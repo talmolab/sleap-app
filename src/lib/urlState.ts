@@ -42,9 +42,18 @@ export function decodeHashToState(): {
     frameIdx?: number;
     instanceIdx?: number;
   } = {};
-  if (params.has("v")) result.videoIdx = parseInt(params.get("v")!, 10);
-  if (params.has("f")) result.frameIdx = parseInt(params.get("f")!, 10);
-  if (params.has("i")) result.instanceIdx = parseInt(params.get("i")!, 10);
+  if (params.has("v")) {
+    const v = parseInt(params.get("v")!, 10);
+    if (!isNaN(v)) result.videoIdx = v;
+  }
+  if (params.has("f")) {
+    const f = parseInt(params.get("f")!, 10);
+    if (!isNaN(f)) result.frameIdx = f;
+  }
+  if (params.has("i")) {
+    const i = parseInt(params.get("i")!, 10);
+    if (!isNaN(i)) result.instanceIdx = i;
+  }
   return Object.keys(result).length > 0 ? result : null;
 }
 
