@@ -44,6 +44,7 @@ import { Film } from "lucide-react";
 export function VideoPlayer() {
   const frameCanvasRef = useRef<HTMLCanvasElement>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
+  const insetCanvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   // State from store
@@ -492,6 +493,128 @@ export function VideoPlayer() {
     video,
     frameIdx,
   ]);
+
+  // Render zoomed inset during node drag
+  const INSET_SIZE = 150;
+  const INSET_ZOOM = 4;
+  useEffect(() => {
+    const inset = insetCanvasRef.current;
+    if (!inset) return;
+
+    if (interactionMode !== "dragging" || !dragNodeInfo) {
+      inset.style.display = "none";
+      return;
+    }
+
+    const bmp = frameBitmapRef.current;
+    if (!bmp) {
+      inset.style.display = "none";
+      return;
+    }
+
+    const instances = renderedInstancesRef.current;
+    const inst = instances[dragNodeInfo.instanceIdx];
+    const node = inst?.nodes[dragNodeInfo.nodeIdx];
+    if (!inst || !node) {
+      inset.style.display = "none";
+      return;
+    }
+
+    inset.style.display = "block";
+
+    const dpr = window.devicePixelRatio || 1;
+    inset.width = INSET_SIZE * dpr;
+    inset.height = INSET_SIZE * dpr;
+    inset.style.width = `${INSET_SIZE}px`;
+    inset.style.height = `${INSET_SIZE}px`;
+
+    const ctx = inset.getContext("2d");
+    if (!ctx) return;
+
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, INSET_SIZE, INSET_SIZE);
+
+    // Draw magnified frame region centered on the dragged node
+    const srcSize = INSET_SIZE / INSET_ZOOM;
+    const sx = node.x - srcSize / 2;
+    const sy = node.y - srcSize / 2;
+
+    ctx.imageSmoothingEnabled = false;
+    try {
+      ctx.drawImage(bmp, sx, sy, srcSize, srcSize, 0, 0, INSET_SIZE, INSET_SIZE);
+    } catch {
+      // Bitmap may be closed
+    }
+
+    // Draw nearby edges from this instance
+    const toInset = (px: number, py: number) => ({
+      ix: (px - sx) * INSET_ZOOM,
+      iy: (py - sy) * INSET_ZOOM,
+    });
+
+    ctx.lineWidth = 1.5;
+    ctx.globalAlpha = 0.7;
+    for (const edge of inst.edges) {
+      const src = inst.nodes[edge.srcIdx];
+      const dst = inst.nodes[edge.dstIdx];
+      if (!src?.visible || !dst?.visible) continue;
+      const s = toInset(src.x, src.y);
+      const d = toInset(dst.x, dst.y);
+      ctx.strokeStyle = inst.edgeColors
+        ? inst.edgeColors[inst.edges.indexOf(edge)]
+        : inst.color;
+      ctx.beginPath();
+      ctx.moveTo(s.ix, s.iy);
+      ctx.lineTo(d.ix, d.iy);
+      ctx.stroke();
+    }
+
+    // Draw other visible nodes as small dots
+    ctx.globalAlpha = 0.6;
+    for (let nIdx = 0; nIdx < inst.nodes.length; nIdx++) {
+      if (nIdx === dragNodeInfo.nodeIdx) continue;
+      const n = inst.nodes[nIdx];
+      if (!n.visible) continue;
+      const { ix, iy } = toInset(n.x, n.y);
+      if (ix < -10 || ix > INSET_SIZE + 10 || iy < -10 || iy > INSET_SIZE + 10) continue;
+      ctx.fillStyle = inst.nodeColors ? inst.nodeColors[nIdx] : inst.color;
+      ctx.beginPath();
+      ctx.arc(ix, iy, 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+
+    // Draw crosshair at center (dragged node position)
+    const cx = INSET_SIZE / 2;
+    const cy = INSET_SIZE / 2;
+    const armLen = 12;
+
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(cx - armLen, cy);
+    ctx.lineTo(cx - 4, cy);
+    ctx.moveTo(cx + 4, cy);
+    ctx.lineTo(cx + armLen, cy);
+    ctx.moveTo(cx, cy - armLen);
+    ctx.lineTo(cx, cy - 4);
+    ctx.moveTo(cx, cy + 4);
+    ctx.lineTo(cx, cy + armLen);
+    ctx.stroke();
+
+    ctx.strokeStyle = "rgba(0, 0, 0, 0.5)";
+    ctx.lineWidth = 0.5;
+    ctx.beginPath();
+    ctx.moveTo(cx - armLen, cy);
+    ctx.lineTo(cx - 4, cy);
+    ctx.moveTo(cx + 4, cy);
+    ctx.lineTo(cx + armLen, cy);
+    ctx.moveTo(cx, cy - armLen);
+    ctx.lineTo(cx, cy - 4);
+    ctx.moveTo(cx, cy + 4);
+    ctx.lineTo(cx, cy + armLen);
+    ctx.stroke();
+  }, [interactionMode, dragNodeInfo, overlayVersion, bitmapVersion]);
 
   // Fit view to instances when 'fit' is enabled and frame/labels change
   // Only re-fit when fit is toggled on or the labeled frame changes,
@@ -1047,6 +1170,13 @@ export function VideoPlayer() {
           onContextMenu={handleContextMenu}
         />
 
+
+        {/* Zoomed inset during node drag */}
+        <canvas
+          ref={insetCanvasRef}
+          className="absolute top-3 right-3 z-30 pointer-events-none rounded-lg border-2 border-white/30 shadow-lg"
+          style={{ display: "none", width: INSET_SIZE, height: INSET_SIZE }}
+        />
         {/* Node hover tooltip */}
         {hoveredNode && labeledFrame && (() => {
           const lfInst = labeledFrame.instances[hoveredNode.instanceIdx];
