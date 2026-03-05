@@ -29,6 +29,7 @@ import {
   type RenderedNode,
 } from "../../canvas/SkeletonRenderer";
 import { getPaletteColor, getInstanceColor } from "../../lib/colorPalettes";
+import { COLORMAPS } from "../../lib/colormaps";
 import { renderTrails } from "../../canvas/TrailRenderer";
 import {
   commandContext,
@@ -67,6 +68,7 @@ export function VideoPlayer() {
   const trailLength = useAppStore((s) => s.trailLength);
   const lutMin = useAppStore((s) => s.lutMin);
   const lutMax = useAppStore((s) => s.lutMax);
+  const colormap = useAppStore((s) => s.colormap);
 
   // Local zoom/pan state
   const [zoom, setZoom] = useState(1);
@@ -463,7 +465,9 @@ export function VideoPlayer() {
     ctx.scale(baseScale * zoom, baseScale * zoom);
     ctx.imageSmoothingEnabled = baseScale * zoom <= 2;
     try {
-      if (lutMin > 0 || lutMax < 255) {
+      const needsLUT = lutMin > 0 || lutMax < 255;
+      const cmapLUT = COLORMAPS[colormap] ?? null;
+      if (needsLUT || cmapLUT) {
         const offscreen = new OffscreenCanvas(bmp.width, bmp.height);
         const offCtx = offscreen.getContext("2d")!;
         offCtx.drawImage(bmp, 0, 0);
@@ -471,9 +475,19 @@ export function VideoPlayer() {
         const d = imgData.data;
         const range = lutMax - lutMin || 1;
         for (let i = 0; i < d.length; i += 4) {
-          d[i] = Math.max(0, Math.min(255, ((d[i] - lutMin) / range) * 255));
-          d[i + 1] = Math.max(0, Math.min(255, ((d[i + 1] - lutMin) / range) * 255));
-          d[i + 2] = Math.max(0, Math.min(255, ((d[i + 2] - lutMin) / range) * 255));
+          let r = d[i], g = d[i + 1], b = d[i + 2];
+          if (needsLUT) {
+            r = Math.max(0, Math.min(255, ((r - lutMin) / range) * 255));
+            g = Math.max(0, Math.min(255, ((g - lutMin) / range) * 255));
+            b = Math.max(0, Math.min(255, ((b - lutMin) / range) * 255));
+          }
+          if (cmapLUT) {
+            // Use luminance of the (possibly LUT-adjusted) pixel to index colormap
+            const lum = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
+            const c = cmapLUT[Math.max(0, Math.min(255, lum))];
+            r = c[0]; g = c[1]; b = c[2];
+          }
+          d[i] = r; d[i + 1] = g; d[i + 2] = b;
         }
         offCtx.putImageData(imgData, 0, 0);
         ctx.drawImage(offscreen, 0, 0);
@@ -484,7 +498,7 @@ export function VideoPlayer() {
       // Bitmap was closed (detached) by a racing frame load — skip, next frame will redraw
     }
     ctx.restore();
-  }, [frameDims, containerSize, zoom, panX, panY, baseScale, offsetX, offsetY, bitmapVersion, lutMin, lutMax]);
+  }, [frameDims, containerSize, zoom, panX, panY, baseScale, offsetX, offsetY, bitmapVersion, lutMin, lutMax, colormap]);
 
   // Find the current labeled frame and update store
   useEffect(() => {

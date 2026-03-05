@@ -5,6 +5,7 @@
 
 import { useAppStore } from "../../stores/appStore";
 import { PALETTES, rgbToCSS } from "../../lib/colorPalettes";
+import { COLORMAPS } from "../../lib/colormaps";
 import { Slider } from "@/components/ui/slider";
 import {
   Select,
@@ -270,11 +271,38 @@ function IntensityHistogram() {
   );
 }
 
+/** Colormap gradient swatch. */
+function ColormapSwatch({ name }: { name: string }) {
+  const lut = COLORMAPS[name];
+  if (!lut) {
+    // Grayscale
+    return (
+      <div
+        className="w-16 h-3 rounded-sm border border-border"
+        style={{ background: "linear-gradient(to right, #000, #fff)" }}
+      />
+    );
+  }
+  // Sample 8 evenly spaced colors
+  const stops = Array.from({ length: 8 }, (_, i) => {
+    const idx = Math.round((i / 7) * 255);
+    const c = lut[idx];
+    return `rgb(${c[0]},${c[1]},${c[2]})`;
+  });
+  return (
+    <div
+      className="w-16 h-3 rounded-sm border border-border"
+      style={{ background: `linear-gradient(to right, ${stops.join(", ")})` }}
+    />
+  );
+}
+
 export function ViewPanel() {
   const edgeStyle = useAppStore((s) => s.edgeStyle);
   const palette = useAppStore((s) => s.palette);
   const distinctlyColor = useAppStore((s) => s.distinctlyColor);
   const trailShade = useAppStore((s) => s.trailShade);
+  const currentColormap = useAppStore((s) => s.colormap);
   const set = useAppStore((s) => s.set);
   const bumpOverlay = useAppStore((s) => s.bumpOverlayVersion);
 
@@ -283,6 +311,27 @@ export function ViewPanel() {
       {/* Intensity histogram and LUT */}
       <Section title="Intensity">
         <IntensityHistogram />
+        <div className="space-y-1">
+          <span className="text-xs text-muted-foreground">Colormap</span>
+          <Select
+            value={currentColormap}
+            onValueChange={(v) => set("colormap", v)}
+          >
+            <SelectTrigger size="sm" className="h-7 text-xs w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {Object.keys(COLORMAPS).map((name) => (
+                <SelectItem key={name} value={name}>
+                  <div className="flex items-center gap-2">
+                    <ColormapSwatch name={name} />
+                    <span>{name}</span>
+                  </div>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
       </Section>
 
       {/* Overlay visibility */}
