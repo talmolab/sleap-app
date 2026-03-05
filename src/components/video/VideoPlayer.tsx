@@ -44,7 +44,6 @@ import { Film } from "lucide-react";
 export function VideoPlayer() {
   const frameCanvasRef = useRef<HTMLCanvasElement>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
-  const insetCanvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   // State from store
