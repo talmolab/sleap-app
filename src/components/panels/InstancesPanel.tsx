@@ -3,8 +3,12 @@
  *
  * Shows track name, predicted status, visible node count, score,
  * and a color indicator matching the instance's palette color.
+ * When an instance is selected, shows a detail panel with metadata
+ * and copyable Python points.
  */
 
+import { useState } from "react";
+import { Clipboard, Check } from "lucide-react";
 import { useAppStore } from "../../stores/appStore";
 import { rgbToCSS, getInstanceColor } from "../../lib/colorPalettes";
 import {
@@ -32,6 +36,14 @@ function isPredicted(instance: Instance): instance is PredictedInstance {
     "score" in instance &&
     typeof (instance as PredictedInstance).score === "number"
   );
+}
+
+function formatPointsAsPython(instance: Instance | PredictedInstance): string {
+  const rows = instance.points.map((pt) => {
+    if (!pt.visible) return "  [np.nan, np.nan]";
+    return `  [${pt.xy[0].toFixed(1)}, ${pt.xy[1].toFixed(1)}]`;
+  });
+  return `np.array([\n${rows.join(",\n")}\n])`;
 }
 
 function InstanceRow({
@@ -75,7 +87,7 @@ function InstanceRow({
         "cursor-pointer border-b-0",
         isSelected
           ? "bg-orange-500/10 border-l-2 border-l-orange-500 text-foreground"
-          : "hover:bg-muted/50 text-foreground"
+          : "hover:bg-muted/50 text-foreground",
       )}
     >
       <TableCell className="py-0.5 px-2">
@@ -86,7 +98,10 @@ function InstanceRow({
       </TableCell>
       <TableCell className="py-0.5 px-2 text-xs">{trackName}</TableCell>
       <TableCell className="py-0.5 px-2 text-xs">
-        <Badge variant={predicted ? "secondary" : "outline"} className="text-[10px] px-1.5 py-0">
+        <Badge
+          variant={predicted ? "secondary" : "outline"}
+          className="text-[10px] px-1.5 py-0"
+        >
           {predicted ? "pred" : "user"}
         </Badge>
       </TableCell>
@@ -97,6 +112,62 @@ function InstanceRow({
         {score !== null ? score.toFixed(2) : "--"}
       </TableCell>
     </TableRow>
+  );
+}
+
+function InstanceDetailPanel({
+  instance,
+}: {
+  instance: Instance | PredictedInstance;
+}) {
+  const [copied, setCopied] = useState(false);
+  const predicted = isPredicted(instance);
+  const trackName = instance.track?.name ?? "Untracked";
+  const visibleNodes = instance.nVisible;
+  const totalNodes = instance.points.length;
+  const score = predicted ? (instance as PredictedInstance).score : null;
+  const pointsStr = formatPointsAsPython(instance);
+
+  const handleCopy = async () => {
+    await navigator.clipboard.writeText(pointsStr);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
+  return (
+    <div className="px-2 py-1.5 space-y-1.5">
+      <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
+        <span>
+          <span className="text-foreground">{trackName}</span>
+        </span>
+        <span>
+          {predicted ? "Predicted" : "User"}
+          {score !== null && ` (${score.toFixed(2)})`}
+        </span>
+        <span>
+          Nodes: {visibleNodes}/{totalNodes}
+        </span>
+      </div>
+      <div className="relative">
+        <Button
+          variant="ghost"
+          size="icon"
+          className="absolute top-1 right-1 h-6 w-6"
+          onClick={handleCopy}
+        >
+          {copied ? (
+            <Check className="h-3 w-3" />
+          ) : (
+            <Clipboard className="h-3 w-3" />
+          )}
+        </Button>
+        <ScrollArea className="max-h-32">
+          <pre className="text-[10px] leading-tight font-mono bg-muted/50 rounded p-2 pr-8">
+            {pointsStr}
+          </pre>
+        </ScrollArea>
+      </div>
+    </div>
   );
 }
 
@@ -160,6 +231,13 @@ export function InstancesPanel() {
           </Table>
         )}
       </ScrollArea>
+
+      {currentInstance && (
+        <>
+          <Separator />
+          <InstanceDetailPanel instance={currentInstance} />
+        </>
+      )}
 
       <Separator />
       <div className="flex gap-1 p-2">
