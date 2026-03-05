@@ -215,6 +215,42 @@ export function VideosPanel() {
         )}
       </ScrollArea>
 
+      {currentVideo && (
+        <>
+          <Separator />
+          <div className="p-2 text-xs space-y-0.5">
+            <div className="text-muted-foreground truncate" title={Array.isArray(currentVideo.filename) ? currentVideo.filename[0] : currentVideo.filename}>
+              <span className="font-medium text-foreground">File: </span>
+              {Array.isArray(currentVideo.filename) ? currentVideo.filename[0] : currentVideo.filename}
+            </div>
+            {currentVideo.shape && (
+              <>
+                <div>
+                  <span className="font-medium">Resolution: </span>
+                  <span className="text-muted-foreground">{currentVideo.shape[2]}x{currentVideo.shape[1]}</span>
+                </div>
+                <div>
+                  <span className="font-medium">Frames: </span>
+                  <span className="text-muted-foreground">{currentVideo.shape[0]}</span>
+                </div>
+                {currentVideo.shape[3] != null && (
+                  <div>
+                    <span className="font-medium">Channels: </span>
+                    <span className="text-muted-foreground">{currentVideo.shape[3]}</span>
+                  </div>
+                )}
+              </>
+            )}
+            {currentVideo.backend?.constructor?.name && (
+              <div>
+                <span className="font-medium">Backend: </span>
+                <span className="text-muted-foreground">{currentVideo.backend.constructor.name}</span>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
       <Separator />
       <div className="flex gap-1 p-2">
         <Button
