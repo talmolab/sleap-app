@@ -205,6 +205,67 @@ export function VideoPlayer() {
     return () => window.removeEventListener("keydown", handler);
   }, [selectedNodes, hoveredNode]);
 
+  // Delete/Backspace: delete instances when all their visible nodes are selected
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== "Delete" && e.key !== "Backspace") return;
+      if (e.metaKey || e.ctrlKey) return;
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      if (selectedNodes.size === 0) return;
+
+      const lf = useAppStore.getState().labeledFrame;
+      if (!lf) return;
+
+      const selectedByInstance = new Map<number, Set<number>>();
+      for (const key of selectedNodes) {
+        const { instanceIdx, nodeIdx } = parseNodeKey(key);
+        if (!selectedByInstance.has(instanceIdx)) {
+          selectedByInstance.set(instanceIdx, new Set());
+        }
+        selectedByInstance.get(instanceIdx)!.add(nodeIdx);
+      }
+
+      const instancesToDelete: number[] = [];
+      for (const [instanceIdx, selectedNodeIdxs] of selectedByInstance) {
+        const instance = lf.instances[instanceIdx];
+        if (!instance) continue;
+
+        let visibleCount = 0;
+        for (const point of instance.points) {
+          if (!isNaN(point.xy[0]) && !isNaN(point.xy[1])) {
+            visibleCount++;
+          }
+        }
+
+        if (visibleCount > 0 && selectedNodeIdxs.size >= visibleCount) {
+          instancesToDelete.push(instanceIdx);
+        }
+      }
+
+      if (instancesToDelete.length === 0) return;
+
+      e.preventDefault();
+      commandContext.execute(BeginEdit);
+
+      instancesToDelete.sort((a, b) => b - a);
+      for (const idx of instancesToDelete) {
+        lf.instances.splice(idx, 1);
+      }
+
+      setSelectedNodes(new Set());
+      const store = useAppStore.getState();
+      if (store.instance && !lf.instances.includes(store.instance)) {
+        store.setInstance(null);
+      }
+      store.setLabeledFrame(lf.instances.length > 0 ? lf : null);
+      store.markChanged();
+      store.bumpOverlayVersion();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [selectedNodes]);
+
   // Compute fit-to-window base scale and centering offsets
   const [cw, ch] = containerSize;
   const [fw, fh] = frameDims;
