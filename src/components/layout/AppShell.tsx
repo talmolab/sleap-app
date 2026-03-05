@@ -41,7 +41,7 @@ import {
   Bone,
   Users,
   Lightbulb,
-  Terminal,
+  Bug,
   PanelRightClose,
   PanelRightOpen,
   GripVertical,
@@ -60,7 +60,7 @@ const PANELS = [
   { id: "skeleton", label: "Skeleton", icon: Bone, component: SkeletonPanel },
   { id: "instances", label: "Instances", icon: Users, component: InstancesPanel },
   { id: "suggestions", label: "Suggestions", icon: Lightbulb, component: SuggestionsPanel },
-  { id: "debug", label: "Debug", icon: Terminal, component: DebugPanel },
+  { id: "debug", label: "Debug", icon: Bug, component: DebugPanel },
 ] as const;
 
 export function AppShell() {
