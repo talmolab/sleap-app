@@ -32,8 +32,7 @@ export async function loadProjectFromFile(file: File): Promise<boolean> {
   store.setLoading(true, `Loading ${file.name}...`);
 
   try {
-    const buffer = await file.arrayBuffer();
-    const labels = await loadSlp(buffer, {
+    const labels = await loadSlp(file, {
       openVideos: true,
       h5: { filenameHint: file.name },
     });
