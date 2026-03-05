@@ -102,6 +102,11 @@ export function VideoPlayer() {
   // Track whether an undo snapshot has been taken for the current rotation gesture
   const rotationSnapshotTaken = useRef(false);
 
+  // Double-tap spacebar zoom cycle
+  const lastSpaceDownTime = useRef(0);
+  const zoomMode = useRef<"free" | "fit-content" | "fit-frame">("free");
+  const savedFreeView = useRef({ zoom: 1, panX: 0, panY: 0 });
+
   // Track frame canvas dimensions so overlay can sync after async frame load
   const [frameDims, setFrameDims] = useState<[number, number]>([0, 0]);
   // Counter to trigger frame canvas re-render when a new bitmap is loaded (even same dims)
@@ -137,7 +142,7 @@ export function VideoPlayer() {
     return () => ro.disconnect();
   }, []);
 
-  // Track spacebar hold for pan mode
+  // Track spacebar hold for pan mode + double-tap zoom cycle
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.code === "Space" && !e.repeat) {
@@ -145,6 +150,82 @@ export function VideoPlayer() {
         const tag = (e.target as HTMLElement)?.tagName;
         if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
         e.preventDefault();
+
+        const now = performance.now();
+        const elapsed = now - lastSpaceDownTime.current;
+        lastSpaceDownTime.current = now;
+
+        if (elapsed < 300) {
+          // Double-tap detected: cycle zoom modes
+          const currentMode = zoomMode.current;
+
+          if (currentMode === "free") {
+            // Save current view before cycling
+            savedFreeView.current = { ...viewRef.current };
+
+            // fit-content: zoom to fit all visible instance nodes
+            const instances = renderedInstancesRef.current;
+            const allNodes = instances.flatMap((inst) =>
+              inst.nodes.filter((n) => n.visible)
+            );
+            if (allNodes.length > 0) {
+              const container = containerRef.current;
+              if (container) {
+                const cRect = container.getBoundingClientRect();
+                const cw = cRect.width;
+                const ch = cRect.height;
+                const fw = frameBitmapRef.current?.width ?? 0;
+                const fh = frameBitmapRef.current?.height ?? 0;
+                if (fw > 0 && fh > 0) {
+                  const bs = Math.min(cw / fw, ch / fh);
+                  const ox = (cw - fw * bs) / 2;
+                  const oy = (ch - fh * bs) / 2;
+
+                  const xs = allNodes.map((n) => n.x);
+                  const ys = allNodes.map((n) => n.y);
+                  const pad = 50;
+                  const minX = Math.min(...xs) - pad;
+                  const maxX = Math.max(...xs) + pad;
+                  const minY = Math.min(...ys) - pad;
+                  const maxY = Math.max(...ys) + pad;
+                  const bboxW = maxX - minX;
+                  const bboxH = maxY - minY;
+
+                  if (bboxW > 0 && bboxH > 0) {
+                    const newZoom = Math.min(cw / (bboxW * bs), ch / (bboxH * bs), 10);
+                    const centerX = (minX + maxX) / 2;
+                    const centerY = (minY + maxY) / 2;
+                    const newPanX = cw / 2 - ox - centerX * bs * newZoom;
+                    const newPanY = ch / 2 - oy - centerY * bs * newZoom;
+
+                    viewRef.current = { zoom: newZoom, panX: newPanX, panY: newPanY };
+                    setZoom(newZoom);
+                    setPanX(newPanX);
+                    setPanY(newPanY);
+                    zoomMode.current = "fit-content";
+                  }
+                }
+              }
+            }
+          } else if (currentMode === "fit-content") {
+            // fit-frame: reset to zoom=1, centered
+            viewRef.current = { zoom: 1, panX: 0, panY: 0 };
+            setZoom(1);
+            setPanX(0);
+            setPanY(0);
+            zoomMode.current = "fit-frame";
+          } else {
+            // fit-frame -> free: restore saved view
+            const saved = savedFreeView.current;
+            viewRef.current = { ...saved };
+            setZoom(saved.zoom);
+            setPanX(saved.panX);
+            setPanY(saved.panY);
+            zoomMode.current = "free";
+          }
+          return;
+        }
+
         setIsSpaceHeld(true);
       }
     };
