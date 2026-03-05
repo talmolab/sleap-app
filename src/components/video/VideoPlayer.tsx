@@ -77,6 +77,13 @@ export function VideoPlayer() {
   const [isDragging, setIsDragging] = useState(false);
   const [isPanning, setIsPanning] = useState(false);
   const [isSpaceHeld, setIsSpaceHeld] = useState(false);
+  const [isCmdHeld, setIsCmdHeld] = useState(false);
+  const [isZoomDragging, setIsZoomDragging] = useState(false);
+  const zoomDragStart = useRef<{
+    clientX: number; clientY: number;
+    zoom: number; panX: number; panY: number;
+    anchorX: number; anchorY: number;
+  } | null>(null);
   const [panStart, setPanStart] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [dragNodeInfo, setDragNodeInfo] = useState<{
     instanceIdx: number;
@@ -101,6 +108,11 @@ export function VideoPlayer() {
 
   // Track whether an undo snapshot has been taken for the current rotation gesture
   const rotationSnapshotTaken = useRef(false);
+
+  // Double-tap spacebar zoom cycle
+  const lastSpaceDownTime = useRef(0);
+  const zoomMode = useRef<"free" | "fit-content" | "fit-frame">("free");
+  const savedFreeView = useRef({ zoom: 1, panX: 0, panY: 0 });
 
   // Track frame canvas dimensions so overlay can sync after async frame load
   const [frameDims, setFrameDims] = useState<[number, number]>([0, 0]);
@@ -137,7 +149,7 @@ export function VideoPlayer() {
     return () => ro.disconnect();
   }, []);
 
-  // Track spacebar hold for pan mode
+  // Track spacebar hold for pan mode + double-tap zoom cycle
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.code === "Space" && !e.repeat) {
@@ -145,6 +157,82 @@ export function VideoPlayer() {
         const tag = (e.target as HTMLElement)?.tagName;
         if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
         e.preventDefault();
+
+        const now = performance.now();
+        const elapsed = now - lastSpaceDownTime.current;
+        lastSpaceDownTime.current = now;
+
+        if (elapsed < 300) {
+          // Double-tap detected: cycle zoom modes
+          const currentMode = zoomMode.current;
+
+          if (currentMode === "free") {
+            // Save current view before cycling
+            savedFreeView.current = { ...viewRef.current };
+
+            // fit-content: zoom to fit all visible instance nodes
+            const instances = renderedInstancesRef.current;
+            const allNodes = instances.flatMap((inst) =>
+              inst.nodes.filter((n) => n.visible)
+            );
+            if (allNodes.length > 0) {
+              const container = containerRef.current;
+              if (container) {
+                const cRect = container.getBoundingClientRect();
+                const cw = cRect.width;
+                const ch = cRect.height;
+                const fw = frameBitmapRef.current?.width ?? 0;
+                const fh = frameBitmapRef.current?.height ?? 0;
+                if (fw > 0 && fh > 0) {
+                  const bs = Math.min(cw / fw, ch / fh);
+                  const ox = (cw - fw * bs) / 2;
+                  const oy = (ch - fh * bs) / 2;
+
+                  const xs = allNodes.map((n) => n.x);
+                  const ys = allNodes.map((n) => n.y);
+                  const pad = 50;
+                  const minX = Math.min(...xs) - pad;
+                  const maxX = Math.max(...xs) + pad;
+                  const minY = Math.min(...ys) - pad;
+                  const maxY = Math.max(...ys) + pad;
+                  const bboxW = maxX - minX;
+                  const bboxH = maxY - minY;
+
+                  if (bboxW > 0 && bboxH > 0) {
+                    const newZoom = Math.min(cw / (bboxW * bs), ch / (bboxH * bs), 10);
+                    const centerX = (minX + maxX) / 2;
+                    const centerY = (minY + maxY) / 2;
+                    const newPanX = cw / 2 - ox - centerX * bs * newZoom;
+                    const newPanY = ch / 2 - oy - centerY * bs * newZoom;
+
+                    viewRef.current = { zoom: newZoom, panX: newPanX, panY: newPanY };
+                    setZoom(newZoom);
+                    setPanX(newPanX);
+                    setPanY(newPanY);
+                    zoomMode.current = "fit-content";
+                  }
+                }
+              }
+            }
+          } else if (currentMode === "fit-content") {
+            // fit-frame: reset to zoom=1, centered
+            viewRef.current = { zoom: 1, panX: 0, panY: 0 };
+            setZoom(1);
+            setPanX(0);
+            setPanY(0);
+            zoomMode.current = "fit-frame";
+          } else {
+            // fit-frame -> free: restore saved view
+            const saved = savedFreeView.current;
+            viewRef.current = { ...saved };
+            setZoom(saved.zoom);
+            setPanX(saved.panX);
+            setPanY(saved.panY);
+            zoomMode.current = "free";
+          }
+          return;
+        }
+
         setIsSpaceHeld(true);
       }
     };
@@ -593,6 +681,20 @@ export function VideoPlayer() {
 
       if (e.button !== 0) return; // Only left-click for interaction
 
+      // Cmd/Ctrl+Space+left-click: zoom-drag mode
+      if (isSpaceHeld && (isCmdHeld || e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        const rect = containerRef.current?.getBoundingClientRect();
+        const anchorX = rect ? e.clientX - rect.left - offsetX : 0;
+        const anchorY = rect ? e.clientY - rect.top - offsetY : 0;
+        setIsZoomDragging(true);
+        zoomDragStart.current = {
+          clientX: e.clientX, clientY: e.clientY,
+          zoom, panX, panY, anchorX, anchorY,
+        };
+        return;
+      }
+
       // Space+left-click panning
       if (isSpaceHeld) {
         e.preventDefault();
@@ -693,11 +795,33 @@ export function VideoPlayer() {
       setMarqueeStart({ x, y });
       setMarqueeEnd({ x, y });
     },
-    [canvasToScene, markerSize, panX, panY, zoom, isSpaceHeld, selectedNodes, showNonVisibleNodes]
+    [canvasToScene, markerSize, panX, panY, zoom, isSpaceHeld, isCmdHeld, offsetX, offsetY, selectedNodes, showNonVisibleNodes]
   );
 
   const handleMouseMove = useCallback(
     (e: React.MouseEvent) => {
+      // Handle zoom-drag (Cmd+Space+drag)
+      if (isZoomDragging && zoomDragStart.current) {
+        const start = zoomDragStart.current;
+        const dx = e.clientX - start.clientX;
+        const dy = e.clientY - start.clientY;
+        // Drag right/down = zoom in, drag left/up = zoom out
+        const dragDistance = dx - dy;
+        const sensitivity = 0.005;
+        const newZoom = Math.max(0.1, Math.min(50, start.zoom * Math.exp(dragDistance * sensitivity)));
+
+        // Keep zoom centered on the initial click point
+        const ratio = newZoom / start.zoom;
+        const newPanX = start.anchorX - (start.anchorX - start.panX) * ratio;
+        const newPanY = start.anchorY - (start.anchorY - start.panY) * ratio;
+
+        viewRef.current = { zoom: newZoom, panX: newPanX, panY: newPanY };
+        setZoom(newZoom);
+        setPanX(newPanX);
+        setPanY(newPanY);
+        return;
+      }
+
       // Handle panning
       if (isPanning) {
         const rawPx = e.clientX - panStart.x;
@@ -801,10 +925,16 @@ export function VideoPlayer() {
         useAppStore.getState().bumpOverlayVersion();
       }
     },
-    [isDragging, isPanning, dragNodeInfo, canvasToScene, panStart, constrainPan, zoom, interactionMode, selectedNodes, markerSize, hoveredNode, showNonVisibleNodes]
+    [isDragging, isPanning, isZoomDragging, dragNodeInfo, canvasToScene, panStart, constrainPan, zoom, interactionMode, selectedNodes, markerSize, hoveredNode, showNonVisibleNodes, offsetX, offsetY]
   );
 
   const handleMouseUp = useCallback(() => {
+    if (isZoomDragging) {
+      setIsZoomDragging(false);
+      zoomDragStart.current = null;
+      return;
+    }
+
     if (isPanning) {
       setIsPanning(false);
     }
@@ -830,7 +960,7 @@ export function VideoPlayer() {
       lastDragPos.current = null;
       setInteractionMode("idle");
     }
-  }, [isDragging, isPanning, interactionMode, marqueeStart, marqueeEnd]);
+  }, [isDragging, isPanning, isZoomDragging, interactionMode, marqueeStart, marqueeEnd]);
 
   // Zoom with mouse wheel (towards pointer), Alt+Scroll for rotation
   // Use native event listener with { passive: false } so preventDefault() works
@@ -1026,7 +1156,7 @@ export function VideoPlayer() {
         ref={containerRef}
         className={cn(
           "flex-1 relative overflow-hidden bg-background min-h-0",
-          isPanning ? "cursor-grabbing" : isSpaceHeld ? "cursor-grab" : isDragging ? "cursor-grabbing" : interactionMode === "marquee" ? "cursor-crosshair" : isPlacingNodes ? "cursor-cell" : hoveredNode ? "cursor-pointer" : "cursor-default"
+          isPanning ? "cursor-grabbing" : isZoomDragging ? "cursor-zoom-in" : (isSpaceHeld && isCmdHeld) ? "cursor-zoom-in" : isSpaceHeld ? "cursor-grab" : isDragging ? "cursor-grabbing" : interactionMode === "marquee" ? "cursor-crosshair" : isPlacingNodes ? "cursor-cell" : hoveredNode ? "cursor-pointer" : "cursor-default"
         )}
         onDoubleClick={handleDoubleClick}
       >
