@@ -412,12 +412,12 @@ export function Seekbar() {
               <Button
                 variant="subtle"
                 size="icon-xs"
-                onClick={() => useAppStore.getState().incrementFrameIdx(-100)}
+                onClick={() => useAppStore.getState().setFrameIdx(0)}
               >
                 <SkipBack />
               </Button>
             </TooltipTrigger>
-            <TooltipContent side="top"><p>Previous large step (Ctrl+Shift+Left)</p></TooltipContent>
+            <TooltipContent side="top"><p>Go to start (Home)</p></TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
@@ -460,12 +460,16 @@ export function Seekbar() {
               <Button
                 variant="subtle"
                 size="icon-xs"
-                onClick={() => useAppStore.getState().incrementFrameIdx(100)}
+                onClick={() => {
+                  const { video } = useAppStore.getState();
+                  const total = video?.shape?.[0] ?? 0;
+                  if (total > 0) useAppStore.getState().setFrameIdx(total - 1);
+                }}
               >
                 <SkipForward />
               </Button>
             </TooltipTrigger>
-            <TooltipContent side="top"><p>Next large step (Ctrl+Shift+Right)</p></TooltipContent>
+            <TooltipContent side="top"><p>Go to end (End)</p></TooltipContent>
           </Tooltip>
           {/* Speed selector */}
           <Popover>

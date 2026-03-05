@@ -109,6 +109,29 @@ export const GoPrevSuggestion: Command = {
   },
 };
 
+/** Navigate to the first frame (frame 0). */
+export const GoToStartFrame: Command = {
+  name: "GoToStartFrame",
+  topics: [UpdateTopic.Frame],
+  execute(ctx: CommandContext) {
+    ctx.state.setFrameIdx(0);
+  },
+};
+
+/** Navigate to the last frame of the current video. */
+export const GoToEndFrame: Command = {
+  name: "GoToEndFrame",
+  topics: [UpdateTopic.Frame],
+  execute(ctx: CommandContext) {
+    const { video } = ctx.state;
+    if (!video) return;
+    const totalFrames = video.shape?.[0] ?? 0;
+    if (totalFrames > 0) {
+      ctx.state.setFrameIdx(totalFrames - 1);
+    }
+  },
+};
+
 /** Navigate to a specific frame number. */
 export const GoToFrame: Command = {
   name: "GoToFrame",

@@ -24,6 +24,8 @@ import {
   GoToLastInteracted,
   GoNextUserFrame,
   GoNextTrackSpawnFrame,
+  GoToStartFrame,
+  GoToEndFrame,
   AddInstance,
   DeleteSelectedInstance,
   CopyInstance,
@@ -64,6 +66,16 @@ export function useKeyboardShortcuts() {
       [DEFAULT_SHORTCUTS["frame prev large step"]]: (e) => {
         e.preventDefault();
         store().incrementFrameIdx(-STEP_SIZES.large);
+      },
+
+      // Skip to start/end
+      [DEFAULT_SHORTCUTS["goto start"]]: (e) => {
+        e.preventDefault();
+        commandContext.execute(GoToStartFrame);
+      },
+      [DEFAULT_SHORTCUTS["goto end"]]: (e) => {
+        e.preventDefault();
+        commandContext.execute(GoToEndFrame);
       },
 
       // Labeled frame navigation (via command system)

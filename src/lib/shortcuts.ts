@@ -17,6 +17,8 @@ export const DEFAULT_SHORTCUTS: Record<string, string> = {
   "frame prev medium step": "$mod+ArrowLeft",
   "frame next large step": "$mod+Shift+ArrowRight",
   "frame prev large step": "$mod+Shift+ArrowLeft",
+  "goto start": "Home",
+  "goto end": "End",
 
   // Navigation - labeled frames
   "goto next labeled": "Alt+ArrowRight",

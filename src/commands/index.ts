@@ -32,6 +32,8 @@ export {
   GoPrevLabeledFrame,
   GoNextSuggestion,
   GoPrevSuggestion,
+  GoToStartFrame,
+  GoToEndFrame,
   GoToFrame,
   GoToLastInteracted,
   GoNextUserFrame,
