@@ -25,6 +25,7 @@ import { VideosPanel } from "../panels/VideosPanel";
 import { SkeletonPanel } from "../panels/SkeletonPanel";
 import { InstancesPanel } from "../panels/InstancesPanel";
 import { SuggestionsPanel } from "../panels/SuggestionsPanel";
+import { ViewPanel } from "../panels/ViewPanel";
 import { DebugPanel } from "../panels/DebugPanel";
 import { WelcomeScreen } from "./WelcomeScreen";
 import { TrainingDialog } from "../dialogs/TrainingDialog";
@@ -42,6 +43,7 @@ import {
   Users,
   Lightbulb,
   Bug,
+  Eye,
   PanelRightClose,
   PanelRightOpen,
   GripVertical,
@@ -59,6 +61,7 @@ const PANELS = [
   { id: "videos", label: "Videos", icon: Film, component: VideosPanel },
   { id: "skeleton", label: "Skeleton", icon: Bone, component: SkeletonPanel },
   { id: "instances", label: "Instances", icon: Users, component: InstancesPanel },
+  { id: "view", label: "View", icon: Eye, component: ViewPanel },
   { id: "suggestions", label: "Suggestions", icon: Lightbulb, component: SuggestionsPanel },
   { id: "debug", label: "Debug", icon: Bug, component: DebugPanel },
 ] as const;
