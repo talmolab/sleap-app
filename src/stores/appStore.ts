@@ -61,6 +61,7 @@ export interface AppState {
   lutMax: number;
   frameHistogram: Uint32Array | null;
   colormap: string;
+  rotation: 0 | 90 | 180 | 270;
 
   // === Editing state ===
   instanceInitMethod: InstancePlacementMethod;
@@ -168,6 +169,7 @@ export const useAppStore = create<AppState>()(
       lutMax: 255,
       frameHistogram: null,
       colormap: "grayscale",
+      rotation: 0 as 0 | 90 | 180 | 270,
 
       // Editing state
       instanceInitMethod: "best" as InstancePlacementMethod,

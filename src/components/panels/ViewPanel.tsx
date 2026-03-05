@@ -297,12 +297,15 @@ function ColormapSwatch({ name }: { name: string }) {
   );
 }
 
+const ROTATIONS = [0, 90, 180, 270] as const;
+
 export function ViewPanel() {
   const edgeStyle = useAppStore((s) => s.edgeStyle);
   const palette = useAppStore((s) => s.palette);
   const distinctlyColor = useAppStore((s) => s.distinctlyColor);
   const trailShade = useAppStore((s) => s.trailShade);
   const currentColormap = useAppStore((s) => s.colormap);
+  const rotation = useAppStore((s) => s.rotation);
   const set = useAppStore((s) => s.set);
   const bumpOverlay = useAppStore((s) => s.bumpOverlayVersion);
 
@@ -331,6 +334,23 @@ export function ViewPanel() {
               ))}
             </SelectContent>
           </Select>
+        </div>
+      </Section>
+
+      {/* Rotation */}
+      <Section title="Rotation" defaultOpen={false}>
+        <div className="flex gap-1">
+          {ROTATIONS.map((deg) => (
+            <Button
+              key={deg}
+              variant={rotation === deg ? "default" : "subtle"}
+              size="xs"
+              className="text-[10px] h-6 flex-1"
+              onClick={() => set("rotation", deg)}
+            >
+              {deg}°
+            </Button>
+          ))}
         </div>
       </Section>
 

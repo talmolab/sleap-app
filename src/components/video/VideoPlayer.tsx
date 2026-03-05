@@ -69,6 +69,7 @@ export function VideoPlayer() {
   const lutMin = useAppStore((s) => s.lutMin);
   const lutMax = useAppStore((s) => s.lutMax);
   const colormap = useAppStore((s) => s.colormap);
+  const rotation = useAppStore((s) => s.rotation);
 
   // Local zoom/pan state
   const [zoom, setZoom] = useState(1);
@@ -362,9 +363,13 @@ export function VideoPlayer() {
   // Compute fit-to-window base scale and centering offsets
   const [cw, ch] = containerSize;
   const [fw, fh] = frameDims;
-  const baseScale = fw > 0 && fh > 0 ? Math.min(cw / fw, ch / fh) : 1;
-  const offsetX = fw > 0 && fh > 0 ? (cw - fw * baseScale) / 2 : 0;
-  const offsetY = fw > 0 && fh > 0 ? (ch - fh * baseScale) / 2 : 0;
+  // For 90/270 rotation, swap effective dimensions for fitting
+  const isRotated90 = rotation === 90 || rotation === 270;
+  const displayW = isRotated90 ? fh : fw;
+  const displayH = isRotated90 ? fw : fh;
+  const baseScale = displayW > 0 && displayH > 0 ? Math.min(cw / displayW, ch / displayH) : 1;
+  const offsetX = displayW > 0 && displayH > 0 ? (cw - displayW * baseScale) / 2 : 0;
+  const offsetY = displayW > 0 && displayH > 0 ? (ch - displayH * baseScale) / 2 : 0;
 
   // Load the current frame (convert to ImageBitmap, trigger dimension update)
   useEffect(() => {
@@ -463,6 +468,17 @@ export function VideoPlayer() {
     ctx.save();
     ctx.translate(offsetX + panX, offsetY + panY);
     ctx.scale(baseScale * zoom, baseScale * zoom);
+    // Apply virtual rotation
+    if (rotation === 90) {
+      ctx.translate(fh, 0);
+      ctx.rotate(Math.PI / 2);
+    } else if (rotation === 180) {
+      ctx.translate(fw, fh);
+      ctx.rotate(Math.PI);
+    } else if (rotation === 270) {
+      ctx.translate(0, fw);
+      ctx.rotate((3 * Math.PI) / 2);
+    }
     ctx.imageSmoothingEnabled = baseScale * zoom <= 2;
     try {
       const needsLUT = lutMin > 0 || lutMax < 255;
@@ -498,7 +514,7 @@ export function VideoPlayer() {
       // Bitmap was closed (detached) by a racing frame load — skip, next frame will redraw
     }
     ctx.restore();
-  }, [frameDims, containerSize, zoom, panX, panY, baseScale, offsetX, offsetY, bitmapVersion, lutMin, lutMax, colormap]);
+  }, [frameDims, containerSize, zoom, panX, panY, baseScale, offsetX, offsetY, bitmapVersion, lutMin, lutMax, colormap, rotation]);
 
   // Find the current labeled frame and update store
   useEffect(() => {
@@ -600,10 +616,20 @@ export function VideoPlayer() {
 
     renderedInstancesRef.current = instances;
 
-    // Apply fit-to-window base transform + user zoom/pan
+    // Apply fit-to-window base transform + user zoom/pan + rotation
     ctx.save();
     ctx.translate(offsetX + panX, offsetY + panY);
     ctx.scale(baseScale * zoom, baseScale * zoom);
+    if (rotation === 90) {
+      ctx.translate(fh, 0);
+      ctx.rotate(Math.PI / 2);
+    } else if (rotation === 180) {
+      ctx.translate(fw, fh);
+      ctx.rotate(Math.PI);
+    } else if (rotation === 270) {
+      ctx.translate(0, fw);
+      ctx.rotate((3 * Math.PI) / 2);
+    }
 
     // Render motion trails before skeleton instances (behind)
     if (trailLength > 0 && labels && video) {
@@ -689,6 +715,7 @@ export function VideoPlayer() {
     labels,
     video,
     frameIdx,
+    rotation,
   ]);
 
   // Render zoomed inset during node drag
@@ -865,22 +892,31 @@ export function VideoPlayer() {
       const rect = canvas.getBoundingClientRect();
       const cx = clientX - rect.left;
       const cy = clientY - rect.top;
-      return {
-        x: (cx - offsetX - panX) / (baseScale * zoom),
-        y: (cy - offsetY - panY) / (baseScale * zoom),
-      };
+      // Convert to rotated scene coordinates
+      let sx = (cx - offsetX - panX) / (baseScale * zoom);
+      let sy = (cy - offsetY - panY) / (baseScale * zoom);
+      // Apply inverse rotation to get frame coordinates
+      if (rotation === 90) {
+        const fx = sy, fy = fh - sx;
+        sx = fx; sy = fy;
+      } else if (rotation === 180) {
+        sx = fw - sx; sy = fh - sy;
+      } else if (rotation === 270) {
+        const fx = fw - sy, fy = sx;
+        sx = fx; sy = fy;
+      }
+      return { x: sx, y: sy };
     },
-    [zoom, panX, panY, baseScale, offsetX, offsetY]
+    [zoom, panX, panY, baseScale, offsetX, offsetY, rotation, fw, fh]
   );
 
   // Constrain pan so at least 25% of the video remains visible
   const constrainPan = useCallback(
     (px: number, py: number, z: number) => {
       const [cw, ch] = containerSize;
-      const [fw, fh] = frameDims;
-      if (fw === 0 || fh === 0) return { x: px, y: py };
-      const scaledW = fw * baseScale * z;
-      const scaledH = fh * baseScale * z;
+      if (displayW === 0 || displayH === 0) return { x: px, y: py };
+      const scaledW = displayW * baseScale * z;
+      const scaledH = displayH * baseScale * z;
       const minVisible = 0.25;
       const minVisibleX = scaledW * minVisible;
       const minVisibleY = scaledH * minVisible;
