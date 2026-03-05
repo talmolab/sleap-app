@@ -5,9 +5,10 @@
  * and a color indicator matching the instance's palette color.
  * When an instance is selected, shows a detail panel with metadata
  * and copyable Python points.
+ * Supports multi-select via Shift+click (range) and Cmd/Ctrl+click (toggle).
  */
 
-import { useState } from "react";
+import { useState, useRef, useCallback } from "react";
 import { Clipboard, Check } from "lucide-react";
 import { useAppStore } from "../../stores/appStore";
 import { rgbToCSS, getInstanceColor } from "../../lib/colorPalettes";
@@ -59,7 +60,7 @@ function InstanceRow({
   instance: Instance | PredictedInstance;
   index: number;
   isSelected: boolean;
-  onSelect: () => void;
+  onSelect: (e: React.MouseEvent) => void;
   palette: string;
   labels: Labels | null;
   distinctlyColor: string;
@@ -175,17 +176,67 @@ export function InstancesPanel() {
   const labels = useAppStore((s) => s.labels);
   const video = useAppStore((s) => s.video);
   const frameIdx = useAppStore((s) => s.frameIdx);
-  const currentInstance = useAppStore((s) => s.instance);
   const setInstance = useAppStore((s) => s.setInstance);
+  const selectedInstanceIndices = useAppStore(
+    (s) => s.selectedInstanceIndices,
+  );
+  const setSelectedInstanceIndices = useAppStore(
+    (s) => s.setSelectedInstanceIndices,
+  );
   const palette = useAppStore((s) => s.palette);
   const distinctlyColor = useAppStore((s) => s.distinctlyColor);
   const colorPredicted = useAppStore((s) => s.colorPredicted);
+  const currentInstance = useAppStore((s) => s.instance);
+  const lastClickedIdx = useRef<number | null>(null);
 
   // Find the labeled frame for current video + frame
   const labeledFrames =
     labels && video ? labels.find({ video, frameIdx }) : [];
   const labeledFrame = labeledFrames.length > 0 ? labeledFrames[0] : null;
   const instances = labeledFrame?.instances ?? [];
+
+  const handleSelect = useCallback(
+    (index: number, e: React.MouseEvent) => {
+      const instance = instances[index];
+      if (!instance) return;
+
+      if (e.shiftKey && lastClickedIdx.current !== null) {
+        // Shift+click: select range from last clicked to current
+        const start = Math.min(lastClickedIdx.current, index);
+        const end = Math.max(lastClickedIdx.current, index);
+        const newIndices = new Set(selectedInstanceIndices);
+        for (let i = start; i <= end; i++) newIndices.add(i);
+        setSelectedInstanceIndices(newIndices);
+        setInstance(instance, index);
+      } else if (e.metaKey || e.ctrlKey) {
+        // Cmd/Ctrl+click: toggle individual instance
+        const newIndices = new Set(selectedInstanceIndices);
+        if (newIndices.has(index)) {
+          newIndices.delete(index);
+          if (newIndices.size > 0) {
+            const last = [...newIndices].pop()!;
+            setInstance(instances[last], last);
+          } else {
+            setInstance(null);
+          }
+        } else {
+          newIndices.add(index);
+          setInstance(instance, index);
+        }
+        setSelectedInstanceIndices(newIndices);
+      } else {
+        // Plain click: single select
+        setInstance(instance, index);
+        lastClickedIdx.current = index;
+      }
+    },
+    [
+      instances,
+      selectedInstanceIndices,
+      setInstance,
+      setSelectedInstanceIndices,
+    ],
+  );
 
   return (
     <div className="flex flex-col h-full">
@@ -214,13 +265,13 @@ export function InstancesPanel() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {instances.map((instance, i) => (
+              {instances.map((inst, i) => (
                 <InstanceRow
                   key={i}
-                  instance={instance}
+                  instance={inst}
                   index={i}
-                  isSelected={instance === currentInstance}
-                  onSelect={() => setInstance(instance)}
+                  isSelected={selectedInstanceIndices.has(i)}
+                  onSelect={(e) => handleSelect(i, e)}
                   palette={palette}
                   labels={labels}
                   distinctlyColor={distinctlyColor}
