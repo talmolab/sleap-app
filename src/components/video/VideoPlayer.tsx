@@ -65,6 +65,8 @@ export function VideoPlayer() {
   const overlayVersion = useAppStore((s) => s.overlayVersion);
   const distinctlyColor = useAppStore((s) => s.distinctlyColor);
   const trailLength = useAppStore((s) => s.trailLength);
+  const lutMin = useAppStore((s) => s.lutMin);
+  const lutMax = useAppStore((s) => s.lutMax);
 
   // Local zoom/pan state
   const [zoom, setZoom] = useState(1);
@@ -404,6 +406,22 @@ export function VideoPlayer() {
           return;
         }
 
+        // Compute histogram from raw frame pixels
+        {
+          const offscreen = new OffscreenCanvas(bmp.width, bmp.height);
+          const offCtx = offscreen.getContext("2d");
+          if (offCtx) {
+            offCtx.drawImage(bmp, 0, 0);
+            const imgData = offCtx.getImageData(0, 0, bmp.width, bmp.height);
+            const hist = new Uint32Array(256);
+            const d = imgData.data;
+            for (let i = 0; i < d.length; i += 4) {
+              hist[d[i + 1]]++;
+            }
+            useAppStore.getState().set("frameHistogram", hist);
+          }
+        }
+
         // Close previous bitmap
         frameBitmapRef.current?.close();
         frameBitmapRef.current = bmp;
@@ -445,12 +463,28 @@ export function VideoPlayer() {
     ctx.scale(baseScale * zoom, baseScale * zoom);
     ctx.imageSmoothingEnabled = baseScale * zoom <= 2;
     try {
-      ctx.drawImage(bmp, 0, 0);
+      if (lutMin > 0 || lutMax < 255) {
+        const offscreen = new OffscreenCanvas(bmp.width, bmp.height);
+        const offCtx = offscreen.getContext("2d")!;
+        offCtx.drawImage(bmp, 0, 0);
+        const imgData = offCtx.getImageData(0, 0, bmp.width, bmp.height);
+        const d = imgData.data;
+        const range = lutMax - lutMin || 1;
+        for (let i = 0; i < d.length; i += 4) {
+          d[i] = Math.max(0, Math.min(255, ((d[i] - lutMin) / range) * 255));
+          d[i + 1] = Math.max(0, Math.min(255, ((d[i + 1] - lutMin) / range) * 255));
+          d[i + 2] = Math.max(0, Math.min(255, ((d[i + 2] - lutMin) / range) * 255));
+        }
+        offCtx.putImageData(imgData, 0, 0);
+        ctx.drawImage(offscreen, 0, 0);
+      } else {
+        ctx.drawImage(bmp, 0, 0);
+      }
     } catch {
       // Bitmap was closed (detached) by a racing frame load — skip, next frame will redraw
     }
     ctx.restore();
-  }, [frameDims, containerSize, zoom, panX, panY, baseScale, offsetX, offsetY, bitmapVersion]);
+  }, [frameDims, containerSize, zoom, panX, panY, baseScale, offsetX, offsetY, bitmapVersion, lutMin, lutMax]);
 
   // Find the current labeled frame and update store
   useEffect(() => {

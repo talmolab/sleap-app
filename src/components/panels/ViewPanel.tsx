@@ -1,5 +1,6 @@
 /**
- * View panel: controls for overlay visibility, styling, colors, and trails.
+ * View panel: controls for overlay visibility, styling, colors, trails,
+ * and intensity histogram with LUT adjustment.
  */
 
 import { useAppStore } from "../../stores/appStore";
@@ -12,9 +13,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Button } from "@/components/ui/button";
 import { ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useState } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import type { EdgeStyle, ColorTarget } from "../../types";
 
 /** Collapsible section with chevron indicator. */
@@ -115,6 +117,159 @@ function SliderRow({
   );
 }
 
+const HIST_WIDTH = 200;
+const HIST_HEIGHT = 60;
+
+/** Intensity histogram with draggable LUT min/max handles. */
+function IntensityHistogram() {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const histogram = useAppStore((s) => s.frameHistogram);
+  const lutMin = useAppStore((s) => s.lutMin);
+  const lutMax = useAppStore((s) => s.lutMax);
+  const set = useAppStore((s) => s.set);
+
+  const [dragging, setDragging] = useState<"min" | "max" | null>(null);
+
+  // Draw histogram with LUT range overlay
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    ctx.clearRect(0, 0, HIST_WIDTH, HIST_HEIGHT);
+
+    if (!histogram) {
+      ctx.fillStyle = "rgba(128, 128, 128, 0.3)";
+      ctx.fillRect(0, 0, HIST_WIDTH, HIST_HEIGHT);
+      return;
+    }
+
+    // Find max count for normalization (skip 0 and 255 which are often outliers)
+    let maxCount = 0;
+    for (let i = 1; i < 255; i++) {
+      if (histogram[i] > maxCount) maxCount = histogram[i];
+    }
+    if (maxCount === 0) maxCount = 1;
+
+    // Draw outside-range shading
+    const minX = (lutMin / 255) * HIST_WIDTH;
+    const maxX = (lutMax / 255) * HIST_WIDTH;
+    ctx.fillStyle = "rgba(0, 0, 0, 0.4)";
+    ctx.fillRect(0, 0, minX, HIST_HEIGHT);
+    ctx.fillRect(maxX, 0, HIST_WIDTH - maxX, HIST_HEIGHT);
+
+    // Draw histogram bars
+    const barWidth = HIST_WIDTH / 256;
+    for (let i = 0; i < 256; i++) {
+      const h = Math.min((histogram[i] / maxCount) * HIST_HEIGHT, HIST_HEIGHT);
+      const x = (i / 255) * HIST_WIDTH;
+      const inRange = i >= lutMin && i <= lutMax;
+      ctx.fillStyle = inRange ? "rgba(180, 180, 255, 0.7)" : "rgba(100, 100, 100, 0.5)";
+      ctx.fillRect(x, HIST_HEIGHT - h, barWidth + 0.5, h);
+    }
+
+    // Draw LUT min/max lines
+    ctx.strokeStyle = "#ff6b6b";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(minX, 0);
+    ctx.lineTo(minX, HIST_HEIGHT);
+    ctx.stroke();
+
+    ctx.strokeStyle = "#4ecdc4";
+    ctx.beginPath();
+    ctx.moveTo(maxX, 0);
+    ctx.lineTo(maxX, HIST_HEIGHT);
+    ctx.stroke();
+  }, [histogram, lutMin, lutMax]);
+
+  const getIntensityFromX = useCallback((clientX: number) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return 0;
+    const rect = canvas.getBoundingClientRect();
+    const x = clientX - rect.left;
+    return Math.round(Math.max(0, Math.min(255, (x / rect.width) * 255)));
+  }, []);
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    const intensity = getIntensityFromX(e.clientX);
+    const distToMin = Math.abs(intensity - lutMin);
+    const distToMax = Math.abs(intensity - lutMax);
+    setDragging(distToMin <= distToMax ? "min" : "max");
+  }, [lutMin, lutMax, getIntensityFromX]);
+
+  useEffect(() => {
+    if (!dragging) return;
+
+    const handleMove = (e: MouseEvent) => {
+      const intensity = getIntensityFromX(e.clientX);
+      if (dragging === "min") {
+        set("lutMin", Math.min(intensity, lutMax - 1));
+      } else {
+        set("lutMax", Math.max(intensity, lutMin + 1));
+      }
+    };
+
+    const handleUp = () => setDragging(null);
+
+    window.addEventListener("mousemove", handleMove);
+    window.addEventListener("mouseup", handleUp);
+    return () => {
+      window.removeEventListener("mousemove", handleMove);
+      window.removeEventListener("mouseup", handleUp);
+    };
+  }, [dragging, lutMin, lutMax, set, getIntensityFromX]);
+
+  return (
+    <div className="space-y-2">
+      <canvas
+        ref={canvasRef}
+        width={HIST_WIDTH}
+        height={HIST_HEIGHT}
+        className="w-full rounded border border-border cursor-ew-resize"
+        style={{ height: HIST_HEIGHT }}
+        onMouseDown={handleMouseDown}
+      />
+      <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1">
+          <span className="text-[10px] text-muted-foreground">Min</span>
+          <input
+            type="number"
+            min={0}
+            max={254}
+            value={lutMin}
+            onChange={(e) => set("lutMin", Math.min(Number(e.target.value) || 0, lutMax - 1))}
+            className="w-12 h-6 text-xs tabular-nums bg-background border border-border rounded px-1 text-foreground"
+          />
+        </div>
+        <div className="flex items-center gap-1">
+          <span className="text-[10px] text-muted-foreground">Max</span>
+          <input
+            type="number"
+            min={1}
+            max={255}
+            value={lutMax}
+            onChange={(e) => set("lutMax", Math.max(Number(e.target.value) || 255, lutMin + 1))}
+            className="w-12 h-6 text-xs tabular-nums bg-background border border-border rounded px-1 text-foreground"
+          />
+        </div>
+        <Button
+          variant="subtle"
+          size="xs"
+          className="ml-auto text-[10px] h-6"
+          onClick={() => {
+            set("lutMin", 0);
+            set("lutMax", 255);
+          }}
+        >
+          Reset
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export function ViewPanel() {
   const edgeStyle = useAppStore((s) => s.edgeStyle);
   const palette = useAppStore((s) => s.palette);
@@ -125,6 +280,11 @@ export function ViewPanel() {
 
   return (
     <div className="flex flex-col">
+      {/* Intensity histogram and LUT */}
+      <Section title="Intensity">
+        <IntensityHistogram />
+      </Section>
+
       {/* Overlay visibility */}
       <Section title="Overlay">
         <Toggle label="Show instances" storeKey="showInstances" />

@@ -57,6 +57,9 @@ export interface AppState {
   nodeLabelSize: number;
   trailLength: number;
   trailShade: string;
+  lutMin: number;
+  lutMax: number;
+  frameHistogram: Uint32Array | null;
 
   // === Editing state ===
   instanceInitMethod: InstancePlacementMethod;
@@ -160,6 +163,9 @@ export const useAppStore = create<AppState>()(
       nodeLabelSize: 12,
       trailLength: 0,
       trailShade: "Normal",
+      lutMin: 0,
+      lutMax: 255,
+      frameHistogram: null,
 
       // Editing state
       instanceInitMethod: "best" as InstancePlacementMethod,
