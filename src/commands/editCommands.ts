@@ -33,10 +33,11 @@ export const AddInstance: Command = {
     }
 
     lf.instances.push(instance);
+    const newIdx = lf.instances.length - 1;
 
     // Select the new instance and update state
     ctx.state.setLabeledFrame(lf);
-    ctx.state.setInstance(instance);
+    ctx.state.setInstance(instance, newIdx);
     ctx.state.markChanged();
   },
 };
@@ -151,7 +152,7 @@ export const PasteInstance: Command = {
 
     lf.instances.push(newInstance);
     ctx.state.setLabeledFrame(lf);
-    ctx.state.setInstance(newInstance);
+    ctx.state.setInstance(newInstance, lf.instances.length - 1);
     ctx.state.markChanged();
   },
 };
