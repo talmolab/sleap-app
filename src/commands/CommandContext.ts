@@ -201,7 +201,7 @@ export class CommandContext {
           snapshot.selectedIdx >= 0 &&
           snapshot.selectedIdx < currentLf.instances.length
         ) {
-          this.state.setInstance(currentLf.instances[snapshot.selectedIdx], snapshot.selectedIdx);
+          this.state.setInstance(currentLf.instances[snapshot.selectedIdx]);
         } else {
           this.state.setInstance(null);
         }
@@ -223,7 +223,7 @@ export class CommandContext {
           snapshot.selectedIdx >= 0 &&
           snapshot.selectedIdx < lf.instances.length
         ) {
-          this.state.setInstance(lf.instances[snapshot.selectedIdx], snapshot.selectedIdx);
+          this.state.setInstance(lf.instances[snapshot.selectedIdx]);
         } else {
           this.state.setInstance(null);
         }

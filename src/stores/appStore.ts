@@ -32,8 +32,6 @@ export interface AppState {
   video: Video | null;
   frameIdx: number;
   instance: Instance | null;
-  instanceIndex: number | null;
-  selectedInstanceIndices: Set<number>;
   labeledFrame: LabeledFrame | null;
   skeleton: Skeleton | null;
   lastInteractedFrame: number | null;
@@ -93,8 +91,7 @@ export interface AppState {
   setVideo: (video: Video) => void;
   setFrameIdx: (idx: number) => void;
   incrementFrameIdx: (step: number) => void;
-  setInstance: (instance: Instance | null, index?: number | null) => void;
-  setSelectedInstanceIndices: (indices: Set<number>) => void;
+  setInstance: (instance: Instance | null) => void;
   setLabeledFrame: (frame: LabeledFrame | null) => void;
   markChanged: () => void;
   clearChanges: () => void;
@@ -138,8 +135,6 @@ export const useAppStore = create<AppState>()(
       video: null,
       frameIdx: 0,
       instance: null,
-      instanceIndex: null,
-      selectedInstanceIndices: new Set<number>(),
       labeledFrame: null,
       skeleton: null,
       lastInteractedFrame: null,
@@ -211,8 +206,6 @@ export const useAppStore = create<AppState>()(
           }
           state.frameIdx = 0;
           state.instance = null;
-          state.instanceIndex = null;
-          state.selectedInstanceIndices = new Set();
           state.labeledFrame = null;
         }),
 
@@ -221,8 +214,6 @@ export const useAppStore = create<AppState>()(
           state.video = video;
           state.frameIdx = 0;
           state.instance = null;
-          state.instanceIndex = null;
-          state.selectedInstanceIndices = new Set();
           state.labeledFrame = null;
         }),
 
@@ -237,8 +228,6 @@ export const useAppStore = create<AppState>()(
             state.frameIdx = Math.max(0, idx);
           }
           state.instance = null;
-          state.instanceIndex = null;
-          state.selectedInstanceIndices = new Set();
           // Compute labeledFrame synchronously to avoid race condition during fast scrubbing
           if (state.labels && state.video) {
             const frames = state.labels.find({ video: state.video as Video, frameIdx: state.frameIdx });
@@ -263,21 +252,9 @@ export const useAppStore = create<AppState>()(
         get().setFrameIdx(newIdx);
       },
 
-      setInstance: (instance, index) =>
+      setInstance: (instance) =>
         set((state) => {
           state.instance = instance;
-          state.instanceIndex = index ?? null;
-          if (index != null) {
-            state.selectedInstanceIndices = new Set([index]);
-          } else if (instance === null) {
-            state.instanceIndex = null;
-            state.selectedInstanceIndices = new Set();
-          }
-        }),
-
-      setSelectedInstanceIndices: (indices) =>
-        set((state) => {
-          state.selectedInstanceIndices = indices;
         }),
 
       setLabeledFrame: (frame) =>

@@ -222,11 +222,10 @@ export function useKeyboardShortcuts() {
         const instances = labeledFrame.instances;
         if (instances.length === 0) return;
         if (!instance) {
-          store().setInstance(instances[0], 0);
+          store().setInstance(instances[0]);
         } else {
           const idx = instances.indexOf(instance);
-          const nextIdx = (idx + 1) % instances.length;
-          store().setInstance(instances[nextIdx], nextIdx);
+          store().setInstance(instances[(idx + 1) % instances.length]);
         }
       },
 

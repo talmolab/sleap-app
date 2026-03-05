@@ -51,7 +51,6 @@ export function VideoPlayer() {
   const frameIdx = useAppStore((s) => s.frameIdx);
   const labels = useAppStore((s) => s.labels);
   const selectedInstance = useAppStore((s) => s.instance);
-  const selectedInstanceIndices = useAppStore((s) => s.selectedInstanceIndices);
   const showInstances = useAppStore((s) => s.showInstances);
   const showLabels = useAppStore((s) => s.showLabels);
   const showEdges = useAppStore((s) => s.showEdges);
@@ -455,7 +454,7 @@ export function VideoPlayer() {
           nodeColors,
           edgeColors,
           isPredicted,
-          isSelected: selectedInstanceIndices.has(idx),
+          isSelected: inst === selectedInstance,
           trackName: inst.track?.name ?? null,
           score: isPredicted ? (inst as unknown as { score: number }).score : undefined,
         };
@@ -526,7 +525,6 @@ export function VideoPlayer() {
   }, [
     labeledFrame,
     selectedInstance,
-    selectedInstanceIndices,
     showInstances,
     showLabels,
     showEdges,
