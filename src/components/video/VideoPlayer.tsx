@@ -10,6 +10,7 @@
  */
 
 import { useRef, useEffect, useCallback, useState } from "react";
+import { PredictedInstance } from "@talmolab/sleap-io.js";
 import { useAppStore } from "../../stores/appStore";
 import { debugFlags } from "../panels/DebugPanel";
 import { Seekbar } from "./Seekbar";
@@ -575,7 +576,7 @@ export function VideoPlayer() {
     const tracks = labels?.tracks ?? [];
     const instances: RenderedInstance[] = labeledFrame.instances.map(
       (inst, idx) => {
-        const isPredicted = "score" in inst;
+        const isPredicted = inst instanceof PredictedInstance;
         const skeleton = inst.skeleton;
         const color = getInstanceColor(
           palette, distinctlyColor, idx, inst.track, tracks, isPredicted, colorPredicted
@@ -598,7 +599,7 @@ export function VideoPlayer() {
           visible: point.visible && !isNaN(point.xy[0]),
           complete: point.complete,
           name: skeleton.nodes[nIdx]?.name ?? `node_${nIdx}`,
-          score: "score" in point ? (point as unknown as { score: number }).score : undefined,
+          score: point.score,
         }));
 
         const edges = edgeIndices.map(
@@ -615,7 +616,7 @@ export function VideoPlayer() {
           isPredicted,
           isSelected: inst === selectedInstance,
           trackName: inst.track?.name ?? null,
-          score: isPredicted ? (inst as unknown as { score: number }).score : undefined,
+          score: isPredicted ? inst.score : undefined,
         };
       }
     );
@@ -1473,9 +1474,9 @@ export function VideoPlayer() {
           if (!containerRect) return null;
           const tipX = hoveredNode.clientX - containerRect.left + 16;
           const tipY = hoveredNode.clientY - containerRect.top - 8;
-          const nodeScore = "score" in point ? (point as unknown as { score: number }).score : undefined;
-          const instScore = "score" in lfInst ? (lfInst as unknown as { score: number }).score : undefined;
-          const isPredicted = "score" in lfInst;
+          const nodeScore = point.score;
+          const instScore = lfInst instanceof PredictedInstance ? lfInst.score : undefined;
+          const isPredicted = lfInst instanceof PredictedInstance;
           const isDragActive = interactionMode === "dragging" && selectedNodes.size > 1;
           return (
             <div

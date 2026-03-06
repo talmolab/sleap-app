@@ -1,7 +1,11 @@
 # sleap-io.js Upstream Issues
 
-> **All issues below were resolved in `@talmolab/sleap-io.js` v0.2.0.**
+> **Issues 1–7 were resolved in `@talmolab/sleap-io.js` v0.2.0.**
 > Workarounds in sleap-label-web have been removed. See PRs #43–#49 in sleap-io.js.
+
+> **Issues 8–9 were resolved in v0.2.1.**
+> Browser bundler stubs for `skia-canvas` and `child_process` removed. Duck-typed
+> predicted instance detection replaced with `instanceof PredictedInstance`.
 
 ---
 
@@ -57,14 +61,39 @@
 
 ---
 
+## 8. Browser bundler requires manual stubs for `skia-canvas` and `child_process`
+
+**Status**: ✅ Fixed in v0.2.1. Package now has a `"browser"` conditional export that excludes Node-only modules.
+
+**Workaround removed**: Deleted `src/lib/stubs/skia-canvas.ts` and `src/lib/stubs/child_process.ts`. Removed corresponding `resolve.alias` entries from `vite.config.ts`.
+
+---
+
+## 9. `PredictedInstance` duck-typing required `"score" in inst` checks
+
+**Status**: ✅ Fixed in v0.2.1. `PredictedInstance` is properly exported as a class extending `Instance`, enabling `instanceof` checks.
+
+**Workaround removed**: All `"score" in inst` duck-typing and `(inst as unknown as { score: number }).score` casts replaced with `inst instanceof PredictedInstance` and direct `inst.score` access. `clonePoints()` now preserves `point.score`. `cloneInstances()` constructs proper `PredictedInstance` objects.
+
+---
+
+## Remaining Notes
+
+- **`fs`/`os`/`path` build warnings**: Vite emits warnings about Node built-in modules being externalized from a shared chunk in sleap-io.js. These are harmless — the browser entry point doesn't use them, but they exist in a shared chunk for the Node entry point. The `module` stub for h5wasm is still required.
+- **`VideosPanel` limitation**: Adding standalone videos to an existing project still requires more plumbing in sleap-io.js (no dedicated API beyond `labels.videos.push()`).
+
+---
+
 ## Summary
 
 | # | Issue | Status | Fixed in |
 |---|-------|--------|----------|
-| 1 | `saveSlp`/`writeSlp` is Node-only | ✅ Fixed | PR #48 |
-| 2 | Serialization internals not exported | ✅ Fixed | PR #48 |
-| 3 | `Labels.find()` basename fallback | ✅ Fixed | PR #44 |
-| 4 | `Mp4BoxVideoBackend` constructor hangs | ✅ Fixed | PR #43 |
-| 5 | `openSource()` HEAD-then-GET fragile | ✅ Fixed | PR #43 |
-| 6 | `Video.shape`/`fps` getter-only | ✅ Fixed | PR #45 |
-| 7 | `Point.score` missing from base type | ✅ Fixed | PR #45 |
+| 1 | `saveSlp`/`writeSlp` is Node-only | ✅ Fixed | v0.2.0 PR #48 |
+| 2 | Serialization internals not exported | ✅ Fixed | v0.2.0 PR #48 |
+| 3 | `Labels.find()` basename fallback | ✅ Fixed | v0.2.0 PR #44 |
+| 4 | `Mp4BoxVideoBackend` constructor hangs | ✅ Fixed | v0.2.0 PR #43 |
+| 5 | `openSource()` HEAD-then-GET fragile | ✅ Fixed | v0.2.0 PR #43 |
+| 6 | `Video.shape`/`fps` getter-only | ✅ Fixed | v0.2.0 PR #45 |
+| 7 | `Point.score` missing from base type | ✅ Fixed | v0.2.0 PR #45 |
+| 8 | Browser bundler stubs required | ✅ Fixed | v0.2.1 |
+| 9 | `PredictedInstance` duck-typing | ✅ Fixed | v0.2.1 |

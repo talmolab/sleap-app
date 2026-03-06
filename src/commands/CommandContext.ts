@@ -6,7 +6,7 @@
  * to update. Includes frame-level undo/redo via instance snapshots.
  */
 
-import { Instance, LabeledFrame } from "@talmolab/sleap-io.js";
+import { Instance, LabeledFrame, PredictedInstance } from "@talmolab/sleap-io.js";
 import { useAppStore, type AppState } from "../stores/appStore";
 import type { UpdateTopic, Track, Video } from "../types";
 import type { Command } from "./types";
@@ -49,24 +49,32 @@ function clonePoints(points: Instance["points"]): Instance["points"] {
     visible: p.visible,
     complete: p.complete,
     name: p.name,
+    score: p.score,
   }));
 }
 
 /** Deep-clone an array of instances (preserving skeleton/track references). */
 function cloneInstances(instances: Instance[]): Instance[] {
   return instances.map((inst) => {
-    const clone = new Instance({
+    if (inst instanceof PredictedInstance) {
+      return new PredictedInstance({
+        skeleton: inst.skeleton,
+        points: inst.points.map((p) => ({
+          xy: [p.xy[0], p.xy[1]] as [number, number],
+          visible: p.visible,
+          complete: p.complete,
+          name: p.name,
+          score: p.score ?? 0,
+        })),
+        track: inst.track,
+        score: inst.score,
+      });
+    }
+    return new Instance({
       skeleton: inst.skeleton,
       points: clonePoints(inst.points),
       track: inst.track,
     });
-    // Preserve predicted instance score if present
-    if ("score" in inst) {
-      (clone as unknown as Record<string, unknown>).score = (
-        inst as unknown as Record<string, number>
-      ).score;
-    }
-    return clone;
   });
 }
 

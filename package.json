@@ -16,7 +16,7 @@
     "tauri:build": "tauri build"
   },
   "dependencies": {
-    "@talmolab/sleap-io.js": "^0.2.0",
+    "@talmolab/sleap-io.js": "^0.2.1",
     "@tanstack/react-table": "^8.21.0",
     "@tauri-apps/api": "^2.10.1",
     "@tauri-apps/plugin-dialog": "^2.6.0",

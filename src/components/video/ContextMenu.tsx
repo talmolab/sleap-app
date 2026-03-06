@@ -9,6 +9,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
+import { PredictedInstance } from "@talmolab/sleap-io.js";
 import { useAppStore } from "../../stores/appStore";
 import {
   commandContext,
@@ -90,7 +91,7 @@ export function ContextMenu({
 
   const hasInstance = instance !== null;
   const hasNode = hasInstance && nodeIdx !== null;
-  const isPredicted = hasInstance && "score" in instance;
+  const isPredicted = instance instanceof PredictedInstance;
   const tracks = labels?.tracks ?? [];
 
   return (

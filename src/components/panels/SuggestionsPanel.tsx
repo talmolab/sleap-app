@@ -29,6 +29,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { PredictedInstance } from "@talmolab/sleap-io.js";
 import type { SuggestionFrame, Video } from "../../types";
 
 /** Extract just the basename from a file path. */
@@ -56,7 +57,7 @@ function computeFrameScore(
 
   const lf = frames[0];
   const predicted = lf.instances.filter(
-    (inst: Record<string, unknown>) => "score" in inst
+    (inst) => inst instanceof PredictedInstance
   );
   if (predicted.length === 0) return null;
 
@@ -64,11 +65,8 @@ function computeFrameScore(
   let count = 0;
   for (const inst of predicted) {
     for (const pt of inst.points) {
-      if (
-        "score" in (pt as Record<string, unknown>) &&
-        !isNaN((pt as Record<string, unknown>).score as number)
-      ) {
-        totalScore += (pt as Record<string, unknown>).score as number;
+      if (pt.score != null && !isNaN(pt.score)) {
+        totalScore += pt.score;
         count++;
       }
     }
@@ -80,7 +78,7 @@ function computeFrameScore(
 /** Check if a frame has user-labeled instances. */
 function hasUserLabels(
   suggestion: SuggestionFrame,
-  labels: { find: (opts: { video: Video; frameIdx: number }) => { instances: Record<string, unknown>[] }[] } | null
+  labels: { find: (opts: { video: Video; frameIdx: number }) => { instances: { skeleton: unknown }[] }[] } | null
 ): boolean {
   if (!labels) return false;
 
@@ -91,7 +89,7 @@ function hasUserLabels(
   if (frames.length === 0) return false;
 
   return frames[0].instances.some(
-    (inst: Record<string, unknown>) => !("score" in inst)
+    (inst) => !(inst instanceof PredictedInstance)
   );
 }
 

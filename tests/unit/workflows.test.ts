@@ -37,6 +37,7 @@ import {
 import {
   Labels,
   Instance,
+  PredictedInstance,
   LabeledFrame,
   Skeleton,
   Track,
@@ -107,12 +108,17 @@ function createProject(opts?: {
     }
 
     if (opts?.withPredictions) {
-      const pred = Instance.empty({ skeleton });
-      for (let n = 0; n < numNodes; n++) {
-        pred.points[n].xy = [300 + n, 400 + n];
-        pred.points[n].visible = true;
-      }
-      (pred as unknown as Record<string, unknown>).score = 0.85;
+      const pred = new PredictedInstance({
+        skeleton,
+        points: skeleton.nodes.map((node, n) => ({
+          xy: [300 + n, 400 + n] as [number, number],
+          visible: true,
+          complete: true,
+          name: node.name,
+          score: 0.85,
+        })),
+        score: 0.85,
+      });
       lf.instances.push(pred);
     }
 

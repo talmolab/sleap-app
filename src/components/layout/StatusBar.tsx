@@ -3,6 +3,7 @@
  * Includes UI scale controls on the right side.
  */
 
+import { PredictedInstance } from "@talmolab/sleap-io.js";
 import { useAppStore } from "../../stores/appStore";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
@@ -30,7 +31,7 @@ export function StatusBar() {
   const totalLabeledFrames = labels?.labeledFrames.length ?? 0;
   const totalVideos = labels?.videos.length ?? 0;
   const instanceCount = labeledFrame?.instances.length ?? 0;
-  const isPredicted = instance && "score" in instance;
+  const isPredicted = instance instanceof PredictedInstance;
 
   const adjustScale = (delta: number) => {
     const newScale = Math.max(0.75, Math.min(1.5, uiScale + delta));
@@ -95,7 +96,7 @@ export function StatusBar() {
                   {instance.track?.name ?? "[no track]"} ({instance.nVisible}/
                   {instance.points.length} nodes)
                   {isPredicted &&
-                    ` score=${(instance as unknown as { score: number }).score.toFixed(3)}`}
+                    ` score=${instance.score.toFixed(3)}`}
                 </span>
               </>
             )}

@@ -10,6 +10,7 @@ import {
 import {
   Labels,
   Instance,
+  PredictedInstance,
   LabeledFrame,
   Skeleton,
   Track,
@@ -60,12 +61,14 @@ function createProjectForCSV(opts?: {
     lf.instances.push(inst);
 
     if (opts?.withPredictions) {
-      const pred = Instance.empty({ skeleton });
-      pred.points[0].xy = [100, 200];
-      pred.points[0].visible = true;
-      pred.points[1].xy = [NaN, NaN]; // NaN point
-      pred.points[1].visible = false;
-      (pred as unknown as Record<string, unknown>).score = 0.95;
+      const pred = new PredictedInstance({
+        skeleton,
+        points: [
+          { xy: [100, 200] as [number, number], visible: true, complete: true, name: "head", score: 0.95 },
+          { xy: [NaN, NaN] as [number, number], visible: false, complete: false, name: "tail", score: 0.95 },
+        ],
+        score: 0.95,
+      });
       lf.instances.push(pred);
     }
 

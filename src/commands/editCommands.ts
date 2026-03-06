@@ -6,7 +6,7 @@
  * SetInstancePointLocations, DeleteFramePredictions, ConvertPredictionToInstance.
  */
 
-import { Instance, LabeledFrame } from "@talmolab/sleap-io.js";
+import { Instance, LabeledFrame, PredictedInstance } from "@talmolab/sleap-io.js";
 import { UpdateTopic } from "../types";
 import type { Command } from "./types";
 import type { CommandContext } from "./CommandContext";
@@ -105,6 +105,7 @@ function clonePoints(points: Instance["points"]): Instance["points"] {
     visible: p.visible,
     complete: p.complete,
     name: p.name,
+    score: p.score,
   }));
 }
 
@@ -168,11 +169,11 @@ export const DeleteFramePredictions: Command = {
     if (frames.length === 0) return;
 
     const lf = frames[0];
-    const userInstances = lf.instances.filter((inst) => !("score" in inst));
+    const userInstances = lf.instances.filter((inst) => !(inst instanceof PredictedInstance));
     lf.instances = userInstances;
 
     // If selected instance was predicted, deselect
-    if (instance && "score" in instance) {
+    if (instance instanceof PredictedInstance) {
       ctx.state.setInstance(null);
     }
     ctx.state.setLabeledFrame(userInstances.length > 0 ? lf : null);
@@ -204,7 +205,7 @@ export const ConvertPredictionToInstance: Command = {
 
     const lf = frames[0];
     const predicted = lf.instances[instanceIdx];
-    if (!predicted || !("score" in predicted)) return;
+    if (!predicted || !(predicted instanceof PredictedInstance)) return;
 
     // Clone as a user Instance (no score property)
     const userInstance = new Instance({
@@ -276,7 +277,7 @@ export const RotateInstance: Command = {
   skipAutoSnapshot: true,
   execute(ctx: CommandContext, params?: Record<string, unknown>) {
     const { instance } = ctx.state;
-    if (!instance || "score" in instance) return;
+    if (!instance || instance instanceof PredictedInstance) return;
 
     const angle = params?.angle;
     if (typeof angle !== "number") return;
@@ -319,7 +320,7 @@ export const DeleteAllPredictions: Command = {
     let removed = 0;
     for (const lf of labels.labeledFrames) {
       const before = lf.instances.length;
-      lf.instances = lf.instances.filter((inst) => !("score" in inst));
+      lf.instances = lf.instances.filter((inst) => !(inst instanceof PredictedInstance));
       removed += before - lf.instances.length;
     }
 
@@ -334,7 +335,7 @@ export const DeleteAllPredictions: Command = {
     ctx.pushUndoSnapshot(snapshot);
 
     // If selected instance was predicted, deselect
-    if (instance && "score" in instance) {
+    if (instance instanceof PredictedInstance) {
       ctx.state.setInstance(null);
     }
     ctx.state.markChanged();

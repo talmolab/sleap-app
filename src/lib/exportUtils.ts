@@ -4,7 +4,7 @@
  * Provides CSV export and file download helpers.
  */
 
-import type { Labels } from "@talmolab/sleap-io.js";
+import { PredictedInstance, type Labels } from "@talmolab/sleap-io.js";
 
 /**
  * Generate a CSV string from Labels data.
@@ -24,19 +24,17 @@ export function generateCSV(labels: Labels): string {
         : lf.video.filename[0] ?? "";
 
     for (const inst of lf.instances) {
-      const isPredicted = "score" in inst;
+      const isPredicted = inst instanceof PredictedInstance;
       const instanceType = isPredicted ? "predicted" : "user";
       const trackName = inst.track?.name ?? "";
-      const instanceScore = isPredicted
-        ? (inst as { score: number }).score
-        : "";
+      const instanceScore = isPredicted ? inst.score : "";
 
       for (const point of inst.points) {
         const x = isNaN(point.xy[0]) ? "" : String(point.xy[0]);
         const y = isNaN(point.xy[1]) ? "" : String(point.xy[1]);
         const nodeName = point.name ?? "";
         const pointScore =
-          "score" in point ? String((point as { score: number }).score) : "";
+          point.score != null ? String(point.score) : "";
         const visible = point.visible ? "true" : "false";
 
         rows.push(

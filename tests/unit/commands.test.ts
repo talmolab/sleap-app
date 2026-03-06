@@ -41,6 +41,7 @@ import {
 import {
   Labels,
   Instance,
+  PredictedInstance,
   LabeledFrame,
   Skeleton,
   Track,
@@ -128,12 +129,17 @@ function createTestProject(opts?: {
 
     // Add predictions if requested
     if (opts?.withPredictions) {
-      const pred = Instance.empty({ skeleton });
-      for (let n = 0; n < numNodes; n++) {
-        pred.points[n].xy = [100 + n, 200 + n];
-        pred.points[n].visible = true;
-      }
-      (pred as unknown as Record<string, unknown>).score = 0.95;
+      const pred = new PredictedInstance({
+        skeleton,
+        points: skeleton.nodes.map((node, n) => ({
+          xy: [100 + n, 200 + n] as [number, number],
+          visible: true,
+          complete: true,
+          name: node.name,
+          score: 0.95,
+        })),
+        score: 0.95,
+      });
       lf.instances.push(pred);
     }
 
@@ -517,7 +523,7 @@ describe("Edit commands", () => {
 
       // All remaining instances should be user instances
       for (const inst of lf.instances) {
-        expect("score" in inst).toBe(false);
+        expect(inst instanceof PredictedInstance).toBe(false);
       }
       expect(lf.instances.length).toBe(2);
     });
@@ -542,7 +548,7 @@ describe("Edit commands", () => {
       // All predictions should be gone
       for (const lf of project.labels.labeledFrames) {
         for (const inst of lf.instances) {
-          expect("score" in inst).toBe(false);
+          expect(inst instanceof PredictedInstance).toBe(false);
         }
       }
       vi.unstubAllGlobals();

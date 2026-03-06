@@ -30,13 +30,11 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
-import type { Instance, PredictedInstance, Labels } from "../../types";
+import { PredictedInstance } from "@talmolab/sleap-io.js";
+import type { Instance, Labels } from "../../types";
 
 function isPredicted(instance: Instance): instance is PredictedInstance {
-  return (
-    "score" in instance &&
-    typeof (instance as PredictedInstance).score === "number"
-  );
+  return instance instanceof PredictedInstance;
 }
 
 function formatPointsAsPython(instance: Instance | PredictedInstance): string {

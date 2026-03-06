@@ -28,12 +28,6 @@ export default defineConfig({
     alias: {
       // Path alias for shadcn/ui
       "@": path.resolve(__dirname, "./src"),
-      // Stub out Node.js-only modules used by sleap-io.js
-      "skia-canvas": path.resolve(__dirname, "src/lib/stubs/skia-canvas.ts"),
-      child_process: path.resolve(
-        __dirname,
-        "src/lib/stubs/child_process.ts"
-      ),
       // Redirect both h5wasm imports to the same ESM browser build
       // (sleap-io.js does: `isNode ? import("h5wasm/node") : import("h5wasm")`)
       "h5wasm/node": h5wasmPath,
