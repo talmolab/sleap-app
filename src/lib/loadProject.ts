@@ -11,7 +11,7 @@
 
 import { loadSlp } from "@talmolab/sleap-io.js";
 import { useAppStore } from "../stores/appStore";
-import { toast } from "sonner";
+import { toast } from "@/lib/notify";
 import { resolveExternalVideos } from "./resolveVideos";
 
 /**

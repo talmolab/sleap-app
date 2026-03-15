@@ -238,3 +238,12 @@ button,
 .sidebar-panel-content {
   transition: width 200ms ease, opacity 150ms ease;
 }
+
+/* Toast copy button: hidden by default, visible on hover */
+[data-sonner-toast] [data-copy-btn] {
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+[data-sonner-toast]:hover [data-copy-btn] {
+  opacity: 1;
+}

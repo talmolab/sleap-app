@@ -18,7 +18,7 @@ import {
   suggestSaveFilename,
   generatePackageJSON,
 } from "../lib/exportUtils";
-import { toast } from "sonner";
+import { toast } from "@/lib/notify";
 
 /** Reset state to an empty project. */
 export const NewProjectCommand: Command = {

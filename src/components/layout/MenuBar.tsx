@@ -37,7 +37,7 @@ import {
   PropagateTrackLabels,
 } from "../../commands";
 import { PALETTES } from "../../lib/colorPalettes";
-import { toast } from "sonner";
+import { toast } from "@/lib/notify";
 import {
   Menubar,
   MenubarMenu,

@@ -27,6 +27,7 @@ import { InstancesPanel } from "../panels/InstancesPanel";
 import { SuggestionsPanel } from "../panels/SuggestionsPanel";
 import { ViewPanel } from "../panels/ViewPanel";
 import { DebugPanel } from "../panels/DebugPanel";
+import { NotificationsPanel } from "../panels/NotificationsPanel";
 import { WelcomeScreen } from "./WelcomeScreen";
 import { TrainingDialog } from "../dialogs/TrainingDialog";
 import { InferenceDialog } from "../dialogs/InferenceDialog";
@@ -44,6 +45,7 @@ import {
   Lightbulb,
   Bug,
   Eye,
+  Bell,
   PanelRightClose,
   PanelRightOpen,
   GripVertical,
@@ -55,6 +57,11 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import {
+  notificationListeners,
+  getUnreadCount,
+  markAllRead,
+} from "../../lib/notificationStore";
 
 /** Panel definitions with icons. */
 const PANELS = [
@@ -63,6 +70,7 @@ const PANELS = [
   { id: "instances", label: "Instances", icon: Users, component: InstancesPanel },
   { id: "view", label: "View", icon: Eye, component: ViewPanel },
   { id: "suggestions", label: "Suggestions", icon: Lightbulb, component: SuggestionsPanel },
+  { id: "notifications", label: "Notifications", icon: Bell, component: NotificationsPanel },
   { id: "debug", label: "Debug", icon: Bug, component: DebugPanel },
 ] as const;
 
@@ -200,10 +208,19 @@ function Sidebar() {
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
 
+  // Notification unread badge
+  const [unreadCount, setUnreadCount] = useState(0);
+  useEffect(() => {
+    const listener = () => setUnreadCount(getUnreadCount());
+    notificationListeners.add(listener);
+    return () => { notificationListeners.delete(listener); };
+  }, []);
+
   const togglePanel = (panelId: string) => {
     if (collapsed || activePanel !== panelId) {
       set("sidebarActivePanel", panelId);
       set("sidebarCollapsed", false);
+      if (panelId === "notifications") markAllRead();
     } else {
       set("sidebarCollapsed", true);
     }
@@ -369,6 +386,12 @@ function Sidebar() {
                       <div className="absolute left-0 top-1.5 bottom-1.5 w-0.5 bg-primary rounded-r" />
                     )}
                     <Icon className="h-[18px] w-[18px]" />
+                    {/* Unread notification badge */}
+                    {panel.id === "notifications" && unreadCount > 0 && (
+                      <span className="absolute top-1 right-1 h-3.5 min-w-3.5 flex items-center justify-center rounded-full bg-primary text-[9px] font-bold text-primary-foreground px-0.5">
+                        {unreadCount > 99 ? "99+" : unreadCount}
+                      </span>
+                    )}
                     {/* Drag grip (visible on hover) */}
                     <GripVertical className="absolute right-0.5 top-1/2 -translate-y-1/2 h-3 w-3 opacity-0 group-hover:opacity-30 transition-opacity" />
                   </button>

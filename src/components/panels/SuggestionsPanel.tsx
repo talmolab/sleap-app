@@ -7,7 +7,7 @@
 
 import { useState, useMemo } from "react";
 import { useAppStore } from "../../stores/appStore";
-import { toast } from "sonner";
+import { toast } from "@/lib/notify";
 import { cn } from "@/lib/utils";
 import {
   Table,

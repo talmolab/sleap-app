@@ -8,7 +8,7 @@
 import type { Labels } from "@talmolab/sleap-io.js";
 import { saveSlpToBytes } from "@talmolab/sleap-io.js";
 import { useAppStore } from "../stores/appStore";
-import { toast } from "sonner";
+import { toast } from "@/lib/notify";
 
 /**
  * Save a Labels object as an SLP file.

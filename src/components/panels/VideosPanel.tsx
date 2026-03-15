@@ -8,7 +8,7 @@
 
 import { useAppStore } from "../../stores/appStore";
 import { getPlatform } from "../../platform";
-import { toast } from "sonner";
+import { toast } from "@/lib/notify";
 import { cn } from "@/lib/utils";
 import {
   Table,

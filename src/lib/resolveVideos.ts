@@ -7,7 +7,7 @@
  */
 
 import { Mp4BoxVideoBackend } from "@talmolab/sleap-io.js";
-import { toast } from "sonner";
+import { toast } from "@/lib/notify";
 import type { Labels, Video } from "../types";
 
 /** Extract just the basename from a path or filename. */
