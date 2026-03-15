@@ -3,11 +3,26 @@ import { AppShell } from "./components/layout/AppShell";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useAppStore } from "./stores/appStore";
 import { applyHashState, initUrlStateSync } from "./lib/urlState";
+import { loadProjectFromPath } from "./lib/loadProject";
 
 export default function App() {
   useKeyboardShortcuts();
   const projectLoaded = useAppStore((s) => s.projectLoaded);
   const hashApplied = useRef(false);
+
+  // Open file passed as CLI argument (Tauri only)
+  useEffect(() => {
+    import("@tauri-apps/api/core")
+      .then(({ invoke }) => invoke<string | null>("get_initial_file"))
+      .then(async (path) => {
+        if (!path) return;
+        const { readFile } = await import("@tauri-apps/plugin-fs");
+        await loadProjectFromPath(path, readFile);
+      })
+      .catch(() => {
+        // Not in Tauri or command unavailable — ignore
+      });
+  }, []);
 
   useEffect(() => {
     // Prevent browser default drag-and-drop behavior
