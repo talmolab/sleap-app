@@ -21,7 +21,8 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, Clipboard, Check } from "lucide-react";
+import { useState } from "react";
 import type { Video } from "../../types";
 import {
   isVideoMissing,
@@ -112,6 +113,120 @@ function VideoRow({
         {width}x{height}
       </TableCell>
     </TableRow>
+  );
+}
+
+/** Resolve a video filename to an absolute path when possible. */
+function resolveVideoPath(video: Video, projectFilename: string | null): string {
+  const raw = Array.isArray(video.filename) ? video.filename[0] : video.filename;
+  if (!raw) return "";
+  // Already absolute (Unix or Windows)
+  if (raw.startsWith("/") || /^[A-Za-z]:[\\/]/.test(raw)) return raw;
+  // Resolve relative paths against the project file's directory
+  if (projectFilename) {
+    const sep = projectFilename.includes("\\") ? "\\" : "/";
+    const dir = projectFilename.substring(
+      0,
+      projectFilename.lastIndexOf(sep)
+    );
+    return dir + sep + raw.replace(/[\\/]/g, sep);
+  }
+  return raw;
+}
+
+/** Format a duration in seconds to MM:SS or HH:MM:SS. */
+function formatDuration(seconds: number): string {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function VideoDetailPanel({ video }: { video: Video }) {
+  const projectFilename = useAppStore((s) => s.filename);
+  const [copied, setCopied] = useState(false);
+
+  const filePath = resolveVideoPath(video, projectFilename);
+  const shape = video.shape;
+  const fps = video.fps;
+  const frames = shape?.[0] ?? null;
+  const height = shape?.[1] ?? null;
+  const width = shape?.[2] ?? null;
+  const channels = shape?.[3] ?? null;
+  const duration = frames != null && fps ? frames / fps : null;
+
+  const handleCopy = async () => {
+    await navigator.clipboard.writeText(filePath);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
+  return (
+    <div className="p-2 text-xs space-y-1">
+      {/* File path with copy button */}
+      <div className="flex items-start gap-1">
+        <div
+          className="text-muted-foreground min-w-0 flex-1 break-all select-all"
+          title={filePath}
+        >
+          <span className="font-medium text-foreground">File: </span>
+          {filePath}
+        </div>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-5 w-5 shrink-0"
+          onClick={handleCopy}
+          title="Copy path"
+        >
+          {copied ? (
+            <Check className="h-3 w-3" />
+          ) : (
+            <Clipboard className="h-3 w-3" />
+          )}
+        </Button>
+      </div>
+
+      {/* Metadata grid */}
+      {shape && (
+        <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-muted-foreground">
+          {width != null && height != null && (
+            <div>
+              <span className="font-medium text-foreground">Resolution: </span>
+              {width}&times;{height}
+              {channels != null && <span> &times;{channels}ch</span>}
+            </div>
+          )}
+          {fps != null && (
+            <div>
+              <span className="font-medium text-foreground">FPS: </span>
+              {Number.isInteger(fps) ? fps : fps.toFixed(2)}
+            </div>
+          )}
+          {frames != null && (
+            <div>
+              <span className="font-medium text-foreground">Frames: </span>
+              {frames.toLocaleString()}
+            </div>
+          )}
+          {duration != null && (
+            <div>
+              <span className="font-medium text-foreground">Duration: </span>
+              {formatDuration(duration)}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Backend */}
+      {video.backend?.constructor?.name && (
+        <div className="text-muted-foreground">
+          <span className="font-medium text-foreground">Backend: </span>
+          {video.backend.constructor.name}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -218,36 +333,7 @@ export function VideosPanel() {
       {currentVideo && (
         <>
           <Separator />
-          <div className="p-2 text-xs space-y-0.5">
-            <div className="text-muted-foreground truncate" title={Array.isArray(currentVideo.filename) ? currentVideo.filename[0] : currentVideo.filename}>
-              <span className="font-medium text-foreground">File: </span>
-              {Array.isArray(currentVideo.filename) ? currentVideo.filename[0] : currentVideo.filename}
-            </div>
-            {currentVideo.shape && (
-              <>
-                <div>
-                  <span className="font-medium">Resolution: </span>
-                  <span className="text-muted-foreground">{currentVideo.shape[2]}x{currentVideo.shape[1]}</span>
-                </div>
-                <div>
-                  <span className="font-medium">Frames: </span>
-                  <span className="text-muted-foreground">{currentVideo.shape[0]}</span>
-                </div>
-                {currentVideo.shape[3] != null && (
-                  <div>
-                    <span className="font-medium">Channels: </span>
-                    <span className="text-muted-foreground">{currentVideo.shape[3]}</span>
-                  </div>
-                )}
-              </>
-            )}
-            {currentVideo.backend?.constructor?.name && (
-              <div>
-                <span className="font-medium">Backend: </span>
-                <span className="text-muted-foreground">{currentVideo.backend.constructor.name}</span>
-              </div>
-            )}
-          </div>
+          <VideoDetailPanel video={currentVideo} />
         </>
       )}
 
