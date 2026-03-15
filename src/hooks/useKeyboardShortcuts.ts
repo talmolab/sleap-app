@@ -125,6 +125,10 @@ export function useKeyboardShortcuts() {
         e.preventDefault();
         store().toggle("fit");
       },
+      [DEFAULT_SHORTCUTS["toggle pan mode"]]: (e) => {
+        e.preventDefault();
+        store().toggle("defaultToPan");
+      },
 
       // Instance editing (via command system)
       [DEFAULT_SHORTCUTS["add instance"]]: (e) => {

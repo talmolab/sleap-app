@@ -328,6 +328,7 @@ function ViewMenu() {
   const palette = useAppStore((s) => s.palette);
   const trailLength = useAppStore((s) => s.trailLength);
   const distinctlyColor = useAppStore((s) => s.distinctlyColor);
+  const defaultToPan = useAppStore((s) => s.defaultToPan);
   const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed);
   const uiScale = useAppStore((s) => s.uiScale);
   const toggle = useAppStore((s) => s.toggle);
@@ -354,6 +355,12 @@ function ViewMenu() {
           onCheckedChange={() => toggle("fit")}
         >
           Fit View to Instances
+        </MenubarCheckboxItem>
+        <MenubarCheckboxItem
+          checked={defaultToPan}
+          onCheckedChange={() => toggle("defaultToPan")}
+        >
+          Default to Pan Mode <MenubarShortcut>P</MenubarShortcut>
         </MenubarCheckboxItem>
         <MenubarSeparator />
         <MenubarSub>

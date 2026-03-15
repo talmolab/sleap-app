@@ -371,6 +371,24 @@ describe("appStore", () => {
     });
   });
 
+  describe("defaultToPan", () => {
+    it("defaults to false", () => {
+      expect(useAppStore.getState().defaultToPan).toBe(false);
+    });
+
+    it("can be toggled", () => {
+      useAppStore.getState().toggle("defaultToPan");
+      expect(useAppStore.getState().defaultToPan).toBe(true);
+      useAppStore.getState().toggle("defaultToPan");
+      expect(useAppStore.getState().defaultToPan).toBe(false);
+    });
+
+    it("can be set directly", () => {
+      useAppStore.getState().set("defaultToPan", true);
+      expect(useAppStore.getState().defaultToPan).toBe(true);
+    });
+  });
+
   describe("edge cases", () => {
     it("setFrameIdx beyond video bounds clamps to max", () => {
       const video = mockVideo({ shape: [50, 480, 640, 3] });

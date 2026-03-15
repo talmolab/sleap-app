@@ -14,7 +14,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { Minus, Plus } from "lucide-react";
+import { Hand, Minus, MousePointer2, Plus } from "lucide-react";
 
 export function StatusBar() {
   const filename = useAppStore((s) => s.filename);
@@ -26,6 +26,7 @@ export function StatusBar() {
   const labeledFrame = useAppStore((s) => s.labeledFrame);
   const uiScale = useAppStore((s) => s.uiScale);
   const frameRange = useAppStore((s) => s.frameRange);
+  const defaultToPan = useAppStore((s) => s.defaultToPan);
 
   const totalFrames = video?.shape?.[0] ?? null;
   const totalLabeledFrames = labels?.labeledFrames.length ?? 0;
@@ -106,9 +107,28 @@ export function StatusBar() {
         )}
       </div>
 
-      {/* Right: UI scale controls */}
+      {/* Right: interaction mode + UI scale controls */}
       <TooltipProvider delayDuration={300}>
         <div className="flex items-center gap-0.5 shrink-0">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant={defaultToPan ? "secondary" : "ghost"}
+                size="icon"
+                className="h-5 w-5"
+                onClick={() => useAppStore.getState().toggle("defaultToPan")}
+              >
+                {defaultToPan ? (
+                  <Hand className="h-3 w-3" />
+                ) : (
+                  <MousePointer2 className="h-3 w-3" />
+                )}
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="top">
+              <p>{defaultToPan ? "Pan mode (P to switch to Select)" : "Select mode (P to switch to Pan)"}</p>
+            </TooltipContent>
+          </Tooltip>
           <Separator orientation="vertical" className="h-3.5 mr-1" />
           <Tooltip>
             <TooltipTrigger asChild>

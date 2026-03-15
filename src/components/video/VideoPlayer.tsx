@@ -71,6 +71,7 @@ export function VideoPlayer() {
   const lutMax = useAppStore((s) => s.lutMax);
   const colormap = useAppStore((s) => s.colormap);
   const rotation = useAppStore((s) => s.rotation);
+  const defaultToPan = useAppStore((s) => s.defaultToPan);
 
   // Local zoom/pan state
   const [zoom, setZoom] = useState(1);
@@ -86,6 +87,8 @@ export function VideoPlayer() {
   const [isSpaceHeld, setIsSpaceHeld] = useState(false);
   const [isCmdHeld, setIsCmdHeld] = useState(false);
   const [isZoomDragging, setIsZoomDragging] = useState(false);
+  // XOR: defaultToPan reverses the meaning of space for pan vs select
+  const shouldPan = defaultToPan !== isSpaceHeld;
   const zoomDragStart = useRef<{
     clientX: number; clientY: number;
     zoom: number; panX: number; panY: number;
@@ -958,8 +961,8 @@ export function VideoPlayer() {
 
       if (e.button !== 0) return; // Only left-click for interaction
 
-      // Cmd/Ctrl+Space+left-click: zoom-drag mode
-      if (isSpaceHeld && (isCmdHeld || e.metaKey || e.ctrlKey)) {
+      // Cmd/Ctrl+pan-mode+left-click: zoom-drag mode
+      if (shouldPan && (isCmdHeld || e.metaKey || e.ctrlKey)) {
         e.preventDefault();
         const rect = containerRef.current?.getBoundingClientRect();
         const anchorX = rect ? e.clientX - rect.left - offsetX : 0;
@@ -972,8 +975,8 @@ export function VideoPlayer() {
         return;
       }
 
-      // Space+left-click panning
-      if (isSpaceHeld) {
+      // Pan mode (default or space-toggled): left-click panning
+      if (shouldPan) {
         e.preventDefault();
         setIsPanning(true);
         setPanStart({ x: e.clientX - panX, y: e.clientY - panY });
@@ -1072,7 +1075,7 @@ export function VideoPlayer() {
       setMarqueeStart({ x, y });
       setMarqueeEnd({ x, y });
     },
-    [canvasToScene, markerSize, panX, panY, zoom, isSpaceHeld, isCmdHeld, offsetX, offsetY, selectedNodes, showNonVisibleNodes]
+    [canvasToScene, markerSize, panX, panY, zoom, shouldPan, isCmdHeld, offsetX, offsetY, selectedNodes, showNonVisibleNodes]
   );
 
   const handleMouseMove = useCallback(
@@ -1367,15 +1370,15 @@ export function VideoPlayer() {
         return;
       }
 
-      // No prediction hit - reset zoom/pan only in pan mode (Space held)
-      if (isSpaceHeld) {
+      // No prediction hit - reset zoom/pan only in pan mode
+      if (shouldPan) {
         viewRef.current = { zoom: 1, panX: 0, panY: 0 };
         setZoom(1);
         setPanX(0);
         setPanY(0);
       }
     },
-    [canvasToScene, markerSize, zoom, isSpaceHeld]
+    [canvasToScene, markerSize, zoom, shouldPan]
   );
 
   // Right-click context menu
@@ -1435,7 +1438,7 @@ export function VideoPlayer() {
         ref={containerRef}
         className={cn(
           "flex-1 relative overflow-hidden bg-background min-h-0",
-          isPanning ? "cursor-grabbing" : isZoomDragging ? "cursor-zoom-in" : (isSpaceHeld && isCmdHeld) ? "cursor-zoom-in" : isSpaceHeld ? "cursor-grab" : isDragging ? "cursor-grabbing" : interactionMode === "marquee" ? "cursor-crosshair" : isPlacingNodes ? "cursor-cell" : hoveredNode ? "cursor-pointer" : "cursor-default"
+          isPanning ? "cursor-grabbing" : isZoomDragging ? "cursor-zoom-in" : (shouldPan && isCmdHeld) ? "cursor-zoom-in" : shouldPan ? "cursor-grab" : isDragging ? "cursor-grabbing" : interactionMode === "marquee" ? "cursor-crosshair" : isPlacingNodes ? "cursor-cell" : hoveredNode ? "cursor-pointer" : "cursor-default"
         )}
         onDoubleClick={handleDoubleClick}
       >

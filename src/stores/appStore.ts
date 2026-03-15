@@ -51,6 +51,7 @@ export interface AppState {
   fit: boolean;
   fitSelection: boolean;
   colorPredicted: boolean;
+  defaultToPan: boolean;
   palette: string;
   distinctlyColor: ColorTarget;
   markerSize: number;
@@ -124,6 +125,7 @@ const PERSISTED_KEYS: (keyof AppState)[] = [
   "showNonVisibleNodes",
   "colorPredicted",
   "trailLength",
+  "defaultToPan",
 ];
 
 export const useAppStore = create<AppState>()(
@@ -159,6 +161,7 @@ export const useAppStore = create<AppState>()(
       fit: false,
       fitSelection: false,
       colorPredicted: false,
+      defaultToPan: false,
       palette: "standard",
       distinctlyColor: "track" as ColorTarget,
       markerSize: 4,

@@ -49,6 +49,7 @@ export const DEFAULT_SHORTCUTS: Record<string, string> = {
   "show labels": "$mod+Tab",
   "show edges": "$mod+Shift+Tab",
   "toggle node visibility": "KeyV",
+  "toggle pan mode": "KeyP",
 
   // Tracks
   transpose: "$mod+KeyT",
