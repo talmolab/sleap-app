@@ -205,6 +205,7 @@ export async function resolveExternalVideos(
  */
 export async function resolveVideoFile(video: Video): Promise<boolean> {
   const platform = await getPlatform();
+  console.log(`[video] Picking video file via ${platform.isTauri ? "Tauri" : "browser"} dialog`);
 
   const result = await platform.showOpenDialog({
     filters: [
@@ -216,9 +217,11 @@ export async function resolveVideoFile(video: Video): Promise<boolean> {
 
   if (typeof result === "string" && !Array.isArray(result)) {
     // Tauri: got a file path — read bytes and create a File object
+    console.log(`[video] Loading video from path: ${result}`);
     try {
       const bytes = await platform.readFile(result);
       const name = getBasename(result);
+      console.log(`[video] Read ${bytes.byteLength} bytes for "${name}"`);
       const file = new File([bytes], name, { type: "video/mp4" });
       await assignVideoBackend(video, file);
       // Update the video's filename to the resolved absolute path
@@ -226,11 +229,12 @@ export async function resolveVideoFile(video: Video): Promise<boolean> {
       toast.success(`Loaded video: ${name}`);
       return true;
     } catch (err) {
-      console.error(`Failed to read video file "${result}":`, err);
+      console.error(`[video] Failed to read video file "${result}":`, err);
       return false;
     }
   } else if (result instanceof File) {
     // Browser: got a File object
+    console.log(`[video] Loading video from File object: ${result.name} (${result.size} bytes)`);
     await assignVideoBackend(video, result);
     toast.success(`Loaded video: ${result.name}`);
     return true;
@@ -251,6 +255,7 @@ export async function resolveAllVideoFiles(
   if (unresolvedVideos.length === 0) return 0;
 
   const platform = await getPlatform();
+  console.log(`[video] Batch-resolving ${unresolvedVideos.length} video(s) via ${platform.isTauri ? "Tauri" : "browser"} dialog`);
   const videoFilters = [
     { name: "Video files", extensions: ["mp4", "avi", "mov", "mkv", "webm"] },
   ];
@@ -363,12 +368,14 @@ export async function resolveAllVideoFiles(
  */
 export async function assignVideoBackend(video: Video, file: File): Promise<void> {
   try {
+    console.log(`[video] Creating Mp4BoxVideoBackend for "${file.name}" (${file.size} bytes)`);
     const backend = new Mp4BoxVideoBackend(file);
     video.backend = backend;
     // Trigger initialization by requesting frame 0 (stays in cache for later use)
     await backend.getFrame(0);
     if (backend.shape) video.shape = backend.shape;
     if (backend.fps) video.fps = backend.fps;
+    console.log(`[video] Backend ready: ${video.shape?.[1]}x${video.shape?.[2]} @ ${video.fps}fps, ${video.shape?.[0]} frames`);
   } catch (err) {
     console.error(`Failed to load video backend for ${file.name}:`, err);
     toast.error(`Failed to load video: ${file.name}`, {

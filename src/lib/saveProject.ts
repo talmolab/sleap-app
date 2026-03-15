@@ -34,6 +34,7 @@ export async function saveProjectAsSlp(
   try {
     const bytes = await saveSlpToBytes(labels);
     const platform = await getPlatform();
+    console.log(`[save] Saving project via ${platform.isTauri ? "Tauri" : "browser"} backend (${bytes.byteLength} bytes)`);
 
     if (platform.isTauri) {
       // Tauri: use native save dialog + filesystem write

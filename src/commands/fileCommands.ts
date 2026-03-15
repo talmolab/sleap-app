@@ -45,6 +45,7 @@ export const OpenProjectCommand: Command = {
   skipAutoSnapshot: true,
   async execute(ctx: CommandContext) {
     const platform = await getPlatform();
+    console.log(`[open] Opening project via ${platform.isTauri ? "Tauri" : "browser"} dialog`);
     const result = await platform.showOpenDialog({
       filters: [{ name: "SLEAP Labels", extensions: ["slp"] }],
     });
@@ -52,10 +53,10 @@ export const OpenProjectCommand: Command = {
     if (!result) return;
 
     if (typeof result === "string" && !Array.isArray(result)) {
-      // Tauri: got a file path
+      console.log(`[open] Loading from path: ${result}`);
       await loadProjectFromPath(result, platform.readFile, platform.exists);
     } else if (result instanceof File) {
-      // Browser: got a File object
+      console.log(`[open] Loading from File object: ${result.name} (${result.size} bytes)`);
       await loadProjectFromFile(result);
     }
 

@@ -60,6 +60,7 @@ function createWebPlatform(): PlatformAPI {
 
       // Try File System Access API first (Chrome/Edge)
       if ("showOpenFilePicker" in window) {
+        console.log(`[platform] showOpenDialog (browser File System Access API, multiple=${multi})`);
         try {
           const types = options?.filters?.map((f) => ({
             description: f.name,
@@ -84,6 +85,7 @@ function createWebPlatform(): PlatformAPI {
       }
 
       // Fallback: use hidden input element
+      console.log(`[platform] showOpenDialog (browser <input> fallback, multiple=${multi})`);
       return new Promise((resolve) => {
         const input = document.createElement("input");
         input.type = "file";
@@ -136,15 +138,18 @@ async function createTauriPlatform(): Promise<PlatformAPI> {
     isTauri: true,
 
     async readFile(path: string): Promise<Uint8Array> {
+      console.log(`[platform] readFile: ${path}`);
       return await readFile(path);
     },
 
     async writeFile(path: string, data: Uint8Array): Promise<void> {
+      console.log(`[platform] writeFile: ${path} (${data.byteLength} bytes)`);
       await writeFile(path, data);
     },
 
     async showOpenDialog(options): Promise<string | string[] | null> {
       const multi = options?.multiple ?? false;
+      console.log(`[platform] showOpenDialog (Tauri native, multiple=${multi})`);
       const selected = await open({
         multiple: multi,
         filters: options?.filters?.map((f) => ({
@@ -153,16 +158,15 @@ async function createTauriPlatform(): Promise<PlatformAPI> {
         })),
       });
       if (multi) {
-        // multiple: return string[] or null
         if (Array.isArray(selected)) return selected.length > 0 ? selected : null;
         return selected ? [selected] : null;
       }
-      // single: return string or null
       if (Array.isArray(selected)) return selected[0] ?? null;
       return selected;
     },
 
     async showSaveDialog(options): Promise<string | null> {
+      console.log(`[platform] showSaveDialog (Tauri native, default=${options?.defaultName})`);
       return await save({
         defaultPath: options?.defaultName,
         filters: options?.filters?.map((f) => ({
@@ -186,8 +190,13 @@ export async function getPlatform(): Promise<PlatformAPI> {
   if (_platform) return _platform;
 
   if (detectTauri()) {
+    console.log("[platform] Detected Tauri desktop shell, using native file I/O");
     _platform = await createTauriPlatform();
   } else {
+    const hasFileAccess = typeof window !== "undefined" && "showOpenFilePicker" in window;
+    console.log(
+      `[platform] Running in browser mode (File System Access API: ${hasFileAccess ? "available" : "unavailable"})`
+    );
     _platform = createWebPlatform();
   }
 
