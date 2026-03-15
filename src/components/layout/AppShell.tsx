@@ -28,6 +28,7 @@ import { SuggestionsPanel } from "../panels/SuggestionsPanel";
 import { ViewPanel } from "../panels/ViewPanel";
 import { DebugPanel } from "../panels/DebugPanel";
 import { NotificationsPanel } from "../panels/NotificationsPanel";
+import { EnvironmentPanel } from "../panels/EnvironmentPanel";
 import { WelcomeScreen } from "./WelcomeScreen";
 import { TrainingDialog } from "../dialogs/TrainingDialog";
 import { InferenceDialog } from "../dialogs/InferenceDialog";
@@ -49,6 +50,7 @@ import {
   PanelRightClose,
   PanelRightOpen,
   GripVertical,
+  Cpu,
 } from "lucide-react";
 import {
   Tooltip,
@@ -70,6 +72,7 @@ const PANELS = [
   { id: "instances", label: "Instances", icon: Users, component: InstancesPanel },
   { id: "view", label: "View", icon: Eye, component: ViewPanel },
   { id: "suggestions", label: "Suggestions", icon: Lightbulb, component: SuggestionsPanel },
+  { id: "environment", label: "Environment", icon: Cpu, component: EnvironmentPanel },
   { id: "notifications", label: "Notifications", icon: Bell, component: NotificationsPanel },
   { id: "debug", label: "Debug", icon: Bug, component: DebugPanel },
 ] as const;
