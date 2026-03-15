@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { CheckCircle2, XCircle, Info, AlertTriangle, Clipboard } from "lucide-react";
+import { CheckCircle2, XCircle, Info, AlertTriangle, Clipboard, ClipboardCopy } from "lucide-react";
 import {
   notificationBuffer,
   notificationListeners,
@@ -67,6 +67,23 @@ export function NotificationsPanel() {
           className="text-xs text-muted-foreground hover:text-foreground transition-colors"
         >
           Clear
+        </button>
+        <button
+          onClick={() => {
+            const text = notificationBuffer.map((e) => {
+              const ts = new Date(e.timestamp).toLocaleTimeString([], {
+                hour12: false,
+                fractionalSecondDigits: 3,
+              } as Intl.DateTimeFormatOptions);
+              return `[${ts}] [${e.type}] ${entryText(e)}`;
+            }).join("\n");
+            navigator.clipboard.writeText(text);
+          }}
+          className="text-xs text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1"
+          title="Copy all notifications"
+        >
+          <ClipboardCopy className="h-3 w-3" />
+          Copy All
         </button>
         <span className="text-xs text-muted-foreground ml-auto">
           {notificationBuffer.length} entries
