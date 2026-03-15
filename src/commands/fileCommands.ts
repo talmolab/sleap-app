@@ -52,7 +52,7 @@ export const OpenProjectCommand: Command = {
 
     if (!result) return;
 
-    if (typeof result === "string" && !Array.isArray(result)) {
+    if (typeof result === "string") {
       console.log(`[open] Loading from path: ${result}`);
       await loadProjectFromPath(result, platform.readFile, platform.exists);
     } else if (result instanceof File) {

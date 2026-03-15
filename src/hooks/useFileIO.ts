@@ -24,7 +24,7 @@ export function useFileIO() {
 
     setLoading(true);
     try {
-      if (typeof result === "string" && !Array.isArray(result)) {
+      if (typeof result === "string") {
         // Tauri path
         await loadProjectFromPath(result, platform.readFile, platform.exists);
       } else if (result instanceof File) {

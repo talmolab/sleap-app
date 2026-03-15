@@ -215,7 +215,7 @@ export async function resolveVideoFile(video: Video): Promise<boolean> {
 
   if (!result) return false;
 
-  if (typeof result === "string" && !Array.isArray(result)) {
+  if (typeof result === "string") {
     // Tauri: got a file path — read bytes and create a File object
     console.log(`[video] Loading video from path: ${result}`);
     try {
@@ -270,9 +270,10 @@ export async function resolveAllVideoFiles(
     return 0;
   }
 
-  // Normalize to arrays of {name, getFile} for unified matching
+  // Normalize to arrays of {name, path?, getFile} for unified matching
   interface PickedVideo {
     name: string;
+    path?: string;
     getFile: () => Promise<File>;
   }
   let picked: PickedVideo[];
@@ -281,6 +282,7 @@ export async function resolveAllVideoFiles(
     // Tauri: got string[] of file paths
     picked = (result as string[]).map((path) => ({
       name: getBasename(path),
+      path,
       getFile: async () => {
         const bytes = await platform.readFile(path);
         return new File([bytes], getBasename(path), { type: "video/mp4" });
@@ -296,6 +298,7 @@ export async function resolveAllVideoFiles(
     // Tauri: single path (shouldn't happen with multiple:true but handle it)
     picked = [{
       name: getBasename(result),
+      path: result,
       getFile: async () => {
         const bytes = await platform.readFile(result);
         return new File([bytes], getBasename(result), { type: "video/mp4" });
@@ -324,12 +327,7 @@ export async function resolveAllVideoFiles(
       const file = await match.getFile();
       await assignVideoBackend(video, file);
       // Update filename to resolved path for Tauri
-      if (platform.isTauri && Array.isArray(result) && typeof result[0] === "string") {
-        const matchedPath = (result as string[]).find(
-          (p) => getBasename(p).toLowerCase() === expectedName
-        );
-        if (matchedPath) video.filename = matchedPath;
-      }
+      if (match.path) video.filename = match.path;
       matchCount++;
     }
   }
