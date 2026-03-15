@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { CheckCircle2, XCircle, Info, AlertTriangle, Clipboard, ClipboardCopy } from "lucide-react";
+import { CheckCircle2, XCircle, Info, AlertTriangle, Clipboard, ClipboardCopy, Trash2 } from "lucide-react";
 import {
   notificationBuffer,
   notificationListeners,
@@ -64,8 +64,9 @@ export function NotificationsPanel() {
       <div className="flex items-center gap-2 px-2 py-1 border-b border-border shrink-0">
         <button
           onClick={clear}
-          className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+          className="text-xs text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1"
         >
+          <Trash2 className="h-3 w-3" />
           Clear
         </button>
         <button
