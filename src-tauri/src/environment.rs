@@ -313,6 +313,55 @@ pub async fn upgrade_uv_tool<R: Runtime>(
     Ok(())
 }
 
+/// Update uv itself via `uv self update`.
+#[tauri::command]
+pub async fn update_uv<R: Runtime>(
+    app: AppHandle<R>,
+    on_event: Channel<InstallEvent>,
+) -> Result<(), String> {
+    stream_command(&app, "uv", &["self", "update"], &on_event).await?;
+    Ok(())
+}
+
+/// Install uv via the official install script.
+/// On Unix: `curl -LsSf https://astral.sh/uv/install.sh | sh`
+/// On Windows: `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"`
+#[tauri::command]
+pub async fn install_uv<R: Runtime>(
+    app: AppHandle<R>,
+    on_event: Channel<InstallEvent>,
+) -> Result<(), String> {
+    #[cfg(not(windows))]
+    {
+        // Download and pipe to sh in one command via sh -c
+        stream_command(
+            &app,
+            "sh",
+            &["-c", "curl -LsSf https://astral.sh/uv/install.sh | sh"],
+            &on_event,
+        )
+        .await?;
+    }
+
+    #[cfg(windows)]
+    {
+        stream_command(
+            &app,
+            "powershell",
+            &[
+                "-ExecutionPolicy",
+                "ByPass",
+                "-c",
+                "irm https://astral.sh/uv/install.ps1 | iex",
+            ],
+            &on_event,
+        )
+        .await?;
+    }
+
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Parsers (pure functions, testable)
 // ---------------------------------------------------------------------------

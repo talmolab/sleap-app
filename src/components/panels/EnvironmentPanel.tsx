@@ -230,6 +230,8 @@ export function EnvironmentPanel() {
     doInstallTool,
     doUpgradeTool,
     doReinstallTool,
+    doUpdateUv,
+    doInstallUv,
     clearInstallLog,
   } = useEnvironmentStore();
 
@@ -302,13 +304,47 @@ export function EnvironmentPanel() {
             <h4 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1">
               Package Manager
             </h4>
-            <StatusRow
-              label="uv"
-              ok={uv?.available ?? false}
-              detail={
-                uv?.available ? `v${uv.version}` : "Not found on PATH"
-              }
-            />
+            <div className="flex items-center gap-2 py-0.5">
+              <StatusIcon ok={uv?.available ?? false} />
+              <span className="text-xs font-medium">uv</span>
+              {uv?.available && uv.version && (
+                <span className="text-xs text-muted-foreground">
+                  v{uv.version}
+                </span>
+              )}
+              <div className="ml-auto">
+                {uv?.available ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-5 text-[10px]"
+                    onClick={doUpdateUv}
+                    disabled={isInstalling}
+                    title="Update uv to latest version"
+                  >
+                    <ArrowUpCircle className="h-3 w-3 mr-1" />
+                    Update
+                  </Button>
+                ) : (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-5 text-[10px]"
+                    onClick={doInstallUv}
+                    disabled={isInstalling}
+                    title="Install uv via official installer"
+                  >
+                    <Download className="h-3 w-3 mr-1" />
+                    Install
+                  </Button>
+                )}
+              </div>
+            </div>
+            {!uv?.available && (
+              <div className="text-[10px] text-muted-foreground pl-5">
+                Not found on PATH
+              </div>
+            )}
             {uv?.path && <PathDisplay path={uv.path} />}
             {uv?.pythonDir && (
               <div className="text-[10px] text-muted-foreground pl-5 mt-0.5">

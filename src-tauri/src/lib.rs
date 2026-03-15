@@ -68,6 +68,8 @@ pub fn run() {
         environment::install_python,
         environment::install_uv_tool,
         environment::upgrade_uv_tool,
+        environment::update_uv,
+        environment::install_uv,
     ])
     .plugin(tauri_plugin_fs::init())
     .plugin(tauri_plugin_dialog::init())

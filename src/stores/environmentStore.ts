@@ -16,6 +16,8 @@ import {
   installPython as installPythonCmd,
   installUvTool as installUvToolCmd,
   upgradeUvTool as upgradeUvToolCmd,
+  updateUv as updateUvCmd,
+  installUv as installUvCmd,
   type UvInfo,
   type UvTool,
   type PythonInterpreter,
@@ -54,6 +56,8 @@ export interface EnvironmentState {
   doInstallTool: (pkg: string) => Promise<void>;
   doUpgradeTool: (pkg: string) => Promise<void>;
   doReinstallTool: (pkg: string) => Promise<void>;
+  doUpdateUv: () => Promise<void>;
+  doInstallUv: () => Promise<void>;
   clearInstallLog: () => void;
 }
 
@@ -279,6 +283,68 @@ export const useEnvironmentStore = create<EnvironmentState>()(
 
         try {
           await installUvToolCmd(pkg, selectedPythonPath, true, onEvent);
+          await get().refresh();
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          set((state) => ({
+            installStatus: "error",
+            installLog: [...state.installLog, `Error: ${msg}`],
+          }));
+        }
+      },
+
+      doUpdateUv: async () => {
+        set({
+          installStatus: "installing",
+          installTarget: "uv (update)",
+          installLog: [],
+        });
+
+        const onEvent = (event: InstallEvent) => {
+          if (event.event === "stdout" || event.event === "stderr") {
+            set((state) => ({
+              installLog: [...state.installLog, event.data.line],
+            }));
+          } else if (event.event === "finished") {
+            set({
+              installStatus: event.data.success ? "done" : "error",
+            });
+          }
+        };
+
+        try {
+          await updateUvCmd(onEvent);
+          await get().refresh();
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          set((state) => ({
+            installStatus: "error",
+            installLog: [...state.installLog, `Error: ${msg}`],
+          }));
+        }
+      },
+
+      doInstallUv: async () => {
+        set({
+          installStatus: "installing",
+          installTarget: "uv (install)",
+          installLog: [],
+        });
+
+        const onEvent = (event: InstallEvent) => {
+          if (event.event === "stdout" || event.event === "stderr") {
+            set((state) => ({
+              installLog: [...state.installLog, event.data.line],
+            }));
+          } else if (event.event === "finished") {
+            set({
+              installStatus: event.data.success ? "done" : "error",
+            });
+          }
+        };
+
+        try {
+          await installUvCmd(onEvent);
           await get().refresh();
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);

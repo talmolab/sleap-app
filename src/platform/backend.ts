@@ -137,3 +137,19 @@ export async function upgradeUvTool(
   if (!isTauri) return;
   await streamingInvoke("upgrade_uv_tool", { package: pkg }, onEvent);
 }
+
+/** Update uv itself via `uv self update`. */
+export async function updateUv(
+  onEvent: (event: InstallEvent) => void
+): Promise<void> {
+  if (!isTauri) return;
+  await streamingInvoke("update_uv", {}, onEvent);
+}
+
+/** Install uv via the official install script. */
+export async function installUv(
+  onEvent: (event: InstallEvent) => void
+): Promise<void> {
+  if (!isTauri) return;
+  await streamingInvoke("install_uv", {}, onEvent);
+}
