@@ -1,31 +1,42 @@
 /**
  * Environment panel for Python/uv toolchain configuration.
  *
- * Shows the status of `uv`, installed tools (sleap-nn, sleap),
- * and allows selecting a Python interpreter.
+ * Shows uv status, lets users pick a Python interpreter,
+ * install Python versions, and manage uv tools (sleap-nn, sleap).
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useRef } from "react";
 import {
   CheckCircle2,
   XCircle,
   Loader2,
   RefreshCw,
   Terminal,
+  Download,
+  RotateCw,
+  ArrowUpCircle,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectLabel,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { isTauri } from "../../platform/index";
 import {
-  detectUv,
-  listUvTools,
-  checkPython,
-  type UvInfo,
-  type UvTool,
-  type PythonInfo,
-} from "../../platform/backend";
+  useEnvironmentStore,
+  type InstallStatus,
+} from "../../stores/environmentStore";
+import type { UvTool } from "../../platform/backend";
 
-type Status = "idle" | "checking" | "done" | "error";
+// ---------------------------------------------------------------------------
+// Shared components
+// ---------------------------------------------------------------------------
 
 function StatusIcon({ ok }: { ok: boolean }) {
   return ok ? (
@@ -45,11 +56,14 @@ function StatusRow({
   detail?: string;
 }) {
   return (
-    <div className="flex items-center gap-2 py-1">
+    <div className="flex items-center gap-2 py-0.5">
       <StatusIcon ok={ok} />
       <span className="text-xs font-medium">{label}</span>
       {detail && (
-        <span className="text-xs text-muted-foreground ml-auto truncate max-w-[140px]" title={detail}>
+        <span
+          className="text-xs text-muted-foreground ml-auto truncate max-w-[140px]"
+          title={detail}
+        >
           {detail}
         </span>
       )}
@@ -57,58 +71,174 @@ function StatusRow({
   );
 }
 
-export function EnvironmentPanel() {
-  const [status, setStatus] = useState<Status>("idle");
-  const [uv, setUv] = useState<UvInfo | null>(null);
-  const [tools, setTools] = useState<UvTool[]>([]);
-  const [python, setPython] = useState<PythonInfo | null>(null);
-  const [error, setError] = useState<string | null>(null);
+function PathDisplay({ path }: { path: string }) {
+  return (
+    <div
+      className="text-[10px] text-muted-foreground pl-5 truncate"
+      title={path}
+    >
+      {path}
+    </div>
+  );
+}
 
-  const refresh = useCallback(async () => {
-    setStatus("checking");
-    setError(null);
-    console.log("[env] Starting environment detection...");
+function InstallLog({
+  lines,
+  status,
+  target,
+  onDismiss,
+}: {
+  lines: string[];
+  status: InstallStatus;
+  target: string | null;
+  onDismiss: () => void;
+}) {
+  const bottomRef = useRef<HTMLDivElement>(null);
 
-    try {
-      // Step 1: Detect uv
-      const uvInfo = await detectUv();
-      console.log("[env] uv:", uvInfo);
-      setUv(uvInfo);
-
-      if (!uvInfo.available) {
-        setTools([]);
-        setPython(null);
-        setStatus("done");
-        return;
-      }
-
-      // Step 2: List uv tools
-      const uvTools = await listUvTools();
-      console.log("[env] uv tools:", uvTools);
-      setTools(uvTools);
-
-      // Step 3: Check default Python
-      const pythonInfo = await checkPython("python3");
-      console.log("[env] python3:", pythonInfo);
-      setPython(pythonInfo);
-
-      setStatus("done");
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error("[env] Detection failed:", err);
-      setError(msg);
-      setStatus("error");
-    }
-  }, []);
-
-  // Auto-detect on mount (only in Tauri mode)
   useEffect(() => {
-    if (isTauri) {
+    bottomRef.current?.scrollIntoView({ behavior: "instant" });
+  }, [lines.length]);
+
+  if (status === "idle") return null;
+
+  return (
+    <div className="border border-border rounded mt-2">
+      <div className="flex items-center gap-2 px-2 py-1 border-b border-border bg-muted/30">
+        {status === "installing" && (
+          <Loader2 className="h-3 w-3 animate-spin shrink-0" />
+        )}
+        {status === "done" && (
+          <CheckCircle2 className="h-3 w-3 text-green-500 shrink-0" />
+        )}
+        {status === "error" && (
+          <XCircle className="h-3 w-3 text-red-500 shrink-0" />
+        )}
+        <span className="text-[10px] font-medium truncate">
+          {status === "installing"
+            ? `Installing ${target}...`
+            : status === "done"
+              ? `${target} installed`
+              : `Failed to install ${target}`}
+        </span>
+        {status !== "installing" && (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-4 w-4 ml-auto"
+            onClick={onDismiss}
+          >
+            <XCircle className="h-3 w-3" />
+          </Button>
+        )}
+      </div>
+      <div className="max-h-32 overflow-auto p-1 text-[10px] font-mono leading-4 text-muted-foreground">
+        {lines.map((line, i) => (
+          <div key={i}>{line}</div>
+        ))}
+        <div ref={bottomRef} />
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Tool action button
+// ---------------------------------------------------------------------------
+
+function ToolActions({
+  tool,
+  installing,
+  onInstall,
+  onUpgrade,
+  onReinstall,
+}: {
+  tool: UvTool | undefined;
+  installing: boolean;
+  onInstall: () => void;
+  onUpgrade: () => void;
+  onReinstall: () => void;
+}) {
+  if (installing) {
+    return (
+      <Button variant="ghost" size="sm" className="h-5 text-[10px]" disabled>
+        <Loader2 className="h-3 w-3 animate-spin mr-1" />
+        Installing...
+      </Button>
+    );
+  }
+
+  if (!tool) {
+    return (
+      <Button
+        variant="outline"
+        size="sm"
+        className="h-5 text-[10px]"
+        onClick={onInstall}
+      >
+        <Download className="h-3 w-3 mr-1" />
+        Install
+      </Button>
+    );
+  }
+
+  return (
+    <div className="flex gap-1">
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-5 text-[10px]"
+        onClick={onUpgrade}
+        title="Upgrade to latest version"
+      >
+        <ArrowUpCircle className="h-3 w-3 mr-1" />
+        Update
+      </Button>
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-5 text-[10px]"
+        onClick={onReinstall}
+        title="Force reinstall"
+      >
+        <RotateCw className="h-3 w-3 mr-1" />
+        Reinstall
+      </Button>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main panel
+// ---------------------------------------------------------------------------
+
+export function EnvironmentPanel() {
+  const {
+    uv,
+    tools,
+    interpreters,
+    downloadable,
+    selectedPythonPath,
+    pythonCheck,
+    detectionStatus,
+    detectionError,
+    installStatus,
+    installLog,
+    installTarget,
+    refresh,
+    selectPython,
+    doInstallPython,
+    doInstallTool,
+    doUpgradeTool,
+    doReinstallTool,
+    clearInstallLog,
+  } = useEnvironmentStore();
+
+  // Auto-detect on mount
+  useEffect(() => {
+    if (isTauri && detectionStatus === "idle") {
       refresh();
-    } else {
-      setStatus("done");
     }
-  }, [refresh]);
+  }, [refresh, detectionStatus]);
 
   if (!isTauri) {
     return (
@@ -124,10 +254,16 @@ export function EnvironmentPanel() {
 
   const sleapNnTool = tools.find((t) => t.name === "sleap-nn");
   const sleapTool = tools.find((t) => t.name === "sleap");
+  const isDetecting = detectionStatus === "checking";
+  const detected = detectionStatus === "done" || detectionStatus === "error";
+  const isInstalling = installStatus === "installing";
+
+  const managedInterps = interpreters.filter((i) => i.source === "managed");
+  const systemInterps = interpreters.filter((i) => i.source === "system");
 
   return (
     <div className="flex flex-col gap-3 -m-2">
-      {/* Header with refresh */}
+      {/* Header */}
       <div className="flex items-center gap-2 px-2 py-1 border-b border-border shrink-0">
         <Terminal className="h-3.5 w-3.5 text-muted-foreground" />
         <span className="text-xs font-medium">Environment</span>
@@ -136,32 +272,32 @@ export function EnvironmentPanel() {
           size="icon"
           className="h-5 w-5 ml-auto"
           onClick={refresh}
-          disabled={status === "checking"}
+          disabled={isDetecting}
           title="Refresh environment detection"
         >
           <RefreshCw
-            className={`h-3 w-3 ${status === "checking" ? "animate-spin" : ""}`}
+            className={`h-3 w-3 ${isDetecting ? "animate-spin" : ""}`}
           />
         </Button>
       </div>
 
       <div className="px-2 flex flex-col gap-3">
-        {/* Status indicator */}
-        {status === "checking" && (
+        {/* Loading */}
+        {isDetecting && (
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
             Detecting environment...
           </div>
         )}
 
-        {error && (
+        {detectionError && (
           <div className="text-xs text-red-500 bg-red-500/10 rounded px-2 py-1">
-            {error}
+            {detectionError}
           </div>
         )}
 
-        {/* uv section */}
-        {(status === "done" || status === "error") && (
+        {/* Section 1: Package Manager */}
+        {detected && (
           <section>
             <h4 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1">
               Package Manager
@@ -170,35 +306,163 @@ export function EnvironmentPanel() {
               label="uv"
               ok={uv?.available ?? false}
               detail={
-                uv?.available
-                  ? `v${uv.version}`
-                  : "Not found on PATH"
+                uv?.available ? `v${uv.version}` : "Not found on PATH"
               }
             />
-            {uv?.path && (
-              <div className="text-[10px] text-muted-foreground pl-5 truncate" title={uv.path}>
-                {uv.path}
+            {uv?.path && <PathDisplay path={uv.path} />}
+            {uv?.pythonDir && (
+              <div className="text-[10px] text-muted-foreground pl-5 mt-0.5">
+                Managed Pythons: <span className="truncate" title={uv.pythonDir}>{uv.pythonDir}</span>
               </div>
             )}
           </section>
         )}
 
-        {/* Tools section */}
-        {(status === "done" || status === "error") && uv?.available && (
+        {/* Section 2: Python Interpreter */}
+        {detected && uv?.available && (
+          <section>
+            <h4 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1">
+              Python Interpreter
+            </h4>
+
+            {interpreters.length > 0 ? (
+              <Select
+                value={selectedPythonPath ?? ""}
+                onValueChange={(path) => selectPython(path)}
+              >
+                <SelectTrigger className="h-7 text-xs">
+                  <SelectValue placeholder="Select interpreter..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {managedInterps.length > 0 && (
+                    <SelectGroup>
+                      <SelectLabel className="text-[10px]">
+                        uv Managed
+                      </SelectLabel>
+                      {managedInterps.map((i) => (
+                        <SelectItem
+                          key={i.path}
+                          value={i.path!}
+                          className="text-xs"
+                        >
+                          Python {i.version}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  )}
+                  {systemInterps.length > 0 && (
+                    <SelectGroup>
+                      <SelectLabel className="text-[10px]">System</SelectLabel>
+                      {systemInterps.map((i) => (
+                        <SelectItem
+                          key={i.path}
+                          value={i.path!}
+                          className="text-xs"
+                        >
+                          Python {i.version}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  )}
+                </SelectContent>
+              </Select>
+            ) : (
+              <div className="text-xs text-muted-foreground py-1">
+                No Python interpreters found.
+              </div>
+            )}
+
+            {/* Selected interpreter details */}
+            {selectedPythonPath && (
+              <div className="mt-1.5 pl-1">
+                <PathDisplay path={selectedPythonPath} />
+                {pythonCheck && (
+                  <div className="mt-1">
+                    <StatusRow
+                      label="sleap-nn"
+                      ok={!!pythonCheck.sleapNnVersion}
+                      detail={
+                        pythonCheck.sleapNnVersion
+                          ? `v${pythonCheck.sleapNnVersion}`
+                          : "Not importable"
+                      }
+                    />
+                    <StatusRow
+                      label="sleap"
+                      ok={!!pythonCheck.sleapVersion}
+                      detail={
+                        pythonCheck.sleapVersion
+                          ? `v${pythonCheck.sleapVersion}`
+                          : "Not importable"
+                      }
+                    />
+                  </div>
+                )}
+                {!pythonCheck && selectedPythonPath && (
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground mt-1">
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    Checking packages...
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Install new Python */}
+            {downloadable.length > 0 && (
+              <div className="mt-2 flex items-center gap-1.5">
+                <Select
+                  onValueChange={(version) => doInstallPython(version)}
+                  disabled={isInstalling}
+                >
+                  <SelectTrigger className="h-6 text-[10px] flex-1">
+                    <SelectValue placeholder="Install Python..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {downloadable.map((d) => (
+                      <SelectItem
+                        key={d.key}
+                        value={d.version}
+                        className="text-xs"
+                      >
+                        Python {d.version}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+          </section>
+        )}
+
+        {/* Section 3: UV Tools */}
+        {detected && uv?.available && (
           <section>
             <h4 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1">
               UV Tools
             </h4>
 
-            <StatusRow
-              label="sleap-nn"
-              ok={!!sleapNnTool}
-              detail={
-                sleapNnTool
-                  ? `v${sleapNnTool.version}`
-                  : "Not installed"
-              }
-            />
+            {/* sleap-nn */}
+            <div className="flex items-center gap-2 py-0.5">
+              <StatusIcon ok={!!sleapNnTool} />
+              <span className="text-xs font-medium">sleap-nn</span>
+              {sleapNnTool?.version && (
+                <span className="text-xs text-muted-foreground">
+                  v{sleapNnTool.version}
+                </span>
+              )}
+              <div className="ml-auto">
+                <ToolActions
+                  tool={sleapNnTool}
+                  installing={
+                    isInstalling &&
+                    (installTarget?.includes("sleap-nn") ?? false)
+                  }
+                  onInstall={() => doInstallTool("sleap-nn")}
+                  onUpgrade={() => doUpgradeTool("sleap-nn")}
+                  onReinstall={() => doReinstallTool("sleap-nn")}
+                />
+              </div>
+            </div>
             {sleapNnTool && sleapNnTool.commands.length > 0 && (
               <div className="flex flex-wrap gap-1 pl-5 mt-0.5">
                 {sleapNnTool.commands.map((cmd) => (
@@ -213,15 +477,28 @@ export function EnvironmentPanel() {
               </div>
             )}
 
-            <StatusRow
-              label="sleap"
-              ok={!!sleapTool}
-              detail={
-                sleapTool
-                  ? `v${sleapTool.version}`
-                  : "Not installed"
-              }
-            />
+            {/* sleap */}
+            <div className="flex items-center gap-2 py-0.5 mt-1">
+              <StatusIcon ok={!!sleapTool} />
+              <span className="text-xs font-medium">sleap</span>
+              {sleapTool?.version && (
+                <span className="text-xs text-muted-foreground">
+                  v{sleapTool.version}
+                </span>
+              )}
+              <div className="ml-auto">
+                <ToolActions
+                  tool={sleapTool}
+                  installing={
+                    isInstalling &&
+                    installTarget === "sleap"
+                  }
+                  onInstall={() => doInstallTool("sleap")}
+                  onUpgrade={() => doUpgradeTool("sleap")}
+                  onReinstall={() => doReinstallTool("sleap")}
+                />
+              </div>
+            </div>
             {sleapTool && sleapTool.commands.length > 0 && (
               <div className="flex flex-wrap gap-1 pl-5 mt-0.5">
                 {sleapTool.commands.map((cmd) => (
@@ -235,66 +512,16 @@ export function EnvironmentPanel() {
                 ))}
               </div>
             )}
-
-            {tools.length > 0 && !sleapNnTool && !sleapTool && (
-              <div className="text-[10px] text-muted-foreground mt-1">
-                {tools.length} other tool{tools.length !== 1 ? "s" : ""} installed
-              </div>
-            )}
-
-            {tools.length === 0 && (
-              <div className="text-[10px] text-muted-foreground mt-1">
-                No tools installed via <code className="bg-muted px-0.5 rounded">uv tool</code>
-              </div>
-            )}
           </section>
         )}
 
-        {/* Python section */}
-        {(status === "done" || status === "error") && (
-          <section>
-            <h4 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1">
-              Python
-            </h4>
-            <StatusRow
-              label="python3"
-              ok={!!python?.version}
-              detail={
-                python?.version
-                  ? `v${python.version}`
-                  : "Not found"
-              }
-            />
-            {python?.path && python.version && (
-              <div className="text-[10px] text-muted-foreground pl-5 truncate" title={python.path}>
-                {python.path}
-              </div>
-            )}
-
-            {python?.version && (
-              <>
-                <StatusRow
-                  label="sleap-nn (import)"
-                  ok={!!python.sleapNnVersion}
-                  detail={
-                    python.sleapNnVersion
-                      ? `v${python.sleapNnVersion}`
-                      : "Not importable"
-                  }
-                />
-                <StatusRow
-                  label="sleap (import)"
-                  ok={!!python.sleapVersion}
-                  detail={
-                    python.sleapVersion
-                      ? `v${python.sleapVersion}`
-                      : "Not importable"
-                  }
-                />
-              </>
-            )}
-          </section>
-        )}
+        {/* Install log (shared for all install operations) */}
+        <InstallLog
+          lines={installLog}
+          status={installStatus}
+          target={installTarget}
+          onDismiss={clearInstallLog}
+        />
       </div>
     </div>
   );

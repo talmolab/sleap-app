@@ -62,7 +62,12 @@ pub fn run() {
         get_initial_file,
         environment::detect_uv,
         environment::list_uv_tools,
+        environment::list_python_interpreters,
+        environment::list_downloadable_pythons,
         environment::check_python,
+        environment::install_python,
+        environment::install_uv_tool,
+        environment::upgrade_uv_tool,
     ])
     .plugin(tauri_plugin_fs::init())
     .plugin(tauri_plugin_dialog::init())
