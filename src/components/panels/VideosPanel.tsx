@@ -219,13 +219,46 @@ function VideoDetailPanel({ video }: { video: Video }) {
         </div>
       )}
 
-      {/* Backend */}
-      {video.backend?.constructor?.name && (
-        <div className="text-muted-foreground">
-          <span className="font-medium text-foreground">Backend: </span>
-          {video.backend.constructor.name}
-        </div>
-      )}
+      {/* Backend metadata */}
+      {(() => {
+        const meta = video.backendMetadata as Record<string, unknown>;
+        const backendName =
+          video.backend?.constructor?.name ??
+          (typeof meta.type === "string" ? meta.type : null);
+        const format = typeof meta.format === "string" ? meta.format : null;
+        const dataset = typeof meta.dataset === "string" && meta.dataset !== "" ? meta.dataset : null;
+        const grayscale = typeof meta.grayscale === "boolean" ? meta.grayscale : null;
+
+        if (!backendName && !format && !dataset) return null;
+        return (
+          <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-muted-foreground">
+            {backendName && (
+              <div>
+                <span className="font-medium text-foreground">Backend: </span>
+                {backendName}
+              </div>
+            )}
+            {format && (
+              <div>
+                <span className="font-medium text-foreground">Format: </span>
+                {format}
+              </div>
+            )}
+            {dataset && (
+              <div className="col-span-2">
+                <span className="font-medium text-foreground">Dataset: </span>
+                {dataset}
+              </div>
+            )}
+            {grayscale != null && (
+              <div>
+                <span className="font-medium text-foreground">Color: </span>
+                {grayscale ? "Grayscale" : "Color"}
+              </div>
+            )}
+          </div>
+        );
+      })()}
     </div>
   );
 }
