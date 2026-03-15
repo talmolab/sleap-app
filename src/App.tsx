@@ -16,8 +16,8 @@ export default function App() {
       .then(({ invoke }) => invoke<string | null>("get_initial_file"))
       .then(async (path) => {
         if (!path) return;
-        const { readFile } = await import("@tauri-apps/plugin-fs");
-        await loadProjectFromPath(path, readFile);
+        const { readFile, exists } = await import("@tauri-apps/plugin-fs");
+        await loadProjectFromPath(path, readFile, exists);
       })
       .catch(() => {
         // Not in Tauri or command unavailable — ignore

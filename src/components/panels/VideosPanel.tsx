@@ -28,6 +28,7 @@ import {
   isVideoMissing,
   resolveVideoFile,
   resolveAllVideoFiles,
+  resolveVideoPath,
 } from "../../lib/resolveVideos";
 
 /** Truncate a filename/path from the left, keeping the rightmost characters. */
@@ -116,24 +117,6 @@ function VideoRow({
   );
 }
 
-/** Resolve a video filename to an absolute path when possible. */
-function resolveVideoPath(video: Video, projectFilename: string | null): string {
-  const raw = Array.isArray(video.filename) ? video.filename[0] : video.filename;
-  if (!raw) return "";
-  // Already absolute (Unix or Windows)
-  if (raw.startsWith("/") || /^[A-Za-z]:[\\/]/.test(raw)) return raw;
-  // Resolve relative paths against the project file's directory
-  if (projectFilename) {
-    const sep = projectFilename.includes("\\") ? "\\" : "/";
-    const dir = projectFilename.substring(
-      0,
-      projectFilename.lastIndexOf(sep)
-    );
-    return dir + sep + raw.replace(/[\\/]/g, sep);
-  }
-  return raw;
-}
-
 /** Format a duration in seconds to MM:SS or HH:MM:SS. */
 function formatDuration(seconds: number): string {
   const h = Math.floor(seconds / 3600);
@@ -144,10 +127,10 @@ function formatDuration(seconds: number): string {
 }
 
 function VideoDetailPanel({ video }: { video: Video }) {
-  const projectFilename = useAppStore((s) => s.filename);
+  const projectPath = useAppStore((s) => s.projectPath);
   const [copied, setCopied] = useState(false);
 
-  const filePath = resolveVideoPath(video, projectFilename);
+  const resolvedPath = resolveVideoPath(video, projectPath);
   const shape = video.shape;
   const fps = video.fps;
   const frames = shape?.[0] ?? null;
@@ -157,10 +140,25 @@ function VideoDetailPanel({ video }: { video: Video }) {
   const duration = frames != null && fps ? frames / fps : null;
 
   const handleCopy = async () => {
-    await navigator.clipboard.writeText(filePath);
+    await navigator.clipboard.writeText(resolvedPath);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };
+
+  const meta = video.backendMetadata as Record<string, unknown>;
+  const backendName =
+    video.backend?.constructor?.name ??
+    (typeof meta.type === "string" ? meta.type : null);
+  const format = typeof meta.format === "string" ? meta.format : null;
+  const dataset =
+    typeof meta.dataset === "string" && meta.dataset !== ""
+      ? meta.dataset
+      : null;
+  const grayscale =
+    typeof meta.grayscale === "boolean" ? meta.grayscale : null;
+  const sourceFilename =
+    typeof meta.sourceFilename === "string" ? meta.sourceFilename : null;
+  const hasMetadata = !!(backendName || format || dataset || sourceFilename);
 
   return (
     <div className="p-2 text-xs space-y-1">
@@ -168,10 +166,10 @@ function VideoDetailPanel({ video }: { video: Video }) {
       <div className="flex items-start gap-1">
         <div
           className="text-muted-foreground min-w-0 flex-1 break-all select-all"
-          title={filePath}
+          title={resolvedPath}
         >
           <span className="font-medium text-foreground">File: </span>
-          {filePath}
+          {resolvedPath}
         </div>
         <Button
           variant="ghost"
@@ -188,7 +186,7 @@ function VideoDetailPanel({ video }: { video: Video }) {
         </Button>
       </div>
 
-      {/* Metadata grid */}
+      {/* Video stats */}
       {shape && (
         <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-muted-foreground">
           {width != null && height != null && (
@@ -219,19 +217,21 @@ function VideoDetailPanel({ video }: { video: Video }) {
         </div>
       )}
 
-      {/* Backend metadata */}
-      {(() => {
-        const meta = video.backendMetadata as Record<string, unknown>;
-        const backendName =
-          video.backend?.constructor?.name ??
-          (typeof meta.type === "string" ? meta.type : null);
-        const format = typeof meta.format === "string" ? meta.format : null;
-        const dataset = typeof meta.dataset === "string" && meta.dataset !== "" ? meta.dataset : null;
-        const grayscale = typeof meta.grayscale === "boolean" ? meta.grayscale : null;
-
-        if (!backendName && !format && !dataset) return null;
-        return (
-          <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-muted-foreground">
+      {/* Collapsible SLP metadata */}
+      {hasMetadata && (
+        <details className="group">
+          <summary className="cursor-pointer text-muted-foreground hover:text-foreground select-none font-medium">
+            Metadata
+          </summary>
+          <div className="mt-1 space-y-0.5 text-muted-foreground">
+            {sourceFilename && (
+              <div className="break-all">
+                <span className="font-medium text-foreground">
+                  Source path:{" "}
+                </span>
+                {sourceFilename}
+              </div>
+            )}
             {backendName && (
               <div>
                 <span className="font-medium text-foreground">Backend: </span>
@@ -245,7 +245,7 @@ function VideoDetailPanel({ video }: { video: Video }) {
               </div>
             )}
             {dataset && (
-              <div className="col-span-2">
+              <div className="break-all">
                 <span className="font-medium text-foreground">Dataset: </span>
                 {dataset}
               </div>
@@ -257,8 +257,8 @@ function VideoDetailPanel({ video }: { video: Video }) {
               </div>
             )}
           </div>
-        );
-      })()}
+        </details>
+      )}
     </div>
   );
 }

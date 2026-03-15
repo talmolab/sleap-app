@@ -1,3 +1,4 @@
+use std::path::{Component, PathBuf};
 use std::sync::Mutex;
 
 /// Holds a file path passed as a CLI argument, consumed once by the frontend.
@@ -9,6 +10,26 @@ fn get_initial_file(state: tauri::State<InitialFile>) -> Option<String> {
     state.0.lock().unwrap().take()
 }
 
+/// Normalize a path by resolving `.` and `..` components without touching the
+/// filesystem. Unlike `canonicalize()`, this works even if the file doesn't
+/// exist yet, and doesn't resolve symlinks.
+fn normalize_path(path: PathBuf) -> PathBuf {
+    let mut parts: Vec<Component> = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                // Pop the last normal component, but keep prefix/root
+                if matches!(parts.last(), Some(Component::Normal(_))) {
+                    parts.pop();
+                }
+            }
+            Component::CurDir => {} // skip "."
+            other => parts.push(other),
+        }
+    }
+    parts.iter().collect()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   // Extract the first non-flag argument as a file path to open on launch.
@@ -17,14 +38,18 @@ pub fn run() {
       .skip(1)
       .find(|a| !a.starts_with('-'))
       .map(|p| {
-          let path = std::path::PathBuf::from(&p);
-          if path.is_relative() {
+          let path = PathBuf::from(&p);
+          let abs = if path.is_relative() {
               std::env::current_dir()
                   .map(|cwd| cwd.join(&path))
                   .unwrap_or(path)
           } else {
               path
-          }
+          };
+          // Normalize to remove .. segments (Tauri FS plugin rejects them).
+          // We use logical normalization instead of canonicalize() because
+          // canonicalize() fails if the file doesn't exist.
+          normalize_path(abs)
       })
       .map(|p| p.to_string_lossy().into_owned());
   println!("[sleap-label] file_arg: {:?}", file_arg);

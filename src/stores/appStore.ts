@@ -25,6 +25,7 @@ export interface AppState {
   // === Project state ===
   labels: Labels | null;
   filename: string | null;
+  projectPath: string | null;
   hasChanges: boolean;
   projectLoaded: boolean;
 
@@ -93,7 +94,7 @@ export interface AppState {
   overlayVersion: number;
 
   // === Actions ===
-  setLabels: (labels: Labels, filename?: string) => void;
+  setLabels: (labels: Labels, filename?: string, projectPath?: string) => void;
   setVideo: (video: Video) => void;
   setFrameIdx: (idx: number) => void;
   incrementFrameIdx: (step: number) => void;
@@ -135,6 +136,7 @@ export const useAppStore = create<AppState>()(
       // Project state
       labels: null,
       filename: null,
+      projectPath: null,
       hasChanges: false,
       projectLoaded: false,
 
@@ -203,10 +205,11 @@ export const useAppStore = create<AppState>()(
       overlayVersion: 0,
 
       // Actions
-      setLabels: (labels, filename) =>
+      setLabels: (labels, filename, projectPath) =>
         set((state) => {
           state.labels = labels;
           state.filename = filename ?? null;
+          state.projectPath = projectPath ?? null;
           state.projectLoaded = true;
           state.hasChanges = false;
 

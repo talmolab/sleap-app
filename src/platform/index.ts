@@ -28,6 +28,8 @@ export interface PlatformAPI {
     filters?: FileFilter[];
     defaultName?: string;
   }): Promise<string | null>;
+  /** Check if a file exists at the given path. */
+  exists(path: string): Promise<boolean>;
 }
 
 /** Detect if running inside Tauri. */
@@ -102,13 +104,17 @@ function createWebPlatform(): PlatformAPI {
       // No save dialog in plain browser mode
       return null;
     },
+
+    async exists(_path: string): Promise<boolean> {
+      return false;
+    },
   };
 }
 
 /** Create the Tauri-based platform implementation. */
 async function createTauriPlatform(): Promise<PlatformAPI> {
   // Dynamic imports so these don't fail in browser mode
-  const { readFile, writeFile } = await import("@tauri-apps/plugin-fs");
+  const { readFile, writeFile, exists } = await import("@tauri-apps/plugin-fs");
   const { open, save } = await import("@tauri-apps/plugin-dialog");
 
   return {
@@ -142,6 +148,10 @@ async function createTauriPlatform(): Promise<PlatformAPI> {
           extensions: f.extensions,
         })),
       });
+    },
+
+    async exists(path: string): Promise<boolean> {
+      return await exists(path);
     },
   };
 }

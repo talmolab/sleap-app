@@ -54,11 +54,13 @@ export async function loadProjectFromFile(file: File): Promise<boolean> {
 
 /**
  * Load an SLP project from a file path (Tauri only).
- * Reads the file bytes first, then loads.
+ * Reads the file bytes first, then loads. Attempts to auto-resolve
+ * external video paths relative to the SLP file's directory.
  */
 export async function loadProjectFromPath(
   path: string,
-  readFile: (path: string) => Promise<Uint8Array>
+  readFile: (path: string) => Promise<Uint8Array>,
+  exists?: (path: string) => Promise<boolean>
 ): Promise<boolean> {
   const store = useAppStore.getState();
 
@@ -79,8 +81,19 @@ export async function loadProjectFromPath(
       openVideos: true,
       h5: { filenameHint: path },
     });
-    await resolveExternalVideos(labels);
-    store.setLabels(labels, filename);
+
+    // Try auto-resolving video paths if we have filesystem access
+    if (exists) {
+      await resolveExternalVideos(labels, {
+        projectPath: path,
+        exists,
+        readFile,
+      });
+    } else {
+      await resolveExternalVideos(labels);
+    }
+
+    store.setLabels(labels, filename, path);
     toast.success(`Loaded ${filename}`, {
       description: `${labels.videos.length} video(s), ${labels.labeledFrames.length} labeled frames`,
     });
