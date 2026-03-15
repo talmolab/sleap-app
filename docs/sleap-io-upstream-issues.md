@@ -77,9 +77,16 @@
 
 ---
 
+## 10. Browser bundle contains Node-only imports (`h5wasm/node`, `module`)
+
+**Status**: ✅ Fixed in v0.2.2 PR #71. Node-specific code extracted into `h5-node.ts` using a provider registration pattern. Browser bundle contains zero Node-only references.
+
+**Workaround removed**: Deleted `src/lib/stubs/module.ts`. Removed `h5wasm/node`, `h5wasm`, and `module` alias entries and `h5wasmPath` resolution logic from `vite.config.ts`. Removed `existsSync` import from `"fs"`.
+
+---
+
 ## Remaining Notes
 
-- **`fs`/`os`/`path` build warnings**: Vite emits warnings about Node built-in modules being externalized from a shared chunk in sleap-io.js. These are harmless — the browser entry point doesn't use them, but they exist in a shared chunk for the Node entry point. The `module` stub for h5wasm is still required.
 - **`VideosPanel` limitation**: Adding standalone videos to an existing project still requires more plumbing in sleap-io.js (no dedicated API beyond `labels.videos.push()`).
 
 ---
@@ -97,3 +104,4 @@
 | 7 | `Point.score` missing from base type | ✅ Fixed | v0.2.0 PR #45 |
 | 8 | Browser bundler stubs required | ✅ Fixed | v0.2.1 |
 | 9 | `PredictedInstance` duck-typing | ✅ Fixed | v0.2.1 |
+| 10 | Browser bundle Node-only imports | ✅ Fixed | v0.2.2 PR #71 |
