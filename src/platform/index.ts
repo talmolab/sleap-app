@@ -18,11 +18,11 @@ export interface PlatformAPI {
   readFile(path: string): Promise<Uint8Array>;
   /** Write binary data to a file. */
   writeFile(path: string, data: Uint8Array): Promise<void>;
-  /** Show a file open dialog. Returns path/File or null if cancelled. */
+  /** Show a file open dialog. Returns path(s)/File(s) or null if cancelled. */
   showOpenDialog(options?: {
     filters?: FileFilter[];
     multiple?: boolean;
-  }): Promise<string | File | null>;
+  }): Promise<string | string[] | File | File[] | null>;
   /** Show a file save dialog. Returns path or null if cancelled. */
   showSaveDialog(options?: {
     filters?: FileFilter[];
@@ -34,7 +34,10 @@ export interface PlatformAPI {
 
 /** Detect if running inside Tauri. */
 function detectTauri(): boolean {
-  return typeof window !== "undefined" && "__TAURI__" in window;
+  return (
+    typeof window !== "undefined" &&
+    ("__TAURI_INTERNALS__" in window || "__TAURI__" in window)
+  );
 }
 
 /** Create the browser-based platform implementation. */
@@ -52,7 +55,9 @@ function createWebPlatform(): PlatformAPI {
       throw new Error("writeFile by path is not supported in browser mode.");
     },
 
-    async showOpenDialog(options): Promise<File | null> {
+    async showOpenDialog(options): Promise<File | File[] | null> {
+      const multi = options?.multiple ?? false;
+
       // Try File System Access API first (Chrome/Edge)
       if ("showOpenFilePicker" in window) {
         try {
@@ -63,11 +68,16 @@ function createWebPlatform(): PlatformAPI {
             },
           }));
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const [handle] = await (window as any).showOpenFilePicker({
+          const handles = await (window as any).showOpenFilePicker({
             types,
-            multiple: false,
+            multiple: multi,
           });
-          return await handle.getFile();
+          const files: File[] = await Promise.all(
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            handles.map((h: any) => h.getFile() as Promise<File>)
+          );
+          if (files.length === 0) return null;
+          return multi ? files : files[0];
         } catch {
           return null; // User cancelled
         }
@@ -77,12 +87,17 @@ function createWebPlatform(): PlatformAPI {
       return new Promise((resolve) => {
         const input = document.createElement("input");
         input.type = "file";
+        if (multi) input.multiple = true;
         if (options?.filters) {
           input.accept = options.filters
             .flatMap((f) => f.extensions.map((e) => `.${e}`))
             .join(",");
         }
-        input.onchange = () => resolve(input.files?.[0] ?? null);
+        input.onchange = () => {
+          const files = input.files ? Array.from(input.files) : [];
+          if (files.length === 0) return resolve(null);
+          resolve(multi ? files : files[0]);
+        };
         input.oncancel = () => resolve(null);
         input.click();
       });
@@ -128,14 +143,21 @@ async function createTauriPlatform(): Promise<PlatformAPI> {
       await writeFile(path, data);
     },
 
-    async showOpenDialog(options): Promise<string | null> {
+    async showOpenDialog(options): Promise<string | string[] | null> {
+      const multi = options?.multiple ?? false;
       const selected = await open({
-        multiple: options?.multiple ?? false,
+        multiple: multi,
         filters: options?.filters?.map((f) => ({
           name: f.name,
           extensions: f.extensions,
         })),
       });
+      if (multi) {
+        // multiple: return string[] or null
+        if (Array.isArray(selected)) return selected.length > 0 ? selected : null;
+        return selected ? [selected] : null;
+      }
+      // single: return string or null
       if (Array.isArray(selected)) return selected[0] ?? null;
       return selected;
     },

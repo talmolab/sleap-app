@@ -9,7 +9,7 @@ import { Labels, PredictedInstance } from "@talmolab/sleap-io.js";
 import { UpdateTopic } from "../types";
 import type { Command } from "./types";
 import type { CommandContext } from "./CommandContext";
-import { loadProjectFromFile } from "../lib/loadProject";
+import { loadProjectFromFile, loadProjectFromPath } from "../lib/loadProject";
 import { saveProjectAsSlp } from "../lib/saveProject";
 import { getPlatform } from "../platform/index";
 import {
@@ -44,44 +44,22 @@ export const OpenProjectCommand: Command = {
   topics: [],
   skipAutoSnapshot: true,
   async execute(ctx: CommandContext) {
-    // Use the File System Access API if available, otherwise fall back to input element
-    let file: File | undefined;
+    const platform = await getPlatform();
+    const result = await platform.showOpenDialog({
+      filters: [{ name: "SLEAP Labels", extensions: ["slp"] }],
+    });
 
-    if ("showOpenFilePicker" in window) {
-      try {
-        const [handle] = await (window as unknown as { showOpenFilePicker: (opts: unknown) => Promise<FileSystemFileHandle[]> }).showOpenFilePicker({
-          types: [
-            {
-              description: "SLEAP Labels",
-              accept: { "application/octet-stream": [".slp"] },
-            },
-          ],
-          multiple: false,
-        });
-        file = await handle.getFile();
-      } catch {
-        // User cancelled the dialog
-        return;
-      }
-    } else {
-      // Fallback: create a hidden file input
-      file = await new Promise<File | undefined>((resolve) => {
-        const input = document.createElement("input");
-        input.type = "file";
-        input.accept = ".slp";
-        input.onchange = () => resolve(input.files?.[0]);
-        // Handle cancel by resolving undefined after a delay
-        input.oncancel = () => resolve(undefined);
-        input.click();
-      });
+    if (!result) return;
+
+    if (typeof result === "string" && !Array.isArray(result)) {
+      // Tauri: got a file path
+      await loadProjectFromPath(result, platform.readFile, platform.exists);
+    } else if (result instanceof File) {
+      // Browser: got a File object
+      await loadProjectFromFile(result);
     }
 
-    if (!file) return;
-
-    // Use the consolidated project loader
-    await loadProjectFromFile(file);
-
-    // OpenProject sets labels directly via loadProjectFromFile,
+    // OpenProject sets labels directly via load helpers,
     // so we don't need to signal topics (setLabels handles it)
     void ctx;
   },

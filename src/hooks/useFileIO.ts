@@ -24,10 +24,10 @@ export function useFileIO() {
 
     setLoading(true);
     try {
-      if (typeof result === "string") {
+      if (typeof result === "string" && !Array.isArray(result)) {
         // Tauri path
         await loadProjectFromPath(result, platform.readFile, platform.exists);
-      } else {
+      } else if (result instanceof File) {
         // Browser File object
         await loadProjectFromFile(result);
       }

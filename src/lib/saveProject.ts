@@ -9,6 +9,7 @@ import type { Labels } from "@talmolab/sleap-io.js";
 import { saveSlpToBytes } from "@talmolab/sleap-io.js";
 import { useAppStore } from "../stores/appStore";
 import { toast } from "@/lib/notify";
+import { getPlatform } from "../platform/index";
 
 /**
  * Save a Labels object as an SLP file.
@@ -32,10 +33,20 @@ export async function saveProjectAsSlp(
 
   try {
     const bytes = await saveSlpToBytes(labels);
-    const blob = new Blob([bytes], { type: "application/octet-stream" });
+    const platform = await getPlatform();
 
-    if ("showSaveFilePicker" in window) {
+    if (platform.isTauri) {
+      // Tauri: use native save dialog + filesystem write
+      const savePath = await platform.showSaveDialog({
+        filters: [{ name: "SLEAP Labels", extensions: ["slp"] }],
+        defaultName: saveName,
+      });
+      if (!savePath) return;
+      await platform.writeFile(savePath, bytes);
+    } else if ("showSaveFilePicker" in window) {
+      // Browser: File System Access API
       try {
+        const blob = new Blob([bytes], { type: "application/octet-stream" });
         const handle = await (
           window as unknown as {
             showSaveFilePicker: (
@@ -61,6 +72,7 @@ export async function saveProjectAsSlp(
       }
     } else {
       // Fallback: anchor download
+      const blob = new Blob([bytes], { type: "application/octet-stream" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
