@@ -130,6 +130,37 @@ export function useKeyboardShortcuts() {
         store().toggle("defaultToPan");
       },
 
+      // Toggle place mode (N key)
+      [DEFAULT_SHORTCUTS["toggle place mode"]]: (e) => {
+        e.preventDefault();
+        const { labelingMode, instance, enterPlacementMode, exitPlacementMode } = store();
+        if (labelingMode === "place") {
+          exitPlacementMode();
+        } else if (instance) {
+          enterPlacementMode();
+        }
+      },
+
+      // Node cycling in place mode (Tab / Shift+Tab)
+      "Tab": (e) => {
+        const { labelingMode, instance, placementNodeIdx } = store();
+        if (labelingMode !== "place" || !instance) return;
+        e.preventDefault();
+        const count = instance.points.length;
+        if (count === 0) return;
+        const current = placementNodeIdx ?? 0;
+        store().set("placementNodeIdx", (current + 1) % count);
+      },
+      "Shift+Tab": (e) => {
+        const { labelingMode, instance, placementNodeIdx } = store();
+        if (labelingMode !== "place" || !instance) return;
+        e.preventDefault();
+        const count = instance.points.length;
+        if (count === 0) return;
+        const current = placementNodeIdx ?? 0;
+        store().set("placementNodeIdx", (current - 1 + count) % count);
+      },
+
       // Instance editing (via command system)
       [DEFAULT_SHORTCUTS["add instance"]]: (e) => {
         e.preventDefault();
@@ -226,10 +257,15 @@ export function useKeyboardShortcuts() {
         commandContext.execute(PasteTrack);
       },
 
-      // Selection
+      // Selection / exit placement mode
       [DEFAULT_SHORTCUTS["clear selection"]]: (e) => {
         e.preventDefault();
-        store().setInstance(null);
+        const { labelingMode, exitPlacementMode } = store();
+        if (labelingMode === "place") {
+          exitPlacementMode();
+        } else {
+          store().setInstance(null);
+        }
       },
       [DEFAULT_SHORTCUTS["select next"]]: (e) => {
         e.preventDefault();

@@ -10,6 +10,7 @@ import { Instance, LabeledFrame, PredictedInstance } from "@talmolab/sleap-io.js
 import { UpdateTopic } from "../types";
 import type { Command } from "./types";
 import type { CommandContext } from "./CommandContext";
+import { useAppStore } from "../stores/appStore";
 
 /** Create a new Instance on the current frame using Instance.empty(). */
 export const AddInstance: Command = {
@@ -38,6 +39,9 @@ export const AddInstance: Command = {
     ctx.state.setLabeledFrame(lf);
     ctx.state.setInstance(instance);
     ctx.state.markChanged();
+
+    // Auto-enter placement mode for the new empty instance
+    useAppStore.getState().enterPlacementMode();
   },
 };
 

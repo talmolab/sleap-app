@@ -329,6 +329,8 @@ function ViewMenu() {
   const trailLength = useAppStore((s) => s.trailLength);
   const distinctlyColor = useAppStore((s) => s.distinctlyColor);
   const defaultToPan = useAppStore((s) => s.defaultToPan);
+  const labelingMode = useAppStore((s) => s.labelingMode);
+  const instance = useAppStore((s) => s.instance);
   const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed);
   const uiScale = useAppStore((s) => s.uiScale);
   const toggle = useAppStore((s) => s.toggle);
@@ -361,6 +363,20 @@ function ViewMenu() {
           onCheckedChange={() => toggle("defaultToPan")}
         >
           Default to Pan Mode <MenubarShortcut>P</MenubarShortcut>
+        </MenubarCheckboxItem>
+        <MenubarCheckboxItem
+          checked={labelingMode === "place"}
+          disabled={!instance && labelingMode !== "place"}
+          onCheckedChange={() => {
+            const s = useAppStore.getState();
+            if (s.labelingMode === "place") {
+              s.exitPlacementMode();
+            } else if (s.instance) {
+              s.enterPlacementMode();
+            }
+          }}
+        >
+          Node Placement Mode <MenubarShortcut>N</MenubarShortcut>
         </MenubarCheckboxItem>
         <MenubarSeparator />
         <MenubarSub>

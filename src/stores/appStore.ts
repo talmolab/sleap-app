@@ -70,6 +70,10 @@ export interface AppState {
   clipboardTrack: Track | null;
   clipboardInstance: Instance | null;
 
+  // === Labeling mode state (transient, not persisted) ===
+  labelingMode: "select" | "place";
+  placementNodeIdx: number | null;
+
   // === Frame range ===
   frameRange: [number, number] | null;
   hasFrameRange: boolean;
@@ -110,6 +114,8 @@ export interface AppState {
   setExportDialogOpen: (open: boolean) => void;
   setShortcutsDialogOpen: (open: boolean) => void;
   setHelpDialogOpen: (open: boolean) => void;
+  enterPlacementMode: () => void;
+  exitPlacementMode: () => void;
   toggle: (key: keyof AppState) => void;
   set: <K extends keyof AppState>(key: K, value: AppState[K]) => void;
   bumpOverlayVersion: () => void;
@@ -180,6 +186,10 @@ export const useAppStore = create<AppState>()(
       instanceInitMethod: "best" as InstancePlacementMethod,
       clipboardTrack: null,
       clipboardInstance: null,
+
+      // Labeling mode state (transient)
+      labelingMode: "select" as "select" | "place",
+      placementNodeIdx: null as number | null,
 
       // Frame range
       frameRange: null,
@@ -328,6 +338,24 @@ export const useAppStore = create<AppState>()(
       setHelpDialogOpen: (open) =>
         set((state) => {
           state.helpDialogOpen = open;
+        }),
+
+      enterPlacementMode: () =>
+        set((state) => {
+          const inst = state.instance;
+          if (!inst) return;
+          state.labelingMode = "place";
+          // Find first unplaced node
+          const firstNaN = inst.points.findIndex(
+            (p) => isNaN(p.xy[0]) || isNaN(p.xy[1])
+          );
+          state.placementNodeIdx = firstNaN !== -1 ? firstNaN : 0;
+        }),
+
+      exitPlacementMode: () =>
+        set((state) => {
+          state.labelingMode = "select";
+          state.placementNodeIdx = null;
         }),
 
       toggle: (key) =>

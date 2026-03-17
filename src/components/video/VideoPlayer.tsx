@@ -944,10 +944,29 @@ export function VideoPlayer() {
     [containerSize, frameDims, baseScale, offsetX, offsetY]
   );
 
-  // Check if we're in node placement mode (selected instance has unplaced NaN nodes)
-  const isPlacingNodes = selectedInstance
-    ? selectedInstance.points.some((p) => isNaN(p.xy[0]) || isNaN(p.xy[1]))
-    : false;
+  // Check if we're in explicit placement mode
+  const labelingMode = useAppStore((s) => s.labelingMode);
+  const placementNodeIdx = useAppStore((s) => s.placementNodeIdx);
+  const isPlacingNodes = labelingMode === "place" && selectedInstance !== null;
+
+  // Auto-exit placement mode when instance is deselected or frame changes
+  useEffect(() => {
+    if (labelingMode !== "place") return;
+    if (!selectedInstance) {
+      useAppStore.getState().exitPlacementMode();
+      return;
+    }
+    // Reset placement target to first unplaced node of new instance
+    const firstNaN = selectedInstance.points.findIndex(
+      (p) => isNaN(p.xy[0]) || isNaN(p.xy[1])
+    );
+    if (firstNaN === -1) {
+      // No unplaced nodes — exit
+      useAppStore.getState().exitPlacementMode();
+    } else {
+      useAppStore.getState().set("placementNodeIdx", firstNaN);
+    }
+  }, [selectedInstance, frameIdx, labelingMode]);
 
   const handleMouseDown = useCallback(
     (e: React.MouseEvent) => {
@@ -987,18 +1006,29 @@ export function VideoPlayer() {
       const currentInstance = useAppStore.getState().instance;
       shiftHeldOnMouseDown.current = e.shiftKey;
 
-      // Node placement mode: place the next unplaced node (with undo snapshot)
-      if (currentInstance && !("score" in currentInstance)) {
-        const unplacedIdx = currentInstance.points.findIndex(
-          (p) => isNaN(p.xy[0]) || isNaN(p.xy[1])
-        );
-        if (unplacedIdx !== -1) {
+      // Node placement mode: place the target node (with undo snapshot)
+      const store = useAppStore.getState();
+      if (store.labelingMode === "place" && currentInstance && !("score" in currentInstance)) {
+        const targetIdx = store.placementNodeIdx;
+        if (targetIdx !== null && targetIdx >= 0 && targetIdx < currentInstance.points.length) {
           commandContext.execute(BeginEdit);
-          currentInstance.points[unplacedIdx].xy = [x, y];
-          currentInstance.points[unplacedIdx].visible = true;
-          currentInstance.points[unplacedIdx].complete = true;
-          useAppStore.getState().markChanged();
-          useAppStore.getState().bumpOverlayVersion();
+          currentInstance.points[targetIdx].xy = [x, y];
+          currentInstance.points[targetIdx].visible = true;
+          currentInstance.points[targetIdx].complete = true;
+          store.markChanged();
+
+          // Auto-advance to next unplaced node
+          const nextUnplaced = currentInstance.points.findIndex(
+            (p, i) => i !== targetIdx && (isNaN(p.xy[0]) || isNaN(p.xy[1]))
+          );
+          if (nextUnplaced !== -1) {
+            store.set("placementNodeIdx", nextUnplaced);
+          } else {
+            // All nodes placed — exit placement mode
+            store.exitPlacementMode();
+          }
+
+          store.bumpOverlayVersion();
           return;
         }
       }
@@ -1440,7 +1470,6 @@ export function VideoPlayer() {
           "flex-1 relative overflow-hidden bg-background min-h-0",
           isPanning ? "cursor-grabbing" : isZoomDragging ? "cursor-zoom-in" : (shouldPan && isCmdHeld) ? "cursor-zoom-in" : shouldPan ? "cursor-grab" : isDragging ? "cursor-grabbing" : interactionMode === "marquee" ? "cursor-crosshair" : isPlacingNodes ? "cursor-cell" : hoveredNode ? "cursor-pointer" : "cursor-default"
         )}
-        onDoubleClick={handleDoubleClick}
       >
         {/* Video frame layer */}
         <canvas
@@ -1520,19 +1549,17 @@ export function VideoPlayer() {
         </Badge>
 
         {/* Node placement indicator */}
-        {isPlacingNodes && selectedInstance && (
+        {isPlacingNodes && selectedInstance && placementNodeIdx !== null && (
           <Badge
             variant="default"
             className="absolute top-2 left-1/2 -translate-x-1/2 pointer-events-none rounded-md"
           >
-            Click to place: {
-              selectedInstance.skeleton.nodes[
-                selectedInstance.points.findIndex(
-                  (p) => isNaN(p.xy[0]) || isNaN(p.xy[1])
-                )
-              ]?.name ?? "node"
+            Place: {
+              selectedInstance.skeleton.nodes[placementNodeIdx]?.name ?? `node ${placementNodeIdx}`
             }
-            {" "}({selectedInstance.points.filter((p) => !isNaN(p.xy[0])).length}/{selectedInstance.points.length})
+            {" "}[{placementNodeIdx + 1}/{selectedInstance.points.length}]
+            {" "}({selectedInstance.points.filter((p) => !isNaN(p.xy[0])).length} placed)
+            {" · Tab/Shift+Tab to cycle · Esc to exit"}
           </Badge>
         )}
 

@@ -14,7 +14,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { Hand, Minus, MousePointer2, Plus } from "lucide-react";
+import { Crosshair, Hand, Minus, MousePointer2, Pencil, Plus } from "lucide-react";
 import { isTauri } from "../../platform/index";
 
 export function StatusBar() {
@@ -28,6 +28,7 @@ export function StatusBar() {
   const uiScale = useAppStore((s) => s.uiScale);
   const frameRange = useAppStore((s) => s.frameRange);
   const defaultToPan = useAppStore((s) => s.defaultToPan);
+  const labelingMode = useAppStore((s) => s.labelingMode);
 
   const platformLabel = isTauri ? "Tauri FS" : "Browser";
 
@@ -144,6 +145,33 @@ export function StatusBar() {
             </TooltipTrigger>
             <TooltipContent side="top">
               <p>{defaultToPan ? "Pan mode (P to switch to Select)" : "Select mode (P to switch to Pan)"}</p>
+            </TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant={labelingMode === "place" ? "secondary" : "ghost"}
+                size="icon"
+                className="h-5 w-5"
+                disabled={!instance}
+                onClick={() => {
+                  const s = useAppStore.getState();
+                  if (s.labelingMode === "place") {
+                    s.exitPlacementMode();
+                  } else if (s.instance) {
+                    s.enterPlacementMode();
+                  }
+                }}
+              >
+                {labelingMode === "place" ? (
+                  <Crosshair className="h-3 w-3" />
+                ) : (
+                  <Pencil className="h-3 w-3" />
+                )}
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="top">
+              <p>{labelingMode === "place" ? "Place mode (N to switch to Select)" : "Select mode (N to switch to Place)"}</p>
             </TooltipContent>
           </Tooltip>
           <Separator orientation="vertical" className="h-3.5 mr-1" />
