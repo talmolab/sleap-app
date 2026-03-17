@@ -143,22 +143,22 @@ export function useKeyboardShortcuts() {
 
       // Node cycling in place mode (Tab / Shift+Tab)
       "Tab": (e) => {
-        const { labelingMode, instance, placementNodeIdx } = store();
-        if (labelingMode !== "place" || !instance) return;
+        const s = store();
+        if (s.labelingMode !== "place" || !s.instance) return;
         e.preventDefault();
-        const count = instance.points.length;
+        const count = s.instance.points.length;
         if (count === 0) return;
-        const current = placementNodeIdx ?? 0;
-        store().set("placementNodeIdx", (current + 1) % count);
+        const current = s.placementNodeIdx ?? 0;
+        s.set("placementNodeIdx", (current + 1) % count);
       },
       "Shift+Tab": (e) => {
-        const { labelingMode, instance, placementNodeIdx } = store();
-        if (labelingMode !== "place" || !instance) return;
+        const s = store();
+        if (s.labelingMode !== "place" || !s.instance) return;
         e.preventDefault();
-        const count = instance.points.length;
+        const count = s.instance.points.length;
         if (count === 0) return;
-        const current = placementNodeIdx ?? 0;
-        store().set("placementNodeIdx", (current - 1 + count) % count);
+        const current = s.placementNodeIdx ?? 0;
+        s.set("placementNodeIdx", (current - 1 + count) % count);
       },
 
       // Instance editing (via command system)

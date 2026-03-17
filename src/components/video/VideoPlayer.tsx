@@ -1017,10 +1017,17 @@ export function VideoPlayer() {
           currentInstance.points[targetIdx].complete = true;
           store.markChanged();
 
-          // Auto-advance to next unplaced node
-          const nextUnplaced = currentInstance.points.findIndex(
-            (p, i) => i !== targetIdx && (isNaN(p.xy[0]) || isNaN(p.xy[1]))
-          );
+          // Auto-advance to next unplaced node (search forward, then wrap)
+          const pts = currentInstance.points;
+          const count = pts.length;
+          let nextUnplaced = -1;
+          for (let offset = 1; offset < count; offset++) {
+            const i = (targetIdx + offset) % count;
+            if (isNaN(pts[i].xy[0]) || isNaN(pts[i].xy[1])) {
+              nextUnplaced = i;
+              break;
+            }
+          }
           if (nextUnplaced !== -1) {
             store.set("placementNodeIdx", nextUnplaced);
           } else {
