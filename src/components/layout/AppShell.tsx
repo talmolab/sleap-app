@@ -37,6 +37,7 @@ import { DeletePredictionsDialog } from "../dialogs/DeletePredictionsDialog";
 import { ExportDialog } from "../dialogs/ExportDialog";
 import { ShortcutsDialog } from "../dialogs/ShortcutsDialog";
 import { HelpDialog } from "../dialogs/HelpDialog";
+import { InferenceMonitor } from "@/components/monitors/InferenceMonitor";
 import { useAppStore } from "../../stores/appStore";
 import { loadProjectFromFile } from "../../lib/loadProject";
 import {
@@ -159,6 +160,7 @@ export function AppShell() {
         </div>
       </ErrorBoundary>
 
+      <InferenceMonitor />
       <StatusBar />
 
       {/* Global dialogs */}

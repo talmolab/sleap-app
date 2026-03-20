@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { ProcessEvent } from "@/platform/backend";
+import { cancelCommand } from "@/platform/backend";
 
 export interface InferenceProgress {
   nProcessed: number;
@@ -34,6 +35,7 @@ interface InferenceState {
   handleProcessEvent: (event: ProcessEvent) => void;
   setMinimized: (minimized: boolean) => void;
   reset: () => void;
+  cancelInference: () => Promise<void>;
 }
 
 const initialState = {
@@ -89,4 +91,9 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
   setMinimized: (minimized: boolean) => set({ minimized }),
 
   reset: () => set({ ...initialState }),
+
+  cancelInference: async () => {
+    await cancelCommand();
+    set({ status: "cancelled" });
+  },
 }));
