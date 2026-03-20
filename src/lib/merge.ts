@@ -92,8 +92,8 @@ function findBestMatch(
  * @returns MergeResult with counts of what was added/skipped/conflicted.
  */
 export function merge(
-  source: Labels,
   target: Labels,
+  source: Labels,
   options: MergeOptions = {}
 ): MergeResult {
   const strategy = options.frameStrategy ?? "auto";

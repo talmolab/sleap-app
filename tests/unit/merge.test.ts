@@ -162,7 +162,7 @@ describe("Skeleton matching", () => {
     const source = makeLabels([], [skel]);
     const target = makeLabels([], [makeSkeleton(["head", "neck"], "Fly")]);
 
-    merge(source, target);
+    merge(target, source);
 
     // Still only one skeleton in target
     expect(target.skeletons).toHaveLength(1);
@@ -174,7 +174,7 @@ describe("Skeleton matching", () => {
     const source = makeLabels([], [sourceSkel]);
     const target = makeLabels([], [targetSkel]);
 
-    merge(source, target);
+    merge(target, source);
 
     expect(target.skeletons).toHaveLength(2);
     expect(target.skeletons).toContain(sourceSkel);
@@ -189,7 +189,7 @@ describe("Skeleton matching", () => {
       [makeSkeleton(["a", "b"]), makeSkeleton(["x", "y", "z"])]
     );
 
-    merge(source, target);
+    merge(target, source);
 
     // No new skeletons added
     expect(target.skeletons).toHaveLength(2);
@@ -207,7 +207,7 @@ describe("Video matching", () => {
     const source = makeLabels([], [], [sourceVideo]);
     const target = makeLabels([], [], [targetVideo]);
 
-    merge(source, target);
+    merge(target, source);
 
     // Same basename → no new video added
     expect(target.videos).toHaveLength(1);
@@ -219,7 +219,7 @@ describe("Video matching", () => {
     const source = makeLabels([], [], [sourceVideo]);
     const target = makeLabels([], [], [targetVideo]);
 
-    merge(source, target);
+    merge(target, source);
 
     expect(target.videos).toHaveLength(2);
     expect(target.videos).toContain(sourceVideo);
@@ -230,7 +230,7 @@ describe("Video matching", () => {
     const source = makeLabels([], [], [sourceVideo]);
     const target = makeLabels([], [], []);
 
-    merge(source, target);
+    merge(target, source);
 
     expect(target.videos).toHaveLength(1);
     expect(target.videos).toContain(sourceVideo);
@@ -248,7 +248,7 @@ describe("Track matching", () => {
     const source = makeLabels([], [], [], [sourceTrack]);
     const target = makeLabels([], [], [], [targetTrack]);
 
-    merge(source, target);
+    merge(target, source);
 
     expect(target.tracks).toHaveLength(1);
   });
@@ -259,7 +259,7 @@ describe("Track matching", () => {
     const source = makeLabels([], [], [], [sourceTrack]);
     const target = makeLabels([], [], [], [targetTrack]);
 
-    merge(source, target);
+    merge(target, source);
 
     expect(target.tracks).toHaveLength(2);
     expect(target.tracks).toContain(sourceTrack);
@@ -276,7 +276,7 @@ describe("Track matching", () => {
       [new Track("animal_0"), new Track("animal_1")]
     );
 
-    merge(source, target);
+    merge(target, source);
 
     expect(target.tracks).toHaveLength(2);
   });
@@ -298,7 +298,7 @@ describe("Auto strategy", () => {
     const source = makeLabels([sourceFrame], [skel], [video]);
     const target = makeLabels([], [skel], [makeVideo("video.mp4")]);
 
-    merge(source, target);
+    merge(target, source);
 
     const frames = target.find({ frameIdx: 0 });
     expect(frames).toHaveLength(1);
@@ -328,7 +328,7 @@ describe("Auto strategy", () => {
     const source = makeLabels([sourceFrame], [skel], [video]);
     const target = makeLabels([targetFrame], [skel], [targetVideo]);
 
-    merge(source, target);
+    merge(target, source);
 
     const frames = target.find({ frameIdx: 0 });
     expect(frames[0].instances).toHaveLength(1);
@@ -361,7 +361,7 @@ describe("Auto strategy", () => {
     const source = makeLabels([sourceFrame], [skel], [video]);
     const target = makeLabels([targetFrame], [skel], [targetVideo]);
 
-    merge(source, target);
+    merge(target, source);
 
     const frames = target.find({ frameIdx: 0 });
     expect(frames[0].instances).toHaveLength(1);
@@ -392,7 +392,7 @@ describe("Auto strategy", () => {
     const source = makeLabels([sourceFrame], [skel], [video]);
     const target = makeLabels([targetFrame], [skel], [targetVideo]);
 
-    merge(source, target);
+    merge(target, source);
 
     const frames = target.find({ frameIdx: 0 });
     // Both predictions remain (one old, one new from different location)
@@ -422,7 +422,7 @@ describe("Auto strategy", () => {
     const source = makeLabels([sourceFrame], [skel], [video]);
     const target = makeLabels([targetFrame], [skel], [targetVideo]);
 
-    merge(source, target);
+    merge(target, source);
 
     const frames = target.find({ frameIdx: 0 });
     expect(frames[0].predictedInstances).toHaveLength(2);
@@ -454,7 +454,7 @@ describe("Auto strategy", () => {
     const source = makeLabels([sourceFrame], [skel], [video]);
     const target = makeLabels([targetFrame], [skel], [targetVideo]);
 
-    merge(source, target);
+    merge(target, source);
 
     const frames = target.find({ frameIdx: 0 });
     // Prediction within 5px of user instance → skipped (user wins)
@@ -485,7 +485,7 @@ describe("Auto strategy", () => {
     const source = makeLabels([sourceFrame], [skel], [video]);
     const target = makeLabels([targetFrame], [skel], [targetVideo]);
 
-    merge(source, target);
+    merge(target, source);
 
     const frames = target.find({ frameIdx: 0 });
     expect(frames[0].instances).toHaveLength(2);
@@ -522,7 +522,7 @@ describe("replace_predictions strategy", () => {
     const source = makeLabels([sourceFrame], [skel], [video]);
     const target = makeLabels([targetFrame], [skel], [targetVideo]);
 
-    merge(source, target, { frameStrategy: "replace_predictions" });
+    merge(target, source, { frameStrategy: "replace_predictions" });
 
     const frames = target.find({ frameIdx: 0 });
     expect(getUserInstances(frames[0])).toHaveLength(1);
@@ -553,7 +553,7 @@ describe("replace_predictions strategy", () => {
     const source = makeLabels([sourceFrame], [skel], [video]);
     const target = makeLabels([targetFrame], [skel], [targetVideo]);
 
-    merge(source, target, { frameStrategy: "replace_predictions" });
+    merge(target, source, { frameStrategy: "replace_predictions" });
 
     const frames = target.find({ frameIdx: 0 });
     expect(getUserInstances(frames[0])).toHaveLength(2);
@@ -575,7 +575,7 @@ describe("replace_predictions strategy", () => {
     const source = makeLabels([sourceFrame], [skel], [video]);
     const target = makeLabels([], [skel], [targetVideo]);
 
-    merge(source, target, { frameStrategy: "replace_predictions" });
+    merge(target, source, { frameStrategy: "replace_predictions" });
 
     const frames = target.find({ frameIdx: 42 });
     expect(frames).toHaveLength(1);
@@ -605,7 +605,7 @@ describe("MergeResult counts", () => {
     const source = makeLabels(frames, [skel], [video]);
     const target = makeLabels([], [skel], [targetVideo]);
 
-    const result = merge(source, target);
+    const result = merge(target, source);
     expect(result.framesAdded).toBe(3);
   });
 
@@ -628,7 +628,7 @@ describe("MergeResult counts", () => {
     const source = makeLabels([sourceFrame], [skel], [video]);
     const target = makeLabels([targetFrame], [skel], [targetVideo]);
 
-    const result = merge(source, target);
+    const result = merge(target, source);
     expect(result.framesAdded).toBe(0);
   });
 
@@ -649,7 +649,7 @@ describe("MergeResult counts", () => {
     const source = makeLabels([sourceFrame], [skel], [video]);
     const target = makeLabels([], [skel], [targetVideo]);
 
-    const result = merge(source, target);
+    const result = merge(target, source);
     expect(result.instancesAdded).toBe(2);
   });
 
@@ -676,7 +676,7 @@ describe("MergeResult counts", () => {
     const source = makeLabels([sourceFrame], [skel], [video]);
     const target = makeLabels([targetFrame], [skel], [targetVideo]);
 
-    const result = merge(source, target);
+    const result = merge(target, source);
     expect(result.instancesSkipped).toBe(1);
   });
 
@@ -702,7 +702,7 @@ describe("MergeResult counts", () => {
     const source = makeLabels([sourceFrame], [skel], [video]);
     const target = makeLabels([targetFrame], [skel], [targetVideo]);
 
-    const result = merge(source, target);
+    const result = merge(target, source);
     expect(result.conflicts).toBe(1);
   });
 
@@ -710,7 +710,7 @@ describe("MergeResult counts", () => {
     const source = makeLabels();
     const target = makeLabels();
 
-    const result = merge(source, target);
+    const result = merge(target, source);
     expect(result.framesAdded).toBe(0);
     expect(result.instancesAdded).toBe(0);
     expect(result.instancesSkipped).toBe(0);
@@ -739,7 +739,7 @@ describe("MergeResult counts", () => {
     const source = makeLabels([sourceFrame], [skel], [video]);
     const target = makeLabels([targetFrame], [skel], [targetVideo]);
 
-    const result = merge(source, target);
+    const result = merge(target, source);
     // The new prediction replaced the old one → 1 added
     expect(result.instancesAdded).toBe(1);
     // The old prediction was replaced, not skipped
@@ -770,7 +770,7 @@ describe("MergeResult counts", () => {
     const target = makeLabels([targetFrame], [skel], [targetVideo]);
 
     // With threshold=10, the prediction at 8px should be skipped (user wins)
-    const result = merge(source, target, { instanceMatchThreshold: 10 });
+    const result = merge(target, source, { instanceMatchThreshold: 10 });
     expect(result.instancesSkipped).toBe(1);
     expect(result.conflicts).toBe(1);
   });
