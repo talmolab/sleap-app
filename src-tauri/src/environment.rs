@@ -6,6 +6,7 @@
 //! All process spawning uses `tauri_plugin_shell::ShellExt` for consistent
 //! cross-platform behavior and streaming support.
 
+use crate::RunningProcess;
 use serde::Serialize;
 use tauri::{ipc::Channel, AppHandle, Runtime};
 use tauri_plugin_shell::{process::CommandEvent, ShellExt};
@@ -359,6 +360,77 @@ pub async fn install_uv<R: Runtime>(
         .await?;
     }
 
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Process management commands
+// ---------------------------------------------------------------------------
+
+/// Spawn an arbitrary program with args, streaming output and retaining the
+/// child handle so it can be cancelled via `cancel_command`.
+#[tauri::command]
+pub async fn run_python_command<R: Runtime>(
+    app: AppHandle<R>,
+    running: tauri::State<'_, RunningProcess>,
+    program: String,
+    args: Vec<String>,
+    on_event: Channel<ProcessEvent>,
+) -> Result<bool, String> {
+    let (mut rx, child) = app
+        .shell()
+        .command(&program)
+        .args(&args)
+        .spawn()
+        .map_err(|e| format!("Failed to spawn {}: {}", program, e))?;
+
+    // Store child handle for cancellation
+    {
+        let mut guard = running.0.lock().map_err(|e| e.to_string())?;
+        *guard = Some(child);
+    }
+
+    let mut success = false;
+    while let Some(event) = rx.recv().await {
+        match event {
+            tauri_plugin_shell::process::CommandEvent::Stdout(line) => {
+                let line = String::from_utf8_lossy(&line).to_string();
+                let _ = on_event.send(ProcessEvent::Stdout { line });
+            }
+            tauri_plugin_shell::process::CommandEvent::Stderr(line) => {
+                let line = String::from_utf8_lossy(&line).to_string();
+                let _ = on_event.send(ProcessEvent::Stderr { line });
+            }
+            tauri_plugin_shell::process::CommandEvent::Terminated(payload) => {
+                success = payload.code == Some(0);
+                let _ = on_event.send(ProcessEvent::Finished {
+                    success,
+                    code: payload.code,
+                });
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    // Clear stored handle
+    {
+        let mut guard = running.0.lock().map_err(|e| e.to_string())?;
+        *guard = None;
+    }
+
+    Ok(success)
+}
+
+/// Kill the currently running process spawned by `run_python_command`, if any.
+#[tauri::command]
+pub async fn cancel_command(
+    running: tauri::State<'_, RunningProcess>,
+) -> Result<(), String> {
+    let mut guard = running.0.lock().map_err(|e| e.to_string())?;
+    if let Some(child) = guard.take() {
+        child.kill().map_err(|e| format!("Failed to kill process: {}", e))?;
+    }
     Ok(())
 }
 

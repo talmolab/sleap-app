@@ -2,6 +2,9 @@ mod environment;
 
 use std::path::{Component, PathBuf};
 use std::sync::Mutex;
+use tauri_plugin_shell::process::CommandChild;
+
+pub struct RunningProcess(pub Mutex<Option<CommandChild>>);
 
 /// Holds a file path passed as a CLI argument, consumed once by the frontend.
 struct InitialFile(Mutex<Option<String>>);
@@ -58,6 +61,7 @@ pub fn run() {
 
   tauri::Builder::default()
     .manage(InitialFile(Mutex::new(file_arg)))
+    .manage(RunningProcess(Mutex::new(None)))
     .invoke_handler(tauri::generate_handler![
         get_initial_file,
         environment::detect_uv,
@@ -70,6 +74,8 @@ pub fn run() {
         environment::upgrade_uv_tool,
         environment::update_uv,
         environment::install_uv,
+        environment::run_python_command,
+        environment::cancel_command,
     ])
     .plugin(tauri_plugin_fs::init())
     .plugin(tauri_plugin_dialog::init())
