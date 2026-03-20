@@ -94,15 +94,15 @@ export async function checkPython(pythonPath: string): Promise<PythonInfo> {
 
 // === Install commands (streaming via Channel) ===
 
-async function streamingInvoke(
+async function streamingInvoke<T = void>(
   cmd: string,
   args: Record<string, unknown>,
   onEvent: (event: ProcessEvent) => void
-): Promise<void> {
+): Promise<T> {
   const { invoke, Channel } = await import("@tauri-apps/api/core");
   const channel = new Channel<ProcessEvent>();
   channel.onmessage = onEvent;
-  await invoke(cmd, { ...args, onEvent: channel });
+  return invoke<T>(cmd, { ...args, onEvent: channel });
 }
 
 /** Install a Python version via `uv python install`. */
@@ -152,4 +152,28 @@ export async function installUv(
 ): Promise<void> {
   if (!isTauri) return;
   await streamingInvoke("install_uv", {}, onEvent);
+}
+
+/**
+ * Spawn a long-running command and stream stdout/stderr via Channel.
+ * Returns true if the process exited successfully.
+ */
+export async function runPythonCommand(
+  program: string,
+  args: string[],
+  onEvent: (event: ProcessEvent) => void
+): Promise<boolean> {
+  if (!isTauri) {
+    console.warn("runPythonCommand is only available in Tauri");
+    return false;
+  }
+  return streamingInvoke<boolean>("run_python_command", { program, args }, onEvent);
+}
+
+/**
+ * Cancel the currently running subprocess.
+ */
+export async function cancelCommand(): Promise<void> {
+  if (!isTauri) return;
+  return invokeCmd<void>("cancel_command");
 }
