@@ -7,10 +7,13 @@
  */
 
 import { Instance, LabeledFrame, PredictedInstance } from "@talmolab/sleap-io.js";
+import type { Labels } from "@talmolab/sleap-io.js";
 import { UpdateTopic } from "../types";
 import type { Command } from "./types";
 import type { CommandContext } from "./CommandContext";
 import { useAppStore } from "../stores/appStore";
+import { merge } from "@/lib/merge";
+import { toast } from "@/lib/notify";
 
 /** Create a new Instance on the current frame using Instance.empty(). */
 export const AddInstance: Command = {
@@ -343,5 +346,34 @@ export const DeleteAllPredictions: Command = {
       ctx.state.setInstance(null);
     }
     ctx.state.markChanged();
+  },
+};
+
+/**
+ * Merge predictions from inference output into current labels.
+ * Supports "auto" (default) and "replace_predictions" strategies.
+ */
+export const MergePredictions: Command = {
+  name: "MergePredictions",
+  topics: [UpdateTopic.Labels, UpdateTopic.Frame, UpdateTopic.Instance],
+  skipAutoSnapshot: true,
+  execute(ctx, params) {
+    const { labels } = ctx.state;
+    if (!labels) return;
+
+    const predictions = params?.predictions as Labels;
+    if (!predictions) return;
+
+    const strategy =
+      (params?.strategy as "auto" | "replace_predictions") ?? "auto";
+
+    const snapshot = ctx.takeAllFramesSnapshot("MergePredictions");
+    const result = merge(labels, predictions, { frameStrategy: strategy });
+    ctx.pushUndoSnapshot(snapshot);
+    ctx.state.markChanged();
+
+    toast.success(
+      `Merged ${result.instancesAdded} prediction(s). ${result.framesAdded} new frame(s), ${result.conflicts} conflict(s).`
+    );
   },
 };
