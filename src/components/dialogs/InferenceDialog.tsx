@@ -1,13 +1,15 @@
 /**
  * Inference / prediction dialog.
  *
- * Placeholder UI for configuring and running model inference.
- * Inference requires sleap-nn and cannot run in the browser -- this dialog
- * provides the UI structure and shows a "Coming Soon" badge.
+ * Configures and submits real inference jobs via sleap-nn.
+ * Requires the sleap-nn backend tool to be installed.
  */
 
 import { useState } from "react";
 import { useAppStore } from "../../stores/appStore";
+import { useEnvironmentStore } from "../../stores/environmentStore";
+import { useInferenceStore } from "../../stores/inferenceStore";
+import type { InferenceConfig } from "@/stores/inferenceStore";
 import {
   Dialog,
   DialogContent,
@@ -25,7 +27,6 @@ import {
 } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { Label } from "@/components/ui/label";
 
@@ -43,7 +44,11 @@ export function InferenceDialog() {
   const setOpen = useAppStore((s) => s.setInferenceDialogOpen);
   const labels = useAppStore((s) => s.labels);
 
-  const [selectedModel, setSelectedModel] = useState("none");
+  const pythonCheck = useEnvironmentStore((s) => s.pythonCheck);
+  const inferenceStatus = useInferenceStore((s) => s.status);
+  const startInference = useInferenceStore((s) => s.startInference);
+
+  const [modelPath, setModelPath] = useState("");
   const [selectedVideo, setSelectedVideo] = useState("all");
   const [frameRange, setFrameRange] = useState<FrameRange>("all");
   const [frameStart, setFrameStart] = useState("0");
@@ -54,16 +59,46 @@ export function InferenceDialog() {
 
   const videos = labels?.videos ?? [];
 
+  const sleapNnAvailable = !!(pythonCheck?.sleapNnVersion);
+  const isRunning = inferenceStatus === "running";
+  const canRun = sleapNnAvailable && !isRunning && modelPath.trim().length > 0;
+
+  const handleBrowseModel = async () => {
+    try {
+      const { open: tauriOpen } = await import("@tauri-apps/plugin-dialog");
+      const selected = await tauriOpen({
+        directory: true,
+        title: "Select Model Directory",
+      });
+      if (selected) {
+        setModelPath(selected as string);
+      }
+    } catch {
+      // User cancelled or not in Tauri
+    }
+  };
+
+  const handleRunInference = async () => {
+    const config: InferenceConfig = {
+      modelPath: modelPath.trim(),
+      videoIndex: selectedVideo === "all" ? "all" : Number(selectedVideo),
+      frameRange:
+        frameRange === "custom"
+          ? { start: Number(frameStart), end: Number(frameEnd) }
+          : frameRange,
+      trackingMethod,
+      maxInstances: Number(maxInstances),
+    };
+
+    setOpen(false);
+    await startInference(config);
+  };
+
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            Run Inference
-            <Badge variant="outline" className="text-xs font-normal">
-              Coming Soon
-            </Badge>
-          </DialogTitle>
+          <DialogTitle>Run Inference</DialogTitle>
           <DialogDescription>
             Configure and run pose estimation inference on video frames.
             Requires trained models and the sleap-nn backend.
@@ -71,21 +106,33 @@ export function InferenceDialog() {
         </DialogHeader>
 
         <div className="space-y-4">
-          {/* Model Selection */}
+          {/* Environment warning */}
+          {!sleapNnAvailable && (
+            <div className="rounded-md border border-yellow-500/40 bg-yellow-500/10 p-3 text-sm text-yellow-700 dark:text-yellow-400">
+              <p className="font-medium">sleap-nn not detected</p>
+              <p className="mt-0.5 text-xs">
+                Install sleap-nn via the Environment panel before running
+                inference.
+              </p>
+            </div>
+          )}
+
+          {/* Model Directory */}
           <div className="space-y-2">
-            <Label>Model</Label>
-            <Select value={selectedModel} onValueChange={setSelectedModel}>
-              <SelectTrigger className="w-full">
-                <SelectValue placeholder="Select a trained model" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="none" disabled>
-                  No trained models available
-                </SelectItem>
-              </SelectContent>
-            </Select>
+            <Label>Model Directory</Label>
+            <div className="flex gap-2">
+              <Input
+                placeholder="Path to trained model directory"
+                value={modelPath}
+                onChange={(e) => setModelPath(e.target.value)}
+                className="flex-1"
+              />
+              <Button variant="outline" onClick={handleBrowseModel}>
+                Browse
+              </Button>
+            </div>
             <p className="text-xs text-muted-foreground">
-              Train a model first, or load a trained model configuration.
+              Select a directory containing a trained sleap-nn model.
             </p>
           </div>
 
@@ -189,34 +236,12 @@ export function InferenceDialog() {
 
         <Separator />
 
-        <div className="rounded-md border border-dashed border-muted-foreground/30 bg-muted/30 p-3 text-sm text-muted-foreground">
-          <p className="font-medium mb-1">sleap-nn integration planned</p>
-          <p>
-            Inference will be supported via the sleap-nn backend. For now, you
-            can run predictions using:
-          </p>
-          <ul className="list-disc pl-4 mt-1 space-y-0.5">
-            <li>
-              SLEAP desktop app:{" "}
-              <span className="font-mono text-xs">sleap-label</span>
-            </li>
-            <li>
-              Command line:{" "}
-              <span className="font-mono text-xs">sleap-nn inference</span>
-            </li>
-            <li>Google Colab notebook</li>
-          </ul>
-        </div>
-
         <DialogFooter>
           <Button variant="outline" onClick={() => setOpen(false)}>
             Cancel
           </Button>
-          <Button disabled>
-            Run Inference
-            <Badge variant="secondary" className="ml-2 text-xs">
-              Coming Soon
-            </Badge>
+          <Button onClick={handleRunInference} disabled={!canRun}>
+            {isRunning ? "Running..." : "Run Inference"}
           </Button>
         </DialogFooter>
       </DialogContent>

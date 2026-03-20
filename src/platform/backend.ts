@@ -6,6 +6,7 @@
  */
 
 import { isTauri } from "./index";
+import type { InferenceConfig } from "@/stores/inferenceStore";
 
 // === Types matching Rust structs ===
 
@@ -176,4 +177,43 @@ export async function runPythonCommand(
 export async function cancelCommand(): Promise<void> {
   if (!isTauri) return;
   return invokeCmd<void>("cancel_command");
+}
+
+/**
+ * Run sleap-nn inference. Orchestrates the full pipeline:
+ * 1. Build CLI args
+ * 2. Spawn process with streaming
+ *
+ * Note: Full temp-file orchestration (writing labels to .slp, reading output .slp)
+ * is a TODO — depends on sleap-io.js serialization and Tauri temp directory APIs.
+ */
+export async function runInference(
+  config: InferenceConfig,
+  onEvent: (event: ProcessEvent) => void
+): Promise<boolean> {
+  if (!isTauri) {
+    console.warn("Inference is only available in Tauri desktop mode");
+    return false;
+  }
+
+  // Build CLI args for sleap-nn track
+  const program = "sleap-nn";
+  const args = ["track", "--gui"];
+
+  // Add model path
+  args.push("--model_paths", config.modelPath);
+
+  // Add video index
+  if (config.videoIndex !== "all") {
+    args.push("--video_index", String(config.videoIndex));
+  }
+
+  // Add max instances
+  args.push("--max_instances", String(config.maxInstances));
+
+  // TODO: Add --data_path (temp .slp file), --output_path, frame range, tracking method
+  // These require writing the current Labels to a temp file, which depends on
+  // sleap-io.js serialization support and Tauri temp directory APIs.
+
+  return runPythonCommand(program, args, onEvent);
 }
