@@ -232,7 +232,7 @@ describe("Dialog components", () => {
       expect(screen.queryByText("Run Inference")).not.toBeInTheDocument();
     });
 
-    it("shows Coming Soon badge", async () => {
+    it("shows Run Inference button", async () => {
       useAppStore.getState().setInferenceDialogOpen(true);
 
       const { InferenceDialog } = await import(
@@ -240,8 +240,11 @@ describe("Dialog components", () => {
       );
       render(<InferenceDialog />);
 
-      const badges = screen.getAllByText("Coming Soon");
-      expect(badges.length).toBeGreaterThanOrEqual(1);
+      const buttons = screen.getAllByRole("button");
+      const runButton = buttons.find(
+        (b) => b.textContent?.includes("Run Inference")
+      );
+      expect(runButton).toBeDefined();
     });
 
     it("has Cancel button", async () => {
@@ -272,7 +275,7 @@ describe("Dialog components", () => {
       expect(runButton).toBeDisabled();
     });
 
-    it("shows Model selector", async () => {
+    it("shows Model Directory input", async () => {
       useAppStore.getState().setInferenceDialogOpen(true);
 
       const { InferenceDialog } = await import(
@@ -280,7 +283,7 @@ describe("Dialog components", () => {
       );
       render(<InferenceDialog />);
 
-      expect(screen.getByText("Model")).toBeInTheDocument();
+      expect(screen.getByText("Model Directory")).toBeInTheDocument();
     });
 
     it("shows Tracking Method selector", async () => {
@@ -294,7 +297,7 @@ describe("Dialog components", () => {
       expect(screen.getByText("Tracking Method")).toBeInTheDocument();
     });
 
-    it("shows sleap-nn integration info", async () => {
+    it("shows Max Instances input", async () => {
       useAppStore.getState().setInferenceDialogOpen(true);
 
       const { InferenceDialog } = await import(
@@ -303,7 +306,7 @@ describe("Dialog components", () => {
       render(<InferenceDialog />);
 
       expect(
-        screen.getByText("sleap-nn integration planned")
+        screen.getByText("Max Instances per Frame")
       ).toBeInTheDocument();
     });
   });
