@@ -57,10 +57,10 @@ pub struct PythonInfo {
     pub sleap_version: Option<String>,
 }
 
-/// Events streamed during install operations.
+/// Events streamed during process operations.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase", tag = "event", content = "data")]
-pub enum InstallEvent {
+pub enum ProcessEvent {
     Stdout { line: String },
     Stderr { line: String },
     Finished { success: bool, code: Option<i32> },
@@ -100,7 +100,7 @@ async fn stream_command<R: Runtime>(
     app: &AppHandle<R>,
     program: &str,
     args: &[&str],
-    on_event: &Channel<InstallEvent>,
+    on_event: &Channel<ProcessEvent>,
 ) -> Result<bool, String> {
     let (mut rx, _child) = app
         .shell()
@@ -115,15 +115,15 @@ async fn stream_command<R: Runtime>(
         match event {
             CommandEvent::Stdout(bytes) => {
                 let line = String::from_utf8_lossy(&bytes).to_string();
-                let _ = on_event.send(InstallEvent::Stdout { line });
+                let _ = on_event.send(ProcessEvent::Stdout { line });
             }
             CommandEvent::Stderr(bytes) => {
                 let line = String::from_utf8_lossy(&bytes).to_string();
-                let _ = on_event.send(InstallEvent::Stderr { line });
+                let _ = on_event.send(ProcessEvent::Stderr { line });
             }
             CommandEvent::Terminated(payload) => {
                 success = payload.code == Some(0);
-                let _ = on_event.send(InstallEvent::Finished {
+                let _ = on_event.send(ProcessEvent::Finished {
                     success,
                     code: payload.code,
                 });
@@ -266,7 +266,7 @@ pub async fn check_python<R: Runtime>(
 pub async fn install_python<R: Runtime>(
     app: AppHandle<R>,
     version: String,
-    on_event: Channel<InstallEvent>,
+    on_event: Channel<ProcessEvent>,
 ) -> Result<(), String> {
     stream_command(&app, "uv", &["python", "install", &version], &on_event).await?;
     Ok(())
@@ -281,7 +281,7 @@ pub async fn install_uv_tool<R: Runtime>(
     package: String,
     python_path: Option<String>,
     force: Option<bool>,
-    on_event: Channel<InstallEvent>,
+    on_event: Channel<ProcessEvent>,
 ) -> Result<(), String> {
     let mut args = vec!["tool", "install"];
     args.push(&package);
@@ -307,7 +307,7 @@ pub async fn install_uv_tool<R: Runtime>(
 pub async fn upgrade_uv_tool<R: Runtime>(
     app: AppHandle<R>,
     package: String,
-    on_event: Channel<InstallEvent>,
+    on_event: Channel<ProcessEvent>,
 ) -> Result<(), String> {
     stream_command(&app, "uv", &["tool", "upgrade", &package], &on_event).await?;
     Ok(())
@@ -317,7 +317,7 @@ pub async fn upgrade_uv_tool<R: Runtime>(
 #[tauri::command]
 pub async fn update_uv<R: Runtime>(
     app: AppHandle<R>,
-    on_event: Channel<InstallEvent>,
+    on_event: Channel<ProcessEvent>,
 ) -> Result<(), String> {
     stream_command(&app, "uv", &["self", "update"], &on_event).await?;
     Ok(())
@@ -329,7 +329,7 @@ pub async fn update_uv<R: Runtime>(
 #[tauri::command]
 pub async fn install_uv<R: Runtime>(
     app: AppHandle<R>,
-    on_event: Channel<InstallEvent>,
+    on_event: Channel<ProcessEvent>,
 ) -> Result<(), String> {
     #[cfg(not(windows))]
     {

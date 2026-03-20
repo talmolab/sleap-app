@@ -36,7 +36,7 @@ export interface PythonInfo {
   sleapVersion: string | null;
 }
 
-export type InstallEvent =
+export type ProcessEvent =
   | { event: "stdout"; data: { line: string } }
   | { event: "stderr"; data: { line: string } }
   | { event: "finished"; data: { success: boolean; code: number | null } };
@@ -97,10 +97,10 @@ export async function checkPython(pythonPath: string): Promise<PythonInfo> {
 async function streamingInvoke(
   cmd: string,
   args: Record<string, unknown>,
-  onEvent: (event: InstallEvent) => void
+  onEvent: (event: ProcessEvent) => void
 ): Promise<void> {
   const { invoke, Channel } = await import("@tauri-apps/api/core");
-  const channel = new Channel<InstallEvent>();
+  const channel = new Channel<ProcessEvent>();
   channel.onmessage = onEvent;
   await invoke(cmd, { ...args, onEvent: channel });
 }
@@ -108,7 +108,7 @@ async function streamingInvoke(
 /** Install a Python version via `uv python install`. */
 export async function installPython(
   version: string,
-  onEvent: (event: InstallEvent) => void
+  onEvent: (event: ProcessEvent) => void
 ): Promise<void> {
   if (!isTauri) return;
   await streamingInvoke("install_python", { version }, onEvent);
@@ -119,7 +119,7 @@ export async function installUvTool(
   pkg: string,
   pythonPath: string | null,
   force: boolean,
-  onEvent: (event: InstallEvent) => void
+  onEvent: (event: ProcessEvent) => void
 ): Promise<void> {
   if (!isTauri) return;
   await streamingInvoke(
@@ -132,7 +132,7 @@ export async function installUvTool(
 /** Upgrade a uv tool to its latest version. */
 export async function upgradeUvTool(
   pkg: string,
-  onEvent: (event: InstallEvent) => void
+  onEvent: (event: ProcessEvent) => void
 ): Promise<void> {
   if (!isTauri) return;
   await streamingInvoke("upgrade_uv_tool", { package: pkg }, onEvent);
@@ -140,7 +140,7 @@ export async function upgradeUvTool(
 
 /** Update uv itself via `uv self update`. */
 export async function updateUv(
-  onEvent: (event: InstallEvent) => void
+  onEvent: (event: ProcessEvent) => void
 ): Promise<void> {
   if (!isTauri) return;
   await streamingInvoke("update_uv", {}, onEvent);
@@ -148,7 +148,7 @@ export async function updateUv(
 
 /** Install uv via the official install script. */
 export async function installUv(
-  onEvent: (event: InstallEvent) => void
+  onEvent: (event: ProcessEvent) => void
 ): Promise<void> {
   if (!isTauri) return;
   await streamingInvoke("install_uv", {}, onEvent);

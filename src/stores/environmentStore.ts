@@ -22,7 +22,7 @@ import {
   type UvTool,
   type PythonInterpreter,
   type PythonInfo,
-  type InstallEvent,
+  type ProcessEvent,
 } from "../platform/backend";
 
 export type DetectionStatus = "idle" | "checking" | "done" | "error";
@@ -173,7 +173,7 @@ export const useEnvironmentStore = create<EnvironmentState>()(
           installLog: [],
         });
 
-        const onEvent = (event: InstallEvent) => {
+        const onEvent = (event: ProcessEvent) => {
           if (event.event === "stdout" || event.event === "stderr") {
             set((state) => ({
               installLog: [...state.installLog, event.data.line],
@@ -206,7 +206,7 @@ export const useEnvironmentStore = create<EnvironmentState>()(
           installLog: [],
         });
 
-        const onEvent = (event: InstallEvent) => {
+        const onEvent = (event: ProcessEvent) => {
           if (event.event === "stdout" || event.event === "stderr") {
             set((state) => ({
               installLog: [...state.installLog, event.data.line],
@@ -237,7 +237,7 @@ export const useEnvironmentStore = create<EnvironmentState>()(
           installLog: [],
         });
 
-        const onEvent = (event: InstallEvent) => {
+        const onEvent = (event: ProcessEvent) => {
           if (event.event === "stdout" || event.event === "stderr") {
             set((state) => ({
               installLog: [...state.installLog, event.data.line],
@@ -269,7 +269,7 @@ export const useEnvironmentStore = create<EnvironmentState>()(
           installLog: [],
         });
 
-        const onEvent = (event: InstallEvent) => {
+        const onEvent = (event: ProcessEvent) => {
           if (event.event === "stdout" || event.event === "stderr") {
             set((state) => ({
               installLog: [...state.installLog, event.data.line],
@@ -300,7 +300,7 @@ export const useEnvironmentStore = create<EnvironmentState>()(
           installLog: [],
         });
 
-        const onEvent = (event: InstallEvent) => {
+        const onEvent = (event: ProcessEvent) => {
           if (event.event === "stdout" || event.event === "stderr") {
             set((state) => ({
               installLog: [...state.installLog, event.data.line],
@@ -331,7 +331,7 @@ export const useEnvironmentStore = create<EnvironmentState>()(
           installLog: [],
         });
 
-        const onEvent = (event: InstallEvent) => {
+        const onEvent = (event: ProcessEvent) => {
           if (event.event === "stdout" || event.event === "stderr") {
             set((state) => ({
               installLog: [...state.installLog, event.data.line],
