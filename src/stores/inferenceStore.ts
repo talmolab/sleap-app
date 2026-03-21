@@ -5,6 +5,7 @@ import { cancelCommand, runInference } from "@/platform/backend";
 import { getPlatform } from "@/platform";
 import { commandContext } from "@/commands";
 import { MergePredictions } from "@/commands/editCommands";
+import { useAppStore } from "@/stores/appStore";
 
 export interface InferenceProgress {
   nProcessed: number;
@@ -113,8 +114,14 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
       outputPath: null,
     });
 
+    const labels = useAppStore.getState().labels;
+    if (!labels) {
+      set({ status: "error", error: "No project loaded" });
+      return;
+    }
+
     const { handleProcessEvent } = useInferenceStore.getState();
-    const result = await runInference(config, handleProcessEvent);
+    const result = await runInference(config, labels, handleProcessEvent);
     if (result.outputPath) {
       set({ outputPath: result.outputPath });
     }

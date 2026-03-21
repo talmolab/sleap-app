@@ -6,6 +6,8 @@
  */
 
 import { isTauri } from "./index";
+import type { Labels } from "@talmolab/sleap-io.js";
+import { saveSlpToBytes } from "@talmolab/sleap-io.js";
 import type { InferenceConfig } from "@/stores/inferenceStore";
 
 // === Types matching Rust structs ===
@@ -181,14 +183,13 @@ export async function cancelCommand(): Promise<void> {
 
 /**
  * Run sleap-nn inference. Orchestrates the full pipeline:
- * 1. Build CLI args
- * 2. Spawn process with streaming
- *
- * Note: Full temp-file orchestration (writing labels to .slp, reading output .slp)
- * is a TODO — depends on sleap-io.js serialization and Tauri temp directory APIs.
+ * 1. Serialize current Labels to a temp .slp file
+ * 2. Build CLI args with data path, output path, and config
+ * 3. Spawn process with streaming
  */
 export async function runInference(
   config: InferenceConfig,
+  labels: Labels,
   onEvent: (event: ProcessEvent) => void
 ): Promise<{ success: boolean; outputPath: string | null }> {
   if (!isTauri) {
@@ -196,32 +197,39 @@ export async function runInference(
     return { success: false, outputPath: null };
   }
 
-  // Generate output path in temp directory
   const { tempDir } = await import("@tauri-apps/api/path");
+  const { writeFile } = await import("@tauri-apps/plugin-fs");
+
   const tmp = await tempDir();
-  const outputPath = `${tmp}sleap_inference_${Date.now()}.slp`;
+  const ts = Date.now();
+  const dataPath = `${tmp}sleap_inference_input_${ts}.slp`;
+  const outputPath = `${tmp}sleap_inference_output_${ts}.slp`;
+
+  // Write current project to temp .slp for sleap-nn input
+  const bytes = await saveSlpToBytes(labels);
+  await writeFile(dataPath, bytes);
 
   // Build CLI args for sleap-nn track
   const program = "sleap-nn";
   const args = ["track", "--gui"];
 
-  // Add model path
+  args.push("--data_path", dataPath);
   args.push("--model_paths", config.modelPath);
-
-  // Add output path
   args.push("--output_path", outputPath);
 
-  // Add video index
   if (config.videoIndex !== "all") {
     args.push("--video_index", String(config.videoIndex));
   }
 
-  // Add max instances
   args.push("--max_instances", String(config.maxInstances));
+  args.push("--tracker", config.trackingMethod);
 
-  // TODO: Add --data_path (temp .slp file), frame range, tracking method
-  // These require writing the current Labels to a temp file, which depends on
-  // sleap-io.js serialization support.
+  if (typeof config.frameRange === "object") {
+    args.push(
+      "--frame_range",
+      `${config.frameRange.start},${config.frameRange.end}`
+    );
+  }
 
   const success = await runPythonCommand(program, args, onEvent);
   return { success, outputPath };
