@@ -1,6 +1,10 @@
 import { create } from "zustand";
+import { loadSlp } from "@talmolab/sleap-io.js";
 import type { ProcessEvent } from "@/platform/backend";
 import { cancelCommand, runInference } from "@/platform/backend";
+import { getPlatform } from "@/platform";
+import { commandContext } from "@/commands";
+import { MergePredictions } from "@/commands/editCommands";
 
 export interface InferenceProgress {
   nProcessed: number;
@@ -37,6 +41,7 @@ interface InferenceState {
   reset: () => void;
   cancelInference: () => Promise<void>;
   startInference: (config: InferenceConfig) => Promise<void>;
+  loadAndMergeResults: () => Promise<void>;
 }
 
 const initialState = {
@@ -109,6 +114,31 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
     });
 
     const { handleProcessEvent } = useInferenceStore.getState();
-    await runInference(config, handleProcessEvent);
+    const result = await runInference(config, handleProcessEvent);
+    if (result.outputPath) {
+      set({ outputPath: result.outputPath });
+    }
+  },
+
+  loadAndMergeResults: async () => {
+    const { outputPath } = useInferenceStore.getState();
+    if (!outputPath) return;
+
+    try {
+      const platform = await getPlatform();
+      const bytes = await platform.readFile(outputPath);
+      const predictions = await loadSlp(bytes.buffer, {
+        openVideos: false,
+        h5: { filenameHint: outputPath },
+      });
+
+      await commandContext.execute(MergePredictions, { predictions });
+      set({ status: "idle" });
+    } catch (e) {
+      set({
+        status: "error",
+        error: `Failed to load results: ${e instanceof Error ? e.message : String(e)}`,
+      });
+    }
   },
 }));

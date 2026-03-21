@@ -24,6 +24,7 @@ import {
   CheckCircle2,
   XCircle,
   AlertCircle,
+  Download,
 } from "lucide-react";
 
 // ── helpers ─────────────────────────────────────────────────────────────────
@@ -60,8 +61,11 @@ function InferenceProgressDialog() {
   const setMinimized = useInferenceStore((s) => s.setMinimized);
   const reset = useInferenceStore((s) => s.reset);
   const cancelInference = useInferenceStore((s) => s.cancelInference);
+  const loadAndMergeResults = useInferenceStore((s) => s.loadAndMergeResults);
+  const outputPath = useInferenceStore((s) => s.outputPath);
 
   const [logExpanded, setLogExpanded] = useState(false);
+  const [merging, setMerging] = useState(false);
   const logRef = useRef<HTMLPreElement>(null);
 
   // Auto-scroll log to bottom when new lines arrive
@@ -193,9 +197,29 @@ function InferenceProgressDialog() {
             </>
           )}
           {isDone && (
-            <Button size="sm" onClick={() => reset()}>
-              Dismiss
-            </Button>
+            <>
+              {status === "completed" && outputPath && (
+                <Button
+                  size="sm"
+                  onClick={async () => {
+                    setMerging(true);
+                    await loadAndMergeResults();
+                    setMerging(false);
+                  }}
+                  disabled={merging}
+                >
+                  {merging ? (
+                    <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                  ) : (
+                    <Download className="h-4 w-4 mr-1" />
+                  )}
+                  {merging ? "Loading…" : "Load Results"}
+                </Button>
+              )}
+              <Button variant="outline" size="sm" onClick={() => reset()}>
+                Dismiss
+              </Button>
+            </>
           )}
         </div>
       </DialogContent>

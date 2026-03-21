@@ -190,11 +190,16 @@ export async function cancelCommand(): Promise<void> {
 export async function runInference(
   config: InferenceConfig,
   onEvent: (event: ProcessEvent) => void
-): Promise<boolean> {
+): Promise<{ success: boolean; outputPath: string | null }> {
   if (!isTauri) {
     console.warn("Inference is only available in Tauri desktop mode");
-    return false;
+    return { success: false, outputPath: null };
   }
+
+  // Generate output path in temp directory
+  const { tempDir } = await import("@tauri-apps/api/path");
+  const tmp = await tempDir();
+  const outputPath = `${tmp}sleap_inference_${Date.now()}.slp`;
 
   // Build CLI args for sleap-nn track
   const program = "sleap-nn";
@@ -202,6 +207,9 @@ export async function runInference(
 
   // Add model path
   args.push("--model_paths", config.modelPath);
+
+  // Add output path
+  args.push("--output_path", outputPath);
 
   // Add video index
   if (config.videoIndex !== "all") {
@@ -211,9 +219,10 @@ export async function runInference(
   // Add max instances
   args.push("--max_instances", String(config.maxInstances));
 
-  // TODO: Add --data_path (temp .slp file), --output_path, frame range, tracking method
+  // TODO: Add --data_path (temp .slp file), frame range, tracking method
   // These require writing the current Labels to a temp file, which depends on
-  // sleap-io.js serialization support and Tauri temp directory APIs.
+  // sleap-io.js serialization support.
 
-  return runPythonCommand(program, args, onEvent);
+  const success = await runPythonCommand(program, args, onEvent);
+  return { success, outputPath };
 }
