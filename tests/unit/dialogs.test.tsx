@@ -207,106 +207,24 @@ describe("Dialog components", () => {
     });
   });
 
-  describe("InferenceDialog", () => {
-    it("renders when open", async () => {
-      useAppStore.getState().setInferenceDialogOpen(true);
-
-      const { InferenceDialog } = await import(
-        "@/components/dialogs/InferenceDialog"
+  describe("InferencePanel", () => {
+    it("renders without crashing", async () => {
+      const { InferencePanel } = await import(
+        "@/components/panels/InferencePanel"
       );
-      render(<InferenceDialog />);
-
-      // "Run Inference" appears in both title and button, so use getAllByText
-      const elements = screen.getAllByText("Run Inference");
-      expect(elements.length).toBeGreaterThanOrEqual(1);
+      render(<InferencePanel />);
+      // Should render something (desktop-only message in browser mode)
+      expect(document.body.textContent).toBeTruthy();
     });
 
-    it("does not render content when closed", async () => {
-      useAppStore.getState().setInferenceDialogOpen(false);
-
-      const { InferenceDialog } = await import(
-        "@/components/dialogs/InferenceDialog"
+    it("shows desktop-only message in browser mode", async () => {
+      const { InferencePanel } = await import(
+        "@/components/panels/InferencePanel"
       );
-      render(<InferenceDialog />);
-
-      expect(screen.queryByText("Run Inference")).not.toBeInTheDocument();
-    });
-
-    it("shows Run Inference button", async () => {
-      useAppStore.getState().setInferenceDialogOpen(true);
-
-      const { InferenceDialog } = await import(
-        "@/components/dialogs/InferenceDialog"
-      );
-      render(<InferenceDialog />);
-
-      const buttons = screen.getAllByRole("button");
-      const runButton = buttons.find(
-        (b) => b.textContent?.includes("Run Inference")
-      );
-      expect(runButton).toBeDefined();
-    });
-
-    it("has Cancel button", async () => {
-      useAppStore.getState().setInferenceDialogOpen(true);
-
-      const { InferenceDialog } = await import(
-        "@/components/dialogs/InferenceDialog"
-      );
-      render(<InferenceDialog />);
-
-      expect(screen.getByText("Cancel")).toBeInTheDocument();
-    });
-
-    it("has disabled Run Inference button", async () => {
-      useAppStore.getState().setInferenceDialogOpen(true);
-
-      const { InferenceDialog } = await import(
-        "@/components/dialogs/InferenceDialog"
-      );
-      render(<InferenceDialog />);
-
-      // Find the Run Inference button (not the title)
-      const buttons = screen.getAllByRole("button");
-      const runButton = buttons.find(
-        (b) => b.textContent?.includes("Run Inference") && b.tagName === "BUTTON"
-      );
-      expect(runButton).toBeDefined();
-      expect(runButton).toBeDisabled();
-    });
-
-    it("shows Model Directory input", async () => {
-      useAppStore.getState().setInferenceDialogOpen(true);
-
-      const { InferenceDialog } = await import(
-        "@/components/dialogs/InferenceDialog"
-      );
-      render(<InferenceDialog />);
-
-      expect(screen.getByText("Model Directory")).toBeInTheDocument();
-    });
-
-    it("shows Tracking Method selector", async () => {
-      useAppStore.getState().setInferenceDialogOpen(true);
-
-      const { InferenceDialog } = await import(
-        "@/components/dialogs/InferenceDialog"
-      );
-      render(<InferenceDialog />);
-
-      expect(screen.getByText("Tracking Method")).toBeInTheDocument();
-    });
-
-    it("shows Max Instances input", async () => {
-      useAppStore.getState().setInferenceDialogOpen(true);
-
-      const { InferenceDialog } = await import(
-        "@/components/dialogs/InferenceDialog"
-      );
-      render(<InferenceDialog />);
+      render(<InferencePanel />);
 
       expect(
-        screen.getByText("Max Instances per Frame")
+        screen.getByText("Inference is only available in the desktop app.")
       ).toBeInTheDocument();
     });
   });

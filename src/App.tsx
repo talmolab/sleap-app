@@ -15,12 +15,16 @@ export default function App() {
     import("@tauri-apps/api/core")
       .then(({ invoke }) => invoke<string | null>("get_initial_file"))
       .then(async (path) => {
-        if (!path) return;
+        if (!path) {
+          console.log("[app] No CLI file argument received");
+          return;
+        }
+        console.log("[app] Loading CLI file argument:", path);
         const { readFile, exists } = await import("@tauri-apps/plugin-fs");
         await loadProjectFromPath(path, readFile, exists);
       })
-      .catch(() => {
-        // Not in Tauri or command unavailable — ignore
+      .catch((err) => {
+        console.warn("[app] Failed to load CLI file argument:", err);
       });
   }, []);
 

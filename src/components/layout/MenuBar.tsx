@@ -590,7 +590,7 @@ function LabelsMenu() {
 
 function PredictMenu() {
   const setTrainingDialogOpen = useAppStore((s) => s.setTrainingDialogOpen);
-  const setInferenceDialogOpen = useAppStore((s) => s.setInferenceDialogOpen);
+  const set = useAppStore((s) => s.set);
 
   return (
     <MenubarMenu>
@@ -599,7 +599,12 @@ function PredictMenu() {
         <MenubarItem onClick={() => setTrainingDialogOpen(true)}>
           Training...
         </MenubarItem>
-        <MenubarItem onClick={() => setInferenceDialogOpen(true)}>
+        <MenubarItem
+          onClick={() => {
+            set("sidebarActivePanel", "inference");
+            set("sidebarCollapsed", false);
+          }}
+        >
           Inference / Run Prediction...
         </MenubarItem>
         <MenubarSeparator />
