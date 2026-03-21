@@ -172,7 +172,7 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
       startedAt: Date.now(),
     });
 
-    const labels = useAppStore.getState().labels;
+    const { projectPath, labels } = useAppStore.getState();
     if (!labels) {
       set({ status: "error", error: "No project loaded" });
       return;
@@ -182,7 +182,7 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
 
     const { handleProcessEvent } = useInferenceStore.getState();
     try {
-      const result = await runInference(config, labels, handleProcessEvent);
+      const result = await runInference(config, projectPath, handleProcessEvent);
       // Log the command that was run
       if (result.command) {
         set((state) => ({

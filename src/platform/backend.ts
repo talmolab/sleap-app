@@ -6,7 +6,6 @@
  */
 
 import { isTauri } from "./index";
-import type { Labels } from "@talmolab/sleap-io.js";
 import { saveSlpToBytes } from "@talmolab/sleap-io.js";
 import type { InferenceConfig } from "@/stores/inferenceStore";
 
@@ -195,7 +194,7 @@ export async function cancelCommand(): Promise<void> {
  */
 export async function runInference(
   config: InferenceConfig,
-  labels: Labels,
+  projectPath: string | null,
   onEvent: (event: ProcessEvent) => void
 ): Promise<{ success: boolean; outputPath: string | null; command: string }> {
   if (!isTauri) {
@@ -204,18 +203,28 @@ export async function runInference(
   }
 
   const { tempDir } = await import("@tauri-apps/api/path");
-  const { writeFile } = await import("@tauri-apps/plugin-fs");
 
   const tmp = await tempDir();
   const ts = Date.now();
-  const dataPath = `${tmp}sleap_inference_input_${ts}.slp`;
   const outputPath = `${tmp}sleap_inference_output_${ts}.slp`;
 
-  // Write current project to temp .slp for sleap-nn input
-  console.log("[inference] Serializing project to temp file:", dataPath);
-  const bytes = await saveSlpToBytes(labels);
-  await writeFile(dataPath, bytes);
-  console.log("[inference] Wrote %d bytes to %s", bytes.byteLength, dataPath);
+  // Use original project file if available, otherwise serialize
+  let dataPath: string;
+  if (projectPath) {
+    dataPath = projectPath;
+    console.log("[inference] Using project file:", dataPath);
+  } else {
+    const { writeFile } = await import("@tauri-apps/plugin-fs");
+    // Lazy import to avoid pulling in saveSlpToBytes when not needed
+    const { useAppStore } = await import("@/stores/appStore");
+    const labels = useAppStore.getState().labels;
+    if (!labels) throw new Error("No project loaded");
+    dataPath = `${tmp}sleap_inference_input_${ts}.slp`;
+    console.log("[inference] Serializing project to temp file:", dataPath);
+    const bytes = await saveSlpToBytes(labels);
+    await writeFile(dataPath, bytes);
+    console.log("[inference] Wrote %d bytes to %s", bytes.byteLength, dataPath);
+  }
 
   // Build CLI args for sleap-nn track
   const program = "sleap-nn";

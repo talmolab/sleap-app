@@ -34,6 +34,7 @@ import {
   Download,
   ChevronDown,
   ChevronRight,
+  Copy,
 } from "lucide-react";
 
 // ── Types & Constants ─────────────────────────────────────────────────────────
@@ -638,25 +639,20 @@ export function InferencePanel() {
               </div>
             )}
 
-            {/* Actions */}
-            <div className="flex gap-2">
-              {isRunning && (
-                <Button variant="destructive" size="sm" className="h-7 text-xs" onClick={() => cancelInference()}>
-                  <X className="h-3.5 w-3.5 mr-1" /> Cancel
-                </Button>
-              )}
-              {inferenceStatus === "completed" && outputPath && (
-                <Button size="sm" className="h-7 text-xs"
-                  onClick={async () => { setMerging(true); await loadAndMergeResults(); setMerging(false); }}
-                  disabled={merging}>
-                  {merging ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Download className="h-3.5 w-3.5 mr-1" />}
-                  {merging ? "Loading..." : "Load Results"}
-                </Button>
-              )}
-              {isDone && (
-                <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => reset()}>Dismiss</Button>
-              )}
-            </div>
+            {/* Inline actions (cancel while running, load results on complete) */}
+            {isRunning && (
+              <Button variant="destructive" size="sm" className="h-7 text-xs" onClick={() => cancelInference()}>
+                <X className="h-3.5 w-3.5 mr-1" /> Cancel
+              </Button>
+            )}
+            {inferenceStatus === "completed" && outputPath && (
+              <Button size="sm" className="h-7 text-xs"
+                onClick={async () => { setMerging(true); await loadAndMergeResults(); setMerging(false); }}
+                disabled={merging}>
+                {merging ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Download className="h-3.5 w-3.5 mr-1" />}
+                {merging ? "Loading..." : "Load Results"}
+              </Button>
+            )}
 
             {/* Log */}
             {log.length > 0 && (
@@ -664,6 +660,19 @@ export function InferencePanel() {
                 className="max-h-48 overflow-auto rounded border bg-muted p-1.5 text-[10px] font-mono whitespace-pre-wrap break-all">
                 {log.join("\n")}
               </pre>
+            )}
+
+            {/* Bottom actions: copy + dismiss */}
+            {isDone && (
+              <div className="flex gap-2">
+                <Button variant="outline" size="sm" className="h-7 text-xs"
+                  onClick={() => navigator.clipboard.writeText(log.join("\n"))}>
+                  <Copy className="h-3.5 w-3.5 mr-1" /> Copy Log
+                </Button>
+                <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => reset()}>
+                  Dismiss
+                </Button>
+              </div>
             )}
           </div>
         </>
