@@ -45,6 +45,15 @@ const TRACKING_LABELS: Record<TrackingMethod, string> = {
 export function InferencePanel() {
   const labels = useAppStore((s) => s.labels);
   const tools = useEnvironmentStore((s) => s.tools);
+  const detectionStatus = useEnvironmentStore((s) => s.detectionStatus);
+  const refresh = useEnvironmentStore((s) => s.refresh);
+
+  // Trigger environment detection if it hasn't run yet
+  useEffect(() => {
+    if (isTauri && detectionStatus === "idle") {
+      refresh();
+    }
+  }, [refresh, detectionStatus]);
   const inferenceStatus = useInferenceStore((s) => s.status);
   const progress = useInferenceStore((s) => s.progress);
   const log = useInferenceStore((s) => s.log);
