@@ -15,7 +15,7 @@ export interface InferenceProgress {
 }
 
 export interface InferenceConfig {
-  modelPath: string;
+  modelPaths: string[];
   videoIndex: number | "all";
   frameRange: "all" | "labeled" | { start: number; end: number };
   trackingMethod: "simple" | "flow" | "identity";

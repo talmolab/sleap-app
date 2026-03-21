@@ -64,7 +64,7 @@ export function InferencePanel() {
   const loadAndMergeResults = useInferenceStore((s) => s.loadAndMergeResults);
   const reset = useInferenceStore((s) => s.reset);
 
-  const [modelPath, setModelPath] = useState("");
+  const [modelPaths, setModelPaths] = useState<string[]>([]);
   const [selectedVideo, setSelectedVideo] = useState("all");
   const [frameRange, setFrameRange] = useState<FrameRange>("all");
   const [frameStart, setFrameStart] = useState("0");
@@ -86,7 +86,7 @@ export function InferencePanel() {
     inferenceStatus === "error" ||
     inferenceStatus === "cancelled";
   const canRun =
-    sleapNnAvailable && !isRunning && !isDone && modelPath.trim().length > 0;
+    sleapNnAvailable && !isRunning && !isDone && modelPaths.length > 0;
 
   // Auto-scroll log
   useEffect(() => {
@@ -105,24 +105,28 @@ export function InferencePanel() {
     );
   }
 
-  const handleBrowseModel = async () => {
+  const handleAddModel = async () => {
     try {
       const { open: tauriOpen } = await import("@tauri-apps/plugin-dialog");
       const selected = await tauriOpen({
         directory: true,
         title: "Select Model Directory",
       });
-      if (selected) {
-        setModelPath(selected as string);
+      if (selected && !modelPaths.includes(selected as string)) {
+        setModelPaths((prev) => [...prev, selected as string]);
       }
     } catch {
       // User cancelled
     }
   };
 
+  const handleRemoveModel = (idx: number) => {
+    setModelPaths((prev) => prev.filter((_, i) => i !== idx));
+  };
+
   const handleRunInference = async () => {
     const config: InferenceConfig = {
-      modelPath: modelPath.trim(),
+      modelPaths,
       videoIndex: selectedVideo === "all" ? "all" : Number(selectedVideo),
       frameRange:
         frameRange === "custom"
@@ -288,28 +292,51 @@ export function InferencePanel() {
           </div>
         )}
 
-        {/* Model Directory */}
-        <div className="space-y-1">
-          <Label className="text-xs">Model Directory</Label>
-          <div className="flex gap-1">
-            <Input
-              placeholder="Path to model..."
-              value={modelPath}
-              onChange={(e) => setModelPath(e.target.value)}
-              className="h-7 text-xs flex-1"
-              disabled={isRunning}
-            />
+        {/* Model Directories */}
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between">
+            <Label className="text-xs">Model Directories</Label>
             <Button
               variant="outline"
-              size="icon"
-              className="h-7 w-7 shrink-0"
-              onClick={handleBrowseModel}
+              size="sm"
+              className="h-6 text-[10px] px-2"
+              onClick={handleAddModel}
               disabled={isRunning}
-              title="Browse"
             >
-              <FolderOpen className="h-3.5 w-3.5" />
+              <FolderOpen className="h-3 w-3 mr-1" />
+              Add
             </Button>
           </div>
+          {modelPaths.length === 0 ? (
+            <p className="text-[10px] text-muted-foreground">
+              No models added. Top-down pipelines need two (centroid +
+              centered-instance).
+            </p>
+          ) : (
+            <div className="space-y-1">
+              {modelPaths.map((p, i) => (
+                <div
+                  key={i}
+                  className="flex items-center gap-1 rounded border bg-muted/50 px-2 py-1"
+                >
+                  <span
+                    className="text-[10px] truncate flex-1"
+                    title={p}
+                  >
+                    {p.split(/[\\/]/).pop()}
+                  </span>
+                  <button
+                    className="text-muted-foreground hover:text-destructive shrink-0"
+                    onClick={() => handleRemoveModel(i)}
+                    disabled={isRunning}
+                    title="Remove"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         <Separator />

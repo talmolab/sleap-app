@@ -214,7 +214,7 @@ export async function runInference(
   const args = ["track", "--gui"];
 
   args.push("--data_path", dataPath);
-  args.push("--model_paths", config.modelPath);
+  args.push("--model_paths", ...config.modelPaths);
   args.push("--output_path", outputPath);
 
   if (config.videoIndex !== "all") {

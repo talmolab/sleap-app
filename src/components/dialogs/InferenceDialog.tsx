@@ -80,7 +80,7 @@ export function InferenceDialog() {
 
   const handleRunInference = async () => {
     const config: InferenceConfig = {
-      modelPath: modelPath.trim(),
+      modelPaths: [modelPath.trim()],
       videoIndex: selectedVideo === "all" ? "all" : Number(selectedVideo),
       frameRange:
         frameRange === "custom"
