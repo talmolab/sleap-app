@@ -223,7 +223,9 @@ export async function runInference(
 
   // Core I/O
   args.push("--data_path", dataPath);
-  args.push("--model_paths", ...config.modelPaths);
+  for (const mp of config.modelPaths) {
+    args.push("--model_paths", mp);
+  }
   args.push("--output_path", outputPath);
 
   // Data selection
