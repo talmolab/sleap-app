@@ -178,6 +178,29 @@ pub async fn detect_uv<R: Runtime>(app: AppHandle<R>) -> UvInfo {
     }
 }
 
+/// Detect GPU availability for torch backend selection.
+/// Returns "cuda" if nvidia-smi is found, "mps" on Apple Silicon macOS, else "cpu".
+#[tauri::command]
+pub async fn detect_gpu<R: Runtime>(app: AppHandle<R>) -> String {
+    // Check for NVIDIA GPU via nvidia-smi
+    if let Some(output) = shell_output(&app, "nvidia-smi", &["--query-gpu=name", "--format=csv,noheader"]).await {
+        if !output.trim().is_empty() {
+            return "cuda".to_string();
+        }
+    }
+
+    // Check for Apple Silicon (MPS)
+    #[cfg(target_os = "macos")]
+    {
+        // Apple Silicon Macs always support MPS via Metal
+        if std::env::consts::ARCH == "aarch64" {
+            return "mps".to_string();
+        }
+    }
+
+    "cpu".to_string()
+}
+
 /// List tools installed via `uv tool`.
 #[tauri::command]
 pub async fn list_uv_tools<R: Runtime>(app: AppHandle<R>) -> Vec<UvTool> {
@@ -276,12 +299,14 @@ pub async fn install_python<R: Runtime>(
 /// Install a uv tool (e.g., sleap-nn).
 /// If `python_path` is provided, uses `--python <path>`.
 /// If `force` is true, uses `--force` for reinstall.
+/// `extra_args` allows passing additional flags like `--torch-backend=auto`.
 #[tauri::command]
 pub async fn install_uv_tool<R: Runtime>(
     app: AppHandle<R>,
     package: String,
     python_path: Option<String>,
     force: Option<bool>,
+    extra_args: Option<Vec<String>>,
     on_event: Channel<ProcessEvent>,
 ) -> Result<(), String> {
     let mut args = vec!["tool", "install"];
@@ -296,6 +321,12 @@ pub async fn install_uv_tool<R: Runtime>(
 
     if force.unwrap_or(false) {
         args.push("--force");
+    }
+
+    // Collect extra_args so we can borrow them
+    let extras = extra_args.unwrap_or_default();
+    for arg in &extras {
+        args.push(arg);
     }
 
     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_ref()).collect();

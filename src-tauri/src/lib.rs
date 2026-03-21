@@ -65,6 +65,7 @@ pub fn run() {
     .invoke_handler(tauri::generate_handler![
         get_initial_file,
         environment::detect_uv,
+        environment::detect_gpu,
         environment::list_uv_tools,
         environment::list_python_interpreters,
         environment::list_downloadable_pythons,

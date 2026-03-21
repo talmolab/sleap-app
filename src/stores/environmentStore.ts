@@ -9,6 +9,7 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import {
   detectUv,
+  detectGpu,
   listUvTools,
   listPythonInterpreters,
   listDownloadablePythons,
@@ -219,7 +220,31 @@ export const useEnvironmentStore = create<EnvironmentState>()(
         };
 
         try {
-          await installUvToolCmd(pkg, selectedPythonPath, false, onEvent);
+          let installPkg = pkg;
+          let extraArgs: string[] | undefined;
+
+          // For sleap-nn, detect GPU and install with appropriate torch extra
+          if (pkg === "sleap-nn") {
+            const gpu = await detectGpu();
+            console.log("[env] Detected GPU type:", gpu);
+            const torchExtra = gpu === "cuda" ? "torch-cuda130" : "torch-cpu";
+            installPkg = `sleap-nn[${torchExtra}]`;
+            extraArgs = ["--torch-backend=auto"];
+            set((state) => ({
+              installLog: [
+                ...state.installLog,
+                `[env] GPU: ${gpu} → installing ${installPkg}`,
+              ],
+            }));
+          }
+
+          await installUvToolCmd(
+            installPkg,
+            selectedPythonPath,
+            false,
+            onEvent,
+            extraArgs
+          );
           await get().refresh();
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
@@ -282,7 +307,29 @@ export const useEnvironmentStore = create<EnvironmentState>()(
         };
 
         try {
-          await installUvToolCmd(pkg, selectedPythonPath, true, onEvent);
+          let installPkg = pkg;
+          let extraArgs: string[] | undefined;
+
+          if (pkg === "sleap-nn") {
+            const gpu = await detectGpu();
+            const torchExtra = gpu === "cuda" ? "torch-cuda130" : "torch-cpu";
+            installPkg = `sleap-nn[${torchExtra}]`;
+            extraArgs = ["--torch-backend=auto"];
+            set((state) => ({
+              installLog: [
+                ...state.installLog,
+                `[env] GPU: ${gpu} → reinstalling ${installPkg}`,
+              ],
+            }));
+          }
+
+          await installUvToolCmd(
+            installPkg,
+            selectedPythonPath,
+            true,
+            onEvent,
+            extraArgs
+          );
           await get().refresh();
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);

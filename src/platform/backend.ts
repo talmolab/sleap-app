@@ -117,17 +117,23 @@ export async function installPython(
   await streamingInvoke("install_python", { version }, onEvent);
 }
 
+/** Detect GPU type: "cuda", "mps", or "cpu". */
+export async function detectGpu(): Promise<string> {
+  return invokeCmd<string>("detect_gpu", {});
+}
+
 /** Install a uv tool (e.g., sleap-nn). */
 export async function installUvTool(
   pkg: string,
   pythonPath: string | null,
   force: boolean,
-  onEvent: (event: ProcessEvent) => void
+  onEvent: (event: ProcessEvent) => void,
+  extraArgs?: string[]
 ): Promise<void> {
   if (!isTauri) return;
   await streamingInvoke(
     "install_uv_tool",
-    { package: pkg, pythonPath, force },
+    { package: pkg, pythonPath, force, extraArgs: extraArgs ?? null },
     onEvent
   );
 }
