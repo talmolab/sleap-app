@@ -215,22 +215,80 @@ export async function runInference(
   const program = "sleap-nn";
   const args = ["track", "--gui"];
 
+  // Core I/O
   args.push("--data_path", dataPath);
   args.push("--model_paths", ...config.modelPaths);
   args.push("--output_path", outputPath);
 
+  // Data selection
   if (config.videoIndex !== "all") {
     args.push("--video_index", String(config.videoIndex));
   }
-
-  args.push("--max_instances", String(config.maxInstances));
-  args.push("--tracker", config.trackingMethod);
-
   if (typeof config.frameRange === "object") {
     args.push(
       "--frame_range",
       `${config.frameRange.start},${config.frameRange.end}`
     );
+  } else if (config.frameRange === "labeled") {
+    args.push("--only_labeled_frames");
+  } else if (config.frameRange === "suggested") {
+    args.push("--only_suggested_frames");
+  }
+  if (config.excludeUserLabeled) {
+    args.push("--exclude_user_labeled");
+  }
+
+  // Inference settings
+  args.push("--batch_size", String(config.batchSize));
+  args.push("--device", config.device);
+  if (config.maxInstances != null) {
+    args.push("--max_instances", String(config.maxInstances));
+  }
+  args.push("--peak_threshold", String(config.peakThreshold));
+  if (config.anchorPart) {
+    args.push("--anchor_part", config.anchorPart);
+  }
+
+  // Bottom-up advanced
+  if (config.integralRefinement) {
+    args.push("--integral_refinement", "integral");
+    args.push("--integral_patch_size", String(config.integralPatchSize));
+  }
+  if (config.pipeline === "bottom-up" || config.pipeline === "bottom-up-id") {
+    args.push("--n_points", String(config.nPoints));
+    args.push("--max_edge_length_ratio", String(config.maxEdgeLengthRatio));
+    args.push("--dist_penalty_weight", String(config.distPenaltyWeight));
+    args.push("--min_line_scores", String(config.minLineScores));
+  }
+
+  // Tracking
+  if (config.tracking) {
+    args.push("--tracking");
+    args.push("--tracker", config.trackerMethod);
+    args.push("--scoring_method", config.similarityMethod);
+    args.push("--track_matching_method", config.matchingMethod);
+    args.push("--tracking_window_size", String(config.trackingWindowSize));
+    if (config.maxTracks != null) {
+      args.push("--max_tracks", String(config.maxTracks));
+    }
+    if (config.connectSingleBreaks) {
+      args.push("--post_connect_single_breaks");
+    }
+
+    // Optical flow
+    if (config.trackerMethod === "flow") {
+      args.push("--use_flow");
+      args.push("--of_img_scale", String(config.flowImgScale));
+      args.push("--of_window_size", String(config.flowWindowSize));
+      args.push("--of_max_levels", String(config.flowMaxLevels));
+    }
+  }
+
+  // Post-processing
+  if (config.filterOverlapping) {
+    args.push("--filter_overlapping");
+    args.push("--filter_overlapping_method", config.filterMethod);
+    args.push("--filter_overlapping_threshold", String(config.filterThreshold));
   }
 
   console.log("[inference] Running: %s %s", program, args.join(" "));

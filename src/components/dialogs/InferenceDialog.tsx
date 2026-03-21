@@ -80,14 +80,38 @@ export function InferenceDialog() {
 
   const handleRunInference = async () => {
     const config: InferenceConfig = {
+      pipeline: "top-down",
       modelPaths: [modelPath.trim()],
       videoIndex: selectedVideo === "all" ? "all" : Number(selectedVideo),
       frameRange:
         frameRange === "custom"
           ? { start: Number(frameStart), end: Number(frameEnd) }
           : frameRange,
-      trackingMethod,
+      excludeUserLabeled: false,
+      batchSize: 4,
+      device: "auto",
       maxInstances: Number(maxInstances),
+      peakThreshold: 0.2,
+      anchorPart: null,
+      integralRefinement: true,
+      integralPatchSize: 5,
+      nPoints: 10,
+      maxEdgeLengthRatio: 0.25,
+      distPenaltyWeight: 1.0,
+      minLineScores: 0.25,
+      tracking: true,
+      trackerMethod: trackingMethod as "simple" | "flow",
+      similarityMethod: "oks",
+      matchingMethod: "hungarian",
+      trackingWindowSize: 5,
+      maxTracks: null,
+      connectSingleBreaks: false,
+      flowImgScale: 1.0,
+      flowWindowSize: 21,
+      flowMaxLevels: 3,
+      filterOverlapping: false,
+      filterMethod: "iou",
+      filterThreshold: 0.8,
     };
 
     setOpen(false);

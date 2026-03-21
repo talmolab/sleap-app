@@ -14,12 +14,56 @@ export interface InferenceProgress {
   eta: number;
 }
 
+export type PipelineType =
+  | "top-down"
+  | "bottom-up"
+  | "single-animal"
+  | "top-down-id"
+  | "bottom-up-id";
+
 export interface InferenceConfig {
+  // Pipeline
+  pipeline: PipelineType;
   modelPaths: string[];
+
+  // Data
   videoIndex: number | "all";
-  frameRange: "all" | "labeled" | { start: number; end: number };
-  trackingMethod: "simple" | "flow" | "identity";
-  maxInstances: number;
+  frameRange: "all" | "labeled" | "suggested" | { start: number; end: number };
+  excludeUserLabeled: boolean;
+
+  // Inference
+  batchSize: number;
+  device: "auto" | "cuda" | "cpu" | "mps";
+  maxInstances: number | null;
+  peakThreshold: number;
+  anchorPart: string | null;
+
+  // Bottom-up advanced
+  integralRefinement: boolean;
+  integralPatchSize: number;
+  nPoints: number;
+  maxEdgeLengthRatio: number;
+  distPenaltyWeight: number;
+  minLineScores: number;
+
+  // Tracking
+  tracking: boolean;
+  trackerMethod: "simple" | "flow";
+  similarityMethod: "oks" | "iou" | "centroids" | "euclidean_dist";
+  matchingMethod: "hungarian" | "greedy";
+  trackingWindowSize: number;
+  maxTracks: number | null;
+  connectSingleBreaks: boolean;
+
+  // Optical flow
+  flowImgScale: number;
+  flowWindowSize: number;
+  flowMaxLevels: number;
+
+  // Post-processing
+  filterOverlapping: boolean;
+  filterMethod: "iou" | "oks";
+  filterThreshold: number;
 }
 
 export type InferenceStatus =
