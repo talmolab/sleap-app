@@ -197,10 +197,10 @@ export async function runInference(
   config: InferenceConfig,
   labels: Labels,
   onEvent: (event: ProcessEvent) => void
-): Promise<{ success: boolean; outputPath: string | null }> {
+): Promise<{ success: boolean; outputPath: string | null; command: string }> {
   if (!isTauri) {
     console.warn("Inference is only available in Tauri desktop mode");
-    return { success: false, outputPath: null };
+    return { success: false, outputPath: null, command: "" };
   }
 
   const { tempDir } = await import("@tauri-apps/api/path");
@@ -270,23 +270,8 @@ export async function runInference(
   // Tracking
   if (config.tracking) {
     args.push("--tracking");
-    args.push("--tracker", config.trackerMethod);
-    args.push("--scoring_method", config.similarityMethod);
-    args.push("--track_matching_method", config.matchingMethod);
-    args.push("--tracking_window_size", String(config.trackingWindowSize));
     if (config.maxTracks != null) {
       args.push("--max_tracks", String(config.maxTracks));
-    }
-    if (config.connectSingleBreaks) {
-      args.push("--post_connect_single_breaks");
-    }
-
-    // Optical flow
-    if (config.trackerMethod === "flow") {
-      args.push("--use_flow");
-      args.push("--of_img_scale", String(config.flowImgScale));
-      args.push("--of_window_size", String(config.flowWindowSize));
-      args.push("--of_max_levels", String(config.flowMaxLevels));
     }
   }
 
@@ -297,8 +282,9 @@ export async function runInference(
     args.push("--filter_overlapping_threshold", String(config.filterThreshold));
   }
 
-  console.log("[inference] Running: %s %s", program, args.join(" "));
+  const command = `${program} ${args.join(" ")}`;
+  console.log("[inference] Running:", command);
   const success = await runPythonCommand(program, args, onEvent);
   console.log("[inference] Process finished: success=%s, output=%s", success, outputPath);
-  return { success, outputPath };
+  return { success, outputPath, command };
 }

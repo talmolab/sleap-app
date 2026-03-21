@@ -142,12 +142,9 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
         if (event.data.success) {
           set({ status: "completed" });
         } else {
-          // Include last stderr lines in the error message
-          const { log } = useInferenceStore.getState();
-          const lastLines = log.slice(-10).join("\n");
           set({
             status: "error",
-            error: `Process failed with exit code ${event.data.code}${lastLines ? `\n\n${lastLines}` : ""}`,
+            error: `Process failed with exit code ${event.data.code}`,
           });
         }
         break;
@@ -184,10 +181,23 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
     console.log("[inference] Starting with config:", config);
 
     const { handleProcessEvent } = useInferenceStore.getState();
-    const result = await runInference(config, labels, handleProcessEvent);
-    console.log("[inference] runInference returned:", result);
-    if (result.outputPath) {
-      set({ outputPath: result.outputPath });
+    try {
+      const result = await runInference(config, labels, handleProcessEvent);
+      // Log the command that was run
+      if (result.command) {
+        set((state) => ({
+          log: [`$ ${result.command}`, ...state.log],
+        }));
+      }
+      console.log("[inference] runInference returned:", result);
+      if (result.outputPath) {
+        set({ outputPath: result.outputPath });
+      }
+    } catch (e) {
+      set({
+        status: "error",
+        error: `Failed to start inference: ${e instanceof Error ? e.message : String(e)}`,
+      });
     }
   },
 

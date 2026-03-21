@@ -1,14 +1,10 @@
 /**
  * Inference panel for configuring and running sleap-nn predictions.
  *
- * Organized into sections:
- *  - Progress (when running/done)
- *  - Pipeline type
- *  - Models
- *  - Data (video, frames, exclusions)
- *  - Inference (batch, device, peaks, anchor)
- *  - Tracking (collapsible)
- *  - Advanced (collapsible: bottom-up params, optical flow, NMS)
+ * Layout (top to bottom):
+ *  - Configuration sections (all collapsible)
+ *  - Run button
+ *  - Progress / log (when running or done, at bottom)
  */
 
 import { useState, useRef, useEffect } from "react";
@@ -19,7 +15,6 @@ import type { InferenceConfig, PipelineType } from "@/stores/inferenceStore";
 import { isTauri } from "../../platform/index";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import {
   Select,
@@ -41,37 +36,17 @@ import {
   ChevronRight,
 } from "lucide-react";
 
-// ── Types ─────────────────────────────────────────────────────────────────────
+// ── Types & Constants ─────────────────────────────────────────────────────────
 
 type FrameRange = "all" | "labeled" | "suggested" | "custom";
 
 const PIPELINE_OPTIONS: { value: PipelineType; label: string; desc: string }[] =
   [
-    {
-      value: "top-down",
-      label: "Top-Down",
-      desc: "Two models: centroid detection + centered instance. Best for multi-animal.",
-    },
-    {
-      value: "bottom-up",
-      label: "Bottom-Up",
-      desc: "Single model with confidence maps + PAFs. Good for dense groups.",
-    },
-    {
-      value: "single-animal",
-      label: "Single Animal",
-      desc: "Single confidence map model. Use when only one animal is present.",
-    },
-    {
-      value: "top-down-id",
-      label: "Top-Down + ID",
-      desc: "Top-down with identity classification for re-identification.",
-    },
-    {
-      value: "bottom-up-id",
-      label: "Bottom-Up + ID",
-      desc: "Bottom-up with identity classification for re-identification.",
-    },
+    { value: "top-down", label: "Top-Down", desc: "Two models: centroid + centered instance." },
+    { value: "bottom-up", label: "Bottom-Up", desc: "Single model with confidence maps + PAFs." },
+    { value: "single-animal", label: "Single Animal", desc: "Single confidence map model." },
+    { value: "top-down-id", label: "Top-Down + ID", desc: "Top-down with identity classification." },
+    { value: "bottom-up-id", label: "Bottom-Up + ID", desc: "Bottom-up with identity classification." },
   ];
 
 const DEVICE_OPTIONS = [
@@ -94,21 +69,19 @@ function formatDuration(ms: number): string {
   const s = Math.floor(ms / 1000);
   if (s < 60) return `${s}s`;
   const m = Math.floor(s / 60);
-  const rem = s % 60;
-  if (m < 60) return `${m}m ${rem}s`;
-  const h = Math.floor(m / 60);
-  return `${h}h ${m % 60}m`;
+  if (m < 60) return `${m}m ${s % 60}s`;
+  return `${Math.floor(m / 60)}h ${m % 60}m`;
 }
 
 function formatEta(seconds: number): string {
   if (seconds <= 0) return "0s";
   const m = Math.floor(seconds / 60);
   const s = Math.round(seconds % 60);
-  if (m > 0) return `${m}m ${s}s`;
-  return `${s}s`;
+  return m > 0 ? `${m}m ${s}s` : `${s}s`;
 }
 
-/** Collapsible section with chevron toggle. */
+// ── Reusable widgets ──────────────────────────────────────────────────────────
+
 function Section({
   title,
   defaultOpen = false,
@@ -137,7 +110,6 @@ function Section({
   );
 }
 
-/** Inline checkbox + label. */
 function Check({
   label,
   checked,
@@ -163,7 +135,6 @@ function Check({
   );
 }
 
-/** Small labeled number input. */
 function NumField({
   label,
   value,
@@ -183,9 +154,7 @@ function NumField({
 }) {
   return (
     <div className="flex items-center justify-between gap-2">
-      <span className="text-[10px] text-muted-foreground shrink-0">
-        {label}
-      </span>
+      <span className="text-[10px] text-muted-foreground shrink-0">{label}</span>
       <Input
         type="number"
         value={value}
@@ -241,9 +210,7 @@ export function InferencePanel() {
   const refresh = useEnvironmentStore((s) => s.refresh);
 
   useEffect(() => {
-    if (isTauri && detectionStatus === "idle") {
-      refresh();
-    }
+    if (isTauri && detectionStatus === "idle") refresh();
   }, [refresh, detectionStatus]);
 
   const inferenceStatus = useInferenceStore((s) => s.status);
@@ -257,8 +224,7 @@ export function InferencePanel() {
   const loadAndMergeResults = useInferenceStore((s) => s.loadAndMergeResults);
   const reset = useInferenceStore((s) => s.reset);
 
-  // ── Config state ────────────────────────────────────────────────────────
-
+  // Config state
   const [pipeline, setPipeline] = useState<PipelineType>(DEFAULTS.pipeline);
   const [modelPaths, setModelPaths] = useState<string[]>([]);
   const [selectedVideo, setSelectedVideo] = useState("all");
@@ -266,23 +232,18 @@ export function InferencePanel() {
   const [frameStart, setFrameStart] = useState("0");
   const [frameEnd, setFrameEnd] = useState("1000");
   const [excludeUserLabeled, setExcludeUserLabeled] = useState(DEFAULTS.excludeUserLabeled);
-
   const [batchSize, setBatchSize] = useState(DEFAULTS.batchSize);
   const [device, setDevice] = useState(DEFAULTS.device);
   const [maxInstances, setMaxInstances] = useState<number | null>(DEFAULTS.maxInstances);
   const [noMaxInstances, setNoMaxInstances] = useState(true);
   const [peakThreshold, setPeakThreshold] = useState(DEFAULTS.peakThreshold);
   const [anchorPart, setAnchorPart] = useState<string | null>(DEFAULTS.anchorPart);
-
-  // Bottom-up advanced
   const [integralRefinement, setIntegralRefinement] = useState(DEFAULTS.integralRefinement);
   const [integralPatchSize, setIntegralPatchSize] = useState(DEFAULTS.integralPatchSize);
   const [nPoints, setNPoints] = useState(DEFAULTS.nPoints);
   const [maxEdgeLengthRatio, setMaxEdgeLengthRatio] = useState(DEFAULTS.maxEdgeLengthRatio);
   const [distPenaltyWeight, setDistPenaltyWeight] = useState(DEFAULTS.distPenaltyWeight);
   const [minLineScores, setMinLineScores] = useState(DEFAULTS.minLineScores);
-
-  // Tracking
   const [tracking, setTracking] = useState(DEFAULTS.tracking);
   const [trackerMethod, setTrackerMethod] = useState(DEFAULTS.trackerMethod);
   const [similarityMethod, setSimilarityMethod] = useState(DEFAULTS.similarityMethod);
@@ -291,17 +252,12 @@ export function InferencePanel() {
   const [maxTracks, setMaxTracks] = useState<number | null>(DEFAULTS.maxTracks);
   const [noMaxTracks, setNoMaxTracks] = useState(true);
   const [connectSingleBreaks, setConnectSingleBreaks] = useState(DEFAULTS.connectSingleBreaks);
-
-  // Optical flow
   const [flowImgScale, setFlowImgScale] = useState(DEFAULTS.flowImgScale);
   const [flowWindowSize, setFlowWindowSize] = useState(DEFAULTS.flowWindowSize);
   const [flowMaxLevels, setFlowMaxLevels] = useState(DEFAULTS.flowMaxLevels);
-
-  // Post-processing
   const [filterOverlapping, setFilterOverlapping] = useState(DEFAULTS.filterOverlapping);
   const [filterMethod, setFilterMethod] = useState(DEFAULTS.filterMethod);
   const [filterThreshold, setFilterThreshold] = useState(DEFAULTS.filterThreshold);
-
   const [merging, setMerging] = useState(false);
   const logRef = useRef<HTMLPreElement>(null);
 
@@ -325,22 +281,15 @@ export function InferencePanel() {
     (t) => t.name === "sleap-nn" || t.commands?.includes("sleap-nn")
   );
   const isRunning = inferenceStatus === "running";
-  const isDone =
-    inferenceStatus === "completed" ||
-    inferenceStatus === "error" ||
-    inferenceStatus === "cancelled";
-  const canRun =
-    sleapNnAvailable && !isRunning && !isDone && modelPaths.length > 0;
-
+  const isDone = inferenceStatus === "completed" || inferenceStatus === "error" || inferenceStatus === "cancelled";
+  const canRun = sleapNnAvailable && !isRunning && !isDone && modelPaths.length > 0;
   const isBottomUp = pipeline === "bottom-up" || pipeline === "bottom-up-id";
   const isTopDown = pipeline === "top-down" || pipeline === "top-down-id";
 
   if (!isTauri) {
     return (
       <div className="flex flex-col items-center justify-center gap-2 py-8 text-center">
-        <p className="text-xs text-muted-foreground">
-          Inference is only available in the desktop app.
-        </p>
+        <p className="text-xs text-muted-foreground">Inference is only available in the desktop app.</p>
       </div>
     );
   }
@@ -348,69 +297,288 @@ export function InferencePanel() {
   const handleAddModel = async () => {
     try {
       const { open: tauriOpen } = await import("@tauri-apps/plugin-dialog");
-      const selected = await tauriOpen({
-        directory: true,
-        title: "Select Model Directory",
-      });
+      const selected = await tauriOpen({ directory: true, title: "Select Model Directory" });
       if (selected && !modelPaths.includes(selected as string)) {
         setModelPaths((prev) => [...prev, selected as string]);
       }
-    } catch {
-      // User cancelled
-    }
+    } catch { /* cancelled */ }
   };
 
   const handleRunInference = async () => {
     const config: InferenceConfig = {
-      pipeline,
-      modelPaths,
+      pipeline, modelPaths,
       videoIndex: selectedVideo === "all" ? "all" : Number(selectedVideo),
-      frameRange:
-        frameRange === "custom"
-          ? { start: Number(frameStart), end: Number(frameEnd) }
-          : frameRange,
-      excludeUserLabeled,
-      batchSize,
-      device,
+      frameRange: frameRange === "custom" ? { start: Number(frameStart), end: Number(frameEnd) } : frameRange,
+      excludeUserLabeled, batchSize, device,
       maxInstances: noMaxInstances ? null : maxInstances,
       peakThreshold,
       anchorPart: isTopDown ? anchorPart : null,
-      integralRefinement,
-      integralPatchSize,
-      nPoints,
-      maxEdgeLengthRatio,
-      distPenaltyWeight,
-      minLineScores,
-      tracking,
-      trackerMethod,
-      similarityMethod,
-      matchingMethod,
+      integralRefinement, integralPatchSize,
+      nPoints, maxEdgeLengthRatio, distPenaltyWeight, minLineScores,
+      tracking, trackerMethod, similarityMethod, matchingMethod,
       trackingWindowSize,
       maxTracks: noMaxTracks ? null : maxTracks,
-      connectSingleBreaks,
-      flowImgScale,
-      flowWindowSize,
-      flowMaxLevels,
-      filterOverlapping,
-      filterMethod,
-      filterThreshold,
+      connectSingleBreaks, flowImgScale, flowWindowSize, flowMaxLevels,
+      filterOverlapping, filterMethod, filterThreshold,
     };
     await startInference(config);
   };
 
-  const pct =
-    progress && progress.nTotal > 0
-      ? (progress.nProcessed / progress.nTotal) * 100
-      : 0;
-
-  // ── Render ──────────────────────────────────────────────────────────────
+  const pct = progress && progress.nTotal > 0 ? (progress.nProcessed / progress.nTotal) * 100 : 0;
 
   return (
     <div className="flex flex-col gap-0 -m-2">
-      {/* ── Progress ─────────────────────────────────────────────────────── */}
+      {/* ── Configuration (top) ────────────────────────────────────── */}
+      <div className="px-3 py-2 space-y-1">
+        {!sleapNnAvailable && (
+          <div className="rounded-md border border-yellow-500/40 bg-yellow-500/10 p-2 text-[10px] text-yellow-700 dark:text-yellow-400 mb-1">
+            <p className="font-medium">sleap-nn not detected</p>
+            <p className="mt-0.5">Install via the Environment panel first.</p>
+          </div>
+        )}
+
+        {/* ── Pipeline ────────────────────────────────────────────── */}
+        <Section title="Pipeline" defaultOpen={true}>
+          <Select value={pipeline} onValueChange={(v) => setPipeline(v as PipelineType)} disabled={isRunning}>
+            <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {PIPELINE_OPTIONS.map((o) => (
+                <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="text-[10px] text-muted-foreground">
+            {PIPELINE_OPTIONS.find((o) => o.value === pipeline)?.desc}
+          </p>
+        </Section>
+
+        <Separator />
+
+        {/* ── Models ──────────────────────────────────────────────── */}
+        <Section title="Models" defaultOpen={true}>
+          <div className="flex justify-end">
+            <Button variant="outline" size="sm" className="h-6 text-[10px] px-2"
+              onClick={handleAddModel} disabled={isRunning}>
+              <FolderOpen className="h-3 w-3 mr-1" /> Add
+            </Button>
+          </div>
+          {modelPaths.length === 0 ? (
+            <p className="text-[10px] text-muted-foreground">
+              {isTopDown ? "Add two directories (centroid + centered-instance)." : "Add a model directory."}
+            </p>
+          ) : (
+            <div className="space-y-1">
+              {modelPaths.map((p, i) => (
+                <div key={i} className="flex items-center gap-1 rounded border bg-muted/50 px-2 py-1">
+                  <span className="text-[10px] truncate flex-1" title={p}>{p.split(/[\\/]/).pop()}</span>
+                  <button className="text-muted-foreground hover:text-destructive shrink-0"
+                    onClick={() => setModelPaths((prev) => prev.filter((_, j) => j !== i))}
+                    disabled={isRunning} title="Remove">
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </Section>
+
+        <Separator />
+
+        {/* ── Data ────────────────────────────────────────────────── */}
+        <Section title="Data" defaultOpen={true}>
+          <div className="space-y-1">
+            <span className="text-[10px] text-muted-foreground">Video</span>
+            <Select value={selectedVideo} onValueChange={setSelectedVideo} disabled={isRunning}>
+              <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All videos</SelectItem>
+                {videos.map((video, i) => (
+                  <SelectItem key={i} value={String(i)}>
+                    {video.filename ?? video.backendMetadata?.filename ?? `Video ${i + 1}`}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1">
+            <span className="text-[10px] text-muted-foreground">Frames</span>
+            <Select value={frameRange} onValueChange={(v) => setFrameRange(v as FrameRange)} disabled={isRunning}>
+              <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All frames</SelectItem>
+                <SelectItem value="labeled">Labeled frames only</SelectItem>
+                <SelectItem value="suggested">Suggested frames only</SelectItem>
+                <SelectItem value="custom">Custom range</SelectItem>
+              </SelectContent>
+            </Select>
+            {frameRange === "custom" && (
+              <div className="flex items-center gap-1 mt-1">
+                <Input type="number" min={0} placeholder="Start" value={frameStart}
+                  onChange={(e) => setFrameStart(e.target.value)} className="h-6 text-[10px] flex-1" disabled={isRunning} />
+                <span className="text-[10px] text-muted-foreground">to</span>
+                <Input type="number" min={0} placeholder="End" value={frameEnd}
+                  onChange={(e) => setFrameEnd(e.target.value)} className="h-6 text-[10px] flex-1" disabled={isRunning} />
+              </div>
+            )}
+          </div>
+          <Check label="Exclude user-labeled frames" checked={excludeUserLabeled}
+            onChange={setExcludeUserLabeled} disabled={isRunning} />
+        </Section>
+
+        <Separator />
+
+        {/* ── Inference ───────────────────────────────────────────── */}
+        <Section title="Inference" defaultOpen={true}>
+          <NumField label="Batch size" value={batchSize} onChange={setBatchSize} min={1} max={128} disabled={isRunning} />
+
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[10px] text-muted-foreground">Device</span>
+            <Select value={device} onValueChange={(v) => setDevice(v as typeof device)} disabled={isRunning}>
+              <SelectTrigger className="h-6 text-[10px] w-32"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {DEVICE_OPTIONS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <NumField label="Peak threshold" value={peakThreshold} onChange={setPeakThreshold}
+            min={0} max={1} step={0.05} disabled={isRunning} />
+
+          <div className="space-y-1">
+            <NumField label="Max instances" value={maxInstances ?? 0}
+              onChange={(v) => setMaxInstances(v)} min={1} max={100} disabled={isRunning || noMaxInstances} />
+            <Check label="No limit" checked={noMaxInstances}
+              onChange={(v) => { setNoMaxInstances(v); if (!v && maxInstances === null) setMaxInstances(2); }}
+              disabled={isRunning} />
+          </div>
+
+          {isTopDown && nodes.length > 0 && (
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[10px] text-muted-foreground">Anchor part</span>
+              <Select value={anchorPart ?? "none"} onValueChange={(v) => setAnchorPart(v === "none" ? null : v)} disabled={isRunning}>
+                <SelectTrigger className="h-6 text-[10px] w-32"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">Auto</SelectItem>
+                  {nodes.map((n) => <SelectItem key={n.name} value={n.name}>{n.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+        </Section>
+
+        <Separator />
+
+        {/* ── Tracking ────────────────────────────────────────────── */}
+        <Section title="Tracking" defaultOpen={false}>
+          <Check label="Enable tracking" checked={tracking} onChange={setTracking} disabled={isRunning} />
+          {tracking && (
+            <>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] text-muted-foreground">Method</span>
+                <Select value={trackerMethod} onValueChange={(v) => setTrackerMethod(v as typeof trackerMethod)} disabled={isRunning}>
+                  <SelectTrigger className="h-6 text-[10px] w-28"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="simple">Simple</SelectItem>
+                    <SelectItem value="flow">Optical Flow</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] text-muted-foreground">Similarity</span>
+                <Select value={similarityMethod} onValueChange={(v) => setSimilarityMethod(v as typeof similarityMethod)} disabled={isRunning}>
+                  <SelectTrigger className="h-6 text-[10px] w-32"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {SIMILARITY_OPTIONS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] text-muted-foreground">Matching</span>
+                <Select value={matchingMethod} onValueChange={(v) => setMatchingMethod(v as typeof matchingMethod)} disabled={isRunning}>
+                  <SelectTrigger className="h-6 text-[10px] w-28"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="hungarian">Hungarian</SelectItem>
+                    <SelectItem value="greedy">Greedy</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <NumField label="Window size" value={trackingWindowSize} onChange={setTrackingWindowSize} min={1} max={100} disabled={isRunning} />
+              <div className="space-y-1">
+                <NumField label="Max tracks" value={maxTracks ?? 0} onChange={(v) => setMaxTracks(v)}
+                  min={1} max={100} disabled={isRunning || noMaxTracks} />
+                <Check label="No limit" checked={noMaxTracks}
+                  onChange={(v) => { setNoMaxTracks(v); if (!v && maxTracks === null) setMaxTracks(2); }}
+                  disabled={isRunning} />
+              </div>
+              <Check label="Connect single-frame breaks" checked={connectSingleBreaks}
+                onChange={setConnectSingleBreaks} disabled={isRunning} />
+              {trackerMethod === "flow" && (
+                <Section title="Optical Flow">
+                  <NumField label="Image scale" value={flowImgScale} onChange={setFlowImgScale} min={0.1} max={2} step={0.1} disabled={isRunning} />
+                  <NumField label="Window size" value={flowWindowSize} onChange={setFlowWindowSize} min={3} max={99} step={2} disabled={isRunning} />
+                  <NumField label="Pyramid levels" value={flowMaxLevels} onChange={setFlowMaxLevels} min={1} max={10} disabled={isRunning} />
+                </Section>
+              )}
+            </>
+          )}
+        </Section>
+
+        <Separator />
+
+        {/* ── Advanced ────────────────────────────────────────────── */}
+        <Section title="Advanced" defaultOpen={false}>
+          <Check label="Integral refinement" checked={integralRefinement}
+            onChange={setIntegralRefinement} disabled={isRunning} />
+          {integralRefinement && (
+            <NumField label="Patch size" value={integralPatchSize}
+              onChange={setIntegralPatchSize} min={3} max={15} step={2} disabled={isRunning} />
+          )}
+
+          {isBottomUp && (
+            <>
+              <Separator className="my-1" />
+              <span className="text-[10px] font-medium text-muted-foreground">PAF Matching</span>
+              <NumField label="Sample points" value={nPoints} onChange={setNPoints} min={1} max={50} disabled={isRunning} />
+              <NumField label="Max edge ratio" value={maxEdgeLengthRatio} onChange={setMaxEdgeLengthRatio} min={0} max={1} step={0.05} disabled={isRunning} />
+              <NumField label="Distance penalty" value={distPenaltyWeight} onChange={setDistPenaltyWeight} min={0} max={10} step={0.1} disabled={isRunning} />
+              <NumField label="Min line scores" value={minLineScores} onChange={setMinLineScores} min={-1} max={1} step={0.05} disabled={isRunning} />
+            </>
+          )}
+
+          <Separator className="my-1" />
+          <Check label="Filter overlapping instances" checked={filterOverlapping}
+            onChange={setFilterOverlapping} disabled={isRunning} />
+          {filterOverlapping && (
+            <>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] text-muted-foreground">Method</span>
+                <Select value={filterMethod} onValueChange={(v) => setFilterMethod(v as typeof filterMethod)} disabled={isRunning}>
+                  <SelectTrigger className="h-6 text-[10px] w-24"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="iou">IoU</SelectItem>
+                    <SelectItem value="oks">OKS</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <NumField label="Threshold" value={filterThreshold} onChange={setFilterThreshold} min={0} max={1} step={0.05} disabled={isRunning} />
+            </>
+          )}
+        </Section>
+
+        <Separator />
+
+        {/* ── Run button ──────────────────────────────────────────── */}
+        <Button className="w-full h-8 text-xs" onClick={handleRunInference} disabled={!canRun}>
+          <Play className="h-3.5 w-3.5 mr-1.5" /> Run Inference
+        </Button>
+      </div>
+
+      {/* ── Progress (bottom) ──────────────────────────────────────── */}
       {(isRunning || isDone) && (
         <>
-          <div className="px-3 pt-3 space-y-2">
+          <Separator />
+          <div className="px-3 py-2 space-y-2">
+            {/* Status header */}
             <div className="flex items-center gap-2">
               {isRunning && (
                 <>
@@ -443,23 +611,19 @@ export function InferencePanel() {
               )}
             </div>
 
+            {/* Progress bar */}
             <div className="space-y-1">
               <div className="h-2 w-full rounded-full bg-secondary overflow-hidden">
-                <div
-                  className="h-full bg-primary transition-all duration-300"
-                  style={{ width: `${Math.max(0, Math.min(100, pct))}%` }}
-                />
+                <div className="h-full bg-primary transition-all duration-300"
+                  style={{ width: `${Math.max(0, Math.min(100, pct))}%` }} />
               </div>
               <div className="flex justify-between text-[10px] text-muted-foreground">
-                <span>
-                  {progress
-                    ? `${progress.nProcessed} / ${progress.nTotal} frames`
-                    : "Initializing..."}
-                </span>
+                <span>{progress ? `${progress.nProcessed} / ${progress.nTotal} frames` : "Initializing..."}</span>
                 <span>{pct > 0 ? `${pct.toFixed(1)}%` : ""}</span>
               </div>
             </div>
 
+            {/* Stats */}
             {progress && (
               <div className="flex gap-3 text-[10px] text-muted-foreground">
                 {progress.rate > 0 && <span>{progress.rate.toFixed(1)} fps</span>}
@@ -467,12 +631,14 @@ export function InferencePanel() {
               </div>
             )}
 
+            {/* Error */}
             {error && (
-              <div className="rounded-md bg-destructive/15 border border-destructive/30 px-2 py-1.5 text-[10px] text-destructive whitespace-pre-wrap break-all">
+              <div className="rounded-md bg-destructive/15 border border-destructive/30 px-2 py-1.5 text-[10px] text-destructive">
                 {error}
               </div>
             )}
 
+            {/* Actions */}
             <div className="flex gap-2">
               {isRunning && (
                 <Button variant="destructive" size="sm" className="h-7 text-xs" onClick={() => cancelInference()}>
@@ -480,348 +646,28 @@ export function InferencePanel() {
                 </Button>
               )}
               {inferenceStatus === "completed" && outputPath && (
-                <Button
-                  size="sm"
-                  className="h-7 text-xs"
+                <Button size="sm" className="h-7 text-xs"
                   onClick={async () => { setMerging(true); await loadAndMergeResults(); setMerging(false); }}
-                  disabled={merging}
-                >
+                  disabled={merging}>
                   {merging ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Download className="h-3.5 w-3.5 mr-1" />}
                   {merging ? "Loading..." : "Load Results"}
                 </Button>
               )}
               {isDone && (
-                <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => reset()}>
-                  Dismiss
-                </Button>
+                <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => reset()}>Dismiss</Button>
               )}
             </div>
 
+            {/* Log */}
             {log.length > 0 && (
-              <pre
-                ref={logRef}
-                className="max-h-48 overflow-auto rounded border bg-muted p-1.5 text-[10px] font-mono whitespace-pre-wrap break-all"
-              >
+              <pre ref={logRef}
+                className="max-h-48 overflow-auto rounded border bg-muted p-1.5 text-[10px] font-mono whitespace-pre-wrap break-all">
                 {log.join("\n")}
               </pre>
             )}
           </div>
-          <Separator className="my-2" />
         </>
       )}
-
-      {/* ── Configuration ──────────────────────────────────────────────── */}
-      <div className="px-3 pb-3 space-y-2">
-        {!sleapNnAvailable && (
-          <div className="rounded-md border border-yellow-500/40 bg-yellow-500/10 p-2 text-[10px] text-yellow-700 dark:text-yellow-400">
-            <p className="font-medium">sleap-nn not detected</p>
-            <p className="mt-0.5">Install via the Environment panel first.</p>
-          </div>
-        )}
-
-        {/* ── Pipeline ───────────────────────────────────────────────── */}
-        <div className="space-y-1">
-          <Label className="text-xs">Pipeline</Label>
-          <Select
-            value={pipeline}
-            onValueChange={(v) => setPipeline(v as PipelineType)}
-            disabled={isRunning}
-          >
-            <SelectTrigger className="h-7 text-xs">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {PIPELINE_OPTIONS.map((o) => (
-                <SelectItem key={o.value} value={o.value}>
-                  {o.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <p className="text-[10px] text-muted-foreground">
-            {PIPELINE_OPTIONS.find((o) => o.value === pipeline)?.desc}
-          </p>
-        </div>
-
-        {/* ── Models ─────────────────────────────────────────────────── */}
-        <div className="space-y-1.5">
-          <div className="flex items-center justify-between">
-            <Label className="text-xs">Models</Label>
-            <Button
-              variant="outline" size="sm" className="h-6 text-[10px] px-2"
-              onClick={handleAddModel} disabled={isRunning}
-            >
-              <FolderOpen className="h-3 w-3 mr-1" /> Add
-            </Button>
-          </div>
-          {modelPaths.length === 0 ? (
-            <p className="text-[10px] text-muted-foreground">
-              {isTopDown
-                ? "Add two model directories (centroid + centered-instance)."
-                : "Add a model directory."}
-            </p>
-          ) : (
-            <div className="space-y-1">
-              {modelPaths.map((p, i) => (
-                <div key={i} className="flex items-center gap-1 rounded border bg-muted/50 px-2 py-1">
-                  <span className="text-[10px] truncate flex-1" title={p}>
-                    {p.split(/[\\/]/).pop()}
-                  </span>
-                  <button
-                    className="text-muted-foreground hover:text-destructive shrink-0"
-                    onClick={() => setModelPaths((prev) => prev.filter((_, j) => j !== i))}
-                    disabled={isRunning} title="Remove"
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <Separator />
-
-        {/* ── Data ───────────────────────────────────────────────────── */}
-        <div className="space-y-2">
-          <Label className="text-xs">Data</Label>
-
-          <div className="space-y-1">
-            <span className="text-[10px] text-muted-foreground">Video</span>
-            <Select value={selectedVideo} onValueChange={setSelectedVideo} disabled={isRunning}>
-              <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All videos</SelectItem>
-                {videos.map((video, i) => (
-                  <SelectItem key={i} value={String(i)}>
-                    {video.filename ?? video.backendMetadata?.filename ?? `Video ${i + 1}`}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-
-          <div className="space-y-1">
-            <span className="text-[10px] text-muted-foreground">Frames</span>
-            <Select
-              value={frameRange}
-              onValueChange={(v) => setFrameRange(v as FrameRange)}
-              disabled={isRunning}
-            >
-              <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All frames</SelectItem>
-                <SelectItem value="labeled">Labeled frames only</SelectItem>
-                <SelectItem value="suggested">Suggested frames only</SelectItem>
-                <SelectItem value="custom">Custom range</SelectItem>
-              </SelectContent>
-            </Select>
-            {frameRange === "custom" && (
-              <div className="flex items-center gap-1 mt-1">
-                <Input type="number" min={0} placeholder="Start" value={frameStart}
-                  onChange={(e) => setFrameStart(e.target.value)} className="h-6 text-[10px] flex-1" disabled={isRunning} />
-                <span className="text-[10px] text-muted-foreground">to</span>
-                <Input type="number" min={0} placeholder="End" value={frameEnd}
-                  onChange={(e) => setFrameEnd(e.target.value)} className="h-6 text-[10px] flex-1" disabled={isRunning} />
-              </div>
-            )}
-          </div>
-
-          <Check label="Exclude user-labeled frames" checked={excludeUserLabeled}
-            onChange={setExcludeUserLabeled} disabled={isRunning} />
-        </div>
-
-        <Separator />
-
-        {/* ── Inference ──────────────────────────────────────────────── */}
-        <div className="space-y-2">
-          <Label className="text-xs">Inference</Label>
-
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-[10px] text-muted-foreground">Batch size</span>
-            <Input type="number" value={batchSize} onChange={(e) => setBatchSize(Number(e.target.value))}
-              min={1} max={128} className="h-6 text-[10px] w-16" disabled={isRunning} />
-          </div>
-
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-[10px] text-muted-foreground">Device</span>
-            <Select value={device} onValueChange={(v) => setDevice(v as typeof device)} disabled={isRunning}>
-              <SelectTrigger className="h-6 text-[10px] w-32"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                {DEVICE_OPTIONS.map((o) => (
-                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-[10px] text-muted-foreground">Peak threshold</span>
-            <Input type="number" value={peakThreshold} onChange={(e) => setPeakThreshold(Number(e.target.value))}
-              min={0} max={1} step={0.05} className="h-6 text-[10px] w-16" disabled={isRunning} />
-          </div>
-
-          <div className="space-y-1">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-[10px] text-muted-foreground">Max instances</span>
-              <Input type="number" value={maxInstances ?? 0}
-                onChange={(e) => setMaxInstances(Number(e.target.value))}
-                min={1} max={100} className="h-6 text-[10px] w-16"
-                disabled={isRunning || noMaxInstances} />
-            </div>
-            <Check label="No limit" checked={noMaxInstances}
-              onChange={(v) => { setNoMaxInstances(v); if (!v && maxInstances === null) setMaxInstances(2); }}
-              disabled={isRunning} />
-          </div>
-
-          {isTopDown && nodes.length > 0 && (
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-[10px] text-muted-foreground">Anchor part</span>
-              <Select value={anchorPart ?? "none"} onValueChange={(v) => setAnchorPart(v === "none" ? null : v)} disabled={isRunning}>
-                <SelectTrigger className="h-6 text-[10px] w-32"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">Auto</SelectItem>
-                  {nodes.map((n) => (
-                    <SelectItem key={n.name} value={n.name}>{n.name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          )}
-        </div>
-
-        <Separator />
-
-        {/* ── Tracking ───────────────────────────────────────────────── */}
-        <Section title="Tracking" defaultOpen={true}>
-          <Check label="Enable tracking" checked={tracking} onChange={setTracking} disabled={isRunning} />
-
-          {tracking && (
-            <>
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[10px] text-muted-foreground">Method</span>
-                <Select value={trackerMethod} onValueChange={(v) => setTrackerMethod(v as typeof trackerMethod)} disabled={isRunning}>
-                  <SelectTrigger className="h-6 text-[10px] w-28"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="simple">Simple</SelectItem>
-                    <SelectItem value="flow">Optical Flow</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[10px] text-muted-foreground">Similarity</span>
-                <Select value={similarityMethod} onValueChange={(v) => setSimilarityMethod(v as typeof similarityMethod)} disabled={isRunning}>
-                  <SelectTrigger className="h-6 text-[10px] w-32"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {SIMILARITY_OPTIONS.map((o) => (
-                      <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[10px] text-muted-foreground">Matching</span>
-                <Select value={matchingMethod} onValueChange={(v) => setMatchingMethod(v as typeof matchingMethod)} disabled={isRunning}>
-                  <SelectTrigger className="h-6 text-[10px] w-28"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="hungarian">Hungarian</SelectItem>
-                    <SelectItem value="greedy">Greedy</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <NumField label="Window size" value={trackingWindowSize}
-                onChange={setTrackingWindowSize} min={1} max={100} disabled={isRunning} />
-
-              <div className="space-y-1">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-[10px] text-muted-foreground">Max tracks</span>
-                  <Input type="number" value={maxTracks ?? 0}
-                    onChange={(e) => setMaxTracks(Number(e.target.value))}
-                    min={1} max={100} className="h-6 text-[10px] w-16"
-                    disabled={isRunning || noMaxTracks} />
-                </div>
-                <Check label="No limit" checked={noMaxTracks}
-                  onChange={(v) => { setNoMaxTracks(v); if (!v && maxTracks === null) setMaxTracks(2); }}
-                  disabled={isRunning} />
-              </div>
-
-              <Check label="Connect single-frame track breaks" checked={connectSingleBreaks}
-                onChange={setConnectSingleBreaks} disabled={isRunning} />
-
-              {trackerMethod === "flow" && (
-                <Section title="Optical Flow">
-                  <NumField label="Image scale" value={flowImgScale}
-                    onChange={setFlowImgScale} min={0.1} max={2} step={0.1} disabled={isRunning} />
-                  <NumField label="Window size" value={flowWindowSize}
-                    onChange={setFlowWindowSize} min={3} max={99} step={2} disabled={isRunning} />
-                  <NumField label="Max pyramid levels" value={flowMaxLevels}
-                    onChange={setFlowMaxLevels} min={1} max={10} disabled={isRunning} />
-                </Section>
-              )}
-            </>
-          )}
-        </Section>
-
-        <Separator />
-
-        {/* ── Advanced ────────────────────────────────────────────────── */}
-        <Section title="Advanced">
-          {/* Integral refinement */}
-          <Check label="Integral refinement" checked={integralRefinement}
-            onChange={setIntegralRefinement} disabled={isRunning} />
-          {integralRefinement && (
-            <NumField label="Patch size" value={integralPatchSize}
-              onChange={setIntegralPatchSize} min={3} max={15} step={2} disabled={isRunning} />
-          )}
-
-          {/* Bottom-up PAF params */}
-          {isBottomUp && (
-            <>
-              <Separator className="my-1" />
-              <span className="text-[10px] font-medium text-muted-foreground">PAF Matching</span>
-              <NumField label="Sample points" value={nPoints}
-                onChange={setNPoints} min={1} max={50} disabled={isRunning} />
-              <NumField label="Max edge length ratio" value={maxEdgeLengthRatio}
-                onChange={setMaxEdgeLengthRatio} min={0} max={1} step={0.05} disabled={isRunning} />
-              <NumField label="Distance penalty" value={distPenaltyWeight}
-                onChange={setDistPenaltyWeight} min={0} max={10} step={0.1} disabled={isRunning} />
-              <NumField label="Min line scores" value={minLineScores}
-                onChange={setMinLineScores} min={-1} max={1} step={0.05} disabled={isRunning} />
-            </>
-          )}
-
-          {/* Filter overlapping */}
-          <Separator className="my-1" />
-          <Check label="Filter overlapping instances" checked={filterOverlapping}
-            onChange={setFilterOverlapping} disabled={isRunning} />
-          {filterOverlapping && (
-            <>
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[10px] text-muted-foreground">Method</span>
-                <Select value={filterMethod} onValueChange={(v) => setFilterMethod(v as typeof filterMethod)} disabled={isRunning}>
-                  <SelectTrigger className="h-6 text-[10px] w-24"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="iou">IoU</SelectItem>
-                    <SelectItem value="oks">OKS</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <NumField label="Threshold" value={filterThreshold}
-                onChange={setFilterThreshold} min={0} max={1} step={0.05} disabled={isRunning} />
-            </>
-          )}
-        </Section>
-
-        <Separator />
-
-        {/* ── Run ────────────────────────────────────────────────────── */}
-        <Button className="w-full h-8 text-xs" onClick={handleRunInference} disabled={!canRun}>
-          <Play className="h-3.5 w-3.5 mr-1.5" /> Run Inference
-        </Button>
-      </div>
     </div>
   );
 }
