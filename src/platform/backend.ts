@@ -206,8 +206,10 @@ export async function runInference(
   const outputPath = `${tmp}sleap_inference_output_${ts}.slp`;
 
   // Write current project to temp .slp for sleap-nn input
+  console.log("[inference] Serializing project to temp file:", dataPath);
   const bytes = await saveSlpToBytes(labels);
   await writeFile(dataPath, bytes);
+  console.log("[inference] Wrote %d bytes to %s", bytes.byteLength, dataPath);
 
   // Build CLI args for sleap-nn track
   const program = "sleap-nn";
@@ -231,6 +233,8 @@ export async function runInference(
     );
   }
 
+  console.log("[inference] Running: %s %s", program, args.join(" "));
   const success = await runPythonCommand(program, args, onEvent);
+  console.log("[inference] Process finished: success=%s, output=%s", success, outputPath);
   return { success, outputPath };
 }

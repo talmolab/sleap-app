@@ -42,6 +42,24 @@ const TRACKING_LABELS: Record<TrackingMethod, string> = {
   identity: "Identity (re-ID)",
 };
 
+function formatDuration(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  if (m < 60) return `${m}m ${rem}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m`;
+}
+
+function formatEta(seconds: number): string {
+  if (seconds <= 0) return "0s";
+  const m = Math.floor(seconds / 60);
+  const s = Math.round(seconds % 60);
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
 export function InferencePanel() {
   const labels = useAppStore((s) => s.labels);
   const tools = useEnvironmentStore((s) => s.tools);
@@ -54,11 +72,13 @@ export function InferencePanel() {
       refresh();
     }
   }, [refresh, detectionStatus]);
+
   const inferenceStatus = useInferenceStore((s) => s.status);
   const progress = useInferenceStore((s) => s.progress);
   const log = useInferenceStore((s) => s.log);
   const error = useInferenceStore((s) => s.error);
   const outputPath = useInferenceStore((s) => s.outputPath);
+  const startedAt = useInferenceStore((s) => s.startedAt);
   const startInference = useInferenceStore((s) => s.startInference);
   const cancelInference = useInferenceStore((s) => s.cancelInference);
   const loadAndMergeResults = useInferenceStore((s) => s.loadAndMergeResults);
@@ -72,9 +92,19 @@ export function InferencePanel() {
   const [trackingMethod, setTrackingMethod] =
     useState<TrackingMethod>("simple");
   const [maxInstances, setMaxInstances] = useState("2");
-  const [logExpanded, setLogExpanded] = useState(false);
   const [merging, setMerging] = useState(false);
   const logRef = useRef<HTMLPreElement>(null);
+
+  // Elapsed time ticker
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    if (inferenceStatus !== "running" || !startedAt) {
+      return;
+    }
+    setElapsed(Date.now() - startedAt);
+    const id = setInterval(() => setElapsed(Date.now() - startedAt), 1000);
+    return () => clearInterval(id);
+  }, [inferenceStatus, startedAt]);
 
   const videos = labels?.videos ?? [];
   const sleapNnAvailable = tools.some(
@@ -90,10 +120,10 @@ export function InferencePanel() {
 
   // Auto-scroll log
   useEffect(() => {
-    if (logExpanded && logRef.current) {
+    if (logRef.current) {
       logRef.current.scrollTop = logRef.current.scrollHeight;
     }
-  }, [log, logExpanded]);
+  }, [log]);
 
   if (!isTauri) {
     return (
@@ -175,6 +205,16 @@ export function InferencePanel() {
                   <span className="text-xs font-medium">Cancelled</span>
                 </>
               )}
+              {/* Elapsed time */}
+              {startedAt && (
+                <span className="text-[10px] text-muted-foreground ml-auto">
+                  {formatDuration(
+                    isDone && !isRunning
+                      ? elapsed
+                      : Date.now() - startedAt
+                  )}
+                </span>
+              )}
             </div>
 
             {/* Progress bar */}
@@ -189,25 +229,27 @@ export function InferencePanel() {
                 <span>
                   {progress
                     ? `${progress.nProcessed} / ${progress.nTotal} frames`
-                    : "Waiting..."}
+                    : "Initializing..."}
                 </span>
                 <span>{pct > 0 ? `${pct.toFixed(1)}%` : ""}</span>
               </div>
             </div>
 
-            {/* Stats */}
-            {progress && progress.rate > 0 && (
-              <p className="text-[10px] text-muted-foreground">
-                {progress.rate.toFixed(1)} fps &middot; ETA:{" "}
-                {progress.eta > 0
-                  ? `${Math.floor(progress.eta / 60)}m ${Math.round(progress.eta % 60)}s`
-                  : "0s"}
-              </p>
+            {/* Stats row */}
+            {progress && (
+              <div className="flex gap-3 text-[10px] text-muted-foreground">
+                {progress.rate > 0 && (
+                  <span>{progress.rate.toFixed(1)} fps</span>
+                )}
+                {progress.eta > 0 && (
+                  <span>ETA {formatEta(progress.eta)}</span>
+                )}
+              </div>
             )}
 
             {/* Error */}
             {error && (
-              <div className="rounded-md bg-destructive/15 border border-destructive/30 px-2 py-1.5 text-[10px] text-destructive">
+              <div className="rounded-md bg-destructive/15 border border-destructive/30 px-2 py-1.5 text-[10px] text-destructive whitespace-pre-wrap break-all">
                 {error}
               </div>
             )}
@@ -256,24 +298,14 @@ export function InferencePanel() {
               )}
             </div>
 
-            {/* Log */}
+            {/* Log — always visible when there are entries */}
             {log.length > 0 && (
-              <div>
-                <button
-                  className="text-[10px] text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
-                  onClick={() => setLogExpanded((v) => !v)}
-                >
-                  {logExpanded ? "Hide" : "Show"} log ({log.length} lines)
-                </button>
-                {logExpanded && (
-                  <pre
-                    ref={logRef}
-                    className="mt-1 max-h-36 overflow-auto rounded border bg-muted p-1.5 text-[10px] font-mono whitespace-pre-wrap break-all"
-                  >
-                    {log.join("\n")}
-                  </pre>
-                )}
-              </div>
+              <pre
+                ref={logRef}
+                className="max-h-48 overflow-auto rounded border bg-muted p-1.5 text-[10px] font-mono whitespace-pre-wrap break-all"
+              >
+                {log.join("\n")}
+              </pre>
             )}
           </div>
           <Separator />

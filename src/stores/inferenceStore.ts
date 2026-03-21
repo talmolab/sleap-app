@@ -36,6 +36,7 @@ interface InferenceState {
   log: string[];
   minimized: boolean;
   outputPath: string | null;
+  startedAt: number | null;
 
   handleProcessEvent: (event: ProcessEvent) => void;
   setMinimized: (minimized: boolean) => void;
@@ -52,6 +53,7 @@ const initialState = {
   log: [] as string[],
   minimized: false,
   outputPath: null as string | null,
+  startedAt: null as number | null,
 };
 
 export const useInferenceStore = create<InferenceState>()((set) => ({
@@ -60,8 +62,10 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
   handleProcessEvent: (event: ProcessEvent) => {
     switch (event.event) {
       case "stdout": {
+        const line = event.data.line;
+        console.log("[inference:stdout]", line);
         try {
-          const data = JSON.parse(event.data.line);
+          const data = JSON.parse(line);
           if ("n_processed" in data && "n_total" in data) {
             set({
               progress: {
@@ -76,22 +80,34 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
         } catch {
           // Not JSON — fall through to log
         }
-        set((state) => ({ log: [...state.log, event.data.line] }));
+        set((state) => ({ log: [...state.log, line] }));
         break;
       }
-      case "stderr":
-        set((state) => ({ log: [...state.log, event.data.line] }));
+      case "stderr": {
+        const line = event.data.line;
+        console.warn("[inference:stderr]", line);
+        set((state) => ({ log: [...state.log, line] }));
         break;
-      case "finished":
+      }
+      case "finished": {
+        console.log(
+          "[inference] Process finished: code=%s success=%s",
+          event.data.code,
+          event.data.success
+        );
         if (event.data.success) {
           set({ status: "completed" });
         } else {
+          // Include last stderr lines in the error message
+          const { log } = useInferenceStore.getState();
+          const lastLines = log.slice(-10).join("\n");
           set({
             status: "error",
-            error: `Process failed with exit code ${event.data.code}`,
+            error: `Process failed with exit code ${event.data.code}${lastLines ? `\n\n${lastLines}` : ""}`,
           });
         }
         break;
+      }
     }
   },
 
@@ -112,6 +128,7 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
       log: [],
       minimized: false,
       outputPath: null,
+      startedAt: Date.now(),
     });
 
     const labels = useAppStore.getState().labels;
@@ -120,8 +137,11 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
       return;
     }
 
+    console.log("[inference] Starting with config:", config);
+
     const { handleProcessEvent } = useInferenceStore.getState();
     const result = await runInference(config, labels, handleProcessEvent);
+    console.log("[inference] runInference returned:", result);
     if (result.outputPath) {
       set({ outputPath: result.outputPath });
     }
