@@ -87,7 +87,7 @@ function SliderRow({
   step = 1,
 }: {
   label: string;
-  storeKey: "markerSize" | "nodeLabelSize" | "trailLength";
+  storeKey: "markerSize" | "nodeLabelSize" | "insetSize" | "insetZoom" | "trailLength";
   min: number;
   max: number;
   step?: number;
@@ -384,6 +384,8 @@ export function ViewPanel() {
         </div>
         <SliderRow label="Marker size" storeKey="markerSize" min={1} max={20} />
         <SliderRow label="Label size" storeKey="nodeLabelSize" min={0} max={20} />
+        <SliderRow label="Inset size" storeKey="insetSize" min={100} max={400} step={10} />
+        <SliderRow label="Inset zoom" storeKey="insetZoom" min={1} max={10} />
       </Section>
 
       {/* Color settings */}

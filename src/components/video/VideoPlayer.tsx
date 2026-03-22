@@ -749,8 +749,8 @@ export function VideoPlayer() {
   const isPlacingNodes = labelingMode === "place" && selectedInstance !== null;
 
   // Render zoomed inset during node drag or placement mode
-  const INSET_SIZE = 200;
-  const INSET_ZOOM = 4;
+  const INSET_SIZE = useAppStore((s) => s.insetSize);
+  const INSET_ZOOM = useAppStore((s) => s.insetZoom);
   useEffect(() => {
     const inset = insetCanvasRef.current;
     if (!inset) return;
@@ -930,7 +930,7 @@ export function VideoPlayer() {
     ctx.moveTo(cx, cy + 4);
     ctx.lineTo(cx, cy + armLen);
     ctx.stroke();
-  }, [interactionMode, dragNodeInfo, overlayVersion, bitmapVersion, isPlacingNodes, isShiftHeld]);
+  }, [interactionMode, dragNodeInfo, overlayVersion, bitmapVersion, isPlacingNodes, isShiftHeld, INSET_SIZE, INSET_ZOOM]);
 
   // Fit view to instances when 'fit' is enabled and frame/labels change
   // Only re-fit when fit is toggled on or the labeled frame changes,
