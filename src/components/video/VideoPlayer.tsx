@@ -119,6 +119,9 @@ export function VideoPlayer() {
   // Track drag-start screen position for anchoring tooltip + inset
   const dragStartClient = useRef<{ clientX: number; clientY: number } | null>(null);
 
+  // Track cursor scene position for placement-mode inset
+  const cursorScene = useRef<{ x: number; y: number } | null>(null);
+
   // Track whether an undo snapshot has been taken for the current rotation gesture
   const rotationSnapshotTaken = useRef(false);
 
@@ -731,7 +734,12 @@ export function VideoPlayer() {
     rotation,
   ]);
 
-  // Render zoomed inset during node drag
+  // Check if we're in explicit placement mode
+  const labelingMode = useAppStore((s) => s.labelingMode);
+  const placementNodeIdx = useAppStore((s) => s.placementNodeIdx);
+  const isPlacingNodes = labelingMode === "place" && selectedInstance !== null;
+
+  // Render zoomed inset during node drag or placement mode
   const INSET_SIZE = 200;
   const INSET_ZOOM = 4;
   useEffect(() => {
@@ -745,7 +753,9 @@ export function VideoPlayer() {
       inset.style.right = "";
     };
 
-    if (interactionMode !== "dragging" || !dragNodeInfo) {
+    const isDragInset = interactionMode === "dragging" && !!dragNodeInfo;
+    const isPlaceInset = isPlacingNodes && !!cursorScene.current;
+    if (!isDragInset && !isPlaceInset) {
       hideInset();
       return;
     }
@@ -757,18 +767,33 @@ export function VideoPlayer() {
     }
 
     const instances = renderedInstancesRef.current;
-    const inst = instances[dragNodeInfo.instanceIdx];
-    const node = inst?.nodes[dragNodeInfo.nodeIdx];
-    if (!inst || !node) {
-      hideInset();
-      return;
+
+    // Determine center point and overlay instance
+    let centerX: number, centerY: number;
+    let overlayInst: (typeof instances)[number] | null = null;
+    let skipNodeIdx = -1;
+
+    if (isDragInset) {
+      const inst = instances[dragNodeInfo!.instanceIdx];
+      const node = inst?.nodes[dragNodeInfo!.nodeIdx];
+      if (!inst || !node) { hideInset(); return; }
+      centerX = node.x;
+      centerY = node.y;
+      overlayInst = inst;
+      skipNodeIdx = dragNodeInfo!.nodeIdx;
+    } else {
+      centerX = cursorScene.current!.x;
+      centerY = cursorScene.current!.y;
+      // Find the selected instance in rendered instances
+      const selIdx = instances.findIndex((i) => i.isSelected);
+      if (selIdx !== -1) overlayInst = instances[selIdx];
     }
 
     inset.style.display = "block";
 
-    // Position inset near the pinned tooltip at drag-start position
+    // Position: anchor near tooltip for drag, top-right for placement
     const container = containerRef.current;
-    if (container && dragStartClient.current) {
+    if (isDragInset && container && dragStartClient.current) {
       const containerRect = container.getBoundingClientRect();
       const TOOLTIP_OFFSET_X = 16;
       const TOOLTIP_OFFSET_Y = -8;
@@ -783,12 +808,10 @@ export function VideoPlayer() {
       let insetLeft = tipLeft;
       let insetTop = tipTop + TOOLTIP_HEIGHT_ESTIMATE + GAP;
 
-      // Flip above tooltip if it would overflow bottom
       if (insetTop + INSET_SIZE > containerRect.height) {
         insetTop = tipTop - INSET_SIZE - GAP;
       }
 
-      // Clamp to container bounds
       insetLeft = Math.max(8, Math.min(insetLeft, containerRect.width - INSET_SIZE - 8));
       insetTop = Math.max(8, insetTop);
 
@@ -813,10 +836,10 @@ export function VideoPlayer() {
     ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, INSET_SIZE, INSET_SIZE);
 
-    // Draw magnified frame region centered on the dragged node
+    // Draw magnified frame region centered on the target point
     const srcSize = INSET_SIZE / INSET_ZOOM;
-    const sx = node.x - srcSize / 2;
-    const sy = node.y - srcSize / 2;
+    const sx = centerX - srcSize / 2;
+    const sy = centerY - srcSize / 2;
 
     ctx.imageSmoothingEnabled = false;
     try {
@@ -825,47 +848,49 @@ export function VideoPlayer() {
       // Bitmap may be closed
     }
 
-    // Draw nearby edges from this instance
+    // Draw nearby edges from the overlay instance
     const toInset = (px: number, py: number) => ({
       ix: (px - sx) * INSET_ZOOM,
       iy: (py - sy) * INSET_ZOOM,
     });
 
-    ctx.lineWidth = 1.5;
-    ctx.globalAlpha = 0.7;
-    for (const edge of inst.edges) {
-      const src = inst.nodes[edge.srcIdx];
-      const dst = inst.nodes[edge.dstIdx];
-      if (!src?.visible || !dst?.visible) continue;
-      const s = toInset(src.x, src.y);
-      const d = toInset(dst.x, dst.y);
-      const edgeColor = inst.edgeColors
-        ? inst.edgeColors[inst.edges.indexOf(edge)]
-        : inst.color;
-      ctx.strokeStyle = rgbToCSS(edgeColor);
-      ctx.beginPath();
-      ctx.moveTo(s.ix, s.iy);
-      ctx.lineTo(d.ix, d.iy);
-      ctx.stroke();
+    if (overlayInst) {
+      ctx.lineWidth = 1.5;
+      ctx.globalAlpha = 0.7;
+      for (const edge of overlayInst.edges) {
+        const src = overlayInst.nodes[edge.srcIdx];
+        const dst = overlayInst.nodes[edge.dstIdx];
+        if (!src?.visible || !dst?.visible) continue;
+        const s = toInset(src.x, src.y);
+        const d = toInset(dst.x, dst.y);
+        const edgeColor = overlayInst.edgeColors
+          ? overlayInst.edgeColors[overlayInst.edges.indexOf(edge)]
+          : overlayInst.color;
+        ctx.strokeStyle = rgbToCSS(edgeColor);
+        ctx.beginPath();
+        ctx.moveTo(s.ix, s.iy);
+        ctx.lineTo(d.ix, d.iy);
+        ctx.stroke();
+      }
+
+      // Draw other visible nodes as small dots
+      ctx.globalAlpha = 0.6;
+      for (let nIdx = 0; nIdx < overlayInst.nodes.length; nIdx++) {
+        if (nIdx === skipNodeIdx) continue;
+        const n = overlayInst.nodes[nIdx];
+        if (!n.visible) continue;
+        const { ix, iy } = toInset(n.x, n.y);
+        if (ix < -10 || ix > INSET_SIZE + 10 || iy < -10 || iy > INSET_SIZE + 10) continue;
+        const nodeColor = overlayInst.nodeColors ? overlayInst.nodeColors[nIdx] : overlayInst.color;
+        ctx.fillStyle = rgbToCSS(nodeColor);
+        ctx.beginPath();
+        ctx.arc(ix, iy, 3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
     }
 
-    // Draw other visible nodes as small dots
-    ctx.globalAlpha = 0.6;
-    for (let nIdx = 0; nIdx < inst.nodes.length; nIdx++) {
-      if (nIdx === dragNodeInfo.nodeIdx) continue;
-      const n = inst.nodes[nIdx];
-      if (!n.visible) continue;
-      const { ix, iy } = toInset(n.x, n.y);
-      if (ix < -10 || ix > INSET_SIZE + 10 || iy < -10 || iy > INSET_SIZE + 10) continue;
-      const nodeColor = inst.nodeColors ? inst.nodeColors[nIdx] : inst.color;
-      ctx.fillStyle = rgbToCSS(nodeColor);
-      ctx.beginPath();
-      ctx.arc(ix, iy, 3, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    ctx.globalAlpha = 1;
-
-    // Draw crosshair at center (dragged node position)
+    // Draw crosshair at center
     const cx = INSET_SIZE / 2;
     const cy = INSET_SIZE / 2;
     const armLen = 12;
@@ -895,7 +920,7 @@ export function VideoPlayer() {
     ctx.moveTo(cx, cy + 4);
     ctx.lineTo(cx, cy + armLen);
     ctx.stroke();
-  }, [interactionMode, dragNodeInfo, overlayVersion, bitmapVersion]);
+  }, [interactionMode, dragNodeInfo, overlayVersion, bitmapVersion, isPlacingNodes]);
 
   // Fit view to instances when 'fit' is enabled and frame/labels change
   // Only re-fit when fit is toggled on or the labeled frame changes,
@@ -988,11 +1013,6 @@ export function VideoPlayer() {
     },
     [containerSize, frameDims, baseScale, offsetX, offsetY]
   );
-
-  // Check if we're in explicit placement mode
-  const labelingMode = useAppStore((s) => s.labelingMode);
-  const placementNodeIdx = useAppStore((s) => s.placementNodeIdx);
-  const isPlacingNodes = labelingMode === "place" && selectedInstance !== null;
 
   // Auto-exit placement mode when instance is deselected or frame changes
   useEffect(() => {
@@ -1267,6 +1287,13 @@ export function VideoPlayer() {
 
       // Idle mode: hover detection
       const { x, y } = canvasToScene(e.clientX, e.clientY);
+      cursorScene.current = { x, y };
+
+      // Bump overlay version in placement mode to update inset on every move
+      if (isPlacingNodes) {
+        useAppStore.getState().bumpOverlayVersion();
+      }
+
       const instances = renderedInstancesRef.current;
       const nodeThreshold = (markerSize * 2) / zoom;
       const hit = hitTestNode(instances, x, y, nodeThreshold, showNonVisibleNodes);
@@ -1288,7 +1315,7 @@ export function VideoPlayer() {
         useAppStore.getState().bumpOverlayVersion();
       }
     },
-    [isDragging, isPanning, isZoomDragging, dragNodeInfo, canvasToScene, panStart, constrainPan, zoom, interactionMode, selectedNodes, markerSize, hoveredNode, showNonVisibleNodes, offsetX, offsetY]
+    [isDragging, isPanning, isZoomDragging, dragNodeInfo, canvasToScene, panStart, constrainPan, zoom, interactionMode, selectedNodes, markerSize, hoveredNode, showNonVisibleNodes, offsetX, offsetY, isPlacingNodes]
   );
 
   const handleMouseUp = useCallback(() => {
@@ -1537,7 +1564,7 @@ export function VideoPlayer() {
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
-          onMouseLeave={() => { handleMouseUp(); setHoveredNode(null); }}
+          onMouseLeave={() => { handleMouseUp(); setHoveredNode(null); cursorScene.current = null; }}
           onDoubleClick={handleDoubleClick}
           onContextMenu={handleContextMenu}
         />
