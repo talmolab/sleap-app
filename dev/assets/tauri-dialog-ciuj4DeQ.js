@@ -1,0 +1,1 @@
+async function o(n){throw new Error("open dialog is only available in Tauri runtime")}async function i(n){throw new Error("save dialog is only available in Tauri runtime")}export{o as open,i as save};
