@@ -90,7 +90,7 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: sleap-label-${{ matrix.target }}
+          name: sleap-app-${{ matrix.target }}
           path: artifacts/*
           if-no-files-found: error
 

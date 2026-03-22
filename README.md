@@ -1,8 +1,8 @@
-# SLEAP Label Web
+# SLEAP App
 
-Web-based labeling GUI for [SLEAP](https://sleap.ai) animal pose estimation and tracking.
+Pose estimation and tracking app for [SLEAP](https://sleap.ai).
 
-A port of SLEAP's Qt/Python desktop labeling interface to a modern web stack, with an optional [Tauri v2](https://v2.tauri.app/) desktop shell for native file access. Runs entirely in the browser -- no server or Python required.
+A modern rewrite of SLEAP's Qt/Python desktop labeling interface as a web app, with an optional [Tauri v2](https://v2.tauri.app/) desktop shell for native file access. Runs entirely in the browser -- no server or Python required.
 
 ## Tech Stack
 
@@ -153,7 +153,6 @@ src/
 
 src-tauri/                       # Tauri v2 desktop shell (Rust)
 tests/                           # Vitest unit tests + Playwright E2E
-docs/                            # Architecture, research, and feature audit docs
 ```
 
 ### Key Patterns
@@ -163,19 +162,6 @@ docs/                            # Architecture, research, and feature audit doc
 - **`overlayVersion` counter** -- bumped to force overlay re-renders when mutable data changes without React state changes
 - **Reference equality** -- all `labeledFrame` lookups use `===` on video objects (avoids a basename-matching bug in sleap-io.js `Labels.find()`)
 - **Platform abstraction** -- `src/platform/` abstracts file I/O so the same codebase runs in Tauri and the browser
-
-## Documentation
-
-The `docs/` directory contains detailed research and design documents:
-
-- **[architecture.md](docs/architecture.md)** -- system design, state management, rendering pipeline, command pattern
-- **[missing-features-audit.md](docs/missing-features-audit.md)** -- side-by-side comparison with SLEAP desktop (~40% implemented)
-- **[enhancement-proposals.md](docs/enhancement-proposals.md)** -- prioritized feature roadmap (P0--P3)
-- **[sleap-io-upstream-issues.md](docs/sleap-io-upstream-issues.md)** -- tracked bugs/improvements for sleap-io.js
-- **[user-flows.md](docs/user-flows.md)** -- supported labeling workflows
-- **[canvas-rendering-research.md](docs/canvas-rendering-research.md)** -- Canvas 2D vs WebGL vs PixiJS evaluation
-- **[desktop-shell-research.md](docs/desktop-shell-research.md)** -- Tauri v2 vs Electron analysis
-- **[ui-libraries-research.md](docs/ui-libraries-research.md)** -- component/state/styling library selection
 
 ## License
 

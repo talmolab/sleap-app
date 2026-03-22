@@ -1,10 +1,10 @@
 [package]
-name = "sleap-label"
+name = "sleap-app"
 version = "0.1.0"
-description = "SLEAP Label - desktop shell"
+description = "SLEAP - desktop shell"
 authors = ["SLEAP"]
 license = "BSD-3-Clause"
-repository = "https://github.com/talmolab/sleap-label-web"
+repository = "https://github.com/talmolab/sleap-app"
 edition = "2021"
 rust-version = "1.77.2"
 
