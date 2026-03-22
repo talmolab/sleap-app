@@ -116,6 +116,9 @@ export function VideoPlayer() {
   // Track the last scene position during drag for delta calculations (alt-drag)
   const lastDragPos = useRef<{ x: number; y: number } | null>(null);
 
+  // Track drag-start screen position for anchoring tooltip + inset
+  const dragStartClient = useRef<{ clientX: number; clientY: number } | null>(null);
+
   // Track whether an undo snapshot has been taken for the current rotation gesture
   const rotationSnapshotTaken = useRef(false);
 
@@ -735,14 +738,21 @@ export function VideoPlayer() {
     const inset = insetCanvasRef.current;
     if (!inset) return;
 
-    if (interactionMode !== "dragging" || !dragNodeInfo) {
+    const hideInset = () => {
       inset.style.display = "none";
+      inset.style.left = "";
+      inset.style.top = "";
+      inset.style.right = "";
+    };
+
+    if (interactionMode !== "dragging" || !dragNodeInfo) {
+      hideInset();
       return;
     }
 
     const bmp = frameBitmapRef.current;
     if (!bmp) {
-      inset.style.display = "none";
+      hideInset();
       return;
     }
 
@@ -750,11 +760,46 @@ export function VideoPlayer() {
     const inst = instances[dragNodeInfo.instanceIdx];
     const node = inst?.nodes[dragNodeInfo.nodeIdx];
     if (!inst || !node) {
-      inset.style.display = "none";
+      hideInset();
       return;
     }
 
     inset.style.display = "block";
+
+    // Position inset near the pinned tooltip at drag-start position
+    const container = containerRef.current;
+    if (container && dragStartClient.current) {
+      const containerRect = container.getBoundingClientRect();
+      const TOOLTIP_OFFSET_X = 16;
+      const TOOLTIP_OFFSET_Y = -8;
+      const TOOLTIP_HEIGHT_ESTIMATE = 80;
+      const GAP = 6;
+
+      const tipLeft =
+        dragStartClient.current.clientX - containerRect.left + TOOLTIP_OFFSET_X;
+      const tipTop =
+        dragStartClient.current.clientY - containerRect.top + TOOLTIP_OFFSET_Y;
+
+      let insetLeft = tipLeft;
+      let insetTop = tipTop + TOOLTIP_HEIGHT_ESTIMATE + GAP;
+
+      // Flip above tooltip if it would overflow bottom
+      if (insetTop + INSET_SIZE > containerRect.height) {
+        insetTop = tipTop - INSET_SIZE - GAP;
+      }
+
+      // Clamp to container bounds
+      insetLeft = Math.max(8, Math.min(insetLeft, containerRect.width - INSET_SIZE - 8));
+      insetTop = Math.max(8, insetTop);
+
+      inset.style.left = `${insetLeft}px`;
+      inset.style.top = `${insetTop}px`;
+      inset.style.right = "auto";
+    } else {
+      inset.style.top = "12px";
+      inset.style.right = "12px";
+      inset.style.left = "auto";
+    }
 
     const dpr = window.devicePixelRatio || 1;
     inset.width = INSET_SIZE * dpr;
@@ -1078,6 +1123,7 @@ export function VideoPlayer() {
           setIsDragging(true);
           setInteractionMode("dragging");
           lastDragPos.current = { x, y };
+          dragStartClient.current = { clientX: e.clientX, clientY: e.clientY };
         }
         return;
       }
@@ -1205,12 +1251,12 @@ export function VideoPlayer() {
           }
         }
 
-        // Update hover tooltip to track dragged node position
+        // Update hover tooltip — pin at drag-start position, not cursor
         setHoveredNode({
           instanceIdx: dragNodeInfo.instanceIdx,
           nodeIdx: dragNodeInfo.nodeIdx,
-          clientX: e.clientX,
-          clientY: e.clientY,
+          clientX: dragStartClient.current?.clientX ?? e.clientX,
+          clientY: dragStartClient.current?.clientY ?? e.clientY,
         });
 
         lastDragPos.current = { x, y };
@@ -1275,6 +1321,7 @@ export function VideoPlayer() {
       setIsDragging(false);
       setDragNodeInfo(null);
       lastDragPos.current = null;
+      dragStartClient.current = null;
       setInteractionMode("idle");
     }
   }, [isDragging, isPanning, isZoomDragging, interactionMode, marqueeStart, marqueeEnd]);
@@ -1499,7 +1546,7 @@ export function VideoPlayer() {
         {/* Zoomed inset during node drag */}
         <canvas
           ref={insetCanvasRef}
-          className="absolute top-3 right-3 z-30 pointer-events-none rounded-lg border-2 border-white/30 shadow-lg"
+          className="absolute z-30 pointer-events-none rounded-lg border-2 border-white/30 shadow-lg"
           style={{ display: "none", width: INSET_SIZE, height: INSET_SIZE }}
         />
         {/* Node hover tooltip */}
