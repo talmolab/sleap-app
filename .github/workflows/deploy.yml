@@ -52,62 +52,66 @@ jobs:
         run: |
           DEPLOY_PATH="${{ steps.target.outputs.path }}"
 
+          # Set up a fresh clone of just the gh-pages branch
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Checkout or create gh-pages branch
-          git fetch origin gh-pages:gh-pages 2>/dev/null || true
-          if git rev-parse --verify gh-pages >/dev/null 2>&1; then
-            git worktree add gh-pages-dir gh-pages
+          mkdir gh-pages-dir
+          cd gh-pages-dir
+          git init
+          git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+
+          # Fetch existing gh-pages content, or start fresh
+          if git fetch origin gh-pages 2>/dev/null; then
+            git checkout gh-pages
           else
-            git worktree add --orphan gh-pages gh-pages-dir
+            git checkout --orphan gh-pages
           fi
 
           # Clean target directory
           if [[ -z "$DEPLOY_PATH" ]]; then
-            # Root deploy: remove everything except dev/ and special files
-            find gh-pages-dir -maxdepth 1 \
-              ! -name 'gh-pages-dir' \
+            # Root deploy: remove everything except dev/
+            find . -maxdepth 1 \
+              ! -name '.' \
               ! -name '.git' \
               ! -name 'dev' \
-              -exec rm -rf {} + 2>/dev/null || true
+              -exec rm -rf {} +
           else
             # Dev deploy: remove only dev/
-            rm -rf "gh-pages-dir/${DEPLOY_PATH}"
+            rm -rf "${DEPLOY_PATH}"
           fi
 
           # Copy build output
           if [[ -z "$DEPLOY_PATH" ]]; then
-            cp -r dist/* gh-pages-dir/
+            cp -r ../dist/* .
           else
-            cp -r dist "gh-pages-dir/${DEPLOY_PATH}"
+            cp -r ../dist "${DEPLOY_PATH}"
           fi
 
           # Ensure required files exist
-          touch gh-pages-dir/.nojekyll
-          echo "app.sleap.ai" > gh-pages-dir/CNAME
+          touch .nojekyll
+          echo "app.sleap.ai" > CNAME
 
           # 404 page
-          cat > gh-pages-dir/404.html << 'NOTFOUND_EOF'
-          <!DOCTYPE html>
-          <html>
-          <head>
-            <meta charset="utf-8">
-            <title>Page not found - SLEAP</title>
-            <style>
-              body { font-family: system-ui, sans-serif; max-width: 480px; margin: 80px auto; text-align: center; color: #333; }
-              a { color: #f97316; }
-            </style>
-          </head>
-          <body>
-            <h1>Page not found</h1>
-            <p><a href="https://app.sleap.ai">Go to SLEAP</a></p>
-          </body>
-          </html>
-          NOTFOUND_EOF
+          cat > 404.html << 'NOTFOUND_EOF'
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Page not found - SLEAP</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 480px; margin: 80px auto; text-align: center; color: #333; }
+    a { color: #f97316; }
+  </style>
+</head>
+<body>
+  <h1>Page not found</h1>
+  <p><a href="https://app.sleap.ai">Go to SLEAP</a></p>
+</body>
+</html>
+NOTFOUND_EOF
 
           # Commit and push
-          cd gh-pages-dir
           git add -A
           git diff --cached --quiet && echo "No changes to deploy" && exit 0
           git commit -m "Deploy ${{ steps.target.outputs.label }} (${GITHUB_SHA::8})"
