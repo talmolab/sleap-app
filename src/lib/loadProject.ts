@@ -34,7 +34,6 @@ export async function loadProjectFromFile(file: File): Promise<boolean> {
   try {
     const labels = await loadSlp(file, {
       openVideos: true,
-      h5: { filenameHint: file.name },
     });
     await resolveExternalVideos(labels);
     store.setLabels(labels, file.name);
