@@ -732,7 +732,7 @@ export function VideoPlayer() {
   ]);
 
   // Render zoomed inset during node drag
-  const INSET_SIZE = 150;
+  const INSET_SIZE = 200;
   const INSET_ZOOM = 4;
   useEffect(() => {
     const inset = insetCanvasRef.current;
