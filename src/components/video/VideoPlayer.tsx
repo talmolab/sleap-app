@@ -86,6 +86,7 @@ export function VideoPlayer() {
   const [isPanning, setIsPanning] = useState(false);
   const [isSpaceHeld, setIsSpaceHeld] = useState(false);
   const [isCmdHeld, setIsCmdHeld] = useState(false);
+  const [isShiftHeld, setIsShiftHeld] = useState(false);
   const [isZoomDragging, setIsZoomDragging] = useState(false);
   // XOR: defaultToPan reverses the meaning of space for pan vs select
   const shouldPan = defaultToPan !== isSpaceHeld;
@@ -254,6 +255,10 @@ export function VideoPlayer() {
       if (e.key === "Meta" || e.key === "Control") {
         setIsCmdHeld(true);
       }
+      if (e.key === "Shift" && !e.repeat) {
+        setIsShiftHeld(true);
+        useAppStore.getState().bumpOverlayVersion();
+      }
     };
     const handleKeyUp = (e: KeyboardEvent) => {
       if (e.code === "Space") {
@@ -261,6 +266,10 @@ export function VideoPlayer() {
       }
       if (e.key === "Meta" || e.key === "Control") {
         setIsCmdHeld(false);
+      }
+      if (e.key === "Shift") {
+        setIsShiftHeld(false);
+        useAppStore.getState().bumpOverlayVersion();
       }
     };
     window.addEventListener("keydown", handleKeyDown);
@@ -755,7 +764,8 @@ export function VideoPlayer() {
 
     const isDragInset = interactionMode === "dragging" && !!dragNodeInfo;
     const isPlaceInset = isPlacingNodes && !!cursorScene.current;
-    if (!isDragInset && !isPlaceInset) {
+    const isHoldInset = isShiftHeld && !!cursorScene.current;
+    if (!isDragInset && !isPlaceInset && !isHoldInset) {
       hideInset();
       return;
     }
@@ -920,7 +930,7 @@ export function VideoPlayer() {
     ctx.moveTo(cx, cy + 4);
     ctx.lineTo(cx, cy + armLen);
     ctx.stroke();
-  }, [interactionMode, dragNodeInfo, overlayVersion, bitmapVersion, isPlacingNodes]);
+  }, [interactionMode, dragNodeInfo, overlayVersion, bitmapVersion, isPlacingNodes, isShiftHeld]);
 
   // Fit view to instances when 'fit' is enabled and frame/labels change
   // Only re-fit when fit is toggled on or the labeled frame changes,
