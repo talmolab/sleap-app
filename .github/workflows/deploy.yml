@@ -60,7 +60,7 @@ jobs:
           if git rev-parse --verify gh-pages >/dev/null 2>&1; then
             git worktree add gh-pages-dir gh-pages
           else
-            git worktree add gh-pages-dir --orphan gh-pages
+            git worktree add --orphan gh-pages gh-pages-dir
           fi
 
           # Clean target directory
