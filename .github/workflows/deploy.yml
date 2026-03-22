@@ -1,0 +1,114 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+# Serialize deploys to avoid race conditions on gh-pages branch
+concurrency:
+  group: deploy-pages
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Determine deploy target
+        id: target
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "path=" >> "$GITHUB_OUTPUT"
+            echo "base=/" >> "$GITHUB_OUTPUT"
+            echo "label=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          else
+            echo "path=dev" >> "$GITHUB_OUTPUT"
+            echo "base=/dev/" >> "$GITHUB_OUTPUT"
+            echo "label=dev" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+        env:
+          VITE_BASE_PATH: ${{ steps.target.outputs.base }}
+
+      - name: Deploy to gh-pages
+        run: |
+          DEPLOY_PATH="${{ steps.target.outputs.path }}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Checkout or create gh-pages branch
+          git fetch origin gh-pages:gh-pages 2>/dev/null || true
+          if git rev-parse --verify gh-pages >/dev/null 2>&1; then
+            git worktree add gh-pages-dir gh-pages
+          else
+            git worktree add gh-pages-dir --orphan gh-pages
+          fi
+
+          # Clean target directory
+          if [[ -z "$DEPLOY_PATH" ]]; then
+            # Root deploy: remove everything except dev/ and special files
+            find gh-pages-dir -maxdepth 1 \
+              ! -name 'gh-pages-dir' \
+              ! -name '.git' \
+              ! -name 'dev' \
+              -exec rm -rf {} + 2>/dev/null || true
+          else
+            # Dev deploy: remove only dev/
+            rm -rf "gh-pages-dir/${DEPLOY_PATH}"
+          fi
+
+          # Copy build output
+          if [[ -z "$DEPLOY_PATH" ]]; then
+            cp -r dist/* gh-pages-dir/
+          else
+            cp -r dist "gh-pages-dir/${DEPLOY_PATH}"
+          fi
+
+          # Ensure required files exist
+          touch gh-pages-dir/.nojekyll
+          echo "app.sleap.ai" > gh-pages-dir/CNAME
+
+          # 404 page
+          cat > gh-pages-dir/404.html << 'NOTFOUND_EOF'
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <meta charset="utf-8">
+            <title>Page not found - SLEAP</title>
+            <style>
+              body { font-family: system-ui, sans-serif; max-width: 480px; margin: 80px auto; text-align: center; color: #333; }
+              a { color: #f97316; }
+            </style>
+          </head>
+          <body>
+            <h1>Page not found</h1>
+            <p><a href="https://app.sleap.ai">Go to SLEAP</a></p>
+          </body>
+          </html>
+          NOTFOUND_EOF
+
+          # Commit and push
+          cd gh-pages-dir
+          git add -A
+          git diff --cached --quiet && echo "No changes to deploy" && exit 0
+          git commit -m "Deploy ${{ steps.target.outputs.label }} (${GITHUB_SHA::8})"
+          git push origin gh-pages

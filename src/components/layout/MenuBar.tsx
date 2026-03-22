@@ -59,7 +59,7 @@ export function MenuBar() {
   return (
     <Menubar className="h-8 rounded-none border-0 border-b border-border bg-card px-0 gap-0 shadow-none">
       <div className="px-3 font-semibold text-sm text-primary flex items-center tracking-wider gap-1.5">
-        <img src="/icon.png" alt="" className="w-4 h-4" />
+        <img src={`${import.meta.env.BASE_URL}icon.png`} alt="" className="w-4 h-4" />
         SLEAP
       </div>
       <FileMenu />

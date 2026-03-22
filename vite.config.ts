@@ -8,6 +8,7 @@ import path from "path";
 const isTauri = !!process.env.TAURI_ENV_PLATFORM;
 
 export default defineConfig({
+  base: process.env.VITE_BASE_PATH || "/",
   plugins: [react(), tailwindcss()],
 
   resolve: {

@@ -32,7 +32,7 @@ export function WelcomeScreen() {
     <div
       className="flex-1 flex items-center justify-center relative"
       style={{
-        backgroundImage: "url(/background.jpg)",
+        backgroundImage: `url(${import.meta.env.BASE_URL}background.jpg)`,
         backgroundSize: "cover",
         backgroundPosition: "center",
       }}
@@ -44,7 +44,7 @@ export function WelcomeScreen() {
 
       <Card className="relative z-10 w-full max-w-md border-border bg-card/95 backdrop-blur-sm py-8">
         <CardContent className="flex flex-col items-center text-center space-y-6">
-          <img src="/icon.png" alt="SLEAP" className="w-16 h-16" />
+          <img src={`${import.meta.env.BASE_URL}icon.png`} alt="SLEAP" className="w-16 h-16" />
 
           <div>
             <h1 className="text-2xl font-bold text-foreground">
