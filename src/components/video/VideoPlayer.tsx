@@ -847,7 +847,9 @@ export function VideoPlayer() {
     ctx.clearRect(0, 0, INSET_SIZE, INSET_SIZE);
 
     // Draw magnified frame region centered on the target point
-    const srcSize = INSET_SIZE / INSET_ZOOM;
+    // Inset zoom is relative to the current viewport zoom level
+    const effectiveZoom = INSET_ZOOM * zoom;
+    const srcSize = INSET_SIZE / effectiveZoom;
     const sx = centerX - srcSize / 2;
     const sy = centerY - srcSize / 2;
 
@@ -912,7 +914,7 @@ export function VideoPlayer() {
     ctx.moveTo(cx, 0);
     ctx.lineTo(cx, INSET_SIZE);
     ctx.stroke();
-  }, [interactionMode, dragNodeInfo, overlayVersion, bitmapVersion, isPlacingNodes, isShiftHeld, INSET_SIZE, INSET_ZOOM]);
+  }, [interactionMode, dragNodeInfo, overlayVersion, bitmapVersion, isPlacingNodes, isShiftHeld, INSET_SIZE, INSET_ZOOM, zoom]);
 
   // Fit view to instances when 'fit' is enabled and frame/labels change
   // Only re-fit when fit is toggled on or the labeled frame changes,
