@@ -383,7 +383,7 @@ export const useAppStore = create<AppState>()(
         }),
     })),
     {
-      name: "sleap-label-preferences",
+      name: "sleap-app-preferences",
       partialize: (state) =>
         Object.fromEntries(
           PERSISTED_KEYS.map((key) => [key, state[key]])

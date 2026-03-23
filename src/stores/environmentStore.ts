@@ -407,7 +407,7 @@ export const useEnvironmentStore = create<EnvironmentState>()(
       },
     }),
     {
-      name: "sleap-label-environment",
+      name: "sleap-app-environment",
       partialize: (state) =>
         Object.fromEntries(
           PERSISTED_KEYS.map((key) => [key, state[key]])
