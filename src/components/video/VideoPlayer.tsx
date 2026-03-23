@@ -904,7 +904,7 @@ export function VideoPlayer() {
     const cx = INSET_SIZE / 2;
     const cy = INSET_SIZE / 2;
 
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.5)";
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.25)";
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(0, cy);

@@ -178,7 +178,7 @@ export const useAppStore = create<AppState>()(
       distinctlyColor: "track" as ColorTarget,
       markerSize: 4,
       nodeLabelSize: 12,
-      insetSize: 200,
+      insetSize: 400,
       insetZoom: 4,
       trailLength: 0,
       trailShade: "Normal",
