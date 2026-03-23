@@ -1281,8 +1281,8 @@ export function VideoPlayer() {
       const { x, y } = canvasToScene(e.clientX, e.clientY);
       cursorScene.current = { x, y };
 
-      // Bump overlay version in placement mode to update inset on every move
-      if (isPlacingNodes) {
+      // Bump overlay version to update inset on every move
+      if (isPlacingNodes || isShiftHeld) {
         useAppStore.getState().bumpOverlayVersion();
       }
 
@@ -1307,7 +1307,7 @@ export function VideoPlayer() {
         useAppStore.getState().bumpOverlayVersion();
       }
     },
-    [isDragging, isPanning, isZoomDragging, dragNodeInfo, canvasToScene, panStart, constrainPan, zoom, interactionMode, selectedNodes, markerSize, hoveredNode, showNonVisibleNodes, offsetX, offsetY, isPlacingNodes]
+    [isDragging, isPanning, isZoomDragging, dragNodeInfo, canvasToScene, panStart, constrainPan, zoom, interactionMode, selectedNodes, markerSize, hoveredNode, showNonVisibleNodes, offsetX, offsetY, isPlacingNodes, isShiftHeld]
   );
 
   const handleMouseUp = useCallback(() => {
