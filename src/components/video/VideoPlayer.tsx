@@ -900,35 +900,17 @@ export function VideoPlayer() {
       ctx.globalAlpha = 1;
     }
 
-    // Draw crosshair at center
+    // Draw crosshair spanning full inset
     const cx = INSET_SIZE / 2;
     const cy = INSET_SIZE / 2;
-    const armLen = 12;
 
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
-    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.5)";
+    ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.moveTo(cx - armLen, cy);
-    ctx.lineTo(cx - 4, cy);
-    ctx.moveTo(cx + 4, cy);
-    ctx.lineTo(cx + armLen, cy);
-    ctx.moveTo(cx, cy - armLen);
-    ctx.lineTo(cx, cy - 4);
-    ctx.moveTo(cx, cy + 4);
-    ctx.lineTo(cx, cy + armLen);
-    ctx.stroke();
-
-    ctx.strokeStyle = "rgba(0, 0, 0, 0.5)";
-    ctx.lineWidth = 0.5;
-    ctx.beginPath();
-    ctx.moveTo(cx - armLen, cy);
-    ctx.lineTo(cx - 4, cy);
-    ctx.moveTo(cx + 4, cy);
-    ctx.lineTo(cx + armLen, cy);
-    ctx.moveTo(cx, cy - armLen);
-    ctx.lineTo(cx, cy - 4);
-    ctx.moveTo(cx, cy + 4);
-    ctx.lineTo(cx, cy + armLen);
+    ctx.moveTo(0, cy);
+    ctx.lineTo(INSET_SIZE, cy);
+    ctx.moveTo(cx, 0);
+    ctx.lineTo(cx, INSET_SIZE);
     ctx.stroke();
   }, [interactionMode, dragNodeInfo, overlayVersion, bitmapVersion, isPlacingNodes, isShiftHeld, INSET_SIZE, INSET_ZOOM]);
 
