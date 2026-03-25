@@ -12,6 +12,8 @@ import { useAppStore } from "../../stores/appStore";
 import { useEnvironmentStore } from "../../stores/environmentStore";
 import { useInferenceStore } from "../../stores/inferenceStore";
 import type { InferenceConfig, PipelineType } from "@/stores/inferenceStore";
+import { useConnectStore } from "@/stores/connectStore";
+import { RemoteFileBrowser } from "@/components/dialogs/RemoteFileBrowser";
 import { isTauri } from "../../platform/index";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -29,6 +31,7 @@ import {
   XCircle,
   AlertCircle,
   FolderOpen,
+  Folder,
   Play,
   X,
   Download,
@@ -262,6 +265,23 @@ export function InferencePanel() {
   const [merging, setMerging] = useState(false);
   const logRef = useRef<HTMLPreElement>(null);
 
+  // Remote inference state
+  const [remoteEnabled, setRemoteEnabled] = useState(false);
+  const [remoteDataPath, setRemoteDataPath] = useState("");
+  const [remoteModelPaths, setRemoteModelPaths] = useState<string[]>([]);
+  const [fileBrowserOpen, setFileBrowserOpen] = useState(false);
+  const [fileBrowserMode, setFileBrowserMode] = useState<"directory" | "file">("directory");
+  const [fileBrowserCallback, setFileBrowserCallback] = useState<((path: string) => void) | null>(null);
+
+  const connectionStatus = useConnectStore((s) => s.connectionStatus);
+  const workers = useConnectStore((s) => s.workers);
+  const selectedWorkerId = useConnectStore((s) => s.selectedWorkerId);
+  const selectWorker = useConnectStore((s) => s.selectWorker);
+
+  const availableWorkers = workers.filter((w) => w.status === "available");
+  const selectedWorker = workers.find((w) => w.peerId === selectedWorkerId);
+  const workerMounts = selectedWorker?.mounts || ["/"];
+
   // Elapsed time ticker
   const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
@@ -283,7 +303,8 @@ export function InferencePanel() {
   );
   const isRunning = inferenceStatus === "running";
   const isDone = inferenceStatus === "completed" || inferenceStatus === "error" || inferenceStatus === "cancelled";
-  const canRun = sleapNnAvailable && !isRunning && !isDone && modelPaths.length > 0;
+  const activeModelPaths = remoteEnabled ? remoteModelPaths : modelPaths;
+  const canRun = (remoteEnabled || sleapNnAvailable) && !isRunning && !isDone && activeModelPaths.length > 0;
   const isBottomUp = pipeline === "bottom-up" || pipeline === "bottom-up-id";
   const isTopDown = pipeline === "top-down" || pipeline === "top-down-id";
 
@@ -307,7 +328,7 @@ export function InferencePanel() {
 
   const handleRunInference = async () => {
     const config: InferenceConfig = {
-      pipeline, modelPaths,
+      pipeline, modelPaths: remoteEnabled ? remoteModelPaths : modelPaths,
       videoIndex: selectedVideo === "all" ? "all" : Number(selectedVideo),
       frameRange: frameRange === "custom" ? { start: Number(frameStart), end: Number(frameEnd) } : frameRange,
       excludeUserLabeled, batchSize, device,
@@ -322,7 +343,16 @@ export function InferencePanel() {
       connectSingleBreaks, flowImgScale, flowWindowSize, flowMaxLevels,
       filterOverlapping, filterMethod, filterThreshold,
     };
-    await startInference(config);
+
+    if (remoteEnabled) {
+      await startInference(config, {
+        remote: true,
+        dataPath: remoteDataPath,
+        workerId: selectedWorkerId!,
+      });
+    } else {
+      await startInference(config);
+    }
   };
 
   const pct = progress && progress.nTotal > 0 ? (progress.nProcessed / progress.nTotal) * 100 : 0;
@@ -359,21 +389,38 @@ export function InferencePanel() {
         <Section title="Models" defaultOpen={true}>
           <div className="flex justify-end">
             <Button variant="outline" size="sm" className="h-6 text-[10px] px-2"
-              onClick={handleAddModel} disabled={isRunning}>
-              <FolderOpen className="h-3 w-3 mr-1" /> Add
+              onClick={() => {
+                if (remoteEnabled) {
+                  setFileBrowserMode("directory");
+                  setFileBrowserCallback(() => (path: string) => {
+                    setRemoteModelPaths((prev) => [...prev, path]);
+                  });
+                  setFileBrowserOpen(true);
+                } else {
+                  handleAddModel();
+                }
+              }} disabled={isRunning}>
+              <FolderOpen className="h-3 w-3 mr-1" /> {remoteEnabled ? "Browse Worker" : "Add"}
             </Button>
           </div>
-          {modelPaths.length === 0 ? (
+          {activeModelPaths.length === 0 ? (
             <p className="text-[10px] text-muted-foreground">
               {isTopDown ? "Add two directories (centroid + centered-instance)." : "Add a model directory."}
             </p>
           ) : (
             <div className="space-y-1">
-              {modelPaths.map((p, i) => (
+              {activeModelPaths.map((p, i) => (
                 <div key={i} className="flex items-center gap-1 rounded border bg-muted/50 px-2 py-1">
-                  <span className="text-[10px] truncate flex-1" title={p}>{p.split(/[\\/]/).pop()}</span>
+                  {remoteEnabled && <Folder className="h-3.5 w-3.5 text-primary flex-shrink-0" />}
+                  <span className="text-[10px] truncate flex-1" title={p}>{remoteEnabled ? p : p.split(/[\\/]/).pop()}</span>
                   <button className="text-muted-foreground hover:text-destructive shrink-0"
-                    onClick={() => setModelPaths((prev) => prev.filter((_, j) => j !== i))}
+                    onClick={() => {
+                      if (remoteEnabled) {
+                        setRemoteModelPaths((prev) => prev.filter((_, j) => j !== i));
+                      } else {
+                        setModelPaths((prev) => prev.filter((_, j) => j !== i));
+                      }
+                    }}
                     disabled={isRunning} title="Remove">
                     <X className="h-3 w-3" />
                   </button>
@@ -424,6 +471,35 @@ export function InferencePanel() {
           </div>
           <Check label="Exclude user-labeled frames" checked={excludeUserLabeled}
             onChange={setExcludeUserLabeled} disabled={isRunning} />
+          {remoteEnabled && (
+            <div className="space-y-1">
+              <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+                Data Path (on worker)
+              </label>
+              <div className="flex gap-1">
+                <Input
+                  value={remoteDataPath}
+                  readOnly
+                  className="h-7 text-xs font-mono flex-1"
+                  placeholder="Select a .slp file on the worker"
+                />
+                <Button
+                  variant="outline"
+                  size="xs"
+                  className="px-2"
+                  onClick={() => {
+                    setFileBrowserMode("file");
+                    setFileBrowserCallback(() => (path: string) => {
+                      setRemoteDataPath(path);
+                    });
+                    setFileBrowserOpen(true);
+                  }}
+                >
+                  <Folder className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            </div>
+          )}
         </Section>
 
         <Separator />
@@ -568,9 +644,88 @@ export function InferencePanel() {
 
         <Separator />
 
+        {/* ── Remote ─────────────────────────────────────────────── */}
+        <Section title="Remote" defaultOpen={false}>
+          {/* Remote Inference toggle */}
+          <div className="flex items-center justify-between py-1">
+            <span className="text-xs">Remote Inference</span>
+            <button
+              className={`w-9 h-5 rounded-full relative transition-colors ${
+                remoteEnabled ? "bg-primary" : "bg-zinc-700"
+              }`}
+              onClick={() => setRemoteEnabled(!remoteEnabled)}
+              disabled={connectionStatus !== "connected"}
+            >
+              <span
+                className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
+                  remoteEnabled ? "translate-x-4" : ""
+                }`}
+              />
+            </button>
+          </div>
+
+          {connectionStatus !== "connected" && !remoteEnabled && (
+            <p className="text-[10px] text-muted-foreground">
+              Connect to a room in the Connect tab to enable remote inference.
+            </p>
+          )}
+
+          {remoteEnabled && connectionStatus === "connected" && (
+            <>
+              {/* Room indicator */}
+              <div className="space-y-1">
+                <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+                  Room
+                </label>
+                <div className="flex items-center gap-1.5 text-[11px]">
+                  <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
+                  {useConnectStore.getState().roomId}
+                </div>
+              </div>
+
+              {/* Worker selector */}
+              <div className="space-y-1">
+                <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+                  Worker
+                </label>
+                <Select
+                  value={selectedWorkerId || ""}
+                  onValueChange={(v) => selectWorker(v)}
+                >
+                  <SelectTrigger className="h-7 text-xs">
+                    <SelectValue placeholder="Select a worker" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {workers.map((w) => (
+                      <SelectItem
+                        key={w.peerId}
+                        value={w.peerId}
+                        disabled={w.status !== "available"}
+                      >
+                        {w.name}
+                        {w.gpu ? ` (${w.gpu.model})` : ""}
+                        {w.status !== "available" ? ` — ${w.status}` : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {availableWorkers.length === 0 && (
+                <div className="bg-orange-500/8 border border-orange-500/20 rounded-md p-2 text-[11px] text-orange-400">
+                  <b>All workers are busy.</b> Wait for a worker to become
+                  available, or disable remote inference.
+                </div>
+              )}
+            </>
+          )}
+        </Section>
+
+        <Separator />
+
         {/* ── Run button ──────────────────────────────────────────── */}
         <Button className="w-full h-8 text-xs" onClick={handleRunInference} disabled={!canRun}>
-          <Play className="h-3.5 w-3.5 mr-1.5" /> Run Inference
+          <Play className="h-3.5 w-3.5 mr-1.5" /> {remoteEnabled ? "Run Remote Inference" : "Run Inference"}
         </Button>
       </div>
 
@@ -677,6 +832,18 @@ export function InferencePanel() {
           </div>
         </>
       )}
+
+      <RemoteFileBrowser
+        open={fileBrowserOpen}
+        onClose={() => setFileBrowserOpen(false)}
+        onSelect={(path) => {
+          if (fileBrowserCallback) fileBrowserCallback(path);
+          setFileBrowserOpen(false);
+        }}
+        startPath={workerMounts[0] || "/"}
+        mode={fileBrowserMode}
+        fileFilter={fileBrowserMode === "file" ? ".slp" : undefined}
+      />
     </div>
   );
 }
