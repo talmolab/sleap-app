@@ -304,7 +304,7 @@ export function InferencePanel() {
   const isRunning = inferenceStatus === "running";
   const isDone = inferenceStatus === "completed" || inferenceStatus === "error" || inferenceStatus === "cancelled";
   const activeModelPaths = remoteEnabled ? remoteModelPaths : modelPaths;
-  const canRun = (remoteEnabled || sleapNnAvailable) && !isRunning && !isDone && activeModelPaths.length > 0;
+  const canRun = (remoteEnabled ? (!!selectedWorkerId && !!remoteDataPath) : sleapNnAvailable) && !isRunning && !isDone && activeModelPaths.length > 0;
   const isBottomUp = pipeline === "bottom-up" || pipeline === "bottom-up-id";
   const isTopDown = pipeline === "top-down" || pipeline === "top-down-id";
 

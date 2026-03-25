@@ -256,6 +256,7 @@ export function EnvironmentPanel() {
 
   const sleapNnTool = tools.find((t) => t.name === "sleap-nn");
   const sleapTool = tools.find((t) => t.name === "sleap");
+  const sleapRtcTool = tools.find((t) => t.name === "sleap-rtc");
   const isDetecting = detectionStatus === "checking";
   const detected = detectionStatus === "done" || detectionStatus === "error";
   const isInstalling = installStatus === "installing";
@@ -538,6 +539,42 @@ export function EnvironmentPanel() {
             {sleapTool && sleapTool.commands.length > 0 && (
               <div className="flex flex-wrap gap-1 pl-5 mt-0.5">
                 {sleapTool.commands.map((cmd) => (
+                  <Badge
+                    key={cmd}
+                    variant="secondary"
+                    className="text-[10px] px-1.5 py-0 h-4 rounded-sm font-mono"
+                  >
+                    {cmd}
+                  </Badge>
+                ))}
+              </div>
+            )}
+
+            {/* sleap-rtc */}
+            <div className="flex items-center gap-2 py-0.5 mt-1">
+              <StatusIcon ok={!!sleapRtcTool} />
+              <span className="text-xs font-medium">sleap-rtc</span>
+              {sleapRtcTool?.version && (
+                <span className="text-xs text-muted-foreground">
+                  v{sleapRtcTool.version}
+                </span>
+              )}
+              <div className="ml-auto">
+                <ToolActions
+                  tool={sleapRtcTool}
+                  installing={
+                    isInstalling &&
+                    (installTarget?.includes("sleap-rtc") ?? false)
+                  }
+                  onInstall={() => doInstallTool("sleap-rtc")}
+                  onUpgrade={() => doUpgradeTool("sleap-rtc")}
+                  onReinstall={() => doReinstallTool("sleap-rtc")}
+                />
+              </div>
+            </div>
+            {sleapRtcTool && sleapRtcTool.commands.length > 0 && (
+              <div className="flex flex-wrap gap-1 pl-5 mt-0.5">
+                {sleapRtcTool.commands.map((cmd) => (
                   <Badge
                     key={cmd}
                     variant="secondary"
