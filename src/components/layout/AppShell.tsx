@@ -30,6 +30,7 @@ import { DebugPanel } from "../panels/DebugPanel";
 import { NotificationsPanel } from "../panels/NotificationsPanel";
 import { EnvironmentPanel } from "../panels/EnvironmentPanel";
 import { InferencePanel } from "../panels/InferencePanel";
+import { ConnectPanel } from "../panels/ConnectPanel";
 import { WelcomeScreen } from "./WelcomeScreen";
 import { TrainingDialog } from "../dialogs/TrainingDialog";
 import { GoToFrameDialog } from "../dialogs/GoToFrameDialog";
@@ -52,6 +53,7 @@ import {
   GripVertical,
   Cpu,
   Zap,
+  Globe,
 } from "lucide-react";
 import {
   Tooltip,
@@ -77,6 +79,7 @@ const PANELS = [
   { id: "environment", label: "Environment", icon: Cpu, component: EnvironmentPanel },
   { id: "notifications", label: "Notifications", icon: Bell, component: NotificationsPanel },
   { id: "debug", label: "Debug", icon: Bug, component: DebugPanel },
+  { id: "connect", label: "Connect", icon: Globe, component: ConnectPanel },
 ] as const;
 
 export function AppShell() {
