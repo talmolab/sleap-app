@@ -66,6 +66,12 @@ export interface InferenceConfig {
   filterThreshold: number;
 }
 
+export interface RemoteInferenceOptions {
+  remote: true;
+  dataPath: string;
+  workerId: string;
+}
+
 export type InferenceStatus =
   | "idle"
   | "running"
@@ -86,7 +92,7 @@ interface InferenceState {
   setMinimized: (minimized: boolean) => void;
   reset: () => void;
   cancelInference: () => Promise<void>;
-  startInference: (config: InferenceConfig) => Promise<void>;
+  startInference: (config: InferenceConfig, remoteOpts?: RemoteInferenceOptions) => Promise<void>;
   loadAndMergeResults: () => Promise<void>;
 }
 
@@ -161,7 +167,7 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
     set({ status: "cancelled" });
   },
 
-  startInference: async (config: InferenceConfig) => {
+  startInference: async (config: InferenceConfig, remoteOpts?: RemoteInferenceOptions) => {
     set({
       status: "running",
       error: null,
@@ -172,32 +178,82 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
       startedAt: Date.now(),
     });
 
-    const { projectPath, labels } = useAppStore.getState();
-    if (!labels) {
-      set({ status: "error", error: "No project loaded" });
-      return;
-    }
+    if (remoteOpts?.remote) {
+      // ── Remote inference via WebRTC ────────────────────────
+      const { useConnectStore } = await import("@/stores/connectStore");
+      const { submitJob } = useConnectStore.getState();
+      const { handleProcessEvent } = useInferenceStore.getState();
 
-    console.log("[inference] Starting with config:", config);
+      // Build TrackJobSpec from InferenceConfig
+      const spec = {
+        type: "track" as const,
+        data_path: remoteOpts.dataPath,
+        model_paths: config.modelPaths,
+        batch_size: config.batchSize,
+        peak_threshold: config.peakThreshold,
+        only_suggested_frames: config.frameRange === "suggested",
+        frames: typeof config.frameRange === "object"
+          ? `${config.frameRange.start}-${config.frameRange.end}`
+          : undefined,
+      };
 
-    const { handleProcessEvent } = useInferenceStore.getState();
-    try {
-      const result = await runInference(config, projectPath, handleProcessEvent);
-      // Log the command that was run
-      if (result.command) {
-        set((state) => ({
-          log: [`$ ${result.command}`, ...state.log],
-        }));
+      // Log the spec
+      set((state) => ({
+        log: [`$ Remote: ${JSON.stringify(spec, null, 2)}`, ...state.log],
+      }));
+
+      try {
+        const result = await submitJob(spec, (line: string) => {
+          // Parse progress lines the same way as local stdout
+          handleProcessEvent({
+            event: "stdout",
+            data: { line },
+          });
+        });
+
+        if (result.success) {
+          set({
+            status: "completed",
+            outputPath: result.outputPath || null,
+          });
+        } else {
+          set({
+            status: "error",
+            error: result.error || "Remote inference failed",
+          });
+        }
+      } catch (e) {
+        set({
+          status: "error",
+          error: `Remote inference error: ${e instanceof Error ? e.message : String(e)}`,
+        });
       }
-      console.log("[inference] runInference returned:", result);
-      if (result.outputPath) {
-        set({ outputPath: result.outputPath });
+    } else {
+      // ── Local inference via subprocess (existing code) ─────
+      const { projectPath, labels } = useAppStore.getState();
+      if (!labels) {
+        set({ status: "error", error: "No project loaded" });
+        return;
       }
-    } catch (e) {
-      set({
-        status: "error",
-        error: `Failed to start inference: ${e instanceof Error ? e.message : String(e)}`,
-      });
+
+      console.log("[inference] Starting with config:", config);
+      const { handleProcessEvent } = useInferenceStore.getState();
+      try {
+        const result = await runInference(config, projectPath, handleProcessEvent);
+        if (result.command) {
+          set((state) => ({
+            log: [`$ ${result.command}`, ...state.log],
+          }));
+        }
+        if (result.outputPath) {
+          set({ outputPath: result.outputPath });
+        }
+      } catch (e) {
+        set({
+          status: "error",
+          error: `Failed to start inference: ${e instanceof Error ? e.message : String(e)}`,
+        });
+      }
     }
   },
 
