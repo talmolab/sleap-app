@@ -1,0 +1,909 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>sleap-app Training Panel Prototype</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
+<style>
+  :root {
+    --bg: #09090b;
+    --card: #18181b;
+    --surface: #27272a;
+    --sidebar-bg: #16141f;
+    --border: #27272a;
+    --fg: #fafafa;
+    --muted: #a1a1aa;
+    --primary: #f97316;
+    --primary-hover: #ea6c0e;
+    --destructive: #ef4444;
+    --green: #22c55e;
+    --blue: #3b82f6;
+    --yellow: #eab308;
+    --radius: 6px;
+    --font: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    --mono: 'JetBrains Mono', monospace;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: var(--font);
+    background: var(--bg);
+    color: var(--fg);
+    font-size: 14px;
+    line-height: 1.45;
+    overflow: hidden;
+    height: 100vh;
+  }
+
+  /* Layout */
+  .app-shell { display: flex; flex-direction: column; height: 100vh; }
+  .menu-bar {
+    height: 36px; background: var(--card); border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; padding: 0 12px; gap: 16px;
+    font-size: 13px; color: var(--muted);
+  }
+  .menu-bar span { cursor: pointer; }
+  .menu-bar span:hover { color: var(--fg); }
+  .menu-bar .logo { color: var(--primary); font-weight: 600; }
+  .main-area { display: flex; flex: 1; overflow: hidden; }
+  .video-area { flex: 1; display: flex; flex-direction: column; background: #000; position: relative; }
+  .video-placeholder {
+    flex: 1; display: flex; align-items: center; justify-content: center;
+    color: var(--muted); font-size: 13px; flex-direction: column; gap: 8px;
+  }
+  .seekbar {
+    height: 32px; background: var(--card); border-top: 1px solid var(--border);
+    display: flex; align-items: center; padding: 0 12px; gap: 8px;
+  }
+  .seekbar-track { flex: 1; height: 4px; background: var(--surface); border-radius: 2px; position: relative; }
+  .seekbar-fill { height: 100%; background: var(--primary); border-radius: 2px; width: 35%; }
+  .seekbar-label { font-family: var(--mono); font-size: 10px; color: var(--muted); }
+
+  /* Sidebar */
+  .sidebar { display: flex; flex-direction: row; }
+  .panel-content {
+    width: 340px; background: var(--card); border-left: 1px solid var(--border);
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  .panel-header {
+    height: 36px; display: flex; align-items: center; padding: 0 12px;
+    border-bottom: 1px solid var(--border); font-size: 13px; font-weight: 500; gap: 6px; flex-shrink: 0;
+  }
+  .panel-body { flex: 1; overflow-y: auto; padding: 8px; }
+  .icon-strip {
+    width: 44px; background: var(--sidebar-bg); border-left: 1px solid var(--border);
+    display: flex; flex-direction: column; align-items: center; padding-top: 4px; gap: 2px;
+  }
+  .icon-btn {
+    width: 36px; height: 36px; display: flex; align-items: center; justify-content: center;
+    border-radius: var(--radius); cursor: pointer; color: var(--muted);
+    border: none; background: none; font-size: 16px; position: relative;
+  }
+  .icon-btn:hover { background: rgba(255,255,255,0.06); color: var(--fg); }
+  .icon-btn.active { color: var(--primary); background: rgba(249,115,22,0.08); }
+  .icon-btn .badge {
+    position: absolute; top: 4px; right: 4px; width: 8px; height: 8px;
+    background: var(--green); border-radius: 50%; border: 2px solid var(--sidebar-bg);
+  }
+  .icon-btn svg { width: 18px; height: 18px; }
+
+  /* Status bar */
+  .status-bar {
+    height: 24px; background: var(--card); border-top: 1px solid var(--border);
+    display: flex; align-items: center; padding: 0 12px;
+    font-size: 10px; color: var(--muted); gap: 16px; font-family: var(--mono);
+  }
+
+  /* Components */
+  .section-header {
+    display: flex; align-items: center; gap: 4px; padding: 4px 0;
+    cursor: pointer; font-size: 12px; font-weight: 500; user-select: none;
+  }
+  .section-header:hover { color: var(--fg); }
+  .section-header .chevron { font-size: 10px; color: var(--muted); width: 12px; }
+  .section-content { padding-left: 16px; padding-bottom: 4px; }
+  .separator { height: 1px; background: var(--border); margin: 6px 0; }
+
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    border-radius: var(--radius); font-family: var(--font); font-size: 12px;
+    font-weight: 500; cursor: pointer; border: 1px solid transparent;
+    padding: 0 12px; height: 32px; transition: all 0.15s;
+  }
+  .btn-primary { background: var(--primary); color: var(--bg); }
+  .btn-primary:hover { background: var(--primary-hover); }
+  .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn-outline { background: transparent; border-color: var(--border); color: var(--fg); }
+  .btn-outline:hover { background: rgba(255,255,255,0.06); }
+  .btn-destructive { background: var(--destructive); color: var(--fg); border: none; }
+  .btn-destructive:hover { background: #dc2626; }
+  .btn-ghost { background: transparent; color: var(--muted); }
+  .btn-ghost:hover { background: rgba(255,255,255,0.06); color: var(--fg); }
+  .btn-sm { height: 28px; font-size: 11px; padding: 0 8px; }
+  .btn-xs { height: 22px; font-size: 10px; padding: 0 6px; }
+  .btn-full { width: 100%; }
+  .btn-warning { background: var(--yellow); color: var(--bg); border: none; }
+  .btn-warning:hover { background: #ca8a04; }
+
+  select, input[type="text"], input[type="number"] {
+    height: 28px; font-size: 11px; font-family: var(--font);
+    background: rgba(39,39,42,0.3); border: 1px solid var(--border);
+    border-radius: var(--radius); color: var(--fg); padding: 0 8px; width: 100%; outline: none;
+  }
+  select:focus, input:focus { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(249,115,22,0.2); }
+
+  .label {
+    font-size: 10px; font-weight: 500; color: var(--muted);
+    text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; display: block;
+  }
+  .field { margin-bottom: 8px; }
+
+  /* Toggle/Switch */
+  .switch-row { display: flex; align-items: center; justify-content: space-between; padding: 6px 0; }
+  .switch-label { font-size: 12px; }
+  .switch {
+    width: 36px; height: 20px; background: var(--surface); border-radius: 10px;
+    cursor: pointer; position: relative; transition: background 0.15s; border: none;
+  }
+  .switch.on { background: var(--primary); }
+  .switch::after {
+    content: ''; position: absolute; top: 2px; left: 2px;
+    width: 16px; height: 16px; background: white; border-radius: 50%;
+    transition: transform 0.15s;
+  }
+  .switch.on::after { transform: translateX(16px); }
+
+  /* Config upload zone */
+  .config-slot {
+    border: 1px dashed var(--border); border-radius: var(--radius);
+    padding: 12px; text-align: center; cursor: pointer; transition: all 0.15s;
+    font-size: 11px; color: var(--muted); margin-bottom: 6px;
+  }
+  .config-slot:hover { border-color: var(--primary); background: rgba(249,115,22,0.04); }
+  .config-slot.loaded {
+    border-style: solid; border-color: var(--green); background: rgba(34,197,94,0.05);
+    text-align: left; cursor: default;
+  }
+  .config-slot .filename { color: var(--fg); font-weight: 500; font-size: 12px; }
+  .config-slot .model-type { color: var(--muted); font-size: 10px; font-family: var(--mono); }
+  .config-slot .remove-btn {
+    float: right; cursor: pointer; color: var(--muted); font-size: 14px;
+    background: none; border: none; padding: 0;
+  }
+  .config-slot .remove-btn:hover { color: var(--destructive); }
+
+  /* Progress area */
+  .progress-container { margin-top: 8px; }
+  .progress-model-label {
+    font-size: 11px; font-weight: 500; color: var(--primary); margin-bottom: 4px;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .progress-model-label .check { color: var(--green); }
+  .progress-bar-track {
+    height: 6px; background: var(--surface); border-radius: 3px; overflow: hidden; margin-bottom: 4px;
+  }
+  .progress-bar-fill {
+    height: 100%; background: var(--primary); border-radius: 3px; transition: width 0.3s;
+  }
+  .progress-stats {
+    display: flex; justify-content: space-between; font-size: 10px; color: var(--muted);
+    font-family: var(--mono); margin-bottom: 6px;
+  }
+  .progress-log {
+    background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 6px 8px; max-height: 150px; overflow-y: auto; font-family: var(--mono);
+    font-size: 10px; color: var(--muted); line-height: 1.6;
+  }
+  .progress-log .epoch-line { color: var(--fg); }
+  .progress-log .loss-improved { color: var(--green); }
+  .progress-log .wandb-link { color: var(--blue); text-decoration: underline; cursor: pointer; }
+  .progress-log .error-line { color: var(--destructive); }
+
+  /* Worker card */
+  .worker-card {
+    background: rgba(39,39,42,0.3); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 8px; margin-bottom: 4px; cursor: pointer; transition: all 0.15s;
+  }
+  .worker-card:hover { border-color: var(--muted); }
+  .worker-card.selected { border-color: var(--primary); background: rgba(249,115,22,0.05); }
+  .worker-card .worker-name { font-size: 12px; font-weight: 500; display: flex; align-items: center; gap: 6px; }
+  .worker-card .worker-gpu { font-size: 10px; color: var(--muted); font-family: var(--mono); margin-top: 2px; }
+  .status-dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+  .status-dot.available { background: var(--green); }
+  .status-dot.busy { background: var(--yellow); }
+
+  /* Info banner */
+  .info-banner {
+    border-radius: var(--radius); padding: 8px; font-size: 11px; margin-bottom: 6px;
+  }
+  .info-banner.blue { background: rgba(59,130,246,0.08); border: 1px solid rgba(59,130,246,0.2); color: #60a5fa; }
+  .info-banner.green { background: rgba(34,197,94,0.08); border: 1px solid rgba(34,197,94,0.2); color: #4ade80; }
+  .info-banner.red { background: rgba(239,68,68,0.08); border: 1px solid rgba(239,68,68,0.2); color: #f87171; }
+  .info-banner.orange { background: rgba(249,115,22,0.08); border: 1px solid rgba(249,115,22,0.2); color: #fb923c; }
+
+  /* Path display */
+  .path-display {
+    display: flex; align-items: center; gap: 6px; padding: 4px 8px;
+    background: rgba(0,0,0,0.2); border: 1px solid var(--border); border-radius: var(--radius);
+    font-family: var(--mono); font-size: 10px; color: var(--fg); margin-bottom: 4px;
+  }
+  .path-display .browse-btn {
+    flex-shrink: 0; background: none; border: 1px solid var(--border); color: var(--muted);
+    border-radius: 4px; padding: 2px 6px; font-size: 10px; cursor: pointer;
+  }
+  .path-display .browse-btn:hover { border-color: var(--primary); color: var(--fg); }
+
+  /* Button group */
+  .btn-group { display: flex; gap: 6px; margin-top: 8px; }
+  .btn-group .btn { flex: 1; }
+
+  /* Scenario nav */
+  .scenario-nav {
+    position: fixed; bottom: 40px; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 8px; z-index: 100; background: var(--card);
+    border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  }
+  .scenario-btn {
+    background: var(--surface); color: var(--fg); border: none; border-radius: 4px;
+    padding: 6px 12px; font-size: 11px; cursor: pointer; font-family: var(--font);
+    transition: all 0.15s;
+  }
+  .scenario-btn:hover { background: var(--primary); color: var(--bg); }
+  .scenario-btn.active { background: var(--primary); color: var(--bg); }
+</style>
+</head>
+<body>
+<div class="app-shell">
+  <!-- Menu bar -->
+  <div class="menu-bar">
+    <span class="logo">SLEAP</span>
+    <span>File</span><span>Edit</span><span>Go</span><span>View</span>
+    <span>Labels</span><span>Predict</span><span>Tracks</span><span>Help</span>
+  </div>
+
+  <div class="main-area">
+    <!-- Video area -->
+    <div class="video-area">
+      <div class="video-placeholder">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="20" height="20" rx="2"/><line x1="2" y1="8" x2="22" y2="8"/><line x1="8" y1="2" x2="8" y2="22"/></svg>
+        <span>Video loaded: centered_pair_low_quality.mp4</span>
+        <span class="frame-label">Frame 0 / 1100</span>
+      </div>
+      <div class="seekbar">
+        <span class="seekbar-label">0</span>
+        <div class="seekbar-track"><div class="seekbar-fill"></div></div>
+        <span class="seekbar-label">1100</span>
+      </div>
+    </div>
+
+    <!-- Sidebar -->
+    <div class="sidebar">
+      <div class="panel-content" id="panel-content">
+        <div class="panel-header">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 10v6M2 10l10-5 10 5-10 5z"/><path d="M6 12v5c3 3 9 3 12 0v-5"/></svg>
+          Training
+        </div>
+        <div class="panel-body" id="panel-body">
+          <!-- Content injected by JS -->
+        </div>
+      </div>
+      <div class="icon-strip">
+        <button class="icon-btn" title="Videos">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="20" rx="2"/><path d="M10 8l6 4-6 4z"/></svg>
+        </button>
+        <button class="icon-btn" title="Skeleton">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M2 12h20"/></svg>
+        </button>
+        <button class="icon-btn" title="Instances">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4-4v-2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
+        </button>
+        <button class="icon-btn" title="View">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+        </button>
+        <button class="icon-btn" title="Suggestions">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 006 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5"/><path d="M9 18h6"/><path d="M10 22h4"/></svg>
+        </button>
+        <button class="icon-btn" title="Inference">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+        </button>
+        <button class="icon-btn active" title="Training">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 10v6M2 10l10-5 10 5-10 5z"/><path d="M6 12v5c3 3 9 3 12 0v-5"/></svg>
+        </button>
+        <button class="icon-btn" title="Environment">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M15 2v2M15 20v2M2 15h2M20 15h2M9 2v2M9 20v2M2 9h2M20 9h2"/></svg>
+        </button>
+        <button class="icon-btn" title="Connect">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/></svg>
+          <div class="badge"></div>
+        </button>
+        <button class="icon-btn" title="Notifications">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
+        </button>
+        <button class="icon-btn" title="Debug">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Status bar -->
+  <div class="status-bar">
+    <span>labels.v003.slp</span>
+    <span>Frame 0</span>
+    <span>1 labeled</span>
+    <span>1 video</span>
+    <span>2 instances</span>
+    <span style="margin-left:auto">Desktop</span>
+    <span>100%</span>
+  </div>
+</div>
+
+<!-- Scenario navigation -->
+<div class="scenario-nav">
+  <button class="scenario-btn active" onclick="showScenario('setup')">1. Setup</button>
+  <button class="scenario-btn" onclick="showScenario('config-loaded')">2. Config Loaded</button>
+  <button class="scenario-btn" onclick="showScenario('remote-on')">3. Remote On</button>
+  <button class="scenario-btn" onclick="showScenario('training')">4. Training</button>
+  <button class="scenario-btn" onclick="showScenario('multi-model')">5. Multi-Model</button>
+  <button class="scenario-btn" onclick="showScenario('complete')">6. Complete</button>
+  <button class="scenario-btn" onclick="showScenario('error')">7. Error</button>
+</div>
+
+<script>
+const scenarios = {
+  // ── Scenario 1: Initial setup (no config loaded) ──
+  'setup': `
+    <!-- Model Type -->
+    <div class="section-header"><span class="chevron">&#9660;</span> Model Type & Configs</div>
+    <div class="section-content">
+      <div class="field">
+        <span class="label">Model Type</span>
+        <select>
+          <option>single_animal</option>
+          <option selected>top_down</option>
+          <option>bottom_up</option>
+          <option>top_down_id</option>
+          <option>bottom_up_id</option>
+        </select>
+      </div>
+      <div class="field">
+        <span class="label">Centroid Config</span>
+        <div class="config-slot" onclick="alert('Opens native file dialog to select .yaml config from local machine')">
+          <div>Drop YAML config here or click to browse</div>
+          <div style="font-size:10px;margin-top:4px;color:var(--muted)">Accepts .yaml files</div>
+        </div>
+      </div>
+      <div class="field">
+        <span class="label">Centered Instance Config</span>
+        <div class="config-slot" onclick="alert('Opens native file dialog to select .yaml config from local machine')">
+          <div>Drop YAML config here or click to browse</div>
+          <div style="font-size:10px;margin-top:4px;color:var(--muted)">Accepts .yaml files</div>
+        </div>
+      </div>
+    </div>
+    <div class="separator"></div>
+
+    <!-- Data -->
+    <div class="section-header"><span class="chevron">&#9660;</span> Data</div>
+    <div class="section-content">
+      <div class="field">
+        <span class="label">Training Labels</span>
+        <div class="path-display">
+          <span style="flex:1;color:var(--muted)">No file selected</span>
+          <button class="browse-btn">Browse</button>
+        </div>
+      </div>
+      <div class="field">
+        <span class="label">Validation Labels (optional)</span>
+        <div class="path-display">
+          <span style="flex:1;color:var(--muted)">No file selected</span>
+          <button class="browse-btn">Browse</button>
+        </div>
+      </div>
+    </div>
+    <div class="separator"></div>
+
+    <!-- Hyperparameters -->
+    <div class="section-header"><span class="chevron">&#9660;</span> Hyperparameters</div>
+    <div class="section-content">
+      <div class="field">
+        <span class="label">Backbone</span>
+        <select>
+          <option value="" disabled selected>From config...</option>
+          <option>UNet</option>
+          <option>LEAP CNN</option>
+          <option>Stacked Hourglass</option>
+        </select>
+      </div>
+      <div class="field">
+        <span class="label">Max Epochs</span>
+        <input type="number" value="" placeholder="From config...">
+      </div>
+      <div class="field">
+        <span class="label">Batch Size</span>
+        <input type="number" value="" placeholder="From config...">
+      </div>
+      <div class="field">
+        <span class="label">Learning Rate</span>
+        <input type="number" value="" placeholder="From config..." step="0.0001">
+      </div>
+      <div class="field">
+        <span class="label">Run Name</span>
+        <input type="text" value="" placeholder="From config...">
+      </div>
+    </div>
+    <div class="separator"></div>
+
+    <!-- Tracking -->
+    <div class="section-header"><span class="chevron">&#9660;</span> Tracking (W&B)</div>
+    <div class="section-content">
+      <div class="field">
+        <span class="label">Wandb Entity</span>
+        <input type="text" value="" placeholder="From config...">
+      </div>
+      <div class="field">
+        <span class="label">Wandb Project</span>
+        <input type="text" value="" placeholder="From config...">
+      </div>
+    </div>
+    <div class="separator"></div>
+
+    <!-- Remote -->
+    <div class="section-header"><span class="chevron">&#9660;</span> Remote</div>
+    <div class="section-content">
+      <div class="switch-row">
+        <span class="switch-label">Remote Training</span>
+        <button class="switch" disabled title="Connect to a room in the Connect tab first"></button>
+      </div>
+      <div style="font-size:10px;color:var(--muted);margin-top:2px">
+        Connect to a room in the Connect tab to enable remote training.
+      </div>
+    </div>
+    <div class="separator"></div>
+
+    <!-- Start button -->
+    <button class="btn btn-primary btn-full" disabled>Start Training</button>
+    <div style="font-size:10px;color:var(--muted);text-align:center;margin-top:4px">
+      Upload config file(s) and select training data to begin
+    </div>
+  `,
+
+  // ── Scenario 2: Config loaded, auto-filled ──
+  'config-loaded': `
+    <!-- Model Type -->
+    <div class="section-header"><span class="chevron">&#9660;</span> Model Type & Configs</div>
+    <div class="section-content">
+      <div class="field">
+        <span class="label">Model Type</span>
+        <select>
+          <option>single_animal</option>
+          <option selected>top_down</option>
+          <option>bottom_up</option>
+        </select>
+      </div>
+      <div class="field">
+        <span class="label">Centroid Config</span>
+        <div class="config-slot loaded">
+          <button class="remove-btn">&times;</button>
+          <div class="filename">centroid.yaml</div>
+          <div class="model-type">head: centroid</div>
+        </div>
+      </div>
+      <div class="field">
+        <span class="label">Centered Instance Config</span>
+        <div class="config-slot loaded">
+          <button class="remove-btn">&times;</button>
+          <div class="filename">centered_instance.yaml</div>
+          <div class="model-type">head: centered_instance</div>
+        </div>
+      </div>
+      <div class="info-banner green">
+        Auto-filled from config files. All fields are editable.
+      </div>
+    </div>
+    <div class="separator"></div>
+
+    <!-- Data (auto-filled) -->
+    <div class="section-header"><span class="chevron">&#9660;</span> Data</div>
+    <div class="section-content">
+      <div class="field">
+        <span class="label">Training Labels</span>
+        <div class="path-display">
+          <span style="flex:1">/root/vast/amick/project/labels.v003.slp</span>
+          <button class="browse-btn">Browse</button>
+        </div>
+      </div>
+      <div class="field">
+        <span class="label">Validation Labels (optional)</span>
+        <div class="path-display">
+          <span style="flex:1;color:var(--muted)">Same as training (auto-split)</span>
+          <button class="browse-btn">Browse</button>
+        </div>
+      </div>
+    </div>
+    <div class="separator"></div>
+
+    <!-- Hyperparameters (auto-filled) -->
+    <div class="section-header"><span class="chevron">&#9660;</span> Hyperparameters</div>
+    <div class="section-content">
+      <div class="field">
+        <span class="label">Backbone</span>
+        <select>
+          <option selected>UNet</option>
+          <option>LEAP CNN</option>
+          <option>Stacked Hourglass</option>
+        </select>
+      </div>
+      <div class="field">
+        <span class="label">Max Epochs</span>
+        <input type="number" value="200">
+      </div>
+      <div class="field">
+        <span class="label">Batch Size</span>
+        <input type="number" value="4">
+      </div>
+      <div class="field">
+        <span class="label">Learning Rate</span>
+        <input type="number" value="0.0001" step="0.0001">
+      </div>
+      <div class="field">
+        <span class="label">Run Name</span>
+        <input type="text" value="centroid_topdown">
+      </div>
+    </div>
+    <div class="separator"></div>
+
+    <!-- Tracking (auto-filled) -->
+    <div class="section-header"><span class="chevron">&#9660;</span> Tracking (W&B)</div>
+    <div class="section-content">
+      <div class="field">
+        <span class="label">Wandb Entity</span>
+        <input type="text" value="talmo-lab">
+      </div>
+      <div class="field">
+        <span class="label">Wandb Project</span>
+        <input type="text" value="sleap-medicago">
+      </div>
+    </div>
+    <div class="separator"></div>
+
+    <!-- Remote (disconnected) -->
+    <div class="section-header"><span class="chevron">&#9660;</span> Remote</div>
+    <div class="section-content">
+      <div class="switch-row">
+        <span class="switch-label">Remote Training</span>
+        <button class="switch" disabled></button>
+      </div>
+      <div style="font-size:10px;color:var(--muted);margin-top:2px">
+        Connect to a room in the Connect tab to enable remote training.
+      </div>
+    </div>
+    <div class="separator"></div>
+
+    <button class="btn btn-primary btn-full">Start Training</button>
+  `,
+
+  // ── Scenario 3: Remote toggled on, worker selected ──
+  'remote-on': `
+    <!-- Model Type (collapsed) -->
+    <div class="section-header"><span class="chevron">&#9654;</span> Model Type & Configs</div>
+    <div style="font-size:10px;color:var(--muted);padding-left:16px;margin-bottom:4px">top_down: centroid.yaml + centered_instance.yaml</div>
+    <div class="separator"></div>
+
+    <!-- Data -->
+    <div class="section-header"><span class="chevron">&#9660;</span> Data</div>
+    <div class="section-content">
+      <div class="field">
+        <span class="label">Training Labels (on worker)</span>
+        <div class="path-display">
+          <span style="flex:1">/root/vast/amick/project/labels.v003.slp</span>
+          <button class="browse-btn" onclick="alert('Opens RemoteFileBrowser dialog')">Browse Worker</button>
+        </div>
+      </div>
+      <div class="field">
+        <span class="label">Validation Labels (optional)</span>
+        <div class="path-display">
+          <span style="flex:1;color:var(--muted)">Same as training (auto-split)</span>
+          <button class="browse-btn" onclick="alert('Opens RemoteFileBrowser dialog')">Browse Worker</button>
+        </div>
+      </div>
+    </div>
+    <div class="separator"></div>
+
+    <!-- Hyperparameters (collapsed) -->
+    <div class="section-header"><span class="chevron">&#9654;</span> Hyperparameters</div>
+    <div style="font-size:10px;color:var(--muted);padding-left:16px;margin-bottom:4px">200 epochs, batch 4, lr 0.0001</div>
+    <div class="separator"></div>
+
+    <!-- Tracking (collapsed) -->
+    <div class="section-header"><span class="chevron">&#9654;</span> Tracking (W&B)</div>
+    <div style="font-size:10px;color:var(--muted);padding-left:16px;margin-bottom:4px">talmo-lab / sleap-medicago</div>
+    <div class="separator"></div>
+
+    <!-- Remote (ON) -->
+    <div class="section-header"><span class="chevron">&#9660;</span> Remote</div>
+    <div class="section-content">
+      <div class="switch-row">
+        <span class="switch-label">Remote Training</span>
+        <button class="switch on"></button>
+      </div>
+      <div class="field" style="margin-top:4px">
+        <span class="label">Room</span>
+        <div style="display:flex;align-items:center;gap:6px;font-size:11px">
+          <span class="status-dot available"></span>
+          test-never-expiry
+        </div>
+      </div>
+      <div class="field">
+        <span class="label">Worker</span>
+        <div class="worker-card selected">
+          <div class="worker-name"><span class="status-dot available"></span> runai-1 <span style="font-size:10px;color:var(--primary);margin-left:auto">Connected</span></div>
+          <div class="worker-gpu">NVIDIA A100 80GB &middot; CUDA 12.8</div>
+        </div>
+      </div>
+    </div>
+    <div class="separator"></div>
+
+    <button class="btn btn-primary btn-full">Start Remote Training</button>
+  `,
+
+  // ── Scenario 4: Training in progress (centroid model) ──
+  'training': `
+    <!-- Model Type (collapsed) -->
+    <div class="section-header"><span class="chevron">&#9654;</span> Model Type & Configs</div>
+    <div style="font-size:10px;color:var(--muted);padding-left:16px;margin-bottom:4px">top_down: centroid.yaml + centered_instance.yaml</div>
+    <div class="separator"></div>
+
+    <!-- Sections collapsed during training -->
+    <div class="section-header" style="opacity:0.5"><span class="chevron">&#9654;</span> Data</div>
+    <div class="separator"></div>
+    <div class="section-header" style="opacity:0.5"><span class="chevron">&#9654;</span> Hyperparameters</div>
+    <div class="separator"></div>
+    <div class="section-header" style="opacity:0.5"><span class="chevron">&#9654;</span> Tracking (W&B)</div>
+    <div class="separator"></div>
+    <div class="section-header" style="opacity:0.5"><span class="chevron">&#9654;</span> Remote</div>
+    <div style="font-size:10px;color:var(--muted);padding-left:16px;margin-bottom:4px">
+      <span class="status-dot available"></span> runai-1
+    </div>
+    <div class="separator"></div>
+
+    <!-- Progress -->
+    <div class="section-header"><span class="chevron">&#9660;</span> Progress</div>
+    <div class="section-content">
+      <div class="progress-container">
+        <div class="progress-model-label">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M2 12h20"/></svg>
+          Training: centroid (1/2)
+        </div>
+        <div class="progress-bar-track">
+          <div class="progress-bar-fill" style="width:35%"></div>
+        </div>
+        <div class="progress-stats">
+          <span>Epoch 70 / 200</span>
+          <span>ETA: ~4 min</span>
+        </div>
+        <div class="progress-log">
+          <div class="wandb-link">W&B: https://wandb.ai/talmo-lab/sleap-medicago/runs/abc123</div>
+          <div>---</div>
+          <div class="epoch-line">[Epoch 68/200] loss: 0.0089 | val_loss: 0.0112</div>
+          <div class="epoch-line">[Epoch 69/200] loss: 0.0087 | val_loss: 0.0108</div>
+          <div class="epoch-line loss-improved">[Epoch 70/200] loss: 0.0084 | val_loss: 0.0101 *** best ***</div>
+        </div>
+      </div>
+    </div>
+    <div class="separator"></div>
+
+    <!-- Control buttons -->
+    <div class="btn-group">
+      <button class="btn btn-warning btn-sm" style="flex:1" onclick="alert('Sends JOB_STOP: graceful stop, saves checkpoint')">Stop Early</button>
+      <button class="btn btn-destructive btn-sm" style="flex:1" onclick="alert('Sends JOB_CANCEL: hard cancel, no checkpoint')">Cancel</button>
+    </div>
+    <div style="font-size:9px;color:var(--muted);text-align:center;margin-top:4px">
+      Stop Early saves a checkpoint. Cancel terminates immediately.
+    </div>
+  `,
+
+  // ── Scenario 5: Multi-model transition (centroid done, centered_instance training) ──
+  'multi-model': `
+    <!-- Model Type (collapsed) -->
+    <div class="section-header"><span class="chevron">&#9654;</span> Model Type & Configs</div>
+    <div style="font-size:10px;color:var(--muted);padding-left:16px;margin-bottom:4px">top_down: centroid.yaml + centered_instance.yaml</div>
+    <div class="separator"></div>
+    <div class="section-header" style="opacity:0.5"><span class="chevron">&#9654;</span> Data</div>
+    <div class="separator"></div>
+    <div class="section-header" style="opacity:0.5"><span class="chevron">&#9654;</span> Hyperparameters</div>
+    <div class="separator"></div>
+    <div class="section-header" style="opacity:0.5"><span class="chevron">&#9654;</span> Tracking (W&B)</div>
+    <div class="separator"></div>
+    <div class="section-header" style="opacity:0.5"><span class="chevron">&#9654;</span> Remote</div>
+    <div style="font-size:10px;color:var(--muted);padding-left:16px;margin-bottom:4px">
+      <span class="status-dot available"></span> runai-1
+    </div>
+    <div class="separator"></div>
+
+    <!-- Progress -->
+    <div class="section-header"><span class="chevron">&#9660;</span> Progress</div>
+    <div class="section-content">
+      <!-- Completed model -->
+      <div class="progress-container" style="margin-bottom:12px;opacity:0.7">
+        <div class="progress-model-label">
+          <span class="check" style="color:var(--green)">&#10003;</span>
+          centroid (1/2) &mdash; completed
+        </div>
+        <div class="progress-bar-track">
+          <div class="progress-bar-fill" style="width:100%;background:var(--green)"></div>
+        </div>
+        <div class="progress-stats">
+          <span>200 / 200 epochs</span>
+          <span>Final loss: 0.0031</span>
+        </div>
+      </div>
+
+      <!-- Current model -->
+      <div class="progress-container">
+        <div class="progress-model-label">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M2 12h20"/></svg>
+          Training: centered_instance (2/2)
+        </div>
+        <div class="progress-bar-track">
+          <div class="progress-bar-fill" style="width:15%"></div>
+        </div>
+        <div class="progress-stats">
+          <span>Epoch 30 / 200</span>
+          <span>ETA: ~8 min</span>
+        </div>
+        <div class="progress-log">
+          <div class="wandb-link">W&B: https://wandb.ai/talmo-lab/sleap-medicago/runs/def456</div>
+          <div>---</div>
+          <div class="epoch-line">[Epoch 28/200] loss: 0.0234 | val_loss: 0.0312</div>
+          <div class="epoch-line">[Epoch 29/200] loss: 0.0229 | val_loss: 0.0298</div>
+          <div class="epoch-line loss-improved">[Epoch 30/200] loss: 0.0221 | val_loss: 0.0289 *** best ***</div>
+        </div>
+      </div>
+    </div>
+    <div class="separator"></div>
+
+    <div class="btn-group">
+      <button class="btn btn-warning btn-sm" style="flex:1">Stop Early</button>
+      <button class="btn btn-destructive btn-sm" style="flex:1">Cancel</button>
+    </div>
+  `,
+
+  // ── Scenario 6: Training complete ──
+  'complete': `
+    <!-- Model Type (collapsed) -->
+    <div class="section-header"><span class="chevron">&#9654;</span> Model Type & Configs</div>
+    <div style="font-size:10px;color:var(--muted);padding-left:16px;margin-bottom:4px">top_down: centroid.yaml + centered_instance.yaml</div>
+    <div class="separator"></div>
+    <div class="section-header"><span class="chevron">&#9654;</span> Data</div>
+    <div class="separator"></div>
+    <div class="section-header"><span class="chevron">&#9654;</span> Hyperparameters</div>
+    <div class="separator"></div>
+    <div class="section-header"><span class="chevron">&#9654;</span> Tracking (W&B)</div>
+    <div class="separator"></div>
+    <div class="section-header"><span class="chevron">&#9654;</span> Remote</div>
+    <div style="font-size:10px;color:var(--muted);padding-left:16px;margin-bottom:4px">
+      <span class="status-dot available"></span> runai-1
+    </div>
+    <div class="separator"></div>
+
+    <!-- Progress (complete) -->
+    <div class="section-header"><span class="chevron">&#9660;</span> Progress</div>
+    <div class="section-content">
+      <div class="info-banner green" style="margin-bottom:8px">
+        <strong>Training complete!</strong> Both models trained successfully.
+      </div>
+
+      <!-- Centroid -->
+      <div class="progress-container" style="margin-bottom:8px;opacity:0.7">
+        <div class="progress-model-label">
+          <span class="check" style="color:var(--green)">&#10003;</span>
+          centroid &mdash; 200 epochs, best val_loss: 0.0031
+        </div>
+        <div class="progress-bar-track">
+          <div class="progress-bar-fill" style="width:100%;background:var(--green)"></div>
+        </div>
+      </div>
+
+      <!-- Centered instance -->
+      <div class="progress-container" style="margin-bottom:8px;opacity:0.7">
+        <div class="progress-model-label">
+          <span class="check" style="color:var(--green)">&#10003;</span>
+          centered_instance &mdash; 200 epochs, best val_loss: 0.0089
+        </div>
+        <div class="progress-bar-track">
+          <div class="progress-bar-fill" style="width:100%;background:var(--green)"></div>
+        </div>
+      </div>
+
+      <div style="font-size:10px;color:var(--muted);margin-bottom:8px">
+        Model checkpoints saved to:<br>
+        <span style="font-family:var(--mono);font-size:9px">/root/vast/amick/project/models/260326_173400.centroid</span><br>
+        <span style="font-family:var(--mono);font-size:9px">/root/vast/amick/project/models/260326_173400.centered_instance</span>
+      </div>
+
+      <div class="info-banner blue">
+        <strong>Next step:</strong> Use these models in the Inference tab to run predictions on your data.
+      </div>
+    </div>
+    <div class="separator"></div>
+
+    <button class="btn btn-primary btn-full" onclick="alert('Resets form for new training run')">Train Again</button>
+  `,
+
+  // ── Scenario 7: Error during training ──
+  'error': `
+    <!-- Model Type (collapsed) -->
+    <div class="section-header"><span class="chevron">&#9654;</span> Model Type & Configs</div>
+    <div style="font-size:10px;color:var(--muted);padding-left:16px;margin-bottom:4px">top_down: centroid.yaml + centered_instance.yaml</div>
+    <div class="separator"></div>
+    <div class="section-header" style="opacity:0.5"><span class="chevron">&#9654;</span> Data</div>
+    <div class="separator"></div>
+    <div class="section-header" style="opacity:0.5"><span class="chevron">&#9654;</span> Hyperparameters</div>
+    <div class="separator"></div>
+    <div class="section-header" style="opacity:0.5"><span class="chevron">&#9654;</span> Tracking (W&B)</div>
+    <div class="separator"></div>
+    <div class="section-header" style="opacity:0.5"><span class="chevron">&#9654;</span> Remote</div>
+    <div style="font-size:10px;color:var(--muted);padding-left:16px;margin-bottom:4px">
+      <span class="status-dot available"></span> runai-1
+    </div>
+    <div class="separator"></div>
+
+    <!-- Progress (error) -->
+    <div class="section-header"><span class="chevron">&#9660;</span> Progress</div>
+    <div class="section-content">
+      <!-- Completed first model -->
+      <div class="progress-container" style="margin-bottom:12px;opacity:0.7">
+        <div class="progress-model-label">
+          <span class="check" style="color:var(--green)">&#10003;</span>
+          centroid (1/2) &mdash; completed
+        </div>
+        <div class="progress-bar-track">
+          <div class="progress-bar-fill" style="width:100%;background:var(--green)"></div>
+        </div>
+      </div>
+
+      <!-- Failed second model -->
+      <div class="progress-container">
+        <div class="progress-model-label" style="color:var(--destructive)">
+          &#10007; centered_instance (2/2) &mdash; failed at epoch 45
+        </div>
+        <div class="progress-bar-track">
+          <div class="progress-bar-fill" style="width:22%;background:var(--destructive)"></div>
+        </div>
+        <div class="progress-log" style="margin-top:6px">
+          <div class="epoch-line">[Epoch 44/200] loss: 0.0312 | val_loss: 0.0401</div>
+          <div class="epoch-line">[Epoch 45/200] loss: 0.0298 | val_loss: 0.0389</div>
+          <div class="error-line">RuntimeError: CUDA out of memory. Tried to allocate 2.00 GiB.</div>
+          <div class="error-line">Try reducing batch_size or max_instances.</div>
+        </div>
+      </div>
+
+      <div class="info-banner red" style="margin-top:8px">
+        <strong>Training failed:</strong> CUDA out of memory during centered_instance training.
+        Centroid model was saved successfully. Try reducing batch size and retrying.
+      </div>
+    </div>
+    <div class="separator"></div>
+
+    <div class="btn-group">
+      <button class="btn btn-outline btn-sm" style="flex:1" onclick="alert('Resets to config view with previous settings')">Retry</button>
+      <button class="btn btn-primary btn-sm" style="flex:1" onclick="alert('Resets form completely')">New Training</button>
+    </div>
+  `
+};
+
+function showScenario(name) {
+  document.getElementById('panel-body').innerHTML = scenarios[name];
+  document.querySelectorAll('.scenario-btn').forEach(b => b.classList.remove('active'));
+  event.target.classList.add('active');
+}
+
+// Show initial scenario
+showScenario('setup');
+</script>
+</body>
+</html>
