@@ -705,6 +705,24 @@ export const useConnectStore = create<ConnectState>()(
             break;
           }
 
+          case "PROGRESS_REPORT": {
+            // Worker sends: PROGRESS_REPORT::{jsonpickle payload}
+            // Contains structured progress events (epoch_begin, epoch_end,
+            // train_begin, train_end) from sleap-nn's ZMQ progress reporter.
+            // NOT printed to terminal — silently updates progress state.
+            // Matches PyQt behavior: LossViewer._check_messages() consumes
+            // these for loss curves, not terminal output.
+            const prPayload = parts.slice(1).join(MSG_SEPARATOR);
+            const { _pendingJobs: prJobs } = get();
+            const prEntry = Array.from(prJobs.entries())[0];
+            if (prEntry) {
+              const [, pending] = prEntry;
+              // Tag as progress report so trainingStore handles it differently
+              pending.onProgress(`__PROGRESS_REPORT__${prPayload}`);
+            }
+            break;
+          }
+
           default: {
             // Unrecognized message — raw log line from worker (e.g. wandb
             // output, error messages, training summaries). Forward to

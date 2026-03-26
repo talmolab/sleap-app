@@ -308,6 +308,57 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
           const state = get();
           const idx = state.currentModelIndex;
 
+          // ── PROGRESS_REPORT (structured ZMQ events) ───────────
+          // Silently updates progress state — NOT printed to terminal.
+          if (line.startsWith("__PROGRESS_REPORT__")) {
+            const payload = line.slice("__PROGRESS_REPORT__".length);
+            try {
+              const data = JSON.parse(payload);
+              const event = data.event ?? data.py_dict?.event;
+
+              if (event === "train_begin" || data.wandb_url) {
+                const url = data.wandb_url ?? data.py_dict?.wandb_url;
+                if (url) set({ wandbUrl: url });
+              }
+
+              if (event === "epoch_end") {
+                const logs = data.logs ?? data.py_dict?.logs ?? {};
+                const trainLoss = logs["train/loss"] ?? logs["loss"];
+                const valLoss = logs["val/loss"];
+                set((s) => ({
+                  models: s.models.map((m, i) =>
+                    i === idx
+                      ? {
+                          ...m,
+                          loss: trainLoss ?? m.loss,
+                          valLoss: valLoss ?? m.valLoss,
+                          bestValLoss:
+                            valLoss != null &&
+                            (m.bestValLoss === null || valLoss < m.bestValLoss)
+                              ? valLoss
+                              : m.bestValLoss,
+                        }
+                      : m,
+                  ),
+                }));
+              }
+
+              if (event === "epoch_begin") {
+                const epoch = data.epoch ?? data.py_dict?.epoch;
+                if (typeof epoch === "number") {
+                  set((s) => ({
+                    models: s.models.map((m, i) =>
+                      i === idx ? { ...m, epoch } : m,
+                    ),
+                  }));
+                }
+              }
+            } catch {
+              // Malformed progress report — ignore
+            }
+            return;
+          }
+
           // ── CR:: lines (tqdm progress bars) ───────────────────
           // Replace the last log line to emulate in-place overwriting.
           if (isCarriageReturn) {
@@ -377,9 +428,10 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
           // ── Filter empty lines ────────────────────────────────
           if (!line.trim()) return;
 
-          // ── wandb URL detection ───────────────────────────────
+          // ── wandb URL detection (from regular log lines) ──────
           if (line.includes("wandb.ai/")) {
-            const urlMatch = line.match(/(https:\/\/wandb\.ai\/\S+)/);
+            // Strip trailing punctuation that may be captured from JSON context
+            const urlMatch = line.match(/(https:\/\/wandb\.ai\/[^\s"}\]>)]+)/);
             if (urlMatch) set({ wandbUrl: urlMatch[1] });
           }
 
