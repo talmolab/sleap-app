@@ -678,8 +678,18 @@ export const useConnectStore = create<ConnectState>()(
             break;
           }
 
-          default:
-            console.log("[connect] Unhandled data channel message:", msgType);
+          default: {
+            // Unrecognized message — raw log line from worker (e.g. wandb
+            // output, error messages, training summaries). Forward to
+            // onProgress, matching the PyQt client's on_log() behavior.
+            const { _pendingJobs } = get();
+            const defaultEntry = Array.from(_pendingJobs.entries())[0];
+            if (defaultEntry) {
+              const [, pending] = defaultEntry;
+              pending.onProgress(data);
+            }
+            break;
+          }
         }
       },
     }),
