@@ -300,46 +300,46 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       }));
 
       try {
-        const result = await submitJob(spec, (line: string) => {
+        const result = await submitJob(spec, (line: string, isCarriageReturn?: boolean) => {
           // Parse progress from worker
           const state = get();
           const idx = state.currentModelIndex;
 
-          // ── tqdm / Lightning progress bar lines ───────────────
-          // These use \r to update in-place but arrive as separate lines.
-          // Parse them for progress data, don't append to log.
-          const tqdmMatch = line.match(
-            /Epoch (\d+):\s+(\d+)%\|.*?\|\s*(\d+)\/(\d+)\s.*?loss=([\d.]+)/,
-          );
-          if (tqdmMatch) {
-            const epoch = parseInt(tqdmMatch[1]);
-            const step = parseInt(tqdmMatch[3]);
-            const totalSteps = parseInt(tqdmMatch[4]);
-            const loss = parseFloat(tqdmMatch[5]);
+          // ── CR:: lines (tqdm progress bars) ───────────────────
+          // Worker sends \r-terminated tqdm updates as CR:: messages.
+          // Replace the last log line to emulate in-place overwriting.
+          if (isCarriageReturn) {
+            // Parse epoch/loss from tqdm line for progress bar updates
+            const tqdmMatch = line.match(
+              /Epoch (\d+):\s+(\d+)%\|.*?loss=([\d.]+)/,
+            );
+            if (tqdmMatch) {
+              const epoch = parseInt(tqdmMatch[1]);
+              const loss = parseFloat(tqdmMatch[3]);
+              set((s) => ({
+                models: s.models.map((m, i) =>
+                  i === idx ? { ...m, epoch, loss } : m,
+                ),
+              }));
+            }
+
+            // Strip ANSI escape codes and progress bar chars for clean display
+            const clean = line.replace(/\x1b\[[0-9;]*m/g, "").trim();
+            if (!clean) return;
+
+            // Replace last log line (carriage return behavior)
             set((s) => ({
               models: s.models.map((m, i) =>
                 i === idx
                   ? {
                       ...m,
-                      epoch,
-                      loss,
-                      // Show step progress within the epoch as a fractional epoch
-                      log: totalSteps > 0 && step === totalSteps
-                        ? [...m.log, `[Epoch ${epoch}/${m.maxEpochs}] loss: ${loss.toFixed(4)}`]
-                        : m.log,
+                      log: m.log.length > 0
+                        ? [...m.log.slice(0, -1), clean]
+                        : [clean],
                     }
                   : m,
               ),
             }));
-            return;
-          }
-
-          // Filter out other tqdm noise (Sanity Checking, Training: |, empty progress bars)
-          if (
-            /^\s*(Sanity Checking|Training:|Validation|Epoch \d+:)\s*[|]/.test(line) ||
-            /^\s*$/.test(line) ||
-            /^\s+$/.test(line)
-          ) {
             return;
           }
 
@@ -379,13 +379,16 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
             // Not JSON — continue
           }
 
+          // ── Filter empty lines ────────────────────────────────
+          if (!line.trim()) return;
+
           // ── wandb URL detection ───────────────────────────────
           if (line.includes("wandb.ai/")) {
             const urlMatch = line.match(/(https:\/\/wandb\.ai\/\S+)/);
             if (urlMatch) set({ wandbUrl: urlMatch[1] });
           }
 
-          // ── Meaningful log line — append ──────────────────────
+          // ── Regular log line — append ─────────────────────────
           set((s) => ({
             models: s.models.map((m, i) =>
               i === idx ? { ...m, log: [...m.log, line] } : m,

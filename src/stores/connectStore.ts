@@ -56,7 +56,7 @@ interface PendingFsRequest {
 }
 
 interface PendingJobCallbacks {
-  onProgress: (line: string) => void;
+  onProgress: (line: string, isCarriageReturn?: boolean) => void;
   onComplete: (result: JobResult) => void;
 }
 
@@ -90,7 +90,7 @@ interface ConnectState {
   browseRemoteDir: (path: string) => Promise<FileEntry[]>;
   submitJob: (
     spec: JobSpec,
-    onProgress: (line: string) => void,
+    onProgress: (line: string, isCarriageReturn?: boolean) => void,
   ) => Promise<JobResult>;
   cancelJob: (jobId: string) => void;
   stopJob: () => void;
@@ -405,7 +405,7 @@ export const useConnectStore = create<ConnectState>()(
       // ── Job submission ───────────────────────────────────────
       submitJob: async (
         spec: JobSpec,
-        onProgress: (line: string) => void,
+        onProgress: (line: string, isCarriageReturn?: boolean) => void,
       ): Promise<JobResult> => {
         const { _dc } = get();
         if (!_dc || _dc.readyState !== "open") {
@@ -598,14 +598,14 @@ export const useConnectStore = create<ConnectState>()(
           }
 
           case "CR": {
-            // Worker sends stdout lines as CR::{text}
-            // These contain the actual sleap-nn output including progress JSON
+            // Worker sends \r-terminated tqdm lines as CR::{text}
+            // These should overwrite the previous line (carriage return behavior)
             const line = parts.slice(1).join(MSG_SEPARATOR);
             const { _pendingJobs } = get();
             const crEntry = Array.from(_pendingJobs.entries())[0];
             if (crEntry) {
               const [, pending] = crEntry;
-              pending.onProgress(line);
+              pending.onProgress(line, true);
             }
             break;
           }
