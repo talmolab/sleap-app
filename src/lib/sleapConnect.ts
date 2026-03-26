@@ -19,6 +19,7 @@ export const MSG_JOB_COMPLETE = "JOB_COMPLETE";
 export const MSG_JOB_FAILED = "JOB_FAILED";
 export const MSG_JOB_CANCEL = "JOB_CANCEL";
 export const MSG_JOB_STOP = "JOB_STOP";
+export const MSG_CONTROL_COMMAND = "CONTROL_COMMAND";
 
 // Filesystem messages
 export const MSG_FS_GET_MOUNTS = "FS_GET_MOUNTS";

@@ -431,16 +431,18 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
   },
 
   stopTraining: async () => {
-    // Send JOB_STOP — worker sends SIGINT to Lightning, which saves a
-    // checkpoint and exits gracefully. The worker then continues to the
-    // next model or finishes the job. We do NOT set status to "stopped"
-    // here — the JOB_COMPLETE/JOB_FAILED from the worker handles that.
-    // This matches the PyQt GUI's LossViewer behavior.
+    // Send CONTROL_COMMAND::{"command":"stop"} — forwarded by the worker
+    // to sleap-nn's TrainingControllerZMQ, which does a graceful early
+    // stop at the trainer level (saves checkpoint, continues to next
+    // model). This matches the PyQt LossViewer's "Stop Early" button.
+    //
+    // NOT JOB_STOP (which sends SIGINT to the process group and crashes
+    // DDP training).
     try {
       const { useConnectStore } = await import("@/stores/connectStore");
-      const { stopJob } = useConnectStore.getState();
-      stopJob();
-      // Mark current model as stopped early, but keep overall status running
+      const { sendControlCommand } = useConnectStore.getState();
+      sendControlCommand("stop");
+      // Keep status running — worker continues to next model or completes
       set((s) => ({
         models: s.models.map((m, i) =>
           i === s.currentModelIndex && m.status === "running"

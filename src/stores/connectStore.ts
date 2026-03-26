@@ -14,6 +14,7 @@ import {
   MSG_JOB_SUBMIT,
   MSG_JOB_CANCEL,
   MSG_JOB_STOP,
+  MSG_CONTROL_COMMAND,
   MSG_JOB_ACCEPTED,
   MSG_JOB_REJECTED,
   MSG_JOB_PROGRESS,
@@ -94,6 +95,7 @@ interface ConnectState {
   ) => Promise<JobResult>;
   cancelJob: (jobId: string) => void;
   stopJob: () => void;
+  sendControlCommand: (command: string) => void;
   loadCredentialsFromDisk: () => Promise<void>;
   fetchRooms: () => Promise<void>;
 
@@ -438,6 +440,17 @@ export const useConnectStore = create<ConnectState>()(
         const { _dc } = get();
         if (_dc && _dc.readyState === "open") {
           _dc.send(buildMessage(MSG_JOB_STOP));
+        }
+      },
+
+      sendControlCommand: (command: string) => {
+        // Forward a command to sleap-nn's TrainingControllerZMQ via the
+        // worker. Matches the PyQt RemoteProgressBridge pattern:
+        // CONTROL_COMMAND::{jsonpickle-encoded payload}
+        const { _dc } = get();
+        if (_dc && _dc.readyState === "open") {
+          const payload = JSON.stringify({ command });
+          _dc.send(buildMessage(MSG_CONTROL_COMMAND, payload));
         }
       },
 
