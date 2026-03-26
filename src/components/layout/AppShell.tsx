@@ -31,6 +31,7 @@ import { NotificationsPanel } from "../panels/NotificationsPanel";
 import { EnvironmentPanel } from "../panels/EnvironmentPanel";
 import { InferencePanel } from "../panels/InferencePanel";
 import { ConnectPanel } from "../panels/ConnectPanel";
+import { TrainingPanel } from "../panels/TrainingPanel";
 import { WelcomeScreen } from "./WelcomeScreen";
 import { TrainingDialog } from "../dialogs/TrainingDialog";
 import { GoToFrameDialog } from "../dialogs/GoToFrameDialog";
@@ -54,6 +55,7 @@ import {
   Cpu,
   Zap,
   Globe,
+  GraduationCap,
 } from "lucide-react";
 import {
   Tooltip,
@@ -76,6 +78,7 @@ const PANELS = [
   { id: "view", label: "View", icon: Eye, component: ViewPanel },
   { id: "suggestions", label: "Suggestions", icon: Lightbulb, component: SuggestionsPanel },
   { id: "inference", label: "Inference", icon: Zap, component: InferencePanel },
+  { id: "training", label: "Training", icon: GraduationCap, component: TrainingPanel },
   { id: "environment", label: "Environment", icon: Cpu, component: EnvironmentPanel },
   { id: "notifications", label: "Notifications", icon: Bell, component: NotificationsPanel },
   { id: "debug", label: "Debug", icon: Bug, component: DebugPanel },
