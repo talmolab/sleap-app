@@ -20,8 +20,11 @@ export const MSG_JOB_FAILED = "JOB_FAILED";
 export const MSG_JOB_CANCEL = "JOB_CANCEL";
 
 // Filesystem messages
+export const MSG_FS_GET_MOUNTS = "FS_GET_MOUNTS";
+export const MSG_FS_MOUNTS_RESPONSE = "FS_MOUNTS_RESPONSE";
 export const MSG_FS_LIST_DIR = "FS_LIST_DIR";
 export const MSG_FS_LIST_RESPONSE = "FS_LIST_RESPONSE";
+export const MSG_FS_ERROR = "FS_ERROR";
 
 // ── Types ─────────────────────────────────────────────────────────
 

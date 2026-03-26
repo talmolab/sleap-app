@@ -204,7 +204,9 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
 
       try {
         const result = await submitJob(spec, (line: string) => {
-          // Parse progress lines the same way as local stdout
+          // Forward progress lines to handleProcessEvent
+          // Note: progress bar updates require --gui flag on sleap-nn track
+          // which outputs JSON with n_processed/n_total fields
           handleProcessEvent({
             event: "stdout",
             data: { line },

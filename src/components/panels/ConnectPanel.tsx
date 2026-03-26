@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import {
   LogOut,
   Loader2,
@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/select";
 import { useConnectStore } from "@/stores/connectStore";
 import { isTauri } from "@/platform/index";
+import { runPythonCommand } from "@/platform/backend";
 
 // GitHub OAuth SVG icon
 const GitHubIcon = () => (
@@ -42,13 +43,21 @@ export function ConnectPanel() {
   const connectionStatus = useConnectStore((s) => s.connectionStatus);
   const connectionError = useConnectStore((s) => s.connectionError);
   const roomId = useConnectStore((s) => s.roomId);
+  const availableRooms = useConnectStore((s) => s.availableRooms);
   const workers = useConnectStore((s) => s.workers);
+  const selectedWorkerId = useConnectStore((s) => s.selectedWorkerId);
   const setCredentials = useConnectStore((s) => s.setCredentials);
   const connect = useConnectStore((s) => s.connect);
   const disconnect = useConnectStore((s) => s.disconnect);
+  const connectToWorker = useConnectStore((s) => s.connectToWorker);
+  const fetchRooms = useConnectStore((s) => s.fetchRooms);
   const loadCredentialsFromDisk = useConnectStore(
     (s) => s.loadCredentialsFromDisk,
   );
+
+  const [loggingIn, setLoggingIn] = useState(false);
+  const [loginError, setLoginError] = useState<string | null>(null);
+  const [expandedWorkerId, setExpandedWorkerId] = useState<string | null>(null);
 
   // Auto-detect credentials on mount (desktop only)
   useEffect(() => {
@@ -56,6 +65,47 @@ export function ConnectPanel() {
       loadCredentialsFromDisk();
     }
   }, []);
+
+  // Fetch rooms when credentials become available
+  useEffect(() => {
+    if (credentials) {
+      fetchRooms();
+    }
+  }, [credentials]);
+
+  const handleLogin = async () => {
+    setLoggingIn(true);
+    setLoginError(null);
+    try {
+      // First, try loading existing credentials from disk
+      await loadCredentialsFromDisk();
+      if (useConnectStore.getState().credentials) {
+        // Already had credentials on disk — done
+        return;
+      }
+
+      // No credentials file — run `sleap-rtc login` to start OAuth flow
+      const success = await runPythonCommand("sleap-rtc", ["login"], (event) => {
+        if (event.event === "stderr") {
+          console.warn("[connect:login]", event.data.line);
+        }
+      });
+      if (success) {
+        await loadCredentialsFromDisk();
+        if (!useConnectStore.getState().credentials) {
+          setLoginError("Login completed but credentials were not saved.");
+        }
+      } else {
+        setLoginError("Login process exited without completing.");
+      }
+    } catch (err) {
+      setLoginError(
+        err instanceof Error ? err.message : "Failed to start login",
+      );
+    } finally {
+      setLoggingIn(false);
+    }
+  };
 
   // ── Not logged in ──────────────────────────────────────────
   if (!credentials) {
@@ -70,16 +120,22 @@ export function ConnectPanel() {
           <Button
             size="sm"
             className="gap-2"
-            onClick={() => {
-              // TODO: Implement GitHub OAuth flow
-              // For now, try loading from disk
-              loadCredentialsFromDisk();
-            }}
+            onClick={handleLogin}
+            disabled={loggingIn}
           >
-            <GitHubIcon />
-            Login with GitHub
+            {loggingIn ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <GitHubIcon />
+            )}
+            {loggingIn ? "Waiting for browser..." : "Login with GitHub"}
           </Button>
         </div>
+        {loginError && (
+          <div className="bg-red-500/8 border border-red-500/20 rounded-md p-2 text-[11px] text-red-400">
+            {loginError}
+          </div>
+        )}
         <div className="bg-blue-500/8 border border-blue-500/20 rounded-md p-2 text-[11px] text-blue-400 leading-relaxed">
           <b>Tip:</b> If you&apos;ve already run{" "}
           <code className="bg-black/30 px-1 py-0.5 rounded text-[10px] font-mono">
@@ -135,7 +191,15 @@ export function ConnectPanel() {
                 <SelectValue placeholder="Select a room" />
               </SelectTrigger>
               <SelectContent>
-                {credentials.defaultRoom && (
+                {availableRooms.map((room) => (
+                  <SelectItem key={room.roomId} value={room.roomId}>
+                    <span>{room.name || room.roomId}</span>
+                    <span className="text-muted-foreground ml-1.5">
+                      · {room.workerCount ?? 0} worker{room.workerCount !== 1 ? "s" : ""}
+                    </span>
+                  </SelectItem>
+                ))}
+                {availableRooms.length === 0 && credentials.defaultRoom && (
                   <SelectItem value={credentials.defaultRoom}>
                     {credentials.defaultRoom}
                   </SelectItem>
@@ -174,7 +238,7 @@ export function ConnectPanel() {
           <div className="flex items-center gap-1.5 py-1">
             <span className="w-2 h-2 rounded-full bg-green-500" />
             <span className="text-xs">
-              Connected to <b>{roomId}</b>
+              Connected to <b>{availableRooms.find((r) => r.roomId === roomId)?.name || roomId}</b>
             </span>
             <Button
               variant="ghost"
@@ -197,23 +261,52 @@ export function ConnectPanel() {
               No workers found in this room.
             </p>
           )}
-          {workers.map((w) => (
-            <div
-              key={w.peerId}
-              className="bg-zinc-800/50 border border-border rounded-md p-2 cursor-pointer hover:border-muted-foreground/50 transition-colors"
-            >
-              <div className="flex items-center gap-1.5 text-xs font-medium">
-                <StatusDot status={w.status} />
-                {w.name}
-              </div>
-              {w.gpu && (
-                <div className="text-[10px] text-muted-foreground font-mono mt-0.5">
-                  {w.gpu.model} · {Math.round(w.gpu.memoryMb / 1024)} GB ·
-                  CUDA {w.gpu.cudaVersion}
+          {workers.map((w) => {
+            const isSelected = selectedWorkerId === w.peerId;
+            const isExpanded = expandedWorkerId === w.peerId;
+            return (
+              <div
+                key={w.peerId}
+                className={`border rounded-md p-2 transition-colors ${
+                  isSelected
+                    ? "bg-primary/10 border-primary"
+                    : "bg-zinc-800/50 border-border"
+                } ${w.status === "available" && !isSelected ? "cursor-pointer hover:border-muted-foreground/50" : ""}`}
+                onClick={() => {
+                  if (w.status === "available" && !isSelected) {
+                    setExpandedWorkerId(isExpanded ? null : w.peerId);
+                  }
+                }}
+              >
+                <div className="flex items-center gap-1.5 text-xs font-medium">
+                  <StatusDot status={w.status} />
+                  {w.name}
+                  {isSelected && (
+                    <span className="text-[10px] text-primary ml-auto">Connected</span>
+                  )}
                 </div>
-              )}
-            </div>
-          ))}
+                {w.gpu && (
+                  <div className="text-[10px] text-muted-foreground font-mono mt-0.5">
+                    {w.gpu.model} · {Math.round(w.gpu.memoryMb / 1024)} GB ·
+                    CUDA {w.gpu.cudaVersion}
+                  </div>
+                )}
+                {isExpanded && !isSelected && w.status === "available" && (
+                  <Button
+                    size="sm"
+                    className="w-full mt-2 h-7 text-xs"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setExpandedWorkerId(null);
+                      connectToWorker(w.peerId);
+                    }}
+                  >
+                    Connect to {w.name}
+                  </Button>
+                )}
+              </div>
+            );
+          })}
         </>
       )}
     </div>

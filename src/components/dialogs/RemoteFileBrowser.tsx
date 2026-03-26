@@ -30,8 +30,20 @@ export function RemoteFileBrowser({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedEntry, setSelectedEntry] = useState<string | null>(null);
+  const [openCount, setOpenCount] = useState(0);
 
-  // Load directory contents when path changes
+  // Reset to startPath each time the dialog opens
+  useEffect(() => {
+    if (open) {
+      setCurrentPath(startPath);
+      setEntries([]);
+      setSelectedEntry(null);
+      setError(null);
+      setOpenCount((c) => c + 1);
+    }
+  }, [open, startPath]);
+
+  // Load directory contents when path changes or dialog re-opens
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
@@ -65,20 +77,16 @@ export function RemoteFileBrowser({
     return () => {
       cancelled = true;
     };
-  }, [open, currentPath, browseRemoteDir]);
-
-  // Reset when opened
-  useEffect(() => {
-    if (open) {
-      setCurrentPath(startPath);
-      setEntries([]);
-      setSelectedEntry(null);
-    }
-  }, [open, startPath]);
+  }, [openCount, currentPath, browseRemoteDir]);
 
   if (!open) return null;
 
   const pathParts = currentPath.split("/").filter(Boolean);
+
+  const joinPath = (base: string, name: string) => {
+    const cleanBase = base.endsWith("/") ? base.slice(0, -1) : base;
+    return cleanBase === "" ? `/${name}` : `${cleanBase}/${name}`;
+  };
 
   const navigateTo = (path: string) => {
     setCurrentPath(path);
@@ -86,11 +94,7 @@ export function RemoteFileBrowser({
 
   const handleDoubleClick = (entry: FileEntry) => {
     if (entry.isDir) {
-      navigateTo(
-        currentPath === "/"
-          ? `/${entry.name}`
-          : `${currentPath}/${entry.name}`,
-      );
+      navigateTo(joinPath(currentPath, entry.name));
     }
   };
 
@@ -100,11 +104,7 @@ export function RemoteFileBrowser({
       if (selectedEntry) {
         const entry = entries.find((e) => e.name === selectedEntry);
         if (entry?.isDir) {
-          onSelect(
-            currentPath === "/"
-              ? `/${entry.name}`
-              : `${currentPath}/${entry.name}`,
-          );
+          onSelect(joinPath(currentPath, entry.name));
         }
       } else {
         onSelect(currentPath);
@@ -112,11 +112,7 @@ export function RemoteFileBrowser({
     } else {
       // Select a file
       if (selectedEntry) {
-        onSelect(
-          currentPath === "/"
-            ? `/${selectedEntry}`
-            : `${currentPath}/${selectedEntry}`,
-        );
+        onSelect(joinPath(currentPath, selectedEntry));
       }
     }
     onClose();

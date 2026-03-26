@@ -679,7 +679,11 @@ export function InferencePanel() {
                 </label>
                 <div className="flex items-center gap-1.5 text-[11px]">
                   <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
-                  {useConnectStore.getState().roomId}
+                  {(() => {
+                    const state = useConnectStore.getState();
+                    const room = state.availableRooms.find((r) => r.roomId === state.roomId);
+                    return room?.name || state.roomId;
+                  })()}
                 </div>
               </div>
 

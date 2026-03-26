@@ -18,26 +18,21 @@ import {
   MSG_JOB_PROGRESS,
   MSG_JOB_COMPLETE,
   MSG_JOB_FAILED,
+  MSG_FS_GET_MOUNTS,
+  MSG_FS_MOUNTS_RESPONSE,
   MSG_FS_LIST_DIR,
   MSG_FS_LIST_RESPONSE,
+  MSG_FS_ERROR,
   MSG_SEPARATOR,
 } from "@/lib/sleapConnect";
 import { isTauri } from "@/platform/index";
 
 // ── Signaling server config ──────────────────────────────────────
 const SIGNALING_WS =
-  (typeof import.meta !== "undefined" &&
-    (import.meta as Record<string, unknown>).env &&
-    ((import.meta as Record<string, unknown>).env as Record<string, string>)
-      .VITE_SIGNALING_WS) ||
-  "wss://signaling.sleap.ai/ws";
+  import.meta.env?.VITE_SIGNALING_WS || "wss://signaling.sleap.ai/ws";
 
 const SIGNALING_HTTP =
-  (typeof import.meta !== "undefined" &&
-    (import.meta as Record<string, unknown>).env &&
-    ((import.meta as Record<string, unknown>).env as Record<string, string>)
-      .VITE_SIGNALING_HTTP) ||
-  "https://signaling.sleap.ai";
+  import.meta.env?.VITE_SIGNALING_HTTP || "https://signaling.sleap.ai";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -46,6 +41,13 @@ export type ConnectionStatus =
   | "connecting"
   | "connected"
   | "error";
+
+export interface RoomInfo {
+  roomId: string;
+  name: string | null;
+  role: string;
+  workerCount?: number;
+}
 
 interface PendingFsRequest {
   resolve: (entries: FileEntry[]) => void;
@@ -65,7 +67,7 @@ interface ConnectState {
   connectionStatus: ConnectionStatus;
   connectionError: string | null;
   roomId: string | null;
-  availableRooms: string[];
+  availableRooms: RoomInfo[];
 
   // Workers
   workers: WorkerInfo[];
@@ -83,6 +85,7 @@ interface ConnectState {
   connect: (roomId: string) => Promise<void>;
   disconnect: () => void;
   selectWorker: (workerId: string | null) => void;
+  connectToWorker: (workerId: string) => Promise<void>;
   browseRemoteDir: (path: string) => Promise<FileEntry[]>;
   submitJob: (
     spec: TrackJobSpec,
@@ -90,6 +93,7 @@ interface ConnectState {
   ) => Promise<JobResult>;
   cancelJob: (jobId: string) => void;
   loadCredentialsFromDisk: () => Promise<void>;
+  fetchRooms: () => Promise<void>;
 
   // Internal handlers
   _handleSignalingMessage: (msg: Record<string, unknown>) => void;
@@ -124,7 +128,7 @@ export const useConnectStore = create<ConnectState>()(
           );
           const { homeDir } = await import("@tauri-apps/api/path");
           const home = await homeDir();
-          const credPath = `${home}.sleap-rtc/credentials.json`;
+          const credPath = `${home}/.sleap-rtc/credentials.json`;
           const fileExists = await exists(credPath);
           if (!fileExists) return;
           const text = await readTextFile(credPath);
@@ -142,6 +146,54 @@ export const useConnectStore = create<ConnectState>()(
           }
         } catch (err) {
           console.warn("[connect] Failed to load credentials:", err);
+        }
+      },
+
+      fetchRooms: async () => {
+        const { credentials } = get();
+        if (!credentials) return;
+        try {
+          const res = await fetch(`${SIGNALING_HTTP}/api/auth/rooms`, {
+            headers: { Authorization: `Bearer ${credentials.jwt}` },
+          });
+          if (!res.ok) {
+            console.warn("[connect] Failed to fetch rooms:", res.status);
+            return;
+          }
+          const data = await res.json();
+          const now = Date.now() / 1000;
+          const activeRooms = (data.rooms as Array<Record<string, unknown>>).filter((r) => {
+            const expiresAt = r.expires_at as number | null;
+            return !expiresAt || expiresAt > now;
+          });
+          const rooms: RoomInfo[] = await Promise.all(
+            activeRooms.map(async (r) => {
+              const roomId = r.room_id as string;
+              // Fetch worker count for each room
+              let workerCount = 0;
+              try {
+                const wRes = await fetch(
+                  `${SIGNALING_HTTP}/api/rooms/${roomId}/workers`,
+                  { headers: { Authorization: `Bearer ${credentials.jwt}` } },
+                );
+                if (wRes.ok) {
+                  const wData = await wRes.json();
+                  workerCount = wData.count ?? 0;
+                }
+              } catch {
+                // Worker count fetch failed — non-critical
+              }
+              return {
+                roomId,
+                name: (r.name as string) || null,
+                role: r.role as string,
+                workerCount,
+              };
+            }),
+          );
+          set({ availableRooms: rooms });
+        } catch (err) {
+          console.warn("[connect] Failed to fetch rooms:", err);
         }
       },
 
@@ -241,6 +293,86 @@ export const useConnectStore = create<ConnectState>()(
 
       selectWorker: (workerId) => set({ selectedWorkerId: workerId }),
 
+      connectToWorker: async (workerId: string) => {
+        const { _ws, credentials } = get();
+        if (!_ws || !credentials) return;
+
+        console.log("[connect] Initiating WebRTC connection to worker:", workerId);
+        set({ selectedWorkerId: workerId });
+
+        // Create RTCPeerConnection with STUN + TURN servers
+        const pc = new RTCPeerConnection({
+          iceServers: [
+            { urls: "stun:stun.l.google.com:19302" },
+            {
+              urls: "turn:10.0.73.44:31540",
+              username: "sleap",
+              credential: "sleap123",
+            },
+            {
+              urls: "turn:10.0.73.44:31540?transport=tcp",
+              username: "sleap",
+              credential: "sleap123",
+            },
+          ],
+        });
+
+        // Create data channel
+        const dc = pc.createDataChannel("my-data-channel");
+        dc.onopen = () => {
+          console.log("[connect] Data channel open to worker:", workerId);
+          // Request worker's mount paths
+          dc.send(MSG_FS_GET_MOUNTS);
+        };
+        dc.onmessage = (event) => {
+          if (typeof event.data === "string") {
+            get()._handleDataChannelMessage(event.data);
+          }
+        };
+        dc.onclose = () => {
+          console.log("[connect] Data channel closed");
+        };
+
+        // Handle ICE candidates — send to worker via signaling
+        pc.onicecandidate = (event) => {
+          if (event.candidate && _ws.readyState === WebSocket.OPEN) {
+            _ws.send(
+              JSON.stringify({
+                type: "candidate",
+                sender: credentials.username,
+                target: workerId,
+                candidate: event.candidate,
+              }),
+            );
+          }
+        };
+
+        pc.oniceconnectionstatechange = () => {
+          console.log("[connect] ICE state:", pc.iceConnectionState);
+          if (pc.iceConnectionState === "failed" || pc.iceConnectionState === "disconnected") {
+            console.warn("[connect] ICE connection failed/disconnected");
+          }
+        };
+
+        set({ _pc: pc, _dc: dc });
+
+        // Create and send SDP offer
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+
+        _ws.send(
+          JSON.stringify({
+            type: "offer",
+            sender: credentials.username,
+            target: workerId,
+            sdp: offer.sdp,
+            role: "client",
+          }),
+        );
+
+        console.log("[connect] SDP offer sent to worker:", workerId);
+      },
+
       // ── Remote filesystem ────────────────────────────────────
       browseRemoteDir: async (path: string): Promise<FileEntry[]> => {
         const { _dc } = get();
@@ -249,18 +381,19 @@ export const useConnectStore = create<ConnectState>()(
         }
 
         return new Promise((resolve, reject) => {
-          const requestId = `fs_${Date.now()}`;
+          // Worker protocol: FS_LIST_DIR::path::offset (no request ID)
+          // Only one FS request at a time
           const { _pendingFs } = get();
-          _pendingFs.set(requestId, { resolve, reject });
+          _pendingFs.set("_current", { resolve, reject });
 
           _dc.send(
-            buildMessage(MSG_FS_LIST_DIR, requestId, path),
+            buildMessage(MSG_FS_LIST_DIR, path, "0"),
           );
 
           // Timeout after 10s
           setTimeout(() => {
-            if (_pendingFs.has(requestId)) {
-              _pendingFs.delete(requestId);
+            if (_pendingFs.has("_current")) {
+              _pendingFs.delete("_current");
               reject(new Error("Filesystem request timed out"));
             }
           }, 10000);
@@ -388,14 +521,22 @@ export const useConnectStore = create<ConnectState>()(
 
         switch (msgType) {
           case MSG_FS_LIST_RESPONSE: {
-            const requestId = parts[1];
-            const entriesJson = parts[2];
+            // Worker sends: FS_LIST_RESPONSE::{json}
+            // JSON: {path, entries: [{name, is_dir, size}], total_count, has_more}
+            const responseJson = parts.slice(1).join(MSG_SEPARATOR);
             const { _pendingFs } = get();
-            const pending = _pendingFs.get(requestId);
+            const pending = _pendingFs.get("_current");
             if (pending) {
-              _pendingFs.delete(requestId);
+              _pendingFs.delete("_current");
               try {
-                const entries = JSON.parse(entriesJson) as FileEntry[];
+                const result = JSON.parse(responseJson);
+                const entries: FileEntry[] = (result.entries || []).map(
+                  (e: Record<string, unknown>) => ({
+                    name: e.name as string,
+                    isDir: e.type === "directory",
+                    size: e.size as number | undefined,
+                  }),
+                );
                 pending.resolve(entries);
               } catch {
                 pending.reject(new Error("Invalid filesystem response"));
@@ -404,9 +545,59 @@ export const useConnectStore = create<ConnectState>()(
             break;
           }
 
+          case MSG_FS_MOUNTS_RESPONSE: {
+            // Worker sends: FS_MOUNTS_RESPONSE::{json}
+            // JSON: [{path, label}, ...]
+            const mountsJson = parts.slice(1).join(MSG_SEPARATOR);
+            try {
+              const mounts = JSON.parse(mountsJson) as Array<{ path: string; label?: string }>;
+              const mountPaths = mounts.map((m) => m.path);
+              console.log("[connect] Worker mounts:", mountPaths);
+              // Update the selected worker's mounts
+              const { workers, selectedWorkerId } = get();
+              set({
+                workers: workers.map((w) =>
+                  w.peerId === selectedWorkerId
+                    ? { ...w, mounts: mountPaths }
+                    : w,
+                ),
+              });
+            } catch {
+              console.warn("[connect] Failed to parse mounts response");
+            }
+            break;
+          }
+
+          case MSG_FS_ERROR: {
+            // Worker sends: FS_ERROR::error_code::message
+            const errorCode = parts[1];
+            const errorMsg = parts.slice(2).join(MSG_SEPARATOR);
+            console.warn("[connect] FS error:", errorCode, errorMsg);
+            const { _pendingFs } = get();
+            const pendingFs = _pendingFs.get("_current");
+            if (pendingFs) {
+              _pendingFs.delete("_current");
+              pendingFs.reject(new Error(`${errorCode}: ${errorMsg}`));
+            }
+            break;
+          }
+
           case MSG_JOB_ACCEPTED: {
             const jobId = parts[1];
             console.log("[connect] Job accepted:", jobId);
+            break;
+          }
+
+          case "CR": {
+            // Worker sends stdout lines as CR::{text}
+            // These contain the actual sleap-nn output including progress JSON
+            const line = parts.slice(1).join(MSG_SEPARATOR);
+            const { _pendingJobs } = get();
+            const crEntry = Array.from(_pendingJobs.entries())[0];
+            if (crEntry) {
+              const [, pending] = crEntry;
+              pending.onProgress(line);
+            }
             break;
           }
 
@@ -427,25 +618,28 @@ export const useConnectStore = create<ConnectState>()(
           }
 
           case MSG_JOB_PROGRESS: {
-            const jobId = parts[1];
-            const line = parts.slice(2).join(MSG_SEPARATOR);
+            // Worker sends: JOB_PROGRESS::{json} (no job ID prefix)
+            const progressPayload = parts.slice(1).join(MSG_SEPARATOR);
             const { _pendingJobs } = get();
-            const pending = _pendingJobs.get(jobId);
-            if (pending) {
-              pending.onProgress(line);
+            // Find the active pending job (there's only one at a time)
+            const pendingEntry = Array.from(_pendingJobs.entries())[0];
+            if (pendingEntry) {
+              const [, pending] = pendingEntry;
+              pending.onProgress(progressPayload);
             }
             break;
           }
 
           case MSG_JOB_COMPLETE: {
-            const jobId = parts[1];
-            const resultJson = parts[2];
+            // Worker sends: JOB_COMPLETE::{json} (no job ID prefix)
+            const completePayload = parts.slice(1).join(MSG_SEPARATOR);
             const { _pendingJobs } = get();
-            const pending = _pendingJobs.get(jobId);
-            if (pending) {
+            const completeEntry = Array.from(_pendingJobs.entries())[0];
+            if (completeEntry) {
+              const [jobId, pending] = completeEntry;
               _pendingJobs.delete(jobId);
               try {
-                const result = JSON.parse(resultJson);
+                const result = JSON.parse(completePayload);
                 pending.onComplete({
                   jobId,
                   success: true,
@@ -459,15 +653,16 @@ export const useConnectStore = create<ConnectState>()(
           }
 
           case MSG_JOB_FAILED: {
-            const jobId = parts[1];
-            const errorJson = parts[2];
+            // Worker sends: JOB_FAILED::{json} (no job ID prefix)
+            const failPayload = parts.slice(1).join(MSG_SEPARATOR);
             const { _pendingJobs } = get();
-            const pending = _pendingJobs.get(jobId);
-            if (pending) {
+            const failEntry = Array.from(_pendingJobs.entries())[0];
+            if (failEntry) {
+              const [jobId, pending] = failEntry;
               _pendingJobs.delete(jobId);
               let errorMsg = "Job failed";
               try {
-                const parsed = JSON.parse(errorJson);
+                const parsed = JSON.parse(failPayload);
                 errorMsg = parsed.error || errorMsg;
               } catch { /* use default */ }
               pending.onComplete({
