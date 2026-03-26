@@ -300,6 +300,8 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         ),
       }));
 
+      const numModels = slots.length;
+
       try {
         const result = await submitJob(spec, (line: string, isCarriageReturn?: boolean) => {
           // Parse progress from worker — single shared log
@@ -383,6 +385,26 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
 
           // ── Regular log line — append to shared log ───────────
           set((s) => ({ log: [...s.log, line] }));
+        }, {
+          expectedCompletions: numModels,
+          onModelComplete: () => {
+            // A model finished — advance to the next one
+            set((s) => {
+              const idx = s.currentModelIndex;
+              const nextIdx = idx + 1;
+              return {
+                currentModelIndex: nextIdx,
+                models: s.models.map((m, i) =>
+                  i === idx && m.status === "running"
+                    ? { ...m, status: "completed" as const }
+                    : i === nextIdx && m.status === "pending"
+                      ? { ...m, status: "running" as const }
+                      : m,
+                ),
+                log: [...s.log, `— ${s.models[idx]?.label} completed, starting ${s.models[nextIdx]?.label ?? "next model"}...`],
+              };
+            });
+          },
         });
 
         if (result.success) {

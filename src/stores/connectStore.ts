@@ -59,6 +59,8 @@ interface PendingFsRequest {
 interface PendingJobCallbacks {
   onProgress: (line: string, isCarriageReturn?: boolean) => void;
   onComplete: (result: JobResult) => void;
+  onModelComplete?: (result: JobResult) => void; // per-model completion for multi-model pipelines
+  remainingCompletions: number; // resolve only when this reaches 0
 }
 
 interface ConnectState {
@@ -92,6 +94,7 @@ interface ConnectState {
   submitJob: (
     spec: JobSpec,
     onProgress: (line: string, isCarriageReturn?: boolean) => void,
+    options?: { expectedCompletions?: number; onModelComplete?: (result: JobResult) => void },
   ) => Promise<JobResult>;
   cancelJob: (jobId: string) => void;
   stopJob: () => void;
@@ -408,6 +411,7 @@ export const useConnectStore = create<ConnectState>()(
       submitJob: async (
         spec: JobSpec,
         onProgress: (line: string, isCarriageReturn?: boolean) => void,
+        options?: { expectedCompletions?: number; onModelComplete?: (result: JobResult) => void },
       ): Promise<JobResult> => {
         const { _dc } = get();
         if (!_dc || _dc.readyState !== "open") {
@@ -421,6 +425,8 @@ export const useConnectStore = create<ConnectState>()(
           _pendingJobs.set(jobId, {
             onProgress,
             onComplete: resolve,
+            onModelComplete: options?.onModelComplete,
+            remainingCompletions: options?.expectedCompletions ?? 1,
           });
 
           _dc.send(
@@ -648,22 +654,30 @@ export const useConnectStore = create<ConnectState>()(
           }
 
           case MSG_JOB_COMPLETE: {
-            // Worker sends: JOB_COMPLETE::{json} (no job ID prefix)
+            // Worker sends: JOB_COMPLETE::{json} per model in multi-model pipelines.
+            // Only resolve the promise after all expected completions.
             const completePayload = parts.slice(1).join(MSG_SEPARATOR);
             const { _pendingJobs } = get();
             const completeEntry = Array.from(_pendingJobs.entries())[0];
             if (completeEntry) {
               const [jobId, pending] = completeEntry;
-              _pendingJobs.delete(jobId);
+              let result: JobResult;
               try {
-                const result = JSON.parse(completePayload);
-                pending.onComplete({
-                  jobId,
-                  success: true,
-                  outputPath: result.output_path,
-                });
+                const parsed = JSON.parse(completePayload);
+                result = { jobId, success: true, outputPath: parsed.output_path };
               } catch {
-                pending.onComplete({ jobId, success: true });
+                result = { jobId, success: true };
+              }
+
+              pending.remainingCompletions--;
+
+              if (pending.remainingCompletions <= 0) {
+                // All models done — resolve the promise
+                _pendingJobs.delete(jobId);
+                pending.onComplete(result);
+              } else {
+                // More models to go — notify per-model callback, keep listening
+                pending.onModelComplete?.(result);
               }
             }
             break;
