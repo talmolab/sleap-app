@@ -22,24 +22,37 @@ export interface TrainingConfig {
   // Data
   trainingLabelsPath: string;
   validationLabelsPath: string;
+}
 
-  // Hyperparameters
+/** Per-config hyperparameters parsed from YAML */
+export interface ConfigHyperparams {
   backbone: Backbone | "";
   maxEpochs: number;
   batchSize: number;
   learningRate: number;
   runName: string;
-
-  // Tracking
+  useWandb: boolean;
   wandbEntity: string;
   wandbProject: string;
 }
+
+export const defaultHyperparams: ConfigHyperparams = {
+  backbone: "",
+  maxEpochs: 100,
+  batchSize: 4,
+  learningRate: 0.0001,
+  runName: "",
+  useWandb: false,
+  wandbEntity: "",
+  wandbProject: "",
+};
 
 export interface ConfigFile {
   filename: string;
   content: string; // raw YAML text
   modelType: string; // parsed from head_configs (e.g., "centroid")
   slot: string; // which slot this fills (e.g., "centroid", "centered_instance", "config")
+  hyperparams: ConfigHyperparams; // per-config hyperparameters
 }
 
 export interface RemoteTrainingOptions {
@@ -78,10 +91,10 @@ interface TrainingState {
 
   // Actions
   setConfig: <K extends keyof TrainingConfig>(key: K, value: TrainingConfig[K]) => void;
+  updateConfigHyperparams: (slot: string, updates: Partial<ConfigHyperparams>) => void;
   addConfigFile: (file: ConfigFile) => void;
   removeConfigFile: (slot: string) => void;
   parseYamlConfig: (yamlText: string, filename: string, slot: string) => ConfigFile | null;
-  autoFillFromConfig: (configFile: ConfigFile) => void;
   reset: () => void;
   startTraining: (remoteOpts?: RemoteTrainingOptions) => Promise<void>;
   stopTraining: () => Promise<void>;
@@ -117,13 +130,6 @@ const initialConfig: TrainingConfig = {
   configs: [],
   trainingLabelsPath: "",
   validationLabelsPath: "",
-  backbone: "",
-  maxEpochs: 100,
-  batchSize: 4,
-  learningRate: 0.0001,
-  runName: "",
-  wandbEntity: "",
-  wandbProject: "",
 };
 
 const initialState = {
@@ -144,6 +150,18 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
   setConfig: (key, value) =>
     set((state) => ({
       config: { ...state.config, [key]: value },
+    })),
+
+  updateConfigHyperparams: (slot, updates) =>
+    set((state) => ({
+      config: {
+        ...state.config,
+        configs: state.config.configs.map((c) =>
+          c.slot === slot
+            ? { ...c, hyperparams: { ...c.hyperparams, ...updates } }
+            : c,
+        ),
+      },
     })),
 
   addConfigFile: (file) =>
@@ -176,30 +194,16 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       const headConfigs = (modelConfig.head_configs ?? trainerConfig?.head_configs ?? {}) as Record<string, unknown>;
       const detectedModelType = Object.entries(headConfigs).find(([, v]) => v != null)?.[0] ?? "unknown";
 
-      return {
-        filename,
-        content: yamlText,
-        modelType: detectedModelType,
-        slot,
-      };
-    } catch (err) {
-      console.warn("[training] Failed to parse YAML:", err);
-      return null;
-    }
-  },
-
-  autoFillFromConfig: (configFile: ConfigFile) => {
-    try {
-      const doc = yaml.load(configFile.content) as Record<string, unknown>;
-      if (!doc || typeof doc !== "object") return;
-
-      const trainer = (doc.trainer_config ?? doc.trainer ?? doc) as Record<string, unknown>;
+      // Extract per-config hyperparameters
+      const trainer = trainerConfig;
+      const trainLoader = (trainer.train_data_loader ?? {}) as Record<string, unknown>;
+      const optimizer = (trainer.optimizer ?? {}) as Record<string, unknown>;
       const wandb = (trainer.wandb ?? (doc as Record<string, unknown>).wandb ?? {}) as Record<string, unknown>;
       const dataConfig = (doc.data_config ?? {}) as Record<string, unknown>;
-      const modelConfig = (doc.model_config ?? {}) as Record<string, unknown>;
 
-      // Extract backbone from model config
-      const backbone = (modelConfig.backbone ?? "") as string;
+      // Detect backbone from backbone_config keys
+      const backboneConfig = (modelConfig.backbone_config ?? {}) as Record<string, unknown>;
+      const activeBackbone = Object.entries(backboneConfig).find(([, v]) => v != null)?.[0] ?? "";
       const backboneMap: Record<string, Backbone> = {
         "unet": "UNet",
         "leap": "LEAP CNN",
@@ -208,45 +212,40 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         "stacked_hourglass": "Stacked Hourglass",
       };
 
-      const updates: Partial<TrainingConfig> = {};
+      const hyperparams: ConfigHyperparams = {
+        backbone: backboneMap[activeBackbone.toLowerCase()] ?? "",
+        maxEpochs: typeof trainer.max_epochs === "number" ? trainer.max_epochs : 100,
+        batchSize: typeof trainLoader.batch_size === "number" ? trainLoader.batch_size
+          : typeof trainer.batch_size === "number" ? trainer.batch_size : 4,
+        learningRate: typeof optimizer.lr === "number" ? optimizer.lr
+          : typeof trainer.learning_rate === "number" ? trainer.learning_rate : 0.0001,
+        runName: typeof trainer.run_name === "string" ? trainer.run_name : "",
+        useWandb: trainer.use_wandb === true,
+        wandbEntity: typeof wandb.entity === "string" ? wandb.entity : "",
+        wandbProject: typeof wandb.project === "string" ? wandb.project : "",
+      };
 
-      const trainLoader = (trainer.train_data_loader ?? {}) as Record<string, unknown>;
-      const optimizer = (trainer.optimizer ?? {}) as Record<string, unknown>;
-
-      const batchSize = trainLoader.batch_size ?? trainer.batch_size;
-      if (typeof batchSize === "number") updates.batchSize = batchSize;
-
-      const lr = optimizer.lr ?? trainer.learning_rate;
-      if (typeof lr === "number") updates.learningRate = lr;
-
-      const maxEpochs = trainer.max_epochs;
-      if (typeof maxEpochs === "number") updates.maxEpochs = maxEpochs;
-
-      const runName = trainer.run_name ?? wandb.name ?? wandb.run_name;
-      if (typeof runName === "string") updates.runName = runName;
-
-      const wandbProject = wandb.project;
-      if (typeof wandbProject === "string") updates.wandbProject = wandbProject;
-
-      const wandbEntity = wandb.entity;
-      if (typeof wandbEntity === "string") updates.wandbEntity = wandbEntity;
-
+      // Also auto-fill data paths into the global config
       const trainLabels = dataConfig.train_labels_path;
-      if (typeof trainLabels === "string") updates.trainingLabelsPath = trainLabels;
-      if (Array.isArray(trainLabels) && trainLabels.length > 0) updates.trainingLabelsPath = trainLabels[0];
-
       const valLabels = dataConfig.val_labels_path;
-      if (typeof valLabels === "string") updates.validationLabelsPath = valLabels;
-
-      if (backbone && backboneMap[backbone.toLowerCase()]) {
-        updates.backbone = backboneMap[backbone.toLowerCase()];
+      const configUpdates: Partial<TrainingConfig> = {};
+      if (typeof trainLabels === "string") configUpdates.trainingLabelsPath = trainLabels;
+      if (Array.isArray(trainLabels) && trainLabels.length > 0) configUpdates.trainingLabelsPath = trainLabels[0];
+      if (typeof valLabels === "string") configUpdates.validationLabelsPath = valLabels;
+      if (Object.keys(configUpdates).length > 0) {
+        set((state) => ({ config: { ...state.config, ...configUpdates } }));
       }
 
-      set((state) => ({
-        config: { ...state.config, ...updates },
-      }));
+      return {
+        filename,
+        content: yamlText,
+        modelType: detectedModelType,
+        slot,
+        hyperparams,
+      };
     } catch (err) {
-      console.warn("[training] Failed to auto-fill from config:", err);
+      console.warn("[training] Failed to parse YAML:", err);
+      return null;
     }
   },
 
@@ -255,18 +254,21 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
   startTraining: async (remoteOpts?: RemoteTrainingOptions) => {
     const { config } = get();
 
-    // Build model progress entries
+    // Build model progress entries from per-config hyperparams
     const slots = getConfigSlots(config.modelType);
-    const models: ModelProgress[] = slots.map((slot) => ({
-      label: getSlotLabel(slot).replace(" Config", ""),
-      epoch: 0,
-      maxEpochs: config.maxEpochs,
-      loss: null,
-      valLoss: null,
-      bestValLoss: null,
-      status: "pending",
-      log: [],
-    }));
+    const models: ModelProgress[] = slots.map((slot) => {
+      const cf = config.configs.find((c) => c.slot === slot);
+      return {
+        label: getSlotLabel(slot).replace(" Config", ""),
+        epoch: 0,
+        maxEpochs: cf?.hyperparams.maxEpochs ?? 100,
+        loss: null,
+        valLoss: null,
+        bestValLoss: null,
+        status: "pending" as const,
+        log: [],
+      };
+    });
 
     set({
       status: "running",
@@ -282,17 +284,13 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       const { useConnectStore } = await import("@/stores/connectStore");
       const { submitJob } = useConnectStore.getState();
 
-      // Build TrainJobSpec
+      // Build TrainJobSpec — configs carry their own hyperparams
       const spec = {
         type: "train" as const,
         config_contents: config.configs.map((c) => c.content),
         model_types: config.configs.map((c) => c.modelType),
         labels_path: remoteOpts.labelsPath,
         val_labels_path: remoteOpts.valLabelsPath || undefined,
-        max_epochs: config.maxEpochs,
-        batch_size: config.batchSize,
-        learning_rate: config.learningRate,
-        run_name: config.runName || undefined,
       };
 
       set((state) => ({

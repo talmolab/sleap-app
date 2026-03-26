@@ -9,7 +9,7 @@
 
 import { useState, useRef, useEffect } from "react";
 import { useTrainingStore, getConfigSlots, getSlotLabel } from "@/stores/trainingStore";
-import type { ModelType, Backbone, ConfigFile } from "@/stores/trainingStore";
+import type { ModelType, Backbone, ConfigFile, ConfigHyperparams } from "@/stores/trainingStore";
 import { useConnectStore } from "@/stores/connectStore";
 import { RemoteFileBrowser } from "@/components/dialogs/RemoteFileBrowser";
 import { useAppStore } from "@/stores/appStore";
@@ -17,6 +17,7 @@ import { isTauri } from "@/platform/index";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   Select,
   SelectContent,
@@ -110,7 +111,7 @@ function ConfigSlot({
   disabled: boolean;
 }) {
   const [dragOver, setDragOver] = useState(false);
-  const { parseYamlConfig, addConfigFile, autoFillFromConfig } = useTrainingStore();
+  const { parseYamlConfig, addConfigFile } = useTrainingStore();
 
   const handleFile = (file: File) => {
     if (!file.name.endsWith(".yaml") && !file.name.endsWith(".yml")) return;
@@ -120,7 +121,6 @@ function ConfigSlot({
       const parsed = parseYamlConfig(text, file.name, slot);
       if (parsed) {
         addConfigFile(parsed);
-        autoFillFromConfig(parsed);
       }
     };
     reader.readAsText(file);
@@ -176,6 +176,153 @@ function ConfigSlot({
   );
 }
 
+// ── Per-config field groups ──────────────────────────────────────────────────
+
+function HyperparamsFields({
+  slot,
+  hp,
+  onUpdate,
+  disabled,
+}: {
+  slot: string;
+  hp: ConfigHyperparams;
+  onUpdate: (slot: string, updates: Partial<ConfigHyperparams>) => void;
+  disabled: boolean;
+}) {
+  return (
+    <div className="space-y-2">
+      <div className="space-y-1">
+        <span className="text-[10px] text-muted-foreground">Backbone</span>
+        <Select
+          value={hp.backbone || ""}
+          onValueChange={(v) => onUpdate(slot, { backbone: v as Backbone })}
+          disabled={disabled}
+        >
+          <SelectTrigger className="h-7 text-xs">
+            <SelectValue placeholder="From config..." />
+          </SelectTrigger>
+          <SelectContent>
+            {BACKBONE_OPTIONS.map((o) => (
+              <SelectItem key={o.value} value={o.value}>
+                {o.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[10px] text-muted-foreground shrink-0">Max Epochs</span>
+        <Input
+          type="number"
+          value={hp.maxEpochs}
+          onChange={(e) => onUpdate(slot, { maxEpochs: Number(e.target.value) })}
+          min={1}
+          className="h-6 text-[10px] w-20"
+          disabled={disabled}
+        />
+      </div>
+
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[10px] text-muted-foreground shrink-0">Batch Size</span>
+        <Input
+          type="number"
+          value={hp.batchSize}
+          onChange={(e) => onUpdate(slot, { batchSize: Number(e.target.value) })}
+          min={1}
+          max={128}
+          className="h-6 text-[10px] w-20"
+          disabled={disabled}
+        />
+      </div>
+
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[10px] text-muted-foreground shrink-0">Learning Rate</span>
+        <Input
+          type="number"
+          value={hp.learningRate}
+          onChange={(e) => onUpdate(slot, { learningRate: Number(e.target.value) })}
+          step={0.0001}
+          className="h-6 text-[10px] w-20"
+          disabled={disabled}
+        />
+      </div>
+
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[10px] text-muted-foreground shrink-0">Run Name</span>
+        <Input
+          type="text"
+          value={hp.runName}
+          onChange={(e) => onUpdate(slot, { runName: e.target.value })}
+          placeholder="From config..."
+          className="h-6 text-[10px] w-32"
+          disabled={disabled}
+        />
+      </div>
+    </div>
+  );
+}
+
+function WandbFields({
+  slot,
+  hp,
+  onUpdate,
+  disabled,
+}: {
+  slot: string;
+  hp: ConfigHyperparams;
+  onUpdate: (slot: string, updates: Partial<ConfigHyperparams>) => void;
+  disabled: boolean;
+}) {
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between py-0.5">
+        <span className="text-[10px] text-muted-foreground">Enable W&B</span>
+        <button
+          className={`w-8 h-4 rounded-full relative transition-colors ${
+            hp.useWandb ? "bg-primary" : "bg-zinc-700"
+          }`}
+          onClick={() => onUpdate(slot, { useWandb: !hp.useWandb })}
+          disabled={disabled}
+        >
+          <span
+            className={`absolute top-0.5 left-0.5 w-3 h-3 rounded-full bg-white transition-transform ${
+              hp.useWandb ? "translate-x-4" : ""
+            }`}
+          />
+        </button>
+      </div>
+
+      {hp.useWandb && (
+        <>
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[10px] text-muted-foreground shrink-0">Entity</span>
+            <Input
+              type="text"
+              value={hp.wandbEntity}
+              onChange={(e) => onUpdate(slot, { wandbEntity: e.target.value })}
+              placeholder="From config..."
+              className="h-6 text-[10px] w-32"
+              disabled={disabled}
+            />
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[10px] text-muted-foreground shrink-0">Project</span>
+            <Input
+              type="text"
+              value={hp.wandbProject}
+              onChange={(e) => onUpdate(slot, { wandbProject: e.target.value })}
+              placeholder="From config..."
+              className="h-6 text-[10px] w-32"
+              disabled={disabled}
+            />
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ── Panel ────────────────────────────────────────────────────────────────────
 
 export function TrainingPanel() {
@@ -187,6 +334,7 @@ export function TrainingPanel() {
   const currentModelIndex = useTrainingStore((s) => s.currentModelIndex);
   const wandbUrl = useTrainingStore((s) => s.wandbUrl);
   const setConfig = useTrainingStore((s) => s.setConfig);
+  const updateConfigHyperparams = useTrainingStore((s) => s.updateConfigHyperparams);
   const removeConfigFile = useTrainingStore((s) => s.removeConfigFile);
   const startTraining = useTrainingStore((s) => s.startTraining);
   const stopTraining = useTrainingStore((s) => s.stopTraining);
@@ -258,12 +406,11 @@ export function TrainingPanel() {
         const reader = new FileReader();
         reader.onload = () => {
           const text = reader.result as string;
-          const { parseYamlConfig, addConfigFile, autoFillFromConfig } =
+          const { parseYamlConfig, addConfigFile } =
             useTrainingStore.getState();
           const parsed = parseYamlConfig(text, file.name, slot);
           if (parsed) {
             addConfigFile(parsed);
-            autoFillFromConfig(parsed);
           }
         };
         reader.readAsText(file);
@@ -454,118 +601,78 @@ export function TrainingPanel() {
 
         <Separator />
 
-        {/* ── Hyperparameters ──────────────────────────────────────── */}
+        {/* ── Hyperparameters (per-config tabs) ─────────────────── */}
         <Section title="Hyperparameters" defaultOpen={true}>
-          <div className="space-y-1">
-            <span className="text-[10px] text-muted-foreground">Backbone</span>
-            <Select
-              value={config.backbone || ""}
-              onValueChange={(v) => setConfig("backbone", v as Backbone)}
+          {config.configs.length === 0 ? (
+            <p className="text-[10px] text-muted-foreground">
+              Upload config file(s) above to see hyperparameters.
+            </p>
+          ) : config.configs.length === 1 ? (
+            <HyperparamsFields
+              slot={config.configs[0].slot}
+              hp={config.configs[0].hyperparams}
+              onUpdate={updateConfigHyperparams}
               disabled={isRunning}
-            >
-              <SelectTrigger className="h-7 text-xs">
-                <SelectValue placeholder="From config..." />
-              </SelectTrigger>
-              <SelectContent>
-                {BACKBONE_OPTIONS.map((o) => (
-                  <SelectItem key={o.value} value={o.value}>
-                    {o.label}
-                  </SelectItem>
+            />
+          ) : (
+            <Tabs defaultValue={config.configs[0]?.slot}>
+              <TabsList className="w-full h-7">
+                {config.configs.map((cf) => (
+                  <TabsTrigger key={cf.slot} value={cf.slot} className="flex-1 text-[10px] h-6">
+                    {getSlotLabel(cf.slot).replace(" Config", "")}
+                  </TabsTrigger>
                 ))}
-              </SelectContent>
-            </Select>
-          </div>
-
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-[10px] text-muted-foreground shrink-0">
-              Max Epochs
-            </span>
-            <Input
-              type="number"
-              value={config.maxEpochs}
-              onChange={(e) => setConfig("maxEpochs", Number(e.target.value))}
-              min={1}
-              className="h-6 text-[10px] w-20"
-              disabled={isRunning}
-            />
-          </div>
-
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-[10px] text-muted-foreground shrink-0">
-              Batch Size
-            </span>
-            <Input
-              type="number"
-              value={config.batchSize}
-              onChange={(e) => setConfig("batchSize", Number(e.target.value))}
-              min={1}
-              max={128}
-              className="h-6 text-[10px] w-20"
-              disabled={isRunning}
-            />
-          </div>
-
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-[10px] text-muted-foreground shrink-0">
-              Learning Rate
-            </span>
-            <Input
-              type="number"
-              value={config.learningRate}
-              onChange={(e) =>
-                setConfig("learningRate", Number(e.target.value))
-              }
-              step={0.0001}
-              className="h-6 text-[10px] w-20"
-              disabled={isRunning}
-            />
-          </div>
-
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-[10px] text-muted-foreground shrink-0">
-              Run Name
-            </span>
-            <Input
-              type="text"
-              value={config.runName}
-              onChange={(e) => setConfig("runName", e.target.value)}
-              placeholder="From config..."
-              className="h-6 text-[10px] w-32"
-              disabled={isRunning}
-            />
-          </div>
+              </TabsList>
+              {config.configs.map((cf) => (
+                <TabsContent key={cf.slot} value={cf.slot} className="mt-2">
+                  <HyperparamsFields
+                    slot={cf.slot}
+                    hp={cf.hyperparams}
+                    onUpdate={updateConfigHyperparams}
+                    disabled={isRunning}
+                  />
+                </TabsContent>
+              ))}
+            </Tabs>
+          )}
         </Section>
 
         <Separator />
 
-        {/* ── Tracking (W&B) ──────────────────────────────────────── */}
+        {/* ── Tracking / W&B (per-config tabs) ────────────────── */}
         <Section title="Tracking (W&B)" defaultOpen={false}>
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-[10px] text-muted-foreground shrink-0">
-              Entity
-            </span>
-            <Input
-              type="text"
-              value={config.wandbEntity}
-              onChange={(e) => setConfig("wandbEntity", e.target.value)}
-              placeholder="From config..."
-              className="h-6 text-[10px] w-32"
+          {config.configs.length === 0 ? (
+            <p className="text-[10px] text-muted-foreground">
+              Upload config file(s) above to see W&B settings.
+            </p>
+          ) : config.configs.length === 1 ? (
+            <WandbFields
+              slot={config.configs[0].slot}
+              hp={config.configs[0].hyperparams}
+              onUpdate={updateConfigHyperparams}
               disabled={isRunning}
             />
-          </div>
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-[10px] text-muted-foreground shrink-0">
-              Project
-            </span>
-            <Input
-              type="text"
-              value={config.wandbProject}
-              onChange={(e) => setConfig("wandbProject", e.target.value)}
-              placeholder="From config..."
-              className="h-6 text-[10px] w-32"
-              disabled={isRunning}
-            />
-          </div>
+          ) : (
+            <Tabs defaultValue={config.configs[0]?.slot}>
+              <TabsList className="w-full h-7">
+                {config.configs.map((cf) => (
+                  <TabsTrigger key={cf.slot} value={cf.slot} className="flex-1 text-[10px] h-6">
+                    {getSlotLabel(cf.slot).replace(" Config", "")}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+              {config.configs.map((cf) => (
+                <TabsContent key={cf.slot} value={cf.slot} className="mt-2">
+                  <WandbFields
+                    slot={cf.slot}
+                    hp={cf.hyperparams}
+                    onUpdate={updateConfigHyperparams}
+                    disabled={isRunning}
+                  />
+                </TabsContent>
+              ))}
+            </Tabs>
+          )}
         </Section>
 
         <Separator />
