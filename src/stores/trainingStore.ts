@@ -72,7 +72,6 @@ export interface ModelProgress {
   valLoss: number | null;
   bestValLoss: number | null;
   status: "pending" | "running" | "completed" | "failed";
-  log: string[];
 }
 
 interface TrainingState {
@@ -84,10 +83,11 @@ interface TrainingState {
   error: string | null;
   startedAt: number | null;
 
-  // Progress (multi-model)
+  // Progress
   models: ModelProgress[];
   currentModelIndex: number;
   wandbUrl: string | null;
+  log: string[]; // single shared log for all models
 
   // Actions
   setConfig: <K extends keyof TrainingConfig>(key: K, value: TrainingConfig[K]) => void;
@@ -140,6 +140,7 @@ const initialState = {
   models: [] as ModelProgress[],
   currentModelIndex: 0,
   wandbUrl: null as string | null,
+  log: [] as string[],
 };
 
 // ── Store ─────────────────────────────────────────────────────────
@@ -266,7 +267,6 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         valLoss: null,
         bestValLoss: null,
         status: "pending" as const,
-        log: [],
       };
     });
 
@@ -277,6 +277,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       models,
       currentModelIndex: 0,
       wandbUrl: null,
+      log: [],
     });
 
     if (remoteOpts?.remote) {
@@ -301,12 +302,11 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
 
       try {
         const result = await submitJob(spec, (line: string, isCarriageReturn?: boolean) => {
-          // Parse progress from worker
+          // Parse progress from worker — single shared log
           const state = get();
           const idx = state.currentModelIndex;
 
           // ── CR:: lines (tqdm progress bars) ───────────────────
-          // Worker sends \r-terminated tqdm updates as CR:: messages.
           // Replace the last log line to emulate in-place overwriting.
           if (isCarriageReturn) {
             // Parse epoch/loss from tqdm line for progress bar updates
@@ -323,22 +323,15 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
               }));
             }
 
-            // Strip ANSI escape codes and progress bar chars for clean display
+            // Strip ANSI escape codes for clean display
             const clean = line.replace(/\x1b\[[0-9;]*m/g, "").trim();
             if (!clean) return;
 
             // Replace last log line (carriage return behavior)
             set((s) => ({
-              models: s.models.map((m, i) =>
-                i === idx
-                  ? {
-                      ...m,
-                      log: m.log.length > 0
-                        ? [...m.log.slice(0, -1), clean]
-                        : [clean],
-                    }
-                  : m,
-              ),
+              log: s.log.length > 0
+                ? [...s.log.slice(0, -1), clean]
+                : [clean],
             }));
             return;
           }
@@ -360,18 +353,18 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
                           (m.bestValLoss === null || data.val_loss < m.bestValLoss)
                             ? data.val_loss
                             : m.bestValLoss,
-                        log: [
-                          ...m.log,
-                          `[Epoch ${data.epoch}/${m.maxEpochs}] loss: ${data.loss?.toFixed(4) ?? "?"} | val_loss: ${data.val_loss?.toFixed(4) ?? "?"}${
-                            data.val_loss != null &&
-                            (m.bestValLoss === null || data.val_loss < m.bestValLoss)
-                              ? " *** best ***"
-                              : ""
-                          }`,
-                        ],
                       }
                     : m,
                 ),
+                log: [
+                  ...s.log,
+                  `[Epoch ${data.epoch}/${s.models[idx]?.maxEpochs}] loss: ${data.loss?.toFixed(4) ?? "?"} | val_loss: ${data.val_loss?.toFixed(4) ?? "?"}${
+                    data.val_loss != null &&
+                    (s.models[idx]?.bestValLoss === null || data.val_loss < (s.models[idx]?.bestValLoss ?? Infinity))
+                      ? " *** best ***"
+                      : ""
+                  }`,
+                ],
               }));
               return;
             }
@@ -388,12 +381,8 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
             if (urlMatch) set({ wandbUrl: urlMatch[1] });
           }
 
-          // ── Regular log line — append ─────────────────────────
-          set((s) => ({
-            models: s.models.map((m, i) =>
-              i === idx ? { ...m, log: [...m.log, line] } : m,
-            ),
-          }));
+          // ── Regular log line — append to shared log ───────────
+          set((s) => ({ log: [...s.log, line] }));
         });
 
         if (result.success) {
@@ -444,11 +433,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       sendControlCommand("stop");
       // Keep status running — worker continues to next model or completes
       set((s) => ({
-        models: s.models.map((m, i) =>
-          i === s.currentModelIndex && m.status === "running"
-            ? { ...m, log: [...m.log, "— Stop Early requested, saving checkpoint..."] }
-            : m,
-        ),
+        log: [...s.log, "— Stop Early requested, saving checkpoint..."],
       }));
     } catch (e) {
       console.warn("[training] Failed to stop:", e);

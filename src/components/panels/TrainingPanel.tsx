@@ -333,6 +333,7 @@ export function TrainingPanel() {
   const models = useTrainingStore((s) => s.models);
   const currentModelIndex = useTrainingStore((s) => s.currentModelIndex);
   const wandbUrl = useTrainingStore((s) => s.wandbUrl);
+  const log = useTrainingStore((s) => s.log);
   const setConfig = useTrainingStore((s) => s.setConfig);
   const updateConfigHyperparams = useTrainingStore((s) => s.updateConfigHyperparams);
   const removeConfigFile = useTrainingStore((s) => s.removeConfigFile);
@@ -372,10 +373,9 @@ export function TrainingPanel() {
 
   // Auto-scroll log
   const logRef = useRef<HTMLPreElement>(null);
-  const currentModel = models[currentModelIndex];
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
-  }, [currentModel?.log.length]);
+  }, [log.length]);
 
   const isRunning = status === "running";
   const isDone =
@@ -759,6 +759,19 @@ export function TrainingPanel() {
 
         <Separator />
 
+        {/* ── W&B link (shown as soon as available) ─────────────── */}
+        {wandbUrl && (
+          <a
+            href={wandbUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-1.5 text-[11px] text-blue-400 hover:underline bg-blue-500/8 border border-blue-500/20 rounded-md px-2 py-1.5"
+          >
+            <ExternalLink className="h-3 w-3" />
+            View on Weights & Biases
+          </a>
+        )}
+
         {/* ── Action buttons ──────────────────────────────────────── */}
         {status === "idle" && (
           <>
@@ -965,45 +978,34 @@ export function TrainingPanel() {
                       )}
                     </div>
                   )}
-
-                  {/* Log (only for current or failed model) */}
-                  {(isCurrent || isFailed) && model.log.length > 0 && (
-                    <pre
-                      ref={isCurrent ? logRef : undefined}
-                      className="max-h-36 overflow-auto rounded border bg-muted p-1.5 text-[10px] font-mono whitespace-pre-wrap break-all mb-2"
-                    >
-                      {model.log.map((line, j) => (
-                        <div
-                          key={j}
-                          className={
-                            line.includes("*** best ***")
-                              ? "text-green-400"
-                              : line.includes("Error") ||
-                                  line.includes("error")
-                                ? "text-destructive"
-                                : ""
-                          }
-                        >
-                          {line}
-                        </div>
-                      ))}
-                    </pre>
-                  )}
                 </div>
               );
             })}
 
-            {/* W&B link */}
-            {wandbUrl && (
-              <a
-                href={wandbUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-1 text-[10px] text-blue-400 hover:underline"
+            {/* Single shared log terminal */}
+            {log.length > 0 && (
+              <pre
+                ref={logRef}
+                className="max-h-48 overflow-auto rounded border bg-muted p-1.5 text-[10px] font-mono whitespace-pre-wrap break-all"
               >
-                <ExternalLink className="h-3 w-3" />
-                View on Weights & Biases
-              </a>
+                {log.map((line, j) => (
+                  <div
+                    key={j}
+                    className={
+                      line.includes("*** best ***")
+                        ? "text-green-400"
+                        : line.includes("Error") ||
+                            line.includes("error")
+                          ? "text-destructive"
+                          : line.startsWith("—")
+                            ? "text-yellow-400"
+                            : ""
+                    }
+                  >
+                    {line}
+                  </div>
+                ))}
+              </pre>
             )}
 
             {/* Error banner */}
