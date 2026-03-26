@@ -388,14 +388,20 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         if (result.success) {
           set((s) => ({
             status: "completed",
-            models: s.models.map((m) => ({ ...m, status: "completed" as const })),
+            // Only mark models that actually ran as completed;
+            // leave pending models as-is (e.g. after stop early)
+            models: s.models.map((m) =>
+              m.status === "running"
+                ? { ...m, status: "completed" as const }
+                : m,
+            ),
           }));
         } else {
           set((s) => ({
             status: "error",
             error: result.error || "Training failed",
-            models: s.models.map((m, i) =>
-              i === s.currentModelIndex && m.status === "running"
+            models: s.models.map((m) =>
+              m.status === "running"
                 ? { ...m, status: "failed" as const }
                 : m,
             ),
