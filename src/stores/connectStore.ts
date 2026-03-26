@@ -627,15 +627,10 @@ export const useConnectStore = create<ConnectState>()(
           }
 
           case MSG_JOB_PROGRESS: {
-            // Worker sends: JOB_PROGRESS::{json} (no job ID prefix)
-            const progressPayload = parts.slice(1).join(MSG_SEPARATOR);
-            const { _pendingJobs } = get();
-            // Find the active pending job (there's only one at a time)
-            const pendingEntry = Array.from(_pendingJobs.entries())[0];
-            if (pendingEntry) {
-              const [, pending] = pendingEntry;
-              pending.onProgress(progressPayload);
-            }
+            // Intentionally ignored — matches PyQt client behavior.
+            // Terminal output is handled via CR:: (tqdm) and regular log
+            // lines. JOB_PROGRESS fires once per batch, which spams the
+            // terminal with ~100 formatted lines per epoch.
             break;
           }
 
