@@ -52,6 +52,20 @@ export interface TrackJobSpec {
   frames?: string;
 }
 
+export interface TrainJobSpec {
+  type: "train";
+  config_contents: string[];
+  model_types: string[];
+  labels_path: string;
+  val_labels_path?: string;
+  max_epochs?: number;
+  batch_size?: number;
+  learning_rate?: number;
+  run_name?: string;
+}
+
+export type JobSpec = TrackJobSpec | TrainJobSpec;
+
 export interface FileEntry {
   name: string;
   isDir: boolean;

@@ -4,7 +4,7 @@ import type {
   WorkerInfo,
   Credentials,
   FileEntry,
-  TrackJobSpec,
+  JobSpec,
   JobResult,
 } from "@/lib/sleapConnect";
 import {
@@ -88,7 +88,7 @@ interface ConnectState {
   connectToWorker: (workerId: string) => Promise<void>;
   browseRemoteDir: (path: string) => Promise<FileEntry[]>;
   submitJob: (
-    spec: TrackJobSpec,
+    spec: JobSpec,
     onProgress: (line: string) => void,
   ) => Promise<JobResult>;
   cancelJob: (jobId: string) => void;
@@ -402,7 +402,7 @@ export const useConnectStore = create<ConnectState>()(
 
       // ── Job submission ───────────────────────────────────────
       submitJob: async (
-        spec: TrackJobSpec,
+        spec: JobSpec,
         onProgress: (line: string) => void,
       ): Promise<JobResult> => {
         const { _dc } = get();
