@@ -304,6 +304,46 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
           // Parse progress from worker
           const state = get();
           const idx = state.currentModelIndex;
+
+          // ── tqdm / Lightning progress bar lines ───────────────
+          // These use \r to update in-place but arrive as separate lines.
+          // Parse them for progress data, don't append to log.
+          const tqdmMatch = line.match(
+            /Epoch (\d+):\s+(\d+)%\|.*?\|\s*(\d+)\/(\d+)\s.*?loss=([\d.]+)/,
+          );
+          if (tqdmMatch) {
+            const epoch = parseInt(tqdmMatch[1]);
+            const step = parseInt(tqdmMatch[3]);
+            const totalSteps = parseInt(tqdmMatch[4]);
+            const loss = parseFloat(tqdmMatch[5]);
+            set((s) => ({
+              models: s.models.map((m, i) =>
+                i === idx
+                  ? {
+                      ...m,
+                      epoch,
+                      loss,
+                      // Show step progress within the epoch as a fractional epoch
+                      log: totalSteps > 0 && step === totalSteps
+                        ? [...m.log, `[Epoch ${epoch}/${m.maxEpochs}] loss: ${loss.toFixed(4)}`]
+                        : m.log,
+                    }
+                  : m,
+              ),
+            }));
+            return;
+          }
+
+          // Filter out other tqdm noise (Sanity Checking, Training: |, empty progress bars)
+          if (
+            /^\s*(Sanity Checking|Training:|Validation|Epoch \d+:)\s*[|]/.test(line) ||
+            /^\s*$/.test(line) ||
+            /^\s+$/.test(line)
+          ) {
+            return;
+          }
+
+          // ── JSON progress (e.g. from --gui flag) ──────────────
           try {
             const data = JSON.parse(line);
             if ("epoch" in data) {
@@ -333,20 +373,24 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
                     : m,
                 ),
               }));
+              return;
             }
           } catch {
-            // Plain text log line — check for wandb URL
-            if (line.includes("wandb.ai/")) {
-              const urlMatch = line.match(/(https:\/\/wandb\.ai\/\S+)/);
-              if (urlMatch) set({ wandbUrl: urlMatch[1] });
-            }
-            // Append to current model log
-            set((s) => ({
-              models: s.models.map((m, i) =>
-                i === idx ? { ...m, log: [...m.log, line] } : m,
-              ),
-            }));
+            // Not JSON — continue
           }
+
+          // ── wandb URL detection ───────────────────────────────
+          if (line.includes("wandb.ai/")) {
+            const urlMatch = line.match(/(https:\/\/wandb\.ai\/\S+)/);
+            if (urlMatch) set({ wandbUrl: urlMatch[1] });
+          }
+
+          // ── Meaningful log line — append ──────────────────────
+          set((s) => ({
+            models: s.models.map((m, i) =>
+              i === idx ? { ...m, log: [...m.log, line] } : m,
+            ),
+          }));
         });
 
         if (result.success) {
