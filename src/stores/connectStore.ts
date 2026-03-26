@@ -13,6 +13,7 @@ import {
   generateJobId,
   MSG_JOB_SUBMIT,
   MSG_JOB_CANCEL,
+  MSG_JOB_STOP,
   MSG_JOB_ACCEPTED,
   MSG_JOB_REJECTED,
   MSG_JOB_PROGRESS,
@@ -92,6 +93,7 @@ interface ConnectState {
     onProgress: (line: string) => void,
   ) => Promise<JobResult>;
   cancelJob: (jobId: string) => void;
+  stopJob: () => void;
   loadCredentialsFromDisk: () => Promise<void>;
   fetchRooms: () => Promise<void>;
 
@@ -429,6 +431,13 @@ export const useConnectStore = create<ConnectState>()(
         const { _dc } = get();
         if (_dc && _dc.readyState === "open") {
           _dc.send(buildMessage(MSG_JOB_CANCEL, jobId));
+        }
+      },
+
+      stopJob: () => {
+        const { _dc } = get();
+        if (_dc && _dc.readyState === "open") {
+          _dc.send(buildMessage(MSG_JOB_STOP));
         }
       },
 

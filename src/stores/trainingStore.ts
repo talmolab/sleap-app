@@ -389,16 +389,13 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
     // Send JOB_STOP for graceful stop with checkpoint
     try {
       const { useConnectStore } = await import("@/stores/connectStore");
-      const { _dc } = useConnectStore.getState();
-      if (_dc && _dc.readyState === "open") {
-        const { buildMessage, MSG_JOB_STOP } = await import("@/lib/sleapConnect");
-        _dc.send(buildMessage(MSG_JOB_STOP));
-      } else {
-        await cancelCommand();
-      }
+      const { stopJob } = useConnectStore.getState();
+      stopJob();
       set({ status: "stopped" });
     } catch (e) {
       console.warn("[training] Failed to stop:", e);
+      await cancelCommand();
+      set({ status: "stopped" });
     }
   },
 
