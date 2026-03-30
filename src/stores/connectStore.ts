@@ -527,7 +527,11 @@ export const useConnectStore = create<ConnectState>()(
                       cudaVersion: (props.cuda_version as string) || "",
                     }
                   : undefined,
-                mounts: (props.mounts as string[]) || [],
+                mounts: Array.isArray(props.mounts)
+                  ? (props.mounts as Array<unknown>).map((m) =>
+                      typeof m === "string" ? m : (m as Record<string, unknown>)?.path as string ?? "",
+                    ).filter(Boolean)
+                  : [],
               };
             });
             set({ workers });
