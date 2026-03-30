@@ -28,6 +28,8 @@ import {
   MSG_SEPARATOR,
 } from "@/lib/sleapConnect";
 import { isTauri } from "@/platform/index";
+import type { Transport } from "@/lib/transport";
+import { WebRTCTransport, RelayTransport } from "@/lib/transport";
 
 // ── Signaling server config ──────────────────────────────────────
 const SIGNALING_WS =
@@ -77,10 +79,13 @@ interface ConnectState {
   workers: WorkerInfo[];
   selectedWorkerId: string | null;
 
+  // Transport
+  transportMode: "direct" | "relay" | null;
+
   // Internal (not persisted)
   _ws: WebSocket | null;
   _pc: RTCPeerConnection | null;
-  _dc: RTCDataChannel | null;
+  _transport: Transport | null;
   _pendingFs: Map<string, PendingFsRequest>;
   _pendingJobs: Map<string, PendingJobCallbacks>;
 
@@ -118,9 +123,10 @@ export const useConnectStore = create<ConnectState>()(
       availableRooms: [],
       workers: [],
       selectedWorkerId: null,
+      transportMode: null,
       _ws: null,
       _pc: null,
-      _dc: null,
+      _transport: null,
       _pendingFs: new Map(),
       _pendingJobs: new Map(),
 
@@ -282,8 +288,8 @@ export const useConnectStore = create<ConnectState>()(
       },
 
       disconnect: () => {
-        const { _ws, _pc, _dc } = get();
-        if (_dc) _dc.close();
+        const { _ws, _pc, _transport } = get();
+        if (_transport) _transport.close();
         if (_pc) _pc.close();
         if (_ws) _ws.close();
         set({
@@ -292,49 +298,45 @@ export const useConnectStore = create<ConnectState>()(
           roomId: null,
           workers: [],
           selectedWorkerId: null,
+          transportMode: null,
           _ws: null,
           _pc: null,
-          _dc: null,
+          _transport: null,
         });
       },
 
       selectWorker: (workerId) => set({ selectedWorkerId: workerId }),
 
       connectToWorker: async (workerId: string) => {
-        const { _ws, credentials } = get();
-        if (!_ws || !credentials) return;
+        const { _ws, credentials, roomId } = get();
+        if (!_ws || !credentials || !roomId) return;
 
-        console.log("[connect] Initiating WebRTC connection to worker:", workerId);
+        console.log("[connect] Attempting WebRTC connection to worker:", workerId);
         set({ selectedWorkerId: workerId });
 
-        // Create RTCPeerConnection with STUN + TURN servers
+        // ── Helper to finalize connection with a transport ─────
+        let settled = false;
+        const finalize = (transport: Transport, mode: "direct" | "relay") => {
+          if (settled) return;
+          settled = true;
+          transport.onMessage((data) => get()._handleDataChannelMessage(data));
+          transport.send(MSG_FS_GET_MOUNTS);
+          set({ _transport: transport, transportMode: mode, connectionStatus: "connected" });
+          console.log(`[connect] Connected to ${workerId} via ${mode} transport`);
+        };
+
+        // ── Create RTCPeerConnection ──────────────────────────
         const pc = new RTCPeerConnection({
           iceServers: [
             { urls: "stun:stun.l.google.com:19302" },
-            {
-              urls: "turn:10.0.73.44:31540",
-              username: "sleap",
-              credential: "sleap123",
-            },
-            {
-              urls: "turn:10.0.73.44:31540?transport=tcp",
-              username: "sleap",
-              credential: "sleap123",
-            },
           ],
         });
 
         // Create data channel
         const dc = pc.createDataChannel("my-data-channel");
         dc.onopen = () => {
-          console.log("[connect] Data channel open to worker:", workerId);
-          // Request worker's mount paths
-          dc.send(MSG_FS_GET_MOUNTS);
-        };
-        dc.onmessage = (event) => {
-          if (typeof event.data === "string") {
-            get()._handleDataChannelMessage(event.data);
-          }
+          console.log("[connect] Data channel open → using WebRTC transport");
+          finalize(new WebRTCTransport(dc), "direct");
         };
         dc.onclose = () => {
           console.log("[connect] Data channel closed");
@@ -356,12 +358,12 @@ export const useConnectStore = create<ConnectState>()(
 
         pc.oniceconnectionstatechange = () => {
           console.log("[connect] ICE state:", pc.iceConnectionState);
-          if (pc.iceConnectionState === "failed" || pc.iceConnectionState === "disconnected") {
-            console.warn("[connect] ICE connection failed/disconnected");
+          if (pc.iceConnectionState === "failed") {
+            console.warn("[connect] ICE connection failed");
           }
         };
 
-        set({ _pc: pc, _dc: dc });
+        set({ _pc: pc });
 
         // Create and send SDP offer
         const offer = await pc.createOffer();
@@ -378,24 +380,37 @@ export const useConnectStore = create<ConnectState>()(
         );
 
         console.log("[connect] SDP offer sent to worker:", workerId);
+
+        // ── 10s ICE timeout → relay fallback ──────────────────
+        setTimeout(() => {
+          if (settled) return;
+          console.log("[connect] ICE timeout after 10s → falling back to relay transport");
+          // Clean up failed WebRTC attempt
+          try { pc.close(); } catch { /* ignore */ }
+          set({ _pc: null });
+
+          const relay = new RelayTransport({
+            jwt: credentials.jwt,
+            roomId,
+            peerId: workerId,
+          });
+          relay.open();
+          finalize(relay, "relay");
+        }, 10000);
       },
 
       // ── Remote filesystem ────────────────────────────────────
       browseRemoteDir: async (path: string): Promise<FileEntry[]> => {
-        const { _dc } = get();
-        if (!_dc || _dc.readyState !== "open") {
-          throw new Error("Data channel not connected");
+        const { _transport } = get();
+        if (!_transport || !_transport.ready) {
+          throw new Error("Not connected to worker");
         }
 
         return new Promise((resolve, reject) => {
-          // Worker protocol: FS_LIST_DIR::path::offset (no request ID)
-          // Only one FS request at a time
           const { _pendingFs } = get();
           _pendingFs.set("_current", { resolve, reject });
 
-          _dc.send(
-            buildMessage(MSG_FS_LIST_DIR, path, "0"),
-          );
+          _transport.send(buildMessage(MSG_FS_LIST_DIR, path, "0"));
 
           // Timeout after 10s
           setTimeout(() => {
@@ -413,9 +428,9 @@ export const useConnectStore = create<ConnectState>()(
         onProgress: (line: string, isCarriageReturn?: boolean) => void,
         options?: { expectedCompletions?: number; onModelComplete?: (result: JobResult) => void },
       ): Promise<JobResult> => {
-        const { _dc } = get();
-        if (!_dc || _dc.readyState !== "open") {
-          throw new Error("Data channel not connected");
+        const { _transport } = get();
+        if (!_transport || !_transport.ready) {
+          throw new Error("Not connected to worker");
         }
 
         const jobId = generateJobId();
@@ -429,34 +444,29 @@ export const useConnectStore = create<ConnectState>()(
             remainingCompletions: options?.expectedCompletions ?? 1,
           });
 
-          _dc.send(
-            buildMessage(MSG_JOB_SUBMIT, jobId, JSON.stringify(spec)),
-          );
+          _transport.send(buildMessage(MSG_JOB_SUBMIT, jobId, JSON.stringify(spec)));
         });
       },
 
       cancelJob: (jobId: string) => {
-        const { _dc } = get();
-        if (_dc && _dc.readyState === "open") {
-          _dc.send(buildMessage(MSG_JOB_CANCEL, jobId));
+        const { _transport } = get();
+        if (_transport && _transport.ready) {
+          _transport.send(buildMessage(MSG_JOB_CANCEL, jobId));
         }
       },
 
       stopJob: () => {
-        const { _dc } = get();
-        if (_dc && _dc.readyState === "open") {
-          _dc.send(buildMessage(MSG_JOB_STOP));
+        const { _transport } = get();
+        if (_transport && _transport.ready) {
+          _transport.send(buildMessage(MSG_JOB_STOP));
         }
       },
 
       sendControlCommand: (command: string) => {
-        // Forward a command to sleap-nn's TrainingControllerZMQ via the
-        // worker. Matches the PyQt RemoteProgressBridge pattern:
-        // CONTROL_COMMAND::{jsonpickle-encoded payload}
-        const { _dc } = get();
-        if (_dc && _dc.readyState === "open") {
+        const { _transport } = get();
+        if (_transport && _transport.ready) {
           const payload = JSON.stringify({ command });
-          _dc.send(buildMessage(MSG_CONTROL_COMMAND, payload));
+          _transport.send(buildMessage(MSG_CONTROL_COMMAND, payload));
         }
       },
 
