@@ -355,18 +355,36 @@ export class RelayTransport implements Transport {
         const jobId = data.job_id as string;
         console.log(`[relay] SSE: received job_status (status: ${status}, job_id: ${jobId})`);
 
-        if (status === "completed" || status === "success") {
+        if (status === "complete" || status === "completed" || status === "success") {
           this._handler(`JOB_COMPLETE::${JSON.stringify(data)}`);
         } else if (status === "failed" || status === "error") {
           this._handler(`JOB_FAILED::${JSON.stringify(data)}`);
         }
-        // "submitted", "running" — informational, no protocol message needed
+        // "submitted", "accepted", "running" — informational
         break;
       }
 
       case "job_progress": {
-        console.log("[relay] SSE: received job_progress");
+        // RelayChannel sends epoch-level events:
+        //   {type: "job_progress", event: "train_begin", wandb_url: "..."}
+        //   {type: "job_progress", event: "epoch_end", epoch: N, logs: {"train/loss": ..., "val/loss": ...}}
+        //   {type: "job_progress", event: "train_end"}
+        const event = data.event as string;
+        console.log(`[relay] SSE: received job_progress (event: ${event})`);
+
+        // Forward as __PROGRESS_REPORT__ for trainingStore to handle
         this._handler(`PROGRESS_REPORT::${JSON.stringify(data)}`);
+
+        // Also generate a log line for epoch_end so the user sees progress
+        if (event === "epoch_end") {
+          const logs = (data.logs ?? {}) as Record<string, number>;
+          const epoch = data.epoch as number;
+          const trainLoss = logs["train/loss"];
+          const valLoss = logs["val/loss"];
+          const logLine = `[Epoch ${epoch}] loss: ${trainLoss?.toFixed(4) ?? "?"} | val_loss: ${valLoss?.toFixed(4) ?? "?"}`;
+          // Send as a regular log line (not CR::, not PROGRESS_REPORT::)
+          this._handler(logLine);
+        }
         break;
       }
 
