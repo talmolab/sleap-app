@@ -320,7 +320,22 @@ export const useConnectStore = create<ConnectState>()(
           if (settled) return;
           settled = true;
           transport.onMessage((data) => get()._handleDataChannelMessage(data));
-          transport.send(MSG_FS_GET_MOUNTS);
+
+          // For relay mode, the signaling server doesn't forward fs_mounts_res
+          // to the relay. Use mounts from worker metadata (already in state
+          // from peer_list). For WebRTC, request mounts as before.
+          if (mode === "relay") {
+            const worker = get().workers.find((w) => w.peerId === workerId);
+            if (worker && worker.mounts.length > 0) {
+              console.log("[connect] Using mounts from worker metadata:", worker.mounts);
+            } else {
+              // Fallback: try FS_GET_MOUNTS via relay (may not get a response)
+              transport.send(MSG_FS_GET_MOUNTS);
+            }
+          } else {
+            transport.send(MSG_FS_GET_MOUNTS);
+          }
+
           set({ _transport: transport, transportMode: mode, connectionStatus: "connected" });
           console.log(`[connect] Connected to ${workerId} via ${mode} transport`);
         };
