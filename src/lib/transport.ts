@@ -164,11 +164,15 @@ export class RelayTransport implements Transport {
         break;
 
       case "CONTROL_COMMAND": {
-        // CONTROL_COMMAND::{jsonPayload}
-        this._sendWorkerMessage({
-          type: "control_command",
-          payload: payload,
-        });
+        // In relay mode, the worker's WebSocket handler doesn't support
+        // CONTROL_COMMAND. Use job_cancel instead — the worker's
+        // _handle_job_cancel sends ZMQ "stop" to sleap-nn (graceful
+        // early stop, same as CONTROL_COMMAND::{"command":"stop"}).
+        if (this._serverJobId) {
+          this._postJobCancel(this._serverJobId);
+        } else {
+          console.warn("[relay] Cannot send CONTROL_COMMAND — no server job ID");
+        }
         break;
       }
 

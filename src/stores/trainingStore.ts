@@ -325,11 +325,13 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
                 const logs = data.logs ?? data.py_dict?.logs ?? {};
                 const trainLoss = logs["train/loss"] ?? logs["loss"];
                 const valLoss = logs["val/loss"];
+                const epoch = data.epoch ?? data.py_dict?.epoch;
                 set((s) => ({
                   models: s.models.map((m, i) =>
                     i === idx
                       ? {
                           ...m,
+                          epoch: typeof epoch === "number" ? epoch + 1 : m.epoch,
                           loss: trainLoss ?? m.loss,
                           valLoss: valLoss ?? m.valLoss,
                           bestValLoss:
