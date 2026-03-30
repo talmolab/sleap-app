@@ -316,18 +316,20 @@ export class RelayTransport implements Transport {
     switch (type) {
       case "fs_list_res": {
         // Translate to FS_LIST_RESPONSE::{json}
+        // Worker may send entries with either `type: "directory"` (from
+        // FS_LIST_RESPONSE protocol) or `is_dir: true` (from other sources)
         const entries = (data.entries as Array<Record<string, unknown>>) || [];
         const translated = {
           path: data.path,
           entries: entries.map((e) => ({
             name: e.name,
-            type: e.is_dir ? "directory" : "file",
+            type: e.type === "directory" || e.is_dir ? "directory" : "file",
             size: e.size,
           })),
           total_count: data.total_count ?? entries.length,
           has_more: data.has_more ?? false,
         };
-        console.log(`[relay] SSE: received fs_list_res (path: ${data.path})`);
+        console.log(`[relay] SSE: received fs_list_res (path: ${data.path}, ${entries.length} entries)`);
         this._handler(`FS_LIST_RESPONSE::${JSON.stringify(translated)}`);
         break;
       }
