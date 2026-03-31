@@ -266,7 +266,7 @@ export function InferencePanel() {
   const logRef = useRef<HTMLPreElement>(null);
 
   // Remote inference state
-  const [remoteEnabled, setRemoteEnabled] = useState(false);
+  const [remoteEnabled, setRemoteEnabled] = useState(!isTauri);
   const [remoteDataPath, setRemoteDataPath] = useState("");
   const [remoteModelPaths, setRemoteModelPaths] = useState<string[]>([]);
   const [fileBrowserOpen, setFileBrowserOpen] = useState(false);
@@ -308,10 +308,12 @@ export function InferencePanel() {
   const isBottomUp = pipeline === "bottom-up" || pipeline === "bottom-up-id";
   const isTopDown = pipeline === "top-down" || pipeline === "top-down-id";
 
-  if (!isTauri) {
+  if (!isTauri && connectionStatus !== "connected") {
     return (
       <div className="flex flex-col items-center justify-center gap-2 py-8 text-center">
-        <p className="text-xs text-muted-foreground">Inference is only available in the desktop app.</p>
+        <p className="text-xs text-muted-foreground">
+          Connect to a worker in the Connect tab to start remote inference.
+        </p>
       </div>
     );
   }
@@ -361,7 +363,7 @@ export function InferencePanel() {
     <div className="flex flex-col gap-0 -m-2">
       {/* ── Configuration (top) ────────────────────────────────────── */}
       <div className="px-3 py-2 space-y-1">
-        {!sleapNnAvailable && (
+        {!sleapNnAvailable && isTauri && (
           <div className="rounded-md border border-yellow-500/40 bg-yellow-500/10 p-2 text-[10px] text-yellow-700 dark:text-yellow-400 mb-1">
             <p className="font-medium">sleap-nn not detected</p>
             <p className="mt-0.5">Install via the Environment panel first.</p>
@@ -508,15 +510,17 @@ export function InferencePanel() {
         <Section title="Inference" defaultOpen={true}>
           <NumField label="Batch size" value={batchSize} onChange={setBatchSize} min={1} max={128} disabled={isRunning} />
 
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-[10px] text-muted-foreground">Device</span>
-            <Select value={device} onValueChange={(v) => setDevice(v as typeof device)} disabled={isRunning}>
-              <SelectTrigger className="h-6 text-[10px] w-32"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                {DEVICE_OPTIONS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
-              </SelectContent>
-            </Select>
-          </div>
+          {isTauri && (
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[10px] text-muted-foreground">Device</span>
+              <Select value={device} onValueChange={(v) => setDevice(v as typeof device)} disabled={isRunning}>
+                <SelectTrigger className="h-6 text-[10px] w-32"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {DEVICE_OPTIONS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
 
           <NumField label="Peak threshold" value={peakThreshold} onChange={setPeakThreshold}
             min={0} max={1} step={0.05} disabled={isRunning} />
@@ -642,88 +646,89 @@ export function InferencePanel() {
           )}
         </Section>
 
-        <Separator />
+        {isTauri && (
+          <>
+            <Separator />
 
-        {/* ── Remote ─────────────────────────────────────────────── */}
-        <Section title="Remote" defaultOpen={false}>
-          {/* Remote Inference toggle */}
-          <div className="flex items-center justify-between py-1">
-            <span className="text-xs">Remote Inference</span>
-            <button
-              className={`w-9 h-5 rounded-full relative transition-colors ${
-                remoteEnabled ? "bg-primary" : "bg-zinc-700"
-              }`}
-              onClick={() => setRemoteEnabled(!remoteEnabled)}
-              disabled={connectionStatus !== "connected"}
-            >
-              <span
-                className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
-                  remoteEnabled ? "translate-x-4" : ""
-                }`}
-              />
-            </button>
-          </div>
-
-          {connectionStatus !== "connected" && !remoteEnabled && (
-            <p className="text-[10px] text-muted-foreground">
-              Connect to a room in the Connect tab to enable remote inference.
-            </p>
-          )}
-
-          {remoteEnabled && connectionStatus === "connected" && (
-            <>
-              {/* Room indicator */}
-              <div className="space-y-1">
-                <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
-                  Room
-                </label>
-                <div className="flex items-center gap-1.5 text-[11px]">
-                  <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
-                  {(() => {
-                    const state = useConnectStore.getState();
-                    const room = state.availableRooms.find((r) => r.roomId === state.roomId);
-                    return room?.name || state.roomId;
-                  })()}
-                </div>
-              </div>
-
-              {/* Worker selector */}
-              <div className="space-y-1">
-                <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
-                  Worker
-                </label>
-                <Select
-                  value={selectedWorkerId || ""}
-                  onValueChange={(v) => selectWorker(v)}
+            {/* ── Remote (desktop only — web is always remote) ──────── */}
+            <Section title="Remote" defaultOpen={false}>
+              <div className="flex items-center justify-between py-1">
+                <span className="text-xs">Remote Inference</span>
+                <button
+                  className={`w-9 h-5 rounded-full relative transition-colors ${
+                    remoteEnabled ? "bg-primary" : "bg-zinc-700"
+                  }`}
+                  onClick={() => setRemoteEnabled(!remoteEnabled)}
+                  disabled={connectionStatus !== "connected"}
                 >
-                  <SelectTrigger className="h-7 text-xs">
-                    <SelectValue placeholder="Select a worker" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {workers.map((w) => (
-                      <SelectItem
-                        key={w.peerId}
-                        value={w.peerId}
-                        disabled={w.status !== "available"}
-                      >
-                        {w.name}
-                        {w.gpu ? ` (${w.gpu.model})` : ""}
-                        {w.status !== "available" ? ` — ${w.status}` : ""}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                  <span
+                    className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
+                      remoteEnabled ? "translate-x-4" : ""
+                    }`}
+                  />
+                </button>
               </div>
 
-              {availableWorkers.length === 0 && (
-                <div className="bg-orange-500/8 border border-orange-500/20 rounded-md p-2 text-[11px] text-orange-400">
-                  <b>All workers are busy.</b> Wait for a worker to become
-                  available, or disable remote inference.
-                </div>
+              {connectionStatus !== "connected" && !remoteEnabled && (
+                <p className="text-[10px] text-muted-foreground">
+                  Connect to a room in the Connect tab to enable remote inference.
+                </p>
               )}
-            </>
-          )}
-        </Section>
+
+              {remoteEnabled && connectionStatus === "connected" && (
+                <>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+                      Room
+                    </label>
+                    <div className="flex items-center gap-1.5 text-[11px]">
+                      <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
+                      {(() => {
+                        const state = useConnectStore.getState();
+                        const room = state.availableRooms.find((r) => r.roomId === state.roomId);
+                        return room?.name || state.roomId;
+                      })()}
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+                      Worker
+                    </label>
+                    <Select
+                      value={selectedWorkerId || ""}
+                      onValueChange={(v) => selectWorker(v)}
+                    >
+                      <SelectTrigger className="h-7 text-xs">
+                        <SelectValue placeholder="Select a worker" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {workers.map((w) => (
+                          <SelectItem
+                            key={w.peerId}
+                            value={w.peerId}
+                            disabled={w.status !== "available"}
+                          >
+                            {w.name}
+                            {w.gpu ? ` (${w.gpu.model})` : ""}
+                            {w.status !== "available" ? ` — ${w.status}` : ""}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  {availableWorkers.length === 0 && (
+                    <div className="bg-orange-500/8 border border-orange-500/20 rounded-md p-2 text-[11px] text-orange-400">
+                      <b>All workers are busy.</b> Wait for a worker to become
+                      available, or disable remote inference.
+                    </div>
+                  )}
+                </>
+              )}
+            </Section>
+          </>
+        )}
 
         <Separator />
 
@@ -805,12 +810,18 @@ export function InferencePanel() {
               </Button>
             )}
             {inferenceStatus === "completed" && outputPath && (
-              <Button size="sm" className="h-7 text-xs"
-                onClick={async () => { setMerging(true); await loadAndMergeResults(); setMerging(false); }}
-                disabled={merging}>
-                {merging ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Download className="h-3.5 w-3.5 mr-1" />}
-                {merging ? "Loading..." : "Load Results"}
-              </Button>
+              isTauri ? (
+                <Button size="sm" className="h-7 text-xs"
+                  onClick={async () => { setMerging(true); await loadAndMergeResults(); setMerging(false); }}
+                  disabled={merging}>
+                  {merging ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Download className="h-3.5 w-3.5 mr-1" />}
+                  {merging ? "Loading..." : "Load Results"}
+                </Button>
+              ) : (
+                <div className="text-[10px] text-muted-foreground">
+                  Results saved on worker. Download from the worker filesystem to load.
+                </div>
+              )
             )}
 
             {/* Log */}
