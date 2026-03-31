@@ -343,7 +343,7 @@ export function TrainingPanel() {
   const reset = useTrainingStore((s) => s.reset);
 
   // Remote state
-  const [remoteEnabled, setRemoteEnabled] = useState(false);
+  const [remoteEnabled, setRemoteEnabled] = useState(!isTauri);
   const [remoteLabelsPath, setRemoteLabelsPath] = useState("");
   const [remoteValLabelsPath, setRemoteValLabelsPath] = useState("");
   const [fileBrowserOpen, setFileBrowserOpen] = useState(false);
@@ -452,11 +452,11 @@ export function TrainingPanel() {
     }
   };
 
-  if (!isTauri) {
+  if (!isTauri && connectionStatus !== "connected") {
     return (
       <div className="flex flex-col items-center justify-center gap-2 py-8 text-center">
         <p className="text-xs text-muted-foreground">
-          Training is only available in the desktop app.
+          Connect to a worker in the Connect tab to start remote training.
         </p>
       </div>
     );
@@ -675,87 +675,91 @@ export function TrainingPanel() {
           )}
         </Section>
 
-        <Separator />
+        {isTauri && (
+          <>
+            <Separator />
 
-        {/* ── Remote ───────────────────────────────────────────────── */}
-        <Section title="Remote" defaultOpen={false}>
-          <div className="flex items-center justify-between py-1">
-            <span className="text-xs">Remote Training</span>
-            <button
-              className={`w-9 h-5 rounded-full relative transition-colors ${
-                remoteEnabled ? "bg-primary" : "bg-zinc-700"
-              }`}
-              onClick={() => setRemoteEnabled(!remoteEnabled)}
-              disabled={connectionStatus !== "connected"}
-            >
-              <span
-                className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
-                  remoteEnabled ? "translate-x-4" : ""
-                }`}
-              />
-            </button>
-          </div>
-
-          {connectionStatus !== "connected" && !remoteEnabled && (
-            <p className="text-[10px] text-muted-foreground">
-              Connect to a room in the Connect tab to enable remote training.
-            </p>
-          )}
-
-          {remoteEnabled && connectionStatus === "connected" && (
-            <>
-              <div className="space-y-1">
-                <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
-                  Room
-                </label>
-                <div className="flex items-center gap-1.5 text-[11px]">
-                  <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
-                  {(() => {
-                    const state = useConnectStore.getState();
-                    const room = state.availableRooms.find(
-                      (r) => r.roomId === state.roomId,
-                    );
-                    return room?.name || state.roomId;
-                  })()}
-                </div>
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
-                  Worker
-                </label>
-                <Select
-                  value={selectedWorkerId || ""}
-                  onValueChange={(v) => selectWorker(v)}
+            {/* ── Remote (desktop only — web is always remote) ──────── */}
+            <Section title="Remote" defaultOpen={false}>
+              <div className="flex items-center justify-between py-1">
+                <span className="text-xs">Remote Training</span>
+                <button
+                  className={`w-9 h-5 rounded-full relative transition-colors ${
+                    remoteEnabled ? "bg-primary" : "bg-zinc-700"
+                  }`}
+                  onClick={() => setRemoteEnabled(!remoteEnabled)}
+                  disabled={connectionStatus !== "connected"}
                 >
-                  <SelectTrigger className="h-7 text-xs">
-                    <SelectValue placeholder="Select a worker" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {workers.map((w) => (
-                      <SelectItem
-                        key={w.peerId}
-                        value={w.peerId}
-                        disabled={w.status !== "available"}
-                      >
-                        {w.name}
-                        {w.gpu ? ` (${w.gpu.model})` : ""}
-                        {w.status !== "available" ? ` — ${w.status}` : ""}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                  <span
+                    className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
+                      remoteEnabled ? "translate-x-4" : ""
+                    }`}
+                  />
+                </button>
               </div>
 
-              {workers.filter((w) => w.status === "available").length === 0 && (
-                <div className="bg-orange-500/8 border border-orange-500/20 rounded-md p-2 text-[11px] text-orange-400">
-                  <b>All workers are busy.</b> Wait for a worker to become
-                  available, or disable remote training.
-                </div>
+              {connectionStatus !== "connected" && !remoteEnabled && (
+                <p className="text-[10px] text-muted-foreground">
+                  Connect to a room in the Connect tab to enable remote training.
+                </p>
               )}
-            </>
-          )}
-        </Section>
+
+              {remoteEnabled && connectionStatus === "connected" && (
+                <>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+                      Room
+                    </label>
+                    <div className="flex items-center gap-1.5 text-[11px]">
+                      <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
+                      {(() => {
+                        const state = useConnectStore.getState();
+                        const room = state.availableRooms.find(
+                          (r) => r.roomId === state.roomId,
+                        );
+                        return room?.name || state.roomId;
+                      })()}
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+                      Worker
+                    </label>
+                    <Select
+                      value={selectedWorkerId || ""}
+                      onValueChange={(v) => selectWorker(v)}
+                    >
+                      <SelectTrigger className="h-7 text-xs">
+                        <SelectValue placeholder="Select a worker" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {workers.map((w) => (
+                          <SelectItem
+                            key={w.peerId}
+                            value={w.peerId}
+                            disabled={w.status !== "available"}
+                          >
+                            {w.name}
+                            {w.gpu ? ` (${w.gpu.model})` : ""}
+                            {w.status !== "available" ? ` — ${w.status}` : ""}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  {workers.filter((w) => w.status === "available").length === 0 && (
+                    <div className="bg-orange-500/8 border border-orange-500/20 rounded-md p-2 text-[11px] text-orange-400">
+                      <b>All workers are busy.</b> Wait for a worker to become
+                      available, or disable remote training.
+                    </div>
+                  )}
+                </>
+              )}
+            </Section>
+          </>
+        )}
 
         <Separator />
 
