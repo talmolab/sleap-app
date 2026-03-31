@@ -16,6 +16,12 @@ import { useConnectStore } from "@/stores/connectStore";
 import { isTauri } from "@/platform/index";
 import { runPythonCommand } from "@/platform/backend";
 
+// GitHub OAuth config
+const GITHUB_CLIENT_ID =
+  import.meta.env?.VITE_GITHUB_CLIENT_ID || "Ov23liThtdK2nvPctNXU";
+const SIGNALING_HTTP =
+  import.meta.env?.VITE_SIGNALING_HTTP || "https://signaling.sleap.ai";
+
 // GitHub OAuth SVG icon
 const GitHubIcon = () => (
   <svg
@@ -66,6 +72,54 @@ export function ConnectPanel() {
     }
   }, []);
 
+  // Handle GitHub OAuth callback (web only)
+  useEffect(() => {
+    if (isTauri || credentials) return;
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get("code");
+    if (!code) return;
+
+    // Clear URL params immediately
+    window.history.replaceState({}, "", window.location.pathname);
+
+    (async () => {
+      setLoggingIn(true);
+      setLoginError(null);
+      try {
+        const res = await fetch(
+          `${SIGNALING_HTTP}/api/auth/github/callback`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              code,
+              redirect_uri:
+                window.location.origin + window.location.pathname,
+            }),
+          },
+        );
+        if (!res.ok) {
+          const err = await res.json();
+          setLoginError(err.detail || "OAuth exchange failed");
+          return;
+        }
+        const data = await res.json();
+        setCredentials({
+          jwt: data.jwt,
+          username: data.user.username,
+          avatarUrl: data.user.avatar_url,
+          defaultRoom: data.user.default_room,
+        });
+      } catch (err) {
+        setLoginError(
+          err instanceof Error ? err.message : "OAuth callback failed",
+        );
+      } finally {
+        setLoggingIn(false);
+      }
+    })();
+  }, []);
+
   // Fetch rooms when credentials become available
   useEffect(() => {
     if (credentials) {
@@ -74,17 +128,27 @@ export function ConnectPanel() {
   }, [credentials]);
 
   const handleLogin = async () => {
+    if (!isTauri) {
+      // Web: redirect to GitHub OAuth
+      const redirectUri =
+        window.location.origin + window.location.pathname;
+      const authUrl = new URL(
+        "https://github.com/login/oauth/authorize",
+      );
+      authUrl.searchParams.set("client_id", GITHUB_CLIENT_ID);
+      authUrl.searchParams.set("redirect_uri", redirectUri);
+      authUrl.searchParams.set("scope", "read:user");
+      window.location.href = authUrl.toString();
+      return;
+    }
+
+    // Desktop: existing sleap-rtc login flow
     setLoggingIn(true);
     setLoginError(null);
     try {
-      // First, try loading existing credentials from disk
       await loadCredentialsFromDisk();
-      if (useConnectStore.getState().credentials) {
-        // Already had credentials on disk — done
-        return;
-      }
+      if (useConnectStore.getState().credentials) return;
 
-      // No credentials file — run `sleap-rtc login` to start OAuth flow
       const success = await runPythonCommand("sleap-rtc", ["login"], (event) => {
         if (event.event === "stderr") {
           console.warn("[connect:login]", event.data.line);
@@ -136,13 +200,20 @@ export function ConnectPanel() {
             {loginError}
           </div>
         )}
-        <div className="bg-blue-500/8 border border-blue-500/20 rounded-md p-2 text-[11px] text-blue-400 leading-relaxed">
-          <b>Tip:</b> If you&apos;ve already run{" "}
-          <code className="bg-black/30 px-1 py-0.5 rounded text-[10px] font-mono">
-            sleap-rtc login
-          </code>{" "}
-          from the terminal, your credentials will be detected automatically.
-        </div>
+        {isTauri ? (
+          <div className="bg-blue-500/8 border border-blue-500/20 rounded-md p-2 text-[11px] text-blue-400 leading-relaxed">
+            <b>Tip:</b> If you&apos;ve already run{" "}
+            <code className="bg-black/30 px-1 py-0.5 rounded text-[10px] font-mono">
+              sleap-rtc login
+            </code>{" "}
+            from the terminal, your credentials will be detected automatically.
+          </div>
+        ) : (
+          <div className="bg-blue-500/8 border border-blue-500/20 rounded-md p-2 text-[11px] text-blue-400 leading-relaxed">
+            <b>Tip:</b> Log in with GitHub to connect to remote GPU workers
+            for training and inference.
+          </div>
+        )}
       </div>
     );
   }
