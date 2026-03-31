@@ -217,14 +217,14 @@ describe("Dialog components", () => {
       expect(document.body.textContent).toBeTruthy();
     });
 
-    it("shows desktop-only message in browser mode", async () => {
+    it("shows connect message in browser mode when not connected", async () => {
       const { InferencePanel } = await import(
         "@/components/panels/InferencePanel"
       );
       render(<InferencePanel />);
 
       expect(
-        screen.getByText("Inference is only available in the desktop app.")
+        screen.getByText("Connect to a worker in the Connect tab to start remote inference.")
       ).toBeInTheDocument();
     });
   });
