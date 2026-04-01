@@ -18,7 +18,7 @@ import { runPythonCommand } from "@/platform/backend";
 
 // GitHub OAuth config
 const GITHUB_CLIENT_ID =
-  import.meta.env?.VITE_GITHUB_CLIENT_ID || "Ov23liThtdK2nvPctNXU";
+  import.meta.env?.VITE_GITHUB_CLIENT_ID || "Ov23liqVylRvty5d84VS";
 const SIGNALING_HTTP =
   import.meta.env?.VITE_SIGNALING_HTTP || "https://signaling.sleap.ai";
 
