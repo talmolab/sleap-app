@@ -93,6 +93,7 @@ export function ConnectPanel() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               code,
+              client_id: GITHUB_CLIENT_ID,
               redirect_uri:
                 window.location.origin + window.location.pathname,
             }),
