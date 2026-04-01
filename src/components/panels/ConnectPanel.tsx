@@ -106,7 +106,7 @@ export function ConnectPanel() {
         }
         const data = await res.json();
         setCredentials({
-          jwt: data.jwt,
+          jwt: data.token,
           username: data.user.username,
           avatarUrl: data.user.avatar_url,
           defaultRoom: data.user.default_room,
