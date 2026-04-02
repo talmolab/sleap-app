@@ -86,6 +86,7 @@ interface ConnectState {
   _ws: WebSocket | null;
   _pc: RTCPeerConnection | null;
   _transport: Transport | null;
+  _connectGeneration: number;
   _pendingFs: Map<string, PendingFsRequest>;
   _pendingJobs: Map<string, PendingJobCallbacks>;
 
@@ -127,6 +128,7 @@ export const useConnectStore = create<ConnectState>()(
       _ws: null,
       _pc: null,
       _transport: null,
+      _connectGeneration: 0,
       _pendingFs: new Map(),
       _pendingJobs: new Map(),
 
@@ -288,7 +290,7 @@ export const useConnectStore = create<ConnectState>()(
       },
 
       disconnect: () => {
-        const { _ws, _pc, _transport } = get();
+        const { _ws, _pc, _transport, _connectGeneration } = get();
         if (_transport) _transport.close();
         if (_pc) _pc.close();
         if (_ws) _ws.close();
@@ -302,22 +304,31 @@ export const useConnectStore = create<ConnectState>()(
           _ws: null,
           _pc: null,
           _transport: null,
+          _connectGeneration: _connectGeneration + 1, // invalidate pending timeouts
         });
       },
 
       selectWorker: (workerId) => set({ selectedWorkerId: workerId }),
 
       connectToWorker: async (workerId: string) => {
-        const { _ws, credentials, roomId } = get();
+        const { _ws, credentials, roomId, _connectGeneration } = get();
         if (!_ws || !credentials || !roomId) return;
 
+        // Increment generation to invalidate any previous connectToWorker attempt
+        const gen = _connectGeneration + 1;
+        set({ selectedWorkerId: workerId, _connectGeneration: gen });
+
         console.log("[connect] Attempting WebRTC connection to worker:", workerId);
-        set({ selectedWorkerId: workerId });
 
         // ── Helper to finalize connection with a transport ─────
         let settled = false;
         const finalize = (transport: Transport, mode: "direct" | "relay") => {
           if (settled) return;
+          if (gen !== get()._connectGeneration) {
+            console.log("[connect] Stale connection attempt (gen mismatch), ignoring");
+            transport.close();
+            return;
+          }
           settled = true;
           transport.onMessage((data) => get()._handleDataChannelMessage(data));
 
@@ -399,6 +410,11 @@ export const useConnectStore = create<ConnectState>()(
         // ── 10s ICE timeout → relay fallback ──────────────────
         setTimeout(async () => {
           if (settled) return;
+          if (gen !== get()._connectGeneration) {
+            console.log("[connect] Stale ICE timeout (gen mismatch), ignoring");
+            try { pc.close(); } catch { /* ignore */ }
+            return;
+          }
           console.log("[connect] ICE timeout after 10s → falling back to relay transport");
           // Clean up failed WebRTC attempt
           try { pc.close(); } catch { /* ignore */ }
