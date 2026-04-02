@@ -406,7 +406,7 @@ export class RelayTransport implements Transport {
                 );
 
                 // Restore original handler
-                if (this._workerSSE) this._workerSSE.onmessage = originalHandler;
+                if (this._workerSSE) this._workerSSE.onmessage = originalHandler ?? null;
                 resolve();
               } catch (e) {
                 reject(e);
@@ -415,7 +415,7 @@ export class RelayTransport implements Transport {
             }
 
             // Forward other messages to original handler
-            if (originalHandler) originalHandler.call(this._workerSSE, event);
+            if (originalHandler && this._workerSSE) originalHandler.call(this._workerSSE, event);
           };
         }
 
