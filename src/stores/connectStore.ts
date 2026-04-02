@@ -397,7 +397,7 @@ export const useConnectStore = create<ConnectState>()(
         console.log("[connect] SDP offer sent to worker:", workerId);
 
         // ── 10s ICE timeout → relay fallback ──────────────────
-        setTimeout(() => {
+        setTimeout(async () => {
           if (settled) return;
           console.log("[connect] ICE timeout after 10s → falling back to relay transport");
           // Clean up failed WebRTC attempt
@@ -409,8 +409,13 @@ export const useConnectStore = create<ConnectState>()(
             roomId,
             peerId: workerId,
           });
-          relay.open();
-          finalize(relay, "relay");
+          try {
+            await relay.open();
+            finalize(relay, "relay");
+          } catch (err) {
+            console.error("[connect] Relay E2E key exchange failed:", err);
+            set({ connectionStatus: "error" });
+          }
         }, 10000);
       },
 
