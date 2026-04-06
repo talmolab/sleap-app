@@ -855,7 +855,7 @@ export function InferencePanel() {
           if (fileBrowserCallback) fileBrowserCallback(path);
           setFileBrowserOpen(false);
         }}
-        startPath={workerMounts[0] || "/"}
+        mounts={workerMounts}
         mode={fileBrowserMode}
         fileFilter={fileBrowserMode === "file" ? ".slp" : undefined}
       />

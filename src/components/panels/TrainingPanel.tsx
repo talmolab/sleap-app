@@ -1037,7 +1037,7 @@ export function TrainingPanel() {
           if (fileBrowserCallback) fileBrowserCallback(path);
           setFileBrowserOpen(false);
         }}
-        startPath={workerMounts[0] || "/"}
+        mounts={workerMounts}
         mode="file"
         fileFilter=".slp"
       />

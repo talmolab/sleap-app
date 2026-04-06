@@ -8,46 +8,66 @@ interface RemoteFileBrowserProps {
   open: boolean;
   onClose: () => void;
   onSelect: (path: string) => void;
-  /** Starting directory (e.g., first mount path) */
-  startPath?: string;
+  /** All available mount paths on the worker. Browser starts at the mount picker. */
+  mounts?: string[];
   /** If "directory", only directories can be selected. If "file", only files. */
   mode?: "directory" | "file";
   /** File extension filter (e.g., ".slp") — only applies when mode is "file" */
   fileFilter?: string;
 }
 
+/** Sentinel path representing the mount picker view */
+const MOUNT_PICKER = "//mounts";
+
 export function RemoteFileBrowser({
   open,
   onClose,
   onSelect,
-  startPath = "/",
+  mounts = [],
   mode = "directory",
   fileFilter,
 }: RemoteFileBrowserProps) {
   const browseRemoteDir = useConnectStore((s) => s.browseRemoteDir);
-  const [currentPath, setCurrentPath] = useState(startPath);
+  // Initial view: mount picker if multiple mounts, else first mount, else root
+  const initialPath =
+    mounts.length > 1 ? MOUNT_PICKER : mounts[0] || "/";
+  const [currentPath, setCurrentPath] = useState(initialPath);
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedEntry, setSelectedEntry] = useState<string | null>(null);
   const [openCount, setOpenCount] = useState(0);
 
-  // Reset to startPath each time the dialog opens
+  // Reset to initial path each time the dialog opens
   useEffect(() => {
     if (open) {
-      setCurrentPath(startPath);
+      setCurrentPath(initialPath);
       setEntries([]);
       setSelectedEntry(null);
       setError(null);
       setOpenCount((c) => c + 1);
     }
-  }, [open, startPath]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   // Load directory contents when path changes or dialog re-opens
   useEffect(() => {
     if (!open) return;
-    let cancelled = false;
 
+    // Mount picker view: show mounts as virtual folder entries (no fs call)
+    if (currentPath === MOUNT_PICKER) {
+      const mountEntries: FileEntry[] = mounts.map((m) => ({
+        name: m,
+        isDir: true,
+      }));
+      setEntries(mountEntries);
+      setLoading(false);
+      setError(null);
+      setSelectedEntry(null);
+      return;
+    }
+
+    let cancelled = false;
     const loadDir = async () => {
       setLoading(true);
       setError(null);
@@ -77,11 +97,14 @@ export function RemoteFileBrowser({
     return () => {
       cancelled = true;
     };
-  }, [openCount, currentPath, browseRemoteDir]);
+  }, [openCount, currentPath, browseRemoteDir, mounts]);
 
   if (!open) return null;
 
-  const pathParts = currentPath.split("/").filter(Boolean);
+  const isMountPicker = currentPath === MOUNT_PICKER;
+  const pathParts = isMountPicker
+    ? []
+    : currentPath.split("/").filter(Boolean);
 
   const joinPath = (base: string, name: string) => {
     const cleanBase = base.endsWith("/") ? base.slice(0, -1) : base;
@@ -93,12 +116,21 @@ export function RemoteFileBrowser({
   };
 
   const handleDoubleClick = (entry: FileEntry) => {
-    if (entry.isDir) {
+    if (!entry.isDir) return;
+    // From mount picker, the entry name is the full mount path
+    if (isMountPicker) {
+      navigateTo(entry.name);
+    } else {
       navigateTo(joinPath(currentPath, entry.name));
     }
   };
 
   const handleSelect = () => {
+    if (isMountPicker) {
+      // Mount picker: clicking "Select" with a mount selected navigates into it
+      if (selectedEntry) navigateTo(selectedEntry);
+      return;
+    }
     if (mode === "directory") {
       // Select current directory or selected subdirectory
       if (selectedEntry) {
@@ -118,8 +150,9 @@ export function RemoteFileBrowser({
     onClose();
   };
 
-  const canSelect =
-    mode === "directory"
+  const canSelect = isMountPicker
+    ? selectedEntry != null
+    : mode === "directory"
       ? true // Can always select current directory
       : selectedEntry != null &&
         !entries.find((e) => e.name === selectedEntry)?.isDir;
@@ -148,27 +181,44 @@ export function RemoteFileBrowser({
 
         {/* Breadcrumb */}
         <div className="flex items-center gap-1 px-3 py-2 text-[11px] font-mono text-muted-foreground border-b border-border">
-          <span
-            className="cursor-pointer hover:text-primary"
-            onClick={() => navigateTo("/")}
-          >
-            /
-          </span>
-          {pathParts.map((part, i) => {
-            const path = "/" + pathParts.slice(0, i + 1).join("/");
-            const isLast = i === pathParts.length - 1;
-            return (
-              <span key={path}>
-                <span
-                  className={`cursor-pointer ${isLast ? "text-foreground" : "hover:text-primary"}`}
-                  onClick={() => !isLast && navigateTo(path)}
-                >
-                  {part}
-                </span>
-                {!isLast && <span className="text-border mx-0.5">/</span>}
+          {mounts.length > 1 && (
+            <>
+              <span
+                className={`cursor-pointer ${
+                  isMountPicker ? "text-foreground" : "hover:text-primary"
+                }`}
+                onClick={() => !isMountPicker && navigateTo(MOUNT_PICKER)}
+              >
+                Mounts
               </span>
-            );
-          })}
+              {!isMountPicker && <span className="text-border mx-0.5">/</span>}
+            </>
+          )}
+          {!isMountPicker && (
+            <>
+              <span
+                className="cursor-pointer hover:text-primary"
+                onClick={() => navigateTo("/")}
+              >
+                /
+              </span>
+              {pathParts.map((part, i) => {
+                const path = "/" + pathParts.slice(0, i + 1).join("/");
+                const isLast = i === pathParts.length - 1;
+                return (
+                  <span key={path}>
+                    <span
+                      className={`cursor-pointer ${isLast ? "text-foreground" : "hover:text-primary"}`}
+                      onClick={() => !isLast && navigateTo(path)}
+                    >
+                      {part}
+                    </span>
+                    {!isLast && <span className="text-border mx-0.5">/</span>}
+                  </span>
+                );
+              })}
+            </>
+          )}
         </div>
 
         {/* File list */}
@@ -186,7 +236,7 @@ export function RemoteFileBrowser({
           )}
           {!loading && !error && filteredEntries.length === 0 && (
             <p className="text-[11px] text-muted-foreground py-4 text-center">
-              Empty directory
+              {isMountPicker ? "No mounts available on this worker" : "Empty directory"}
             </p>
           )}
           {!loading &&
@@ -228,7 +278,11 @@ export function RemoteFileBrowser({
             Cancel
           </Button>
           <Button size="sm" onClick={handleSelect} disabled={!canSelect}>
-            {mode === "directory" ? "Select Folder" : "Select File"}
+            {isMountPicker
+              ? "Open Mount"
+              : mode === "directory"
+                ? "Select Folder"
+                : "Select File"}
           </Button>
         </div>
       </div>
