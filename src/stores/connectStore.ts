@@ -54,7 +54,7 @@ export interface RoomInfo {
 }
 
 interface PendingFsRequest {
-  resolve: (entries: FileEntry[]) => void;
+  resolve: (result: { entries: FileEntry[]; hasMore: boolean }) => void;
   reject: (err: Error) => void;
 }
 
@@ -442,20 +442,41 @@ export const useConnectStore = create<ConnectState>()(
           throw new Error("Not connected to worker");
         }
 
-        return new Promise((resolve, reject) => {
-          const { _pendingFs } = get();
-          _pendingFs.set("_current", { resolve, reject });
+        // Auto-paginate: keep requesting more pages until has_more is false.
+        // Worker paginates fs_list responses (~25 entries per page by default).
+        const allEntries: FileEntry[] = [];
+        let offset = 0;
+        const MAX_PAGES = 200; // safety cap (200 pages * ~25 = ~5000 entries)
 
-          _transport.send(buildMessage(MSG_FS_LIST_DIR, path, "0"));
-
-          // Timeout after 10s
-          setTimeout(() => {
-            if (_pendingFs.has("_current")) {
-              _pendingFs.delete("_current");
-              reject(new Error("Filesystem request timed out"));
+        for (let page = 0; page < MAX_PAGES; page++) {
+          const result = await new Promise<{
+            entries: FileEntry[];
+            hasMore: boolean;
+          }>((resolve, reject) => {
+            const { _pendingFs, _transport: t } = get();
+            if (!t || !t.ready) {
+              reject(new Error("Transport disconnected mid-request"));
+              return;
             }
-          }, 10000);
-        });
+            _pendingFs.set("_current", { resolve, reject });
+
+            t.send(buildMessage(MSG_FS_LIST_DIR, path, String(offset)));
+
+            // Timeout after 10s per page
+            setTimeout(() => {
+              if (_pendingFs.has("_current")) {
+                _pendingFs.delete("_current");
+                reject(new Error("Filesystem request timed out"));
+              }
+            }, 10000);
+          });
+
+          allEntries.push(...result.entries);
+          if (!result.hasMore || result.entries.length === 0) break;
+          offset += result.entries.length;
+        }
+
+        return allEntries;
       },
 
       // ── Job submission ───────────────────────────────────────
@@ -615,7 +636,7 @@ export const useConnectStore = create<ConnectState>()(
                     size: e.size as number | undefined,
                   }),
                 );
-                pending.resolve(entries);
+                pending.resolve({ entries, hasMore: !!result.has_more });
               } catch {
                 pending.reject(new Error("Invalid filesystem response"));
               }
