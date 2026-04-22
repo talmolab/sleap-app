@@ -67,6 +67,14 @@ const SIMILARITY_OPTIONS = [
   { value: "euclidean_dist", label: "Euclidean distance" },
 ];
 
+/**
+ * Extensions sleap-nn inference accepts as a data_path input:
+ *   - .slp: labeled project (inference writes predictions back into it)
+ *   - .mp4 / .avi / .mov / .mkv: raw video files (inference produces a sibling .predictions.slp)
+ * Matches the video format set used in src/lib/resolveVideos.ts.
+ */
+const INFERENCE_DATA_EXTENSIONS = [".slp", ".mp4", ".avi", ".mov", ".mkv"];
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function formatDuration(ms: number): string {
@@ -483,7 +491,7 @@ export function InferencePanel() {
                   value={remoteDataPath}
                   readOnly
                   className="h-7 text-xs font-mono flex-1"
-                  placeholder="Select a .slp file on the worker"
+                  placeholder="Select a .slp or video file on the worker"
                 />
                 <Button
                   variant="outline"
@@ -857,7 +865,9 @@ export function InferencePanel() {
         }}
         mounts={workerMounts}
         mode={fileBrowserMode}
-        fileFilter={fileBrowserMode === "file" ? ".slp" : undefined}
+        fileFilter={
+          fileBrowserMode === "file" ? INFERENCE_DATA_EXTENSIONS : undefined
+        }
       />
     </div>
   );

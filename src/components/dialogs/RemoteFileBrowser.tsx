@@ -12,8 +12,11 @@ interface RemoteFileBrowserProps {
   mounts?: string[];
   /** If "directory", only directories can be selected. If "file", only files. */
   mode?: "directory" | "file";
-  /** File extension filter (e.g., ".slp") — only applies when mode is "file" */
-  fileFilter?: string;
+  /**
+   * File extension filter(s) (e.g., ".slp" or [".slp", ".mp4"]) — only applies
+   * when mode is "file". Matching is case-insensitive. If omitted, all files show.
+   */
+  fileFilter?: string | string[];
 }
 
 /** Sentinel path representing the mount picker view */
@@ -157,10 +160,17 @@ export function RemoteFileBrowser({
       : selectedEntry != null &&
         !entries.find((e) => e.name === selectedEntry)?.isDir;
 
-  const filteredEntries = fileFilter
-    ? entries.filter(
-        (e) => e.isDir || e.name.endsWith(fileFilter),
+  const filterExts = fileFilter
+    ? (Array.isArray(fileFilter) ? fileFilter : [fileFilter]).map((ext) =>
+        ext.toLowerCase(),
       )
+    : null;
+  const filteredEntries = filterExts
+    ? entries.filter((e) => {
+        if (e.isDir) return true;
+        const name = e.name.toLowerCase();
+        return filterExts.some((ext) => name.endsWith(ext));
+      })
     : entries;
 
   return (
