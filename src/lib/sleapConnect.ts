@@ -21,6 +21,15 @@ export const MSG_JOB_CANCEL = "JOB_CANCEL";
 export const MSG_JOB_STOP = "JOB_STOP";
 export const MSG_CONTROL_COMMAND = "CONTROL_COMMAND";
 
+// Job log messages
+export const MSG_JOB_LOG = "JOB_LOG";
+
+// P2P auth messages (Ed25519 challenge-response)
+export const MSG_AUTH_CHALLENGE = "AUTH_CHALLENGE";
+export const MSG_AUTH_RESPONSE = "AUTH_RESPONSE";
+export const MSG_AUTH_SUCCESS = "AUTH_SUCCESS";
+export const MSG_AUTH_FAILURE = "AUTH_FAILURE";
+
 // Filesystem messages
 export const MSG_FS_GET_MOUNTS = "FS_GET_MOUNTS";
 export const MSG_FS_MOUNTS_RESPONSE = "FS_MOUNTS_RESPONSE";
@@ -79,6 +88,7 @@ export interface Credentials {
   avatarUrl?: string;
   defaultRoom?: string;
   accountKey?: string;
+  privateKey?: string; // Ed25519 private key (URL-safe base64, raw 32 bytes)
 }
 
 export interface JobResult {

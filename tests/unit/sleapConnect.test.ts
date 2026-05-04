@@ -5,6 +5,11 @@ import {
   generateJobId,
   MSG_JOB_SUBMIT,
   MSG_SEPARATOR,
+  MSG_JOB_LOG,
+  MSG_AUTH_CHALLENGE,
+  MSG_AUTH_RESPONSE,
+  MSG_AUTH_SUCCESS,
+  MSG_AUTH_FAILURE,
 } from "@/lib/sleapConnect";
 
 describe("sleapConnect protocol helpers", () => {
@@ -40,5 +45,27 @@ describe("sleapConnect protocol helpers", () => {
       const ids = new Set(Array.from({ length: 100 }, () => generateJobId()));
       expect(ids.size).toBe(100);
     });
+  });
+});
+
+describe("auth and log protocol constants", () => {
+  it("exports MSG_JOB_LOG", () => {
+    expect(MSG_JOB_LOG).toBe("JOB_LOG");
+  });
+
+  it("exports MSG_AUTH_CHALLENGE", () => {
+    expect(MSG_AUTH_CHALLENGE).toBe("AUTH_CHALLENGE");
+  });
+
+  it("exports MSG_AUTH_RESPONSE", () => {
+    expect(MSG_AUTH_RESPONSE).toBe("AUTH_RESPONSE");
+  });
+
+  it("exports MSG_AUTH_SUCCESS", () => {
+    expect(MSG_AUTH_SUCCESS).toBe("AUTH_SUCCESS");
+  });
+
+  it("exports MSG_AUTH_FAILURE", () => {
+    expect(MSG_AUTH_FAILURE).toBe("AUTH_FAILURE");
   });
 });
