@@ -64,6 +64,11 @@ export function ConnectPanel() {
   const [loggingIn, setLoggingIn] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [expandedWorkerId, setExpandedWorkerId] = useState<string | null>(null);
+  const [hasSigningKey, setHasSigningKey] = useState<boolean | null>(null);
+  const [keyImportValue, setKeyImportValue] = useState("");
+  const [keyImportError, setKeyImportError] = useState<string | null>(null);
+  const [showKeyImport, setShowKeyImport] = useState(false);
+  const transportMode = useConnectStore((s) => s.transportMode);
 
   // Auto-detect credentials on mount (desktop only)
   useEffect(() => {
@@ -121,6 +126,20 @@ export function ConnectPanel() {
     })();
   }, []);
 
+  // Check for existing signing key on mount (browser only)
+  useEffect(() => {
+    if (isTauri) return;
+    (async () => {
+      try {
+        const { loadSigningKey } = await import("@/lib/auth");
+        const key = await loadSigningKey();
+        setHasSigningKey(key !== null);
+      } catch {
+        setHasSigningKey(false);
+      }
+    })();
+  }, []);
+
   // Fetch rooms when credentials become available
   useEffect(() => {
     if (credentials) {
@@ -169,6 +188,24 @@ export function ConnectPanel() {
       );
     } finally {
       setLoggingIn(false);
+    }
+  };
+
+  const handleKeyImport = async () => {
+    setKeyImportError(null);
+    try {
+      const { validateKeyB64, importPrivateKey, storeSigningKey } = await import("@/lib/auth");
+      if (!validateKeyB64(keyImportValue.trim())) {
+        setKeyImportError("Invalid key: must be 32 bytes, URL-safe base64 encoded");
+        return;
+      }
+      const cryptoKey = await importPrivateKey(keyImportValue.trim());
+      await storeSigningKey(cryptoKey);
+      setHasSigningKey(true);
+      setKeyImportValue("");
+      setShowKeyImport(false);
+    } catch (err) {
+      setKeyImportError(err instanceof Error ? err.message : "Failed to import key");
     }
   };
 
@@ -279,6 +316,51 @@ export function ConnectPanel() {
               </SelectContent>
             </Select>
           </div>
+
+          {/* Private key import (browser only) */}
+          {!isTauri && hasSigningKey === false && (
+            <div className="bg-yellow-500/8 border border-yellow-500/20 rounded-md p-2 space-y-1.5">
+              <p className="text-[11px] text-yellow-400">
+                <b>Setup required:</b> Import your Ed25519 private key to connect to workers.
+              </p>
+              {!showKeyImport ? (
+                <Button size="sm" variant="outline" className="h-6 text-[10px]" onClick={() => setShowKeyImport(true)}>
+                  Import Private Key
+                </Button>
+              ) : (
+                <div className="space-y-1.5">
+                  <p className="text-[10px] text-muted-foreground">
+                    Paste the <code className="bg-black/30 px-1 py-0.5 rounded text-[10px] font-mono">private_key</code> value from your <code className="bg-black/30 px-1 py-0.5 rounded text-[10px] font-mono">~/.sleap-rtc/credentials.json</code>
+                  </p>
+                  <input
+                    type="password"
+                    value={keyImportValue}
+                    onChange={(e) => setKeyImportValue(e.target.value)}
+                    placeholder="Paste private key (base64)"
+                    className="w-full h-7 px-2 text-xs bg-zinc-900 border border-border rounded-md font-mono"
+                  />
+                  <div className="flex gap-1">
+                    <Button size="sm" className="h-6 text-[10px]" onClick={handleKeyImport} disabled={!keyImportValue.trim()}>
+                      Save
+                    </Button>
+                    <Button size="sm" variant="ghost" className="h-6 text-[10px]" onClick={() => { setShowKeyImport(false); setKeyImportError(null); }}>
+                      Cancel
+                    </Button>
+                  </div>
+                  {keyImportError && (
+                    <p className="text-[10px] text-red-400">{keyImportError}</p>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+          {!isTauri && hasSigningKey === true && (
+            <div className="flex items-center gap-1 text-[10px] text-green-400 py-0.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
+              Signing key imported
+            </div>
+          )}
+
           <Button
             className="w-full h-8 text-xs"
             onClick={() =>
@@ -312,6 +394,18 @@ export function ConnectPanel() {
             <span className="text-xs">
               Connected to <b>{availableRooms.find((r) => r.roomId === roomId)?.name || roomId}</b>
             </span>
+            {transportMode && (
+              <span
+                className={`text-[9px] px-1.5 py-0.5 rounded-full font-medium ${
+                  transportMode === "direct"
+                    ? "bg-green-500/15 text-green-400"
+                    : "bg-yellow-500/15 text-yellow-400"
+                }`}
+                title={transportMode === "direct" ? "Connected peer-to-peer via WebRTC" : "Connected via relay server (WebRTC unavailable)"}
+              >
+                {transportMode === "direct" ? "Direct" : "Relay"}
+              </span>
+            )}
             <Button
               variant="ghost"
               size="xs"
@@ -367,13 +461,14 @@ export function ConnectPanel() {
                   <Button
                     size="sm"
                     className="w-full mt-2 h-7 text-xs"
+                    disabled={!isTauri && !hasSigningKey}
                     onClick={(e) => {
                       e.stopPropagation();
                       setExpandedWorkerId(null);
                       connectToWorker(w.peerId);
                     }}
                   >
-                    Connect to {w.name}
+                    {!isTauri && !hasSigningKey ? "Import key to connect" : `Connect to ${w.name}`}
                   </Button>
                 )}
               </div>
