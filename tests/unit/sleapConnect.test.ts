@@ -4,7 +4,6 @@ import {
   parseMessage,
   generateJobId,
   MSG_JOB_SUBMIT,
-  MSG_SEPARATOR,
   MSG_JOB_LOG,
   MSG_AUTH_CHALLENGE,
   MSG_AUTH_RESPONSE,
