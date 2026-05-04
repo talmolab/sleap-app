@@ -14,12 +14,17 @@ import {
   MSG_JOB_SUBMIT,
   MSG_JOB_CANCEL,
   MSG_JOB_STOP,
+  MSG_JOB_LOG,
   MSG_CONTROL_COMMAND,
   MSG_JOB_ACCEPTED,
   MSG_JOB_REJECTED,
   MSG_JOB_PROGRESS,
   MSG_JOB_COMPLETE,
   MSG_JOB_FAILED,
+  MSG_AUTH_CHALLENGE,
+  MSG_AUTH_RESPONSE,
+  MSG_AUTH_SUCCESS,
+  MSG_AUTH_FAILURE,
   MSG_FS_GET_MOUNTS,
   MSG_FS_MOUNTS_RESPONSE,
   MSG_FS_LIST_DIR,
@@ -156,8 +161,20 @@ export const useConnectStore = create<ConnectState>()(
                 avatarUrl: data.user.avatar_url,
                 defaultRoom: data.default_room,
                 accountKey: data.account_key,
+                privateKey: data.private_key,
               },
             });
+
+            if (data.private_key) {
+              try {
+                const { importPrivateKey, storeSigningKey } = await import("@/lib/auth");
+                const cryptoKey = await importPrivateKey(data.private_key);
+                await storeSigningKey(cryptoKey);
+                console.log("[connect] Private key imported into IndexedDB");
+              } catch (err) {
+                console.warn("[connect] Failed to import private key:", err);
+              }
+            }
           }
         } catch (err) {
           console.warn("[connect] Failed to load credentials:", err);
@@ -238,7 +255,7 @@ export const useConnectStore = create<ConnectState>()(
                 type: "register",
                 peer_id: credentials.username,
                 room_id: roomId,
-                role: "client",
+                role: "app",
                 jwt: credentials.jwt,
                 metadata: {
                   tags: ["sleap-app"],
@@ -361,8 +378,56 @@ export const useConnectStore = create<ConnectState>()(
         // Create data channel
         const dc = pc.createDataChannel("my-data-channel");
         dc.onopen = () => {
-          console.log("[connect] Data channel open → using WebRTC transport");
-          finalize(new WebRTCTransport(dc), "direct");
+          console.log("[connect] Data channel open → performing auth handshake");
+          const transport = new WebRTCTransport(dc);
+
+          // Set a temporary message handler for the auth handshake
+          const authTimeout = setTimeout(() => {
+            // No AUTH_CHALLENGE after 10s → assume older worker without auth
+            console.log("[connect] Auth timeout (10s) → assuming pre-auth worker, proceeding");
+            finalize(transport, "direct");
+          }, 10000);
+
+          transport.onMessage(async (data: string) => {
+            const parts = parseMessage(data);
+            const msgType = parts[0];
+
+            if (msgType === MSG_AUTH_CHALLENGE) {
+              const nonce = parts[1];
+              console.log("[connect] Received AUTH_CHALLENGE, signing nonce...");
+              try {
+                const { loadSigningKey, signNonce } = await import("@/lib/auth");
+                const key = await loadSigningKey();
+                if (!key) {
+                  throw new Error("No signing key in IndexedDB");
+                }
+                const signature = await signNonce(key, nonce);
+                transport.send(buildMessage(MSG_AUTH_RESPONSE, signature));
+                console.log("[connect] Sent AUTH_RESPONSE");
+              } catch (err) {
+                clearTimeout(authTimeout);
+                console.error("[connect] Auth handshake failed:", err);
+                transport.close();
+                set({
+                  connectionStatus: "error",
+                  connectionError: `Auth failed: ${err instanceof Error ? err.message : String(err)}`,
+                });
+              }
+            } else if (msgType === MSG_AUTH_SUCCESS) {
+              clearTimeout(authTimeout);
+              console.log("[connect] AUTH_SUCCESS → connection authenticated");
+              finalize(transport, "direct");
+            } else if (msgType === MSG_AUTH_FAILURE) {
+              clearTimeout(authTimeout);
+              const reason = parts.slice(1).join(MSG_SEPARATOR) || "Authentication rejected";
+              console.error("[connect] AUTH_FAILURE:", reason);
+              transport.close();
+              set({
+                connectionStatus: "error",
+                connectionError: `Auth rejected: ${reason}`,
+              });
+            }
+          });
         };
         dc.onclose = () => {
           console.log("[connect] Data channel closed");
@@ -401,7 +466,7 @@ export const useConnectStore = create<ConnectState>()(
             sender: credentials.username,
             target: workerId,
             sdp: offer.sdp,
-            role: "client",
+            role: "app",
           }),
         );
 
@@ -775,6 +840,24 @@ export const useConnectStore = create<ConnectState>()(
             }
             break;
           }
+
+          case MSG_JOB_LOG: {
+            // Worker sends: JOB_LOG::{job_id}::{text}
+            const logJobId = parts[1];
+            const text = parts.slice(2).join(MSG_SEPARATOR);
+            const { _pendingJobs: logJobs } = get();
+            const pending = logJobs.get(logJobId);
+            if (pending) {
+              pending.onProgress(text);
+            }
+            break;
+          }
+
+          case MSG_AUTH_CHALLENGE:
+          case MSG_AUTH_SUCCESS:
+          case MSG_AUTH_FAILURE:
+            // Handled during auth handshake in connectToWorker — ignore here
+            break;
 
           case "PROGRESS_REPORT": {
             // Worker sends: PROGRESS_REPORT::{jsonpickle payload}

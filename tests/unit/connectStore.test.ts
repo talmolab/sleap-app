@@ -88,4 +88,86 @@ describe("connectStore", () => {
       expect(state.workers).toEqual([]);
     });
   });
+
+  describe("_handleDataChannelMessage — JOB_LOG", () => {
+    it("strips JOB_LOG prefix and routes text to pending job by ID", () => {
+      const lines: string[] = [];
+      const pendingJobs = new Map();
+      pendingJobs.set("job_abc", {
+        onProgress: (line: string) => lines.push(line),
+        onComplete: () => {},
+        remainingCompletions: 1,
+      });
+      useConnectStore.setState({ _pendingJobs: pendingJobs });
+      useConnectStore.getState()._handleDataChannelMessage("JOB_LOG::job_abc::Training epoch 1");
+      expect(lines).toEqual(["Training epoch 1"]);
+    });
+
+    it("handles JOB_LOG with :: in the text body", () => {
+      const lines: string[] = [];
+      const pendingJobs = new Map();
+      pendingJobs.set("job_abc", {
+        onProgress: (line: string) => lines.push(line),
+        onComplete: () => {},
+        remainingCompletions: 1,
+      });
+      useConnectStore.setState({ _pendingJobs: pendingJobs });
+      useConnectStore.getState()._handleDataChannelMessage("JOB_LOG::job_abc::loss: 0.5 :: val: 0.3");
+      expect(lines).toEqual(["loss: 0.5 :: val: 0.3"]);
+    });
+
+    it("ignores JOB_LOG for unknown job ID", () => {
+      const lines: string[] = [];
+      const pendingJobs = new Map();
+      pendingJobs.set("job_abc", {
+        onProgress: (line: string) => lines.push(line),
+        onComplete: () => {},
+        remainingCompletions: 1,
+      });
+      useConnectStore.setState({ _pendingJobs: pendingJobs });
+      useConnectStore.getState()._handleDataChannelMessage("JOB_LOG::job_xyz::Unknown job");
+      expect(lines).toEqual([]);
+    });
+  });
+
+  describe("_handleDataChannelMessage — AUTH messages not forwarded", () => {
+    it("does not forward AUTH_CHALLENGE to pending jobs", () => {
+      const lines: string[] = [];
+      const pendingJobs = new Map();
+      pendingJobs.set("job_abc", {
+        onProgress: (line: string) => lines.push(line),
+        onComplete: () => {},
+        remainingCompletions: 1,
+      });
+      useConnectStore.setState({ _pendingJobs: pendingJobs });
+      useConnectStore.getState()._handleDataChannelMessage("AUTH_CHALLENGE::test-nonce");
+      expect(lines).toEqual([]);
+    });
+
+    it("does not forward AUTH_SUCCESS to pending jobs", () => {
+      const lines: string[] = [];
+      const pendingJobs = new Map();
+      pendingJobs.set("job_abc", {
+        onProgress: (line: string) => lines.push(line),
+        onComplete: () => {},
+        remainingCompletions: 1,
+      });
+      useConnectStore.setState({ _pendingJobs: pendingJobs });
+      useConnectStore.getState()._handleDataChannelMessage("AUTH_SUCCESS");
+      expect(lines).toEqual([]);
+    });
+
+    it("does not forward AUTH_FAILURE to pending jobs", () => {
+      const lines: string[] = [];
+      const pendingJobs = new Map();
+      pendingJobs.set("job_abc", {
+        onProgress: (line: string) => lines.push(line),
+        onComplete: () => {},
+        remainingCompletions: 1,
+      });
+      useConnectStore.setState({ _pendingJobs: pendingJobs });
+      useConnectStore.getState()._handleDataChannelMessage("AUTH_FAILURE::invalid");
+      expect(lines).toEqual([]);
+    });
+  });
 });
