@@ -92,6 +92,7 @@ interface ConnectState {
   _pc: RTCPeerConnection | null;
   _transport: Transport | null;
   _connectGeneration: number;
+  _iceServers: RTCIceServer[];
   _pendingFs: Map<string, PendingFsRequest>;
   _pendingJobs: Map<string, PendingJobCallbacks>;
 
@@ -134,6 +135,7 @@ export const useConnectStore = create<ConnectState>()(
       _pc: null,
       _transport: null,
       _connectGeneration: 0,
+      _iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
       _pendingFs: new Map(),
       _pendingJobs: new Map(),
 
@@ -369,10 +371,10 @@ export const useConnectStore = create<ConnectState>()(
         };
 
         // ── Create RTCPeerConnection ──────────────────────────
+        const { _iceServers } = get();
+        console.log("[connect] Using ICE servers:", _iceServers.length);
         const pc = new RTCPeerConnection({
-          iceServers: [
-            { urls: "stun:stun.l.google.com:19302" },
-          ],
+          iceServers: _iceServers,
         });
 
         // Create data channel
@@ -599,6 +601,14 @@ export const useConnectStore = create<ConnectState>()(
         switch (type) {
           case "registered_auth": {
             console.log("[connect] Registered in room:", msg.room_id);
+
+            // Store ICE servers from signaling server (may include TURN credentials)
+            const iceServers = msg.ice_servers as RTCIceServer[] | undefined;
+            if (iceServers && iceServers.length > 0) {
+              console.log(`[connect] Received ${iceServers.length} ICE server(s) from signaling`);
+              set({ _iceServers: iceServers });
+            }
+
             set({ connectionStatus: "connected" });
 
             // Request peer list to find workers
