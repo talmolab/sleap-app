@@ -80,6 +80,7 @@ pub fn run() {
         environment::run_python_command,
         environment::cancel_command,
         rtc::rtc_join_room,
+        rtc::rtc_connect_worker,
     ])
     .plugin(tauri_plugin_fs::init())
     .plugin(tauri_plugin_dialog::init())
