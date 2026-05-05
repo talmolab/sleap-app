@@ -24,3 +24,13 @@ tauri-plugin-log = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-shell = "2"
+
+# WebRTC (native P2P, bypasses webview mDNS restriction)
+webrtc = "0.17"
+tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+base64 = "0.22"
+tokio = { version = "1", features = ["sync", "time", "macros"] }
+futures-util = "0.3"
+urlencoding = "2"
+dirs = "6"
