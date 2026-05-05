@@ -180,8 +180,10 @@ export function PathResolutionDialog({
             <tbody>
               {paths.map((p, index) => (
                 <tr key={p.local} className="border-t">
-                  <td className="px-3 py-2 truncate max-w-[160px]" title={p.local}>
-                    {basename(p.local)}
+                  <td className="px-3 py-2 max-w-[160px]">
+                    <div className="overflow-x-auto whitespace-nowrap text-xs font-mono scrollbar-thin" title={p.local}>
+                      {basename(p.local)}
+                    </div>
                   </td>
                   <td className="px-3 py-2 text-center">
                     {p.worker !== null ? (
@@ -192,12 +194,12 @@ export function PathResolutionDialog({
                   </td>
                   <td className="px-3 py-2">
                     {p.worker !== null ? (
-                      <span
-                        className="text-muted-foreground truncate block max-w-[300px]"
+                      <div
+                        className="text-muted-foreground overflow-x-auto whitespace-nowrap max-w-[350px] text-xs font-mono scrollbar-thin"
                         title={p.worker}
                       >
                         {p.worker}
-                      </span>
+                      </div>
                     ) : (
                       <div className="flex gap-1">
                         <Input
