@@ -283,15 +283,66 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
     if (remoteOpts?.remote) {
       // ── Remote training via WebRTC ────────────────────────
       const { useConnectStore } = await import("@/stores/connectStore");
-      const { submitJob } = useConnectStore.getState();
+      const { submitJob, workers, selectedWorkerId } = useConnectStore.getState();
 
-      // Build TrainJobSpec — configs carry their own hyperparams
+      // Collect video paths from the loaded project
+      const { useAppStore } = await import("@/stores/appStore");
+      const { labels } = useAppStore.getState();
+      const videoPaths: string[] = [];
+      if (labels) {
+        for (const video of labels.videos) {
+          if (typeof video.filename === "string") {
+            videoPaths.push(video.filename);
+          } else if (Array.isArray(video.filename)) {
+            videoPaths.push(video.filename[0]);
+          }
+        }
+      }
+
+      // All paths to resolve: labels path + video paths
+      const allLocalPaths = [remoteOpts.labelsPath, ...videoPaths];
+
+      // Load saved mappings and get worker mounts
+      const { loadSavedMappings, resolveProjectPaths, buildPathMappings } =
+        await import("@/lib/pathMappings");
+      const savedMappings = await loadSavedMappings();
+      const worker = workers.find((w) => w.peerId === selectedWorkerId);
+      const workerMounts = worker?.mounts ?? [];
+
+      // Resolve paths using saved prefix mappings
+      const resolvedPaths = resolveProjectPaths(allLocalPaths, savedMappings, workerMounts);
+
+      // Show PathResolutionDialog for user confirmation
+      const confirmedPaths = await new Promise<
+        Array<{ local: string; worker: string }> | null
+      >((resolve) => {
+        window.dispatchEvent(
+          new CustomEvent("sleap:path-resolution", {
+            detail: { paths: resolvedPaths, resolve },
+          }),
+        );
+      });
+
+      if (!confirmedPaths) {
+        // User cancelled path resolution
+        set({ status: "idle" });
+        return;
+      }
+
+      // Build path_mappings dict from confirmed resolutions
+      const pathMappings = buildPathMappings(confirmedPaths);
+
+      // Use the resolved labels path (first entry is always the labels/data path)
+      const resolvedLabelsPath = confirmedPaths[0]?.worker ?? remoteOpts.labelsPath;
+
+      // Build TrainJobSpec with path_mappings
       const spec = {
         type: "train" as const,
         config_contents: config.configs.map((c) => c.content),
         model_types: config.configs.map((c) => c.modelType),
-        labels_path: remoteOpts.labelsPath,
+        labels_path: resolvedLabelsPath,
         val_labels_path: remoteOpts.valLabelsPath || undefined,
+        path_mappings: Object.keys(pathMappings).length > 0 ? pathMappings : undefined,
       };
 
       set((state) => ({
