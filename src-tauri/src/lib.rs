@@ -79,6 +79,7 @@ pub fn run() {
         environment::install_uv,
         environment::run_python_command,
         environment::cancel_command,
+        rtc::rtc_join_room,
     ])
     .plugin(tauri_plugin_fs::init())
     .plugin(tauri_plugin_dialog::init())
