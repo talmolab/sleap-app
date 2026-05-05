@@ -9,6 +9,8 @@ import {
   MSG_AUTH_RESPONSE,
   MSG_AUTH_SUCCESS,
   MSG_AUTH_FAILURE,
+  TrackJobSpec,
+  TrainJobSpec,
 } from "@/lib/sleapConnect";
 
 describe("sleapConnect protocol helpers", () => {
@@ -66,5 +68,47 @@ describe("auth and log protocol constants", () => {
 
   it("exports MSG_AUTH_FAILURE", () => {
     expect(MSG_AUTH_FAILURE).toBe("AUTH_FAILURE");
+  });
+});
+
+describe("JobSpec types include path_mappings", () => {
+  it("TrackJobSpec accepts path_mappings", () => {
+    const spec: TrackJobSpec = {
+      type: "track",
+      data_path: "/data/labels.slp",
+      model_paths: ["/models/centroid"],
+      path_mappings: { "/local/video.mp4": "/worker/video.mp4" },
+    };
+    expect(spec.path_mappings).toEqual({ "/local/video.mp4": "/worker/video.mp4" });
+  });
+
+  it("TrainJobSpec accepts path_mappings", () => {
+    const spec: TrainJobSpec = {
+      type: "train",
+      config_contents: ["yaml content"],
+      model_types: ["centroid"],
+      labels_path: "/data/labels.slp",
+      path_mappings: { "/local/video.mp4": "/worker/video.mp4" },
+    };
+    expect(spec.path_mappings).toEqual({ "/local/video.mp4": "/worker/video.mp4" });
+  });
+
+  it("path_mappings is optional on TrackJobSpec", () => {
+    const spec: TrackJobSpec = {
+      type: "track",
+      data_path: "/data/labels.slp",
+      model_paths: ["/models/centroid"],
+    };
+    expect(spec.path_mappings).toBeUndefined();
+  });
+
+  it("path_mappings is optional on TrainJobSpec", () => {
+    const spec: TrainJobSpec = {
+      type: "train",
+      config_contents: ["yaml"],
+      model_types: ["centroid"],
+      labels_path: "/data/labels.slp",
+    };
+    expect(spec.path_mappings).toBeUndefined();
   });
 });

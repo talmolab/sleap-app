@@ -60,6 +60,7 @@ export interface TrackJobSpec {
   peak_threshold?: number;
   only_suggested_frames?: boolean;
   frames?: string;
+  path_mappings?: Record<string, string>;
 }
 
 export interface TrainJobSpec {
@@ -72,6 +73,7 @@ export interface TrainJobSpec {
   batch_size?: number;
   learning_rate?: number;
   run_name?: string;
+  path_mappings?: Record<string, string>;
 }
 
 export type JobSpec = TrackJobSpec | TrainJobSpec;
