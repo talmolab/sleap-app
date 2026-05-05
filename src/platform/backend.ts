@@ -299,3 +299,44 @@ export async function runInference(
   console.log("[inference] Process finished: success=%s, output=%s", success, outputPath);
   return { success, outputPath, command };
 }
+
+// === RTC commands (native WebRTC via Rust backend) ===
+
+export interface RtcWorkerInfo {
+  peerId: string;
+  name: string;
+  status: string;
+  gpu?: { model: string; memoryMb: number; cudaVersion: string };
+  mounts: string[];
+}
+
+export async function rtcJoinRoom(roomId: string): Promise<RtcWorkerInfo[]> {
+  if (!isTauri) return [];
+  return invokeCmd<RtcWorkerInfo[]>("rtc_join_room", { roomId });
+}
+
+export async function rtcConnectWorker(
+  workerId: string,
+  onMessage: (msg: string) => void,
+): Promise<void> {
+  if (!isTauri) return;
+  const { invoke, Channel } = await import("@tauri-apps/api/core");
+  const channel = new Channel<string>();
+  channel.onmessage = onMessage;
+  return invoke("rtc_connect_worker", { workerId, onMessage: channel });
+}
+
+export async function rtcSend(msg: string): Promise<void> {
+  if (!isTauri) return;
+  return invokeCmd("rtc_send", { msg });
+}
+
+export async function rtcDisconnectWorker(): Promise<void> {
+  if (!isTauri) return;
+  return invokeCmd("rtc_disconnect_worker");
+}
+
+export async function rtcLeaveRoom(): Promise<void> {
+  if (!isTauri) return;
+  return invokeCmd("rtc_leave_room");
+}

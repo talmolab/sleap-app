@@ -244,6 +244,37 @@ export const useConnectStore = create<ConnectState>()(
 
         set({ connectionStatus: "connecting", connectionError: null, roomId });
 
+        // ── Tauri: delegate to Rust backend ─────────────────────
+        if (isTauri) {
+          try {
+            const { rtcJoinRoom } = await import("@/platform/backend");
+            const rtcWorkers = await rtcJoinRoom(roomId);
+            const workers: WorkerInfo[] = rtcWorkers.map((w) => ({
+              peerId: w.peerId,
+              name: w.name,
+              status: w.status as WorkerInfo["status"],
+              gpu: w.gpu
+                ? {
+                    model: w.gpu.model,
+                    memoryMb: w.gpu.memoryMb,
+                    cudaVersion: w.gpu.cudaVersion,
+                  }
+                : undefined,
+              mounts: w.mounts,
+            }));
+            set({ connectionStatus: "connected", workers });
+            console.log("[connect] Joined room via Rust backend, workers:", workers.length);
+            return;
+          } catch (err) {
+            console.error("[connect] Rust rtc_join_room failed:", err);
+            set({
+              connectionStatus: "error",
+              connectionError: err instanceof Error ? err.message : String(err),
+            });
+            return;
+          }
+        }
+
         try {
           // Connect WebSocket to signaling server
           const wsUrl = `${SIGNALING_WS}?token=${encodeURIComponent(credentials.jwt)}`;
@@ -310,6 +341,12 @@ export const useConnectStore = create<ConnectState>()(
 
       disconnect: () => {
         const { _ws, _pc, _transport, _connectGeneration } = get();
+        // Tauri: leave room via Rust backend
+        if (isTauri) {
+          import("@/platform/backend").then(({ rtcLeaveRoom }) => {
+            rtcLeaveRoom().catch(() => {});
+          });
+        }
         if (_transport) _transport.close();
         if (_pc) _pc.close();
         if (_ws) _ws.close();
@@ -331,11 +368,36 @@ export const useConnectStore = create<ConnectState>()(
 
       connectToWorker: async (workerId: string) => {
         const { _ws, credentials, roomId, _connectGeneration } = get();
-        if (!_ws || !credentials || !roomId) return;
+        if (!credentials || !roomId) return;
 
         // Increment generation to invalidate any previous connectToWorker attempt
         const gen = _connectGeneration + 1;
         set({ selectedWorkerId: workerId, _connectGeneration: gen });
+
+        // ── Tauri: use Rust WebRTC backend ─────────────────────
+        if (isTauri) {
+          try {
+            const { rtcConnectWorker } = await import("@/platform/backend");
+            const { RustTransport } = await import("@/lib/transport");
+            const transport = new RustTransport();
+            transport.onMessage((data) => get()._handleDataChannelMessage(data));
+
+            await rtcConnectWorker(workerId, (msg: string) => {
+              transport._dispatchMessage(msg);
+            });
+
+            transport._setReady();
+            transport.send("FS_GET_MOUNTS");
+            set({ _transport: transport, transportMode: "direct", connectionStatus: "connected" });
+            console.log(`[connect] Connected to ${workerId} via Rust WebRTC`);
+            return;
+          } catch (err) {
+            console.warn("[connect] Rust WebRTC failed, falling back to relay:", err);
+            // Fall through to existing WebRTC/relay logic below
+          }
+        }
+
+        if (!_ws) return;
 
         console.log("[connect] Attempting WebRTC connection to worker:", workerId);
 

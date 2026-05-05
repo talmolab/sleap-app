@@ -71,6 +71,53 @@ export class WebRTCTransport implements Transport {
   }
 }
 
+// ── RustTransport (Tauri native WebRTC via Rust backend) ─────
+
+export class RustTransport implements Transport {
+  private _ready = false;
+  private _handler: ((data: string) => void) | null = null;
+
+  readonly mode = "direct" as const;
+
+  get ready(): boolean {
+    return this._ready;
+  }
+
+  send(msg: string): void {
+    if (!this._ready) {
+      console.warn("[transport:rust] Cannot send — not connected");
+      return;
+    }
+    import("@tauri-apps/api/core").then(({ invoke }) => {
+      invoke("rtc_send", { msg }).catch((err: unknown) => {
+        console.error("[transport:rust] Send failed:", err);
+      });
+    });
+  }
+
+  onMessage(handler: (data: string) => void): void {
+    this._handler = handler;
+  }
+
+  close(): void {
+    import("@tauri-apps/api/core").then(({ invoke }) => {
+      invoke("rtc_disconnect_worker").catch(() => {});
+    });
+    this._ready = false;
+    this._handler = null;
+  }
+
+  _setReady(): void {
+    this._ready = true;
+  }
+
+  _dispatchMessage(data: string): void {
+    if (this._handler) {
+      this._handler(data);
+    }
+  }
+}
+
 // ── RelayTransport ───────────────────────────────────────────────
 
 export interface RelayTransportConfig {
