@@ -15,6 +15,8 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { PathResolutionDialog } from "../dialogs/PathResolutionDialog";
+import type { ResolvedPath } from "@/lib/pathMappings";
 import { Toaster } from "sonner";
 import { MenuBar } from "./MenuBar";
 import { StatusBar } from "./StatusBar";
@@ -84,6 +86,61 @@ const PANELS = [
   { id: "debug", label: "Debug", icon: Bug, component: DebugPanel },
   { id: "connect", label: "Connect", icon: Globe, component: ConnectPanel },
 ] as const;
+
+/** Hosts the PathResolutionDialog, listening for custom events from stores. */
+function PathResolutionHost() {
+  const [dialogState, setDialogState] = useState<{
+    open: boolean;
+    paths: ResolvedPath[];
+    resolve: ((result: Array<{ local: string; worker: string }> | null) => void) | null;
+  }>({ open: false, paths: [], resolve: null });
+
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent).detail;
+      setDialogState({
+        open: true,
+        paths: detail.paths,
+        resolve: detail.resolve,
+      });
+    };
+    window.addEventListener("sleap:path-resolution", handler);
+    return () => window.removeEventListener("sleap:path-resolution", handler);
+  }, []);
+
+  const handleSubmit = useCallback(
+    async (resolvedPaths: Array<{ local: string; worker: string }>) => {
+      // Detect and save new prefix mappings
+      const { detectPrefixDiff, saveMapping } = await import("@/lib/pathMappings");
+      const savedPrefixes = new Set<string>();
+      for (const { local, worker } of resolvedPaths) {
+        const diff = detectPrefixDiff(local, worker);
+        if (diff && !savedPrefixes.has(diff.local)) {
+          await saveMapping(diff);
+          savedPrefixes.add(diff.local);
+        }
+      }
+
+      dialogState.resolve?.(resolvedPaths);
+      setDialogState({ open: false, paths: [], resolve: null });
+    },
+    [dialogState.resolve],
+  );
+
+  const handleCancel = useCallback(() => {
+    dialogState.resolve?.(null);
+    setDialogState({ open: false, paths: [], resolve: null });
+  }, [dialogState.resolve]);
+
+  return (
+    <PathResolutionDialog
+      open={dialogState.open}
+      paths={dialogState.paths}
+      onSubmit={handleSubmit}
+      onCancel={handleCancel}
+    />
+  );
+}
 
 export function AppShell() {
   const projectLoaded = useAppStore((s) => s.projectLoaded);
@@ -188,6 +245,7 @@ export function AppShell() {
         open={helpDialogOpen}
         onOpenChange={setHelpDialogOpen}
       />
+      <PathResolutionHost />
 
       {/* Toast notifications */}
       <Toaster
