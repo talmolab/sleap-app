@@ -181,13 +181,62 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
     if (remoteOpts?.remote) {
       // ── Remote inference via WebRTC ────────────────────────
       const { useConnectStore } = await import("@/stores/connectStore");
-      const { submitJob } = useConnectStore.getState();
+      const { submitJob, workers, selectedWorkerId } = useConnectStore.getState();
       const { handleProcessEvent } = useInferenceStore.getState();
 
-      // Build TrackJobSpec from InferenceConfig
+      // Collect video paths from the loaded project
+      const { labels } = useAppStore.getState();
+      const videoPaths: string[] = [];
+      if (labels) {
+        for (const video of labels.videos) {
+          if (typeof video.filename === "string") {
+            videoPaths.push(video.filename);
+          } else if (Array.isArray(video.filename)) {
+            videoPaths.push(video.filename[0]);
+          }
+        }
+      }
+
+      // All paths to resolve: data_path + video paths
+      const allLocalPaths = [remoteOpts.dataPath, ...videoPaths];
+
+      // Load saved mappings and get worker mounts
+      const { loadSavedMappings, resolveProjectPaths, buildPathMappings } =
+        await import("@/lib/pathMappings");
+      const savedMappings = await loadSavedMappings();
+      const worker = workers.find((w) => w.peerId === selectedWorkerId);
+      const workerMounts = worker?.mounts ?? [];
+
+      // Resolve paths using saved prefix mappings
+      const resolvedPaths = resolveProjectPaths(allLocalPaths, savedMappings, workerMounts);
+
+      // Show PathResolutionDialog for user confirmation
+      const confirmedPaths = await new Promise<
+        Array<{ local: string; worker: string }> | null
+      >((resolve) => {
+        window.dispatchEvent(
+          new CustomEvent("sleap:path-resolution", {
+            detail: { paths: resolvedPaths, resolve },
+          }),
+        );
+      });
+
+      if (!confirmedPaths) {
+        // User cancelled path resolution
+        set({ status: "idle" });
+        return;
+      }
+
+      // Build path_mappings dict from confirmed resolutions
+      const pathMappings = buildPathMappings(confirmedPaths);
+
+      // Use the resolved data path (first entry)
+      const resolvedDataPath = confirmedPaths[0]?.worker ?? remoteOpts.dataPath;
+
+      // Build TrackJobSpec with path_mappings
       const spec = {
         type: "track" as const,
-        data_path: remoteOpts.dataPath,
+        data_path: resolvedDataPath,
         model_paths: config.modelPaths,
         batch_size: config.batchSize,
         peak_threshold: config.peakThreshold,
@@ -195,6 +244,7 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
         frames: typeof config.frameRange === "object"
           ? `${config.frameRange.start}-${config.frameRange.end}`
           : undefined,
+        path_mappings: Object.keys(pathMappings).length > 0 ? pathMappings : undefined,
       };
 
       // Log the spec
