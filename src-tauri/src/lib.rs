@@ -81,6 +81,9 @@ pub fn run() {
         environment::cancel_command,
         rtc::rtc_join_room,
         rtc::rtc_connect_worker,
+        rtc::rtc_send,
+        rtc::rtc_disconnect_worker,
+        rtc::rtc_leave_room,
     ])
     .plugin(tauri_plugin_fs::init())
     .plugin(tauri_plugin_dialog::init())

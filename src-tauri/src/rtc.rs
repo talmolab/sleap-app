@@ -613,3 +613,63 @@ pub async fn rtc_connect_worker(
 
     Ok(auth_result)
 }
+
+// ── Send Command ────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn rtc_send(
+    msg: String,
+    state: tauri::State<'_, tokio::sync::Mutex<RtcState>>,
+) -> Result<(), String> {
+    let s = state.lock().await;
+    let dc = s.dc.as_ref().ok_or("Not connected to worker")?;
+    dc.send_text(msg)
+        .await
+        .map_err(|e| format!("Send failed: {}", e))?;
+    Ok(())
+}
+
+// ── Disconnect Worker Command ───────────────────────────────────
+
+#[tauri::command]
+pub async fn rtc_disconnect_worker(
+    state: tauri::State<'_, tokio::sync::Mutex<RtcState>>,
+) -> Result<(), String> {
+    let mut s = state.lock().await;
+    if let Some(dc) = s.dc.take() {
+        dc.close()
+            .await
+            .map_err(|e| format!("DC close failed: {}", e))?;
+    }
+    if let Some(pc) = s.pc.take() {
+        pc.close()
+            .await
+            .map_err(|e| format!("PC close failed: {}", e))?;
+    }
+    Ok(())
+}
+
+// ── Leave Room Command ──────────────────────────────────────────
+
+#[tauri::command]
+pub async fn rtc_leave_room(
+    state: tauri::State<'_, tokio::sync::Mutex<RtcState>>,
+) -> Result<(), String> {
+    let mut s = state.lock().await;
+    // Close worker connection if active
+    if let Some(dc) = s.dc.take() {
+        let _ = dc.close().await;
+    }
+    if let Some(pc) = s.pc.take() {
+        let _ = pc.close().await;
+    }
+    // Close signaling WebSocket
+    if let Some(mut sink) = s.ws_sink.take() {
+        let _ = sink.close().await;
+    }
+    s.ws_stream = None;
+    s.credentials = None;
+    s.room_id = None;
+    s.ice_servers.clear();
+    Ok(())
+}
