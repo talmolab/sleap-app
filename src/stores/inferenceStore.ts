@@ -284,15 +284,52 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
         }
         videoIndex = currentVideoIdx;
       } else if (target === "random") {
-        // Client-side random sampling: pick N frames from current video
-        // For "all videos" random, we sample from the current video for now
-        // (multi-spec batch submission would be needed for true per-video sampling)
-        const { video: activeVideo } = useAppStore.getState();
-        const nFrames = activeVideo?.shape?.[0] ?? 0;
-        if (nFrames > 0) {
+        // Random sample (all videos): submit one spec per video sequentially
+        // Each spec samples N frames from that video
+        const allVideos = labels?.videos ?? [];
+        const specs = allVideos.map((v, i) => {
+          const nFrames = v.shape?.[0] ?? 0;
+          if (nFrames === 0) return null;
           const sampled = sampleRandom(nFrames, config.sampleCount);
-          frames = sampled.join(",");
+          return {
+            type: "track" as const,
+            data_path: resolvedDataPath,
+            model_paths: config.modelPaths,
+            batch_size: config.batchSize,
+            peak_threshold: config.peakThreshold,
+            video_index: i,
+            exclude_user_labeled: config.excludeUserLabeled || undefined,
+            frames: sampled.join(","),
+            path_mappings: Object.keys(pathMappings).length > 0 ? pathMappings : undefined,
+          };
+        }).filter(Boolean);
+
+        set((state) => ({
+          log: [`$ Remote (${specs.length} videos): ${JSON.stringify(specs, null, 2)}`, ...state.log],
+        }));
+
+        try {
+          for (let i = 0; i < specs.length; i++) {
+            const spec = specs[i]!;
+            set((state) => ({
+              log: [...state.log, `── Video ${i + 1} of ${specs.length} ──`],
+            }));
+            const result = await submitJob(spec, (line: string) => {
+              handleProcessEvent({ event: "stdout", data: { line } });
+            });
+            if (!result.success) {
+              set({ status: "error", error: result.error || `Video ${i + 1} failed` });
+              return;
+            }
+          }
+          set({ status: "completed" });
+        } catch (e) {
+          set({
+            status: "error",
+            error: `Remote inference error: ${e instanceof Error ? e.message : String(e)}`,
+          });
         }
+        return;
       }
       // all_videos, suggestions, user_labeled, predicted: no frames/videoIndex needed
 
@@ -316,13 +353,7 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
 
       try {
         const result = await submitJob(spec, (line: string) => {
-          // Forward progress lines to handleProcessEvent
-          // Note: progress bar updates require --gui flag on sleap-nn track
-          // which outputs JSON with n_processed/n_total fields
-          handleProcessEvent({
-            event: "stdout",
-            data: { line },
-          });
+          handleProcessEvent({ event: "stdout", data: { line } });
         });
 
         if (result.success) {
