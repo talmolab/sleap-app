@@ -5,6 +5,7 @@ use futures_util::{
     SinkExt, StreamExt,
 };
 use serde::{Deserialize, Serialize};
+use std::io::Write;
 use std::sync::Arc;
 use tokio::net::TcpStream;
 use tokio::sync::Mutex as TokioMutex;
@@ -56,6 +57,14 @@ pub struct Credentials {
     pub jwt: String,
     pub username: String,
     pub private_key_bytes: [u8; 32],
+}
+
+struct FileReceiveState {
+    file: std::fs::File,
+    path: std::path::PathBuf,
+    filename: String,
+    expected_size: usize,
+    bytes_written: usize,
 }
 
 // ── Managed State ────────────────────────────────────────────────
@@ -200,6 +209,14 @@ fn parse_worker(peer: &serde_json::Value) -> Option<WorkerInfo> {
         gpu,
         mounts,
     })
+}
+
+fn uuid_simple() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let d = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    format!("{:x}_{:x}", d.as_millis(), d.subsec_nanos())
 }
 
 #[tauri::command]
@@ -595,12 +612,88 @@ pub async fn rtc_connect_worker(
     // Auth succeeded — abort the signaling WS task (no longer needed)
     ws_task.abort();
 
-    // 10. Switch to message forwarding — forward all DC messages to the frontend
+    // 10. Switch to message forwarding — binary-aware handler
+    let file_state: Arc<TokioMutex<Option<FileReceiveState>>> =
+        Arc::new(TokioMutex::new(None));
+    let file_state_for_handler = Arc::clone(&file_state);
+
     dc.on_message(Box::new(move |msg: DataChannelMessage| {
         let channel = on_message.clone();
+        let fs = Arc::clone(&file_state_for_handler);
         Box::pin(async move {
-            let text = String::from_utf8_lossy(&msg.data).to_string();
-            let _ = channel.send(text);
+            if msg.is_string {
+                // Text message
+                let text = String::from_utf8_lossy(&msg.data).to_string();
+
+                if text.starts_with("FILE_META::") {
+                    // Parse: FILE_META::<filename>:<size>:<hint>
+                    let meta = &text["FILE_META::".len()..];
+                    let parts: Vec<&str> = meta.splitn(3, ':').collect();
+                    if parts.len() >= 2 {
+                        let filename = parts[0].to_string();
+                        let expected_size: usize = parts[1].parse().unwrap_or(0);
+
+                        // Extract file extension for temp file suffix
+                        let ext = std::path::Path::new(&filename)
+                            .extension()
+                            .map(|e| format!(".{}", e.to_string_lossy()))
+                            .unwrap_or_default();
+
+                        let temp_path = std::env::temp_dir()
+                            .join(format!("sleap_pred_{}{}", uuid_simple(), ext));
+
+                        match std::fs::File::create(&temp_path) {
+                            Ok(file) => {
+                                log::info!(
+                                    "[rtc] FILE_META: {} ({} bytes) → {:?}",
+                                    filename, expected_size, temp_path
+                                );
+                                let mut fs_lock = fs.lock().await;
+                                *fs_lock = Some(FileReceiveState {
+                                    file,
+                                    path: temp_path,
+                                    filename,
+                                    expected_size,
+                                    bytes_written: 0,
+                                });
+                            }
+                            Err(e) => {
+                                log::error!("[rtc] Failed to create temp file: {}", e);
+                            }
+                        }
+                    }
+                    // Consumed — don't forward to frontend
+                } else if text == "END_OF_FILE" {
+                    let mut fs_lock = fs.lock().await;
+                    if let Some(recv) = fs_lock.take() {
+                        // File handle is dropped here (closes the file)
+                        let path_str = recv.path.to_string_lossy().to_string();
+                        log::info!(
+                            "[rtc] END_OF_FILE: {} ({} bytes written) → {}",
+                            recv.filename, recv.bytes_written, path_str
+                        );
+                        let _ = channel.send(format!("__FILE_RECEIVED__::{}", path_str));
+                    }
+                    // Consumed — don't forward to frontend
+                } else if text == "KEEP_ALIVE" {
+                    // Silently ignore text KEEP_ALIVE
+                } else {
+                    // Regular text message — forward to frontend
+                    let _ = channel.send(text);
+                }
+            } else {
+                // Binary message
+                let mut fs_lock = fs.lock().await;
+                if let Some(ref mut recv) = *fs_lock {
+                    // Write binary chunk to file
+                    if let Err(e) = recv.file.write_all(&msg.data) {
+                        log::error!("[rtc] Failed to write chunk: {}", e);
+                    } else {
+                        recv.bytes_written += msg.data.len();
+                    }
+                }
+                // If no active transfer, silently drop (KEEP_ALIVE bytes, etc.)
+            }
         })
     }));
 
