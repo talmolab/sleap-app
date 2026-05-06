@@ -29,6 +29,7 @@ export interface InferenceConfig {
   // Data
   videoIndex: number | "all";
   frameRange: "all_videos" | "video" | "suggestions" | "user_labeled" | "predicted" | "random_video" | "random" | "frame" | { start: number; end: number };
+  sampleCount: number;
   excludeUserLabeled: boolean;
 
   // Inference
@@ -239,6 +240,18 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
       const target = typeof config.frameRange === "string" ? config.frameRange : null;
       const currentVideoIdx = config.videoIndex !== "all" ? config.videoIndex : undefined;
 
+      // Helper: sample N random indices from [0, totalFrames)
+      const sampleRandom = (totalFrames: number, count: number): number[] => {
+        const n = Math.min(count, totalFrames);
+        const indices = Array.from({ length: totalFrames }, (_, i) => i);
+        // Fisher-Yates shuffle, take first n
+        for (let i = indices.length - 1; i > 0 && i >= indices.length - n; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [indices[i], indices[j]] = [indices[j], indices[i]];
+        }
+        return indices.slice(indices.length - n).sort((a, b) => a - b);
+      };
+
       // frame_filter: only for filter-based targets (worker-side filtering)
       const FILTER_MAP: Record<string, string> = {
         suggestions: "suggested",
@@ -247,22 +260,41 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
       };
       const frameFilter = target && target in FILTER_MAP ? FILTER_MAP[target] : undefined;
 
-      // frames: explicit frame indices/ranges (client-side selection)
+      // frames + video_index: depends on target type
       let frames: string | undefined;
+      let videoIndex: number | undefined;
+
       if (typeof config.frameRange === "object") {
         // custom range
         frames = `${config.frameRange.start}-${config.frameRange.end}`;
+        videoIndex = currentVideoIdx;
       } else if (target === "frame") {
-        // current frame — need the frame index from appStore
         const { frameIdx } = useAppStore.getState();
         frames = String(frameIdx);
+        videoIndex = currentVideoIdx;
+      } else if (target === "video") {
+        videoIndex = currentVideoIdx;
+      } else if (target === "random_video") {
+        // Client-side random sampling: pick N frames from current video
+        const { video: activeVideo } = useAppStore.getState();
+        const nFrames = activeVideo?.shape?.[0] ?? 0;
+        if (nFrames > 0) {
+          const sampled = sampleRandom(nFrames, config.sampleCount);
+          frames = sampled.join(",");
+        }
+        videoIndex = currentVideoIdx;
+      } else if (target === "random") {
+        // Client-side random sampling: pick N frames from current video
+        // For "all videos" random, we sample from the current video for now
+        // (multi-spec batch submission would be needed for true per-video sampling)
+        const { video: activeVideo } = useAppStore.getState();
+        const nFrames = activeVideo?.shape?.[0] ?? 0;
+        if (nFrames > 0) {
+          const sampled = sampleRandom(nFrames, config.sampleCount);
+          frames = sampled.join(",");
+        }
       }
-
-      // video_index: scope to current video for per-video targets
-      const PER_VIDEO_TARGETS = ["frame", "video", "random_video"];
-      const videoIndex = target && PER_VIDEO_TARGETS.includes(target)
-        ? currentVideoIdx
-        : (typeof config.frameRange === "object" ? currentVideoIdx : undefined);
+      // all_videos, suggestions, user_labeled, predicted: no frames/videoIndex needed
 
       const spec = {
         type: "track" as const,

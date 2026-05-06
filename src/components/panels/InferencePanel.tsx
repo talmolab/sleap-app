@@ -244,6 +244,7 @@ export function InferencePanel() {
   const [frameRange, setFrameRange] = useState<FrameRange>("suggestions");
   const [frameStart, setFrameStart] = useState("0");
   const [frameEnd, setFrameEnd] = useState("1000");
+  const [sampleCount, setSampleCount] = useState(20);
   const [excludeUserLabeled, setExcludeUserLabeled] = useState(DEFAULTS.excludeUserLabeled);
   const [batchSize, setBatchSize] = useState(DEFAULTS.batchSize);
   const [device, setDevice] = useState(DEFAULTS.device);
@@ -368,7 +369,7 @@ export function InferencePanel() {
       pipeline, modelPaths: remoteEnabled ? remoteModelPaths : modelPaths,
       videoIndex,
       frameRange: frameRange === "custom" ? { start: Number(frameStart), end: Number(frameEnd) } : frameRange,
-      excludeUserLabeled, batchSize, device,
+      sampleCount, excludeUserLabeled, batchSize, device,
       maxInstances: noMaxInstances ? null : maxInstances,
       peakThreshold,
       anchorPart: isTopDown ? anchorPart : null,
@@ -487,6 +488,14 @@ export function InferencePanel() {
                 <SelectItem value="predicted">Frames with predictions</SelectItem>
               </SelectContent>
             </Select>
+            {(frameRange === "random_video" || frameRange === "random") && (
+              <div className="flex items-center justify-between gap-2 mt-1">
+                <span className="text-[10px] text-muted-foreground shrink-0">Sample count</span>
+                <Input type="number" min={1} value={sampleCount}
+                  onChange={(e) => setSampleCount(Math.max(1, Number(e.target.value)))}
+                  className="h-6 text-[10px] w-20" disabled={isRunning} />
+              </div>
+            )}
             {frameRange === "custom" && (
               <div className="space-y-1 mt-1">
                 <div className="flex items-center gap-1">
