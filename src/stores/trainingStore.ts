@@ -60,7 +60,7 @@ export interface RemoteTrainingOptions {
   workerId: string;
   labelsPath: string; // path on worker
   valLabelsPath?: string;
-  inferenceTarget?: "suggested" | "all" | "none";
+  inferenceTarget?: string;
 }
 
 export type TrainingStatus = "idle" | "running" | "completed" | "error" | "stopped";

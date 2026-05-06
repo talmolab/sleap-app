@@ -346,7 +346,7 @@ export function TrainingPanel() {
   const [remoteEnabled, setRemoteEnabled] = useState(!isTauri);
   const [remoteLabelsPath, setRemoteLabelsPath] = useState("");
   const [remoteValLabelsPath, setRemoteValLabelsPath] = useState("");
-  const [inferenceTarget, setInferenceTarget] = useState<"suggested" | "all" | "none">("suggested");
+  const [inferenceTarget, setInferenceTarget] = useState<string>("suggestions");
   const [fileBrowserOpen, setFileBrowserOpen] = useState(false);
   const [fileBrowserCallback, setFileBrowserCallback] = useState<
     ((path: string) => void) | null
@@ -606,16 +606,21 @@ export function TrainingPanel() {
             </span>
             <Select
               value={inferenceTarget}
-              onValueChange={(v) => setInferenceTarget(v as "suggested" | "all" | "none")}
+              onValueChange={(v) => setInferenceTarget(v)}
               disabled={isRunning}
             >
               <SelectTrigger className="h-7 text-xs">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="suggested">Suggested frames</SelectItem>
-                <SelectItem value="all">All frames</SelectItem>
-                <SelectItem value="none">Skip inference</SelectItem>
+                <SelectItem value="nothing">Nothing (skip inference)</SelectItem>
+                <SelectItem value="suggestions">Suggested frames</SelectItem>
+                <SelectItem value="user_labeled">User labeled frames</SelectItem>
+                <SelectItem value="predicted">Frames with predictions</SelectItem>
+                <SelectItem value="video">Entire current video</SelectItem>
+                <SelectItem value="all_videos">All videos</SelectItem>
+                <SelectItem value="random_video">Random sample (current video)</SelectItem>
+                <SelectItem value="random">Random sample (all videos)</SelectItem>
               </SelectContent>
             </Select>
           </div>

@@ -28,7 +28,7 @@ export interface InferenceConfig {
 
   // Data
   videoIndex: number | "all";
-  frameRange: "all" | "labeled" | "suggested" | { start: number; end: number };
+  frameRange: "all_videos" | "video" | "suggestions" | "user_labeled" | "predicted" | "random_video" | "random" | "frame" | { start: number; end: number };
   excludeUserLabeled: boolean;
 
   // Inference
@@ -234,13 +234,20 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
       const resolvedDataPath = confirmedPaths[0]?.worker ?? remoteOpts.dataPath;
 
       // Build TrackJobSpec with path_mappings
+      // Map frame_filter values to TrackJobSpec fields
+      const frameFilter = typeof config.frameRange === "string" ? config.frameRange : undefined;
+      const isFilterTarget = frameFilter && ["suggestions", "user_labeled", "predicted"].includes(frameFilter);
       const spec = {
         type: "track" as const,
         data_path: resolvedDataPath,
         model_paths: config.modelPaths,
         batch_size: config.batchSize,
         peak_threshold: config.peakThreshold,
-        only_suggested_frames: config.frameRange === "suggested",
+        frame_filter: isFilterTarget
+          ? (frameFilter === "suggestions" ? "suggested" : frameFilter)
+          : undefined,
+        video_index: config.videoIndex !== "all" ? config.videoIndex : undefined,
+        exclude_user_labeled: config.excludeUserLabeled || undefined,
         frames: typeof config.frameRange === "object"
           ? `${config.frameRange.start}-${config.frameRange.end}`
           : undefined,

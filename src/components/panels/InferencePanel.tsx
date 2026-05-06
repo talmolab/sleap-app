@@ -42,7 +42,7 @@ import {
 
 // ── Types & Constants ─────────────────────────────────────────────────────────
 
-type FrameRange = "all" | "labeled" | "suggested" | "custom";
+type FrameRange = "all_videos" | "video" | "suggestions" | "user_labeled" | "predicted" | "random_video" | "random" | "frame" | "custom";
 
 const PIPELINE_OPTIONS: { value: PipelineType; label: string; desc: string }[] =
   [
@@ -240,7 +240,7 @@ export function InferencePanel() {
   const [pipeline, setPipeline] = useState<PipelineType>(DEFAULTS.pipeline);
   const [modelPaths, setModelPaths] = useState<string[]>([]);
   const [selectedVideo, setSelectedVideo] = useState("all");
-  const [frameRange, setFrameRange] = useState<FrameRange>("all");
+  const [frameRange, setFrameRange] = useState<FrameRange>("suggestions");
   const [frameStart, setFrameStart] = useState("0");
   const [frameEnd, setFrameEnd] = useState("1000");
   const [excludeUserLabeled, setExcludeUserLabeled] = useState(DEFAULTS.excludeUserLabeled);
@@ -463,10 +463,15 @@ export function InferencePanel() {
             <Select value={frameRange} onValueChange={(v) => setFrameRange(v as FrameRange)} disabled={isRunning}>
               <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All frames</SelectItem>
-                <SelectItem value="labeled">Labeled frames only</SelectItem>
-                <SelectItem value="suggested">Suggested frames only</SelectItem>
+                <SelectItem value="frame">Current frame</SelectItem>
                 <SelectItem value="custom">Custom range</SelectItem>
+                <SelectItem value="video">Entire current video</SelectItem>
+                <SelectItem value="all_videos">All videos</SelectItem>
+                <SelectItem value="random_video">Random sample (current video)</SelectItem>
+                <SelectItem value="random">Random sample (all videos)</SelectItem>
+                <SelectItem value="suggestions">Suggested frames</SelectItem>
+                <SelectItem value="user_labeled">User labeled frames</SelectItem>
+                <SelectItem value="predicted">Frames with predictions</SelectItem>
               </SelectContent>
             </Select>
             {frameRange === "custom" && (

@@ -59,6 +59,9 @@ export interface TrackJobSpec {
   batch_size?: number;
   peak_threshold?: number;
   only_suggested_frames?: boolean;
+  frame_filter?: string;
+  video_index?: number;
+  exclude_user_labeled?: boolean;
   frames?: string;
   path_mappings?: Record<string, string>;
 }
@@ -74,7 +77,7 @@ export interface TrainJobSpec {
   learning_rate?: number;
   run_name?: string;
   path_mappings?: Record<string, string>;
-  inference_target?: "suggested" | "all" | "none";
+  inference_target?: string;
 }
 
 export type JobSpec = TrackJobSpec | TrainJobSpec;
