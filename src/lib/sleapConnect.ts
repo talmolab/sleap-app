@@ -74,6 +74,7 @@ export interface TrainJobSpec {
   learning_rate?: number;
   run_name?: string;
   path_mappings?: Record<string, string>;
+  inference_target?: "suggested" | "all" | "none";
 }
 
 export type JobSpec = TrackJobSpec | TrainJobSpec;

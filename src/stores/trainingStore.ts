@@ -60,6 +60,7 @@ export interface RemoteTrainingOptions {
   workerId: string;
   labelsPath: string; // path on worker
   valLabelsPath?: string;
+  inferenceTarget?: "suggested" | "all" | "none";
 }
 
 export type TrainingStatus = "idle" | "running" | "completed" | "error" | "stopped";
@@ -343,6 +344,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         labels_path: resolvedLabelsPath,
         val_labels_path: remoteOpts.valLabelsPath || undefined,
         path_mappings: Object.keys(pathMappings).length > 0 ? pathMappings : undefined,
+        inference_target: remoteOpts.inferenceTarget ?? "suggested",
       };
 
       set((state) => ({
