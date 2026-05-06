@@ -216,6 +216,7 @@ const DEFAULTS: Omit<InferenceConfig, "modelPaths" | "videoIndex" | "frameRange"
 
 export function InferencePanel() {
   const labels = useAppStore((s) => s.labels);
+  const video = useAppStore((s) => s.video);
   const skeleton = useAppStore((s) => s.skeleton);
   const tools = useEnvironmentStore((s) => s.tools);
   const detectionStatus = useEnvironmentStore((s) => s.detectionStatus);
@@ -312,7 +313,20 @@ export function InferencePanel() {
   const isRunning = inferenceStatus === "running";
   const isDone = inferenceStatus === "completed" || inferenceStatus === "error" || inferenceStatus === "cancelled";
   const activeModelPaths = remoteEnabled ? remoteModelPaths : modelPaths;
-  const canRun = (remoteEnabled ? (!!selectedWorkerId && !!remoteDataPath) : sleapNnAvailable) && !isRunning && !isDone && activeModelPaths.length > 0;
+
+  // Custom range validation: check against current video's frame count
+  const currentVideoFrameCount = video?.shape?.[0] ?? Infinity;
+  const customRangeInvalid = frameRange === "custom" && (
+    Number(frameStart) < 0 ||
+    Number(frameEnd) < 0 ||
+    Number(frameStart) >= currentVideoFrameCount ||
+    Number(frameEnd) >= currentVideoFrameCount ||
+    Number(frameStart) > Number(frameEnd) ||
+    isNaN(Number(frameStart)) ||
+    isNaN(Number(frameEnd))
+  );
+
+  const canRun = (remoteEnabled ? (!!selectedWorkerId && !!remoteDataPath) : sleapNnAvailable) && !isRunning && !isDone && activeModelPaths.length > 0 && !customRangeInvalid;
   const isBottomUp = pipeline === "bottom-up" || pipeline === "bottom-up-id";
   const isTopDown = pipeline === "top-down" || pipeline === "top-down-id";
 
@@ -474,12 +488,27 @@ export function InferencePanel() {
               </SelectContent>
             </Select>
             {frameRange === "custom" && (
-              <div className="flex items-center gap-1 mt-1">
-                <Input type="number" min={0} placeholder="Start" value={frameStart}
-                  onChange={(e) => setFrameStart(e.target.value)} className="h-6 text-[10px] flex-1" disabled={isRunning} />
-                <span className="text-[10px] text-muted-foreground">to</span>
-                <Input type="number" min={0} placeholder="End" value={frameEnd}
-                  onChange={(e) => setFrameEnd(e.target.value)} className="h-6 text-[10px] flex-1" disabled={isRunning} />
+              <div className="space-y-1 mt-1">
+                <div className="flex items-center gap-1">
+                  <Input type="number" min={0} placeholder="Start" value={frameStart}
+                    onChange={(e) => setFrameStart(e.target.value)}
+                    className={`h-6 text-[10px] flex-1 ${customRangeInvalid ? "border-red-500" : ""}`}
+                    disabled={isRunning} />
+                  <span className="text-[10px] text-muted-foreground">to</span>
+                  <Input type="number" min={0} placeholder="End" value={frameEnd}
+                    onChange={(e) => setFrameEnd(e.target.value)}
+                    className={`h-6 text-[10px] flex-1 ${customRangeInvalid ? "border-red-500" : ""}`}
+                    disabled={isRunning} />
+                </div>
+                {customRangeInvalid && (
+                  <p className="text-[10px] text-red-400">
+                    {Number(frameStart) > Number(frameEnd)
+                      ? "Start must be less than end"
+                      : currentVideoFrameCount !== Infinity
+                        ? `Range must be 0–${currentVideoFrameCount - 1} (${currentVideoFrameCount} frames in current video)`
+                        : "Invalid range"}
+                  </p>
+                )}
               </div>
             )}
           </div>
