@@ -22,6 +22,9 @@ interface RemoteFileBrowserProps {
 /** Sentinel path representing the mount picker view */
 const MOUNT_PICKER = "//mounts";
 
+/** Remember the last browsed directory across dialog opens */
+let lastBrowsedPath: string | null = null;
+
 export function RemoteFileBrowser({
   open,
   onClose,
@@ -31,9 +34,9 @@ export function RemoteFileBrowser({
   fileFilter,
 }: RemoteFileBrowserProps) {
   const browseRemoteDir = useConnectStore((s) => s.browseRemoteDir);
-  // Initial view: mount picker if multiple mounts, else first mount, else root
-  const initialPath =
-    mounts.length > 1 ? MOUNT_PICKER : mounts[0] || "/";
+  // Use last browsed path if available, else mount picker / first mount / root
+  const initialPath = lastBrowsedPath
+    ?? (mounts.length > 1 ? MOUNT_PICKER : mounts[0] || "/");
   const [currentPath, setCurrentPath] = useState(initialPath);
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(false);
@@ -116,6 +119,9 @@ export function RemoteFileBrowser({
 
   const navigateTo = (path: string) => {
     setCurrentPath(path);
+    if (path !== MOUNT_PICKER) {
+      lastBrowsedPath = path;
+    }
   };
 
   const handleDoubleClick = (entry: FileEntry) => {
