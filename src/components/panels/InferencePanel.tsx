@@ -337,9 +337,22 @@ export function InferencePanel() {
   };
 
   const handleRunInference = async () => {
+    // Derive video index from inference target: "current video" targets use the
+    // active video from appStore, "all videos" targets use "all"
+    const currentVideoTargets = ["frame", "video", "random_video", "custom"];
+    const currentVideoIdx = (() => {
+      const { labels, video: activeVideo } = useAppStore.getState();
+      if (!labels || !activeVideo) return 0;
+      const idx = labels.videos.indexOf(activeVideo);
+      return idx >= 0 ? idx : 0;
+    })();
+    const videoIndex = currentVideoTargets.includes(frameRange as string)
+      ? currentVideoIdx
+      : ("all" as const);
+
     const config: InferenceConfig = {
       pipeline, modelPaths: remoteEnabled ? remoteModelPaths : modelPaths,
-      videoIndex: selectedVideo === "all" ? "all" : Number(selectedVideo),
+      videoIndex,
       frameRange: frameRange === "custom" ? { start: Number(frameStart), end: Number(frameEnd) } : frameRange,
       excludeUserLabeled, batchSize, device,
       maxInstances: noMaxInstances ? null : maxInstances,
@@ -444,20 +457,6 @@ export function InferencePanel() {
 
         {/* ── Data ────────────────────────────────────────────────── */}
         <Section title="Data" defaultOpen={true}>
-          <div className="space-y-1">
-            <span className="text-[10px] text-muted-foreground">Video</span>
-            <Select value={selectedVideo} onValueChange={setSelectedVideo} disabled={isRunning}>
-              <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All videos</SelectItem>
-                {videos.map((video, i) => (
-                  <SelectItem key={i} value={String(i)}>
-                    {video.filename ?? video.backendMetadata?.filename ?? `Video ${i + 1}`}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
           <div className="space-y-1">
             <span className="text-[10px] text-muted-foreground">Inference Target</span>
             <Select value={frameRange} onValueChange={(v) => setFrameRange(v as FrameRange)} disabled={isRunning}>
