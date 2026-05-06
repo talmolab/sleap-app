@@ -296,6 +296,17 @@ export function Seekbar() {
       });
     }
 
+    // Draw suggestion frame marks (yellow ticks at top of seekbar)
+    if (labels) {
+      const currentVideo = useAppStore.getState().video;
+      ctx.fillStyle = "rgba(250, 204, 21, 0.7)"; // yellow
+      for (const sf of labels.suggestions ?? []) {
+        if (sf.video !== currentVideo) continue;
+        const x = frameToX(sf.frameIdx);
+        ctx.fillRect(x - 0.5, 0, 1, 6);
+      }
+    }
+
     // Draw labeled frame marks
     if (labels) {
       const currentVideo = useAppStore.getState().video;
