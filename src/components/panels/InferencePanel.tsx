@@ -459,7 +459,7 @@ export function InferencePanel() {
             </Select>
           </div>
           <div className="space-y-1">
-            <span className="text-[10px] text-muted-foreground">Frames</span>
+            <span className="text-[10px] text-muted-foreground">Inference Target</span>
             <Select value={frameRange} onValueChange={(v) => setFrameRange(v as FrameRange)} disabled={isRunning}>
               <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
               <SelectContent>
