@@ -949,6 +949,18 @@ export const useConnectStore = create<ConnectState>()(
             break;
           }
 
+          case "__FILE_RECEIVED__": {
+            // Rust backend received a predictions file and wrote it to a temp path.
+            // Load the .slp and merge predictions into the current project.
+            const filePath = parts.slice(1).join(MSG_SEPARATOR);
+            console.log("[connect] Received predictions file:", filePath);
+            import("@/stores/inferenceStore").then(({ useInferenceStore }) => {
+              useInferenceStore.setState({ outputPath: filePath });
+              useInferenceStore.getState().loadAndMergeResults();
+            });
+            break;
+          }
+
           default: {
             // Unrecognized message — raw log line from worker (e.g. wandb
             // output, error messages, training summaries). Forward to
