@@ -159,7 +159,7 @@ export function PathResolutionDialog({
 
   return (
     <Dialog open={open} onOpenChange={(isOpen) => { if (!isOpen) onCancel(); }}>
-      <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+      <DialogContent className="w-[50vw] max-w-none max-h-[80vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Path Resolution</DialogTitle>
           <DialogDescription>
@@ -195,7 +195,7 @@ export function PathResolutionDialog({
                   <td className="px-3 py-2">
                     {p.worker !== null ? (
                       <div
-                        className="text-muted-foreground overflow-x-auto whitespace-nowrap max-w-[350px] text-xs font-mono scrollbar-thin"
+                        className="text-muted-foreground overflow-x-auto whitespace-nowrap max-w-[550px] text-xs font-mono scrollbar-thin"
                         title={p.worker}
                       >
                         {p.worker}
