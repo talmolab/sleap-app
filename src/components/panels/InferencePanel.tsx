@@ -185,6 +185,7 @@ function NumField({
 
 const DEFAULTS: Omit<InferenceConfig, "modelPaths" | "videoIndex" | "frameRange"> = {
   pipeline: "top-down",
+  sampleCount: 20,
   excludeUserLabeled: false,
   batchSize: 4,
   device: "auto",
@@ -215,7 +216,6 @@ const DEFAULTS: Omit<InferenceConfig, "modelPaths" | "videoIndex" | "frameRange"
 // ── Panel ─────────────────────────────────────────────────────────────────────
 
 export function InferencePanel() {
-  const labels = useAppStore((s) => s.labels);
   const video = useAppStore((s) => s.video);
   const skeleton = useAppStore((s) => s.skeleton);
   const tools = useEnvironmentStore((s) => s.tools);
@@ -240,7 +240,6 @@ export function InferencePanel() {
   // Config state
   const [pipeline, setPipeline] = useState<PipelineType>(DEFAULTS.pipeline);
   const [modelPaths, setModelPaths] = useState<string[]>([]);
-  const [selectedVideo, setSelectedVideo] = useState("all");
   const [frameRange, setFrameRange] = useState<FrameRange>("suggestions");
   const [frameStart, setFrameStart] = useState("0");
   const [frameEnd, setFrameEnd] = useState("1000");
@@ -306,7 +305,6 @@ export function InferencePanel() {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [log]);
 
-  const videos = labels?.videos ?? [];
   const nodes = skeleton?.nodes ?? [];
   const sleapNnAvailable = tools.some(
     (t) => t.name === "sleap-nn" || t.commands?.includes("sleap-nn")

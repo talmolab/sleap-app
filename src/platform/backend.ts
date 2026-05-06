@@ -246,9 +246,9 @@ export async function runInference(
       "--frame_range",
       `${config.frameRange.start},${config.frameRange.end}`
     );
-  } else if (config.frameRange === "labeled") {
+  } else if (config.frameRange === "user_labeled") {
     args.push("--only_labeled_frames");
-  } else if (config.frameRange === "suggested") {
+  } else if (config.frameRange === "suggestions") {
     args.push("--only_suggested_frames");
   }
   if (config.excludeUserLabeled) {

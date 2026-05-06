@@ -30,7 +30,7 @@ import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Label } from "@/components/ui/label";
 
-type FrameRange = "all" | "labeled" | "custom";
+type FrameRange = "all_videos" | "suggestions" | "custom";
 type TrackingMethod = "simple" | "flow" | "identity";
 
 const TRACKING_LABELS: Record<TrackingMethod, string> = {
@@ -50,7 +50,7 @@ export function InferenceDialog() {
 
   const [modelPath, setModelPath] = useState("");
   const [selectedVideo, setSelectedVideo] = useState("all");
-  const [frameRange, setFrameRange] = useState<FrameRange>("all");
+  const [frameRange, setFrameRange] = useState<FrameRange>("all_videos");
   const [frameStart, setFrameStart] = useState("0");
   const [frameEnd, setFrameEnd] = useState("1000");
   const [trackingMethod, setTrackingMethod] =
@@ -87,6 +87,7 @@ export function InferenceDialog() {
         frameRange === "custom"
           ? { start: Number(frameStart), end: Number(frameEnd) }
           : frameRange,
+      sampleCount: 20,
       excludeUserLabeled: false,
       batchSize: 4,
       device: "auto",
