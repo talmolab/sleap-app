@@ -233,24 +233,47 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
       // Use the resolved data path (first entry)
       const resolvedDataPath = confirmedPaths[0]?.worker ?? remoteOpts.dataPath;
 
-      // Build TrackJobSpec with path_mappings
-      // Map frame_filter values to TrackJobSpec fields
-      const frameFilter = typeof config.frameRange === "string" ? config.frameRange : undefined;
-      const isFilterTarget = frameFilter && ["suggestions", "user_labeled", "predicted"].includes(frameFilter);
+      // Build TrackJobSpec from inference target
+      // Map UI target keys to TrackJobSpec fields, matching the PyQt GUI's
+      // _track_target_to_spec_fields mapper in dialog.py.
+      const target = typeof config.frameRange === "string" ? config.frameRange : null;
+      const currentVideoIdx = config.videoIndex !== "all" ? config.videoIndex : undefined;
+
+      // frame_filter: only for filter-based targets (worker-side filtering)
+      const FILTER_MAP: Record<string, string> = {
+        suggestions: "suggested",
+        user_labeled: "user",
+        predicted: "predicted",
+      };
+      const frameFilter = target && target in FILTER_MAP ? FILTER_MAP[target] : undefined;
+
+      // frames: explicit frame indices/ranges (client-side selection)
+      let frames: string | undefined;
+      if (typeof config.frameRange === "object") {
+        // custom range
+        frames = `${config.frameRange.start}-${config.frameRange.end}`;
+      } else if (target === "frame") {
+        // current frame — need the frame index from appStore
+        const { frameIdx } = useAppStore.getState();
+        frames = String(frameIdx);
+      }
+
+      // video_index: scope to current video for per-video targets
+      const PER_VIDEO_TARGETS = ["frame", "video", "random_video"];
+      const videoIndex = target && PER_VIDEO_TARGETS.includes(target)
+        ? currentVideoIdx
+        : (typeof config.frameRange === "object" ? currentVideoIdx : undefined);
+
       const spec = {
         type: "track" as const,
         data_path: resolvedDataPath,
         model_paths: config.modelPaths,
         batch_size: config.batchSize,
         peak_threshold: config.peakThreshold,
-        frame_filter: isFilterTarget
-          ? (frameFilter === "suggestions" ? "suggested" : frameFilter)
-          : undefined,
-        video_index: config.videoIndex !== "all" ? config.videoIndex : undefined,
+        frame_filter: frameFilter,
+        video_index: videoIndex,
         exclude_user_labeled: config.excludeUserLabeled || undefined,
-        frames: typeof config.frameRange === "object"
-          ? `${config.frameRange.start}-${config.frameRange.end}`
-          : undefined,
+        frames,
         path_mappings: Object.keys(pathMappings).length > 0 ? pathMappings : undefined,
       };
 
