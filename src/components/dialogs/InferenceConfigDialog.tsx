@@ -1,12 +1,11 @@
-import { useState } from "react";
+import { useRef, useCallback, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
-  DialogFooter,
 } from "@/components/ui/dialog";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import {
@@ -16,6 +15,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Search, HelpCircle } from "lucide-react";
 
 export interface InferenceConfigValues {
   peakThreshold: number;
@@ -61,34 +61,97 @@ const CATEGORIES = [
   { id: "postprocess", label: "Post-processing" },
 ] as const;
 
-type Category = (typeof CATEGORIES)[number]["id"];
+const SEARCHABLE_FIELDS = [
+  { label: "Peak Threshold", section: "inference", fieldId: "field-peakthreshold" },
+  { label: "Max Instances", section: "inference", fieldId: "field-maxinstances" },
+  { label: "Anchor Part", section: "inference", fieldId: "field-anchorpart" },
+  { label: "Ensure Channels", section: "inference", fieldId: "field-ensurechannels" },
+  { label: "Tracker Method", section: "tracking", fieldId: "field-trackermethod" },
+  { label: "Similarity", section: "tracking", fieldId: "field-similarity" },
+  { label: "Matching", section: "tracking", fieldId: "field-matching" },
+  { label: "Window Size", section: "tracking", fieldId: "field-trackwindow" },
+  { label: "Max Tracks", section: "tracking", fieldId: "field-maxtracks" },
+  { label: "Robust (quantile)", section: "tracking", fieldId: "field-robust" },
+  { label: "Connect Single-Frame Breaks", section: "tracking", fieldId: "field-connectbreaks" },
+  { label: "Image Scale", section: "flow", fieldId: "field-flowscale" },
+  { label: "Flow Window Size", section: "flow", fieldId: "field-flowwindow" },
+  { label: "Pyramid Levels", section: "flow", fieldId: "field-flowlevels" },
+  { label: "Integral Refinement", section: "advanced", fieldId: "field-integralrefinement" },
+  { label: "Integral Patch Size", section: "advanced", fieldId: "field-integralpatch" },
+  { label: "Sample Points", section: "advanced", fieldId: "field-npoints" },
+  { label: "Max Edge Ratio", section: "advanced", fieldId: "field-maxedgeratio" },
+  { label: "Distance Penalty", section: "advanced", fieldId: "field-distpenalty" },
+  { label: "Min Line Scores", section: "advanced", fieldId: "field-minlinescores" },
+  { label: "Filter Overlapping", section: "postprocess", fieldId: "field-filteroverlapping" },
+  { label: "Filter Method", section: "postprocess", fieldId: "field-filtermethod" },
+  { label: "Filter Threshold", section: "postprocess", fieldId: "field-filterthreshold" },
+];
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function HintBubble({ text }: { text: string }) {
+  const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
   return (
-    <div className="flex items-center justify-between gap-4 py-1.5">
-      <span className="text-xs text-muted-foreground shrink-0">{label}</span>
-      <div className="w-44">{children}</div>
+    <span className="relative">
+      <HelpCircle
+        className="h-3.5 w-3.5 text-muted-foreground/50 hover:text-muted-foreground cursor-help"
+        onMouseEnter={(e) => {
+          const rect = e.currentTarget.getBoundingClientRect();
+          setPos({ x: rect.left + rect.width / 2, y: rect.top });
+        }}
+        onMouseLeave={() => setPos(null)}
+      />
+      {pos && createPortal(
+        <span
+          className="fixed z-[9999] px-3 py-2 text-xs bg-popover border rounded-md shadow-lg w-64 text-foreground leading-relaxed"
+          style={{ left: pos.x, top: pos.y - 8, transform: "translate(-50%, -100%)" }}
+        >
+          {text}
+        </span>,
+        document.body,
+      )}
+    </span>
+  );
+}
+
+function Field({ label, id, hint, children }: { label: string; id?: string; hint?: string; children: React.ReactNode }) {
+  return (
+    <div id={id} className="flex items-center gap-6 py-2.5 scroll-mt-4">
+      <span className="text-sm text-muted-foreground shrink-0 flex items-center gap-1.5">
+        {label}
+        {hint && <HintBubble text={hint} />}
+      </span>
+      <div className="flex-1 min-w-0">{children}</div>
     </div>
   );
 }
 
-function Toggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
+function Toggle({ label, id, hint, checked, onChange }: { label: string; id?: string; hint?: string; checked: boolean; onChange: (v: boolean) => void }) {
   return (
-    <div className="flex items-center justify-between gap-4 py-1.5">
-      <span className="text-xs text-muted-foreground shrink-0">{label}</span>
+    <div id={id} className="flex items-center gap-6 py-2.5 scroll-mt-4">
+      <span className="text-sm text-muted-foreground shrink-0 flex items-center gap-1.5">
+        {label}
+        {hint && <HintBubble text={hint} />}
+      </span>
       <button
-        className={`w-9 h-5 rounded-full relative transition-colors ${
+        className={`w-10 h-6 rounded-full relative transition-colors ${
           checked ? "bg-primary" : "bg-zinc-700"
         }`}
         onClick={() => onChange(!checked)}
       >
         <span
-          className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
+          className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform ${
             checked ? "translate-x-4" : ""
           }`}
         />
       </button>
     </div>
+  );
+}
+
+function SectionHeading({ id, label }: { id: string; label: string }) {
+  return (
+    <h3 id={id} className="text-base font-medium pt-6 pb-3 first:pt-0 scroll-mt-4">
+      {label}
+    </h3>
   );
 }
 
@@ -101,356 +164,398 @@ export function InferenceConfigDialog({
   tracking,
   skeletonNodes = [],
 }: InferenceConfigDialogProps) {
-  const [activeCategory, setActiveCategory] = useState<Category>("inference");
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [searchQuery, setSearchQuery] = useState("");
 
   const isTopDown = pipeline === "top-down" || pipeline === "top-down-id";
   const isBottomUp = pipeline === "bottom-up" || pipeline === "bottom-up-id";
 
+  const scrollTo = useCallback((id: string) => {
+    const el = scrollRef.current?.querySelector(`#${id}`);
+    el?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, []);
+
+  const searchResults = searchQuery.trim()
+    ? SEARCHABLE_FIELDS.filter((f) =>
+        f.label.toLowerCase().includes(searchQuery.toLowerCase())
+      )
+    : [];
+
+  const handleSearchSelect = (fieldId: string) => {
+    setSearchQuery("");
+    const el = scrollRef.current?.querySelector(`#${fieldId}`);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      el.classList.add("ring-2", "ring-primary", "rounded");
+      setTimeout(() => el.classList.remove("ring-2", "ring-primary", "rounded"), 1500);
+    }
+  };
+
   return (
-    <Dialog open={open} onOpenChange={(isOpen) => { if (!isOpen) onClose(); }}>
-      <DialogContent className="w-full sm:max-w-[750px] max-h-[80vh] p-0 overflow-hidden [backface-visibility:hidden]">
-        <DialogHeader className="px-6 pt-5 pb-3">
-          <DialogTitle>Inference Configuration</DialogTitle>
-        </DialogHeader>
-
-        <div className="flex flex-1 min-h-0 border-t">
-          {/* Left nav */}
-          <nav className="w-[160px] border-r bg-muted/30 py-2 shrink-0">
-            {CATEGORIES.map((cat) => {
-              if (cat.id === "flow" && v.trackerMethod !== "flow") return null;
-              return (
-                <button
-                  key={cat.id}
-                  className={`w-full text-left px-4 py-1.5 text-xs transition-colors ${
-                    activeCategory === cat.id
-                      ? "bg-primary/10 text-primary font-medium"
-                      : "text-muted-foreground hover:text-foreground hover:bg-accent/50"
-                  }`}
-                  onClick={() => setActiveCategory(cat.id)}
-                >
-                  {cat.label}
-                </button>
-              );
-            })}
-          </nav>
-
-          {/* Content area */}
-          <div className="flex-1 overflow-y-auto px-6 py-4">
-            {activeCategory === "inference" && (
-              <div className="space-y-1">
-                <h3 className="text-sm font-medium mb-3">Inference Parameters</h3>
-                <Field label="Peak Threshold">
-                  <Input
-                    type="number"
-                    value={v.peakThreshold}
-                    onChange={(e) => onUpdate({ peakThreshold: Number(e.target.value) })}
-                    min={0}
-                    max={1}
-                    step={0.05}
-                    className="h-8 text-xs"
-                  />
-                </Field>
-                <Field label="Max Instances">
-                  <div className="flex items-center gap-2">
-                    <Input
-                      type="number"
-                      value={v.maxInstances ?? ""}
-                      onChange={(e) => onUpdate({ maxInstances: e.target.value ? Number(e.target.value) : null })}
-                      min={1}
-                      max={100}
-                      className="h-8 text-xs flex-1"
-                      placeholder="No limit"
-                    />
-                  </div>
-                </Field>
-                {isTopDown && (
-                  <Field label="Anchor Part">
-                    <Select
-                      value={v.anchorPart ?? "none"}
-                      onValueChange={(val) => onUpdate({ anchorPart: val === "none" ? null : val })}
-                    >
-                      <SelectTrigger className="h-8 text-xs">
-                        <SelectValue placeholder="Auto" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="none">Auto (centroid)</SelectItem>
-                        {skeletonNodes.map((node) => (
-                          <SelectItem key={node} value={node}>{node}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </Field>
-                )}
-                <Separator className="my-3" />
-                <Field label="Ensure Channels">
-                  <Select
-                    value={v.ensureChannels}
-                    onValueChange={(val) => onUpdate({ ensureChannels: val as typeof v.ensureChannels })}
+    <Dialog open={open} onOpenChange={(isOpen) => { if (!isOpen) { onClose(); setSearchQuery(""); } }}>
+      <DialogContent className="w-full sm:max-w-[1000px] h-[70vh] p-0 overflow-hidden inset-0 translate-x-0 translate-y-0 m-auto flex flex-col">
+        <DialogHeader className="px-6 pt-5 pb-3 shrink-0">
+          <DialogTitle className="text-lg">Inference Configuration</DialogTitle>
+          {/* Search bar */}
+          <div className="relative mt-2">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Input
+              type="text"
+              placeholder="Search parameters..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="h-9 text-sm pl-9"
+            />
+            {searchResults.length > 0 && (
+              <div className="absolute top-full left-0 right-0 mt-1 bg-popover border rounded-md shadow-lg z-10 max-h-48 overflow-y-auto">
+                {searchResults.map((r) => (
+                  <button
+                    key={r.fieldId}
+                    className="w-full text-left px-3 py-2 text-sm hover:bg-accent/50 flex items-center justify-between"
+                    onClick={() => handleSearchSelect(r.fieldId)}
                   >
-                    <SelectTrigger className="h-8 text-xs">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="auto">Auto</SelectItem>
-                      <SelectItem value="rgb">RGB</SelectItem>
-                      <SelectItem value="grayscale">Grayscale</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </Field>
-              </div>
-            )}
-
-            {activeCategory === "tracking" && (
-              <div className="space-y-1">
-                <h3 className="text-sm font-medium mb-3">Tracking</h3>
-                {!tracking ? (
-                  <p className="text-xs text-muted-foreground">
-                    Tracking is disabled. Enable it in the sidebar to configure these settings.
-                  </p>
-                ) : (
-                  <>
-                    <Field label="Tracker Method">
-                      <Select
-                        value={v.trackerMethod}
-                        onValueChange={(val) => onUpdate({ trackerMethod: val as typeof v.trackerMethod })}
-                      >
-                        <SelectTrigger className="h-8 text-xs">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="simple">Simple (instance matching)</SelectItem>
-                          <SelectItem value="flow">Optical Flow</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </Field>
-                    <Field label="Similarity">
-                      <Select
-                        value={v.similarityMethod}
-                        onValueChange={(val) => onUpdate({ similarityMethod: val as typeof v.similarityMethod })}
-                      >
-                        <SelectTrigger className="h-8 text-xs">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="oks">Object Keypoint Similarity</SelectItem>
-                          <SelectItem value="iou">IoU (bounding box)</SelectItem>
-                          <SelectItem value="centroids">Centroid distance</SelectItem>
-                          <SelectItem value="euclidean_dist">Euclidean distance</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </Field>
-                    <Field label="Matching">
-                      <Select
-                        value={v.matchingMethod}
-                        onValueChange={(val) => onUpdate({ matchingMethod: val as typeof v.matchingMethod })}
-                      >
-                        <SelectTrigger className="h-8 text-xs">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="hungarian">Hungarian</SelectItem>
-                          <SelectItem value="greedy">Greedy</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </Field>
-                    <Field label="Window Size">
-                      <Input
-                        type="number"
-                        value={v.trackingWindowSize}
-                        onChange={(e) => onUpdate({ trackingWindowSize: Number(e.target.value) })}
-                        min={1}
-                        max={100}
-                        className="h-8 text-xs"
-                      />
-                    </Field>
-                    <Field label="Max Tracks">
-                      <Input
-                        type="number"
-                        value={v.maxTracks ?? ""}
-                        onChange={(e) => onUpdate({ maxTracks: e.target.value ? Number(e.target.value) : null })}
-                        min={1}
-                        max={100}
-                        className="h-8 text-xs"
-                        placeholder="No limit"
-                      />
-                    </Field>
-                    <Field label="Robust (quantile)">
-                      <Input
-                        type="number"
-                        value={v.robust}
-                        onChange={(e) => onUpdate({ robust: Number(e.target.value) })}
-                        min={0}
-                        max={1}
-                        step={0.05}
-                        className="h-8 text-xs"
-                      />
-                    </Field>
-                    <Toggle
-                      label="Connect single-frame breaks"
-                      checked={v.connectSingleBreaks}
-                      onChange={(val) => onUpdate({ connectSingleBreaks: val })}
-                    />
-                  </>
-                )}
-              </div>
-            )}
-
-            {activeCategory === "flow" && (
-              <div className="space-y-1">
-                <h3 className="text-sm font-medium mb-3">Optical Flow</h3>
-                <Field label="Image Scale">
-                  <Input
-                    type="number"
-                    value={v.flowImgScale}
-                    onChange={(e) => onUpdate({ flowImgScale: Number(e.target.value) })}
-                    min={0.1}
-                    max={2}
-                    step={0.1}
-                    className="h-8 text-xs"
-                  />
-                </Field>
-                <Field label="Window Size">
-                  <Input
-                    type="number"
-                    value={v.flowWindowSize}
-                    onChange={(e) => onUpdate({ flowWindowSize: Number(e.target.value) })}
-                    min={3}
-                    max={99}
-                    step={2}
-                    className="h-8 text-xs"
-                  />
-                </Field>
-                <Field label="Pyramid Levels">
-                  <Input
-                    type="number"
-                    value={v.flowMaxLevels}
-                    onChange={(e) => onUpdate({ flowMaxLevels: Number(e.target.value) })}
-                    min={1}
-                    max={10}
-                    className="h-8 text-xs"
-                  />
-                </Field>
-              </div>
-            )}
-
-            {activeCategory === "advanced" && (
-              <div className="space-y-1">
-                <h3 className="text-sm font-medium mb-3">Advanced</h3>
-                <Toggle
-                  label="Integral Refinement"
-                  checked={v.integralRefinement}
-                  onChange={(val) => onUpdate({ integralRefinement: val })}
-                />
-                {v.integralRefinement && (
-                  <Field label="Patch Size">
-                    <Input
-                      type="number"
-                      value={v.integralPatchSize}
-                      onChange={(e) => onUpdate({ integralPatchSize: Number(e.target.value) })}
-                      min={3}
-                      max={15}
-                      step={2}
-                      className="h-8 text-xs"
-                    />
-                  </Field>
-                )}
-                {isBottomUp && (
-                  <>
-                    <Separator className="my-3" />
-                    <h4 className="text-xs font-medium text-muted-foreground mb-2">PAF Matching</h4>
-                    <Field label="Sample Points">
-                      <Input
-                        type="number"
-                        value={v.nPoints}
-                        onChange={(e) => onUpdate({ nPoints: Number(e.target.value) })}
-                        min={1}
-                        max={50}
-                        className="h-8 text-xs"
-                      />
-                    </Field>
-                    <Field label="Max Edge Ratio">
-                      <Input
-                        type="number"
-                        value={v.maxEdgeLengthRatio}
-                        onChange={(e) => onUpdate({ maxEdgeLengthRatio: Number(e.target.value) })}
-                        min={0}
-                        max={1}
-                        step={0.05}
-                        className="h-8 text-xs"
-                      />
-                    </Field>
-                    <Field label="Distance Penalty">
-                      <Input
-                        type="number"
-                        value={v.distPenaltyWeight}
-                        onChange={(e) => onUpdate({ distPenaltyWeight: Number(e.target.value) })}
-                        min={0}
-                        max={10}
-                        step={0.1}
-                        className="h-8 text-xs"
-                      />
-                    </Field>
-                    <Field label="Min Line Scores">
-                      <Input
-                        type="number"
-                        value={v.minLineScores}
-                        onChange={(e) => onUpdate({ minLineScores: Number(e.target.value) })}
-                        min={-1}
-                        max={1}
-                        step={0.05}
-                        className="h-8 text-xs"
-                      />
-                    </Field>
-                  </>
-                )}
-              </div>
-            )}
-
-            {activeCategory === "postprocess" && (
-              <div className="space-y-1">
-                <h3 className="text-sm font-medium mb-3">Post-processing</h3>
-                <Toggle
-                  label="Filter Overlapping Instances"
-                  checked={v.filterOverlapping}
-                  onChange={(val) => onUpdate({ filterOverlapping: val })}
-                />
-                {v.filterOverlapping && (
-                  <>
-                    <Field label="Method">
-                      <Select
-                        value={v.filterMethod}
-                        onValueChange={(val) => onUpdate({ filterMethod: val as typeof v.filterMethod })}
-                      >
-                        <SelectTrigger className="h-8 text-xs">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="iou">IoU</SelectItem>
-                          <SelectItem value="oks">OKS</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </Field>
-                    <Field label="Threshold">
-                      <Input
-                        type="number"
-                        value={v.filterThreshold}
-                        onChange={(e) => onUpdate({ filterThreshold: Number(e.target.value) })}
-                        min={0}
-                        max={1}
-                        step={0.05}
-                        className="h-8 text-xs"
-                      />
-                    </Field>
-                  </>
-                )}
+                    <span>{r.label}</span>
+                    <span className="text-xs text-muted-foreground">{CATEGORIES.find((c) => c.id === r.section)?.label}</span>
+                  </button>
+                ))}
               </div>
             )}
           </div>
-        </div>
+        </DialogHeader>
 
-        <DialogFooter className="px-6 py-3 border-t">
-          <Button variant="outline" onClick={onClose}>Close</Button>
-        </DialogFooter>
+        <div className="flex flex-1 min-h-0 border-t">
+          {/* Left nav — jump links */}
+          <nav className="w-[180px] border-r bg-muted/30 py-3 shrink-0">
+            {CATEGORIES.map((cat) => (
+              <button
+                key={cat.id}
+                className="w-full text-left px-5 py-2.5 text-sm transition-colors text-muted-foreground hover:text-foreground hover:bg-accent/50"
+                onClick={() => scrollTo(cat.id)}
+              >
+                {cat.label}
+              </button>
+            ))}
+          </nav>
+
+          {/* Scrollable content — all sections visible */}
+          <div ref={scrollRef} className="flex-1 overflow-y-auto px-8 py-6">
+            {/* ── Inference ── */}
+            <SectionHeading id="inference" label="Inference Parameters" />
+            <div className="space-y-2">
+              <Field label="Peak Threshold" id="field-peakthreshold" hint="Minimum confidence score for a detected keypoint to be kept. Lower values detect more points but may include false positives.">
+                <Input
+                  type="number"
+                  value={v.peakThreshold}
+                  onChange={(e) => onUpdate({ peakThreshold: Number(e.target.value) })}
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  className="h-9 text-sm"
+                />
+              </Field>
+              <Field label="Max Instances" id="field-maxinstances" hint="Maximum number of animal instances to detect per frame. Leave empty for no limit.">
+                <Input
+                  type="number"
+                  value={v.maxInstances ?? ""}
+                  onChange={(e) => onUpdate({ maxInstances: e.target.value ? Number(e.target.value) : null })}
+                  min={1}
+                  max={100}
+                  className="h-9 text-sm"
+                  placeholder="No limit"
+                />
+              </Field>
+              {isTopDown && (
+                <Field label="Anchor Part" id="field-anchorpart" hint="Body part used to center the crop around each instance. Choose one that is consistently visible and near the animal's center.">
+                  <Select
+                    value={v.anchorPart ?? "none"}
+                    onValueChange={(val) => onUpdate({ anchorPart: val === "none" ? null : val })}
+                  >
+                    <SelectTrigger className="h-9 text-sm">
+                      <SelectValue placeholder="Auto" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">Auto (centroid)</SelectItem>
+                      {skeletonNodes.map((node) => (
+                        <SelectItem key={node} value={node}>{node}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </Field>
+              )}
+              <Field label="Ensure Channels" id="field-ensurechannels" hint="Convert input images to a specific channel format. Use RGB for pretrained backbones or Grayscale for single-channel videos.">
+                <Select
+                  value={v.ensureChannels}
+                  onValueChange={(val) => onUpdate({ ensureChannels: val as typeof v.ensureChannels })}
+                >
+                  <SelectTrigger className="h-9 text-sm">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="auto">Auto</SelectItem>
+                    <SelectItem value="rgb">RGB</SelectItem>
+                    <SelectItem value="grayscale">Grayscale</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
+            </div>
+
+            <Separator className="my-5" />
+
+            {/* ── Tracking ── */}
+            <SectionHeading id="tracking" label="Tracking" />
+            <div className="space-y-2">
+              {!tracking ? (
+                <p className="text-sm text-muted-foreground">
+                  Tracking is disabled. Enable it in the sidebar to configure these settings.
+                </p>
+              ) : (
+                <>
+                  <Field label="Tracker Method" id="field-trackermethod" hint="Simple uses instance matching across frames. Optical Flow uses pixel motion estimation for more robust tracking with fast-moving animals.">
+                    <Select
+                      value={v.trackerMethod}
+                      onValueChange={(val) => onUpdate({ trackerMethod: val as typeof v.trackerMethod })}
+                    >
+                      <SelectTrigger className="h-9 text-sm">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="simple">Simple (instance matching)</SelectItem>
+                        <SelectItem value="flow">Optical Flow</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                  <Field label="Similarity" id="field-similarity" hint="Metric for comparing instances across frames. OKS uses keypoint positions, IoU uses bounding boxes, Centroids uses center distance.">
+                    <Select
+                      value={v.similarityMethod}
+                      onValueChange={(val) => onUpdate({ similarityMethod: val as typeof v.similarityMethod })}
+                    >
+                      <SelectTrigger className="h-9 text-sm">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="oks">Object Keypoint Similarity</SelectItem>
+                        <SelectItem value="iou">IoU (bounding box)</SelectItem>
+                        <SelectItem value="centroids">Centroid distance</SelectItem>
+                        <SelectItem value="euclidean_dist">Euclidean distance</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                  <Field label="Matching" id="field-matching" hint="Algorithm for assigning detections to tracks. Hungarian finds the globally optimal assignment; Greedy is faster but may be suboptimal.">
+                    <Select
+                      value={v.matchingMethod}
+                      onValueChange={(val) => onUpdate({ matchingMethod: val as typeof v.matchingMethod })}
+                    >
+                      <SelectTrigger className="h-9 text-sm">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="hungarian">Hungarian</SelectItem>
+                        <SelectItem value="greedy">Greedy</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                  <Field label="Window Size" id="field-trackwindow" hint="Number of past frames to look back when matching instances to tracks. Larger windows handle longer occlusions but are slower.">
+                    <Input
+                      type="number"
+                      value={v.trackingWindowSize}
+                      onChange={(e) => onUpdate({ trackingWindowSize: Number(e.target.value) })}
+                      min={1}
+                      max={100}
+                      className="h-9 text-sm"
+                    />
+                  </Field>
+                  <Field label="Max Tracks" id="field-maxtracks" hint="Maximum number of simultaneous tracks. Leave empty for no limit. Set to the number of animals if known.">
+                    <Input
+                      type="number"
+                      value={v.maxTracks ?? ""}
+                      onChange={(e) => onUpdate({ maxTracks: e.target.value ? Number(e.target.value) : null })}
+                      min={1}
+                      max={100}
+                      className="h-9 text-sm"
+                      placeholder="No limit"
+                    />
+                  </Field>
+                  <Field label="Robust (quantile)" id="field-robust" hint="Quantile for robust similarity scoring. Lower values are more tolerant of outlier keypoints when comparing instances.">
+                    <Input
+                      type="number"
+                      value={v.robust}
+                      onChange={(e) => onUpdate({ robust: Number(e.target.value) })}
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      className="h-9 text-sm"
+                    />
+                  </Field>
+                  <Toggle
+                    label="Connect single-frame breaks"
+                    id="field-connectbreaks"
+                    hint="Merge tracks that have a single-frame gap between them. Useful for fixing brief detection dropouts."
+                    checked={v.connectSingleBreaks}
+                    onChange={(val) => onUpdate({ connectSingleBreaks: val })}
+                  />
+                </>
+              )}
+            </div>
+
+            <Separator className="my-5" />
+
+            {/* ── Optical Flow ── */}
+            <SectionHeading id="flow" label="Optical Flow" />
+            <div className="space-y-2">
+              <Field label="Image Scale" id="field-flowscale" hint="Scale factor for images before computing optical flow. Lower values are faster but less precise.">
+                <Input
+                  type="number"
+                  value={v.flowImgScale}
+                  onChange={(e) => onUpdate({ flowImgScale: Number(e.target.value) })}
+                  min={0.1}
+                  max={2}
+                  step={0.1}
+                  className="h-9 text-sm"
+                />
+              </Field>
+              <Field label="Window Size" id="field-flowwindow" hint="Size of the search window for optical flow computation. Larger windows handle faster motion but are slower.">
+                <Input
+                  type="number"
+                  value={v.flowWindowSize}
+                  onChange={(e) => onUpdate({ flowWindowSize: Number(e.target.value) })}
+                  min={3}
+                  max={99}
+                  step={2}
+                  className="h-9 text-sm"
+                />
+              </Field>
+              <Field label="Pyramid Levels" id="field-flowlevels" hint="Number of image pyramid levels for multi-scale optical flow. More levels handle larger displacements.">
+                <Input
+                  type="number"
+                  value={v.flowMaxLevels}
+                  onChange={(e) => onUpdate({ flowMaxLevels: Number(e.target.value) })}
+                  min={1}
+                  max={10}
+                  className="h-9 text-sm"
+                />
+              </Field>
+            </div>
+
+            <Separator className="my-5" />
+
+            {/* ── Advanced ── */}
+            <SectionHeading id="advanced" label="Advanced" />
+            <div className="space-y-2">
+              <Toggle
+                label="Integral Refinement"
+                id="field-integralrefinement"
+                hint="Use integral regression to refine keypoint locations to sub-pixel accuracy. Recommended for most pipelines."
+                checked={v.integralRefinement}
+                onChange={(val) => onUpdate({ integralRefinement: val })}
+              />
+              {v.integralRefinement && (
+                <Field label="Patch Size" id="field-integralpatch" hint="Size of the local patch around each peak used for integral regression refinement. Larger patches are more robust but slower.">
+                  <Input
+                    type="number"
+                    value={v.integralPatchSize}
+                    onChange={(e) => onUpdate({ integralPatchSize: Number(e.target.value) })}
+                    min={3}
+                    max={15}
+                    step={2}
+                    className="h-9 text-sm"
+                  />
+                </Field>
+              )}
+              {isBottomUp && (
+                <>
+                  <Separator className="my-4" />
+                  <h4 className="text-sm font-medium text-muted-foreground mb-3">PAF Matching</h4>
+                  <Field label="Sample Points" id="field-npoints" hint="Number of points sampled along each edge for PAF scoring. More points give better accuracy but are slower.">
+                    <Input
+                      type="number"
+                      value={v.nPoints}
+                      onChange={(e) => onUpdate({ nPoints: Number(e.target.value) })}
+                      min={1}
+                      max={50}
+                      className="h-9 text-sm"
+                    />
+                  </Field>
+                  <Field label="Max Edge Ratio" id="field-maxedgeratio" hint="Maximum edge length as a fraction of image size. Edges longer than this are discarded during PAF matching.">
+                    <Input
+                      type="number"
+                      value={v.maxEdgeLengthRatio}
+                      onChange={(e) => onUpdate({ maxEdgeLengthRatio: Number(e.target.value) })}
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      className="h-9 text-sm"
+                    />
+                  </Field>
+                  <Field label="Distance Penalty" id="field-distpenalty" hint="Weight for penalizing long edges during PAF grouping. Higher values prefer shorter connections between keypoints.">
+                    <Input
+                      type="number"
+                      value={v.distPenaltyWeight}
+                      onChange={(e) => onUpdate({ distPenaltyWeight: Number(e.target.value) })}
+                      min={0}
+                      max={10}
+                      step={0.1}
+                      className="h-9 text-sm"
+                    />
+                  </Field>
+                  <Field label="Min Line Scores" id="field-minlinescores" hint="Minimum PAF score for an edge to be considered valid. Lower values are more permissive.">
+                    <Input
+                      type="number"
+                      value={v.minLineScores}
+                      onChange={(e) => onUpdate({ minLineScores: Number(e.target.value) })}
+                      min={-1}
+                      max={1}
+                      step={0.05}
+                      className="h-9 text-sm"
+                    />
+                  </Field>
+                </>
+              )}
+            </div>
+
+            <Separator className="my-5" />
+
+            {/* ── Post-processing ── */}
+            <SectionHeading id="postprocess" label="Post-processing" />
+            <div className="space-y-2">
+              <Toggle
+                label="Filter Overlapping Instances"
+                id="field-filteroverlapping"
+                hint="Remove duplicate detections that overlap significantly. Useful when the model produces redundant predictions."
+                checked={v.filterOverlapping}
+                onChange={(val) => onUpdate({ filterOverlapping: val })}
+              />
+              {v.filterOverlapping && (
+                <>
+                  <Field label="Method" id="field-filtermethod" hint="Metric for measuring overlap. IoU uses bounding box intersection; OKS uses keypoint similarity.">
+                    <Select
+                      value={v.filterMethod}
+                      onValueChange={(val) => onUpdate({ filterMethod: val as typeof v.filterMethod })}
+                    >
+                      <SelectTrigger className="h-9 text-sm">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="iou">IoU</SelectItem>
+                        <SelectItem value="oks">OKS</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                  <Field label="Threshold" id="field-filterthreshold" hint="Overlap score above which instances are considered duplicates and the lower-scoring one is removed.">
+                    <Input
+                      type="number"
+                      value={v.filterThreshold}
+                      onChange={(e) => onUpdate({ filterThreshold: Number(e.target.value) })}
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      className="h-9 text-sm"
+                    />
+                  </Field>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
       </DialogContent>
     </Dialog>
   );

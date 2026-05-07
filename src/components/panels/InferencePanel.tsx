@@ -613,16 +613,6 @@ export function InferencePanel() {
               </Select>
             </div>
           )}
-          <Button
-            variant="ghost"
-            size="sm"
-            className="w-full text-xs text-muted-foreground hover:text-foreground mt-1"
-            onClick={() => setConfigDialogOpen(true)}
-            disabled={isRunning}
-          >
-            <Settings2 className="h-3 w-3 mr-1.5" />
-            Full Configuration...
-          </Button>
         </Section>
 
         {isTauri && (
@@ -711,7 +701,16 @@ export function InferencePanel() {
 
         <Separator />
 
-        {/* ── Run button ──────────────────────────────────────────── */}
+        {/* ── Action buttons ──────────────────────────────────────── */}
+        <Button
+          variant="outline"
+          className="w-full h-8 text-xs border-blue-500/50 text-blue-400 hover:bg-blue-500/10"
+          onClick={() => setConfigDialogOpen(true)}
+          disabled={isRunning}
+        >
+          <Settings2 className="h-3 w-3 mr-1.5" />
+          Full Configuration...
+        </Button>
         <Button className="w-full h-8 text-xs" onClick={handleRunInference} disabled={!canRun}>
           <Play className="h-3.5 w-3.5 mr-1.5" /> {remoteEnabled ? "Run Remote Inference" : "Run Inference"}
         </Button>

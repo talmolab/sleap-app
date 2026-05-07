@@ -186,13 +186,11 @@ function HyperparamsFields({
   hp,
   onUpdate,
   disabled,
-  onOpenDialog,
 }: {
   slot: string;
   hp: ConfigHyperparams;
   onUpdate: (slot: string, updates: Partial<ConfigHyperparams>) => void;
   disabled: boolean;
-  onOpenDialog: (slot: string) => void;
 }) {
   return (
     <div className="space-y-2">
@@ -254,16 +252,6 @@ function HyperparamsFields({
         </Select>
       </div>
 
-      <Button
-        variant="ghost"
-        size="sm"
-        className="w-full text-xs text-muted-foreground hover:text-foreground"
-        onClick={() => onOpenDialog(slot)}
-        disabled={disabled}
-      >
-        <Settings2 className="h-3 w-3 mr-1.5" />
-        Full Configuration...
-      </Button>
     </div>
   );
 }
@@ -289,7 +277,7 @@ export function TrainingPanel() {
   const reset = useTrainingStore((s) => s.reset);
 
   // Config dialog state
-  const [configDialogSlot, setConfigDialogSlot] = useState<string | null>(null);
+  const [configDialogOpen, setConfigDialogOpen] = useState(false);
 
   // Remote state
   const [remoteEnabled, setRemoteEnabled] = useState(!isTauri);
@@ -589,7 +577,7 @@ export function TrainingPanel() {
               hp={config.configs[0].hyperparams}
               onUpdate={updateConfigHyperparams}
               disabled={isRunning}
-              onOpenDialog={setConfigDialogSlot}
+
             />
           ) : (
             <Tabs defaultValue={config.configs[0]?.slot}>
@@ -607,7 +595,7 @@ export function TrainingPanel() {
                     hp={cf.hyperparams}
                     onUpdate={updateConfigHyperparams}
                     disabled={isRunning}
-                    onOpenDialog={setConfigDialogSlot}
+      
                   />
                 </TabsContent>
               ))}
@@ -717,6 +705,17 @@ export function TrainingPanel() {
         )}
 
         {/* ── Action buttons ──────────────────────────────────────── */}
+        {config.configs.length > 0 && (
+          <Button
+            variant="outline"
+            className="w-full h-8 text-xs border-blue-500/50 text-blue-400 hover:bg-blue-500/10"
+            onClick={() => setConfigDialogOpen(true)}
+            disabled={isRunning}
+          >
+            <Settings2 className="h-3 w-3 mr-1.5" />
+            Full Configuration...
+          </Button>
+        )}
         {status === "idle" && (
           <>
             <Button
@@ -982,18 +981,21 @@ export function TrainingPanel() {
         fileFilter=".slp"
       />
 
-      {configDialogSlot && (() => {
-        const cf = config.configs.find((c) => c.slot === configDialogSlot);
-        if (!cf) return null;
-        return (
-          <TrainingConfigDialog
-            open={true}
-            onClose={() => setConfigDialogSlot(null)}
-            hyperparams={cf.hyperparams}
-            onUpdate={(updates) => updateConfigHyperparams(configDialogSlot, updates)}
-          />
-        );
-      })()}
+      <TrainingConfigDialog
+        open={configDialogOpen}
+        onClose={() => setConfigDialogOpen(false)}
+        modelType={config.modelType}
+        configs={config.configs}
+        onUpdateSlot={updateConfigHyperparams}
+        inferenceTarget={inferenceTarget}
+        onInferenceTargetChange={setInferenceTarget}
+        remoteEnabled={remoteEnabled}
+        onRemoteEnabledChange={setRemoteEnabled}
+        skeletonNodes={(() => {
+          const skeleton = useAppStore.getState().skeleton;
+          return skeleton?.nodes?.map((n) => n.name) ?? [];
+        })()}
+      />
     </div>
   );
 }
