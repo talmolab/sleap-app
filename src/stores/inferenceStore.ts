@@ -55,11 +55,15 @@ export interface InferenceConfig {
   trackingWindowSize: number;
   maxTracks: number | null;
   connectSingleBreaks: boolean;
+  robust: number;
 
   // Optical flow
   flowImgScale: number;
   flowWindowSize: number;
   flowMaxLevels: number;
+
+  // Preprocessing
+  ensureChannels: "auto" | "rgb" | "grayscale";
 
   // Post-processing
   filterOverlapping: boolean;
@@ -301,6 +305,14 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
             exclude_user_labeled: config.excludeUserLabeled || undefined,
             frames: sampled.join(","),
             path_mappings: Object.keys(pathMappings).length > 0 ? pathMappings : undefined,
+            robust: config.tracking ? config.robust : undefined,
+            ensure_channels: config.ensureChannels !== "auto" ? config.ensureChannels : undefined,
+            tracker: config.tracking ? config.trackerMethod : undefined,
+            similarity: config.tracking ? config.similarityMethod : undefined,
+            match: config.tracking ? config.matchingMethod : undefined,
+            track_window: config.tracking ? config.trackingWindowSize : undefined,
+            max_tracks: config.tracking && config.maxTracks != null ? config.maxTracks : undefined,
+            connect_single_breaks: config.tracking && config.connectSingleBreaks ? true : undefined,
           };
         }).filter(Boolean);
 
@@ -344,6 +356,14 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
         exclude_user_labeled: config.excludeUserLabeled || undefined,
         frames,
         path_mappings: Object.keys(pathMappings).length > 0 ? pathMappings : undefined,
+        robust: config.tracking ? config.robust : undefined,
+        ensure_channels: config.ensureChannels !== "auto" ? config.ensureChannels : undefined,
+        tracker: config.tracking ? config.trackerMethod : undefined,
+        similarity: config.tracking ? config.similarityMethod : undefined,
+        match: config.tracking ? config.matchingMethod : undefined,
+        track_window: config.tracking ? config.trackingWindowSize : undefined,
+        max_tracks: config.tracking && config.maxTracks != null ? config.maxTracks : undefined,
+        connect_single_breaks: config.tracking && config.connectSingleBreaks ? true : undefined,
       };
 
       // Log the spec

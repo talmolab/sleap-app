@@ -38,7 +38,9 @@ import {
   ChevronDown,
   ChevronRight,
   Copy,
+  Settings2,
 } from "lucide-react";
+import { InferenceConfigDialog } from "@/components/dialogs/InferenceConfigDialog";
 
 // ── Types & Constants ─────────────────────────────────────────────────────────
 
@@ -60,12 +62,6 @@ const DEVICE_OPTIONS = [
   { value: "mps", label: "MPS (Apple Silicon)" },
 ];
 
-const SIMILARITY_OPTIONS = [
-  { value: "oks", label: "Object Keypoint Similarity" },
-  { value: "iou", label: "IoU (bounding box)" },
-  { value: "centroids", label: "Centroid distance" },
-  { value: "euclidean_dist", label: "Euclidean distance" },
-];
 
 /**
  * Extensions sleap-nn inference accepts as a data_path input:
@@ -205,9 +201,11 @@ const DEFAULTS: Omit<InferenceConfig, "modelPaths" | "videoIndex" | "frameRange"
   trackingWindowSize: 5,
   maxTracks: null,
   connectSingleBreaks: false,
+  robust: 0.95,
   flowImgScale: 1.0,
   flowWindowSize: 21,
   flowMaxLevels: 3,
+  ensureChannels: "auto",
   filterOverlapping: false,
   filterMethod: "iou",
   filterThreshold: 0.8,
@@ -265,13 +263,16 @@ export function InferencePanel() {
   const [maxTracks, setMaxTracks] = useState<number | null>(DEFAULTS.maxTracks);
   const [noMaxTracks, setNoMaxTracks] = useState(true);
   const [connectSingleBreaks, setConnectSingleBreaks] = useState(DEFAULTS.connectSingleBreaks);
+  const [robust, setRobust] = useState(DEFAULTS.robust);
   const [flowImgScale, setFlowImgScale] = useState(DEFAULTS.flowImgScale);
   const [flowWindowSize, setFlowWindowSize] = useState(DEFAULTS.flowWindowSize);
   const [flowMaxLevels, setFlowMaxLevels] = useState(DEFAULTS.flowMaxLevels);
+  const [ensureChannels, setEnsureChannels] = useState(DEFAULTS.ensureChannels);
   const [filterOverlapping, setFilterOverlapping] = useState(DEFAULTS.filterOverlapping);
   const [filterMethod, setFilterMethod] = useState(DEFAULTS.filterMethod);
   const [filterThreshold, setFilterThreshold] = useState(DEFAULTS.filterThreshold);
   const [merging, setMerging] = useState(false);
+  const [configDialogOpen, setConfigDialogOpen] = useState(false);
   const logRef = useRef<HTMLPreElement>(null);
 
   // Remote inference state
@@ -326,7 +327,6 @@ export function InferencePanel() {
   );
 
   const canRun = (remoteEnabled ? (!!selectedWorkerId && !!remoteDataPath) : sleapNnAvailable) && !isRunning && !isDone && activeModelPaths.length > 0 && !customRangeInvalid;
-  const isBottomUp = pipeline === "bottom-up" || pipeline === "bottom-up-id";
   const isTopDown = pipeline === "top-down" || pipeline === "top-down-id";
 
   if (!isTauri && connectionStatus !== "connected") {
@@ -376,8 +376,9 @@ export function InferencePanel() {
       tracking, trackerMethod, similarityMethod, matchingMethod,
       trackingWindowSize,
       maxTracks: noMaxTracks ? null : maxTracks,
-      connectSingleBreaks, flowImgScale, flowWindowSize, flowMaxLevels,
-      filterOverlapping, filterMethod, filterThreshold,
+      connectSingleBreaks, robust,
+      flowImgScale, flowWindowSize, flowMaxLevels,
+      ensureChannels, filterOverlapping, filterMethod, filterThreshold,
     };
 
     if (remoteEnabled) {
@@ -601,97 +602,27 @@ export function InferencePanel() {
         <Section title="Tracking" defaultOpen={false}>
           <Check label="Enable tracking" checked={tracking} onChange={setTracking} disabled={isRunning} />
           {tracking && (
-            <>
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[10px] text-muted-foreground">Method</span>
-                <Select value={trackerMethod} onValueChange={(v) => setTrackerMethod(v as typeof trackerMethod)} disabled={isRunning}>
-                  <SelectTrigger className="h-6 text-[10px] w-28"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="simple">Simple</SelectItem>
-                    <SelectItem value="flow">Optical Flow</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[10px] text-muted-foreground">Similarity</span>
-                <Select value={similarityMethod} onValueChange={(v) => setSimilarityMethod(v as typeof similarityMethod)} disabled={isRunning}>
-                  <SelectTrigger className="h-6 text-[10px] w-32"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {SIMILARITY_OPTIONS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[10px] text-muted-foreground">Matching</span>
-                <Select value={matchingMethod} onValueChange={(v) => setMatchingMethod(v as typeof matchingMethod)} disabled={isRunning}>
-                  <SelectTrigger className="h-6 text-[10px] w-28"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="hungarian">Hungarian</SelectItem>
-                    <SelectItem value="greedy">Greedy</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <NumField label="Window size" value={trackingWindowSize} onChange={setTrackingWindowSize} min={1} max={100} disabled={isRunning} />
-              <div className="space-y-1">
-                <NumField label="Max tracks" value={maxTracks ?? 0} onChange={(v) => setMaxTracks(v)}
-                  min={1} max={100} disabled={isRunning || noMaxTracks} />
-                <Check label="No limit" checked={noMaxTracks}
-                  onChange={(v) => { setNoMaxTracks(v); if (!v && maxTracks === null) setMaxTracks(2); }}
-                  disabled={isRunning} />
-              </div>
-              <Check label="Connect single-frame breaks" checked={connectSingleBreaks}
-                onChange={setConnectSingleBreaks} disabled={isRunning} />
-              {trackerMethod === "flow" && (
-                <Section title="Optical Flow">
-                  <NumField label="Image scale" value={flowImgScale} onChange={setFlowImgScale} min={0.1} max={2} step={0.1} disabled={isRunning} />
-                  <NumField label="Window size" value={flowWindowSize} onChange={setFlowWindowSize} min={3} max={99} step={2} disabled={isRunning} />
-                  <NumField label="Pyramid levels" value={flowMaxLevels} onChange={setFlowMaxLevels} min={1} max={10} disabled={isRunning} />
-                </Section>
-              )}
-            </>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[10px] text-muted-foreground">Method</span>
+              <Select value={trackerMethod} onValueChange={(v) => setTrackerMethod(v as typeof trackerMethod)} disabled={isRunning}>
+                <SelectTrigger className="h-6 text-[10px] w-28"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="simple">Simple</SelectItem>
+                  <SelectItem value="flow">Optical Flow</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
           )}
-        </Section>
-
-        <Separator />
-
-        {/* ── Advanced ────────────────────────────────────────────── */}
-        <Section title="Advanced" defaultOpen={false}>
-          <Check label="Integral refinement" checked={integralRefinement}
-            onChange={setIntegralRefinement} disabled={isRunning} />
-          {integralRefinement && (
-            <NumField label="Patch size" value={integralPatchSize}
-              onChange={setIntegralPatchSize} min={3} max={15} step={2} disabled={isRunning} />
-          )}
-
-          {isBottomUp && (
-            <>
-              <Separator className="my-1" />
-              <span className="text-[10px] font-medium text-muted-foreground">PAF Matching</span>
-              <NumField label="Sample points" value={nPoints} onChange={setNPoints} min={1} max={50} disabled={isRunning} />
-              <NumField label="Max edge ratio" value={maxEdgeLengthRatio} onChange={setMaxEdgeLengthRatio} min={0} max={1} step={0.05} disabled={isRunning} />
-              <NumField label="Distance penalty" value={distPenaltyWeight} onChange={setDistPenaltyWeight} min={0} max={10} step={0.1} disabled={isRunning} />
-              <NumField label="Min line scores" value={minLineScores} onChange={setMinLineScores} min={-1} max={1} step={0.05} disabled={isRunning} />
-            </>
-          )}
-
-          <Separator className="my-1" />
-          <Check label="Filter overlapping instances" checked={filterOverlapping}
-            onChange={setFilterOverlapping} disabled={isRunning} />
-          {filterOverlapping && (
-            <>
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[10px] text-muted-foreground">Method</span>
-                <Select value={filterMethod} onValueChange={(v) => setFilterMethod(v as typeof filterMethod)} disabled={isRunning}>
-                  <SelectTrigger className="h-6 text-[10px] w-24"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="iou">IoU</SelectItem>
-                    <SelectItem value="oks">OKS</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <NumField label="Threshold" value={filterThreshold} onChange={setFilterThreshold} min={0} max={1} step={0.05} disabled={isRunning} />
-            </>
-          )}
+          <Button
+            variant="ghost"
+            size="sm"
+            className="w-full text-xs text-muted-foreground hover:text-foreground mt-1"
+            onClick={() => setConfigDialogOpen(true)}
+            disabled={isRunning}
+          >
+            <Settings2 className="h-3 w-3 mr-1.5" />
+            Full Configuration...
+          </Button>
         </Section>
 
         {isTauri && (
@@ -908,6 +839,48 @@ export function InferencePanel() {
         fileFilter={
           fileBrowserMode === "file" ? INFERENCE_DATA_EXTENSIONS : undefined
         }
+      />
+
+      <InferenceConfigDialog
+        open={configDialogOpen}
+        onClose={() => setConfigDialogOpen(false)}
+        pipeline={pipeline}
+        tracking={tracking}
+        skeletonNodes={nodes.map((n) => n.name)}
+        values={{
+          peakThreshold, maxInstances, anchorPart,
+          integralRefinement, integralPatchSize,
+          nPoints, maxEdgeLengthRatio, distPenaltyWeight, minLineScores,
+          trackerMethod, similarityMethod, matchingMethod,
+          trackingWindowSize, maxTracks, connectSingleBreaks, robust,
+          flowImgScale, flowWindowSize, flowMaxLevels,
+          ensureChannels, filterOverlapping, filterMethod, filterThreshold,
+        }}
+        onUpdate={(updates) => {
+          if ("peakThreshold" in updates) setPeakThreshold(updates.peakThreshold!);
+          if ("maxInstances" in updates) setMaxInstances(updates.maxInstances!);
+          if ("anchorPart" in updates) setAnchorPart(updates.anchorPart!);
+          if ("integralRefinement" in updates) setIntegralRefinement(updates.integralRefinement!);
+          if ("integralPatchSize" in updates) setIntegralPatchSize(updates.integralPatchSize!);
+          if ("nPoints" in updates) setNPoints(updates.nPoints!);
+          if ("maxEdgeLengthRatio" in updates) setMaxEdgeLengthRatio(updates.maxEdgeLengthRatio!);
+          if ("distPenaltyWeight" in updates) setDistPenaltyWeight(updates.distPenaltyWeight!);
+          if ("minLineScores" in updates) setMinLineScores(updates.minLineScores!);
+          if ("trackerMethod" in updates) setTrackerMethod(updates.trackerMethod!);
+          if ("similarityMethod" in updates) setSimilarityMethod(updates.similarityMethod!);
+          if ("matchingMethod" in updates) setMatchingMethod(updates.matchingMethod!);
+          if ("trackingWindowSize" in updates) setTrackingWindowSize(updates.trackingWindowSize!);
+          if ("maxTracks" in updates) { setMaxTracks(updates.maxTracks!); setNoMaxTracks(updates.maxTracks === null); }
+          if ("connectSingleBreaks" in updates) setConnectSingleBreaks(updates.connectSingleBreaks!);
+          if ("robust" in updates) setRobust(updates.robust!);
+          if ("flowImgScale" in updates) setFlowImgScale(updates.flowImgScale!);
+          if ("flowWindowSize" in updates) setFlowWindowSize(updates.flowWindowSize!);
+          if ("flowMaxLevels" in updates) setFlowMaxLevels(updates.flowMaxLevels!);
+          if ("ensureChannels" in updates) setEnsureChannels(updates.ensureChannels!);
+          if ("filterOverlapping" in updates) setFilterOverlapping(updates.filterOverlapping!);
+          if ("filterMethod" in updates) setFilterMethod(updates.filterMethod!);
+          if ("filterThreshold" in updates) setFilterThreshold(updates.filterThreshold!);
+        }}
       />
     </div>
   );

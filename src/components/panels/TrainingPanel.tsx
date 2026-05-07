@@ -9,9 +9,10 @@
 
 import { useState, useRef, useEffect } from "react";
 import { useTrainingStore, getConfigSlots, getSlotLabel } from "@/stores/trainingStore";
-import type { ModelType, Backbone, ConfigFile, ConfigHyperparams } from "@/stores/trainingStore";
+import type { ModelType, ConfigFile, ConfigHyperparams, AugmentationPreset } from "@/stores/trainingStore";
 import { useConnectStore } from "@/stores/connectStore";
 import { RemoteFileBrowser } from "@/components/dialogs/RemoteFileBrowser";
+import { TrainingConfigDialog } from "@/components/dialogs/TrainingConfigDialog";
 import { useAppStore } from "@/stores/appStore";
 import { isTauri } from "@/platform/index";
 import { Button } from "@/components/ui/button";
@@ -37,6 +38,7 @@ import {
   ExternalLink,
   Folder,
   Square,
+  Settings2,
 } from "lucide-react";
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -49,10 +51,11 @@ const MODEL_TYPE_OPTIONS: { value: ModelType; label: string }[] = [
   { value: "bottom_up_id", label: "Bottom-Up + ID" },
 ];
 
-const BACKBONE_OPTIONS: { value: Backbone; label: string }[] = [
-  { value: "UNet", label: "UNet" },
-  { value: "LEAP CNN", label: "LEAP CNN" },
-  { value: "Stacked Hourglass", label: "Stacked Hourglass" },
+const AUGMENTATION_PRESET_OPTIONS: { value: AugmentationPreset; label: string; desc: string }[] = [
+  { value: "none", label: "None", desc: "No augmentation" },
+  { value: "light", label: "Light", desc: "Rotation ±15°" },
+  { value: "standard", label: "Standard", desc: "Rotation ±180° + noise" },
+  { value: "heavy", label: "Heavy", desc: "Full augmentation suite" },
 ];
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -183,34 +186,16 @@ function HyperparamsFields({
   hp,
   onUpdate,
   disabled,
+  onOpenDialog,
 }: {
   slot: string;
   hp: ConfigHyperparams;
   onUpdate: (slot: string, updates: Partial<ConfigHyperparams>) => void;
   disabled: boolean;
+  onOpenDialog: (slot: string) => void;
 }) {
   return (
     <div className="space-y-2">
-      <div className="space-y-1">
-        <span className="text-[10px] text-muted-foreground">Backbone</span>
-        <Select
-          value={hp.backbone || ""}
-          onValueChange={(v) => onUpdate(slot, { backbone: v as Backbone })}
-          disabled={disabled}
-        >
-          <SelectTrigger className="h-7 text-xs">
-            <SelectValue placeholder="From config..." />
-          </SelectTrigger>
-          <SelectContent>
-            {BACKBONE_OPTIONS.map((o) => (
-              <SelectItem key={o.value} value={o.value}>
-                {o.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-
       <div className="flex items-center justify-between gap-2">
         <span className="text-[10px] text-muted-foreground shrink-0">Max Epochs</span>
         <Input
@@ -248,80 +233,41 @@ function HyperparamsFields({
         />
       </div>
 
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-[10px] text-muted-foreground shrink-0">Run Name</span>
-        <Input
-          type="text"
-          value={hp.runName}
-          onChange={(e) => onUpdate(slot, { runName: e.target.value })}
-          placeholder="From config..."
-          className="h-6 text-[10px] w-32"
-          disabled={disabled}
-        />
-      </div>
-    </div>
-  );
-}
-
-function WandbFields({
-  slot,
-  hp,
-  onUpdate,
-  disabled,
-}: {
-  slot: string;
-  hp: ConfigHyperparams;
-  onUpdate: (slot: string, updates: Partial<ConfigHyperparams>) => void;
-  disabled: boolean;
-}) {
-  return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between py-0.5">
-        <span className="text-[10px] text-muted-foreground">Enable W&B</span>
-        <button
-          className={`w-8 h-4 rounded-full relative transition-colors ${
-            hp.useWandb ? "bg-primary" : "bg-zinc-700"
-          }`}
-          onClick={() => onUpdate(slot, { useWandb: !hp.useWandb })}
+      <div className="space-y-1">
+        <span className="text-[10px] text-muted-foreground">Augmentation</span>
+        <Select
+          value={hp.augmentationPreset}
+          onValueChange={(v) => onUpdate(slot, { augmentationPreset: v as AugmentationPreset })}
           disabled={disabled}
         >
-          <span
-            className={`absolute top-0.5 left-0.5 w-3 h-3 rounded-full bg-white transition-transform ${
-              hp.useWandb ? "translate-x-4" : ""
-            }`}
-          />
-        </button>
+          <SelectTrigger className="h-7 text-xs">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {AUGMENTATION_PRESET_OPTIONS.map((o) => (
+              <SelectItem key={o.value} value={o.value}>
+                {o.label}
+                <span className="text-muted-foreground ml-1">— {o.desc}</span>
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
 
-      {hp.useWandb && (
-        <>
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-[10px] text-muted-foreground shrink-0">Entity</span>
-            <Input
-              type="text"
-              value={hp.wandbEntity}
-              onChange={(e) => onUpdate(slot, { wandbEntity: e.target.value })}
-              placeholder="From config..."
-              className="h-6 text-[10px] w-32"
-              disabled={disabled}
-            />
-          </div>
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-[10px] text-muted-foreground shrink-0">Project</span>
-            <Input
-              type="text"
-              value={hp.wandbProject}
-              onChange={(e) => onUpdate(slot, { wandbProject: e.target.value })}
-              placeholder="From config..."
-              className="h-6 text-[10px] w-32"
-              disabled={disabled}
-            />
-          </div>
-        </>
-      )}
+      <Button
+        variant="ghost"
+        size="sm"
+        className="w-full text-xs text-muted-foreground hover:text-foreground"
+        onClick={() => onOpenDialog(slot)}
+        disabled={disabled}
+      >
+        <Settings2 className="h-3 w-3 mr-1.5" />
+        Full Configuration...
+      </Button>
     </div>
   );
 }
+
 
 // ── Panel ────────────────────────────────────────────────────────────────────
 
@@ -341,6 +287,9 @@ export function TrainingPanel() {
   const stopTraining = useTrainingStore((s) => s.stopTraining);
   const cancelTraining = useTrainingStore((s) => s.cancelTraining);
   const reset = useTrainingStore((s) => s.reset);
+
+  // Config dialog state
+  const [configDialogSlot, setConfigDialogSlot] = useState<string | null>(null);
 
   // Remote state
   const [remoteEnabled, setRemoteEnabled] = useState(!isTauri);
@@ -640,6 +589,7 @@ export function TrainingPanel() {
               hp={config.configs[0].hyperparams}
               onUpdate={updateConfigHyperparams}
               disabled={isRunning}
+              onOpenDialog={setConfigDialogSlot}
             />
           ) : (
             <Tabs defaultValue={config.configs[0]?.slot}>
@@ -657,44 +607,7 @@ export function TrainingPanel() {
                     hp={cf.hyperparams}
                     onUpdate={updateConfigHyperparams}
                     disabled={isRunning}
-                  />
-                </TabsContent>
-              ))}
-            </Tabs>
-          )}
-        </Section>
-
-        <Separator />
-
-        {/* ── Tracking / W&B (per-config tabs) ────────────────── */}
-        <Section title="Tracking (W&B)" defaultOpen={false}>
-          {config.configs.length === 0 ? (
-            <p className="text-[10px] text-muted-foreground">
-              Upload config file(s) above to see W&B settings.
-            </p>
-          ) : config.configs.length === 1 ? (
-            <WandbFields
-              slot={config.configs[0].slot}
-              hp={config.configs[0].hyperparams}
-              onUpdate={updateConfigHyperparams}
-              disabled={isRunning}
-            />
-          ) : (
-            <Tabs defaultValue={config.configs[0]?.slot}>
-              <TabsList className="w-full h-7">
-                {config.configs.map((cf) => (
-                  <TabsTrigger key={cf.slot} value={cf.slot} className="flex-1 text-[10px] h-6">
-                    {getSlotLabel(cf.slot).replace(" Config", "")}
-                  </TabsTrigger>
-                ))}
-              </TabsList>
-              {config.configs.map((cf) => (
-                <TabsContent key={cf.slot} value={cf.slot} className="mt-2">
-                  <WandbFields
-                    slot={cf.slot}
-                    hp={cf.hyperparams}
-                    onUpdate={updateConfigHyperparams}
-                    disabled={isRunning}
+                    onOpenDialog={setConfigDialogSlot}
                   />
                 </TabsContent>
               ))}
@@ -1068,6 +981,19 @@ export function TrainingPanel() {
         mode="file"
         fileFilter=".slp"
       />
+
+      {configDialogSlot && (() => {
+        const cf = config.configs.find((c) => c.slot === configDialogSlot);
+        if (!cf) return null;
+        return (
+          <TrainingConfigDialog
+            open={true}
+            onClose={() => setConfigDialogSlot(null)}
+            hyperparams={cf.hyperparams}
+            onUpdate={(updates) => updateConfigHyperparams(configDialogSlot, updates)}
+          />
+        );
+      })()}
     </div>
   );
 }

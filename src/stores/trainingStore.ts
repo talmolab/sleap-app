@@ -14,6 +14,8 @@ export type ModelType =
 
 export type Backbone = "UNet" | "LEAP CNN" | "Stacked Hourglass";
 
+export type AugmentationPreset = "none" | "light" | "standard" | "heavy";
+
 export interface TrainingConfig {
   // Model
   modelType: ModelType;
@@ -34,6 +36,12 @@ export interface ConfigHyperparams {
   useWandb: boolean;
   wandbEntity: string;
   wandbProject: string;
+  // Layer 1 quick-tune params
+  validationFraction: number;
+  earlyStoppingPatience: number;
+  sigma: number;
+  scale: number;
+  augmentationPreset: AugmentationPreset;
 }
 
 export const defaultHyperparams: ConfigHyperparams = {
@@ -45,6 +53,11 @@ export const defaultHyperparams: ConfigHyperparams = {
   useWandb: false,
   wandbEntity: "",
   wandbProject: "",
+  validationFraction: 0.1,
+  earlyStoppingPatience: 10,
+  sigma: 5.0,
+  scale: 1.0,
+  augmentationPreset: "standard",
 };
 
 export interface ConfigFile {
@@ -122,6 +135,133 @@ export function getSlotLabel(slot: string): string {
     case "centered_instance": return "Centered Instance Config";
     default: return "Config";
   }
+}
+
+// ── Augmentation presets ─────────────────────────────────────────
+
+interface AugmentationConfig {
+  rotation: number;
+  affine_p: number;
+  scale_min?: number;
+  scale_max?: number;
+  uniform_noise_min?: number;
+  uniform_noise_max?: number;
+  uniform_noise_p?: number;
+  gaussian_noise_mean?: number;
+  gaussian_noise_std?: number;
+  gaussian_noise_p?: number;
+  contrast_min?: number;
+  contrast_max?: number;
+  contrast_p?: number;
+  brightness_min?: number;
+  brightness_max?: number;
+  brightness_p?: number;
+}
+
+const AUGMENTATION_PRESETS: Record<AugmentationPreset, AugmentationConfig> = {
+  none: { rotation: 0, affine_p: 0 },
+  light: { rotation: 15, affine_p: 1.0 },
+  standard: {
+    rotation: 180,
+    affine_p: 1.0,
+    gaussian_noise_mean: 0.0,
+    gaussian_noise_std: 0.04,
+    gaussian_noise_p: 0.5,
+  },
+  heavy: {
+    rotation: 180,
+    affine_p: 1.0,
+    scale_min: 0.9,
+    scale_max: 1.1,
+    gaussian_noise_mean: 0.0,
+    gaussian_noise_std: 0.04,
+    gaussian_noise_p: 0.5,
+    contrast_min: 0.75,
+    contrast_max: 1.25,
+    contrast_p: 0.5,
+    brightness_min: 0.0,
+    brightness_max: 0.1,
+    brightness_p: 0.5,
+  },
+};
+
+// ── YAML override helper ─────────────────────────────────────────
+
+/** Apply ConfigHyperparams overrides to raw YAML config content. */
+export function applyHyperparamsToYaml(yamlText: string, hp: ConfigHyperparams): string {
+  const doc = yaml.load(yamlText) as Record<string, unknown> | null;
+  if (!doc || typeof doc !== "object") return yamlText;
+
+  // Ensure nested structures exist
+  if (!doc.trainer_config) doc.trainer_config = {};
+  if (!doc.data_config) doc.data_config = {};
+  if (!doc.model_config) doc.model_config = {};
+  const trainer = doc.trainer_config as Record<string, unknown>;
+  const data = doc.data_config as Record<string, unknown>;
+  const model = doc.model_config as Record<string, unknown>;
+
+  // Basic training params
+  trainer.max_epochs = hp.maxEpochs;
+  if (!trainer.train_data_loader) trainer.train_data_loader = {};
+  (trainer.train_data_loader as Record<string, unknown>).batch_size = hp.batchSize;
+  if (!trainer.optimizer) trainer.optimizer = {};
+  (trainer.optimizer as Record<string, unknown>).lr = hp.learningRate;
+  if (hp.runName) trainer.run_name = hp.runName;
+
+  // W&B
+  trainer.use_wandb = hp.useWandb;
+  if (hp.useWandb) {
+    if (!trainer.wandb) trainer.wandb = {};
+    const wandb = trainer.wandb as Record<string, unknown>;
+    if (hp.wandbEntity) wandb.entity = hp.wandbEntity;
+    if (hp.wandbProject) wandb.project = hp.wandbProject;
+  }
+
+  // Data config
+  data.validation_fraction = hp.validationFraction;
+  data.scale = hp.scale;
+
+  // Early stopping
+  if (!trainer.early_stopping) trainer.early_stopping = {};
+  const es = trainer.early_stopping as Record<string, unknown>;
+  es.stop_training_on_plateau = true;
+  es.patience = hp.earlyStoppingPatience;
+
+  // Sigma — apply to all head configs
+  const headConfigs = (model.head_configs ?? {}) as Record<string, unknown>;
+  for (const [, headVal] of Object.entries(headConfigs)) {
+    if (headVal && typeof headVal === "object") {
+      const head = headVal as Record<string, unknown>;
+      if ("sigma" in head) head.sigma = hp.sigma;
+      // Bottom-up nested confmaps
+      if (head.confmaps && typeof head.confmaps === "object") {
+        (head.confmaps as Record<string, unknown>).sigma = hp.sigma;
+      }
+    }
+  }
+
+  // Augmentation preset
+  const aug = AUGMENTATION_PRESETS[hp.augmentationPreset];
+  if (!data.augmentation_config) data.augmentation_config = {};
+  const augConfig = data.augmentation_config as Record<string, unknown>;
+  augConfig.rotation = aug.rotation;
+  augConfig.affine_p = aug.affine_p;
+  augConfig.scale_min = aug.scale_min ?? null;
+  augConfig.scale_max = aug.scale_max ?? null;
+  augConfig.uniform_noise_min = aug.uniform_noise_min ?? 0;
+  augConfig.uniform_noise_max = aug.uniform_noise_max ?? 0;
+  augConfig.uniform_noise_p = aug.uniform_noise_p ?? 0;
+  augConfig.gaussian_noise_mean = aug.gaussian_noise_mean ?? 0;
+  augConfig.gaussian_noise_std = aug.gaussian_noise_std ?? 0;
+  augConfig.gaussian_noise_p = aug.gaussian_noise_p ?? 0;
+  augConfig.contrast_min = aug.contrast_min ?? 0.5;
+  augConfig.contrast_max = aug.contrast_max ?? 2.0;
+  augConfig.contrast_p = aug.contrast_p ?? 0;
+  augConfig.brightness_min = aug.brightness_min ?? 0;
+  augConfig.brightness_max = aug.brightness_max ?? 0;
+  augConfig.brightness_p = aug.brightness_p ?? 0;
+
+  return yaml.dump(doc, { lineWidth: -1 });
 }
 
 // ── Initial state ─────────────────────────────────────────────────
@@ -214,6 +354,21 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         "stacked_hourglass": "Stacked Hourglass",
       };
 
+      // Extract early stopping config
+      const earlyStopping = (trainer.early_stopping ?? {}) as Record<string, unknown>;
+
+      // Extract sigma from head configs (first head's sigma value)
+      let sigma = 5.0;
+      for (const headVal of Object.values(headConfigs)) {
+        if (headVal && typeof headVal === "object") {
+          const head = headVal as Record<string, unknown>;
+          if (typeof head.sigma === "number") { sigma = head.sigma; break; }
+          // Bottom-up has nested confmaps.sigma
+          const confmaps = head.confmaps as Record<string, unknown> | undefined;
+          if (confmaps && typeof confmaps.sigma === "number") { sigma = confmaps.sigma; break; }
+        }
+      }
+
       const hyperparams: ConfigHyperparams = {
         backbone: backboneMap[activeBackbone.toLowerCase()] ?? "",
         maxEpochs: typeof trainer.max_epochs === "number" ? trainer.max_epochs : 100,
@@ -225,6 +380,13 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         useWandb: trainer.use_wandb === true,
         wandbEntity: typeof wandb.entity === "string" ? wandb.entity : "",
         wandbProject: typeof wandb.project === "string" ? wandb.project : "",
+        validationFraction: typeof dataConfig.validation_fraction === "number"
+          ? dataConfig.validation_fraction : 0.1,
+        earlyStoppingPatience: typeof earlyStopping.patience === "number"
+          ? earlyStopping.patience : 10,
+        sigma,
+        scale: typeof dataConfig.scale === "number" ? dataConfig.scale : 1.0,
+        augmentationPreset: "standard",
       };
 
       // Also auto-fill data paths into the global config
@@ -336,10 +498,10 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       // Use the resolved labels path (first entry is always the labels/data path)
       const resolvedLabelsPath = confirmedPaths[0]?.worker ?? remoteOpts.labelsPath;
 
-      // Build TrainJobSpec with path_mappings
+      // Build TrainJobSpec with path_mappings — apply hyperparam overrides to YAML
       const spec = {
         type: "train" as const,
-        config_contents: config.configs.map((c) => c.content),
+        config_contents: config.configs.map((c) => applyHyperparamsToYaml(c.content, c.hyperparams)),
         model_types: config.configs.map((c) => c.modelType),
         labels_path: resolvedLabelsPath,
         val_labels_path: remoteOpts.valLabelsPath || undefined,

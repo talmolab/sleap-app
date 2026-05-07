@@ -278,11 +278,26 @@ export async function runInference(
     args.push("--min_line_scores", String(config.minLineScores));
   }
 
+  // Preprocessing
+  if (config.ensureChannels === "rgb") {
+    args.push("--ensure_rgb");
+  } else if (config.ensureChannels === "grayscale") {
+    args.push("--ensure_grayscale");
+  }
+
   // Tracking
   if (config.tracking) {
     args.push("--tracking");
+    args.push("--tracker", config.trackerMethod);
+    args.push("--similarity", config.similarityMethod);
+    args.push("--match", config.matchingMethod);
+    args.push("--track_window", String(config.trackingWindowSize));
     if (config.maxTracks != null) {
       args.push("--max_tracks", String(config.maxTracks));
+    }
+    args.push("--robust", String(config.robust));
+    if (config.connectSingleBreaks) {
+      args.push("--post_connect_single_breaks");
     }
   }
 

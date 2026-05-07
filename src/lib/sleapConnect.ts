@@ -64,6 +64,14 @@ export interface TrackJobSpec {
   exclude_user_labeled?: boolean;
   frames?: string;
   path_mappings?: Record<string, string>;
+  robust?: number;
+  ensure_channels?: "rgb" | "grayscale";
+  tracker?: string;
+  similarity?: string;
+  match?: string;
+  track_window?: number;
+  max_tracks?: number;
+  connect_single_breaks?: boolean;
 }
 
 export interface TrainJobSpec {
