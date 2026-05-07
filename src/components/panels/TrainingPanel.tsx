@@ -284,6 +284,8 @@ export function TrainingPanel() {
   const [remoteLabelsPath, setRemoteLabelsPath] = useState("");
   const [remoteValLabelsPath, setRemoteValLabelsPath] = useState("");
   const [inferenceTarget, setInferenceTarget] = useState<string>("suggestions");
+  const [skipUserLabeled, setSkipUserLabeled] = useState(false);
+  const [existingPredictions, setExistingPredictions] = useState<"clear_all" | "replace" | "keep">("replace");
   const [fileBrowserOpen, setFileBrowserOpen] = useState(false);
   const [fileBrowserCallback, setFileBrowserCallback] = useState<
     ((path: string) => void) | null
@@ -995,6 +997,10 @@ export function TrainingPanel() {
           const skeleton = useAppStore.getState().skeleton;
           return skeleton?.nodes?.map((n) => n.name) ?? [];
         })()}
+        skipUserLabeled={skipUserLabeled}
+        onSkipUserLabeledChange={setSkipUserLabeled}
+        existingPredictions={existingPredictions}
+        onExistingPredictionsChange={setExistingPredictions}
       />
     </div>
   );

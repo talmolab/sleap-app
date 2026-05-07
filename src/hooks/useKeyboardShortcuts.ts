@@ -37,6 +37,11 @@ import {
   PasteTrack,
 } from "../commands";
 
+function isTextInput(e: KeyboardEvent): boolean {
+  const tag = (e.target as HTMLElement)?.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (e.target as HTMLElement)?.isContentEditable === true;
+}
+
 export function useKeyboardShortcuts() {
   useEffect(() => {
     const store = useAppStore.getState;
@@ -90,10 +95,12 @@ export function useKeyboardShortcuts() {
 
       // Suggestion navigation
       [DEFAULT_SHORTCUTS["goto next suggestion"]]: (e) => {
+        if (isTextInput(e)) return;
         e.preventDefault();
         commandContext.execute(GoNextSuggestion);
       },
       [DEFAULT_SHORTCUTS["goto prev suggestion"]]: (e) => {
+        if (isTextInput(e)) return;
         e.preventDefault();
         commandContext.execute(GoPrevSuggestion);
       },
@@ -110,14 +117,17 @@ export function useKeyboardShortcuts() {
 
       // View toggles (direct store)
       [DEFAULT_SHORTCUTS["show instances"]]: (e) => {
+        if (isTextInput(e)) return;
         e.preventDefault();
         store().toggle("showInstances");
       },
       [DEFAULT_SHORTCUTS["show labels"]]: (e) => {
+        if (isTextInput(e)) return;
         e.preventDefault();
         store().toggle("showLabels");
       },
       [DEFAULT_SHORTCUTS["show edges"]]: (e) => {
+        if (isTextInput(e)) return;
         e.preventDefault();
         store().toggle("showEdges");
       },
@@ -126,12 +136,14 @@ export function useKeyboardShortcuts() {
         store().toggle("fit");
       },
       [DEFAULT_SHORTCUTS["toggle pan mode"]]: (e) => {
+        if (isTextInput(e)) return;
         e.preventDefault();
         store().toggle("defaultToPan");
       },
 
       // Toggle place mode (N key)
       [DEFAULT_SHORTCUTS["toggle place mode"]]: (e) => {
+        if (isTextInput(e)) return;
         e.preventDefault();
         const { labelingMode, instance, enterPlacementMode, exitPlacementMode } = store();
         if (labelingMode === "place") {
@@ -143,6 +155,7 @@ export function useKeyboardShortcuts() {
 
       // Node cycling in place mode (Tab / Shift+Tab)
       "Tab": (e) => {
+        if (isTextInput(e)) return;
         const s = store();
         if (s.labelingMode !== "place" || !s.instance) return;
         e.preventDefault();
@@ -152,6 +165,7 @@ export function useKeyboardShortcuts() {
         s.set("placementNodeIdx", (current + 1) % count);
       },
       "Shift+Tab": (e) => {
+        if (isTextInput(e)) return;
         const s = store();
         if (s.labelingMode !== "place" || !s.instance) return;
         e.preventDefault();
@@ -259,6 +273,7 @@ export function useKeyboardShortcuts() {
 
       // Selection / exit placement mode
       [DEFAULT_SHORTCUTS["clear selection"]]: (e) => {
+        if (isTextInput(e)) return;
         e.preventDefault();
         const { labelingMode, exitPlacementMode } = store();
         if (labelingMode === "place") {
@@ -268,6 +283,7 @@ export function useKeyboardShortcuts() {
         }
       },
       [DEFAULT_SHORTCUTS["select next"]]: (e) => {
+        if (isTextInput(e)) return;
         e.preventDefault();
         const { labeledFrame, instance } = store();
         if (!labeledFrame) return;

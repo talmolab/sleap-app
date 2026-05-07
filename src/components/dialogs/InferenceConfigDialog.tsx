@@ -193,7 +193,7 @@ export function InferenceConfigDialog({
 
   return (
     <Dialog open={open} onOpenChange={(isOpen) => { if (!isOpen) { onClose(); setSearchQuery(""); } }}>
-      <DialogContent className="w-full sm:max-w-[1000px] h-[70vh] p-0 overflow-hidden inset-0 translate-x-0 translate-y-0 m-auto flex flex-col">
+      <DialogContent className="w-full sm:max-w-[1000px] h-[70vh] p-0 overflow-hidden inset-0 translate-x-0 translate-y-0 m-auto flex flex-col" onKeyDown={(e) => e.stopPropagation()}>
         <DialogHeader className="px-6 pt-5 pb-3 shrink-0">
           <DialogTitle className="text-lg">Inference Configuration</DialogTitle>
           {/* Search bar */}

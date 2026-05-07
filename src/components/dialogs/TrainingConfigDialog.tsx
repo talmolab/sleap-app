@@ -20,6 +20,7 @@ import { Search, HelpCircle } from "lucide-react";
 import type { ConfigFile, ConfigHyperparams, Backbone, AugmentationPreset, ModelType } from "@/stores/trainingStore";
 import { getSlotLabel } from "@/stores/trainingStore";
 import { useConnectStore } from "@/stores/connectStore";
+import { useAppStore } from "@/stores/appStore";
 
 // ── Props ──────────────────────────────────────────────────────────
 
@@ -34,6 +35,10 @@ interface TrainingConfigDialogProps {
   remoteEnabled: boolean;
   onRemoteEnabledChange: (enabled: boolean) => void;
   skeletonNodes?: string[];
+  skipUserLabeled: boolean;
+  onSkipUserLabeledChange: (v: boolean) => void;
+  existingPredictions: "clear_all" | "replace" | "keep";
+  onExistingPredictionsChange: (v: "clear_all" | "replace" | "keep") => void;
 }
 
 // ── Constants ──────────────────────────────────────────────────────
@@ -57,7 +62,7 @@ const MODEL_TYPE_DESCRIPTIONS: Record<ModelType, string> = {
 const PIPELINE_NAV = [
   { id: "pipeline-type", label: "Pipeline Type" },
   { id: "pipeline-inference", label: "Inference Target" },
-  { id: "pipeline-preprocessing", label: "Pre/Post-processing" },
+  { id: "pipeline-preprocessing", label: "Pre/Post-proc." },
   { id: "pipeline-performance", label: "Performance" },
   { id: "pipeline-wandb", label: "W&B" },
   { id: "pipeline-evaluation", label: "Evaluation" },
@@ -260,11 +265,19 @@ export function TrainingConfigDialog({
   remoteEnabled,
   onRemoteEnabledChange,
   skeletonNodes = [],
+  skipUserLabeled,
+  onSkipUserLabeledChange,
+  existingPredictions,
+  onExistingPredictionsChange,
 }: TrainingConfigDialogProps) {
   const pipelineScrollRef = useRef<HTMLDivElement>(null);
   const headScrollRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const [activeTab, setActiveTab] = useState("pipeline");
   const [searchQuery, setSearchQuery] = useState("");
+
+  // App store for suggestions count
+  const labels = useAppStore((s) => s.labels);
+  const suggestionsCount = labels?.suggestions?.length ?? 0;
 
   // Connect store for remote training section
   const connectionStatus = useConnectStore((s) => s.connectionStatus);
@@ -305,11 +318,9 @@ export function TrainingConfigDialog({
   const firstConfig = configs[0];
   const firstHp = firstConfig?.hyperparams;
 
-  const room = availableRooms.find((r) => r.roomId === roomId);
-
   return (
     <Dialog open={open} onOpenChange={(isOpen) => { if (!isOpen) { onClose(); setSearchQuery(""); } }}>
-      <DialogContent className="w-full sm:max-w-[1000px] h-[70vh] p-0 overflow-hidden inset-0 translate-x-0 translate-y-0 m-auto flex flex-col">
+      <DialogContent className="w-full sm:max-w-[1000px] h-[70vh] p-0 overflow-hidden inset-0 translate-x-0 translate-y-0 m-auto flex flex-col" onKeyDown={(e) => e.stopPropagation()}>
         <DialogHeader className="px-6 pt-5 pb-3 shrink-0">
           <DialogTitle className="text-lg">Training Configuration</DialogTitle>
           <div className="relative mt-2">
@@ -466,52 +477,109 @@ export function TrainingConfigDialog({
 
                 {/* 2. Inference Target */}
                 <SectionHeading id="pipeline-inference" label="Inference Target" />
-                <div className="space-y-2">
-                  <Field label="Post-Training Target" hint="Which frames to run inference on after training completes. Predictions will be merged back into the project.">
-                    <Select value={inferenceTarget} onValueChange={onInferenceTargetChange}>
-                      <SelectTrigger className="h-9 text-sm"><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="nothing">Nothing (skip inference)</SelectItem>
-                        <SelectItem value="suggestions">Suggested frames</SelectItem>
-                        <SelectItem value="user_labeled">User labeled frames</SelectItem>
-                        <SelectItem value="predicted">Frames with predictions</SelectItem>
-                        <SelectItem value="video">Entire current video</SelectItem>
-                        <SelectItem value="all_videos">All videos</SelectItem>
-                        <SelectItem value="random_video">Random sample (current video)</SelectItem>
-                        <SelectItem value="random">Random sample (all videos)</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </Field>
+                <div className="space-y-3">
+                  <div className="flex items-center gap-4 flex-wrap">
+                    <div className="flex items-center gap-2 flex-1 min-w-0">
+                      <span className="text-sm text-muted-foreground shrink-0 flex items-center gap-1.5">
+                        Post-Training Inference Target
+                        <HintBubble text="Which frames to run inference on after training completes. Predictions will be merged back into the project." />
+                      </span>
+                      <Select value={inferenceTarget} onValueChange={onInferenceTargetChange}>
+                        <SelectTrigger className="h-9 text-sm w-48"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="nothing">Nothing (skip inference)</SelectItem>
+                          <SelectItem value="suggestions">Suggested frames</SelectItem>
+                          <SelectItem value="user_labeled">User labeled frames</SelectItem>
+                          <SelectItem value="predicted">Frames with predictions</SelectItem>
+                          <SelectItem value="video">Entire current video</SelectItem>
+                          <SelectItem value="all_videos">All videos</SelectItem>
+                          <SelectItem value="random_video">Random sample (current video)</SelectItem>
+                          <SelectItem value="random">Random sample (all videos)</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    {inferenceTarget === "suggestions" && (
+                      <span className="text-sm text-muted-foreground">
+                        Frames in the Labeling Suggestions list ({suggestionsCount} frames)
+                      </span>
+                    )}
+                  </div>
+                  <Toggle
+                    label="Skip user labeled frames"
+                    hint="Exclude frames that already have user-created labels from the inference target."
+                    checked={skipUserLabeled}
+                    onChange={onSkipUserLabeledChange}
+                  />
+                  <div className="flex items-center gap-4">
+                    <span className="text-sm text-muted-foreground">Existing predictions:</span>
+                    {(["clear_all", "replace", "keep"] as const).map((option) => (
+                      <label key={option} className="flex items-center gap-1.5 cursor-pointer">
+                        <input
+                          type="radio"
+                          name="existing-predictions"
+                          checked={existingPredictions === option}
+                          onChange={() => onExistingPredictionsChange(option)}
+                          className="accent-primary"
+                        />
+                        <span className="text-sm">{option === "clear_all" ? "Clear all" : option === "replace" ? "Replace" : "Keep"}</span>
+                      </label>
+                    ))}
+                  </div>
                 </div>
 
                 <Separator className="my-5" />
 
-                {/* 3. Preprocessing / Post-processing */}
-                <SectionHeading id="pipeline-preprocessing" label="Preprocessing / Post-processing" />
+                {/* 3. Pre-processing / Post-processing */}
+                <SectionHeading id="pipeline-preprocessing" label="Pre-processing / Post-processing" />
                 {firstHp ? (
-                  <div className="space-y-2">
-                    <h4 className="text-sm font-medium text-muted-foreground mb-1">Preprocessing</h4>
-                    <Field label="Input Scale" id="field-inputscale" hint="Factor to resize images before feeding to the model. Lower = faster training + larger effective receptive field. Higher = more detail preserved but slower.">
-                      <Input type="number" value={firstHp.scale} onChange={(e) => { const v = Number(e.target.value); configs.forEach((c) => onUpdateSlot(c.slot, { scale: v })); }} min={0.125} max={1} step={0.125} className="h-9 text-sm" />
-                    </Field>
-                    <Field label="Validation Fraction" id="field-valfraction" hint="Fraction of labeled frames held out for validation. Used to monitor training and for early stopping. 10–20% is typical.">
-                      <Input type="number" value={firstHp.validationFraction} onChange={(e) => { const v = Number(e.target.value); configs.forEach((c) => onUpdateSlot(c.slot, { validationFraction: v })); }} min={0} max={1} step={0.05} className="h-9 text-sm" />
-                    </Field>
-                    <Separator className="my-4" />
-                    <h4 className="text-sm font-medium text-muted-foreground mb-1">Post-processing (inference)</h4>
-                    <Field label="Ensure Channels" id="field-ensurechannels" hint="Convert input images to a specific channel format during post-training inference. Use RGB for pretrained backbones or Grayscale for single-channel videos.">
-                      <Select value="auto" disabled>
-                        <SelectTrigger className="h-9 text-sm"><SelectValue /></SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="auto">Auto</SelectItem>
-                          <SelectItem value="rgb">RGB</SelectItem>
-                          <SelectItem value="grayscale">Grayscale</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </Field>
-                    <Field label="Max Instances" id="field-maxinstances" hint="Maximum number of animal instances to detect per frame during post-training inference. Leave empty for no limit.">
-                      <Input type="number" placeholder="No limit" disabled className="h-9 text-sm" />
-                    </Field>
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-6 flex-wrap">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                          Convert Colors
+                          <HintBubble text="Convert input images to a specific channel format. Use RGB for pretrained backbones or Grayscale for single-channel videos." />
+                        </span>
+                        <Select value="grayscale">
+                          <SelectTrigger className="h-8 text-sm w-32" id="field-ensurechannels"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="auto">Auto</SelectItem>
+                            <SelectItem value="rgb">RGB</SelectItem>
+                            <SelectItem value="grayscale">Grayscale</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                          Max Instances
+                          <HintBubble text="Maximum number of animal instances to detect per frame. Leave empty or check 'No max' for no limit." />
+                        </span>
+                        <Input type="number" id="field-maxinstances" placeholder="1" className="h-8 text-sm w-16" />
+                      </div>
+                      <label className="flex items-center gap-1.5 cursor-pointer">
+                        <input type="checkbox" defaultChecked className="accent-primary" />
+                        <span className="text-sm">No max</span>
+                      </label>
+                    </div>
+                    <div className="flex items-center gap-4">
+                      <label className="flex items-center gap-1.5 cursor-pointer">
+                        <input type="checkbox" className="accent-primary" />
+                        <span className="text-sm">Filter Overlapping Instances</span>
+                      </label>
+                      <div className="flex items-center gap-2 opacity-50">
+                        <span className="text-sm text-muted-foreground">Method:</span>
+                        <Select value="iou" disabled>
+                          <SelectTrigger className="h-8 text-sm w-36"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="iou">IOU (bounding box)</SelectItem>
+                            <SelectItem value="oks">OKS</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="flex items-center gap-2 opacity-50">
+                        <span className="text-sm text-muted-foreground">Threshold:</span>
+                        <Input type="number" value={0.80} disabled step={0.05} className="h-8 text-sm w-16" />
+                      </div>
+                    </div>
                   </div>
                 ) : (
                   <p className="text-sm text-muted-foreground">Upload config files to configure preprocessing.</p>
@@ -521,40 +589,96 @@ export function TrainingConfigDialog({
 
                 {/* 4. Performance */}
                 <SectionHeading id="pipeline-performance" label="Performance" />
-                <div className="space-y-2">
-                  <Field label="Accelerator" id="field-accelerator" hint="Hardware to use for training. 'Auto' detects available hardware automatically. Use GPU for NVIDIA, MPS for Apple Silicon, or CPU for CPU-only (slow).">
-                    <Select value="auto" disabled>
-                      <SelectTrigger className="h-9 text-sm"><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="auto">Auto</SelectItem>
-                        <SelectItem value="cuda">CUDA (GPU)</SelectItem>
-                        <SelectItem value="mps">MPS (Apple Silicon)</SelectItem>
-                        <SelectItem value="cpu">CPU</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </Field>
-                  <p className="text-[11px] text-muted-foreground">
-                    Additional performance options (data pipeline caching, dataloader workers) will be available in a future update.
-                  </p>
+                <div className="space-y-3">
+                  <div className="flex items-center gap-6 flex-wrap">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                        Data Pipeline
+                        <HintBubble text="How training data is loaded. 'Cache in Memory' is fastest but uses more RAM. 'Stream' reads from disk each epoch. 'Cache to Disk' saves processed data to disk." />
+                      </span>
+                      <Select value="memory">
+                        <SelectTrigger className="h-8 text-sm w-40" id="field-datapipeline"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="stream">Stream (no caching)</SelectItem>
+                          <SelectItem value="memory">Cache in Memory</SelectItem>
+                          <SelectItem value="disk">Cache to Disk</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                        Dataloader Workers
+                        <HintBubble text="Number of parallel workers for loading training data. More workers = faster data loading but more CPU/memory usage. 0 = main thread only." />
+                      </span>
+                      <Input type="number" value={0} min={0} max={16} className="h-8 text-sm w-16" />
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-6 flex-wrap">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                        Accelerator
+                        <HintBubble text="Hardware to use for training. 'Auto' detects available hardware. Use 'cuda' for NVIDIA GPUs, 'mps' for Apple Silicon, or 'cpu' for CPU-only (slow)." />
+                      </span>
+                      <Select value="auto">
+                        <SelectTrigger className="h-8 text-sm w-28" id="field-accelerator"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="auto">auto</SelectItem>
+                          <SelectItem value="cuda">cuda</SelectItem>
+                          <SelectItem value="mps">mps</SelectItem>
+                          <SelectItem value="cpu">cpu</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                        Number of Devices
+                        <HintBubble text="Number of GPUs/devices to use for training. Set to 1 for single-GPU training." />
+                      </span>
+                      <Input type="number" value={1} min={1} max={8} className="h-8 text-sm w-16" />
+                    </div>
+                    <label className="flex items-center gap-1.5 cursor-pointer">
+                      <input type="checkbox" className="accent-primary" />
+                      <span className="text-sm">Auto</span>
+                    </label>
+                  </div>
                 </div>
 
                 <Separator className="my-5" />
 
                 {/* 5. W&B */}
-                <SectionHeading id="pipeline-wandb" label="Weights & Biases" />
+                <SectionHeading id="pipeline-wandb" label="WandB" />
                 {firstHp ? (
-                  <div className="space-y-2">
-                    <Toggle label="Enable W&B" id="field-wandb-enable" hint="Log training metrics, loss curves, and visualizations to Weights & Biases for experiment tracking." checked={firstHp.useWandb} onChange={(v) => configs.forEach((c) => onUpdateSlot(c.slot, { useWandb: v }))} />
-                    {firstHp.useWandb && (
-                      <>
-                        <Field label="Entity" id="field-wandb-entity" hint="W&B username or organization name.">
-                          <Input type="text" value={firstHp.wandbEntity} onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { wandbEntity: e.target.value }))} placeholder="username/org" className="h-9 text-sm" />
-                        </Field>
-                        <Field label="Project" id="field-wandb-project" hint="W&B project name for grouping training runs.">
-                          <Input type="text" value={firstHp.wandbProject} onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { wandbProject: e.target.value }))} placeholder="project-name" className="h-9 text-sm" />
-                        </Field>
-                      </>
-                    )}
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-muted-foreground">Status:</span>
+                      <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
+                      <span className="text-sm text-red-400">Not logged in</span>
+                    </div>
+                    <div className="flex items-center gap-4 flex-wrap">
+                      <Toggle label="Enable WandB for logging" id="field-wandb-enable" hint="Log training metrics, loss curves, and visualizations to Weights & Biases for experiment tracking." checked={firstHp.useWandb} onChange={(v) => configs.forEach((c) => onUpdateSlot(c.slot, { useWandb: v }))} />
+                      <Toggle label="Upload Viz" hint="Upload prediction visualization images to W&B for remote viewing." checked={false} onChange={() => {}} />
+                      <Toggle label="Open in browser" hint="Automatically open the W&B run page in your browser when training starts." checked={false} onChange={() => {}} />
+                    </div>
+                    <div className="flex items-center gap-6 flex-wrap">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm text-muted-foreground">Entity Name:</span>
+                        <Input type="text" value={firstHp.wandbEntity} onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { wandbEntity: e.target.value }))} placeholder="" className="h-8 text-sm w-40" disabled={!firstHp.useWandb} />
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm text-muted-foreground">Project Name:</span>
+                        <Input type="text" value={firstHp.wandbProject} onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { wandbProject: e.target.value }))} placeholder="" className="h-8 text-sm w-40" disabled={!firstHp.useWandb} />
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-6 flex-wrap">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm text-muted-foreground">Previous Run ID:</span>
+                        <Input type="text" placeholder="" className="h-8 text-sm w-40" disabled={!firstHp.useWandb} />
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm text-muted-foreground">Group Name:</span>
+                        <Input type="text" placeholder="" className="h-8 text-sm w-40" disabled={!firstHp.useWandb} />
+                      </div>
+                    </div>
                   </div>
                 ) : (
                   <p className="text-sm text-muted-foreground">Upload config files to configure W&B.</p>
@@ -564,11 +688,17 @@ export function TrainingConfigDialog({
 
                 {/* 6. Evaluation */}
                 <SectionHeading id="pipeline-evaluation" label="Evaluation" />
-                <div className="space-y-2">
-                  <Toggle label="Run evaluation during training" id="field-eval-enable" hint="Run inference on validation frames at epoch intervals and compute pose metrics (mOKS, mAP, PCK). Useful for monitoring training quality beyond loss." checked={false} onChange={() => {}} />
-                  <p className="text-[11px] text-muted-foreground">
-                    Evaluation settings (frequency, metric selection) will be available in a future update.
-                  </p>
+                <div className="space-y-3">
+                  <div className="flex items-center gap-6">
+                    <Toggle label="Run evaluation during training" id="field-eval-enable" hint="Run inference on validation frames at epoch intervals and compute pose metrics (mOKS, mAP, PCK). Useful for monitoring training quality beyond loss." checked={false} onChange={() => {}} />
+                    <div className="flex items-center gap-2 opacity-50">
+                      <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                        Frequency (epochs):
+                        <HintBubble text="How often to run full evaluation. Every 1 epoch is most informative but slower. Every 5–10 epochs is a good balance." />
+                      </span>
+                      <Input type="number" value={1} min={1} disabled className="h-8 text-sm w-16" />
+                    </div>
+                  </div>
                 </div>
 
                 <Separator className="my-5" />
@@ -576,13 +706,35 @@ export function TrainingConfigDialog({
                 {/* 7. Output */}
                 <SectionHeading id="pipeline-output" label="Output" />
                 {firstHp ? (
-                  <div className="space-y-2">
+                  <div className="space-y-3">
                     <Field label="Run Name" id="field-runname" hint="Name for this training run. Leave empty to auto-generate from timestamp and head type.">
                       <Input type="text" value={firstHp.runName} onChange={(e) => onUpdateSlot(firstConfig!.slot, { runName: e.target.value })} placeholder="Auto-generated" className="h-9 text-sm" />
                     </Field>
-                    <p className="text-[11px] text-muted-foreground">
-                      Checkpoint options (runs folder, save best/last model) will be available in a future update.
-                    </p>
+                    <Field label="Runs Folder" hint="Directory where the run folder and checkpoints will be created.">
+                      <Input type="text" value="models" disabled className="h-9 text-sm" />
+                    </Field>
+                    <div className="flex items-center gap-6">
+                      <span className="text-sm text-muted-foreground">Checkpoint:</span>
+                      <label className="flex items-center gap-1.5 cursor-pointer">
+                        <input type="checkbox" defaultChecked className="accent-primary" />
+                        <span className="text-sm">Best Model</span>
+                      </label>
+                      <label className="flex items-center gap-1.5 cursor-pointer">
+                        <input type="checkbox" className="accent-primary" />
+                        <span className="text-sm">Latest Model</span>
+                      </label>
+                    </div>
+                    <div className="flex items-center gap-6">
+                      <span className="text-sm text-muted-foreground">Visualization:</span>
+                      <label className="flex items-center gap-1.5 cursor-pointer">
+                        <input type="checkbox" defaultChecked className="accent-primary" />
+                        <span className="text-sm">Visualize Predictions</span>
+                      </label>
+                      <label className="flex items-center gap-1.5 cursor-pointer">
+                        <input type="checkbox" className="accent-primary" />
+                        <span className="text-sm">Keep Viz Images</span>
+                      </label>
+                    </div>
                   </div>
                 ) : (
                   <p className="text-sm text-muted-foreground">Upload config files to configure output.</p>
@@ -592,19 +744,42 @@ export function TrainingConfigDialog({
 
                 {/* 8. Remote Training */}
                 <SectionHeading id="pipeline-remote" label="Remote Training" />
-                <div className="space-y-2">
+                <div className="space-y-3">
                   <Toggle label="Enable Remote Training" hint="Send training jobs to a remote worker via sleap-connect instead of running locally." checked={remoteEnabled} onChange={onRemoteEnabledChange} />
+                  {remoteEnabled && connectionStatus !== "connected" && (
+                    <div className="bg-orange-500/10 border border-orange-500/30 rounded-md px-3 py-2 text-sm text-orange-400">
+                      Not connected. Go to the Connect tab to join a room before enabling remote training.
+                    </div>
+                  )}
                   {remoteEnabled && connectionStatus === "connected" && (
                     <>
-                      <Field label="Room">
-                        <span className="text-sm flex items-center gap-1.5">
-                          <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
-                          {room?.name || roomId}
+                      <div className="flex items-center gap-2">
+                        <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
+                        <span className="text-sm text-green-400">
+                          Connected ({workers.filter((w) => w.status === "available").length} worker{workers.filter((w) => w.status === "available").length !== 1 ? "s" : ""} available)
                         </span>
-                      </Field>
-                      <Field label="Worker" hint="Select which worker will run the training job. Workers with GPUs are preferred.">
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                          Room:
+                          <HintBubble text="The sleap-connect room to use for remote training. Rooms group workers and clients together." />
+                        </span>
+                        <Select value={roomId || ""} disabled>
+                          <SelectTrigger className="h-8 text-sm w-64"><SelectValue placeholder="Select a room" /></SelectTrigger>
+                          <SelectContent>
+                            {availableRooms.map((r) => (
+                              <SelectItem key={r.roomId} value={r.roomId}>{r.name || r.roomId}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                          Worker:
+                          <HintBubble text="Select which worker will run the training job. Workers with GPUs are preferred for faster training." />
+                        </span>
                         <Select value={selectedWorkerId || ""} onValueChange={selectWorker}>
-                          <SelectTrigger className="h-9 text-sm"><SelectValue placeholder="Select a worker" /></SelectTrigger>
+                          <SelectTrigger className="h-8 text-sm w-64"><SelectValue placeholder="Select a worker" /></SelectTrigger>
                           <SelectContent>
                             {workers.map((w) => (
                               <SelectItem key={w.peerId} value={w.peerId} disabled={w.status !== "available"}>
@@ -613,13 +788,8 @@ export function TrainingConfigDialog({
                             ))}
                           </SelectContent>
                         </Select>
-                      </Field>
+                      </div>
                     </>
-                  )}
-                  {remoteEnabled && connectionStatus !== "connected" && (
-                    <p className="text-sm text-muted-foreground">
-                      Connect to a room in the Connect tab to enable remote training.
-                    </p>
                   )}
                 </div>
               </div>
