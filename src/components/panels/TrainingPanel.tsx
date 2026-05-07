@@ -56,6 +56,7 @@ const AUGMENTATION_PRESET_OPTIONS: { value: AugmentationPreset; label: string; d
   { value: "light", label: "Light", desc: "Rotation ±15°" },
   { value: "standard", label: "Standard", desc: "Rotation ±180° + noise" },
   { value: "heavy", label: "Heavy", desc: "Full augmentation suite" },
+  { value: "custom", label: "Custom", desc: "Configure manually" },
 ];
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

@@ -12,9 +12,9 @@ export type ModelType =
   | "top_down_id"
   | "bottom_up_id";
 
-export type Backbone = "UNet" | "LEAP CNN" | "Stacked Hourglass";
+export type Backbone = "unet" | "convnext" | "swint";
 
-export type AugmentationPreset = "none" | "light" | "standard" | "heavy";
+export type AugmentationPreset = "none" | "light" | "standard" | "heavy" | "custom";
 
 export interface TrainingConfig {
   // Model
@@ -183,6 +183,7 @@ const AUGMENTATION_PRESETS: Record<AugmentationPreset, AugmentationConfig> = {
     brightness_max: 0.1,
     brightness_p: 0.5,
   },
+  custom: { rotation: 180, affine_p: 1.0 },
 };
 
 // ── YAML override helper ─────────────────────────────────────────
@@ -240,26 +241,28 @@ export function applyHyperparamsToYaml(yamlText: string, hp: ConfigHyperparams):
     }
   }
 
-  // Augmentation preset
-  const aug = AUGMENTATION_PRESETS[hp.augmentationPreset];
-  if (!data.augmentation_config) data.augmentation_config = {};
-  const augConfig = data.augmentation_config as Record<string, unknown>;
-  augConfig.rotation = aug.rotation;
-  augConfig.affine_p = aug.affine_p;
-  augConfig.scale_min = aug.scale_min ?? null;
-  augConfig.scale_max = aug.scale_max ?? null;
-  augConfig.uniform_noise_min = aug.uniform_noise_min ?? 0;
-  augConfig.uniform_noise_max = aug.uniform_noise_max ?? 0;
-  augConfig.uniform_noise_p = aug.uniform_noise_p ?? 0;
-  augConfig.gaussian_noise_mean = aug.gaussian_noise_mean ?? 0;
-  augConfig.gaussian_noise_std = aug.gaussian_noise_std ?? 0;
-  augConfig.gaussian_noise_p = aug.gaussian_noise_p ?? 0;
-  augConfig.contrast_min = aug.contrast_min ?? 0.5;
-  augConfig.contrast_max = aug.contrast_max ?? 2.0;
-  augConfig.contrast_p = aug.contrast_p ?? 0;
-  augConfig.brightness_min = aug.brightness_min ?? 0;
-  augConfig.brightness_max = aug.brightness_max ?? 0;
-  augConfig.brightness_p = aug.brightness_p ?? 0;
+  // Augmentation preset — skip override for "custom" (user manages augmentation directly)
+  if (hp.augmentationPreset !== "custom") {
+    const aug = AUGMENTATION_PRESETS[hp.augmentationPreset];
+    if (!data.augmentation_config) data.augmentation_config = {};
+    const augConfig = data.augmentation_config as Record<string, unknown>;
+    augConfig.rotation = aug.rotation;
+    augConfig.affine_p = aug.affine_p;
+    augConfig.scale_min = aug.scale_min ?? null;
+    augConfig.scale_max = aug.scale_max ?? null;
+    augConfig.uniform_noise_min = aug.uniform_noise_min ?? 0;
+    augConfig.uniform_noise_max = aug.uniform_noise_max ?? 0;
+    augConfig.uniform_noise_p = aug.uniform_noise_p ?? 0;
+    augConfig.gaussian_noise_mean = aug.gaussian_noise_mean ?? 0;
+    augConfig.gaussian_noise_std = aug.gaussian_noise_std ?? 0;
+    augConfig.gaussian_noise_p = aug.gaussian_noise_p ?? 0;
+    augConfig.contrast_min = aug.contrast_min ?? 0.5;
+    augConfig.contrast_max = aug.contrast_max ?? 2.0;
+    augConfig.contrast_p = aug.contrast_p ?? 0;
+    augConfig.brightness_min = aug.brightness_min ?? 0;
+    augConfig.brightness_max = aug.brightness_max ?? 0;
+    augConfig.brightness_p = aug.brightness_p ?? 0;
+  }
 
   return yaml.dump(doc, { lineWidth: -1 });
 }
@@ -347,11 +350,9 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       const backboneConfig = (modelConfig.backbone_config ?? {}) as Record<string, unknown>;
       const activeBackbone = Object.entries(backboneConfig).find(([, v]) => v != null)?.[0] ?? "";
       const backboneMap: Record<string, Backbone> = {
-        "unet": "UNet",
-        "leap": "LEAP CNN",
-        "leap_cnn": "LEAP CNN",
-        "hourglass": "Stacked Hourglass",
-        "stacked_hourglass": "Stacked Hourglass",
+        "unet": "unet",
+        "convnext": "convnext",
+        "swint": "swint",
       };
 
       // Extract early stopping config

@@ -18,7 +18,7 @@ import {
 } from "@/components/ui/select";
 import { Search, HelpCircle } from "lucide-react";
 import type { ConfigFile, ConfigHyperparams, Backbone, AugmentationPreset, ModelType } from "@/stores/trainingStore";
-import { getSlotLabel } from "@/stores/trainingStore";
+import { getSlotLabel, useTrainingStore } from "@/stores/trainingStore";
 import { useConnectStore } from "@/stores/connectStore";
 import { useAppStore } from "@/stores/appStore";
 
@@ -71,15 +71,16 @@ const PIPELINE_NAV = [
 ] as const;
 
 const HEAD_NAV = [
-  { id: "head-model", label: "Model" },
-  { id: "head-optimization", label: "Optimization" },
+  { id: "head-data", label: "Data" },
   { id: "head-augmentation", label: "Augmentation" },
+  { id: "head-optimization", label: "Optimization" },
+  { id: "head-model", label: "Model" },
 ] as const;
 
 const BACKBONE_OPTIONS: { value: Backbone; label: string }[] = [
-  { value: "UNet", label: "UNet" },
-  { value: "LEAP CNN", label: "LEAP CNN" },
-  { value: "Stacked Hourglass", label: "Stacked Hourglass" },
+  { value: "unet", label: "UNet" },
+  { value: "convnext", label: "ConvNeXt" },
+  { value: "swint", label: "Swin Transformer" },
 ];
 
 const AUGMENTATION_PRESET_OPTIONS: { value: AugmentationPreset; label: string; desc: string }[] = [
@@ -87,6 +88,7 @@ const AUGMENTATION_PRESET_OPTIONS: { value: AugmentationPreset; label: string; d
   { value: "light", label: "Light", desc: "Rotation ±15°" },
   { value: "standard", label: "Standard", desc: "Rotation ±180° + noise" },
   { value: "heavy", label: "Heavy", desc: "Full augmentation suite" },
+  { value: "custom", label: "Custom", desc: "Configure each parameter manually" },
 ];
 
 const SEARCHABLE_FIELDS = [
@@ -182,17 +184,247 @@ function SectionHeading({ id, label }: { id: string; label: string }) {
 // ── Per-head tab content ───────────────────────────────────────────
 
 function HeadTabContent({
+  slot,
+  configFile,
   hp,
   onUpdate,
   scrollRefCallback,
+  skeletonNodes,
 }: {
+  slot: string;
+  configFile: ConfigFile | undefined;
   hp: ConfigHyperparams;
   onUpdate: (updates: Partial<ConfigHyperparams>) => void;
   scrollRefCallback: (el: HTMLDivElement | null) => void;
+  skeletonNodes: string[];
 }) {
+  const showAnchorPart = slot === "centroid" || slot === "centered_instance";
+  const [trainingMode, setTrainingMode] = useState<"reuse_config" | "resume" | "reuse_model">("reuse_config");
+  const modelLocked = trainingMode === "resume" || trainingMode === "reuse_model";
+  const allLocked = trainingMode === "reuse_model";
+  const { parseYamlConfig, addConfigFile } = useTrainingStore();
+
+  const handleConfigBrowse = () => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".yaml,.yml";
+    input.onchange = () => {
+      const file = input.files?.[0];
+      if (file) {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const text = reader.result as string;
+          const parsed = parseYamlConfig(text, file.name, slot);
+          if (parsed) addConfigFile(parsed);
+        };
+        reader.readAsText(file);
+      }
+    };
+    input.click();
+  };
+
   return (
-    <div ref={scrollRefCallback} className="flex-1 overflow-y-auto px-8 py-6 bg-muted/20">
-      {/* ── Model ── */}
+    <div ref={scrollRefCallback} className="h-full overflow-y-auto px-8 py-6 bg-muted/20">
+      {/* ── Config file selector (dropdown like PyQt) ── */}
+      <div className="mb-5 pb-4 border-b">
+        <Select
+          value={configFile ? configFile.filename : "__browse__"}
+          onValueChange={(v) => { if (v === "__browse__") handleConfigBrowse(); }}
+        >
+          <SelectTrigger className="h-10 text-sm font-mono bg-background">
+            <SelectValue placeholder="Select training config file..." />
+          </SelectTrigger>
+          <SelectContent>
+            {configFile && (
+              <SelectItem value={configFile.filename}>
+                {configFile.filename} ({configFile.modelType})
+              </SelectItem>
+            )}
+            <SelectItem value="__browse__" className="text-primary font-medium">
+              Select training config file...
+            </SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      {/* ── Training mode radios ── */}
+      <div className="flex items-center gap-5 mb-5 pb-4 border-b">
+        {([
+          { value: "reuse_config" as const, label: "Reuse config (train from scratch)" },
+          { value: "resume" as const, label: "Resume training (fine-tune)" },
+          { value: "reuse_model" as const, label: "Reuse model (don't retrain)" },
+        ]).map((opt) => (
+          <label key={opt.value} className="flex items-center gap-1.5 cursor-pointer">
+            <input
+              type="radio"
+              name={`training-mode-${slot}`}
+              checked={trainingMode === opt.value}
+              onChange={() => setTrainingMode(opt.value)}
+              className="accent-primary"
+            />
+            <span className="text-sm">{opt.label}</span>
+          </label>
+        ))}
+      </div>
+
+      {/* ── 1. Data ── */}
+      <div className={allLocked ? "opacity-40 pointer-events-none" : ""}>
+      <SectionHeading id="head-data" label="Data" />
+      <div className="space-y-2">
+        <Field label="Validation Fraction" hint="Fraction of labeled frames held out for validation. Used to monitor training and for early stopping. 10–20% is typical.">
+          <Input type="number" value={hp.validationFraction} onChange={(e) => onUpdate({ validationFraction: Number(e.target.value) })} min={0} max={1} step={0.05} className="h-9 text-sm" />
+        </Field>
+        <div className="flex items-center gap-6">
+          <Toggle label="Overfit Mode (train=val)" hint="Use the same data for training and validation. Useful for debugging model capacity — should overfit perfectly if the model is expressive enough." checked={false} onChange={() => {}} />
+        </div>
+        <div className="flex items-center gap-4 flex-wrap">
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+              Random Seed
+              <HintBubble text="Seed for reproducibility. Set a fixed value to get the same train/val split and augmentation sequence across runs." />
+            </span>
+            <Input type="number" placeholder="0" className="h-8 text-sm w-20" />
+          </div>
+          <label className="flex items-center gap-1.5 cursor-pointer">
+            <input type="checkbox" defaultChecked className="accent-primary" />
+            <span className="text-sm">Auto</span>
+          </label>
+        </div>
+        <Field label="Input Scaling" hint="Factor to resize images before feeding to the model. Lower = faster training + larger effective receptive field. Higher = more detail preserved but slower.">
+          <Input type="number" value={hp.scale} onChange={(e) => onUpdate({ scale: Number(e.target.value) })} min={0.125} max={1} step={0.125} className="h-9 text-sm" />
+        </Field>
+      </div>
+
+      </div>
+
+      <Separator className="my-5" />
+
+      {/* ── 2. Augmentation ── */}
+      <div className={allLocked ? "opacity-40 pointer-events-none" : ""}>
+      <SectionHeading id="head-augmentation" label="Augmentation" />
+      <div className="space-y-2">
+        <Field label="Preset" id="field-augpreset" hint="Quick preset that configures all augmentation parameters at once. Choose 'None' to disable or select a preset and adjust individual settings below.">
+          <Select value={hp.augmentationPreset} onValueChange={(v) => onUpdate({ augmentationPreset: v as AugmentationPreset })}>
+            <SelectTrigger className="h-9 text-sm"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {AUGMENTATION_PRESET_OPTIONS.map((o) => (
+                <SelectItem key={o.value} value={o.value}>{o.label} — {o.desc}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Field>
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+            Rotation
+            <HintBubble text="Random rotation range in degrees applied during augmentation. ±180° means full rotation invariance." />
+          </span>
+          <Select value={hp.augmentationPreset === "none" ? "off" : hp.augmentationPreset === "light" ? "15" : "180"}>
+            <SelectTrigger className="h-8 text-sm w-24"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="off">Off</SelectItem>
+              <SelectItem value="15">±15°</SelectItem>
+              <SelectItem value="180">±180°</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        {(() => {
+          const isCustom = hp.augmentationPreset === "custom";
+          const scaleOn = isCustom ? false : hp.augmentationPreset === "heavy";
+          const noiseOn = isCustom ? false : hp.augmentationPreset === "standard" || hp.augmentationPreset === "heavy";
+          const contrastOn = isCustom ? false : hp.augmentationPreset === "heavy";
+          const brightnessOn = isCustom ? false : hp.augmentationPreset === "heavy";
+          return (
+            <>
+              <div className="flex items-center gap-6 flex-wrap">
+                <label className="flex items-center gap-1.5 cursor-pointer">
+                  <input type="checkbox" checked={scaleOn} readOnly={!isCustom} className="accent-primary" />
+                  <span className="text-sm flex items-center gap-1">Scale <HintBubble text="Random scaling factor applied to images. Helps the model handle animals at different distances from the camera." /></span>
+                </label>
+                <label className="flex items-center gap-1.5 cursor-pointer">
+                  <input type="checkbox" readOnly={!isCustom} className="accent-primary" />
+                  <span className="text-sm flex items-center gap-1">Uniform Noise <HintBubble text="Add random uniform noise to pixel values. Helps with robustness to sensor noise." /></span>
+                </label>
+                <label className="flex items-center gap-1.5 cursor-pointer">
+                  <input type="checkbox" checked={noiseOn} readOnly={!isCustom} className="accent-primary" />
+                  <span className="text-sm flex items-center gap-1">Gaussian Noise <HintBubble text="Add random Gaussian noise to pixel values. More natural noise model than uniform." /></span>
+                </label>
+                <label className="flex items-center gap-1.5 cursor-pointer">
+                  <input type="checkbox" checked={contrastOn} readOnly={!isCustom} className="accent-primary" />
+                  <span className="text-sm flex items-center gap-1">Contrast <HintBubble text="Random contrast adjustment. Helps with varying lighting conditions." /></span>
+                </label>
+                <label className="flex items-center gap-1.5 cursor-pointer">
+                  <input type="checkbox" checked={brightnessOn} readOnly={!isCustom} className="accent-primary" />
+                  <span className="text-sm flex items-center gap-1">Brightness <HintBubble text="Random brightness adjustment. Helps with varying illumination." /></span>
+                </label>
+              </div>
+              <div className="flex items-center gap-4 flex-wrap mt-1">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                    Scale Min
+                    <HintBubble text="Minimum scaling factor. Values below 1.0 shrink the image. E.g., 0.9 means images can be scaled down to 90%." />
+                  </span>
+                  <Input type="number" value={0.9} min={0.1} max={2} step={0.05} className="h-8 text-sm w-20" disabled={!scaleOn && !isCustom} />
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                    Scale Max
+                    <HintBubble text="Maximum scaling factor. Values above 1.0 enlarge the image. E.g., 1.1 means images can be scaled up to 110%." />
+                  </span>
+                  <Input type="number" value={1.1} min={0.1} max={2} step={0.05} className="h-8 text-sm w-20" disabled={!scaleOn && !isCustom} />
+                </div>
+              </div>
+            </>
+          );
+        })()}
+      </div>
+      </div>
+
+      <Separator className="my-5" />
+
+      {/* ── 3. Optimization ── */}
+      <div className={allLocked ? "opacity-40 pointer-events-none" : ""}>
+      <SectionHeading id="head-optimization" label="Optimization" />
+      <div className="space-y-2">
+        <Field label="Batch Size" id="field-batchsize" hint="Number of samples per training batch. Larger batches train faster but use more GPU memory. If you get OOM errors, reduce this first. 4–8 is typical for 8GB GPUs.">
+          <Input type="number" value={hp.batchSize} onChange={(e) => onUpdate({ batchSize: Number(e.target.value) })} min={1} max={128} className="h-9 text-sm" />
+        </Field>
+        <Field label="Epochs" id="field-maxepochs" hint="Maximum training epochs. Training may stop earlier via early stopping. 100–200 is typical; complex datasets may need more.">
+          <Input type="number" value={hp.maxEpochs} onChange={(e) => onUpdate({ maxEpochs: Number(e.target.value) })} min={1} className="h-9 text-sm" />
+        </Field>
+        <Field label="Initial Learning Rate" id="field-learningrate" hint="Initial learning rate for the optimizer. Lower values train more slowly but may converge better. 1e-4 is a good default.">
+          <Input type="number" value={hp.learningRate} onChange={(e) => onUpdate({ learningRate: Number(e.target.value) })} step={0.0001} className="h-9 text-sm" />
+        </Field>
+        <Toggle label="Stop Training on Plateau" hint="Automatically stop when validation loss stops improving, preventing overfitting and wasted compute." checked={true} onChange={() => {}} />
+        <Field label="Plateau Min. Delta" hint="Minimum change in validation loss to qualify as an improvement. Very small values (1e-6 to 1e-8) ensure training continues until truly converged.">
+          <Input type="text" value="1e-08" className="h-9 text-sm" />
+        </Field>
+        <Field label="Plateau Patience" id="field-earlystopping" hint="Number of epochs to wait for improvement before stopping. Higher values allow recovery from plateaus but risk overfitting.">
+          <Input type="number" value={hp.earlyStoppingPatience} onChange={(e) => onUpdate({ earlyStoppingPatience: Number(e.target.value) })} min={1} max={100} className="h-9 text-sm" />
+        </Field>
+        <Toggle label="Online Mining" hint="Online Hard Keypoint Mining (OHKM). Focuses training on the hardest-to-predict keypoints by upweighting their loss contribution." checked={false} onChange={() => {}} />
+        <div className="flex items-center gap-4 flex-wrap opacity-50">
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+              Min Hard Keypoints
+              <HintBubble text="Minimum number of keypoints to treat as 'hard' per instance during OHKM." />
+            </span>
+            <Input type="number" value={2} disabled className="h-8 text-sm w-16" />
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+              Max Hard Keypoints
+              <HintBubble text="Maximum number of keypoints to treat as 'hard' per instance. Leave empty for no limit. If set, only the top-N hardest keypoints contribute to the OHKM loss." />
+            </span>
+            <Input type="number" placeholder="None" disabled className="h-8 text-sm w-16" />
+          </div>
+        </div>
+      </div>
+      </div>
+
+      <Separator className="my-5" />
+
+      {/* ── 4. Model ── */}
+      <div className={modelLocked ? "opacity-40 pointer-events-none" : ""}>
       <SectionHeading id="head-model" label="Model" />
       <div className="space-y-2">
         <Field label="Backbone" id="field-backbone" hint="UNet is recommended for most cases. ConvNeXt/SwinT have pretrained weights but require RGB images and have fixed max_stride=32.">
@@ -203,50 +435,91 @@ function HeadTabContent({
             </SelectContent>
           </Select>
         </Field>
+        <Separator className="my-3" />
+        <div className="flex items-center gap-6 flex-wrap">
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+              Stem Stride
+              <HintBubble text="Learned downsampling stride applied before the encoder. Set to None to skip. Reduces input resolution early for faster training." />
+            </span>
+            <Input type="number" placeholder="0" className="h-8 text-sm w-16" />
+            <label className="flex items-center gap-1.5 cursor-pointer">
+              <input type="checkbox" defaultChecked className="accent-primary" />
+              <span className="text-sm">None</span>
+            </label>
+          </div>
+        </div>
+        <div className="flex items-center gap-6 flex-wrap">
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+              Max Stride
+              <HintBubble text="Determines network depth and receptive field. Higher = larger receptive field but more parameters and memory." />
+            </span>
+            <Select value="16">
+              <SelectTrigger className="h-8 text-sm w-20"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {[2, 4, 8, 16, 32, 64, 128].map((v) => <SelectItem key={v} value={String(v)}>{v}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+              Filters
+              <HintBubble text="Number of filters in the first encoder block. Each subsequent block multiplies by filters_rate. More filters = more capacity but slower. 16–64 typical." />
+            </span>
+            <Input type="number" value={16} className="h-8 text-sm w-16" />
+          </div>
+        </div>
+        <div className="flex items-center gap-6 flex-wrap">
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+              Filters Rate
+              <HintBubble text="Multiplier for filters per encoder block. E.g., rate=2.0 with base=16: 16→32→64→128." />
+            </span>
+            <Input type="number" value={2.0} step={0.1} className="h-8 text-sm w-20" />
+          </div>
+          <label className="flex items-center gap-1.5 cursor-pointer">
+            <input type="checkbox" defaultChecked className="accent-primary" />
+            <span className="text-sm flex items-center gap-1">Middle Block <HintBubble text="Add a convolutional block at the bottom of the U-Net between encoder and decoder." /></span>
+          </label>
+          <label className="flex items-center gap-1.5 cursor-pointer">
+            <input type="checkbox" defaultChecked className="accent-primary" />
+            <span className="text-sm flex items-center gap-1">Up Interpolate <HintBubble text="Use interpolation for upsampling in the decoder instead of transposed convolutions." /></span>
+          </label>
+        </div>
+        <Separator className="my-3" />
+        <h4 className="text-sm font-medium text-muted-foreground mb-2">Head</h4>
+        {showAnchorPart && (
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+              Anchor Part
+              <HintBubble text="The body part used to center the crop around each animal. Choose one that is consistently visible and near the center of the animal." />
+            </span>
+            <Select value="auto">
+              <SelectTrigger className="h-8 text-sm w-32"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="auto">Auto</SelectItem>
+                {skeletonNodes.map((n) => <SelectItem key={n} value={n}>{n}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
         <Field label="Sigma" id="field-sigma" hint="Gaussian spread for keypoint heatmaps. Smaller = more precise but harder to train. Larger = easier to train but less spatially precise.">
           <Input type="number" value={hp.sigma} onChange={(e) => onUpdate({ sigma: Number(e.target.value) })} min={0.5} max={30} step={0.5} className="h-9 text-sm" />
         </Field>
-      </div>
-
-      <Separator className="my-5" />
-
-      {/* ── Optimization ── */}
-      <SectionHeading id="head-optimization" label="Optimization" />
-      <div className="space-y-2">
-        <Field label="Max Epochs" id="field-maxepochs" hint="Maximum training epochs. Training may stop earlier via early stopping. 100–200 is typical; complex datasets may need more.">
-          <Input type="number" value={hp.maxEpochs} onChange={(e) => onUpdate({ maxEpochs: Number(e.target.value) })} min={1} className="h-9 text-sm" />
-        </Field>
-        <Field label="Batch Size" id="field-batchsize" hint="Number of samples per training batch. Larger batches train faster but use more GPU memory. If you get OOM errors, reduce this first. 4–8 is typical for 8GB GPUs.">
-          <Input type="number" value={hp.batchSize} onChange={(e) => onUpdate({ batchSize: Number(e.target.value) })} min={1} max={128} className="h-9 text-sm" />
-        </Field>
-        <Field label="Learning Rate" id="field-learningrate" hint="Initial learning rate for the optimizer. Lower values train more slowly but may converge better. 1e-4 is a good default.">
-          <Input type="number" value={hp.learningRate} onChange={(e) => onUpdate({ learningRate: Number(e.target.value) })} step={0.0001} className="h-9 text-sm" />
-        </Field>
-        <Separator className="my-4" />
-        <h4 className="text-sm font-medium text-muted-foreground mb-3">Early Stopping</h4>
-        <Field label="Patience (epochs)" id="field-earlystopping" hint="Number of epochs to wait for improvement before stopping. Higher values allow recovery from plateaus but risk overfitting.">
-          <Input type="number" value={hp.earlyStoppingPatience} onChange={(e) => onUpdate({ earlyStoppingPatience: Number(e.target.value) })} min={1} max={100} className="h-9 text-sm" />
-        </Field>
-      </div>
-
-      <Separator className="my-5" />
-
-      {/* ── Augmentation ── */}
-      <SectionHeading id="head-augmentation" label="Augmentation" />
-      <div className="space-y-2">
-        <Field label="Preset" id="field-augpreset" hint="Data augmentation expands training data via random transformations (rotation, noise, etc.) to help the model generalize and reduce overfitting.">
-          <Select value={hp.augmentationPreset} onValueChange={(v) => onUpdate({ augmentationPreset: v as AugmentationPreset })}>
-            <SelectTrigger className="h-9 text-sm"><SelectValue /></SelectTrigger>
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+            Output Stride
+            <HintBubble text="Stride of output confidence maps relative to input. Stride=2 means 0.5× resolution output. Higher values speed up training but decrease precision." />
+          </span>
+          <Select value="2">
+            <SelectTrigger className="h-8 text-sm w-20"><SelectValue /></SelectTrigger>
             <SelectContent>
-              {AUGMENTATION_PRESET_OPTIONS.map((o) => (
-                <SelectItem key={o.value} value={o.value}>{o.label} — {o.desc}</SelectItem>
-              ))}
+              {[1, 2, 4, 8, 16, 32, 64].map((v) => <SelectItem key={v} value={String(v)}>{v}</SelectItem>)}
             </SelectContent>
           </Select>
-        </Field>
-        <p className="text-sm text-muted-foreground mt-4">
-          Detailed augmentation controls will be available in a future update.
-        </p>
+        </div>
+      </div>
       </div>
     </div>
   );
@@ -323,7 +596,21 @@ export function TrainingConfigDialog({
       <DialogContent className="w-full sm:max-w-[1000px] h-[70vh] p-0 overflow-hidden inset-0 translate-x-0 translate-y-0 m-auto flex flex-col" onKeyDown={(e) => e.stopPropagation()}>
         <DialogHeader className="px-6 pt-5 pb-3 shrink-0">
           <DialogTitle className="text-lg">Training Configuration</DialogTitle>
-          <div className="relative mt-2">
+        </DialogHeader>
+
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="flex flex-col flex-1 min-h-0">
+          <div className="flex justify-center mx-6 shrink-0">
+            <TabsList className="h-9">
+              <TabsTrigger value="pipeline" className="text-sm">Training Pipeline</TabsTrigger>
+              {configs.map((cf) => (
+                <TabsTrigger key={cf.slot} value={cf.slot} className="text-sm">
+                  {getSlotLabel(cf.slot).replace(" Config", "")} Model Configuration
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </div>
+
+          <div className="relative mx-6 mt-2 mb-2 shrink-0">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input
               type="text"
@@ -346,19 +633,6 @@ export function TrainingConfigDialog({
                 ))}
               </div>
             )}
-          </div>
-        </DialogHeader>
-
-        <Tabs value={activeTab} onValueChange={setActiveTab} className="flex flex-col flex-1 min-h-0">
-          <div className="flex justify-center mx-6 shrink-0">
-            <TabsList className="h-9">
-              <TabsTrigger value="pipeline" className="text-sm">Training Pipeline</TabsTrigger>
-              {configs.map((cf) => (
-                <TabsTrigger key={cf.slot} value={cf.slot} className="text-sm">
-                  {getSlotLabel(cf.slot).replace(" Config", "")} Model Configuration
-                </TabsTrigger>
-              ))}
-            </TabsList>
           </div>
 
           <div className="flex flex-1 min-h-0 border-t mt-2">
@@ -797,11 +1071,14 @@ export function TrainingConfigDialog({
 
             {/* ── Per-head tabs ── */}
             {configs.map((cf) => (
-              <TabsContent key={cf.slot} value={cf.slot} className="flex-1 min-h-0 mt-0 overflow-hidden">
+              <TabsContent key={cf.slot} value={cf.slot} className="flex-1 min-h-0 mt-0 overflow-hidden h-full">
                 <HeadTabContent
+                  slot={cf.slot}
+                  configFile={cf}
                   hp={cf.hyperparams}
                   onUpdate={(updates) => onUpdateSlot(cf.slot, updates)}
                   scrollRefCallback={(el) => { headScrollRefs.current[cf.slot] = el; }}
+                  skeletonNodes={skeletonNodes}
                 />
               </TabsContent>
             ))}
