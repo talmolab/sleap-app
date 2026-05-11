@@ -310,7 +310,7 @@ function HeadTabContent({
       </div>
 
       {/* ── Model Stats Preview (thumbnail + RF + crop size + params) ── */}
-      <ModelStatsPreview hp={hp} maxStride={hp.maxStride} filters={hp.filters} filtersRate={hp.filtersRate} configYaml={configFile?.content} slot={slot} />
+      <ModelStatsPreview hp={hp} maxStride={hp.maxStride} filters={hp.filters} filtersRate={hp.filtersRate} outputStride={hp.outputStride} stemStride={hp.stemStride} backbone={hp.backbone || "unet"} slot={slot} />
 
       {/* ── 1. Data ── */}
       <div className={allLocked ? "opacity-40 pointer-events-none" : ""}>

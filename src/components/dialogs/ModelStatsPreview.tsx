@@ -1,5 +1,4 @@
-import { useEffect, useRef, useState, useMemo } from "react";
-import yaml from "js-yaml";
+import { useEffect, useRef, useState } from "react";
 import { useAppStore } from "@/stores/appStore";
 import { computeReceptiveField, computeCropSize, computeParamCount } from "@/lib/modelStats";
 import type { ConfigHyperparams } from "@/stores/trainingStore";
@@ -9,67 +8,22 @@ interface ModelStatsPreviewProps {
   maxStride: number;
   filters: number;
   filtersRate: number;
-  configYaml?: string;
-  slot?: string;
-}
-
-interface ParsedBackboneParams {
-  maxStride: number;
-  filters: number;
-  filtersRate: number;
   outputStride: number;
   stemStride: number | null;
-  inputChannels: number;
-}
-
-function parseBackboneFromYaml(yamlText: string | undefined): ParsedBackboneParams | null {
-  if (!yamlText) return null;
-  try {
-    const doc = yaml.load(yamlText) as Record<string, unknown>;
-    const modelConfig = (doc?.model_config ?? {}) as Record<string, unknown>;
-    const backboneConfig = (modelConfig?.backbone_config ?? {}) as Record<string, unknown>;
-    const unet = (backboneConfig?.unet ?? {}) as Record<string, unknown>;
-    if (!unet || typeof unet !== "object") return null;
-    const headConfigs = (modelConfig?.head_configs ?? {}) as Record<string, unknown>;
-    let outputStride = 1;
-    for (const val of Object.values(headConfigs)) {
-      if (val && typeof val === "object") {
-        const head = val as Record<string, unknown>;
-        if (typeof head.output_stride === "number") { outputStride = head.output_stride; break; }
-        const confmaps = head.confmaps as Record<string, unknown> | undefined;
-        if (confmaps && typeof confmaps.output_stride === "number") { outputStride = confmaps.output_stride; break; }
-      }
-    }
-    return {
-      maxStride: typeof unet.max_stride === "number" ? unet.max_stride : 16,
-      filters: typeof unet.filters === "number" ? unet.filters : 16,
-      filtersRate: typeof unet.filters_rate === "number" ? unet.filters_rate : 2.0,
-      outputStride,
-      stemStride: typeof unet.stem_stride === "number" ? unet.stem_stride : null,
-      inputChannels: typeof unet.in_channels === "number" ? unet.in_channels : 1,
-    };
-  } catch { return null; }
+  backbone: string;
+  inputChannels?: number;
+  slot?: string;
 }
 
 const THUMBNAIL_SIZE = 200;
 
-export function ModelStatsPreview({ hp, maxStride: defaultMaxStride, filters: defaultFilters, filtersRate: defaultFiltersRate, configYaml, slot }: ModelStatsPreviewProps) {
+export function ModelStatsPreview({ hp, maxStride, filters, filtersRate, outputStride, stemStride, backbone, inputChannels = 1, slot }: ModelStatsPreviewProps) {
   const labels = useAppStore((s) => s.labels);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [thumbnail, setThumbnail] = useState<ImageBitmap | null>(null);
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const dragRef = useRef<{ startX: number; startY: number; panX: number; panY: number } | null>(null);
-
-  const parsed = useMemo(() => parseBackboneFromYaml(configYaml), [configYaml]);
-  const maxStride = parsed?.maxStride ?? defaultMaxStride;
-  const filters = parsed?.filters ?? defaultFilters;
-  const filtersRate = parsed?.filtersRate ?? defaultFiltersRate;
-  const outputStride = parsed?.outputStride ?? 1;
-  const stemStride = parsed?.stemStride ?? null;
-  const inputChannels = parsed?.inputChannels ?? 1;
-
-  const backbone = hp.backbone || "unet";
   const rf = computeReceptiveField(maxStride, stemStride);
   const showCropSize = slot !== "centroid";
   const cropSize = showCropSize ? computeCropSize(labels, maxStride, hp.scale) : null;
