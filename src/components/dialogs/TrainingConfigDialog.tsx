@@ -18,9 +18,10 @@ import {
 } from "@/components/ui/select";
 import { Search, HelpCircle } from "lucide-react";
 import type { ConfigFile, ConfigHyperparams, Backbone, AugmentationPreset, ModelType } from "@/stores/trainingStore";
-import { getSlotLabel, useTrainingStore } from "@/stores/trainingStore";
+import { getSlotLabel, getConfigSlots, useTrainingStore } from "@/stores/trainingStore";
 import { useConnectStore } from "@/stores/connectStore";
 import { useAppStore } from "@/stores/appStore";
+import { ModelStatsPreview } from "@/components/dialogs/ModelStatsPreview";
 
 // ── Props ──────────────────────────────────────────────────────────
 
@@ -267,6 +268,9 @@ function HeadTabContent({
         ))}
       </div>
 
+      {/* ── Model Stats Preview (thumbnail + RF + crop size + params) ── */}
+      <ModelStatsPreview hp={hp} maxStride={16} filters={16} filtersRate={2.0} configYaml={configFile?.content} slot={slot} />
+
       {/* ── 1. Data ── */}
       <div className={allLocked ? "opacity-40 pointer-events-none" : ""}>
       <SectionHeading id="head-data" label="Data" />
@@ -313,65 +317,111 @@ function HeadTabContent({
             </SelectContent>
           </Select>
         </Field>
-        <div className="flex items-center gap-2">
-          <span className="text-sm text-muted-foreground flex items-center gap-1.5">
-            Rotation
-            <HintBubble text="Random rotation range in degrees applied during augmentation. ±180° means full rotation invariance." />
-          </span>
-          <Select value={hp.augmentationPreset === "none" ? "off" : hp.augmentationPreset === "light" ? "15" : "180"}>
-            <SelectTrigger className="h-8 text-sm w-24"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="off">Off</SelectItem>
-              <SelectItem value="15">±15°</SelectItem>
-              <SelectItem value="180">±180°</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
         {(() => {
           const isCustom = hp.augmentationPreset === "custom";
           const scaleOn = isCustom ? false : hp.augmentationPreset === "heavy";
-          const noiseOn = isCustom ? false : hp.augmentationPreset === "standard" || hp.augmentationPreset === "heavy";
+          const uniformNoiseOn = false;
+          const gaussianNoiseOn = isCustom ? false : hp.augmentationPreset === "standard" || hp.augmentationPreset === "heavy";
           const contrastOn = isCustom ? false : hp.augmentationPreset === "heavy";
           const brightnessOn = isCustom ? false : hp.augmentationPreset === "heavy";
           return (
             <>
-              <div className="flex items-center gap-6 flex-wrap">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                  Rotation
+                  <HintBubble text="Rotation augmentation range. Off: disabled. ±15°: for side-view cameras where upside-down would be unnatural. ±180°: for top-view/overhead cameras where all orientations are valid." />
+                </span>
+                <Select value={hp.augmentationPreset === "none" ? "off" : hp.augmentationPreset === "light" ? "15" : "180"}>
+                  <SelectTrigger className="h-8 text-sm w-24"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="off">Off</SelectItem>
+                    <SelectItem value="15">±15°</SelectItem>
+                    <SelectItem value="180">±180°</SelectItem>
+                    <SelectItem value="custom">Custom</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
                 <label className="flex items-center gap-1.5 cursor-pointer">
                   <input type="checkbox" checked={scaleOn} readOnly={!isCustom} className="accent-primary" />
-                  <span className="text-sm flex items-center gap-1">Scale <HintBubble text="Random scaling factor applied to images. Helps the model handle animals at different distances from the camera." /></span>
+                  <span className="text-sm flex items-center gap-1">Scale <HintBubble text="Enable random scaling augmentation. Scaling is applied independently with 100% probability when enabled." /></span>
                 </label>
+                {scaleOn && (
+                  <div className="flex items-center gap-4 pl-6">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-muted-foreground">Scale Min</span>
+                      <Input type="number" value={0.9} min={0.1} max={2} step={0.05} className="h-8 text-sm w-20" />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-muted-foreground">Scale Max</span>
+                      <Input type="number" value={1.1} min={0.1} max={2} step={0.05} className="h-8 text-sm w-20" />
+                    </div>
+                  </div>
+                )}
                 <label className="flex items-center gap-1.5 cursor-pointer">
-                  <input type="checkbox" readOnly={!isCustom} className="accent-primary" />
-                  <span className="text-sm flex items-center gap-1">Uniform Noise <HintBubble text="Add random uniform noise to pixel values. Helps with robustness to sensor noise." /></span>
+                  <input type="checkbox" checked={uniformNoiseOn} readOnly={!isCustom} className="accent-primary" />
+                  <span className="text-sm flex items-center gap-1">Uniform Noise <HintBubble text="Enable uniformly distributed noise augmentation." /></span>
                 </label>
+                {uniformNoiseOn && (
+                  <div className="flex items-center gap-4 pl-6">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-muted-foreground">Min Val</span>
+                      <Input type="number" value={0.0} min={0} max={1} step={0.01} className="h-8 text-sm w-20" />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-muted-foreground">Max Val</span>
+                      <Input type="number" value={0.1} min={0} max={1} step={0.01} className="h-8 text-sm w-20" />
+                    </div>
+                  </div>
+                )}
                 <label className="flex items-center gap-1.5 cursor-pointer">
-                  <input type="checkbox" checked={noiseOn} readOnly={!isCustom} className="accent-primary" />
-                  <span className="text-sm flex items-center gap-1">Gaussian Noise <HintBubble text="Add random Gaussian noise to pixel values. More natural noise model than uniform." /></span>
+                  <input type="checkbox" checked={gaussianNoiseOn} readOnly={!isCustom} className="accent-primary" />
+                  <span className="text-sm flex items-center gap-1">Gaussian Noise <HintBubble text="Enable normally distributed noise augmentation. This is applied independently to each pixel." /></span>
                 </label>
+                {gaussianNoiseOn && (
+                  <div className="flex items-center gap-4 pl-6">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-muted-foreground">Mean</span>
+                      <Input type="number" value={0.0} step={0.01} className="h-8 text-sm w-20" />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-muted-foreground">Std Dev</span>
+                      <Input type="number" value={0.04} step={0.01} className="h-8 text-sm w-20" />
+                    </div>
+                  </div>
+                )}
                 <label className="flex items-center gap-1.5 cursor-pointer">
                   <input type="checkbox" checked={contrastOn} readOnly={!isCustom} className="accent-primary" />
-                  <span className="text-sm flex items-center gap-1">Contrast <HintBubble text="Random contrast adjustment. Helps with varying lighting conditions." /></span>
+                  <span className="text-sm flex items-center gap-1">Contrast <HintBubble text="Enable gamma contrast adjustment. This scales all pixel values by x^gamma where x is in [0, 1]." /></span>
                 </label>
+                {contrastOn && (
+                  <div className="flex items-center gap-4 pl-6">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-muted-foreground">Contrast Min</span>
+                      <Input type="number" value={0.5} min={0.5} max={2} step={0.05} className="h-8 text-sm w-20" />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-muted-foreground">Contrast Max</span>
+                      <Input type="number" value={2.0} min={0.5} max={2} step={0.05} className="h-8 text-sm w-20" />
+                    </div>
+                  </div>
+                )}
                 <label className="flex items-center gap-1.5 cursor-pointer">
                   <input type="checkbox" checked={brightnessOn} readOnly={!isCustom} className="accent-primary" />
-                  <span className="text-sm flex items-center gap-1">Brightness <HintBubble text="Random brightness adjustment. Helps with varying illumination." /></span>
+                  <span className="text-sm flex items-center gap-1">Brightness <HintBubble text="Enable brightness augmentation. This adds the same value to all pixels to simulate illumination change." /></span>
                 </label>
-              </div>
-              <div className="flex items-center gap-4 flex-wrap mt-1">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm text-muted-foreground flex items-center gap-1.5">
-                    Scale Min
-                    <HintBubble text="Minimum scaling factor. Values below 1.0 shrink the image. E.g., 0.9 means images can be scaled down to 90%." />
-                  </span>
-                  <Input type="number" value={0.9} min={0.1} max={2} step={0.05} className="h-8 text-sm w-20" disabled={!scaleOn && !isCustom} />
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-sm text-muted-foreground flex items-center gap-1.5">
-                    Scale Max
-                    <HintBubble text="Maximum scaling factor. Values above 1.0 enlarge the image. E.g., 1.1 means images can be scaled up to 110%." />
-                  </span>
-                  <Input type="number" value={1.1} min={0.1} max={2} step={0.05} className="h-8 text-sm w-20" disabled={!scaleOn && !isCustom} />
-                </div>
+                {brightnessOn && (
+                  <div className="flex items-center gap-4 pl-6">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-muted-foreground">Brightness Min</span>
+                      <Input type="number" value={0.0} step={0.01} className="h-8 text-sm w-20" />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-muted-foreground">Brightness Max</span>
+                      <Input type="number" value={0.2} step={0.01} className="h-8 text-sm w-20" />
+                    </div>
+                  </div>
+                )}
               </div>
             </>
           );
@@ -552,6 +602,14 @@ export function TrainingConfigDialog({
   const labels = useAppStore((s) => s.labels);
   const suggestionsCount = labels?.suggestions?.length ?? 0;
 
+  // Sort configs to match canonical slot order (centroid first for top-down)
+  const slotOrder = getConfigSlots(modelType);
+  const sortedConfigs = [...configs].sort((a, b) => {
+    const ai = slotOrder.indexOf(a.slot);
+    const bi = slotOrder.indexOf(b.slot);
+    return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+  });
+
   // Connect store for remote training section
   const connectionStatus = useConnectStore((s) => s.connectionStatus);
   const workers = useConnectStore((s) => s.workers);
@@ -574,7 +632,7 @@ export function TrainingConfigDialog({
 
   const handleSearchSelect = (fieldId: string, section: string) => {
     setSearchQuery("");
-    const targetTab = section === "pipeline" ? "pipeline" : configs[0]?.slot ?? "pipeline";
+    const targetTab = section === "pipeline" ? "pipeline" : sortedConfigs[0]?.slot ?? "pipeline";
     setActiveTab(targetTab);
     setTimeout(() => {
       const ref = targetTab === "pipeline" ? pipelineScrollRef.current : headScrollRefs.current[targetTab];
@@ -588,7 +646,7 @@ export function TrainingConfigDialog({
   };
 
   const navItems = activeTab === "pipeline" ? PIPELINE_NAV : HEAD_NAV;
-  const firstConfig = configs[0];
+  const firstConfig = sortedConfigs[0];
   const firstHp = firstConfig?.hyperparams;
 
   return (
@@ -602,7 +660,7 @@ export function TrainingConfigDialog({
           <div className="flex justify-center mx-6 shrink-0">
             <TabsList className="h-9">
               <TabsTrigger value="pipeline" className="text-sm">Training Pipeline</TabsTrigger>
-              {configs.map((cf) => (
+              {sortedConfigs.map((cf) => (
                 <TabsTrigger key={cf.slot} value={cf.slot} className="text-sm">
                   {getSlotLabel(cf.slot).replace(" Config", "")} Model Configuration
                 </TabsTrigger>
@@ -1070,7 +1128,7 @@ export function TrainingConfigDialog({
             </TabsContent>
 
             {/* ── Per-head tabs ── */}
-            {configs.map((cf) => (
+            {sortedConfigs.map((cf) => (
               <TabsContent key={cf.slot} value={cf.slot} className="flex-1 min-h-0 mt-0 overflow-hidden h-full">
                 <HeadTabContent
                   slot={cf.slot}
