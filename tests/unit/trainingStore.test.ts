@@ -12,6 +12,7 @@ function makeConfigFile(overrides: Partial<ConfigFile> = {}): ConfigFile {
     modelType: "centroid",
     slot: "centroid",
     hyperparams: { ...defaultHyperparams },
+    hasTrainedModel: false,
     ...overrides,
   };
 }
@@ -163,6 +164,31 @@ data_config:
       const result = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
       expect(result).not.toBeNull();
       expect(result!.hyperparams.overfitMode).toBe(true);
+    });
+
+    it("detects hasTrainedModel from run_name", () => {
+      const yamlText = `
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config:
+  run_name: my_trained_model
+`;
+      const result = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
+      expect(result!.hasTrainedModel).toBe(true);
+    });
+
+    it("hasTrainedModel is false when no run_name", () => {
+      const yamlText = `
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config: {}
+`;
+      const result = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
+      expect(result!.hasTrainedModel).toBe(false);
     });
 
     it("handles train_labels_path as array", () => {

@@ -229,7 +229,9 @@ function HeadTabContent({
 }) {
   const showAnchorPart = slot === "centroid" || slot === "centered_instance";
   const showCropSize = slot !== "centroid";
-  const [trainingMode, setTrainingMode] = useState<"reuse_config" | "resume" | "reuse_model">("reuse_config");
+  const trainingMode = (!configFile?.hasTrainedModel && hp.trainingMode !== "reuse_config")
+    ? "reuse_config"
+    : (hp.trainingMode ?? "reuse_config");
   const modelLocked = trainingMode === "resume" || trainingMode === "reuse_model";
   const allLocked = trainingMode === "reuse_model";
   const { parseYamlConfig, addConfigFile } = useTrainingStore();
@@ -295,21 +297,25 @@ function HeadTabContent({
       {/* ── Training mode radios ── */}
       <div className="flex items-center gap-5 mb-5 pb-4 border-b">
         {([
-          { value: "reuse_config" as const, label: "Reuse config (train from scratch)" },
-          { value: "resume" as const, label: "Resume training (fine-tune)" },
-          { value: "reuse_model" as const, label: "Reuse model (don't retrain)" },
-        ]).map((opt) => (
-          <label key={opt.value} className="flex items-center gap-1.5 cursor-pointer">
-            <input
-              type="radio"
-              name={`training-mode-${slot}`}
-              checked={trainingMode === opt.value}
-              onChange={() => setTrainingMode(opt.value)}
-              className="accent-primary"
-            />
-            <span className="text-sm">{opt.label}</span>
-          </label>
-        ))}
+          { value: "reuse_config" as const, label: "Reuse config (train from scratch)", alwaysEnabled: true },
+          { value: "resume" as const, label: "Resume training (fine-tune)", alwaysEnabled: false },
+          { value: "reuse_model" as const, label: "Reuse model (don't retrain)", alwaysEnabled: false },
+        ]).map((opt) => {
+          const disabled = !opt.alwaysEnabled && !configFile?.hasTrainedModel;
+          return (
+            <label key={opt.value} className={`flex items-center gap-1.5 ${disabled ? "opacity-40 cursor-not-allowed" : "cursor-pointer"}`}>
+              <input
+                type="radio"
+                name={`training-mode-${slot}`}
+                checked={trainingMode === opt.value}
+                onChange={() => onUpdate({ trainingMode: opt.value })}
+                className="accent-primary"
+                disabled={disabled}
+              />
+              <span className="text-sm">{opt.label}</span>
+            </label>
+          );
+        })}
       </div>
 
       {/* ── Model Stats Preview (thumbnail + RF + crop size + params) ── */}

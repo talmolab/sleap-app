@@ -43,6 +43,7 @@ export interface ConfigHyperparams {
   sigma: number;
   scale: number;
   augmentationPreset: AugmentationPreset;
+  trainingMode: "reuse_config" | "resume" | "reuse_model";
 }
 
 export const defaultHyperparams: ConfigHyperparams = {
@@ -60,6 +61,7 @@ export const defaultHyperparams: ConfigHyperparams = {
   sigma: 5.0,
   scale: 1.0,
   augmentationPreset: "standard",
+  trainingMode: "reuse_config",
 };
 
 export interface ConfigFile {
@@ -68,6 +70,7 @@ export interface ConfigFile {
   modelType: string; // parsed from head_configs (e.g., "centroid")
   slot: string; // which slot this fills (e.g., "centroid", "centered_instance", "config")
   hyperparams: ConfigHyperparams; // per-config hyperparameters
+  hasTrainedModel: boolean; // true if config has a non-empty run_name (trained model exists)
 }
 
 export interface RemoteTrainingOptions {
@@ -373,6 +376,8 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         }
       }
 
+      const hasTrainedModel = typeof trainer.run_name === "string" && trainer.run_name.length > 0;
+
       const hyperparams: ConfigHyperparams = {
         backbone: backboneMap[activeBackbone.toLowerCase()] ?? "",
         maxEpochs: typeof trainer.max_epochs === "number" ? trainer.max_epochs : 100,
@@ -392,6 +397,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         sigma,
         scale: typeof dataConfig.scale === "number" ? dataConfig.scale : 1.0,
         augmentationPreset: "standard",
+        trainingMode: "reuse_config" as const,
       };
 
       // Also auto-fill data paths into the global config
@@ -411,6 +417,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         modelType: detectedModelType,
         slot,
         hyperparams,
+        hasTrainedModel,
       };
     } catch (err) {
       console.warn("[training] Failed to parse YAML:", err);
