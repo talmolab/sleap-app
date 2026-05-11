@@ -310,11 +310,13 @@ function HeadTabContent({
       <div className={allLocked ? "opacity-40 pointer-events-none" : ""}>
       <SectionHeading id="head-data" label="Data" />
       <div className="space-y-2">
-        <Field label="Validation Fraction" hint="Fraction of labeled frames to use as a validation set. Ignored if &quot;Overfit Mode&quot; is enabled.">
-          <Input type="number" value={hp.validationFraction} onChange={(e) => onUpdate({ validationFraction: Number(e.target.value) })} min={0} max={1} step={0.05} className="h-9 text-sm" />
-        </Field>
+        <div className={hp.overfitMode ? "opacity-50" : ""}>
+          <Field label="Validation Fraction" hint="Fraction of labeled frames to use as a validation set. Ignored if &quot;Overfit Mode&quot; is enabled.">
+            <Input type="number" value={hp.validationFraction} onChange={(e) => onUpdate({ validationFraction: Number(e.target.value) })} min={0} max={1} step={0.05} className="h-9 text-sm" disabled={hp.overfitMode} />
+          </Field>
+        </div>
         <div className="flex items-center gap-6">
-          <Toggle label="Overfit Mode (train=val)" hint="If enabled, the same data will be used for both training and validation. This is useful for intentional overfitting on small datasets (fewer than 10 labeled frames) to test model capacity." checked={false} onChange={() => {}} />
+          <Toggle label="Overfit Mode (train=val)" hint="If enabled, the same data will be used for both training and validation. This is useful for intentional overfitting on small datasets (fewer than 10 labeled frames) to test model capacity." checked={hp.overfitMode} onChange={(v) => onUpdate({ overfitMode: v })} />
         </div>
         <div className="flex items-center gap-4 flex-wrap">
           <div className="flex items-center gap-2">

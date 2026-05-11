@@ -38,6 +38,7 @@ export interface ConfigHyperparams {
   wandbProject: string;
   // Layer 1 quick-tune params
   validationFraction: number;
+  overfitMode: boolean;
   earlyStoppingPatience: number;
   sigma: number;
   scale: number;
@@ -54,6 +55,7 @@ export const defaultHyperparams: ConfigHyperparams = {
   wandbEntity: "",
   wandbProject: "",
   validationFraction: 0.1,
+  overfitMode: false,
   earlyStoppingPatience: 10,
   sigma: 5.0,
   scale: 1.0,
@@ -220,6 +222,7 @@ export function applyHyperparamsToYaml(yamlText: string, hp: ConfigHyperparams):
 
   // Data config
   data.validation_fraction = hp.validationFraction;
+  data.use_same_data_for_val = hp.overfitMode;
   data.scale = hp.scale;
 
   // Early stopping
@@ -383,6 +386,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         wandbProject: typeof wandb.project === "string" ? wandb.project : "",
         validationFraction: typeof dataConfig.validation_fraction === "number"
           ? dataConfig.validation_fraction : 0.1,
+        overfitMode: dataConfig.use_same_data_for_val === true,
         earlyStoppingPatience: typeof earlyStopping.patience === "number"
           ? earlyStopping.patience : 10,
         sigma,

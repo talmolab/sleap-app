@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
+import yaml from "js-yaml";
 import { useTrainingStore } from "@/stores/trainingStore";
-import { getConfigSlots, getSlotLabel, defaultHyperparams } from "@/stores/trainingStore";
+import { getConfigSlots, getSlotLabel, defaultHyperparams, applyHyperparamsToYaml } from "@/stores/trainingStore";
 import type { ConfigFile } from "@/stores/trainingStore";
 
 /** Helper to create a ConfigFile with default hyperparams */
@@ -150,6 +151,20 @@ trainer_config:
       expect(result!.hyperparams.wandbProject).toBe("");
     });
 
+    it("parses overfitMode from use_same_data_for_val", () => {
+      const yamlText = `
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+data_config:
+  use_same_data_for_val: true
+`;
+      const result = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
+      expect(result).not.toBeNull();
+      expect(result!.hyperparams.overfitMode).toBe(true);
+    });
+
     it("handles train_labels_path as array", () => {
       const yamlText = `
 model_config:
@@ -196,6 +211,23 @@ data_config:
       expect(getSlotLabel("centroid")).toBe("Centroid Config");
       expect(getSlotLabel("centered_instance")).toBe("Centered Instance Config");
       expect(getSlotLabel("config")).toBe("Config");
+    });
+  });
+
+  describe("applyHyperparamsToYaml", () => {
+    it("writes overfitMode to use_same_data_for_val", () => {
+      const input = `
+data_config: {}
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config: {}
+`;
+      const hp = { ...defaultHyperparams, overfitMode: true };
+      const result = applyHyperparamsToYaml(input, hp);
+      const doc = yaml.load(result) as Record<string, any>;
+      expect(doc.data_config.use_same_data_for_val).toBe(true);
     });
   });
 });
