@@ -109,13 +109,41 @@ const SEARCHABLE_FIELDS = [
   { label: "Evaluation", section: "pipeline", fieldId: "field-eval-enable" },
   { label: "Run Name", section: "pipeline", fieldId: "field-runname" },
   { label: "Remote Training", section: "pipeline", fieldId: "pipeline-remote" },
-  { label: "Backbone", section: "head", fieldId: "field-backbone" },
-  { label: "Sigma", section: "head", fieldId: "field-sigma" },
-  { label: "Max Epochs", section: "head", fieldId: "field-maxepochs" },
-  { label: "Batch Size", section: "head", fieldId: "field-batchsize" },
-  { label: "Learning Rate", section: "head", fieldId: "field-learningrate" },
-  { label: "Early Stopping Patience", section: "head", fieldId: "field-earlystopping" },
+  // Head — Data
+  { label: "Validation Fraction (per-head)", section: "head", fieldId: "head-data" },
+  { label: "Overfit Mode", section: "head", fieldId: "head-data" },
+  { label: "Random Seed", section: "head", fieldId: "head-data" },
+  { label: "Input Scaling", section: "head", fieldId: "head-data" },
+  { label: "Crop Size", section: "head", fieldId: "head-data" },
+  // Head — Augmentation
   { label: "Augmentation Preset", section: "head", fieldId: "field-augpreset" },
+  { label: "Rotation", section: "head", fieldId: "head-augmentation" },
+  { label: "Scale Augmentation", section: "head", fieldId: "head-augmentation" },
+  { label: "Uniform Noise", section: "head", fieldId: "head-augmentation" },
+  { label: "Gaussian Noise", section: "head", fieldId: "head-augmentation" },
+  { label: "Contrast", section: "head", fieldId: "head-augmentation" },
+  { label: "Brightness", section: "head", fieldId: "head-augmentation" },
+  // Head — Optimization
+  { label: "Batch Size", section: "head", fieldId: "field-batchsize" },
+  { label: "Max Epochs", section: "head", fieldId: "field-maxepochs" },
+  { label: "Learning Rate", section: "head", fieldId: "field-learningrate" },
+  { label: "Stop Training on Plateau", section: "head", fieldId: "head-optimization" },
+  { label: "Plateau Min Delta", section: "head", fieldId: "head-optimization" },
+  { label: "Plateau Patience", section: "head", fieldId: "field-earlystopping" },
+  { label: "Online Mining", section: "head", fieldId: "head-optimization" },
+  { label: "Min Hard Keypoints", section: "head", fieldId: "head-optimization" },
+  { label: "Max Hard Keypoints", section: "head", fieldId: "head-optimization" },
+  // Head — Model
+  { label: "Backbone", section: "head", fieldId: "field-backbone" },
+  { label: "Stem Stride", section: "head", fieldId: "head-model" },
+  { label: "Max Stride", section: "head", fieldId: "head-model" },
+  { label: "Filters", section: "head", fieldId: "head-model" },
+  { label: "Filters Rate", section: "head", fieldId: "head-model" },
+  { label: "Middle Block", section: "head", fieldId: "head-model" },
+  { label: "Up Interpolate", section: "head", fieldId: "head-model" },
+  { label: "Anchor Part", section: "head", fieldId: "head-model" },
+  { label: "Sigma", section: "head", fieldId: "field-sigma" },
+  { label: "Output Stride", section: "head", fieldId: "head-model" },
 ];
 
 // ── Shared components ──────────────────────────────────────────────
@@ -200,6 +228,7 @@ function HeadTabContent({
   skeletonNodes: string[];
 }) {
   const showAnchorPart = slot === "centroid" || slot === "centered_instance";
+  const showCropSize = slot !== "centroid";
   const [trainingMode, setTrainingMode] = useState<"reuse_config" | "resume" | "reuse_model">("reuse_config");
   const modelLocked = trainingMode === "resume" || trainingMode === "reuse_model";
   const allLocked = trainingMode === "reuse_model";
@@ -238,7 +267,13 @@ function HeadTabContent({
           <SelectContent>
             {configFile && (
               <SelectItem value={configFile.filename}>
-                {configFile.filename} ({configFile.modelType})
+                {(() => {
+                  const runNameMatch = configFile.content.match(/run_name:\s*(.+)/);
+                  const runName = runNameMatch?.[1]?.trim();
+                  return runName
+                    ? `[Trained] ${runName}(${configFile.filename})`
+                    : `[${configFile.modelType}] (${configFile.filename})`;
+                })()}
               </SelectItem>
             )}
             <SelectItem value="__browse__" className="text-primary font-medium">
@@ -275,17 +310,17 @@ function HeadTabContent({
       <div className={allLocked ? "opacity-40 pointer-events-none" : ""}>
       <SectionHeading id="head-data" label="Data" />
       <div className="space-y-2">
-        <Field label="Validation Fraction" hint="Fraction of labeled frames held out for validation. Used to monitor training and for early stopping. 10–20% is typical.">
+        <Field label="Validation Fraction" hint="Fraction of labeled frames to use as a validation set. Ignored if &quot;Overfit Mode&quot; is enabled.">
           <Input type="number" value={hp.validationFraction} onChange={(e) => onUpdate({ validationFraction: Number(e.target.value) })} min={0} max={1} step={0.05} className="h-9 text-sm" />
         </Field>
         <div className="flex items-center gap-6">
-          <Toggle label="Overfit Mode (train=val)" hint="Use the same data for training and validation. Useful for debugging model capacity — should overfit perfectly if the model is expressive enough." checked={false} onChange={() => {}} />
+          <Toggle label="Overfit Mode (train=val)" hint="If enabled, the same data will be used for both training and validation. This is useful for intentional overfitting on small datasets (fewer than 10 labeled frames) to test model capacity." checked={false} onChange={() => {}} />
         </div>
         <div className="flex items-center gap-4 flex-wrap">
           <div className="flex items-center gap-2">
             <span className="text-sm text-muted-foreground flex items-center gap-1.5">
               Random Seed
-              <HintBubble text="Seed for reproducibility. Set a fixed value to get the same train/val split and augmentation sequence across runs." />
+              <HintBubble text="Random seed for reproducible train/validation data splits. Leave empty (Auto) for random seed each run." />
             </span>
             <Input type="number" placeholder="0" className="h-8 text-sm w-20" />
           </div>
@@ -294,9 +329,20 @@ function HeadTabContent({
             <span className="text-sm">Auto</span>
           </label>
         </div>
-        <Field label="Input Scaling" hint="Factor to resize images before feeding to the model. Lower = faster training + larger effective receptive field. Higher = more detail preserved but slower.">
+        <Field label="Input Scaling" hint="Rescaling factor applied to input images before training. Values less than 1.0 downsample the image, which reduces memory usage and speeds up training at the cost of spatial resolution. Note that crop size and sigma values are relative to the scaled image.">
           <Input type="number" value={hp.scale} onChange={(e) => onUpdate({ scale: Number(e.target.value) })} min={0.125} max={1} step={0.125} className="h-9 text-sm" />
         </Field>
+        {showCropSize && (
+          <div className="flex items-center gap-4">
+            <Field label="Crop Size" hint="Bounding box crop size around each instance in pixels. Set to 'Auto' to compute from the data (largest instance bounding box, aligned to max_stride).">
+              <Input type="number" value={256} className="h-9 text-sm" />
+            </Field>
+            <label className="flex items-center gap-1.5 cursor-pointer shrink-0">
+              <input type="checkbox" className="accent-primary" />
+              <span className="text-sm">Auto</span>
+            </label>
+          </div>
+        )}
       </div>
 
       </div>
@@ -435,35 +481,35 @@ function HeadTabContent({
       <div className={allLocked ? "opacity-40 pointer-events-none" : ""}>
       <SectionHeading id="head-optimization" label="Optimization" />
       <div className="space-y-2">
-        <Field label="Batch Size" id="field-batchsize" hint="Number of samples per training batch. Larger batches train faster but use more GPU memory. If you get OOM errors, reduce this first. 4–8 is typical for 8GB GPUs.">
+        <Field label="Batch Size" id="field-batchsize" hint="Number of examples per minibatch. Higher numbers can increase generalization by averaging gradient updates over more examples, at the cost of more GPU memory. Lower numbers may lead to overfitting but can help optimization with few varied examples.">
           <Input type="number" value={hp.batchSize} onChange={(e) => onUpdate({ batchSize: Number(e.target.value) })} min={1} max={128} className="h-9 text-sm" />
         </Field>
-        <Field label="Epochs" id="field-maxepochs" hint="Maximum training epochs. Training may stop earlier via early stopping. 100–200 is typical; complex datasets may need more.">
+        <Field label="Epochs" id="field-maxepochs" hint="Maximum number of epochs to train for. Training can be stopped manually or automatically if early stopping is enabled and a plateau is detected.">
           <Input type="number" value={hp.maxEpochs} onChange={(e) => onUpdate({ maxEpochs: Number(e.target.value) })} min={1} className="h-9 text-sm" />
         </Field>
-        <Field label="Initial Learning Rate" id="field-learningrate" hint="Initial learning rate for the optimizer. Lower values train more slowly but may converge better. 1e-4 is a good default.">
+        <Field label="Initial Learning Rate" id="field-learningrate" hint="The initial learning rate for the optimizer. Typically 1e-3 or 1e-4. Can be decreased automatically with learning rate reduction on plateau. If too high or too low, training may fail to find good initial local minima.">
           <Input type="number" value={hp.learningRate} onChange={(e) => onUpdate({ learningRate: Number(e.target.value) })} step={0.0001} className="h-9 text-sm" />
         </Field>
-        <Toggle label="Stop Training on Plateau" hint="Automatically stop when validation loss stops improving, preventing overfitting and wasted compute." checked={true} onChange={() => {}} />
-        <Field label="Plateau Min. Delta" hint="Minimum change in validation loss to qualify as an improvement. Very small values (1e-6 to 1e-8) ensure training continues until truly converged.">
+        <Toggle label="Stop Training on Plateau" hint="If enabled, training will terminate automatically when the validation loss plateaus. This saves time and compute, and prevents training into the overfitting regime." checked={true} onChange={() => {}} />
+        <Field label="Plateau Min. Delta" hint="Minimum absolute decrease in the loss in order to consider an epoch as not in a plateau.">
           <Input type="text" value="1e-08" className="h-9 text-sm" />
         </Field>
-        <Field label="Plateau Patience" id="field-earlystopping" hint="Number of epochs to wait for improvement before stopping. Higher values allow recovery from plateaus but risk overfitting.">
+        <Field label="Plateau Patience" id="field-earlystopping" hint="Number of epochs without an improvement of at least min_delta in order for a plateau to be detected.">
           <Input type="number" value={hp.earlyStoppingPatience} onChange={(e) => onUpdate({ earlyStoppingPatience: Number(e.target.value) })} min={1} max={100} className="h-9 text-sm" />
         </Field>
-        <Toggle label="Online Mining" hint="Online Hard Keypoint Mining (OHKM). Focuses training on the hardest-to-predict keypoints by upweighting their loss contribution." checked={false} onChange={() => {}} />
+        <Toggle label="Online Mining" hint="If enabled, online hard keypoint mining (OHKM) will compute loss per keypoint, sort from easy to hard, and scale hard keypoints to have higher weight. This encourages training to focus on tricky body parts. If disabled, all keypoints are weighted equally." checked={false} onChange={() => {}} />
         <div className="flex items-center gap-4 flex-wrap opacity-50">
           <div className="flex items-center gap-2">
             <span className="text-sm text-muted-foreground flex items-center gap-1.5">
               Min Hard Keypoints
-              <HintBubble text="Minimum number of keypoints to treat as 'hard' per instance during OHKM." />
+              <HintBubble text="The minimum number of keypoints that will be considered as 'hard', even if they are not below the hard_to_easy_ratio." />
             </span>
             <Input type="number" value={2} disabled className="h-8 text-sm w-16" />
           </div>
           <div className="flex items-center gap-2">
             <span className="text-sm text-muted-foreground flex items-center gap-1.5">
               Max Hard Keypoints
-              <HintBubble text="Maximum number of keypoints to treat as 'hard' per instance. Leave empty for no limit. If set, only the top-N hardest keypoints contribute to the OHKM loss." />
+              <HintBubble text="The maximum number of hard keypoints to apply scaling to. This can help when there are few very easy keypoints which may skew the ratio." />
             </span>
             <Input type="number" placeholder="None" disabled className="h-8 text-sm w-16" />
           </div>
@@ -477,7 +523,7 @@ function HeadTabContent({
       <div className={modelLocked ? "opacity-40 pointer-events-none" : ""}>
       <SectionHeading id="head-model" label="Model" />
       <div className="space-y-2">
-        <Field label="Backbone" id="field-backbone" hint="UNet is recommended for most cases. ConvNeXt/SwinT have pretrained weights but require RGB images and have fixed max_stride=32.">
+        <Field label="Backbone" id="field-backbone" hint="Select the backbone architecture. UNet is the default and works well for most cases. ConvNeXt and Swin Transformer support pretrained ImageNet weights but require RGB images.">
           <Select value={hp.backbone || ""} onValueChange={(v) => onUpdate({ backbone: v as Backbone })}>
             <SelectTrigger className="h-9 text-sm"><SelectValue placeholder="From config..." /></SelectTrigger>
             <SelectContent>
@@ -490,7 +536,7 @@ function HeadTabContent({
           <div className="flex items-center gap-2">
             <span className="text-sm text-muted-foreground flex items-center gap-1.5">
               Stem Stride
-              <HintBubble text="Learned downsampling stride applied before the encoder. Set to None to skip. Reduces input resolution early for faster training." />
+              <HintBubble text="If not None, controls how many stem blocks to use for initial downsampling. These are useful for learned downsampling that retains spatial information while reducing large input image sizes." />
             </span>
             <Input type="number" placeholder="0" className="h-8 text-sm w-16" />
             <label className="flex items-center gap-1.5 cursor-pointer">
@@ -503,7 +549,7 @@ function HeadTabContent({
           <div className="flex items-center gap-2">
             <span className="text-sm text-muted-foreground flex items-center gap-1.5">
               Max Stride
-              <HintBubble text="Determines network depth and receptive field. Higher = larger receptive field but more parameters and memory." />
+              <HintBubble text="Determines the number of downsampling blocks in the network, increasing receptive field size at the cost of network size." />
             </span>
             <Select value="16">
               <SelectTrigger className="h-8 text-sm w-20"><SelectValue /></SelectTrigger>
@@ -515,7 +561,7 @@ function HeadTabContent({
           <div className="flex items-center gap-2">
             <span className="text-sm text-muted-foreground flex items-center gap-1.5">
               Filters
-              <HintBubble text="Number of filters in the first encoder block. Each subsequent block multiplies by filters_rate. More filters = more capacity but slower. 16–64 typical." />
+              <HintBubble text="Base number of filters in the network." />
             </span>
             <Input type="number" value={16} className="h-8 text-sm w-16" />
           </div>
@@ -524,17 +570,17 @@ function HeadTabContent({
           <div className="flex items-center gap-2">
             <span className="text-sm text-muted-foreground flex items-center gap-1.5">
               Filters Rate
-              <HintBubble text="Multiplier for filters per encoder block. E.g., rate=2.0 with base=16: 16→32→64→128." />
+              <HintBubble text="Factor to scale the number of filters by at each block." />
             </span>
             <Input type="number" value={2.0} step={0.1} className="h-8 text-sm w-20" />
           </div>
           <label className="flex items-center gap-1.5 cursor-pointer">
             <input type="checkbox" defaultChecked className="accent-primary" />
-            <span className="text-sm flex items-center gap-1">Middle Block <HintBubble text="Add a convolutional block at the bottom of the U-Net between encoder and decoder." /></span>
+            <span className="text-sm flex items-center gap-1">Middle Block <HintBubble text="If enabled, adds an intermediate block between the downsampling and upsampling branch for additional processing at the largest receptive field size." /></span>
           </label>
           <label className="flex items-center gap-1.5 cursor-pointer">
             <input type="checkbox" defaultChecked className="accent-primary" />
-            <span className="text-sm flex items-center gap-1">Up Interpolate <HintBubble text="Use interpolation for upsampling in the decoder instead of transposed convolutions." /></span>
+            <span className="text-sm flex items-center gap-1">Up Interpolate <HintBubble text="If enabled, use bilinear upsampling instead of transposed convolutions. This can save computations but may lower overall accuracy." /></span>
           </label>
         </div>
         <Separator className="my-3" />
@@ -543,7 +589,7 @@ function HeadTabContent({
           <div className="flex items-center gap-2 mb-2">
             <span className="text-sm text-muted-foreground flex items-center gap-1.5">
               Anchor Part
-              <HintBubble text="The body part used to center the crop around each animal. Choose one that is consistently visible and near the center of the animal." />
+              <HintBubble text="Text name of a body part (node) to use as the anchor point. If None, the midpoint of the bounding box of all visible points will be used. Setting a reliable anchor point can significantly improve top-down model accuracy." />
             </span>
             <Select value="auto">
               <SelectTrigger className="h-8 text-sm w-32"><SelectValue /></SelectTrigger>
@@ -554,13 +600,13 @@ function HeadTabContent({
             </Select>
           </div>
         )}
-        <Field label="Sigma" id="field-sigma" hint="Gaussian spread for keypoint heatmaps. Smaller = more precise but harder to train. Larger = easier to train but less spatially precise.">
+        <Field label="Sigma" id="field-sigma" hint="Spread of the Gaussian distribution of the confidence maps. Smaller values are more precise but harder to learn. Larger values are easier to learn but less precise. This spread is in units of pixels of the model input image (after any input scaling).">
           <Input type="number" value={hp.sigma} onChange={(e) => onUpdate({ sigma: Number(e.target.value) })} min={0.5} max={30} step={0.5} className="h-9 text-sm" />
         </Field>
         <div className="flex items-center gap-2">
           <span className="text-sm text-muted-foreground flex items-center gap-1.5">
             Output Stride
-            <HintBubble text="Stride of output confidence maps relative to input. Stride=2 means 0.5× resolution output. Higher values speed up training but decrease precision." />
+            <HintBubble text="The stride of the output confidence maps relative to the input image. This is the reciprocal of the resolution (e.g., stride 2 = 0.5x size). Increasing this value speeds up performance and decreases memory, at the cost of spatial resolution." />
           </span>
           <Select value="2">
             <SelectTrigger className="h-8 text-sm w-20"><SelectValue /></SelectTrigger>

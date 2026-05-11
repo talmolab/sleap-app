@@ -57,6 +57,9 @@ export function ModelStatsPreview({ hp, maxStride: defaultMaxStride, filters: de
   const labels = useAppStore((s) => s.labels);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [thumbnail, setThumbnail] = useState<ImageBitmap | null>(null);
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const dragRef = useRef<{ startX: number; startY: number; panX: number; panY: number } | null>(null);
 
   const parsed = useMemo(() => parseBackboneFromYaml(configYaml), [configYaml]);
   const maxStride = parsed?.maxStride ?? defaultMaxStride;
@@ -73,9 +76,16 @@ export function ModelStatsPreview({ hp, maxStride: defaultMaxStride, filters: de
   const params = computeParamCount(backbone, maxStride, filters, filtersRate, undefined, outputStride, stemStride, inputChannels);
   const downBlocks = Math.log2(maxStride);
 
-  // Compute features at output stride (backbone channels → head output channels)
-  const outputLevel = Math.log2(maxStride / outputStride) - 1;
-  const featuresAtStride = backbone === "unet" ? Math.floor(filters * Math.pow(filtersRate, Math.max(0, outputLevel))) : null;
+  // Compute features at output stride (decoder output channels at the final up block)
+  // With block_contraction=false: decoder block output = filters * rate^(max(0, downBlocks - 1 - blockIdx))
+  // The last decoder block (blockIdx = upBlocks-1) determines features at the output stride
+  const stemBlksForFeatures = stemStride ? Math.log2(stemStride) : 0;
+  const downBlocksForFeatures = Math.log2(maxStride) - stemBlksForFeatures;
+  const upBlocksForFeatures = Math.log2(maxStride / outputStride) + stemBlksForFeatures;
+  const lastDecoderBlockIdx = upBlocksForFeatures - 1;
+  const featuresAtStride = backbone === "unet"
+    ? Math.floor(filters * Math.pow(filtersRate, Math.max(0, downBlocksForFeatures + stemBlksForFeatures - 1 - lastDecoderBlockIdx)))
+    : null;
   const numKeypoints = labels?.skeletons?.[0]?.nodes?.length ?? 0;
   const headName = slot === "centroid" ? "centroids" : "confmaps";
 
@@ -136,9 +146,16 @@ export function ModelStatsPreview({ hp, maxStride: defaultMaxStride, filters: de
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, THUMBNAIL_SIZE, THUMBNAIL_SIZE);
 
     if (thumbnail) {
+      // Apply zoom + pan
+      ctx.save();
+      ctx.translate(THUMBNAIL_SIZE / 2 + pan.x, THUMBNAIL_SIZE / 2 + pan.y);
+      ctx.scale(zoom, zoom);
+      ctx.translate(-THUMBNAIL_SIZE / 2, -THUMBNAIL_SIZE / 2);
+
       // Draw scaled thumbnail centered
       const aspect = thumbnail.width / thumbnail.height;
       let drawW: number, drawH: number, offsetX: number, offsetY: number;
@@ -156,27 +173,28 @@ export function ModelStatsPreview({ hp, maxStride: defaultMaxStride, filters: de
       ctx.drawImage(thumbnail, offsetX, offsetY, drawW, drawH);
 
       // Scale factor: thumbnail pixels per original pixel
-      const scale = drawW / thumbnail.width;
+      const imgScale = drawW / thumbnail.width;
       const centerX = offsetX + drawW / 2;
       const centerY = offsetY + drawH / 2;
 
       // Draw crop size box (red dashed)
       if (cropSize != null) {
-        const cropPx = (cropSize / hp.scale) * scale;
+        const cropPx = (cropSize / hp.scale) * imgScale;
         ctx.strokeStyle = "#ef4444";
-        ctx.lineWidth = 2;
-        ctx.setLineDash([6, 4]);
+        ctx.lineWidth = 2 / zoom;
+        ctx.setLineDash([6 / zoom, 4 / zoom]);
         ctx.strokeRect(centerX - cropPx / 2, centerY - cropPx / 2, cropPx, cropPx);
         ctx.setLineDash([]);
       }
 
       // Draw receptive field box (blue solid)
-      const rfPx = (rf / hp.scale) * scale;
+      const rfPx = (rf / hp.scale) * imgScale;
       ctx.strokeStyle = "#3b82f6";
-      ctx.lineWidth = 3;
+      ctx.lineWidth = 3 / zoom;
       ctx.strokeRect(centerX - rfPx / 2, centerY - rfPx / 2, rfPx, rfPx);
+
+      ctx.restore();
     } else {
-      // No thumbnail — draw placeholder
       ctx.fillStyle = "#27272a";
       ctx.fillRect(0, 0, THUMBNAIL_SIZE, THUMBNAIL_SIZE);
       ctx.fillStyle = "#71717a";
@@ -184,7 +202,7 @@ export function ModelStatsPreview({ hp, maxStride: defaultMaxStride, filters: de
       ctx.textAlign = "center";
       ctx.fillText("No labeled frames", THUMBNAIL_SIZE / 2, THUMBNAIL_SIZE / 2);
     }
-  }, [thumbnail, cropSize, rf, hp.scale]);
+  }, [thumbnail, cropSize, rf, hp.scale, zoom, pan]);
 
   return (
     <div className="mb-5 pb-4 border-b">
@@ -195,7 +213,23 @@ export function ModelStatsPreview({ hp, maxStride: defaultMaxStride, filters: de
             ref={canvasRef}
             width={THUMBNAIL_SIZE}
             height={THUMBNAIL_SIZE}
-            className="rounded border border-border"
+            className="rounded border border-border cursor-grab active:cursor-grabbing"
+            onWheel={(e) => {
+              e.preventDefault();
+              setZoom((z) => Math.max(0.5, Math.min(10, z * (e.deltaY < 0 ? 1.15 : 0.87))));
+            }}
+            onMouseDown={(e) => {
+              dragRef.current = { startX: e.clientX, startY: e.clientY, panX: pan.x, panY: pan.y };
+            }}
+            onMouseMove={(e) => {
+              if (!dragRef.current) return;
+              setPan({
+                x: dragRef.current.panX + (e.clientX - dragRef.current.startX),
+                y: dragRef.current.panY + (e.clientY - dragRef.current.startY),
+              });
+            }}
+            onMouseUp={() => { dragRef.current = null; }}
+            onMouseLeave={() => { dragRef.current = null; }}
           />
         </div>
 
@@ -236,14 +270,12 @@ export function ModelStatsPreview({ hp, maxStride: defaultMaxStride, filters: de
               {backbone === "unet" ? "UNet" : backbone === "convnext" ? "ConvNeXt" : "Swin Transformer"}:
             </span>
             <br />
-            <span className="text-muted-foreground">Parameters: {params}</span>
+            <span className="font-medium">Parameters:</span> <span className="text-muted-foreground">{params}</span>
             {featuresAtStride != null && numKeypoints > 0 && (
               <>
                 <br />
-                <span className="text-muted-foreground">
-                  Features ({headName} @ stride {outputStride}):{" "}
-                  <span className="text-green-400">{featuresAtStride}→{numKeypoints} ✓</span>
-                </span>
+                <span className="font-medium">Features ({headName} @ stride {outputStride}):</span>{" "}
+                <span className="text-green-400">{featuresAtStride}→{numKeypoints} ✓</span>
               </>
             )}
           </div>
