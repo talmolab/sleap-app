@@ -119,7 +119,7 @@ data_config:
       expect(result!.hyperparams.batchSize).toBe(8);
       expect(result!.hyperparams.learningRate).toBe(0.001);
       expect(result!.hyperparams.runName).toBe("my_run");
-      expect(result!.hyperparams.backbone).toBe("UNet");
+      expect(result!.hyperparams.backbone).toBe("unet");
       expect(result!.hyperparams.useWandb).toBe(true);
       expect(result!.hyperparams.wandbEntity).toBe("my-lab");
       expect(result!.hyperparams.wandbProject).toBe("my-project");
