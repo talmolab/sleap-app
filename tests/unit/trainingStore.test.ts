@@ -256,4 +256,259 @@ trainer_config: {}
       expect(doc.data_config.use_same_data_for_val).toBe(true);
     });
   });
+
+  describe("applyHyperparamsToYaml - augmentation", () => {
+    const baseYaml = `
+data_config: {}
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config: {}
+`;
+
+    it("writes rotation ±180° correctly", () => {
+      const hp = { ...defaultHyperparams, rotationPreset: "180" as const };
+      const result = applyHyperparamsToYaml(baseYaml, hp);
+      const doc = yaml.load(result) as Record<string, any>;
+      const aug = doc.data_config.augmentation_config;
+      expect(aug.geometric.rotation_min).toBe(-180);
+      expect(aug.geometric.rotation_max).toBe(180);
+      expect(aug.geometric.affine_p).toBe(1.0);
+    });
+
+    it("writes rotation off correctly", () => {
+      const hp = { ...defaultHyperparams, rotationPreset: "off" as const };
+      const result = applyHyperparamsToYaml(baseYaml, hp);
+      const doc = yaml.load(result) as Record<string, any>;
+      const aug = doc.data_config.augmentation_config;
+      expect(aug.geometric.affine_p).toBe(0);
+    });
+
+    it("writes rotation ±15° correctly", () => {
+      const hp = { ...defaultHyperparams, rotationPreset: "15" as const };
+      const result = applyHyperparamsToYaml(baseYaml, hp);
+      const doc = yaml.load(result) as Record<string, any>;
+      const geo = doc.data_config.augmentation_config.geometric;
+      expect(geo.rotation_min).toBe(-15);
+      expect(geo.rotation_max).toBe(15);
+      expect(geo.affine_p).toBe(1.0);
+    });
+
+    it("writes custom rotation angle correctly", () => {
+      const hp = { ...defaultHyperparams, rotationPreset: "custom" as const, rotationCustomAngle: 30 };
+      const result = applyHyperparamsToYaml(baseYaml, hp);
+      const doc = yaml.load(result) as Record<string, any>;
+      const geo = doc.data_config.augmentation_config.geometric;
+      expect(geo.rotation_min).toBe(-30);
+      expect(geo.rotation_max).toBe(30);
+      expect(geo.affine_p).toBe(1.0);
+    });
+
+    it("writes scale when enabled", () => {
+      const hp = { ...defaultHyperparams, scaleEnabled: true, scaleMin: 0.8, scaleMax: 1.2 };
+      const result = applyHyperparamsToYaml(baseYaml, hp);
+      const doc = yaml.load(result) as Record<string, any>;
+      const geo = doc.data_config.augmentation_config.geometric;
+      expect(geo.scale_min).toBe(0.8);
+      expect(geo.scale_max).toBe(1.2);
+    });
+
+    it("resets scale_min/max to 1.0 when scale disabled", () => {
+      const hp = { ...defaultHyperparams, scaleEnabled: false };
+      const result = applyHyperparamsToYaml(baseYaml, hp);
+      const doc = yaml.load(result) as Record<string, any>;
+      const geo = doc.data_config.augmentation_config.geometric;
+      expect(geo.scale_min).toBe(1.0);
+      expect(geo.scale_max).toBe(1.0);
+    });
+
+    it("writes gaussian noise when enabled", () => {
+      const hp = { ...defaultHyperparams, gaussianNoiseEnabled: true, gaussianNoiseMean: 0.0, gaussianNoiseStd: 0.04 };
+      const result = applyHyperparamsToYaml(baseYaml, hp);
+      const doc = yaml.load(result) as Record<string, any>;
+      const int = doc.data_config.augmentation_config.intensity;
+      expect(int.gaussian_noise_p).toBe(1.0);
+      expect(int.gaussian_noise_mean).toBe(0.0);
+      expect(int.gaussian_noise_std).toBe(0.04);
+    });
+
+    it("sets gaussian_noise_p to 0 when disabled", () => {
+      const hp = { ...defaultHyperparams, gaussianNoiseEnabled: false };
+      const result = applyHyperparamsToYaml(baseYaml, hp);
+      const doc = yaml.load(result) as Record<string, any>;
+      const int = doc.data_config.augmentation_config.intensity;
+      expect(int.gaussian_noise_p).toBe(0);
+    });
+
+    it("writes uniform noise when enabled", () => {
+      const hp = { ...defaultHyperparams, uniformNoiseEnabled: true, uniformNoiseMin: 0.0, uniformNoiseMax: 0.1 };
+      const result = applyHyperparamsToYaml(baseYaml, hp);
+      const doc = yaml.load(result) as Record<string, any>;
+      const int = doc.data_config.augmentation_config.intensity;
+      expect(int.uniform_noise_p).toBe(1.0);
+      expect(int.uniform_noise_min).toBe(0.0);
+      expect(int.uniform_noise_max).toBe(0.1);
+    });
+
+    it("writes contrast when enabled", () => {
+      const hp = { ...defaultHyperparams, contrastEnabled: true, contrastMin: 0.5, contrastMax: 2.0 };
+      const result = applyHyperparamsToYaml(baseYaml, hp);
+      const doc = yaml.load(result) as Record<string, any>;
+      const int = doc.data_config.augmentation_config.intensity;
+      expect(int.contrast_p).toBe(1.0);
+      expect(int.contrast_min).toBe(0.5);
+      expect(int.contrast_max).toBe(2.0);
+    });
+
+    it("writes brightness when enabled", () => {
+      const hp = { ...defaultHyperparams, brightnessEnabled: true, brightnessMin: 0.0, brightnessMax: 0.2 };
+      const result = applyHyperparamsToYaml(baseYaml, hp);
+      const doc = yaml.load(result) as Record<string, any>;
+      const int = doc.data_config.augmentation_config.intensity;
+      expect(int.brightness_p).toBe(1.0);
+      expect(int.brightness_min).toBe(0.0);
+      expect(int.brightness_max).toBe(0.2);
+    });
+  });
+
+  describe("parseYamlConfig - augmentation reverse-map", () => {
+    it("detects rotation ±180° from rotation_min/max", () => {
+      const yamlText = `
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+data_config:
+  augmentation_config:
+    geometric:
+      rotation_min: -180
+      rotation_max: 180
+      affine_p: 1.0
+`;
+      const result = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
+      expect(result!.hyperparams.rotationPreset).toBe("180");
+    });
+
+    it("detects rotation off from affine_p=0", () => {
+      const yamlText = `
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+data_config:
+  augmentation_config:
+    geometric:
+      rotation_min: 0
+      rotation_max: 0
+      affine_p: 0
+`;
+      const result = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
+      expect(result!.hyperparams.rotationPreset).toBe("off");
+    });
+
+    it("detects rotation ±15°", () => {
+      const yamlText = `
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+data_config:
+  augmentation_config:
+    geometric:
+      rotation_min: -15
+      rotation_max: 15
+      affine_p: 1.0
+`;
+      const result = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
+      expect(result!.hyperparams.rotationPreset).toBe("15");
+    });
+
+    it("detects custom rotation from non-standard angles", () => {
+      const yamlText = `
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+data_config:
+  augmentation_config:
+    geometric:
+      rotation_min: -45
+      rotation_max: 45
+      affine_p: 1.0
+`;
+      const result = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
+      expect(result!.hyperparams.rotationPreset).toBe("custom");
+      expect(result!.hyperparams.rotationCustomAngle).toBe(45);
+    });
+
+    it("detects scale enabled from scale_min != scale_max", () => {
+      const yamlText = `
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+data_config:
+  augmentation_config:
+    geometric:
+      scale_min: 0.9
+      scale_max: 1.1
+`;
+      const result = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
+      expect(result!.hyperparams.scaleEnabled).toBe(true);
+      expect(result!.hyperparams.scaleMin).toBe(0.9);
+      expect(result!.hyperparams.scaleMax).toBe(1.1);
+    });
+
+    it("detects scale disabled when both are 1.0", () => {
+      const yamlText = `
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+data_config:
+  augmentation_config:
+    geometric:
+      scale_min: 1.0
+      scale_max: 1.0
+`;
+      const result = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
+      expect(result!.hyperparams.scaleEnabled).toBe(false);
+    });
+
+    it("detects gaussian noise enabled from p > 0", () => {
+      const yamlText = `
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+data_config:
+  augmentation_config:
+    intensity:
+      gaussian_noise_p: 0.5
+      gaussian_noise_mean: 0.0
+      gaussian_noise_std: 0.04
+`;
+      const result = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
+      expect(result!.hyperparams.gaussianNoiseEnabled).toBe(true);
+      expect(result!.hyperparams.gaussianNoiseStd).toBe(0.04);
+    });
+
+    it("defaults augmentation fields when no augmentation_config present", () => {
+      const yamlText = `
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+data_config: {}
+`;
+      const result = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
+      expect(result!.hyperparams.rotationPreset).toBe("180");
+      expect(result!.hyperparams.scaleEnabled).toBe(false);
+      expect(result!.hyperparams.gaussianNoiseEnabled).toBe(false);
+      expect(result!.hyperparams.uniformNoiseEnabled).toBe(false);
+      expect(result!.hyperparams.contrastEnabled).toBe(false);
+      expect(result!.hyperparams.brightnessEnabled).toBe(false);
+    });
+  });
 });

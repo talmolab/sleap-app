@@ -9,7 +9,7 @@
 
 import { useState, useRef, useEffect } from "react";
 import { useTrainingStore, getConfigSlots, getSlotLabel } from "@/stores/trainingStore";
-import type { ModelType, ConfigFile, ConfigHyperparams, AugmentationPreset } from "@/stores/trainingStore";
+import type { ModelType, ConfigFile, ConfigHyperparams } from "@/stores/trainingStore";
 import { useConnectStore } from "@/stores/connectStore";
 import { RemoteFileBrowser } from "@/components/dialogs/RemoteFileBrowser";
 import { TrainingConfigDialog } from "@/components/dialogs/TrainingConfigDialog";
@@ -49,14 +49,6 @@ const MODEL_TYPE_OPTIONS: { value: ModelType; label: string }[] = [
   { value: "bottom_up", label: "Bottom-Up" },
   { value: "top_down_id", label: "Top-Down + ID" },
   { value: "bottom_up_id", label: "Bottom-Up + ID" },
-];
-
-const AUGMENTATION_PRESET_OPTIONS: { value: AugmentationPreset; label: string; desc: string }[] = [
-  { value: "none", label: "None", desc: "No augmentation" },
-  { value: "light", label: "Light", desc: "Rotation ±15°" },
-  { value: "standard", label: "Standard", desc: "Rotation ±180° + noise" },
-  { value: "heavy", label: "Heavy", desc: "Full augmentation suite" },
-  { value: "custom", label: "Custom", desc: "Configure manually" },
 ];
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -233,22 +225,18 @@ function HyperparamsFields({
       </div>
 
       <div className="space-y-1">
-        <span className="text-[10px] text-muted-foreground">Augmentation</span>
+        <span className="text-[10px] text-muted-foreground">Rotation</span>
         <Select
-          value={hp.augmentationPreset}
-          onValueChange={(v) => onUpdate(slot, { augmentationPreset: v as AugmentationPreset })}
+          value={hp.rotationPreset}
+          onValueChange={(v) => onUpdate(slot, { rotationPreset: v as "off" | "15" | "180" | "custom" })}
           disabled={disabled}
         >
-          <SelectTrigger className="h-7 text-xs">
-            <SelectValue />
-          </SelectTrigger>
+          <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
           <SelectContent>
-            {AUGMENTATION_PRESET_OPTIONS.map((o) => (
-              <SelectItem key={o.value} value={o.value}>
-                {o.label}
-                <span className="text-muted-foreground ml-1">— {o.desc}</span>
-              </SelectItem>
-            ))}
+            <SelectItem value="off">Off</SelectItem>
+            <SelectItem value="15">&plusmn;15&deg;</SelectItem>
+            <SelectItem value="180">&plusmn;180&deg;</SelectItem>
+            <SelectItem value="custom">Custom</SelectItem>
           </SelectContent>
         </Select>
       </div>

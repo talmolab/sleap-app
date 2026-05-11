@@ -14,8 +14,6 @@ export type ModelType =
 
 export type Backbone = "unet" | "convnext" | "swint";
 
-export type AugmentationPreset = "none" | "light" | "standard" | "heavy" | "custom";
-
 export interface TrainingConfig {
   // Model
   modelType: ModelType;
@@ -42,7 +40,24 @@ export interface ConfigHyperparams {
   earlyStoppingPatience: number;
   sigma: number;
   scale: number;
-  augmentationPreset: AugmentationPreset;
+  // Augmentation — individual controls (PyQt model)
+  rotationPreset: "off" | "15" | "180" | "custom";
+  rotationCustomAngle: number;
+  scaleEnabled: boolean;
+  scaleMin: number;
+  scaleMax: number;
+  uniformNoiseEnabled: boolean;
+  uniformNoiseMin: number;
+  uniformNoiseMax: number;
+  gaussianNoiseEnabled: boolean;
+  gaussianNoiseMean: number;
+  gaussianNoiseStd: number;
+  contrastEnabled: boolean;
+  contrastMin: number;
+  contrastMax: number;
+  brightnessEnabled: boolean;
+  brightnessMin: number;
+  brightnessMax: number;
   trainingMode: "reuse_config" | "resume" | "reuse_model";
 }
 
@@ -60,7 +75,23 @@ export const defaultHyperparams: ConfigHyperparams = {
   earlyStoppingPatience: 10,
   sigma: 5.0,
   scale: 1.0,
-  augmentationPreset: "standard",
+  rotationPreset: "180",
+  rotationCustomAngle: 45,
+  scaleEnabled: false,
+  scaleMin: 0.9,
+  scaleMax: 1.1,
+  uniformNoiseEnabled: false,
+  uniformNoiseMin: 0.0,
+  uniformNoiseMax: 0.1,
+  gaussianNoiseEnabled: false,
+  gaussianNoiseMean: 0.0,
+  gaussianNoiseStd: 0.04,
+  contrastEnabled: false,
+  contrastMin: 0.5,
+  contrastMax: 2.0,
+  brightnessEnabled: false,
+  brightnessMin: 0.0,
+  brightnessMax: 0.2,
   trainingMode: "reuse_config",
 };
 
@@ -142,55 +173,6 @@ export function getSlotLabel(slot: string): string {
   }
 }
 
-// ── Augmentation presets ─────────────────────────────────────────
-
-interface AugmentationConfig {
-  rotation: number;
-  affine_p: number;
-  scale_min?: number;
-  scale_max?: number;
-  uniform_noise_min?: number;
-  uniform_noise_max?: number;
-  uniform_noise_p?: number;
-  gaussian_noise_mean?: number;
-  gaussian_noise_std?: number;
-  gaussian_noise_p?: number;
-  contrast_min?: number;
-  contrast_max?: number;
-  contrast_p?: number;
-  brightness_min?: number;
-  brightness_max?: number;
-  brightness_p?: number;
-}
-
-const AUGMENTATION_PRESETS: Record<AugmentationPreset, AugmentationConfig> = {
-  none: { rotation: 0, affine_p: 0 },
-  light: { rotation: 15, affine_p: 1.0 },
-  standard: {
-    rotation: 180,
-    affine_p: 1.0,
-    gaussian_noise_mean: 0.0,
-    gaussian_noise_std: 0.04,
-    gaussian_noise_p: 0.5,
-  },
-  heavy: {
-    rotation: 180,
-    affine_p: 1.0,
-    scale_min: 0.9,
-    scale_max: 1.1,
-    gaussian_noise_mean: 0.0,
-    gaussian_noise_std: 0.04,
-    gaussian_noise_p: 0.5,
-    contrast_min: 0.75,
-    contrast_max: 1.25,
-    contrast_p: 0.5,
-    brightness_min: 0.0,
-    brightness_max: 0.1,
-    brightness_p: 0.5,
-  },
-  custom: { rotation: 180, affine_p: 1.0 },
-};
-
 // ── YAML override helper ─────────────────────────────────────────
 
 /** Apply ConfigHyperparams overrides to raw YAML config content. */
@@ -247,28 +229,61 @@ export function applyHyperparamsToYaml(yamlText: string, hp: ConfigHyperparams):
     }
   }
 
-  // Augmentation preset — skip override for "custom" (user manages augmentation directly)
-  if (hp.augmentationPreset !== "custom") {
-    const aug = AUGMENTATION_PRESETS[hp.augmentationPreset];
-    if (!data.augmentation_config) data.augmentation_config = {};
-    const augConfig = data.augmentation_config as Record<string, unknown>;
-    augConfig.rotation = aug.rotation;
-    augConfig.affine_p = aug.affine_p;
-    augConfig.scale_min = aug.scale_min ?? null;
-    augConfig.scale_max = aug.scale_max ?? null;
-    augConfig.uniform_noise_min = aug.uniform_noise_min ?? 0;
-    augConfig.uniform_noise_max = aug.uniform_noise_max ?? 0;
-    augConfig.uniform_noise_p = aug.uniform_noise_p ?? 0;
-    augConfig.gaussian_noise_mean = aug.gaussian_noise_mean ?? 0;
-    augConfig.gaussian_noise_std = aug.gaussian_noise_std ?? 0;
-    augConfig.gaussian_noise_p = aug.gaussian_noise_p ?? 0;
-    augConfig.contrast_min = aug.contrast_min ?? 0.5;
-    augConfig.contrast_max = aug.contrast_max ?? 2.0;
-    augConfig.contrast_p = aug.contrast_p ?? 0;
-    augConfig.brightness_min = aug.brightness_min ?? 0;
-    augConfig.brightness_max = aug.brightness_max ?? 0;
-    augConfig.brightness_p = aug.brightness_p ?? 0;
+  // Augmentation — individual controls
+  if (!data.augmentation_config) data.augmentation_config = {};
+  const augConfig = data.augmentation_config as Record<string, unknown>;
+  if (!augConfig.geometric) augConfig.geometric = {};
+  if (!augConfig.intensity) augConfig.intensity = {};
+  const geo = augConfig.geometric as Record<string, unknown>;
+  const int = augConfig.intensity as Record<string, unknown>;
+
+  // Rotation
+  if (hp.rotationPreset === "off") {
+    geo.rotation_min = 0;
+    geo.rotation_max = 0;
+    geo.affine_p = 0;
+  } else if (hp.rotationPreset === "15") {
+    geo.rotation_min = -15;
+    geo.rotation_max = 15;
+    geo.affine_p = 1.0;
+  } else if (hp.rotationPreset === "180") {
+    geo.rotation_min = -180;
+    geo.rotation_max = 180;
+    geo.affine_p = 1.0;
+  } else if (hp.rotationPreset === "custom") {
+    geo.rotation_min = -hp.rotationCustomAngle;
+    geo.rotation_max = hp.rotationCustomAngle;
+    geo.affine_p = 1.0;
   }
+
+  // Scale
+  if (hp.scaleEnabled) {
+    geo.scale_min = hp.scaleMin;
+    geo.scale_max = hp.scaleMax;
+  } else {
+    geo.scale_min = 1.0;
+    geo.scale_max = 1.0;
+  }
+
+  // Uniform noise
+  int.uniform_noise_min = hp.uniformNoiseMin;
+  int.uniform_noise_max = hp.uniformNoiseMax;
+  int.uniform_noise_p = hp.uniformNoiseEnabled ? 1.0 : 0;
+
+  // Gaussian noise
+  int.gaussian_noise_mean = hp.gaussianNoiseMean;
+  int.gaussian_noise_std = hp.gaussianNoiseStd;
+  int.gaussian_noise_p = hp.gaussianNoiseEnabled ? 1.0 : 0;
+
+  // Contrast
+  int.contrast_min = hp.contrastMin;
+  int.contrast_max = hp.contrastMax;
+  int.contrast_p = hp.contrastEnabled ? 1.0 : 0;
+
+  // Brightness
+  int.brightness_min = hp.brightnessMin;
+  int.brightness_max = hp.brightnessMax;
+  int.brightness_p = hp.brightnessEnabled ? 1.0 : 0;
 
   return yaml.dump(doc, { lineWidth: -1 });
 }
@@ -378,6 +393,35 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
 
       const hasTrainedModel = typeof trainer.run_name === "string" && trainer.run_name.length > 0;
 
+      // Augmentation reverse-map
+      const augCfg = (dataConfig.augmentation_config ?? {}) as Record<string, unknown>;
+      const geoCfg = (augCfg.geometric ?? {}) as Record<string, unknown>;
+      const intCfg = (augCfg.intensity ?? {}) as Record<string, unknown>;
+
+      const rotMin = typeof geoCfg.rotation_min === "number" ? geoCfg.rotation_min : -180;
+      const rotMax = typeof geoCfg.rotation_max === "number" ? geoCfg.rotation_max : 180;
+      const affineP = typeof geoCfg.affine_p === "number" ? geoCfg.affine_p : 1.0;
+
+      let rotationPreset: "off" | "15" | "180" | "custom" = "180";
+      if (affineP === 0 || (rotMin === 0 && rotMax === 0)) {
+        rotationPreset = "off";
+      } else if (Math.abs(rotMin) === 15 && Math.abs(rotMax) === 15) {
+        rotationPreset = "15";
+      } else if (Math.abs(rotMin) === 180 && Math.abs(rotMax) === 180) {
+        rotationPreset = "180";
+      } else {
+        rotationPreset = "custom";
+      }
+
+      const scaleMinVal = typeof geoCfg.scale_min === "number" ? geoCfg.scale_min : 1.0;
+      const scaleMaxVal = typeof geoCfg.scale_max === "number" ? geoCfg.scale_max : 1.0;
+      const scaleEnabled = scaleMinVal !== 1.0 || scaleMaxVal !== 1.0;
+
+      const gaussP = typeof intCfg.gaussian_noise_p === "number" ? intCfg.gaussian_noise_p : 0;
+      const uniformP = typeof intCfg.uniform_noise_p === "number" ? intCfg.uniform_noise_p : 0;
+      const contrastP = typeof intCfg.contrast_p === "number" ? intCfg.contrast_p : 0;
+      const brightnessP = typeof intCfg.brightness_p === "number" ? intCfg.brightness_p : 0;
+
       const hyperparams: ConfigHyperparams = {
         backbone: backboneMap[activeBackbone.toLowerCase()] ?? "",
         maxEpochs: typeof trainer.max_epochs === "number" ? trainer.max_epochs : 100,
@@ -396,7 +440,23 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
           ? earlyStopping.patience : 10,
         sigma,
         scale: typeof dataConfig.scale === "number" ? dataConfig.scale : 1.0,
-        augmentationPreset: "standard",
+        rotationPreset,
+        rotationCustomAngle: rotationPreset === "custom" ? Math.abs(rotMax) : 45,
+        scaleEnabled,
+        scaleMin: typeof geoCfg.scale_min === "number" ? geoCfg.scale_min : 0.9,
+        scaleMax: typeof geoCfg.scale_max === "number" ? geoCfg.scale_max : 1.1,
+        uniformNoiseEnabled: uniformP > 0,
+        uniformNoiseMin: typeof intCfg.uniform_noise_min === "number" ? intCfg.uniform_noise_min : 0.0,
+        uniformNoiseMax: typeof intCfg.uniform_noise_max === "number" ? intCfg.uniform_noise_max : 0.1,
+        gaussianNoiseEnabled: gaussP > 0,
+        gaussianNoiseMean: typeof intCfg.gaussian_noise_mean === "number" ? intCfg.gaussian_noise_mean : 0.0,
+        gaussianNoiseStd: typeof intCfg.gaussian_noise_std === "number" ? intCfg.gaussian_noise_std : 0.04,
+        contrastEnabled: contrastP > 0,
+        contrastMin: typeof intCfg.contrast_min === "number" ? intCfg.contrast_min : 0.5,
+        contrastMax: typeof intCfg.contrast_max === "number" ? intCfg.contrast_max : 2.0,
+        brightnessEnabled: brightnessP > 0,
+        brightnessMin: typeof intCfg.brightness_min === "number" ? intCfg.brightness_min : 0.0,
+        brightnessMax: typeof intCfg.brightness_max === "number" ? intCfg.brightness_max : 0.2,
         trainingMode: "reuse_config" as const,
       };
 
