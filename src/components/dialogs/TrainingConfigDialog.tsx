@@ -245,7 +245,16 @@ function HeadTabContent({
         reader.onload = () => {
           const text = reader.result as string;
           const parsed = parseYamlConfig(text, file.name, slot);
-          if (parsed) addConfigFile(parsed);
+          if (parsed) {
+            if (parsed.modelType !== slot && parsed.modelType !== "unknown") {
+              window.alert(
+                `The file you selected was a training config for ${parsed.modelType} and cannot be used for ${slot}.`
+              );
+            }
+            addConfigFile(parsed);
+          } else {
+            window.alert("The file you selected was not a valid training config.");
+          }
         };
         reader.readAsText(file);
       }
