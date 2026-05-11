@@ -40,6 +40,16 @@ export interface ConfigHyperparams {
   earlyStoppingPatience: number;
   sigma: number;
   scale: number;
+  // Model — backbone
+  stemStride: number | null;
+  maxStride: number;
+  filters: number;
+  filtersRate: number;
+  middleBlock: boolean;
+  upInterpolate: boolean;
+  // Model — head
+  outputStride: number;
+  anchorPart: string | null;
   // Augmentation — individual controls (PyQt model)
   rotationPreset: "off" | "15" | "180" | "custom";
   rotationCustomAngle: number;
@@ -75,6 +85,14 @@ export const defaultHyperparams: ConfigHyperparams = {
   earlyStoppingPatience: 10,
   sigma: 5.0,
   scale: 1.0,
+  stemStride: null,
+  maxStride: 16,
+  filters: 16,
+  filtersRate: 2.0,
+  middleBlock: true,
+  upInterpolate: true,
+  outputStride: 2,
+  anchorPart: null,
   rotationPreset: "180",
   rotationCustomAngle: 45,
   scaleEnabled: false,
@@ -225,6 +243,38 @@ export function applyHyperparamsToYaml(yamlText: string, hp: ConfigHyperparams):
       // Bottom-up nested confmaps
       if (head.confmaps && typeof head.confmaps === "object") {
         (head.confmaps as Record<string, unknown>).sigma = hp.sigma;
+      }
+    }
+  }
+
+  // Backbone model params
+  const backboneConfig = (model.backbone_config ?? {}) as Record<string, unknown>;
+  if (hp.backbone === "unet" || !hp.backbone) {
+    if (!backboneConfig.unet) backboneConfig.unet = {};
+    const unet = backboneConfig.unet as Record<string, unknown>;
+    unet.max_stride = hp.maxStride;
+    unet.filters = hp.filters;
+    unet.filters_rate = hp.filtersRate;
+    unet.middle_block = hp.middleBlock;
+    unet.up_interpolate = hp.upInterpolate;
+    unet.stem_stride = hp.stemStride;
+    model.backbone_config = backboneConfig;
+  }
+
+  // Head params — output_stride and anchor_part
+  for (const [, headVal] of Object.entries(headConfigs)) {
+    if (headVal && typeof headVal === "object") {
+      const head = headVal as Record<string, unknown>;
+      if (head.confmaps && typeof head.confmaps === "object") {
+        (head.confmaps as Record<string, unknown>).output_stride = hp.outputStride;
+        if (hp.anchorPart !== null) {
+          (head.confmaps as Record<string, unknown>).anchor_part = hp.anchorPart;
+        }
+      } else {
+        head.output_stride = hp.outputStride;
+        if (hp.anchorPart !== null) {
+          head.anchor_part = hp.anchorPart;
+        }
       }
     }
   }
@@ -393,6 +443,25 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
 
       const hasTrainedModel = typeof trainer.run_name === "string" && trainer.run_name.length > 0;
 
+      // Extract backbone model params
+      const unetConfig = (backboneConfig[activeBackbone.toLowerCase()] ?? {}) as Record<string, unknown>;
+
+      // Extract output_stride and anchor_part from head configs
+      let outputStride = 2;
+      let anchorPart: string | null = null;
+      for (const headVal of Object.values(headConfigs)) {
+        if (headVal && typeof headVal === "object") {
+          const head = headVal as Record<string, unknown>;
+          if (typeof head.output_stride === "number") outputStride = head.output_stride;
+          if (typeof head.anchor_part === "string") anchorPart = head.anchor_part;
+          const confmaps = head.confmaps as Record<string, unknown> | undefined;
+          if (confmaps) {
+            if (typeof confmaps.output_stride === "number") outputStride = confmaps.output_stride;
+            if (typeof confmaps.anchor_part === "string") anchorPart = confmaps.anchor_part;
+          }
+        }
+      }
+
       // Augmentation reverse-map
       const augCfg = (dataConfig.augmentation_config ?? {}) as Record<string, unknown>;
       const geoCfg = (augCfg.geometric ?? {}) as Record<string, unknown>;
@@ -440,6 +509,14 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
           ? earlyStopping.patience : 10,
         sigma,
         scale: typeof dataConfig.scale === "number" ? dataConfig.scale : 1.0,
+        stemStride: typeof unetConfig.stem_stride === "number" ? unetConfig.stem_stride : null,
+        maxStride: typeof unetConfig.max_stride === "number" ? unetConfig.max_stride : 16,
+        filters: typeof unetConfig.filters === "number" ? unetConfig.filters : 16,
+        filtersRate: typeof unetConfig.filters_rate === "number" ? unetConfig.filters_rate : 2.0,
+        middleBlock: typeof unetConfig.middle_block === "boolean" ? unetConfig.middle_block : true,
+        upInterpolate: typeof unetConfig.up_interpolate === "boolean" ? unetConfig.up_interpolate : true,
+        outputStride,
+        anchorPart,
         rotationPreset,
         rotationCustomAngle: rotationPreset === "custom" ? Math.abs(rotMax) : 45,
         scaleEnabled,

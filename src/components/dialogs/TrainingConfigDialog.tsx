@@ -310,7 +310,7 @@ function HeadTabContent({
       </div>
 
       {/* ── Model Stats Preview (thumbnail + RF + crop size + params) ── */}
-      <ModelStatsPreview hp={hp} maxStride={16} filters={16} filtersRate={2.0} configYaml={configFile?.content} slot={slot} />
+      <ModelStatsPreview hp={hp} maxStride={hp.maxStride} filters={hp.filters} filtersRate={hp.filtersRate} configYaml={configFile?.content} slot={slot} />
 
       {/* ── 1. Data ── */}
       <div className={allLocked ? "opacity-40 pointer-events-none" : ""}>
@@ -541,9 +541,9 @@ function HeadTabContent({
               Stem Stride
               <HintBubble text="If not None, controls how many stem blocks to use for initial downsampling. These are useful for learned downsampling that retains spatial information while reducing large input image sizes." />
             </span>
-            <Input type="number" placeholder="0" className="h-8 text-sm w-16" />
+            <Input type="number" value={hp.stemStride ?? ""} onChange={(e) => onUpdate({ stemStride: e.target.value ? Number(e.target.value) : null })} disabled={hp.stemStride === null} placeholder="0" className="h-8 text-sm w-16" />
             <label className="flex items-center gap-1.5 cursor-pointer">
-              <input type="checkbox" defaultChecked className="accent-primary" />
+              <input type="checkbox" checked={hp.stemStride === null} onChange={(e) => onUpdate({ stemStride: e.target.checked ? null : 0 })} className="accent-primary" />
               <span className="text-sm">None</span>
             </label>
           </div>
@@ -554,7 +554,7 @@ function HeadTabContent({
               Max Stride
               <HintBubble text="Determines the number of downsampling blocks in the network, increasing receptive field size at the cost of network size." />
             </span>
-            <Select value="16">
+            <Select value={String(hp.maxStride)} onValueChange={(v) => onUpdate({ maxStride: Number(v) })}>
               <SelectTrigger className="h-8 text-sm w-20"><SelectValue /></SelectTrigger>
               <SelectContent>
                 {[2, 4, 8, 16, 32, 64, 128].map((v) => <SelectItem key={v} value={String(v)}>{v}</SelectItem>)}
@@ -566,7 +566,7 @@ function HeadTabContent({
               Filters
               <HintBubble text="Base number of filters in the network." />
             </span>
-            <Input type="number" value={16} className="h-8 text-sm w-16" />
+            <Input type="number" value={hp.filters} onChange={(e) => onUpdate({ filters: Number(e.target.value) })} className="h-8 text-sm w-16" />
           </div>
         </div>
         <div className="flex items-center gap-6 flex-wrap">
@@ -575,14 +575,14 @@ function HeadTabContent({
               Filters Rate
               <HintBubble text="Factor to scale the number of filters by at each block." />
             </span>
-            <Input type="number" value={2.0} step={0.1} className="h-8 text-sm w-20" />
+            <Input type="number" value={hp.filtersRate} onChange={(e) => onUpdate({ filtersRate: Number(e.target.value) })} step={0.1} className="h-8 text-sm w-20" />
           </div>
           <label className="flex items-center gap-1.5 cursor-pointer">
-            <input type="checkbox" defaultChecked className="accent-primary" />
+            <input type="checkbox" checked={hp.middleBlock} onChange={(e) => onUpdate({ middleBlock: e.target.checked })} className="accent-primary" />
             <span className="text-sm flex items-center gap-1">Middle Block <HintBubble text="If enabled, adds an intermediate block between the downsampling and upsampling branch for additional processing at the largest receptive field size." /></span>
           </label>
           <label className="flex items-center gap-1.5 cursor-pointer">
-            <input type="checkbox" defaultChecked className="accent-primary" />
+            <input type="checkbox" checked={hp.upInterpolate} onChange={(e) => onUpdate({ upInterpolate: e.target.checked })} className="accent-primary" />
             <span className="text-sm flex items-center gap-1">Up Interpolate <HintBubble text="If enabled, use bilinear upsampling instead of transposed convolutions. This can save computations but may lower overall accuracy." /></span>
           </label>
         </div>
@@ -594,10 +594,10 @@ function HeadTabContent({
               Anchor Part
               <HintBubble text="Text name of a body part (node) to use as the anchor point. If None, the midpoint of the bounding box of all visible points will be used. Setting a reliable anchor point can significantly improve top-down model accuracy." />
             </span>
-            <Select value="auto">
-              <SelectTrigger className="h-8 text-sm w-32"><SelectValue /></SelectTrigger>
+            <Select value={hp.anchorPart ?? ""} onValueChange={(v) => onUpdate({ anchorPart: v || null })}>
+              <SelectTrigger className="h-8 text-sm w-32"><SelectValue placeholder="Auto" /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="auto">Auto</SelectItem>
+                <SelectItem value="">Auto</SelectItem>
                 {skeletonNodes.map((n) => <SelectItem key={n} value={n}>{n}</SelectItem>)}
               </SelectContent>
             </Select>
@@ -611,7 +611,7 @@ function HeadTabContent({
             Output Stride
             <HintBubble text="The stride of the output confidence maps relative to the input image. This is the reciprocal of the resolution (e.g., stride 2 = 0.5x size). Increasing this value speeds up performance and decreases memory, at the cost of spatial resolution." />
           </span>
-          <Select value="2">
+          <Select value={String(hp.outputStride)} onValueChange={(v) => onUpdate({ outputStride: Number(v) })}>
             <SelectTrigger className="h-8 text-sm w-20"><SelectValue /></SelectTrigger>
             <SelectContent>
               {[1, 2, 4, 8, 16, 32, 64].map((v) => <SelectItem key={v} value={String(v)}>{v}</SelectItem>)}

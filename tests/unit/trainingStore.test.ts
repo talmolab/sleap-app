@@ -372,6 +372,87 @@ trainer_config: {}
     });
   });
 
+  describe("applyHyperparamsToYaml - model params", () => {
+    const baseYaml = `
+data_config: {}
+model_config:
+  backbone_config:
+    unet:
+      filters: 16
+      max_stride: 16
+  head_configs:
+    centroid:
+      confmaps:
+        sigma: 2.5
+        output_stride: 2
+trainer_config: {}
+`;
+
+    it("writes backbone model params to YAML", () => {
+      const hp = { ...defaultHyperparams, maxStride: 32, filters: 24, filtersRate: 1.5, middleBlock: false, upInterpolate: false };
+      const result = applyHyperparamsToYaml(baseYaml, hp);
+      const doc = yaml.load(result) as Record<string, any>;
+      const unet = doc.model_config.backbone_config.unet;
+      expect(unet.max_stride).toBe(32);
+      expect(unet.filters).toBe(24);
+      expect(unet.filters_rate).toBe(1.5);
+      expect(unet.middle_block).toBe(false);
+      expect(unet.up_interpolate).toBe(false);
+    });
+
+    it("writes output_stride to head config", () => {
+      const hp = { ...defaultHyperparams, outputStride: 4 };
+      const result = applyHyperparamsToYaml(baseYaml, hp);
+      const doc = yaml.load(result) as Record<string, any>;
+      expect(doc.model_config.head_configs.centroid.confmaps.output_stride).toBe(4);
+    });
+
+    it("writes stem_stride to backbone config", () => {
+      const hp = { ...defaultHyperparams, stemStride: 2 };
+      const result = applyHyperparamsToYaml(baseYaml, hp);
+      const doc = yaml.load(result) as Record<string, any>;
+      expect(doc.model_config.backbone_config.unet.stem_stride).toBe(2);
+    });
+
+    it("writes anchor_part to head config", () => {
+      const hp = { ...defaultHyperparams, anchorPart: "thorax" };
+      const result = applyHyperparamsToYaml(baseYaml, hp);
+      const doc = yaml.load(result) as Record<string, any>;
+      expect(doc.model_config.head_configs.centroid.confmaps.anchor_part).toBe("thorax");
+    });
+  });
+
+  describe("parseYamlConfig - model params", () => {
+    it("extracts backbone params from YAML", () => {
+      const yamlText = `
+model_config:
+  backbone_config:
+    unet:
+      filters: 24
+      filters_rate: 1.5
+      max_stride: 32
+      stem_stride: 2
+      middle_block: false
+      up_interpolate: false
+  head_configs:
+    centered_instance:
+      confmaps:
+        output_stride: 4
+        anchor_part: thorax
+        sigma: 2.5
+`;
+      const result = useTrainingStore.getState().parseYamlConfig(yamlText, "ci.yaml", "centered_instance");
+      expect(result!.hyperparams.filters).toBe(24);
+      expect(result!.hyperparams.filtersRate).toBe(1.5);
+      expect(result!.hyperparams.maxStride).toBe(32);
+      expect(result!.hyperparams.stemStride).toBe(2);
+      expect(result!.hyperparams.middleBlock).toBe(false);
+      expect(result!.hyperparams.upInterpolate).toBe(false);
+      expect(result!.hyperparams.outputStride).toBe(4);
+      expect(result!.hyperparams.anchorPart).toBe("thorax");
+    });
+  });
+
   describe("parseYamlConfig - augmentation reverse-map", () => {
     it("detects rotation ±180° from rotation_min/max", () => {
       const yamlText = `
