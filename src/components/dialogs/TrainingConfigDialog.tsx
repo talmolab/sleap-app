@@ -330,10 +330,10 @@ function HeadTabContent({
               Random Seed
               <HintBubble text="Random seed for reproducible train/validation data splits. Leave empty (Auto) for random seed each run." />
             </span>
-            <Input type="number" placeholder="0" className="h-8 text-sm w-20" />
+            <Input type="number" value={hp.randomSeed ?? ""} onChange={(e) => onUpdate({ randomSeed: e.target.value ? Number(e.target.value) : null })} disabled={hp.randomSeed === null} placeholder="0" className="h-8 text-sm w-20" />
           </div>
           <label className="flex items-center gap-1.5 cursor-pointer">
-            <input type="checkbox" defaultChecked className="accent-primary" />
+            <input type="checkbox" checked={hp.randomSeed === null} onChange={(e) => onUpdate({ randomSeed: e.target.checked ? null : 0 })} className="accent-primary" />
             <span className="text-sm">Auto</span>
           </label>
         </div>
@@ -343,10 +343,10 @@ function HeadTabContent({
         {showCropSize && (
           <div className="flex items-center gap-4">
             <Field label="Crop Size" hint="Bounding box crop size around each instance in pixels. Set to 'Auto' to compute from the data (largest instance bounding box, aligned to max_stride).">
-              <Input type="number" value={256} className="h-9 text-sm" />
+              <Input type="number" value={hp.cropSize ?? ""} onChange={(e) => onUpdate({ cropSize: e.target.value ? Number(e.target.value) : null })} disabled={hp.cropSize === null} className="h-9 text-sm" />
             </Field>
             <label className="flex items-center gap-1.5 cursor-pointer shrink-0">
-              <input type="checkbox" className="accent-primary" />
+              <input type="checkbox" checked={hp.cropSize === null} onChange={(e) => onUpdate({ cropSize: e.target.checked ? null : 256 })} className="accent-primary" />
               <span className="text-sm">Auto</span>
             </label>
           </div>
@@ -493,28 +493,28 @@ function HeadTabContent({
         <Field label="Initial Learning Rate" id="field-learningrate" hint="The initial learning rate for the optimizer. Typically 1e-3 or 1e-4. Can be decreased automatically with learning rate reduction on plateau. If too high or too low, training may fail to find good initial local minima.">
           <Input type="number" value={hp.learningRate} onChange={(e) => onUpdate({ learningRate: Number(e.target.value) })} step={0.0001} className="h-9 text-sm" />
         </Field>
-        <Toggle label="Stop Training on Plateau" hint="If enabled, training will terminate automatically when the validation loss plateaus. This saves time and compute, and prevents training into the overfitting regime." checked={true} onChange={() => {}} />
+        <Toggle label="Stop Training on Plateau" hint="If enabled, training will terminate automatically when the validation loss plateaus. This saves time and compute, and prevents training into the overfitting regime." checked={hp.stopOnPlateau} onChange={(v) => onUpdate({ stopOnPlateau: v })} />
         <Field label="Plateau Min. Delta" hint="Minimum absolute decrease in the loss in order to consider an epoch as not in a plateau.">
-          <Input type="text" value="1e-08" className="h-9 text-sm" />
+          <Input type="text" value={hp.plateauMinDelta} onChange={(e) => onUpdate({ plateauMinDelta: Number(e.target.value) })} disabled={!hp.stopOnPlateau} className="h-9 text-sm" />
         </Field>
         <Field label="Plateau Patience" id="field-earlystopping" hint="Number of epochs without an improvement of at least min_delta in order for a plateau to be detected.">
-          <Input type="number" value={hp.earlyStoppingPatience} onChange={(e) => onUpdate({ earlyStoppingPatience: Number(e.target.value) })} min={1} max={100} className="h-9 text-sm" />
+          <Input type="number" value={hp.earlyStoppingPatience} onChange={(e) => onUpdate({ earlyStoppingPatience: Number(e.target.value) })} min={1} max={100} disabled={!hp.stopOnPlateau} className="h-9 text-sm" />
         </Field>
-        <Toggle label="Online Mining" hint="If enabled, online hard keypoint mining (OHKM) will compute loss per keypoint, sort from easy to hard, and scale hard keypoints to have higher weight. This encourages training to focus on tricky body parts. If disabled, all keypoints are weighted equally." checked={false} onChange={() => {}} />
-        <div className="flex items-center gap-4 flex-wrap opacity-50">
+        <Toggle label="Online Mining" hint="If enabled, online hard keypoint mining (OHKM) will compute loss per keypoint, sort from easy to hard, and scale hard keypoints to have higher weight. This encourages training to focus on tricky body parts. If disabled, all keypoints are weighted equally." checked={hp.onlineMining} onChange={(v) => onUpdate({ onlineMining: v })} />
+        <div className={`flex items-center gap-4 flex-wrap ${!hp.onlineMining ? "opacity-50" : ""}`}>
           <div className="flex items-center gap-2">
             <span className="text-sm text-muted-foreground flex items-center gap-1.5">
               Min Hard Keypoints
               <HintBubble text="The minimum number of keypoints that will be considered as 'hard', even if they are not below the hard_to_easy_ratio." />
             </span>
-            <Input type="number" value={2} disabled className="h-8 text-sm w-16" />
+            <Input type="number" value={hp.minHardKeypoints} onChange={(e) => onUpdate({ minHardKeypoints: Number(e.target.value) })} disabled={!hp.onlineMining} className="h-8 text-sm w-16" />
           </div>
           <div className="flex items-center gap-2">
             <span className="text-sm text-muted-foreground flex items-center gap-1.5">
               Max Hard Keypoints
               <HintBubble text="The maximum number of hard keypoints to apply scaling to. This can help when there are few very easy keypoints which may skew the ratio." />
             </span>
-            <Input type="number" placeholder="None" disabled className="h-8 text-sm w-16" />
+            <Input type="number" value={hp.maxHardKeypoints ?? ""} onChange={(e) => onUpdate({ maxHardKeypoints: e.target.value ? Number(e.target.value) : null })} disabled={!hp.onlineMining} placeholder="None" className="h-8 text-sm w-16" />
           </div>
         </div>
       </div>

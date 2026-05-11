@@ -453,6 +453,152 @@ model_config:
     });
   });
 
+  describe("applyHyperparamsToYaml - data and optimization", () => {
+    const baseYaml = `
+data_config:
+  preprocessing: {}
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config:
+  early_stopping: {}
+  online_hard_keypoint_mining: {}
+`;
+
+    it("writes cropSize to preprocessing", () => {
+      const hp = { ...defaultHyperparams, cropSize: 192 };
+      const result = applyHyperparamsToYaml(baseYaml, hp);
+      const doc = yaml.load(result) as Record<string, any>;
+      expect(doc.data_config.preprocessing.crop_size).toBe(192);
+    });
+
+    it("writes null cropSize as null", () => {
+      const hp = { ...defaultHyperparams, cropSize: null };
+      const result = applyHyperparamsToYaml(baseYaml, hp);
+      const doc = yaml.load(result) as Record<string, any>;
+      expect(doc.data_config.preprocessing.crop_size).toBeNull();
+    });
+
+    it("writes randomSeed to trainer_config.seed", () => {
+      const hp = { ...defaultHyperparams, randomSeed: 42 };
+      const result = applyHyperparamsToYaml(baseYaml, hp);
+      const doc = yaml.load(result) as Record<string, any>;
+      expect(doc.trainer_config.seed).toBe(42);
+    });
+
+    it("writes stop_training_on_plateau", () => {
+      const hp = { ...defaultHyperparams, stopOnPlateau: false };
+      const result = applyHyperparamsToYaml(baseYaml, hp);
+      const doc = yaml.load(result) as Record<string, any>;
+      expect(doc.trainer_config.early_stopping.stop_training_on_plateau).toBe(false);
+    });
+
+    it("writes plateauMinDelta to early_stopping.min_delta", () => {
+      const hp = { ...defaultHyperparams, plateauMinDelta: 0.001 };
+      const result = applyHyperparamsToYaml(baseYaml, hp);
+      const doc = yaml.load(result) as Record<string, any>;
+      expect(doc.trainer_config.early_stopping.min_delta).toBe(0.001);
+    });
+
+    it("writes online mining params", () => {
+      const hp = { ...defaultHyperparams, onlineMining: true, minHardKeypoints: 3, maxHardKeypoints: 10 };
+      const result = applyHyperparamsToYaml(baseYaml, hp);
+      const doc = yaml.load(result) as Record<string, any>;
+      const ohkm = doc.trainer_config.online_hard_keypoint_mining;
+      expect(ohkm.online_mining).toBe(true);
+      expect(ohkm.min_hard_keypoints).toBe(3);
+      expect(ohkm.max_hard_keypoints).toBe(10);
+    });
+  });
+
+  describe("parseYamlConfig - data and optimization", () => {
+    it("parses cropSize from preprocessing", () => {
+      const yamlText = `
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+data_config:
+  preprocessing:
+    crop_size: 192
+`;
+      const result = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
+      expect(result!.hyperparams.cropSize).toBe(192);
+    });
+
+    it("defaults cropSize to null when not present", () => {
+      const yamlText = `
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+data_config: {}
+`;
+      const result = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
+      expect(result!.hyperparams.cropSize).toBeNull();
+    });
+
+    it("parses randomSeed from trainer_config.seed", () => {
+      const yamlText = `
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config:
+  seed: 42
+`;
+      const result = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
+      expect(result!.hyperparams.randomSeed).toBe(42);
+    });
+
+    it("parses stopOnPlateau false", () => {
+      const yamlText = `
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config:
+  early_stopping:
+    stop_training_on_plateau: false
+`;
+      const result = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
+      expect(result!.hyperparams.stopOnPlateau).toBe(false);
+    });
+
+    it("parses online mining params", () => {
+      const yamlText = `
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config:
+  online_hard_keypoint_mining:
+    online_mining: true
+    min_hard_keypoints: 3
+    max_hard_keypoints: 10
+`;
+      const result = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
+      expect(result!.hyperparams.onlineMining).toBe(true);
+      expect(result!.hyperparams.minHardKeypoints).toBe(3);
+      expect(result!.hyperparams.maxHardKeypoints).toBe(10);
+    });
+
+    it("parses plateauMinDelta from early_stopping.min_delta", () => {
+      const yamlText = `
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config:
+  early_stopping:
+    min_delta: 0.001
+`;
+      const result = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
+      expect(result!.hyperparams.plateauMinDelta).toBe(0.001);
+    });
+  });
+
   describe("parseYamlConfig - augmentation reverse-map", () => {
     it("detects rotation ±180° from rotation_min/max", () => {
       const yamlText = `

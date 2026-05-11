@@ -68,6 +68,15 @@ export interface ConfigHyperparams {
   brightnessEnabled: boolean;
   brightnessMin: number;
   brightnessMax: number;
+  // Data
+  cropSize: number | null;
+  randomSeed: number | null;
+  // Optimization
+  stopOnPlateau: boolean;
+  plateauMinDelta: number;
+  onlineMining: boolean;
+  minHardKeypoints: number;
+  maxHardKeypoints: number | null;
   trainingMode: "reuse_config" | "resume" | "reuse_model";
 }
 
@@ -110,6 +119,13 @@ export const defaultHyperparams: ConfigHyperparams = {
   brightnessEnabled: false,
   brightnessMin: 0.0,
   brightnessMax: 0.2,
+  cropSize: null,
+  randomSeed: null,
+  stopOnPlateau: true,
+  plateauMinDelta: 1e-08,
+  onlineMining: false,
+  minHardKeypoints: 2,
+  maxHardKeypoints: null,
   trainingMode: "reuse_config",
 };
 
@@ -228,11 +244,27 @@ export function applyHyperparamsToYaml(yamlText: string, hp: ConfigHyperparams):
   data.use_same_data_for_val = hp.overfitMode;
   data.scale = hp.scale;
 
+  // Data — preprocessing
+  if (!data.preprocessing) data.preprocessing = {};
+  const preprocessing = data.preprocessing as Record<string, unknown>;
+  preprocessing.crop_size = hp.cropSize;
+
+  // Seed
+  trainer.seed = hp.randomSeed;
+
   // Early stopping
   if (!trainer.early_stopping) trainer.early_stopping = {};
   const es = trainer.early_stopping as Record<string, unknown>;
-  es.stop_training_on_plateau = true;
+  es.stop_training_on_plateau = hp.stopOnPlateau;
   es.patience = hp.earlyStoppingPatience;
+  es.min_delta = hp.plateauMinDelta;
+
+  // Online hard keypoint mining
+  if (!trainer.online_hard_keypoint_mining) trainer.online_hard_keypoint_mining = {};
+  const ohkm = trainer.online_hard_keypoint_mining as Record<string, unknown>;
+  ohkm.online_mining = hp.onlineMining;
+  ohkm.min_hard_keypoints = hp.minHardKeypoints;
+  ohkm.max_hard_keypoints = hp.maxHardKeypoints;
 
   // Sigma — apply to all head configs
   const headConfigs = (model.head_configs ?? {}) as Record<string, unknown>;
@@ -429,6 +461,12 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       // Extract early stopping config
       const earlyStopping = (trainer.early_stopping ?? {}) as Record<string, unknown>;
 
+      // Extract preprocessing config
+      const preprocessing = (dataConfig.preprocessing ?? {}) as Record<string, unknown>;
+
+      // Extract online hard keypoint mining config
+      const ohkmCfg = (trainer.online_hard_keypoint_mining ?? {}) as Record<string, unknown>;
+
       // Extract sigma from head configs (first head's sigma value)
       let sigma = 5.0;
       for (const headVal of Object.values(headConfigs)) {
@@ -534,6 +572,13 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         brightnessEnabled: brightnessP > 0,
         brightnessMin: typeof intCfg.brightness_min === "number" ? intCfg.brightness_min : 0.0,
         brightnessMax: typeof intCfg.brightness_max === "number" ? intCfg.brightness_max : 0.2,
+        cropSize: typeof preprocessing.crop_size === "number" ? preprocessing.crop_size : null,
+        randomSeed: typeof trainer.seed === "number" ? trainer.seed : null,
+        stopOnPlateau: earlyStopping.stop_training_on_plateau !== false,
+        plateauMinDelta: typeof earlyStopping.min_delta === "number" ? earlyStopping.min_delta : 1e-08,
+        onlineMining: ohkmCfg.online_mining === true,
+        minHardKeypoints: typeof ohkmCfg.min_hard_keypoints === "number" ? ohkmCfg.min_hard_keypoints : 2,
+        maxHardKeypoints: typeof ohkmCfg.max_hard_keypoints === "number" ? ohkmCfg.max_hard_keypoints : null,
         trainingMode: "reuse_config" as const,
       };
 
