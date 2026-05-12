@@ -242,11 +242,11 @@ export function applyHyperparamsToYaml(yamlText: string, hp: ConfigHyperparams):
   // Data config
   data.validation_fraction = hp.validationFraction;
   data.use_same_data_for_val = hp.overfitMode;
-  data.scale = hp.scale;
 
   // Data — preprocessing
   if (!data.preprocessing) data.preprocessing = {};
   const preprocessing = data.preprocessing as Record<string, unknown>;
+  preprocessing.scale = hp.scale;
   preprocessing.crop_size = hp.cropSize;
 
   // Seed
@@ -546,7 +546,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         earlyStoppingPatience: typeof earlyStopping.patience === "number"
           ? earlyStopping.patience : 10,
         sigma,
-        scale: typeof dataConfig.scale === "number" ? dataConfig.scale : 1.0,
+        scale: typeof preprocessing.scale === "number" ? preprocessing.scale : 1.0,
         stemStride: typeof unetConfig.stem_stride === "number" ? unetConfig.stem_stride : null,
         maxStride: typeof unetConfig.max_stride === "number" ? unetConfig.max_stride : 16,
         filters: typeof unetConfig.filters === "number" ? unetConfig.filters : 16,

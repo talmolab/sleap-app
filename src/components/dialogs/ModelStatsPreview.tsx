@@ -16,6 +16,7 @@ interface ModelStatsPreviewProps {
 }
 
 const THUMBNAIL_SIZE = 200;
+const DPR = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
 
 export function ModelStatsPreview({ hp, maxStride, filters, filtersRate, outputStride, stemStride, backbone, inputChannels = 1, slot }: ModelStatsPreviewProps) {
   const labels = useAppStore((s) => s.labels);
@@ -23,6 +24,7 @@ export function ModelStatsPreview({ hp, maxStride, filters, filtersRate, outputS
   const [thumbnail, setThumbnail] = useState<ImageBitmap | null>(null);
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [mousePos, setMousePos] = useState<{ x: number; y: number } | null>(null);
   const dragRef = useRef<{ startX: number; startY: number; panX: number; panY: number } | null>(null);
   const rf = computeReceptiveField(maxStride, stemStride);
   const showCropSize = slot !== "centroid";
@@ -100,7 +102,10 @@ export function ModelStatsPreview({ hp, maxStride, filters, filtersRate, outputS
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    // HiDPI: scale backing buffer by devicePixelRatio
+    canvas.width = THUMBNAIL_SIZE * DPR;
+    canvas.height = THUMBNAIL_SIZE * DPR;
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
     ctx.clearRect(0, 0, THUMBNAIL_SIZE, THUMBNAIL_SIZE);
 
     if (thumbnail) {
@@ -128,8 +133,17 @@ export function ModelStatsPreview({ hp, maxStride, filters, filtersRate, outputS
 
       // Scale factor: thumbnail pixels per original pixel
       const imgScale = drawW / thumbnail.width;
-      const centerX = offsetX + drawW / 2;
-      const centerY = offsetY + drawH / 2;
+
+      // Box center follows mouse; falls back to image center when cursor is outside
+      let boxCenterX: number, boxCenterY: number;
+      if (mousePos) {
+        // Convert CSS mouse coords to pre-transform canvas coords
+        boxCenterX = (mousePos.x - THUMBNAIL_SIZE / 2 - pan.x) / zoom + THUMBNAIL_SIZE / 2;
+        boxCenterY = (mousePos.y - THUMBNAIL_SIZE / 2 - pan.y) / zoom + THUMBNAIL_SIZE / 2;
+      } else {
+        boxCenterX = offsetX + drawW / 2;
+        boxCenterY = offsetY + drawH / 2;
+      }
 
       // Draw crop size box (red dashed)
       if (cropSize != null) {
@@ -137,7 +151,7 @@ export function ModelStatsPreview({ hp, maxStride, filters, filtersRate, outputS
         ctx.strokeStyle = "#ef4444";
         ctx.lineWidth = 2 / zoom;
         ctx.setLineDash([6 / zoom, 4 / zoom]);
-        ctx.strokeRect(centerX - cropPx / 2, centerY - cropPx / 2, cropPx, cropPx);
+        ctx.strokeRect(boxCenterX - cropPx / 2, boxCenterY - cropPx / 2, cropPx, cropPx);
         ctx.setLineDash([]);
       }
 
@@ -145,7 +159,7 @@ export function ModelStatsPreview({ hp, maxStride, filters, filtersRate, outputS
       const rfPx = (rf / hp.scale) * imgScale;
       ctx.strokeStyle = "#3b82f6";
       ctx.lineWidth = 3 / zoom;
-      ctx.strokeRect(centerX - rfPx / 2, centerY - rfPx / 2, rfPx, rfPx);
+      ctx.strokeRect(boxCenterX - rfPx / 2, boxCenterY - rfPx / 2, rfPx, rfPx);
 
       ctx.restore();
     } else {
@@ -156,7 +170,7 @@ export function ModelStatsPreview({ hp, maxStride, filters, filtersRate, outputS
       ctx.textAlign = "center";
       ctx.fillText("No labeled frames", THUMBNAIL_SIZE / 2, THUMBNAIL_SIZE / 2);
     }
-  }, [thumbnail, cropSize, rf, hp.scale, zoom, pan]);
+  }, [thumbnail, cropSize, rf, hp.scale, zoom, pan, mousePos]);
 
   return (
     <div className="mb-5 pb-4 border-b">
@@ -165,9 +179,10 @@ export function ModelStatsPreview({ hp, maxStride, filters, filtersRate, outputS
         <div className="shrink-0">
           <canvas
             ref={canvasRef}
-            width={THUMBNAIL_SIZE}
-            height={THUMBNAIL_SIZE}
-            className="rounded border border-border cursor-grab active:cursor-grabbing"
+            width={THUMBNAIL_SIZE * DPR}
+            height={THUMBNAIL_SIZE * DPR}
+            style={{ width: THUMBNAIL_SIZE, height: THUMBNAIL_SIZE }}
+            className="rounded border border-border cursor-crosshair"
             onWheel={(e) => {
               e.preventDefault();
               setZoom((z) => Math.max(0.5, Math.min(10, z * (e.deltaY < 0 ? 1.15 : 0.87))));
@@ -176,6 +191,8 @@ export function ModelStatsPreview({ hp, maxStride, filters, filtersRate, outputS
               dragRef.current = { startX: e.clientX, startY: e.clientY, panX: pan.x, panY: pan.y };
             }}
             onMouseMove={(e) => {
+              const rect = canvasRef.current!.getBoundingClientRect();
+              setMousePos({ x: e.clientX - rect.left, y: e.clientY - rect.top });
               if (!dragRef.current) return;
               setPan({
                 x: dragRef.current.panX + (e.clientX - dragRef.current.startX),
@@ -183,7 +200,7 @@ export function ModelStatsPreview({ hp, maxStride, filters, filtersRate, outputS
               });
             }}
             onMouseUp={() => { dragRef.current = null; }}
-            onMouseLeave={() => { dragRef.current = null; }}
+            onMouseLeave={() => { dragRef.current = null; setMousePos(null); }}
           />
         </div>
 

@@ -243,8 +243,8 @@ export async function runInference(
   }
   if (typeof config.frameRange === "object") {
     args.push(
-      "--frame_range",
-      `${config.frameRange.start},${config.frameRange.end}`
+      "--frames",
+      `${config.frameRange.start}-${config.frameRange.end}`
     );
   } else if (config.frameRange === "user_labeled") {
     args.push("--only_labeled_frames");
@@ -288,14 +288,21 @@ export async function runInference(
   // Tracking
   if (config.tracking) {
     args.push("--tracking");
-    args.push("--tracker", config.trackerMethod);
-    args.push("--similarity", config.similarityMethod);
-    args.push("--match", config.matchingMethod);
-    args.push("--track_window", String(config.trackingWindowSize));
+    if (config.trackerMethod === "flow") {
+      args.push("--use_flow");
+    }
+    if (config.similarityMethod === "centroids") {
+      args.push("--features", "centroids");
+      args.push("--scoring_method", "euclidean_dist");
+    } else {
+      args.push("--scoring_method", config.similarityMethod);
+    }
+    args.push("--track_matching_method", config.matchingMethod);
+    args.push("--tracking_window_size", String(config.trackingWindowSize));
     if (config.maxTracks != null) {
       args.push("--max_tracks", String(config.maxTracks));
     }
-    args.push("--robust", String(config.robust));
+    args.push("--robust_best_instance", String(config.robust));
     if (config.connectSingleBreaks) {
       args.push("--post_connect_single_breaks");
     }

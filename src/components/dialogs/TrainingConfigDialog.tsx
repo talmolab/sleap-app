@@ -614,10 +614,10 @@ function HeadTabContent({
               Anchor Part
               <HintBubble text="Text name of a body part (node) to use as the anchor point. If None, the midpoint of the bounding box of all visible points will be used. Setting a reliable anchor point can significantly improve top-down model accuracy." />
             </span>
-            <Select value={hp.anchorPart ?? ""} onValueChange={(v) => onUpdate({ anchorPart: v || null })}>
+            <Select value={hp.anchorPart ?? "__auto__"} onValueChange={(v) => onUpdate({ anchorPart: v === "__auto__" ? null : v })}>
               <SelectTrigger className="h-8 text-sm w-32"><SelectValue placeholder="Auto" /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="">Auto</SelectItem>
+                <SelectItem value="__auto__">Auto</SelectItem>
                 {skeletonNodes.map((n) => <SelectItem key={n} value={n}>{n}</SelectItem>)}
               </SelectContent>
             </Select>
