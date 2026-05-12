@@ -1,4 +1,4 @@
-import { useRef, useCallback, useState } from "react";
+import { useRef, useCallback, useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import {
   Dialog,
@@ -22,6 +22,7 @@ import { getSlotLabel, getConfigSlots, useTrainingStore } from "@/stores/trainin
 import { useConnectStore } from "@/stores/connectStore";
 import { useAppStore } from "@/stores/appStore";
 import { ModelStatsPreview } from "@/components/dialogs/ModelStatsPreview";
+import { getBaselineProfilesForHead, getDefaultProfileForHead, slotToHeadType } from "@/lib/trainingProfiles";
 
 // ── Props ──────────────────────────────────────────────────────────
 
@@ -205,6 +206,7 @@ function SectionHeading({ id, label }: { id: string; label: string }) {
 
 function HeadTabContent({
   slot,
+  modelType,
   configFile,
   hp,
   onUpdate,
@@ -212,12 +214,15 @@ function HeadTabContent({
   skeletonNodes,
 }: {
   slot: string;
+  modelType: ModelType;
   configFile: ConfigFile | undefined;
   hp: ConfigHyperparams;
   onUpdate: (updates: Partial<ConfigHyperparams>) => void;
   scrollRefCallback: (el: HTMLDivElement | null) => void;
   skeletonNodes: string[];
 }) {
+  const headType = slotToHeadType(modelType, slot);
+  const baselineProfiles = getBaselineProfilesForHead(headType);
   const showAnchorPart = slot === "centroid" || slot === "centered_instance";
   const showCropSize = slot !== "centroid";
   const trainingMode = (!configFile?.hasTrainedModel && hp.trainingMode !== "reuse_config")
@@ -260,26 +265,41 @@ function HeadTabContent({
       {/* ── Config file selector (dropdown like PyQt) ── */}
       <div className="mb-5 pb-4 border-b">
         <Select
-          value={configFile ? configFile.filename : "__browse__"}
-          onValueChange={(v) => { if (v === "__browse__") handleConfigBrowse(); }}
+          value={configFile ? configFile.filename : ""}
+          onValueChange={(v) => {
+            if (v === "__browse__") {
+              handleConfigBrowse();
+            } else {
+              const baseline = baselineProfiles.find((p) => p.filename === v);
+              if (baseline) {
+                const parsed = parseYamlConfig(baseline.content, baseline.filename, slot);
+                if (parsed) addConfigFile(parsed);
+              }
+            }
+          }}
         >
           <SelectTrigger className="h-10 text-sm font-mono bg-background">
             <SelectValue placeholder="Select training config file..." />
           </SelectTrigger>
           <SelectContent>
-            {configFile && (
+            {baselineProfiles.map((p) => (
+              <SelectItem key={p.filename} value={p.filename}>
+                [{p.filename.replace(".yaml", "")}] ({p.filename})
+              </SelectItem>
+            ))}
+            {configFile && !baselineProfiles.some((p) => p.filename === configFile.filename) && (
               <SelectItem value={configFile.filename}>
                 {(() => {
                   const runNameMatch = configFile.content.match(/run_name:\s*(.+)/);
                   const runName = runNameMatch?.[1]?.trim();
-                  return runName
-                    ? `[Trained] ${runName}(${configFile.filename})`
+                  return runName && runName !== "null"
+                    ? `[Trained] ${runName} (${configFile.filename})`
                     : `[${configFile.modelType}] (${configFile.filename})`;
                 })()}
               </SelectItem>
             )}
             <SelectItem value="__browse__" className="text-primary font-medium">
-              Select training config file...
+              Browse for config file...
             </SelectItem>
           </SelectContent>
         </Select>
@@ -650,6 +670,23 @@ export function TrainingConfigDialog({
   // App store for suggestions count
   const labels = useAppStore((s) => s.labels);
   const suggestionsCount = labels?.suggestions?.length ?? 0;
+
+  // Auto-load baseline configs for empty slots when dialog opens
+  const { parseYamlConfig, addConfigFile } = useTrainingStore();
+  useEffect(() => {
+    if (!open) return;
+    const slots = getConfigSlots(modelType);
+    for (const slot of slots) {
+      const existing = configs.find((c) => c.slot === slot);
+      if (existing) continue;
+      const headType = slotToHeadType(modelType, slot);
+      const baseline = getDefaultProfileForHead(headType);
+      if (baseline) {
+        const parsed = parseYamlConfig(baseline.content, baseline.filename, slot);
+        if (parsed) addConfigFile(parsed);
+      }
+    }
+  }, [open, modelType]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Sort configs to match canonical slot order (centroid first for top-down)
   const slotOrder = getConfigSlots(modelType);
@@ -1181,6 +1218,7 @@ export function TrainingConfigDialog({
               <TabsContent key={cf.slot} value={cf.slot} className="flex-1 min-h-0 mt-0 overflow-hidden h-full">
                 <HeadTabContent
                   slot={cf.slot}
+                  modelType={modelType}
                   configFile={cf}
                   hp={cf.hyperparams}
                   onUpdate={(updates) => onUpdateSlot(cf.slot, updates)}
