@@ -63,7 +63,7 @@ struct FileReceiveState {
     file: std::fs::File,
     path: std::path::PathBuf,
     filename: String,
-    expected_size: usize,
+    _expected_size: usize,
     bytes_written: usize,
 }
 
@@ -653,7 +653,7 @@ pub async fn rtc_connect_worker(
                                     file,
                                     path: temp_path,
                                     filename,
-                                    expected_size,
+                                    _expected_size: expected_size,
                                     bytes_written: 0,
                                 });
                             }
