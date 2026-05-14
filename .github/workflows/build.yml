@@ -22,7 +22,7 @@ jobs:
         include:
           - platform: ubuntu-22.04
             target: linux
-          - platform: macos-latest
+          - platform: macos-14
             target: macos-arm64
           - platform: windows-latest
             target: windows
