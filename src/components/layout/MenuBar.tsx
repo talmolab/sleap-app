@@ -31,10 +31,15 @@ import {
   DeleteFramePredictions,
   DeleteAllPredictions,
   AddTrack,
+  SetInstanceTrack,
   TransposeInstances,
   CopyTrack,
   PasteTrack,
   PropagateTrackLabels,
+  DeleteInstanceAndTrack,
+  DeleteTrack,
+  DeleteUnusedTracks,
+  DeleteAllTracks,
 } from "../../commands";
 import { PALETTES } from "../../lib/colorPalettes";
 import { toast } from "@/lib/notify";
@@ -639,6 +644,7 @@ function PredictMenu() {
 function TracksMenu() {
   const projectLoaded = useAppStore((s) => s.projectLoaded);
   const instance = useAppStore((s) => s.instance);
+  const labels = useAppStore((s) => s.labels);
 
   const exec = (cmd: Parameters<typeof commandContext.execute>[0]) => {
     commandContext.execute(cmd);
@@ -661,6 +667,16 @@ function TracksMenu() {
         >
           New Track <MenubarShortcut>{modKey}+0</MenubarShortcut>
         </MenubarItem>
+        <MenubarSub>
+          <MenubarSubTrigger disabled={!instance}>Set Instance Track</MenubarSubTrigger>
+          <MenubarSubContent>
+            {labels?.tracks.map((track, idx) => (
+              <MenubarItem key={idx} onClick={() => commandContext.execute(SetInstanceTrack, { trackIdx: idx })}>
+                {track.name} {idx < 9 && <MenubarShortcut>{modKey}+{idx + 1}</MenubarShortcut>}
+              </MenubarItem>
+            ))}
+          </MenubarSubContent>
+        </MenubarSub>
         <MenubarSeparator />
         <MenubarItem
           disabled={!instance}
@@ -678,12 +694,12 @@ function TracksMenu() {
         <MenubarItem
           disabled={!instance || !instance.track}
           onClick={() => {
-            const { instance: inst, labels } = useAppStore.getState();
-            if (!inst?.track || !labels) return;
+            const { instance: inst, labels: lbl } = useAppStore.getState();
+            if (!inst?.track || !lbl) return;
             // Use the current track as both old and new (user should have
             // just swapped tracks on this frame via TransposeInstances first)
             // For now, propagate from the current track forward
-            const tracks = labels.tracks;
+            const tracks = lbl.tracks;
             if (tracks.length < 2) return;
             const trackIdx = tracks.indexOf(inst.track);
             const otherTrack = tracks[(trackIdx + 1) % tracks.length];
@@ -696,6 +712,51 @@ function TracksMenu() {
           }}
         >
           Propagate Track Labels
+        </MenubarItem>
+        <MenubarSeparator />
+        <MenubarItem
+          disabled={!instance}
+          onClick={() => {
+            if (confirm("Delete this instance and its track?"))
+              exec(DeleteInstanceAndTrack);
+          }}
+        >
+          Delete Instance and Track <MenubarShortcut>{modKey}+Shift+Backspace</MenubarShortcut>
+        </MenubarItem>
+        <MenubarSeparator />
+        <MenubarSub>
+          <MenubarSubTrigger disabled={!projectLoaded}>Delete Track</MenubarSubTrigger>
+          <MenubarSubContent>
+            {labels?.tracks.map((track, idx) => (
+              <MenubarItem
+                key={idx}
+                onClick={() => {
+                  if (confirm(`Delete track "${track.name}"?`))
+                    commandContext.execute(DeleteTrack, { trackIdx: idx });
+                }}
+              >
+                {track.name}
+              </MenubarItem>
+            ))}
+          </MenubarSubContent>
+        </MenubarSub>
+        <MenubarItem
+          disabled={!projectLoaded}
+          onClick={() => {
+            if (confirm("Delete all unused tracks?"))
+              exec(DeleteUnusedTracks);
+          }}
+        >
+          Delete Unused Tracks
+        </MenubarItem>
+        <MenubarItem
+          disabled={!projectLoaded}
+          onClick={() => {
+            if (confirm("Delete ALL tracks?"))
+              exec(DeleteAllTracks);
+          }}
+        >
+          Delete All Tracks
         </MenubarItem>
       </MenubarContent>
     </MenubarMenu>

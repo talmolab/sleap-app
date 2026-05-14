@@ -35,6 +35,7 @@ import {
   SetInstanceTrack,
   CopyTrack,
   PasteTrack,
+  DeleteInstanceAndTrack,
 } from "../commands";
 
 function isTextInput(e: KeyboardEvent): boolean {
@@ -193,6 +194,12 @@ export function useKeyboardShortcuts() {
       [DEFAULT_SHORTCUTS["add track"]]: (e) => {
         e.preventDefault();
         commandContext.execute(AddTrack);
+      },
+      [DEFAULT_SHORTCUTS["delete track"]]: (e) => {
+        e.preventDefault();
+        if (confirm("Delete this instance and its track?")) {
+          commandContext.execute(DeleteInstanceAndTrack);
+        }
       },
 
       // Set instance track via Ctrl+1-9 (core proofreading interaction)

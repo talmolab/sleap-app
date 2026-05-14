@@ -63,6 +63,10 @@ export {
   CopyTrack,
   PasteTrack,
   PropagateTrackLabels,
+  DeleteInstanceAndTrack,
+  DeleteTrack,
+  DeleteUnusedTracks,
+  DeleteAllTracks,
 } from "./trackCommands";
 
 // Skeleton commands

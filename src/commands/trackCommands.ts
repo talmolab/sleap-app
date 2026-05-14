@@ -119,6 +119,152 @@ export const PasteTrack: Command = {
 };
 
 /**
+ * Delete the selected instance AND remove its track from labels.tracks.
+ * Also removes the track from any other instances across all labeled frames.
+ */
+export const DeleteInstanceAndTrack: Command = {
+  name: "DeleteInstanceAndTrack",
+  topics: [UpdateTopic.Tracks, UpdateTopic.Instance],
+  execute(ctx: CommandContext) {
+    const { labels, video, frameIdx, instance } = ctx.state;
+    if (!labels || !video || !instance) return;
+
+    const track = instance.track;
+
+    // Remove the track from all instances across all labeled frames
+    if (track) {
+      for (const lf of labels.labeledFrames) {
+        for (const inst of lf.instances) {
+          if (inst.track === track) {
+            inst.track = undefined;
+          }
+        }
+      }
+      // Remove track from labels.tracks
+      const trackIdx = labels.tracks.indexOf(track);
+      if (trackIdx >= 0) {
+        labels.tracks.splice(trackIdx, 1);
+      }
+    }
+
+    // Delete the selected instance from the current frame
+    const frames = labels.find({ video, frameIdx });
+    if (frames.length > 0) {
+      const lf = frames[0];
+      const instIdx = lf.instances.indexOf(instance);
+      if (instIdx >= 0) {
+        lf.instances.splice(instIdx, 1);
+      }
+    }
+
+    // Clear selection
+    ctx.state.setInstance(null);
+    ctx.state.markChanged();
+  },
+};
+
+/**
+ * Remove a track from labels.tracks and unassign it from all instances.
+ * Does NOT delete any instances.
+ *
+ * Params:
+ *   track?: Track - the track object to remove
+ *   trackIdx?: number - index into labels.tracks (used if track not provided)
+ */
+export const DeleteTrack: Command = {
+  name: "DeleteTrack",
+  topics: [UpdateTopic.Tracks, UpdateTopic.Instance],
+  execute(ctx: CommandContext, params?: Record<string, unknown>) {
+    const { labels } = ctx.state;
+    if (!labels) return;
+
+    let track: Track | undefined;
+    if (params?.track instanceof Track) {
+      track = params.track;
+    } else if (typeof params?.trackIdx === "number") {
+      const idx = params.trackIdx;
+      if (idx >= 0 && idx < labels.tracks.length) {
+        track = labels.tracks[idx];
+      }
+    }
+    if (!track) return;
+
+    // Remove track from all instances across all labeled frames
+    for (const lf of labels.labeledFrames) {
+      for (const inst of lf.instances) {
+        if (inst.track === track) {
+          inst.track = undefined;
+        }
+      }
+    }
+
+    // Remove track from labels.tracks
+    const trackIdx = labels.tracks.indexOf(track);
+    if (trackIdx >= 0) {
+      labels.tracks.splice(trackIdx, 1);
+    }
+
+    ctx.state.markChanged();
+  },
+};
+
+/**
+ * Find and remove tracks not assigned to any instance across all labeled frames.
+ */
+export const DeleteUnusedTracks: Command = {
+  name: "DeleteUnusedTracks",
+  topics: [UpdateTopic.Tracks],
+  execute(ctx: CommandContext) {
+    const { labels } = ctx.state;
+    if (!labels) return;
+
+    // Collect all tracks that are in use
+    const usedTracks = new Set<Track>();
+    for (const lf of labels.labeledFrames) {
+      for (const inst of lf.instances) {
+        if (inst.track) {
+          usedTracks.add(inst.track);
+        }
+      }
+    }
+
+    // Remove unused tracks
+    const before = labels.tracks.length;
+    labels.tracks = labels.tracks.filter((t) => usedTracks.has(t));
+
+    if (labels.tracks.length < before) {
+      ctx.state.markChanged();
+    }
+  },
+};
+
+/**
+ * Clear all tracks from labels.tracks and unassign tracks from all instances.
+ */
+export const DeleteAllTracks: Command = {
+  name: "DeleteAllTracks",
+  topics: [UpdateTopic.Tracks, UpdateTopic.Instance],
+  execute(ctx: CommandContext) {
+    const { labels } = ctx.state;
+    if (!labels) return;
+
+    // Unassign tracks from all instances
+    for (const lf of labels.labeledFrames) {
+      for (const inst of lf.instances) {
+        if (inst.track) {
+          inst.track = undefined;
+        }
+      }
+    }
+
+    // Clear all tracks
+    labels.tracks = [];
+
+    ctx.state.markChanged();
+  },
+};
+
+/**
  * Propagate track labels forward from the current frame.
  *
  * Starting from the current frame, iterates forward through labeled frames
