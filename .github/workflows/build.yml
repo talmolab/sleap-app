@@ -1,6 +1,8 @@
 name: Build Desktop Apps
 
 on:
+  release:
+    types: [published]
   workflow_dispatch:
 
 # Cancel in-progress runs of the same workflow
@@ -61,6 +63,20 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Set version from release tag
+        if: github.event_name == 'release'
+        run: |
+          VERSION="${{ github.event.release.tag_name }}"
+          VERSION="${VERSION#v}"
+          echo "Setting version to $VERSION"
+          # Update tauri.conf.json version
+          node -e "
+            const fs = require('fs');
+            const conf = JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json', 'utf8'));
+            conf.version = '$VERSION';
+            fs.writeFileSync('src-tauri/tauri.conf.json', JSON.stringify(conf, null, 2) + '\n');
+          "
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
@@ -103,6 +119,7 @@ jobs:
 
   release:
     needs: build
+    if: github.event_name == 'release'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -117,56 +134,20 @@ jobs:
       - name: List artifacts
         run: ls -lhR artifacts/
 
-      - name: Delete existing dev release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release delete dev --repo ${{ github.repository }} --yes 2>/dev/null || true
-          git push --delete origin dev 2>/dev/null || true
-
-      - name: Create dev release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: dev
-          name: "Dev Build"
-          body: |
-            Rolling development build from `main` branch.
-
-            **Commit:** ${{ github.sha }}
-            **Built:** ${{ github.event.head_commit.timestamp || github.event.repository.updated_at }}
-            **Triggered by:** @${{ github.actor }}
-
-            > This release is overwritten on each build. Only the latest artifacts are kept.
-          prerelease: true
-          files: artifacts/*
-          make_latest: false
-
       - name: Generate update manifest (latest.json)
         run: |
-          VERSION=$(cat artifacts/*.json 2>/dev/null | jq -r '.version' 2>/dev/null || echo "0.1.0")
+          TAG="${{ github.event.release.tag_name }}"
           REPO="talmolab/sleap-app"
-          TAG="dev"
           BASE="https://github.com/${REPO}/releases/download/${TAG}"
 
-          # Build platform entries from available .sig files
-          cat > latest.json << 'MANIFEST_EOF'
-          {
-            "version": "REPLACE_VERSION",
-            "notes": "Development build",
-            "pub_date": "REPLACE_DATE",
-            "platforms": {}
-          }
-          MANIFEST_EOF
-
-          # Use Python to build the manifest properly
           python3 -c "
           import json, glob, os, datetime
 
-          version = '${VERSION}'
+          tag = '${TAG}'
+          version = tag.lstrip('v')
           base = '${BASE}'
           platforms = {}
 
-          # Map file patterns to Tauri platform identifiers
           mappings = {
               '.AppImage.sig': ('linux-x86_64', '.AppImage'),
               '.msi.sig': ('windows-x86_64', '.msi'),
@@ -180,7 +161,7 @@ jobs:
                   signature = f.read().strip()
               for suffix, (platform, artifact_ext) in mappings.items():
                   if name.endswith(suffix):
-                      artifact_name = name[:-4]  # remove .sig
+                      artifact_name = name[:-4]
                       platforms[platform] = {
                           'signature': signature,
                           'url': f'{base}/{artifact_name}'
@@ -188,7 +169,7 @@ jobs:
 
           manifest = {
               'version': version,
-              'notes': 'Development build',
+              'notes': '${{ github.event.release.body }}',
               'pub_date': datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
               'platforms': platforms
           }
@@ -198,9 +179,10 @@ jobs:
           print(json.dumps(manifest, indent=2))
           "
 
-      - name: Upload update manifest
+      - name: Upload artifacts and manifest to release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: dev
-          files: latest.json
-          make_latest: false
+          tag_name: ${{ github.event.release.tag_name }}
+          files: |
+            artifacts/*
+            latest.json
