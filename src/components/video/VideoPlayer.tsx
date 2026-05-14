@@ -36,6 +36,7 @@ import {
   commandContext,
   ConvertPredictionToInstance,
   BeginEdit,
+  DeletePredictionsByArea,
 } from "../../commands";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -73,6 +74,7 @@ export function VideoPlayer() {
   const rotation = useAppStore((s) => s.rotation);
   const defaultToPan = useAppStore((s) => s.defaultToPan);
   const fitSelection = useAppStore((s) => s.fitSelection);
+  const areaDeleteMode = useAppStore((s) => s.areaDeleteMode);
 
   // Local zoom/pan state
   const [zoom, setZoom] = useState(1);
@@ -107,6 +109,10 @@ export function VideoPlayer() {
   const [interactionMode, setInteractionMode] = useState<"idle" | "marquee" | "dragging">("idle");
   const [marqueeStart, setMarqueeStart] = useState<{ x: number; y: number } | null>(null);
   const [marqueeEnd, setMarqueeEnd] = useState<{ x: number; y: number } | null>(null);
+  // Area-delete rectangle state
+  const [areaDeleteStart, setAreaDeleteStart] = useState<{ x: number; y: number } | null>(null);
+  const [areaDeleteEnd, setAreaDeleteEnd] = useState<{ x: number; y: number } | null>(null);
+  const [isAreaDeleting, setIsAreaDeleting] = useState(false);
   const [hoveredNode, setHoveredNode] = useState<{
     instanceIdx: number;
     nodeIdx: number;
@@ -710,6 +716,29 @@ export function VideoPlayer() {
       renderMarqueeRect(ctx, marqueeStart.x, marqueeStart.y, marqueeEnd.x, marqueeEnd.y, baseScale * zoom);
     }
 
+    // Render area-delete rectangle (red dashed)
+    if (areaDeleteStart && areaDeleteEnd) {
+      const adx1 = areaDeleteStart.x;
+      const ady1 = areaDeleteStart.y;
+      const adx2 = areaDeleteEnd.x;
+      const ady2 = areaDeleteEnd.y;
+      ctx.save();
+      ctx.strokeStyle = "rgba(255, 60, 60, 0.9)";
+      ctx.lineWidth = 2 / (baseScale * zoom);
+      ctx.setLineDash([6 / (baseScale * zoom), 4 / (baseScale * zoom)]);
+      ctx.fillStyle = "rgba(255, 60, 60, 0.1)";
+      ctx.beginPath();
+      ctx.rect(
+        Math.min(adx1, adx2),
+        Math.min(ady1, ady2),
+        Math.abs(adx2 - adx1),
+        Math.abs(ady2 - ady1)
+      );
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
+
     ctx.restore();
   }, [
     labeledFrame,
@@ -738,6 +767,8 @@ export function VideoPlayer() {
     hoveredNode,
     marqueeStart,
     marqueeEnd,
+    areaDeleteStart,
+    areaDeleteEnd,
     labels,
     video,
     frameIdx,
@@ -1098,7 +1129,7 @@ export function VideoPlayer() {
       }
 
       // Pan mode (default or space-toggled): left-click panning
-      if (shouldPan) {
+      if (shouldPan && !areaDeleteMode) {
         e.preventDefault();
         setIsPanning(true);
         setPanStart({ x: e.clientX - panX, y: e.clientY - panY });
@@ -1106,6 +1137,16 @@ export function VideoPlayer() {
       }
 
       const { x, y } = canvasToScene(e.clientX, e.clientY);
+
+      // Area-delete mode: start drawing the delete rectangle
+      if (areaDeleteMode) {
+        e.preventDefault();
+        setIsAreaDeleting(true);
+        setAreaDeleteStart({ x, y });
+        setAreaDeleteEnd({ x, y });
+        return;
+      }
+
       const currentInstance = useAppStore.getState().instance;
       shiftHeldOnMouseDown.current = e.shiftKey;
 
@@ -1216,7 +1257,7 @@ export function VideoPlayer() {
       setMarqueeStart({ x, y });
       setMarqueeEnd({ x, y });
     },
-    [canvasToScene, markerSize, panX, panY, zoom, shouldPan, isCmdHeld, offsetX, offsetY, selectedNodes, showNonVisibleNodes]
+    [canvasToScene, markerSize, panX, panY, zoom, shouldPan, isCmdHeld, offsetX, offsetY, selectedNodes, showNonVisibleNodes, areaDeleteMode]
   );
 
   const handleMouseMove = useCallback(
@@ -1252,6 +1293,14 @@ export function VideoPlayer() {
         viewRef.current.panY = constrained.y;
         setPanX(constrained.x);
         setPanY(constrained.y);
+        return;
+      }
+
+      // Area-delete mode: update end point
+      if (isAreaDeleting && areaDeleteStart) {
+        const { x, y } = canvasToScene(e.clientX, e.clientY);
+        setAreaDeleteEnd({ x, y });
+        useAppStore.getState().bumpOverlayVersion();
         return;
       }
 
@@ -1353,10 +1402,31 @@ export function VideoPlayer() {
         useAppStore.getState().bumpOverlayVersion();
       }
     },
-    [isDragging, isPanning, isZoomDragging, dragNodeInfo, canvasToScene, panStart, constrainPan, zoom, interactionMode, selectedNodes, markerSize, hoveredNode, showNonVisibleNodes, offsetX, offsetY, isPlacingNodes, isShiftHeld]
+    [isDragging, isPanning, isZoomDragging, dragNodeInfo, canvasToScene, panStart, constrainPan, zoom, interactionMode, selectedNodes, markerSize, hoveredNode, showNonVisibleNodes, offsetX, offsetY, isPlacingNodes, isShiftHeld, isAreaDeleting, areaDeleteStart]
   );
 
   const handleMouseUp = useCallback(() => {
+    // Area-delete mode: execute the delete command
+    if (isAreaDeleting && areaDeleteStart && areaDeleteEnd) {
+      // Require minimum drag distance (5px in scene coords) to avoid accidental deletes
+      const dx = Math.abs(areaDeleteEnd.x - areaDeleteStart.x);
+      const dy = Math.abs(areaDeleteEnd.y - areaDeleteStart.y);
+      if (dx > 5 && dy > 5) {
+        commandContext.execute(DeletePredictionsByArea, {
+          x1: areaDeleteStart.x,
+          y1: areaDeleteStart.y,
+          x2: areaDeleteEnd.x,
+          y2: areaDeleteEnd.y,
+        });
+      }
+      setIsAreaDeleting(false);
+      setAreaDeleteStart(null);
+      setAreaDeleteEnd(null);
+      useAppStore.getState().set("areaDeleteMode", false);
+      useAppStore.getState().bumpOverlayVersion();
+      return;
+    }
+
     if (isZoomDragging) {
       setIsZoomDragging(false);
       zoomDragStart.current = null;
@@ -1389,7 +1459,7 @@ export function VideoPlayer() {
       dragStartClient.current = null;
       setInteractionMode("idle");
     }
-  }, [isDragging, isPanning, isZoomDragging, interactionMode, marqueeStart, marqueeEnd]);
+  }, [isDragging, isPanning, isZoomDragging, interactionMode, marqueeStart, marqueeEnd, isAreaDeleting, areaDeleteStart, areaDeleteEnd]);
 
   // Zoom with mouse wheel (towards pointer), Alt+Scroll for rotation
   // Use native event listener with { passive: false } so preventDefault() works
@@ -1587,7 +1657,7 @@ export function VideoPlayer() {
         ref={containerRef}
         className={cn(
           "flex-1 relative overflow-hidden bg-background min-h-0",
-          isPanning ? "cursor-grabbing" : isZoomDragging ? "cursor-zoom-in" : (shouldPan && isCmdHeld) ? "cursor-zoom-in" : shouldPan ? "cursor-grab" : isDragging ? "cursor-grabbing" : interactionMode === "marquee" ? "cursor-crosshair" : isPlacingNodes ? "cursor-cell" : hoveredNode ? "cursor-pointer" : "cursor-default"
+          isPanning ? "cursor-grabbing" : isZoomDragging ? "cursor-zoom-in" : (shouldPan && isCmdHeld) ? "cursor-zoom-in" : shouldPan ? "cursor-grab" : isDragging ? "cursor-grabbing" : areaDeleteMode ? "cursor-crosshair" : interactionMode === "marquee" ? "cursor-crosshair" : isPlacingNodes ? "cursor-cell" : hoveredNode ? "cursor-pointer" : "cursor-default"
         )}
       >
         {/* Video frame layer */}
@@ -1666,6 +1736,16 @@ export function VideoPlayer() {
           {video?.shape && ` / ${video.shape[0] - 1}`}
           {zoom !== 1 && ` | ${(zoom * 100).toFixed(0)}%`}
         </Badge>
+
+        {/* Area-delete mode indicator */}
+        {areaDeleteMode && (
+          <Badge
+            variant="destructive"
+            className="absolute top-2 left-1/2 -translate-x-1/2 pointer-events-none rounded-md"
+          >
+            Delete Area: Draw a rectangle to delete predictions · Esc to cancel
+          </Badge>
+        )}
 
         {/* Node placement indicator */}
         {isPlacingNodes && selectedInstance && placementNodeIdx !== null && (

@@ -23,6 +23,9 @@ export {
   DeletePredictionsByRange,
   DeletePredictionsOnLabeledFrames,
   DeletePredictionsByMaxCount,
+  DeletePredictionsByArea,
+  DeletePredictionsByTrack,
+  DeleteInstancesByType,
   ExportPackageCommand,
 } from "./fileCommands";
 

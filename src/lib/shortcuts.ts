@@ -67,7 +67,7 @@ export const DEFAULT_SHORTCUTS: Record<string, string> = {
   // Prediction management
   "delete frame predictions": "",
   "delete clip predictions": "",
-  "delete area predictions": "",
+  "delete area predictions": "$mod+KeyK",
 
   // Add videos
   "add videos": "",

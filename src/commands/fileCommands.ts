@@ -397,6 +397,194 @@ export const DeletePredictionsByMaxCount: Command = {
 };
 
 // ---------------------------------------------------------------------------
+// Delete Predictions by Area (current frame only)
+// ---------------------------------------------------------------------------
+
+/** Compute the centroid of an instance's visible points. */
+function computeCentroid(
+  instance: { points: Array<{ xy: [number, number]; visible: boolean }> }
+): [number, number] | null {
+  let sumX = 0;
+  let sumY = 0;
+  let count = 0;
+  for (const p of instance.points) {
+    if (p.visible && !isNaN(p.xy[0]) && !isNaN(p.xy[1])) {
+      sumX += p.xy[0];
+      sumY += p.xy[1];
+      count++;
+    }
+  }
+  if (count === 0) return null;
+  return [sumX / count, sumY / count];
+}
+
+/** Delete predicted instances whose centroid falls within a rectangle on the current frame. */
+export const DeletePredictionsByArea: Command = {
+  name: "DeletePredictionsByArea",
+  topics: [UpdateTopic.Frame, UpdateTopic.Instance],
+  skipAutoSnapshot: true,
+  execute(ctx: CommandContext, params?: Record<string, unknown>) {
+    const { labels, labeledFrame, instance } = ctx.state;
+    if (!labels || !labeledFrame) return;
+
+    const x1 = typeof params?.x1 === "number" ? params.x1 : 0;
+    const y1 = typeof params?.y1 === "number" ? params.y1 : 0;
+    const x2 = typeof params?.x2 === "number" ? params.x2 : 0;
+    const y2 = typeof params?.y2 === "number" ? params.y2 : 0;
+
+    const minX = Math.min(x1, x2);
+    const maxX = Math.max(x1, x2);
+    const minY = Math.min(y1, y2);
+    const maxY = Math.max(y1, y2);
+
+    const snapshot = ctx.takeAllFramesSnapshot("DeletePredictionsByArea");
+    let removed = 0;
+
+    const before = labeledFrame.instances.length;
+    labeledFrame.instances = labeledFrame.instances.filter((inst) => {
+      if (!(inst instanceof PredictedInstance)) return true;
+      const centroid = computeCentroid(inst);
+      if (!centroid) return true;
+      const [cx, cy] = centroid;
+      if (cx >= minX && cx <= maxX && cy >= minY && cy <= maxY) {
+        return false; // Remove
+      }
+      return true;
+    });
+    removed = before - labeledFrame.instances.length;
+
+    // Remove empty labeled frames
+    if (labeledFrame.instances.length === 0) {
+      labels.labeledFrames = labels.labeledFrames.filter(
+        (lf) => lf !== labeledFrame
+      );
+    }
+
+    if (removed === 0) {
+      toast.info("No predictions found in the selected area.");
+      return;
+    }
+
+    ctx.pushUndoSnapshot(snapshot);
+
+    if (instance && instance instanceof PredictedInstance) {
+      ctx.state.setInstance(null);
+    }
+    ctx.state.markChanged();
+    toast.success(`Deleted ${removed} prediction(s)`, {
+      description: "From selected area on current frame",
+    });
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Delete Predictions by Track
+// ---------------------------------------------------------------------------
+
+/** Delete predicted instances on a specific track (or untracked). */
+export const DeletePredictionsByTrack: Command = {
+  name: "DeletePredictionsByTrack",
+  topics: [UpdateTopic.Labels, UpdateTopic.Frame, UpdateTopic.Instance],
+  skipAutoSnapshot: true,
+  execute(ctx: CommandContext, params?: Record<string, unknown>) {
+    const { labels, instance } = ctx.state;
+    if (!labels) return;
+
+    // trackName: string | null (null means untracked)
+    const trackName = params?.trackName as string | null | undefined;
+
+    const snapshot = ctx.takeAllFramesSnapshot("DeletePredictionsByTrack");
+    let removed = 0;
+
+    for (const lf of labels.labeledFrames) {
+      const before = lf.instances.length;
+      lf.instances = lf.instances.filter((inst) => {
+        if (!(inst instanceof PredictedInstance)) return true;
+        if (trackName === null || trackName === undefined) {
+          // Delete untracked
+          return inst.track !== null;
+        }
+        return inst.track?.name !== trackName;
+      });
+      removed += before - lf.instances.length;
+    }
+
+    labels.labeledFrames = labels.labeledFrames.filter(
+      (lf) => lf.instances.length > 0
+    );
+
+    if (removed === 0) {
+      toast.info("No predictions matched the track filter.");
+      return;
+    }
+
+    ctx.pushUndoSnapshot(snapshot);
+
+    if (instance && instance instanceof PredictedInstance) {
+      ctx.state.setInstance(null);
+    }
+    ctx.state.markChanged();
+    toast.success(`Deleted ${removed} prediction(s)`, {
+      description: trackName ? `Track: ${trackName}` : "Untracked instances",
+    });
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Delete Instances by Type
+// ---------------------------------------------------------------------------
+
+/** Delete instances by type: "predicted", "user", or "all". */
+export const DeleteInstancesByType: Command = {
+  name: "DeleteInstancesByType",
+  topics: [UpdateTopic.Labels, UpdateTopic.Frame, UpdateTopic.Instance],
+  skipAutoSnapshot: true,
+  execute(ctx: CommandContext, params?: Record<string, unknown>) {
+    const { labels, instance } = ctx.state;
+    if (!labels) return;
+
+    const instanceType = (params?.instanceType as string) ?? "predicted";
+
+    const snapshot = ctx.takeAllFramesSnapshot("DeleteInstancesByType");
+    let removed = 0;
+
+    for (const lf of labels.labeledFrames) {
+      const before = lf.instances.length;
+      lf.instances = lf.instances.filter((inst) => {
+        if (instanceType === "predicted") {
+          return !(inst instanceof PredictedInstance);
+        } else if (instanceType === "user") {
+          return inst instanceof PredictedInstance;
+        } else {
+          // "all" — remove everything
+          return false;
+        }
+      });
+      removed += before - lf.instances.length;
+    }
+
+    labels.labeledFrames = labels.labeledFrames.filter(
+      (lf) => lf.instances.length > 0
+    );
+
+    if (removed === 0) {
+      toast.info("No instances matched the type filter.");
+      return;
+    }
+
+    ctx.pushUndoSnapshot(snapshot);
+
+    if (instance) {
+      ctx.state.setInstance(null);
+    }
+    ctx.state.markChanged();
+    toast.success(`Deleted ${removed} instance(s)`, {
+      description: `Type: ${instanceType}`,
+    });
+  },
+};
+
+// ---------------------------------------------------------------------------
 // Export Package
 // ---------------------------------------------------------------------------
 

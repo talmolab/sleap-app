@@ -282,15 +282,23 @@ export function useKeyboardShortcuts() {
         commandContext.execute(PasteTrack);
       },
 
-      // Selection / exit placement mode
+      // Delete predictions from area (Ctrl+K)
+      [DEFAULT_SHORTCUTS["delete area predictions"]]: (e) => {
+        e.preventDefault();
+        store().toggle("areaDeleteMode");
+      },
+
+      // Selection / exit placement mode / cancel area-delete
       [DEFAULT_SHORTCUTS["clear selection"]]: (e) => {
         if (isTextInput(e)) return;
         e.preventDefault();
-        const { labelingMode, exitPlacementMode } = store();
-        if (labelingMode === "place") {
-          exitPlacementMode();
+        const s = store();
+        if (s.areaDeleteMode) {
+          s.set("areaDeleteMode", false);
+        } else if (s.labelingMode === "place") {
+          s.exitPlacementMode();
         } else {
-          store().setInstance(null);
+          s.setInstance(null);
         }
       },
       [DEFAULT_SHORTCUTS["select next"]]: (e) => {

@@ -94,6 +94,9 @@ export interface AppState {
   shortcutsDialogOpen: boolean;
   helpDialogOpen: boolean;
 
+  // === Area delete mode ===
+  areaDeleteMode: boolean;
+
   // === Debug ===
   debugMode: boolean;
 
@@ -216,6 +219,9 @@ export const useAppStore = create<AppState>()(
       exportDialogOpen: false,
       shortcutsDialogOpen: false,
       helpDialogOpen: false,
+
+      // Area delete mode
+      areaDeleteMode: false,
 
       // Debug
       debugMode: false,

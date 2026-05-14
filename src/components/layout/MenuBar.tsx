@@ -7,7 +7,6 @@
 
 import { useAppStore } from "../../stores/appStore";
 import { modKey, isTauri } from "../../lib/platform";
-import { getPlatform } from "../../platform/index";
 
 async function openExternal(url: string) {
   if (isTauri) {
@@ -34,7 +33,6 @@ import {
   GoToLastInteracted,
   GoNextUserFrame,
   GoNextTrackSpawnFrame,
-  SelectToFrame,
   AddInstance,
   DeleteSelectedInstance,
   CopyInstance,
@@ -120,7 +118,7 @@ function FileMenu() {
                   useAppStore.getState().bumpOverlayVersion();
                 }}
               >
-                {v.filename?.split("/").pop() || `Video ${idx + 1}`}
+                {(Array.isArray(v.filename) ? v.filename[0] : v.filename)?.split("/").pop() || `Video ${idx + 1}`}
               </MenubarItem>
             ))}
           </MenubarSubContent>
@@ -613,6 +611,12 @@ function LabelsMenu() {
           }
         >
           Delete Predictions...
+        </MenubarItem>
+        <MenubarItem
+          disabled={!projectLoaded}
+          onClick={() => useAppStore.getState().toggle("areaDeleteMode")}
+        >
+          Delete Predictions from Area... <MenubarShortcut>{modKey}+K</MenubarShortcut>
         </MenubarItem>
         <MenubarItem
           disabled={!projectLoaded}
