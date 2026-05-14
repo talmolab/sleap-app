@@ -6,7 +6,17 @@
  */
 
 import { useAppStore } from "../../stores/appStore";
-import { modKey } from "../../lib/platform";
+import { modKey, isTauri } from "../../lib/platform";
+import { getPlatform } from "../../platform/index";
+
+async function openExternal(url: string) {
+  if (isTauri) {
+    const { open } = await import("@tauri-apps/plugin-shell");
+    await open(url);
+  } else {
+    window.open(url, "_blank");
+  }
+}
 import {
   commandContext,
   NewProjectCommand,
@@ -24,6 +34,7 @@ import {
   GoToLastInteracted,
   GoNextUserFrame,
   GoNextTrackSpawnFrame,
+  SelectToFrame,
   AddInstance,
   DeleteSelectedInstance,
   CopyInstance,
@@ -81,6 +92,7 @@ export function MenuBar() {
 
 function FileMenu() {
   const projectLoaded = useAppStore((s) => s.projectLoaded);
+  const labels = useAppStore((s) => s.labels);
 
   const exec = (cmd: Parameters<typeof commandContext.execute>[0]) => {
     commandContext.execute(cmd);
@@ -96,6 +108,23 @@ function FileMenu() {
         <MenubarItem onClick={() => exec(OpenProjectCommand)}>
           Open Project... <MenubarShortcut>{modKey}+O</MenubarShortcut>
         </MenubarItem>
+        <MenubarSub>
+          <MenubarSubTrigger disabled={!projectLoaded}>Replace Videos...</MenubarSubTrigger>
+          <MenubarSubContent>
+            {labels?.videos.map((v, idx) => (
+              <MenubarItem
+                key={idx}
+                onClick={async () => {
+                  const { resolveVideoFile } = await import("../../lib/resolveVideos");
+                  await resolveVideoFile(v);
+                  useAppStore.getState().bumpOverlayVersion();
+                }}
+              >
+                {v.filename?.split("/").pop() || `Video ${idx + 1}`}
+              </MenubarItem>
+            ))}
+          </MenubarSubContent>
+        </MenubarSub>
         <MenubarSeparator />
         <MenubarItem
           disabled={!projectLoaded}
@@ -239,6 +268,12 @@ function GoMenu() {
         >
           Go to Frame... <MenubarShortcut>{modKey}+J</MenubarShortcut>
         </MenubarItem>
+        <MenubarItem
+          disabled={!projectLoaded}
+          onClick={() => useAppStore.getState().setSelectToFrameDialogOpen(true)}
+        >
+          Select to Frame... <MenubarShortcut>{modKey}+Shift+J</MenubarShortcut>
+        </MenubarItem>
         <MenubarSeparator />
         <MenubarItem disabled={!projectLoaded} onClick={() => exec(GoNextLabeledFrame)}>
           Next Labeled Frame <MenubarShortcut>Alt+{"\u2192"}</MenubarShortcut>
@@ -363,6 +398,12 @@ function ViewMenu() {
         >
           Fit View to Instances
         </MenubarCheckboxItem>
+        <MenubarItem
+          disabled={!instance}
+          onClick={() => useAppStore.getState().set("fitSelection", true)}
+        >
+          Fit View to Selection
+        </MenubarItem>
         <MenubarCheckboxItem
           checked={defaultToPan}
           onCheckedChange={() => toggle("defaultToPan")}
@@ -448,20 +489,20 @@ function ViewMenu() {
           </MenubarSubContent>
         </MenubarSub>
         <MenubarSeparator />
-        <MenubarLabel className="text-xs text-muted-foreground">Node Size</MenubarLabel>
-        <div className="flex items-center px-2 py-1 gap-2">
-          <input
-            type="range"
-            min={1}
-            max={12}
-            value={markerSize}
-            onChange={(e) => setVal("markerSize", Number(e.target.value))}
-            className="flex-1 h-1 accent-primary"
-          />
-          <span className="text-xs text-muted-foreground w-4 text-right">
-            {markerSize}
-          </span>
-        </div>
+        <MenubarSub>
+          <MenubarSubTrigger className="text-sm">Node Marker Size</MenubarSubTrigger>
+          <MenubarSubContent>
+            <MenubarRadioGroup
+              value={String(markerSize)}
+              onValueChange={(val) => setVal("markerSize", Number(val))}
+            >
+              <MenubarRadioItem value="2">Small (2)</MenubarRadioItem>
+              <MenubarRadioItem value="4">Medium (4)</MenubarRadioItem>
+              <MenubarRadioItem value="6">Large (6)</MenubarRadioItem>
+              <MenubarRadioItem value="8">Extra Large (8)</MenubarRadioItem>
+            </MenubarRadioGroup>
+          </MenubarSubContent>
+        </MenubarSub>
         <MenubarSeparator />
         <MenubarSub>
           <MenubarSubTrigger className="text-sm">Node Label Size</MenubarSubTrigger>
@@ -780,19 +821,17 @@ function HelpMenu() {
           Keyboard Shortcuts...
         </MenubarItem>
         <MenubarItem
-          onClick={() => window.open("https://sleap.ai/", "_blank")}
+          onClick={() => openExternal("https://docs.sleap.ai/")}
         >
           Documentation
         </MenubarItem>
         <MenubarItem
-          onClick={() =>
-            window.open(
-              "https://github.com/talmolab/sleap/issues",
-              "_blank"
-            )
-          }
+          onClick={() => openExternal("https://github.com/talmolab/sleap-app/issues")}
         >
           Report Issue
+        </MenubarItem>
+        <MenubarItem onClick={() => openExternal("https://github.com/talmolab/sleap-app/releases")}>
+          Releases
         </MenubarItem>
         <MenubarSeparator />
         <MenubarItem

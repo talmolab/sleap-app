@@ -38,6 +38,7 @@ export {
   GoToLastInteracted,
   GoNextUserFrame,
   GoNextTrackSpawnFrame,
+  SelectToFrame,
 } from "./navCommands";
 
 // Edit commands

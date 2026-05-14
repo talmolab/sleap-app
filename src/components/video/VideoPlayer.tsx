@@ -72,6 +72,7 @@ export function VideoPlayer() {
   const colormap = useAppStore((s) => s.colormap);
   const rotation = useAppStore((s) => s.rotation);
   const defaultToPan = useAppStore((s) => s.defaultToPan);
+  const fitSelection = useAppStore((s) => s.fitSelection);
 
   // Local zoom/pan state
   const [zoom, setZoom] = useState(1);
@@ -959,6 +960,49 @@ export function VideoPlayer() {
     setPanY(newPanY);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fit, labeledFrame]);
+
+  // Fit view to selected instance (one-shot action triggered from menu)
+  useEffect(() => {
+    if (!fitSelection || !selectedInstance) return;
+    // Reset the flag immediately so this is a one-shot action
+    useAppStore.getState().set("fitSelection", false);
+
+    const [cw, ch] = containerSize;
+    if (cw === 0 || ch === 0) return;
+
+    // Find the rendered instance matching the selected instance
+    const instances = renderedInstancesRef.current;
+    const selectedRendered = instances.find((ri) => ri.isSelected);
+    if (!selectedRendered) return;
+
+    const visibleNodes = selectedRendered.nodes.filter((n) => n.visible);
+    if (visibleNodes.length === 0) return;
+
+    const xs = visibleNodes.map((n) => n.x);
+    const ys = visibleNodes.map((n) => n.y);
+    const pad = 50;
+    const minX = Math.min(...xs) - pad;
+    const maxX = Math.max(...xs) + pad;
+    const minY = Math.min(...ys) - pad;
+    const maxY = Math.max(...ys) + pad;
+
+    const bboxW = maxX - minX;
+    const bboxH = maxY - minY;
+    if (bboxW <= 0 || bboxH <= 0) return;
+
+    const newZoom = Math.min(cw / (bboxW * baseScale), ch / (bboxH * baseScale), 10);
+
+    const centerX = (minX + maxX) / 2;
+    const centerY = (minY + maxY) / 2;
+    const newPanX = cw / 2 - offsetX - centerX * baseScale * newZoom;
+    const newPanY = ch / 2 - offsetY - centerY * baseScale * newZoom;
+
+    viewRef.current = { zoom: newZoom, panX: newPanX, panY: newPanY };
+    setZoom(newZoom);
+    setPanX(newPanX);
+    setPanY(newPanY);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fitSelection]);
 
   // Mouse handlers for interaction
   const canvasToScene = useCallback(

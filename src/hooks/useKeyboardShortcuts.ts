@@ -201,6 +201,10 @@ export function useKeyboardShortcuts() {
           commandContext.execute(DeleteInstanceAndTrack);
         }
       },
+      [DEFAULT_SHORTCUTS["select to frame"]]: (e) => {
+        e.preventDefault();
+        store().setSelectToFrameDialogOpen(true);
+      },
 
       // Set instance track via Ctrl+1-9 (core proofreading interaction)
       ...Object.fromEntries(

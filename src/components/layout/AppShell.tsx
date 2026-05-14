@@ -37,6 +37,7 @@ import { TrainingPanel } from "../panels/TrainingPanel";
 import { WelcomeScreen } from "./WelcomeScreen";
 import { TrainingDialog } from "../dialogs/TrainingDialog";
 import { GoToFrameDialog } from "../dialogs/GoToFrameDialog";
+import { SelectToFrameDialog } from "../dialogs/SelectToFrameDialog";
 import { DeletePredictionsDialog } from "../dialogs/DeletePredictionsDialog";
 import { ExportDialog } from "../dialogs/ExportDialog";
 import { ShortcutsDialog } from "../dialogs/ShortcutsDialog";
@@ -229,6 +230,7 @@ export function AppShell() {
       {/* Global dialogs */}
       <TrainingDialog />
       <GoToFrameDialog />
+      <SelectToFrameDialog />
       <DeletePredictionsDialog
         open={deletePredictionsDialogOpen}
         onOpenChange={setDeletePredictionsDialogOpen}

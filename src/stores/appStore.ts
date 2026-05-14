@@ -88,6 +88,7 @@ export interface AppState {
   trainingDialogOpen: boolean;
   inferenceDialogOpen: boolean;
   goToFrameDialogOpen: boolean;
+  selectToFrameDialogOpen: boolean;
   deletePredictionsDialogOpen: boolean;
   exportDialogOpen: boolean;
   shortcutsDialogOpen: boolean;
@@ -112,6 +113,7 @@ export interface AppState {
   setTrainingDialogOpen: (open: boolean) => void;
   setInferenceDialogOpen: (open: boolean) => void;
   setGoToFrameDialogOpen: (open: boolean) => void;
+  setSelectToFrameDialogOpen: (open: boolean) => void;
   setDeletePredictionsDialogOpen: (open: boolean) => void;
   setExportDialogOpen: (open: boolean) => void;
   setShortcutsDialogOpen: (open: boolean) => void;
@@ -209,6 +211,7 @@ export const useAppStore = create<AppState>()(
       trainingDialogOpen: false,
       inferenceDialogOpen: false,
       goToFrameDialogOpen: false,
+      selectToFrameDialogOpen: false,
       deletePredictionsDialogOpen: false,
       exportDialogOpen: false,
       shortcutsDialogOpen: false,
@@ -324,6 +327,11 @@ export const useAppStore = create<AppState>()(
       setGoToFrameDialogOpen: (open) =>
         set((state) => {
           state.goToFrameDialogOpen = open;
+        }),
+
+      setSelectToFrameDialogOpen: (open) =>
+        set((state) => {
+          state.selectToFrameDialogOpen = open;
         }),
 
       setDeletePredictionsDialogOpen: (open) =>

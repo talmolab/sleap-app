@@ -182,6 +182,31 @@ export const GoNextUserFrame: Command = {
  * then navigates to the next spawn frame after the current position.
  * Wraps around if at the end.
  */
+/** Select a range from the current frame to a user-specified target frame. */
+export const SelectToFrame: Command = {
+  name: "SelectToFrame",
+  topics: [],
+  execute(ctx: CommandContext) {
+    const { frameIdx, video } = ctx.state;
+    if (!video) return;
+
+    const input = window.prompt("Select to frame number:", String(frameIdx));
+    if (input === null) return;
+
+    const target = parseInt(input, 10);
+    if (isNaN(target)) return;
+
+    const maxFrame = video.shape ? (video.shape[0] ?? 1) - 1 : Infinity;
+    const clamped = Math.max(0, Math.min(target, maxFrame));
+
+    const rangeStart = Math.min(frameIdx, clamped);
+    const rangeEnd = Math.max(frameIdx, clamped);
+
+    ctx.state.set("frameRange", [rangeStart, rangeEnd] as [number, number]);
+    ctx.state.set("hasFrameRange", true);
+  },
+};
+
 export const GoNextTrackSpawnFrame: Command = {
   name: "GoNextTrackSpawnFrame",
   topics: [UpdateTopic.Frame],
