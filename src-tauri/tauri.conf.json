@@ -37,6 +37,15 @@
     ],
     "category": "DeveloperTool",
     "shortDescription": "SLEAP pose estimation labeling tool",
-    "longDescription": "Web-based labeling GUI for SLEAP animal pose estimation and tracking."
+    "longDescription": "Web-based labeling GUI for SLEAP animal pose estimation and tracking.",
+    "createUpdaterArtifacts": "v2Compatible"
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/talmolab/sleap-app/releases/download/dev/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEJEN0QwRjQwQzNBRjlFREIKUldUYm5xL0RRQTk5dlhvbnBBS1h6c1ExZGVaZHduWXFodHRYVGhLM2tXbDFFR2xMYUljajBmVGoK"
+    }
   }
 }

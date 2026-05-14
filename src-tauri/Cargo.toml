@@ -24,6 +24,8 @@ tauri-plugin-log = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-shell = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 
 # WebRTC (native P2P, bypasses webview mDNS restriction)
 webrtc = "0.17"

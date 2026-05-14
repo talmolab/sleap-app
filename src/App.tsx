@@ -4,6 +4,7 @@ import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useAppStore } from "./stores/appStore";
 import { applyHashState, initUrlStateSync } from "./lib/urlState";
 import { loadProjectFromPath } from "./lib/loadProject";
+import { isTauri } from "./platform";
 
 export default function App() {
   useKeyboardShortcuts();
@@ -40,6 +41,30 @@ export default function App() {
       window.removeEventListener("dragover", prevent);
       window.removeEventListener("drop", prevent);
     };
+  }, []);
+
+  // Check for updates on startup (Tauri only)
+  useEffect(() => {
+    if (!isTauri) return;
+    (async () => {
+      try {
+        const { check } = await import("@tauri-apps/plugin-updater");
+        const update = await check();
+        if (update) {
+          console.log(`[updater] Update available: ${update.version}`);
+          const yes = window.confirm(
+            `A new version of SLEAP is available (${update.version}). Download and install?`
+          );
+          if (yes) {
+            await update.downloadAndInstall();
+            const { relaunch } = await import("@tauri-apps/plugin-process");
+            await relaunch();
+          }
+        }
+      } catch (e) {
+        console.warn("[updater] Update check failed:", e);
+      }
+    })();
   }, []);
 
   // Apply hash state once after project loads, then start syncing
