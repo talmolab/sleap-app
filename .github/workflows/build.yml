@@ -22,7 +22,7 @@ jobs:
         include:
           - platform: ubuntu-22.04
             target: linux
-          - platform: macos-14
+          - platform: macos-latest
             target: macos-arm64
           - platform: windows-latest
             target: windows
@@ -35,6 +35,11 @@ jobs:
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Ensure cargo is in PATH
+        shell: bash
+        run: |
+          echo "${CARGO_HOME:-$HOME/.cargo}/bin" >> $GITHUB_PATH
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
