@@ -667,16 +667,18 @@ function TracksMenu() {
         >
           New Track <MenubarShortcut>{modKey}+0</MenubarShortcut>
         </MenubarItem>
-        <MenubarSub>
-          <MenubarSubTrigger disabled={!instance}>Set Instance Track</MenubarSubTrigger>
-          <MenubarSubContent>
-            {labels?.tracks.map((track, idx) => (
-              <MenubarItem key={idx} onClick={() => commandContext.execute(SetInstanceTrack, { trackIdx: idx })}>
-                {track.name} {idx < 9 && <MenubarShortcut>{modKey}+{idx + 1}</MenubarShortcut>}
-              </MenubarItem>
-            ))}
-          </MenubarSubContent>
-        </MenubarSub>
+        {labels?.tracks && labels.tracks.length > 0 && (
+          <MenubarSub>
+            <MenubarSubTrigger disabled={!instance}>Set Instance Track</MenubarSubTrigger>
+            <MenubarSubContent>
+              {labels.tracks.map((track, idx) => (
+                <MenubarItem key={idx} onClick={() => commandContext.execute(SetInstanceTrack, { trackIdx: idx })}>
+                  {track.name} {idx < 9 && <MenubarShortcut>{modKey}+{idx + 1}</MenubarShortcut>}
+                </MenubarItem>
+              ))}
+            </MenubarSubContent>
+          </MenubarSub>
+        )}
         <MenubarSeparator />
         <MenubarItem
           disabled={!instance}
@@ -724,22 +726,24 @@ function TracksMenu() {
           Delete Instance and Track <MenubarShortcut>{modKey}+Shift+Backspace</MenubarShortcut>
         </MenubarItem>
         <MenubarSeparator />
-        <MenubarSub>
-          <MenubarSubTrigger disabled={!projectLoaded}>Delete Track</MenubarSubTrigger>
-          <MenubarSubContent>
-            {labels?.tracks.map((track, idx) => (
-              <MenubarItem
-                key={idx}
-                onClick={() => {
-                  if (confirm(`Delete track "${track.name}"?`))
-                    commandContext.execute(DeleteTrack, { trackIdx: idx });
-                }}
-              >
-                {track.name}
-              </MenubarItem>
-            ))}
-          </MenubarSubContent>
-        </MenubarSub>
+        {labels?.tracks && labels.tracks.length > 0 && (
+          <MenubarSub>
+            <MenubarSubTrigger disabled={!projectLoaded}>Delete Track</MenubarSubTrigger>
+            <MenubarSubContent>
+              {labels.tracks.map((track, idx) => (
+                <MenubarItem
+                  key={idx}
+                  onClick={() => {
+                    if (confirm(`Delete track "${track.name}"?`))
+                      commandContext.execute(DeleteTrack, { trackIdx: idx });
+                  }}
+                >
+                  {track.name}
+                </MenubarItem>
+              ))}
+            </MenubarSubContent>
+          </MenubarSub>
+        )}
         <MenubarItem
           disabled={!projectLoaded}
           onClick={() => {
