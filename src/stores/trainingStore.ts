@@ -175,6 +175,7 @@ interface TrainingState {
   models: ModelProgress[];
   currentModelIndex: number;
   wandbUrl: string | null;
+  modelOutputDirs: string[];
   log: string[]; // single shared log for all models
 
   // Actions
@@ -396,6 +397,7 @@ const initialState = {
   models: [] as ModelProgress[],
   currentModelIndex: 0,
   wandbUrl: null as string | null,
+  modelOutputDirs: [] as string[],
   log: [] as string[],
 };
 
@@ -646,6 +648,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       models,
       currentModelIndex: 0,
       wandbUrl: null,
+      modelOutputDirs: [],
       log: [],
     });
 
@@ -1000,6 +1003,17 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
               if (line.includes("wandb.ai/")) {
                 const urlMatch = line.match(/(https:\/\/wandb\.ai\/[^\s"}\]>)]+)/);
                 if (urlMatch) set({ wandbUrl: urlMatch[1] });
+              }
+
+              // Model output directory detection (best_ckpt path from sleap-nn)
+              const ckptMatch = line.match(/best_ckpt['":\s]+([^\s'",}]+\.ckpt)/);
+              if (ckptMatch) {
+                const dir = ckptMatch[1].replace(/\/[^/]+$/, "");
+                set((s) => {
+                  const dirs = [...s.modelOutputDirs];
+                  if (!dirs.includes(dir)) dirs.push(dir);
+                  return { modelOutputDirs: dirs };
+                });
               }
 
               if (line.trim()) {

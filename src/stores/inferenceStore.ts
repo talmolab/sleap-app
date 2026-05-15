@@ -412,6 +412,7 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
         }
         if (result.outputPath) {
           set({ outputPath: result.outputPath });
+          await useInferenceStore.getState().loadAndMergeResults();
         }
       } catch (e) {
         set({

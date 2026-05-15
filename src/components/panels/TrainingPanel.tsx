@@ -256,6 +256,7 @@ export function TrainingPanel() {
   const models = useTrainingStore((s) => s.models);
   const currentModelIndex = useTrainingStore((s) => s.currentModelIndex);
   const wandbUrl = useTrainingStore((s) => s.wandbUrl);
+  const modelOutputDirs = useTrainingStore((s) => s.modelOutputDirs);
   const log = useTrainingStore((s) => s.log);
   const setConfig = useTrainingStore((s) => s.setConfig);
   const updateConfigHyperparams = useTrainingStore((s) => s.updateConfigHyperparams);
@@ -758,6 +759,14 @@ export function TrainingPanel() {
           </p>
         )}
 
+        {status === "completed" && modelOutputDirs.length > 0 && (
+          <div className="bg-green-500/8 border border-green-500/20 rounded-md p-2 text-[11px] text-green-400 space-y-1">
+            <div className="font-medium">Trained model{modelOutputDirs.length > 1 ? "s" : ""}:</div>
+            {modelOutputDirs.map((dir, i) => (
+              <div key={i} className="font-mono text-[10px] text-green-300 break-all">{dir}</div>
+            ))}
+          </div>
+        )}
         {status === "completed" && (
           <Button className="w-full h-8 text-xs" onClick={() => reset()}>
             Train Again

@@ -125,10 +125,13 @@ export function Seekbar() {
       const frame = pixelToFrame(e.clientX);
 
       if (e.shiftKey) {
-        // Start range selection
+        // Start range selection anchored at the current frame
+        const currentFrame = useAppStore.getState().frameIdx;
         setIsSelectingRange(true);
-        setRangeAnchor(frame);
-        useAppStore.getState().set("frameRange", [frame, frame]);
+        setRangeAnchor(currentFrame);
+        const start = Math.min(currentFrame, frame);
+        const end = Math.max(currentFrame, frame);
+        useAppStore.getState().set("frameRange", [start, end]);
         return;
       }
 
