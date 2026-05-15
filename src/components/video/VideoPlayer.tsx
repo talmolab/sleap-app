@@ -894,8 +894,8 @@ export function VideoPlayer() {
 
     // Draw nearby edges from the overlay instance
     const toInset = (px: number, py: number) => ({
-      ix: (px - sx) * INSET_ZOOM,
-      iy: (py - sy) * INSET_ZOOM,
+      ix: (px - sx) * effectiveZoom,
+      iy: (py - sy) * effectiveZoom,
     });
 
     if (overlayInst) {
