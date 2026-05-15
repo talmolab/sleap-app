@@ -573,6 +573,7 @@ function LabelsMenu() {
   const labels = useAppStore((s) => s.labels);
   const projectLoaded = useAppStore((s) => s.projectLoaded);
   const instance = useAppStore((s) => s.instance);
+  const instanceInitMethod = useAppStore((s) => s.instanceInitMethod);
   const totalLabeled = labels?.labeledFrames.length ?? 0;
   const totalInstances =
     labels?.labeledFrames.reduce((sum, lf) => sum + lf.instances.length, 0) ?? 0;
@@ -591,6 +592,22 @@ function LabelsMenu() {
         >
           Add Instance <MenubarShortcut>{modKey}+I</MenubarShortcut>
         </MenubarItem>
+        <MenubarSub>
+          <MenubarSubTrigger>Instance Placement Method</MenubarSubTrigger>
+          <MenubarSubContent>
+            <MenubarRadioGroup
+              value={instanceInitMethod}
+              onValueChange={(v) => useAppStore.getState().set("instanceInitMethod", v as typeof instanceInitMethod)}
+            >
+              <MenubarRadioItem value="best">Best</MenubarRadioItem>
+              <MenubarRadioItem value="template">Template</MenubarRadioItem>
+              <MenubarRadioItem value="force_directed">Force Directed</MenubarRadioItem>
+              <MenubarRadioItem value="random">Random</MenubarRadioItem>
+              <MenubarRadioItem value="prior_frame">Copy Prior Frame</MenubarRadioItem>
+              <MenubarRadioItem value="prediction">Copy Predictions</MenubarRadioItem>
+            </MenubarRadioGroup>
+          </MenubarSubContent>
+        </MenubarSub>
         <MenubarItem
           disabled={!instance}
           onClick={() => exec(DeleteSelectedInstance)}

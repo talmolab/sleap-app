@@ -14,8 +14,9 @@ import type { CommandContext } from "./CommandContext";
 import { useAppStore } from "../stores/appStore";
 import { merge } from "@/lib/merge";
 import { toast } from "@/lib/notify";
+import { placeInstance } from "@/lib/instancePlacement";
 
-/** Create a new Instance on the current frame using Instance.empty(). */
+/** Create a new Instance on the current frame using the selected placement method. */
 export const AddInstance: Command = {
   name: "AddInstance",
   topics: [UpdateTopic.Frame, UpdateTopic.Instance],
@@ -23,14 +24,32 @@ export const AddInstance: Command = {
     const { labels, video, frameIdx, skeleton } = ctx.state;
     if (!labels || !video || !skeleton) return;
 
-    // Create an empty instance with NaN points
-    const instance = Instance.empty({ skeleton });
+    // Get the placement method from app settings
+    const method = useAppStore.getState().instanceInitMethod;
+
+    // Get existing instances on the current frame
+    const currentFrames = labels.find({ video, frameIdx });
+    const existingInstances =
+      currentFrames.length > 0 ? currentFrames[0].instances : [];
+
+    // Get the prior frame for prior_frame placement method
+    const priorFrames =
+      frameIdx > 0 ? labels.find({ video, frameIdx: frameIdx - 1 }) : [];
+    const priorFrame = priorFrames.length > 0 ? priorFrames[0] : null;
+
+    // Create instance using the selected placement method
+    const instance = placeInstance(
+      method,
+      skeleton,
+      video,
+      existingInstances,
+      priorFrame
+    );
 
     // Find or create the LabeledFrame for this video + frame
-    const frames = labels.find({ video, frameIdx });
     let lf: LabeledFrame;
-    if (frames.length > 0) {
-      lf = frames[0];
+    if (currentFrames.length > 0) {
+      lf = currentFrames[0];
     } else {
       lf = new LabeledFrame({ video, frameIdx });
       labels.append(lf);
@@ -43,8 +62,13 @@ export const AddInstance: Command = {
     ctx.state.setInstance(instance);
     ctx.state.markChanged();
 
-    // Auto-enter placement mode for the new empty instance
-    useAppStore.getState().enterPlacementMode();
+    // Only enter placement mode if instance has unplaced (NaN) points
+    const hasNaNPoints = instance.points.some(
+      (p) => isNaN(p.xy[0]) || isNaN(p.xy[1])
+    );
+    if (hasNaNPoints) {
+      useAppStore.getState().enterPlacementMode();
+    }
   },
 };
 
