@@ -262,9 +262,33 @@ function ContextMenuSubmenu({
 }) {
   const [open, setOpen] = useState(false);
   const timeoutRef = useRef<ReturnType<typeof setTimeout>>();
+  const triggerRef = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState<{ top?: number; bottom?: number; left?: number; right?: number }>({});
+
+  useEffect(() => {
+    if (!open || !triggerRef.current) return;
+    const rect = triggerRef.current.getBoundingClientRect();
+    const vh = window.innerHeight;
+    const vw = window.innerWidth;
+    const submenuHeight = 220;
+    const submenuWidth = 170;
+    const pos: typeof position = {};
+    if (rect.right + submenuWidth > vw) {
+      pos.right = submenuWidth + 2;
+    } else {
+      pos.left = rect.width + 2;
+    }
+    if (rect.top + submenuHeight > vh) {
+      pos.bottom = 0;
+    } else {
+      pos.top = 0;
+    }
+    setPosition(pos);
+  }, [open]);
 
   return (
     <div
+      ref={triggerRef}
       className="relative"
       onMouseEnter={() => {
         clearTimeout(timeoutRef.current);
@@ -286,7 +310,10 @@ function ContextMenuSubmenu({
         </span>
       </button>
       {open && (
-        <div className="absolute left-full top-0 ml-0.5 min-w-[160px] rounded-md border border-border bg-popover p-1 shadow-lg z-[100]">
+        <div
+          className="absolute min-w-[160px] rounded-md border border-border bg-popover p-1 shadow-lg z-[100]"
+          style={position}
+        >
           {children}
         </div>
       )}
