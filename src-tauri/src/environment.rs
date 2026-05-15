@@ -465,6 +465,76 @@ pub async fn cancel_command(
     Ok(())
 }
 
+/// Spawn a persistent ZMQ PUB relay that binds on the controller port.
+/// sleap-nn's TrainingControllerZMQ SUB connects to this port on startup.
+/// Commands can be sent via `send_training_stop` (writes to stdin).
+#[tauri::command]
+pub async fn start_training_controller<R: Runtime>(
+    app: AppHandle<R>,
+    controller: tauri::State<'_, crate::TrainingController>,
+    port: u16,
+) -> Result<(), String> {
+    // Kill any existing controller
+    {
+        let mut guard = controller.0.lock().map_err(|e| e.to_string())?;
+        if let Some(child) = guard.take() {
+            let _ = child.kill();
+        }
+    }
+
+    let script = format!(
+        "import zmq,sys,os; \
+         os.set_blocking(sys.stdin.fileno(),True); \
+         c=zmq.Context(); s=c.socket(zmq.PUB); s.bind('tcp://127.0.0.1:{}'); \
+         sys.stdout.write('ready\\n'); sys.stdout.flush(); \
+         while True:\n \
+           line=sys.stdin.readline()\n \
+           if not line: break\n \
+           line=line.strip()\n \
+           if line: s.send_string(line)\n \
+         s.close(); c.term()",
+        port
+    );
+    let (_rx, child) = app
+        .shell()
+        .command("python3")
+        .args(&["-u", "-c", &script])
+        .spawn()
+        .map_err(|e| format!("Failed to start controller: {}", e))?;
+
+    let mut guard = controller.0.lock().map_err(|e| e.to_string())?;
+    *guard = Some(child);
+    Ok(())
+}
+
+/// Send a stop command to sleap-nn via the ZMQ controller relay.
+#[tauri::command]
+pub async fn send_training_stop(
+    controller: tauri::State<'_, crate::TrainingController>,
+) -> Result<(), String> {
+    let mut guard = controller.0.lock().map_err(|e| e.to_string())?;
+    if let Some(child) = guard.as_mut() {
+        child
+            .write(b"{\"command\":\"stop\"}\n")
+            .map_err(|e| format!("Failed to send stop: {}", e))?;
+        Ok(())
+    } else {
+        Err("No training controller running".into())
+    }
+}
+
+/// Kill the ZMQ controller relay process.
+#[tauri::command]
+pub async fn stop_training_controller(
+    controller: tauri::State<'_, crate::TrainingController>,
+) -> Result<(), String> {
+    let mut guard = controller.0.lock().map_err(|e| e.to_string())?;
+    if let Some(child) = guard.take() {
+        let _ = child.kill();
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Parsers (pure functions, testable)
 // ---------------------------------------------------------------------------

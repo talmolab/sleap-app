@@ -187,6 +187,75 @@ export async function cancelCommand(): Promise<void> {
 }
 
 /**
+ * Start a persistent ZMQ PUB relay before training.
+ * sleap-nn's TrainingControllerZMQ SUB connects to this on startup.
+ */
+export async function startTrainingController(port = 9000): Promise<void> {
+  if (!isTauri) return;
+  return invokeCmd<void>("start_training_controller", { port });
+}
+
+/**
+ * Send a graceful stop command to sleap-nn via the ZMQ controller relay.
+ */
+export async function sendTrainingStop(): Promise<void> {
+  if (!isTauri) return;
+  return invokeCmd<void>("send_training_stop");
+}
+
+/**
+ * Kill the ZMQ controller relay process.
+ */
+export async function stopTrainingController(): Promise<void> {
+  if (!isTauri) return;
+  return invokeCmd<void>("stop_training_controller");
+}
+
+/**
+ * Run a single sleap-nn train command for one config.
+ * 1. Write the YAML config to a temp file
+ * 2. Build `sleap-nn train --config-name <name> --config-dir <dir>` with Hydra overrides
+ * 3. Spawn process with streaming
+ */
+export async function runTraining(
+  configYaml: string,
+  labelsPath: string,
+  runName: string,
+  onEvent: (event: ProcessEvent) => void,
+): Promise<{ success: boolean; command: string }> {
+  if (!isTauri) {
+    console.warn("Training is only available in Tauri desktop mode");
+    return { success: false, command: "" };
+  }
+
+  const { writeFile } = await import("@tauri-apps/plugin-fs");
+  const { tempDir } = await import("@tauri-apps/api/path");
+
+  const tmp = await tempDir();
+  const configFileName = `sleap_train_config_${Date.now()}.yaml`;
+  const configPath = `${tmp}${configFileName}`;
+
+  await writeFile(configPath, new TextEncoder().encode(configYaml));
+  console.log("[training] Wrote config to:", configPath);
+
+  const args = [
+    "train",
+    "--config-name", configFileName,
+    "--config-dir", tmp,
+    `data_config.train_labels_path=[${labelsPath}]`,
+    `trainer_config.run_name=${runName}`,
+  ];
+
+  const command = `sleap-nn ${args.join(" ")}`;
+  console.log("[training] Running:", command);
+
+  const success = await runPythonCommand("sleap-nn", args, onEvent);
+  console.log("[training] Process finished: success=%s", success);
+
+  return { success, command };
+}
+
+/**
  * Run sleap-nn inference. Orchestrates the full pipeline:
  * 1. Serialize current Labels to a temp .slp file
  * 2. Build CLI args with data path, output path, and config

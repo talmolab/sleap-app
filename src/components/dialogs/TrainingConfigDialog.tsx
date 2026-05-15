@@ -1037,7 +1037,7 @@ export function TrainingConfigDialog({
                         Accelerator
                         <HintBubble text="Hardware to use for training. 'Auto' detects available hardware. Use 'cuda' for NVIDIA GPUs, 'mps' for Apple Silicon, or 'cpu' for CPU-only (slow)." />
                       </span>
-                      <Select value="auto">
+                      <Select value={firstHp?.accelerator ?? "auto"} onValueChange={(v) => configs.forEach((c) => onUpdateSlot(c.slot, { accelerator: v as "auto" | "cuda" | "mps" | "cpu" }))}>
                         <SelectTrigger className="h-8 text-sm w-28" id="field-accelerator"><SelectValue /></SelectTrigger>
                         <SelectContent>
                           <SelectItem value="auto">auto</SelectItem>

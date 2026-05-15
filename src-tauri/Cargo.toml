@@ -27,6 +27,8 @@ tauri-plugin-shell = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 
+libc = "0.2"
+
 # WebRTC (native P2P, bypasses webview mDNS restriction)
 webrtc = "0.17"
 tokio-tungstenite = { version = "0.26", features = ["native-tls"] }

@@ -43,3 +43,4 @@ scratch/
 
 # Design/planning docs (brainstorming artifacts, not shipped)
 docs/plans/
+src-tauri/models/

@@ -6,6 +6,7 @@ use std::sync::Mutex;
 use tauri_plugin_shell::process::CommandChild;
 
 pub struct RunningProcess(pub Mutex<Option<CommandChild>>);
+pub struct TrainingController(pub Mutex<Option<CommandChild>>);
 
 /// Holds a file path passed as a CLI argument, consumed once by the frontend.
 struct InitialFile(Mutex<Option<String>>);
@@ -63,6 +64,7 @@ pub fn run() {
   tauri::Builder::default()
     .manage(InitialFile(Mutex::new(file_arg)))
     .manage(RunningProcess(Mutex::new(None)))
+    .manage(TrainingController(Mutex::new(None)))
     .manage(tokio::sync::Mutex::new(rtc::RtcState::new()))
     .invoke_handler(tauri::generate_handler![
         get_initial_file,
@@ -79,6 +81,9 @@ pub fn run() {
         environment::install_uv,
         environment::run_python_command,
         environment::cancel_command,
+        environment::start_training_controller,
+        environment::send_training_stop,
+        environment::stop_training_controller,
         rtc::rtc_join_room,
         rtc::rtc_connect_worker,
         rtc::rtc_send,

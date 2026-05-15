@@ -78,6 +78,7 @@ export interface ConfigHyperparams {
   minHardKeypoints: number;
   maxHardKeypoints: number | null;
   trainingMode: "reuse_config" | "resume" | "reuse_model";
+  accelerator: "auto" | "cuda" | "mps" | "cpu";
 }
 
 export const defaultHyperparams: ConfigHyperparams = {
@@ -127,6 +128,7 @@ export const defaultHyperparams: ConfigHyperparams = {
   minHardKeypoints: 2,
   maxHardKeypoints: null,
   trainingMode: "reuse_config",
+  accelerator: "auto",
 };
 
 export interface ConfigFile {
@@ -166,6 +168,8 @@ interface TrainingState {
   status: TrainingStatus;
   error: string | null;
   startedAt: number | null;
+  _stopRequested: boolean;
+  _isRemote: boolean;
 
   // Progress
   models: ModelProgress[];
@@ -251,6 +255,9 @@ export function applyHyperparamsToYaml(yamlText: string, hp: ConfigHyperparams):
 
   // Seed
   trainer.seed = hp.randomSeed;
+
+  // Override accelerator so configs from CUDA machines work on CPU/MPS
+  trainer.trainer_accelerator = hp.accelerator;
 
   // Early stopping
   if (!trainer.early_stopping) trainer.early_stopping = {};
@@ -384,6 +391,8 @@ const initialState = {
   status: "idle" as TrainingStatus,
   error: null as string | null,
   startedAt: null as number | null,
+  _stopRequested: false,
+  _isRemote: false,
   models: [] as ModelProgress[],
   currentModelIndex: 0,
   wandbUrl: null as string | null,
@@ -580,6 +589,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         minHardKeypoints: typeof ohkmCfg.min_hard_keypoints === "number" ? ohkmCfg.min_hard_keypoints : 2,
         maxHardKeypoints: typeof ohkmCfg.max_hard_keypoints === "number" ? ohkmCfg.max_hard_keypoints : null,
         trainingMode: "reuse_config" as const,
+        accelerator: (typeof trainer.trainer_accelerator === "string" ? trainer.trainer_accelerator : "auto") as ConfigHyperparams["accelerator"],
       };
 
       // Also auto-fill data paths into the global config
@@ -631,6 +641,8 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       status: "running",
       error: null,
       startedAt: Date.now(),
+      _stopRequested: false,
+      _isRemote: !!remoteOpts?.remote,
       models,
       currentModelIndex: 0,
       wandbUrl: null,
@@ -905,44 +917,162 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         return;
       }
 
-      // For MVP, local training is not yet implemented
-      set({ status: "error", error: "Local training coming soon. Use remote training via sleap-connect." });
+      const { runTraining, startTrainingController, stopTrainingController } = await import("@/platform/backend");
+      const labelsPath = config.trainingLabelsPath || (await import("@/stores/appStore")).useAppStore.getState().projectPath || "";
+      if (!labelsPath) {
+        set({ status: "error", error: "No training labels file selected" });
+        return;
+      }
+
+      // Start ZMQ controller relay before training so sleap-nn can connect
+      await startTrainingController();
+
+      set((state) => ({
+        models: state.models.map((m, i) =>
+          i === 0 ? { ...m, status: "running" as const } : m,
+        ),
+      }));
+
+      try {
+        for (let i = 0; i < slots.length; i++) {
+          const cf = config.configs.find((c) => c.slot === slots[i]);
+          if (!cf) continue;
+
+          set((s) => ({
+            currentModelIndex: i,
+            models: s.models.map((m, j) =>
+              j === i ? { ...m, status: "running" as const } : m,
+            ),
+            log: i > 0 ? [...s.log, `— Starting ${s.models[i]?.label}...`] : s.log,
+          }));
+
+          const configYaml = applyHyperparamsToYaml(cf.content, cf.hyperparams);
+          const ts = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 15);
+          const runName = cf.hyperparams.runName || `${cf.modelType}_${ts}`;
+
+          const result = await runTraining(configYaml, labelsPath, runName, (event) => {
+            const state = get();
+            const idx = state.currentModelIndex;
+
+            if (event.event === "stdout" || event.event === "stderr") {
+              const line = event.data.line;
+
+              // Parse tqdm-style progress
+              const tqdmMatch = line.match(/Epoch (\d+):\s+(\d+)%\|.*?loss=([\d.]+)/);
+              if (tqdmMatch) {
+                const epoch = parseInt(tqdmMatch[1]);
+                const loss = parseFloat(tqdmMatch[3]);
+                set((s) => ({
+                  models: s.models.map((m, j) =>
+                    j === idx ? { ...m, epoch, loss } : m,
+                  ),
+                }));
+              }
+
+              // Parse JSON progress
+              try {
+                const data = JSON.parse(line);
+                if ("epoch" in data) {
+                  set((s) => ({
+                    models: s.models.map((m, j) =>
+                      j === idx
+                        ? {
+                            ...m,
+                            epoch: data.epoch ?? m.epoch,
+                            loss: data.loss ?? m.loss,
+                            valLoss: data.val_loss ?? m.valLoss,
+                            bestValLoss:
+                              data.val_loss != null &&
+                              (m.bestValLoss === null || data.val_loss < m.bestValLoss)
+                                ? data.val_loss
+                                : m.bestValLoss,
+                          }
+                        : m,
+                    ),
+                  }));
+                  return;
+                }
+              } catch {
+                // Not JSON
+              }
+
+              // W&B URL detection
+              if (line.includes("wandb.ai/")) {
+                const urlMatch = line.match(/(https:\/\/wandb\.ai\/[^\s"}\]>)]+)/);
+                if (urlMatch) set({ wandbUrl: urlMatch[1] });
+              }
+
+              if (line.trim()) {
+                set((s) => ({ log: [...s.log, line] }));
+              }
+            }
+          });
+
+          const wasStopped = get()._stopRequested;
+          if (result.success || wasStopped) {
+            set((s) => ({
+              _stopRequested: false,
+              models: s.models.map((m, j) =>
+                j === i ? { ...m, status: "completed" as const } : m,
+              ),
+              log: wasStopped
+                ? [...s.log, `— ${s.models[i]?.label} stopped early, moving to next model...`]
+                : s.log,
+            }));
+          } else {
+            set((s) => ({
+              status: "error",
+              error: `Training failed for ${cf.modelType}`,
+              models: s.models.map((m, j) =>
+                j === i ? { ...m, status: "failed" as const } : m,
+              ),
+            }));
+            return;
+          }
+        }
+
+        set({ status: "completed" });
+      } catch (e) {
+        set({
+          status: "error",
+          error: `Local training error: ${e instanceof Error ? e.message : String(e)}`,
+        });
+      } finally {
+        await stopTrainingController();
+      }
     }
   },
 
   stopTraining: async () => {
-    // Send CONTROL_COMMAND::{"command":"stop"} — forwarded by the worker
-    // to sleap-nn's TrainingControllerZMQ, which does a graceful early
-    // stop at the trainer level (saves checkpoint, continues to next
-    // model). This matches the PyQt LossViewer's "Stop Early" button.
-    //
-    // NOT JOB_STOP (which sends SIGINT to the process group and crashes
-    // DDP training).
-    try {
+    if (get()._isRemote) {
+      // Remote: send CONTROL_COMMAND for graceful early stop
       const { useConnectStore } = await import("@/stores/connectStore");
       const { sendControlCommand } = useConnectStore.getState();
       sendControlCommand("stop");
-      // Keep status running — worker continues to next model or completes
       set((s) => ({
         log: [...s.log, "— Stop Early requested, saving checkpoint..."],
       }));
-    } catch (e) {
-      console.warn("[training] Failed to stop:", e);
-      await cancelCommand();
-      set({ status: "stopped" });
+    } else {
+      // Local: send SIGINT — Lightning saves checkpoint and exits
+      const { sendTrainingStop } = await import("@/platform/backend");
+      set((s) => ({
+        _stopRequested: true,
+        log: [...s.log, "— Stop Early requested, saving checkpoint..."],
+      }));
+      await sendTrainingStop();
     }
   },
 
   cancelTraining: async () => {
-    // Send JOB_CANCEL for hard cancel
-    try {
+    if (get()._isRemote) {
+      // Remote: send JOB_CANCEL
       const { useConnectStore } = await import("@/stores/connectStore");
       const { cancelJob } = useConnectStore.getState();
       cancelJob("current");
-      set({ status: "error", error: "Training cancelled" });
-    } catch {
+    } else {
+      // Local: kill subprocess
       await cancelCommand();
-      set({ status: "error", error: "Training cancelled" });
     }
+    set({ status: "error", error: "Training cancelled" });
   },
 }));
