@@ -1562,6 +1562,7 @@ export function VideoPlayer() {
           commandContext.execute(ConvertPredictionToInstance, {
             instanceIdx: nodeHit.instanceIdx,
           });
+          useAppStore.getState().bumpOverlayVersion();
           return;
         }
         // User instance: select all nodes in this instance
@@ -1586,6 +1587,7 @@ export function VideoPlayer() {
         commandContext.execute(ConvertPredictionToInstance, {
           instanceIdx: instHit,
         });
+        useAppStore.getState().bumpOverlayVersion();
         return;
       }
 

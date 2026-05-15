@@ -22,6 +22,8 @@ import {
   SetInstanceTrack,
 } from "../../commands";
 import { cn } from "@/lib/utils";
+import { placeInstance } from "@/lib/instancePlacement";
+import type { InstancePlacementMethod } from "../../types";
 
 interface ContextMenuProps {
   x: number;
@@ -87,6 +89,14 @@ export function ContextMenu({
   const exec = (cmd: Parameters<typeof commandContext.execute>[0], params?: Record<string, unknown>) => {
     onClose();
     commandContext.execute(cmd, params);
+  };
+
+  const addWithMethod = (method: InstancePlacementMethod) => {
+    const store = useAppStore.getState();
+    const saved = store.instanceInitMethod;
+    store.set("instanceInitMethod", method);
+    exec(AddInstance);
+    store.set("instanceInitMethod", saved);
   };
 
   const hasInstance = instance !== null;
@@ -180,11 +190,14 @@ export function ContextMenu({
       )}
 
       {/* General actions */}
-      <ContextMenuItem
-        label="Add Instance"
-        shortcut="Ctrl+I"
-        onClick={() => exec(AddInstance)}
-      />
+      <ContextMenuSubmenu label="Add Instance" shortcut="Ctrl+I">
+        <ContextMenuItem label="Best" onClick={() => addWithMethod("best")} />
+        <ContextMenuItem label="Template" onClick={() => addWithMethod("template")} />
+        <ContextMenuItem label="Force Directed" onClick={() => addWithMethod("force_directed")} />
+        <ContextMenuItem label="Random" onClick={() => addWithMethod("random")} />
+        <ContextMenuItem label="Copy Prior Frame" onClick={() => addWithMethod("prior_frame")} />
+        <ContextMenuItem label="Copy Predictions" onClick={() => addWithMethod("prediction")} />
+      </ContextMenuSubmenu>
       {clipboardInstance && (
         <ContextMenuItem
           label="Paste Instance"
@@ -235,6 +248,49 @@ function ContextMenuItem({
         </span>
       )}
     </button>
+  );
+}
+
+function ContextMenuSubmenu({
+  label,
+  shortcut,
+  children,
+}: {
+  label: string;
+  shortcut?: string;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout>>();
+
+  return (
+    <div
+      className="relative"
+      onMouseEnter={() => {
+        clearTimeout(timeoutRef.current);
+        timeoutRef.current = setTimeout(() => setOpen(true), 150);
+      }}
+      onMouseLeave={() => {
+        clearTimeout(timeoutRef.current);
+        timeoutRef.current = setTimeout(() => setOpen(false), 200);
+      }}
+    >
+      <button
+        className="w-full flex items-center justify-between px-2 py-1.5 text-sm text-left rounded-sm text-popover-foreground hover:bg-accent hover:text-accent-foreground"
+        onClick={() => setOpen(!open)}
+      >
+        <span>{label}</span>
+        <span className="text-muted-foreground ml-4 text-xs flex items-center gap-1">
+          {shortcut && <span>{shortcut}</span>}
+          <span>&#x25B8;</span>
+        </span>
+      </button>
+      {open && (
+        <div className="absolute left-full top-0 ml-0.5 min-w-[160px] rounded-md border border-border bg-popover p-1 shadow-lg z-[100]">
+          {children}
+        </div>
+      )}
+    </div>
   );
 }
 
