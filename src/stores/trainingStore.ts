@@ -920,15 +920,23 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         return;
       }
 
-      const { runTraining, startTrainingController, stopTrainingController } = await import("@/platform/backend");
+      const { runTraining, startZmqRelay, stopZmqRelay } = await import("@/platform/backend");
       const labelsPath = config.trainingLabelsPath || (await import("@/stores/appStore")).useAppStore.getState().projectPath || "";
       if (!labelsPath) {
         set({ status: "error", error: "No training labels file selected" });
         return;
       }
 
-      // Start ZMQ controller relay before training so sleap-nn can connect
-      await startTrainingController();
+      // Start ZMQ relay so sleap-nn can receive stop commands
+      try {
+        await startZmqRelay();
+        console.log("[training] ZMQ relay started on port 9000");
+      } catch (e) {
+        console.error("[training] ZMQ relay failed to start:", e);
+        set((s) => ({
+          log: [...s.log, `[warn] ZMQ relay failed: ${e instanceof Error ? e.message : String(e)} — Stop Early disabled`],
+        }));
+      }
 
       set((state) => ({
         models: state.models.map((m, i) =>
@@ -1023,6 +1031,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
           });
 
           const wasStopped = get()._stopRequested;
+          console.log("[training] Model %d finished: success=%s, wasStopped=%s", i, result.success, wasStopped);
           if (result.success || wasStopped) {
             set((s) => ({
               _stopRequested: false,
@@ -1033,7 +1042,9 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
                 ? [...s.log, `— ${s.models[i]?.label} stopped early, moving to next model...`]
                 : s.log,
             }));
+            console.log("[training] Continuing to next model (i=%d, total=%d)", i, slots.length);
           } else {
+            console.log("[training] Model failed, aborting training loop");
             set((s) => ({
               status: "error",
               error: `Training failed for ${cf.modelType}`,
@@ -1052,7 +1063,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
           error: `Local training error: ${e instanceof Error ? e.message : String(e)}`,
         });
       } finally {
-        await stopTrainingController();
+        try { await stopZmqRelay(); } catch { /* ignore */ }
       }
     }
   },
@@ -1067,13 +1078,20 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         log: [...s.log, "— Stop Early requested, saving checkpoint..."],
       }));
     } else {
-      // Local: send SIGINT — Lightning saves checkpoint and exits
+      // Local: send stop via ZMQ (same as PyQt GUI)
       const { sendTrainingStop } = await import("@/platform/backend");
       set((s) => ({
         _stopRequested: true,
-        log: [...s.log, "— Stop Early requested, saving checkpoint..."],
+        log: [...s.log, "— Stop Early requested, finishing current epoch..."],
       }));
-      await sendTrainingStop();
+      try {
+        await sendTrainingStop();
+      } catch (e) {
+        console.error("[training] sendTrainingStop() failed:", e);
+        set((s) => ({
+          log: [...s.log, `[debug] Stop command failed: ${e instanceof Error ? e.message : String(e)}`],
+        }));
+      }
     }
   },
 

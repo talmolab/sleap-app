@@ -187,28 +187,31 @@ export async function cancelCommand(): Promise<void> {
 }
 
 /**
- * Start a persistent ZMQ PUB relay before training.
- * sleap-nn's TrainingControllerZMQ SUB connects to this on startup.
+ * Start ZMQ PUB relay on port 9000 for sending stop commands to sleap-nn.
+ * Cleans up any stale processes on the port before binding.
  */
-export async function startTrainingController(port = 9000): Promise<void> {
+export async function startZmqRelay(): Promise<void> {
   if (!isTauri) return;
-  return invokeCmd<void>("start_training_controller", { port });
+  return invokeCmd<void>("start_zmq_relay");
 }
 
 /**
- * Send a graceful stop command to sleap-nn via the ZMQ controller relay.
+ * Send stop command to sleap-nn via ZMQ relay.
+ * sleap-nn finishes the current epoch, saves checkpoint, exits with code 0.
  */
 export async function sendTrainingStop(): Promise<void> {
   if (!isTauri) return;
-  return invokeCmd<void>("send_training_stop");
+  console.log("[backend] Sending stop via ZMQ relay...");
+  await invokeCmd<void>("send_training_stop");
+  console.log("[backend] Stop command sent");
 }
 
 /**
- * Kill the ZMQ controller relay process.
+ * Kill the ZMQ relay process.
  */
-export async function stopTrainingController(): Promise<void> {
+export async function stopZmqRelay(): Promise<void> {
   if (!isTauri) return;
-  return invokeCmd<void>("stop_training_controller");
+  return invokeCmd<void>("stop_zmq_relay");
 }
 
 /**
@@ -244,6 +247,7 @@ export async function runTraining(
     "--config-dir", tmp,
     `data_config.train_labels_path=[${labelsPath}]`,
     `trainer_config.run_name=${runName}`,
+    `trainer_config.zmq.controller_port=9000`,
   ];
 
   const command = `sleap-nn ${args.join(" ")}`;

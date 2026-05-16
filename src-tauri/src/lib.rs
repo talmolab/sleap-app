@@ -6,7 +6,10 @@ use std::sync::Mutex;
 use tauri_plugin_shell::process::CommandChild;
 
 pub struct RunningProcess(pub Mutex<Option<CommandChild>>);
-pub struct TrainingController(pub Mutex<Option<CommandChild>>);
+
+/// ZMQ PUB relay for sending stop commands to sleap-nn during training.
+/// Uses std::process::Child (not Tauri shell) for reliable pipe handling.
+pub struct ZmqRelay(pub Mutex<Option<std::process::Child>>);
 
 /// Holds a file path passed as a CLI argument, consumed once by the frontend.
 struct InitialFile(Mutex<Option<String>>);
@@ -64,7 +67,7 @@ pub fn run() {
   tauri::Builder::default()
     .manage(InitialFile(Mutex::new(file_arg)))
     .manage(RunningProcess(Mutex::new(None)))
-    .manage(TrainingController(Mutex::new(None)))
+    .manage(ZmqRelay(Mutex::new(None)))
     .manage(tokio::sync::Mutex::new(rtc::RtcState::new()))
     .invoke_handler(tauri::generate_handler![
         get_initial_file,
@@ -81,9 +84,9 @@ pub fn run() {
         environment::install_uv,
         environment::run_python_command,
         environment::cancel_command,
-        environment::start_training_controller,
+        environment::start_zmq_relay,
         environment::send_training_stop,
-        environment::stop_training_controller,
+        environment::stop_zmq_relay,
         rtc::rtc_join_room,
         rtc::rtc_connect_worker,
         rtc::rtc_send,
