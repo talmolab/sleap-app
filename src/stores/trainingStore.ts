@@ -334,7 +334,7 @@ export function applyHyperparamsToYaml(yamlText: string, hp: ConfigHyperparams):
   }
 
   // Loss weights — per sub-head
-  for (const [headName, headVal] of Object.entries(headConfigs)) {
+  for (const [, headVal] of Object.entries(headConfigs)) {
     if (headVal && typeof headVal === "object") {
       const head = headVal as Record<string, unknown>;
       if (head.confmaps && typeof head.confmaps === "object") {
