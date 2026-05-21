@@ -7,6 +7,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { LogNumberInput } from "@/components/LogNumberInput";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
@@ -138,6 +139,10 @@ const SEARCHABLE_FIELDS = [
   { label: "Anchor Part", section: "head", fieldId: "head-model" },
   { label: "Sigma", section: "head", fieldId: "field-sigma" },
   { label: "Output Stride", section: "head", fieldId: "head-model" },
+  { label: "Confmaps Loss Weight", section: "head", fieldId: "head-model" },
+  { label: "PAFs Loss Weight", section: "head", fieldId: "head-model" },
+  { label: "Class Vectors Loss Weight", section: "head", fieldId: "head-model" },
+  { label: "Class Maps Loss Weight", section: "head", fieldId: "head-model" },
 ];
 
 // ── Shared components ──────────────────────────────────────────────
@@ -640,6 +645,36 @@ function HeadTabContent({
             </SelectContent>
           </Select>
         </div>
+        {headType === "bottomup" && (
+          <>
+            <Field label="Confmaps Loss Weight" hint="Loss weight for the confidence maps head. Increase to prioritize this head during multi-head training.">
+              <LogNumberInput value={hp.confmapsLossWeight} onChange={(v) => onUpdate({ confmapsLossWeight: v })} className="h-9 text-sm" />
+            </Field>
+            <Field label="PAFs Loss Weight" hint="Loss weight for the part affinity fields head. Increase to prioritize this head during multi-head training.">
+              <LogNumberInput value={hp.pafsLossWeight} onChange={(v) => onUpdate({ pafsLossWeight: v })} className="h-9 text-sm" />
+            </Field>
+          </>
+        )}
+        {headType === "multi_class_topdown" && (
+          <>
+            <Field label="Confmaps Loss Weight" hint="Loss weight for the confidence maps head. Increase to prioritize this head during multi-head training.">
+              <LogNumberInput value={hp.confmapsLossWeight} onChange={(v) => onUpdate({ confmapsLossWeight: v })} className="h-9 text-sm" />
+            </Field>
+            <Field label="Class Vectors Loss Weight" hint="Loss weight for the classification head. Increase to prioritize this head during multi-head training.">
+              <LogNumberInput value={hp.classLossWeight} onChange={(v) => onUpdate({ classLossWeight: v })} className="h-9 text-sm" />
+            </Field>
+          </>
+        )}
+        {headType === "multi_class_bottomup" && (
+          <>
+            <Field label="Confmaps Loss Weight" hint="Loss weight for the confidence maps head. Increase to prioritize this head during multi-head training.">
+              <LogNumberInput value={hp.confmapsLossWeight} onChange={(v) => onUpdate({ confmapsLossWeight: v })} className="h-9 text-sm" />
+            </Field>
+            <Field label="Class Maps Loss Weight" hint="Loss weight for the classification maps head. Increase to prioritize this head during multi-head training.">
+              <LogNumberInput value={hp.classLossWeight} onChange={(v) => onUpdate({ classLossWeight: v })} className="h-9 text-sm" />
+            </Field>
+          </>
+        )}
       </div>
       </div>
     </div>

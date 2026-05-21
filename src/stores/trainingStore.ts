@@ -50,6 +50,10 @@ export interface ConfigHyperparams {
   // Model — head
   outputStride: number;
   anchorPart: string | null;
+  // Loss weights (per sub-head, only used by multi-head model types)
+  confmapsLossWeight: number;
+  pafsLossWeight: number;
+  classLossWeight: number;
   // Augmentation — individual controls (PyQt model)
   rotationPreset: "off" | "15" | "180" | "custom";
   rotationCustomAngle: number;
@@ -103,6 +107,9 @@ export const defaultHyperparams: ConfigHyperparams = {
   upInterpolate: true,
   outputStride: 2,
   anchorPart: null,
+  confmapsLossWeight: 1.0,
+  pafsLossWeight: 1.0,
+  classLossWeight: 1.0,
   rotationPreset: "180",
   rotationCustomAngle: 45,
   scaleEnabled: false,
@@ -326,6 +333,31 @@ export function applyHyperparamsToYaml(yamlText: string, hp: ConfigHyperparams):
     }
   }
 
+  // Loss weights — per sub-head
+  for (const [headName, headVal] of Object.entries(headConfigs)) {
+    if (headVal && typeof headVal === "object") {
+      const head = headVal as Record<string, unknown>;
+      if (head.confmaps && typeof head.confmaps === "object") {
+        (head.confmaps as Record<string, unknown>).loss_weight = hp.confmapsLossWeight;
+      }
+      if (head.pafs && typeof head.pafs === "object") {
+        (head.pafs as Record<string, unknown>).loss_weight = hp.pafsLossWeight;
+      }
+      if (head.class_vectors && typeof head.class_vectors === "object") {
+        (head.class_vectors as Record<string, unknown>).loss_weight = hp.classLossWeight;
+      }
+      if (head.class_maps && typeof head.class_maps === "object") {
+        (head.class_maps as Record<string, unknown>).loss_weight = hp.classLossWeight;
+      }
+      // Single-head types: loss_weight at top level
+      if (!head.confmaps && !head.pafs && !head.class_vectors && !head.class_maps) {
+        if ("loss_weight" in head) {
+          head.loss_weight = hp.confmapsLossWeight;
+        }
+      }
+    }
+  }
+
   // Augmentation — individual controls
   if (!data.augmentation_config) data.augmentation_config = {};
   const augConfig = data.augmentation_config as Record<string, unknown>;
@@ -518,6 +550,28 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         }
       }
 
+      // Extract loss weights from head configs
+      let confmapsLossWeight = 1.0;
+      let pafsLossWeight = 1.0;
+      let classLossWeight = 1.0;
+      for (const headVal of Object.values(headConfigs)) {
+        if (headVal && typeof headVal === "object") {
+          const head = headVal as Record<string, unknown>;
+          const confmaps = head.confmaps as Record<string, unknown> | undefined;
+          const pafs = head.pafs as Record<string, unknown> | undefined;
+          const classVectors = head.class_vectors as Record<string, unknown> | undefined;
+          const classMaps = head.class_maps as Record<string, unknown> | undefined;
+          if (confmaps && typeof confmaps.loss_weight === "number") confmapsLossWeight = confmaps.loss_weight;
+          if (pafs && typeof pafs.loss_weight === "number") pafsLossWeight = pafs.loss_weight;
+          if (classVectors && typeof classVectors.loss_weight === "number") classLossWeight = classVectors.loss_weight;
+          if (classMaps && typeof classMaps.loss_weight === "number") classLossWeight = classMaps.loss_weight;
+          // Single-head types: top-level loss_weight
+          if (!confmaps && !pafs && !classVectors && !classMaps && typeof head.loss_weight === "number") {
+            confmapsLossWeight = head.loss_weight;
+          }
+        }
+      }
+
       // Augmentation reverse-map
       const augCfg = (dataConfig.augmentation_config ?? {}) as Record<string, unknown>;
       const geoCfg = (augCfg.geometric ?? {}) as Record<string, unknown>;
@@ -573,6 +627,9 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         upInterpolate: typeof unetConfig.up_interpolate === "boolean" ? unetConfig.up_interpolate : true,
         outputStride,
         anchorPart,
+        confmapsLossWeight,
+        pafsLossWeight,
+        classLossWeight,
         rotationPreset,
         rotationCustomAngle: rotationPreset === "custom" ? Math.abs(rotMax) : 45,
         scaleEnabled,

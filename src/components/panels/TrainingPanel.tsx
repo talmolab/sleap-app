@@ -13,6 +13,7 @@ import type { ModelType, ConfigFile, ConfigHyperparams } from "@/stores/training
 import { useConnectStore } from "@/stores/connectStore";
 import { RemoteFileBrowser } from "@/components/dialogs/RemoteFileBrowser";
 import { TrainingConfigDialog } from "@/components/dialogs/TrainingConfigDialog";
+import { slotToHeadType, getDefaultProfileForHead } from "@/lib/trainingProfiles";
 import { useAppStore } from "@/stores/appStore";
 import { isTauri } from "@/platform/index";
 import { Button } from "@/components/ui/button";
@@ -265,6 +266,32 @@ export function TrainingPanel() {
   const stopTraining = useTrainingStore((s) => s.stopTraining);
   const cancelTraining = useTrainingStore((s) => s.cancelTraining);
   const reset = useTrainingStore((s) => s.reset);
+  const { parseYamlConfig: parseConfig, addConfigFile: addConfig } = useTrainingStore();
+
+  // Auto-load baseline configs when model type changes: clear stale configs
+  // from the previous model type, then populate defaults for the new one.
+  const prevModelType = useRef(config.modelType);
+  useEffect(() => {
+    const newSlots = getConfigSlots(config.modelType);
+    if (prevModelType.current !== config.modelType) {
+      // Remove configs that don't belong to the new model type's slots
+      for (const cf of config.configs) {
+        if (!newSlots.includes(cf.slot)) {
+          removeConfigFile(cf.slot);
+        }
+      }
+      prevModelType.current = config.modelType;
+    }
+    for (const slot of newSlots) {
+      if (config.configs.some((c) => c.slot === slot)) continue;
+      const headType = slotToHeadType(config.modelType, slot);
+      const baseline = getDefaultProfileForHead(headType);
+      if (baseline) {
+        const parsed = parseConfig(baseline.content, baseline.filename, slot);
+        if (parsed) addConfig(parsed);
+      }
+    }
+  }, [config.modelType]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Config dialog state
   const [configDialogOpen, setConfigDialogOpen] = useState(false);
@@ -320,9 +347,15 @@ export function TrainingPanel() {
   const hasData = remoteEnabled
     ? !!remoteLabelsPath
     : !!config.trainingLabelsPath || !!projectPath;
+  const hasValidLossWeights = config.configs.every((cf) =>
+    cf.hyperparams.confmapsLossWeight > 0 &&
+    cf.hyperparams.pafsLossWeight > 0 &&
+    cf.hyperparams.classLossWeight > 0
+  );
   const canStart =
     hasAllConfigs &&
     hasData &&
+    hasValidLossWeights &&
     status === "idle" &&
     (remoteEnabled ? !!selectedWorkerId : true);
 
