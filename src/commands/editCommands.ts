@@ -32,10 +32,17 @@ export const AddInstance: Command = {
     const existingInstances =
       currentFrames.length > 0 ? currentFrames[0].instances : [];
 
-    // Get the prior frame for prior_frame placement method
-    const priorFrames =
-      frameIdx > 0 ? labels.find({ video, frameIdx: frameIdx - 1 }) : [];
-    const priorFrame = priorFrames.length > 0 ? priorFrames[0] : null;
+    // Search backward for the nearest labeled frame (not just frameIdx - 1)
+    let priorFrame: LabeledFrame | null = null;
+    if (frameIdx > 0) {
+      let bestIdx = -1;
+      for (const lf of labels.labeledFrames) {
+        if (lf.video === video && lf.frameIdx < frameIdx && lf.frameIdx > bestIdx) {
+          bestIdx = lf.frameIdx;
+          priorFrame = lf;
+        }
+      }
+    }
 
     // Create instance using the selected placement method
     const instance = placeInstance(

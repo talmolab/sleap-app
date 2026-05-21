@@ -218,28 +218,31 @@ function placePriorFrame(
   priorFrame: LabeledFrame | null
 ): Instance {
   if (priorFrame && priorFrame.instances.length > 0) {
-    // Try to find a user instance (not predicted) with matching track first
     const userInstances = priorFrame.instances.filter(
       (inst) => !(inst instanceof PredictedInstance) && hasPlacedPoints(inst)
     );
+    const candidates = userInstances.length > 0
+      ? userInstances
+      : priorFrame.instances.filter((inst) => hasPlacedPoints(inst));
 
-    let source: Instance | undefined;
+    if (candidates.length > 0) {
+      const usedTracks = new Set(
+        existingInstances
+          .filter((inst) => inst.track !== null)
+          .map((inst) => inst.track)
+      );
 
-    // If we have existing instances, try to match by track
-    if (userInstances.length > 0) {
-      source = userInstances[0];
-    } else {
-      // Fall back to any instance with placed points
-      source = priorFrame.instances.find((inst) => hasPlacedPoints(inst));
-    }
+      const source = candidates.find(
+        (inst) => !inst.track || !usedTracks.has(inst.track)
+      ) ?? candidates[0];
 
-    if (source) {
       const instance = Instance.empty({ skeleton });
       for (let i = 0; i < instance.points.length && i < source.points.length; i++) {
         instance.points[i].xy = [source.points[i].xy[0], source.points[i].xy[1]];
         instance.points[i].visible = source.points[i].visible;
         instance.points[i].complete = source.points[i].complete;
       }
+      if (source.track) instance.track = source.track;
       return instance;
     }
   }
