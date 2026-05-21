@@ -1083,7 +1083,8 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
           const { runInference } = await import("@/platform/backend");
           const { useAppStore } = await import("@/stores/appStore");
           const { loadSlp } = await import("@talmolab/sleap-io.js");
-          const { commandContext, MergePredictions } = await import("@/commands");
+          const { commandContext } = await import("@/commands");
+          const { MergePredictions } = await import("@/commands/editCommands");
           const getPlatform = (await import("@/platform")).getPlatform;
 
           const pipelineMap: Record<string, import("@/stores/inferenceStore").PipelineType> = {
@@ -1097,7 +1098,10 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
             pipeline: pipelineMap[config.modelType] || "top-down",
             modelPaths: trainedModelPaths,
             videoIndex: (inferenceTarget === "video" || inferenceTarget === "random_video")
-              ? (useAppStore.getState().videoIdx ?? 0)
+              ? (() => {
+                  const { labels, video } = useAppStore.getState();
+                  return labels && video ? labels.videos.indexOf(video) : 0;
+                })()
               : "all",
             frameRange: inferenceTarget as import("@/stores/inferenceStore").InferenceConfig["frameRange"],
             sampleCount: localOpts?.sampleCount ?? 20,

@@ -22,7 +22,6 @@ import {
   SetInstanceTrack,
 } from "../../commands";
 import { cn } from "@/lib/utils";
-import { placeInstance } from "@/lib/instancePlacement";
 import type { InstancePlacementMethod } from "../../types";
 
 interface ContextMenuProps {
@@ -261,7 +260,7 @@ function ContextMenuSubmenu({
   children: React.ReactNode;
 }) {
   const [open, setOpen] = useState(false);
-  const timeoutRef = useRef<ReturnType<typeof setTimeout>>();
+  const timeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const triggerRef = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState<{ top?: number; bottom?: number; left?: number; right?: number }>({});
 
