@@ -394,7 +394,7 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
         });
       }
     } else {
-      // ── Local inference via subprocess (existing code) ─────
+      // ── Local inference via subprocess ─────
       const { projectPath, labels } = useAppStore.getState();
       if (!labels) {
         set({ status: "error", error: "No project loaded" });
@@ -404,15 +404,63 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
       console.log("[inference] Starting with config:", config);
       const { handleProcessEvent } = useInferenceStore.getState();
       try {
-        const result = await runInference(config, projectPath, handleProcessEvent);
-        if (result.command) {
-          set((state) => ({
-            log: [`$ ${result.command}`, ...state.log],
-          }));
-        }
-        if (result.outputPath) {
-          set({ outputPath: result.outputPath });
-          await useInferenceStore.getState().loadAndMergeResults();
+        if (config.frameRange === "random") {
+          // "random (all videos)": run per-video, merge each result
+          const multiVideoHandler = (event: ProcessEvent) => {
+            if (event.event === "stdout") {
+              const line = event.data.line;
+              try {
+                const data = JSON.parse(line);
+                if ("n_processed" in data && "n_total" in data) {
+                  set({ progress: { nProcessed: data.n_processed, nTotal: data.n_total, rate: data.rate ?? 0, eta: data.eta ?? 0 } });
+                  return;
+                }
+              } catch { /* not JSON */ }
+              if (line.trim()) set((s) => ({ log: [...s.log, line] }));
+            } else if (event.event === "stderr") {
+              const line = event.data.line;
+              if (line.trim()) set((s) => ({ log: [...s.log, line] }));
+            }
+          };
+
+          for (let vi = 0; vi < labels.videos.length; vi++) {
+            const video = labels.videos[vi];
+            const nFrames = video.shape?.[0] ?? 0;
+            if (nFrames === 0) continue;
+            const perVideoConfig = {
+              ...config,
+              videoIndex: vi as number | "all",
+              frameRange: "random_video" as InferenceConfig["frameRange"],
+            };
+            set((s) => ({
+              progress: null,
+              log: [...s.log, `— Video ${vi + 1}/${labels.videos.length}: sampling ${Math.min(config.sampleCount, nFrames)} of ${nFrames} frames...`],
+            }));
+            const result = await runInference(perVideoConfig, projectPath, multiVideoHandler);
+            if (result.outputPath) {
+              set({ outputPath: result.outputPath });
+              const platform = await getPlatform();
+              const bytes = await platform.readFile(result.outputPath);
+              const predictions = await loadSlp(bytes.buffer, { openVideos: false, h5: { filenameHint: result.outputPath } });
+              await commandContext.execute(MergePredictions, { predictions });
+            }
+            if (!result.success) {
+              set({ status: "error", error: `Video ${vi + 1} failed` });
+              return;
+            }
+          }
+          set({ status: "completed" });
+        } else {
+          const result = await runInference(config, projectPath, handleProcessEvent);
+          if (result.command) {
+            set((state) => ({
+              log: [`$ ${result.command}`, ...state.log],
+            }));
+          }
+          if (result.outputPath) {
+            set({ outputPath: result.outputPath });
+            await useInferenceStore.getState().loadAndMergeResults();
+          }
         }
       } catch (e) {
         set({
@@ -430,10 +478,16 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
     try {
       const platform = await getPlatform();
       const bytes = await platform.readFile(outputPath);
+      console.log("[inference] Read predictions file: %d bytes from %s", bytes.byteLength, outputPath);
       const predictions = await loadSlp(bytes.buffer, {
         openVideos: false,
         h5: { filenameHint: outputPath },
       });
+      console.log("[inference] Loaded predictions: %d videos, %d labeled frames, %d tracks",
+        predictions.videos?.length ?? 0,
+        predictions.labeledFrames?.length ?? 0,
+        predictions.tracks?.length ?? 0,
+      );
 
       await commandContext.execute(MergePredictions, { predictions });
       set({ status: "idle" });

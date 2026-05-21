@@ -274,6 +274,7 @@ export function TrainingPanel() {
   const [remoteLabelsPath, setRemoteLabelsPath] = useState("");
   const [remoteValLabelsPath, setRemoteValLabelsPath] = useState("");
   const [inferenceTarget, setInferenceTarget] = useState<string>("suggestions");
+  const [sampleCount, setSampleCount] = useState(20);
   const [skipUserLabeled, setSkipUserLabeled] = useState(false);
   const [existingPredictions, setExistingPredictions] = useState<"clear_all" | "replace" | "keep">("replace");
   const [fileBrowserOpen, setFileBrowserOpen] = useState(false);
@@ -379,7 +380,12 @@ export function TrainingPanel() {
         inferenceTarget,
       });
     } else {
-      await startTraining();
+      await startTraining({
+        inferenceTarget,
+        sampleCount,
+        skipUserLabeled,
+        existingPredictions,
+      });
     }
   };
 
@@ -552,6 +558,14 @@ export function TrainingPanel() {
                 <SelectItem value="random">Random sample (all videos)</SelectItem>
               </SelectContent>
             </Select>
+            {(inferenceTarget === "random_video" || inferenceTarget === "random") && (
+              <div className="flex items-center justify-between gap-2 mt-1">
+                <span className="text-[10px] text-muted-foreground shrink-0">Sample count</span>
+                <Input type="number" min={1} value={sampleCount}
+                  onChange={(e) => setSampleCount(Math.max(1, Number(e.target.value)))}
+                  className="h-6 text-[10px] w-20" disabled={isRunning} />
+              </div>
+            )}
           </div>
         </Section>
 
@@ -995,6 +1009,8 @@ export function TrainingPanel() {
           const skeleton = useAppStore.getState().skeleton;
           return skeleton?.nodes?.map((n) => n.name) ?? [];
         })()}
+        sampleCount={sampleCount}
+        onSampleCountChange={setSampleCount}
         skipUserLabeled={skipUserLabeled}
         onSkipUserLabeledChange={setSkipUserLabeled}
         existingPredictions={existingPredictions}

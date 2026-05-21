@@ -148,6 +148,13 @@ export interface RemoteTrainingOptions {
   inferenceTarget?: string;
 }
 
+export interface LocalTrainingOptions {
+  inferenceTarget?: string;
+  sampleCount?: number;
+  skipUserLabeled?: boolean;
+  existingPredictions?: "clear_all" | "replace" | "keep";
+}
+
 export type TrainingStatus = "idle" | "running" | "completed" | "error" | "stopped";
 
 export interface ModelProgress {
@@ -185,7 +192,7 @@ interface TrainingState {
   removeConfigFile: (slot: string) => void;
   parseYamlConfig: (yamlText: string, filename: string, slot: string) => ConfigFile | null;
   reset: () => void;
-  startTraining: (remoteOpts?: RemoteTrainingOptions) => Promise<void>;
+  startTraining: (opts?: RemoteTrainingOptions | LocalTrainingOptions) => Promise<void>;
   stopTraining: () => Promise<void>;
   cancelTraining: () => Promise<void>;
 }
@@ -621,7 +628,9 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
 
   reset: () => set({ ...initialState, config: { ...initialConfig } }),
 
-  startTraining: async (remoteOpts?: RemoteTrainingOptions) => {
+  startTraining: async (opts?: RemoteTrainingOptions | LocalTrainingOptions) => {
+    const remoteOpts = opts && "remote" in opts ? opts : undefined;
+    const localOpts = opts && !("remote" in opts) ? opts as LocalTrainingOptions : undefined;
     const { config } = get();
 
     // Build model progress entries from per-config hyperparams
@@ -927,6 +936,10 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         return;
       }
 
+      // Save models next to the labels file
+      const modelDir = labelsPath.replace(/[/\\][^/\\]+$/, "") + "/models";
+      const trainedModelPaths: string[] = [];
+
       // Start ZMQ relay so sleap-nn can receive stop commands
       try {
         await startZmqRelay();
@@ -1028,10 +1041,12 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
                 set((s) => ({ log: [...s.log, line] }));
               }
             }
-          });
+          }, modelDir);
+
+          if (result.modelPath) trainedModelPaths.push(result.modelPath);
 
           const wasStopped = get()._stopRequested;
-          console.log("[training] Model %d finished: success=%s, wasStopped=%s", i, result.success, wasStopped);
+          console.log("[training] Model %d finished: success=%s, wasStopped=%s, modelPath=%s", i, result.success, wasStopped, result.modelPath);
           if (result.success || wasStopped) {
             set((s) => ({
               _stopRequested: false,
@@ -1053,6 +1068,121 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
               ),
             }));
             return;
+          }
+        }
+
+        set({ modelOutputDirs: trainedModelPaths });
+
+        // ── Post-training inference ───────────────────────────
+        const inferenceTarget = localOpts?.inferenceTarget;
+        if (inferenceTarget && inferenceTarget !== "nothing" && trainedModelPaths.length > 0) {
+          set((s) => ({
+            log: [...s.log, `— Training complete. Running inference (${inferenceTarget}) with models: ${trainedModelPaths.join(", ")}...`],
+          }));
+
+          const { runInference } = await import("@/platform/backend");
+          const { useAppStore } = await import("@/stores/appStore");
+          const { loadSlp } = await import("@talmolab/sleap-io.js");
+          const { commandContext, MergePredictions } = await import("@/commands");
+          const getPlatform = (await import("@/platform")).getPlatform;
+
+          const pipelineMap: Record<string, import("@/stores/inferenceStore").PipelineType> = {
+            single_animal: "single-animal",
+            top_down: "top-down",
+            bottom_up: "bottom-up",
+            top_down_id: "top-down-id",
+            bottom_up_id: "bottom-up-id",
+          };
+          const inferenceConfig: import("@/stores/inferenceStore").InferenceConfig = {
+            pipeline: pipelineMap[config.modelType] || "top-down",
+            modelPaths: trainedModelPaths,
+            videoIndex: (inferenceTarget === "video" || inferenceTarget === "random_video")
+              ? (useAppStore.getState().videoIdx ?? 0)
+              : "all",
+            frameRange: inferenceTarget as import("@/stores/inferenceStore").InferenceConfig["frameRange"],
+            sampleCount: localOpts?.sampleCount ?? 20,
+            excludeUserLabeled: localOpts?.skipUserLabeled ?? false,
+            batchSize: 4,
+            device: "auto",
+            maxInstances: null,
+            peakThreshold: 0.2,
+            anchorPart: null,
+            integralRefinement: true,
+            integralPatchSize: 5,
+            nPoints: 10,
+            maxEdgeLengthRatio: 0.25,
+            distPenaltyWeight: 1.0,
+            minLineScores: 0.25,
+            tracking: true,
+            trackerMethod: "simple",
+            similarityMethod: "oks",
+            matchingMethod: "hungarian",
+            trackingWindowSize: 5,
+            maxTracks: null,
+            connectSingleBreaks: false,
+            robust: 0.95,
+            flowImgScale: 1.0,
+            flowWindowSize: 21,
+            flowMaxLevels: 3,
+            ensureChannels: "auto",
+            filterOverlapping: false,
+            filterMethod: "iou",
+            filterThreshold: 0.8,
+          };
+
+          try {
+            const { projectPath, labels: currentLabels } = useAppStore.getState();
+
+            const logEvent = (event: import("@/platform/backend").ProcessEvent) => {
+              if (event.event === "stdout" || event.event === "stderr") {
+                const line = event.data.line;
+                if (line.trim()) set((s) => ({ log: [...s.log, line] }));
+              }
+            };
+
+            const mergeOutputSlp = async (outputPath: string) => {
+              const platform = await getPlatform();
+              const bytes = await platform.readFile(outputPath);
+              console.log("[training] Read predictions file: %d bytes", bytes.byteLength);
+              const predictions = await loadSlp(bytes.buffer, {
+                openVideos: false,
+                h5: { filenameHint: outputPath },
+              });
+              console.log("[training] Loaded predictions: %d videos, %d frames, %d tracks",
+                predictions.videos?.length ?? 0,
+                predictions.labeledFrames?.length ?? 0,
+                predictions.tracks?.length ?? 0,
+              );
+              await commandContext.execute(MergePredictions, { predictions });
+            };
+
+            if (inferenceTarget === "random") {
+              // Per-video random sampling
+              const videos = currentLabels?.videos ?? [];
+              for (let vi = 0; vi < videos.length; vi++) {
+                const nFrames = videos[vi].shape?.[0] ?? 0;
+                if (nFrames === 0) continue;
+                set((s) => ({ log: [...s.log, `— Inference: video ${vi + 1}/${videos.length}...`] }));
+                const perVideoConfig = { ...inferenceConfig, videoIndex: vi as number | "all", frameRange: "random_video" as typeof inferenceConfig.frameRange };
+                const result = await runInference(perVideoConfig, projectPath, logEvent);
+                if (result.success && result.outputPath) {
+                  await mergeOutputSlp(result.outputPath);
+                }
+              }
+            } else {
+              const result = await runInference(inferenceConfig, projectPath, logEvent);
+              if (result.success && result.outputPath) {
+                await mergeOutputSlp(result.outputPath);
+              } else if (!result.success) {
+                set((s) => ({ log: [...s.log, "— Post-training inference failed (non-zero exit)."] }));
+              }
+            }
+            set((s) => ({ log: [...s.log, "— Predictions merged into project."] }));
+          } catch (e) {
+            console.error("[training] Post-training inference failed:", e);
+            set((s) => ({
+              log: [...s.log, `— Post-training inference failed: ${e instanceof Error ? e.message : String(e)}`],
+            }));
           }
         }
 

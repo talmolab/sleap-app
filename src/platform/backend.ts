@@ -9,6 +9,16 @@ import { isTauri } from "./index";
 import { saveSlpToBytes } from "@talmolab/sleap-io.js";
 import type { InferenceConfig } from "@/stores/inferenceStore";
 
+function sampleRandomFrames(totalFrames: number, count: number): number[] {
+  const n = Math.min(count, totalFrames);
+  const indices = Array.from({ length: totalFrames }, (_, i) => i);
+  for (let i = indices.length - 1; i > 0 && i >= indices.length - n; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [indices[i], indices[j]] = [indices[j], indices[i]];
+  }
+  return indices.slice(indices.length - n).sort((a, b) => a - b);
+}
+
 // === Types matching Rust structs ===
 
 export interface UvInfo {
@@ -225,10 +235,11 @@ export async function runTraining(
   labelsPath: string,
   runName: string,
   onEvent: (event: ProcessEvent) => void,
-): Promise<{ success: boolean; command: string }> {
+  modelDir?: string,
+): Promise<{ success: boolean; command: string; modelPath: string }> {
   if (!isTauri) {
     console.warn("Training is only available in Tauri desktop mode");
-    return { success: false, command: "" };
+    return { success: false, command: "", modelPath: "" };
   }
 
   const { writeFile } = await import("@tauri-apps/plugin-fs");
@@ -241,22 +252,28 @@ export async function runTraining(
   await writeFile(configPath, new TextEncoder().encode(configYaml));
   console.log("[training] Wrote config to:", configPath);
 
+  // Use provided modelDir or default to temp/models
+  const ckptDir = modelDir || `${tmp}sleap_models`;
+  const modelPath = `${ckptDir}/${runName}`;
+
   const args = [
     "train",
     "--config-name", configFileName,
     "--config-dir", tmp,
     `data_config.train_labels_path=[${labelsPath}]`,
     `trainer_config.run_name=${runName}`,
+    `trainer_config.ckpt_dir=${ckptDir}`,
     `trainer_config.zmq.controller_port=9000`,
   ];
 
   const command = `sleap-nn ${args.join(" ")}`;
   console.log("[training] Running:", command);
+  console.log("[training] Model will be saved to:", modelPath);
 
   const success = await runPythonCommand("sleap-nn", args, onEvent);
   console.log("[training] Process finished: success=%s", success);
 
-  return { success, command };
+  return { success, command, modelPath };
 }
 
 /**
@@ -314,16 +331,46 @@ export async function runInference(
   if (config.videoIndex !== "all") {
     args.push("--video_index", String(config.videoIndex));
   }
+
+  // Frame range → CLI args (fail fast on unhandled types)
   if (typeof config.frameRange === "object") {
-    args.push(
-      "--frames",
-      `${config.frameRange.start}-${config.frameRange.end}`
-    );
-  } else if (config.frameRange === "user_labeled") {
-    args.push("--only_labeled_frames");
-  } else if (config.frameRange === "suggestions") {
-    args.push("--only_suggested_frames");
+    args.push("--frames", `${config.frameRange.start}-${config.frameRange.end}`);
+  } else {
+    const { useAppStore } = await import("@/stores/appStore");
+
+    switch (config.frameRange) {
+      case "user_labeled":
+        args.push("--only_labeled_frames");
+        break;
+      case "suggestions":
+        args.push("--only_suggested_frames");
+        break;
+      case "predicted":
+        args.push("--only_predicted_frames");
+        break;
+      case "video":
+      case "all_videos":
+        break;
+      case "random_video": {
+        const activeVideo = useAppStore.getState().video;
+        const nFrames = activeVideo?.shape?.[0] ?? 0;
+        if (nFrames === 0) throw new Error("Cannot sample: current video has no frames");
+        const sampled = sampleRandomFrames(nFrames, config.sampleCount);
+        args.push("--frames", sampled.join(","));
+        break;
+      }
+      case "random":
+        // "random (all videos)" requires per-video invocation — handled by caller.
+        // If we reach here, fall back to current video only.
+        throw new Error(
+          "Random sampling across all videos requires per-video invocation. " +
+          "Use 'random_video' for single-video random, or call runInference per video."
+        );
+      default:
+        throw new Error(`Unhandled frame range type: ${config.frameRange}`);
+    }
   }
+
   if (config.excludeUserLabeled) {
     args.push("--exclude_user_labeled");
   }
