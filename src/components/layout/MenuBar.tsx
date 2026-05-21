@@ -91,6 +91,7 @@ export function MenuBar() {
 function FileMenu() {
   const projectLoaded = useAppStore((s) => s.projectLoaded);
   const labels = useAppStore((s) => s.labels);
+  const projectPath = useAppStore((s) => s.projectPath);
 
   const exec = (cmd: Parameters<typeof commandContext.execute>[0]) => {
     commandContext.execute(cmd);
@@ -155,6 +156,43 @@ function FileMenu() {
         >
           Export Labels Package...
         </MenubarItem>
+        {isTauri && (
+          <>
+            <MenubarSeparator />
+            <MenubarItem
+              disabled={!projectPath}
+              onClick={async () => {
+                if (!projectPath) return;
+                const { invoke } = await import("@tauri-apps/api/core");
+                try {
+                  await invoke("reveal_in_file_manager", { path: projectPath });
+                } catch (e) {
+                  const { toast } = await import("@/lib/notify");
+                  toast.error("Failed to reveal project file", {
+                    description: e instanceof Error ? e.message : String(e),
+                  });
+                }
+              }}
+            >
+              Reveal Project in File Manager
+            </MenubarItem>
+            <MenubarItem
+              onClick={async () => {
+                const { invoke } = await import("@tauri-apps/api/core");
+                try {
+                  await invoke("open_preferences_directory");
+                } catch (e) {
+                  const { toast } = await import("@/lib/notify");
+                  toast.error("Failed to open preferences directory", {
+                    description: e instanceof Error ? e.message : String(e),
+                  });
+                }
+              }}
+            >
+              Open Preferences Directory...
+            </MenubarItem>
+          </>
+        )}
         <MenubarSeparator />
         <MenubarItem onClick={() => window.close()}>
           Quit <MenubarShortcut>{modKey}+Q</MenubarShortcut>

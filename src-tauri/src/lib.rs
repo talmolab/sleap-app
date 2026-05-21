@@ -20,6 +20,77 @@ fn get_initial_file(state: tauri::State<InitialFile>) -> Option<String> {
     state.0.lock().unwrap().take()
 }
 
+/// Reveal a file in the OS file manager (Finder / Explorer / xdg-open).
+#[tauri::command]
+fn reveal_in_file_manager(path: String) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+    if !p.exists() {
+        return Err(format!("Path does not exist: {}", path));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .args(["-R", &path])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .args(["/select,", &path])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let parent = p.parent().unwrap_or(p);
+        std::process::Command::new("xdg-open")
+            .arg(parent)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+/// Open the preferences directory (~/.sleap-app) in the OS file manager.
+#[tauri::command]
+fn open_preferences_directory() -> Result<(), String> {
+    let home = dirs::home_dir().ok_or("Could not determine home directory")?;
+    let prefs_dir = home.join(".sleap-app");
+
+    if !prefs_dir.exists() {
+        std::fs::create_dir_all(&prefs_dir).map_err(|e| e.to_string())?;
+    }
+
+    let dir_str = prefs_dir.to_string_lossy().to_string();
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&dir_str)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(&dir_str)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&dir_str)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
 /// Normalize a path by resolving `.` and `..` components without touching the
 /// filesystem. Unlike `canonicalize()`, this works even if the file doesn't
 /// exist yet, and doesn't resolve symlinks.
@@ -71,6 +142,8 @@ pub fn run() {
     .manage(tokio::sync::Mutex::new(rtc::RtcState::new()))
     .invoke_handler(tauri::generate_handler![
         get_initial_file,
+        reveal_in_file_manager,
+        open_preferences_directory,
         environment::detect_uv,
         environment::detect_gpu,
         environment::list_uv_tools,
