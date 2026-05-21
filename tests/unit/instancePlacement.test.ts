@@ -1,13 +1,14 @@
 import { describe, it, expect } from "vitest";
 import {
   Instance,
+  Labels,
   PredictedInstance,
   Skeleton,
   Video,
   LabeledFrame,
   Track,
 } from "@talmolab/sleap-io.js";
-import { placeInstance } from "@/lib/instancePlacement";
+import { placeInstance, findNearestPriorFrame } from "@/lib/instancePlacement";
 
 function makeSkeleton(): Skeleton {
   return new Skeleton({ nodes: ["A", "B"], name: "test" });
@@ -161,5 +162,60 @@ describe("placePriorFrame", () => {
     const result = placeInstance("prior_frame", skeleton, video, [], priorFrame);
 
     expect(result).toBeInstanceOf(Instance);
+  });
+});
+
+describe("findNearestPriorFrame", () => {
+  const skeleton = makeSkeleton();
+  const video = makeVideo();
+  const video2 = makeVideo();
+
+  function makeLabels(frames: LabeledFrame[]): Labels {
+    const labels = new Labels({ videos: [video, video2] });
+    for (const lf of frames) labels.append(lf);
+    return labels;
+  }
+
+  it("returns the nearest labeled frame before the given index", () => {
+    const lf5 = makeLabeledFrame(video, 5, []);
+    const lf20 = makeLabeledFrame(video, 20, []);
+    const lf50 = makeLabeledFrame(video, 50, []);
+    const labels = makeLabels([lf5, lf20, lf50]);
+
+    expect(findNearestPriorFrame(labels, video, 60)).toBe(lf50);
+    expect(findNearestPriorFrame(labels, video, 30)).toBe(lf20);
+    expect(findNearestPriorFrame(labels, video, 10)).toBe(lf5);
+  });
+
+  it("returns null when no prior labeled frames exist", () => {
+    const lf50 = makeLabeledFrame(video, 50, []);
+    const labels = makeLabels([lf50]);
+
+    expect(findNearestPriorFrame(labels, video, 50)).toBeNull();
+    expect(findNearestPriorFrame(labels, video, 10)).toBeNull();
+  });
+
+  it("returns null for frameIdx 0", () => {
+    const lf0 = makeLabeledFrame(video, 0, []);
+    const labels = makeLabels([lf0]);
+
+    expect(findNearestPriorFrame(labels, video, 0)).toBeNull();
+  });
+
+  it("only considers frames from the same video", () => {
+    const lfV1 = makeLabeledFrame(video, 10, []);
+    const lfV2 = makeLabeledFrame(video2, 40, []);
+    const labels = makeLabels([lfV1, lfV2]);
+
+    expect(findNearestPriorFrame(labels, video, 50)).toBe(lfV1);
+    expect(findNearestPriorFrame(labels, video2, 50)).toBe(lfV2);
+  });
+
+  it("skips frames at or after the target index", () => {
+    const lf10 = makeLabeledFrame(video, 10, []);
+    const lf20 = makeLabeledFrame(video, 20, []);
+    const labels = makeLabels([lf10, lf20]);
+
+    expect(findNearestPriorFrame(labels, video, 20)).toBe(lf10);
   });
 });

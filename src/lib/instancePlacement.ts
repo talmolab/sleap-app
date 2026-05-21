@@ -6,7 +6,7 @@
  */
 
 import { Instance, PredictedInstance } from "@talmolab/sleap-io.js";
-import type { Skeleton, Video, LabeledFrame, InstancePlacementMethod } from "../types";
+import type { Labels, Skeleton, Video, LabeledFrame, InstancePlacementMethod } from "../types";
 
 /** Default frame dimensions when video shape is unknown. */
 const DEFAULT_WIDTH = 800;
@@ -311,6 +311,24 @@ function placePrediction(
  * @param priorFrame - The labeled frame from frameIdx-1 (for prior_frame method)
  * @returns A new Instance with points positioned according to the method
  */
+/** Find the nearest labeled frame before `frameIdx` for the given video. */
+export function findNearestPriorFrame(
+  labels: Labels,
+  video: Video,
+  frameIdx: number
+): LabeledFrame | null {
+  if (frameIdx <= 0) return null;
+  let best: LabeledFrame | null = null;
+  let bestIdx = -1;
+  for (const lf of labels.labeledFrames) {
+    if (lf.video === video && lf.frameIdx < frameIdx && lf.frameIdx > bestIdx) {
+      bestIdx = lf.frameIdx;
+      best = lf;
+    }
+  }
+  return best;
+}
+
 export function placeInstance(
   method: InstancePlacementMethod,
   skeleton: Skeleton,

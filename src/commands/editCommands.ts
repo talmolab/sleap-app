@@ -14,7 +14,7 @@ import type { CommandContext } from "./CommandContext";
 import { useAppStore } from "../stores/appStore";
 import { merge } from "@/lib/merge";
 import { toast } from "@/lib/notify";
-import { placeInstance } from "@/lib/instancePlacement";
+import { placeInstance, findNearestPriorFrame } from "@/lib/instancePlacement";
 
 /** Create a new Instance on the current frame using the selected placement method. */
 export const AddInstance: Command = {
@@ -32,17 +32,7 @@ export const AddInstance: Command = {
     const existingInstances =
       currentFrames.length > 0 ? currentFrames[0].instances : [];
 
-    // Search backward for the nearest labeled frame (not just frameIdx - 1)
-    let priorFrame: LabeledFrame | null = null;
-    if (frameIdx > 0) {
-      let bestIdx = -1;
-      for (const lf of labels.labeledFrames) {
-        if (lf.video === video && lf.frameIdx < frameIdx && lf.frameIdx > bestIdx) {
-          bestIdx = lf.frameIdx;
-          priorFrame = lf;
-        }
-      }
-    }
+    const priorFrame = findNearestPriorFrame(labels, video, frameIdx);
 
     // Create instance using the selected placement method
     const instance = placeInstance(
