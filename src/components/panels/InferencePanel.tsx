@@ -845,6 +845,7 @@ export function InferencePanel() {
         onClose={() => setConfigDialogOpen(false)}
         pipeline={pipeline}
         tracking={tracking}
+        onTrackingChange={setTracking}
         skeletonNodes={nodes.map((n) => n.name)}
         values={{
           peakThreshold, maxInstances, anchorPart,

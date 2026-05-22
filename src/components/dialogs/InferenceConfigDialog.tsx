@@ -50,6 +50,7 @@ interface InferenceConfigDialogProps {
   onUpdate: (updates: Partial<InferenceConfigValues>) => void;
   pipeline: string;
   tracking: boolean;
+  onTrackingChange: (enabled: boolean) => void;
   skeletonNodes?: string[];
 }
 
@@ -162,6 +163,7 @@ export function InferenceConfigDialog({
   onUpdate,
   pipeline,
   tracking,
+  onTrackingChange,
   skeletonNodes = [],
 }: InferenceConfigDialogProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -304,9 +306,10 @@ export function InferenceConfigDialog({
             {/* ── Tracking ── */}
             <SectionHeading id="tracking" label="Tracking" />
             <div className="space-y-2">
+              <Toggle label="Enable Tracking" hint="Connect predicted instances across frames to maintain identity over time." checked={tracking} onChange={onTrackingChange} />
               {!tracking ? (
                 <p className="text-sm text-muted-foreground">
-                  Tracking is disabled. Enable it in the sidebar to configure these settings.
+                  Tracking is disabled. Enable it above to configure tracking settings.
                 </p>
               ) : (
                 <>
