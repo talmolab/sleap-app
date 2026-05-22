@@ -4,7 +4,7 @@
  * Provides export options: CSV analysis data, JSON project, labels package.
  */
 
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import { useAppStore } from "../../stores/appStore";
 import { commandContext } from "../../commands/CommandContext";
 import {
@@ -27,11 +27,12 @@ interface ExportDialogProps {
 
 export function ExportDialog({ open, onOpenChange }: ExportDialogProps) {
   const labels = useAppStore((s) => s.labels);
+  const [includeEmpty, setIncludeEmpty] = useState(true);
 
   const handleExportCSV = useCallback(async () => {
-    await commandContext.execute(ExportCSVCommand);
+    await commandContext.execute(ExportCSVCommand, { includeEmpty });
     onOpenChange(false);
-  }, [onOpenChange]);
+  }, [onOpenChange, includeEmpty]);
 
   const handleSaveAsJSON = useCallback(async () => {
     await commandContext.execute(SaveAsJsonCommand);
@@ -61,10 +62,21 @@ export function ExportDialog({ open, onOpenChange }: ExportDialogProps) {
             <div className="text-left">
               <div className="font-medium">Analysis CSV</div>
               <div className="text-xs text-muted-foreground">
-                Export all labels as a CSV spreadsheet for analysis.
+                Export labels as a CSV spreadsheet for analysis.
               </div>
             </div>
           </Button>
+          <label className="flex items-center gap-2 px-1 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={includeEmpty}
+              onChange={(e) => setIncludeEmpty(e.target.checked)}
+              className="accent-primary"
+            />
+            <span className="text-xs text-muted-foreground">
+              Include rows for every video frame (recommended for downstream analysis)
+            </span>
+          </label>
 
           <Button
             variant="outline"

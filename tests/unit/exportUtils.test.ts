@@ -89,9 +89,9 @@ describe("generateCSV", () => {
     );
   });
 
-  it("produces correct number of data rows", () => {
+  it("produces correct number of data rows (sparse)", () => {
     const labels = createProjectForCSV({ numFrames: 2 });
-    const csv = generateCSV(labels);
+    const csv = generateCSV(labels, { includeEmpty: false });
     const lines = csv.split("\n");
 
     // Header + 2 frames * 1 instance * 2 points = 5 lines
@@ -152,7 +152,7 @@ describe("generateCSV", () => {
     expect(csv).toContain("Track 1");
   });
 
-  it("handles empty labels", () => {
+  it("handles empty labels (sparse)", () => {
     const skeleton = new Skeleton({ nodes: ["a"], name: "test" });
     const video = {
       filename: "test.mp4",
@@ -161,10 +161,43 @@ describe("generateCSV", () => {
     } as unknown as Video;
     const labels = new Labels({ videos: [video], skeletons: [skeleton] });
 
-    const csv = generateCSV(labels);
+    const csv = generateCSV(labels, { includeEmpty: false });
     const lines = csv.split("\n");
     // Only header
     expect(lines.length).toBe(1);
+  });
+
+  it("includes empty frame rows when includeEmpty is true", () => {
+    const labels = createProjectForCSV({ numFrames: 1 });
+    // Video has 100 frames (shape[0]), 1 labeled frame at index 0
+    const csv = generateCSV(labels, { includeEmpty: true });
+    const lines = csv.split("\n");
+
+    // Header + 100 frames * 2 nodes = 201 lines
+    // Frame 0 has 1 instance with 2 points, frames 1-99 have 2 empty rows each
+    expect(lines.length).toBe(201);
+  });
+
+  it("defaults to includeEmpty true", () => {
+    const labels = createProjectForCSV({ numFrames: 1 });
+    const csvDefault = generateCSV(labels);
+    const csvExplicit = generateCSV(labels, { includeEmpty: true });
+    expect(csvDefault).toBe(csvExplicit);
+  });
+
+  it("empty frame rows have empty coordinates", () => {
+    const labels = createProjectForCSV({ numFrames: 1 });
+    const csv = generateCSV(labels, { includeEmpty: true });
+    const lines = csv.split("\n");
+
+    // Frame 1 (index 1) should be an empty row — no instance, just video+frame+node
+    const frame1Lines = lines.filter((l) => l.startsWith("video.mp4,1,"));
+    expect(frame1Lines.length).toBe(2); // 2 nodes
+    for (const line of frame1Lines) {
+      const cols = line.split(",");
+      expect(cols[5]).toBe(""); // x
+      expect(cols[6]).toBe(""); // y
+    }
   });
 
   it("includes node names", () => {

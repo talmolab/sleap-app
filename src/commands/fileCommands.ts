@@ -119,12 +119,14 @@ export const ExportJsonCommand: Command = {
 export const ExportCSVCommand: Command = {
   name: "ExportCSV",
   topics: [],
-  execute(ctx: CommandContext) {
+  execute(ctx: CommandContext, params?: Record<string, unknown>) {
     const { labels, filename } = ctx.state;
     if (!labels) return;
 
+    const includeEmpty = params?.includeEmpty !== false;
+
     try {
-      const csv = generateCSV(labels);
+      const csv = generateCSV(labels, { includeEmpty });
       const baseName = filename
         ? filename.replace(/\.slp$/, "").replace(/\.json$/, "")
         : "labels";

@@ -4,57 +4,109 @@
  * Provides CSV export and file download helpers.
  */
 
-import { PredictedInstance, type Labels } from "@talmolab/sleap-io.js";
+import { PredictedInstance, type Labels, type LabeledFrame } from "@talmolab/sleap-io.js";
 
 /**
  * Generate a CSV string from Labels data.
  *
  * Columns: video_filename, frame_idx, track_name, instance_type,
  *          node_name, x, y, score, visible
+ *
+ * @param includeEmpty - If true, emit rows for every frame in each video
+ *   (NaN/empty for frames without annotations). Default: true.
  */
-export function generateCSV(labels: Labels): string {
+export function generateCSV(
+  labels: Labels,
+  options: { includeEmpty?: boolean } = {}
+): string {
+  const { includeEmpty = true } = options;
+
   const rows: string[] = [
     "video_filename,frame_idx,track_name,instance_type,node_name,x,y,score,visible",
   ];
 
-  for (const lf of labels.labeledFrames) {
-    const videoFilename =
-      typeof lf.video.filename === "string"
+  const nodeNames = labels.skeletons[0]?.nodes.map((n) => n.name) ?? [];
+
+  if (includeEmpty) {
+    // Build a lookup of labeled frames per video + frame index
+    const frameLookup = new Map<string, Map<number, typeof labels.labeledFrames>>();
+    for (const lf of labels.labeledFrames) {
+      const vKey = typeof lf.video.filename === "string"
         ? lf.video.filename
         : lf.video.filename[0] ?? "";
+      if (!frameLookup.has(vKey)) frameLookup.set(vKey, new Map());
+      const frameMap = frameLookup.get(vKey)!;
+      if (!frameMap.has(lf.frameIdx)) frameMap.set(lf.frameIdx, []);
+      frameMap.get(lf.frameIdx)!.push(lf);
+    }
 
-    for (const inst of lf.instances) {
-      const isPredicted = inst instanceof PredictedInstance;
-      const instanceType = isPredicted ? "predicted" : "user";
-      const trackName = inst.track?.name ?? "";
-      const instanceScore = isPredicted ? inst.score : "";
+    for (const video of labels.videos) {
+      const videoFilename = typeof video.filename === "string"
+        ? video.filename
+        : video.filename[0] ?? "";
+      const numFrames = video.shape?.[0] ?? 0;
+      const frameMap = frameLookup.get(videoFilename);
 
-      for (const point of inst.points) {
-        const x = isNaN(point.xy[0]) ? "" : String(point.xy[0]);
-        const y = isNaN(point.xy[1]) ? "" : String(point.xy[1]);
-        const nodeName = point.name ?? "";
-        const pointScore =
-          point.score != null ? String(point.score) : "";
-        const visible = point.visible ? "true" : "false";
-
-        rows.push(
-          [
-            csvEscape(videoFilename),
-            lf.frameIdx,
-            csvEscape(trackName),
-            instanceType,
-            csvEscape(nodeName),
-            x,
-            y,
-            pointScore || instanceScore,
-            visible,
-          ].join(",")
-        );
+      for (let frameIdx = 0; frameIdx < numFrames; frameIdx++) {
+        const labeledFrames = frameMap?.get(frameIdx);
+        if (labeledFrames && labeledFrames.length > 0) {
+          for (const lf of labeledFrames) {
+            appendInstanceRows(rows, lf, videoFilename);
+          }
+        } else {
+          for (const nodeName of nodeNames) {
+            rows.push(
+              [csvEscape(videoFilename), frameIdx, "", "", csvEscape(nodeName), "", "", "", ""].join(",")
+            );
+          }
+        }
       }
+    }
+  } else {
+    for (const lf of labels.labeledFrames) {
+      const videoFilename = typeof lf.video.filename === "string"
+        ? lf.video.filename
+        : lf.video.filename[0] ?? "";
+      appendInstanceRows(rows, lf, videoFilename);
     }
   }
 
   return rows.join("\n");
+}
+
+function appendInstanceRows(
+  rows: string[],
+  lf: LabeledFrame,
+  videoFilename: string
+): void {
+  for (const inst of lf.instances) {
+    const isPredicted = inst instanceof PredictedInstance;
+    const instanceType = isPredicted ? "predicted" : "user";
+    const trackName = inst.track?.name ?? "";
+    const instanceScore = isPredicted ? inst.score : "";
+
+    for (const point of inst.points) {
+      const x = isNaN(point.xy[0]) ? "" : String(point.xy[0]);
+      const y = isNaN(point.xy[1]) ? "" : String(point.xy[1]);
+      const nodeName = point.name ?? "";
+      const pointScore = point.score != null ? String(point.score) : "";
+      const visible = point.visible ? "true" : "false";
+
+      rows.push(
+        [
+          csvEscape(videoFilename),
+          lf.frameIdx,
+          csvEscape(trackName),
+          instanceType,
+          csvEscape(nodeName),
+          x,
+          y,
+          pointScore || instanceScore,
+          visible,
+        ].join(",")
+      );
+    }
+  }
 }
 
 /** Escape a string value for CSV (quote if it contains comma, quote, or newline). */
