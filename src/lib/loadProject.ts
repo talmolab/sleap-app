@@ -77,12 +77,7 @@ export async function loadProjectFromPath(
   try {
     const bytes = await readFile(path);
     const labels = await loadSlp(bytes.buffer, {
-      // Don't let sleap-io.js try to fetch() video URLs — in Tauri mode, video
-      // paths are local filesystem paths that can't be fetched. If the SLP
-      // contains a relative filename like "video.mp4", fetch() hits the Vite dev
-      // server which returns HTML, and mp4box hangs forever parsing it.
-      // We handle video loading ourselves via resolveExternalVideos below.
-      openVideos: false,
+      openVideos: true,
       h5: { filenameHint: path },
     });
 
@@ -98,9 +93,19 @@ export async function loadProjectFromPath(
     }
 
     store.setLabels(labels, filename, path);
+
+    const missingVideos = labels.videos.filter((v) => v.backend === null && !v.hasEmbeddedImages);
+
     toast.success(`Loaded ${filename}`, {
       description: `${labels.videos.length} video(s), ${labels.labeledFrames.length} labeled frames`,
     });
+
+    if (missingVideos.length > 0) {
+      toast.info(`${missingVideos.length} video(s) not found`, {
+        description: "Use the Videos panel to locate them.",
+      });
+    }
+
     return true;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

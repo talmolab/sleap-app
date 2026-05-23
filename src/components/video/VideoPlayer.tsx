@@ -413,7 +413,7 @@ export function VideoPlayer() {
 
     (async () => {
       try {
-        const frame = await video.backend!.getFrame(frameIdx);
+        const frame = await video.getFrame(frameIdx);
         if (debugFlags.logSeeking) console.debug(`[seek] getFrame(${frameIdx}) returned ${frame?.constructor?.name ?? "null"} in ${(performance.now() - t0).toFixed(1)}ms`);
         if (cancelled || !frame) {
           if (debugFlags.logSeeking && cancelled) console.debug(`[seek] frame ${frameIdx} cancelled`);

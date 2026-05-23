@@ -26,6 +26,7 @@ export function isFetchableUrl(filename: string | string[]): boolean {
 
 /** Check if a video is missing its backend (unresolved external file). */
 export function isVideoMissing(video: Video): boolean {
+  if (video.hasEmbeddedImages) return false;
   return video.backend === null && !isFetchableUrl(video.filename);
 }
 
