@@ -21,6 +21,13 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { LayoutGrid } from "lucide-react";
 
 /** Extract just the basename from a file path. */
 function basename(path: string | string[]): string {
@@ -55,9 +62,6 @@ export interface FrameRowData {
   low: number;
   score: number | null;
 }
-
-/** Visible columns for initial render. */
-const visibleColumns = COLUMNS.filter((c) => c.defaultVisible);
 
 /** Render a single cell value based on column key. */
 function renderCell(row: FrameRowData, key: ColumnKey) {
@@ -125,6 +129,14 @@ export function FramesPanel() {
   const [sortKey, setSortKey] = useState<ColumnKey>("frame");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [searchText, setSearchText] = useState("");
+  const [visibleCols, setVisibleCols] = useState<Set<ColumnKey>>(
+    () => new Set(COLUMNS.filter((c) => c.defaultVisible).map((c) => c.key))
+  );
+
+  const visibleColumns = useMemo(
+    () => COLUMNS.filter((c) => visibleCols.has(c.key)),
+    [visibleCols]
+  );
 
   const toggleSort = (key: ColumnKey) => {
     if (sortKey === key) {
@@ -179,7 +191,7 @@ export function FramesPanel() {
         return String(v).toLowerCase().includes(q);
       })
     );
-  }, [rows, searchText]);
+  }, [rows, searchText, visibleColumns]);
 
   const sortedRows = useMemo(() => {
     if (searchFiltered.length === 0) return searchFiltered;
@@ -223,13 +235,49 @@ export function FramesPanel() {
               : `${sortedRows.length} of ${rows.length} frames`}
           </Badge>
         </div>
-        <Input
-          type="text"
-          placeholder="Search frames..."
-          value={searchText}
-          onChange={(e) => setSearchText(e.target.value)}
-          className="h-7 text-xs"
-        />
+        <div className="flex items-center gap-1.5">
+          <Input
+            type="text"
+            placeholder="Search frames..."
+            value={searchText}
+            onChange={(e) => setSearchText(e.target.value)}
+            className="h-7 text-xs flex-1"
+          />
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0">
+                <LayoutGrid className="h-3.5 w-3.5" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-48 p-2">
+              <p className="text-xs font-medium mb-2">Visible Columns</p>
+              {COLUMNS.map((col) => (
+                <label
+                  key={col.key}
+                  className="flex items-center gap-2 py-1 px-1 text-xs text-muted-foreground hover:bg-muted rounded cursor-pointer"
+                >
+                  <input
+                    type="checkbox"
+                    checked={visibleCols.has(col.key)}
+                    onChange={() => {
+                      setVisibleCols((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(col.key)) {
+                          if (next.size > 1) next.delete(col.key);
+                        } else {
+                          next.add(col.key);
+                        }
+                        return next;
+                      });
+                    }}
+                    className="accent-orange-500"
+                  />
+                  {col.label}
+                </label>
+              ))}
+            </PopoverContent>
+          </Popover>
+        </div>
       </div>
 
       {/* Table */}
