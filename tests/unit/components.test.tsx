@@ -305,6 +305,16 @@ describe("Component rendering", () => {
     });
   });
 
+  describe("FramesPanel", () => {
+    it("renders empty state when no project loaded", async () => {
+      const { FramesPanel } = await import(
+        "@/components/panels/FramesPanel"
+      );
+      render(<FramesPanel />);
+      expect(screen.getByText(/no labeled frames/i)).toBeInTheDocument();
+    });
+  });
+
   describe("ErrorBoundary", () => {
     it("renders children when no error", async () => {
       const { ErrorBoundary } = await import(
