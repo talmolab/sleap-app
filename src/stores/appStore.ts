@@ -167,7 +167,7 @@ export const useAppStore = create<AppState>()(
       uiScale: 1,
       sidebarCollapsed: false,
       sidebarActivePanel: "videos",
-      panelOrder: ["videos", "skeleton", "instances", "view", "suggestions", "training", "inference", "environment", "connect", "notifications", "debug"],
+      panelOrder: ["videos", "skeleton", "instances", "view", "suggestions", "frames", "training", "inference", "environment", "connect", "notifications", "debug"],
 
       // View state
       showInstances: true,

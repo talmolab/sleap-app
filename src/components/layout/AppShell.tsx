@@ -33,6 +33,7 @@ import { NotificationsPanel } from "../panels/NotificationsPanel";
 import { EnvironmentPanel } from "../panels/EnvironmentPanel";
 import { InferencePanel } from "../panels/InferencePanel";
 import { ConnectPanel } from "../panels/ConnectPanel";
+import { FramesPanel } from "../panels/FramesPanel";
 import { TrainingPanel } from "../panels/TrainingPanel";
 import { WelcomeScreen } from "./WelcomeScreen";
 import { TrainingDialog } from "../dialogs/TrainingDialog";
@@ -59,6 +60,7 @@ import {
   Zap,
   Globe,
   GraduationCap,
+  TableProperties,
 } from "lucide-react";
 import {
   Tooltip,
@@ -80,6 +82,7 @@ const PANELS = [
   { id: "instances", label: "Instances", icon: Users, component: InstancesPanel },
   { id: "view", label: "View", icon: Eye, component: ViewPanel },
   { id: "suggestions", label: "Suggestions", icon: Lightbulb, component: SuggestionsPanel },
+  { id: "frames", label: "Frames", icon: TableProperties, component: FramesPanel },
   { id: "inference", label: "Inference", icon: Zap, component: InferencePanel },
   { id: "training", label: "Training", icon: GraduationCap, component: TrainingPanel },
   { id: "environment", label: "Environment", icon: Cpu, component: EnvironmentPanel },
