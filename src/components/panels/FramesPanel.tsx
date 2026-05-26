@@ -27,7 +27,15 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { LayoutGrid } from "lucide-react";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Slider } from "@/components/ui/slider";
+import { LayoutGrid, ListFilter } from "lucide-react";
 
 /** Extract just the basename from a file path. */
 function basename(path: string | string[]): string {
@@ -49,6 +57,14 @@ export const COLUMNS = [
 ] as const;
 
 type ColumnKey = (typeof COLUMNS)[number]["key"];
+
+type FilterOp = "==" | "!=" | ">" | "<" | ">=" | "<=" | "contains" | "is";
+
+interface ColumnFilter {
+  key: ColumnKey;
+  op: FilterOp;
+  value: string;
+}
 
 export interface FrameRowData {
   video: Video;
@@ -119,6 +135,294 @@ function renderCell(row: FrameRowData, key: ColumnKey) {
   }
 }
 
+/** Get the default filter operator for a column type. */
+function getDefaultOp(type: string): FilterOp {
+  if (type === "string") return "contains";
+  if (type === "boolean") return "is";
+  return ">=";
+}
+
+/** Format a filter as a human-readable label. */
+function formatFilterLabel(f: ColumnFilter): string {
+  const col = COLUMNS.find((c) => c.key === f.key);
+  const label = col?.label ?? f.key;
+  if (f.op === "is") return `${label} = ${f.value}`;
+  if (f.op === "contains") return `${label} ⊃ "${f.value}"`;
+  const opMap: Record<string, string> = {
+    "==": "=",
+    "!=": "≠",
+    ">": ">",
+    "<": "<",
+    ">=": "≥",
+    "<=": "≤",
+  };
+  return `${label} ${opMap[f.op] ?? f.op} ${f.value}`;
+}
+
+/** Check whether a single row passes one filter. */
+function applyFilter(row: FrameRowData, f: ColumnFilter): boolean {
+  const raw =
+    f.key === "video" ? row.videoName : row[f.key as keyof FrameRowData];
+
+  if (f.op === "contains")
+    return String(raw ?? "")
+      .toLowerCase()
+      .includes(f.value.toLowerCase());
+  if (f.op === "is") return f.value === "yes" ? raw === true : raw === false;
+
+  if (raw === null || raw === undefined) return false;
+  const numVal = Number(raw);
+  const filterNum = Number(f.value);
+  if (isNaN(numVal) || isNaN(filterNum)) return false;
+
+  switch (f.op) {
+    case "==":
+      return numVal === filterNum;
+    case "!=":
+      return numVal !== filterNum;
+    case ">":
+      return numVal > filterNum;
+    case "<":
+      return numVal < filterNum;
+    case ">=":
+      return numVal >= filterNum;
+    case "<=":
+      return numVal <= filterNum;
+    default:
+      return true;
+  }
+}
+
+/** Popover for configuring a filter on a single column. */
+function FilterPopover({
+  col,
+  filters,
+  onApply,
+  onClear,
+}: {
+  col: (typeof COLUMNS)[number];
+  filters: ColumnFilter[];
+  onApply: (f: ColumnFilter) => void;
+  onClear: (key: ColumnKey) => void;
+}) {
+  const existing = filters.find((f) => f.key === col.key);
+  const [op, setOp] = useState<FilterOp>(
+    existing?.op ?? getDefaultOp(col.type)
+  );
+  const [value, setValue] = useState(existing?.value ?? "");
+
+  const stringOps: FilterOp[] = ["contains", "==", "!="];
+  const numericOps: FilterOp[] = ["==", "!=", ">", "<", ">=", "<="];
+
+  const opLabel: Record<string, string> = {
+    contains: "contains",
+    "==": "=",
+    "!=": "≠",
+    ">": ">",
+    "<": "<",
+    ">=": "≥",
+    "<=": "≤",
+    is: "is",
+  };
+
+  return (
+    <Popover
+      onOpenChange={(open) => {
+        if (open) {
+          setOp(existing?.op ?? getDefaultOp(col.type));
+          setValue(existing?.value ?? "");
+        }
+      }}
+    >
+      <PopoverTrigger asChild onClick={(e) => e.stopPropagation()}>
+        <button
+          className={cn(
+            "ml-1 text-[10px] opacity-30 hover:opacity-100 transition-opacity",
+            existing && "opacity-100 text-orange-500"
+          )}
+        >
+          ▾
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        className="w-56 p-3"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <p className="text-xs font-medium mb-2">Filter: {col.label}</p>
+
+        {col.type === "boolean" ? (
+          /* Boolean: radio buttons for Yes / No */
+          <div className="flex gap-3">
+            {(["yes", "no"] as const).map((v) => (
+              <label key={v} className="flex items-center gap-1 text-xs">
+                <input
+                  type="radio"
+                  name={`filter-${col.key}`}
+                  checked={value === v}
+                  onChange={() => setValue(v)}
+                  className="accent-orange-500"
+                />
+                {v === "yes" ? "Yes" : "No"}
+              </label>
+            ))}
+          </div>
+        ) : (
+          /* String / Number / Score */
+          <>
+            <Select
+              value={op}
+              onValueChange={(v) => setOp(v as FilterOp)}
+            >
+              <SelectTrigger size="sm" className="h-7 text-xs mb-2 w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {(col.type === "string" ? stringOps : numericOps).map((o) => (
+                  <SelectItem key={o} value={o} className="text-xs">
+                    {opLabel[o]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            <Input
+              type={col.type === "string" ? "text" : "number"}
+              placeholder={col.type === "string" ? "value" : "0"}
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              className="h-7 text-xs"
+              step={col.type === "score" ? "0.01" : undefined}
+            />
+
+            {/* Score: synced range slider */}
+            {col.type === "score" && (
+              <Slider
+                min={0}
+                max={1}
+                step={0.01}
+                value={[value === "" ? 0 : Number(value)]}
+                onValueChange={([v]) => setValue(String(v))}
+                className="mt-2"
+              />
+            )}
+          </>
+        )}
+
+        <div className="flex gap-2 mt-2">
+          <Button
+            variant="default"
+            size="xs"
+            onClick={() => onApply({ key: col.key, op, value })}
+          >
+            Apply
+          </Button>
+          {existing && (
+            <Button
+              variant="ghost"
+              size="xs"
+              onClick={() => onClear(col.key)}
+            >
+              Clear
+            </Button>
+          )}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+/** Inline filter form used inside the "Add filter" popover. */
+function AddFilterForm({
+  col,
+  onApply,
+}: {
+  col: (typeof COLUMNS)[number];
+  onApply: (f: ColumnFilter) => void;
+}) {
+  const [op, setOp] = useState<FilterOp>(getDefaultOp(col.type));
+  const [value, setValue] = useState("");
+
+  const stringOps: FilterOp[] = ["contains", "==", "!="];
+  const numericOps: FilterOp[] = ["==", "!=", ">", "<", ">=", "<="];
+
+  const opLabel: Record<string, string> = {
+    contains: "contains",
+    "==": "=",
+    "!=": "≠",
+    ">": ">",
+    "<": "<",
+    ">=": "≥",
+    "<=": "≤",
+    is: "is",
+  };
+
+  return (
+    <div className="space-y-2">
+      <p className="text-xs font-medium">Filter: {col.label}</p>
+
+      {col.type === "boolean" ? (
+        <div className="flex gap-3">
+          {(["yes", "no"] as const).map((v) => (
+            <label key={v} className="flex items-center gap-1 text-xs">
+              <input
+                type="radio"
+                name={`add-filter-${col.key}`}
+                checked={value === v}
+                onChange={() => setValue(v)}
+                className="accent-orange-500"
+              />
+              {v === "yes" ? "Yes" : "No"}
+            </label>
+          ))}
+        </div>
+      ) : (
+        <>
+          <Select value={op} onValueChange={(v) => setOp(v as FilterOp)}>
+            <SelectTrigger size="sm" className="h-7 text-xs w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {(col.type === "string" ? stringOps : numericOps).map((o) => (
+                <SelectItem key={o} value={o} className="text-xs">
+                  {opLabel[o]}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          <Input
+            type={col.type === "string" ? "text" : "number"}
+            placeholder={col.type === "string" ? "value" : "0"}
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            className="h-7 text-xs"
+            step={col.type === "score" ? "0.01" : undefined}
+          />
+
+          {col.type === "score" && (
+            <Slider
+              min={0}
+              max={1}
+              step={0.01}
+              value={[value === "" ? 0 : Number(value)]}
+              onValueChange={([v]) => setValue(String(v))}
+            />
+          )}
+        </>
+      )}
+
+      <Button
+        variant="default"
+        size="xs"
+        onClick={() => onApply({ key: col.key, op, value })}
+      >
+        Apply
+      </Button>
+    </div>
+  );
+}
+
 export function FramesPanel() {
   const labels = useAppStore((s) => s.labels);
   const currentVideo = useAppStore((s) => s.video);
@@ -129,6 +433,8 @@ export function FramesPanel() {
   const [sortKey, setSortKey] = useState<ColumnKey>("frame");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [searchText, setSearchText] = useState("");
+  const [filters, setFilters] = useState<ColumnFilter[]>([]);
+  const [addFilterCol, setAddFilterCol] = useState<ColumnKey | null>(null);
   const [visibleCols, setVisibleCols] = useState<Set<ColumnKey>>(
     () => new Set(COLUMNS.filter((c) => c.defaultVisible).map((c) => c.key))
   );
@@ -193,13 +499,33 @@ export function FramesPanel() {
     );
   }, [rows, searchText, visibleColumns]);
 
+  const filtered = useMemo(() => {
+    if (filters.length === 0) return searchFiltered;
+    return searchFiltered.filter((row) =>
+      filters.every((f) => applyFilter(row, f))
+    );
+  }, [searchFiltered, filters]);
+
+  /** Apply (add or replace) a filter for a given column. */
+  const handleApplyFilter = (f: ColumnFilter) => {
+    setFilters((prev) => {
+      const without = prev.filter((p) => p.key !== f.key);
+      return [...without, f];
+    });
+  };
+
+  /** Clear the filter for a given column. */
+  const handleClearFilter = (key: ColumnKey) => {
+    setFilters((prev) => prev.filter((p) => p.key !== key));
+  };
+
   const sortedRows = useMemo(() => {
-    if (searchFiltered.length === 0) return searchFiltered;
+    if (filtered.length === 0) return filtered;
 
     const col = COLUMNS.find((c) => c.key === sortKey);
-    if (!col) return searchFiltered;
+    if (!col) return filtered;
 
-    const sorted = [...searchFiltered].sort((a, b) => {
+    const sorted = [...filtered].sort((a, b) => {
       const aVal = sortKey === "video" ? a.videoName : a[sortKey as keyof FrameRowData];
       const bVal = sortKey === "video" ? b.videoName : b[sortKey as keyof FrameRowData];
 
@@ -222,7 +548,7 @@ export function FramesPanel() {
     });
 
     return sorted;
-  }, [searchFiltered, sortKey, sortDir]);
+  }, [filtered, sortKey, sortDir]);
 
   return (
     <div className="flex flex-col h-full">
@@ -230,9 +556,9 @@ export function FramesPanel() {
       <div className="px-2 py-1.5 border-b border-border space-y-1.5">
         <div className="flex items-center gap-1.5">
           <Badge variant="secondary" className="text-xs shrink-0">
-            {sortedRows.length === rows.length
+            {filtered.length === rows.length
               ? `${rows.length} frame${rows.length !== 1 ? "s" : ""}`
-              : `${sortedRows.length} of ${rows.length} frames`}
+              : `${filtered.length} of ${rows.length} frames`}
           </Badge>
         </div>
         <div className="flex items-center gap-1.5">
@@ -243,6 +569,59 @@ export function FramesPanel() {
             onChange={(e) => setSearchText(e.target.value)}
             className="h-7 text-xs flex-1"
           />
+
+          {/* Add filter button */}
+          <Popover onOpenChange={(open) => { if (!open) setAddFilterCol(null); }}>
+            <PopoverTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className={cn(
+                  "h-7 w-7 shrink-0",
+                  filters.length > 0 && "text-orange-500"
+                )}
+              >
+                <ListFilter className="h-3.5 w-3.5" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-56 p-2">
+              {addFilterCol === null ? (
+                <>
+                  <p className="text-xs font-medium mb-2">Add Filter</p>
+                  {COLUMNS.map((col) => (
+                    <button
+                      key={col.key}
+                      className="flex items-center w-full gap-2 py-1 px-1 text-xs text-muted-foreground hover:bg-muted rounded cursor-pointer"
+                      onClick={() => setAddFilterCol(col.key)}
+                    >
+                      {col.label}
+                      {filters.some((f) => f.key === col.key) && (
+                        <span className="ml-auto text-orange-500 text-[10px]">active</span>
+                      )}
+                    </button>
+                  ))}
+                </>
+              ) : (
+                <>
+                  <button
+                    className="text-xs text-muted-foreground hover:text-foreground mb-2"
+                    onClick={() => setAddFilterCol(null)}
+                  >
+                    &larr; Back
+                  </button>
+                  <AddFilterForm
+                    col={COLUMNS.find((c) => c.key === addFilterCol)!}
+                    onApply={(f) => {
+                      handleApplyFilter(f);
+                      setAddFilterCol(null);
+                    }}
+                  />
+                </>
+              )}
+            </PopoverContent>
+          </Popover>
+
+          {/* Column visibility */}
           <Popover>
             <PopoverTrigger asChild>
               <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0">
@@ -278,6 +657,25 @@ export function FramesPanel() {
             </PopoverContent>
           </Popover>
         </div>
+
+        {/* Active filter chips */}
+        {filters.length > 0 && (
+          <div className="flex flex-wrap gap-1">
+            {filters.map((f, i) => (
+              <Badge key={i} variant="secondary" className="text-xs gap-1 pr-1">
+                {formatFilterLabel(f)}
+                <button
+                  onClick={() =>
+                    setFilters((prev) => prev.filter((_, j) => j !== i))
+                  }
+                  className="ml-0.5 hover:text-foreground"
+                >
+                  &times;
+                </button>
+              </Badge>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Table */}
@@ -295,12 +693,18 @@ export function FramesPanel() {
                     key={col.key}
                     onClick={() => toggleSort(col.key)}
                     className={cn(
-                      "py-1 px-2 text-xs font-normal h-auto cursor-pointer select-none",
+                      "py-1 px-2 text-xs font-normal h-auto cursor-pointer select-none whitespace-nowrap",
                       col.align === "right" && "text-right",
                       (col.align as string) === "center" && "text-center"
                     )}
                   >
                     {col.label}{sortIndicator(col.key)}
+                    <FilterPopover
+                      col={col}
+                      filters={filters}
+                      onApply={handleApplyFilter}
+                      onClear={handleClearFilter}
+                    />
                   </TableHead>
                 ))}
               </TableRow>
@@ -331,9 +735,9 @@ export function FramesPanel() {
       {/* Footer */}
       <div className="px-2 py-1.5 border-t border-border">
         <span className="text-xs text-muted-foreground">
-          {sortedRows.length === rows.length
+          {filtered.length === rows.length
             ? `${rows.length} frames`
-            : `${sortedRows.length} of ${rows.length} frames`}
+            : `${filtered.length} of ${rows.length} frames`}
         </span>
       </div>
     </div>
