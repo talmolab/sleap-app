@@ -140,6 +140,7 @@ export function ContextMenu({
               if (point) {
                 point.visible = !point.visible;
                 useAppStore.getState().markChanged();
+                useAppStore.getState().touchFrame();
                 useAppStore.getState().bumpOverlayVersion();
               }
               onClose();

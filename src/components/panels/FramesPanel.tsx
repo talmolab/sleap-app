@@ -54,6 +54,7 @@ export const COLUMNS = [
   { key: "used",    label: "Used",   type: "number",  align: "right",  defaultVisible: false, tooltip: "Consumed predictions (accepted as labels)" },
   { key: "low",     label: "Low",    type: "number",  align: "right",  defaultVisible: false, tooltip: "Predictions with score below threshold" },
   { key: "score",   label: "Score",  type: "score",   align: "right",  defaultVisible: true,  tooltip: "Mean prediction score (0-1)" },
+  { key: "recent",  label: "Recent", type: "number",  align: "right",  defaultVisible: false, tooltip: "Recently interacted frame" },
 ] as const;
 
 type ColumnKey = (typeof COLUMNS)[number]["key"];
@@ -77,6 +78,7 @@ export interface FrameRowData {
   used: number;
   low: number;
   score: number | null;
+  recent: number | null;
 }
 
 /** Render a single cell value based on column key. */
@@ -123,6 +125,14 @@ function renderCell(row: FrameRowData, key: ColumnKey) {
             </span>
           ) : (
             <span className="text-muted-foreground">&mdash;</span>
+          )}
+        </TableCell>
+      );
+    case "recent":
+      return (
+        <TableCell key={key} className="py-0.5 px-2 text-xs text-center">
+          {row.recent !== null && (
+            <span className="inline-block w-2 h-2 rounded-full bg-blue-500" title={`Rank: ${row.recent}`} />
           )}
         </TableCell>
       );
@@ -458,6 +468,8 @@ export function FramesPanel() {
     return sortDir === "asc" ? " ▲" : " ▼";
   };
 
+  const interactionStack = useAppStore((s) => s.frameInteractionStack);
+
   const rows: FrameRowData[] = useMemo(() => {
     if (!labels) return [];
 
@@ -469,6 +481,11 @@ export function FramesPanel() {
         predicted.length > 0
           ? predicted.reduce((sum, pi) => sum + pi.score, 0) / predicted.length
           : null;
+
+      const vidIdx = labels.videos.indexOf(lf.video);
+      const key = `${vidIdx}:${lf.frameIdx}`;
+      const stackIdx = interactionStack.lastIndexOf(key);
+      const recent = stackIdx !== -1 ? interactionStack.length - stackIdx : null;
 
       return {
         video: lf.video,
@@ -483,9 +500,10 @@ export function FramesPanel() {
         ).length,
         low: predicted.filter((pi) => pi.score < 0.5).length,
         score,
+        recent,
       };
     });
-  }, [labels]);
+  }, [labels, interactionStack]);
 
   const searchFiltered = useMemo(() => {
     if (!searchText) return rows;

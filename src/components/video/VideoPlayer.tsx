@@ -314,6 +314,7 @@ export function VideoPlayer() {
           if (point) point.visible = makeVisible;
         }
         useAppStore.getState().markChanged();
+        useAppStore.getState().touchFrame();
         useAppStore.getState().bumpOverlayVersion();
       } else if (hoveredNode) {
         // Toggle hovered node
@@ -323,6 +324,7 @@ export function VideoPlayer() {
         if (point) {
           point.visible = !point.visible;
           useAppStore.getState().markChanged();
+          useAppStore.getState().touchFrame();
           useAppStore.getState().bumpOverlayVersion();
         }
       }
@@ -386,6 +388,7 @@ export function VideoPlayer() {
       }
       store.setLabeledFrame(lf.instances.length > 0 ? lf : null);
       store.markChanged();
+      store.touchFrame();
       store.bumpOverlayVersion();
     };
     window.addEventListener("keydown", handler);
@@ -1167,6 +1170,7 @@ export function VideoPlayer() {
           currentInstance.points[targetIdx].visible = true;
           currentInstance.points[targetIdx].complete = true;
           store.markChanged();
+          store.touchFrame();
 
           // Auto-advance to next unplaced node (search forward, then wrap)
           const pts = currentInstance.points;
@@ -1375,6 +1379,7 @@ export function VideoPlayer() {
 
         lastDragPos.current = { x, y };
         useAppStore.getState().markChanged();
+        useAppStore.getState().touchFrame();
         useAppStore.getState().bumpOverlayVersion();
         return;
       }
@@ -1507,6 +1512,7 @@ export function VideoPlayer() {
             }
 
             useAppStore.getState().markChanged();
+            useAppStore.getState().touchFrame();
             useAppStore.getState().bumpOverlayVersion();
           }
         }
@@ -1834,6 +1840,7 @@ export function VideoPlayer() {
               if (point) point.visible = makeVisible;
             }
             useAppStore.getState().markChanged();
+            useAppStore.getState().touchFrame();
             useAppStore.getState().bumpOverlayVersion();
           }}
           onClose={() => setContextMenu(null)}
