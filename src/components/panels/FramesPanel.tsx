@@ -116,6 +116,10 @@ function renderCell(row: FrameRowData, key: ColumnKey) {
 
 export function FramesPanel() {
   const labels = useAppStore((s) => s.labels);
+  const currentVideo = useAppStore((s) => s.video);
+  const currentFrameIdx = useAppStore((s) => s.frameIdx);
+  const setVideo = useAppStore((s) => s.setVideo);
+  const setFrameIdx = useAppStore((s) => s.setFrameIdx);
 
   const [sortKey, setSortKey] = useState<ColumnKey>("frame");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
@@ -234,7 +238,16 @@ export function FramesPanel() {
               {sortedRows.map((row, idx) => (
                 <TableRow
                   key={`${row.videoName}-${row.frame}-${idx}`}
-                  className="cursor-pointer border-b-0 hover:bg-muted/50 text-foreground"
+                  onClick={() => {
+                    if (row.video !== currentVideo) setVideo(row.video);
+                    setFrameIdx(row.frame);
+                  }}
+                  className={cn(
+                    "cursor-pointer border-b-0",
+                    row.video === currentVideo && row.frame === currentFrameIdx
+                      ? "bg-orange-500/10 border-l-2 border-l-orange-500 text-foreground"
+                      : "hover:bg-muted/50 text-foreground"
+                  )}
                 >
                   {visibleColumns.map((col) => renderCell(row, col.key))}
                 </TableRow>
