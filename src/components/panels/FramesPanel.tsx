@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/table";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 
 /** Extract just the basename from a file path. */
 function basename(path: string | string[]): string {
@@ -123,6 +124,7 @@ export function FramesPanel() {
 
   const [sortKey, setSortKey] = useState<ColumnKey>("frame");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  const [searchText, setSearchText] = useState("");
 
   const toggleSort = (key: ColumnKey) => {
     if (sortKey === key) {
@@ -167,13 +169,25 @@ export function FramesPanel() {
     });
   }, [labels]);
 
+  const searchFiltered = useMemo(() => {
+    if (!searchText) return rows;
+    const q = searchText.toLowerCase();
+    return rows.filter((row) =>
+      visibleColumns.some((col) => {
+        const v = row[col.key as keyof FrameRowData];
+        if (v === null || v === undefined) return false;
+        return String(v).toLowerCase().includes(q);
+      })
+    );
+  }, [rows, searchText]);
+
   const sortedRows = useMemo(() => {
-    if (rows.length === 0) return rows;
+    if (searchFiltered.length === 0) return searchFiltered;
 
     const col = COLUMNS.find((c) => c.key === sortKey);
-    if (!col) return rows;
+    if (!col) return searchFiltered;
 
-    const sorted = [...rows].sort((a, b) => {
+    const sorted = [...searchFiltered].sort((a, b) => {
       const aVal = sortKey === "video" ? a.videoName : a[sortKey as keyof FrameRowData];
       const bVal = sortKey === "video" ? b.videoName : b[sortKey as keyof FrameRowData];
 
@@ -196,17 +210,26 @@ export function FramesPanel() {
     });
 
     return sorted;
-  }, [rows, sortKey, sortDir]);
+  }, [searchFiltered, sortKey, sortDir]);
 
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="px-2 py-1.5 border-b border-border">
+      <div className="px-2 py-1.5 border-b border-border space-y-1.5">
         <div className="flex items-center gap-1.5">
           <Badge variant="secondary" className="text-xs shrink-0">
-            {rows.length} frame{rows.length !== 1 ? "s" : ""}
+            {sortedRows.length === rows.length
+              ? `${rows.length} frame${rows.length !== 1 ? "s" : ""}`
+              : `${sortedRows.length} of ${rows.length} frames`}
           </Badge>
         </div>
+        <Input
+          type="text"
+          placeholder="Search frames..."
+          value={searchText}
+          onChange={(e) => setSearchText(e.target.value)}
+          className="h-7 text-xs"
+        />
       </div>
 
       {/* Table */}
@@ -260,7 +283,9 @@ export function FramesPanel() {
       {/* Footer */}
       <div className="px-2 py-1.5 border-t border-border">
         <span className="text-xs text-muted-foreground">
-          {rows.length} frames
+          {sortedRows.length === rows.length
+            ? `${rows.length} frames`
+            : `${sortedRows.length} of ${rows.length} frames`}
         </span>
       </div>
     </div>
