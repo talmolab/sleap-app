@@ -7,7 +7,7 @@
  *  - Progress (when running or done)
  */
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { useTrainingStore, getConfigSlots, getSlotLabel } from "@/stores/trainingStore";
 import type { ModelType, ConfigFile, ConfigHyperparams } from "@/stores/trainingStore";
 import { useConnectStore } from "@/stores/connectStore";
@@ -51,6 +51,64 @@ const MODEL_TYPE_OPTIONS: { value: ModelType; label: string }[] = [
   { value: "top_down_id", label: "Top-Down + ID" },
   { value: "bottom_up_id", label: "Bottom-Up + ID" },
 ];
+
+// ── Skeleton ↔ Pipeline Compatibility ────────────────────────────────────────
+
+interface SkeletonCompatibility {
+  disabledTypes: Set<ModelType>;
+  warnings: Map<ModelType, string>;
+  recommendation: string | null;
+}
+
+const BOTTOM_UP_TYPES: ModelType[] = ["bottom_up", "bottom_up_id"];
+
+function isSkeletonConnected(
+  nodes: { name: string }[],
+  edges: { source: { name: string }; destination: { name: string } }[],
+): boolean {
+  if (nodes.length <= 1) return true;
+  if (edges.length === 0) return false;
+  const adj = new Map<string, Set<string>>();
+  for (const n of nodes) adj.set(n.name, new Set());
+  for (const e of edges) {
+    adj.get(e.source.name)?.add(e.destination.name);
+    adj.get(e.destination.name)?.add(e.source.name);
+  }
+  const visited = new Set<string>();
+  const queue = [nodes[0].name];
+  visited.add(nodes[0].name);
+  while (queue.length > 0) {
+    const curr = queue.pop()!;
+    for (const neighbor of adj.get(curr) ?? []) {
+      if (!visited.has(neighbor)) {
+        visited.add(neighbor);
+        queue.push(neighbor);
+      }
+    }
+  }
+  return visited.size === nodes.length;
+}
+
+function getSkeletonCompatibility(
+  skeleton: { nodes: { name: string }[]; edges: { source: { name: string }; destination: { name: string } }[] } | null,
+): SkeletonCompatibility {
+  const disabledTypes = new Set<ModelType>();
+  const warnings = new Map<ModelType, string>();
+  let recommendation: string | null = null;
+
+  if (!skeleton) return { disabledTypes, warnings, recommendation };
+
+  if (skeleton.edges.length === 0) {
+    for (const t of BOTTOM_UP_TYPES) disabledTypes.add(t);
+    recommendation = "Bottom-Up requires skeleton edges for Part Affinity Fields";
+  } else if (!isSkeletonConnected(skeleton.nodes, skeleton.edges)) {
+    for (const t of BOTTOM_UP_TYPES) {
+      warnings.set(t, "Bottom-Up works best with a fully connected skeleton");
+    }
+  }
+
+  return { disabledTypes, warnings, recommendation };
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -319,6 +377,8 @@ export function TrainingPanel() {
 
   // App state
   const projectPath = useAppStore((s) => s.projectPath);
+  const skeleton = useAppStore((s) => s.skeleton);
+  const skeletonCompat = useMemo(() => getSkeletonCompatibility(skeleton), [skeleton]);
 
   // Elapsed time ticker
   const [elapsed, setElapsed] = useState(0);
@@ -352,10 +412,12 @@ export function TrainingPanel() {
     cf.hyperparams.pafsLossWeight > 0 &&
     cf.hyperparams.classLossWeight > 0
   );
+  const isModelTypeIncompatible = skeletonCompat.disabledTypes.has(config.modelType);
   const canStart =
     hasAllConfigs &&
     hasData &&
     hasValidLossWeights &&
+    !isModelTypeIncompatible &&
     status === "idle" &&
     (remoteEnabled ? !!selectedWorkerId : true);
 
@@ -451,13 +513,26 @@ export function TrainingPanel() {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {MODEL_TYPE_OPTIONS.map((o) => (
-                  <SelectItem key={o.value} value={o.value}>
-                    {o.label}
-                  </SelectItem>
-                ))}
+                {MODEL_TYPE_OPTIONS.map((o) => {
+                  const isDisabled = skeletonCompat.disabledTypes.has(o.value);
+                  return (
+                    <SelectItem key={o.value} value={o.value} disabled={isDisabled}>
+                      {o.label}{isDisabled ? " (requires edges)" : ""}
+                      {skeletonCompat.warnings.has(o.value) ? " ⚠" : ""}
+                    </SelectItem>
+                  );
+                })}
               </SelectContent>
             </Select>
+            {skeletonCompat.recommendation && (
+              <p className="text-[10px] text-orange-400">{skeletonCompat.recommendation}</p>
+            )}
+            {!skeletonCompat.recommendation && skeletonCompat.warnings.has(config.modelType) && (
+              <p className="text-[10px] text-yellow-400">⚠ {skeletonCompat.warnings.get(config.modelType)}</p>
+            )}
+            {isModelTypeIncompatible && (
+              <p className="text-[10px] text-red-400">Selected model type is incompatible with the current skeleton</p>
+            )}
           </div>
 
           {requiredSlots.map((slot) => {
