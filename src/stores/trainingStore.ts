@@ -333,11 +333,13 @@ export function applyHyperparamsToYaml(yamlText: string, hp: ConfigHyperparams):
     }
   }
 
-  // Loss weights — per sub-head
-  for (const [, headVal] of Object.entries(headConfigs)) {
+  // Loss weights — per sub-head (skip centroid and single_instance whose
+  // confmaps schemas in sleap-nn don't include loss_weight)
+  const noLossWeightHeads = new Set(["centroid", "single_instance"]);
+  for (const [headName, headVal] of Object.entries(headConfigs)) {
     if (headVal && typeof headVal === "object") {
       const head = headVal as Record<string, unknown>;
-      if (head.confmaps && typeof head.confmaps === "object") {
+      if (head.confmaps && typeof head.confmaps === "object" && !noLossWeightHeads.has(headName)) {
         (head.confmaps as Record<string, unknown>).loss_weight = hp.confmapsLossWeight;
       }
       if (head.pafs && typeof head.pafs === "object") {
@@ -348,12 +350,6 @@ export function applyHyperparamsToYaml(yamlText: string, hp: ConfigHyperparams):
       }
       if (head.class_maps && typeof head.class_maps === "object") {
         (head.class_maps as Record<string, unknown>).loss_weight = hp.classLossWeight;
-      }
-      // Single-head types: loss_weight at top level
-      if (!head.confmaps && !head.pafs && !head.class_vectors && !head.class_maps) {
-        if ("loss_weight" in head) {
-          head.loss_weight = hp.confmapsLossWeight;
-        }
       }
     }
   }
