@@ -18,7 +18,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -510,7 +510,7 @@ export function FramesPanel() {
     const q = searchText.toLowerCase();
     return rows.filter((row) =>
       visibleColumns.some((col) => {
-        const v = row[col.key as keyof FrameRowData];
+        const v = col.key === "video" ? row.videoName : row[col.key as keyof FrameRowData];
         if (v === null || v === undefined) return false;
         return String(v).toLowerCase().includes(q);
       })
@@ -646,7 +646,7 @@ export function FramesPanel() {
                 <LayoutGrid className="h-3.5 w-3.5" />
               </Button>
             </PopoverTrigger>
-            <PopoverContent align="end" className="w-48 p-2">
+            <PopoverContent align="end" className="w-48 p-2 max-h-80 overflow-y-auto">
               <p className="text-xs font-medium mb-2">Visible Columns</p>
               {COLUMNS.map((col) => (
                 <label
@@ -703,7 +703,7 @@ export function FramesPanel() {
             No labeled frames
           </p>
         ) : (
-          <Table>
+          <Table className="w-max min-w-full">
             <TableHeader>
               <TableRow className="border-b hover:bg-transparent">
                 {visibleColumns.map((col) => (
@@ -748,6 +748,7 @@ export function FramesPanel() {
             </TableBody>
           </Table>
         )}
+        <ScrollBar orientation="horizontal" />
       </ScrollArea>
 
       {/* Footer */}
