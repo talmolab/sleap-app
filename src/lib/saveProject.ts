@@ -19,10 +19,12 @@ import { getPlatform } from "../platform/index";
  *
  * @param labels - The Labels object to serialize.
  * @param filename - Optional filename hint (e.g. from the loaded project).
+ * @param forceDialog - When true, always show the save dialog (Save As).
  */
 export async function saveProjectAsSlp(
   labels: Labels,
-  filename?: string
+  filename?: string,
+  forceDialog = false
 ): Promise<void> {
   const store = useAppStore.getState();
   store.setLoading(true, "Saving project...");
@@ -31,21 +33,31 @@ export async function saveProjectAsSlp(
     ? filename.replace(/\.slp$/, "") + ".slp"
     : "labels.slp";
 
+  let displayName = saveName;
+
   try {
     const bytes = await saveSlpToBytes(labels);
     const platform = await getPlatform();
     console.log(`[save] Saving project via ${platform.isTauri ? "Tauri" : "browser"} backend (${bytes.byteLength} bytes)`);
 
     if (platform.isTauri) {
-      // Tauri: use native save dialog + filesystem write
-      const savePath = await platform.showSaveDialog({
-        filters: [{ name: "SLEAP Labels", extensions: ["slp"] }],
-        defaultName: saveName,
-      });
-      if (!savePath) return;
-      await platform.writeFile(savePath, bytes);
+      const existingPath = !forceDialog ? store.projectPath : null;
+
+      if (existingPath) {
+        await platform.writeFile(existingPath, bytes);
+        displayName = existingPath;
+      } else {
+        const savePath = await platform.showSaveDialog({
+          filters: [{ name: "SLEAP Labels", extensions: ["slp"] }],
+          defaultName: saveName,
+        });
+        if (!savePath) return;
+        await platform.writeFile(savePath, bytes);
+        store.set("projectPath", savePath);
+        displayName = savePath;
+      }
     } else if ("showSaveFilePicker" in window) {
-      // Browser: File System Access API
+      // Browser: File System Access API (always shows picker)
       try {
         const blob = new Blob([bytes], { type: "application/octet-stream" });
         const handle = await (
@@ -66,6 +78,7 @@ export async function saveProjectAsSlp(
         const writable = await handle.createWritable();
         await writable.write(blob);
         await writable.close();
+        displayName = handle.name;
       } catch (err: unknown) {
         // User cancelled the save dialog
         if (err instanceof DOMException && err.name === "AbortError") return;
@@ -83,7 +96,7 @@ export async function saveProjectAsSlp(
     }
 
     store.clearChanges();
-    toast.success("Project saved", { description: saveName });
+    toast.success("Project saved", { description: displayName });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     toast.error("Failed to save project", { description: msg });

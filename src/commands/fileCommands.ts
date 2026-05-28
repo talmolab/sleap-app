@@ -82,10 +82,9 @@ export const SaveAsProjectCommand: Command = {
   name: "SaveAsProject",
   topics: [],
   async execute(ctx: CommandContext) {
-    const { labels } = ctx.state;
+    const { labels, filename } = ctx.state;
     if (!labels) return;
-    // Pass no filename so the picker always shows with default "labels.slp"
-    await saveProjectAsSlp(labels);
+    await saveProjectAsSlp(labels, filename ?? undefined, true);
   },
 };
 
