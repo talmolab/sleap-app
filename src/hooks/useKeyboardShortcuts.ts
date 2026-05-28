@@ -11,6 +11,7 @@ import { tinykeys } from "tinykeys";
 import { DEFAULT_SHORTCUTS, STEP_SIZES } from "../lib/shortcuts";
 import { useAppStore } from "../stores/appStore";
 import { Track } from "@talmolab/sleap-io.js";
+import { quitApp } from "../lib/quit";
 import {
   commandContext,
   OpenProjectCommand,
@@ -260,6 +261,10 @@ export function useKeyboardShortcuts() {
       [DEFAULT_SHORTCUTS["save as"]]: (e) => {
         e.preventDefault();
         commandContext.execute(SaveAsProjectCommand);
+      },
+      [DEFAULT_SHORTCUTS.close]: async (e) => {
+        e.preventDefault();
+        await quitApp();
       },
 
       // Copy/paste

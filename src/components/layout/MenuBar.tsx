@@ -194,7 +194,12 @@ function FileMenu() {
           </>
         )}
         <MenubarSeparator />
-        <MenubarItem onClick={() => window.close()}>
+        <MenubarItem
+          onClick={async () => {
+            const { quitApp } = await import("../../lib/quit");
+            await quitApp();
+          }}
+        >
           Quit <MenubarShortcut>{modKey}+Q</MenubarShortcut>
         </MenubarItem>
       </MenubarContent>

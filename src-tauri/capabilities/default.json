@@ -20,6 +20,8 @@
     "dialog:allow-save",
     "shell:allow-open",
     "updater:default",
-    "process:default"
+    "process:default",
+    "core:window:allow-close",
+    "core:window:allow-destroy"
   ]
 }

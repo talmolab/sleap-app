@@ -1,13 +1,19 @@
 import { useEffect, useRef } from "react";
 import { AppShell } from "./components/layout/AppShell";
+import { QuitConfirmDialog } from "./components/dialogs/QuitConfirmDialog";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useAppStore } from "./stores/appStore";
 import { applyHashState, initUrlStateSync } from "./lib/urlState";
 import { loadProjectFromPath } from "./lib/loadProject";
 import { isTauri } from "./platform";
+import { setupCloseHandler } from "./lib/quit";
 
 export default function App() {
   useKeyboardShortcuts();
+
+  useEffect(() => {
+    setupCloseHandler();
+  }, []);
   const projectLoaded = useAppStore((s) => s.projectLoaded);
   const hashApplied = useRef(false);
 
@@ -77,5 +83,10 @@ export default function App() {
     return initUrlStateSync();
   }, [projectLoaded]);
 
-  return <AppShell />;
+  return (
+    <>
+      <AppShell />
+      <QuitConfirmDialog />
+    </>
+  );
 }
