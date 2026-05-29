@@ -135,7 +135,7 @@ pub fn run() {
       .map(|p| p.to_string_lossy().into_owned());
   println!("[sleap-label] file_arg: {:?}", file_arg);
 
-  tauri::Builder::default()
+  let builder = tauri::Builder::default()
     .manage(InitialFile(Mutex::new(file_arg)))
     .manage(RunningProcess(Mutex::new(None)))
     .manage(ZmqRelay(Mutex::new(None)))
@@ -180,7 +180,20 @@ pub fn run() {
         )?;
       }
       Ok(())
-    })
+    });
+
+  // tauri-pilot: dev-only bridge that lets the `tauri-pilot` CLI drive the
+  // WebView for UI inspection and automation. Registered here in the builder
+  // chain (not inside `setup`) so its `js_init_script` bridge is injected
+  // before the main window's webview loads. `tauri_plugin_pilot::init()` is a
+  // no-op in release builds; this gate keeps it out of production entirely.
+  // The conditional `let` shadows `builder` only in debug — using `let mut`
+  // would warn about an unused `mut` in release, where this line is compiled out.
+  // See CLAUDE.md → "Driving the desktop GUI (tauri-pilot)".
+  #[cfg(debug_assertions)]
+  let builder = builder.plugin(tauri_plugin_pilot::init());
+
+  builder
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
 }

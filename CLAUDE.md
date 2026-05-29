@@ -35,6 +35,60 @@ which runs the package.json script with the required `--isolate` flag.
 - E2E tests: `tests/e2e/`
 - Fixtures: `tests/fixtures/` (SLP files)
 
+## Driving the desktop GUI (tauri-pilot)
+[`tauri-pilot`](https://github.com/mpiton/tauri-pilot) lets you (and AI agents)
+inspect and drive the **desktop** app's WebView from the CLI — Playwright can't,
+because Tauri uses the OS WebView (WebView2 on Windows), not Chromium. Use it to
+confirm desktop-only code paths actually work in a real Tauri window. **The full
+command reference, safety rules, targeting syntax, and agent workflow live in the
+project skill `.claude/skills/tauri-pilot/SKILL.md`** (auto-loaded by Claude Code)
+— start there; this section is just the quick-start.
+
+**How it's wired in** (already done):
+- `src-tauri/Cargo.toml` depends on `tauri-plugin-pilot` (a dev tool; `init()` is
+  a **no-op in release builds**, so it never ships in the production app). It's
+  pinned to a **git commit**, not crates.io: published 0.6.0 panics at startup on
+  Windows (it binds its named pipe in the sync `setup` hook); the fix (upstream
+  #115) is on `main` but unreleased. Move to a crates.io version once >0.6.0 ships.
+- `src-tauri/src/lib.rs` registers it in the builder chain under
+  `#[cfg(debug_assertions)]` (in the chain, *not* in `setup`, so its bridge
+  `js_init_script` is injected before the main window loads).
+- `src-tauri/capabilities/default.json` grants `pilot:default` (required, or
+  `eval` times out).
+- Building requires a **Rust 1.95+** toolchain (the crate uses edition 2024).
+
+**Prerequisite (once per machine):**
+```
+cargo install tauri-pilot-cli          # provides the `tauri-pilot` binary
+```
+The crates.io CLI `0.6.0` is protocol-compatible with the git-pinned plugin
+(the #115 fix changes runtime behavior, not the JSON-RPC protocol). If you bump
+the plugin pin to a version with protocol changes, reinstall a matching CLI
+(`cargo install --git https://github.com/mpiton/tauri-pilot tauri-pilot-cli`).
+
+**Use it:**
+```
+bun run tauri:dev                      # launch the desktop app; wait for the window
+tauri-pilot ping                       # -> ok  (auto-detects the running instance)
+tauri-pilot snapshot -i                # interactive elements with @refs
+tauri-pilot click '@e3'                # act on a ref (quote @refs in PowerShell!)
+tauri-pilot screenshot shot.png        # capture the WebView
+tauri-pilot logs --level error         # catch JS errors
+tauri-pilot ipc detect_gpu             # call a #[tauri::command] directly
+```
+On Windows the plugin listens on the Named Pipe
+`\\.\pipe\tauri-pilot-org.sleap.app` and registers a liveness file at
+`%LOCALAPPDATA%\tauri-pilot\instances\org.sleap.app.json`, which the CLI uses to
+auto-detect the app — no `--socket` needed. **In PowerShell, quote element refs**
+(`tauri-pilot click '@e3'`) — a bare `@e3` is parsed as the splat operator and
+silently dropped. The full command reference and agent workflow live
+in the project skill at `.claude/skills/tauri-pilot/SKILL.md` (auto-loaded by
+Claude Code). For native MCP tool use instead of the CLI, run `tauri-pilot mcp`.
+
+> If port 5173 is already taken by a browser `bun run dev`, run tauri dev against
+> the existing server instead of killing it:
+> `bun run tauri dev --config '{"build":{"beforeDevCommand":""}}'`
+
 # Deployment
 - On merge to `main`:
   - Deployed to: `https://app.sleap.ai/dev/`
