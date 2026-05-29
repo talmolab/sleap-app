@@ -12,7 +12,7 @@ It is deployed to a static page endpoint (app.sleap.ai), as well as compiled to 
 This app makes extensive use of `sleap-io.js` for I/O, data model, SLP file handling, video decoding, playback, HDF5 ops.
 - Source: https://github.com/talmolab/sleap-io.js
 - Docs: https://iojs.sleap.ai/usage.md, https://iojs.sleap.ai/api.md
-- Can use a local sibling checkout at `../sleap-io.js` (Vite auto-detects). CI clones it automatically.
+- Can use a local sibling checkout at `../sleap-io.js` (Vite auto-detects). CI uses the published package, not a sibling checkout.
 
 ## Commands
 ```
