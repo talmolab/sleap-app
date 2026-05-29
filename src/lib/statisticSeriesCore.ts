@@ -73,3 +73,51 @@ export function instanceVelocity(
   }
   return reduceValues(dists, reduction);
 }
+
+/** Median of a list of numbers (assumes non-empty). */
+function median(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0
+    ? (sorted[mid - 1] + sorted[mid]) / 2
+    : sorted[mid];
+}
+
+/**
+ * Per-axis nanmedian centroid of an instance's points (rows [x, y]).
+ * INTENTIONALLY matches summary.py get_centroid = np.nanmedian(points, axis=0),
+ * and deliberately DIFFERS from the app's MEAN centroid (centroidXy /
+ * TrailRenderer.computeCentroid). Used ONLY by min-centroid-proximity.
+ * Returns null when no point has a finite coordinate.
+ */
+export function medianCentroid(points: number[][]): [number, number] | null {
+  const xs: number[] = [];
+  const ys: number[] = [];
+  for (const p of points) {
+    if (!Number.isNaN(p[0]) && !Number.isNaN(p[1])) {
+      xs.push(p[0]);
+      ys.push(p[1]);
+    }
+  }
+  if (xs.length === 0) return null;
+  return [median(xs), median(ys)];
+}
+
+/**
+ * Minimum pairwise Euclidean distance between centroids.
+ * Ports summary.py min_centroid_dist: <2 centroids -> NaN; otherwise
+ * the min off-diagonal distance.
+ */
+export function minCentroidDistance(centroids: Array<[number, number]>): number {
+  if (centroids.length < 2) return NaN;
+  let min = Infinity;
+  for (let i = 0; i < centroids.length; i++) {
+    for (let j = i + 1; j < centroids.length; j++) {
+      const dx = centroids[i][0] - centroids[j][0];
+      const dy = centroids[i][1] - centroids[j][1];
+      const d = Math.hypot(dx, dy);
+      if (!Number.isNaN(d) && d < min) min = d;
+    }
+  }
+  return min === Infinity ? NaN : min;
+}

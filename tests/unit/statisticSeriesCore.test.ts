@@ -68,3 +68,35 @@ describe("instanceVelocity", () => {
     expect(Number.isNaN(instanceVelocity(a, b, "mean"))).toBe(true);
   });
 });
+
+import { medianCentroid, minCentroidDistance } from "@/lib/statisticSeriesCore";
+
+describe("medianCentroid", () => {
+  it("computes per-axis median over visible (non-NaN) points", () => {
+    // x: median(0,2,100)=2 ; y: median(0,2,100)=2  (odd count -> middle)
+    expect(medianCentroid([[0, 0], [2, 2], [100, 100]])).toEqual([2, 2]);
+  });
+  it("ignores NaN points (nanmedian)", () => {
+    // visible x: [0,4] -> median 2 ; visible y: [0,4] -> median 2
+    expect(medianCentroid([[0, 0], [NaN, NaN], [4, 4]])).toEqual([2, 2]);
+  });
+  it("median differs from mean for asymmetric/outlier points", () => {
+    // mean x = (0+0+30)/3 = 10 ; median x = 0  -> proves we are NOT using mean
+    expect(medianCentroid([[0, 0], [0, 0], [30, 0]])![0]).toBe(0);
+  });
+  it("returns null when no visible points", () => {
+    expect(medianCentroid([[NaN, NaN]])).toBeNull();
+    expect(medianCentroid([])).toBeNull();
+  });
+});
+
+describe("minCentroidDistance", () => {
+  it("fewer than 2 centroids -> NaN", () => {
+    expect(Number.isNaN(minCentroidDistance([[0, 0]]))).toBe(true);
+    expect(Number.isNaN(minCentroidDistance([]))).toBe(true);
+  });
+  it("returns smallest pairwise distance", () => {
+    // distances: (0,0)-(3,4)=5, (0,0)-(0,1)=1, (3,4)-(0,1)=~4.24
+    expect(minCentroidDistance([[0, 0], [3, 4], [0, 1]])).toBe(1);
+  });
+});
