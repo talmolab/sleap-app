@@ -16,7 +16,7 @@ A modern rewrite of SLEAP's Qt/Python desktop labeling interface as a web app, w
 | **Video** | [WebCodecs](https://developer.mozilla.org/en-US/docs/Web/API/WebCodecs_API) + [mp4box.js](https://gpac.github.io/mp4box.js/) |
 | **Desktop** | Tauri v2 (~5 MB vs ~244 MB Electron) |
 | **Shortcuts** | [tinykeys](https://github.com/jamiebuilds/tinykeys) (~400 B) |
-| **Testing** | [Vitest](https://vitest.dev/) (200+ unit tests), [Playwright](https://playwright.dev/) (E2E) |
+| **Testing** | [bun test](https://bun.com/docs/cli/test) (200+ unit tests), [Playwright](https://playwright.dev/) (E2E) |
 
 ## Features
 
@@ -75,21 +75,21 @@ A modern rewrite of SLEAP's Qt/Python desktop labeling interface as a web app, w
 
 ```bash
 # Install dependencies
-npm install
+bun install
 
 # Start dev server (browser)
-npm run dev          # http://localhost:5173
+bun run dev          # http://localhost:5173
 
 # Start Tauri dev mode (desktop, requires system deps)
-npm run tauri:dev
+bun run tauri:dev
 
 # Run tests
-npm test             # Vitest unit tests
-npm run test:e2e     # Playwright E2E tests
+bun test tests/unit  # Unit tests (bun's native runner)
+bun run test:e2e     # Playwright E2E tests
 
 # Production builds
-npm run build        # Browser (dist/)
-npm run tauri:build  # Desktop installer (.msi / .dmg / .deb)
+bun run build        # Browser (dist/)
+bun run tauri:build  # Desktop installer (.msi / .dmg / .deb)
 ```
 
 ### System Dependencies (Linux, for Tauri)
@@ -102,22 +102,28 @@ sudo apt-get install libwebkit2gtk-4.1-dev libgtk-3-dev \
 
 ### sleap-io.js Dependency
 
-The data model and SLP file handling come from `@talmolab/sleap-io.js`. It can be used from a local checkout or from npm.
+The data model and SLP file handling come from `@talmolab/sleap-io.js`. It can be used from a local checkout or from the npm registry.
 
 **Local development (default)** -- links to a sibling checkout for developing against unpublished changes:
 
 ```bash
 # Expects ../sleap-io.js to exist (git clone it alongside this repo)
-npm pkg set dependencies.@talmolab/sleap-io.js="file:../sleap-io.js"
-npm install
+bun add file:../sleap-io.js
 ```
 
-**npm (CI / standalone)** -- uses the published package:
+`bun add` updates `package.json` + `bun.lock` and installs in one step (there is no
+`bun pkg set` equivalent). Alternatively, hand-edit the
+`dependencies."@talmolab/sleap-io.js"` field in `package.json` to `"file:../sleap-io.js"`,
+then run `bun install`.
+
+**Published package (CI / standalone)** -- uses the package from the npm registry:
 
 ```bash
-npm pkg set dependencies.@talmolab/sleap-io.js="^0.1.9"
-npm install
+bun add @talmolab/sleap-io.js@<version>
 ```
+
+Or hand-edit the `dependencies."@talmolab/sleap-io.js"` version in `package.json`,
+then run `bun install`.
 
 The Vite config auto-detects which mode is active by checking where `h5wasm` is installed.
 
@@ -152,7 +158,7 @@ src/
 └── types/                       #   TypeScript type definitions
 
 src-tauri/                       # Tauri v2 desktop shell (Rust)
-tests/                           # Vitest unit tests + Playwright E2E
+tests/                           # bun unit tests + Playwright E2E
 ```
 
 ### Key Patterns

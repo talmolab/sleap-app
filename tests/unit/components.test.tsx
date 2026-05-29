@@ -2,7 +2,7 @@
  * Basic component rendering tests.
  */
 
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "../bun-test";
 import { render, screen } from "@testing-library/react";
 import { useAppStore } from "@/stores/appStore";
 

@@ -2,7 +2,7 @@
  * Tests for skeleton template data validation.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "../bun-test";
 import {
   SKELETON_TEMPLATES,
   TEMPLATE_ORDER,

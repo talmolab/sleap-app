@@ -2,7 +2,7 @@
  * Tests for dialog components.
  */
 
-import { describe, it, expect, beforeEach, beforeAll, vi } from "vitest";
+import { describe, it, expect, beforeEach, beforeAll, vi } from "../bun-test";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { useAppStore } from "@/stores/appStore";
 

@@ -2,7 +2,7 @@
  * Tests for the command system.
  */
 
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "../bun-test";
 import { CommandContext } from "@/commands/CommandContext";
 import { useAppStore } from "@/stores/appStore";
 import { UpdateTopic } from "@/types";

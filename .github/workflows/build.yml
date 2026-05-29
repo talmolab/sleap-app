@@ -59,14 +59,13 @@ jobs:
             libglib2.0-dev \
             libayatana-appindicator3-dev
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Setup bun
+        uses: oven-sh/setup-bun@v2
         with:
-          node-version: 22
-          cache: npm
+          bun-version: 1.3.14
 
       - name: Install frontend dependencies
-        run: npm ci
+        run: bun install --frozen-lockfile
 
       - name: Set version from release tag
         if: github.event_name == 'release'
@@ -76,7 +75,7 @@ jobs:
           VERSION="${VERSION#v}"
           echo "Setting version to $VERSION"
           # Update tauri.conf.json version
-          node -e "
+          bun -e "
             const fs = require('fs');
             const conf = JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json', 'utf8'));
             conf.version = '$VERSION';

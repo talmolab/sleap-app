@@ -2,7 +2,7 @@
  * Tests for skeleton editing commands.
  */
 
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach } from "../bun-test";
 import { CommandContext } from "@/commands/CommandContext";
 import { useAppStore } from "@/stores/appStore";
 import {

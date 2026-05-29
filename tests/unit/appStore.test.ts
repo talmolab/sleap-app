@@ -2,7 +2,7 @@
  * Tests for the Zustand app store.
  */
 
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach } from "../bun-test";
 import { useAppStore } from "@/stores/appStore";
 import type { Labels, Video, Skeleton, Instance } from "@/types";
 

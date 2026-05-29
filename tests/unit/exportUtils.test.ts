@@ -2,7 +2,7 @@
  * Tests for export utility functions.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "../bun-test";
 import {
   generateCSV,
   suggestSaveFilename,

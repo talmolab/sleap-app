@@ -1,0 +1,8 @@
+# Bun configuration. See https://bun.com/docs/runtime/bunfig
+
+[test]
+# Register a DOM and the jest-dom matchers before any test file (or its module
+# graph, e.g. @testing-library/dom's `screen`) is evaluated. Under `--isolate`
+# each file also re-registers via the tests/bun-test.ts shim in its own fresh
+# global; this preload covers the original global as well.
+preload = ["./tests/setup.bun.ts"]

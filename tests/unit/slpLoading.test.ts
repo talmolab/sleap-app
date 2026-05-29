@@ -4,10 +4,10 @@
  * These tests verify that SLP files from the test fixtures can be loaded
  * using @talmolab/sleap-io.js.
  *
- * @vitest-environment node
+ * (Pure Node I/O; no DOM is required for these tests.)
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "../bun-test";
 import { loadSlp } from "@talmolab/sleap-io.js";
 import fs from "fs";
 import path from "path";
