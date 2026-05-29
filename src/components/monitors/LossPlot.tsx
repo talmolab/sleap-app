@@ -55,7 +55,6 @@ export function LossPlot({
         computeYRange(latestYsRef.current, { logScale, ignoreOutliers }) ??
         [logScale ? 0.001 : 0, 1],
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [logScale, ignoreOutliers]);
 
   if (model.epochSamples.length === 0) return null;
