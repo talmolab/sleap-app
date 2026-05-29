@@ -24,3 +24,47 @@ describe("reduceValues", () => {
     expect(Number.isNaN(reduceValues([NaN, NaN], "mean"))).toBe(true);
   });
 });
+
+import { instanceVelocity } from "@/lib/statisticSeriesCore";
+
+describe("instanceVelocity", () => {
+  it("sum of per-node distances (all visible)", () => {
+    // node0 moves (0,0)->(3,4) => dist 5; node1 moves (0,0)->(0,0) => 0
+    const a = [[3, 4], [0, 0]];
+    const b = [[0, 0], [0, 0]];
+    expect(instanceVelocity(a, b, "sum")).toBe(5);
+  });
+  it("max of per-node distances (all visible)", () => {
+    const a = [[3, 4], [6, 8]];
+    const b = [[0, 0], [0, 0]];
+    expect(instanceVelocity(a, b, "max")).toBe(10);
+  });
+  // HYBRID parity: summary.py uses NaN-propagating np.sum/np.max
+  // (summary.py:110), so ANY invisible node makes the whole instance NaN.
+  it("sum PROPAGATES NaN when any node distance is NaN (partially-visible)", () => {
+    const a = [[3, 4], [NaN, NaN]];
+    const b = [[0, 0], [0, 0]];
+    expect(Number.isNaN(instanceVelocity(a, b, "sum"))).toBe(true);
+  });
+  it("max PROPAGATES NaN when any node distance is NaN (partially-visible)", () => {
+    const a = [[3, 4], [NaN, NaN]];
+    const b = [[0, 0], [0, 0]];
+    expect(Number.isNaN(instanceVelocity(a, b, "max"))).toBe(true);
+  });
+  it("all-NaN instance is NaN for sum and max", () => {
+    const a = [[NaN, NaN], [NaN, NaN]];
+    const b = [[0, 0], [0, 0]];
+    expect(Number.isNaN(instanceVelocity(a, b, "sum"))).toBe(true);
+    expect(Number.isNaN(instanceVelocity(a, b, "max"))).toBe(true);
+  });
+  it("mean uses nanmean: NaN node coords drop out of mean", () => {
+    const a = [[3, 4], [NaN, NaN]];
+    const b = [[0, 0], [0, 0]];
+    expect(instanceVelocity(a, b, "mean")).toBe(5);
+  });
+  it("all-NaN instance is NaN for mean too (nanmean of empty)", () => {
+    const a = [[NaN, NaN]];
+    const b = [[0, 0]];
+    expect(Number.isNaN(instanceVelocity(a, b, "mean"))).toBe(true);
+  });
+});
