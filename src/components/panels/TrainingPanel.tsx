@@ -13,6 +13,7 @@ import type { ModelType, ConfigFile, ConfigHyperparams } from "@/stores/training
 import { useConnectStore } from "@/stores/connectStore";
 import { RemoteFileBrowser } from "@/components/dialogs/RemoteFileBrowser";
 import { TrainingConfigDialog } from "@/components/dialogs/TrainingConfigDialog";
+import { LossPlot } from "@/components/monitors/LossPlot";
 import { slotToHeadType, getDefaultProfileForHead } from "@/lib/trainingProfiles";
 import { useAppStore } from "@/stores/appStore";
 import { isTauri } from "@/platform/index";
@@ -1148,6 +1149,11 @@ export function TrainingPanel() {
                         <span>loss: {model.loss.toFixed(4)}</span>
                       )}
                     </div>
+                  )}
+
+                  {/* Live loss chart */}
+                  {(isCurrent || isCompleted || isFailed) && model.epochSamples.length > 0 && (
+                    <LossPlot model={model} startedAt={startedAt} status={status} />
                   )}
                 </div>
               );
