@@ -1,3 +1,4 @@
+import { describe, it, expect, beforeEach } from "../bun-test";
 import { useInferenceStore } from "@/stores/inferenceStore";
 
 function resetStore() {

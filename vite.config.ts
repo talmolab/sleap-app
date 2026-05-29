@@ -8,9 +8,31 @@ import fs from "fs";
 // In that case, use real Tauri plugin packages instead of browser stubs.
 const isTauri = !!process.env.TAURI_ENV_PLATFORM;
 
-// Detect linked sleap-io.js (symlink to local checkout)
+// Detect whether sleap-io.js is linked to a local out-of-tree checkout
+// (e.g. `bun add file:../sleap-io.js` for local development) vs. a normal
+// published-package install. Linking can manifest in different ways depending
+// on the package manager / OS: a POSIX symlink, a Windows junction, or a real
+// directory whose realpath resolves outside this project's node_modules. We
+// treat it as linked if it's a symlink OR if its realpath points outside
+// node_modules. A normal install resolves inside node_modules -> not linked.
 const sleapIoPath = path.resolve(__dirname, "node_modules/@talmolab/sleap-io.js");
-const isLinkedSleapIo = fs.lstatSync(sleapIoPath, { throwIfNoEntry: false })?.isSymbolicLink() ?? false;
+const nodeModulesDir = path.join(__dirname, "node_modules");
+function detectLinkedSleapIo(): boolean {
+  try {
+    if (fs.lstatSync(sleapIoPath, { throwIfNoEntry: false })?.isSymbolicLink()) {
+      return true;
+    }
+    // realpathSync follows junctions/symlinks and normalizes the path; if the
+    // resolved location lives outside our node_modules, it's a local link.
+    const resolved = fs.realpathSync(sleapIoPath);
+    const relative = path.relative(nodeModulesDir, resolved);
+    return relative.startsWith("..") || path.isAbsolute(relative);
+  } catch {
+    // Package not installed (or path inaccessible); treat as a normal install.
+    return false;
+  }
+}
+const isLinkedSleapIo = detectLinkedSleapIo();
 
 export default defineConfig({
   base: process.env.VITE_BASE_PATH || "/",

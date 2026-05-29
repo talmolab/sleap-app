@@ -7,13 +7,15 @@
  * bun:test equivalents. This keeps the test bodies unchanged while dropping
  * the vitest/vite-node dependency (which cannot run under bun on Windows).
  *
- * This module also (re-)registers happy-dom and the jest-dom matchers. The
- * suite runs with `bun test --isolate`, which gives every test file a fresh
- * global object and module registry (so `mock.module` mocks made by one file
- * never leak into another). A bunfig `preload` would register the DOM only in
- * the original global, which the isolated per-file globals cannot see. Because
- * every test file imports this shim, registering here runs once per file in
- * that file's own fresh global, guaranteeing `document` is present everywhere.
+ * This module also registers happy-dom and the jest-dom matchers. The suite
+ * runs with `bun test --isolate`, which gives every test file a fresh global
+ * object and module registry (so `mock.module` mocks made by one file never
+ * leak into another). The bunfig `preload` (tests/setup.bun.ts) registers the
+ * DOM in bun's original global before any test module loads -- early enough
+ * for `@testing-library/dom`'s `screen` (which binds to `document.body` at
+ * module-load time). This shim re-registers in each isolated per-file global
+ * as a belt-and-braces measure (guarded so it is a no-op if a DOM already
+ * exists), guaranteeing `document` is present everywhere.
  *
  * Registration happens at the very top, before `@testing-library/dom` (pulled
  * in transitively below) is evaluated, because its `screen` export binds to
@@ -28,6 +30,15 @@ if (!(globalThis as { document?: unknown }).document) {
 // Vite normally injects import.meta.env.BASE_URL; under bun test it maps to
 // process.env, so provide the dev-server base path the app expects ("/").
 process.env.BASE_URL = "/";
+
+// Bun maps import.meta.env to process.env (empty by default). vitest used to
+// set MODE=test / DEV=true / PROD=false; without these, import.meta.env.DEV
+// (e.g. in src/components/layout/ErrorBoundary.tsx) would be falsy under bun,
+// diverging from the vitest behaviour the tests were written against. Mirror
+// vitest here (DEV truthy). Do NOT set NODE_ENV. Use ??= so explicit env wins.
+process.env.MODE ??= "test";
+process.env.DEV ??= "true";
+process.env.PROD ??= "";
 
 import { mock, spyOn, expect } from "bun:test";
 import * as matchers from "@testing-library/jest-dom/matchers";
@@ -61,7 +72,18 @@ export const vi = {
   /** vitest `vi.spyOn` -> bun `spyOn`. */
   spyOn,
 
-  /** vitest `vi.mock(specifier, factory)` -> bun `mock.module`. */
+  /**
+   * vitest `vi.mock(specifier, factory)` -> bun `mock.module`.
+   *
+   * CAVEAT: bun's `mock.module` is NOT hoisted above static `import`
+   * statements the way vitest's `vi.mock` is. The mock only takes effect for
+   * modules imported AFTER this call runs. Therefore any test that uses
+   * `vi.mock` MUST import the module-under-test DYNAMICALLY (via
+   * `await import(...)`) inside the test/`beforeEach`, AFTER calling
+   * `vi.mock`, rather than with a top-of-file static import (as the
+   * components/dialogs tests already do). A static import would be evaluated
+   * before the mock is registered and would bind to the real module.
+   */
   mock: (specifier: string, factory: () => unknown) =>
     mock.module(specifier, factory),
 

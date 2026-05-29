@@ -19,14 +19,16 @@ This app makes extensive use of `sleap-io.js` for I/O, data model, SLP file hand
 bun run dev          # Browser dev server (port 5173)
 bun run build        # Type check + production build
 bun run lint         # ESLint
-bun test tests/unit  # Unit tests (bun's native runner, one-shot)
+bun run test         # Unit tests (bun's native runner, --isolate)
 bun run test:e2e     # E2E tests (Playwright)
 bun run tauri:dev    # Desktop dev mode
 bun run tauri:build  # Desktop build
 ```
 
-Unit tests use `bun test` (bun's native runner), NOT vitest. `bun test` is already
-one-shot (there is no `-- --run` flag), and it runs all test files in a single process.
+Unit tests use `bun test` (bun's native runner), NOT vitest. The suite runs with
+`--isolate` (each test file gets a fresh global object / module registry). A bare
+`bun test` WITHOUT `--isolate` currently panics bun 1.3.14, so always use `bun run test`,
+which runs the package.json script with the required `--isolate` flag.
 
 ## Tests
 - Unit tests: `tests/unit/`

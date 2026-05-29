@@ -84,7 +84,7 @@ bun run dev          # http://localhost:5173
 bun run tauri:dev
 
 # Run tests
-bun test tests/unit  # Unit tests (bun's native runner)
+bun run test         # unit tests (bun, --isolate)
 bun run test:e2e     # Playwright E2E tests
 
 # Production builds
@@ -125,7 +125,7 @@ bun add @talmolab/sleap-io.js@<version>
 Or hand-edit the `dependencies."@talmolab/sleap-io.js"` version in `package.json`,
 then run `bun install`.
 
-The Vite config auto-detects which mode is active by checking where `h5wasm` is installed.
+The Vite config auto-detects which mode is active by checking whether `@talmolab/sleap-io.js` in `node_modules` is a local link (symlink to an out-of-tree checkout) rather than a normal install.
 
 ## Architecture
 

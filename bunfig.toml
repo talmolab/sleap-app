@@ -2,7 +2,11 @@
 
 [test]
 # Register a DOM and the jest-dom matchers before any test file (or its module
-# graph, e.g. @testing-library/dom's `screen`) is evaluated. Under `--isolate`
-# each file also re-registers via the tests/bun-test.ts shim in its own fresh
-# global; this preload covers the original global as well.
+# graph, e.g. @testing-library/dom's `screen`) is evaluated. This preload runs
+# in bun's original global before any test module loads, which is the only
+# point early enough to register the DOM before `screen` binds to
+# `document.body` at module-load time. The per-file tests/bun-test.ts shim also
+# registers happy-dom for each isolated global, but cannot run early enough on
+# its own (its own static imports pull in @testing-library/dom). See
+# tests/setup.bun.ts for details.
 preload = ["./tests/setup.bun.ts"]

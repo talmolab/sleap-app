@@ -4,7 +4,10 @@
  * These tests verify that SLP files from the test fixtures can be loaded
  * using @talmolab/sleap-io.js.
  *
- * (Pure Node I/O; no DOM is required for these tests.)
+ * These run with a happy-dom DOM registered: the `../bun-test` shim registers
+ * it globally and bun test has no per-file environment, so a `document` is
+ * present even though these tests don't exercise it. Fixtures are read into an
+ * ArrayBuffer and passed to loadSlp, so the node-fs file path isn't required.
  */
 
 import { describe, it, expect } from "../bun-test";

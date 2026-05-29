@@ -1,0 +1,14 @@
+{
+  // Type-checks the test suite (not covered by `tsc -b`, which only checks
+  // src + vite.config). Extends the app config so tests resolve `@/*` and the
+  // same lib/strictness, but adds bun's types so `bun:test` (describe/it/expect)
+  // and the bun globals used by the shim resolve. `types` fully overrides the
+  // parent's, so re-list "vite/client" (for import.meta.env) alongside "bun".
+  "extends": "./tsconfig.app.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.test.tsbuildinfo",
+    "types": ["vite/client", "bun"],
+    "noEmit": true
+  },
+  "include": ["tests", "tests/**/*"]
+}
