@@ -183,3 +183,32 @@ describe("pointDisplacementSeries", () => {
     expect(pointDisplacementSeries(labels, VIDEO, "sum").get(1)).toBe(0);
   });
 });
+
+import { primaryPointDisplacementSeries, computeStatisticSeries } from "@/lib/statisticSeries";
+
+describe("primaryPointDisplacementSeries", () => {
+  it("carries forward track position and shifts displacement by 1 frame", () => {
+    const trackA = {};
+    // frames 0,1,2; node0 anchor: f0=(0,0), f1=(0,0), f2=(3,4)
+    const labels = mockLabels(
+      [
+        frame(0, [inst([pt(0, 0), pt(9, 9)], { track: trackA, score: 1 })]),
+        frame(1, [inst([pt(0, 0), pt(9, 9)], { track: trackA, score: 1 })]),
+        frame(2, [inst([pt(3, 4), pt(9, 9)], { track: trackA, score: 1 })]),
+      ],
+      [trackA],
+    );
+    const s = primaryPointDisplacementSeries(labels, VIDEO, "sum");
+    expect(s.get(2)).toBeCloseTo(5);
+  });
+});
+
+describe("computeStatisticSeries dispatch", () => {
+  it("routes to the right series by graph type", () => {
+    const labels = mockLabels([
+      frame(0, [inst([pt(0, 0), pt(1, 1)], { score: 0.9 })]),
+    ]);
+    expect(computeStatisticSeries(labels, VIDEO, "point-count", "sum").get(0)).toBe(2);
+    expect(computeStatisticSeries(labels, VIDEO, "none", "sum").size).toBe(0);
+  });
+});

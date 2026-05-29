@@ -192,3 +192,85 @@ export function pointDisplacementSeries(
   }
   return series;
 }
+
+import { primaryDisplacementFromMatrix } from "./statisticSeriesCore";
+
+/**
+ * Primary (single anchor node) displacement per frame, reduced across
+ * tracks (summary.py get_primary_point_displacement_series). Builds a
+ * per-frame, per-track anchor location matrix with carry-forward of last
+ * known position, then computes shifted displacement.
+ */
+export function primaryPointDisplacementSeries(
+  labels: Labels,
+  video: Video,
+  reduction: Reduction,
+  primaryNodeIdx = 0,
+): Map<number, number> {
+  const tracks = labels.tracks as unknown[];
+  const trackCount = tracks.length;
+  const series = new Map<number, number>();
+  if (trackCount === 0) return series;
+
+  const frames = labels.find({ video });
+  let lastFrameIdx = 0;
+  for (const lf of frames) if (lf.frameIdx > lastFrameIdx) lastFrameIdx = lf.frameIdx;
+
+  // location_matrix[frame][track] = [x, y]; carry-forward of last known pos.
+  const loc: Array<Array<[number, number]>> = [];
+  const lastPos: Array<[number, number]> = tracks.map(() => [0, 0]);
+  const seen = new Set<number>();
+  const byFrame = new Map<number, (typeof frames)[number]>();
+  for (const lf of frames) byFrame.set(lf.frameIdx, lf);
+
+  for (let f = 0; f <= lastFrameIdx; f++) {
+    // start with last known positions
+    const row: Array<[number, number]> = lastPos.map((p) => [p[0], p[1]]);
+    const lf = byFrame.get(f);
+    if (lf) {
+      for (const inst of lf.instances) {
+        const track = (inst as { track?: unknown }).track ?? null;
+        if (track === null) continue;
+        const trackIdx = tracks.indexOf(track);
+        if (trackIdx < 0 || trackIdx >= trackCount) continue;
+        const point = (inst as unknown as { numpy: () => number[][] }).numpy()[primaryNodeIdx];
+        if (!point) continue;
+        row[trackIdx] = [point[0], point[1]];
+        if (!Number.isNaN(point[0]) && !Number.isNaN(point[1])) {
+          lastPos[trackIdx] = [point[0], point[1]];
+          // first sighting: backfill earlier frames so no spurious jump
+          if (!seen.has(trackIdx)) {
+            for (let pf = 0; pf < f; pf++) loc[pf][trackIdx] = [point[0], point[1]];
+            seen.add(trackIdx);
+          }
+        }
+      }
+    }
+    loc.push(row);
+  }
+
+  const out = primaryDisplacementFromMatrix(loc, reduction);
+  for (let f = 0; f < out.length; f++) {
+    if (byFrame.has(f)) series.set(f, out[f]);
+  }
+  return series;
+}
+
+/** Dispatch by graph type. "none"/"instance-count" are handled in the UI. */
+export function computeStatisticSeries(
+  labels: Labels,
+  video: Video,
+  graph: StatisticGraphType,
+  reduction: Reduction,
+): Map<number, number> {
+  switch (graph) {
+    case "point-count": return pointCountSeries(labels, video);
+    case "point-score": return pointScoreSeries(labels, video, reduction);
+    case "instance-score": return instanceScoreSeries(labels, video, reduction);
+    case "point-displacement": return pointDisplacementSeries(labels, video, reduction);
+    case "primary-point-displacement": return primaryPointDisplacementSeries(labels, video, reduction);
+    case "min-centroid-proximity": return minCentroidProximitySeries(labels, video);
+    case "tracking-score": return trackingScoreSeries(labels, video, reduction);
+    default: return new Map();
+  }
+}
