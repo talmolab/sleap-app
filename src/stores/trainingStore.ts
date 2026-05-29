@@ -2,6 +2,7 @@ import { create } from "zustand";
 import yaml from "js-yaml";
 import { cancelCommand } from "@/platform/backend";
 import { isTauri } from "@/platform";
+import { computeRuntimeMetrics } from "@/lib/trainingMetrics";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -1341,32 +1342,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
           if (i !== modelIndex) return m;
           const epochSamples = [...m.epochSamples, sample];
 
-          // TODO(training-monitor): replace inline metrics with computeRuntimeMetrics() once Task 1.3 lands
-          const valSamples = epochSamples.filter(
-            (s) => s.valLoss != null && Number.isFinite(s.valLoss),
-          );
-          let bestVal = Infinity;
-          let bestValEpoch: number | null = null;
-          let epochsInPlateau = 0;
-          let inPlateau = false;
-          const delta = m.plateauMinDelta ?? 0;
-          for (const s of valSamples) {
-            const v = s.valLoss as number;
-            const isBetter = bestValEpoch === null ? true : v < bestVal - delta;
-            if (isBetter) {
-              bestVal = v; bestValEpoch = s.epoch; epochsInPlateau = 0; inPlateau = false;
-            } else {
-              epochsInPlateau += 1; inPlateau = true;
-            }
-          }
-          let meanEpochTimeSec: number | null = null;
-          let etaNext10Min: number | null = null;
-          if (epochSamples.length >= 1) {
-            const elapsedSec = (Date.now() - startedAt) / 1000;
-            meanEpochTimeSec = elapsedSec / epochSamples.length;
-            etaNext10Min = Math.floor((meanEpochTimeSec * 10) / 60);
-          }
-          const metrics: RuntimeMetrics = { meanEpochTimeSec, etaNext10Min, epochsInPlateau, inPlateau, bestValEpoch };
+          const metrics = computeRuntimeMetrics(epochSamples, startedAt, Date.now(), m.plateauMinDelta);
 
           return {
             ...m,
