@@ -784,4 +784,27 @@ describe("recordEpoch", () => {
     useTrainingStore.setState({ models: [makeModel()], startedAt: 0 });
     expect(() => useTrainingStore.getState().recordEpoch(5, { epoch: 0, trainLoss: 1, valLoss: 1 })).not.toThrow();
   });
+
+  it("recordEpoch preserves prior loss/valLoss when a sample field is null", () => {
+    useTrainingStore.setState({ models: [makeModel({ loss: 0.7, valLoss: 0.6, bestValLoss: 0.6 })], startedAt: 0 });
+    useTrainingStore.getState().recordEpoch(0, { epoch: 0, trainLoss: null, valLoss: null });
+    const m = useTrainingStore.getState().models[0];
+    expect(m.loss).toBe(0.7);        // unchanged (sample.trainLoss was null)
+    expect(m.valLoss).toBe(0.6);     // unchanged (sample.valLoss was null)
+    expect(m.bestValLoss).toBe(0.6); // unchanged (no new val loss)
+    expect(m.epochSamples).toHaveLength(1);
+  });
+});
+
+describe("recordBatch", () => {
+  beforeEach(() => useTrainingStore.getState().reset());
+  it("appends batch samples to the model", () => {
+    useTrainingStore.setState({ models: [makeModel()], startedAt: 0 });
+    useTrainingStore.getState().recordBatch(0, { globalBatch: 5, loss: 0.42 });
+    expect(useTrainingStore.getState().models[0].batchSamples).toEqual([{ globalBatch: 5, loss: 0.42 }]);
+  });
+  it("ignores out-of-range model index safely", () => {
+    useTrainingStore.setState({ models: [makeModel()], startedAt: 0 });
+    expect(() => useTrainingStore.getState().recordBatch(9, { globalBatch: 0, loss: 1 })).not.toThrow();
+  });
 });
