@@ -10,9 +10,16 @@
  * - Instance count header graph
  */
 
-import { useRef, useCallback, useState, useEffect } from "react";
+import { useRef, useCallback, useState, useEffect, useMemo } from "react";
 import { useAppStore } from "../../stores/appStore";
 import { getPaletteColor, rgbToCSS } from "../../lib/colorPalettes";
+import {
+  computeStatisticSeries,
+  getGraphSpec,
+  GRAPH_SPECS,
+  type StatisticGraphType,
+} from "@/lib/statisticSeries";
+import { drawHeaderSeries } from "@/lib/headerSeriesRender";
 import { Button } from "@/components/ui/button";
 import {
   Tooltip,
@@ -55,6 +62,10 @@ export function Seekbar() {
   const palette = useAppStore((s) => s.palette);
   const setFrameIdx = useAppStore((s) => s.setFrameIdx);
   const frameRange = useAppStore((s) => s.frameRange);
+  const seekbarHeaderGraph = useAppStore((s) => s.seekbarHeaderGraph);
+  const seekbarHeaderReduction = useAppStore((s) => s.seekbarHeaderReduction);
+  const overlayVersion = useAppStore((s) => s.overlayVersion);
+  const setKey = useAppStore((s) => s.set);
 
   // Playback state
   const [isPlaying, setIsPlaying] = useState(false);
@@ -75,6 +86,36 @@ export function Seekbar() {
     ? Math.max(0, ...labels.find({ video }).map((lf) => lf.frameIdx)) + 1
     : 0;
   const totalFrames = shapeFrames ?? (inferredFrames > 0 ? inferredFrames : 0);
+
+  // Computed header statistic series for the selected graph type. "none" and
+  // "instance-count" are drawn directly in the header effect and return null
+  // here. overlayVersion is intentionally in the deps so the series refreshes
+  // after labeling edits.
+  const headerSeries = useMemo<Map<number, number> | null>(() => {
+    if (!labels || !video) return null;
+    if (seekbarHeaderGraph === "none" || seekbarHeaderGraph === "instance-count") {
+      return null;
+    }
+    return computeStatisticSeries(labels, video, seekbarHeaderGraph, seekbarHeaderReduction);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [labels, video, seekbarHeaderGraph, seekbarHeaderReduction, overlayVersion]);
+
+  // Switch graph type; reset reduction to the new graph's default if the
+  // current reduction is unsupported by it.
+  const selectGraph = useCallback(
+    (next: StatisticGraphType) => {
+      setKey("seekbarHeaderGraph", next);
+      const spec = getGraphSpec(next);
+      if (
+        spec &&
+        spec.reductions.length > 0 &&
+        !spec.reductions.includes(seekbarHeaderReduction)
+      ) {
+        setKey("seekbarHeaderReduction", spec.defaultReduction);
+      }
+    },
+    [setKey, seekbarHeaderReduction]
+  );
 
   const [isDragging, setIsDragging] = useState(false);
   const [hoverFrame, setHoverFrame] = useState<number | null>(null);
@@ -224,26 +265,33 @@ export function Seekbar() {
 
     if (totalFrames === 0 || !labels || !video) return;
 
-    // Build instance count per frame
-    const currentVideo = video;
-    let maxCount = 0;
-    const counts = new Map<number, number>();
-    for (const lf of labels.labeledFrames) {
-      if (lf.video !== currentVideo) continue;
-      counts.set(lf.frameIdx, lf.instances.length);
-      if (lf.instances.length > maxCount) maxCount = lf.instances.length;
+    if (seekbarHeaderGraph === "instance-count") {
+      // Build instance count per frame
+      const currentVideo = video;
+      let maxCount = 0;
+      const counts = new Map<number, number>();
+      for (const lf of labels.labeledFrames) {
+        if (lf.video !== currentVideo) continue;
+        counts.set(lf.frameIdx, lf.instances.length);
+        if (lf.instances.length > maxCount) maxCount = lf.instances.length;
+      }
+
+      if (maxCount === 0) return;
+
+      // Draw bar chart
+      ctx.fillStyle = "rgba(100, 149, 237, 0.5)";
+      for (const [fi, count] of counts) {
+        const x = (fi / (totalFrames - 1)) * w;
+        const barH = (count / maxCount) * h;
+        ctx.fillRect(x, h - barH, Math.max(1, w / totalFrames), barH);
+      }
+      return;
     }
 
-    if (maxCount === 0) return;
+    if (seekbarHeaderGraph === "none" || !headerSeries) return;
 
-    // Draw bar chart
-    ctx.fillStyle = "rgba(100, 149, 237, 0.5)";
-    for (const [fi, count] of counts) {
-      const x = (fi / (totalFrames - 1)) * w;
-      const barH = (count / maxCount) * h;
-      ctx.fillRect(x, h - barH, Math.max(1, w / totalFrames), barH);
-    }
-  }, [totalFrames, labels, video]);
+    drawHeaderSeries(ctx, headerSeries, totalFrames, w, h);
+  }, [totalFrames, labels, video, seekbarHeaderGraph, headerSeries]);
 
   // Render seekbar
   useEffect(() => {
@@ -386,13 +434,69 @@ export function Seekbar() {
             style={{ display: "block" }}
           />
         </div>
-        <div className="flex gap-0.5 shrink-0 items-center invisible" aria-hidden="true">
-          <Button variant="subtle" size="icon-xs" tabIndex={-1}><SkipBack /></Button>
-          <Button variant="subtle" size="icon-xs" tabIndex={-1}><ChevronLeft /></Button>
-          <Button variant="subtle" size="icon-xs" tabIndex={-1}><Play /></Button>
-          <Button variant="subtle" size="icon-xs" tabIndex={-1}><ChevronRight /></Button>
-          <Button variant="subtle" size="icon-xs" tabIndex={-1}><SkipForward /></Button>
-          <Button variant="subtle" size="xs" className="w-8 px-0" tabIndex={-1}>1x</Button>
+        <div className="flex gap-1 shrink-0 items-center">
+          {/* Graph-type picker */}
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button
+                variant="subtle"
+                size="xs"
+                className="h-4 text-[10px] text-muted-foreground px-1 max-w-40 truncate"
+                title="Seekbar header graph"
+              >
+                {getGraphSpec(seekbarHeaderGraph)?.label ?? "None"}
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-auto p-1" align="end" side="top">
+              <div className="flex flex-col">
+                {GRAPH_SPECS.map((spec) => (
+                  <Button
+                    key={spec.type}
+                    variant={spec.type === seekbarHeaderGraph ? "secondary" : "ghost"}
+                    size="xs"
+                    className="justify-start text-xs"
+                    onClick={() => selectGraph(spec.type)}
+                  >
+                    {spec.label}
+                  </Button>
+                ))}
+              </div>
+            </PopoverContent>
+          </Popover>
+          {/* Reduction picker (only when the chosen graph supports reductions) */}
+          {(() => {
+            const reductions = getGraphSpec(seekbarHeaderGraph)?.reductions ?? [];
+            if (reductions.length === 0) return null;
+            return (
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="subtle"
+                    size="xs"
+                    className="h-4 text-[10px] text-muted-foreground px-1"
+                    title="Reduction"
+                  >
+                    {seekbarHeaderReduction}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-auto p-1" align="end" side="top">
+                  <div className="flex flex-col">
+                    {reductions.map((r) => (
+                      <Button
+                        key={r}
+                        variant={r === seekbarHeaderReduction ? "secondary" : "ghost"}
+                        size="xs"
+                        className="justify-center text-xs"
+                        onClick={() => setKey("seekbarHeaderReduction", r)}
+                      >
+                        {r}
+                      </Button>
+                    ))}
+                  </div>
+                </PopoverContent>
+              </Popover>
+            );
+          })()}
         </div>
       </div>
 
