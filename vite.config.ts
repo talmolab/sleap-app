@@ -69,6 +69,13 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true,
+    // Don't watch the Rust build output. Under `bun run tauri:dev`, cargo is
+    // actively writing/locking .dll files in src-tauri/target/ while it
+    // compiles; chokidar attaching to a locked file throws EBUSY on Windows
+    // and crashes the dev server. (Standard in the Tauri Vite template.)
+    watch: {
+      ignored: ["**/src-tauri/**"],
+    },
     // Allow serving files from linked sleap-io.js outside the project root
     ...(isLinkedSleapIo && {
       fs: { allow: [".", fs.realpathSync(sleapIoPath)] },
