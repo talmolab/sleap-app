@@ -1,5 +1,10 @@
 import { describe, it, expect } from "../bun-test";
-import { quantile, computeYRange, computeRuntimeMetrics } from "@/lib/trainingMetrics";
+import {
+  quantile,
+  computeYRange,
+  computeRuntimeMetrics,
+  formatRuntimeTitle,
+} from "@/lib/trainingMetrics";
 import type { EpochSample } from "@/stores/trainingStore";
 
 const ep = (epoch: number, trainLoss: number, valLoss: number): EpochSample => ({
@@ -73,5 +78,31 @@ describe("computeRuntimeMetrics", () => {
     const m = computeRuntimeMetrics([ep(0, 1, NaN)], 0, 10_000, null);
     expect(m.bestValEpoch).toBeNull();
     expect(m.epochsInPlateau).toBe(0);
+  });
+});
+
+describe("formatRuntimeTitle", () => {
+  it("renders epoch + total runtime line", () => {
+    const lines = formatRuntimeTitle({
+      epoch: 4, maxEpochs: 100, totalRuntimeMs: 65_000, epochRuntimeMs: 5_000,
+      metrics: { meanEpochTimeSec: null, etaNext10Min: null, epochsInPlateau: 0, inPlateau: false, bestValEpoch: null },
+      plateauPatience: null, lastValLoss: null, bestValLoss: null, bestValEpoch: null,
+    });
+    expect(lines[0]).toContain("Epoch 5");          // epoch+1
+    expect(lines[0]).toContain("01:05");            // total runtime mm:ss
+    expect(lines[0]).toContain("00:05");            // epoch runtime
+  });
+  it("includes ETA, plateau, last and best val lines when available", () => {
+    const lines = formatRuntimeTitle({
+      epoch: 9, maxEpochs: 100, totalRuntimeMs: 600_000, epochRuntimeMs: null,
+      metrics: { meanEpochTimeSec: 60, etaNext10Min: 10, epochsInPlateau: 3, inPlateau: true, bestValEpoch: 2 },
+      plateauPatience: 10, lastValLoss: 0.0123, bestValLoss: 0.0099, bestValEpoch: 2,
+    });
+    const joined = lines.join("\n");
+    expect(joined).toContain("Mean Time per Epoch: 01:00");
+    expect(joined).toContain("ETA Next 10 Epochs: 10 min");
+    expect(joined).toContain("Epochs in Plateau: 3 / 10");
+    expect(joined).toMatch(/Last Epoch Validation Loss: 1\.230e-2/);
+    expect(joined).toMatch(/Best Epoch Validation Loss: 9\.900e-3 \(epoch 3\)/); // bestValEpoch+1
   });
 });

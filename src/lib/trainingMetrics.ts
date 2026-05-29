@@ -110,3 +110,53 @@ export function computeRuntimeMetrics(
 
   return { meanEpochTimeSec, etaNext10Min, epochsInPlateau, inPlateau, bestValEpoch };
 }
+
+function mmss(totalSec: number): string {
+  const m = Math.floor(totalSec / 60);
+  const s = Math.floor(totalSec % 60);
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+/**
+ * Multi-line runtime title (one string per line). Parity with
+ * monitor.py:update_runtime_title, minus matplotlib LaTeX markup. Losses are
+ * formatted toExponential(3) (PyQt ":.3e"); times as mm:ss.
+ */
+export function formatRuntimeTitle(args: {
+  epoch: number;
+  maxEpochs: number;
+  totalRuntimeMs: number;
+  epochRuntimeMs: number | null;
+  metrics: RuntimeMetrics;
+  plateauPatience: number | null;
+  lastValLoss: number | null;
+  bestValLoss: number | null;
+  bestValEpoch: number | null;
+}): string[] {
+  const lines: string[] = [];
+
+  let head = `Training Epoch ${args.epoch + 1} / Total Runtime: ${mmss(args.totalRuntimeMs / 1000)}`;
+  if (args.epochRuntimeMs != null) {
+    head += ` / Epoch Runtime: ${mmss(args.epochRuntimeMs / 1000)}`;
+  }
+  lines.push(head);
+
+  const { metrics } = args;
+  if (args.lastValLoss != null) {
+    if (metrics.meanEpochTimeSec != null && metrics.etaNext10Min != null) {
+      lines.push(
+        `Mean Time per Epoch: ${mmss(metrics.meanEpochTimeSec)} / ETA Next 10 Epochs: ${metrics.etaNext10Min} min`,
+      );
+      if (metrics.inPlateau && args.plateauPatience != null) {
+        lines.push(`Epochs in Plateau: ${metrics.epochsInPlateau} / ${args.plateauPatience}`);
+      }
+    }
+    lines.push(`Last Epoch Validation Loss: ${args.lastValLoss.toExponential(3)}`);
+    if (args.bestValLoss != null && args.bestValEpoch != null) {
+      lines.push(
+        `Best Epoch Validation Loss: ${args.bestValLoss.toExponential(3)} (epoch ${args.bestValEpoch + 1})`,
+      );
+    }
+  }
+  return lines;
+}
