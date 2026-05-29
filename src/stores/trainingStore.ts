@@ -848,37 +848,18 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
 
               if (event === "epoch_end") {
                 const logs = data.logs ?? data.py_dict?.logs ?? {};
-                const trainLoss = logs["train/loss"] ?? logs["loss"];
-                const valLoss = logs["val/loss"];
+                const trainLoss = logs["train/loss"] ?? logs["loss"] ?? null;
+                const valLoss = logs["val/loss"] ?? null;
                 const epoch = data.epoch ?? data.py_dict?.epoch;
-                set((s) => ({
-                  models: s.models.map((m, i) =>
-                    i === idx
-                      ? {
-                          ...m,
-                          epoch: typeof epoch === "number" ? epoch + 1 : m.epoch,
-                          loss: trainLoss ?? m.loss,
-                          valLoss: valLoss ?? m.valLoss,
-                          bestValLoss:
-                            valLoss != null &&
-                            (m.bestValLoss === null || valLoss < m.bestValLoss)
-                              ? valLoss
-                              : m.bestValLoss,
-                        }
-                      : m,
-                  ),
-                }));
+                // OQ-5: remote epoch is 0-based — pass through, no normalization.
+                if (typeof epoch === "number") {
+                  get().recordEpoch(idx, { epoch, trainLoss, valLoss });
+                }
               }
 
               if (event === "epoch_begin") {
                 const epoch = data.epoch ?? data.py_dict?.epoch;
-                if (typeof epoch === "number") {
-                  set((s) => ({
-                    models: s.models.map((m, i) =>
-                      i === idx ? { ...m, epoch } : m,
-                    ),
-                  }));
-                }
+                if (typeof epoch === "number") get().markEpochBegin(idx, epoch);
               }
             } catch {
               // Malformed progress report — ignore
