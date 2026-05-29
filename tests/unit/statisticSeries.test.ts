@@ -125,3 +125,19 @@ describe("trackingScoreSeries", () => {
     expect(trackingScoreSeries(labels, VIDEO, "min").get(0)).toBeCloseTo(0.4);
   });
 });
+
+import { minCentroidProximitySeries } from "@/lib/statisticSeries";
+
+describe("minCentroidProximitySeries", () => {
+  it("skips frames with <2 instances; reports min centroid distance otherwise", () => {
+    const labels = mockLabels([
+      frame(0, [inst([pt(0, 0)])]),                          // 1 inst -> skipped
+      frame(1, [inst([pt(0, 0)]), inst([pt(3, 4)])]),        // dist 5
+      frame(2, [inst([pt(0, 0)]), inst([pt(0, 1)]), inst([pt(9, 9)])]), // min dist 1
+    ]);
+    const s = minCentroidProximitySeries(labels, VIDEO);
+    expect(s.has(0)).toBe(false);
+    expect(s.get(1)).toBeCloseTo(5);
+    expect(s.get(2)).toBeCloseTo(1);
+  });
+});

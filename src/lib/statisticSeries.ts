@@ -127,3 +127,28 @@ export function trackingScoreSeries(
   }
   return series;
 }
+
+import { medianCentroid, minCentroidDistance } from "./statisticSeriesCore";
+
+/**
+ * Min pairwise centroid distance per frame (summary.py
+ * get_min_centroid_proximity_series). HYBRID parity: uses a MEDIAN centroid
+ * (medianCentroid over Instance.numpy() rows) to match summary.py's
+ * np.nanmedian get_centroid — INTENTIONALLY NOT Instance.centroidXy
+ * (src/model/instance.ts:173), which is a MEAN centroid. Frames with <2
+ * centroids are skipped.
+ */
+export function minCentroidProximitySeries(labels: Labels, video: Video): Map<number, number> {
+  const series = new Map<number, number>();
+  for (const lf of labels.find({ video })) {
+    const centroids: Array<[number, number]> = [];
+    for (const inst of lf.instances) {
+      const points = (inst as unknown as { numpy: () => number[][] }).numpy();
+      const c = medianCentroid(points);
+      if (c) centroids.push(c);
+    }
+    const val = minCentroidDistance(centroids);
+    if (!Number.isNaN(val)) series.set(lf.frameIdx, val);
+  }
+  return series;
+}
