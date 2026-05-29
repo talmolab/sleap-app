@@ -4,6 +4,7 @@ import {
   computeYRange,
   computeRuntimeMetrics,
   formatRuntimeTitle,
+  buildLossPlotData,
 } from "@/lib/trainingMetrics";
 import type { EpochSample } from "@/stores/trainingStore";
 
@@ -104,5 +105,23 @@ describe("formatRuntimeTitle", () => {
     expect(joined).toContain("Epochs in Plateau: 3 / 10");
     expect(joined).toMatch(/Last Epoch Validation Loss: 1\.230e-2/);
     expect(joined).toMatch(/Best Epoch Validation Loss: 9\.900e-3 \(epoch 3\)/); // bestValEpoch+1
+  });
+});
+
+describe("buildLossPlotData", () => {
+  it("builds aligned [x, train, val] arrays with 1-based epochs", () => {
+    const d = buildLossPlotData([
+      { epoch: 0, trainLoss: 1.0, valLoss: 0.9 },
+      { epoch: 1, trainLoss: 0.8, valLoss: null },
+    ]);
+    expect(d.x).toEqual([1, 2]);
+    expect(d.train).toEqual([1.0, 0.8]);
+    expect(d.val).toEqual([0.9, null]);
+  });
+  it("returns empty arrays for no samples", () => {
+    const d = buildLossPlotData([]);
+    expect(d.x).toEqual([]);
+    expect(d.train).toEqual([]);
+    expect(d.val).toEqual([]);
   });
 });

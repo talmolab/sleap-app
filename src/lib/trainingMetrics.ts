@@ -160,3 +160,16 @@ export function formatRuntimeTitle(args: {
   }
   return lines;
 }
+
+/** Build x/train/val arrays for the loss chart. x is 1-based epoch (PyQt parity). */
+export function buildLossPlotData(samples: EpochSample[]): {
+  x: number[];
+  train: (number | null)[];
+  val: (number | null)[];
+} {
+  return {
+    x: samples.map((s) => s.epoch + 1),
+    train: samples.map((s) => s.trainLoss),
+    val: samples.map((s) => s.valLoss),
+  };
+}
