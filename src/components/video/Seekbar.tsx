@@ -25,6 +25,12 @@ import type {
   WorkerResponse,
 } from "@/lib/statisticSeriesWorkerCore";
 import { drawHeaderSeries } from "@/lib/headerSeriesRender";
+import {
+  createSeriesCache,
+  getOrComputeSeries,
+  peekSeries,
+  putSeries,
+} from "@/lib/seriesCache";
 import { Button } from "@/components/ui/button";
 import {
   Tooltip,
@@ -112,6 +118,11 @@ export function Seekbar() {
   const useWorker =
     WORKER_GRAPHS.has(seekbarHeaderGraph) && totalFrames > WORKER_FRAME_THRESHOLD;
 
+  // Per-(video, graph, reduction) result cache so re-selecting a graph is
+  // instant (issue #105 AC2). Invalidated on video change / label edit
+  // (overlayVersion) inside the cache helper, so it never serves stale data.
+  const seriesCacheRef = useRef(createSeriesCache());
+
   // Synchronously-computed header statistic series for the selected graph type.
   // "none" and "instance-count" are drawn directly in the header effect and
   // return null here. Heavy graphs over the worker threshold also return null
@@ -123,8 +134,13 @@ export function Seekbar() {
       return null;
     }
     if (useWorker) return null;
-    return computeStatisticSeries(labels, video, seekbarHeaderGraph, seekbarHeaderReduction);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    return getOrComputeSeries(
+      seriesCacheRef.current,
+      video,
+      overlayVersion,
+      `${seekbarHeaderGraph}|${seekbarHeaderReduction}`,
+      () => computeStatisticSeries(labels, video, seekbarHeaderGraph, seekbarHeaderReduction),
+    );
   }, [labels, video, seekbarHeaderGraph, seekbarHeaderReduction, overlayVersion, useWorker]);
 
   // Worker-computed series for heavy graphs over the frame threshold.
@@ -140,6 +156,15 @@ export function Seekbar() {
     if (!useWorker || !labels || !video) {
       // Not in worker mode: drop any prior worker result so the sync path wins.
       setWorkerHeaderSeries(null);
+      return;
+    }
+
+    // Cache hit: re-selecting a heavy graph is instant, no worker round-trip
+    // (issue #105 AC2). Keyed by graph|reduction; invalidated on video/label change.
+    const cacheKey = `${seekbarHeaderGraph}|${seekbarHeaderReduction}`;
+    const cached = peekSeries(seriesCacheRef.current, video, overlayVersion, cacheKey);
+    if (cached) {
+      setWorkerHeaderSeries(cached);
       return;
     }
 
@@ -167,7 +192,10 @@ export function Seekbar() {
     const handleMessage = (e: MessageEvent<WorkerResponse>) => {
       // Ignore responses superseded by a newer request.
       if (reqId !== requestIdRef.current) return;
-      setWorkerHeaderSeries(new Map(e.data.entries));
+      const series = new Map(e.data.entries);
+      // Cache the result so re-selecting this heavy graph is instant.
+      putSeries(seriesCacheRef.current, video, overlayVersion, cacheKey, series);
+      setWorkerHeaderSeries(series);
     };
     worker.addEventListener("message", handleMessage);
 
