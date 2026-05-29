@@ -164,6 +164,29 @@ export interface LocalTrainingOptions {
 
 export type TrainingStatus = "idle" | "running" | "completed" | "error" | "stopped";
 
+export interface EpochSample {
+  epoch: number;
+  trainLoss: number | null;
+  valLoss: number | null;
+}
+
+export interface BatchSample {
+  globalBatch: number;
+  loss: number;
+}
+
+export interface RuntimeMetrics {
+  meanEpochTimeSec: number | null;
+  etaNext10Min: number | null;
+  epochsInPlateau: number;
+  inPlateau: boolean;
+  bestValEpoch: number | null;
+}
+
+export function emptyMetrics(): RuntimeMetrics {
+  return { meanEpochTimeSec: null, etaNext10Min: null, epochsInPlateau: 0, inPlateau: false, bestValEpoch: null };
+}
+
 export interface ModelProgress {
   label: string;
   epoch: number;
@@ -172,6 +195,12 @@ export interface ModelProgress {
   valLoss: number | null;
   bestValLoss: number | null;
   status: "pending" | "running" | "completed" | "failed";
+  epochSamples: EpochSample[];
+  batchSamples: BatchSample[];
+  metrics: RuntimeMetrics;
+  epochStartedAt: number | null;
+  plateauPatience: number | null;
+  plateauMinDelta: number | null;
 }
 
 interface TrainingState {
@@ -202,6 +231,8 @@ interface TrainingState {
   startTraining: (opts?: RemoteTrainingOptions | LocalTrainingOptions) => Promise<void>;
   stopTraining: () => Promise<void>;
   cancelTraining: () => Promise<void>;
+  recordEpoch: (modelIndex: number, sample: EpochSample) => void;
+  recordBatch: (modelIndex: number, sample: BatchSample) => void;
 }
 
 // ── Config slot helpers ───────────────────────────────────────────
@@ -698,6 +729,12 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         valLoss: null,
         bestValLoss: null,
         status: "pending" as const,
+        epochSamples: [],
+        batchSamples: [],
+        metrics: emptyMetrics(),
+        epochStartedAt: null,
+        plateauPatience: cf?.hyperparams.earlyStoppingPatience ?? null,
+        plateauMinDelta: cf?.hyperparams.plateauMinDelta ?? null,
       };
     });
 
@@ -1294,4 +1331,67 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
     }
     set({ status: "error", error: "Training cancelled" });
   },
+
+  recordEpoch: (modelIndex, sample) =>
+    set((state) => {
+      if (modelIndex < 0 || modelIndex >= state.models.length) return state;
+      const startedAt = state.startedAt ?? Date.now();
+      return {
+        models: state.models.map((m, i) => {
+          if (i !== modelIndex) return m;
+          const epochSamples = [...m.epochSamples, sample];
+
+          // TODO(training-monitor): replace inline metrics with computeRuntimeMetrics() once Task 1.3 lands
+          const valSamples = epochSamples.filter(
+            (s) => s.valLoss != null && Number.isFinite(s.valLoss),
+          );
+          let bestVal = Infinity;
+          let bestValEpoch: number | null = null;
+          let epochsInPlateau = 0;
+          let inPlateau = false;
+          const delta = m.plateauMinDelta ?? 0;
+          for (const s of valSamples) {
+            const v = s.valLoss as number;
+            const isBetter = bestValEpoch === null ? true : v < bestVal - delta;
+            if (isBetter) {
+              bestVal = v; bestValEpoch = s.epoch; epochsInPlateau = 0; inPlateau = false;
+            } else {
+              epochsInPlateau += 1; inPlateau = true;
+            }
+          }
+          let meanEpochTimeSec: number | null = null;
+          let etaNext10Min: number | null = null;
+          if (epochSamples.length >= 1) {
+            const elapsedSec = (Date.now() - startedAt) / 1000;
+            meanEpochTimeSec = elapsedSec / epochSamples.length;
+            etaNext10Min = Math.floor((meanEpochTimeSec * 10) / 60);
+          }
+          const metrics: RuntimeMetrics = { meanEpochTimeSec, etaNext10Min, epochsInPlateau, inPlateau, bestValEpoch };
+
+          return {
+            ...m,
+            epochSamples,
+            epoch: sample.epoch + 1,
+            loss: sample.trainLoss ?? m.loss,
+            valLoss: sample.valLoss ?? m.valLoss,
+            bestValLoss:
+              sample.valLoss != null &&
+              (m.bestValLoss === null || sample.valLoss < m.bestValLoss)
+                ? sample.valLoss
+                : m.bestValLoss,
+            metrics,
+          };
+        }),
+      };
+    }),
+
+  recordBatch: (modelIndex, sample) =>
+    set((state) => {
+      if (modelIndex < 0 || modelIndex >= state.models.length) return state;
+      return {
+        models: state.models.map((m, i) =>
+          i === modelIndex ? { ...m, batchSamples: [...m.batchSamples, sample] } : m,
+        ),
+      };
+    }),
 }));

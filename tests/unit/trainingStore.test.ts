@@ -739,3 +739,49 @@ data_config: {}
     });
   });
 });
+
+import type { ModelProgress } from "@/stores/trainingStore";
+
+function makeModel(over: Partial<ModelProgress> = {}): ModelProgress {
+  return {
+    label: "Centroid", epoch: 0, maxEpochs: 100, loss: null, valLoss: null,
+    bestValLoss: null, status: "running",
+    epochSamples: [], batchSamples: [],
+    metrics: { meanEpochTimeSec: null, etaNext10Min: null, epochsInPlateau: 0, inPlateau: false, bestValEpoch: null },
+    epochStartedAt: null, plateauPatience: 10, plateauMinDelta: null,
+    ...over,
+  };
+}
+
+describe("recordEpoch", () => {
+  beforeEach(() => useTrainingStore.getState().reset());
+
+  it("appends an epoch sample and updates scalars", () => {
+    useTrainingStore.setState({ models: [makeModel()], startedAt: 0 });
+    useTrainingStore.getState().recordEpoch(0, { epoch: 0, trainLoss: 1.0, valLoss: 0.9 });
+    const m = useTrainingStore.getState().models[0];
+    expect(m.epochSamples).toHaveLength(1);
+    expect(m.epochSamples[0]).toEqual({ epoch: 0, trainLoss: 1.0, valLoss: 0.9 });
+    expect(m.epoch).toBe(1);          // PyQt displays epoch+1
+    expect(m.loss).toBe(1.0);
+    expect(m.valLoss).toBe(0.9);
+    expect(m.bestValLoss).toBe(0.9);
+  });
+
+  it("tracks best val loss across epochs and recomputes metrics", () => {
+    useTrainingStore.setState({ models: [makeModel()], startedAt: 0 });
+    const s = useTrainingStore.getState();
+    s.recordEpoch(0, { epoch: 0, trainLoss: 1.0, valLoss: 0.5 });
+    s.recordEpoch(0, { epoch: 1, trainLoss: 0.8, valLoss: 0.6 }); // worse
+    const m = useTrainingStore.getState().models[0];
+    expect(m.bestValLoss).toBe(0.5);
+    expect(m.metrics.bestValEpoch).toBe(0);
+    expect(m.metrics.inPlateau).toBe(true);
+    expect(m.epochSamples).toHaveLength(2);
+  });
+
+  it("ignores out-of-range model index safely", () => {
+    useTrainingStore.setState({ models: [makeModel()], startedAt: 0 });
+    expect(() => useTrainingStore.getState().recordEpoch(5, { epoch: 0, trainLoss: 1, valLoss: 1 })).not.toThrow();
+  });
+});
