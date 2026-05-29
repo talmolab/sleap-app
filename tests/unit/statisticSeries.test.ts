@@ -99,3 +99,29 @@ describe("instanceScoreSeries", () => {
     expect(instanceScoreSeries(labels, VIDEO, "min").get(0)).toBeCloseTo(0.4);
   });
 });
+
+import { pointScoreSeries, trackingScoreSeries } from "@/lib/statisticSeries";
+
+describe("pointScoreSeries", () => {
+  it("sums per-point scores of predicted instances", () => {
+    const labels = mockLabels([
+      frame(0, [inst([pt(0, 0, 0.2), pt(1, 1, 0.3)], { score: 0.9 })]),
+    ]);
+    expect(pointScoreSeries(labels, VIDEO, "sum").get(0)).toBeCloseTo(0.5);
+  });
+  it("min over all points", () => {
+    const labels = mockLabels([
+      frame(0, [inst([pt(0, 0, 0.2), pt(1, 1, 0.3)], { score: 0.9 })]),
+    ]);
+    expect(pointScoreSeries(labels, VIDEO, "min").get(0)).toBeCloseTo(0.2);
+  });
+});
+
+describe("trackingScoreSeries", () => {
+  it("min reduction, skips frames with no tracking score", () => {
+    const labels = mockLabels([
+      frame(0, [inst([pt(0, 0)], { score: 1, trackingScore: 0.7 }), inst([pt(1, 1)], { score: 1, trackingScore: 0.4 })]),
+    ]);
+    expect(trackingScoreSeries(labels, VIDEO, "min").get(0)).toBeCloseTo(0.4);
+  });
+});

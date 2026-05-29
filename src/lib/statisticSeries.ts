@@ -84,3 +84,46 @@ export function instanceScoreSeries(
   }
   return series;
 }
+
+/** Reduced per-point scores per frame (summary.py get_point_score_series). */
+export function pointScoreSeries(
+  labels: Labels,
+  video: Video,
+  reduction: Reduction,
+): Map<number, number> {
+  const series = new Map<number, number>();
+  for (const lf of labels.find({ video })) {
+    const vals: number[] = [];
+    for (const inst of lf.instances) {
+      if (!isPredicted(inst)) continue;
+      for (const p of (inst as unknown as { points: Array<{ score?: number }> }).points) {
+        if (typeof p.score === "number") vals.push(p.score);
+      }
+    }
+    series.set(lf.frameIdx, reduceValues(vals, reduction));
+  }
+  return series;
+}
+
+/**
+ * Reduced tracking scores per frame (summary.py get_tracking_score_series).
+ * Reduction is nanmin/nanmean; frames with no usable score are skipped.
+ */
+export function trackingScoreSeries(
+  labels: Labels,
+  video: Video,
+  reduction: Reduction,
+): Map<number, number> {
+  const series = new Map<number, number>();
+  for (const lf of labels.find({ video })) {
+    const vals: number[] = [];
+    for (const inst of lf.instances) {
+      const ts = (inst as unknown as { trackingScore?: number }).trackingScore;
+      if (typeof ts === "number") vals.push(ts);
+    }
+    if (vals.length === 0) continue;
+    const val = reduceValues(vals, reduction);
+    if (!Number.isNaN(val)) series.set(lf.frameIdx, val);
+  }
+  return series;
+}
