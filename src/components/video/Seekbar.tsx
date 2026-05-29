@@ -19,6 +19,11 @@ import {
   GRAPH_SPECS,
   type StatisticGraphType,
 } from "@/lib/statisticSeries";
+import type {
+  WorkerGraphType,
+  WorkerRequest,
+  WorkerResponse,
+} from "@/lib/statisticSeriesWorkerCore";
 import { drawHeaderSeries } from "@/lib/headerSeriesRender";
 import { Button } from "@/components/ui/button";
 import {
@@ -49,6 +54,21 @@ const SNAP_THRESHOLD_PX = 12;
 
 /** Height of the instance count header graph in pixels. */
 const HEADER_HEIGHT = 16;
+
+/**
+ * Frame-count threshold past which the 3 heavy header graphs (point
+ * displacement, primary point displacement, min centroid proximity) are
+ * computed off the main thread in a Web Worker. Smaller videos keep the
+ * synchronous useMemo path. Locked default; tune empirically.
+ */
+const WORKER_FRAME_THRESHOLD = 2000;
+
+/** The heavy graph types that have a Web Worker implementation. */
+const WORKER_GRAPHS: ReadonlySet<StatisticGraphType> = new Set<StatisticGraphType>([
+  "point-displacement",
+  "primary-point-displacement",
+  "min-centroid-proximity",
+]);
 
 export function Seekbar() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -87,18 +107,96 @@ export function Seekbar() {
     : 0;
   const totalFrames = shapeFrames ?? (inferredFrames > 0 ? inferredFrames : 0);
 
-  // Computed header statistic series for the selected graph type. "none" and
-  // "instance-count" are drawn directly in the header effect and return null
-  // here. overlayVersion is intentionally in the deps so the series refreshes
-  // after labeling edits.
-  const headerSeries = useMemo<Map<number, number> | null>(() => {
+  // Whether the selected graph is a heavy graph offloaded to the worker. Only
+  // gated past the frame threshold; below it the synchronous path is fine.
+  const useWorker =
+    WORKER_GRAPHS.has(seekbarHeaderGraph) && totalFrames > WORKER_FRAME_THRESHOLD;
+
+  // Synchronously-computed header statistic series for the selected graph type.
+  // "none" and "instance-count" are drawn directly in the header effect and
+  // return null here. Heavy graphs over the worker threshold also return null
+  // (computed off-thread; see the worker effect below). overlayVersion is
+  // intentionally in the deps so the series refreshes after labeling edits.
+  const syncHeaderSeries = useMemo<Map<number, number> | null>(() => {
     if (!labels || !video) return null;
     if (seekbarHeaderGraph === "none" || seekbarHeaderGraph === "instance-count") {
       return null;
     }
+    if (useWorker) return null;
     return computeStatisticSeries(labels, video, seekbarHeaderGraph, seekbarHeaderReduction);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [labels, video, seekbarHeaderGraph, seekbarHeaderReduction, overlayVersion]);
+  }, [labels, video, seekbarHeaderGraph, seekbarHeaderReduction, overlayVersion, useWorker]);
+
+  // Worker-computed series for heavy graphs over the frame threshold.
+  const [workerHeaderSeries, setWorkerHeaderSeries] = useState<Map<number, number> | null>(null);
+  const workerRef = useRef<Worker | null>(null);
+  const requestIdRef = useRef(0);
+
+  // Off-thread computation for heavy graphs over the frame threshold. A
+  // monotonically-increasing request id guards against stale responses (e.g.
+  // a slow earlier job resolving after the graph/reduction changed). The
+  // worker is created lazily, reused across requests, and terminated on unmount.
+  useEffect(() => {
+    if (!useWorker || !labels || !video) {
+      // Not in worker mode: drop any prior worker result so the sync path wins.
+      setWorkerHeaderSeries(null);
+      return;
+    }
+
+    // Extract plain, structured-clone-safe frame arrays (no sleap-io objects).
+    const tracks = labels.tracks as unknown[];
+    const frames: WorkerRequest["frames"] = [];
+    for (const lf of labels.find({ video })) {
+      const instances = lf.instances.map((inst) => {
+        const track = (inst as { track?: unknown }).track ?? null;
+        const trackIdx = track === null ? -1 : tracks.indexOf(track);
+        const points = (inst as unknown as { numpy: () => number[][] }).numpy();
+        return { trackIdx, points };
+      });
+      frames.push({ frameIdx: lf.frameIdx, instances });
+    }
+
+    const worker =
+      workerRef.current ??
+      (workerRef.current = new Worker(
+        new URL("@/lib/statisticSeries.worker.ts", import.meta.url),
+        { type: "module" },
+      ));
+
+    const reqId = ++requestIdRef.current;
+    const handleMessage = (e: MessageEvent<WorkerResponse>) => {
+      // Ignore responses superseded by a newer request.
+      if (reqId !== requestIdRef.current) return;
+      setWorkerHeaderSeries(new Map(e.data.entries));
+    };
+    worker.addEventListener("message", handleMessage);
+
+    const req: WorkerRequest = {
+      graph: seekbarHeaderGraph as WorkerGraphType,
+      reduction: seekbarHeaderReduction,
+      trackCount: tracks.length,
+      primaryNodeIdx: 0,
+      frames,
+    };
+    worker.postMessage(req);
+
+    return () => {
+      // Invalidate this request and stop listening; the worker instance is
+      // kept for reuse and only torn down on unmount (see effect below).
+      worker.removeEventListener("message", handleMessage);
+    };
+  }, [useWorker, labels, video, seekbarHeaderGraph, seekbarHeaderReduction, overlayVersion]);
+
+  // Terminate the worker on unmount.
+  useEffect(() => {
+    return () => {
+      workerRef.current?.terminate();
+      workerRef.current = null;
+    };
+  }, []);
+
+  // The series actually rendered: worker result when offloaded, else sync.
+  const headerSeries = useWorker ? workerHeaderSeries : syncHeaderSeries;
 
   // Switch graph type; reset reduction to the new graph's default if the
   // current reduction is unsupported by it.
