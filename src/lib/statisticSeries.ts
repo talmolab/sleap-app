@@ -177,6 +177,11 @@ export function pointDisplacementSeries(
         const prev = lastLf.instances.find(
           (o) => ((o as { track?: unknown }).track ?? null) === track,
         );
+        // Deliberate divergence from summary.py: an untracked instance
+        // (track === null) is skipped rather than matched against an arbitrary
+        // previous instance (summary.py's labeled_frame_find returns all
+        // instances for track=None, which is nondeterministic). Untracked
+        // instances contribute 0.
         if (prev && track !== null) {
           const a = (inst as unknown as { numpy: () => number[][] }).numpy();
           const b = (prev as unknown as { numpy: () => number[][] }).numpy();

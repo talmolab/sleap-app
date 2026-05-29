@@ -171,6 +171,11 @@ export function Seekbar() {
     };
     worker.addEventListener("message", handleMessage);
 
+    // Clear the previous graph's result so a heavy->heavy switch doesn't keep
+    // drawing the stale polyline during the pending window (the request-id
+    // guard already prevents committing superseded data).
+    setWorkerHeaderSeries(null);
+
     const req: WorkerRequest = {
       graph: seekbarHeaderGraph as WorkerGraphType,
       reduction: seekbarHeaderReduction,
