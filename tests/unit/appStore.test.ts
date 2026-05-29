@@ -429,4 +429,17 @@ describe("appStore", () => {
       expect(state.projectLoaded).toBe(true);
     });
   });
+
+  it("defaults seekbarHeaderGraph to instance-count and reduction to sum", () => {
+    resetStore();
+    const s = useAppStore.getState();
+    expect(s.seekbarHeaderGraph).toBe("instance-count");
+    expect(s.seekbarHeaderReduction).toBe("sum");
+  });
+
+  it("set() updates the seekbar header graph type", () => {
+    resetStore();
+    useAppStore.getState().set("seekbarHeaderGraph", "tracking-score");
+    expect(useAppStore.getState().seekbarHeaderGraph).toBe("tracking-score");
+  });
 });

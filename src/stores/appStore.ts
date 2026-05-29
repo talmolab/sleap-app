@@ -20,6 +20,7 @@ import type {
   ColorTarget,
   InstancePlacementMethod,
 } from "../types";
+import type { StatisticGraphType, Reduction } from "@/lib/statisticSeries";
 
 export interface AppState {
   // === Project state ===
@@ -67,6 +68,8 @@ export interface AppState {
   frameHistogram: Uint32Array | null;
   colormap: string;
   rotation: 0 | 90 | 180 | 270;
+  seekbarHeaderGraph: StatisticGraphType;
+  seekbarHeaderReduction: Reduction;
 
   // === Editing state ===
   instanceInitMethod: InstancePlacementMethod;
@@ -145,6 +148,8 @@ const PERSISTED_KEYS: (keyof AppState)[] = [
   "insetSize",
   "insetZoom",
   "defaultToPan",
+  "seekbarHeaderGraph",
+  "seekbarHeaderReduction",
 ];
 
 export const useAppStore = create<AppState>()(
@@ -196,6 +201,8 @@ export const useAppStore = create<AppState>()(
       frameHistogram: null,
       colormap: "grayscale",
       rotation: 0 as 0 | 90 | 180 | 270,
+      seekbarHeaderGraph: "instance-count" as StatisticGraphType,
+      seekbarHeaderReduction: "sum" as Reduction,
 
       // Editing state
       instanceInitMethod: "best" as InstancePlacementMethod,
