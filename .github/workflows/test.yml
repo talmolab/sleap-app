@@ -24,11 +24,13 @@ jobs:
           bun-version: 1.3.14
 
       # sleap-io.js is being ported to bun too (talmolab/sleap-io.js#130),
-      # so build the sibling checkout with bun instead of npm.
+      # so build the sibling checkout with bun instead of npm. Use a plain
+      # `bun install` (not --frozen-lockfile) until that repo commits an
+      # up-to-date bun.lock; bun resolves its deps from package.json.
       - name: Clone and build sleap-io.js
         run: |
           git clone --depth 1 https://github.com/talmolab/sleap-io.js.git ../sleap-io.js
-          cd ../sleap-io.js && bun install --frozen-lockfile && bun run build
+          cd ../sleap-io.js && bun install && bun run build
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -37,4 +39,4 @@ jobs:
         run: bun run build
 
       - name: Run tests
-        run: bun test tests/unit
+        run: bun run test
