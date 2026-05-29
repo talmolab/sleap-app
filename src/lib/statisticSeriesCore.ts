@@ -121,3 +121,41 @@ export function minCentroidDistance(centroids: Array<[number, number]>): number 
   }
   return min === Infinity ? NaN : min;
 }
+
+/**
+ * Given a per-frame, per-track anchor location matrix
+ * (loc[frameIdx][trackIdx] = [x, y], NaN for unknown), compute the
+ * reduced-across-tracks frame-to-frame displacement, aligned so that the
+ * displacement ARRIVING at frame f sits at index f. Returns a dense array
+ * indexed by frame.
+ *
+ * INTENTIONALLY DIVERGES FROM summary.py:202-203: summary.py's in-place
+ * `result[1:] = result[:-1]` (on a length-(frames-1) array) shifts the series
+ * forward AND DROPS the last frame's displacement off the end (a latent bug).
+ * We KEEP the last frame's value: each diff loc[f+1]-loc[f] is placed at the
+ * arrival index f+1, and the final diff is preserved (NOT dropped).
+ */
+export function primaryDisplacementFromMatrix(
+  loc: Array<Array<[number, number]>>,
+  reduction: Reduction,
+): number[] {
+  const frames = loc.length;
+  if (frames === 0) return [];
+  const trackCount = loc[0].length;
+  const out: number[] = new Array(frames).fill(0);
+  // displacement[f] = reduce_over_tracks(loc[f+1] - loc[f]); placed at index f+1
+  // so the displacement is attributed to the frame it ARRIVES at. The final
+  // diff (f = frames-2 -> arrival index frames-1) is kept, NOT dropped.
+  for (let f = 0; f < frames - 1; f++) {
+    const dists: number[] = [];
+    for (let tr = 0; tr < trackCount; tr++) {
+      const dx = loc[f + 1][tr][0] - loc[f][tr][0];
+      const dy = loc[f + 1][tr][1] - loc[f][tr][1];
+      dists.push(Math.hypot(dx, dy));
+    }
+    let v = reduceValues(dists, reduction);
+    if (Number.isNaN(v)) v = 0; // summary.py: result[np.isnan(result)] = 0
+    out[f + 1] = v;
+  }
+  return out;
+}

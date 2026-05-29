@@ -100,3 +100,28 @@ describe("minCentroidDistance", () => {
     expect(minCentroidDistance([[0, 0], [3, 4], [0, 1]])).toBe(1);
   });
 });
+
+import { primaryDisplacementFromMatrix } from "@/lib/statisticSeriesCore";
+
+describe("primaryDisplacementFromMatrix", () => {
+  it("aligns each frame-to-frame displacement to its arrival frame; KEEPS the last value", () => {
+    // 1 track, 3 frames, anchor moves: f0=(0,0), f1=(0,0), f2=(3,4)
+    // location_matrix[frame][track] = [x,y]
+    const loc: Array<Array<[number, number]>> = [
+      [[0, 0]], // frame 0
+      [[0, 0]], // frame 1
+      [[3, 4]], // frame 2
+    ];
+    // Frame-to-frame diffs reduced over tracks (sum): f0->f1 = 0, f1->f2 = 5.
+    // Each displacement is aligned to its ARRIVAL frame: out[1]=0, out[2]=5.
+    //
+    // INTENTIONAL DIVERGENCE FROM summary.py: summary.py:202-203 does an
+    // in-place `result[1:] = result[:-1]` on a length-(frames-1) array, which
+    // both shifts forward AND DROPS the last value off the end — for this very
+    // example summary.py would yield [0, 0] and LOSE the displacement of 5
+    // (a latent bug). We deliberately KEEP the last frame's value.
+    const out = primaryDisplacementFromMatrix(loc, "sum");
+    expect(out[2]).toBe(5); // CORRECTED last-frame value (summary.py would drop this)
+    expect(out[1]).toBe(0);
+  });
+});
