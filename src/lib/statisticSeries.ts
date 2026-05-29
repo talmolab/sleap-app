@@ -46,3 +46,41 @@ export const GRAPH_SPECS: GraphSpec[] = [
 export function getGraphSpec(type: StatisticGraphType): GraphSpec | undefined {
   return GRAPH_SPECS.find((s) => s.type === type);
 }
+
+import { reduceValues } from "./statisticSeriesCore";
+
+/** Whether an instance is predicted (has a score). Mirrors summary.py hasattr(inst,"score"). */
+function isPredicted(inst: unknown): inst is { score: number } {
+  return typeof inst === "object" && inst !== null && "score" in inst &&
+    typeof (inst as { score: unknown }).score === "number";
+}
+
+/** Total predicted points per frame (summary.py get_point_count_series). */
+export function pointCountSeries(labels: Labels, video: Video): Map<number, number> {
+  const series = new Map<number, number>();
+  for (const lf of labels.find({ video })) {
+    let val = 0;
+    for (const inst of lf.instances) {
+      if (isPredicted(inst)) val += inst.points.length;
+    }
+    series.set(lf.frameIdx, val);
+  }
+  return series;
+}
+
+/** Reduced instance scores per frame (summary.py get_instance_score_series). */
+export function instanceScoreSeries(
+  labels: Labels,
+  video: Video,
+  reduction: Reduction,
+): Map<number, number> {
+  const series = new Map<number, number>();
+  for (const lf of labels.find({ video })) {
+    const vals: number[] = [];
+    for (const inst of lf.instances) {
+      if (isPredicted(inst)) vals.push(inst.score);
+    }
+    series.set(lf.frameIdx, reduceValues(vals, reduction));
+  }
+  return series;
+}

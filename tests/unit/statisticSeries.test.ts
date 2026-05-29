@@ -1,5 +1,55 @@
 import { describe, it, expect } from "../bun-test";
 import { GRAPH_SPECS, getGraphSpec } from "@/lib/statisticSeries";
+import type { Labels, Video } from "@/types";
+
+interface MockPoint { xy: [number, number]; visible: boolean; score?: number; }
+interface MockInst {
+  points: MockPoint[];
+  track?: object | null;
+  score?: number;          // predicted only
+  trackingScore?: number;
+  numpy: () => number[][];
+  centroidXy: [number, number] | null;
+}
+
+function pt(x: number, y: number, score?: number): MockPoint {
+  return { xy: [x, y], visible: true, score };
+}
+
+/** Build a mock instance. Pass `score` to make it "predicted". */
+function inst(points: MockPoint[], opts: { track?: object | null; score?: number; trackingScore?: number } = {}): MockInst {
+  const xy = points.map((p) => p.xy as number[]);
+  const vis = points.filter((p) => p.visible);
+  const cx = vis.length ? vis.reduce((s, p) => s + p.xy[0], 0) / vis.length : null;
+  const cy = vis.length ? vis.reduce((s, p) => s + p.xy[1], 0) / vis.length : null;
+  return {
+    points,
+    track: opts.track ?? null,
+    score: opts.score,
+    trackingScore: opts.trackingScore,
+    numpy: () => xy,
+    centroidXy: cx === null ? null : [cx, cy as number],
+  };
+}
+
+function frame(frameIdx: number, instances: MockInst[]) {
+  return { frameIdx, instances, video: VIDEO };
+}
+
+const VIDEO = { shape: [10, 100, 100, 1] } as unknown as Video;
+
+/** Mock Labels whose find({video}) returns the given frames in order. */
+function mockLabels(frames: ReturnType<typeof frame>[], tracks: object[] = []): Labels {
+  return {
+    tracks,
+    skeletons: [{ index: (n: number) => (typeof n === "number" ? n : 0), nodes: [{}, {}] }],
+    labeledFrames: frames,
+    find: (opts: { video?: Video; frameIdx?: number }) => {
+      if (opts.frameIdx !== undefined) return frames.filter((f) => f.frameIdx === opts.frameIdx);
+      return frames;
+    },
+  } as unknown as Labels;
+}
 
 describe("GRAPH_SPECS", () => {
   it("includes none, instance-count, and 12 legacy stats", () => {
@@ -18,5 +68,34 @@ describe("GRAPH_SPECS", () => {
     expect(getGraphSpec("instance-count")?.reductions).toEqual([]);
     expect(getGraphSpec("point-count")?.reductions).toEqual([]);
     expect(getGraphSpec("min-centroid-proximity")?.reductions).toEqual([]);
+  });
+});
+
+import { pointCountSeries, instanceScoreSeries } from "@/lib/statisticSeries";
+
+describe("pointCountSeries", () => {
+  it("sums points of predicted instances per frame", () => {
+    const labels = mockLabels([
+      frame(0, [inst([pt(0, 0), pt(1, 1)], { score: 0.9 })]),         // predicted, 2 pts
+      frame(1, [inst([pt(0, 0)], { score: 0.5 }), inst([pt(2, 2)])]), // 1 predicted (1pt) + 1 user (ignored)
+    ]);
+    const s = pointCountSeries(labels, VIDEO);
+    expect(s.get(0)).toBe(2);
+    expect(s.get(1)).toBe(1);
+  });
+});
+
+describe("instanceScoreSeries", () => {
+  it("sum reduction adds instance scores", () => {
+    const labels = mockLabels([
+      frame(0, [inst([pt(0, 0)], { score: 0.4 }), inst([pt(1, 1)], { score: 0.6 })]),
+    ]);
+    expect(instanceScoreSeries(labels, VIDEO, "sum").get(0)).toBeCloseTo(1.0);
+  });
+  it("min reduction returns smallest score", () => {
+    const labels = mockLabels([
+      frame(0, [inst([pt(0, 0)], { score: 0.4 }), inst([pt(1, 1)], { score: 0.6 })]),
+    ]);
+    expect(instanceScoreSeries(labels, VIDEO, "min").get(0)).toBeCloseTo(0.4);
   });
 });
