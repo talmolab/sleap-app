@@ -141,3 +141,45 @@ describe("minCentroidProximitySeries", () => {
     expect(s.get(2)).toBeCloseTo(1);
   });
 });
+
+import { pointDisplacementSeries } from "@/lib/statisticSeries";
+
+describe("pointDisplacementSeries", () => {
+  it("velocity vs previous labeled frame, matched by track", () => {
+    const trackA = {}; // shared identity
+    const labels = mockLabels(
+      [
+        frame(0, [inst([pt(0, 0), pt(0, 0)], { track: trackA, score: 1 })]),
+        frame(1, [inst([pt(3, 4), pt(0, 0)], { track: trackA, score: 1 })]), // node0 moved 5
+      ],
+      [trackA],
+    );
+    const s = pointDisplacementSeries(labels, VIDEO, "sum");
+    // frame 0 has no previous frame -> value 0 (no displacement); still emitted (not NaN)
+    expect(s.get(1)).toBeCloseTo(5);
+  });
+  it("unmatched track contributes nothing", () => {
+    const a = {}, b = {};
+    const labels = mockLabels(
+      [
+        frame(0, [inst([pt(0, 0)], { track: a, score: 1 })]),
+        frame(1, [inst([pt(9, 9)], { track: b, score: 1 })]), // different track, no match
+      ],
+      [a, b],
+    );
+    expect(pointDisplacementSeries(labels, VIDEO, "sum").get(1)).toBe(0);
+  });
+  it("partially-visible instance (a NaN node) contributes 0 under sum (NaN-propagate, summary.py:262)", () => {
+    const trackA = {};
+    // node1 becomes invisible (NaN) in frame 1 -> instanceVelocity sum => NaN
+    // -> caller adds 0 for the whole instance. Frame value = 0.
+    const labels = mockLabels(
+      [
+        frame(0, [inst([pt(0, 0), pt(0, 0)], { track: trackA, score: 1 })]),
+        frame(1, [inst([pt(3, 4), { xy: [NaN, NaN], visible: false }], { track: trackA, score: 1 })]),
+      ],
+      [trackA],
+    );
+    expect(pointDisplacementSeries(labels, VIDEO, "sum").get(1)).toBe(0);
+  });
+});

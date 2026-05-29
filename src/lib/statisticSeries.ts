@@ -152,3 +152,43 @@ export function minCentroidProximitySeries(labels: Labels, video: Video): Map<nu
   }
   return series;
 }
+
+import { instanceVelocity } from "./statisticSeriesCore";
+
+/**
+ * Point displacement per frame vs the closest earlier labeled frame,
+ * matching instances by track (summary.py get_point_displacement_series
+ * + _calculate_frame_velocity). Track matching is reference identity,
+ * same as Seekbar.tsx track occupancy.
+ */
+export function pointDisplacementSeries(
+  labels: Labels,
+  video: Video,
+  reduction: Reduction,
+): Map<number, number> {
+  const series = new Map<number, number>();
+  let lastLf: { instances: unknown[] } | null = null;
+  for (const lf of labels.find({ video })) {
+    let val = 0;
+    if (lastLf) {
+      for (const inst of lf.instances) {
+        const track = (inst as { track?: unknown }).track ?? null;
+        // Find same-track instance in previous frame.
+        const prev = lastLf.instances.find(
+          (o) => ((o as { track?: unknown }).track ?? null) === track,
+        );
+        if (prev && track !== null) {
+          const a = (inst as unknown as { numpy: () => number[][] }).numpy();
+          const b = (prev as unknown as { numpy: () => number[][] }).numpy();
+          const d = instanceVelocity(a, b, reduction);
+          // summary.py:262: NaN per-instance velocity (e.g. a partially-visible
+          // instance under sum/max NaN-propagation) contributes 0 to the frame.
+          if (!Number.isNaN(d)) val += d;
+        }
+      }
+    }
+    lastLf = lf as unknown as { instances: unknown[] };
+    if (!Number.isNaN(val)) series.set(lf.frameIdx, val);
+  }
+  return series;
+}
