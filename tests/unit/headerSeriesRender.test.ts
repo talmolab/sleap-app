@@ -26,6 +26,11 @@ describe("makeToYPos", () => {
     expect(toY(10)).toBeCloseTo(20 - (10 - -1) * (20 / 11)); // top-ish
     expect(toY(0)).toBeCloseTo(20 - (0 - -1) * (20 / 11));
   });
+  it("flat series (min === max) sits on the baseline, not the top edge", () => {
+    // all-zero series: should map to the bottom (height-1), NOT y=0 (top).
+    const toY = makeToYPos(0, 0, 16);
+    expect(toY(0)).toBe(15);
+  });
 });
 
 import { drawHeaderSeries } from "@/lib/headerSeriesRender";

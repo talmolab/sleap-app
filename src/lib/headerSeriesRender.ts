@@ -56,6 +56,12 @@ export function makeToYPos(
   max: number,
   height: number,
 ): (val: number) => number {
+  // Degenerate / flat series (no variation, e.g. an all-zero series): sit on
+  // the baseline instead of pinning every point to the top edge. Without this,
+  // min === max maps to y=0 (top), reading as a misleading full-height line.
+  if (max <= min) {
+    return () => height - 1;
+  }
   const seriesMin = min - 1;
   const denom = max - seriesMin;
   const scale = denom === 0 ? 0 : height / denom;

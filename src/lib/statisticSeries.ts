@@ -173,16 +173,20 @@ export function pointDisplacementSeries(
     if (lastLf) {
       for (const inst of lf.instances) {
         const track = (inst as { track?: unknown }).track ?? null;
-        // Find same-track instance in previous frame.
-        const prev = lastLf.instances.find(
-          (o) => ((o as { track?: unknown }).track ?? null) === track,
-        );
-        // Deliberate divergence from summary.py: an untracked instance
-        // (track === null) is skipped rather than matched against an arbitrary
-        // previous instance (summary.py's labeled_frame_find returns all
-        // instances for track=None, which is nondeterministic). Untracked
-        // instances contribute 0.
-        if (prev && track !== null) {
+        // Match PyQt labeled_frame_find(last_lf, track=inst.track)
+        // (summary.py:252 + lf_labels_utils.py:1390):
+        //   track === null -> ALL previous instances, take the first;
+        //   track !== null -> previous instances with that track, take the first.
+        // So UNTRACKED instances are matched against the first instance of the
+        // previous labeled frame (this is how SLEAP shows displacement on
+        // user-labeled data that has not been tracked yet).
+        const prev =
+          track === null
+            ? lastLf.instances[0]
+            : lastLf.instances.find(
+                (o) => ((o as { track?: unknown }).track ?? null) === track,
+              );
+        if (prev) {
           const a = (inst as unknown as { numpy: () => number[][] }).numpy();
           const b = (prev as unknown as { numpy: () => number[][] }).numpy();
           const d = instanceVelocity(a, b, reduction);

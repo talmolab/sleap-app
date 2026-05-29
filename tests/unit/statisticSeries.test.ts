@@ -212,3 +212,16 @@ describe("computeStatisticSeries dispatch", () => {
     expect(computeStatisticSeries(labels, VIDEO, "none", "sum").size).toBe(0);
   });
 });
+
+describe("pointDisplacementSeries (untracked, PyQt labeled_frame_find track=None)", () => {
+  it("matches an untracked instance against the FIRST instance of the previous frame", () => {
+    // No tracks at all (track: null). PyQt's labeled_frame_find(last_lf, None)
+    // returns all instances and uses [0], so f1's instance is compared to f0's
+    // first instance: node moves (0,0)->(3,4) => displacement 5.
+    const labels = mockLabels([
+      frame(0, [inst([pt(0, 0)])]),
+      frame(1, [inst([pt(3, 4)])]),
+    ]); // tracks = []
+    expect(pointDisplacementSeries(labels, VIDEO, "sum").get(1)).toBeCloseTo(5);
+  });
+});
