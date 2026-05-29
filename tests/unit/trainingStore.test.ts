@@ -808,3 +808,19 @@ describe("recordBatch", () => {
     expect(() => useTrainingStore.getState().recordBatch(9, { globalBatch: 0, loss: 1 })).not.toThrow();
   });
 });
+
+describe("markEpochBegin / epochStartedAt", () => {
+  beforeEach(() => useTrainingStore.getState().reset());
+  it("recordEpoch keeps epochStartedAt (set by epoch_begin)", () => {
+    useTrainingStore.setState({ models: [makeModel({ epochStartedAt: 1000 })], startedAt: 0 });
+    useTrainingStore.getState().recordEpoch(0, { epoch: 0, trainLoss: 1, valLoss: 1 });
+    expect(useTrainingStore.getState().models[0].epochStartedAt).toBe(1000);
+  });
+  it("markEpochBegin sets epoch and stamps epochStartedAt", () => {
+    useTrainingStore.setState({ models: [makeModel()], startedAt: 0 });
+    useTrainingStore.getState().markEpochBegin(0, 3);
+    const m = useTrainingStore.getState().models[0];
+    expect(m.epoch).toBe(3);
+    expect(typeof m.epochStartedAt).toBe("number");
+  });
+});

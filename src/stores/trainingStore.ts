@@ -234,6 +234,7 @@ interface TrainingState {
   cancelTraining: () => Promise<void>;
   recordEpoch: (modelIndex: number, sample: EpochSample) => void;
   recordBatch: (modelIndex: number, sample: BatchSample) => void;
+  markEpochBegin: (modelIndex: number, epoch: number) => void;
 }
 
 // ── Config slot helpers ───────────────────────────────────────────
@@ -1367,6 +1368,16 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       return {
         models: state.models.map((m, i) =>
           i === modelIndex ? { ...m, batchSamples: [...m.batchSamples, sample] } : m,
+        ),
+      };
+    }),
+
+  markEpochBegin: (modelIndex, epoch) =>
+    set((state) => {
+      if (modelIndex < 0 || modelIndex >= state.models.length) return state;
+      return {
+        models: state.models.map((m, i) =>
+          i === modelIndex ? { ...m, epoch, epochStartedAt: Date.now() } : m,
         ),
       };
     }),
