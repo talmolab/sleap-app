@@ -1055,6 +1055,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
               const line = event.data.line;
 
               // Parse tqdm-style progress
+              // tqdm fires many times per epoch (no val loss); epoch SAMPLES come from JSON lines, not here.
               const tqdmMatch = line.match(/Epoch (\d+):\s+(\d+)%\|.*?loss=([\d.]+)/);
               if (tqdmMatch) {
                 const epoch = parseInt(tqdmMatch[1]);
@@ -1070,23 +1071,11 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
               try {
                 const data = JSON.parse(line);
                 if ("epoch" in data) {
-                  set((s) => ({
-                    models: s.models.map((m, j) =>
-                      j === idx
-                        ? {
-                            ...m,
-                            epoch: data.epoch ?? m.epoch,
-                            loss: data.loss ?? m.loss,
-                            valLoss: data.val_loss ?? m.valLoss,
-                            bestValLoss:
-                              data.val_loss != null &&
-                              (m.bestValLoss === null || data.val_loss < m.bestValLoss)
-                                ? data.val_loss
-                                : m.bestValLoss,
-                          }
-                        : m,
-                    ),
-                  }));
+                  get().recordEpoch(idx, {
+                    epoch: data.epoch ?? 0,
+                    trainLoss: data.loss ?? null,
+                    valLoss: data.val_loss ?? null,
+                  });
                   return;
                 }
               } catch {
