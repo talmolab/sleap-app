@@ -296,21 +296,12 @@ describe("appStore", () => {
   describe("dialog state", () => {
     it("has all dialogs closed initially", () => {
       const state = useAppStore.getState();
-      expect(state.trainingDialogOpen).toBe(false);
       expect(state.inferenceDialogOpen).toBe(false);
       expect(state.goToFrameDialogOpen).toBe(false);
       expect(state.deletePredictionsDialogOpen).toBe(false);
       expect(state.exportDialogOpen).toBe(false);
       expect(state.shortcutsDialogOpen).toBe(false);
       expect(state.helpDialogOpen).toBe(false);
-    });
-
-    it("opens and closes training dialog", () => {
-      useAppStore.getState().setTrainingDialogOpen(true);
-      expect(useAppStore.getState().trainingDialogOpen).toBe(true);
-
-      useAppStore.getState().setTrainingDialogOpen(false);
-      expect(useAppStore.getState().trainingDialogOpen).toBe(false);
     });
 
     it("opens and closes inference dialog", () => {
@@ -330,12 +321,12 @@ describe("appStore", () => {
     });
 
     it("dialogs are independent of each other", () => {
-      useAppStore.getState().setTrainingDialogOpen(true);
       useAppStore.getState().setInferenceDialogOpen(true);
+      useAppStore.getState().setGoToFrameDialogOpen(true);
 
-      expect(useAppStore.getState().trainingDialogOpen).toBe(true);
       expect(useAppStore.getState().inferenceDialogOpen).toBe(true);
-      expect(useAppStore.getState().goToFrameDialogOpen).toBe(false);
+      expect(useAppStore.getState().goToFrameDialogOpen).toBe(true);
+      expect(useAppStore.getState().deletePredictionsDialogOpen).toBe(false);
     });
 
     it("opens and closes delete predictions dialog", () => {
