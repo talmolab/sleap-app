@@ -36,7 +36,6 @@ import { ConnectPanel } from "../panels/ConnectPanel";
 import { FramesPanel } from "../panels/FramesPanel";
 import { TrainingPanel } from "../panels/TrainingPanel";
 import { WelcomeScreen } from "./WelcomeScreen";
-import { TrainingDialog } from "../dialogs/TrainingDialog";
 import { GoToFrameDialog } from "../dialogs/GoToFrameDialog";
 import { SelectToFrameDialog } from "../dialogs/SelectToFrameDialog";
 import { DeletePredictionsDialog } from "../dialogs/DeletePredictionsDialog";
@@ -231,7 +230,6 @@ export function AppShell() {
       <StatusBar />
 
       {/* Global dialogs */}
-      <TrainingDialog />
       <GoToFrameDialog />
       <SelectToFrameDialog />
       <DeletePredictionsDialog

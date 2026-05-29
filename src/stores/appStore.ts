@@ -89,7 +89,6 @@ export interface AppState {
   loadingMessage: string;
 
   // === Dialog state ===
-  trainingDialogOpen: boolean;
   inferenceDialogOpen: boolean;
   goToFrameDialogOpen: boolean;
   selectToFrameDialogOpen: boolean;
@@ -119,7 +118,6 @@ export interface AppState {
   touchFrame: () => void;
   clearChanges: () => void;
   setLoading: (loading: boolean, message?: string) => void;
-  setTrainingDialogOpen: (open: boolean) => void;
   setInferenceDialogOpen: (open: boolean) => void;
   setGoToFrameDialogOpen: (open: boolean) => void;
   setSelectToFrameDialogOpen: (open: boolean) => void;
@@ -222,7 +220,6 @@ export const useAppStore = create<AppState>()(
       loadingMessage: "",
 
       // Dialog state
-      trainingDialogOpen: false,
       inferenceDialogOpen: false,
       goToFrameDialogOpen: false,
       selectToFrameDialogOpen: false,
@@ -340,11 +337,6 @@ export const useAppStore = create<AppState>()(
         set((state) => {
           state.isLoading = loading;
           state.loadingMessage = message ?? "";
-        }),
-
-      setTrainingDialogOpen: (open) =>
-        set((state) => {
-          state.trainingDialogOpen = open;
         }),
 
       setInferenceDialogOpen: (open) =>

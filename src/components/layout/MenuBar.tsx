@@ -699,14 +699,18 @@ function LabelsMenu() {
 }
 
 function PredictMenu() {
-  const setTrainingDialogOpen = useAppStore((s) => s.setTrainingDialogOpen);
   const set = useAppStore((s) => s.set);
 
   return (
     <MenubarMenu>
       <MenubarTrigger className="px-3 h-8 text-xs rounded-none">Predict</MenubarTrigger>
       <MenubarContent>
-        <MenubarItem onClick={() => setTrainingDialogOpen(true)}>
+        <MenubarItem
+          onClick={() => {
+            set("sidebarActivePanel", "training");
+            set("sidebarCollapsed", false);
+          }}
+        >
           Training...
         </MenubarItem>
         <MenubarItem
