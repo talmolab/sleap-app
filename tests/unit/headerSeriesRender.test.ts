@@ -27,3 +27,36 @@ describe("makeToYPos", () => {
     expect(toY(0)).toBeCloseTo(20 - (0 - -1) * (20 / 11));
   });
 });
+
+import { drawHeaderSeries } from "@/lib/headerSeriesRender";
+
+describe("drawHeaderSeries", () => {
+  it("strokes a polyline through downsampled points", () => {
+    const calls: string[] = [];
+    const ctx = {
+      beginPath: () => calls.push("begin"),
+      moveTo: () => calls.push("moveTo"),
+      lineTo: () => calls.push("lineTo"),
+      stroke: () => calls.push("stroke"),
+      set strokeStyle(_v: string) {},
+      set lineWidth(_v: number) {},
+    } as unknown as CanvasRenderingContext2D;
+
+    const series = new Map([[0, 1], [1, 3], [2, 2]]);
+    drawHeaderSeries(ctx, series, 3, 100, 16);
+
+    expect(calls[0]).toBe("begin");
+    expect(calls.filter((c) => c === "lineTo").length).toBeGreaterThan(0);
+    expect(calls[calls.length - 1]).toBe("stroke");
+  });
+  it("no-ops on empty series", () => {
+    let stroked = false;
+    const ctx = {
+      beginPath: () => {}, moveTo: () => {}, lineTo: () => {},
+      stroke: () => { stroked = true; },
+      set strokeStyle(_v: string) {}, set lineWidth(_v: number) {},
+    } as unknown as CanvasRenderingContext2D;
+    drawHeaderSeries(ctx, new Map(), 3, 100, 16);
+    expect(stroked).toBe(false);
+  });
+});

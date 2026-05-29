@@ -61,3 +61,37 @@ export function makeToYPos(
   const scale = denom === 0 ? 0 : height / denom;
   return (val: number) => height - (val - seriesMin) * scale;
 }
+
+/**
+ * Draw an auto-scaled polyline of the series onto the header canvas.
+ * X maps frameIdx across width; Y via makeToYPos. Mirrors the QPainterPath
+ * polyline in slider.py:882-894 (smooth line, step_chart=False).
+ */
+export function drawHeaderSeries(
+  ctx: CanvasRenderingContext2D,
+  series: Map<number, number>,
+  totalFrames: number,
+  width: number,
+  height: number,
+): void {
+  if (series.size === 0 || totalFrames <= 1) return;
+  const { buckets, min, max } = downsampleSeries(series, width);
+  const toY = makeToYPos(min, max, height);
+  const frameToX = (f: number) => (f / (totalFrames - 1)) * width;
+
+  ctx.strokeStyle = "rgba(100, 149, 237, 0.8)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  let started = false;
+  for (const [frame, val] of buckets) {
+    const x = frameToX(frame);
+    const y = toY(val);
+    if (!started) {
+      ctx.moveTo(x, y);
+      started = true;
+    } else {
+      ctx.lineTo(x, y);
+    }
+  }
+  ctx.stroke();
+}
