@@ -30,20 +30,22 @@ jobs:
           key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
           restore-keys: ${{ runner.os }}-bun-
 
-      # sleap-io.js is being ported to bun too (talmolab/sleap-io.js#130),
-      # so build the sibling checkout with bun instead of npm. Use a plain
-      # `bun install` (not --frozen-lockfile) until that repo commits an
-      # up-to-date bun.lock; bun resolves its deps from package.json.
+      # sleap-io.js is on bun too and now ships a committed bun.lock
+      # (talmolab/sleap-io.js#130, done), so we use --frozen-lockfile for
+      # reproducible sibling builds.
       - name: Clone and build sleap-io.js
         run: |
           git clone --depth 1 https://github.com/talmolab/sleap-io.js.git ../sleap-io.js
-          cd ../sleap-io.js && bun install && bun run build
+          cd ../sleap-io.js && bun install --frozen-lockfile && bun run build
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
       - name: Type check and build
         run: bun run build
+
+      - name: Type check tests
+        run: bun run typecheck:tests
 
       - name: Run tests
         run: bun run test

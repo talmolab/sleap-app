@@ -13,7 +13,6 @@ describe("connectStore", () => {
       selectedWorkerId: null,
       _ws: null,
       _pc: null,
-      _dc: null,
       _pendingFs: new Map(),
       _pendingJobs: new Map(),
     });

@@ -76,7 +76,7 @@ export async function loadProjectFromPath(
 
   try {
     const bytes = await readFile(path);
-    const labels = await loadSlp(bytes.buffer, {
+    const labels = await loadSlp(bytes, {
       openVideos: true,
       h5: { filenameHint: path },
     });

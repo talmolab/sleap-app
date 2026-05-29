@@ -19,10 +19,7 @@ import {
   Instance,
   LabeledFrame,
   Skeleton,
-  Node,
-  Edge,
   Video,
-  Track,
 } from "@talmolab/sleap-io.js";
 
 /** Reset the store between tests. */

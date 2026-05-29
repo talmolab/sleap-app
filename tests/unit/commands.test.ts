@@ -300,7 +300,7 @@ describe("CommandContext", () => {
 
   describe("multi-frame undo", () => {
     it("takeAllFramesSnapshot captures all labeled frames", () => {
-      const project = setupProjectInStore({ numFrames: 3, withPredictions: true });
+      setupProjectInStore({ numFrames: 3, withPredictions: true });
       const snapshot = ctx.takeAllFramesSnapshot("TestBulk");
 
       expect(snapshot.commandName).toBe("TestBulk");
@@ -475,7 +475,7 @@ describe("Edit commands", () => {
       const inst = lf.instances[0];
       useAppStore.getState().setInstance(inst);
 
-      const origXY = [...inst.points[0].xy];
+      const origXY: [number, number] = [...inst.points[0].xy];
       await ctx.execute(SetPointLocation, { nodeIdx: -1, x: 99, y: 88 });
       expect(inst.points[0].xy).toEqual(origXY);
 
@@ -555,7 +555,7 @@ describe("Edit commands", () => {
     });
 
     it("does not push undo if nothing was removed", async () => {
-      const project = setupProjectInStore({
+      setupProjectInStore({
         numFrames: 2,
         numInstancesPerFrame: 1,
         withPredictions: false,
@@ -664,7 +664,7 @@ describe("Navigation commands", () => {
 
   describe("GoNextLabeledFrame", () => {
     it("navigates to next labeled frame", async () => {
-      const project = setupProjectInStore({ numFrames: 3 });
+      setupProjectInStore({ numFrames: 3 });
       // Frames at indices 0, 10, 20
       useAppStore.getState().setFrameIdx(0);
 
@@ -778,7 +778,7 @@ describe("Navigation commands", () => {
 
   describe("GoNextUserFrame", () => {
     it("navigates to next frame with user instances", async () => {
-      const project = setupProjectInStore({
+      setupProjectInStore({
         numFrames: 3,
         numInstancesPerFrame: 1,
         withPredictions: true,
@@ -938,7 +938,7 @@ describe("Track commands", () => {
       useAppStore.getState().setInstance(inst0);
       await ctx.execute(CopyTrack);
 
-      expect(useAppStore.getState().clipboardTrack).toBe(inst0.track);
+      expect(useAppStore.getState().clipboardTrack).toBe(inst0.track ?? null);
 
       // Paste onto inst1
       useAppStore.getState().setInstance(inst1);
@@ -1173,7 +1173,7 @@ describe("Edit commands (new)", () => {
       const inst = project.labeledFrames[0].instances[0];
       useAppStore.getState().setInstance(inst);
 
-      const origXY = [...inst.points[0].xy];
+      const origXY: [number, number] = [...inst.points[0].xy];
       await ctx.execute(MoveInstance);
       expect(inst.points[0].xy).toEqual(origXY);
     });
@@ -1232,7 +1232,7 @@ describe("Edit commands (new)", () => {
       const inst = project.labeledFrames[0].instances[0];
       useAppStore.getState().setInstance(inst);
 
-      const origXY = [...inst.points[0].xy];
+      const origXY: [number, number] = [...inst.points[0].xy];
       await ctx.execute(RotateInstance);
       expect(inst.points[0].xy).toEqual(origXY);
     });
@@ -1290,7 +1290,7 @@ describe("Navigation commands (new)", () => {
     });
 
     it("wraps around to first spawn frame", async () => {
-      const project = setupProjectInStore({
+      setupProjectInStore({
         numFrames: 3,
         numInstancesPerFrame: 1,
         withTracks: true,

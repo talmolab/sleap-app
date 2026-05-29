@@ -441,7 +441,7 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
               set({ outputPath: result.outputPath });
               const platform = await getPlatform();
               const bytes = await platform.readFile(result.outputPath);
-              const predictions = await loadSlp(bytes.buffer, { openVideos: false, h5: { filenameHint: result.outputPath } });
+              const predictions = await loadSlp(bytes, { openVideos: false, h5: { filenameHint: result.outputPath } });
               await commandContext.execute(MergePredictions, { predictions });
             }
             if (!result.success) {
@@ -479,7 +479,7 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
       const platform = await getPlatform();
       const bytes = await platform.readFile(outputPath);
       console.log("[inference] Read predictions file: %d bytes from %s", bytes.byteLength, outputPath);
-      const predictions = await loadSlp(bytes.buffer, {
+      const predictions = await loadSlp(bytes, {
         openVideos: false,
         h5: { filenameHint: outputPath },
       });

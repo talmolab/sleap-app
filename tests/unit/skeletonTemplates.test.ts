@@ -6,7 +6,6 @@ import { describe, it, expect } from "../bun-test";
 import {
   SKELETON_TEMPLATES,
   TEMPLATE_ORDER,
-  type SkeletonTemplate,
 } from "@/lib/skeletonTemplates";
 
 describe("skeletonTemplates", () => {
@@ -17,7 +16,7 @@ describe("skeletonTemplates", () => {
   });
 
   it("all templates have valid structure", () => {
-    for (const [id, template] of Object.entries(SKELETON_TEMPLATES)) {
+    for (const [, template] of Object.entries(SKELETON_TEMPLATES)) {
       expect(template.name).toBeDefined();
       expect(typeof template.name).toBe("string");
       expect(template.name.length).toBeGreaterThan(0);
@@ -31,7 +30,7 @@ describe("skeletonTemplates", () => {
   });
 
   it("edge indices are within node bounds", () => {
-    for (const [id, template] of Object.entries(SKELETON_TEMPLATES)) {
+    for (const [, template] of Object.entries(SKELETON_TEMPLATES)) {
       for (const [srcIdx, dstIdx] of template.edges) {
         expect(srcIdx).toBeGreaterThanOrEqual(0);
         expect(srcIdx).toBeLessThan(template.nodes.length);
@@ -42,7 +41,7 @@ describe("skeletonTemplates", () => {
   });
 
   it("no duplicate node names within a template", () => {
-    for (const [id, template] of Object.entries(SKELETON_TEMPLATES)) {
+    for (const [, template] of Object.entries(SKELETON_TEMPLATES)) {
       const names = new Set(template.nodes);
       expect(names.size).toBe(template.nodes.length);
     }
@@ -80,7 +79,7 @@ describe("skeletonTemplates", () => {
   });
 
   it("edges are valid index pairs", () => {
-    for (const [id, template] of Object.entries(SKELETON_TEMPLATES)) {
+    for (const [, template] of Object.entries(SKELETON_TEMPLATES)) {
       for (const edge of template.edges) {
         expect(Array.isArray(edge)).toBe(true);
         expect(edge.length).toBe(2);
@@ -91,7 +90,7 @@ describe("skeletonTemplates", () => {
   });
 
   it("no self-edges (source equals destination)", () => {
-    for (const [id, template] of Object.entries(SKELETON_TEMPLATES)) {
+    for (const [, template] of Object.entries(SKELETON_TEMPLATES)) {
       for (const [srcIdx, dstIdx] of template.edges) {
         expect(srcIdx).not.toBe(dstIdx);
       }

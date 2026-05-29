@@ -166,7 +166,6 @@ describe("placePriorFrame", () => {
 });
 
 describe("findNearestPriorFrame", () => {
-  const skeleton = makeSkeleton();
   const video = makeVideo();
   const video2 = makeVideo();
 

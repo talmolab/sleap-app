@@ -335,7 +335,7 @@ describe("Component rendering", () => {
       );
 
       // Component that throws on render
-      function ThrowingComponent() {
+      function ThrowingComponent(): never {
         throw new Error("Test error");
       }
 
@@ -359,7 +359,7 @@ describe("Component rendering", () => {
         "@/components/layout/ErrorBoundary"
       );
 
-      function ThrowingComponent() {
+      function ThrowingComponent(): never {
         throw new Error("Test error");
       }
 

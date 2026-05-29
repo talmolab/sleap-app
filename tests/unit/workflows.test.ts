@@ -8,10 +8,8 @@
 import { describe, it, expect, beforeEach, vi } from "../bun-test";
 import { CommandContext } from "@/commands/CommandContext";
 import { useAppStore } from "@/stores/appStore";
-import { UpdateTopic } from "@/types";
 import {
   AddInstance,
-  DeleteSelectedInstance,
   CopyInstance,
   PasteInstance,
   DeleteAllPredictions,
@@ -173,7 +171,7 @@ describe("Workflow: Labeling", () => {
   });
 
   it("navigate between labeled frames", async () => {
-    const project = loadProject({ numFrames: 3, numInstancesPerFrame: 1 });
+    loadProject({ numFrames: 3, numInstancesPerFrame: 1 });
     // Frames at 0, 5, 10
 
     useAppStore.getState().setFrameIdx(0);
@@ -206,7 +204,7 @@ describe("Workflow: Labeling", () => {
   });
 
   it("add instance -> select -> modify coordinates", async () => {
-    const project = loadProject({ numFrames: 1, numInstancesPerFrame: 0 });
+    loadProject({ numFrames: 1, numInstancesPerFrame: 0 });
 
     await ctx.execute(AddInstance);
 
@@ -283,7 +281,7 @@ describe("Workflow: Undo/Redo", () => {
   });
 
   it("redo restores the added instance", async () => {
-    const project = loadProject({ numFrames: 1, numInstancesPerFrame: 0 });
+    loadProject({ numFrames: 1, numInstancesPerFrame: 0 });
     useAppStore.getState().setFrameIdx(0);
 
     // Add instance
@@ -371,7 +369,7 @@ describe("Workflow: Undo/Redo", () => {
   });
 
   it("new action clears redo stack", async () => {
-    const project = loadProject({ numFrames: 1, numInstancesPerFrame: 0 });
+    loadProject({ numFrames: 1, numInstancesPerFrame: 0 });
     useAppStore.getState().setFrameIdx(0);
 
     // Add, undo, then add again
@@ -457,15 +455,12 @@ describe("Workflow: Track management", () => {
 });
 
 describe("Workflow: State consistency", () => {
-  let ctx: CommandContext;
-
   beforeEach(() => {
     resetStore();
-    ctx = new CommandContext();
   });
 
   it("loading a new project resets all state", () => {
-    const project1 = loadProject({ numFrames: 3 });
+    loadProject({ numFrames: 3 });
 
     // Set some state
     useAppStore.getState().setFrameIdx(10);

@@ -1201,7 +1201,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
               const platform = await getPlatform();
               const bytes = await platform.readFile(outputPath);
               console.log("[training] Read predictions file: %d bytes", bytes.byteLength);
-              const predictions = await loadSlp(bytes.buffer, {
+              const predictions = await loadSlp(bytes, {
                 openVideos: false,
                 h5: { filenameHint: outputPath },
               });
