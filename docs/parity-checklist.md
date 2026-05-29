@@ -108,7 +108,7 @@ Use this to track which PyQt features have been ported to sleap-app.
 - [x] Delete Multiple Tracks (Unused/All)
 - [x] Copy Instance Track (Ctrl+Shift+C)
 - [x] Paste Instance Track (Ctrl+Shift+V)
-- [ ] Seekbar Header stat selection (12 options)
+- [x] Seekbar Header stat selection (12 options)
 - [x] New Track (Ctrl+0)
 
 ### Help Menu
@@ -205,7 +205,7 @@ Use this to track which PyQt features have been ported to sleap-app.
 - [x] Track occupancy bars
 - [ ] Confidence map overlay
 - [ ] PAF (Part Affinity Field) overlay
-- [ ] Seekbar header stats (12 options — instance count only)
+- [x] Seekbar header stats (12 options)
 
 ### Canvas Interactions
 
