@@ -5,6 +5,12 @@ import { isTauri } from "@/platform";
 import { computeRuntimeMetrics } from "@/lib/trainingMetrics";
 
 const MAX_BATCH_SAMPLES = 20000; // bound batchSamples; drop oldest beyond this
+const MAX_LOG_LINES = 1000; // bound the training log so it doesn't grow unbounded during long runs
+
+function appendLog(prev: string[], ...lines: string[]): string[] {
+  const next = [...prev, ...lines];
+  return next.length > MAX_LOG_LINES ? next.slice(next.length - MAX_LOG_LINES) : next;
+}
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -904,7 +910,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
             // Replace last log line (carriage return behavior)
             set((s) => ({
               log: s.log.length > 0
-                ? [...s.log.slice(0, -1), clean]
+                ? appendLog(s.log.slice(0, -1), clean)
                 : [clean],
             }));
             return;
@@ -930,15 +936,15 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
                       }
                     : m,
                 ),
-                log: [
-                  ...s.log,
+                log: appendLog(
+                  s.log,
                   `[Epoch ${data.epoch}/${s.models[idx]?.maxEpochs}] loss: ${data.loss?.toFixed(4) ?? "?"} | val_loss: ${data.val_loss?.toFixed(4) ?? "?"}${
                     data.val_loss != null &&
                     (s.models[idx]?.bestValLoss === null || data.val_loss < (s.models[idx]?.bestValLoss ?? Infinity))
                       ? " *** best ***"
                       : ""
                   }`,
-                ],
+                ),
               }));
               return;
             }
@@ -957,7 +963,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
           }
 
           // ── Regular log line — append to shared log ───────────
-          set((s) => ({ log: [...s.log, line] }));
+          set((s) => ({ log: appendLog(s.log, line) }));
         }, {
           expectedCompletions: numModels,
           onModelComplete: () => {
@@ -974,7 +980,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
                       ? { ...m, status: "running" as const }
                       : m,
                 ),
-                log: [...s.log, `— ${s.models[idx]?.label} completed, starting ${s.models[nextIdx]?.label ?? "next model"}...`],
+                log: appendLog(s.log, `— ${s.models[idx]?.label} completed, starting ${s.models[nextIdx]?.label ?? "next model"}...`),
               };
             });
           },
@@ -1083,7 +1089,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       } catch (e) {
         console.error("[training] ZMQ relay failed to start:", e);
         set((s) => ({
-          log: [...s.log, `[warn] ZMQ relay failed: ${e instanceof Error ? e.message : String(e)} — Stop Early disabled`],
+          log: appendLog(s.log, `[warn] ZMQ relay failed: ${e instanceof Error ? e.message : String(e)} — Stop Early disabled`),
         }));
       }
 
@@ -1103,7 +1109,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
             models: s.models.map((m, j) =>
               j === i ? { ...m, status: "running" as const } : m,
             ),
-            log: i > 0 ? [...s.log, `— Starting ${s.models[i]?.label}...`] : s.log,
+            log: i > 0 ? appendLog(s.log, `— Starting ${s.models[i]?.label}...`) : s.log,
           }));
 
           const configYaml = applyHyperparamsToYaml(cf.content, cf.hyperparams);
@@ -1163,7 +1169,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
               }
 
               if (line.trim()) {
-                set((s) => ({ log: [...s.log, line] }));
+                set((s) => ({ log: appendLog(s.log, line) }));
               }
             }
           }, modelDir);
@@ -1179,7 +1185,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
                 j === i ? { ...m, status: "completed" as const } : m,
               ),
               log: wasStopped
-                ? [...s.log, `— ${s.models[i]?.label} stopped early, moving to next model...`]
+                ? appendLog(s.log, `— ${s.models[i]?.label} stopped early, moving to next model...`)
                 : s.log,
             }));
             console.log("[training] Continuing to next model (i=%d, total=%d)", i, slots.length);
@@ -1202,7 +1208,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         const inferenceTarget = localOpts?.inferenceTarget;
         if (inferenceTarget && inferenceTarget !== "nothing" && trainedModelPaths.length > 0) {
           set((s) => ({
-            log: [...s.log, `— Training complete. Running inference (${inferenceTarget}) with models: ${trainedModelPaths.join(", ")}...`],
+            log: appendLog(s.log, `— Training complete. Running inference (${inferenceTarget}) with models: ${trainedModelPaths.join(", ")}...`),
           }));
 
           const { runInference } = await import("@/platform/backend");
@@ -1265,7 +1271,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
             const logEvent = (event: import("@/platform/backend").ProcessEvent) => {
               if (event.event === "stdout" || event.event === "stderr") {
                 const line = event.data.line;
-                if (line.trim()) set((s) => ({ log: [...s.log, line] }));
+                if (line.trim()) set((s) => ({ log: appendLog(s.log, line) }));
               }
             };
 
@@ -1291,7 +1297,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
               for (let vi = 0; vi < videos.length; vi++) {
                 const nFrames = videos[vi].shape?.[0] ?? 0;
                 if (nFrames === 0) continue;
-                set((s) => ({ log: [...s.log, `— Inference: video ${vi + 1}/${videos.length}...`] }));
+                set((s) => ({ log: appendLog(s.log, `— Inference: video ${vi + 1}/${videos.length}...`) }));
                 const perVideoConfig = { ...inferenceConfig, videoIndex: vi as number | "all", frameRange: "random_video" as typeof inferenceConfig.frameRange };
                 const result = await runInference(perVideoConfig, projectPath, logEvent);
                 if (result.success && result.outputPath) {
@@ -1303,14 +1309,14 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
               if (result.success && result.outputPath) {
                 await mergeOutputSlp(result.outputPath);
               } else if (!result.success) {
-                set((s) => ({ log: [...s.log, "— Post-training inference failed (non-zero exit)."] }));
+                set((s) => ({ log: appendLog(s.log, "— Post-training inference failed (non-zero exit).") }));
               }
             }
-            set((s) => ({ log: [...s.log, "— Predictions merged into project."] }));
+            set((s) => ({ log: appendLog(s.log, "— Predictions merged into project.") }));
           } catch (e) {
             console.error("[training] Post-training inference failed:", e);
             set((s) => ({
-              log: [...s.log, `— Post-training inference failed: ${e instanceof Error ? e.message : String(e)}`],
+              log: appendLog(s.log, `— Post-training inference failed: ${e instanceof Error ? e.message : String(e)}`),
             }));
           }
         }
@@ -1340,21 +1346,21 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       const { sendControlCommand } = useConnectStore.getState();
       sendControlCommand("stop");
       set((s) => ({
-        log: [...s.log, "— Stop Early requested, saving checkpoint..."],
+        log: appendLog(s.log, "— Stop Early requested, saving checkpoint..."),
       }));
     } else {
       // Local: send stop via ZMQ (same as PyQt GUI)
       const { sendTrainingStop } = await import("@/platform/backend");
       set((s) => ({
         _stopRequested: true,
-        log: [...s.log, "— Stop Early requested, finishing current epoch..."],
+        log: appendLog(s.log, "— Stop Early requested, finishing current epoch..."),
       }));
       try {
         await sendTrainingStop();
       } catch (e) {
         console.error("[training] sendTrainingStop() failed:", e);
         set((s) => ({
-          log: [...s.log, `[debug] Stop command failed: ${e instanceof Error ? e.message : String(e)}`],
+          log: appendLog(s.log, `[debug] Stop command failed: ${e instanceof Error ? e.message : String(e)}`),
         }));
       }
     }

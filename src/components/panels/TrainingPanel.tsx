@@ -419,6 +419,28 @@ export function TrainingPanel() {
   const wandbUrl = useTrainingStore((s) => s.wandbUrl);
   const modelOutputDirs = useTrainingStore((s) => s.modelOutputDirs);
   const log = useTrainingStore((s) => s.log);
+  // Memoize the rendered log lines so we only re-map when `log` actually changes,
+  // not on every panel render (the log can update frequently during training).
+  const logLines = useMemo(
+    () =>
+      log.map((line, j) => (
+        <div
+          key={j}
+          className={
+            line.includes("*** best ***")
+              ? "text-green-400"
+              : line.includes("Error") || line.includes("error")
+                ? "text-destructive"
+                : line.startsWith("—")
+                  ? "text-yellow-400"
+                  : ""
+          }
+        >
+          {line}
+        </div>
+      )),
+    [log],
+  );
   const setConfig = useTrainingStore((s) => s.setConfig);
   const updateConfigHyperparams = useTrainingStore((s) => s.updateConfigHyperparams);
   const removeConfigFile = useTrainingStore((s) => s.removeConfigFile);
@@ -1184,23 +1206,7 @@ export function TrainingPanel() {
                 ref={logRef}
                 className="max-h-48 overflow-auto rounded border bg-muted p-1.5 text-[10px] font-mono whitespace-pre-wrap break-all"
               >
-                {log.map((line, j) => (
-                  <div
-                    key={j}
-                    className={
-                      line.includes("*** best ***")
-                        ? "text-green-400"
-                        : line.includes("Error") ||
-                            line.includes("error")
-                          ? "text-destructive"
-                          : line.startsWith("—")
-                            ? "text-yellow-400"
-                            : ""
-                    }
-                  >
-                    {line}
-                  </div>
-                ))}
+                {logLines}
               </pre>
             )}
 
