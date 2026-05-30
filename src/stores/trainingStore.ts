@@ -4,6 +4,8 @@ import { cancelCommand } from "@/platform/backend";
 import { isTauri } from "@/platform";
 import { computeRuntimeMetrics } from "@/lib/trainingMetrics";
 
+const MAX_BATCH_SAMPLES = 20000; // bound batchSamples; drop oldest beyond this
+
 // ── Types ─────────────────────────────────────────────────────────
 
 export type ModelType =
@@ -176,6 +178,12 @@ export interface BatchSample {
   loss: number;
 }
 
+export interface BatchInput {
+  epoch: number;
+  batch: number;
+  loss: number;
+}
+
 export interface RuntimeMetrics {
   meanEpochTimeSec: number | null;
   etaNext10Min: number | null;
@@ -198,6 +206,8 @@ export interface ModelProgress {
   status: "pending" | "running" | "completed" | "failed";
   epochSamples: EpochSample[];
   batchSamples: BatchSample[];
+  epochSize: number;        // batches-per-epoch (learned: max seen last_batch+1); PyQt parity
+  lastBatchNumber: number;  // most recent batch index seen this epoch
   metrics: RuntimeMetrics;
   epochStartedAt: number | null;
   plateauPatience: number | null;
@@ -233,7 +243,8 @@ interface TrainingState {
   stopTraining: () => Promise<void>;
   cancelTraining: () => Promise<void>;
   recordEpoch: (modelIndex: number, sample: EpochSample) => void;
-  recordBatch: (modelIndex: number, sample: BatchSample) => void;
+  recordBatch: (modelIndex: number, sample: BatchInput) => void;
+  recordBatches: (modelIndex: number, samples: BatchInput[]) => void;
   markEpochBegin: (modelIndex: number, epoch: number) => void;
 }
 
@@ -733,6 +744,8 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         status: "pending" as const,
         epochSamples: [],
         batchSamples: [],
+        epochSize: 1,
+        lastBatchNumber: 0,
         metrics: emptyMetrics(),
         epochStartedAt: null,
         plateauPatience: cf?.hyperparams.earlyStoppingPatience ?? null,
@@ -1345,12 +1358,14 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       return {
         models: state.models.map((m, i) => {
           if (i !== modelIndex) return m;
+          const epochSize = Math.max(m.epochSize, m.lastBatchNumber + 1);
           const epochSamples = [...m.epochSamples, sample];
 
           const metrics = computeRuntimeMetrics(epochSamples, startedAt, Date.now(), m.plateauMinDelta);
 
           return {
             ...m,
+            epochSize,
             epochSamples,
             epoch: sample.epoch + 1,
             loss: sample.trainLoss ?? m.loss,
@@ -1370,9 +1385,37 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
     set((state) => {
       if (modelIndex < 0 || modelIndex >= state.models.length) return state;
       return {
-        models: state.models.map((m, i) =>
-          i === modelIndex ? { ...m, batchSamples: [...m.batchSamples, sample] } : m,
-        ),
+        models: state.models.map((m, i) => {
+          if (i !== modelIndex) return m;
+          const globalBatch = sample.epoch * m.epochSize + sample.batch;
+          const next = [...m.batchSamples, { globalBatch, loss: sample.loss }];
+          return {
+            ...m,
+            lastBatchNumber: sample.batch,
+            batchSamples: next.length > MAX_BATCH_SAMPLES ? next.slice(next.length - MAX_BATCH_SAMPLES) : next,
+          };
+        }),
+      };
+    }),
+
+  recordBatches: (modelIndex, samples) =>
+    set((state) => {
+      if (modelIndex < 0 || modelIndex >= state.models.length || samples.length === 0) return state;
+      return {
+        models: state.models.map((m, i) => {
+          if (i !== modelIndex) return m;
+          let lastBatch = m.lastBatchNumber;
+          const additions = samples.map((s) => {
+            lastBatch = s.batch;
+            return { globalBatch: s.epoch * m.epochSize + s.batch, loss: s.loss };
+          });
+          const next = [...m.batchSamples, ...additions];
+          return {
+            ...m,
+            lastBatchNumber: lastBatch,
+            batchSamples: next.length > MAX_BATCH_SAMPLES ? next.slice(next.length - MAX_BATCH_SAMPLES) : next,
+          };
+        }),
       };
     }),
 
