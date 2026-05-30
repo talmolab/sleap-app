@@ -3,7 +3,7 @@
  * Pure functions, no React/store deps. Parity with sleap PyQt
  * sleap/gui/widgets/monitor.py (LossViewer/LossPlot).
  */
-import type { EpochSample, RuntimeMetrics } from "@/stores/trainingStore";
+import type { BatchSample, EpochSample, RuntimeMetrics } from "@/stores/trainingStore";
 
 /**
  * Linear-interpolation quantile matching numpy.quantile's default
@@ -172,4 +172,55 @@ export function buildLossPlotData(samples: EpochSample[]): {
     train: samples.map((s) => s.trainLoss),
     val: samples.map((s) => s.valLoss),
   };
+}
+
+/**
+ * Unified batch-x-axis chart data (PyQt LossViewer parity). x-axis = global batch
+ * number. The dense `batch` series is per-batch train loss; `train`/`val` are
+ * epoch-averaged losses placed at epoch boundaries (x = (epoch+1)*epochSize);
+ * `best` is a single-point marker at the best-val epoch. All series share the
+ * sorted union of x values, with null where a series has no point at that x.
+ */
+export function buildLossPlotDataBatched(
+  batchSamples: BatchSample[],
+  epochSamples: EpochSample[],
+  epochSize: number,
+  bestValEpoch: number | null,
+  bestValLoss: number | null,
+): {
+  x: number[];
+  batch: (number | null)[];
+  train: (number | null)[];
+  val: (number | null)[];
+  best: (number | null)[];
+} {
+  const batchAt = new Map<number, number>();
+  for (const b of batchSamples) batchAt.set(b.globalBatch, b.loss);
+
+  const trainAt = new Map<number, number | null>();
+  const valAt = new Map<number, number | null>();
+  for (const e of epochSamples) {
+    const bx = (e.epoch + 1) * epochSize;
+    trainAt.set(bx, e.trainLoss);
+    valAt.set(bx, e.valLoss);
+  }
+
+  const bestX = bestValEpoch != null ? (bestValEpoch + 1) * epochSize : null;
+
+  const xset = new Set<number>();
+  for (const b of batchSamples) xset.add(b.globalBatch);
+  for (const e of epochSamples) xset.add((e.epoch + 1) * epochSize);
+  const xs = Array.from(xset).sort((a, b) => a - b);
+
+  const batch: (number | null)[] = [];
+  const train: (number | null)[] = [];
+  const val: (number | null)[] = [];
+  const best: (number | null)[] = [];
+  for (const x of xs) {
+    batch.push(batchAt.has(x) ? (batchAt.get(x) as number) : null);
+    train.push(trainAt.has(x) ? (trainAt.get(x) ?? null) : null);
+    val.push(valAt.has(x) ? (valAt.get(x) ?? null) : null);
+    best.push(bestX != null && x === bestX ? bestValLoss : null);
+  }
+  return { x: xs, batch, train, val, best };
 }

@@ -5,6 +5,7 @@ import {
   computeRuntimeMetrics,
   formatRuntimeTitle,
   buildLossPlotData,
+  buildLossPlotDataBatched,
 } from "@/lib/trainingMetrics";
 import type { EpochSample } from "@/stores/trainingStore";
 
@@ -123,5 +124,57 @@ describe("buildLossPlotData", () => {
     expect(d.x).toEqual([]);
     expect(d.train).toEqual([]);
     expect(d.val).toEqual([]);
+  });
+});
+
+describe("buildLossPlotDataBatched", () => {
+  it("aligns batch trace + epoch train/val + best on a unified x-axis", () => {
+    const d = buildLossPlotDataBatched(
+      [ { globalBatch: 0, loss: 1.0 }, { globalBatch: 1, loss: 0.9 } ], // batchSamples
+      [ { epoch: 0, trainLoss: 0.95, valLoss: 0.8 } ],                  // epochSamples
+      2,        // epochSize → epoch-0 boundary at (0+1)*2 = 2
+      0,        // bestValEpoch
+      0.8,      // bestValLoss
+    );
+    expect(d.x).toEqual([0, 1, 2]);
+    expect(d.batch).toEqual([1.0, 0.9, null]);
+    expect(d.train).toEqual([null, null, 0.95]);
+    expect(d.val).toEqual([null, null, 0.8]);
+    expect(d.best).toEqual([null, null, 0.8]);   // best at (0+1)*2 = 2
+  });
+
+  it("returns empty arrays when there is no data", () => {
+    const d = buildLossPlotDataBatched([], [], 1, null, null);
+    expect(d.x).toEqual([]);
+    expect(d.batch).toEqual([]);
+    expect(d.train).toEqual([]);
+    expect(d.val).toEqual([]);
+    expect(d.best).toEqual([]);
+  });
+
+  it("handles a batch point coinciding with an epoch boundary (shared x)", () => {
+    // epochSize=2, epoch 0 boundary at x=2; a batch point also lands at x=2
+    const d = buildLossPlotDataBatched(
+      [ { globalBatch: 2, loss: 0.7 } ],
+      [ { epoch: 0, trainLoss: 0.75, valLoss: 0.6 } ],
+      2, 0, 0.6,
+    );
+    expect(d.x).toEqual([2]);
+    expect(d.batch).toEqual([0.7]);   // batch value present
+    expect(d.train).toEqual([0.75]);  // AND epoch values present at same x
+    expect(d.val).toEqual([0.6]);
+    expect(d.best).toEqual([0.6]);
+  });
+
+  it("carries null epoch losses through (no val that epoch)", () => {
+    const d = buildLossPlotDataBatched(
+      [],
+      [ { epoch: 0, trainLoss: 0.5, valLoss: null } ],
+      3, null, null,
+    );
+    expect(d.x).toEqual([3]);          // (0+1)*3
+    expect(d.train).toEqual([0.5]);
+    expect(d.val).toEqual([null]);
+    expect(d.best).toEqual([null]);
   });
 });
