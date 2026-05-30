@@ -606,6 +606,144 @@ pub async fn stop_zmq_relay(
     Ok(())
 }
 
+/// Start a ZMQ SUB relay that BINDS port 9001 and forwards every training-progress
+/// message published by sleap-nn (ProgressReporterZMQ) to the frontend as a
+/// "training-progress" Tauri event. sleap-nn's PUB CONNECTs to 9001, so the SUB binds.
+/// Mirrors start_zmq_relay but subscribes instead of publishes.
+#[tauri::command]
+pub async fn start_progress_relay<R: Runtime>(
+    app: tauri::AppHandle<R>,
+    relay: tauri::State<'_, crate::ProgressRelay>,
+) -> Result<(), String> {
+    // Kill any existing relay we own
+    {
+        let mut guard = relay.0.lock().map_err(|e| e.to_string())?;
+        if let Some(mut child) = guard.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+
+    let port: u16 = 9001;
+
+    let script = format!(
+        "import zmq, sys\n\
+         c = zmq.Context()\n\
+         s = c.socket(zmq.SUB)\n\
+         s.bind('tcp://127.0.0.1:{}')\n\
+         s.setsockopt_string(zmq.SUBSCRIBE, '')\n\
+         sys.stdout.write('ready\\n')\n\
+         sys.stdout.flush()\n\
+         while True:\n\
+         \ttry:\n\
+         \t\tmsg = s.recv_string()\n\
+         \texcept Exception:\n\
+         \t\tbreak\n\
+         \tline = msg.replace('\\r', ' ').replace('\\n', ' ')\n\
+         \tsys.stdout.write(line + '\\n')\n\
+         \tsys.stdout.flush()\n",
+        port
+    );
+
+    // Kill any stale process holding the port (from crashed previous runs)
+    #[cfg(unix)]
+    {
+        use std::process::Command as StdCommand;
+        if let Ok(output) = StdCommand::new("lsof")
+            .args(["-ti", &format!(":{}", port)])
+            .output()
+        {
+            let pids = String::from_utf8_lossy(&output.stdout);
+            for pid_str in pids.split_whitespace() {
+                if let Ok(pid) = pid_str.parse::<i32>() {
+                    log::info!("[progress-relay] Killing stale process on port {}: pid={}", port, pid);
+                    unsafe { libc::kill(pid, libc::SIGKILL); }
+                }
+            }
+            if !pids.trim().is_empty() {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+        }
+    }
+
+    log::info!("[progress-relay] Starting on port {}...", port);
+    let mut child = std::process::Command::new("python3")
+        .args(["-u", "-c", &script])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to spawn progress relay: {}", e))?;
+
+    // Take stdout so we can read the ready handshake, then move it to the forwarder thread.
+    let mut stdout = child.stdout.take().ok_or("progress relay: no stdout")?;
+    {
+        use std::io::BufRead;
+        let mut reader = std::io::BufReader::new(&mut stdout);
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(n) if n > 0 && line.trim() == "ready" => {
+                log::info!("[progress-relay] Ready on port {}", port);
+            }
+            Ok(_) => {
+                let stderr_msg = child.stderr.as_mut().map(|se| {
+                    let mut buf = String::new();
+                    use std::io::Read;
+                    let _ = se.read_to_string(&mut buf);
+                    buf
+                }).unwrap_or_default();
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("Progress relay failed: {}", stderr_msg.trim()));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("Failed to read from progress relay: {}", e));
+            }
+        }
+    }
+
+    // Forward every subsequent stdout line to the frontend as a Tauri event.
+    let app_handle = app.clone();
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        use tauri::Emitter;
+        let reader = std::io::BufReader::new(stdout);
+        for line in reader.lines() {
+            match line {
+                Ok(l) if !l.trim().is_empty() => {
+                    let _ = app_handle.emit("training-progress", l);
+                }
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+        log::info!("[progress-relay] stdout reader thread exited");
+    });
+
+    // Detach stderr so the pipe doesn't block.
+    child.stderr.take();
+
+    let mut guard = relay.0.lock().map_err(|e| e.to_string())?;
+    *guard = Some(child);
+    Ok(())
+}
+
+/// Kill the ZMQ SUB progress relay process.
+#[tauri::command]
+pub async fn stop_progress_relay(
+    relay: tauri::State<'_, crate::ProgressRelay>,
+) -> Result<(), String> {
+    let mut guard = relay.0.lock().map_err(|e| e.to_string())?;
+    if let Some(mut child) = guard.take() {
+        let _ = child.kill();
+        let _ = child.wait();
+        log::info!("[progress-relay] Stopped");
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Parsers (pure functions, testable)
 // ---------------------------------------------------------------------------
