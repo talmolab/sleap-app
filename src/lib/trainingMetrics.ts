@@ -187,6 +187,7 @@ export function buildLossPlotDataBatched(
   epochSize: number,
   bestValEpoch: number | null,
   bestValLoss: number | null,
+  batchesToShow: number = -1,
 ): {
   x: number[];
   batch: (number | null)[];
@@ -194,8 +195,16 @@ export function buildLossPlotDataBatched(
   val: (number | null)[];
   best: (number | null)[];
 } {
+  // When batchesToShow > 0, window the dense batch trace to the LAST N points.
+  // Epoch train/val/best points are always kept (sparse, span the full range),
+  // matching PyQt which only windows the batch trace.
+  const windowedBatches =
+    batchesToShow > 0 && batchSamples.length > batchesToShow
+      ? batchSamples.slice(batchSamples.length - batchesToShow)
+      : batchSamples;
+
   const batchAt = new Map<number, number>();
-  for (const b of batchSamples) batchAt.set(b.globalBatch, b.loss);
+  for (const b of windowedBatches) batchAt.set(b.globalBatch, b.loss);
 
   const trainAt = new Map<number, number | null>();
   const valAt = new Map<number, number | null>();
@@ -208,7 +217,7 @@ export function buildLossPlotDataBatched(
   const bestX = bestValEpoch != null ? (bestValEpoch + 1) * epochSize : null;
 
   const xset = new Set<number>();
-  for (const b of batchSamples) xset.add(b.globalBatch);
+  for (const b of windowedBatches) xset.add(b.globalBatch);
   for (const e of epochSamples) xset.add((e.epoch + 1) * epochSize);
   const xs = Array.from(xset).sort((a, b) => a - b);
 

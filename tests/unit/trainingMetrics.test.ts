@@ -178,3 +178,27 @@ describe("buildLossPlotDataBatched", () => {
     expect(d.best).toEqual([null]);
   });
 });
+
+describe("buildLossPlotDataBatched windowing", () => {
+  it("keeps only the last N batch points but all epoch points", () => {
+    const batches = [
+      { globalBatch: 0, loss: 1.0 },
+      { globalBatch: 1, loss: 0.9 },
+      { globalBatch: 2, loss: 0.8 },
+      { globalBatch: 3, loss: 0.7 },
+    ];
+    const epochs = [{ epoch: 0, trainLoss: 0.85, valLoss: 0.6 }]; // boundary x = (0+1)*4 = 4
+    const d = buildLossPlotDataBatched(batches, epochs, 4, 0, 0.6, 2); // batchesToShow=2
+    // only last 2 batch points (globalBatch 2,3) + the epoch boundary at x=4
+    expect(d.x).toEqual([2, 3, 4]);
+    expect(d.batch).toEqual([0.8, 0.7, null]);
+    expect(d.train).toEqual([null, null, 0.85]);
+    expect(d.val).toEqual([null, null, 0.6]);
+  });
+  it("shows all batch points when batchesToShow <= 0 (All)", () => {
+    const batches = [ { globalBatch: 0, loss: 1.0 }, { globalBatch: 1, loss: 0.9 } ];
+    const d = buildLossPlotDataBatched(batches, [], 1, null, null, -1);
+    expect(d.x).toEqual([0, 1]);
+    expect(d.batch).toEqual([1.0, 0.9]);
+  });
+});
