@@ -1002,7 +1002,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         return;
       }
 
-      const { runTraining, startZmqRelay, stopZmqRelay } = await import("@/platform/backend");
+      const { runTraining, startZmqRelay, stopZmqRelay, startProgressRelay, stopProgressRelay, listenTrainingProgress } = await import("@/platform/backend");
       const labelsPath = config.trainingLabelsPath || (await import("@/stores/appStore")).useAppStore.getState().projectPath || "";
       if (!labelsPath) {
         set({ status: "error", error: "No training labels file selected" });
@@ -1013,10 +1013,42 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       const modelDir = labelsPath.replace(/[/\\][^/\\]+$/, "") + "/models";
       const trainedModelPaths: string[] = [];
 
+      // Holder for the ZMQ progress-relay subscription; cleaned up in finally.
+      let unlistenProgress: (() => void) | null = null;
+
       // Start ZMQ relay so sleap-nn can receive stop commands
       try {
         await startZmqRelay();
         console.log("[training] ZMQ relay started on port 9000");
+
+        // Live loss telemetry: subscribe to sleap-nn's ZMQ progress (epoch loss)
+        // relayed by the Rust SUB relay, and feed it into the per-model time-series.
+        await startProgressRelay();
+        unlistenProgress = await listenTrainingProgress((msg) => {
+          let data: { event?: string; epoch?: number; wandb_url?: string; logs?: Record<string, number> };
+          try {
+            data = JSON.parse(msg);
+          } catch {
+            return;
+          }
+          const i = get().currentModelIndex;
+          const ev = data.event;
+          if (ev === "epoch_begin") {
+            if (typeof data.epoch === "number") get().markEpochBegin(i, data.epoch);
+          } else if (ev === "epoch_end") {
+            const logs = data.logs ?? {};
+            const trainLoss = logs["train/loss"] ?? logs["loss"] ?? null;
+            const valLoss = logs["val/loss"] ?? null;
+            if (typeof data.epoch === "number") {
+              get().recordEpoch(i, { epoch: data.epoch, trainLoss, valLoss });
+            }
+          } else if (ev === "train_begin") {
+            if (data.wandb_url) set({ wandbUrl: data.wandb_url });
+          }
+          // NOTE: batch_end intentionally NOT handled yet — the per-batch scatter
+          // component + subsampling are a follow-up; handling it here would grow
+          // batchSamples unbounded with no UI consuming it.
+        });
       } catch (e) {
         console.error("[training] ZMQ relay failed to start:", e);
         set((s) => ({
@@ -1259,6 +1291,8 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
           error: `Local training error: ${e instanceof Error ? e.message : String(e)}`,
         });
       } finally {
+        if (unlistenProgress) { unlistenProgress(); unlistenProgress = null; }
+        try { await stopProgressRelay(); } catch { /* ignore */ }
         try { await stopZmqRelay(); } catch { /* ignore */ }
       }
     }
