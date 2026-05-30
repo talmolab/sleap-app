@@ -1028,6 +1028,8 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
 
       // Holder for the ZMQ progress-relay subscription; cleaned up in finally.
       let unlistenProgress: (() => void) | null = null;
+      const batchBuffer: { epoch: number; batch: number; loss: number }[] = [];
+      let batchFlushTimer: ReturnType<typeof setInterval> | null = null;
 
       // Start ZMQ relay so sleap-nn can receive stop commands
       try {
@@ -1038,7 +1040,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         // relayed by the Rust SUB relay, and feed it into the per-model time-series.
         await startProgressRelay();
         unlistenProgress = await listenTrainingProgress((msg) => {
-          let data: { event?: string; epoch?: number; wandb_url?: string; logs?: Record<string, number> };
+          let data: { event?: string; epoch?: number; batch?: number; wandb_url?: string; logs?: Record<string, number> };
           try {
             data = JSON.parse(msg);
           } catch {
@@ -1057,11 +1059,27 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
             }
           } else if (ev === "train_begin") {
             if (data.wandb_url) set({ wandbUrl: data.wandb_url });
+          } else if (ev === "batch_end") {
+            const logs = data.logs ?? {};
+            // PyQt reads logs["loss"] for batch loss (falls back to train/loss).
+            const loss = logs["loss"] ?? logs["train/loss"] ?? logs["train_loss"];
+            if (
+              typeof data.epoch === "number" &&
+              typeof data.batch === "number" &&
+              typeof loss === "number"
+            ) {
+              batchBuffer.push({ epoch: data.epoch, batch: data.batch, loss });
+            }
           }
-          // NOTE: batch_end intentionally NOT handled yet — the per-batch scatter
-          // component + subsampling are a follow-up; handling it here would grow
-          // batchSamples unbounded with no UI consuming it.
         });
+
+        // Flush buffered per-batch losses ~2x/sec so high-frequency batch_end
+        // events don't thrash React (mirrors PyQt's 500ms redraw throttle).
+        batchFlushTimer = setInterval(() => {
+          if (batchBuffer.length === 0) return;
+          const drained = batchBuffer.splice(0, batchBuffer.length);
+          get().recordBatches(get().currentModelIndex, drained);
+        }, 500);
       } catch (e) {
         console.error("[training] ZMQ relay failed to start:", e);
         set((s) => ({
@@ -1304,6 +1322,10 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
           error: `Local training error: ${e instanceof Error ? e.message : String(e)}`,
         });
       } finally {
+        if (batchFlushTimer) { clearInterval(batchFlushTimer); batchFlushTimer = null; }
+        if (batchBuffer.length > 0) {
+          get().recordBatches(get().currentModelIndex, batchBuffer.splice(0, batchBuffer.length));
+        }
         if (unlistenProgress) { unlistenProgress(); unlistenProgress = null; }
         try { await stopProgressRelay(); } catch { /* ignore */ }
         try { await stopZmqRelay(); } catch { /* ignore */ }
