@@ -8,6 +8,7 @@
 import { isTauri } from "./index";
 import { saveSlpToBytes } from "@talmolab/sleap-io.js";
 import type { InferenceConfig } from "@/stores/inferenceStore";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 
 function sampleRandomFrames(totalFrames: number, count: number): number[] {
   const n = Math.min(count, totalFrames);
@@ -225,6 +226,35 @@ export async function stopZmqRelay(): Promise<void> {
 }
 
 /**
+ * Start the ZMQ SUB progress relay (binds :9001) that forwards sleap-nn
+ * training loss telemetry to the frontend as "training-progress" events.
+ * No-op outside Tauri.
+ */
+export async function startProgressRelay(): Promise<void> {
+  if (!isTauri) return;
+  return invokeCmd<void>("start_progress_relay");
+}
+
+/** Stop the ZMQ SUB progress relay. No-op outside Tauri. */
+export async function stopProgressRelay(): Promise<void> {
+  if (!isTauri) return;
+  return invokeCmd<void>("stop_progress_relay");
+}
+
+/**
+ * Subscribe to training-progress events emitted by the Rust SUB relay.
+ * Each payload is one raw sleap-nn ZMQ message (JSON string). Returns an
+ * unlisten function. No-op (returns a noop unlisten) outside Tauri.
+ */
+export async function listenTrainingProgress(
+  cb: (msg: string) => void,
+): Promise<UnlistenFn> {
+  if (!isTauri) return () => {};
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<string>("training-progress", (event) => cb(event.payload));
+}
+
+/**
  * Run a single sleap-nn train command for one config.
  * 1. Write the YAML config to a temp file
  * 2. Build `sleap-nn train --config-name <name> --config-dir <dir>` with Hydra overrides
@@ -264,6 +294,7 @@ export async function runTraining(
     `trainer_config.run_name=${runName}`,
     `trainer_config.ckpt_dir=${ckptDir}`,
     `trainer_config.zmq.controller_port=9000`,
+    `trainer_config.zmq.publish_port=9001`,
   ];
 
   const command = `sleap-nn ${args.join(" ")}`;
