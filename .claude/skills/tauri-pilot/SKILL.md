@@ -25,16 +25,25 @@ Unix socket on macOS/Linux) using JSON-RPC 2.0.
    tauri-pilot ping        # -> ok
    tauri-pilot state       # url, title, viewport, scroll
    ```
-   If `ping` fails with "No active tauri-pilot instance", the app isn't running
-   in dev mode yet, or it's still compiling — check the `tauri:dev` output.
+   Two distinct failure modes — don't conflate them:
+   - **`tauri-pilot: command not found`** (PowerShell: *"The term 'tauri-pilot'
+     is not recognized as the name of a cmdlet…"*) — the **CLI isn't installed**.
+     Install it (step 3), then retry. Don't assume the app is broken.
+   - **"No active tauri-pilot instance"** — the CLI is installed but the app
+     isn't running in dev mode yet, or it's still compiling — check the
+     `tauri:dev` output.
 
-3. **The CLI is installed via** `cargo install tauri-pilot-cli` (binary at
-   `~/.cargo/bin/tauri-pilot`, currently `0.7.0`). The plugin in
-   `src-tauri/Cargo.toml` uses the crates.io release `tauri-plugin-pilot = "0.7.0"`
-   (0.7.0 includes the Windows startup fix #115 and the WebView2/WebKitGTK eval
-   fix #110). Keep the CLI and plugin at the same version — both are 0.7.0 from
-   crates.io. If you bump the plugin to a version with JSON-RPC protocol changes,
-   reinstall a matching CLI with `cargo install tauri-pilot-cli`.
+3. **Install the CLI if it's missing.** `cargo install tauri-pilot-cli` puts the
+   `tauri-pilot` binary at `~/.cargo/bin/tauri-pilot` (needs a Rust toolchain on
+   `PATH` — see the upstream README's
+   [Installation](https://github.com/mpiton/tauri-pilot#installation) section).
+   Confirm it landed with `tauri-pilot --help`. The CLI is currently `0.7.0`; the
+   plugin in `src-tauri/Cargo.toml` uses the crates.io release
+   `tauri-plugin-pilot = "0.7.0"` (0.7.0 includes the Windows startup fix #115 and
+   the WebView2/WebKitGTK eval fix #110). Keep the CLI and plugin at the same
+   version — both are 0.7.0 from crates.io. If you bump the plugin to a version
+   with JSON-RPC protocol changes, reinstall a matching CLI with
+   `cargo install tauri-pilot-cli`.
 
 ### Connection details (Windows)
 
