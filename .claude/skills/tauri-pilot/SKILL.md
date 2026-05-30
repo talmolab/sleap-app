@@ -35,8 +35,8 @@ Unix socket on macOS/Linux) using JSON-RPC 2.0.
 
 3. **Install the CLI if it's missing.** `cargo install tauri-pilot-cli` puts the
    `tauri-pilot` binary at `~/.cargo/bin/tauri-pilot` (needs a Rust toolchain on
-   `PATH` — see the upstream README's
-   [Installation](https://github.com/mpiton/tauri-pilot#installation) section).
+   `PATH` — see the upstream
+   [README](https://github.com/mpiton/tauri-pilot#readme) "Quick Start").
    Confirm it landed with `tauri-pilot --help`. The CLI is currently `0.7.0`; the
    plugin in `src-tauri/Cargo.toml` uses the crates.io release
    `tauri-plugin-pilot = "0.7.0"` (0.7.0 includes the Windows startup fix #115 and
