@@ -5056,8 +5056,9 @@ dependencies = [
 
 [[package]]
 name = "tauri-plugin-pilot"
-version = "0.6.0"
-source = "git+https://github.com/mpiton/tauri-pilot?rev=f1d67f2d40339b8d6d9d6ca9c258ecaffd3c3305#f1d67f2d40339b8d6d9d6ca9c258ecaffd3c3305"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e47d8f36fe11877179c535757dacbb79c4e369aa0d5d5191efd64e7af3d78086"
 dependencies = [
  "block2",
  "core-foundation",

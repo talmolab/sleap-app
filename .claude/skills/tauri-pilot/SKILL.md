@@ -29,11 +29,12 @@ Unix socket on macOS/Linux) using JSON-RPC 2.0.
    in dev mode yet, or it's still compiling — check the `tauri:dev` output.
 
 3. **The CLI is installed via** `cargo install tauri-pilot-cli` (binary at
-   `~/.cargo/bin/tauri-pilot`, currently `0.6.0`). The plugin in
-   `src-tauri/Cargo.toml` is pinned to a git commit (0.6.0 + the unreleased
-   Windows startup fix #115); that fix doesn't change the JSON-RPC protocol, so
-   the crates.io `0.6.0` CLI is compatible. If you bump the plugin pin to a
-   build with protocol changes, reinstall a matching CLI from the same source.
+   `~/.cargo/bin/tauri-pilot`, currently `0.7.0`). The plugin in
+   `src-tauri/Cargo.toml` uses the crates.io release `tauri-plugin-pilot = "0.7.0"`
+   (0.7.0 includes the Windows startup fix #115 and the WebView2/WebKitGTK eval
+   fix #110). Keep the CLI and plugin at the same version — both are 0.7.0 from
+   crates.io. If you bump the plugin to a version with JSON-RPC protocol changes,
+   reinstall a matching CLI with `cargo install tauri-pilot-cli`.
 
 ### Connection details (Windows)
 

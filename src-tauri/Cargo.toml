@@ -32,12 +32,13 @@ tauri-plugin-process = "2"
 # in release builds, so it never ships in the production app. Requires the
 # build toolchain to be Rust 1.95+ (the crate uses edition 2024).
 #
-# Pinned to a git commit, NOT crates.io: the published 0.6.0 panics at startup
-# on Windows ("there is no reactor running, must be called from the context of
-# a Tokio 1.x runtime") because it binds its named pipe in the synchronous
-# `setup` hook. The fix (upstream #115) is on `main` but unreleased. Switch to a
-# crates.io version once a release > 0.6.0 ships with the fix.
-tauri-plugin-pilot = { git = "https://github.com/mpiton/tauri-pilot", rev = "f1d67f2d40339b8d6d9d6ca9c258ecaffd3c3305" }
+# Uses the crates.io release. (Background: 0.6.0 panicked at startup on Windows
+# — "there is no reactor running, must be called from the context of a Tokio
+# 1.x runtime" — because it bound its named pipe in the synchronous `setup`
+# hook. That was fixed upstream in #115, and 0.7.0 also restored eval on the
+# Windows / Linux WebViews (#110). Both fixes shipped in 0.7.0, so the old
+# git-commit pin is no longer needed.)
+tauri-plugin-pilot = "0.7.0"
 
 libc = "0.2"
 

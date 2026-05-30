@@ -46,10 +46,11 @@ project skill `.claude/skills/tauri-pilot/SKILL.md`** (auto-loaded by Claude Cod
 
 **How it's wired in** (already done):
 - `src-tauri/Cargo.toml` depends on `tauri-plugin-pilot` (a dev tool; `init()` is
-  a **no-op in release builds**, so it never ships in the production app). It's
-  pinned to a **git commit**, not crates.io: published 0.6.0 panics at startup on
-  Windows (it binds its named pipe in the sync `setup` hook); the fix (upstream
-  #115) is on `main` but unreleased. Move to a crates.io version once >0.6.0 ships.
+  a **no-op in release builds**, so it never ships in the production app). It uses
+  the crates.io release `tauri-plugin-pilot = "0.7.0"`. (Background: 0.6.0 panicked
+  at startup on Windows because it bound its named pipe in the sync `setup` hook;
+  that was fixed upstream in #115 — and eval on the Windows/Linux WebViews was
+  restored in #110 — both shipping in 0.7.0, so the old git-commit pin is gone.)
 - `src-tauri/src/lib.rs` registers it in the builder chain under
   `#[cfg(debug_assertions)]` (in the chain, *not* in `setup`, so its bridge
   `js_init_script` is injected before the main window loads).
@@ -61,10 +62,10 @@ project skill `.claude/skills/tauri-pilot/SKILL.md`** (auto-loaded by Claude Cod
 ```
 cargo install tauri-pilot-cli          # provides the `tauri-pilot` binary
 ```
-The crates.io CLI `0.6.0` is protocol-compatible with the git-pinned plugin
-(the #115 fix changes runtime behavior, not the JSON-RPC protocol). If you bump
-the plugin pin to a version with protocol changes, reinstall a matching CLI
-(`cargo install --git https://github.com/mpiton/tauri-pilot tauri-pilot-cli`).
+Keep the CLI and the `tauri-plugin-pilot` crate at the same version — both are
+crates.io `0.7.0`, which includes the Windows startup fix (#115) and the
+Windows/Linux eval fix (#110). If you ever bump the plugin to a version with
+JSON-RPC protocol changes, reinstall a matching CLI with `cargo install tauri-pilot-cli`.
 
 **Use it:**
 ```
