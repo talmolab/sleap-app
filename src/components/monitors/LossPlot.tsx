@@ -57,7 +57,23 @@ export function LossPlot({
     },
   }), [logScale, ignoreOutliers]);
 
-  if (model.epochSamples.length === 0) return null;
+  if (model.epochSamples.length === 0) {
+    return (
+      <div className="space-y-1">
+        <div className="text-[10px] text-muted-foreground leading-tight">
+          {status === "running" ? "Waiting for first epoch…" : "No loss data"}
+        </div>
+        <div
+          className="flex items-center justify-center rounded border border-dashed border-muted-foreground/30 text-[10px] text-muted-foreground"
+          style={{ height: 200 }}
+        >
+          {status === "running"
+            ? "Loss curves will appear after the first epoch completes."
+            : "No loss data was recorded for this model."}
+        </div>
+      </div>
+    );
+  }
 
   const lastVal = model.epochSamples[model.epochSamples.length - 1]?.valLoss ?? null;
   const epochStartedAt = model.epochStartedAt;

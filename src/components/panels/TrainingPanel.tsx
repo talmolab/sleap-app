@@ -1151,8 +1151,8 @@ export function TrainingPanel() {
                     </div>
                   )}
 
-                  {/* Live loss chart */}
-                  {(isCurrent || isCompleted || isFailed) && model.epochSamples.length > 0 && (
+                  {/* Live loss chart — visible as soon as the model is active */}
+                  {(isCurrent || isCompleted || isFailed) && (
                     <LossPlot model={model} startedAt={startedAt} status={status} />
                   )}
                 </div>
