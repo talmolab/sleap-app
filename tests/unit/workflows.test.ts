@@ -67,14 +67,14 @@ function createProject(opts?: {
     skeleton.addEdge(skeleton.nodes[0], skeleton.nodes[1]);
   }
 
-  // Use a mock video object since Video.shape is a getter from backend
-  const video = {
+  // Real (backend-less) Video with an explicit shape — no file to open.
+  // As of sleap-io.js 0.4.0, find()/get*() resolve videos via
+  // Video.matchesPath(), so this must be a real instance, not a plain cast.
+  const video = new Video({
     filename: "test_video.mp4",
-    shape: [200, 480, 640, 3] as [number, number, number, number],
-    backend: null,
-    sourceVideo: null,
-    backendMetadata: {},
-  } as unknown as Video;
+    backendMetadata: { shape: [200, 480, 640, 3] },
+    openBackend: false,
+  });
 
   const labels = new Labels({
     videos: [video],
@@ -492,13 +492,11 @@ describe("Workflow: State consistency", () => {
   it("video switch resets frame and instance", () => {
     const project = createProject({ numFrames: 2 });
     // Add a second video
-    const video2 = {
+    const video2 = new Video({
       filename: "test2.mp4",
-      shape: [50, 480, 640, 3] as [number, number, number, number],
-      backend: null,
-      sourceVideo: null,
-      backendMetadata: {},
-    } as unknown as Video;
+      backendMetadata: { shape: [50, 480, 640, 3] },
+      openBackend: false,
+    });
     project.labels.videos.push(video2);
 
     useAppStore.getState().setLabels(project.labels, "multi.slp");

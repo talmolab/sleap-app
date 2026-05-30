@@ -42,6 +42,13 @@ export default defineConfig({
     alias: {
       // Path alias for shadcn/ui
       "@": path.resolve(__dirname, "./src"),
+      // sleap-io.js (>=0.4.0) lazily `import()`s the Node-only `skia-canvas`
+      // as a fallback image decoder for `.seq` videos. That path is dead code
+      // in the browser/Tauri WebView (native ImageData/OffscreenCanvas always
+      // win), but the bundler still tries to resolve it — and skia-canvas's
+      // browser shim pulls in `jszip`, which we don't depend on, breaking the
+      // build. Alias it to an empty stub so the bundler never walks into it.
+      "skia-canvas": path.resolve(__dirname, "src/lib/stubs/skia-canvas.ts"),
       // In browser mode, stub Tauri plugins; in Tauri mode, use real packages
       ...(!isTauri && {
         "@tauri-apps/plugin-fs": path.resolve(
