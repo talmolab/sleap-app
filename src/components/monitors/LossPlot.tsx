@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import type uPlot from "uplot";
 import type { ModelProgress, TrainingStatus } from "@/stores/trainingStore";
 import { UPlotChart } from "@/components/charts/UPlotChart";
-import { buildLossPlotData, computeYRange, formatRuntimeTitle } from "@/lib/trainingMetrics";
+import { buildLossPlotDataBatched, computeYRange, formatRuntimeTitle } from "@/lib/trainingMetrics";
 
 export function LossPlot({
   model, startedAt, status,
@@ -19,29 +19,41 @@ export function LossPlot({
   }, [status]);
 
   const series = useMemo<uPlot.Series[]>(() => [
-    {},                                                   // x
-    { label: "train", stroke: "#60a5fa", width: 2 },
-    { label: "val", stroke: "#f59e0b", width: 2 },
-    { label: "best val", stroke: "#22c55e", points: { show: true, size: 8 }, paths: () => null },
+    {},                                                                                  // x (global batch)
+    { label: "batch", stroke: "#94a3b8", width: 1, spanGaps: true },                     // dense per-batch train loss
+    { label: "train", stroke: "#60a5fa", width: 2, spanGaps: true, points: { show: false } }, // epoch-avg train @ boundaries
+    { label: "val", stroke: "#f59e0b", width: 2, spanGaps: true, points: { show: false } },   // epoch val @ boundaries
+    { label: "best val", stroke: "#22c55e", points: { show: true, size: 8 }, paths: () => null }, // marker
   ], []);
 
   const data = useMemo<uPlot.AlignedData>(() => {
-    const { x, train, val } = buildLossPlotData(model.epochSamples);
-    const bestEpoch = model.metrics.bestValEpoch;
-    const best = x.map((xi) =>
-      bestEpoch != null && xi === bestEpoch + 1 ? model.bestValLoss : null,
+    const { x, batch, train, val, best } = buildLossPlotDataBatched(
+      model.batchSamples,
+      model.epochSamples,
+      model.epochSize,
+      model.metrics.bestValEpoch,
+      model.bestValLoss,
     );
-    return [x, train, val, best];
-  }, [model.epochSamples, model.metrics.bestValEpoch, model.bestValLoss]);
+    return [x, batch, train, val, best];
+  }, [
+    model.batchSamples,
+    model.epochSamples,
+    model.epochSize,
+    model.metrics.bestValEpoch,
+    model.bestValLoss,
+  ]);
 
   // PERF: the y-range must track new epochs WITHOUT producing a new `scales`
   // object each epoch (a new `scales` recreates the whole uPlot instance every
   // epoch and bypasses UPlotChart's setData throttle). So we keep the latest
   // y-values in a ref and let uPlot's `range` callback read it on each redraw.
   const latestYsRef = useRef<number[]>([]);
-  latestYsRef.current = model.epochSamples.flatMap((s) =>
-    [s.trainLoss, s.valLoss].filter((v): v is number => v != null),
-  );
+  latestYsRef.current = [
+    ...model.batchSamples.map((b) => b.loss),
+    ...model.epochSamples.flatMap((s) =>
+      [s.trainLoss, s.valLoss].filter((v): v is number => v != null),
+    ),
+  ];
 
   // `scales` is memoized on [logScale, ignoreOutliers] ONLY — NOT on epochSamples.
   // The `range` fn closes over the ref, so it always sees the current data and
@@ -57,7 +69,7 @@ export function LossPlot({
     },
   }), [logScale, ignoreOutliers]);
 
-  if (model.epochSamples.length === 0) {
+  if (model.batchSamples.length === 0 && model.epochSamples.length === 0) {
     return (
       <div className="space-y-1">
         <div className="text-[10px] text-muted-foreground leading-tight">
