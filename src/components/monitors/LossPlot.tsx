@@ -5,8 +5,8 @@ import { UPlotChart } from "@/components/charts/UPlotChart";
 import { buildLossPlotDataBatched, computeYRange, formatRuntimeTitle } from "@/lib/trainingMetrics";
 
 export function LossPlot({
-  model, startedAt, status,
-}: { model: ModelProgress; startedAt: number | null; status: TrainingStatus }) {
+  model, startedAt, status, height = 200,
+}: { model: ModelProgress; startedAt: number | null; status: TrainingStatus; height?: number }) {
   const [logScale, setLogScale] = useState(true);       // PyQt opens in log
   const [ignoreOutliers, setIgnoreOutliers] = useState(false);
 
@@ -77,7 +77,7 @@ export function LossPlot({
         </div>
         <div
           className="flex items-center justify-center rounded border border-dashed border-muted-foreground/30 text-[10px] text-muted-foreground"
-          style={{ height: 200 }}
+          style={{ height }}
         >
           {status === "running"
             ? "Loss curves will appear after the first epoch completes."
@@ -106,7 +106,7 @@ export function LossPlot({
       <div className="text-[10px] text-muted-foreground leading-tight">
         {titleLines.map((l, i) => <div key={i}>{l}</div>)}
       </div>
-      <UPlotChart data={data} series={series} scales={scales} height={200} className="w-full" />
+      <UPlotChart data={data} series={series} scales={scales} height={height} className="w-full" />
       <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
         <label className="flex items-center gap-1 cursor-pointer">
           <input type="checkbox" checked={logScale} onChange={(e) => setLogScale(e.target.checked)} />

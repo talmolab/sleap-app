@@ -13,7 +13,7 @@ import type { ModelType, ConfigFile, ConfigHyperparams } from "@/stores/training
 import { useConnectStore } from "@/stores/connectStore";
 import { RemoteFileBrowser } from "@/components/dialogs/RemoteFileBrowser";
 import { TrainingConfigDialog } from "@/components/dialogs/TrainingConfigDialog";
-import { LossPlot } from "@/components/monitors/LossPlot";
+import { LossViewerDialog } from "@/components/monitors/LossViewerDialog";
 import { slotToHeadType, getDefaultProfileForHead } from "@/lib/trainingProfiles";
 import { useAppStore } from "@/stores/appStore";
 import { isTauri } from "@/platform/index";
@@ -41,6 +41,7 @@ import {
   Folder,
   Square,
   Settings2,
+  LineChart,
 } from "lucide-react";
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -454,6 +455,9 @@ export function TrainingPanel() {
 
   // Config dialog state
   const [configDialogOpen, setConfigDialogOpen] = useState(false);
+
+  // Loss viewer modal: which model's curves are open (null = closed).
+  const [viewerIndex, setViewerIndex] = useState<number | null>(null);
 
   // Remote state
   const [remoteEnabled, setRemoteEnabled] = useState(!isTauri);
@@ -1091,37 +1095,56 @@ export function TrainingPanel() {
                   key={i}
                   className={isCompleted && !isDone ? "opacity-70" : ""}
                 >
-                  <div
-                    className={`text-[11px] font-medium flex items-center gap-1.5 mb-1 ${
-                      isFailed
-                        ? "text-destructive"
-                        : isCompleted
-                          ? "text-green-500"
-                          : "text-primary"
-                    }`}
-                  >
-                    {isCompleted && (
-                      <CheckCircle2 className="h-3 w-3" />
-                    )}
-                    {isFailed && <XCircle className="h-3 w-3" />}
-                    {isCurrent && (
-                      <Loader2 className="h-3 w-3 animate-spin" />
-                    )}
-                    {model.status === "pending" && (
-                      <span className="w-3 h-3 rounded-full border border-muted-foreground/30" />
-                    )}
-                    {isCurrent
-                      ? `Training: ${model.label} (${i + 1}/${models.length})`
-                      : isCompleted
-                        ? `${model.label} — ${model.epoch} epochs${
-                            model.bestValLoss != null
-                              ? `, best val_loss: ${model.bestValLoss.toFixed(4)}`
-                              : ""
-                          }`
-                        : isFailed
-                          ? `${model.label} — failed at epoch ${model.epoch}`
-                          : `${model.label} (pending)`}
-                  </div>
+                  {(() => {
+                    const hasChart = isCurrent || isCompleted || isFailed;
+                    return (
+                      <div
+                        role={hasChart ? "button" : undefined}
+                        tabIndex={hasChart ? 0 : undefined}
+                        onClick={() => {
+                          if (hasChart) setViewerIndex(i);
+                        }}
+                        onKeyDown={(e) => {
+                          if (hasChart && (e.key === "Enter" || e.key === " ")) {
+                            e.preventDefault();
+                            setViewerIndex(i);
+                          }
+                        }}
+                        className={`text-[11px] font-medium flex items-center gap-1.5 mb-1 ${
+                          isFailed
+                            ? "text-destructive"
+                            : isCompleted
+                              ? "text-green-500"
+                              : "text-primary"
+                        } ${hasChart ? "cursor-pointer hover:underline" : ""}`}
+                      >
+                        {isCompleted && (
+                          <CheckCircle2 className="h-3 w-3" />
+                        )}
+                        {isFailed && <XCircle className="h-3 w-3" />}
+                        {isCurrent && (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        )}
+                        {model.status === "pending" && (
+                          <span className="w-3 h-3 rounded-full border border-muted-foreground/30" />
+                        )}
+                        {isCurrent
+                          ? `Training: ${model.label} (${i + 1}/${models.length})`
+                          : isCompleted
+                            ? `${model.label} — ${model.epoch} epochs${
+                                model.bestValLoss != null
+                                  ? `, best val_loss: ${model.bestValLoss.toFixed(4)}`
+                                  : ""
+                              }`
+                            : isFailed
+                              ? `${model.label} — failed at epoch ${model.epoch}`
+                              : `${model.label} (pending)`}
+                        {hasChart && (
+                          <LineChart className="h-3 w-3 ml-auto opacity-60" />
+                        )}
+                      </div>
+                    );
+                  })()}
 
                   {/* Progress bar */}
                   <div className="h-1.5 w-full rounded-full bg-secondary overflow-hidden mb-1">
@@ -1151,10 +1174,6 @@ export function TrainingPanel() {
                     </div>
                   )}
 
-                  {/* Live loss chart — visible as soon as the model is active */}
-                  {(isCurrent || isCompleted || isFailed) && (
-                    <LossPlot model={model} startedAt={startedAt} status={status} />
-                  )}
                 </div>
               );
             })}
@@ -1202,6 +1221,23 @@ export function TrainingPanel() {
           </div>
         </>
       )}
+
+      <LossViewerDialog
+        open={viewerIndex !== null}
+        onOpenChange={(o) => {
+          if (!o) setViewerIndex(null);
+        }}
+        model={viewerIndex !== null ? (models[viewerIndex] ?? null) : null}
+        startedAt={startedAt}
+        status={status}
+        isActive={
+          viewerIndex !== null &&
+          viewerIndex === currentModelIndex &&
+          isRunning
+        }
+        onStopEarly={() => stopTraining()}
+        onCancel={() => cancelTraining()}
+      />
 
       <RemoteFileBrowser
         open={fileBrowserOpen}
