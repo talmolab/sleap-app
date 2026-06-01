@@ -10,5 +10,9 @@
     "types": ["vite/client", "bun"],
     "noEmit": true
   },
-  "include": ["tests", "tests/**/*"]
+  // `include` overrides (does not merge with) the parent's ["src"], so ambient
+  // declaration files under src/ are not auto-loaded here. Explicitly include
+  // src/globals.d.ts so build-time globals (e.g. __APP_VERSION__, used by
+  // src/hooks/useWindowTitle.ts which the tests import) resolve.
+  "include": ["tests", "tests/**/*", "src/globals.d.ts"]
 }
