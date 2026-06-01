@@ -174,6 +174,20 @@ export function buildLossPlotData(samples: EpochSample[]): {
   };
 }
 
+/** Max batch scatter points actually DRAWN by uPlot (see buildLossPlotDataBatched). */
+const MAX_DRAWN_BATCH_POINTS = 2000;
+
+/** Evenly subsample `arr` to at most `target` items, always keeping the last one. */
+function downsampleEven<T>(arr: T[], target: number): T[] {
+  if (arr.length <= target) return arr;
+  const stride = arr.length / target;
+  const out: T[] = [];
+  for (let i = 0; i < target; i++) out.push(arr[Math.floor(i * stride)]);
+  const last = arr[arr.length - 1];
+  if (out[out.length - 1] !== last) out.push(last);
+  return out;
+}
+
 /**
  * Unified batch-x-axis chart data (PyQt LossViewer parity). x-axis = global batch
  * number. The dense `batch` series is per-batch train loss; `train`/`val` are
@@ -203,8 +217,14 @@ export function buildLossPlotDataBatched(
       ? batchSamples.slice(batchSamples.length - batchesToShow)
       : batchSamples;
 
+  // Cap the number of DRAWN batch points. uPlot renders each scatter point as an
+  // individual marker; ~20k markers blocks the main thread ~800ms/redraw. Downsampling
+  // the drawn dots (evenly, last point kept) is visually identical at typical chart
+  // widths and keeps redraws cheap. The epoch train/val/best points are unaffected.
+  const drawnBatches = downsampleEven(windowedBatches, MAX_DRAWN_BATCH_POINTS);
+
   const batchAt = new Map<number, number>();
-  for (const b of windowedBatches) batchAt.set(b.globalBatch, b.loss);
+  for (const b of drawnBatches) batchAt.set(b.globalBatch, b.loss);
 
   const trainAt = new Map<number, number | null>();
   const valAt = new Map<number, number | null>();
@@ -217,7 +237,7 @@ export function buildLossPlotDataBatched(
   const bestX = bestValEpoch != null ? (bestValEpoch + 1) * epochSize : null;
 
   const xset = new Set<number>();
-  for (const b of windowedBatches) xset.add(b.globalBatch);
+  for (const b of drawnBatches) xset.add(b.globalBatch);
   for (const e of epochSamples) xset.add((e.epoch + 1) * epochSize);
   const xs = Array.from(xset).sort((a, b) => a - b);
 

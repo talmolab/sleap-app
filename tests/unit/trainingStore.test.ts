@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "../bun-test";
 import yaml from "js-yaml";
 import { useTrainingStore } from "@/stores/trainingStore";
-import { getConfigSlots, getSlotLabel, defaultHyperparams, applyHyperparamsToYaml } from "@/stores/trainingStore";
+import { getConfigSlots, getSlotLabel, defaultHyperparams, applyHyperparamsToYaml, mergeStdoutIntoLog } from "@/stores/trainingStore";
 import type { ConfigFile } from "@/stores/trainingStore";
 
 /** Helper to create a ConfigFile with default hyperparams */
@@ -852,5 +852,41 @@ describe("markEpochBegin / epochStartedAt", () => {
     const m = useTrainingStore.getState().models[0];
     expect(m.epoch).toBe(3);
     expect(typeof m.epochStartedAt).toBe("number");
+  });
+
+  describe("mergeStdoutIntoLog (tqdm coalescing)", () => {
+    it("appends normal (non-progress) lines", () => {
+      expect(mergeStdoutIntoLog([], ["hello", "world"])).toEqual(["hello", "world"]);
+    });
+
+    it("coalesces consecutive tqdm progress lines into one in-place line", () => {
+      const out = mergeStdoutIntoLog([], [
+        "Epoch 0:  10%|#         | 2/20 [00:00<00:01, loss=0.5]",
+        "Epoch 0:  50%|#####     | 10/20 [00:01<00:01, loss=0.3]",
+        "Epoch 0: 100%|##########| 20/20 [00:02<00:00, loss=0.1]",
+      ]);
+      expect(out).toEqual(["Epoch 0: 100%|##########| 20/20 [00:02<00:00, loss=0.1]"]);
+    });
+
+    it("keeps non-progress lines that bracket a progress bar", () => {
+      const out = mergeStdoutIntoLog([], [
+        "starting",
+        "Epoch 0:  10%|#         | 2/20",
+        "Epoch 0:  90%|######### | 18/20",
+        "done",
+      ]);
+      expect(out).toEqual(["starting", "Epoch 0:  90%|######### | 18/20", "done"]);
+    });
+
+    it("coalesces across calls (replaces a trailing progress line from prior log)", () => {
+      const first = mergeStdoutIntoLog([], ["Epoch 0:  10%|#         | 2/20"]);
+      const second = mergeStdoutIntoLog(first, ["Epoch 0:  80%|######## | 16/20"]);
+      expect(second).toEqual(["Epoch 0:  80%|######## | 16/20"]);
+    });
+
+    it("strips ANSI escape codes and drops blank lines", () => {
+      const out = mergeStdoutIntoLog([], ["\x1b[32mgreen\x1b[0m", "   ", ""]);
+      expect(out).toEqual(["green"]);
+    });
   });
 });

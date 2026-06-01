@@ -12,6 +12,36 @@ function appendLog(prev: string[], ...lines: string[]): string[] {
   return next.length > MAX_LOG_LINES ? next.slice(next.length - MAX_LOG_LINES) : next;
 }
 
+// A tqdm/Lightning progress-bar line contains a "<pct>%|" segment, e.g.
+// "Epoch 0:  85%|████▌ | 17/20 [00:03<00:00, 5.4it/s, loss=0.012]". tqdm rewrites
+// these in place via carriage return many times/sec.
+const PROGRESS_LINE_RE = /\d+%\|/;
+
+/**
+ * Merge a batch of raw stdout/stderr lines into the bounded training log. Strips
+ * ANSI codes, drops blanks, and — to emulate a terminal carriage return — REPLACES
+ * the trailing log line (instead of appending) when both it and the incoming line
+ * are progress bars, so a tqdm bar shows as ONE in-place-updating line rather than
+ * thousands. Pure + synchronous so it is unit-testable. Bounded to MAX_LOG_LINES.
+ */
+export function mergeStdoutIntoLog(prev: string[], rawLines: string[]): string[] {
+  const next = prev.slice();
+  for (const raw of rawLines) {
+    const clean = raw.replace(/\x1b\[[0-9;]*m/g, "").trim();
+    if (!clean) continue;
+    if (
+      PROGRESS_LINE_RE.test(clean) &&
+      next.length > 0 &&
+      PROGRESS_LINE_RE.test(next[next.length - 1])
+    ) {
+      next[next.length - 1] = clean; // coalesce in place (carriage-return behavior)
+    } else {
+      next.push(clean);
+    }
+  }
+  return next.length > MAX_LOG_LINES ? next.slice(next.length - MAX_LOG_LINES) : next;
+}
+
 // ── Types ─────────────────────────────────────────────────────────
 
 export type ModelType =
@@ -1040,6 +1070,36 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       const batchBuffer: { epoch: number; batch: number; loss: number }[] = [];
       let batchFlushTimer: ReturnType<typeof setInterval> | null = null;
 
+      // sleap-nn's tqdm progress bar repaints via carriage return many times/sec, and
+      // Tauri splits stdout on \r, so each repaint arrives as its own line event.
+      // Applying them per-line previously caused an unthrottled re-render storm that
+      // froze the UI (#128 follow-up). Buffer raw lines and flush ~4x/sec, coalescing
+      // consecutive tqdm progress lines into a single in-place-updating log line.
+      const stdoutBuffer: string[] = [];
+      let stdoutFlushTimer: ReturnType<typeof setInterval> | null = null;
+      const flushStdout = () => {
+        if (stdoutBuffer.length === 0) return;
+        const lines = stdoutBuffer.splice(0, stdoutBuffer.length);
+        const idx = get().currentModelIndex;
+        // Latest tqdm epoch/loss in this batch drives the live per-model progress.
+        let tqdmEpoch: number | null = null;
+        let tqdmLoss: number | null = null;
+        for (const l of lines) {
+          const m = l.match(/Epoch (\d+):\s+(\d+)%\|.*?loss=([\d.]+)/);
+          if (m) { tqdmEpoch = parseInt(m[1]); tqdmLoss = parseFloat(m[3]); }
+        }
+        set((s) => ({
+          log: mergeStdoutIntoLog(s.log, lines),
+          models:
+            tqdmEpoch !== null
+              ? s.models.map((m, j) =>
+                  j === idx ? { ...m, epoch: tqdmEpoch as number, loss: tqdmLoss ?? m.loss } : m,
+                )
+              : s.models,
+        }));
+      };
+      stdoutFlushTimer = setInterval(flushStdout, 250);
+
       // Start ZMQ relay so sleap-nn can receive stop commands
       try {
         await startZmqRelay();
@@ -1136,20 +1196,8 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
             if (event.event === "stdout" || event.event === "stderr") {
               const line = event.data.line;
 
-              // Parse tqdm-style progress
-              // tqdm fires many times per epoch (no val loss); epoch SAMPLES come from JSON lines, not here.
-              const tqdmMatch = line.match(/Epoch (\d+):\s+(\d+)%\|.*?loss=([\d.]+)/);
-              if (tqdmMatch) {
-                const epoch = parseInt(tqdmMatch[1]);
-                const loss = parseFloat(tqdmMatch[3]);
-                set((s) => ({
-                  models: s.models.map((m, j) =>
-                    j === idx ? { ...m, epoch, loss } : m,
-                  ),
-                }));
-              }
-
-              // Parse JSON progress
+              // Structured epoch progress (rare — ~once/epoch): record immediately.
+              // epoch SAMPLES come from these JSON lines, not from tqdm.
               try {
                 const data = JSON.parse(line);
                 if ("epoch" in data) {
@@ -1164,13 +1212,13 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
                 // Not JSON
               }
 
-              // W&B URL detection
+              // W&B URL detection (one-time side effect).
               if (line.includes("wandb.ai/")) {
                 const urlMatch = line.match(/(https:\/\/wandb\.ai\/[^\s"}\]>)]+)/);
                 if (urlMatch) set({ wandbUrl: urlMatch[1] });
               }
 
-              // Model output directory detection (best_ckpt path from sleap-nn)
+              // Model output directory detection (best_ckpt path from sleap-nn).
               const ckptMatch = line.match(/best_ckpt['":\s]+([^\s'",}]+\.ckpt)/);
               if (ckptMatch) {
                 const dir = ckptMatch[1].replace(/\/[^/]+$/, "");
@@ -1181,9 +1229,9 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
                 });
               }
 
-              if (line.trim()) {
-                set((s) => ({ log: appendLog(s.log, line) }));
-              }
+              // tqdm progress + all other lines: buffer for the throttled, coalesced
+              // flush (flushStdout). NEVER set() per line — that is the freeze.
+              if (line.trim()) stdoutBuffer.push(line);
             }
           }, modelDir);
 
@@ -1345,6 +1393,8 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         if (batchBuffer.length > 0) {
           get().recordBatches(get().currentModelIndex, batchBuffer.splice(0, batchBuffer.length));
         }
+        if (stdoutFlushTimer) { clearInterval(stdoutFlushTimer); stdoutFlushTimer = null; }
+        flushStdout(); // drain any remaining buffered stdout into the log
         if (unlistenProgress) { unlistenProgress(); unlistenProgress = null; }
         try { await stopProgressRelay(); } catch { /* ignore */ }
         try { await stopZmqRelay(); } catch { /* ignore */ }

@@ -202,3 +202,33 @@ describe("buildLossPlotDataBatched windowing", () => {
     expect(d.batch).toEqual([1.0, 0.9]);
   });
 });
+
+describe("buildLossPlotDataBatched downsampling (uPlot render cap)", () => {
+  it("caps drawn batch points to ~2000 and always keeps the most recent point", () => {
+    // 5000 batches, "All" — must downsample so uPlot doesn't draw 5000 markers.
+    const batches = Array.from({ length: 5000 }, (_, i) => ({ globalBatch: i, loss: 1 / (i + 1) }));
+    const d = buildLossPlotDataBatched(batches, [], 1, null, null, -1);
+    expect(d.x.length).toBe(2001);            // 2000 even samples + the kept last point
+    expect(d.x.length).toBeGreaterThan(1900); // far fewer than the raw 5000
+    expect(d.x[d.x.length - 1]).toBe(4999);   // most recent batch preserved
+    expect(d.batch[d.batch.length - 1]).toBe(1 / 5000);
+  });
+
+  it("does not downsample when batch count is under the cap", () => {
+    const batches = Array.from({ length: 100 }, (_, i) => ({ globalBatch: i, loss: 1 }));
+    const d = buildLossPlotDataBatched(batches, [], 1, null, null, -1);
+    expect(d.x.length).toBe(100);
+  });
+
+  it("keeps all epoch train/val points even when batch points are downsampled", () => {
+    const batches = Array.from({ length: 5000 }, (_, i) => ({ globalBatch: i, loss: 0.5 }));
+    const epochs = [
+      { epoch: 0, trainLoss: 0.4, valLoss: 0.6 },
+      { epoch: 1, trainLoss: 0.3, valLoss: 0.5 },
+    ];
+    const d = buildLossPlotDataBatched(batches, epochs, 2500, null, null, -1);
+    // both epoch boundaries (x = 2500, 5000) must carry their train/val values
+    expect(d.train.filter((v) => v != null)).toEqual([0.4, 0.3]);
+    expect(d.val.filter((v) => v != null)).toEqual([0.6, 0.5]);
+  });
+});
