@@ -273,17 +273,19 @@ export async function runTraining(
   }
 
   const { writeFile } = await import("@tauri-apps/plugin-fs");
-  const { tempDir } = await import("@tauri-apps/api/path");
+  const { tempDir, join } = await import("@tauri-apps/api/path");
 
   const tmp = await tempDir();
   const configFileName = `sleap_train_config_${Date.now()}.yaml`;
-  const configPath = `${tmp}${configFileName}`;
+  // join() (not string concat) — tempDir() is not guaranteed to end in a separator
+  // (e.g. Linux "/tmp", or a slash-less $TMPDIR), which would mangle the path.
+  const configPath = await join(tmp, configFileName);
 
   await writeFile(configPath, new TextEncoder().encode(configYaml));
   console.log("[training] Wrote config to:", configPath);
 
   // Use provided modelDir or default to temp/models
-  const ckptDir = modelDir || `${tmp}sleap_models`;
+  const ckptDir = modelDir || (await join(tmp, "sleap_models"));
   const modelPath = `${ckptDir}/${runName}`;
 
   const args = [
@@ -323,11 +325,11 @@ export async function runInference(
     return { success: false, outputPath: null, command: "" };
   }
 
-  const { tempDir } = await import("@tauri-apps/api/path");
+  const { tempDir, join } = await import("@tauri-apps/api/path");
 
   const tmp = await tempDir();
   const ts = Date.now();
-  const outputPath = `${tmp}sleap_inference_output_${ts}.slp`;
+  const outputPath = await join(tmp, `sleap_inference_output_${ts}.slp`);
 
   // Use original project file if available, otherwise serialize
   let dataPath: string;
@@ -340,7 +342,7 @@ export async function runInference(
     const { useAppStore } = await import("@/stores/appStore");
     const labels = useAppStore.getState().labels;
     if (!labels) throw new Error("No project loaded");
-    dataPath = `${tmp}sleap_inference_input_${ts}.slp`;
+    dataPath = await join(tmp, `sleap_inference_input_${ts}.slp`);
     console.log("[inference] Serializing project to temp file:", dataPath);
     const bytes = await saveSlpToBytes(labels);
     await writeFile(dataPath, bytes);
