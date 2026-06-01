@@ -7,6 +7,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { LossPlot } from "@/components/monitors/LossPlot";
+import { VizImageViewer } from "@/components/monitors/VizImageViewer";
 
 /**
  * Centered modal wrapping the training loss chart (PyQt LossViewer parity).
@@ -36,7 +37,7 @@ export function LossViewerDialog({
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[640px]">
+      <DialogContent className="sm:max-w-[760px]">
         <DialogHeader>
           <DialogTitle className="text-sm">
             Training Monitor{model ? ` — ${model.label}` : ""}
@@ -44,8 +45,10 @@ export function LossViewerDialog({
         </DialogHeader>
 
         {model && (
-          <LossPlot model={model} startedAt={startedAt} status={status} height={320} />
+          <LossPlot model={model} startedAt={startedAt} status={status} height={360} />
         )}
+
+        {model && <VizImageViewer model={model} />}
 
         {isActive && (
           <div className="flex items-center gap-2 pt-2">

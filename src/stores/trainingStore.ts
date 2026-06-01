@@ -218,6 +218,8 @@ export interface ModelProgress {
   epochStartedAt: number | null;
   plateauPatience: number | null;
   plateauMinDelta: number | null;
+  /** Local-training-only filesystem run dir (`${modelDir}/${runName}`); null for remote / not-yet-started. */
+  runDir: string | null;
 }
 
 interface TrainingState {
@@ -756,6 +758,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         epochStartedAt: null,
         plateauPatience: cf?.hyperparams.earlyStoppingPatience ?? null,
         plateauMinDelta: cf?.hyperparams.plateauMinDelta ?? null,
+        runDir: null,
       };
     });
 
@@ -1057,6 +1060,10 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
           if (ev === "epoch_begin") {
             if (typeof data.epoch === "number") get().markEpochBegin(i, data.epoch);
           } else if (ev === "epoch_end") {
+            // Flush buffered batches first so epochSize (from lastBatchNumber) is fresh.
+            if (batchBuffer.length > 0) {
+              get().recordBatches(get().currentModelIndex, batchBuffer.splice(0, batchBuffer.length));
+            }
             const logs = data.logs ?? {};
             const trainLoss = logs["train/loss"] ?? logs["loss"] ?? null;
             const valLoss = logs["val/loss"] ?? null;
@@ -1115,6 +1122,12 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
           const configYaml = applyHyperparamsToYaml(cf.content, cf.hyperparams);
           const ts = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 15);
           const runName = cf.hyperparams.runName || `${cf.modelType}_${ts}`;
+
+          set((s) => ({
+            models: s.models.map((m, j) =>
+              j === i ? { ...m, runDir: `${modelDir}/${runName}` } : m,
+            ),
+          }));
 
           const result = await runTraining(configYaml, labelsPath, runName, (event) => {
             const state = get();

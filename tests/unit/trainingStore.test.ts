@@ -750,6 +750,7 @@ function makeModel(over: Partial<ModelProgress> = {}): ModelProgress {
     epochSize: 1, lastBatchNumber: 0,
     metrics: { meanEpochTimeSec: null, etaNext10Min: null, epochsInPlateau: 0, inPlateau: false, bestValEpoch: null },
     epochStartedAt: null, plateauPatience: 10, plateauMinDelta: null,
+    runDir: null,
     ...over,
   };
 }
