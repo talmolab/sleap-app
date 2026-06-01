@@ -8,6 +8,7 @@
 
 use crate::RunningProcess;
 use serde::Serialize;
+use std::path::{Path, PathBuf};
 use tauri::{ipc::Channel, AppHandle, Runtime};
 use tauri_plugin_shell::{process::CommandEvent, ShellExt};
 
@@ -465,11 +466,54 @@ pub async fn cancel_command(
     Ok(())
 }
 
+/// Build the path to the Python interpreter inside a uv tool's virtual env.
+///
+/// uv installs each tool into `<uv tool dir>/<tool>/` with the interpreter at
+/// `bin/python3` (Unix) or `Scripts\python.exe` (Windows). Pure + testable.
+fn sleap_nn_python_path(tool_dir: &Path) -> PathBuf {
+    let base = tool_dir.join("sleap-nn");
+    #[cfg(windows)]
+    {
+        base.join("Scripts").join("python.exe")
+    }
+    #[cfg(not(windows))]
+    {
+        base.join("bin").join("python3")
+    }
+}
+
+/// Resolve the Python interpreter inside sleap-nn's uv-tool virtual environment.
+///
+/// The ZMQ relay sidecars `import zmq` (pyzmq), which is a declared dependency of
+/// sleap-nn and lives in its venv, NOT in the system `python3`. Running the relay
+/// with this interpreter mirrors how the `sleap-nn` command itself runs (its uv
+/// shim is shebang-pinned to this same interpreter), so the relay shares the exact
+/// pyzmq the trainer publishes with. Errors clearly rather than silently falling
+/// back to a base `python3` that lacks pyzmq.
+async fn resolve_sleap_nn_python<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
+    let tool_dir = shell_output(app, "uv", &["tool", "dir"])
+        .await
+        .ok_or_else(|| "Could not determine uv tool directory (is uv installed?)".to_string())?;
+    let python = sleap_nn_python_path(Path::new(tool_dir.trim()));
+    if python.exists() {
+        Ok(python)
+    } else {
+        Err(format!(
+            "sleap-nn environment not found at {} — install sleap-nn before training.",
+            python.display()
+        ))
+    }
+}
+
 /// Start a ZMQ PUB relay using std::process::Command for reliable pipe control.
 /// Binds on port 9000 (matching PyQt SLEAP GUI default).
 /// Kills any stale process on the port before binding.
+///
+/// Runs the sidecar with sleap-nn's venv Python (which has pyzmq), resolved via
+/// `uv tool dir`, instead of the system `python3` (which lacks pyzmq). See #121.
 #[tauri::command]
-pub async fn start_zmq_relay(
+pub async fn start_zmq_relay<R: Runtime>(
+    app: AppHandle<R>,
     relay: tauri::State<'_, crate::ZmqRelay>,
 ) -> Result<(), String> {
     // Kill any existing relay we own
@@ -480,6 +524,10 @@ pub async fn start_zmq_relay(
             let _ = child.wait();
         }
     }
+
+    // Resolve sleap-nn's venv Python (which has pyzmq) before spawning the
+    // sidecar; the system `python3` lacks pyzmq. See #121.
+    let python = resolve_sleap_nn_python(&app).await?;
 
     let port: u16 = 9000;
 
@@ -522,7 +570,7 @@ pub async fn start_zmq_relay(
     }
 
     log::info!("[zmq-relay] Starting on port {}...", port);
-    let mut child = std::process::Command::new("python3")
+    let mut child = std::process::Command::new(&python)
         .args(["-u", "-c", &script])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -624,6 +672,10 @@ pub async fn start_progress_relay<R: Runtime>(
         }
     }
 
+    // Resolve sleap-nn's venv Python (which has pyzmq) before spawning the
+    // sidecar; the system `python3` lacks pyzmq. See #121.
+    let python = resolve_sleap_nn_python(&app).await?;
+
     let port: u16 = 9001;
 
     let script = format!(
@@ -667,7 +719,7 @@ pub async fn start_progress_relay<R: Runtime>(
     }
 
     log::info!("[progress-relay] Starting on port {}...", port);
-    let mut child = std::process::Command::new("python3")
+    let mut child = std::process::Command::new(&python)
         .args(["-u", "-c", &script])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -955,6 +1007,23 @@ fn extract_downloadable(output: &str) -> Vec<PythonInterpreter> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- sleap-nn venv python path (relay interpreter, #121) --
+
+    #[test]
+    fn test_sleap_nn_python_path() {
+        let tool_dir = Path::new("/home/u/.local/share/uv/tools");
+        let p = sleap_nn_python_path(tool_dir);
+        // Must live under the sleap-nn tool dir, not the system python.
+        assert!(p.starts_with("/home/u/.local/share/uv/tools/sleap-nn"));
+        #[cfg(not(windows))]
+        assert_eq!(
+            p,
+            Path::new("/home/u/.local/share/uv/tools/sleap-nn/bin/python3")
+        );
+        #[cfg(windows)]
+        assert!(p.ends_with("Scripts\\python.exe"));
+    }
 
     // -- uv tool list parser tests --
 
