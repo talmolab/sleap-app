@@ -1153,7 +1153,7 @@ export function TrainingPanel() {
                         {isCurrent
                           ? `Training: ${model.label} (${i + 1}/${models.length})`
                           : isCompleted
-                            ? `${model.label} — ${model.epoch} epochs${
+                            ? `${model.label} — ${model.epochSamples.length} epochs${
                                 model.bestValLoss != null
                                   ? `, best val_loss: ${model.bestValLoss.toFixed(4)}`
                                   : ""

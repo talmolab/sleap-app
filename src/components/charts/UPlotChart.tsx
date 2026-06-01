@@ -8,6 +8,7 @@ export interface UPlotChartProps {
   scales?: uPlot.Scales;
   axes?: uPlot.Axis[];
   height?: number;
+  showLegend?: boolean;
   className?: string;
 }
 
@@ -19,7 +20,7 @@ export interface UPlotChartProps {
  *   high-frequency (e.g. per-batch) updates do not thrash the canvas.
  * - Series/scales changes recreate the instance (they change rarely).
  */
-export function UPlotChart({ data, series, scales, axes, height = 240, className }: UPlotChartProps) {
+export function UPlotChart({ data, series, scales, axes, height = 240, showLegend = true, className }: UPlotChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const plotRef = useRef<uPlot | null>(null);
   const pendingData = useRef<uPlot.AlignedData | null>(null);
@@ -36,7 +37,7 @@ export function UPlotChart({ data, series, scales, axes, height = 240, className
       series,
       scales,
       axes,
-      legend: { show: true },
+      legend: { show: showLegend },
       cursor: { drag: { x: true, y: false } },
     };
     const u = new uPlot(opts, data, el);
@@ -55,7 +56,7 @@ export function UPlotChart({ data, series, scales, axes, height = 240, className
     };
     // Recreate only when the chart shape changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [series, scales, axes, height]);
+  }, [series, scales, axes, height, showLegend]);
 
   // Throttled data updates (≈500ms trailing edge).
   useEffect(() => {

@@ -1,8 +1,18 @@
 import { useState, useEffect, useMemo, useRef } from "react";
+import type { ReactNode } from "react";
 import type uPlot from "uplot";
 import type { ModelProgress, TrainingStatus } from "@/stores/trainingStore";
 import { UPlotChart } from "@/components/charts/UPlotChart";
 import { buildLossPlotDataBatched, computeYRange, formatRuntimeTitle } from "@/lib/trainingMetrics";
+
+// Bold numeric tokens (integers, decimals, mm:ss times, scientific notation)
+// in the runtime title — PyQt parity.
+function renderTitleLine(line: string): ReactNode[] {
+  const parts = line.split(/(\d+:\d+|\d+\.\d+e[-+]?\d+|\d+(?:\.\d+)?)/g);
+  return parts.map((p, i) =>
+    /^(?:\d+:\d+|\d+\.\d+e[-+]?\d+|\d+(?:\.\d+)?)$/.test(p) ? <strong key={i}>{p}</strong> : <span key={i}>{p}</span>,
+  );
+}
 
 export function LossPlot({
   model, startedAt, status, height = 200,
@@ -24,8 +34,10 @@ export function LossPlot({
     { label: "batch", stroke: "rgba(18,158,220,0.55)",
       points: { show: true, size: 3, stroke: "rgba(18,158,220,0.55)", fill: "rgba(18,158,220,0.22)" },
       paths: () => null },                                                                // faint blue scatter
-    { label: "train", stroke: "rgb(18,158,220)", width: 2, spanGaps: true, points: { show: false } },   // blue line
-    { label: "val",   stroke: "rgb(248,167,52)", width: 2, spanGaps: true, points: { show: false } },    // orange line
+    { label: "train", stroke: "rgb(18,158,220)", width: 2, spanGaps: true,
+      points: { show: true, size: 6, stroke: "rgb(18,158,220)", fill: "rgb(18,158,220)" } },   // blue line
+    { label: "val",   stroke: "rgb(248,167,52)", width: 2, spanGaps: true,
+      points: { show: true, size: 6, stroke: "rgb(248,167,52)", fill: "rgb(248,167,52)" } },    // orange line
     { label: "best val", stroke: "rgb(151,204,89)", points: { show: true, size: 9, stroke: "rgb(151,204,89)" }, paths: () => null }, // green marker
   ], []);
 
@@ -114,10 +126,23 @@ export function LossPlot({
 
   return (
     <div className="space-y-1">
-      <div className="text-[10px] text-muted-foreground leading-tight">
-        {titleLines.map((l, i) => <div key={i}>{l}</div>)}
+      <div className="text-xs text-muted-foreground leading-snug">
+        {titleLines.map((l, i) => <div key={i}>{renderTitleLine(l)}</div>)}
       </div>
-      <UPlotChart data={data} series={series} scales={scales} axes={axes} height={height} className="w-full" />
+      <div className="flex flex-wrap items-center gap-3 text-[11px] text-muted-foreground">
+        {[
+          { c: "rgba(18,158,220,0.55)", l: "Batch Training Loss" },
+          { c: "rgb(18,158,220)", l: "Epoch Training Loss" },
+          { c: "rgb(248,167,52)", l: "Epoch Validation Loss" },
+          { c: "rgb(151,204,89)", l: "Best Validation Loss" },
+        ].map((s) => (
+          <span key={s.l} className="flex items-center gap-1">
+            <span className="inline-block rounded-full" style={{ width: 8, height: 8, background: s.c }} />
+            {s.l}
+          </span>
+        ))}
+      </div>
+      <UPlotChart data={data} series={series} scales={scales} axes={axes} height={height} showLegend={false} className="w-full" />
       <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
         <label className="flex items-center gap-1 cursor-pointer">
           <input type="checkbox" checked={logScale} onChange={(e) => setLogScale(e.target.checked)} />
