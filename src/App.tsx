@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { AppShell } from "./components/layout/AppShell";
 import { QuitConfirmDialog } from "./components/dialogs/QuitConfirmDialog";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
+import { useWindowTitle } from "./hooks/useWindowTitle";
 import { useAppStore } from "./stores/appStore";
 import { applyHashState, initUrlStateSync } from "./lib/urlState";
 import { loadProjectFromPath } from "./lib/loadProject";
@@ -10,10 +11,20 @@ import { setupCloseHandler } from "./lib/quit";
 
 export default function App() {
   useKeyboardShortcuts();
+  useWindowTitle();
 
   useEffect(() => {
     setupCloseHandler();
   }, []);
+
+  // Re-apply the persisted UI scale to the CSS var on boot. uiScale is restored
+  // into the store by zustand-persist, but the --ui-scale var is otherwise only
+  // set inside the +/- handlers, so without this a reload would not re-scale.
+  useEffect(() => {
+    const scale = useAppStore.getState().uiScale;
+    document.documentElement.style.setProperty("--ui-scale", String(scale));
+  }, []);
+
   const projectLoaded = useAppStore((s) => s.projectLoaded);
   const hashApplied = useRef(false);
 

@@ -34,8 +34,19 @@ function detectLinkedSleapIo(): boolean {
 }
 const isLinkedSleapIo = detectLinkedSleapIo();
 
+// App version injected as the build-time constant `__APP_VERSION__` (declared
+// in src/globals.d.ts, consumed by useWindowTitle). Read from package.json via
+// the already-imported `fs` to avoid a typed JSON import + `resolveJsonModule`
+// in tsconfig.node.json.
+const pkgVersion = JSON.parse(
+  fs.readFileSync(path.resolve(__dirname, "package.json"), "utf-8"),
+).version as string;
+
 export default defineConfig({
   base: process.env.VITE_BASE_PATH || "/",
+  define: {
+    __APP_VERSION__: JSON.stringify(pkgVersion),
+  },
   plugins: [react(), tailwindcss()],
 
   resolve: {

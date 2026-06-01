@@ -16,6 +16,8 @@ import {
 } from "@/components/ui/tooltip";
 import { Crosshair, Hand, Minus, MousePointer2, Pencil, Plus } from "lucide-react";
 import { isTauri } from "../../platform/index";
+import { computeStatusStats, instancesToShowCount } from "@/lib/statusStats";
+import { DEFAULT_SHORTCUTS } from "@/lib/shortcuts";
 
 export function StatusBar() {
   const filename = useAppStore((s) => s.filename);
@@ -29,14 +31,22 @@ export function StatusBar() {
   const frameRange = useAppStore((s) => s.frameRange);
   const defaultToPan = useAppStore((s) => s.defaultToPan);
   const labelingMode = useAppStore((s) => s.labelingMode);
+  const showInstances = useAppStore((s) => s.showInstances);
 
   const platformLabel = isTauri ? "Tauri FS" : "Browser";
 
   const totalFrames = video?.shape?.[0] ?? null;
-  const totalLabeledFrames = labels?.labeledFrames.length ?? 0;
-  const totalVideos = labels?.videos.length ?? 0;
-  const instanceCount = labeledFrame?.instances.length ?? 0;
+  const stats = computeStatusStats(labels, video, totalFrames);
+  const instanceCount = instancesToShowCount(labeledFrame);
+  const hidden = instanceCount > 0 && !showInstances;
+  const isNegative = labeledFrame?.isNegative ?? false;
   const isPredicted = instance instanceof PredictedInstance;
+
+  // Display string for the "show instances" shortcut, e.g. "KeyH" -> "H".
+  const showInstancesKey = DEFAULT_SHORTCUTS["show instances"].replace(
+    /^Key/,
+    "",
+  );
 
   const adjustScale = (delta: number) => {
     const newScale = Math.max(0.75, Math.min(1.5, uiScale + delta));
@@ -59,24 +69,55 @@ export function StatusBar() {
               {filename}
               {hasChanges ? " *" : ""}
             </span>
+            {/* Video index / total. Gate on a valid (>=0) index so a broken/
+                missing video reference does not render a misleading "Video 0 / N". */}
+            {stats.videoIndex >= 0 && (
+              <>
+                <Separator orientation="vertical" className="h-3.5" />
+                <span className="tabular-nums whitespace-nowrap">
+                  Video {stats.videoIndex + 1} / {stats.totalVideos}
+                </span>
+              </>
+            )}
             <Separator orientation="vertical" className="h-3.5" />
             <span className="tabular-nums whitespace-nowrap">
-              Frame {frameIdx}
-              {totalFrames !== null ? ` / ${totalFrames - 1}` : ""}
+              Frame {(frameIdx + 1).toLocaleString()}
+              {totalFrames !== null ? ` / ${totalFrames.toLocaleString()}` : ""}
             </span>
-            <Separator orientation="vertical" className="h-3.5" />
-            <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4 rounded-sm font-normal whitespace-nowrap">
-              {totalLabeledFrames} labeled
-            </Badge>
             <Separator orientation="vertical" className="h-3.5" />
             <span className="whitespace-nowrap">
-              {totalVideos} video{totalVideos !== 1 ? "s" : ""}
+              Labeled: {stats.userInVideo.toLocaleString()}
+              {stats.totalVideos > 1
+                ? ` in video, ${stats.userInProject.toLocaleString()} in project`
+                : ""}
             </span>
-            {instanceCount > 0 && (
+            {stats.predictedInVideo > 0 && (
               <>
                 <Separator orientation="vertical" className="h-3.5" />
                 <span className="whitespace-nowrap">
+                  Predicted: {stats.predictedInVideo.toLocaleString()} (
+                  {stats.predictedPct.toFixed(2)}%) in video
+                </span>
+              </>
+            )}
+            {instanceCount > 0 && (
+              <>
+                <Separator orientation="vertical" className="h-3.5" />
+                <span
+                  className={`whitespace-nowrap${hidden ? " text-red-500" : ""}`}
+                >
                   {instanceCount} instance{instanceCount !== 1 ? "s" : ""}
+                  {hidden
+                    ? ` [Hidden] Press '${showInstancesKey}' to toggle.`
+                    : ""}
+                </span>
+              </>
+            )}
+            {isNegative && (
+              <>
+                <Separator orientation="vertical" className="h-3.5" />
+                <span className="whitespace-nowrap text-amber-500">
+                  [NEGATIVE FRAME]
                 </span>
               </>
             )}
@@ -84,7 +125,10 @@ export function StatusBar() {
               <>
                 <Separator orientation="vertical" className="h-3.5" />
                 <span className="whitespace-nowrap">
-                  Frames {frameRange[0]}-{frameRange[1]} selected
+                  {/* 1-based to stay consistent with the Frame counter above.
+                      frameRange stores 0-based inclusive indices. */}
+                  Frames {(frameRange[0] + 1).toLocaleString()}-
+                  {(frameRange[1] + 1).toLocaleString()} selected
                 </span>
               </>
             )}

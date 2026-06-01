@@ -127,7 +127,7 @@ Use this to track which PyQt features have been ported to sleap-app.
 
 - [x] Training Configuration Dialog (LearningDialog training mode)
 - [x] Inference Configuration Dialog (LearningDialog inference mode)
-- [ ] Training Monitor (live loss plots — text log only)
+- [x] Training Monitor (live loss plots) — PR #128 (per-batch scatter + per-epoch train/val curves, best-val marker, runtime/ETA/plateau, validation-image panel)
 - [x] Custom Instance Delete Dialog (enhanced Delete Predictions dialog with type/track filters)
 - [ ] Delete User-Frame Predictions Dialog
 - [ ] Merge Projects Dialog (MergeDialog)
@@ -257,13 +257,14 @@ Use this to track which PyQt features have been ported to sleap-app.
 - [x] Frame X/Y display
 - [x] Selection range display
 - [x] Instance count on current frame
-- [ ] Video X/Y (current index / total) — shows count only
-- [ ] Labeled frames (in-video vs in-project split)
-- [ ] Predicted frames count + percentage
-- [ ] [Hidden] warning when instances hidden
-- [ ] Window title with filename (shown in status bar instead)
-- [ ] Dock floating/undocking
-- [ ] Window state persistence (dock positions/sizes)
+- [x] Video X/Y (current index / total)
+- [x] Labeled frames (in-video vs in-project split)
+- [x] Predicted frames count + percentage
+- [x] [Hidden] warning when instances hidden
+- [x] [NEGATIVE FRAME] indicator
+- [x] Window title with filename (also kept in status bar)
+- [ ] Dock floating/undocking — **by design / won't-do** (single-sidebar model, no docking library; see status-chrome-design.md §1/§9)
+- [ ] Window state persistence (dock positions/sizes) — **partial**: panel layout + UI scale **persisted** (panelOrder/sidebarCollapsed/sidebarActivePanel/uiScale); OS window geometry **by design / won't-do** here (needs tauri-plugin-window-state, phase-2)
 
 ---
 

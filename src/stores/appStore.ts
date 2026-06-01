@@ -133,7 +133,7 @@ export interface AppState {
 }
 
 /** Keys persisted to localStorage for user preferences. */
-const PERSISTED_KEYS: (keyof AppState)[] = [
+export const PERSISTED_KEYS: (keyof AppState)[] = [
   "palette",
   "edgeStyle",
   "markerSize",
@@ -148,6 +148,11 @@ const PERSISTED_KEYS: (keyof AppState)[] = [
   "defaultToPan",
   "seekbarHeaderGraph",
   "seekbarHeaderReduction",
+  // Layout + scale persistence (PyQt saveState/restoreState parity).
+  "panelOrder",
+  "sidebarCollapsed",
+  "sidebarActivePanel",
+  "uiScale",
 ];
 
 export const useAppStore = create<AppState>()(

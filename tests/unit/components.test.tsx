@@ -139,16 +139,30 @@ describe("Component rendering", () => {
         "@/components/layout/StatusBar"
       );
       render(<StatusBar />);
-      expect(screen.getByText(/Frame 42/)).toBeInTheDocument();
+      // StatusBar now shows a 1-based frame counter (PyQt parity): frameIdx 42 -> "Frame 43".
+      expect(screen.getByText(/Frame 43/)).toBeInTheDocument();
     });
 
-    it("shows labeled frame count", async () => {
+    it("shows user-labeled frame count", async () => {
+      // Single video: "Labeled: {userInVideo}" with no in-video/in-project split.
+      // The video object is shared between labels.videos[0], store.video, and
+      // each frame's .video so reference-identity matching counts them.
+      const vid = { filename: "test.mp4", shape: [100, 480, 640, 3] };
+      const userFrame = {
+        video: vid,
+        userInstances: [{}],
+        unusedPredictions: [],
+        hasUserInstances: true,
+        hasPredictedInstances: false,
+        isNegative: false,
+        instances: [{}],
+      };
       useAppStore.setState({
         filename: "test.slp",
         labels: {
-          videos: [{ filename: "test.mp4", shape: [100, 480, 640, 3] }],
+          videos: [vid],
           skeletons: [],
-          labeledFrames: [{ instances: [] }, { instances: [] }],
+          labeledFrames: [userFrame, userFrame],
           tracks: [],
           suggestions: [],
           provenance: {},
@@ -156,17 +170,192 @@ describe("Component rendering", () => {
           append: () => {},
         } as unknown as import("@/types").Labels,
         projectLoaded: true,
-        video: {
-          filename: "test.mp4",
-          shape: [100, 480, 640, 3],
-        } as unknown as import("@/types").Video,
+        video: vid as unknown as import("@/types").Video,
       });
 
       const { StatusBar } = await import(
         "@/components/layout/StatusBar"
       );
       render(<StatusBar />);
-      expect(screen.getByText("2 labeled")).toBeInTheDocument();
+      expect(screen.getByText(/Labeled: 2/)).toBeInTheDocument();
+    });
+
+    it("shows Video index out of total", async () => {
+      const vidA = { filename: "a.mp4", shape: [100, 1, 1, 1] };
+      const vidB = { filename: "b.mp4", shape: [50, 1, 1, 1] };
+      useAppStore.setState({
+        filename: "test.slp",
+        labels: {
+          videos: [vidA, vidB],
+          skeletons: [],
+          labeledFrames: [],
+          tracks: [],
+          suggestions: [],
+          provenance: {},
+          find: () => [],
+          append: () => {},
+        } as unknown as import("@/types").Labels,
+        projectLoaded: true,
+        video: vidB as unknown as import("@/types").Video,
+      });
+      const { StatusBar } = await import("@/components/layout/StatusBar");
+      render(<StatusBar />);
+      expect(screen.getByText(/Video 2\s*\/\s*2/)).toBeInTheDocument();
+    });
+
+    it("shows in-video / in-project labeled split with >1 video", async () => {
+      const vidA = { filename: "a.mp4", shape: [100, 1, 1, 1] };
+      const vidB = { filename: "b.mp4", shape: [50, 1, 1, 1] };
+      const userA = {
+        video: vidA,
+        userInstances: [{}],
+        unusedPredictions: [],
+        hasUserInstances: true,
+        hasPredictedInstances: false,
+        isNegative: false,
+        instances: [{}],
+      };
+      const userB = { ...userA, video: vidB };
+      useAppStore.setState({
+        filename: "test.slp",
+        labels: {
+          videos: [vidA, vidB],
+          skeletons: [],
+          labeledFrames: [userA, userA, userB],
+          tracks: [],
+          suggestions: [],
+          provenance: {},
+          find: () => [],
+          append: () => {},
+        } as unknown as import("@/types").Labels,
+        projectLoaded: true,
+        video: vidA as unknown as import("@/types").Video,
+      });
+      const { StatusBar } = await import("@/components/layout/StatusBar");
+      render(<StatusBar />);
+      expect(screen.getByText(/2 in video/)).toBeInTheDocument();
+      expect(screen.getByText(/3 in project/)).toBeInTheDocument();
+    });
+
+    it("shows predicted frames count and percentage when > 0", async () => {
+      const vid = { filename: "a.mp4", shape: [100, 1, 1, 1] };
+      const pred = {
+        video: vid,
+        userInstances: [],
+        unusedPredictions: [{}],
+        hasUserInstances: false,
+        hasPredictedInstances: true,
+        isNegative: false,
+        instances: [{}],
+      };
+      useAppStore.setState({
+        filename: "test.slp",
+        labels: {
+          videos: [vid],
+          skeletons: [],
+          labeledFrames: [pred, pred],
+          tracks: [],
+          suggestions: [],
+          provenance: {},
+          find: () => [],
+          append: () => {},
+        } as unknown as import("@/types").Labels,
+        projectLoaded: true,
+        video: vid as unknown as import("@/types").Video,
+      });
+      const { StatusBar } = await import("@/components/layout/StatusBar");
+      render(<StatusBar />);
+      expect(screen.getByText(/Predicted/)).toBeInTheDocument();
+      expect(screen.getByText(/2\.00%/)).toBeInTheDocument();
+    });
+
+    it("shows [Hidden] warning when instances present but hidden", async () => {
+      const vid = { filename: "a.mp4", shape: [100, 1, 1, 1] };
+      const lf = {
+        video: vid,
+        userInstances: [{}],
+        unusedPredictions: [],
+        hasUserInstances: true,
+        hasPredictedInstances: false,
+        isNegative: false,
+        instances: [{}],
+      };
+      useAppStore.setState({
+        filename: "test.slp",
+        showInstances: false,
+        labels: {
+          videos: [vid],
+          skeletons: [],
+          labeledFrames: [lf],
+          tracks: [],
+          suggestions: [],
+          provenance: {},
+          find: () => [],
+          append: () => {},
+        } as unknown as import("@/types").Labels,
+        projectLoaded: true,
+        video: vid as unknown as import("@/types").Video,
+        labeledFrame: lf as unknown as import("@/types").LabeledFrame,
+      });
+      const { StatusBar } = await import("@/components/layout/StatusBar");
+      render(<StatusBar />);
+      expect(screen.getByText(/\[Hidden\]/)).toBeInTheDocument();
+    });
+
+    it("shows [NEGATIVE FRAME] when frame is negative", async () => {
+      const vid = { filename: "a.mp4", shape: [100, 1, 1, 1] };
+      const lf = {
+        video: vid,
+        userInstances: [],
+        unusedPredictions: [],
+        hasUserInstances: false,
+        hasPredictedInstances: false,
+        isNegative: true,
+        instances: [],
+      };
+      useAppStore.setState({
+        filename: "test.slp",
+        labels: {
+          videos: [vid],
+          skeletons: [],
+          labeledFrames: [lf],
+          tracks: [],
+          suggestions: [],
+          provenance: {},
+          find: () => [],
+          append: () => {},
+        } as unknown as import("@/types").Labels,
+        projectLoaded: true,
+        video: vid as unknown as import("@/types").Video,
+        labeledFrame: lf as unknown as import("@/types").LabeledFrame,
+      });
+      const { StatusBar } = await import("@/components/layout/StatusBar");
+      render(<StatusBar />);
+      expect(screen.getByText(/\[NEGATIVE FRAME\]/)).toBeInTheDocument();
+    });
+
+    it("shows the selection range 1-based (consistent with Frame counter)", async () => {
+      const vid = { filename: "a.mp4", shape: [100, 1, 1, 1] };
+      useAppStore.setState({
+        filename: "test.slp",
+        labels: {
+          videos: [vid],
+          skeletons: [],
+          labeledFrames: [],
+          tracks: [],
+          suggestions: [],
+          provenance: {},
+          find: () => [],
+          append: () => {},
+        } as unknown as import("@/types").Labels,
+        projectLoaded: true,
+        video: vid as unknown as import("@/types").Video,
+        // 0-based inclusive [4, 9] -> displayed 1-based as "Frames 5-10 selected".
+        frameRange: [4, 9],
+      });
+      const { StatusBar } = await import("@/components/layout/StatusBar");
+      render(<StatusBar />);
+      expect(screen.getByText(/Frames 5-10 selected/)).toBeInTheDocument();
     });
   });
 

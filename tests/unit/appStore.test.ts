@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, beforeEach } from "../bun-test";
-import { useAppStore } from "@/stores/appStore";
+import { useAppStore, PERSISTED_KEYS } from "@/stores/appStore";
 import type { Labels, Video, Skeleton, Instance } from "@/types";
 
 /** Helper to reset the store between tests. */
@@ -432,5 +432,21 @@ describe("appStore", () => {
     resetStore();
     useAppStore.getState().set("seekbarHeaderGraph", "tracking-score");
     expect(useAppStore.getState().seekbarHeaderGraph).toBe("tracking-score");
+  });
+});
+
+describe("PERSISTED_KEYS (layout + scale persistence)", () => {
+  it("persists panel layout and UI scale across reloads", () => {
+    expect(PERSISTED_KEYS).toContain("panelOrder");
+    expect(PERSISTED_KEYS).toContain("sidebarCollapsed");
+    expect(PERSISTED_KEYS).toContain("sidebarActivePanel");
+    expect(PERSISTED_KEYS).toContain("uiScale");
+  });
+
+  it("keeps the pre-existing persisted keys (e.g. seekbar header prefs)", () => {
+    // Regression guard: appending layout keys must not drop existing ones.
+    expect(PERSISTED_KEYS).toContain("seekbarHeaderGraph");
+    expect(PERSISTED_KEYS).toContain("seekbarHeaderReduction");
+    expect(PERSISTED_KEYS).toContain("palette");
   });
 });
