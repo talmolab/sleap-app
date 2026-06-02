@@ -446,12 +446,14 @@ describe("Component rendering", () => {
       expect(container).toBeTruthy();
     });
 
-    it("shows SLEAP branding", async () => {
+    it("does not render a redundant SLEAP brand block (#133)", async () => {
       const { MenuBar } = await import(
         "@/components/layout/MenuBar"
       );
       render(<MenuBar />);
-      expect(screen.getByText("SLEAP")).toBeInTheDocument();
+      // The icon + "SLEAP" wordmark was removed as redundant — the OS title bar
+      // (desktop) and browser tab already display "SLEAP".
+      expect(screen.queryByText("SLEAP")).not.toBeInTheDocument();
     });
 
     it("renders all menu triggers including Help", async () => {
