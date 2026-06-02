@@ -56,7 +56,6 @@ pub struct PythonInfo {
     pub path: String,
     pub version: Option<String>,
     pub sleap_nn_version: Option<String>,
-    pub sleap_version: Option<String>,
 }
 
 /// Events streamed during process operations.
@@ -267,18 +266,10 @@ pub async fn check_python<R: Runtime>(
     )
     .await;
 
-    let sleap_version = shell_output(
-        &app,
-        &python_path,
-        &["-c", "import sleap; print(sleap.__version__)"],
-    )
-    .await;
-
     PythonInfo {
         path: python_path,
         version,
         sleap_nn_version,
-        sleap_version,
     }
 }
 
@@ -1059,17 +1050,19 @@ ruff v0.5.0
 
     #[test]
     fn test_parse_uv_tool_list_multiple_commands() {
+        // A tool that exposes several console scripts (sleap-nn itself exposes
+        // only `sleap-nn`; its train/track are subcommands, not separate execs).
         let output = "\
-sleap v0.2.0
-    - sleap
-    - sleap-train
-    - sleap-track
+jupyter v1.1.1
+    - jupyter
+    - jupyter-lab
+    - jupyter-notebook
 ";
         let tools = parse_uv_tool_list(output);
         assert_eq!(tools.len(), 1);
         assert_eq!(
             tools[0].commands,
-            vec!["sleap", "sleap-train", "sleap-track"]
+            vec!["jupyter", "jupyter-lab", "jupyter-notebook"]
         );
     }
 

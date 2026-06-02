@@ -2,7 +2,7 @@
  * Environment panel for Python/uv toolchain configuration.
  *
  * Shows uv status, lets users pick a Python interpreter,
- * install Python versions, and manage uv tools (sleap-nn, sleap).
+ * install Python versions, and manage uv tools (sleap-nn, sleap-rtc).
  */
 
 import { useEffect, useRef } from "react";
@@ -255,7 +255,6 @@ export function EnvironmentPanel() {
   }
 
   const sleapNnTool = tools.find((t) => t.name === "sleap-nn");
-  const sleapTool = tools.find((t) => t.name === "sleap");
   const sleapRtcTool = tools.find((t) => t.name === "sleap-rtc");
   const isDetecting = detectionStatus === "checking";
   const detected = detectionStatus === "done" || detectionStatus === "error";
@@ -424,15 +423,6 @@ export function EnvironmentPanel() {
                           : "Not importable"
                       }
                     />
-                    <StatusRow
-                      label="sleap"
-                      ok={!!pythonCheck.sleapVersion}
-                      detail={
-                        pythonCheck.sleapVersion
-                          ? `v${pythonCheck.sleapVersion}`
-                          : "Not importable"
-                      }
-                    />
                   </div>
                 )}
                 {!pythonCheck && selectedPythonPath && (
@@ -503,42 +493,6 @@ export function EnvironmentPanel() {
             {sleapNnTool && sleapNnTool.commands.length > 0 && (
               <div className="flex flex-wrap gap-1 pl-5 mt-0.5">
                 {sleapNnTool.commands.map((cmd) => (
-                  <Badge
-                    key={cmd}
-                    variant="secondary"
-                    className="text-[10px] px-1.5 py-0 h-4 rounded-sm font-mono"
-                  >
-                    {cmd}
-                  </Badge>
-                ))}
-              </div>
-            )}
-
-            {/* sleap */}
-            <div className="flex items-center gap-2 py-0.5 mt-1">
-              <StatusIcon ok={!!sleapTool} />
-              <span className="text-xs font-medium">sleap</span>
-              {sleapTool?.version && (
-                <span className="text-xs text-muted-foreground">
-                  v{sleapTool.version}
-                </span>
-              )}
-              <div className="ml-auto">
-                <ToolActions
-                  tool={sleapTool}
-                  installing={
-                    isInstalling &&
-                    installTarget === "sleap"
-                  }
-                  onInstall={() => doInstallTool("sleap")}
-                  onUpgrade={() => doUpgradeTool("sleap")}
-                  onReinstall={() => doReinstallTool("sleap")}
-                />
-              </div>
-            </div>
-            {sleapTool && sleapTool.commands.length > 0 && (
-              <div className="flex flex-wrap gap-1 pl-5 mt-0.5">
-                {sleapTool.commands.map((cmd) => (
                   <Badge
                     key={cmd}
                     variant="secondary"

@@ -46,7 +46,6 @@ export interface PythonInfo {
   path: string;
   version: string | null;
   sleapNnVersion: string | null;
-  sleapVersion: string | null;
 }
 
 export type ProcessEvent =
@@ -99,7 +98,6 @@ export async function checkPython(pythonPath: string): Promise<PythonInfo> {
       path: pythonPath,
       version: null,
       sleapNnVersion: null,
-      sleapVersion: null,
     };
   }
   return invokeCmd<PythonInfo>("check_python", { pythonPath });
