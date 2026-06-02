@@ -290,6 +290,8 @@ function EditMenu() {
 
 function GoMenu() {
   const projectLoaded = useAppStore((s) => s.projectLoaded);
+  const navigateLabeledOnly = useAppStore((s) => s.navigateLabeledOnly);
+  const toggle = useAppStore((s) => s.toggle);
 
   const exec = (cmd: Parameters<typeof commandContext.execute>[0]) => {
     commandContext.execute(cmd);
@@ -318,6 +320,13 @@ function GoMenu() {
         <MenubarItem disabled={!projectLoaded} onClick={() => exec(GoPrevLabeledFrame)}>
           Previous Labeled Frame <MenubarShortcut>Alt+{"\u2190"}</MenubarShortcut>
         </MenubarItem>
+        <MenubarCheckboxItem
+          disabled={!projectLoaded}
+          checked={navigateLabeledOnly}
+          onCheckedChange={() => toggle("navigateLabeledOnly")}
+        >
+          Navigate Labeled Frames Only
+        </MenubarCheckboxItem>
         <MenubarSeparator />
         <MenubarItem disabled={!projectLoaded} onClick={() => exec(GoNextSuggestion)}>
           Next Suggestion <MenubarShortcut>Space</MenubarShortcut>

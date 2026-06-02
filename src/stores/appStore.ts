@@ -21,6 +21,7 @@ import type {
   InstancePlacementMethod,
 } from "../types";
 import type { StatisticGraphType, Reduction } from "@/lib/statisticSeries";
+import { labeledFrameIndices, stepLabeled } from "@/lib/navigableFrames";
 
 export interface AppState {
   // === Project state ===
@@ -70,6 +71,8 @@ export interface AppState {
   rotation: 0 | 90 | 180 | 270;
   seekbarHeaderGraph: StatisticGraphType;
   seekbarHeaderReduction: Reduction;
+  /** When true, frame stepping/playback/seekbar are confined to labeled frames (#137). */
+  navigateLabeledOnly: boolean;
 
   // === Editing state ===
   instanceInitMethod: InstancePlacementMethod;
@@ -148,6 +151,7 @@ export const PERSISTED_KEYS: (keyof AppState)[] = [
   "defaultToPan",
   "seekbarHeaderGraph",
   "seekbarHeaderReduction",
+  "navigateLabeledOnly",
   // Layout + scale persistence (PyQt saveState/restoreState parity).
   "panelOrder",
   "sidebarCollapsed",
@@ -206,6 +210,7 @@ export const useAppStore = create<AppState>()(
       rotation: 0 as 0 | 90 | 180 | 270,
       seekbarHeaderGraph: "instance-count" as StatisticGraphType,
       seekbarHeaderReduction: "sum" as Reduction,
+      navigateLabeledOnly: false,
 
       // Editing state
       instanceInitMethod: "best" as InstancePlacementMethod,
@@ -293,8 +298,21 @@ export const useAppStore = create<AppState>()(
         }),
 
       incrementFrameIdx: (step) => {
-        const { video, frameIdx } = get();
+        const { video, frameIdx, navigateLabeledOnly, labels } = get();
         if (!video) return;
+
+        // Labeled-only mode (#137): step within the set of labeled frames so
+        // arrow keys, prev/next buttons, and playback all skip the dead gaps.
+        // Falls through to dense navigation when there are none (never traps).
+        if (navigateLabeledOnly) {
+          const domain = labeledFrameIndices(labels, video);
+          const target = stepLabeled(domain, frameIdx, step);
+          if (target !== null) {
+            get().setFrameIdx(target);
+            return;
+          }
+        }
+
         const maxFrame = video.shape ? (video.shape[0] ?? 1) - 1 : Infinity;
         let newIdx = frameIdx + step;
         if (maxFrame !== Infinity) {
