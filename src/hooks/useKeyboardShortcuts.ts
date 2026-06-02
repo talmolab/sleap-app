@@ -15,7 +15,6 @@ import { quitApp } from "../lib/quit";
 import {
   commandContext,
   OpenProjectCommand,
-  NewProjectCommand,
   SaveProjectCommand,
   SaveAsProjectCommand,
   GoNextLabeledFrame,
@@ -252,7 +251,7 @@ export function useKeyboardShortcuts() {
       },
       [DEFAULT_SHORTCUTS.new]: (e) => {
         e.preventDefault();
-        commandContext.execute(NewProjectCommand);
+        store().setNewProjectDialogOpen(true);
       },
       [DEFAULT_SHORTCUTS.save]: (e) => {
         e.preventDefault();

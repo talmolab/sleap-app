@@ -18,7 +18,6 @@ async function openExternal(url: string) {
 }
 import {
   commandContext,
-  NewProjectCommand,
   OpenProjectCommand,
   SaveProjectCommand,
   SaveAsProjectCommand,
@@ -97,8 +96,8 @@ function FileMenu() {
     <MenubarMenu>
       <MenubarTrigger className="px-3 h-8 text-xs rounded-none">File</MenubarTrigger>
       <MenubarContent>
-        <MenubarItem onClick={() => exec(NewProjectCommand)}>
-          New Project <MenubarShortcut>{modKey}+N</MenubarShortcut>
+        <MenubarItem onClick={() => useAppStore.getState().setNewProjectDialogOpen(true)}>
+          New Project... <MenubarShortcut>{modKey}+N</MenubarShortcut>
         </MenubarItem>
         <MenubarItem onClick={() => exec(OpenProjectCommand)}>
           Open Project... <MenubarShortcut>{modKey}+O</MenubarShortcut>

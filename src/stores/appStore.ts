@@ -93,6 +93,7 @@ export interface AppState {
 
   // === Dialog state ===
   inferenceDialogOpen: boolean;
+  newProjectDialogOpen: boolean;
   goToFrameDialogOpen: boolean;
   selectToFrameDialogOpen: boolean;
   deletePredictionsDialogOpen: boolean;
@@ -122,6 +123,7 @@ export interface AppState {
   clearChanges: () => void;
   setLoading: (loading: boolean, message?: string) => void;
   setInferenceDialogOpen: (open: boolean) => void;
+  setNewProjectDialogOpen: (open: boolean) => void;
   setGoToFrameDialogOpen: (open: boolean) => void;
   setSelectToFrameDialogOpen: (open: boolean) => void;
   setDeletePredictionsDialogOpen: (open: boolean) => void;
@@ -231,6 +233,7 @@ export const useAppStore = create<AppState>()(
 
       // Dialog state
       inferenceDialogOpen: false,
+      newProjectDialogOpen: false,
       goToFrameDialogOpen: false,
       selectToFrameDialogOpen: false,
       deletePredictionsDialogOpen: false,
@@ -365,6 +368,11 @@ export const useAppStore = create<AppState>()(
       setInferenceDialogOpen: (open) =>
         set((state) => {
           state.inferenceDialogOpen = open;
+        }),
+
+      setNewProjectDialogOpen: (open) =>
+        set((state) => {
+          state.newProjectDialogOpen = open;
         }),
 
       setGoToFrameDialogOpen: (open) =>

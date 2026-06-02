@@ -419,15 +419,21 @@ export async function buildStandaloneVideo(file: File): Promise<Video | null> {
   return video;
 }
 
+/** A picked video file plus its absolute path (Tauri) or null (browser). */
+export interface PickedVideoFile {
+  file: File;
+  /** Absolute path on Tauri (used as the canonical filename); null in browser. */
+  absPath: string | null;
+}
+
 /**
- * Open a file picker and add the chosen standalone video file(s) to the
- * project's labels. Handles both browser (File) and Tauri (path → readFile)
- * results, dispatches each file through {@link buildStandaloneVideo}, and
- * reindexes via labels.reindex(). Returns the videos actually added (callers
- * select the first and refresh the UI). Unsupported/failed files are skipped
- * (each surfaces its own toast).
+ * Open a multi-select video file picker and return normalized File objects.
+ * Browser yields File(s) directly; Tauri yields path(s), read into File via
+ * platform.readFile. MP4 only for now (see {@link SUPPORTED_VIDEO_EXTS}).
+ * Returns [] if the user cancels. Shared by the Videos panel
+ * ({@link pickAndAddVideos}) and the New Project dialog (#138).
  */
-export async function pickAndAddVideos(labels: Labels): Promise<Video[]> {
+export async function pickVideoFiles(): Promise<PickedVideoFile[]> {
   const platform = await getPlatform();
   const result = await platform.showOpenDialog({
     multiple: true,
@@ -436,40 +442,64 @@ export async function pickAndAddVideos(labels: Labels): Promise<Video[]> {
   if (!result) return []; // cancelled
 
   const picked = Array.isArray(result) ? result : [result];
-  const added: Video[] = [];
-
+  const files: PickedVideoFile[] = [];
   for (const item of picked) {
-    let file: File;
-    let absPath: string | null = null;
     if (typeof item === "string") {
       // Tauri: got a path — read bytes into a File (mirrors resolveVideoFile).
       try {
         const bytes = await platform.readFile(item);
-        file = new File([bytes], getBasename(item), { type: "video/mp4" });
-        absPath = item;
+        files.push({
+          file: new File([bytes], getBasename(item), { type: "video/mp4" }),
+          absPath: item,
+        });
       } catch (err) {
         console.error(`[video] Failed to read "${item}":`, err);
         toast.error(`Failed to read ${getBasename(item)}`, {
           description: err instanceof Error ? err.message : String(err),
         });
-        continue;
       }
     } else {
-      file = item;
+      files.push({ file: item, absPath: null });
     }
-
-    const video = await buildStandaloneVideo(file);
-    if (!video) continue; // unsupported format or decode failure (already toasted)
-    // On Tauri, keep the absolute path as the canonical filename so the video
-    // resolves on reload; in the browser the basename is all we have.
-    if (absPath) video.filename = absPath;
-    labels.addVideo(video);
-    added.push(video);
   }
+  return files;
+}
 
-  // Rebuild lookups after the structural change. NOTE: use reindex(), NOT
-  // update() — the sleap-io.js .d.ts declares Labels.update() but the shipped
-  // JS only implements reindex(), so update() throws at runtime.
+/**
+ * Build a standalone Video from a picked file and append it to labels (NO
+ * reindex — callers batch a single labels.reindex() after adding all videos).
+ * On Tauri, the absolute path becomes the canonical filename so the video
+ * resolves on reload. Returns the Video, or null if unsupported/decode failed
+ * (already toasted). Used by both the Videos panel and the New Project dialog.
+ */
+export async function addVideoFileToLabels(
+  labels: Labels,
+  picked: PickedVideoFile
+): Promise<Video | null> {
+  const video = await buildStandaloneVideo(picked.file);
+  if (!video) return null;
+  if (picked.absPath) video.filename = picked.absPath;
+  labels.addVideo(video);
+  return video;
+}
+
+/**
+ * Open a file picker and add the chosen standalone video file(s) to the
+ * project's labels. Returns the videos actually added (callers select the
+ * first and refresh the UI). Unsupported/failed files are skipped (each
+ * surfaces its own toast).
+ *
+ * NOTE: reindexes via labels.reindex() — the sleap-io.js .d.ts declares
+ * Labels.update() but the shipped JS only implements reindex(), so update()
+ * throws at runtime.
+ */
+export async function pickAndAddVideos(labels: Labels): Promise<Video[]> {
+  const picked = await pickVideoFiles();
+  const added: Video[] = [];
+  for (const p of picked) {
+    const video = await addVideoFileToLabels(labels, p);
+    if (video) added.push(video);
+  }
   if (added.length > 0) labels.reindex();
   return added;
 }

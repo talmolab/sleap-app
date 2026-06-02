@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, beforeEach, beforeAll, vi } from "../bun-test";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { useAppStore } from "@/stores/appStore";
 
 // Mock platform module
@@ -320,6 +320,36 @@ describe("Dialog components", () => {
 
       // Should not render anything meaningful
       expect(screen.queryByText("Export")).not.toBeInTheDocument();
+    });
+  });
+
+  describe("NewProjectDialog (#138)", () => {
+    it("renders when open", async () => {
+      useAppStore.getState().setNewProjectDialogOpen(true);
+      const { NewProjectDialog } = await import(
+        "@/components/dialogs/NewProjectDialog"
+      );
+      render(<NewProjectDialog />);
+      expect(screen.getByText("New Project")).toBeInTheDocument();
+      expect(screen.getByText("Create Project")).toBeInTheDocument();
+    });
+
+    it("creates a usable empty project on Create (seeded skeleton, no videos)", async () => {
+      useAppStore.getState().setNewProjectDialogOpen(true);
+      const { NewProjectDialog } = await import(
+        "@/components/dialogs/NewProjectDialog"
+      );
+      render(<NewProjectDialog />);
+      // Default skeleton is "Empty" — Create without touching the Select/picker.
+      fireEvent.click(screen.getByText("Create Project"));
+      await waitFor(() => {
+        expect(useAppStore.getState().projectLoaded).toBe(true);
+      });
+      const s = useAppStore.getState();
+      expect(s.labels?.skeletons.length).toBe(1);
+      expect(s.skeleton?.nodes.length).toBe(0);
+      expect(s.labels?.videos.length).toBe(0);
+      expect(s.newProjectDialogOpen).toBe(false); // dialog closed after create
     });
   });
 });

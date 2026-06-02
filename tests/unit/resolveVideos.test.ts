@@ -9,7 +9,11 @@
 
 import { describe, it, expect } from "../bun-test";
 import { Labels } from "@talmolab/sleap-io.js";
-import { buildStandaloneVideo, SUPPORTED_VIDEO_EXTS } from "@/lib/resolveVideos";
+import {
+  buildStandaloneVideo,
+  addVideoFileToLabels,
+  SUPPORTED_VIDEO_EXTS,
+} from "@/lib/resolveVideos";
 
 function fakeFile(name: string): File {
   return new File([new Uint8Array([0])], name, { type: "video/mp4" });
@@ -24,6 +28,18 @@ describe("Labels runtime API used by pickAndAddVideos", () => {
     const labels = new Labels();
     expect(typeof labels.addVideo).toBe("function");
     expect(typeof labels.reindex).toBe("function");
+  });
+});
+
+describe("addVideoFileToLabels", () => {
+  it("skips an unsupported format: returns null and adds nothing", async () => {
+    const labels = new Labels();
+    const result = await addVideoFileToLabels(labels, {
+      file: fakeFile("clip.mov"),
+      absPath: null,
+    });
+    expect(result).toBeNull();
+    expect(labels.videos.length).toBe(0);
   });
 });
 
