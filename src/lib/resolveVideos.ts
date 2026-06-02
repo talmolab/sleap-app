@@ -6,9 +6,9 @@
  * and auto-resolution via the filesystem in Tauri mode.
  */
 
-import { Mp4BoxVideoBackend } from "@talmolab/sleap-io.js";
+import { Mp4BoxVideoBackend, Video } from "@talmolab/sleap-io.js";
 import { toast } from "@/lib/notify";
-import type { Labels, Video } from "../types";
+import type { Labels } from "../types";
 import { getPlatform } from "../platform/index";
 
 /** Extract just the basename from a path or filename. */
@@ -381,4 +381,95 @@ export async function assignVideoBackend(video: Video, file: File): Promise<void
       description: err instanceof Error ? err.message : String(err),
     });
   }
+}
+
+/**
+ * Standalone-video file extensions we can currently decode. MP4 only for now;
+ * this is the dispatch point for future MediaBunny (WebM/MOV/MKV) and Seq
+ * (.seq) backends — add the extension here and branch in buildStandaloneVideo.
+ */
+export const SUPPORTED_VIDEO_EXTS = ["mp4"] as const;
+
+/** Lowercased extension of a filename, or "" if none. */
+function fileExt(name: string): string {
+  const i = name.lastIndexOf(".");
+  return i >= 0 ? name.slice(i + 1).toLowerCase() : "";
+}
+
+/**
+ * Build a new standalone Video from a user-picked file, dispatching by
+ * extension. MP4 → Mp4Box backend (via {@link assignVideoBackend}, which probes
+ * shape/fps). Unsupported formats are rejected with a toast and return null
+ * (the drop-in point for MediaBunny/Seq later). Returns null on decode failure
+ * too (assignVideoBackend already surfaces the error).
+ */
+export async function buildStandaloneVideo(file: File): Promise<Video | null> {
+  const ext = fileExt(file.name);
+  if (!(SUPPORTED_VIDEO_EXTS as readonly string[]).includes(ext)) {
+    toast.error(`${ext ? `.${ext} files are` : "This file is"} not supported yet`, {
+      description: "Only MP4 is supported for now — WebM, MOV, and .seq are coming.",
+    });
+    return null;
+  }
+  const video = new Video({ filename: file.name, openBackend: false });
+  await assignVideoBackend(video, file);
+  // assignVideoBackend sets shape only on a successful probe (and toasts on
+  // failure); a missing shape means the backend never initialized.
+  if (!video.shape) return null;
+  return video;
+}
+
+/**
+ * Open a file picker and add the chosen standalone video file(s) to the
+ * project's labels. Handles both browser (File) and Tauri (path → readFile)
+ * results, dispatches each file through {@link buildStandaloneVideo}, and
+ * reindexes via labels.reindex(). Returns the videos actually added (callers
+ * select the first and refresh the UI). Unsupported/failed files are skipped
+ * (each surfaces its own toast).
+ */
+export async function pickAndAddVideos(labels: Labels): Promise<Video[]> {
+  const platform = await getPlatform();
+  const result = await platform.showOpenDialog({
+    multiple: true,
+    filters: [{ name: "Video files", extensions: [...SUPPORTED_VIDEO_EXTS] }],
+  });
+  if (!result) return []; // cancelled
+
+  const picked = Array.isArray(result) ? result : [result];
+  const added: Video[] = [];
+
+  for (const item of picked) {
+    let file: File;
+    let absPath: string | null = null;
+    if (typeof item === "string") {
+      // Tauri: got a path — read bytes into a File (mirrors resolveVideoFile).
+      try {
+        const bytes = await platform.readFile(item);
+        file = new File([bytes], getBasename(item), { type: "video/mp4" });
+        absPath = item;
+      } catch (err) {
+        console.error(`[video] Failed to read "${item}":`, err);
+        toast.error(`Failed to read ${getBasename(item)}`, {
+          description: err instanceof Error ? err.message : String(err),
+        });
+        continue;
+      }
+    } else {
+      file = item;
+    }
+
+    const video = await buildStandaloneVideo(file);
+    if (!video) continue; // unsupported format or decode failure (already toasted)
+    // On Tauri, keep the absolute path as the canonical filename so the video
+    // resolves on reload; in the browser the basename is all we have.
+    if (absPath) video.filename = absPath;
+    labels.addVideo(video);
+    added.push(video);
+  }
+
+  // Rebuild lookups after the structural change. NOTE: use reindex(), NOT
+  // update() — the sleap-io.js .d.ts declares Labels.update() but the shipped
+  // JS only implements reindex(), so update() throws at runtime.
+  if (added.length > 0) labels.reindex();
+  return added;
 }

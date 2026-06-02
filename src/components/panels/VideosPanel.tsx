@@ -7,7 +7,6 @@
  */
 
 import { useAppStore } from "../../stores/appStore";
-import { getPlatform } from "../../platform";
 import { toast } from "@/lib/notify";
 import { cn } from "@/lib/utils";
 import {
@@ -29,6 +28,7 @@ import {
   resolveVideoFile,
   resolveAllVideoFiles,
   resolveVideoPath,
+  pickAndAddVideos,
 } from "../../lib/resolveVideos";
 
 /** Truncate a filename/path from the left, keeping the rightmost characters. */
@@ -263,29 +263,6 @@ function VideoDetailPanel({ video }: { video: Video }) {
   );
 }
 
-async function handleAddVideos() {
-  try {
-    const platform = await getPlatform();
-    const result = await platform.showOpenDialog({
-      filters: [
-        { name: "Video Files", extensions: ["mp4", "avi", "mov", "mkv", "h5", "hdf5"] },
-      ],
-    });
-
-    if (!result) return; // User cancelled
-
-    // For now, show an informational toast since adding standalone videos
-    // to an existing project requires more plumbing in sleap-io.js
-    toast.info("Video file selected", {
-      description: "Adding standalone videos to a project is not yet fully supported. Open a .slp file that includes your videos.",
-    });
-  } catch (err) {
-    toast.error("Failed to open file picker", {
-      description: err instanceof Error ? err.message : String(err),
-    });
-  }
-}
-
 export function VideosPanel() {
   const labels = useAppStore((s) => s.labels);
   const currentVideo = useAppStore((s) => s.video);
@@ -293,6 +270,7 @@ export function VideosPanel() {
   const setFrameIdx = useAppStore((s) => s.setFrameIdx);
   const frameIdx = useAppStore((s) => s.frameIdx);
   const bumpOverlayVersion = useAppStore((s) => s.bumpOverlayVersion);
+  const markChanged = useAppStore((s) => s.markChanged);
 
   const videos = labels?.videos ?? [];
   const missingVideos = videos.filter(isVideoMissing);
@@ -319,6 +297,26 @@ export function VideosPanel() {
         setFrameIdx(frameIdx);
       }
     }
+  };
+
+  const handleAddVideos = async () => {
+    if (!labels) return;
+    let added: Video[];
+    try {
+      added = await pickAndAddVideos(labels);
+    } catch (err) {
+      toast.error("Failed to add video", {
+        description: err instanceof Error ? err.message : String(err),
+      });
+      return;
+    }
+    if (added.length === 0) return; // cancelled, unsupported, or failed (toasted)
+    markChanged();
+    bumpOverlayVersion();
+    // Select the first newly-added video and load its first frame.
+    setVideo(added[0]);
+    setFrameIdx(0);
+    toast.success(`Added ${added.length} video${added.length > 1 ? "s" : ""}`);
   };
 
   return (

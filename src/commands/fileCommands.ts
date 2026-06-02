@@ -5,7 +5,7 @@
  * CSV export, JSON save-as, prediction deletion variants, and package export.
  */
 
-import { Labels, PredictedInstance } from "@talmolab/sleap-io.js";
+import { Labels, PredictedInstance, Skeleton } from "@talmolab/sleap-io.js";
 import { UpdateTopic } from "../types";
 import type { Command } from "./types";
 import type { CommandContext } from "./CommandContext";
@@ -33,7 +33,13 @@ export const NewProjectCommand: Command = {
       if (!confirmed) return;
     }
 
-    const labels = new Labels();
+    // Seed an empty skeleton so the editor lands in a usable state: the
+    // Skeleton panel (and its template dropdown) require a non-null skeleton —
+    // without one, New Project dead-ends on "No skeleton loaded" with no way to
+    // add nodes. With a 0-node skeleton present, the user can pick a template
+    // or add nodes, then add a video, and build a project from scratch. (#138)
+    const skeleton = new Skeleton({ nodes: [], name: "skeleton" });
+    const labels = new Labels({ skeletons: [skeleton] });
     ctx.state.setLabels(labels, undefined);
   },
 };
