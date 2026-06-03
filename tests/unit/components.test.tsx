@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from "../bun-test";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { useAppStore } from "@/stores/appStore";
 
 // Mock the useFileIO hook used by WelcomeScreen
@@ -368,48 +368,37 @@ describe("Component rendering", () => {
       expect(container).toBeTruthy();
     });
 
-    it("has Open Project button", async () => {
-      const { WelcomeScreen } = await import(
-        "@/components/layout/WelcomeScreen"
-      );
-      render(<WelcomeScreen />);
-      expect(screen.getByText("Open Project")).toBeInTheDocument();
-    });
-
-    it("shows drag and drop hint", async () => {
+    it("has New and Open Project buttons (#132)", async () => {
       const { WelcomeScreen } = await import(
         "@/components/layout/WelcomeScreen"
       );
       render(<WelcomeScreen />);
       expect(
-        screen.getByText(/drag and drop a .slp file/i)
+        screen.getByRole("button", { name: /New Project/i })
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: /Open Project/i })
       ).toBeInTheDocument();
     });
 
-    it("shows SLEAP Label title", async () => {
+    it("New Project opens the guided new-project dialog (#132/#138)", async () => {
       const { WelcomeScreen } = await import(
         "@/components/layout/WelcomeScreen"
       );
       render(<WelcomeScreen />);
-      expect(screen.getByText("SLEAP Label")).toBeInTheDocument();
+      expect(useAppStore.getState().newProjectDialogOpen).toBe(false);
+      fireEvent.click(screen.getByRole("button", { name: /New Project/i }));
+      expect(useAppStore.getState().newProjectDialogOpen).toBe(true);
     });
 
-    it("shows keyboard shortcut hint", async () => {
+    it("shows a drag-and-drop hint", async () => {
       const { WelcomeScreen } = await import(
         "@/components/layout/WelcomeScreen"
       );
       render(<WelcomeScreen />);
-      expect(screen.getByText(/Ctrl\+O/)).toBeInTheDocument();
-    });
-
-    it("shows logo image", async () => {
-      const { WelcomeScreen } = await import(
-        "@/components/layout/WelcomeScreen"
-      );
-      render(<WelcomeScreen />);
-      const img = screen.getByAltText("SLEAP");
-      expect(img).toBeInTheDocument();
-      expect(img.getAttribute("src")).toBe("/icon.png");
+      expect(
+        screen.getByText(/drag .* drop a .slp file/i)
+      ).toBeInTheDocument();
     });
   });
 

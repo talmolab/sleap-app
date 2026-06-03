@@ -34,7 +34,6 @@ import { ExportDialog } from "../dialogs/ExportDialog";
 import { ShortcutsDialog } from "../dialogs/ShortcutsDialog";
 import { HelpDialog } from "../dialogs/HelpDialog";
 import { useAppStore } from "../../stores/appStore";
-import { loadProjectFromFile } from "../../lib/loadProject";
 import { PanelRightClose, PanelRightOpen, GripVertical } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -128,26 +127,13 @@ export function AppShell() {
     return () => window.removeEventListener("beforeunload", handler);
   }, []);
 
-  // Global drag-and-drop for SLP files (uses consolidated loader)
-  const handleDrop = useCallback(async (e: React.DragEvent) => {
-    e.preventDefault();
-    const file = e.dataTransfer.files[0];
-    if (file && file.name.endsWith(".slp")) {
-      await loadProjectFromFile(file);
-    }
-  }, []);
-
-  const handleDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "copy";
-  }, []);
+  // Drag-and-drop to open a project is intentionally limited to the WelcomeScreen
+  // (no project loaded) so a stray drop can never silently replace a project the
+  // user is editing. WelcomeScreen owns its own drop handler; on desktop the
+  // Tauri drag-drop listener in App.tsx applies the same project-loaded guard.
 
   return (
-    <div
-      className="flex flex-col h-full w-full bg-background"
-      onDrop={handleDrop}
-      onDragOver={handleDragOver}
-    >
+    <div className="flex flex-col h-full w-full bg-background">
       <MenuBar />
 
       <ErrorBoundary>

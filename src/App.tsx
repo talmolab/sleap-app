@@ -60,6 +60,39 @@ export default function App() {
     };
   }, []);
 
+  // Desktop drag-and-drop (#132). The Tauri webview intercepts OS file drops, so
+  // the HTML drop event never fires in the desktop app — wire Tauri's own
+  // drag-drop event to load a dropped .slp by path. Reuses loadProjectFromPath,
+  // so it inherits the unsaved-changes confirm + toasts and works whether the
+  // welcome screen or the editor is showing. (Browser keeps its HTML drop.)
+  useEffect(() => {
+    if (!isTauri) return;
+    let active = true;
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+      const fn = await getCurrentWebview().onDragDropEvent(async (event) => {
+        if (event.payload.type !== "drop") return;
+        // Only open via drag-drop on the welcome screen; never replace a project
+        // that's already loaded (a stray drop could discard unsaved work).
+        if (useAppStore.getState().projectLoaded) return;
+        const slp = event.payload.paths.find((p) =>
+          p.toLowerCase().endsWith(".slp")
+        );
+        if (!slp) return;
+        const { readFile, exists } = await import("@tauri-apps/plugin-fs");
+        await loadProjectFromPath(slp, readFile, exists);
+      });
+      // Component may have unmounted before the listener resolved.
+      if (active) unlisten = fn;
+      else fn();
+    })();
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, []);
+
   // Check for updates on startup (Tauri only)
   useEffect(() => {
     if (!isTauri) return;
