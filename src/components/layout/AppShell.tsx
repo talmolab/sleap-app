@@ -291,34 +291,74 @@ function Sidebar() {
     window.addEventListener("mouseup", handleUp);
   }, [panelWidth]);
 
-  // Drag-to-reorder handlers (operate on panel ids against the full order).
+  // Pointer-based drag-to-reorder. Native HTML5 DnD proved unreliable here: the
+  // app's global file-drop handlers and (in the desktop webview) Tauri's
+  // OS-level drag-drop interception fight the dataTransfer effect negotiation,
+  // leaving a stuck "copy" cursor and a drop the browser refuses to fire. Mouse
+  // events — the same mechanism the resize handle uses — sidestep all of it and
+  // work identically in the browser and the Tauri app.
+  const reorderDrag = useRef<{ fromId: string; startY: number; dragging: boolean } | null>(null);
+  const justDragged = useRef(false);
+
   const resetDrag = () => {
     setDragId(null);
     setDragOverId(null);
   };
 
-  const handleDragStart = (e: React.DragEvent, panelId: string) => {
-    setDragId(panelId);
-    setRailExpanded(true); // keep labels visible through the drag
-    e.dataTransfer.effectAllowed = "move";
-    e.dataTransfer.setData("text/plain", panelId);
+  const panelIdAtPoint = (x: number, y: number): string | undefined =>
+    document
+      .elementFromPoint(x, y)
+      ?.closest<HTMLElement>("[data-panel-id]")?.dataset.panelId;
+
+  const handleReorderPointerDown = (e: React.MouseEvent, panelId: string) => {
+    if (e.button !== 0) return;
+    // Clear any stale suppression: a cross-element drag (down on A, up on B)
+    // fires no trailing click, so the flag would otherwise linger and swallow
+    // the next genuine click. Each fresh mousedown starts clean.
+    justDragged.current = false;
+    reorderDrag.current = { fromId: panelId, startY: e.clientY, dragging: false };
+
+    const onMove = (ev: MouseEvent) => {
+      const st = reorderDrag.current;
+      if (!st) return;
+      if (!st.dragging) {
+        if (Math.abs(ev.clientY - st.startY) < 5) return; // tolerate a click jitter
+        st.dragging = true;
+        setRailExpanded(true); // keep labels visible through the drag
+        setDragId(st.fromId);
+        document.body.style.userSelect = "none";
+        document.body.style.cursor = "grabbing";
+      }
+      setDragOverId(panelIdAtPoint(ev.clientX, ev.clientY) ?? null);
+    };
+
+    const onUp = (ev: MouseEvent) => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      document.body.style.userSelect = "";
+      document.body.style.cursor = "";
+      const st = reorderDrag.current;
+      reorderDrag.current = null;
+      if (st?.dragging) {
+        justDragged.current = true; // swallow the click that trails this mouseup
+        const toId = panelIdAtPoint(ev.clientX, ev.clientY);
+        if (toId && toId !== st.fromId) {
+          set("panelOrder", reorderById(panelOrder, st.fromId, toId));
+        }
+      }
+      resetDrag();
+    };
+
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
   };
 
-  const handleDragOver = (e: React.DragEvent, panelId: string) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
-    setDragOverId(panelId);
-  };
-
-  const handleDrop = (e: React.DragEvent, dropId: string) => {
-    e.preventDefault();
-    if (dragId) set("panelOrder", reorderById(panelOrder, dragId, dropId));
-    resetDrag();
-  };
-
-  const handleDragEnd = () => {
-    resetDrag();
-    setRailExpanded(false);
+  const handlePanelClick = (panelId: string) => {
+    if (justDragged.current) {
+      justDragged.current = false; // this "click" was the tail of a drag
+      return;
+    }
+    togglePanel(panelId);
   };
 
   // Visible panels in order (hidden ones filtered out, #135).
@@ -423,12 +463,9 @@ function Sidebar() {
             return (
               <button
                 key={panel.id}
-                draggable
-                onDragStart={(e) => handleDragStart(e, panel.id)}
-                onDragOver={(e) => handleDragOver(e, panel.id)}
-                onDrop={(e) => handleDrop(e, panel.id)}
-                onDragEnd={handleDragEnd}
-                onClick={() => togglePanel(panel.id)}
+                data-panel-id={panel.id}
+                onMouseDown={(e) => handleReorderPointerDown(e, panel.id)}
+                onClick={() => handlePanelClick(panel.id)}
                 className={cn(
                   "group relative flex items-center h-11 w-full shrink-0 overflow-hidden",
                   "transition-colors duration-150",

@@ -631,6 +631,8 @@ function PanelsMenu() {
           <MenubarCheckboxItem
             key={panel.id}
             checked={!hiddenPanels.includes(panel.id)}
+            // Keep the menu open so several panels can be toggled in one trip.
+            onSelect={(e) => e.preventDefault()}
             onCheckedChange={() => togglePanelVisibility(panel.id)}
           >
             {panel.label}
