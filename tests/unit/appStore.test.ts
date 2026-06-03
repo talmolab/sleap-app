@@ -4,6 +4,7 @@
 
 import { describe, it, expect, beforeEach } from "../bun-test";
 import { useAppStore, PERSISTED_KEYS } from "@/stores/appStore";
+import { DEFAULT_PANEL_ORDER } from "@/lib/panelLayout";
 import type { Labels, Video, Skeleton, Instance } from "@/types";
 
 /** Helper to reset the store between tests. */
@@ -438,6 +439,7 @@ describe("appStore", () => {
 describe("PERSISTED_KEYS (layout + scale persistence)", () => {
   it("persists panel layout and UI scale across reloads", () => {
     expect(PERSISTED_KEYS).toContain("panelOrder");
+    expect(PERSISTED_KEYS).toContain("hiddenPanels");
     expect(PERSISTED_KEYS).toContain("sidebarCollapsed");
     expect(PERSISTED_KEYS).toContain("sidebarActivePanel");
     expect(PERSISTED_KEYS).toContain("uiScale");
@@ -448,5 +450,61 @@ describe("PERSISTED_KEYS (layout + scale persistence)", () => {
     expect(PERSISTED_KEYS).toContain("seekbarHeaderGraph");
     expect(PERSISTED_KEYS).toContain("seekbarHeaderReduction");
     expect(PERSISTED_KEYS).toContain("palette");
+  });
+});
+
+describe("panel visibility & reset (#135)", () => {
+  beforeEach(() => {
+    resetStore();
+  });
+
+  it("defaults to no hidden panels and the default order", () => {
+    const s = useAppStore.getState();
+    expect(s.hiddenPanels).toEqual([]);
+    expect(s.panelOrder).toEqual([...DEFAULT_PANEL_ORDER]);
+  });
+
+  it("togglePanelVisibility hides then shows a panel", () => {
+    useAppStore.getState().togglePanelVisibility("debug");
+    expect(useAppStore.getState().hiddenPanels).toContain("debug");
+    useAppStore.getState().togglePanelVisibility("debug");
+    expect(useAppStore.getState().hiddenPanels).not.toContain("debug");
+  });
+
+  it("auto-switches the active panel when the active panel is hidden", () => {
+    useAppStore.setState({ sidebarActivePanel: "videos" });
+    useAppStore.getState().togglePanelVisibility("videos");
+    const s = useAppStore.getState();
+    expect(s.hiddenPanels).toContain("videos");
+    // "skeleton" is next in DEFAULT_PANEL_ORDER and visible.
+    expect(s.sidebarActivePanel).toBe("skeleton");
+  });
+
+  it("leaves the active panel as-is when hiding the last visible one (allow empty)", () => {
+    // Hide everything except the active panel, then hide the active one too.
+    const all = [...DEFAULT_PANEL_ORDER];
+    useAppStore.setState({
+      sidebarActivePanel: "videos",
+      hiddenPanels: all.filter((id) => id !== "videos"),
+    });
+    useAppStore.getState().togglePanelVisibility("videos");
+    const s = useAppStore.getState();
+    expect(s.hiddenPanels).toContain("videos");
+    // No other visible panel to switch to → active unchanged.
+    expect(s.sidebarActivePanel).toBe("videos");
+  });
+
+  it("resetPanels restores default order and clears hidden panels", () => {
+    useAppStore.setState({
+      panelOrder: [...DEFAULT_PANEL_ORDER].reverse(),
+      hiddenPanels: ["videos", "debug"],
+      sidebarActivePanel: "debug",
+    });
+    useAppStore.getState().resetPanels();
+    const s = useAppStore.getState();
+    expect(s.panelOrder).toEqual([...DEFAULT_PANEL_ORDER]);
+    expect(s.hiddenPanels).toEqual([]);
+    // "debug" is a valid id, so it stays selected (now visible again).
+    expect(s.sidebarActivePanel).toBe("debug");
   });
 });

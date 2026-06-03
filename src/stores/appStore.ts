@@ -22,6 +22,12 @@ import type {
 } from "../types";
 import type { StatisticGraphType, Reduction } from "@/lib/statisticSeries";
 import { labeledFrameIndices, stepLabeled } from "@/lib/navigableFrames";
+import {
+  DEFAULT_PANEL_ORDER,
+  reconcilePanelOrder,
+  reconcileHiddenPanels,
+  nextVisiblePanel,
+} from "@/lib/panelLayout";
 
 export interface AppState {
   // === Project state ===
@@ -45,6 +51,7 @@ export interface AppState {
   sidebarCollapsed: boolean;
   sidebarActivePanel: string;
   panelOrder: string[];
+  hiddenPanels: string[];
 
   // === View state ===
   showInstances: boolean;
@@ -132,6 +139,8 @@ export interface AppState {
   setHelpDialogOpen: (open: boolean) => void;
   enterPlacementMode: () => void;
   exitPlacementMode: () => void;
+  togglePanelVisibility: (panelId: string) => void;
+  resetPanels: () => void;
   toggle: (key: keyof AppState) => void;
   set: <K extends keyof AppState>(key: K, value: AppState[K]) => void;
   bumpOverlayVersion: () => void;
@@ -156,6 +165,7 @@ export const PERSISTED_KEYS: (keyof AppState)[] = [
   "navigateLabeledOnly",
   // Layout + scale persistence (PyQt saveState/restoreState parity).
   "panelOrder",
+  "hiddenPanels",
   "sidebarCollapsed",
   "sidebarActivePanel",
   "uiScale",
@@ -185,7 +195,8 @@ export const useAppStore = create<AppState>()(
       uiScale: 1,
       sidebarCollapsed: false,
       sidebarActivePanel: "videos",
-      panelOrder: ["videos", "skeleton", "instances", "view", "suggestions", "frames", "training", "inference", "environment", "connect", "notifications", "debug"],
+      panelOrder: [...DEFAULT_PANEL_ORDER],
+      hiddenPanels: [],
 
       // View state
       showInstances: true,
@@ -423,6 +434,45 @@ export const useAppStore = create<AppState>()(
           state.placementNodeIdx = null;
         }),
 
+      // Toggle a sidebar panel's visibility (#135). Hiding the currently-active
+      // panel auto-switches the active panel to the next visible one; hiding the
+      // last visible panel is allowed (the strip goes empty, recoverable from the
+      // Panels menu).
+      togglePanelVisibility: (panelId) =>
+        set((state) => {
+          const hidden = new Set(state.hiddenPanels);
+          if (hidden.has(panelId)) {
+            hidden.delete(panelId);
+          } else {
+            hidden.add(panelId);
+            if (state.sidebarActivePanel === panelId) {
+              const next = nextVisiblePanel(
+                state.panelOrder,
+                [...hidden],
+                panelId,
+              );
+              if (next) state.sidebarActivePanel = next;
+            }
+          }
+          state.hiddenPanels = [...hidden];
+        }),
+
+      // Restore the default panel order and visibility ("Reset to defaults", #135).
+      resetPanels: () =>
+        set((state) => {
+          state.panelOrder = [...DEFAULT_PANEL_ORDER];
+          state.hiddenPanels = [];
+          // hidden is now empty, so any known active panel is visible again;
+          // only normalize an active id that no longer exists.
+          if (
+            !(DEFAULT_PANEL_ORDER as readonly string[]).includes(
+              state.sidebarActivePanel,
+            )
+          ) {
+            state.sidebarActivePanel = DEFAULT_PANEL_ORDER[0];
+          }
+        }),
+
       toggle: (key) =>
         set((state) => {
           const val = state[key];
@@ -447,6 +497,19 @@ export const useAppStore = create<AppState>()(
         Object.fromEntries(
           PERSISTED_KEYS.map((key) => [key, state[key]])
         ) as Partial<AppState>,
+      // Default zustand merge is shallow, which replaces the persisted panel
+      // arrays wholesale — so an order/visibility blob from an older build would
+      // silently drop panels added since. Reconcile those two arrays against the
+      // current panel set; everything else keeps the shallow-merge behavior.
+      merge: (persisted, current) => {
+        const p = (persisted ?? {}) as Partial<AppState>;
+        return {
+          ...current,
+          ...p,
+          panelOrder: reconcilePanelOrder(p.panelOrder),
+          hiddenPanels: reconcileHiddenPanels(p.hiddenPanels),
+        };
+      },
     },
     )
   )

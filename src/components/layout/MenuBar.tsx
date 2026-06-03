@@ -6,6 +6,7 @@
  */
 
 import { useAppStore } from "../../stores/appStore";
+import { PANELS } from "./panelRegistry";
 import { modKey, isTauri } from "../../lib/platform";
 
 async function openExternal(url: string) {
@@ -75,6 +76,7 @@ export function MenuBar() {
       <EditMenu />
       <GoMenu />
       <ViewMenu />
+      <PanelsMenu />
       <LabelsMenu />
       <PredictMenu />
       <TracksMenu />
@@ -611,6 +613,43 @@ function ViewMenu() {
             </MenubarRadioGroup>
           </MenubarSubContent>
         </MenubarSub>
+      </MenubarContent>
+    </MenubarMenu>
+  );
+}
+
+/** Curate which panels appear in the right sidebar strip (#135). */
+function PanelsMenu() {
+  const hiddenPanels = useAppStore((s) => s.hiddenPanels);
+  const togglePanelVisibility = useAppStore((s) => s.togglePanelVisibility);
+
+  return (
+    <MenubarMenu>
+      <MenubarTrigger className="px-3 h-8 text-xs rounded-none">Panels</MenubarTrigger>
+      <MenubarContent>
+        {PANELS.map((panel) => (
+          <MenubarCheckboxItem
+            key={panel.id}
+            checked={!hiddenPanels.includes(panel.id)}
+            onCheckedChange={() => togglePanelVisibility(panel.id)}
+          >
+            {panel.label}
+          </MenubarCheckboxItem>
+        ))}
+        <MenubarSeparator />
+        <MenubarItem
+          onClick={() => {
+            if (
+              window.confirm(
+                "Reset panels to their default order and visibility?"
+              )
+            ) {
+              useAppStore.getState().resetPanels();
+            }
+          }}
+        >
+          Reset to Defaults...
+        </MenubarItem>
       </MenubarContent>
     </MenubarMenu>
   );

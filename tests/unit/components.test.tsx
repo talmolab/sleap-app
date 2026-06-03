@@ -466,11 +466,24 @@ describe("Component rendering", () => {
       expect(screen.getByText("Edit")).toBeInTheDocument();
       expect(screen.getByText("Go")).toBeInTheDocument();
       expect(screen.getByText("View")).toBeInTheDocument();
+      expect(screen.getByText("Panels")).toBeInTheDocument();
       expect(screen.getByText("Labels")).toBeInTheDocument();
       expect(screen.getByText("Predict")).toBeInTheDocument();
       expect(screen.getByText("Tracks")).toBeInTheDocument();
       // Help menu should exist
       expect(screen.getByText("Help")).toBeInTheDocument();
+    });
+  });
+
+  describe("panelRegistry (#135)", () => {
+    it("PANELS ids match DEFAULT_PANEL_ORDER (no drift)", async () => {
+      // Guards against adding a panel to the registry without adding it to the
+      // default order, which would let reconcile/reset silently drop it.
+      const { PANELS } = await import("@/components/layout/panelRegistry");
+      const { DEFAULT_PANEL_ORDER } = await import("@/lib/panelLayout");
+      expect(PANELS.map((p) => p.id).sort()).toEqual(
+        [...DEFAULT_PANEL_ORDER].sort()
+      );
     });
   });
 
