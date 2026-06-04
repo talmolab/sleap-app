@@ -212,6 +212,10 @@ function EditMenu() {
   const projectLoaded = useAppStore((s) => s.projectLoaded);
   const instance = useAppStore((s) => s.instance);
   const clipboardInstance = useAppStore((s) => s.clipboardInstance);
+  // Instances require a skeleton with at least one node (a node-less skeleton
+  // would yield a null instance). overlayVersion is bumped on node changes.
+  useAppStore((s) => s.overlayVersion);
+  const skeletonHasNodes = useAppStore((s) => (s.skeleton?.nodes?.length ?? 0) > 0);
 
   const exec = (cmd: Parameters<typeof commandContext.execute>[0]) => {
     commandContext.execute(cmd);
@@ -253,7 +257,7 @@ function EditMenu() {
           Copy Instance <MenubarShortcut>{modKey}+C</MenubarShortcut>
         </MenubarItem>
         <MenubarItem
-          disabled={!clipboardInstance}
+          disabled={!clipboardInstance || !skeletonHasNodes}
           onClick={() => {
             exec(PasteInstance);
             toast.info("Instance pasted");
@@ -263,7 +267,7 @@ function EditMenu() {
         </MenubarItem>
         <MenubarSeparator />
         <MenubarItem
-          disabled={!projectLoaded}
+          disabled={!projectLoaded || !skeletonHasNodes}
           onClick={() => exec(AddInstance)}
         >
           Add Instance <MenubarShortcut>{modKey}+I</MenubarShortcut>
@@ -662,6 +666,9 @@ function LabelsMenu() {
   const projectLoaded = useAppStore((s) => s.projectLoaded);
   const instance = useAppStore((s) => s.instance);
   const instanceInitMethod = useAppStore((s) => s.instanceInitMethod);
+  // Instances require a skeleton with at least one node (see EditMenu).
+  useAppStore((s) => s.overlayVersion);
+  const skeletonHasNodes = useAppStore((s) => (s.skeleton?.nodes?.length ?? 0) > 0);
   const totalLabeled = labels?.labeledFrames.length ?? 0;
   const totalInstances =
     labels?.labeledFrames.reduce((sum, lf) => sum + lf.instances.length, 0) ?? 0;
@@ -675,7 +682,7 @@ function LabelsMenu() {
       <MenubarTrigger className="px-3 h-8 text-xs rounded-none">Labels</MenubarTrigger>
       <MenubarContent>
         <MenubarItem
-          disabled={!projectLoaded}
+          disabled={!projectLoaded || !skeletonHasNodes}
           onClick={() => exec(AddInstance)}
         >
           Add Instance <MenubarShortcut>{modKey}+I</MenubarShortcut>

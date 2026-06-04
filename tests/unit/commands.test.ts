@@ -47,6 +47,7 @@ import {
   Track,
   Video,
 } from "@talmolab/sleap-io.js";
+import { toast } from "@/lib/notify";
 
 /** Reset the store between tests. */
 function resetStore() {
@@ -396,6 +397,42 @@ describe("Edit commands", () => {
       // No project loaded
       expect(() => ctx.execute(AddInstance)).not.toThrow();
     });
+
+    it("does not add a null instance when the skeleton has no nodes", async () => {
+      // A fresh project seeds an empty skeleton (nodes: []). PyQt SLEAP blocks
+      // creating an instance until at least one node exists; so must we.
+      const project = setupProjectInStore({
+        numFrames: 1,
+        numNodes: 0,
+        numInstancesPerFrame: 0,
+      });
+      useAppStore.getState().setFrameIdx(0);
+      const infoSpy = vi.spyOn(toast, "info");
+
+      await ctx.execute(AddInstance);
+
+      const found = project.labels.find({ video: project.video, frameIdx: 0 });
+      const count = found.length > 0 ? found[0].instances.length : 0;
+      expect(count).toBe(0);
+      expect(useAppStore.getState().instance).toBeNull();
+      expect(infoSpy).toHaveBeenCalled();
+      infoSpy.mockRestore();
+    });
+
+    it("still adds an instance when the skeleton has nodes", async () => {
+      const project = setupProjectInStore({
+        numFrames: 1,
+        numNodes: 2,
+        numInstancesPerFrame: 0,
+      });
+      useAppStore.getState().setFrameIdx(0);
+
+      await ctx.execute(AddInstance);
+
+      const found = project.labels.find({ video: project.video, frameIdx: 0 });
+      expect(found.length).toBe(1);
+      expect(found[0].instances.length).toBe(1);
+    });
   });
 
   describe("DeleteSelectedInstance", () => {
@@ -451,6 +488,26 @@ describe("Edit commands", () => {
       await ctx.execute(PasteInstance);
 
       expect(lf2.instances.length).toBe(beforeCount + 1);
+    });
+
+    it("does not paste a null instance when the skeleton has no nodes", async () => {
+      const project = setupProjectInStore({
+        numFrames: 1,
+        numNodes: 0,
+        numInstancesPerFrame: 0,
+      });
+      const lf = project.labeledFrames[0];
+      useAppStore.getState().setFrameIdx(lf.frameIdx);
+      useAppStore.getState().setLabeledFrame(lf);
+      // Seed the clipboard with a node-less instance.
+      useAppStore.setState({
+        clipboardInstance: Instance.empty({ skeleton: project.skeleton }),
+      });
+
+      const beforeCount = lf.instances.length;
+      await ctx.execute(PasteInstance);
+
+      expect(lf.instances.length).toBe(beforeCount);
     });
   });
 

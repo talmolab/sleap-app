@@ -24,6 +24,13 @@ export const AddInstance: Command = {
     const { labels, video, frameIdx, skeleton } = ctx.state;
     if (!labels || !video || !skeleton) return;
 
+    // A skeleton with no nodes would yield a null instance (zero points, zero
+    // edges). PyQt SLEAP forbids this; refuse it here too and tell the user why.
+    if (skeleton.nodes.length === 0) {
+      toast.info("Add at least one node to the skeleton before adding an instance.");
+      return;
+    }
+
     // Get the placement method from app settings
     const method = useAppStore.getState().instanceInitMethod;
 
@@ -161,6 +168,12 @@ export const PasteInstance: Command = {
   execute(ctx: CommandContext) {
     const { labels, video, frameIdx, clipboardInstance, skeleton } = ctx.state;
     if (!labels || !video || !clipboardInstance || !skeleton) return;
+
+    // Never materialize a node-less instance (see AddInstance).
+    if (skeleton.nodes.length === 0) {
+      toast.info("Add at least one node to the skeleton before pasting an instance.");
+      return;
+    }
 
     const newInstance = new Instance({
       skeleton,

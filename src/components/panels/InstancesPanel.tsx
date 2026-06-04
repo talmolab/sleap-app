@@ -30,6 +30,12 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { PredictedInstance } from "@talmolab/sleap-io.js";
 import type { Instance, Labels } from "../../types";
 
@@ -176,6 +182,10 @@ export function InstancesPanel() {
   const frameIdx = useAppStore((s) => s.frameIdx);
   const currentInstance = useAppStore((s) => s.instance);
   const setInstance = useAppStore((s) => s.setInstance);
+  // Instances require a skeleton with at least one node; a node-less skeleton
+  // would yield a null instance. Re-evaluates when the node count changes
+  // (skeleton commands bump overlayVersion, which notifies this selector).
+  const skeletonHasNodes = useAppStore((s) => (s.skeleton?.nodes?.length ?? 0) > 0);
   const palette = useAppStore((s) => s.palette);
   const distinctlyColor = useAppStore((s) => s.distinctlyColor);
   const colorPredicted = useAppStore((s) => s.colorPredicted);
@@ -312,13 +322,29 @@ export function InstancesPanel() {
 
       <Separator />
       <div className="flex gap-1 p-2">
-        <Button
-          variant="subtle"
-          size="xs"
-          onClick={() => commandContext.execute(AddInstance)}
-        >
-          Add Instance
-        </Button>
+        <TooltipProvider delayDuration={300}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              {/* Wrapper span keeps the tooltip hoverable when the button is
+                  disabled (disabled buttons don't emit pointer events). */}
+              <span className="inline-flex">
+                <Button
+                  variant="subtle"
+                  size="xs"
+                  disabled={!skeletonHasNodes}
+                  onClick={() => commandContext.execute(AddInstance)}
+                >
+                  Add Instance
+                </Button>
+              </span>
+            </TooltipTrigger>
+            {!skeletonHasNodes && (
+              <TooltipContent side="top">
+                <p>Add a node to the skeleton first</p>
+              </TooltipContent>
+            )}
+          </Tooltip>
+        </TooltipProvider>
         <Button
           variant="subtle"
           size="xs"

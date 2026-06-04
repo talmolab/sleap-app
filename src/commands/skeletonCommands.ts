@@ -163,6 +163,9 @@ export const AddNodeCommand: Command = {
     storeSkeletonUndo(ctx, "AddNode", before, afterSnapshot);
 
     ctx.state.markChanged();
+    // Node count changed: refresh skeleton-dependent UI (e.g. the Add Instance
+    // affordances, which are gated on the skeleton having at least one node).
+    ctx.state.bumpOverlayVersion();
   },
 };
 
@@ -214,6 +217,8 @@ export const DeleteNodeCommand: Command = {
     storeSkeletonUndo(ctx, "DeleteNode", before, afterSnapshot);
 
     ctx.state.markChanged();
+    // Node count changed: refresh skeleton-dependent UI (see AddNode).
+    ctx.state.bumpOverlayVersion();
   },
 };
 
@@ -353,6 +358,8 @@ export const LoadSkeletonTemplateCommand: Command = {
     storeSkeletonUndo(ctx, "LoadSkeletonTemplate", before, afterSnapshot);
 
     ctx.state.markChanged();
+    // Node count changed: refresh skeleton-dependent UI (see AddNode).
+    ctx.state.bumpOverlayVersion();
   },
 };
 

@@ -45,6 +45,10 @@ export function ContextMenu({
   const labels = useAppStore((s) => s.labels);
   const instance = useAppStore((s) => s.instance);
   const clipboardInstance = useAppStore((s) => s.clipboardInstance);
+  // Instances need a skeleton with at least one node, else placement produces a
+  // null instance. overlayVersion is bumped when the skeleton node count changes.
+  useAppStore((s) => s.overlayVersion);
+  const skeletonHasNodes = useAppStore((s) => (s.skeleton?.nodes?.length ?? 0) > 0);
 
   // Close on click outside
   useEffect(() => {
@@ -191,17 +195,18 @@ export function ContextMenu({
 
       {/* General actions */}
       <ContextMenuSubmenu label="Add Instance" shortcut="Ctrl+I">
-        <ContextMenuItem label="Best" onClick={() => addWithMethod("best")} />
-        <ContextMenuItem label="Template" onClick={() => addWithMethod("template")} />
-        <ContextMenuItem label="Force Directed" onClick={() => addWithMethod("force_directed")} />
-        <ContextMenuItem label="Random" onClick={() => addWithMethod("random")} />
-        <ContextMenuItem label="Copy Prior Frame" onClick={() => addWithMethod("prior_frame")} />
-        <ContextMenuItem label="Copy Predictions" onClick={() => addWithMethod("prediction")} />
+        <ContextMenuItem label="Best" disabled={!skeletonHasNodes} onClick={() => addWithMethod("best")} />
+        <ContextMenuItem label="Template" disabled={!skeletonHasNodes} onClick={() => addWithMethod("template")} />
+        <ContextMenuItem label="Force Directed" disabled={!skeletonHasNodes} onClick={() => addWithMethod("force_directed")} />
+        <ContextMenuItem label="Random" disabled={!skeletonHasNodes} onClick={() => addWithMethod("random")} />
+        <ContextMenuItem label="Copy Prior Frame" disabled={!skeletonHasNodes} onClick={() => addWithMethod("prior_frame")} />
+        <ContextMenuItem label="Copy Predictions" disabled={!skeletonHasNodes} onClick={() => addWithMethod("prediction")} />
       </ContextMenuSubmenu>
       {clipboardInstance && (
         <ContextMenuItem
           label="Paste Instance"
           shortcut="Ctrl+V"
+          disabled={!skeletonHasNodes}
           onClick={() => exec(PasteInstance)}
         />
       )}
