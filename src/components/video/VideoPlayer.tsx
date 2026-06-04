@@ -41,6 +41,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { toImageCoords, toSourceCoords } from "@/lib/cropTransform";
 import { isVideoMissing, resolveVideoFile } from "../../lib/resolveVideos";
 import { Film } from "lucide-react";
 
@@ -621,14 +622,20 @@ export function VideoPlayer() {
           ? edgeIndices.map((_, eIdx) => getPaletteColor(palette, eIdx))
           : undefined;
 
-        const nodes: RenderedNode[] = inst.points.map((point, nIdx) => ({
-          x: point.xy[0],
-          y: point.xy[1],
-          visible: point.visible && !isNaN(point.xy[0]),
-          complete: point.complete,
-          name: skeleton.nodes[nIdx]?.name ?? `node_${nIdx}`,
-          score: point.score,
-        }));
+        const nodes: RenderedNode[] = inst.points.map((point, nIdx) => {
+          // Cropped videos store points in SOURCE coords; translate into the
+          // displayed crop-local image space so they overlay the cropped frame.
+          // Identity for uncropped videos. (cropped pkg.slp / SLP-2.3)
+          const [nx, ny] = toImageCoords(video, point.xy[0], point.xy[1]);
+          return {
+            x: nx,
+            y: ny,
+            visible: point.visible && !isNaN(point.xy[0]),
+            complete: point.complete,
+            name: skeleton.nodes[nIdx]?.name ?? `node_${nIdx}`,
+            score: point.score,
+          };
+        });
 
         const edges = edgeIndices.map(
           ([srcIdx, dstIdx]) =>
@@ -1166,7 +1173,12 @@ export function VideoPlayer() {
         const targetIdx = store.placementNodeIdx;
         if (targetIdx !== null && targetIdx >= 0 && targetIdx < currentInstance.points.length) {
           commandContext.execute(BeginEdit);
-          currentInstance.points[targetIdx].xy = [x, y];
+          // Click is in crop-local image space; store back in source coords.
+          currentInstance.points[targetIdx].xy = toSourceCoords(
+            useAppStore.getState().video,
+            x,
+            y
+          );
           currentInstance.points[targetIdx].visible = true;
           currentInstance.points[targetIdx].complete = true;
           store.markChanged();
@@ -1364,7 +1376,8 @@ export function VideoPlayer() {
           const instance = lf.instances[dragNodeInfo.instanceIdx];
           const point = instance?.points[dragNodeInfo.nodeIdx];
           if (point) {
-            point.xy = [x, y];
+            // Drag position is crop-local; store back in source coords.
+            point.xy = toSourceCoords(useAppStore.getState().video, x, y);
             point.visible = true;
           }
         }
