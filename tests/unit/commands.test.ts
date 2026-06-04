@@ -687,10 +687,11 @@ describe("Navigation commands", () => {
       expect(useAppStore.getState().frameIdx).toBe(0);
     });
 
-    it("skips empty LabeledFrames with no instances", async () => {
+    it("includes empty LabeledFrames (PyQt parity — they are still labeled frames)", async () => {
       // Frames with instances at 0, 10, 20; an empty (no-instance) frame at 5.
-      // Empty frames (e.g. pkg.slp leftovers after removing predictions) have
-      // no image, so navigation must skip them.
+      // PyQt's GoNextLabeledFrame has no instance filter, so empty LabeledFrames
+      // (e.g. pkg.slp leftovers) remain navigable; skipping image-less frames is
+      // the separate imaged-navigation mode's job.
       const project = setupProjectInStore({ numFrames: 3, numInstancesPerFrame: 1 });
       project.labels.labeledFrames.push(
         new LabeledFrame({ video: project.video, frameIdx: 5 })
@@ -699,7 +700,7 @@ describe("Navigation commands", () => {
 
       await ctx.execute(GoNextLabeledFrame);
 
-      expect(useAppStore.getState().frameIdx).toBe(10);
+      expect(useAppStore.getState().frameIdx).toBe(5);
     });
   });
 
