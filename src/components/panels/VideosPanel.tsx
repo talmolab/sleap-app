@@ -30,6 +30,7 @@ import {
   resolveVideoPath,
   pickAndAddVideos,
 } from "../../lib/resolveVideos";
+import { displayFrameCount } from "@/lib/videoFrameCount";
 
 /** Truncate a filename/path from the left, keeping the rightmost characters. */
 function truncateLeft(path: string, maxLen: number): string {
@@ -60,7 +61,8 @@ function VideoRow({
   onLocate: () => void;
 }) {
   const shape = video.shape;
-  const frameCount = shape?.[0] ?? "?";
+  // Embedded image count for a pkg.slp video (matches PyQt), else source frames.
+  const frameCount = displayFrameCount(video) ?? "?";
   const height = shape?.[1] ?? "?";
   const width = shape?.[2] ?? "?";
 
@@ -133,7 +135,8 @@ function VideoDetailPanel({ video }: { video: Video }) {
   const resolvedPath = resolveVideoPath(video, projectPath);
   const shape = video.shape;
   const fps = video.fps;
-  const frames = shape?.[0] ?? null;
+  // Embedded image count for a pkg.slp video (matches PyQt), else source frames.
+  const frames = displayFrameCount(video);
   const height = shape?.[1] ?? null;
   const width = shape?.[2] ?? null;
   const channels = shape?.[3] ?? null;
