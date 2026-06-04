@@ -27,6 +27,10 @@ export function labeledFrameIndices(
   if (!labels || !video) return [];
   return labels
     .find({ video })
+    // Skip empty LabeledFrames (no instances) — e.g. pkg.slp leftovers after
+    // removing predictions. They have no image, so navigating to one shows a
+    // frozen frame. Matches the "Labeled" count, which also ignores them.
+    .filter((lf) => lf.instances.length > 0)
     .map((lf) => lf.frameIdx)
     .sort((a, b) => a - b);
 }

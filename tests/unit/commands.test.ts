@@ -686,6 +686,21 @@ describe("Navigation commands", () => {
       await ctx.execute(GoNextLabeledFrame);
       expect(useAppStore.getState().frameIdx).toBe(0);
     });
+
+    it("skips empty LabeledFrames with no instances", async () => {
+      // Frames with instances at 0, 10, 20; an empty (no-instance) frame at 5.
+      // Empty frames (e.g. pkg.slp leftovers after removing predictions) have
+      // no image, so navigation must skip them.
+      const project = setupProjectInStore({ numFrames: 3, numInstancesPerFrame: 1 });
+      project.labels.labeledFrames.push(
+        new LabeledFrame({ video: project.video, frameIdx: 5 })
+      );
+      useAppStore.getState().setFrameIdx(0);
+
+      await ctx.execute(GoNextLabeledFrame);
+
+      expect(useAppStore.getState().frameIdx).toBe(10);
+    });
   });
 
   describe("GoPrevLabeledFrame", () => {

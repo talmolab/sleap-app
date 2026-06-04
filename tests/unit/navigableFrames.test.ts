@@ -144,6 +144,20 @@ describe("labeledFrameIndices", () => {
     const { labels, video } = makeProject([]);
     expect(labeledFrameIndices(labels, video)).toEqual([]);
   });
+
+  it("excludes empty LabeledFrames (no instances)", () => {
+    // pkg.slp files can carry empty LabeledFrames (e.g. leftovers after
+    // removing predictions). They have no image and no annotation, so they
+    // must not be navigable — navigating to one shows a frozen image. Only
+    // frames with at least one instance count.
+    const { labels, video, skeleton } = makeProject([10, 30]);
+    const empty = new LabeledFrame({ video, frameIdx: 20 }); // no instances
+    labels.labeledFrames.push(empty);
+    // sanity: skeleton exists so the populated frames are real instances
+    expect(skeleton.nodes.length).toBeGreaterThan(0);
+
+    expect(labeledFrameIndices(labels, video)).toEqual([10, 30]);
+  });
 });
 
 describe("incrementFrameIdx (labeled-only mode)", () => {

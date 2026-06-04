@@ -302,6 +302,9 @@ export function Seekbar() {
 
       for (const lf of labels.labeledFrames) {
         if (lf.video !== video) continue;
+        // Skip empty LabeledFrames (no instances) — snapping to one would land
+        // on a frame with no image (e.g. pkg.slp leftovers).
+        if (lf.instances.length === 0) continue;
         const frameX = (lf.frameIdx / (totalFrames - 1)) * rect.width;
         const dist = Math.abs(clickX - frameX);
         if (dist < closestDist && dist <= SNAP_THRESHOLD_PX) {

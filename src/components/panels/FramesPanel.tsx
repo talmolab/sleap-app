@@ -473,7 +473,11 @@ export function FramesPanel() {
   const rows: FrameRowData[] = useMemo(() => {
     if (!labels) return [];
 
-    return labels.labeledFrames.map((lf) => {
+    return labels.labeledFrames
+      // Skip empty LabeledFrames (no instances) — e.g. pkg.slp leftovers after
+      // removing predictions. They carry no annotation and no image.
+      .filter((lf) => lf.instances.length > 0)
+      .map((lf) => {
       const userInstances = lf.userInstances;
       const predicted = lf.predictedInstances;
 
