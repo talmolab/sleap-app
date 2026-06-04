@@ -1,7 +1,7 @@
 /**
  * Tests for "navigate labeled frames only" mode (issue #137):
  *   - the pure stepping/snapping helpers in src/lib/navigableFrames.ts, and
- *   - the store integration where incrementFrameIdx honors navigateLabeledOnly
+ *   - the store integration where incrementFrameIdx honors navigationDomain
  *     (and falls through to dense navigation when there are no labeled frames,
  *     so the user is never trapped).
  */
@@ -154,7 +154,7 @@ describe("incrementFrameIdx (labeled-only mode)", () => {
   function loadLabeledOnly(frameIndices: number[]) {
     const { labels } = makeProject(frameIndices);
     useAppStore.getState().setLabels(labels, "test.slp"); // auto-selects video
-    useAppStore.getState().set("navigateLabeledOnly", true);
+    useAppStore.getState().setNavigationDomain("labeled");
   }
 
   it("steps forward only through labeled frames", () => {
@@ -191,7 +191,7 @@ describe("incrementFrameIdx (labeled-only mode)", () => {
   it("uses dense stepping when the mode is off", () => {
     const { labels } = makeProject([0, 10, 20]);
     useAppStore.getState().setLabels(labels, "test.slp");
-    // navigateLabeledOnly defaults to false.
+    // navigationDomain defaults to "all".
     useAppStore.getState().setFrameIdx(0);
 
     useAppStore.getState().incrementFrameIdx(1);

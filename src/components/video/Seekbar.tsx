@@ -25,7 +25,7 @@ import type {
   WorkerResponse,
 } from "@/lib/statisticSeriesWorkerCore";
 import { drawHeaderSeries } from "@/lib/headerSeriesRender";
-import { labeledFrameIndices, nearestFrameInDomain } from "@/lib/navigableFrames";
+import { navigableDomain, nearestFrameInDomain } from "@/lib/navigableFrames";
 import {
   createSeriesCache,
   getOrComputeSeries,
@@ -51,7 +51,9 @@ import {
   Pause,
   ChevronRight,
   SkipForward,
+  List,
   ListFilter,
+  Images,
 } from "lucide-react";
 
 /** Playback speed presets. */
@@ -94,8 +96,8 @@ export function Seekbar() {
   const seekbarHeaderReduction = useAppStore((s) => s.seekbarHeaderReduction);
   const overlayVersion = useAppStore((s) => s.overlayVersion);
   const setKey = useAppStore((s) => s.set);
-  const navigateLabeledOnly = useAppStore((s) => s.navigateLabeledOnly);
-  const toggleKey = useAppStore((s) => s.toggle);
+  const navigationDomain = useAppStore((s) => s.navigationDomain);
+  const cycleNavigationDomain = useAppStore((s) => s.cycleNavigationDomain);
 
   // Playback state
   const [isPlaying, setIsPlaying] = useState(false);
@@ -117,26 +119,42 @@ export function Seekbar() {
     : 0;
   const totalFrames = shapeFrames ?? (inferredFrames > 0 ? inferredFrames : 0);
 
-  // Sorted labeled-frame indices for the current video, used by "labeled frames
-  // only" mode (#137) to snap seekbar clicks/drag. overlayVersion is in the deps
-  // so it refreshes after labeling edits change the set (labels is mutated in
-  // place, so its reference alone won't trigger a recompute).
-  const labeledIndices = useMemo(
-    () => labeledFrameIndices(labels, video),
-    // overlayVersion is intentional: labels is mutated in place on label edits,
-    // so its reference alone won't trigger a recompute (#137).
+  // The active navigation domain (#137) for the current video, used to snap
+  // seekbar clicks/drag in labeled/imaged mode. `null` (no restriction) is
+  // coerced to `[]`. overlayVersion is in the deps so it refreshes after
+  // labeling edits change the labeled set (labels is mutated in place, so its
+  // reference alone won't trigger a recompute).
+  const domainIndices = useMemo(
+    () => navigableDomain(labels, video, navigationDomain) ?? [],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [labels, video, overlayVersion]
+    [labels, video, navigationDomain, overlayVersion]
   );
+  // Confined navigation is active only when a concrete domain exists to visit.
+  const isConfined = navigationDomain !== "all" && domainIndices.length > 0;
 
-  // Tooltip for the transport toggle. When the mode is on but the current video
-  // has no labeled frames, navigation falls through to dense stepping — surface
-  // that so the no-op is obvious rather than silent.
-  const labeledOnlyTooltip = !navigateLabeledOnly
-    ? "Labeled frames only"
-    : labeledIndices.length === 0
-      ? "Labeled frames only — no labeled frames in this video yet"
-      : "Labeled frames only (on)";
+  // A video is "unavailable" when it has no backend and no embedded images
+  // (e.g. an unresolved/missing external video) — no frame can be shown at all.
+  const videoUnavailable =
+    !!video && video.backend === null && !video.hasEmbeddedImages;
+
+  // Tooltip for the transport mode button. The button stays visible and
+  // cycleable in every mode; when a confined mode has nothing to visit it's
+  // inert (navigation falls through to dense), and the tooltip says why so the
+  // no-op is honest rather than silent.
+  const navModeTooltip =
+    navigationDomain === "all"
+      ? "Navigate: all frames"
+      : navigationDomain === "labeled"
+        ? domainIndices.length === 0
+          ? "Navigate: labeled frames only — none in this video yet"
+          : "Navigate: labeled frames only"
+        : domainIndices.length === 0
+          ? videoUnavailable
+            ? "Navigate: imaged frames only — no video available"
+            : video?.hasEmbeddedImages
+              ? "Navigate: imaged frames only — no embedded frames"
+              : "Navigate: imaged frames only — all frames have images"
+          : "Navigate: imaged frames only";
 
   // Whether the selected graph is a heavy graph offloaded to the worker. Only
   // gated past the frame threshold; below it the synchronous path is fine.
@@ -321,10 +339,10 @@ export function Seekbar() {
   const resolveScrubFrame = useCallback(
     (clientX: number): number => {
       const raw = pixelToFrame(clientX);
-      if (!navigateLabeledOnly) return raw;
-      return nearestFrameInDomain(labeledIndices, raw) ?? raw;
+      if (!isConfined) return raw;
+      return nearestFrameInDomain(domainIndices, raw) ?? raw;
     },
-    [pixelToFrame, navigateLabeledOnly, labeledIndices]
+    [pixelToFrame, isConfined, domainIndices]
   );
 
   const handleMouseDown = useCallback(
@@ -344,9 +362,9 @@ export function Seekbar() {
         return;
       }
 
-      // Snap to a labeled frame: the nearest one in labeled-only mode (#137),
-      // otherwise the closest within the threshold (existing behavior).
-      const targetFrame = navigateLabeledOnly
+      // In a confined mode (#137) snap to the nearest in-domain frame;
+      // otherwise the closest labeled frame within the threshold (existing).
+      const targetFrame = isConfined
         ? resolveScrubFrame(e.clientX)
         : (snapToLabeledFrame(e.clientX) ?? frame);
 
@@ -355,7 +373,7 @@ export function Seekbar() {
       // Clear range on normal click
       useAppStore.getState().set("frameRange", null);
     },
-    [pixelToFrame, snapToLabeledFrame, resolveScrubFrame, navigateLabeledOnly, setFrameIdx]
+    [pixelToFrame, snapToLabeledFrame, resolveScrubFrame, isConfined, setFrameIdx]
   );
 
   const handleMouseMove = useCallback(
@@ -694,19 +712,25 @@ export function Seekbar() {
         {/* Transport controls */}
         <TooltipProvider delayDuration={300}>
           <div className="flex gap-0.5 shrink-0 items-center">
-          {/* Labeled-frames-only navigation mode toggle (#137) */}
+          {/* Tri-state navigation domain: All -> Labeled -> Imaged (#137) */}
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
-                variant={navigateLabeledOnly ? "default" : "subtle"}
+                variant={navigationDomain !== "all" ? "default" : "subtle"}
                 size="icon-xs"
-                aria-pressed={navigateLabeledOnly}
-                onClick={() => toggleKey("navigateLabeledOnly")}
+                aria-label={navModeTooltip}
+                onClick={() => cycleNavigationDomain()}
               >
-                <ListFilter />
+                {navigationDomain === "all" ? (
+                  <List />
+                ) : navigationDomain === "labeled" ? (
+                  <ListFilter />
+                ) : (
+                  <Images />
+                )}
               </Button>
             </TooltipTrigger>
-            <TooltipContent side="top"><p>{labeledOnlyTooltip}</p></TooltipContent>
+            <TooltipContent side="top"><p>{navModeTooltip}</p></TooltipContent>
           </Tooltip>
           <div className="w-px h-4 bg-border mx-0.5" />
           <Tooltip>

@@ -99,3 +99,45 @@ export function nearestFrameInDomain(
   }
   return best;
 }
+
+/** Which frames navigation steps through (#137). */
+export type NavigationDomain = "all" | "labeled" | "imaged";
+
+/**
+ * Sorted, ascending frame indices that have an available image for `video`, or
+ * `null` when every frame is imaged (a continuous video) or the set is unknown.
+ *
+ * The "imaged frames only" counterpart of {@link labeledFrameIndices}: it
+ * delegates to sleap-io.js `Video.embeddedFrameIndices`, which returns the
+ * stored `frame_numbers` for an embedded-image video (`pkg.slp`) and `null` for
+ * a normal full video (where the caller should impose no restriction).
+ */
+export function imagedFrameIndices(video: Video | null): number[] | null {
+  return video?.embeddedFrameIndices ?? null;
+}
+
+/**
+ * The frame-index domain navigation is confined to for the given mode, or
+ * `null` for "no restriction" (dense stepping across every frame):
+ * - `"all"`     → `null`
+ * - `"labeled"` → frames with a LabeledFrame (possibly empty)
+ * - `"imaged"`  → frames with a stored image, or `null` if every frame is imaged
+ *
+ * An empty array means "restricted, but nothing to visit" — callers fall back
+ * to dense stepping so the user is never trapped (see `incrementFrameIdx`).
+ */
+export function navigableDomain(
+  labels: Labels | null,
+  video: Video | null,
+  mode: NavigationDomain
+): number[] | null {
+  switch (mode) {
+    case "labeled":
+      return labeledFrameIndices(labels, video);
+    case "imaged":
+      return imagedFrameIndices(video);
+    case "all":
+    default:
+      return null;
+  }
+}

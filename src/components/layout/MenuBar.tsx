@@ -5,7 +5,7 @@
  * All actions are wired to the command system via CommandContext.
  */
 
-import { useAppStore } from "../../stores/appStore";
+import { useAppStore, type NavigationDomain } from "../../stores/appStore";
 import { PANELS } from "./panelRegistry";
 import { modKey, isTauri } from "../../lib/platform";
 
@@ -291,8 +291,8 @@ function EditMenu() {
 
 function GoMenu() {
   const projectLoaded = useAppStore((s) => s.projectLoaded);
-  const navigateLabeledOnly = useAppStore((s) => s.navigateLabeledOnly);
-  const toggle = useAppStore((s) => s.toggle);
+  const navigationDomain = useAppStore((s) => s.navigationDomain);
+  const setNavigationDomain = useAppStore((s) => s.setNavigationDomain);
 
   const exec = (cmd: Parameters<typeof commandContext.execute>[0]) => {
     commandContext.execute(cmd);
@@ -321,13 +321,20 @@ function GoMenu() {
         <MenubarItem disabled={!projectLoaded} onClick={() => exec(GoPrevLabeledFrame)}>
           Previous Labeled Frame <MenubarShortcut>Alt+{"\u2190"}</MenubarShortcut>
         </MenubarItem>
-        <MenubarCheckboxItem
-          disabled={!projectLoaded}
-          checked={navigateLabeledOnly}
-          onCheckedChange={() => toggle("navigateLabeledOnly")}
+        <MenubarRadioGroup
+          value={navigationDomain}
+          onValueChange={(v) => setNavigationDomain(v as NavigationDomain)}
         >
-          Navigate Labeled Frames Only
-        </MenubarCheckboxItem>
+          <MenubarRadioItem value="all" disabled={!projectLoaded}>
+            Navigate All Frames
+          </MenubarRadioItem>
+          <MenubarRadioItem value="labeled" disabled={!projectLoaded}>
+            Navigate Labeled Frames Only
+          </MenubarRadioItem>
+          <MenubarRadioItem value="imaged" disabled={!projectLoaded}>
+            Navigate Imaged Frames Only
+          </MenubarRadioItem>
+        </MenubarRadioGroup>
         <MenubarSeparator />
         <MenubarItem disabled={!projectLoaded} onClick={() => exec(GoNextSuggestion)}>
           Next Suggestion <MenubarShortcut>Space</MenubarShortcut>
