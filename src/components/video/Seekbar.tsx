@@ -535,18 +535,13 @@ export function Seekbar() {
       const currentVideo = useAppStore.getState().video;
       for (const lf of labels.labeledFrames) {
         if (lf.video !== currentVideo) continue;
+        // PyQt draws no seekbar mark for empty LabeledFrames; only frames with
+        // instances get a tick (matching the snap + Frames-panel behavior).
+        if (lf.instances.length === 0) continue;
         const x = frameToX(lf.frameIdx);
 
         const hasUser = lf.instances.some((i) => !("score" in i));
-        const hasPred = lf.instances.some((i) => "score" in i);
-
-        if (hasUser) {
-          ctx.fillStyle = "#3b82f6"; // blue
-        } else if (hasPred) {
-          ctx.fillStyle = "#67e8f9"; // light blue
-        } else {
-          ctx.fillStyle = "#666";
-        }
+        ctx.fillStyle = hasUser ? "#3b82f6" : "#67e8f9"; // blue user / light-blue predicted
         ctx.fillRect(x - 1, h - 14, 2, 10);
       }
     }
