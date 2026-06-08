@@ -384,16 +384,46 @@ export async function assignVideoBackend(video: Video, file: File): Promise<void
 }
 
 /**
- * Standalone-video file extensions we can currently decode. MP4 only for now;
- * this is the dispatch point for future MediaBunny (WebM/MOV/MKV) and Seq
- * (.seq) backends — add the extension here and branch in buildStandaloneVideo.
+ * Standalone-video file extensions we can decode, mapped to the sleap-io.js
+ * backend that handles each. MP4 → Mp4Box; WebM/MKV/MOV/Ogg/MPEG-TS →
+ * MediaBunny; Norpix `.seq` → SeqVideoBackend. `.avi` is intentionally absent
+ * (no sleap-io.js backend decodes it).
  */
-export const SUPPORTED_VIDEO_EXTS = ["mp4"] as const;
+const BACKEND_BY_EXT = {
+  mp4: "mp4box",
+  webm: "mediabunny",
+  mkv: "mediabunny",
+  mov: "mediabunny",
+  ogg: "mediabunny",
+  ogv: "mediabunny",
+  ts: "mediabunny",
+  seq: "seq",
+} as const satisfies Record<string, "mp4box" | "mediabunny" | "seq">;
+
+type StandaloneBackendKind = (typeof BACKEND_BY_EXT)[keyof typeof BACKEND_BY_EXT];
+
+/** Extensions accepted by the standalone-video add flow and the file pickers. */
+export const SUPPORTED_VIDEO_EXTS: string[] = Object.keys(BACKEND_BY_EXT);
 
 /** Lowercased extension of a filename, or "" if none. */
 function fileExt(name: string): string {
   const i = name.lastIndexOf(".");
   return i >= 0 ? name.slice(i + 1).toLowerCase() : "";
+}
+
+/**
+ * Which backend (if any) decodes a given filename, by extension. Returns null
+ * for unsupported / extension-less names. Pure + decoder-independent — the unit
+ * tests assert the full extension→backend table here; real decoding is covered
+ * by manual E2E (WebCodecs/Mp4Box do not run under the bun test runner).
+ */
+export function backendKindForFilename(
+  name: string
+): StandaloneBackendKind | null {
+  return (
+    (BACKEND_BY_EXT as Record<string, StandaloneBackendKind>)[fileExt(name)] ??
+    null
+  );
 }
 
 /**

@@ -12,6 +12,7 @@ import { Labels } from "@talmolab/sleap-io.js";
 import {
   buildStandaloneVideo,
   addVideoFileToLabels,
+  backendKindForFilename,
   SUPPORTED_VIDEO_EXTS,
 } from "@/lib/resolveVideos";
 
@@ -56,5 +57,28 @@ describe("buildStandaloneVideo (format dispatch)", () => {
 
   it("matches the extension case-insensitively", async () => {
     expect(await buildStandaloneVideo(fakeFile("CLIP.MOV"))).toBeNull();
+  });
+});
+
+describe("backendKindForFilename (format → backend dispatch)", () => {
+  it("maps MP4 to the Mp4Box backend", () => {
+    expect(backendKindForFilename("clip.mp4")).toBe("mp4box");
+  });
+  it("maps WebM/MKV/MOV/Ogg/MPEG-TS to the MediaBunny backend", () => {
+    for (const name of ["a.webm", "a.mkv", "a.mov", "a.ogg", "a.ogv", "a.ts"]) {
+      expect(backendKindForFilename(name)).toBe("mediabunny");
+    }
+  });
+  it("maps Norpix .seq to the Seq backend", () => {
+    expect(backendKindForFilename("rec.seq")).toBe("seq");
+  });
+  it("is case-insensitive on the extension", () => {
+    expect(backendKindForFilename("CLIP.MOV")).toBe("mediabunny");
+    expect(backendKindForFilename("CLIP.MP4")).toBe("mp4box");
+  });
+  it("returns null for unsupported or extension-less names", () => {
+    for (const name of ["clip.avi", "clip.xyz", "noextension", ""]) {
+      expect(backendKindForFilename(name)).toBeNull();
+    }
   });
 });
