@@ -216,7 +216,7 @@ export async function resolveVideoFile(video: Video): Promise<boolean> {
 
   const result = await platform.showOpenDialog({
     filters: [
-      { name: "Video files", extensions: ["mp4", "avi", "mov", "mkv", "webm"] },
+      { name: "Video files", extensions: [...SUPPORTED_VIDEO_EXTS] },
     ],
   });
 
@@ -264,7 +264,7 @@ export async function resolveAllVideoFiles(
   const platform = await getPlatform();
   console.log(`[video] Batch-resolving ${unresolvedVideos.length} video(s) via ${platform.isTauri ? "Tauri" : "browser"} dialog`);
   const videoFilters = [
-    { name: "Video files", extensions: ["mp4", "avi", "mov", "mkv", "webm"] },
+    { name: "Video files", extensions: [...SUPPORTED_VIDEO_EXTS] },
   ];
 
   const result = await platform.showOpenDialog({
