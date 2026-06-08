@@ -23,6 +23,12 @@ import {
   SKELETON_TEMPLATES,
   TEMPLATE_ORDER,
 } from "../../lib/skeletonTemplates";
+import {
+  validDestinationNames,
+  initialEdgeSelection,
+  nextEdgeSelection,
+  isValidEdgeSelection,
+} from "../../lib/skeletonEdgeEditing";
 import { cn } from "@/lib/utils";
 import {
   Table,
@@ -78,6 +84,9 @@ export function SkeletonPanel() {
   const [addEdgeOpen, setAddEdgeOpen] = useState(false);
   const [edgeSrcName, setEdgeSrcName] = useState("");
   const [edgeDstName, setEdgeDstName] = useState("");
+  // Sticky seed: remember the last destination we connected to, so reopening
+  // the dialog can prefer it as the next source (PyQt-like rapid chaining).
+  const lastEdgeDst = useRef<string>("");
 
   // Dialog state for template confirmation
   const [templateConfirmOpen, setTemplateConfirmOpen] = useState(false);
@@ -117,15 +126,27 @@ export function SkeletonPanel() {
   };
 
   const addEdge = () => {
-    if (!edgeSrcName || !edgeDstName) return;
+    if (!isValidEdgeSelection(nodes, edges, edgeSrcName, edgeDstName)) return;
+    // Snapshot before executing: AddEdgeCommand mutates skeleton.edges in place,
+    // but other skeleton commands reassign it — so capture the pre-add length
+    // (the index the new edge will occupy) and build the post-add set explicitly
+    // here, rather than relying on `edges` reflecting (or not reflecting) the
+    // push.
+    const newEdgeIdx = edges.length;
+    const postAddEdges = [
+      ...edges,
+      { source: { name: edgeSrcName }, destination: { name: edgeDstName } },
+    ];
     commandContext.execute(AddEdgeCommand, {
       srcName: edgeSrcName,
       dstName: edgeDstName,
     });
-    setSelectedEdgeIdx(edges.length); // new last index
-    setEdgeSrcName("");
-    setEdgeDstName("");
-    setAddEdgeOpen(false);
+    lastEdgeDst.current = edgeDstName;
+    const sel = nextEdgeSelection(nodes, postAddEdges, edgeDstName);
+    setEdgeSrcName(sel.src);
+    setEdgeDstName(sel.dst);
+    setSelectedEdgeIdx(newEdgeIdx);
+    // NOTE: intentionally do NOT close the dialog — allows rapid edge chaining.
   };
 
   const deleteEdge = () => {
@@ -255,8 +276,13 @@ export function SkeletonPanel() {
               variant="subtle"
               size="xs"
               onClick={() => {
-                setEdgeSrcName("");
-                setEdgeDstName("");
+                const sel = initialEdgeSelection(
+                  nodes,
+                  edges,
+                  lastEdgeDst.current
+                );
+                setEdgeSrcName(sel.src);
+                setEdgeDstName(sel.dst);
                 setAddEdgeOpen(true);
               }}
               disabled={nodes.length < 2}
@@ -363,7 +389,16 @@ export function SkeletonPanel() {
               <label className="text-xs text-muted-foreground block mb-1">
                 Source
               </label>
-              <Select value={edgeSrcName} onValueChange={setEdgeSrcName}>
+              <Select
+                value={edgeSrcName}
+                onValueChange={(v) => {
+                  setEdgeSrcName(v);
+                  const valid = validDestinationNames(nodes, v, edges);
+                  setEdgeDstName((prev) =>
+                    valid.includes(prev) ? prev : (valid[0] ?? "")
+                  );
+                }}
+              >
                 <SelectTrigger className="w-full" size="sm">
                   <SelectValue placeholder="Select source node..." />
                 </SelectTrigger>
@@ -385,11 +420,13 @@ export function SkeletonPanel() {
                   <SelectValue placeholder="Select destination node..." />
                 </SelectTrigger>
                 <SelectContent>
-                  {nodes.map((n, i) => (
-                    <SelectItem key={i} value={n.name}>
-                      {n.name}
-                    </SelectItem>
-                  ))}
+                  {validDestinationNames(nodes, edgeSrcName, edges).map(
+                    (name) => (
+                      <SelectItem key={name} value={name}>
+                        {name}
+                      </SelectItem>
+                    )
+                  )}
                 </SelectContent>
               </Select>
             </div>
@@ -400,12 +437,14 @@ export function SkeletonPanel() {
               size="sm"
               onClick={() => setAddEdgeOpen(false)}
             >
-              Cancel
+              Done
             </Button>
             <Button
               size="sm"
               onClick={addEdge}
-              disabled={!edgeSrcName || !edgeDstName}
+              disabled={
+                !isValidEdgeSelection(nodes, edges, edgeSrcName, edgeDstName)
+              }
             >
               Add
             </Button>
