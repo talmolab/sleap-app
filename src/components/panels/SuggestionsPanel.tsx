@@ -5,8 +5,16 @@
  * score display, and configurable generation methods.
  */
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useReducer } from "react";
 import { useAppStore } from "../../stores/appStore";
+import { commandContext } from "../../commands/CommandContext";
+import { GoNextSuggestion, GoPrevSuggestion } from "../../commands/navCommands";
+import {
+  suggestionExists,
+  addSuggestionFrame,
+  removeSuggestionAt,
+  labeledSummary,
+} from "../../lib/suggestionEdits";
 import { toast } from "@/lib/notify";
 import { cn } from "@/lib/utils";
 import {
@@ -29,6 +37,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { PredictedInstance } from "@talmolab/sleap-io.js";
 import type { SuggestionFrame, Video } from "../../types";
 
@@ -148,11 +164,22 @@ export function SuggestionsPanel() {
   const frameIdx = useAppStore((s) => s.frameIdx);
   const setVideo = useAppStore((s) => s.setVideo);
   const setFrameIdx = useAppStore((s) => s.setFrameIdx);
+  // THE "underlying labels/instances changed" signal (bumped on canvas label
+  // edits). Subscribing here re-renders the panel when frames are labeled
+  // elsewhere; see Seekbar.tsx for the same pattern.
+  const overlayVersion = useAppStore((s) => s.overlayVersion);
 
   const [method, setMethod] = useState<SuggestionMethod>("stride");
   const [count, setCount] = useState(20);
   const [sortCol, setSortCol] = useState<SortColumn>("index");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
+
+  // markChanged() does not re-render this panel (it doesn't subscribe to
+  // hasChanges), so panel-initiated suggestion edits force a re-render here.
+  const [, forceUpdate] = useReducer((n: number) => n + 1, 0);
+  // Index into labels.suggestions of the currently selected row (null = none).
+  const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
+  const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
 
   const suggestions = labels?.suggestions ?? [];
 
@@ -194,7 +221,11 @@ export function SuggestionsPanel() {
     });
 
     return withMeta;
-  }, [suggestions, sortCol, sortDir, labels]);
+    // overlayVersion is in the deps so hasLabels/score (and thus the % status
+    // line + green dot) recompute when frames are labeled — labels is mutated
+    // in place, so its reference alone won't trigger a recompute (cf. Seekbar).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [suggestions, sortCol, sortDir, labels, overlayVersion]);
 
   const navigateToSuggestion = (suggestion: SuggestionFrame) => {
     if (suggestion.video !== currentVideo) {
@@ -202,6 +233,35 @@ export function SuggestionsPanel() {
     }
     setFrameIdx(suggestion.frameIdx);
   };
+
+  /** Replace labels.suggestions, mark dirty, and force a re-render. */
+  const applySuggestions = (next: SuggestionFrame[]) => {
+    if (!labels) return;
+    labels.suggestions = next;
+    useAppStore.getState().markChanged();
+    forceUpdate();
+  };
+
+  const addCurrentFrame = () => {
+    if (!labels || !currentVideo) return;
+    if (suggestionExists(labels.suggestions, currentVideo, frameIdx)) {
+      toast.info("This frame is already a suggestion");
+      return;
+    }
+    applySuggestions(
+      addSuggestionFrame(labels.suggestions, currentVideo, frameIdx)
+    );
+    toast.success("Added current frame as a suggestion");
+  };
+
+  const removeSelected = () => {
+    if (!labels || selectedIdx === null) return;
+    applySuggestions(removeSuggestionAt(labels.suggestions, selectedIdx));
+    setSelectedIdx(null);
+  };
+
+  // % labeled across the (filtered/sorted) suggestion list.
+  const summary = labeledSummary(sortedSuggestions.map((e) => e.hasLabels));
 
   const toggleSort = (col: SortColumn) => {
     if (sortCol === col) {
@@ -298,11 +358,15 @@ export function SuggestionsPanel() {
               {sortedSuggestions.map((entry) => (
                 <TableRow
                   key={entry.originalIndex}
-                  onClick={() => navigateToSuggestion(entry.suggestion)}
+                  onClick={() => {
+                    navigateToSuggestion(entry.suggestion);
+                    setSelectedIdx(entry.originalIndex);
+                  }}
                   className={cn(
                     "cursor-pointer border-b-0",
-                    entry.suggestion.video === currentVideo &&
-                      entry.suggestion.frameIdx === frameIdx
+                    entry.originalIndex === selectedIdx ||
+                      (entry.suggestion.video === currentVideo &&
+                        entry.suggestion.frameIdx === frameIdx)
                       ? "bg-orange-500/10 border-l-2 border-l-orange-500 text-foreground"
                       : "hover:bg-muted/50 text-foreground"
                   )}
@@ -335,27 +399,107 @@ export function SuggestionsPanel() {
       </ScrollArea>
 
       <Separator />
-      <div className="flex gap-1 p-2">
-        <Button
-          variant="subtle"
-          size="xs"
-          onClick={() => generateSuggestions(method, count)}
-        >
-          Generate
-        </Button>
-        <Button
-          variant="subtle"
-          size="xs"
-          onClick={() => {
-            if (!labels) return;
-            labels.suggestions = [];
-            useAppStore.getState().markChanged();
-            toast.info("Suggestions cleared");
-          }}
-        >
-          Clear
-        </Button>
+      <div className="flex flex-col gap-1 p-2">
+        {/* Nav row: Prev · status · Next */}
+        <div className="flex items-center gap-1">
+          <Button
+            variant="subtle"
+            size="xs"
+            disabled={suggestions.length === 0}
+            onClick={() => commandContext.execute(GoPrevSuggestion)}
+          >
+            {"◀"} Prev
+          </Button>
+          {summary.total > 0 ? (
+            <span className="flex-1 text-center text-xs text-muted-foreground">
+              {summary.labeled}/{summary.total} labeled (
+              {summary.pct.toFixed(1)}%)
+            </span>
+          ) : (
+            <span className="flex-1" />
+          )}
+          <Button
+            variant="subtle"
+            size="xs"
+            disabled={suggestions.length === 0}
+            onClick={() => commandContext.execute(GoNextSuggestion)}
+          >
+            Next {"▶"}
+          </Button>
+        </div>
+        {/* Edit row: Add current · Remove · Generate · Clear */}
+        <div className="flex gap-1">
+          <Button
+            variant="subtle"
+            size="xs"
+            disabled={!currentVideo}
+            onClick={addCurrentFrame}
+          >
+            Add current
+          </Button>
+          <Button
+            variant="subtle"
+            size="xs"
+            disabled={selectedIdx === null}
+            onClick={removeSelected}
+          >
+            Remove
+          </Button>
+          <Button
+            variant="subtle"
+            size="xs"
+            onClick={() => {
+              generateSuggestions(method, count);
+              setSelectedIdx(null);
+              forceUpdate();
+            }}
+          >
+            Generate
+          </Button>
+          <Button
+            variant="subtle"
+            size="xs"
+            disabled={suggestions.length === 0}
+            onClick={() => setClearConfirmOpen(true)}
+          >
+            Clear
+          </Button>
+        </div>
       </div>
+
+      {/* Clear-all confirmation */}
+      <Dialog open={clearConfirmOpen} onOpenChange={setClearConfirmOpen}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Clear suggestions</DialogTitle>
+            <DialogDescription>
+              Remove all {suggestions.length} suggestions? This cannot be
+              undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setClearConfirmOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => {
+                applySuggestions([]);
+                setSelectedIdx(null);
+                toast.info("Suggestions cleared");
+                setClearConfirmOpen(false);
+              }}
+            >
+              Clear all
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
