@@ -466,16 +466,18 @@ export function backendKindForFilename(
 
 /**
  * Build a new standalone Video from a user-picked file, dispatching by
- * extension. MP4 → Mp4Box backend (via {@link assignVideoBackend}, which probes
- * shape/fps). Unsupported formats are rejected with a toast and return null
- * (the drop-in point for MediaBunny/Seq later). Returns null on decode failure
- * too (assignVideoBackend already surfaces the error).
+ * extension via {@link assignVideoBackend} (which probes shape/fps). Supports
+ * every {@link SUPPORTED_VIDEO_EXTS} format (MP4/WebM/MKV/MOV/Ogg/MPEG-TS/.seq);
+ * unsupported formats (e.g. `.avi`) are rejected with a toast and return null.
+ * Returns null on decode failure too (assignVideoBackend already surfaces the
+ * error).
  */
 export async function buildStandaloneVideo(file: File): Promise<Video | null> {
-  const ext = fileExt(file.name);
-  if (!(SUPPORTED_VIDEO_EXTS as readonly string[]).includes(ext)) {
-    toast.error(`${ext ? `.${ext} files are` : "This file is"} not supported yet`, {
-      description: "Only MP4 is supported for now — WebM, MOV, and .seq are coming.",
+  if (!backendKindForFilename(file.name)) {
+    const ext = fileExt(file.name);
+    toast.error(`${ext ? `.${ext} files are` : "This file is"} not supported`, {
+      description:
+        "Supported video formats: MP4, WebM, MKV, MOV, Ogg, MPEG-TS, and Norpix .seq.",
     });
     return null;
   }
