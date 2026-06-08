@@ -404,10 +404,16 @@ export async function assignVideoBackend(
     );
     const backend = await createBackendForFile(file);
     video.backend = backend;
-    // Mp4Box only populates shape after the first getFrame(); MediaBunny/Seq set
-    // it during construction. Probing frame 0 uniformly warms the cache and
-    // validates that the file actually decodes.
-    await backend.getFrame(0);
+    // Probe frame 0 to warm the cache AND validate the file decodes. Treat a
+    // null result as failure: Mp4Box/MediaBunny only set `shape` after a
+    // successful decode, but SeqVideoBackend sets `shape` from the header at
+    // create() — so without this check a .seq with an undecodable codec (e.g.
+    // Bayer) would pass buildStandaloneVideo's !video.shape guard as a black,
+    // error-free video. The throw is caught below (toasts + leaves shape unset).
+    const frame = await backend.getFrame(0);
+    if (!frame) {
+      throw new Error("could not decode the first video frame");
+    }
     if (backend.shape) video.shape = backend.shape;
     if (backend.fps) video.fps = backend.fps;
     console.log(
@@ -441,7 +447,8 @@ const BACKEND_BY_EXT = {
 type StandaloneBackendKind = (typeof BACKEND_BY_EXT)[keyof typeof BACKEND_BY_EXT];
 
 /** Extensions accepted by the standalone-video add flow and the file pickers. */
-export const SUPPORTED_VIDEO_EXTS: string[] = Object.keys(BACKEND_BY_EXT);
+export const SUPPORTED_VIDEO_EXTS: readonly string[] =
+  Object.keys(BACKEND_BY_EXT);
 
 /** Lowercased extension of a filename, or "" if none. */
 function fileExt(name: string): string {
@@ -499,7 +506,8 @@ export interface PickedVideoFile {
 /**
  * Open a multi-select video file picker and return normalized File objects.
  * Browser yields File(s) directly; Tauri yields path(s), read into File via
- * platform.readFile. MP4 only for now (see {@link SUPPORTED_VIDEO_EXTS}).
+ * platform.readFile. Accepts every format in {@link SUPPORTED_VIDEO_EXTS}
+ * (MP4/WebM/MKV/MOV/Ogg/MPEG-TS/.seq).
  * Returns [] if the user cancels. Shared by the Videos panel
  * ({@link pickAndAddVideos}) and the New Project dialog (#138).
  */
