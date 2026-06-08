@@ -6,7 +6,13 @@
  * and auto-resolution via the filesystem in Tauri mode.
  */
 
-import { Mp4BoxVideoBackend, Video } from "@talmolab/sleap-io.js";
+import {
+  Mp4BoxVideoBackend,
+  MediaBunnyVideoBackend,
+  SeqVideoBackend,
+  Video,
+  type VideoBackend,
+} from "@talmolab/sleap-io.js";
 import { toast } from "@/lib/notify";
 import type { Labels } from "../types";
 import { getPlatform } from "../platform/index";
@@ -363,18 +369,50 @@ export async function resolveAllVideoFiles(
 }
 
 /**
- * Create an Mp4BoxVideoBackend from a user-picked File and assign it to a Video.
+ * Build the sleap-io.js backend for a user-picked file, dispatching by
+ * extension: MP4 → Mp4Box, WebM/MKV/MOV/Ogg/MPEG-TS → MediaBunny, `.seq` → Seq.
+ * Unknown / extension-less names fall back to Mp4Box (historical behavior for
+ * SLP-referenced external videos with non-standard names).
  */
-export async function assignVideoBackend(video: Video, file: File): Promise<void> {
+async function createBackendForFile(file: File): Promise<VideoBackend> {
+  switch (backendKindForFilename(file.name)) {
+    case "mediabunny":
+      return MediaBunnyVideoBackend.fromBlob(file, file.name);
+    case "seq":
+      return SeqVideoBackend.create(file);
+    case "mp4box":
+    default:
+      return new Mp4BoxVideoBackend(file);
+  }
+}
+
+/**
+ * Create the appropriate video backend from a user-picked File and assign it to
+ * a Video, probing shape/fps. Dispatches by extension (see
+ * {@link createBackendForFile}); shared by standalone-video add AND external
+ * SLP-video resolution, so all paths support every {@link SUPPORTED_VIDEO_EXTS}
+ * format.
+ */
+export async function assignVideoBackend(
+  video: Video,
+  file: File
+): Promise<void> {
   try {
-    console.log(`[video] Creating Mp4BoxVideoBackend for "${file.name}" (${file.size} bytes)`);
-    const backend = new Mp4BoxVideoBackend(file);
+    const kind = backendKindForFilename(file.name) ?? "mp4box";
+    console.log(
+      `[video] Creating ${kind} backend for "${file.name}" (${file.size} bytes)`
+    );
+    const backend = await createBackendForFile(file);
     video.backend = backend;
-    // Trigger initialization by requesting frame 0 (stays in cache for later use)
+    // Mp4Box only populates shape after the first getFrame(); MediaBunny/Seq set
+    // it during construction. Probing frame 0 uniformly warms the cache and
+    // validates that the file actually decodes.
     await backend.getFrame(0);
     if (backend.shape) video.shape = backend.shape;
     if (backend.fps) video.fps = backend.fps;
-    console.log(`[video] Backend ready: ${video.shape?.[1]}x${video.shape?.[2]} @ ${video.fps}fps, ${video.shape?.[0]} frames`);
+    console.log(
+      `[video] Backend ready: ${video.shape?.[1]}x${video.shape?.[2]} @ ${video.fps}fps, ${video.shape?.[0]} frames`
+    );
   } catch (err) {
     console.error(`Failed to load video backend for ${file.name}:`, err);
     toast.error(`Failed to load video: ${file.name}`, {
