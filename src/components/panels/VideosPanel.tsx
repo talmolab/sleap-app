@@ -20,6 +20,14 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { AlertTriangle, Clipboard, Check } from "lucide-react";
 import { useState } from "react";
 import type { Video } from "../../types";
@@ -29,7 +37,13 @@ import {
   resolveAllVideoFiles,
   resolveVideoPath,
   pickAndAddVideos,
+  pickVideoFiles,
+  buildStandaloneVideo,
 } from "../../lib/resolveVideos";
+import {
+  labeledFramesBeyond,
+  applyVideoReplacement,
+} from "../../lib/replaceVideo";
 
 /** Truncate a filename/path from the left, keeping the rightmost characters. */
 function truncateLeft(path: string, maxLen: number): string {
@@ -275,6 +289,16 @@ export function VideosPanel() {
   const videos = labels?.videos ?? [];
   const missingVideos = videos.filter(isVideoMissing);
 
+  // Pending confirm-trim state for Replace Video: set when the chosen
+  // replacement is shorter than the current video's labeled frames, so some
+  // frames would be orphaned. null = no dialog open.
+  const [pendingReplace, setPendingReplace] = useState<{
+    oldVideo: Video;
+    newVideo: Video;
+    orphanCount: number;
+    newCount: number;
+  } | null>(null);
+
   const handleLocateVideo = async (video: Video) => {
     const ok = await resolveVideoFile(video);
     if (ok) {
@@ -317,6 +341,63 @@ export function VideosPanel() {
     setVideo(added[0]);
     setFrameIdx(0);
     toast.success(`Added ${added.length} video${added.length > 1 ? "s" : ""}`);
+  };
+
+  /**
+   * Re-point the current project from `oldVideo` to `newVideo` (trimming any
+   * labeled frames beyond the new video's length), select the new video, clamp
+   * the playhead, and refresh the UI. Called directly when nothing is trimmed,
+   * or from the confirm dialog's Replace button when frames would be removed.
+   */
+  const commitReplace = (oldVideo: Video, newVideo: Video) => {
+    if (!labels) return;
+    const { trimmed } = applyVideoReplacement(labels, oldVideo, newVideo);
+    setVideo(newVideo);
+    setFrameIdx(Math.min(frameIdx, (newVideo.shape?.[0] ?? 1) - 1));
+    markChanged();
+    bumpOverlayVersion();
+    setPendingReplace(null);
+    toast.success(
+      trimmed > 0
+        ? `Replaced video — ${trimmed} labeled frame${trimmed > 1 ? "s" : ""} removed`
+        : "Replaced video"
+    );
+  };
+
+  /**
+   * Pick a new video file, build a fresh (decoded) backend for it, and replace
+   * the currently-selected video with it. If labeled frames would be orphaned
+   * (the new video is shorter), open a confirm-trim dialog first; otherwise
+   * apply the replacement immediately.
+   */
+  const handleReplaceVideo = async () => {
+    if (!labels || !currentVideo) return;
+    let files;
+    try {
+      files = await pickVideoFiles();
+    } catch (err) {
+      toast.error("Failed to replace video", {
+        description: err instanceof Error ? err.message : String(err),
+      });
+      return;
+    }
+    if (files.length === 0) return; // cancelled
+    const newVideo = await buildStandaloneVideo(files[0].file);
+    if (!newVideo) return; // unsupported / decode failed (already toasted)
+    if (files[0].absPath) newVideo.filename = files[0].absPath;
+
+    const newCount = newVideo.shape?.[0] ?? Infinity;
+    const orphans = labeledFramesBeyond(labels, currentVideo, newCount);
+    if (orphans.length > 0) {
+      setPendingReplace({
+        oldVideo: currentVideo,
+        newVideo,
+        orphanCount: orphans.length,
+        newCount,
+      });
+      return; // dialog's Replace button calls commitReplace
+    }
+    commitReplace(currentVideo, newVideo);
   };
 
   return (
@@ -380,6 +461,14 @@ export function VideosPanel() {
         <Button
           variant="subtle"
           size="xs"
+          disabled={!currentVideo}
+          onClick={handleReplaceVideo}
+        >
+          Replace Video
+        </Button>
+        <Button
+          variant="subtle"
+          size="xs"
           onClick={() => toast.info("Remove Video is not yet implemented")}
         >
           Remove Video
@@ -394,6 +483,53 @@ export function VideosPanel() {
           </Button>
         )}
       </div>
+
+      {/* Replace Video confirm-trim dialog */}
+      <Dialog
+        open={pendingReplace !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingReplace(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Replace video?</DialogTitle>
+            <DialogDescription>
+              {pendingReplace && (
+                <>
+                  The new video has {pendingReplace.newCount} frames;{" "}
+                  {pendingReplace.orphanCount} labeled frame
+                  {pendingReplace.orphanCount > 1 ? "s" : ""} beyond that will be
+                  removed. This can&apos;t be undone.
+                </>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPendingReplace(null)}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => {
+                if (pendingReplace) {
+                  commitReplace(
+                    pendingReplace.oldVideo,
+                    pendingReplace.newVideo
+                  );
+                }
+              }}
+            >
+              Replace
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
