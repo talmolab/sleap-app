@@ -104,6 +104,20 @@ function predictedInstance(
   return inst;
 }
 
+/**
+ * A PredictedInstance with an explicit INSTANCE score and a DIFFERENT per-point
+ * score — so a test can tell which metric the Score column renders.
+ */
+function predictedInstanceScored(
+  skeleton: Skeleton,
+  instanceScore: number,
+  pointScore: number,
+): PredictedInstance {
+  const inst = predictedInstance(skeleton, instanceScore);
+  for (const p of inst.points) p.score = pointScore;
+  return inst;
+}
+
 describe("SuggestionsPanel generation methods (#162)", () => {
   beforeEach(() => {
     resetStore();
@@ -245,6 +259,28 @@ describe("SuggestionsPanel generation methods (#162)", () => {
     // Defaults scoreLimit=3, lower=1, upper=2 -> only frame 0 qualifies.
     const result = useAppStore.getState().labels?.suggestions ?? [];
     expect(result.map((s) => s.frameIdx)).toEqual([0]);
+  });
+
+  it("Score column shows the mean INSTANCE score (matches Frames panel), not the point-score mean", async () => {
+    const skel = makeSkeleton();
+    const video = makeVideo(100);
+    const labels = new Labels({ videos: [video], skeletons: [skel] });
+    // Instance score 0.40 but point scores 0.90. The Score column must render
+    // 0.40 — the instance score the Frames panel + prediction_score use — NOT
+    // the 0.90 point-score mean the panel previously (wrongly) displayed.
+    const lf = new LabeledFrame({ video, frameIdx: 7 });
+    lf.instances.push(predictedInstanceScored(skel, 0.4, 0.9));
+    labels.labeledFrames.push(lf);
+    labels.suggestions = [{ video, frameIdx: 7 } as SuggestionFrame];
+    useAppStore.getState().setLabels(labels, "test.slp");
+
+    const { SuggestionsPanel } = await import(
+      "@/components/panels/SuggestionsPanel"
+    );
+    render(<SuggestionsPanel />);
+
+    expect(screen.getByText("0.40")).toBeInTheDocument();
+    expect(screen.queryByText("0.90")).not.toBeInTheDocument();
   });
 
   it("default-method (stride) Generate replaces suggestions across ALL videos", async () => {

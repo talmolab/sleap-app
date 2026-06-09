@@ -63,10 +63,23 @@ function basename(path: string | string[]): string {
 type SortColumn = "index" | "video" | "frame" | "score";
 type SortDir = "asc" | "desc";
 
-/** Compute mean prediction score for a frame. */
+/**
+ * Mean prediction *instance* score for a frame.
+ *
+ * Uses `PredictedInstance.score` (SLEAP's instance/grouping score) — the SAME
+ * metric the Frames panel shows (`FramesPanel.tsx`) and that the
+ * `prediction_score` generation method filters on (`lib/suggestionStrategies`).
+ * This keeps the Score column consistent across panels and meaningful for the
+ * prediction-score workflow.
+ *
+ * NOTE: instance scores are NOT bounded to [0, 1] and are distinct from
+ * per-point confidence. A frame can have a high mean here yet still contain a
+ * single low-score instance — which is exactly what makes it a prediction_score
+ * suggestion (the method counts instances below the limit, not the frame mean).
+ */
 function computeFrameScore(
   suggestion: SuggestionFrame,
-  labels: { find: (opts: { video: Video; frameIdx: number }) => { instances: { points: { xy: [number, number] }[] }[] }[] } | null
+  labels: { find: (opts: { video: Video; frameIdx: number }) => { instances: { score?: number }[] }[] } | null
 ): number | null {
   if (!labels) return null;
 
@@ -76,24 +89,21 @@ function computeFrameScore(
   });
   if (frames.length === 0) return null;
 
-  const lf = frames[0];
-  const predicted = lf.instances.filter(
+  const predicted = frames[0].instances.filter(
     (inst) => inst instanceof PredictedInstance
   );
   if (predicted.length === 0) return null;
 
-  let totalScore = 0;
+  let total = 0;
   let count = 0;
   for (const inst of predicted) {
-    for (const pt of inst.points) {
-      if (pt.score != null && !isNaN(pt.score)) {
-        totalScore += pt.score;
-        count++;
-      }
+    if (typeof inst.score === "number" && !isNaN(inst.score)) {
+      total += inst.score;
+      count++;
     }
   }
 
-  return count > 0 ? totalScore / count : null;
+  return count > 0 ? total / count : null;
 }
 
 /** Check if a frame has user-labeled instances. */
