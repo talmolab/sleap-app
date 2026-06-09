@@ -261,14 +261,16 @@ describe("SuggestionsPanel generation methods (#162)", () => {
     expect(result.map((s) => s.frameIdx)).toEqual([0]);
   });
 
-  it("Score column shows the LOWEST instance score (not the mean, not the point-mean), with a breakdown tooltip", async () => {
+  it("Score column shows the LOWEST instance score (not the mean, not the point-mean)", async () => {
     const skel = makeSkeleton();
     const video = makeVideo(100);
     const labels = new Labels({ videos: [video], skeletons: [skel] });
     // Two predicted instances — instance scores 0.40 and 0.90 (mean 0.65), every
     // point score 0.70 (point-mean 0.70). The column must render the MIN instance
     // score 0.40 (the value prediction_score thresholds), NOT the 0.65 mean and
-    // NOT the 0.70 point-mean. The tooltip carries the full per-instance breakdown.
+    // NOT the 0.70 point-mean. (The per-row breakdown is a Radix Tooltip rendered
+    // in a portal on hover — not asserted here per the documented happy-dom Radix
+    // limitation; it's verified in desktop E2E.)
     const lf = new LabeledFrame({ video, frameIdx: 7 });
     lf.instances.push(predictedInstanceScored(skel, 0.4, 0.7));
     lf.instances.push(predictedInstanceScored(skel, 0.9, 0.7));
@@ -281,15 +283,9 @@ describe("SuggestionsPanel generation methods (#162)", () => {
     );
     render(<SuggestionsPanel />);
 
-    const cell = screen.getByText("0.40");
-    expect(cell).toBeInTheDocument();
+    expect(screen.getByText("0.40")).toBeInTheDocument();
     expect(screen.queryByText("0.65")).not.toBeInTheDocument(); // not the mean
     expect(screen.queryByText("0.70")).not.toBeInTheDocument(); // not the point-mean
-    // The tooltip lists every instance score and the mean.
-    const title = cell.getAttribute("title") ?? "";
-    expect(title).toContain("0.40");
-    expect(title).toContain("0.90");
-    expect(title).toContain("0.65");
   });
 
   it("default-method (stride) Generate replaces suggestions across ALL videos", async () => {

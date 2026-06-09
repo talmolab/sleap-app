@@ -45,6 +45,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { PredictedInstance } from "@talmolab/sleap-io.js";
 import type { SuggestionFrame, Video } from "../../types";
 import {
@@ -346,6 +352,7 @@ export function SuggestionsPanel({
   };
 
   return (
+    <TooltipProvider delayDuration={200}>
     <div className="flex flex-col h-full">
       {/* Generation controls */}
       <div className="px-2 py-1.5 border-b border-border space-y-1.5">
@@ -704,17 +711,28 @@ export function SuggestionsPanel({
                   <TableCell className="py-0.5 px-2 text-xs text-right tabular-nums">
                     {entry.suggestion.frameIdx}
                   </TableCell>
-                  <TableCell
-                    className="py-0.5 px-2 text-xs text-right tabular-nums text-muted-foreground"
-                    title={
-                      entry.score
-                        ? `Instances: ${entry.score.scores
-                            .map((s) => s.toFixed(2))
-                            .join(", ")} · mean ${entry.score.mean.toFixed(2)}`
-                        : undefined
-                    }
-                  >
-                    {entry.score ? entry.score.min.toFixed(2) : "--"}
+                  <TableCell className="py-0.5 px-2 text-xs text-right tabular-nums text-muted-foreground">
+                    {entry.score ? (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span className="cursor-help underline decoration-dotted decoration-muted-foreground/50 underline-offset-2">
+                            {entry.score.min.toFixed(2)}
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent side="left">
+                          <div className="tabular-nums">
+                            Instances:{" "}
+                            {entry.score.scores
+                              .map((s) => s.toFixed(2))
+                              .join(", ")}
+                            <br />
+                            mean {entry.score.mean.toFixed(2)}
+                          </div>
+                        </TooltipContent>
+                      </Tooltip>
+                    ) : (
+                      "--"
+                    )}
                   </TableCell>
                   <TableCell className="py-0.5 px-1 text-xs text-center w-6">
                     {entry.hasLabels && (
@@ -826,5 +844,6 @@ export function SuggestionsPanel({
         </DialogContent>
       </Dialog>
     </div>
+    </TooltipProvider>
   );
 }
