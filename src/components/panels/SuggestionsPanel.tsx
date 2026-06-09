@@ -64,23 +64,34 @@ type SortColumn = "index" | "video" | "frame" | "score";
 type SortDir = "asc" | "desc";
 
 /**
- * Mean prediction *instance* score for a frame.
+ * Per-frame prediction-score summary shown in the Score column.
  *
- * Uses `PredictedInstance.score` (SLEAP's instance/grouping score) — the SAME
- * metric the Frames panel shows (`FramesPanel.tsx`) and that the
- * `prediction_score` generation method filters on (`lib/suggestionStrategies`).
- * This keeps the Score column consistent across panels and meaningful for the
- * prediction-score workflow.
- *
- * NOTE: instance scores are NOT bounded to [0, 1] and are distinct from
- * per-point confidence. A frame can have a high mean here yet still contain a
- * single low-score instance — which is exactly what makes it a prediction_score
- * suggestion (the method counts instances below the limit, not the frame mean).
+ * All values are over the frame's PREDICTED instances' `PredictedInstance.score`
+ * (SLEAP's instance/grouping score — NOT bounded to [0, 1] and distinct from
+ * per-point confidence).
+ */
+interface FrameScoreInfo {
+  /**
+   * Lowest instance score in the frame — the weakest instance, and the value
+   * the `prediction_score` method actually compares against its Score limit (it
+   * counts instances at/below the limit). Shown as the Score column value so a
+   * generated row never appears to exceed the limit.
+   */
+  min: number;
+  /** Mean instance score — frame-level quality; matches the Frames panel. */
+  mean: number;
+  /** All predicted-instance scores, ascending (for the breakdown tooltip). */
+  scores: number[];
+}
+
+/**
+ * Summarize a suggested frame's predicted-instance scores, or `null` when the
+ * frame has no scored predictions.
  */
 function computeFrameScore(
   suggestion: SuggestionFrame,
   labels: { find: (opts: { video: Video; frameIdx: number }) => { instances: { score?: number }[] }[] } | null
-): number | null {
+): FrameScoreInfo | null {
   if (!labels) return null;
 
   const frames = labels.find({
@@ -94,16 +105,17 @@ function computeFrameScore(
   );
   if (predicted.length === 0) return null;
 
-  let total = 0;
-  let count = 0;
+  const scores: number[] = [];
   for (const inst of predicted) {
     if (typeof inst.score === "number" && !isNaN(inst.score)) {
-      total += inst.score;
-      count++;
+      scores.push(inst.score);
     }
   }
+  if (scores.length === 0) return null;
 
-  return count > 0 ? total / count : null;
+  scores.sort((a, b) => a - b);
+  const mean = scores.reduce((sum, s) => sum + s, 0) / scores.length;
+  return { min: scores[0], mean, scores };
 }
 
 /** Check if a frame has user-labeled instances. */
@@ -230,8 +242,9 @@ export function SuggestionsPanel({
           cmp = a.suggestion.frameIdx - b.suggestion.frameIdx;
           break;
         case "score": {
-          const sa = a.score ?? -Infinity;
-          const sb = b.score ?? -Infinity;
+          // Sort by the displayed value (each frame's lowest instance score).
+          const sa = a.score?.min ?? -Infinity;
+          const sb = b.score?.min ?? -Infinity;
           cmp = sa - sb;
           break;
         }
@@ -478,6 +491,11 @@ export function SuggestionsPanel({
                 aria-label="Instance limit upper"
               />
             </div>
+            <p className="text-xs text-muted-foreground leading-snug">
+              Selects frames with {instanceLimitLower} to {instanceLimitUpper}{" "}
+              instances scoring ≤ {scoreLimit}. Score shows each frame's lowest
+              instance score.
+            </p>
           </div>
         )}
 
@@ -653,6 +671,7 @@ export function SuggestionsPanel({
                 <TableHead
                   className="py-1 px-2 text-xs font-normal text-right h-auto cursor-pointer select-none"
                   onClick={() => toggleSort("score")}
+                  title="Lowest instance score in each frame (hover a row for the full breakdown)"
                 >
                   Score{sortIndicator("score")}
                 </TableHead>
@@ -685,8 +704,17 @@ export function SuggestionsPanel({
                   <TableCell className="py-0.5 px-2 text-xs text-right tabular-nums">
                     {entry.suggestion.frameIdx}
                   </TableCell>
-                  <TableCell className="py-0.5 px-2 text-xs text-right tabular-nums text-muted-foreground">
-                    {entry.score !== null ? entry.score.toFixed(2) : "--"}
+                  <TableCell
+                    className="py-0.5 px-2 text-xs text-right tabular-nums text-muted-foreground"
+                    title={
+                      entry.score
+                        ? `Instances: ${entry.score.scores
+                            .map((s) => s.toFixed(2))
+                            .join(", ")} · mean ${entry.score.mean.toFixed(2)}`
+                        : undefined
+                    }
+                  >
+                    {entry.score ? entry.score.min.toFixed(2) : "--"}
                   </TableCell>
                   <TableCell className="py-0.5 px-1 text-xs text-center w-6">
                     {entry.hasLabels && (
