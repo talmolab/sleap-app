@@ -44,6 +44,7 @@ import {
   labeledFramesBeyond,
   applyVideoReplacement,
 } from "../../lib/replaceVideo";
+import { nextSelectedVideo } from "../../lib/removeVideo";
 
 /** Truncate a filename/path from the left, keeping the rightmost characters. */
 function truncateLeft(path: string, maxLen: number): string {
@@ -299,6 +300,13 @@ export function VideosPanel() {
     newCount: number;
   } | null>(null);
 
+  // Pending confirm state for Remove Video: set when the target video has
+  // labeled frames (which would be deleted). null = no dialog open.
+  const [pendingRemove, setPendingRemove] = useState<{
+    video: Video;
+    frameCount: number;
+  } | null>(null);
+
   const handleLocateVideo = async (video: Video) => {
     const ok = await resolveVideoFile(video);
     if (ok) {
@@ -400,6 +408,42 @@ export function VideosPanel() {
     commitReplace(currentVideo, newVideo);
   };
 
+  /**
+   * Remove `video` and every reference to it (labeled frames + their ROIs,
+   * suggestions, static ROIs) via `Labels.removeVideo`, then reselect a
+   * neighbouring video — or clear the selection if none remain — and refresh.
+   * Called directly when the video has no labels, or from the confirm dialog.
+   */
+  const commitRemove = (video: Video) => {
+    if (!labels) return;
+    const wasCurrent = video === currentVideo;
+    const next = nextSelectedVideo(labels.videos, video);
+    labels.removeVideo(video);
+    if (wasCurrent) {
+      // The store's `video` state is nullable; the typed `setVideo` action
+      // narrows to Video, so cast when clearing after the last video is gone.
+      setVideo(next as Video);
+    }
+    markChanged();
+    bumpOverlayVersion();
+    setPendingRemove(null);
+    toast.success("Removed video");
+  };
+
+  /**
+   * Remove the selected video. If it has labeled frames, confirm first (they
+   * will be deleted); otherwise remove immediately.
+   */
+  const handleRemoveVideo = () => {
+    if (!labels || !currentVideo) return;
+    const frameCount = labels.find({ video: currentVideo }).length;
+    if (frameCount > 0) {
+      setPendingRemove({ video: currentVideo, frameCount });
+      return; // dialog's Remove button calls commitRemove
+    }
+    commitRemove(currentVideo);
+  };
+
   return (
     <div className="flex flex-col h-full">
       <ScrollArea className="flex-1">
@@ -469,7 +513,8 @@ export function VideosPanel() {
         <Button
           variant="subtle"
           size="xs"
-          onClick={() => toast.info("Remove Video is not yet implemented")}
+          disabled={!currentVideo}
+          onClick={handleRemoveVideo}
         >
           Remove Video
         </Button>
@@ -526,6 +571,47 @@ export function VideosPanel() {
               }}
             >
               Replace
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Remove Video confirm dialog (shown only when the video has labels) */}
+      <Dialog
+        open={pendingRemove !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingRemove(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Remove video?</DialogTitle>
+            <DialogDescription>
+              {pendingRemove && (
+                <>
+                  {pendingRemove.frameCount} labeled frame
+                  {pendingRemove.frameCount > 1 ? "s" : ""} on this video will be
+                  deleted. This can&apos;t be undone.
+                </>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPendingRemove(null)}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => {
+                if (pendingRemove) commitRemove(pendingRemove.video);
+              }}
+            >
+              Remove
             </Button>
           </DialogFooter>
         </DialogContent>
