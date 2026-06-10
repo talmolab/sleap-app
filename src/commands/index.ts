@@ -81,5 +81,6 @@ export {
   DeleteEdgeCommand,
   RenameNodeCommand,
   LoadSkeletonTemplateCommand,
+  OpenSkeletonCommand,
   installSkeletonUndoInterceptor,
 } from "./skeletonCommands";
