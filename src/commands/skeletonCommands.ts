@@ -37,6 +37,10 @@ function clonePoint(p: Instance["points"][0]): Instance["points"][0] {
     xy: [p.xy[0], p.xy[1]] as [number, number],
     visible: p.visible,
     complete: p.complete,
+    // Preserve the per-point prediction score so it survives a skeleton-edit
+    // undo/redo round-trip (predicted instances carry it; user points leave it
+    // undefined). Without this, undoing a skeleton edit silently dropped scores.
+    score: p.score,
     name: p.name,
   };
 }
