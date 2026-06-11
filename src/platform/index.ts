@@ -22,6 +22,7 @@ export interface PlatformAPI {
   showOpenDialog(options?: {
     filters?: FileFilter[];
     multiple?: boolean;
+    directory?: boolean;
   }): Promise<string | string[] | File | File[] | null>;
   /** Show a file save dialog. Returns path or null if cancelled. */
   showSaveDialog(options?: {
@@ -149,13 +150,20 @@ async function createTauriPlatform(): Promise<PlatformAPI> {
 
     async showOpenDialog(options): Promise<string | string[] | null> {
       const multi = options?.multiple ?? false;
-      console.log(`[platform] showOpenDialog (Tauri native, multiple=${multi})`);
+      const directory = options?.directory ?? false;
+      console.log(
+        `[platform] showOpenDialog (Tauri native, multiple=${multi}, directory=${directory})`
+      );
       const selected = await open({
         multiple: multi,
-        filters: options?.filters?.map((f) => ({
-          name: f.name,
-          extensions: f.extensions,
-        })),
+        directory,
+        // Tauri ignores filters in directory mode; omit them.
+        filters: directory
+          ? undefined
+          : options?.filters?.map((f) => ({
+              name: f.name,
+              extensions: f.extensions,
+            })),
       });
       if (multi) {
         if (Array.isArray(selected)) return selected.length > 0 ? selected : null;
