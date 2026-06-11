@@ -25,6 +25,99 @@ export function getBasename(filename: string | string[]): string {
   return parts[parts.length - 1] ?? f;
 }
 
+/** Path separator implied by a path string (Windows backslash vs POSIX slash). */
+function pathSep(p: string): string {
+  return p.includes("\\") ? "\\" : "/";
+}
+
+/**
+ * Re-resolve an image-sequence's stored frame paths against a user-picked folder
+ * by basename. Returns one `located` path per input frame, IN ORDER (positions
+ * preserved so they stay aligned with label frame indices), plus the `missing`
+ * original frame paths whose basename wasn't found in the folder. Pure +
+ * decoder-independent — unit-tested here; the actual decode is covered by E2E.
+ */
+export async function resolveImageFramesInFolder(
+  frames: string[],
+  folder: string,
+  exists: (path: string) => Promise<boolean>
+): Promise<{ located: string[]; missing: string[] }> {
+  const sep = pathSep(folder);
+  const dir = folder.replace(/[\\/]+$/, "");
+  const located = frames.map((f) => dir + sep + getBasename(f));
+  const missing: string[] = [];
+  for (let i = 0; i < frames.length; i++) {
+    if (!(await exists(located[i]))) missing.push(frames[i]);
+  }
+  return { located, missing };
+}
+
+/**
+ * Locate a missing image-sequence (ImageVideo) by pointing it at a user-picked
+ * folder. Re-resolves each stored frame to `<folder>/<basename>` (positions
+ * preserved), rewrites `video.filename` to those absolute paths (stashing the
+ * original in `backendMetadata.sourceFilename`), and rebuilds the
+ * `ImageVideoBackend` via the injected image reader. The shape from the .slp is
+ * passed through so construction does NOT need frame 0 to decode (a missing
+ * frame 0 just renders blank later). Tauri-only — the browser injects no image
+ * reader. Returns true if at least one frame resolved AND the backend built.
+ */
+export async function resolveImageSequenceVideo(
+  video: Video,
+  folder: string,
+  exists: (path: string) => Promise<boolean>
+): Promise<boolean> {
+  const frames = Array.isArray(video.filename)
+    ? video.filename
+    : [video.filename];
+
+  const { located, missing } = await resolveImageFramesInFolder(
+    frames,
+    folder,
+    exists
+  );
+
+  if (missing.length === frames.length) {
+    toast.error("No matching images found in that folder", {
+      description: `None of the ${frames.length} image file name(s) were found in ${folder}.`,
+    });
+    return false;
+  }
+
+  // Preserve the original stored path for re-save / display (first wins; don't clobber).
+  const origFilename = Array.isArray(video.filename)
+    ? video.filename[0] ?? ""
+    : video.filename;
+  const meta = video.backendMetadata as Record<string, unknown>;
+  if (meta.sourceFilename === undefined) meta.sourceFilename = origFilename;
+
+  // Rewrite to located absolute paths (positions preserved) and rebuild the backend.
+  video.filename = located;
+  try {
+    video.backend = await createVideoBackend(video.filename, {
+      shape: video.shape ?? undefined,
+    });
+  } catch (err) {
+    console.error(`[video] ImageVideo locate failed for "${folder}":`, err);
+    toast.error("Could not open the image sequence", {
+      description: err instanceof Error ? err.message : String(err),
+    });
+    return false;
+  }
+
+  if (missing.length > 0) {
+    toast.warning(
+      `${missing.length} of ${frames.length} image${frames.length > 1 ? "s" : ""} not found`,
+      { description: "Those frames will be blank." }
+    );
+  } else {
+    toast.success(
+      `Located ${frames.length} image${frames.length > 1 ? "s" : ""}`
+    );
+  }
+  return true;
+}
+
 /** Check if a filename looks like a fetchable URL. */
 export function isFetchableUrl(filename: string | string[]): boolean {
   const f = Array.isArray(filename) ? filename[0] ?? "" : filename;

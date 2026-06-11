@@ -13,6 +13,7 @@ import {
   buildStandaloneVideo,
   addVideoFileToLabels,
   backendKindForFilename,
+  resolveImageFramesInFolder,
   SUPPORTED_VIDEO_EXTS,
 } from "@/lib/resolveVideos";
 
@@ -60,6 +61,54 @@ describe("buildStandaloneVideo (gate)", () => {
     for (const name of ["clip.avi", "clip.xyz", "noextension"]) {
       expect(await buildStandaloneVideo(fakeFile(name))).toBeNull();
     }
+  });
+});
+
+describe("resolveImageFramesInFolder", () => {
+  it("maps each frame positionally to <folder>/<basename> and splits missing", async () => {
+    const frames = ["/old/a.png", "/old/b.png", "/old/c.png"];
+    const present = new Set(["/imgs/a.png", "/imgs/c.png"]);
+    const exists = async (p: string) => present.has(p);
+
+    const { located, missing } = await resolveImageFramesInFolder(
+      frames,
+      "/imgs",
+      exists
+    );
+
+    // positional: one located path per input frame, in order
+    expect(located).toEqual(["/imgs/a.png", "/imgs/b.png", "/imgs/c.png"]);
+    // b.png wasn't found
+    expect(missing).toEqual(["/old/b.png"]);
+  });
+
+  it("strips a trailing slash on the folder", async () => {
+    const { located } = await resolveImageFramesInFolder(
+      ["x/a.png"],
+      "/imgs/",
+      async () => true
+    );
+    expect(located).toEqual(["/imgs/a.png"]);
+  });
+
+  it("infers a Windows separator from the folder", async () => {
+    const { located } = await resolveImageFramesInFolder(
+      ["C:\\old\\a.png"],
+      "D:\\imgs",
+      async () => true
+    );
+    expect(located).toEqual(["D:\\imgs\\a.png"]);
+  });
+
+  it("reports every frame missing when none exist", async () => {
+    const frames = ["/old/a.png", "/old/b.png"];
+    const { located, missing } = await resolveImageFramesInFolder(
+      frames,
+      "/empty",
+      async () => false
+    );
+    expect(located.length).toBe(2);
+    expect(missing).toEqual(frames);
   });
 });
 
