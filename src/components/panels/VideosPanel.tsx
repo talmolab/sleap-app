@@ -33,6 +33,8 @@ import { useState } from "react";
 import type { Video } from "../../types";
 import {
   isVideoMissing,
+  isImageSequenceVideo,
+  resolveImageSequenceVideo,
   resolveVideoFile,
   resolveAllVideoFiles,
   resolveVideoPath,
@@ -40,6 +42,7 @@ import {
   pickVideoFiles,
   buildStandaloneVideo,
 } from "../../lib/resolveVideos";
+import { getPlatform, isTauri } from "../../platform/index";
 import {
   labeledFramesBeyond,
   applyVideoReplacement,
@@ -63,15 +66,21 @@ function VideoRow({
   index,
   isSelected,
   isMissing,
+  isImageSequence,
+  canLocateFolder,
   onSelect,
   onLocate,
+  onLocateFolder,
 }: {
   video: Video;
   index: number;
   isSelected: boolean;
   isMissing: boolean;
+  isImageSequence: boolean;
+  canLocateFolder: boolean;
   onSelect: () => void;
   onLocate: () => void;
+  onLocateFolder: () => void;
 }) {
   const shape = video.shape;
   const frameCount = shape?.[0] ?? "?";
@@ -106,19 +115,38 @@ function VideoRow({
           <span className={cn(isMissing && "text-muted-foreground")}>
             {truncateLeft(basename(video.filename), 30)}
           </span>
-          {isMissing && (
-            <Button
-              variant="subtle"
-              size="xs"
-              className="h-4 px-1 text-[10px]"
-              onClick={(e) => {
-                e.stopPropagation();
-                onLocate();
-              }}
-            >
-              Locate
-            </Button>
-          )}
+          {isMissing &&
+            (isImageSequence ? (
+              canLocateFolder ? (
+                <Button
+                  variant="subtle"
+                  size="xs"
+                  className="h-4 px-1 text-[10px]"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onLocateFolder();
+                  }}
+                >
+                  Locate folder…
+                </Button>
+              ) : (
+                <span className="text-[10px] italic text-muted-foreground">
+                  image sequence — open in desktop app
+                </span>
+              )
+            ) : (
+              <Button
+                variant="subtle"
+                size="xs"
+                className="h-4 px-1 text-[10px]"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onLocate();
+                }}
+              >
+                Locate
+              </Button>
+            ))}
         </span>
       </TableCell>
       <TableCell className="py-0.5 px-2 text-xs text-right tabular-nums">
@@ -288,6 +316,10 @@ export function VideosPanel() {
 
   const videos = labels?.videos ?? [];
   const missingVideos = videos.filter(isVideoMissing);
+  // "Locate All Missing" only handles regular videos: its multi-file video
+  // picker can't select images, so image sequences are located per-row via
+  // their own folder pick (handleLocateImageFolder).
+  const missingResolvable = missingVideos.filter((v) => !isImageSequenceVideo(v));
 
   // Pending confirm-trim state for Replace Video: set when the chosen
   // replacement is shorter than the current video's labeled frames, so some
@@ -311,8 +343,23 @@ export function VideosPanel() {
     }
   };
 
+  const handleLocateImageFolder = async (video: Video) => {
+    const platform = await getPlatform();
+    const folder = await platform.showOpenDialog({ directory: true });
+    if (!folder || typeof folder !== "string") return;
+    const ok = await resolveImageSequenceVideo(video, folder, platform.exists);
+    if (ok) {
+      bumpOverlayVersion();
+      // If this is the current video, force a frame re-load
+      if (video === currentVideo) {
+        setVideo(video);
+        setFrameIdx(frameIdx);
+      }
+    }
+  };
+
   const handleLocateAll = async () => {
-    const count = await resolveAllVideoFiles(missingVideos);
+    const count = await resolveAllVideoFiles(missingResolvable);
     if (count > 0) {
       bumpOverlayVersion();
       // If the current video was resolved, force a frame re-load
@@ -433,8 +480,11 @@ export function VideosPanel() {
                   index={i}
                   isSelected={video === currentVideo}
                   isMissing={isVideoMissing(video)}
+                  isImageSequence={isImageSequenceVideo(video)}
+                  canLocateFolder={isTauri}
                   onSelect={() => setVideo(video)}
                   onLocate={() => handleLocateVideo(video)}
+                  onLocateFolder={() => handleLocateImageFolder(video)}
                 />
               ))}
             </TableBody>
@@ -473,7 +523,7 @@ export function VideosPanel() {
         >
           Remove Video
         </Button>
-        {missingVideos.length > 0 && (
+        {missingResolvable.length > 0 && (
           <Button
             variant="subtle"
             size="xs"
