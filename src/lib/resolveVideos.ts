@@ -11,6 +11,7 @@ import {
   MediaBunnyVideoBackend,
   SeqVideoBackend,
   Video,
+  createVideoBackend,
   type VideoBackend,
 } from "@talmolab/sleap-io.js";
 import { toast } from "@/lib/notify";
@@ -34,6 +35,22 @@ export function isFetchableUrl(filename: string | string[]): boolean {
 export function isVideoMissing(video: Video): boolean {
   if (video.hasEmbeddedImages) return false;
   return video.backend === null && !isFetchableUrl(video.filename);
+}
+
+/**
+ * Whether a video is an image-sequence (ImageVideo): a list of image paths, or a
+ * single image-extension filename, or one the loader flagged as such. These are
+ * decoded by sleap-io.js's ImageVideoBackend via the injected image reader
+ * during loadSlp — they must NOT be auto-resolved into a single-file (mp4box)
+ * backend, which would hang on a JPEG.
+ */
+export function isImageSequenceVideo(video: Video): boolean {
+  if (video.backendError?.kind === "image-sequence") return true;
+  if (Array.isArray(video.filename)) return true;
+  const first = Array.isArray(video.filename)
+    ? video.filename[0] ?? ""
+    : video.filename;
+  return /\.(png|jpe?g|tiff?|bmp)$/i.test(first);
 }
 
 /**
@@ -152,6 +169,28 @@ export async function resolveExternalVideos(
   // Try auto-resolution if we have filesystem access and a project path
   if (options) {
     for (const video of unresolvedVideos) {
+      // Image-sequence (ImageVideo): build an ImageVideoBackend via the factory,
+      // which uses the injected image reader (set in loadProjectFromPath) to
+      // resolve each frame's path against the project dir. The browser's
+      // streaming reader leaves external videos backendless — including image
+      // sequences — so we create them here, the same place external MP4s are
+      // resolved. Never route them to mp4box (that hangs on a JPEG). If the
+      // reader can't find the images, leave it unresolved for the locate flow.
+      if (isImageSequenceVideo(video)) {
+        try {
+          const backend = await createVideoBackend(video.filename, {
+            shape: video.shape ?? undefined,
+          });
+          video.backend = backend;
+          resolvedCount++;
+        } catch (err) {
+          const ref = Array.isArray(video.filename)
+            ? video.filename[0]
+            : video.filename;
+          console.warn(`[video] ImageVideo not resolved "${ref}":`, err);
+        }
+        continue;
+      }
       const candidates = getVideoPathCandidates(video, options.projectPath);
       console.log(
         `[video] Resolving "${Array.isArray(video.filename) ? video.filename[0] : video.filename}", candidates:`,
