@@ -9,10 +9,11 @@
  * Handles loading state, toast notifications, and unsaved changes confirmation.
  */
 
-import { loadSlp } from "@talmolab/sleap-io.js";
+import { loadSlp, setImageBytesReader } from "@talmolab/sleap-io.js";
 import { useAppStore } from "../stores/appStore";
 import { toast } from "@/lib/notify";
 import { resolveExternalVideos } from "./resolveVideos";
+import { setImageProjectDir, createImageReader } from "./imageVideoReader";
 
 /**
  * Load an SLP project from a File object.
@@ -75,6 +76,16 @@ export async function loadProjectFromPath(
   store.setLoading(true, `Loading ${filename}...`);
 
   try {
+    // Make ImageVideo (image-sequence) frames resolvable on desktop: resolve
+    // relative image paths against the project directory, and read their bytes
+    // through Tauri's plugin-fs. This MUST be set before loadSlp, which opens
+    // ImageVideoBackend inline (it decodes frame 0 for the shape). When a path
+    // can't be resolved the reader throws and sleap-io.js's load guard records
+    // video.backendError instead of aborting the load.
+    const sep = path.includes("\\") ? "\\" : "/";
+    setImageProjectDir(path.substring(0, path.lastIndexOf(sep)));
+    if (exists) setImageBytesReader(createImageReader(readFile, exists));
+
     const bytes = await readFile(path);
     const labels = await loadSlp(bytes, {
       openVideos: true,
