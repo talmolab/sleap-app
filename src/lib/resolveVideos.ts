@@ -17,6 +17,7 @@ import {
 import { toast } from "@/lib/notify";
 import type { Labels } from "../types";
 import { getPlatform } from "../platform/index";
+import { imagePathCandidates } from "./imageVideoReader";
 
 /** Extract just the basename from a path or filename. */
 export function getBasename(filename: string | string[]): string {
@@ -224,6 +225,32 @@ export interface AutoResolveOptions {
 }
 
 /**
+ * True if the first image of an image-sequence resolves on disk, trying the same
+ * ordered candidates the desktop image reader uses (absolute as-is, relative to
+ * the project dir, basename-in-project-dir). An ImageVideoBackend built with a
+ * known shape decodes nothing up front, so it would succeed even when every
+ * image is missing — this guards against accepting such a blank backend.
+ */
+async function imageSequenceFirstFrameExists(
+  video: Video,
+  options: AutoResolveOptions
+): Promise<boolean> {
+  const first = Array.isArray(video.filename)
+    ? video.filename[0] ?? ""
+    : video.filename;
+  if (!first) return false;
+  const sep = options.projectPath.includes("\\") ? "\\" : "/";
+  const projectDir = options.projectPath.substring(
+    0,
+    options.projectPath.lastIndexOf(sep)
+  );
+  for (const candidate of imagePathCandidates(first, projectDir)) {
+    if (await options.exists(candidate)) return true;
+  }
+  return false;
+}
+
+/**
  * After loadSlp() returns, detect videos with no backend (external MP4s that
  * couldn't be resolved) and attempt auto-resolution.
  *
@@ -270,6 +297,20 @@ export async function resolveExternalVideos(
       // resolved. Never route them to mp4box (that hangs on a JPEG). If the
       // reader can't find the images, leave it unresolved for the locate flow.
       if (isImageSequenceVideo(video)) {
+        const ref = Array.isArray(video.filename)
+          ? video.filename[0]
+          : video.filename;
+        // A known shape makes ImageVideoBackend.create() skip its frame-0
+        // decode, so it builds even when no image exists — a non-null but blank
+        // backend with no "Locate image folder…" affordance. Verify the first
+        // image actually resolves before accepting it; otherwise leave the
+        // video unresolved so the Videos panel flags it missing.
+        if (!(await imageSequenceFirstFrameExists(video, options))) {
+          console.warn(
+            `[video] ImageVideo images not found near "${ref}"; leaving unresolved for the locate flow`
+          );
+          continue;
+        }
         try {
           const backend = await createVideoBackend(video.filename, {
             shape: video.shape ?? undefined,
@@ -277,9 +318,6 @@ export async function resolveExternalVideos(
           video.backend = backend;
           resolvedCount++;
         } catch (err) {
-          const ref = Array.isArray(video.filename)
-            ? video.filename[0]
-            : video.filename;
           console.warn(`[video] ImageVideo not resolved "${ref}":`, err);
         }
         continue;
