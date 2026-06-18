@@ -84,7 +84,19 @@ export async function loadProjectFromPath(
     // video.backendError instead of aborting the load.
     const sep = path.includes("\\") ? "\\" : "/";
     setImageProjectDir(path.substring(0, path.lastIndexOf(sep)));
-    if (exists) setImageBytesReader(createImageReader(readFile, exists));
+    if (exists) {
+      // Read image bytes via a native Rust command (std::fs::read) instead of the
+      // fs plugin, whose per-call path scope-validation adds ~4 s/frame on SMB
+      // mounts (vs ~32 ms native) — pathological for ImageVideo, which reads one
+      // image per displayed frame. The plugin's exists()/readFile are still used
+      // for path resolution (once per video) and the .slp itself.
+      const { invoke } = await import("@tauri-apps/api/core");
+      const nativeReadImage = async (p: string): Promise<Uint8Array> => {
+        const buf = await invoke<ArrayBuffer>("read_image_file", { path: p });
+        return new Uint8Array(buf);
+      };
+      setImageBytesReader(createImageReader(nativeReadImage, exists));
+    }
 
     const bytes = await readFile(path);
     const labels = await loadSlp(bytes, {

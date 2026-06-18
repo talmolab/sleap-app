@@ -64,10 +64,28 @@ export function createImageReader(
   readFile: (path: string) => Promise<Uint8Array>,
   exists: (path: string) => Promise<boolean>
 ): (path: string) => Promise<Uint8Array> {
+  // Resolve the candidate strategy ONCE and reuse it. Every image in a sequence
+  // shares one directory and one resolution rule (absolute as-is / relative /
+  // basename-in-project-dir), so once the first frame resolves we apply the same
+  // candidate index to later frames and `readFile` directly — skipping the
+  // per-frame `exists()` stat, which on a network mount is a full round-trip
+  // (measured ~17 ms/frame). If a cached strategy's read later fails (e.g. a
+  // different video in the project needs a different rule), we re-resolve.
+  let resolvedIndex: number | null = null;
   return async (path: string): Promise<Uint8Array> => {
     const candidates = imagePathCandidates(path, projectDir);
-    for (const candidate of candidates) {
-      if (await exists(candidate)) return readFile(candidate);
+    if (resolvedIndex !== null && resolvedIndex < candidates.length) {
+      try {
+        return await readFile(candidates[resolvedIndex]);
+      } catch {
+        resolvedIndex = null; // strategy stopped working — fall through to re-resolve
+      }
+    }
+    for (let i = 0; i < candidates.length; i++) {
+      if (await exists(candidates[i])) {
+        resolvedIndex = i;
+        return readFile(candidates[i]);
+      }
     }
     throw new Error(
       `Image file not found: ${path}` +

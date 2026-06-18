@@ -24,6 +24,18 @@ fn get_initial_file(state: tauri::State<InitialFile>) -> Option<String> {
     state.0.lock().unwrap().take()
 }
 
+/// Read a file's raw bytes natively (`std::fs::read`), bypassing the fs plugin's
+/// per-call path scope-validation. On SMB/network mounts that validation adds
+/// multi-second cold-read latency (measured ~4 s/frame vs ~32 ms native), which
+/// is pathological for ImageVideo playback (one image read per displayed frame).
+/// Returns raw bytes via the binary IPC channel (no JSON number-array encoding).
+#[tauri::command]
+fn read_image_file(path: String) -> Result<tauri::ipc::Response, String> {
+    std::fs::read(&path)
+        .map(tauri::ipc::Response::new)
+        .map_err(|e| format!("read_image_file({path}): {e}"))
+}
+
 /// Reveal a file in the OS file manager (Finder / Explorer / xdg-open).
 #[tauri::command]
 fn reveal_in_file_manager(path: String) -> Result<(), String> {
@@ -147,6 +159,7 @@ pub fn run() {
     .manage(tokio::sync::Mutex::new(rtc::RtcState::new()))
     .invoke_handler(tauri::generate_handler![
         get_initial_file,
+        read_image_file,
         reveal_in_file_manager,
         open_preferences_directory,
         environment::detect_uv,
