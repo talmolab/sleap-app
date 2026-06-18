@@ -465,6 +465,34 @@ export function Seekbar() {
     drawHeaderSeries(ctx, headerSeries, totalFrames, w, h);
   }, [totalFrames, labels, video, seekbarHeaderGraph, headerSeries]);
 
+  // Precompute the seekbar header's static content (per-track occupied frames +
+  // labeled-frame marks) ONCE per data change — NOT per frame. The draw effect
+  // below re-runs on every frameIdx change (to move the 1px playhead); doing the
+  // O(tracks × labeledFrames × instances) `.some()` scan there (with a
+  // getState() per inner iteration) froze the UI for seconds on videos with many
+  // labeled frames. A single pass + a track→index Map makes it O(frames ×
+  // instances). overlayVersion is in the deps because labels is mutated in place.
+  const headerData = useMemo(() => {
+    if (!labels || !video) return null;
+    const tracks = labels.tracks as unknown[];
+    const trackIdxOf = new Map<unknown, number>(tracks.map((t, i) => [t, i]));
+    const byTrack: number[][] = tracks.map(() => []);
+    const marks: Array<[number, boolean]> = [];
+    for (const lf of labels.find({ video })) {
+      if (lf.instances.length === 0) continue;
+      let hasUser = false;
+      for (const inst of lf.instances) {
+        const track = (inst as { track?: unknown }).track ?? null;
+        const ti = track === null ? -1 : trackIdxOf.get(track) ?? -1;
+        if (ti >= 0) byTrack[ti].push(lf.frameIdx);
+        if (!("score" in (inst as object))) hasUser = true;
+      }
+      marks.push([lf.frameIdx, hasUser]);
+    }
+    return { byTrack, marks };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [labels, video, overlayVersion]);
+
   // Render seekbar
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -498,23 +526,15 @@ export function Seekbar() {
       ctx.fillRect(x1, 0, x2 - x1, h);
     }
 
-    // Draw track occupancy bars
-    if (labels) {
-      const tracks = labels.tracks;
-      const trackBarHeight = Math.min(4, (h - 20) / Math.max(tracks.length, 1));
-
-      tracks.forEach((track, trackIdx) => {
-        const color = getPaletteColor(palette, trackIdx);
-        ctx.fillStyle = rgbToCSS(color, 0.6);
-
-        // Find frames where this track has instances
-        for (const lf of labels.labeledFrames) {
-          if (lf.video !== useAppStore.getState().video) continue;
-          const hasTrack = lf.instances.some((inst) => inst.track === track);
-          if (hasTrack) {
-            const x = frameToX(lf.frameIdx);
-            ctx.fillRect(x, trackIdx * trackBarHeight, Math.max(1, w / totalFrames), trackBarHeight - 1);
-          }
+    // Draw track occupancy bars (occupied frames precomputed per track).
+    if (headerData) {
+      const trackBarHeight = Math.min(4, (h - 20) / Math.max(headerData.byTrack.length, 1));
+      const rectW = Math.max(1, w / totalFrames);
+      headerData.byTrack.forEach((frameIdxs, trackIdx) => {
+        ctx.fillStyle = rgbToCSS(getPaletteColor(palette, trackIdx), 0.6);
+        const y = trackIdx * trackBarHeight;
+        for (const f of frameIdxs) {
+          ctx.fillRect(frameToX(f), y, rectW, trackBarHeight - 1);
         }
       });
     }
@@ -530,19 +550,11 @@ export function Seekbar() {
       }
     }
 
-    // Draw labeled frame marks
-    if (labels) {
-      const currentVideo = useAppStore.getState().video;
-      for (const lf of labels.labeledFrames) {
-        if (lf.video !== currentVideo) continue;
-        // PyQt draws no seekbar mark for empty LabeledFrames; only frames with
-        // instances get a tick (matching the snap + Frames-panel behavior).
-        if (lf.instances.length === 0) continue;
-        const x = frameToX(lf.frameIdx);
-
-        const hasUser = lf.instances.some((i) => !("score" in i));
+    // Draw labeled frame marks (frame + user/predicted flag precomputed).
+    if (headerData) {
+      for (const [f, hasUser] of headerData.marks) {
         ctx.fillStyle = hasUser ? "#3b82f6" : "#67e8f9"; // blue user / light-blue predicted
-        ctx.fillRect(x - 1, h - 14, 2, 10);
+        ctx.fillRect(frameToX(f) - 1, h - 14, 2, 10);
       }
     }
 
@@ -557,7 +569,7 @@ export function Seekbar() {
       ctx.fillStyle = "rgba(255,255,255,0.3)";
       ctx.fillRect(hx - 0.5, 0, 1, h);
     }
-  }, [frameIdx, totalFrames, labels, palette, hoverFrame, video, frameRange]);
+  }, [frameIdx, totalFrames, headerData, labels, palette, hoverFrame, video, frameRange]);
 
   // Playback animation loop
   useEffect(() => {
