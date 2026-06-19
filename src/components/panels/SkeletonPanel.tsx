@@ -17,12 +17,30 @@ import {
   DeleteEdgeCommand,
   RenameNodeCommand,
   LoadSkeletonTemplateCommand,
+  OpenSkeletonCommand,
   installSkeletonUndoInterceptor,
 } from "../../commands/skeletonCommands";
 import {
   SKELETON_TEMPLATES,
   TEMPLATE_ORDER,
 } from "../../lib/skeletonTemplates";
+import {
+  parseSkeletonFile,
+  compareSkeletons,
+  serializeSkeletonYaml,
+  type SkeletonDiff,
+} from "../../lib/skeletonIO";
+import { downloadFile } from "../../lib/exportUtils";
+import { getPlatform } from "../../platform/index";
+import { toast } from "@/lib/notify";
+import type { Skeleton } from "@talmolab/sleap-io.js";
+import { ReplaceSkeletonDialog } from "./ReplaceSkeletonDialog";
+import {
+  validDestinationNames,
+  initialEdgeSelection,
+  nextEdgeSelection,
+  isValidEdgeSelection,
+} from "../../lib/skeletonEdgeEditing";
 import { cn } from "@/lib/utils";
 import {
   Table,
@@ -78,12 +96,25 @@ export function SkeletonPanel() {
   const [addEdgeOpen, setAddEdgeOpen] = useState(false);
   const [edgeSrcName, setEdgeSrcName] = useState("");
   const [edgeDstName, setEdgeDstName] = useState("");
+  // Sticky seed: remember the last destination we connected to, so reopening
+  // the dialog can prefer it as the next source (PyQt-like rapid chaining).
+  const lastEdgeDst = useRef<string>("");
 
   // Dialog state for template confirmation
   const [templateConfirmOpen, setTemplateConfirmOpen] = useState(false);
   const [pendingTemplateId, setPendingTemplateId] = useState<string | null>(
     null
   );
+
+  // State for the "Load From File…" → Replace flow (#163). When the imported
+  // skeleton's node set differs from the current one, we stash the parsed
+  // skeleton + the node-name diff and open the ReplaceSkeletonDialog so the user
+  // can link old nodes to new ones before applying.
+  const [replaceDialogOpen, setReplaceDialogOpen] = useState(false);
+  const [pendingImport, setPendingImport] = useState<{
+    newSkeleton: Skeleton;
+    diff: SkeletonDiff;
+  } | null>(null);
 
   // Install undo interceptor
   useEffect(() => {
@@ -117,15 +148,27 @@ export function SkeletonPanel() {
   };
 
   const addEdge = () => {
-    if (!edgeSrcName || !edgeDstName) return;
+    if (!isValidEdgeSelection(nodes, edges, edgeSrcName, edgeDstName)) return;
+    // Snapshot before executing: AddEdgeCommand mutates skeleton.edges in place,
+    // but other skeleton commands reassign it — so capture the pre-add length
+    // (the index the new edge will occupy) and build the post-add set explicitly
+    // here, rather than relying on `edges` reflecting (or not reflecting) the
+    // push.
+    const newEdgeIdx = edges.length;
+    const postAddEdges = [
+      ...edges,
+      { source: { name: edgeSrcName }, destination: { name: edgeDstName } },
+    ];
     commandContext.execute(AddEdgeCommand, {
       srcName: edgeSrcName,
       dstName: edgeDstName,
     });
-    setSelectedEdgeIdx(edges.length); // new last index
-    setEdgeSrcName("");
-    setEdgeDstName("");
-    setAddEdgeOpen(false);
+    lastEdgeDst.current = edgeDstName;
+    const sel = nextEdgeSelection(nodes, postAddEdges, edgeDstName);
+    setEdgeSrcName(sel.src);
+    setEdgeDstName(sel.dst);
+    setSelectedEdgeIdx(newEdgeIdx);
+    // NOTE: intentionally do NOT close the dialog — allows rapid edge chaining.
   };
 
   const deleteEdge = () => {
@@ -160,6 +203,144 @@ export function SkeletonPanel() {
     commandContext.execute(RenameNodeCommand, { nodeIdx, newName });
   };
 
+  /** Apply a parsed skeleton to the project (optionally with a rename link map). */
+  const applyImport = async (
+    newSkeleton: Skeleton,
+    linkMap?: Map<string, string>
+  ) => {
+    await commandContext.execute(OpenSkeletonCommand, { newSkeleton, linkMap });
+    setSelectedNodeIdx(null);
+    setSelectedEdgeIdx(null);
+    toast.success("Loaded skeleton", {
+      description: `${newSkeleton.nodes.length} node${
+        newSkeleton.nodes.length !== 1 ? "s" : ""
+      }`,
+    });
+  };
+
+  /**
+   * Load a skeleton from a .json/.yaml/.yml/.slp file. Seeds a 0-node skeleton
+   * directly; on an existing skeleton, applies directly when the node sets match
+   * (only edges/symmetries change) else opens the Replace dialog to link nodes.
+   */
+  const handleLoadFromFile = async () => {
+    if (!skeleton) return;
+    let picked: string | string[] | File | File[] | null;
+    let newSkeleton: Skeleton;
+    try {
+      const platform = await getPlatform();
+      picked = await platform.showOpenDialog({
+        filters: [
+          { name: "Skeleton", extensions: ["json", "yaml", "yml", "slp"] },
+        ],
+      });
+      if (picked == null) return; // cancelled
+      // showOpenDialog may return a single item or an array; take the first.
+      const one = Array.isArray(picked) ? picked[0] : picked;
+      if (one == null) return; // empty selection
+
+      let filename: string;
+      let data: string | ArrayBuffer | Uint8Array;
+      if (typeof one === "string") {
+        // Tauri: a path string → read bytes via the platform.
+        filename = one;
+        data = await platform.readFile(one);
+      } else {
+        // Browser: a File → read text (or bytes for the binary .slp).
+        filename = one.name;
+        const isSlp = /\.slp$/i.test(one.name);
+        data = isSlp ? await one.arrayBuffer() : await one.text();
+      }
+      newSkeleton = await parseSkeletonFile(filename, data);
+    } catch (err) {
+      toast.error("Failed to load skeleton", {
+        description: err instanceof Error ? err.message : String(err),
+      });
+      return;
+    }
+
+    // Seed case: an empty (0-node) skeleton → apply directly.
+    if (skeleton.nodes.length === 0) {
+      await applyImport(newSkeleton);
+      return;
+    }
+
+    const diff = compareSkeletons(
+      skeleton.nodes.map((n) => n.name),
+      newSkeleton.nodes.map((n) => n.name)
+    );
+
+    // Identical node sets → only edges/symmetries change; apply directly.
+    if (diff.addNodes.length === 0 && diff.deleteNodes.length === 0) {
+      await applyImport(newSkeleton);
+      return;
+    }
+
+    // Differing node sets → let the user link old→new nodes first.
+    setPendingImport({ newSkeleton, diff });
+    setReplaceDialogOpen(true);
+  };
+
+  /** Confirm the Replace dialog: apply the import with the chosen link map. */
+  const handleReplaceConfirm = async (linkMap: Map<string, string>) => {
+    if (pendingImport) {
+      await applyImport(pendingImport.newSkeleton, linkMap);
+    }
+    setPendingImport(null);
+    setReplaceDialogOpen(false);
+  };
+
+  /** Serialize the current skeleton to YAML and save it (Save As…). */
+  const handleSaveAs = async () => {
+    if (!skeleton) return;
+    try {
+      const yaml = serializeSkeletonYaml(skeleton);
+      const name = `${skeleton.name || "skeleton"}.yaml`;
+      const platform = await getPlatform();
+
+      if (platform.isTauri) {
+        const savePath = await platform.showSaveDialog({
+          filters: [{ name: "Skeleton YAML", extensions: ["yaml"] }],
+          defaultName: name,
+        });
+        if (!savePath) return; // cancelled
+        await platform.writeFile(savePath, new TextEncoder().encode(yaml));
+        toast.success("Saved skeleton", { description: savePath });
+      } else if ("showSaveFilePicker" in window) {
+        // Browser: File System Access API (native save dialog).
+        try {
+          const handle = await (
+            window as unknown as {
+              showSaveFilePicker: (
+                opts: unknown
+              ) => Promise<FileSystemFileHandle>;
+            }
+          ).showSaveFilePicker({
+            types: [
+              { description: "Skeleton YAML", accept: { "text/yaml": [".yaml"] } },
+            ],
+            suggestedName: name,
+          });
+          const writable = await handle.createWritable();
+          await writable.write(new Blob([yaml], { type: "text/yaml" }));
+          await writable.close();
+          toast.success("Saved skeleton", { description: handle.name });
+        } catch (err: unknown) {
+          if (err instanceof DOMException && err.name === "AbortError") return;
+          throw err;
+        }
+      } else {
+        // Fallback: anchor download.
+        downloadFile(yaml, name, "text/yaml");
+        toast.success("Saved skeleton", { description: name });
+      }
+    } catch (err) {
+      toast.error("Failed to save skeleton", {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+
   return (
     <div className="flex flex-col h-full">
       {/* Skeleton info header */}
@@ -173,7 +354,7 @@ export function SkeletonPanel() {
         </div>
       </div>
 
-      {/* Template selector */}
+      {/* Template selector + Load/Save buttons */}
       <div className="px-2 py-1.5 border-b border-border">
         <label className="text-xs text-muted-foreground block mb-1">
           Load template
@@ -193,6 +374,25 @@ export function SkeletonPanel() {
             })}
           </SelectContent>
         </Select>
+        <div className="flex gap-1 mt-1.5">
+          <Button
+            variant="subtle"
+            size="xs"
+            className="flex-1"
+            onClick={handleLoadFromFile}
+          >
+            Load From File…
+          </Button>
+          <Button
+            variant="subtle"
+            size="xs"
+            className="flex-1"
+            onClick={handleSaveAs}
+            disabled={nodes.length === 0}
+          >
+            Save As…
+          </Button>
+        </div>
       </div>
 
       {/* Tabs for Nodes / Edges */}
@@ -255,8 +455,13 @@ export function SkeletonPanel() {
               variant="subtle"
               size="xs"
               onClick={() => {
-                setEdgeSrcName("");
-                setEdgeDstName("");
+                const sel = initialEdgeSelection(
+                  nodes,
+                  edges,
+                  lastEdgeDst.current
+                );
+                setEdgeSrcName(sel.src);
+                setEdgeDstName(sel.dst);
                 setAddEdgeOpen(true);
               }}
               disabled={nodes.length < 2}
@@ -363,7 +568,16 @@ export function SkeletonPanel() {
               <label className="text-xs text-muted-foreground block mb-1">
                 Source
               </label>
-              <Select value={edgeSrcName} onValueChange={setEdgeSrcName}>
+              <Select
+                value={edgeSrcName}
+                onValueChange={(v) => {
+                  setEdgeSrcName(v);
+                  const valid = validDestinationNames(nodes, v, edges);
+                  setEdgeDstName((prev) =>
+                    valid.includes(prev) ? prev : (valid[0] ?? "")
+                  );
+                }}
+              >
                 <SelectTrigger className="w-full" size="sm">
                   <SelectValue placeholder="Select source node..." />
                 </SelectTrigger>
@@ -385,11 +599,13 @@ export function SkeletonPanel() {
                   <SelectValue placeholder="Select destination node..." />
                 </SelectTrigger>
                 <SelectContent>
-                  {nodes.map((n, i) => (
-                    <SelectItem key={i} value={n.name}>
-                      {n.name}
-                    </SelectItem>
-                  ))}
+                  {validDestinationNames(nodes, edgeSrcName, edges).map(
+                    (name) => (
+                      <SelectItem key={name} value={name}>
+                        {name}
+                      </SelectItem>
+                    )
+                  )}
                 </SelectContent>
               </Select>
             </div>
@@ -400,12 +616,14 @@ export function SkeletonPanel() {
               size="sm"
               onClick={() => setAddEdgeOpen(false)}
             >
-              Cancel
+              Done
             </Button>
             <Button
               size="sm"
               onClick={addEdge}
-              disabled={!edgeSrcName || !edgeDstName}
+              disabled={
+                !isValidEdgeSelection(nodes, edges, edgeSrcName, edgeDstName)
+              }
             >
               Add
             </Button>
@@ -446,6 +664,20 @@ export function SkeletonPanel() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Replace Skeleton Dialog (Load From File… with a differing node set) */}
+      {pendingImport && (
+        <ReplaceSkeletonDialog
+          open={replaceDialogOpen}
+          onOpenChange={(open) => {
+            setReplaceDialogOpen(open);
+            if (!open) setPendingImport(null);
+          }}
+          diff={pendingImport.diff}
+          newSkeletonName={pendingImport.newSkeleton.name}
+          onConfirm={handleReplaceConfirm}
+        />
+      )}
     </div>
   );
 }

@@ -14,6 +14,7 @@ import {
   SKELETON_TEMPLATES,
   type SkeletonTemplate,
 } from "../lib/skeletonTemplates";
+import { remapInstancePoints } from "../lib/skeletonIO";
 
 // ---------------------------------------------------------------------------
 // Snapshot helpers
@@ -36,6 +37,10 @@ function clonePoint(p: Instance["points"][0]): Instance["points"][0] {
     xy: [p.xy[0], p.xy[1]] as [number, number],
     visible: p.visible,
     complete: p.complete,
+    // Preserve the per-point prediction score so it survives a skeleton-edit
+    // undo/redo round-trip (predicted instances carry it; user points leave it
+    // undefined). Without this, undoing a skeleton edit silently dropped scores.
+    score: p.score,
     name: p.name,
   };
 }
@@ -66,16 +71,45 @@ function restoreSkeletonSnapshot(
   ctx: CommandContext,
   snapshot: SkeletonSnapshot
 ) {
-  const { skeleton } = ctx.state;
+  const { labels, skeleton } = ctx.state;
   if (!skeleton) return;
 
   skeleton.nodes = snapshot.nodes;
   skeleton.edges = snapshot.edges;
   skeleton.rebuildCache(skeleton.nodes);
 
-  // Restore instance points
-  for (const entry of snapshot.instancePoints) {
-    entry.instance.points = entry.points.map(clonePoint);
+  // Restore instance points AND re-point every instance at the restored
+  // skeleton. The snapshot's `instancePoints` is captured in
+  // `labeledFrames` → `instances` iteration order; we re-walk the CURRENT live
+  // instances in that same order and assign positionally. This matters because
+  // the frame-level undo (run just before this, via the interceptor) replaces
+  // `labels.labeledFrames` with fresh clones — the original `entry.instance`
+  // refs are detached, so writing to them would leave the live clones holding
+  // stale (post-mutation) points inconsistent with the restored skeleton.
+  let restoredPositionally = false;
+  if (labels) {
+    const liveInstances: Instance[] = [];
+    for (const lf of labels.labeledFrames) {
+      for (const inst of lf.instances) liveInstances.push(inst);
+    }
+    if (liveInstances.length === snapshot.instancePoints.length) {
+      for (let i = 0; i < liveInstances.length; i++) {
+        liveInstances[i].points = snapshot.instancePoints[i].points.map(
+          clonePoint
+        );
+        liveInstances[i].skeleton = skeleton;
+      }
+      restoredPositionally = true;
+    }
+  }
+
+  // Fallback: assign onto the captured instance refs (legacy behavior) when the
+  // live layout doesn't line up positionally.
+  if (!restoredPositionally) {
+    for (const entry of snapshot.instancePoints) {
+      entry.instance.points = entry.points.map(clonePoint);
+      entry.instance.skeleton = skeleton;
+    }
   }
 
   ctx.state.markChanged();
@@ -356,6 +390,92 @@ export const LoadSkeletonTemplateCommand: Command = {
 
     const afterSnapshot = takeSkeletonSnapshot(ctx);
     storeSkeletonUndo(ctx, "LoadSkeletonTemplate", before, afterSnapshot);
+
+    ctx.state.markChanged();
+    // Node count changed: refresh skeleton-dependent UI (see AddNode).
+    ctx.state.bumpOverlayVersion();
+  },
+};
+
+/**
+ * Import a parsed skeleton onto the project's single skeleton **in place**,
+ * preserving instance points by node name (or by an explicit rename `linkMap`).
+ *
+ * Port of PyQt SLEAP `OpenSkeleton.do_action` (Cases 1 + 2): the existing
+ * skeleton OBJECT is rebuilt (nodes/edges/symmetries replaced) — it is NOT
+ * appended/replaced in `labels.skeletons`, so every reference stays valid and
+ * the #99 multi-skeleton footgun is avoided. Each instance's points are remapped
+ * via {@link remapInstancePoints}: matched/linked nodes keep their xy, brand-new
+ * nodes get NaN points, and dropped nodes' points are discarded.
+ *
+ * Params:
+ *   - `newSkeleton: Skeleton`  — the parsed skeleton to import.
+ *   - `linkMap?: Map<string,string>` — newName → oldName explicit links (rename).
+ */
+export const OpenSkeletonCommand: Command = {
+  name: "OpenSkeleton",
+  topics: [UpdateTopic.Skeleton, UpdateTopic.Frame],
+  skipAutoSnapshot: true,
+  execute(ctx: CommandContext, params?: Record<string, unknown>) {
+    const { labels, skeleton } = ctx.state;
+    if (!skeleton || !labels) return;
+
+    const newSkeleton = params?.newSkeleton as Skeleton | undefined;
+    if (!newSkeleton) return;
+    const linkMap =
+      (params?.linkMap as Map<string, string> | undefined) ?? new Map();
+
+    const before = takeSkeletonSnapshot(ctx);
+
+    // Source nodes for the point remap (the pre-import layout).
+    const oldNodes = [...skeleton.nodes];
+
+    // Rebuild the skeleton in place: keep the SAME object so labels.skeletons[0]
+    // stays valid (no append/replace).
+    const newNodes = newSkeleton.nodes.map((n) => new Node(n.name));
+    skeleton.nodes = newNodes;
+
+    const byName = (nodes: Node[], name: string): Node => {
+      const found = nodes.find((n) => n.name === name);
+      // Imported edges always reference imported nodes by name, so this is
+      // defined in practice; fall back to a fresh Node to stay total.
+      return found ?? new Node(name);
+    };
+
+    skeleton.edges = newSkeleton.edges.map(
+      (e) =>
+        new Edge(
+          byName(newNodes, e.source.name),
+          byName(newNodes, e.destination.name),
+        ),
+    );
+
+    // Rebuild the name/index cache before recreating symmetries by name —
+    // addSymmetry() resolves node names against this cache.
+    skeleton.rebuildCache(skeleton.nodes);
+
+    // Symmetries (best-effort): recreate by name on the existing skeleton.
+    // Templates have none, so this is usually a no-op. Mirrors the PyQt
+    // `try_and_skip_if_error` pattern — never let a bad symmetry abort the import.
+    skeleton.symmetries = [];
+    for (const [leftName, rightName] of newSkeleton.symmetryNames) {
+      try {
+        skeleton.addSymmetry(leftName, rightName);
+      } catch {
+        // skip a symmetry that can't be recreated
+      }
+    }
+
+    // Remap every instance's points by name/link, then re-point at the skeleton.
+    for (const lf of labels.labeledFrames) {
+      for (const inst of lf.instances) {
+        inst.points = remapInstancePoints(inst, oldNodes, newNodes, linkMap);
+        inst.skeleton = skeleton;
+      }
+    }
+
+    const after = takeSkeletonSnapshot(ctx);
+    storeSkeletonUndo(ctx, "OpenSkeleton", before, after);
 
     ctx.state.markChanged();
     // Node count changed: refresh skeleton-dependent UI (see AddNode).

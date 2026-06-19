@@ -405,6 +405,29 @@ describe("Skeleton commands", () => {
       expect(project.skeleton.nodes.length).toBe(beforeNodeCount);
     });
 
+    it("undo restores instance point xy AND score through the interceptor", async () => {
+      // Locks in two shared-helper behaviors: (1) the positional re-walk that
+      // restores points onto the LIVE (re-cloned) instances after frame-undo,
+      // and (2) clonePoint preserving per-point score across the snapshot.
+      setupProject({ numNodes: 3, numFrames: 1, numInstancesPerFrame: 1 });
+      installSkeletonUndoInterceptor(ctx);
+
+      // Seed a known xy + score on the live instance's surviving node (index 0).
+      const liveBefore = useAppStore.getState().labels!.labeledFrames[0].instances[0];
+      liveBefore.points[0].xy = [123, 456];
+      liveBefore.points[0].score = 0.42;
+
+      // Delete a DIFFERENT node so point 0 survives the edit, then undo.
+      await ctx.execute(DeleteNodeCommand, { nodeIdx: 2 });
+      ctx.undo();
+
+      // Re-fetch the LIVE instance — frame-undo swaps in fresh clones.
+      const liveAfter = useAppStore.getState().labels!.labeledFrames[0].instances[0];
+      expect(liveAfter.points.length).toBe(3);
+      expect(liveAfter.points[0].xy).toEqual([123, 456]);
+      expect(liveAfter.points[0].score).toBe(0.42);
+    });
+
     it("undo restores skeleton nodes after LoadTemplate", async () => {
       const project = setupProject({ numNodes: 3, numFrames: 1, numInstancesPerFrame: 1 });
       installSkeletonUndoInterceptor(ctx);

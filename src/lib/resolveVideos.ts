@@ -6,7 +6,13 @@
  * and auto-resolution via the filesystem in Tauri mode.
  */
 
-import { Mp4BoxVideoBackend, Video } from "@talmolab/sleap-io.js";
+import {
+  Mp4BoxVideoBackend,
+  MediaBunnyVideoBackend,
+  SeqVideoBackend,
+  Video,
+  type VideoBackend,
+} from "@talmolab/sleap-io.js";
 import { toast } from "@/lib/notify";
 import type { Labels } from "../types";
 import { getPlatform } from "../platform/index";
@@ -210,7 +216,7 @@ export async function resolveVideoFile(video: Video): Promise<boolean> {
 
   const result = await platform.showOpenDialog({
     filters: [
-      { name: "Video files", extensions: ["mp4", "avi", "mov", "mkv", "webm"] },
+      { name: "Video files", extensions: [...SUPPORTED_VIDEO_EXTS] },
     ],
   });
 
@@ -258,7 +264,7 @@ export async function resolveAllVideoFiles(
   const platform = await getPlatform();
   console.log(`[video] Batch-resolving ${unresolvedVideos.length} video(s) via ${platform.isTauri ? "Tauri" : "browser"} dialog`);
   const videoFilters = [
-    { name: "Video files", extensions: ["mp4", "avi", "mov", "mkv", "webm"] },
+    { name: "Video files", extensions: [...SUPPORTED_VIDEO_EXTS] },
   ];
 
   const result = await platform.showOpenDialog({
@@ -363,18 +369,56 @@ export async function resolveAllVideoFiles(
 }
 
 /**
- * Create an Mp4BoxVideoBackend from a user-picked File and assign it to a Video.
+ * Build the sleap-io.js backend for a user-picked file, dispatching by
+ * extension: MP4 → Mp4Box, WebM/MKV/MOV/Ogg/MPEG-TS → MediaBunny, `.seq` → Seq.
+ * Unknown / extension-less names fall back to Mp4Box (historical behavior for
+ * SLP-referenced external videos with non-standard names).
  */
-export async function assignVideoBackend(video: Video, file: File): Promise<void> {
+async function createBackendForFile(file: File): Promise<VideoBackend> {
+  switch (backendKindForFilename(file.name)) {
+    case "mediabunny":
+      return MediaBunnyVideoBackend.fromBlob(file, file.name);
+    case "seq":
+      return SeqVideoBackend.create(file);
+    case "mp4box":
+    default:
+      return new Mp4BoxVideoBackend(file);
+  }
+}
+
+/**
+ * Create the appropriate video backend from a user-picked File and assign it to
+ * a Video, probing shape/fps. Dispatches by extension (see
+ * {@link createBackendForFile}); shared by standalone-video add AND external
+ * SLP-video resolution, so all paths support every {@link SUPPORTED_VIDEO_EXTS}
+ * format.
+ */
+export async function assignVideoBackend(
+  video: Video,
+  file: File
+): Promise<void> {
   try {
-    console.log(`[video] Creating Mp4BoxVideoBackend for "${file.name}" (${file.size} bytes)`);
-    const backend = new Mp4BoxVideoBackend(file);
+    const kind = backendKindForFilename(file.name) ?? "mp4box";
+    console.log(
+      `[video] Creating ${kind} backend for "${file.name}" (${file.size} bytes)`
+    );
+    const backend = await createBackendForFile(file);
     video.backend = backend;
-    // Trigger initialization by requesting frame 0 (stays in cache for later use)
-    await backend.getFrame(0);
+    // Probe frame 0 to warm the cache AND validate the file decodes. Treat a
+    // null result as failure: Mp4Box/MediaBunny only set `shape` after a
+    // successful decode, but SeqVideoBackend sets `shape` from the header at
+    // create() — so without this check a .seq with an undecodable codec (e.g.
+    // Bayer) would pass buildStandaloneVideo's !video.shape guard as a black,
+    // error-free video. The throw is caught below (toasts + leaves shape unset).
+    const frame = await backend.getFrame(0);
+    if (!frame) {
+      throw new Error("could not decode the first video frame");
+    }
     if (backend.shape) video.shape = backend.shape;
     if (backend.fps) video.fps = backend.fps;
-    console.log(`[video] Backend ready: ${video.shape?.[1]}x${video.shape?.[2]} @ ${video.fps}fps, ${video.shape?.[0]} frames`);
+    console.log(
+      `[video] Backend ready: ${video.shape?.[1]}x${video.shape?.[2]} @ ${video.fps}fps, ${video.shape?.[0]} frames`
+    );
   } catch (err) {
     console.error(`Failed to load video backend for ${file.name}:`, err);
     toast.error(`Failed to load video: ${file.name}`, {
@@ -384,11 +428,27 @@ export async function assignVideoBackend(video: Video, file: File): Promise<void
 }
 
 /**
- * Standalone-video file extensions we can currently decode. MP4 only for now;
- * this is the dispatch point for future MediaBunny (WebM/MOV/MKV) and Seq
- * (.seq) backends — add the extension here and branch in buildStandaloneVideo.
+ * Standalone-video file extensions we can decode, mapped to the sleap-io.js
+ * backend that handles each. MP4 → Mp4Box; WebM/MKV/MOV/Ogg/MPEG-TS →
+ * MediaBunny; Norpix `.seq` → SeqVideoBackend. `.avi` is intentionally absent
+ * (no sleap-io.js backend decodes it).
  */
-export const SUPPORTED_VIDEO_EXTS = ["mp4"] as const;
+const BACKEND_BY_EXT = {
+  mp4: "mp4box",
+  webm: "mediabunny",
+  mkv: "mediabunny",
+  mov: "mediabunny",
+  ogg: "mediabunny",
+  ogv: "mediabunny",
+  ts: "mediabunny",
+  seq: "seq",
+} as const satisfies Record<string, "mp4box" | "mediabunny" | "seq">;
+
+type StandaloneBackendKind = (typeof BACKEND_BY_EXT)[keyof typeof BACKEND_BY_EXT];
+
+/** Extensions accepted by the standalone-video add flow and the file pickers. */
+export const SUPPORTED_VIDEO_EXTS: readonly string[] =
+  Object.keys(BACKEND_BY_EXT);
 
 /** Lowercased extension of a filename, or "" if none. */
 function fileExt(name: string): string {
@@ -397,17 +457,34 @@ function fileExt(name: string): string {
 }
 
 /**
+ * Which backend (if any) decodes a given filename, by extension. Returns null
+ * for unsupported / extension-less names. Pure + decoder-independent — the unit
+ * tests assert the full extension→backend table here; real decoding is covered
+ * by manual E2E (WebCodecs/Mp4Box do not run under the bun test runner).
+ */
+export function backendKindForFilename(
+  name: string
+): StandaloneBackendKind | null {
+  return (
+    (BACKEND_BY_EXT as Record<string, StandaloneBackendKind>)[fileExt(name)] ??
+    null
+  );
+}
+
+/**
  * Build a new standalone Video from a user-picked file, dispatching by
- * extension. MP4 → Mp4Box backend (via {@link assignVideoBackend}, which probes
- * shape/fps). Unsupported formats are rejected with a toast and return null
- * (the drop-in point for MediaBunny/Seq later). Returns null on decode failure
- * too (assignVideoBackend already surfaces the error).
+ * extension via {@link assignVideoBackend} (which probes shape/fps). Supports
+ * every {@link SUPPORTED_VIDEO_EXTS} format (MP4/WebM/MKV/MOV/Ogg/MPEG-TS/.seq);
+ * unsupported formats (e.g. `.avi`) are rejected with a toast and return null.
+ * Returns null on decode failure too (assignVideoBackend already surfaces the
+ * error).
  */
 export async function buildStandaloneVideo(file: File): Promise<Video | null> {
-  const ext = fileExt(file.name);
-  if (!(SUPPORTED_VIDEO_EXTS as readonly string[]).includes(ext)) {
-    toast.error(`${ext ? `.${ext} files are` : "This file is"} not supported yet`, {
-      description: "Only MP4 is supported for now — WebM, MOV, and .seq are coming.",
+  if (!backendKindForFilename(file.name)) {
+    const ext = fileExt(file.name);
+    toast.error(`${ext ? `.${ext} files are` : "This file is"} not supported`, {
+      description:
+        "Supported video formats: MP4, WebM, MKV, MOV, Ogg, MPEG-TS, and Norpix .seq.",
     });
     return null;
   }
@@ -429,7 +506,8 @@ export interface PickedVideoFile {
 /**
  * Open a multi-select video file picker and return normalized File objects.
  * Browser yields File(s) directly; Tauri yields path(s), read into File via
- * platform.readFile. MP4 only for now (see {@link SUPPORTED_VIDEO_EXTS}).
+ * platform.readFile. Accepts every format in {@link SUPPORTED_VIDEO_EXTS}
+ * (MP4/WebM/MKV/MOV/Ogg/MPEG-TS/.seq).
  * Returns [] if the user cancels. Shared by the Videos panel
  * ({@link pickAndAddVideos}) and the New Project dialog (#138).
  */

@@ -5,8 +5,9 @@
  * for each labeled frame in a compact table.
  */
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef, useEffect, useLayoutEffect } from "react";
 import { useAppStore } from "../../stores/appStore";
+import { computeVirtualWindow } from "../../lib/virtualWindow";
 import { cn } from "@/lib/utils";
 import { Instance } from "@talmolab/sleap-io.js";
 import type { Video } from "../../types";
@@ -36,6 +37,15 @@ import {
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import { LayoutGrid, ListFilter } from "lucide-react";
+
+/**
+ * Fallback row height (px) used for windowing before the first real row is
+ * measured, and in environments without layout (e.g. happy-dom in tests).
+ */
+const DEFAULT_ROW_HEIGHT = 22;
+
+/** Extra rows rendered above & below the visible range to smooth scrolling. */
+const OVERSCAN = 8;
 
 /** Extract just the basename from a file path. */
 function basename(path: string | string[]): string {
@@ -449,6 +459,16 @@ export function FramesPanel() {
     () => new Set(COLUMNS.filter((c) => c.defaultVisible).map((c) => c.key))
   );
 
+  // --- Fixed-height row virtualization (#160) -----------------------------
+  // Only a windowed subset of rows is rendered; top/bottom spacer rows stand
+  // in for the rest so the scrollbar geometry is unchanged. Non-zero defaults
+  // mean windowing is active on the very first paint (and in tests / 0-height
+  // containers where real layout never reports a size).
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(400);
+  const [rowHeight, setRowHeight] = useState(DEFAULT_ROW_HEIGHT);
+  const scrollRootRef = useRef<HTMLDivElement>(null);
+
   const visibleColumns = useMemo(
     () => COLUMNS.filter((c) => visibleCols.has(c.key)),
     [visibleCols]
@@ -571,6 +591,57 @@ export function FramesPanel() {
 
     return sorted;
   }, [filtered, sortKey, sortDir]);
+
+  // Track the scroll viewport: listen for scroll, observe its height. The
+  // shadcn ScrollArea renders the scrolling element as the viewport node with
+  // data-slot="scroll-area-viewport"; we reach it via a ref on a wrapper div.
+  useEffect(() => {
+    const vp = scrollRootRef.current?.querySelector(
+      '[data-slot="scroll-area-viewport"]'
+    ) as HTMLElement | null;
+    if (!vp) return;
+
+    const onScroll = () => setScrollTop(vp.scrollTop);
+    vp.addEventListener("scroll", onScroll, { passive: true });
+
+    // Only override the 400px default when a real height is reported, so a
+    // 0-height container (or happy-dom, which has no layout) keeps the default
+    // and still windows.
+    const apply = () => {
+      const h = vp.clientHeight;
+      if (h > 0) setViewportHeight(h);
+    };
+    apply();
+    const ro = new ResizeObserver(apply);
+    ro.observe(vp);
+
+    return () => {
+      vp.removeEventListener("scroll", onScroll);
+      ro.disconnect();
+    };
+  }, []);
+
+  // Measure the real row height once rows render (guarded > 0 so test/no-layout
+  // environments keep the default). The shadcn TableRow is a plain function
+  // component that does not forward a ref, so query the first real (non-spacer)
+  // body row directly. Re-measure when the rendered shape changes.
+  useLayoutEffect(() => {
+    const el = scrollRootRef.current?.querySelector(
+      'tbody tr:not([aria-hidden])'
+    ) as HTMLElement | null;
+    if (el) {
+      const h = el.offsetHeight;
+      if (h > 0 && h !== rowHeight) setRowHeight(h);
+    }
+  }, [sortedRows, visibleColumns, rowHeight]);
+
+  const win = computeVirtualWindow({
+    scrollTop,
+    viewportHeight,
+    rowHeight,
+    rowCount: sortedRows.length,
+    overscan: OVERSCAN,
+  });
 
   return (
     <div className="flex flex-col h-full">
@@ -701,7 +772,8 @@ export function FramesPanel() {
       </div>
 
       {/* Table */}
-      <ScrollArea className="flex-1">
+      <div ref={scrollRootRef} className="flex-1 min-h-0">
+      <ScrollArea className="h-full">
         {rows.length === 0 ? (
           <p className="text-xs text-muted-foreground p-2">
             No labeled frames
@@ -732,28 +804,42 @@ export function FramesPanel() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {sortedRows.map((row, idx) => (
-                <TableRow
-                  key={`${row.videoName}-${row.frame}-${idx}`}
-                  onClick={() => {
-                    if (row.video !== currentVideo) setVideo(row.video);
-                    setFrameIdx(row.frame);
-                  }}
-                  className={cn(
-                    "cursor-pointer border-b-0",
-                    row.video === currentVideo && row.frame === currentFrameIdx
-                      ? "bg-orange-500/10 border-l-2 border-l-orange-500 text-foreground"
-                      : "hover:bg-muted/50 text-foreground"
-                  )}
-                >
-                  {visibleColumns.map((col) => renderCell(row, col.key))}
-                </TableRow>
-              ))}
+              {win.topPad > 0 && (
+                <tr aria-hidden style={{ height: win.topPad }}>
+                  <td colSpan={visibleColumns.length} style={{ padding: 0, border: 0 }} />
+                </tr>
+              )}
+              {sortedRows.slice(win.startIdx, win.endIdx).map((row, i) => {
+                const absoluteIdx = win.startIdx + i;
+                return (
+                  <TableRow
+                    key={`${row.videoName}-${row.frame}-${absoluteIdx}`}
+                    onClick={() => {
+                      if (row.video !== currentVideo) setVideo(row.video);
+                      setFrameIdx(row.frame);
+                    }}
+                    className={cn(
+                      "cursor-pointer border-b-0",
+                      row.video === currentVideo && row.frame === currentFrameIdx
+                        ? "bg-orange-500/10 border-l-2 border-l-orange-500 text-foreground"
+                        : "hover:bg-muted/50 text-foreground"
+                    )}
+                  >
+                    {visibleColumns.map((col) => renderCell(row, col.key))}
+                  </TableRow>
+                );
+              })}
+              {win.bottomPad > 0 && (
+                <tr aria-hidden style={{ height: win.bottomPad }}>
+                  <td colSpan={visibleColumns.length} style={{ padding: 0, border: 0 }} />
+                </tr>
+              )}
             </TableBody>
           </Table>
         )}
         <ScrollBar orientation="horizontal" />
       </ScrollArea>
+      </div>
 
       {/* Footer */}
       <div className="px-2 py-1.5 border-t border-border">

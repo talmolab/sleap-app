@@ -12,6 +12,7 @@ import { Labels } from "@talmolab/sleap-io.js";
 import {
   buildStandaloneVideo,
   addVideoFileToLabels,
+  backendKindForFilename,
   SUPPORTED_VIDEO_EXTS,
 } from "@/lib/resolveVideos";
 
@@ -35,7 +36,7 @@ describe("addVideoFileToLabels", () => {
   it("skips an unsupported format: returns null and adds nothing", async () => {
     const labels = new Labels();
     const result = await addVideoFileToLabels(labels, {
-      file: fakeFile("clip.mov"),
+      file: fakeFile("clip.avi"), // .avi has no backend → gate-rejected
       absPath: null,
     });
     expect(result).toBeNull();
@@ -43,18 +44,44 @@ describe("addVideoFileToLabels", () => {
   });
 });
 
-describe("buildStandaloneVideo (format dispatch)", () => {
-  it("currently supports only MP4", () => {
-    expect([...SUPPORTED_VIDEO_EXTS]).toEqual(["mp4"]);
+describe("SUPPORTED_VIDEO_EXTS", () => {
+  it("lists every decodable format and excludes .avi", () => {
+    expect([...SUPPORTED_VIDEO_EXTS].sort()).toEqual([
+      "mkv", "mov", "mp4", "ogg", "ogv", "seq", "ts", "webm",
+    ]);
+    expect(SUPPORTED_VIDEO_EXTS).not.toContain("avi");
   });
+});
 
+describe("buildStandaloneVideo (gate)", () => {
+  // Only UNSUPPORTED extensions here: a supported ext would attempt a real
+  // MediaBunny/Mp4Box decode, which can't run under the bun test runner.
   it("rejects unsupported formats and returns null without decoding", async () => {
-    for (const name of ["clip.mov", "clip.webm", "clip.mkv", "clip.seq", "noextension"]) {
+    for (const name of ["clip.avi", "clip.xyz", "noextension"]) {
       expect(await buildStandaloneVideo(fakeFile(name))).toBeNull();
     }
   });
+});
 
-  it("matches the extension case-insensitively", async () => {
-    expect(await buildStandaloneVideo(fakeFile("CLIP.MOV"))).toBeNull();
+describe("backendKindForFilename (format → backend dispatch)", () => {
+  it("maps MP4 to the Mp4Box backend", () => {
+    expect(backendKindForFilename("clip.mp4")).toBe("mp4box");
+  });
+  it("maps WebM/MKV/MOV/Ogg/MPEG-TS to the MediaBunny backend", () => {
+    for (const name of ["a.webm", "a.mkv", "a.mov", "a.ogg", "a.ogv", "a.ts"]) {
+      expect(backendKindForFilename(name)).toBe("mediabunny");
+    }
+  });
+  it("maps Norpix .seq to the Seq backend", () => {
+    expect(backendKindForFilename("rec.seq")).toBe("seq");
+  });
+  it("is case-insensitive on the extension", () => {
+    expect(backendKindForFilename("CLIP.MOV")).toBe("mediabunny");
+    expect(backendKindForFilename("CLIP.MP4")).toBe("mp4box");
+  });
+  it("returns null for unsupported or extension-less names", () => {
+    for (const name of ["clip.avi", "clip.xyz", "noextension", ""]) {
+      expect(backendKindForFilename(name)).toBeNull();
+    }
   });
 });
