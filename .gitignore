@@ -33,6 +33,8 @@ playwright-report/
 
 # Claude Code user-specific files (keep project .claude/settings.json tracked)
 .claude/memory/
+.claude/worktrees/
+.agents/
 
 # MCP server config (local, may contain API keys)
 .mcp.json
@@ -44,3 +46,7 @@ scratch/
 # Design/planning docs (brainstorming artifacts, not shipped)
 docs/plans/
 src-tauri/models/
+
+# Session handoff notes (local scratch; keep parity-checklist.md tracked)
+docs/session-*.md
+docs/issue-triage-*.md
