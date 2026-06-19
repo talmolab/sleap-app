@@ -11,17 +11,112 @@ import {
   MediaBunnyVideoBackend,
   SeqVideoBackend,
   Video,
+  createVideoBackend,
   type VideoBackend,
 } from "@talmolab/sleap-io.js";
 import { toast } from "@/lib/notify";
 import type { Labels } from "../types";
 import { getPlatform } from "../platform/index";
+import { imagePathCandidates } from "./imageVideoReader";
 
 /** Extract just the basename from a path or filename. */
 export function getBasename(filename: string | string[]): string {
   const f = Array.isArray(filename) ? filename[0] ?? "" : filename;
   const parts = f.split(/[\\/]/);
   return parts[parts.length - 1] ?? f;
+}
+
+/** Path separator implied by a path string (Windows backslash vs POSIX slash). */
+function pathSep(p: string): string {
+  return p.includes("\\") ? "\\" : "/";
+}
+
+/**
+ * Re-resolve an image-sequence's stored frame paths against a user-picked folder
+ * by basename. Returns one `located` path per input frame, IN ORDER (positions
+ * preserved so they stay aligned with label frame indices), plus the `missing`
+ * original frame paths whose basename wasn't found in the folder. Pure +
+ * decoder-independent — unit-tested here; the actual decode is covered by E2E.
+ */
+export async function resolveImageFramesInFolder(
+  frames: string[],
+  folder: string,
+  exists: (path: string) => Promise<boolean>
+): Promise<{ located: string[]; missing: string[] }> {
+  const sep = pathSep(folder);
+  const dir = folder.replace(/[\\/]+$/, "");
+  const located = frames.map((f) => dir + sep + getBasename(f));
+  const missing: string[] = [];
+  for (let i = 0; i < frames.length; i++) {
+    if (!(await exists(located[i]))) missing.push(frames[i]);
+  }
+  return { located, missing };
+}
+
+/**
+ * Locate a missing image-sequence (ImageVideo) by pointing it at a user-picked
+ * folder. Re-resolves each stored frame to `<folder>/<basename>` (positions
+ * preserved), rewrites `video.filename` to those absolute paths (stashing the
+ * original in `backendMetadata.sourceFilename`), and rebuilds the
+ * `ImageVideoBackend` via the injected image reader. The shape from the .slp is
+ * passed through so construction does NOT need frame 0 to decode (a missing
+ * frame 0 just renders blank later). Tauri-only — the browser injects no image
+ * reader. Returns true if at least one frame resolved AND the backend built.
+ */
+export async function resolveImageSequenceVideo(
+  video: Video,
+  folder: string,
+  exists: (path: string) => Promise<boolean>
+): Promise<boolean> {
+  const frames = Array.isArray(video.filename)
+    ? video.filename
+    : [video.filename];
+
+  const { located, missing } = await resolveImageFramesInFolder(
+    frames,
+    folder,
+    exists
+  );
+
+  if (missing.length === frames.length) {
+    toast.error("No matching images found in that folder", {
+      description: `None of the ${frames.length} image file name(s) were found in ${folder}.`,
+    });
+    return false;
+  }
+
+  // Preserve the original stored path for re-save / display (first wins; don't clobber).
+  const origFilename = Array.isArray(video.filename)
+    ? video.filename[0] ?? ""
+    : video.filename;
+  const meta = video.backendMetadata as Record<string, unknown>;
+  if (meta.sourceFilename === undefined) meta.sourceFilename = origFilename;
+
+  // Rewrite to located absolute paths (positions preserved) and rebuild the backend.
+  video.filename = located;
+  try {
+    video.backend = await createVideoBackend(video.filename, {
+      shape: video.shape ?? undefined,
+    });
+  } catch (err) {
+    console.error(`[video] ImageVideo locate failed for "${folder}":`, err);
+    toast.error("Could not open the image sequence", {
+      description: err instanceof Error ? err.message : String(err),
+    });
+    return false;
+  }
+
+  if (missing.length > 0) {
+    toast.warning(
+      `${missing.length} of ${frames.length} image${frames.length > 1 ? "s" : ""} not found`,
+      { description: "Those frames will be blank." }
+    );
+  } else {
+    toast.success(
+      `Located ${frames.length} image${frames.length > 1 ? "s" : ""}`
+    );
+  }
+  return true;
 }
 
 /** Check if a filename looks like a fetchable URL. */
@@ -34,6 +129,22 @@ export function isFetchableUrl(filename: string | string[]): boolean {
 export function isVideoMissing(video: Video): boolean {
   if (video.hasEmbeddedImages) return false;
   return video.backend === null && !isFetchableUrl(video.filename);
+}
+
+/**
+ * Whether a video is an image-sequence (ImageVideo): a list of image paths, or a
+ * single image-extension filename, or one the loader flagged as such. These are
+ * decoded by sleap-io.js's ImageVideoBackend via the injected image reader
+ * during loadSlp — they must NOT be auto-resolved into a single-file (mp4box)
+ * backend, which would hang on a JPEG.
+ */
+export function isImageSequenceVideo(video: Video): boolean {
+  if (video.backendError?.kind === "image-sequence") return true;
+  if (Array.isArray(video.filename)) return true;
+  const first = Array.isArray(video.filename)
+    ? video.filename[0] ?? ""
+    : video.filename;
+  return /\.(png|jpe?g|tiff?|bmp)$/i.test(first);
 }
 
 /**
@@ -114,6 +225,32 @@ export interface AutoResolveOptions {
 }
 
 /**
+ * True if the first image of an image-sequence resolves on disk, trying the same
+ * ordered candidates the desktop image reader uses (absolute as-is, relative to
+ * the project dir, basename-in-project-dir). An ImageVideoBackend built with a
+ * known shape decodes nothing up front, so it would succeed even when every
+ * image is missing — this guards against accepting such a blank backend.
+ */
+async function imageSequenceFirstFrameExists(
+  video: Video,
+  options: AutoResolveOptions
+): Promise<boolean> {
+  const first = Array.isArray(video.filename)
+    ? video.filename[0] ?? ""
+    : video.filename;
+  if (!first) return false;
+  const sep = options.projectPath.includes("\\") ? "\\" : "/";
+  const projectDir = options.projectPath.substring(
+    0,
+    options.projectPath.lastIndexOf(sep)
+  );
+  for (const candidate of imagePathCandidates(first, projectDir)) {
+    if (await options.exists(candidate)) return true;
+  }
+  return false;
+}
+
+/**
  * After loadSlp() returns, detect videos with no backend (external MP4s that
  * couldn't be resolved) and attempt auto-resolution.
  *
@@ -152,6 +289,39 @@ export async function resolveExternalVideos(
   // Try auto-resolution if we have filesystem access and a project path
   if (options) {
     for (const video of unresolvedVideos) {
+      // Image-sequence (ImageVideo): build an ImageVideoBackend via the factory,
+      // which uses the injected image reader (set in loadProjectFromPath) to
+      // resolve each frame's path against the project dir. The browser's
+      // streaming reader leaves external videos backendless — including image
+      // sequences — so we create them here, the same place external MP4s are
+      // resolved. Never route them to mp4box (that hangs on a JPEG). If the
+      // reader can't find the images, leave it unresolved for the locate flow.
+      if (isImageSequenceVideo(video)) {
+        const ref = Array.isArray(video.filename)
+          ? video.filename[0]
+          : video.filename;
+        // A known shape makes ImageVideoBackend.create() skip its frame-0
+        // decode, so it builds even when no image exists — a non-null but blank
+        // backend with no "Locate image folder…" affordance. Verify the first
+        // image actually resolves before accepting it; otherwise leave the
+        // video unresolved so the Videos panel flags it missing.
+        if (!(await imageSequenceFirstFrameExists(video, options))) {
+          console.warn(
+            `[video] ImageVideo images not found near "${ref}"; leaving unresolved for the locate flow`
+          );
+          continue;
+        }
+        try {
+          const backend = await createVideoBackend(video.filename, {
+            shape: video.shape ?? undefined,
+          });
+          video.backend = backend;
+          resolvedCount++;
+        } catch (err) {
+          console.warn(`[video] ImageVideo not resolved "${ref}":`, err);
+        }
+        continue;
+      }
       const candidates = getVideoPathCandidates(video, options.projectPath);
       console.log(
         `[video] Resolving "${Array.isArray(video.filename) ? video.filename[0] : video.filename}", candidates:`,

@@ -8,11 +8,14 @@
  */
 
 import { describe, it, expect } from "../bun-test";
-import { Labels } from "@talmolab/sleap-io.js";
+import { Labels, Video, setImageBytesReader } from "@talmolab/sleap-io.js";
 import {
   buildStandaloneVideo,
   addVideoFileToLabels,
   backendKindForFilename,
+  resolveImageFramesInFolder,
+  resolveExternalVideos,
+  isVideoMissing,
   SUPPORTED_VIDEO_EXTS,
 } from "@/lib/resolveVideos";
 
@@ -59,6 +62,110 @@ describe("buildStandaloneVideo (gate)", () => {
   it("rejects unsupported formats and returns null without decoding", async () => {
     for (const name of ["clip.avi", "clip.xyz", "noextension"]) {
       expect(await buildStandaloneVideo(fakeFile(name))).toBeNull();
+    }
+  });
+});
+
+describe("resolveImageFramesInFolder", () => {
+  it("maps each frame positionally to <folder>/<basename> and splits missing", async () => {
+    const frames = ["/old/a.png", "/old/b.png", "/old/c.png"];
+    const present = new Set(["/imgs/a.png", "/imgs/c.png"]);
+    const exists = async (p: string) => present.has(p);
+
+    const { located, missing } = await resolveImageFramesInFolder(
+      frames,
+      "/imgs",
+      exists
+    );
+
+    // positional: one located path per input frame, in order
+    expect(located).toEqual(["/imgs/a.png", "/imgs/b.png", "/imgs/c.png"]);
+    // b.png wasn't found
+    expect(missing).toEqual(["/old/b.png"]);
+  });
+
+  it("strips a trailing slash on the folder", async () => {
+    const { located } = await resolveImageFramesInFolder(
+      ["x/a.png"],
+      "/imgs/",
+      async () => true
+    );
+    expect(located).toEqual(["/imgs/a.png"]);
+  });
+
+  it("infers a Windows separator from the folder", async () => {
+    const { located } = await resolveImageFramesInFolder(
+      ["C:\\old\\a.png"],
+      "D:\\imgs",
+      async () => true
+    );
+    expect(located).toEqual(["D:\\imgs\\a.png"]);
+  });
+
+  it("reports every frame missing when none exist", async () => {
+    const frames = ["/old/a.png", "/old/b.png"];
+    const { located, missing } = await resolveImageFramesInFolder(
+      frames,
+      "/empty",
+      async () => false
+    );
+    expect(located.length).toBe(2);
+    expect(missing).toEqual(frames);
+  });
+});
+
+describe("resolveExternalVideos (image-sequence existence check)", () => {
+  // A known shape lets ImageVideoBackend.create() skip its frame-0 decode, so a
+  // backend builds WITHOUT touching disk. That means an image sequence whose
+  // files are all missing would still get a non-null (blank) backend and never
+  // surface the "Locate image folder…" affordance. The loader must verify the
+  // first image actually resolves on disk before accepting the backend.
+  function imageSeqVideo(paths: string[]): Video {
+    const v = new Video({ filename: paths, openBackend: false });
+    v.backend = null;
+    v.shape = [paths.length, 8, 8, 1];
+    return v;
+  }
+
+  it("leaves a missing image-sequence unresolved (flagged missing), not a blank backend", async () => {
+    // Stub the reader so create() can't fail for lack of one — it must never be
+    // reached: with the images missing we bail BEFORE building the backend.
+    setImageBytesReader(async () => new Uint8Array());
+    try {
+      const video = imageSeqVideo(["/gone/a.jpg", "/gone/b.jpg", "/gone/c.jpg"]);
+      const labels = new Labels();
+      labels.addVideo(video);
+
+      await resolveExternalVideos(labels, {
+        projectPath: "/proj/labels.slp",
+        exists: async () => false, // nothing exists on disk
+        readFile: async () => new Uint8Array(),
+      });
+
+      expect(video.backend).toBeNull();
+      expect(isVideoMissing(video)).toBe(true);
+    } finally {
+      setImageBytesReader(null);
+    }
+  });
+
+  it("resolves an image-sequence when its first image exists on disk", async () => {
+    setImageBytesReader(async () => new Uint8Array());
+    try {
+      const video = imageSeqVideo(["/imgs/a.jpg", "/imgs/b.jpg", "/imgs/c.jpg"]);
+      const labels = new Labels();
+      labels.addVideo(video);
+
+      await resolveExternalVideos(labels, {
+        projectPath: "/proj/labels.slp",
+        exists: async () => true, // images present
+        readFile: async () => new Uint8Array(),
+      });
+
+      expect(video.backend).not.toBeNull();
+      expect(isVideoMissing(video)).toBe(false);
+    } finally {
+      setImageBytesReader(null);
     }
   });
 });

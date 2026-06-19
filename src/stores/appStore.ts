@@ -21,7 +21,12 @@ import type {
   InstancePlacementMethod,
 } from "../types";
 import type { StatisticGraphType, Reduction } from "@/lib/statisticSeries";
-import { labeledFrameIndices, stepLabeled } from "@/lib/navigableFrames";
+import {
+  navigableDomain,
+  stepLabeled,
+  type NavigationDomain,
+} from "@/lib/navigableFrames";
+export type { NavigationDomain };
 import {
   DEFAULT_PANEL_ORDER,
   reconcilePanelOrder,
@@ -78,8 +83,8 @@ export interface AppState {
   rotation: 0 | 90 | 180 | 270;
   seekbarHeaderGraph: StatisticGraphType;
   seekbarHeaderReduction: Reduction;
-  /** When true, frame stepping/playback/seekbar are confined to labeled frames (#137). */
-  navigateLabeledOnly: boolean;
+  /** Which frames stepping/playback/seekbar are confined to (#137). */
+  navigationDomain: NavigationDomain;
 
   // === Editing state ===
   instanceInitMethod: InstancePlacementMethod;
@@ -123,6 +128,8 @@ export interface AppState {
   setVideo: (video: Video) => void;
   setFrameIdx: (idx: number) => void;
   incrementFrameIdx: (step: number) => void;
+  setNavigationDomain: (mode: NavigationDomain) => void;
+  cycleNavigationDomain: () => void;
   setInstance: (instance: Instance | null) => void;
   setLabeledFrame: (frame: LabeledFrame | null) => void;
   markChanged: () => void;
@@ -162,7 +169,7 @@ export const PERSISTED_KEYS: (keyof AppState)[] = [
   "defaultToPan",
   "seekbarHeaderGraph",
   "seekbarHeaderReduction",
-  "navigateLabeledOnly",
+  "navigationDomain",
   // Layout + scale persistence (PyQt saveState/restoreState parity).
   "panelOrder",
   "hiddenPanels",
@@ -170,6 +177,23 @@ export const PERSISTED_KEYS: (keyof AppState)[] = [
   "sidebarActivePanel",
   "uiScale",
 ];
+
+/**
+ * Resolve the persisted navigation mode, migrating the pre-tri-state
+ * `navigateLabeledOnly` boolean (#137) to the `navigationDomain` enum. An
+ * explicit persisted `navigationDomain` always wins.
+ */
+export function navigationDomainFromPersisted(p: {
+  navigationDomain?: string;
+  navigateLabeledOnly?: boolean;
+}): NavigationDomain {
+  const valid: NavigationDomain[] = ["all", "labeled", "imaged"];
+  if (p.navigationDomain && (valid as string[]).includes(p.navigationDomain)) {
+    return p.navigationDomain as NavigationDomain;
+  }
+  // Migrate the pre-tri-state boolean; unknown/corrupt values fall back to "all".
+  return p.navigateLabeledOnly ? "labeled" : "all";
+}
 
 export const useAppStore = create<AppState>()(
   subscribeWithSelector(
@@ -223,7 +247,7 @@ export const useAppStore = create<AppState>()(
       rotation: 0 as 0 | 90 | 180 | 270,
       seekbarHeaderGraph: "instance-count" as StatisticGraphType,
       seekbarHeaderReduction: "sum" as Reduction,
-      navigateLabeledOnly: false,
+      navigationDomain: "all" as NavigationDomain,
 
       // Editing state
       instanceInitMethod: "best" as InstancePlacementMethod,
@@ -312,14 +336,15 @@ export const useAppStore = create<AppState>()(
         }),
 
       incrementFrameIdx: (step) => {
-        const { video, frameIdx, navigateLabeledOnly, labels } = get();
+        const { video, frameIdx, navigationDomain, labels } = get();
         if (!video) return;
 
-        // Labeled-only mode (#137): step within the set of labeled frames so
-        // arrow keys, prev/next buttons, and playback all skip the dead gaps.
-        // Falls through to dense navigation when there are none (never traps).
-        if (navigateLabeledOnly) {
-          const domain = labeledFrameIndices(labels, video);
+        // Confined navigation (#137): in "labeled"/"imaged" mode, step within
+        // that domain so arrow keys, prev/next, and playback skip the dead gaps.
+        // A null domain ("all", or "imaged" on a full video) or an empty/
+        // exhausted one falls through to dense stepping so we never trap.
+        const domain = navigableDomain(labels, video, navigationDomain);
+        if (domain && domain.length > 0) {
           const target = stepLabeled(domain, frameIdx, step);
           if (target !== null) {
             get().setFrameIdx(target);
@@ -338,6 +363,18 @@ export const useAppStore = create<AppState>()(
         }
         get().setFrameIdx(newIdx);
       },
+
+      setNavigationDomain: (mode) =>
+        set((state) => {
+          state.navigationDomain = mode;
+        }),
+
+      cycleNavigationDomain: () =>
+        set((state) => {
+          const order: NavigationDomain[] = ["all", "labeled", "imaged"];
+          const i = order.indexOf(state.navigationDomain);
+          state.navigationDomain = order[(i + 1) % order.length];
+        }),
 
       setInstance: (instance) =>
         set((state) => {
@@ -502,13 +539,19 @@ export const useAppStore = create<AppState>()(
       // silently drop panels added since. Reconcile those two arrays against the
       // current panel set; everything else keeps the shallow-merge behavior.
       merge: (persisted, current) => {
-        const p = (persisted ?? {}) as Partial<AppState>;
-        return {
+        const p = (persisted ?? {}) as Partial<AppState> & {
+          navigateLabeledOnly?: boolean;
+        };
+        const merged = {
           ...current,
           ...p,
+          // Migrate the pre-tri-state #137 boolean to the navigationDomain enum.
+          navigationDomain: navigationDomainFromPersisted(p),
           panelOrder: reconcilePanelOrder(p.panelOrder),
           hiddenPanels: reconcileHiddenPanels(p.hiddenPanels),
         };
+        delete (merged as { navigateLabeledOnly?: boolean }).navigateLabeledOnly;
+        return merged;
       },
     },
     )
