@@ -30,12 +30,13 @@ export async function loadProjectFromFile(file: File): Promise<boolean> {
     if (!confirmed) return false;
   }
 
-  store.setLoading(true, `Loading ${file.name}...`);
+  store.setLoading(true, `Reading ${file.name}...`);
 
   try {
     const labels = await loadSlp(file, {
       openVideos: true,
     });
+    store.setLoading(true, "Locating videos...");
     await resolveExternalVideos(labels);
     store.setLabels(labels, file.name);
     toast.success(`Loaded ${file.name}`, {
@@ -73,7 +74,7 @@ export async function loadProjectFromPath(
   }
 
   const filename = path.split(/[\\/]/).pop() ?? path;
-  store.setLoading(true, `Loading ${filename}...`);
+  store.setLoading(true, `Reading ${filename}...`);
 
   try {
     // Make ImageVideo (image-sequence) frames resolvable on desktop: resolve
@@ -99,11 +100,13 @@ export async function loadProjectFromPath(
     }
 
     const bytes = await readFile(path);
+    store.setLoading(true, `Parsing ${filename}...`);
     const labels = await loadSlp(bytes, {
       openVideos: true,
       h5: { filenameHint: path },
     });
 
+    store.setLoading(true, "Locating videos...");
     // Try auto-resolving video paths if we have filesystem access
     if (exists) {
       await resolveExternalVideos(labels, {
