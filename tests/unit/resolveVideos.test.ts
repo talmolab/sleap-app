@@ -16,12 +16,70 @@ import {
   resolveImageFramesInFolder,
   resolveExternalVideos,
   isVideoMissing,
+  classifyVideoError,
+  videoIssue,
   SUPPORTED_VIDEO_EXTS,
 } from "@/lib/resolveVideos";
 
 function fakeFile(name: string): File {
   return new File([new Uint8Array([0])], name, { type: "video/mp4" });
 }
+
+describe("classifyVideoError + videoIssue (codec failure surfacing)", () => {
+  it("maps 'Codec ... not supported' to a decode error", () => {
+    const e = classifyVideoError(
+      new Error("Codec hvc1.2.4.L150.90 not supported")
+    );
+    expect(e.kind).toBe("decode");
+    expect(e.message).toContain("hvc1");
+  });
+
+  it("maps UnsupportedVideoFormatError to unsupported-format", () => {
+    const err = Object.assign(new Error(".avi cannot be decoded"), {
+      name: "UnsupportedVideoFormatError",
+    });
+    expect(classifyVideoError(err).kind).toBe("unsupported-format");
+  });
+
+  it("defaults to decode for a located-but-unopenable file", () => {
+    expect(classifyVideoError(new Error("boom")).kind).toBe("decode");
+    expect(classifyVideoError("weird").kind).toBe("decode");
+  });
+
+  it("videoIssue: unsupported-codec when backend is null with a codec error", () => {
+    const decode = new Video({
+      filename: "clip.mp4",
+      backend: null,
+      backendError: { kind: "decode", message: "Codec hvc1 not supported" },
+      openBackend: false,
+    });
+    expect(videoIssue(decode)).toBe("unsupported-codec");
+    const fmt = new Video({
+      filename: "clip.avi",
+      backend: null,
+      backendError: { kind: "unsupported-format", message: "x" },
+      openBackend: false,
+    });
+    expect(videoIssue(fmt)).toBe("unsupported-codec");
+  });
+
+  it("videoIssue: missing when no backend and the file is just absent", () => {
+    const gone = new Video({
+      filename: "gone.mp4",
+      backend: null,
+      openBackend: false,
+    });
+    expect(videoIssue(gone)).toBe("missing");
+    // An unresolved image sequence is "missing" (locate a folder), not a codec.
+    const img = new Video({
+      filename: "frame.png",
+      backend: null,
+      backendError: { kind: "image-sequence", message: "x" },
+      openBackend: false,
+    });
+    expect(videoIssue(img)).toBe("missing");
+  });
+});
 
 describe("Labels runtime API used by pickAndAddVideos", () => {
   // Guards against a sleap-io.js types-vs-runtime mismatch: the .d.ts declared

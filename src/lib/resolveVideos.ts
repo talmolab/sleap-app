@@ -13,6 +13,7 @@ import {
   Video,
   createVideoBackend,
   type VideoBackend,
+  type VideoBackendError,
 } from "@talmolab/sleap-io.js";
 import { toast } from "@/lib/notify";
 import type { Labels } from "../types";
@@ -129,6 +130,43 @@ export function isFetchableUrl(filename: string | string[]): boolean {
 export function isVideoMissing(video: Video): boolean {
   if (video.hasEmbeddedImages) return false;
   return video.backend === null && !isFetchableUrl(video.filename);
+}
+
+/**
+ * Why a video has no usable backend, for actionable messaging:
+ * - "unsupported-codec": the file was found and read, but its codec can't be
+ *   decoded here (e.g. 10-bit HEVC, which WebCodecs rejects in the browser and
+ *   the Linux WebView). The fix is to transcode, not to relocate.
+ * - "missing": the file couldn't be located.
+ * Returns null when the video is fine (has a backend), is an image sequence
+ * awaiting a folder, or is a fetchable URL.
+ */
+export type VideoIssue = "missing" | "unsupported-codec" | null;
+export function videoIssue(video: Video): VideoIssue {
+  if (!isVideoMissing(video)) return null;
+  const kind = video.backendError?.kind;
+  if (kind === "decode" || kind === "unsupported-format") {
+    return "unsupported-codec";
+  }
+  return "missing";
+}
+
+/**
+ * Classify a thrown backend-open error into a structured {@link VideoBackendError}
+ * so the UI can show WHY a video failed rather than a blanket "not found".
+ * sleap-io.js throws `UnsupportedVideoFormatError` for whole-container formats it
+ * can't read (AVI / MPEG-PS) and "Codec <x> not supported" / decode errors for
+ * unplayable codecs. We only call this after a file was located and read, so an
+ * open failure here is a codec/decode problem (not a missing file) — hence the
+ * default codec kind. Pure + decoder-independent (unit-tested).
+ */
+export function classifyVideoError(err: unknown): VideoBackendError {
+  const message = err instanceof Error ? err.message : String(err);
+  const name = err instanceof Error ? err.name : "";
+  if (name === "UnsupportedVideoFormatError") {
+    return { kind: "unsupported-format", message };
+  }
+  return { kind: "decode", message };
 }
 
 /**
@@ -272,11 +310,12 @@ export async function resolveExternalVideos(
       if (!video.backend || !("ready" in video.backend)) return;
       try {
         await (video.backend as { ready: Promise<unknown> }).ready;
-      } catch {
+      } catch (err) {
         console.log(
           `[video] Backend failed for "${Array.isArray(video.filename) ? video.filename[0] : video.filename}", clearing for re-resolution`
         );
         video.backend = null;
+        video.backendError = classifyVideoError(err);
       }
     })
   );
@@ -335,8 +374,8 @@ export async function resolveExternalVideos(
             const bytes = await options.readFile(candidatePath);
             const name = getBasename(candidatePath);
             const file = new File([bytes], name, { type: "video/mp4" });
-            await assignVideoBackend(video, file);
-            if (video.backend) {
+            const ok = await assignVideoBackend(video, file, { silent: true });
+            if (ok) {
               // Preserve the original SLP path in metadata before updating
               const origFilename = Array.isArray(video.filename)
                 ? video.filename[0] ?? ""
@@ -356,10 +395,17 @@ export async function resolveExternalVideos(
     }
   }
 
-  // Show toast for any remaining unresolved videos
+  // Summarize remaining unusable videos, split by reason so the message is
+  // actionable: files we genuinely couldn't locate vs. files that WERE found but
+  // use a codec we can't decode (e.g. 10-bit HEVC). Lumping both as "not found"
+  // sent users hunting for files that are actually present.
   const stillMissing = labels.videos.filter(isVideoMissing);
-  if (stillMissing.length > 0) {
-    const n = stillMissing.length;
+  const unsupported = stillMissing.filter(
+    (v) => videoIssue(v) === "unsupported-codec"
+  );
+  const notFound = stillMissing.filter((v) => videoIssue(v) === "missing");
+  if (notFound.length > 0) {
+    const n = notFound.length;
     toast.info(
       `${n} video${n > 1 ? "s" : ""} not found. Use the Videos panel to locate them.`,
       {
@@ -367,6 +413,14 @@ export async function resolveExternalVideos(
           "Annotations will be visible but video frames will be blank.",
       }
     );
+  }
+  if (unsupported.length > 0) {
+    const n = unsupported.length;
+    toast.error(`${n} video${n > 1 ? "s" : ""} use an unsupported codec`, {
+      description:
+        "Can't be decoded here (e.g. 10-bit HEVC). Transcode to H.264: " +
+        "ffmpeg -i in.mp4 -c:v libx264 -pix_fmt yuv420p out.mp4",
+    });
   }
 
   if (resolvedCount > 0) {
@@ -400,7 +454,8 @@ export async function resolveVideoFile(video: Video): Promise<boolean> {
       const name = getBasename(result);
       console.log(`[video] Read ${bytes.byteLength} bytes for "${name}"`);
       const file = new File([bytes], name, { type: "video/mp4" });
-      await assignVideoBackend(video, file);
+      const ok = await assignVideoBackend(video, file);
+      if (!ok) return false; // assignVideoBackend already surfaced the reason
       // Update the video's filename to the resolved absolute path
       video.filename = result;
       toast.success(`Loaded video: ${name}`);
@@ -412,7 +467,8 @@ export async function resolveVideoFile(video: Video): Promise<boolean> {
   } else if (result instanceof File) {
     // Browser: got a File object
     console.log(`[video] Loading video from File object: ${result.name} (${result.size} bytes)`);
-    await assignVideoBackend(video, result);
+    const ok = await assignVideoBackend(video, result);
+    if (!ok) return false;
     toast.success(`Loaded video: ${result.name}`);
     return true;
   }
@@ -565,8 +621,9 @@ async function createBackendForFile(file: File): Promise<VideoBackend> {
  */
 export async function assignVideoBackend(
   video: Video,
-  file: File
-): Promise<void> {
+  file: File,
+  opts?: { silent?: boolean }
+): Promise<boolean> {
   try {
     const kind = backendKindForFilename(file.name) ?? "mp4box";
     console.log(
@@ -579,21 +636,32 @@ export async function assignVideoBackend(
     // successful decode, but SeqVideoBackend sets `shape` from the header at
     // create() — so without this check a .seq with an undecodable codec (e.g.
     // Bayer) would pass buildStandaloneVideo's !video.shape guard as a black,
-    // error-free video. The throw is caught below (toasts + leaves shape unset).
+    // error-free video. The throw is caught below (records the reason).
     const frame = await backend.getFrame(0);
     if (!frame) {
       throw new Error("could not decode the first video frame");
     }
     if (backend.shape) video.shape = backend.shape;
     if (backend.fps) video.fps = backend.fps;
+    video.backendError = null;
     console.log(
       `[video] Backend ready: ${video.shape?.[1]}x${video.shape?.[2]} @ ${video.fps}fps, ${video.shape?.[0]} frames`
     );
+    return true;
   } catch (err) {
     console.error(`Failed to load video backend for ${file.name}:`, err);
-    toast.error(`Failed to load video: ${file.name}`, {
-      description: err instanceof Error ? err.message : String(err),
-    });
+    // Don't leave a half-open backend attached: callers (and isVideoMissing)
+    // treat a non-null backend as success, which would mask the failure and
+    // mis-count it as "auto-resolved". Null it and record WHY so the UI can show
+    // an actionable reason (e.g. unsupported codec) instead of "not found".
+    video.backend = null;
+    video.backendError = classifyVideoError(err);
+    if (!opts?.silent) {
+      toast.error(`Failed to load video: ${file.name}`, {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    }
+    return false;
   }
 }
 

@@ -120,18 +120,12 @@ export async function loadProjectFromPath(
 
     store.setLabels(labels, filename, path);
 
-    const missingVideos = labels.videos.filter((v) => v.backend === null && !v.hasEmbeddedImages);
-
     toast.success(`Loaded ${filename}`, {
       description: `${labels.videos.length} video(s), ${labels.labeledFrames.length} labeled frames`,
     });
 
-    if (missingVideos.length > 0) {
-      toast.info(`${missingVideos.length} video(s) not found`, {
-        description: "Use the Videos panel to locate them.",
-      });
-    }
-
+    // Missing / unsupported-codec videos are summarized (codec-aware) by
+    // resolveExternalVideos above — no separate toast here (avoids a duplicate).
     return true;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

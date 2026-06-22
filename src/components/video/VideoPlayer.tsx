@@ -42,7 +42,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { toImageCoords, toSourceCoords } from "@/lib/cropTransform";
-import { isVideoMissing, resolveVideoFile } from "../../lib/resolveVideos";
+import { isVideoMissing, resolveVideoFile, videoIssue } from "../../lib/resolveVideos";
 import { Film } from "lucide-react";
 
 export function VideoPlayer() {
@@ -1800,19 +1800,42 @@ export function VideoPlayer() {
           </Badge>
         )}
 
-        {/* Missing video placeholder */}
+        {/* Missing / unsupported-codec video placeholder */}
         {video && isVideoMissing(video) && (
           <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none z-10">
-            <div className="flex flex-col items-center gap-3 pointer-events-auto">
+            <div className="flex flex-col items-center gap-3 pointer-events-auto max-w-md px-4 text-center">
               <Film className="h-12 w-12 text-muted-foreground/40" />
-              <p className="text-sm text-muted-foreground">Video file not found</p>
+              {videoIssue(video) === "unsupported-codec" ? (
+                <>
+                  <p className="text-sm text-muted-foreground">
+                    Unsupported video codec
+                  </p>
+                  <p className="text-xs text-muted-foreground/70">
+                    {video.backendError?.message
+                      ? `${video.backendError.message}. `
+                      : ""}
+                    This codec (e.g. 10-bit HEVC) can&apos;t be decoded here.
+                    Transcode to H.264, e.g.{" "}
+                    <code className="rounded bg-muted px-1 py-0.5">
+                      ffmpeg -i in.mp4 -c:v libx264 -pix_fmt yuv420p out.mp4
+                    </code>
+                  </p>
+                </>
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  Video file not found
+                </p>
+              )}
               <Button
                 variant="outline"
                 size="sm"
                 onClick={async () => {
                   const ok = await resolveVideoFile(video);
+                  // Re-render either way: on success to show the video, on
+                  // failure so a newly recorded backendError (e.g. unsupported
+                  // codec) updates this placeholder's message.
+                  useAppStore.getState().bumpOverlayVersion();
                   if (ok) {
-                    useAppStore.getState().bumpOverlayVersion();
                     useAppStore.getState().setFrameIdx(frameIdx);
                   }
                 }}
