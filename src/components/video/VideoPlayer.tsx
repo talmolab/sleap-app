@@ -473,6 +473,12 @@ export function VideoPlayer() {
         if (debugFlags.logSeeking) console.debug(`[seek] frame ${frameIdx} rendered (${bmp.width}x${bmp.height}) total ${(performance.now() - t0).toFixed(1)}ms`);
       } catch (err) {
         console.error("Failed to render frame:", err);
+      } finally {
+        // Release the scrub serialization gate so the seekbar drag loop can
+        // issue the next frame. Set unconditionally: during a scrub only one
+        // read is in flight at a time (the loop won't issue while loading), and
+        // for non-scrub seeks this is a harmless no-op.
+        useAppStore.getState().set("frameLoading", false);
       }
     })();
 

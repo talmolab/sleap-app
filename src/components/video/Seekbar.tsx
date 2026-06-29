@@ -373,6 +373,9 @@ export function Seekbar() {
 
       setFrameIdx(targetFrame);
       setIsDragging(true);
+      // Claim the scrub serialization gate for this first read; the drag loop
+      // won't issue the next frame until VideoPlayer clears it.
+      useAppStore.getState().set("frameLoading", true);
       // Clear range on normal click
       useAppStore.getState().set("frameRange", null);
     },
@@ -410,39 +413,49 @@ export function Seekbar() {
     setRangeAnchor(null);
   }, []);
 
-  // Global mouse tracking during seekbar drag — rAF-coalesced.
+  // Global mouse tracking during seekbar drag — serialized read loop.
   //
-  // mousemove fires far faster than the screen repaints, and far faster than a
-  // cold ImageVideo frame loads (~50 ms on a network mount). Calling setFrameIdx
-  // on every event piles up reads that lag behind the cursor. Instead we record
-  // only the latest cursor X and apply it once per animation frame (~60 Hz),
-  // dropping the intermediate positions we flew past — mirroring PyQt SLEAP's
-  // video worker, which drains its request queue to the most recent frame.
-  // Superseded reads can't paint a stale frame: VideoPlayer's frame effect
-  // already cancels out-of-date getFrame results.
+  // A cold ImageVideo frame loads in ~55 ms on a network mount (~18 reads/s
+  // measured), but mousemove fires ~10x faster. Issuing setFrameIdx on every
+  // move (or even once per animation frame) requests reads faster than the
+  // mount can serve them, so they pile up and the painted frame trails the
+  // cursor — fast OR slow drag.
   //
-  // Scoped to drag only — single clicks, arrow-steps, and playback issue one
-  // request each and are unchanged. A *slow* scrub drops nothing: the pending
-  // position is only overwritten when moves arrive faster than a frame loads,
-  // so every frame is shown when there's time to load it.
+  // Instead we mirror PyQt SLEAP's video worker: never more than one read in
+  // flight. Each animation frame we record only the latest cursor X, and issue
+  // it ONLY when no read is loading (frameLoading is cleared by VideoPlayer when
+  // the previous frame finishes). Intermediate positions we flew past are
+  // dropped. The frame then tracks the cursor with one read of latency (~55 ms)
+  // instead of an unbounded backlog, and a slow drag (moves slower than reads
+  // complete) drops nothing.
+  //
+  // Scoped to drag only — single clicks, arrow-steps, and playback are
+  // unchanged. Note: this can't beat the mount's ~18 frames/s on *cold* frames;
+  // warm/prefetched frames load in ~0 ms and scrub at full rate.
   useEffect(() => {
     if (!isDragging) return;
 
     document.body.style.userSelect = "none";
 
-    let pendingX: number | null = null;
+    let pendingX: number | null = null; // latest cursor position (coalesced)
+    let lastIssuedX: number | null = null; // position we last issued a read for
     let rafId = 0;
     const tick = () => {
-      if (pendingX !== null) {
+      if (
+        pendingX !== null &&
+        pendingX !== lastIssuedX &&
+        !useAppStore.getState().frameLoading
+      ) {
+        useAppStore.getState().set("frameLoading", true); // claim the slot now
         setFrameIdx(resolveScrubFrame(pendingX));
-        pendingX = null;
+        lastIssuedX = pendingX;
       }
       rafId = requestAnimationFrame(tick);
     };
     rafId = requestAnimationFrame(tick);
 
     const handleGlobalMouseMove = (e: MouseEvent) => {
-      pendingX = e.clientX; // coalesced: only the latest position survives to the next tick
+      pendingX = e.clientX; // only the latest position survives to the next tick
     };
 
     const handleGlobalMouseUp = () => {
@@ -455,8 +468,10 @@ export function Seekbar() {
     return () => {
       cancelAnimationFrame(rafId);
       // Apply the final cursor position so release lands exactly where the user
-      // let go, not on the previous rAF tick.
-      if (pendingX !== null) setFrameIdx(resolveScrubFrame(pendingX));
+      // let go, even if it was mid-read when they released.
+      if (pendingX !== null && pendingX !== lastIssuedX) {
+        setFrameIdx(resolveScrubFrame(pendingX));
+      }
       document.body.style.userSelect = "";
       window.removeEventListener("mousemove", handleGlobalMouseMove);
       window.removeEventListener("mouseup", handleGlobalMouseUp);
