@@ -409,7 +409,12 @@ export function VideoPlayer() {
 
   // Load the current frame (convert to ImageBitmap, trigger dimension update)
   useEffect(() => {
-    if (!video || !video.backend) return;
+    if (!video || !video.backend) {
+      // Release the scrub gate even when we can't read, so the seekbar loop
+      // never jams waiting on a read that will never happen.
+      useAppStore.getState().set("frameLoading", false);
+      return;
+    }
 
     let cancelled = false;
     const t0 = performance.now();

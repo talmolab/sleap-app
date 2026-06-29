@@ -371,11 +371,17 @@ export function Seekbar() {
         ? resolveScrubFrame(e.clientX)
         : (snapToLabeledFrame(e.clientX) ?? frame);
 
+      const curFrame = useAppStore.getState().frameIdx;
       setFrameIdx(targetFrame);
       setIsDragging(true);
-      // Claim the scrub serialization gate for this first read; the drag loop
-      // won't issue the next frame until VideoPlayer clears it.
-      useAppStore.getState().set("frameLoading", true);
+      // Claim the scrub serialization gate for this first read — but only if it
+      // actually changes the frame. Claiming when the frame is unchanged would
+      // jam the gate: VideoPlayer's read effect only re-runs on a frameIdx
+      // change, so nothing would clear it and the playhead would freeze until
+      // release. The drag loop won't issue the next frame until it's cleared.
+      if (targetFrame !== curFrame) {
+        useAppStore.getState().set("frameLoading", true);
+      }
       // Clear range on normal click
       useAppStore.getState().set("frameRange", null);
     },
@@ -464,9 +470,15 @@ export function Seekbar() {
         pendingX !== lastIssuedX &&
         !useAppStore.getState().frameLoading
       ) {
-        useAppStore.getState().set("frameLoading", true); // claim the slot now
-        setFrameIdx(resolveScrubFrame(pendingX));
+        const target = resolveScrubFrame(pendingX);
         lastIssuedX = pendingX;
+        // Only claim the gate + issue when the frame actually changes. Issuing
+        // the frame that's already showing wouldn't trigger a read, so nothing
+        // would clear the gate and the loop would jam (frozen playhead).
+        if (target !== useAppStore.getState().frameIdx) {
+          useAppStore.getState().set("frameLoading", true); // claim the slot now
+          setFrameIdx(target);
+        }
       }
       rafId = requestAnimationFrame(tick);
     };
