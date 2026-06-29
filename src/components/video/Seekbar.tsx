@@ -390,12 +390,12 @@ export function Seekbar() {
         useAppStore.getState().set("frameRange", [start, end]);
         return;
       }
-
-      if (isDragging) {
-        setFrameIdx(resolveScrubFrame(e.clientX));
-      }
+      // During a drag, frame updates are owned by the rAF-coalesced loop in the
+      // isDragging effect below — it applies only the latest cursor position once
+      // per animation frame. Calling setFrameIdx here too would re-introduce the
+      // per-mousemove read pile-up we're trying to avoid.
     },
-    [isDragging, isSelectingRange, rangeAnchor, pixelToFrame, resolveScrubFrame, setFrameIdx]
+    [isSelectingRange, rangeAnchor, pixelToFrame]
   );
 
   const handleMouseUp = useCallback(() => {
@@ -410,14 +410,39 @@ export function Seekbar() {
     setRangeAnchor(null);
   }, []);
 
-  // Global mouse tracking during seekbar drag
+  // Global mouse tracking during seekbar drag — rAF-coalesced.
+  //
+  // mousemove fires far faster than the screen repaints, and far faster than a
+  // cold ImageVideo frame loads (~50 ms on a network mount). Calling setFrameIdx
+  // on every event piles up reads that lag behind the cursor. Instead we record
+  // only the latest cursor X and apply it once per animation frame (~60 Hz),
+  // dropping the intermediate positions we flew past — mirroring PyQt SLEAP's
+  // video worker, which drains its request queue to the most recent frame.
+  // Superseded reads can't paint a stale frame: VideoPlayer's frame effect
+  // already cancels out-of-date getFrame results.
+  //
+  // Scoped to drag only — single clicks, arrow-steps, and playback issue one
+  // request each and are unchanged. A *slow* scrub drops nothing: the pending
+  // position is only overwritten when moves arrive faster than a frame loads,
+  // so every frame is shown when there's time to load it.
   useEffect(() => {
     if (!isDragging) return;
 
     document.body.style.userSelect = "none";
 
+    let pendingX: number | null = null;
+    let rafId = 0;
+    const tick = () => {
+      if (pendingX !== null) {
+        setFrameIdx(resolveScrubFrame(pendingX));
+        pendingX = null;
+      }
+      rafId = requestAnimationFrame(tick);
+    };
+    rafId = requestAnimationFrame(tick);
+
     const handleGlobalMouseMove = (e: MouseEvent) => {
-      setFrameIdx(resolveScrubFrame(e.clientX));
+      pendingX = e.clientX; // coalesced: only the latest position survives to the next tick
     };
 
     const handleGlobalMouseUp = () => {
@@ -428,6 +453,10 @@ export function Seekbar() {
     window.addEventListener("mouseup", handleGlobalMouseUp);
 
     return () => {
+      cancelAnimationFrame(rafId);
+      // Apply the final cursor position so release lands exactly where the user
+      // let go, not on the previous rAF tick.
+      if (pendingX !== null) setFrameIdx(resolveScrubFrame(pendingX));
       document.body.style.userSelect = "";
       window.removeEventListener("mousemove", handleGlobalMouseMove);
       window.removeEventListener("mouseup", handleGlobalMouseUp);
