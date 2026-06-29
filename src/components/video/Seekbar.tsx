@@ -437,6 +437,24 @@ export function Seekbar() {
 
     document.body.style.userSelect = "none";
 
+    // Suppress the backend's read-ahead window for the duration of the drag.
+    // Prefetch helps sequential playback, but on a slow network mount it
+    // saturates I/O with frames we scrub straight past — measured ~3.6x slower
+    // foreground reads under its 6-wide concurrency. PyQt's worker likewise does
+    // no read-ahead while scrubbing. PROTOTYPE: this pokes ImageVideoBackend's
+    // public prefetch fields directly; the proper fix is an upstream
+    // getFrame({ prefetch: false }) / scrub-mode API in sleap-io.js.
+    const backend = video?.backend as
+      | { prefetchAhead?: number; prefetchBehind?: number }
+      | null
+      | undefined;
+    const savedAhead = backend?.prefetchAhead;
+    const savedBehind = backend?.prefetchBehind;
+    if (backend && typeof savedAhead === "number") {
+      backend.prefetchAhead = 0;
+      backend.prefetchBehind = 0;
+    }
+
     let pendingX: number | null = null; // latest cursor position (coalesced)
     let lastIssuedX: number | null = null; // position we last issued a read for
     let rafId = 0;
@@ -472,11 +490,16 @@ export function Seekbar() {
       if (pendingX !== null && pendingX !== lastIssuedX) {
         setFrameIdx(resolveScrubFrame(pendingX));
       }
+      // Restore read-ahead so sequential playback keeps prefetching.
+      if (backend && typeof savedAhead === "number") {
+        backend.prefetchAhead = savedAhead;
+        if (typeof savedBehind === "number") backend.prefetchBehind = savedBehind;
+      }
       document.body.style.userSelect = "";
       window.removeEventListener("mousemove", handleGlobalMouseMove);
       window.removeEventListener("mouseup", handleGlobalMouseUp);
     };
-  }, [isDragging, resolveScrubFrame, setFrameIdx]);
+  }, [isDragging, video, resolveScrubFrame, setFrameIdx]);
 
   // Render instance count header graph
   useEffect(() => {
