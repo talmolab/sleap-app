@@ -293,6 +293,10 @@ export function Seekbar() {
 
   const [isDragging, setIsDragging] = useState(false);
   const [hoverFrame, setHoverFrame] = useState<number | null>(null);
+  // While dragging, the solid playhead follows the cursor (this value) instead
+  // of frameIdx, so it glides smoothly even while the image load lags behind on
+  // a slow backend. null when not scrubbing → playhead tracks the loaded frame.
+  const [scrubFrame, setScrubFrame] = useState<number | null>(null);
 
   // Convert pixel X to frame index
   const pixelToFrame = useCallback(
@@ -463,21 +467,28 @@ export function Seekbar() {
 
     let pendingX: number | null = null; // latest cursor position (coalesced)
     let lastIssuedX: number | null = null; // position we last issued a read for
+    let lastScrubFrame: number | null = null; // last frame the bar glided to
     let rafId = 0;
     const tick = () => {
-      if (
-        pendingX !== null &&
-        pendingX !== lastIssuedX &&
-        !useAppStore.getState().frameLoading
-      ) {
-        const target = resolveScrubFrame(pendingX);
-        lastIssuedX = pendingX;
-        // Only claim the gate + issue when the frame actually changes. Issuing
-        // the frame that's already showing wouldn't trigger a read, so nothing
-        // would clear the gate and the loop would jam (frozen playhead).
-        if (target !== useAppStore.getState().frameIdx) {
-          useAppStore.getState().set("frameLoading", true); // claim the slot now
-          setFrameIdx(target);
+      if (pendingX !== null) {
+        const cursorFrame = resolveScrubFrame(pendingX);
+        // Smooth playhead: glide the bar to the cursor every frame, decoupled
+        // from the gated image load below — so the bar follows even when the
+        // backend can't decode that fast.
+        if (cursorFrame !== lastScrubFrame) {
+          lastScrubFrame = cursorFrame;
+          setScrubFrame(cursorFrame);
+        }
+        // Gated image load: at most one read in flight, always the latest frame.
+        if (pendingX !== lastIssuedX && !useAppStore.getState().frameLoading) {
+          lastIssuedX = pendingX;
+          // Only claim the gate + issue when the frame actually changes — issuing
+          // the frame already showing wouldn't trigger a read to clear the gate,
+          // jamming the loop.
+          if (cursorFrame !== useAppStore.getState().frameIdx) {
+            useAppStore.getState().set("frameLoading", true); // claim the slot now
+            setFrameIdx(cursorFrame);
+          }
         }
       }
       rafId = requestAnimationFrame(tick);
@@ -502,6 +513,9 @@ export function Seekbar() {
       if (pendingX !== null && pendingX !== lastIssuedX) {
         setFrameIdx(resolveScrubFrame(pendingX));
       }
+      // Drag over: hand the playhead back to the loaded frame (frameIdx now
+      // holds the release position, so the bar stays put — no backward jump).
+      setScrubFrame(null);
       // Restore read-ahead so sequential playback keeps prefetching.
       if (backend && typeof savedAhead === "number") {
         backend.prefetchAhead = savedAhead;
@@ -655,18 +669,21 @@ export function Seekbar() {
       }
     }
 
-    // Draw current frame indicator
-    const curX = frameToX(frameIdx);
+    // Draw current frame indicator. While scrubbing, follow the cursor
+    // (scrubFrame) so the bar glides smoothly even if the image load lags;
+    // otherwise track the actually-loaded frame.
+    const curX = frameToX(scrubFrame ?? frameIdx);
     ctx.fillStyle = "#fff";
     ctx.fillRect(curX - 1, 0, 2, h);
 
-    // Draw hover indicator
-    if (hoverFrame !== null) {
+    // Draw hover indicator — suppressed during a drag, where the solid bar
+    // already sits at the cursor (otherwise the two lines overlap).
+    if (hoverFrame !== null && scrubFrame === null) {
       const hx = frameToX(hoverFrame);
       ctx.fillStyle = "rgba(255,255,255,0.3)";
       ctx.fillRect(hx - 0.5, 0, 1, h);
     }
-  }, [frameIdx, totalFrames, headerData, labels, palette, hoverFrame, video, frameRange]);
+  }, [frameIdx, scrubFrame, totalFrames, headerData, labels, palette, hoverFrame, video, frameRange]);
 
   // Playback animation loop
   useEffect(() => {
