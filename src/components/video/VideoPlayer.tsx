@@ -454,8 +454,11 @@ export function VideoPlayer() {
           return;
         }
 
-        // Compute histogram from raw frame pixels
-        {
+        // Compute histogram from raw frame pixels. Skipped while scrubbing:
+        // OffscreenCanvas + getImageData allocates ~10 MB per frame, and at fast
+        // scrub rates that churn can OOM-crash the WebView renderer. The
+        // histogram refreshes on the next non-scrub frame (e.g. drag release).
+        if (!useAppStore.getState().isScrubbing) {
           const offscreen = new OffscreenCanvas(bmp.width, bmp.height);
           const offCtx = offscreen.getContext("2d");
           if (offCtx) {

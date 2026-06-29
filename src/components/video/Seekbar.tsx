@@ -447,6 +447,11 @@ export function Seekbar() {
 
     document.body.style.userSelect = "none";
 
+    // Mark scrubbing so VideoPlayer skips the expensive per-frame histogram
+    // (OffscreenCanvas + getImageData ≈ 10 MB/frame). At fast scrub rates that
+    // allocation churn can OOM-crash the WebView renderer.
+    useAppStore.getState().set("isScrubbing", true);
+
     // Suppress the backend's read-ahead window for the duration of the drag.
     // Prefetch helps sequential playback, but on a slow network mount it
     // saturates I/O with frames we scrub straight past — measured ~3.6x slower
@@ -508,6 +513,9 @@ export function Seekbar() {
 
     return () => {
       cancelAnimationFrame(rafId);
+      // Scrub over — re-enable the per-frame histogram. Set before the flush
+      // below so the final frame computes its histogram.
+      useAppStore.getState().set("isScrubbing", false);
       // Apply the final cursor position so release lands exactly where the user
       // let go, even if it was mid-read when they released.
       if (pendingX !== null && pendingX !== lastIssuedX) {

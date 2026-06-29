@@ -87,6 +87,13 @@ export interface AppState {
    * the cursor with one read of latency instead of a growing backlog (#137 perf).
    */
   frameLoading: boolean;
+  /**
+   * True while the user is dragging the seekbar (scrubbing). Transient (never
+   * persisted); read via getState(), don't subscribe. Lets VideoPlayer skip
+   * expensive per-frame work (the histogram) during a fast scrub, which would
+   * otherwise churn ~10 MB/frame and can OOM-crash the WebView renderer.
+   */
+  isScrubbing: boolean;
   colormap: string;
   rotation: 0 | 90 | 180 | 270;
   seekbarHeaderGraph: StatisticGraphType;
@@ -252,6 +259,7 @@ export const useAppStore = create<AppState>()(
       lutMax: 255,
       frameHistogram: null,
       frameLoading: false,
+      isScrubbing: false,
       colormap: "grayscale",
       rotation: 0 as 0 | 90 | 180 | 270,
       seekbarHeaderGraph: "instance-count" as StatisticGraphType,
