@@ -15,6 +15,7 @@ import {
   Download,
   RotateCw,
   ArrowUpCircle,
+  Info,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -427,15 +428,38 @@ export function EnvironmentPanel() {
                 <PathDisplay path={selectedPythonPath} />
                 {pythonCheck && (
                   <div className="mt-1">
-                    <StatusRow
-                      label="sleap-nn"
-                      ok={!!pythonCheck.sleapNnVersion}
-                      detail={
-                        pythonCheck.sleapNnVersion
-                          ? `v${pythonCheck.sleapNnVersion}`
-                          : "Not importable"
-                      }
-                    />
+                    {pythonCheck.sleapNnVersion ? (
+                      // Importable directly in the selected interpreter.
+                      <StatusRow
+                        label="sleap-nn"
+                        ok
+                        detail={`v${pythonCheck.sleapNnVersion}`}
+                      />
+                    ) : sleapNnTool ? (
+                      // Not in THIS interpreter, but installed as an isolated uv
+                      // tool — which is what training/inference actually runs
+                      // (the `sleap-nn` shim uses its own venv). Info, not error.
+                      <>
+                        <div className="flex items-center gap-2 py-0.5">
+                          <Info className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                          <span className="text-xs font-medium">sleap-nn</span>
+                          <span className="text-[10px] text-muted-foreground ml-auto">
+                            v{sleapNnTool.version} (uv tool)
+                          </span>
+                        </div>
+                        <div className="text-[10px] text-muted-foreground pl-5">
+                          Not installed in this interpreter — training uses the
+                          isolated uv-tool install, so this is expected.
+                        </div>
+                      </>
+                    ) : (
+                      // Not importable here and no uv tool — genuinely missing.
+                      <StatusRow
+                        label="sleap-nn"
+                        ok={false}
+                        detail="Not installed"
+                      />
+                    )}
                   </div>
                 )}
                 {!pythonCheck && selectedPythonPath && (
