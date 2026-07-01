@@ -126,6 +126,20 @@ fn augmented_path() -> std::ffi::OsString {
     std::env::join_paths(&paths).unwrap_or_else(|_| std::env::var_os("PATH").unwrap_or_default())
 }
 
+/// Parent env minus the AppImage-injected PYTHONHOME/PYTHONPATH, with PATH
+/// overridden to the augmented tool PATH. The Linux AppImage AppRun exports
+/// those two ($APPDIR-based), which a spawned venv python would otherwise
+/// inherit and die on (`ModuleNotFoundError: No module named 'encodings'`).
+/// No-op on macOS/Windows, where neither is set.
+fn child_env() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    use std::ffi::OsStr;
+    let mut env: Vec<_> = std::env::vars_os()
+        .filter(|(k, _)| k != OsStr::new("PYTHONHOME") && k != OsStr::new("PYTHONPATH"))
+        .collect();
+    env.push(("PATH".into(), augmented_path()));
+    env
+}
+
 /// Resolve `uv` to an absolute path.
 /// 1. `which`/`where` FIRST — honors the PATH the user's own shell resolves
 ///    against (dev / terminal launch). In the installed app the minimal PATH
@@ -188,7 +202,8 @@ async fn shell_output<R: Runtime>(
         .shell()
         .command(program)
         .args(args)
-        .env("PATH", augmented_path())
+        .env_clear()
+        .envs(child_env())
         .output()
         .await
         .ok()?;
@@ -215,7 +230,8 @@ async fn stream_command<R: Runtime>(
         .shell()
         .command(program)
         .args(args)
-        .env("PATH", augmented_path())
+        .env_clear()
+        .envs(child_env())
         .spawn()
         .map_err(|e| format!("Failed to spawn {}: {}", program, e))?;
 
@@ -518,7 +534,8 @@ pub async fn run_python_command<R: Runtime>(
         .shell()
         .command(&program)
         .args(&args)
-        .env("PATH", augmented_path())
+        .env_clear()
+        .envs(child_env())
         .spawn()
         .map_err(|e| format!("Failed to spawn {}: {}", program, e))?;
 
@@ -679,6 +696,8 @@ pub async fn start_zmq_relay<R: Runtime>(
     log::info!("[zmq-relay] Starting on port {}...", port);
     let mut child = std::process::Command::new(&python)
         .args(["-u", "-c", &script])
+        .env_clear()
+        .envs(child_env())
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -828,6 +847,8 @@ pub async fn start_progress_relay<R: Runtime>(
     log::info!("[progress-relay] Starting on port {}...", port);
     let mut child = std::process::Command::new(&python)
         .args(["-u", "-c", &script])
+        .env_clear()
+        .envs(child_env())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -1165,6 +1186,43 @@ mod tests {
                     break;
                 }
             }
+        }
+    }
+
+    #[test]
+    fn test_child_env_strips_appimage_python_vars() {
+        // Simulate the Linux AppImage AppRun, which exports $APPDIR-based
+        // PYTHONHOME/PYTHONPATH that break any spawned venv python.
+        std::env::set_var("PYTHONHOME", "/tmp/.mount_TEST/usr/");
+        std::env::set_var("PYTHONPATH", "/tmp/.mount_TEST/usr/share/pyshared/:");
+
+        let env = child_env();
+
+        std::env::remove_var("PYTHONHOME");
+        std::env::remove_var("PYTHONPATH");
+
+        use std::ffi::OsStr;
+        assert!(
+            !env.iter().any(|(k, _)| k == OsStr::new("PYTHONHOME")),
+            "child_env must strip PYTHONHOME"
+        );
+        assert!(
+            !env.iter().any(|(k, _)| k == OsStr::new("PYTHONPATH")),
+            "child_env must strip PYTHONPATH"
+        );
+        // PATH must be present and augmented with the tool bin dirs.
+        let path = env
+            .iter()
+            .rev()
+            .find(|(k, _)| k == OsStr::new("PATH"))
+            .map(|(_, v)| v.to_string_lossy().into_owned())
+            .expect("child_env must set PATH");
+        for dir in tool_bin_dirs() {
+            assert!(
+                path.contains(&*dir.to_string_lossy()),
+                "child_env PATH should contain probed dir {:?}",
+                dir
+            );
         }
     }
 
