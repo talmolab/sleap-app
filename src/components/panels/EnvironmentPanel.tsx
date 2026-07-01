@@ -312,6 +312,18 @@ export function EnvironmentPanel() {
                   v{uv.version}
                 </span>
               )}
+              {/* Explicit detection declaration (auto-detected on mount, before
+                  any install). Makes "found vs not found" unmistakable. */}
+              <Badge
+                variant="secondary"
+                className={`text-[10px] px-1.5 py-0 h-4 rounded-sm ${
+                  uv?.available
+                    ? "bg-green-500/10 text-green-500"
+                    : "bg-red-500/10 text-red-500"
+                }`}
+              >
+                {uv?.available ? "Detected" : "Not detected"}
+              </Badge>
               <div className="ml-auto">
                 {uv?.available ? (
                   <Button
@@ -342,7 +354,8 @@ export function EnvironmentPanel() {
             </div>
             {!uv?.available && (
               <div className="text-[10px] text-muted-foreground pl-5">
-                Not found on PATH
+                No existing uv found on this system — install it to enable
+                training &amp; inference.
               </div>
             )}
             {uv?.path && <PathDisplay path={uv.path} />}
