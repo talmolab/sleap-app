@@ -71,7 +71,114 @@ pub enum ProcessEvent {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Run a command via the shell plugin and collect stdout.
+// --- PATH / uv resolution ---------------------------------------------------
+//
+// The INSTALLED desktop app is launched by the OS GUI layer (macOS
+// LaunchServices, Linux desktop session) — NOT a login shell — so it inherits a
+// MINIMAL PATH (on macOS just /etc/paths: /usr/local/bin:/usr/bin:/bin:...) that
+// EXCLUDES ~/.local/bin, where the astral installer puts `uv` and the uv-tool
+// shims (`sleap-nn`, `sleap-rtc`). Under `tauri dev` the app inherits the
+// launching terminal's rich PATH, so bare-name spawns happen to work — which is
+// why this only reproduces in the installed app. Fix: (1) resolve `uv` to an
+// ABSOLUTE path (which-first, then a documented probe order), and (2) augment
+// every child's PATH with the well-known tool bin dirs so the shims + the
+// `curl | sh` installer resolve too.
+
+/// The uv executable filename for the current platform.
+#[cfg(windows)]
+const UV_EXE: &str = "uv.exe";
+#[cfg(not(windows))]
+const UV_EXE: &str = "uv";
+
+/// Well-known directories that hold `uv` / uv-tool shims, in PREFERENCE ORDER.
+/// cfg-gated so names + separators are always correct per-platform (built with
+/// `PathBuf::join`, never a manual slash swap).
+///
+/// Order: `~/.local/bin` first — the astral installer default AND where our own
+/// Environment-tab install button puts uv — then cargo, then Homebrew/system.
+fn tool_bin_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(home) = dirs::home_dir() {
+        dirs.push(home.join(".local").join("bin")); // astral default + uv-tool shims
+        dirs.push(home.join(".cargo").join("bin")); // `cargo install uv`
+    }
+    #[cfg(target_os = "macos")]
+    {
+        dirs.push(PathBuf::from("/opt/homebrew/bin")); // Homebrew (Apple Silicon)
+        dirs.push(PathBuf::from("/usr/local/bin")); // Homebrew (Intel) / manual
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        dirs.push(PathBuf::from("/usr/local/bin")); // manual / distro
+        dirs.push(PathBuf::from("/home/linuxbrew/.linuxbrew/bin")); // Linuxbrew
+    }
+    dirs
+}
+
+/// A PATH with the well-known tool bin dirs PREPENDED to the inherited PATH.
+/// Prepend so our known-good uv/shims win; keep the rest so system tools
+/// (curl, sh, python) still resolve.
+fn augmented_path() -> std::ffi::OsString {
+    let mut paths = tool_bin_dirs();
+    if let Some(existing) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&existing));
+    }
+    std::env::join_paths(&paths).unwrap_or_else(|_| std::env::var_os("PATH").unwrap_or_default())
+}
+
+/// Resolve `uv` to an absolute path.
+/// 1. `which`/`where` FIRST — honors the PATH the user's own shell resolves
+///    against (dev / terminal launch). In the installed app the minimal PATH
+///    finds nothing here, so we fall through to probing.
+/// 2. Probe the known install dirs in preference order.
+/// 3. Fall back to bare `"uv"` (unchanged legacy behavior; errors as before if
+///    genuinely absent).
+async fn resolve_uv<R: Runtime>(app: &AppHandle<R>) -> String {
+    #[cfg(windows)]
+    let which_cmd = "where";
+    #[cfg(not(windows))]
+    let which_cmd = "which";
+    // RAW (un-augmented) env here so "which-first" reflects the user's OWN PATH,
+    // not our prepended dirs.
+    if let Some(out) = shell_output_raw(app, which_cmd, &["uv"]).await {
+        if let Some(line) = out.lines().next() {
+            let p = PathBuf::from(line.trim());
+            if p.is_file() {
+                return p.to_string_lossy().into_owned();
+            }
+        }
+    }
+    for dir in tool_bin_dirs() {
+        let candidate = dir.join(UV_EXE);
+        if candidate.is_file() {
+            return candidate.to_string_lossy().into_owned();
+        }
+    }
+    "uv".to_string()
+}
+
+/// Run a command with the process's INHERITED environment (no PATH tweaks) and
+/// collect stdout. Used only for the `which`/`where` probe in `resolve_uv`.
+async fn shell_output_raw<R: Runtime>(
+    app: &AppHandle<R>,
+    program: &str,
+    args: &[&str],
+) -> Option<String> {
+    let output = app.shell().command(program).args(args).output().await.ok()?;
+    if output.status.success() {
+        let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if s.is_empty() {
+            None
+        } else {
+            Some(s)
+        }
+    } else {
+        None
+    }
+}
+
+/// Run a command with an AUGMENTED PATH (adds the well-known tool bin dirs) and
+/// collect stdout. Used for all uv / tool invocations.
 async fn shell_output<R: Runtime>(
     app: &AppHandle<R>,
     program: &str,
@@ -81,6 +188,7 @@ async fn shell_output<R: Runtime>(
         .shell()
         .command(program)
         .args(args)
+        .env("PATH", augmented_path())
         .output()
         .await
         .ok()?;
@@ -107,6 +215,7 @@ async fn stream_command<R: Runtime>(
         .shell()
         .command(program)
         .args(args)
+        .env("PATH", augmented_path())
         .spawn()
         .map_err(|e| format!("Failed to spawn {}: {}", program, e))?;
 
@@ -143,8 +252,12 @@ async fn stream_command<R: Runtime>(
 /// Detect whether `uv` is installed and get its version.
 #[tauri::command]
 pub async fn detect_uv<R: Runtime>(app: AppHandle<R>) -> UvInfo {
+    // Resolve uv to an absolute path first — the installed app's minimal PATH
+    // won't find a bare `uv` (see resolve_uv).
+    let uv = resolve_uv(&app).await;
+
     // Try to get uv version
-    let version_output = shell_output(&app, "uv", &["--version"]).await;
+    let version_output = shell_output(&app, &uv, &["--version"]).await;
     if version_output.is_none() {
         return UvInfo {
             available: false,
@@ -158,17 +271,11 @@ pub async fn detect_uv<R: Runtime>(app: AppHandle<R>) -> UvInfo {
         v.strip_prefix("uv ").unwrap_or(&v).to_string()
     });
 
-    // Find uv path
-    #[cfg(windows)]
-    let which_cmd = "where";
-    #[cfg(not(windows))]
-    let which_cmd = "which";
-    let path = shell_output(&app, which_cmd, &["uv"]).await.map(|s| {
-        s.lines().next().unwrap_or(&s).to_string()
-    });
+    // Report the resolved absolute path (None only if we fell back to bare "uv").
+    let path = if uv == "uv" { None } else { Some(uv.clone()) };
 
     // Get managed Python directory
-    let python_dir = shell_output(&app, "uv", &["python", "dir"]).await;
+    let python_dir = shell_output(&app, &uv, &["python", "dir"]).await;
 
     UvInfo {
         available: true,
@@ -204,7 +311,8 @@ pub async fn detect_gpu<R: Runtime>(app: AppHandle<R>) -> String {
 /// List tools installed via `uv tool`.
 #[tauri::command]
 pub async fn list_uv_tools<R: Runtime>(app: AppHandle<R>) -> Vec<UvTool> {
-    match shell_output(&app, "uv", &["tool", "list"]).await {
+    let uv = resolve_uv(&app).await;
+    match shell_output(&app, &uv, &["tool", "list"]).await {
         Some(output) => parse_uv_tool_list(&output),
         None => vec![],
     }
@@ -215,9 +323,10 @@ pub async fn list_uv_tools<R: Runtime>(app: AppHandle<R>) -> Vec<UvTool> {
 pub async fn list_python_interpreters<R: Runtime>(
     app: AppHandle<R>,
 ) -> Vec<PythonInterpreter> {
+    let uv = resolve_uv(&app).await;
     let output = match shell_output(
         &app,
-        "uv",
+        &uv,
         &["python", "list", "--only-installed"],
     )
     .await
@@ -238,7 +347,8 @@ pub async fn list_python_interpreters<R: Runtime>(
 pub async fn list_downloadable_pythons<R: Runtime>(
     app: AppHandle<R>,
 ) -> Vec<PythonInterpreter> {
-    let output = match shell_output(&app, "uv", &["python", "list"]).await {
+    let uv = resolve_uv(&app).await;
+    let output = match shell_output(&app, &uv, &["python", "list"]).await {
         Some(s) => s,
         None => return vec![],
     };
@@ -284,7 +394,8 @@ pub async fn install_python<R: Runtime>(
     version: String,
     on_event: Channel<ProcessEvent>,
 ) -> Result<(), String> {
-    stream_command(&app, "uv", &["python", "install", &version], &on_event).await?;
+    let uv = resolve_uv(&app).await;
+    stream_command(&app, &uv, &["python", "install", &version], &on_event).await?;
     Ok(())
 }
 
@@ -322,7 +433,8 @@ pub async fn install_uv_tool<R: Runtime>(
     }
 
     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_ref()).collect();
-    stream_command(&app, "uv", &arg_refs, &on_event).await?;
+    let uv = resolve_uv(&app).await;
+    stream_command(&app, &uv, &arg_refs, &on_event).await?;
     Ok(())
 }
 
@@ -333,7 +445,8 @@ pub async fn upgrade_uv_tool<R: Runtime>(
     package: String,
     on_event: Channel<ProcessEvent>,
 ) -> Result<(), String> {
-    stream_command(&app, "uv", &["tool", "upgrade", &package], &on_event).await?;
+    let uv = resolve_uv(&app).await;
+    stream_command(&app, &uv, &["tool", "upgrade", &package], &on_event).await?;
     Ok(())
 }
 
@@ -343,7 +456,8 @@ pub async fn update_uv<R: Runtime>(
     app: AppHandle<R>,
     on_event: Channel<ProcessEvent>,
 ) -> Result<(), String> {
-    stream_command(&app, "uv", &["self", "update"], &on_event).await?;
+    let uv = resolve_uv(&app).await;
+    stream_command(&app, &uv, &["self", "update"], &on_event).await?;
     Ok(())
 }
 
@@ -404,6 +518,7 @@ pub async fn run_python_command<R: Runtime>(
         .shell()
         .command(&program)
         .args(&args)
+        .env("PATH", augmented_path())
         .spawn()
         .map_err(|e| format!("Failed to spawn {}: {}", program, e))?;
 
@@ -482,7 +597,8 @@ fn sleap_nn_python_path(tool_dir: &Path) -> PathBuf {
 /// pyzmq the trainer publishes with. Errors clearly rather than silently falling
 /// back to a base `python3` that lacks pyzmq.
 async fn resolve_sleap_nn_python<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
-    let tool_dir = shell_output(app, "uv", &["tool", "dir"])
+    let uv = resolve_uv(app).await;
+    let tool_dir = shell_output(app, &uv, &["tool", "dir"])
         .await
         .ok_or_else(|| "Could not determine uv tool directory (is uv installed?)".to_string())?;
     let python = sleap_nn_python_path(Path::new(tool_dir.trim()));
@@ -998,6 +1114,59 @@ fn extract_downloadable(output: &str) -> Vec<PythonInterpreter> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- uv resolution / PATH augmentation --
+
+    #[test]
+    fn test_uv_exe_name() {
+        #[cfg(windows)]
+        assert_eq!(UV_EXE, "uv.exe");
+        #[cfg(not(windows))]
+        assert_eq!(UV_EXE, "uv");
+    }
+
+    #[test]
+    fn test_tool_bin_dirs_prefers_local_bin_then_cargo() {
+        let dirs = tool_bin_dirs();
+        // ~/.local/bin (astral default + our install button) must be probed
+        // before ~/.cargo/bin so the app prefers the standard install.
+        let local = dirs
+            .iter()
+            .position(|p| p.to_string_lossy().contains(".local"));
+        let cargo = dirs
+            .iter()
+            .position(|p| p.to_string_lossy().contains(".cargo"));
+        if let (Some(l), Some(c)) = (local, cargo) {
+            assert!(l < c, "~/.local/bin must be probed before ~/.cargo/bin");
+        }
+    }
+
+    #[test]
+    fn test_augmented_path_prepends_tool_dirs() {
+        let augmented = augmented_path();
+        let s = augmented.to_string_lossy();
+        // Every probed tool dir must appear in the augmented PATH...
+        for dir in tool_bin_dirs() {
+            assert!(
+                s.contains(&*dir.to_string_lossy()),
+                "augmented PATH should contain probed dir {:?}",
+                dir
+            );
+        }
+        // ...and the inherited PATH must be preserved (not clobbered).
+        if let Some(existing) = std::env::var_os("PATH") {
+            for entry in std::env::split_paths(&existing) {
+                if !entry.as_os_str().is_empty() {
+                    assert!(
+                        s.contains(&*entry.to_string_lossy()),
+                        "augmented PATH should preserve inherited entry {:?}",
+                        entry
+                    );
+                    break;
+                }
+            }
+        }
+    }
 
     // -- sleap-nn venv python path (relay interpreter, #121) --
 
