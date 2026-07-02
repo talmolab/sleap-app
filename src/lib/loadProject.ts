@@ -9,11 +9,28 @@
  * Handles loading state, toast notifications, and unsaved changes confirmation.
  */
 
-import { loadSlp, setImageBytesReader } from "@talmolab/sleap-io.js";
+import { loadSlp, setImageBytesReader, type Labels } from "@talmolab/sleap-io.js";
 import { useAppStore } from "../stores/appStore";
 import { toast } from "@/lib/notify";
 import { resolveExternalVideos } from "./resolveVideos";
 import { setImageProjectDir, createImageReader } from "./imageVideoReader";
+
+/**
+ * After a project loads, open on its first labeled frame instead of frame 0.
+ * Embedded pkg.slp videos store frames at their ORIGINAL source indices — often
+ * far from 0 (e.g. 76978+) — so frame 0 is usually an empty/black non-embedded
+ * position, making a fully-loaded project look blank on open. Selects that
+ * frame's video too (multi-video packages). No-op when there are no labeled
+ * frames. (Full effect needs the sleap-io.js frame-axis fix so shape[0] spans
+ * the original range; otherwise setFrameIdx clamps — but never a regression.)
+ */
+function openFirstLabeledFrame(labels: Labels): void {
+  const firstLF = labels.labeledFrames[0];
+  if (!firstLF) return;
+  const store = useAppStore.getState();
+  if (firstLF.video) store.setVideo(firstLF.video);
+  store.setFrameIdx(firstLF.frameIdx);
+}
 
 /**
  * Load an SLP project from a File object.
@@ -39,6 +56,7 @@ export async function loadProjectFromFile(file: File): Promise<boolean> {
     store.setLoading(true, "Locating videos...");
     await resolveExternalVideos(labels);
     store.setLabels(labels, file.name);
+    openFirstLabeledFrame(labels);
     toast.success(`Loaded ${file.name}`, {
       description: `${labels.videos.length} video(s), ${labels.labeledFrames.length} labeled frames`,
     });
@@ -119,6 +137,7 @@ export async function loadProjectFromPath(
     }
 
     store.setLabels(labels, filename, path);
+    openFirstLabeledFrame(labels);
 
     toast.success(`Loaded ${filename}`, {
       description: `${labels.videos.length} video(s), ${labels.labeledFrames.length} labeled frames`,
