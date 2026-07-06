@@ -213,7 +213,33 @@ pub fn run() {
   #[cfg(debug_assertions)]
   let builder = builder.plugin(tauri_plugin_pilot::init());
 
-  builder
-    .run(tauri::generate_context!())
-    .expect("error while running tauri application");
+  let app = builder
+    .build(tauri::generate_context!())
+    .expect("error while building tauri application");
+
+  app.run(|_app_handle, _event| {
+    // macOS delivers files opened via Finder / a file association ("Open With",
+    // double-click) as an Apple Event, surfaced here as RunEvent::Opened — NOT as
+    // a CLI argument. Stash the first path into the same InitialFile slot the CLI
+    // path uses (so a cold-start webview picks it up via get_initial_file) and
+    // emit `open-file` (so an already-running window loads it immediately). Both
+    // the launch poll and the event handler funnel through get_initial_file,
+    // which take()s the slot, so the two can't double-load the same file.
+    #[cfg(target_os = "macos")]
+    {
+      use tauri::{Emitter, Manager};
+      if let tauri::RunEvent::Opened { urls } = _event {
+        if let Some(path) = urls
+          .iter()
+          .filter_map(|u| u.to_file_path().ok())
+          .next()
+          .map(|p| p.to_string_lossy().into_owned())
+        {
+          println!("[sleap-label] opened file: {path}");
+          *_app_handle.state::<InitialFile>().0.lock().unwrap() = Some(path);
+          let _ = _app_handle.emit("open-file", ());
+        }
+      }
+    }
+  });
 }

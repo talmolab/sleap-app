@@ -9,6 +9,20 @@ import { loadProjectFromPath } from "./lib/loadProject";
 import { isTauri } from "./platform";
 import { setupCloseHandler } from "./lib/quit";
 
+// Consume the pending "initial file" slot in Rust and load it. The slot is
+// populated either from a CLI argument on launch or from a macOS file-association
+// open (RunEvent::Opened). get_initial_file take()s the slot, so calling this
+// from both the launch poll and the `open-file` listener is race-safe: whoever
+// runs first loads the file, the other gets null and no-ops (no double-load).
+async function loadInitialFileIfAny() {
+  const { invoke } = await import("@tauri-apps/api/core");
+  const path = await invoke<string | null>("get_initial_file");
+  if (!path) return;
+  console.log("[app] Loading initial file:", path);
+  const { readFile, exists } = await import("@tauri-apps/plugin-fs");
+  await loadProjectFromPath(path, readFile, exists);
+}
+
 export default function App() {
   useKeyboardShortcuts();
   useWindowTitle();
@@ -28,22 +42,39 @@ export default function App() {
   const projectLoaded = useAppStore((s) => s.projectLoaded);
   const hashApplied = useRef(false);
 
-  // Open file passed as CLI argument (Tauri only)
+  // Open a file passed on launch — a CLI argument, or a macOS file-association
+  // open that fired before the webview was ready (Tauri only).
   useEffect(() => {
-    import("@tauri-apps/api/core")
-      .then(({ invoke }) => invoke<string | null>("get_initial_file"))
-      .then(async (path) => {
-        if (!path) {
-          console.log("[app] No CLI file argument received");
-          return;
-        }
-        console.log("[app] Loading CLI file argument:", path);
-        const { readFile, exists } = await import("@tauri-apps/plugin-fs");
-        await loadProjectFromPath(path, readFile, exists);
-      })
-      .catch((err) => {
-        console.warn("[app] Failed to load CLI file argument:", err);
+    if (!isTauri) return;
+    loadInitialFileIfAny().catch((err) => {
+      console.warn("[app] Failed to load initial file:", err);
+    });
+  }, []);
+
+  // macOS file-association / "Open With" opens while the app is already running
+  // (or that land after the launch poll above). Finder delivers these as an Apple
+  // Event, which Rust forwards as an `open-file` event; we then drain the same
+  // initial-file slot. Reuses loadProjectFromPath, so it inherits the
+  // unsaved-changes confirm and works on the welcome screen or in the editor.
+  useEffect(() => {
+    if (!isTauri) return;
+    let active = true;
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      const { listen } = await import("@tauri-apps/api/event");
+      const fn = await listen("open-file", () => {
+        loadInitialFileIfAny().catch((err) => {
+          console.warn("[app] Failed to load opened file:", err);
+        });
       });
+      // Component may have unmounted before the listener resolved.
+      if (active) unlisten = fn;
+      else fn();
+    })();
+    return () => {
+      active = false;
+      unlisten?.();
+    };
   }, []);
 
   useEffect(() => {

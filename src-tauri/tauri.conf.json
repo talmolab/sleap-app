@@ -38,6 +38,14 @@
     "category": "DeveloperTool",
     "shortDescription": "SLEAP pose estimation labeling tool",
     "longDescription": "Web-based labeling GUI for SLEAP animal pose estimation and tracking.",
+    "fileAssociations": [
+      {
+        "ext": ["slp"],
+        "name": "SLEAP Project",
+        "description": "SLEAP labeling project",
+        "role": "Editor"
+      }
+    ],
     "createUpdaterArtifacts": true
   },
   "plugins": {
