@@ -156,7 +156,7 @@ export function VideoPlayer() {
   const renderedInstancesRef = useRef<RenderedInstance[]>([]);
 
   // Store frame as ImageBitmap so we can re-draw with transforms
-  const frameBitmapRef = useRef<ImageBitmap | null>(null);
+  const frameBitmapRef = useRef<OffscreenCanvas | null>(null);
 
   // Track container dimensions for fit-to-window rendering
   const [containerSize, setContainerSize] = useState<[number, number]>([0, 0]);
@@ -435,13 +435,21 @@ export function VideoPlayer() {
           return;
         }
 
-        let bmp: ImageBitmap;
+        // Copy the backend's frame into an OffscreenCanvas we own via a fast GPU
+        // blit (drawImage) / putImageData — NOT createImageBitmap(). The MP4
+        // backend caches & reuses the returned ImageBitmap, so we can't hold or
+        // close it; the old defensive `createImageBitmap(frame)` clone did that
+        // but is pathologically slow in WKWebView (~300 ms for a 1280x1024 frame,
+        // which dominated every seek). A drawImage into our own canvas is ~1-5 ms
+        // and leaves the backend's cache untouched.
+        let bmp: OffscreenCanvas;
 
         if (frame instanceof ImageBitmap) {
-          // Clone so we don't close the backend's cached copy
-          bmp = await createImageBitmap(frame);
+          bmp = new OffscreenCanvas(frame.width, frame.height);
+          bmp.getContext("2d")?.drawImage(frame, 0, 0);
         } else if (frame instanceof ImageData) {
-          bmp = await createImageBitmap(frame);
+          bmp = new OffscreenCanvas(frame.width, frame.height);
+          bmp.getContext("2d")?.putImageData(frame, 0, 0);
         } else if (frame instanceof ArrayBuffer || frame instanceof Uint8Array) {
           const bytes =
             frame instanceof ArrayBuffer ? new Uint8Array(frame) : frame;
@@ -449,38 +457,21 @@ export function VideoPlayer() {
           if (!shape) return;
           const [, h, w] = shape;
           const imageData = new ImageData(new Uint8ClampedArray(bytes), w, h);
-          bmp = await createImageBitmap(imageData);
+          bmp = new OffscreenCanvas(w, h);
+          bmp.getContext("2d")?.putImageData(imageData, 0, 0);
         } else {
           return;
         }
 
         if (cancelled) {
-          bmp.close();
           if (debugFlags.logSeeking) console.debug(`[seek] frame ${frameIdx} cancelled after decode`);
           return;
         }
 
-        // Compute histogram from raw frame pixels. Skipped while scrubbing:
-        // OffscreenCanvas + getImageData allocates ~10 MB per frame, and at fast
-        // scrub rates that churn can OOM-crash the WebView renderer. The
-        // histogram refreshes on the next non-scrub frame (e.g. drag release).
-        if (!useAppStore.getState().isScrubbing) {
-          const offscreen = new OffscreenCanvas(bmp.width, bmp.height);
-          const offCtx = offscreen.getContext("2d");
-          if (offCtx) {
-            offCtx.drawImage(bmp, 0, 0);
-            const imgData = offCtx.getImageData(0, 0, bmp.width, bmp.height);
-            const hist = new Uint32Array(256);
-            const d = imgData.data;
-            for (let i = 0; i < d.length; i += 4) {
-              hist[d[i + 1]]++;
-            }
-            useAppStore.getState().set("frameHistogram", hist);
-          }
-        }
-
-        // Close previous bitmap
-        frameBitmapRef.current?.close();
+        // Histogram is computed OFF this path — see the debounced effect below.
+        // It needs a full-frame getImageData (a GPU->CPU readback that costs
+        // ~200-340ms in WKWebView); running it here blocked every seek. The frame
+        // now paints immediately and the histogram catches up when nav settles.
         frameBitmapRef.current = bmp;
         setFrameDims((prev) => (prev[0] === bmp.width && prev[1] === bmp.height ? prev : [bmp.width, bmp.height]));
         setBitmapVersion((v) => v + 1);
@@ -500,6 +491,26 @@ export function VideoPlayer() {
       cancelled = true;
     };
   }, [video, frameIdx, overlayVersion]);
+
+  // Frame histogram, computed OFF the seek path. A full-frame getImageData is a
+  // GPU->CPU readback (~200-340ms in WKWebView) — doing it inline blocked every
+  // jump. Keyed on bitmapVersion and debounced, so rapid arrow/scrub navigation
+  // pays it once (when nav settles), never per intermediate frame. Skipped while
+  // scrubbing. `bmp` is now an OffscreenCanvas we own, so we read straight from
+  // its context (no extra canvas/drawImage).
+  useEffect(() => {
+    if (useAppStore.getState().isScrubbing) return;
+    const id = setTimeout(() => {
+      const bmp = frameBitmapRef.current;
+      const offCtx = bmp?.getContext("2d");
+      if (!bmp || !offCtx) return;
+      const d = offCtx.getImageData(0, 0, bmp.width, bmp.height).data;
+      const hist = new Uint32Array(256);
+      for (let i = 0; i < d.length; i += 4) hist[d[i + 1]]++;
+      useAppStore.getState().set("frameHistogram", hist);
+    }, 150);
+    return () => clearTimeout(id);
+  }, [bitmapVersion]);
 
   // Render the frame with fit-to-window base transform + user zoom/pan
   useEffect(() => {
