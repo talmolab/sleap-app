@@ -79,6 +79,21 @@ export interface AppState {
   lutMin: number;
   lutMax: number;
   frameHistogram: Uint32Array | null;
+  /**
+   * True while VideoPlayer has a frame read in flight. Transient (never
+   * persisted); read via getState() — do NOT subscribe with a selector or it
+   * will re-render on every frame. Used by the seekbar scrub loop to serialize
+   * reads: it never issues a new frame while one is loading, so a drag tracks
+   * the cursor with one read of latency instead of a growing backlog (#137 perf).
+   */
+  frameLoading: boolean;
+  /**
+   * True while the user is dragging the seekbar (scrubbing). Transient (never
+   * persisted); read via getState(), don't subscribe. Lets VideoPlayer skip
+   * expensive per-frame work (the histogram) during a fast scrub, which would
+   * otherwise churn ~10 MB/frame and can OOM-crash the WebView renderer.
+   */
+  isScrubbing: boolean;
   colormap: string;
   rotation: 0 | 90 | 180 | 270;
   seekbarHeaderGraph: StatisticGraphType;
@@ -243,6 +258,8 @@ export const useAppStore = create<AppState>()(
       lutMin: 0,
       lutMax: 255,
       frameHistogram: null,
+      frameLoading: false,
+      isScrubbing: false,
       colormap: "grayscale",
       rotation: 0 as 0 | 90 | 180 | 270,
       seekbarHeaderGraph: "instance-count" as StatisticGraphType,

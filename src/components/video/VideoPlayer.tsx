@@ -409,7 +409,12 @@ export function VideoPlayer() {
 
   // Load the current frame (convert to ImageBitmap, trigger dimension update)
   useEffect(() => {
-    if (!video || !video.backend) return;
+    if (!video || !video.backend) {
+      // Release the scrub gate even when we can't read, so the seekbar loop
+      // never jams waiting on a read that will never happen.
+      useAppStore.getState().set("frameLoading", false);
+      return;
+    }
 
     let cancelled = false;
     const t0 = performance.now();
@@ -417,7 +422,13 @@ export function VideoPlayer() {
 
     (async () => {
       try {
-        const frame = await video.getFrame(frameIdx);
+        // While scrubbing, skip the backend's read-ahead prefetch: those frames
+        // are scrubbed past (wasted) and their reads saturate a slow mount,
+        // slowing the frame we actually want (~3.6x on the VAST mount). Mirrors
+        // PyQt's worker, which does no read-ahead while scrubbing.
+        const frame = await video.getFrame(frameIdx, {
+          prefetch: !useAppStore.getState().isScrubbing,
+        });
         if (debugFlags.logSeeking) console.debug(`[seek] getFrame(${frameIdx}) returned ${frame?.constructor?.name ?? "null"} in ${(performance.now() - t0).toFixed(1)}ms`);
         if (cancelled || !frame) {
           if (debugFlags.logSeeking && cancelled) console.debug(`[seek] frame ${frameIdx} cancelled`);
@@ -449,8 +460,11 @@ export function VideoPlayer() {
           return;
         }
 
-        // Compute histogram from raw frame pixels
-        {
+        // Compute histogram from raw frame pixels. Skipped while scrubbing:
+        // OffscreenCanvas + getImageData allocates ~10 MB per frame, and at fast
+        // scrub rates that churn can OOM-crash the WebView renderer. The
+        // histogram refreshes on the next non-scrub frame (e.g. drag release).
+        if (!useAppStore.getState().isScrubbing) {
           const offscreen = new OffscreenCanvas(bmp.width, bmp.height);
           const offCtx = offscreen.getContext("2d");
           if (offCtx) {
@@ -473,6 +487,12 @@ export function VideoPlayer() {
         if (debugFlags.logSeeking) console.debug(`[seek] frame ${frameIdx} rendered (${bmp.width}x${bmp.height}) total ${(performance.now() - t0).toFixed(1)}ms`);
       } catch (err) {
         console.error("Failed to render frame:", err);
+      } finally {
+        // Release the scrub serialization gate so the seekbar drag loop can
+        // issue the next frame. Set unconditionally: during a scrub only one
+        // read is in flight at a time (the loop won't issue while loading), and
+        // for non-scrub seeks this is a harmless no-op.
+        useAppStore.getState().set("frameLoading", false);
       }
     })();
 
