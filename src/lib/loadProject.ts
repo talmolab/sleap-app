@@ -35,6 +35,25 @@ const H5WASM_URL =
     : undefined;
 
 /**
+ * Bridge sleap-io.js load progress into the loading overlay.
+ * The library reports (completed, total, stage) where `stage` names the step
+ * about to run — "Reading frames", "Opening videos (3/27)", … — ending with
+ * (total, total, "Finalizing"). Stage granularity varies by reader path.
+ */
+export function formatLoadProgress(
+  current: number,
+  total: number,
+  message?: string
+): string {
+  const pct = total > 0 ? Math.round((current / total) * 100) : 0;
+  return `${message ?? "Parsing"}... (${pct}%)`;
+}
+
+function reportParseProgress(current: number, total: number, message?: string): void {
+  useAppStore.getState().setLoading(true, formatLoadProgress(current, total, message));
+}
+
+/**
  * After a project loads, open on its first labeled frame instead of frame 0.
  * Embedded pkg.slp videos store frames at their ORIGINAL source indices — often
  * far from 0 (e.g. 76978+) — so frame 0 is usually an empty/black non-embedded
@@ -72,6 +91,7 @@ export async function loadProjectFromFile(file: File): Promise<boolean> {
     const labels = await loadSlp(file, {
       openVideos: true,
       h5: { h5wasmUrl: H5WASM_URL },
+      onProgress: reportParseProgress,
     });
     store.setLoading(true, "Locating videos...");
     await resolveExternalVideos(labels);
@@ -167,6 +187,7 @@ export async function loadProjectFromPath(
       labels = await loadSlp(bytes, {
         openVideos: true,
         h5: { filenameHint: path, h5wasmUrl: H5WASM_URL },
+        onProgress: reportParseProgress,
       });
     }
 
