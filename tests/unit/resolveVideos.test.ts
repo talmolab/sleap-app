@@ -15,6 +15,7 @@ import {
   backendKindForFilename,
   resolveImageFramesInFolder,
   resolveExternalVideos,
+  getVideoPathCandidates,
   isVideoMissing,
   classifyVideoError,
   videoIssue,
@@ -248,5 +249,63 @@ describe("backendKindForFilename (format → backend dispatch)", () => {
     for (const name of ["clip.avi", "clip.xyz", "noextension", ""]) {
       expect(backendKindForFilename(name)).toBeNull();
     }
+  });
+});
+
+describe("getVideoPathCandidates (relative video path resolution, #188)", () => {
+  it("walks up ancestor dirs so a path relative to a root above the .slp resolves", () => {
+    // Repro from #188: the .slp lives 3 dirs deep under the repo, and the video
+    // path is stored relative to the repo root (SLEAP-python's CWD-relative case).
+    const video = new Video({
+      filename: "tests/data/json_format_v1/centered_pair_low_quality.mp4",
+      openBackend: false,
+    });
+    const projectPath = "/home/u/sleap/tests/data/slp_hdf5/centered_pair.slp";
+    const candidates = getVideoPathCandidates(video, projectPath);
+
+    // The real file (relative to the repo root) is reached by walking up.
+    expect(candidates).toContain(
+      "/home/u/sleap/tests/data/json_format_v1/centered_pair_low_quality.mp4"
+    );
+    // The old .slp-dir graft (doubled path) is still tried first — harmless, and
+    // no longer the only candidate.
+    expect(candidates[0]).toBe(
+      "/home/u/sleap/tests/data/slp_hdf5/tests/data/json_format_v1/centered_pair_low_quality.mp4"
+    );
+  });
+
+  it("keeps the .slp-relative candidate first when the video sits beside the .slp", () => {
+    const video = new Video({ filename: "videos/clip.mp4", openBackend: false });
+    const candidates = getVideoPathCandidates(video, "/proj/labels.slp");
+    expect(candidates[0]).toBe("/proj/videos/clip.mp4");
+  });
+
+  it("passes an absolute path through as-is", () => {
+    const video = new Video({
+      filename: "/abs/videos/clip.mp4",
+      openBackend: false,
+    });
+    const candidates = getVideoPathCandidates(video, "/proj/labels.slp");
+    expect(candidates[0]).toBe("/abs/videos/clip.mp4");
+  });
+
+  it("includes a basename-in-project-dir fallback", () => {
+    const video = new Video({ filename: "a/b/clip.mp4", openBackend: false });
+    const candidates = getVideoPathCandidates(video, "/proj/labels.slp");
+    expect(candidates).toContain("/proj/clip.mp4");
+  });
+
+  it("normalizes Windows separators in the stored relative path", () => {
+    const video = new Video({
+      filename: "tests\\data\\json_format_v1\\clip.mp4",
+      openBackend: false,
+    });
+    const candidates = getVideoPathCandidates(
+      video,
+      "/home/u/sleap/tests/data/slp_hdf5/x.slp"
+    );
+    expect(candidates).toContain(
+      "/home/u/sleap/tests/data/json_format_v1/clip.mp4"
+    );
   });
 });

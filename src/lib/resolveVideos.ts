@@ -213,7 +213,9 @@ export function resolveVideoPath(
  * Generate candidate absolute paths for a video file, given the project path.
  * Returns paths to try in priority order:
  * 1. The raw filename if it's already absolute
- * 2. The relative path resolved against the project directory
+ * 2. The relative path resolved against the project directory, then against each
+ *    ancestor directory walking up toward the filesystem root (so a path stored
+ *    relative to a root ABOVE the .slp still resolves — see #188)
  * 3. The basename resolved against the project directory (for moved projects)
  */
 export function getVideoPathCandidates(
@@ -238,9 +240,24 @@ export function getVideoPathCandidates(
     candidates.push(raw);
   }
 
-  // 2. Relative path resolved against project dir
+  // 2. Relative path resolved against the project dir, then each ancestor dir.
+  //    A path stored relative to a root ABOVE the .slp (e.g. the repo root — the
+  //    common SLEAP-python case, which resolves relative to the CWD) would
+  //    otherwise graft only onto the .slp's own dir and yield a doubled,
+  //    always-missing path. Walking up the ancestors finds it without assuming a
+  //    CWD. resolveExternalVideos tries candidates in order and stops at the
+  //    first that exists, so the .slp-relative interpretation still wins when it
+  //    is correct. See #188.
   if (!isAbsolute) {
-    candidates.push(projectDir + sep + raw.replace(/[\\/]/g, sep));
+    const normRaw = raw.replace(/[\\/]/g, sep);
+    let dir = projectDir;
+    while (dir.length > 0) {
+      const candidate = dir + sep + normRaw;
+      if (!candidates.includes(candidate)) candidates.push(candidate);
+      const parentIdx = dir.lastIndexOf(sep);
+      if (parentIdx <= 0) break; // reached the filesystem / drive root
+      dir = dir.substring(0, parentIdx);
+    }
   }
 
   // 3. Basename only, in project dir (for moved/reorganized projects)
