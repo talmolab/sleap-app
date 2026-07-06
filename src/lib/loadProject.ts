@@ -180,6 +180,7 @@ export async function loadProjectFromPath(
         openVideos: true,
         filenameHint: path,
         h5wasmUrl: H5WASM_URL,
+        onProgress: reportParseProgress,
       });
     } else {
       const bytes = await readFile(path);
