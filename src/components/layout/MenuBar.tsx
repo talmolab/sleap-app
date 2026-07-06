@@ -112,7 +112,7 @@ function FileMenu() {
                 key={idx}
                 onClick={async () => {
                   const { resolveVideoFile } = await import("../../lib/resolveVideos");
-                  await resolveVideoFile(v);
+                  await resolveVideoFile(v, labels ?? undefined);
                   useAppStore.getState().bumpOverlayVersion();
                 }}
               >

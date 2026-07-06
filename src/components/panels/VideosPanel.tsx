@@ -343,7 +343,7 @@ export function VideosPanel() {
   } | null>(null);
 
   const handleLocateVideo = async (video: Video) => {
-    const ok = await resolveVideoFile(video);
+    const ok = await resolveVideoFile(video, labels ?? undefined);
     if (ok) {
       bumpOverlayVersion();
       // If this is the current video, force a frame re-load

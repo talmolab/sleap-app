@@ -1830,7 +1830,7 @@ export function VideoPlayer() {
                 variant="outline"
                 size="sm"
                 onClick={async () => {
-                  const ok = await resolveVideoFile(video);
+                  const ok = await resolveVideoFile(video, labels ?? undefined);
                   // Re-render either way: on success to show the video, on
                   // failure so a newly recorded backendError (e.g. unsupported
                   // codec) updates this placeholder's message.
