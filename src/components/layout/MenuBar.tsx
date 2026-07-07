@@ -430,6 +430,8 @@ function ViewMenu() {
   const labelingMode = useAppStore((s) => s.labelingMode);
   const instance = useAppStore((s) => s.instance);
   const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed);
+  const sidebarSide = useAppStore((s) => s.sidebarSide);
+  const showCrosshair = useAppStore((s) => s.showCrosshair);
   const uiScale = useAppStore((s) => s.uiScale);
   const toggle = useAppStore((s) => s.toggle);
   const setVal = useAppStore((s) => s.set);
@@ -449,6 +451,12 @@ function ViewMenu() {
           onCheckedChange={() => toggle("sidebarCollapsed")}
         >
           Side Panel
+        </MenubarCheckboxItem>
+        <MenubarCheckboxItem
+          checked={sidebarSide === "left"}
+          onCheckedChange={(c) => setVal("sidebarSide", c ? "left" : "right")}
+        >
+          Sidebar on Left
         </MenubarCheckboxItem>
         <MenubarCheckboxItem
           checked={fit}
@@ -532,6 +540,12 @@ function ViewMenu() {
           onCheckedChange={() => toggle("showEdges")}
         >
           Show Edges
+        </MenubarCheckboxItem>
+        <MenubarCheckboxItem
+          checked={showCrosshair}
+          onCheckedChange={() => toggle("showCrosshair")}
+        >
+          Crosshair When Zoomed
         </MenubarCheckboxItem>
         <MenubarSeparator />
         <MenubarSub>

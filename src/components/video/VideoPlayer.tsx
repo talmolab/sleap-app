@@ -50,6 +50,7 @@ export function VideoPlayer() {
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
   const insetCanvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const crosshairRef = useRef<HTMLDivElement>(null);
 
   // State from store
   const video = useAppStore((s) => s.video);
@@ -76,6 +77,7 @@ export function VideoPlayer() {
   const defaultToPan = useAppStore((s) => s.defaultToPan);
   const fitSelection = useAppStore((s) => s.fitSelection);
   const areaDeleteMode = useAppStore((s) => s.areaDeleteMode);
+  const showCrosshair = useAppStore((s) => s.showCrosshair);
 
   // Local zoom/pan state
   const [zoom, setZoom] = useState(1);
@@ -1709,6 +1711,20 @@ export function VideoPlayer() {
     [canvasToScene, markerSize, showNonVisibleNodes]
   );
 
+  // Full-canvas crosshair while zoomed (View ▸ "Crosshair When Zoomed"). Only
+  // meaningful zoomed in, where precise keypoint placement matters. Positioned by
+  // writing CSS vars straight to the DOM on move — no per-move React re-render.
+  const crosshairActive = showCrosshair && zoom > 1;
+
+  const handleCrosshairMove = (e: React.MouseEvent) => {
+    const el = crosshairRef.current;
+    const cont = containerRef.current;
+    if (!el || !cont) return;
+    const rect = cont.getBoundingClientRect();
+    el.style.setProperty("--cx", `${e.clientX - rect.left}px`);
+    el.style.setProperty("--cy", `${e.clientY - rect.top}px`);
+  };
+
   return (
     <div className="flex flex-col flex-1 min-h-0">
       {/* Canvas container */}
@@ -1718,6 +1734,16 @@ export function VideoPlayer() {
           "flex-1 relative overflow-hidden bg-background min-h-0",
           isPanning ? "cursor-grabbing" : isZoomDragging ? "cursor-zoom-in" : (shouldPan && isCmdHeld) ? "cursor-zoom-in" : shouldPan ? "cursor-grab" : isDragging ? "cursor-grabbing" : areaDeleteMode ? "cursor-crosshair" : interactionMode === "marquee" ? "cursor-crosshair" : isPlacingNodes ? "cursor-cell" : hoveredNode ? "cursor-pointer" : "cursor-default"
         )}
+        onMouseMove={crosshairActive ? handleCrosshairMove : undefined}
+        onMouseLeave={
+          crosshairActive
+            ? () => {
+                const el = crosshairRef.current;
+                el?.style.setProperty("--cx", "-9999px");
+                el?.style.setProperty("--cy", "-9999px");
+              }
+            : undefined
+        }
       >
         {/* Video frame layer */}
         <canvas
@@ -1743,6 +1769,28 @@ export function VideoPlayer() {
           className="absolute z-30 pointer-events-none rounded-lg border-2 border-white/30 shadow-lg"
           style={{ display: "none", width: INSET_SIZE, height: INSET_SIZE }}
         />
+
+        {/* Full-canvas crosshair guide (screen-space, follows cursor). Lines are
+            positioned via the --cx/--cy CSS vars written on mousemove; starts
+            offscreen until the first move. */}
+        {crosshairActive && (
+          <div
+            ref={crosshairRef}
+            className="absolute inset-0 z-20 pointer-events-none"
+            style={
+              { "--cx": "-9999px", "--cy": "-9999px" } as React.CSSProperties
+            }
+          >
+            <div
+              className="absolute left-0 right-0 h-px bg-primary/70"
+              style={{ top: "var(--cy)" }}
+            />
+            <div
+              className="absolute top-0 bottom-0 w-px bg-primary/70"
+              style={{ left: "var(--cx)" }}
+            />
+          </div>
+        )}
         {/* Node hover tooltip */}
         {hoveredNode && labeledFrame && (() => {
           const lfInst = labeledFrame.instances[hoveredNode.instanceIdx];

@@ -50,7 +50,10 @@ export function formatLoadProgress(
 }
 
 function reportParseProgress(current: number, total: number, message?: string): void {
-  useAppStore.getState().setLoading(true, formatLoadProgress(current, total, message));
+  const pct = total > 0 ? Math.round((current / total) * 100) : 0;
+  useAppStore
+    .getState()
+    .setLoading(true, formatLoadProgress(current, total, message), pct);
 }
 
 /**
