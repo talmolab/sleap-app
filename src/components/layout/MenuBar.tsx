@@ -527,7 +527,7 @@ function ViewMenu() {
           checked={showNonVisibleNodes}
           onCheckedChange={() => toggle("showNonVisibleNodes")}
         >
-          Show Non-Visible Nodes
+          Show Non-Visible Nodes <MenubarShortcut>V</MenubarShortcut>
         </MenubarCheckboxItem>
         <MenubarCheckboxItem
           checked={showLabels}
