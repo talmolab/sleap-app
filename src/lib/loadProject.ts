@@ -27,6 +27,10 @@ import { fileSize, readRange } from "./nativeRange";
 // and avoids per-chunk IPC overhead.
 const RANGE_READER_THRESHOLD = 1_000_000_000; // 1 GB
 
+// Defer opening external video decoders until a video is first viewed (open one,
+// not all N). Flip to false to A/B the eager baseline via the [load-timing] log.
+const LAZY_VIDEO_BACKENDS = true;
+
 // Serve h5wasm same-origin so the streaming Worker can load it under cross-origin
 // isolation (COOP/COEP) — COEP blocks the default cross-origin CDN importScripts.
 // public/h5wasm/h5wasm.js ships with the app (dev: Vite; prod: Tauri asset protocol).
@@ -34,6 +38,24 @@ const H5WASM_URL =
   typeof location !== "undefined"
     ? `${location.origin}/h5wasm/h5wasm.js`
     : undefined;
+
+/**
+ * Emit a phase-timing breakdown of a project load to the console, so we can see
+ * where the seconds go (parse vs. resolve-videos) and measure the effect of
+ * deferring video backends. Cheap; always on (one line per open).
+ */
+function logLoadTiming(
+  label: string,
+  videos: number,
+  phases: Record<string, number>
+): void {
+  const parts = Object.entries(phases)
+    .map(([k, v]) => `${k}=${Math.round(v)}ms`)
+    .join(" · ");
+  console.log(
+    `[load-timing] ${label} (${videos} video(s), lazy-ext=${LAZY_VIDEO_BACKENDS}): ${parts}`
+  );
+}
 
 /**
  * Bridge sleap-io.js load progress into the loading overlay.
@@ -92,13 +114,20 @@ export async function loadProjectFromFile(file: File): Promise<boolean> {
   store.setLoading(true, `Reading ${file.name}...`);
 
   try {
+    const tParse0 = performance.now();
     const labels = await loadSlp(file, {
       openVideos: true,
       h5: { h5wasmUrl: H5WASM_URL },
       onProgress: reportParseProgress,
     });
+    const parseMs = performance.now() - tParse0;
     store.setLoading(true, "Locating videos...");
+    const tResolve0 = performance.now();
     await resolveExternalVideos(labels);
+    logLoadTiming("loadProjectFromFile", labels.videos.length, {
+      parse: parseMs,
+      resolveVideos: performance.now() - tResolve0,
+    });
     store.setLabels(labels, file.name);
     openFirstLabeledFrame(labels);
     toast.success(`Loaded ${file.name}`, {
@@ -172,6 +201,7 @@ export async function loadProjectFromPath(
       fileBytes = 0;
     }
 
+    const tParse0 = performance.now();
     let labels: Labels;
     if (fileBytes > RANGE_READER_THRESHOLD) {
       store.setLoading(true, `Streaming ${filename}...`);
@@ -181,6 +211,9 @@ export async function loadProjectFromPath(
           readRange(path, offset, length),
       };
       labels = await readSlpStreaming(rangeSource, {
+        // Embedded (pkg.slp) decoders still open eagerly here — deferring them
+        // (the measured ~2 s / 23% win on a 140-video file) needs embedded
+        // on-demand opening, which is the in-progress follow-up.
         openVideos: true,
         filenameHint: path,
         h5wasmUrl: H5WASM_URL,
@@ -196,17 +229,26 @@ export async function loadProjectFromPath(
       });
     }
 
+    const parseMs = performance.now() - tParse0;
+
     store.setLoading(true, "Locating videos...");
+    const tResolve0 = performance.now();
     // Try auto-resolving video paths if we have filesystem access
     if (exists) {
       await resolveExternalVideos(labels, {
         projectPath: path,
         exists,
         readFile,
+        lazy: LAZY_VIDEO_BACKENDS,
       });
     } else {
       await resolveExternalVideos(labels);
     }
+    const resolveMs = performance.now() - tResolve0;
+    logLoadTiming("loadProjectFromPath", labels.videos.length, {
+      parse: parseMs,
+      resolveVideos: resolveMs,
+    });
 
     store.setLabels(labels, filename, path);
     openFirstLabeledFrame(labels);

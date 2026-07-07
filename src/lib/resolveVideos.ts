@@ -182,7 +182,41 @@ export function isFetchableUrl(filename: string | string[]): boolean {
 /** Check if a video is missing its backend (unresolved external file). */
 export function isVideoMissing(video: Video): boolean {
   if (video.hasEmbeddedImages) return false;
+  // Lazily resolved: file located, decoder deferred until first view. Present.
+  if (typeof getLazyPath(video) === "string") return false;
   return video.backend === null && !isFetchableUrl(video.filename);
+}
+
+/** The resolved-but-not-yet-opened path for a lazily deferred video, if any. */
+function getLazyPath(video: Video): string | undefined {
+  const meta = video.backendMetadata as Record<string, unknown> | undefined;
+  const p = meta?.lazyPath;
+  return typeof p === "string" ? p : undefined;
+}
+
+/**
+ * Open a lazily-deferred video's backend on first use. When
+ * {@link resolveExternalVideos} runs with `lazy`, it records the resolved path
+ * in `backendMetadata.lazyPath` without reading the file; this reads it and
+ * builds the decoder on demand (the LUC3D pattern). No-op if already open or not
+ * deferred. Clears `lazyPath` after the attempt (success or failure), so a video
+ * that fails to decode falls through to the normal missing/unsupported flow.
+ */
+export async function ensureVideoBackend(
+  video: Video,
+  readFile: (path: string) => Promise<Uint8Array>
+): Promise<boolean> {
+  const lazyPath = getLazyPath(video);
+  if (video.backend || !lazyPath) return video.backend !== null;
+  try {
+    const bytes = await readFile(lazyPath);
+    const file = new File([bytes], getBasename(lazyPath), {
+      type: "video/mp4",
+    });
+    return await assignVideoBackend(video, file, { silent: true });
+  } finally {
+    delete (video.backendMetadata as Record<string, unknown>).lazyPath;
+  }
 }
 
 /**
@@ -345,6 +379,16 @@ export interface AutoResolveOptions {
   exists: (path: string) => Promise<boolean>;
   /** Read a file from the filesystem. */
   readFile: (path: string) => Promise<Uint8Array>;
+  /**
+   * Defer opening each external video's backend. When true, resolution only
+   * *locates* the file (an `exists()` check) and records the resolved path in
+   * `backendMetadata.lazyPath`; the file is NOT read and no decoder is built.
+   * The backend is opened on first view via {@link ensureVideoBackend}. This
+   * turns load from O(N videos read+decoded) into O(1) — you view one at a time.
+   * Dimensions/frame-count come from the `.slp` metadata (`video.shape`), so the
+   * Videos panel is unaffected. Default false (open everything eagerly).
+   */
+  lazy?: boolean;
 }
 
 /**
@@ -411,17 +455,27 @@ export async function resolveExternalVideos(
           const found = await options.exists(candidatePath);
           if (found) {
             console.log(`[video] Found at: ${candidatePath}`);
-            // Lazy byte-range open (no whole-file read) — see assignVideoBackendFromPath.
+            // Preserve the original SLP path before rewriting video.filename.
+            const origFilename = Array.isArray(video.filename)
+              ? video.filename[0] ?? ""
+              : video.filename;
+            const meta = video.backendMetadata as Record<string, unknown>;
+            if (options.lazy) {
+              // #195 fast-open: file located — record the path and defer the
+              // read + decode to first view (ensureVideoBackend). No I/O here.
+              if (origFilename !== candidatePath) meta.sourceFilename = origFilename;
+              meta.lazyPath = candidatePath;
+              video.filename = candidatePath;
+              resolvedCount++;
+              break;
+            }
+            // Eager path: byte-range open, no whole-file read (#200).
             const ok = await assignVideoBackendFromPath(video, candidatePath, {
               silent: true,
             });
             if (ok) {
-              // Preserve the original SLP path in metadata before updating
-              const origFilename = Array.isArray(video.filename)
-                ? video.filename[0] ?? ""
-                : video.filename;
               if (origFilename !== candidatePath) {
-                (video.backendMetadata as Record<string, unknown>).sourceFilename = origFilename;
+                meta.sourceFilename = origFilename;
               }
               video.filename = candidatePath;
               resolvedCount++;

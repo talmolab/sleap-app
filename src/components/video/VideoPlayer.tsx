@@ -42,7 +42,12 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { toImageCoords, toSourceCoords } from "@/lib/cropTransform";
-import { isVideoMissing, resolveVideoFile, videoIssue } from "../../lib/resolveVideos";
+import {
+  isVideoMissing,
+  resolveVideoFile,
+  videoIssue,
+  ensureVideoBackend,
+} from "../../lib/resolveVideos";
 import { Film } from "lucide-react";
 
 export function VideoPlayer() {
@@ -411,7 +416,7 @@ export function VideoPlayer() {
 
   // Load the current frame (convert to ImageBitmap, trigger dimension update)
   useEffect(() => {
-    if (!video || !video.backend) {
+    if (!video) {
       // Release the scrub gate even when we can't read, so the seekbar loop
       // never jams waiting on a read that will never happen.
       useAppStore.getState().set("frameLoading", false);
@@ -424,6 +429,23 @@ export function VideoPlayer() {
 
     (async () => {
       try {
+        // Lazy video backends: the decoder is deferred at load (open one video,
+        // not all N). Open it on first view, then read. ensureVideoBackend clears
+        // lazyPath after opening, so this whole block is skipped from then on.
+        if (!video.backend) {
+          const meta = video.backendMetadata as
+            | Record<string, unknown>
+            | undefined;
+          if (typeof meta?.lazyPath === "string") {
+            const { readFile } = await import("@tauri-apps/plugin-fs");
+            await ensureVideoBackend(video, readFile);
+          }
+          if (cancelled) return;
+          if (!video.backend) {
+            useAppStore.getState().set("frameLoading", false);
+            return;
+          }
+        }
         // While scrubbing, skip the backend's read-ahead prefetch: those frames
         // are scrubbed past (wasted) and their reads saturate a slow mount,
         // slowing the frame we actually want (~3.6x on the VAST mount). Mirrors

@@ -15,6 +15,7 @@ import {
   backendKindForFilename,
   resolveImageFramesInFolder,
   resolveExternalVideos,
+  ensureVideoBackend,
   isVideoMissing,
   classifyVideoError,
   videoIssue,
@@ -427,5 +428,46 @@ describe("computePrefixSwap (locate-one-relocate-siblings, #188)", () => {
     expect(
       computePrefixSwap("/same/dir/a.mp4", "/same/dir/a.mp4")
     ).toBeNull();
+  });
+});
+
+describe("lazy video backends (defer decoder open, #perf)", () => {
+  it("lazy resolve locates the file WITHOUT reading it, marks it present, defers the decoder", async () => {
+    const video = new Video({ filename: "clip.mp4", openBackend: false });
+    video.backend = null;
+    const labels = new Labels();
+    labels.addVideo(video);
+
+    let readCount = 0;
+    await resolveExternalVideos(labels, {
+      projectPath: "/proj/labels.slp",
+      exists: async () => true, // located on the first candidate
+      readFile: async () => {
+        readCount++;
+        return new Uint8Array();
+      },
+      lazy: true,
+    });
+
+    // Located, but NOT read or decoded (the whole point — O(1), not O(N reads)):
+    expect(readCount).toBe(0);
+    expect(video.backend).toBeNull();
+    expect((video.backendMetadata as Record<string, unknown>).lazyPath).toBe(
+      "/proj/clip.mp4"
+    );
+    // A deferred-but-located video reads as present, so the panel shows it found:
+    expect(isVideoMissing(video)).toBe(false);
+  });
+
+  it("ensureVideoBackend is a no-op for a video that wasn't lazily deferred", async () => {
+    const video = new Video({ filename: "/proj/clip.mp4", openBackend: false });
+    video.backend = null; // missing, but no lazyPath → nothing deferred to open
+    let called = false;
+    const ok = await ensureVideoBackend(video, async () => {
+      called = true;
+      return new Uint8Array();
+    });
+    expect(called).toBe(false);
+    expect(ok).toBe(false);
   });
 });
