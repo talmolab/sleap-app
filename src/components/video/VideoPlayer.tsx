@@ -450,9 +450,17 @@ export function VideoPlayer() {
         // are scrubbed past (wasted) and their reads saturate a slow mount,
         // slowing the frame we actually want (~3.6x on the VAST mount). Mirrors
         // PyQt's worker, which does no read-ahead while scrubbing.
+        const framesBefore = video.shape?.[0] ?? null;
         const frame = await video.getFrame(frameIdx, {
           prefetch: !useAppStore.getState().isScrubbing,
         });
+        // A deferred embedded backend (lazyVideoMetadata) reads its per-video
+        // metadata on this first getFrame and corrects video.shape[0] to the true
+        // source frame count — nudge the store so the seekbar/status bar re-read
+        // the real extent instead of the JSON-seeded (labeled-count) stand-in.
+        if ((video.shape?.[0] ?? null) !== framesBefore) {
+          useAppStore.getState().markVideoUpdated();
+        }
         if (debugFlags.logSeeking) console.debug(`[seek] getFrame(${frameIdx}) returned ${frame?.constructor?.name ?? "null"} in ${(performance.now() - t0).toFixed(1)}ms`);
         if (cancelled || !frame) {
           if (debugFlags.logSeeking && cancelled) console.debug(`[seek] frame ${frameIdx} cancelled`);

@@ -3,6 +3,7 @@
  * Includes UI scale controls on the right side.
  */
 
+import { useMemo } from "react";
 import { PredictedInstance } from "@talmolab/sleap-io.js";
 import { useAppStore } from "../../stores/appStore";
 import { Badge } from "@/components/ui/badge";
@@ -23,6 +24,7 @@ export function StatusBar() {
   const filename = useAppStore((s) => s.filename);
   const frameIdx = useAppStore((s) => s.frameIdx);
   const video = useAppStore((s) => s.video);
+  const videoRevision = useAppStore((s) => s.videoRevision);
   const labels = useAppStore((s) => s.labels);
   const hasChanges = useAppStore((s) => s.hasChanges);
   const instance = useAppStore((s) => s.instance);
@@ -35,7 +37,12 @@ export function StatusBar() {
 
   const platformLabel = isTauri ? "Tauri FS" : "Browser";
 
-  const totalFrames = video?.shape?.[0] ?? null;
+  // videoRevision dep: a deferred backend opening corrects video.shape[0] to the
+  // true source count; re-read it so the status bar shows the real frame total.
+  const totalFrames = useMemo(
+    () => video?.shape?.[0] ?? null,
+    [video, videoRevision]
+  );
   const stats = computeStatusStats(labels, video, totalFrames);
   const instanceCount = instancesToShowCount(labeledFrame);
   const hidden = instanceCount > 0 && !showInstances;

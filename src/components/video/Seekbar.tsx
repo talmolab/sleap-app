@@ -95,6 +95,7 @@ export function Seekbar() {
   const seekbarHeaderGraph = useAppStore((s) => s.seekbarHeaderGraph);
   const seekbarHeaderReduction = useAppStore((s) => s.seekbarHeaderReduction);
   const overlayVersion = useAppStore((s) => s.overlayVersion);
+  const videoRevision = useAppStore((s) => s.videoRevision);
   const setKey = useAppStore((s) => s.set);
   const navigationDomain = useAppStore((s) => s.navigationDomain);
   const cycleNavigationDomain = useAppStore((s) => s.cycleNavigationDomain);
@@ -112,8 +113,13 @@ export function Seekbar() {
   // Assumed FPS for playback (30 fps default)
   const fps = 30;
 
-  // Use video shape if available, otherwise infer from labeled frames
-  const shapeFrames = video?.shape?.[0] ?? null;
+  // Use video shape if available, otherwise infer from labeled frames.
+  // videoRevision is a dep so a deferred backend opening (which corrects
+  // video.shape[0] to the true source count) re-extends the seekbar.
+  const shapeFrames = useMemo(
+    () => video?.shape?.[0] ?? null,
+    [video, videoRevision]
+  );
   const inferredFrames = labels && video
     ? Math.max(0, ...labels.find({ video }).map((lf) => lf.frameIdx)) + 1
     : 0;

@@ -149,9 +149,15 @@ export interface AppState {
   // === Overlay version ===
   overlayVersion: number;
 
+  // Bumped when a video's backend loads late (deferred embedded backend, opened
+  // on first view) so the seekbar/status bar re-read the now-corrected
+  // `video.shape[0]` (true source frame count vs. the JSON-seeded stand-in).
+  videoRevision: number;
+
   // === Actions ===
   setLabels: (labels: Labels, filename?: string, projectPath?: string) => void;
   setVideo: (video: Video) => void;
+  markVideoUpdated: () => void;
   setFrameIdx: (idx: number) => void;
   incrementFrameIdx: (step: number) => void;
   setNavigationDomain: (mode: NavigationDomain) => void;
@@ -318,6 +324,7 @@ export const useAppStore = create<AppState>()(
 
       // Overlay version (bumped to force re-render)
       overlayVersion: 0,
+      videoRevision: 0,
 
       // Actions
       setLabels: (labels, filename, projectPath) =>
@@ -346,6 +353,11 @@ export const useAppStore = create<AppState>()(
           state.frameIdx = 0;
           state.instance = null;
           state.labeledFrame = null;
+        }),
+
+      markVideoUpdated: () =>
+        set((state) => {
+          state.videoRevision += 1;
         }),
 
       setFrameIdx: (idx) =>
