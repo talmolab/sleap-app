@@ -25,6 +25,7 @@ import {
   SaveAsProjectCommand,
   ExportJsonCommand,
   ExportCSVCommand,
+  ExportAnalysisH5Command,
 
   ExportPackageCommand,
   GoNextLabeledFrame,
@@ -168,6 +169,12 @@ function FileMenu() {
           onClick={() => exec(ExportCSVCommand)}
         >
           Export Analysis CSV...
+        </MenubarItem>
+        <MenubarItem
+          disabled={!projectLoaded}
+          onClick={() => exec(ExportAnalysisH5Command)}
+        >
+          Export Analysis HDF5...
         </MenubarItem>
         <MenubarItem
           disabled={!projectLoaded}

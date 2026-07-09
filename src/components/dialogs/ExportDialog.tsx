@@ -9,6 +9,7 @@ import { useAppStore } from "../../stores/appStore";
 import { commandContext } from "../../commands/CommandContext";
 import {
   ExportCSVCommand,
+  ExportAnalysisH5Command,
   SaveAsJsonCommand,
   ExportPackageCommand,
 } from "../../commands/fileCommands";
@@ -33,6 +34,11 @@ export function ExportDialog({ open, onOpenChange }: ExportDialogProps) {
     await commandContext.execute(ExportCSVCommand, { includeEmpty });
     onOpenChange(false);
   }, [onOpenChange, includeEmpty]);
+
+  const handleExportAnalysisH5 = useCallback(async () => {
+    await commandContext.execute(ExportAnalysisH5Command);
+    onOpenChange(false);
+  }, [onOpenChange]);
 
   const handleSaveAsJSON = useCallback(async () => {
     await commandContext.execute(SaveAsJsonCommand);
@@ -77,6 +83,20 @@ export function ExportDialog({ open, onOpenChange }: ExportDialogProps) {
               Include rows for every video frame (recommended for downstream analysis)
             </span>
           </label>
+
+          <Button
+            variant="outline"
+            className="w-full justify-start"
+            onClick={handleExportAnalysisH5}
+          >
+            <div className="text-left">
+              <div className="font-medium">Analysis HDF5</div>
+              <div className="text-xs text-muted-foreground">
+                Export the current video's tracks as a dense .h5 for
+                Python/MATLAB analysis.
+              </div>
+            </div>
+          </Button>
 
           <Button
             variant="outline"

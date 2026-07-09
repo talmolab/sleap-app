@@ -10,6 +10,7 @@ import {
   PredictedInstance,
   Skeleton,
   labelsToCsv,
+  saveAnalysisH5ToBytes,
 } from "@talmolab/sleap-io.js";
 import { UpdateTopic } from "../types";
 import type { Command } from "./types";
@@ -73,6 +74,55 @@ async function saveTextFile(
   }
 
   downloadFile(content, suggestedName, filter.mime);
+  return suggestedName;
+}
+
+/**
+ * Save binary content to a user-chosen location. Tauri: native save dialog +
+ * writeFile. Browser: File System Access `showSaveFilePicker` when available,
+ * else a download. Returns the saved path/name, or null if the user cancelled.
+ */
+async function saveBytesFile(
+  bytes: Uint8Array,
+  suggestedName: string,
+  filter: { name: string; ext: string }
+): Promise<string | null> {
+  const platform = await getPlatform();
+
+  if (platform.isTauri) {
+    const savePath = await platform.showSaveDialog({
+      filters: [{ name: filter.name, extensions: [filter.ext] }],
+      defaultName: suggestedName,
+    });
+    if (!savePath) return null;
+    await platform.writeFile(savePath, bytes);
+    return savePath;
+  }
+
+  const blob = new Blob([bytes], { type: "application/octet-stream" });
+  if ("showSaveFilePicker" in window) {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const handle = await (window as any).showSaveFilePicker({
+        suggestedName,
+        types: [
+          {
+            description: filter.name,
+            accept: { "application/octet-stream": [`.${filter.ext}`] },
+          },
+        ],
+      });
+      const writable = await handle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+      return handle.name as string;
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") return null;
+      throw err;
+    }
+  }
+
+  downloadFile(blob, suggestedName, "application/octet-stream");
   return suggestedName;
 }
 
@@ -240,6 +290,47 @@ export const ExportCSVCommand: Command = {
       const msg = err instanceof Error ? err.message : String(err);
       toast.error("Failed to export CSV", { description: msg });
       console.error("[ExportCSV] Failed to export:", err);
+    }
+  },
+};
+
+/**
+ * Export the active video's tracks as a SLEAP Analysis HDF5 (.h5) file — the
+ * dense-array format for downstream analysis (Python/MATLAB). Uses sleap-io's
+ * browser-safe `saveAnalysisH5ToBytes`; saves through a native dialog on desktop,
+ * downloads in the browser. One file per video (the current video), mirroring
+ * PyQt SLEAP's "Analysis HDF5 > Current Video".
+ */
+export const ExportAnalysisH5Command: Command = {
+  name: "ExportAnalysisH5",
+  topics: [],
+  async execute(ctx: CommandContext) {
+    const { labels, filename } = ctx.state;
+    if (!labels) return;
+    if (labels.labeledFrames.length === 0) {
+      toast.info("No labeled frames to export.");
+      return;
+    }
+
+    try {
+      // Export the current video when one is active, else the first video.
+      // saveAnalysisH5ToBytes throws "No labeled frames in video" if the chosen
+      // video has none — surfaced as a friendly error below.
+      const video = ctx.state.video ?? labels.videos[0];
+      const bytes = await saveAnalysisH5ToBytes(labels, { video });
+      const baseName = filename
+        ? filename.replace(/\.(slp|json)$/i, "")
+        : "labels";
+      const saved = await saveBytesFile(bytes, `${baseName}.analysis.h5`, {
+        name: "Analysis HDF5",
+        ext: "h5",
+      });
+      if (!saved) return; // user cancelled
+      toast.success("Analysis HDF5 exported", { description: saved });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      toast.error("Failed to export Analysis HDF5", { description: msg });
+      console.error("[ExportAnalysisH5] Failed to export:", err);
     }
   },
 };

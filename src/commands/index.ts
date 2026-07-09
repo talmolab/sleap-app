@@ -19,6 +19,7 @@ export {
   SaveAsProjectCommand,
   ExportJsonCommand,
   ExportCSVCommand,
+  ExportAnalysisH5Command,
   SaveAsJsonCommand,
   DeletePredictionsByScore,
   DeletePredictionsByRange,
