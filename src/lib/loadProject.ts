@@ -13,6 +13,7 @@ import {
   loadSlp,
   readSlpStreaming,
   setImageBytesReader,
+  loadAnalysisH5,
   type Labels,
 } from "@talmolab/sleap-io.js";
 import { useAppStore } from "../stores/appStore";
@@ -221,6 +222,116 @@ export async function loadProjectFromPath(
     const msg = err instanceof Error ? err.message : String(err);
     toast.error("Failed to load project", { description: msg });
     console.error("Failed to load project:", err);
+    return false;
+  } finally {
+    store.setLoading(false);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// SLEAP Analysis HDF5 import
+// ---------------------------------------------------------------------------
+
+/**
+ * `loadAnalysisH5` types its source as `string`, but the underlying `openH5File`
+ * accepts bytes (Uint8Array / ArrayBuffer) at runtime — that's how the browser
+ * reads an HDF5 file it never has a path for. The public 0.5.3 signature hasn't
+ * been widened yet, so we pass bytes through a single localized cast here.
+ * Follow-up: widen `loadAnalysisH5`'s signature upstream and drop this shim.
+ */
+type AnalysisSource = string | ArrayBuffer | Uint8Array;
+function readAnalysisLabels(source: AnalysisSource): Promise<Labels> {
+  return loadAnalysisH5(source as string);
+}
+
+/**
+ * Import a SLEAP Analysis HDF5 (`.analysis.h5`) file into a new project.
+ *
+ * Analysis files are small (per-frame point arrays, no embedded media), so this
+ * skips the SLP loaders' range-reader / image-reader machinery. The reader
+ * auto-builds a {@link Video} from the file's stored `video_path`; that video is
+ * then resolved like any external video (auto-located next to the file on
+ * desktop, or shown as missing — user can Replace Videos — in the browser).
+ */
+export async function loadAnalysisProjectFromFile(file: File): Promise<boolean> {
+  const store = useAppStore.getState();
+
+  if (store.hasChanges) {
+    const confirmed = window.confirm(
+      "You have unsaved changes. Importing a file will discard them. Continue?"
+    );
+    if (!confirmed) return false;
+  }
+
+  store.setLoading(true, `Reading ${file.name}...`);
+
+  try {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    store.setLoading(true, `Parsing ${file.name}...`);
+    const labels = await readAnalysisLabels(bytes);
+    store.setLoading(true, "Locating videos...");
+    await resolveExternalVideos(labels);
+    store.setLabels(labels, file.name);
+    openFirstLabeledFrame(labels);
+    toast.success(`Imported ${file.name}`, {
+      description: `${labels.videos.length} video(s), ${labels.labeledFrames.length} labeled frames`,
+    });
+    return true;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    toast.error("Failed to import Analysis HDF5", { description: msg });
+    console.error("Failed to import Analysis HDF5:", err);
+    return false;
+  } finally {
+    store.setLoading(false);
+  }
+}
+
+/**
+ * Import a SLEAP Analysis HDF5 file from a path (Tauri only).
+ * Reads the bytes via the platform, then imports like
+ * {@link loadAnalysisProjectFromFile}, resolving the stored video path relative
+ * to the analysis file's directory when filesystem access is available.
+ */
+export async function loadAnalysisProjectFromPath(
+  path: string,
+  readFile: (path: string) => Promise<Uint8Array>,
+  exists?: (path: string) => Promise<boolean>
+): Promise<boolean> {
+  const store = useAppStore.getState();
+
+  if (store.hasChanges) {
+    const confirmed = window.confirm(
+      "You have unsaved changes. Importing a file will discard them. Continue?"
+    );
+    if (!confirmed) return false;
+  }
+
+  const filename = path.split(/[\\/]/).pop() ?? path;
+  store.setLoading(true, `Reading ${filename}...`);
+
+  try {
+    const bytes = await readFile(path);
+    store.setLoading(true, `Parsing ${filename}...`);
+    const labels = await readAnalysisLabels(bytes);
+
+    store.setLoading(true, "Locating videos...");
+    if (exists) {
+      await resolveExternalVideos(labels, { projectPath: path, exists, readFile });
+    } else {
+      await resolveExternalVideos(labels);
+    }
+
+    store.setLabels(labels, filename, path);
+    openFirstLabeledFrame(labels);
+    toast.success(`Imported ${filename}`, {
+      description: `${labels.videos.length} video(s), ${labels.labeledFrames.length} labeled frames`,
+    });
+    return true;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    toast.error("Failed to import Analysis HDF5", { description: msg });
+    console.error("Failed to import Analysis HDF5:", err);
     return false;
   } finally {
     store.setLoading(false);

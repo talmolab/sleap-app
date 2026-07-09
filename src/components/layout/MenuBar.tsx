@@ -20,6 +20,7 @@ async function openExternal(url: string) {
 import {
   commandContext,
   OpenProjectCommand,
+  ImportAnalysisH5Command,
   SaveProjectCommand,
   SaveAsProjectCommand,
   ExportJsonCommand,
@@ -103,6 +104,9 @@ function FileMenu() {
         </MenubarItem>
         <MenubarItem onClick={() => exec(OpenProjectCommand)}>
           Open Project... <MenubarShortcut>{modKey}+O</MenubarShortcut>
+        </MenubarItem>
+        <MenubarItem onClick={() => exec(ImportAnalysisH5Command)}>
+          Import Analysis HDF5...
         </MenubarItem>
         <MenubarSub>
           <MenubarSubTrigger disabled={!projectLoaded}>Replace Videos...</MenubarSubTrigger>

@@ -14,7 +14,12 @@ import {
 import { UpdateTopic } from "../types";
 import type { Command } from "./types";
 import type { CommandContext } from "./CommandContext";
-import { loadProjectFromFile, loadProjectFromPath } from "../lib/loadProject";
+import {
+  loadProjectFromFile,
+  loadProjectFromPath,
+  loadAnalysisProjectFromFile,
+  loadAnalysisProjectFromPath,
+} from "../lib/loadProject";
 import { saveProjectAsSlp } from "../lib/saveProject";
 import { getPlatform } from "../platform/index";
 import {
@@ -119,6 +124,35 @@ export const OpenProjectCommand: Command = {
 
     // OpenProject sets labels directly via load helpers,
     // so we don't need to signal topics (setLabels handles it)
+    void ctx;
+  },
+};
+
+/**
+ * Import a SLEAP Analysis HDF5 (`.analysis.h5`) file as a new project.
+ *
+ * Analysis files carry predicted points + tracks and store the source
+ * `video_path`, so the reader auto-builds the video (resolved like any external
+ * video). Filtered to `.h5` in the picker; the reader validates the contents.
+ */
+export const ImportAnalysisH5Command: Command = {
+  name: "ImportAnalysisH5",
+  topics: [],
+  skipAutoSnapshot: true,
+  async execute(ctx: CommandContext) {
+    const platform = await getPlatform();
+    const result = await platform.showOpenDialog({
+      filters: [{ name: "SLEAP Analysis HDF5", extensions: ["h5"] }],
+    });
+
+    if (!result) return;
+
+    if (typeof result === "string") {
+      await loadAnalysisProjectFromPath(result, platform.readFile, platform.exists);
+    } else if (result instanceof File) {
+      await loadAnalysisProjectFromFile(result);
+    }
+
     void ctx;
   },
 };

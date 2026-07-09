@@ -14,6 +14,7 @@ export type { ChangeRecord } from "./CommandContext";
 export {
   NewProjectCommand,
   OpenProjectCommand,
+  ImportAnalysisH5Command,
   SaveProjectCommand,
   SaveAsProjectCommand,
   ExportJsonCommand,
