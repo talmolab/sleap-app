@@ -182,12 +182,19 @@ export const AddNodeCommand: Command = {
     if (labels) {
       for (const lf of labels.labeledFrames) {
         for (const inst of lf.instances) {
-          inst.points.push({
-            xy: [NaN, NaN] as [number, number],
-            visible: false,
-            complete: false,
-            name: newNode.name,
-          });
+          // Reassign, don't push: since sleap-io.js 0.5.x `inst.points` is a
+          // columnar-backed snapshot array, so an in-place `.push()` is dropped.
+          // Element writes go through proxies, but structural changes must set
+          // `inst.points` to a fresh array.
+          inst.points = [
+            ...inst.points.map(clonePoint),
+            {
+              xy: [NaN, NaN] as [number, number],
+              visible: false,
+              complete: false,
+              name: newNode.name,
+            },
+          ];
         }
       }
     }
@@ -241,7 +248,11 @@ export const DeleteNodeCommand: Command = {
       for (const lf of labels.labeledFrames) {
         for (const inst of lf.instances) {
           if (nodeIdx < inst.points.length) {
-            inst.points.splice(nodeIdx, 1);
+            // Reassign, don't splice in place: `inst.points` is a columnar
+            // snapshot array since sleap-io.js 0.5.x (see AddNode).
+            const kept = inst.points.map(clonePoint);
+            kept.splice(nodeIdx, 1);
+            inst.points = kept;
           }
         }
       }

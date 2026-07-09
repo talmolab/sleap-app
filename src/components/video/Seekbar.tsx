@@ -293,6 +293,10 @@ export function Seekbar() {
 
   const [isDragging, setIsDragging] = useState(false);
   const [hoverFrame, setHoverFrame] = useState<number | null>(null);
+  // While dragging, the solid playhead follows the cursor (this value) instead
+  // of frameIdx, so it glides smoothly even while the image load lags behind on
+  // a slow backend. null when not scrubbing → playhead tracks the loaded frame.
+  const [scrubFrame, setScrubFrame] = useState<number | null>(null);
 
   // Convert pixel X to frame index
   const pixelToFrame = useCallback(
@@ -371,8 +375,17 @@ export function Seekbar() {
         ? resolveScrubFrame(e.clientX)
         : (snapToLabeledFrame(e.clientX) ?? frame);
 
+      const curFrame = useAppStore.getState().frameIdx;
       setFrameIdx(targetFrame);
       setIsDragging(true);
+      // Claim the scrub serialization gate for this first read — but only if it
+      // actually changes the frame. Claiming when the frame is unchanged would
+      // jam the gate: VideoPlayer's read effect only re-runs on a frameIdx
+      // change, so nothing would clear it and the playhead would freeze until
+      // release. The drag loop won't issue the next frame until it's cleared.
+      if (targetFrame !== curFrame) {
+        useAppStore.getState().set("frameLoading", true);
+      }
       // Clear range on normal click
       useAppStore.getState().set("frameRange", null);
     },
@@ -390,12 +403,12 @@ export function Seekbar() {
         useAppStore.getState().set("frameRange", [start, end]);
         return;
       }
-
-      if (isDragging) {
-        setFrameIdx(resolveScrubFrame(e.clientX));
-      }
+      // During a drag, frame updates are owned by the rAF-coalesced loop in the
+      // isDragging effect below — it applies only the latest cursor position once
+      // per animation frame. Calling setFrameIdx here too would re-introduce the
+      // per-mousemove read pile-up we're trying to avoid.
     },
-    [isDragging, isSelectingRange, rangeAnchor, pixelToFrame, resolveScrubFrame, setFrameIdx]
+    [isSelectingRange, rangeAnchor, pixelToFrame]
   );
 
   const handleMouseUp = useCallback(() => {
@@ -410,14 +423,70 @@ export function Seekbar() {
     setRangeAnchor(null);
   }, []);
 
-  // Global mouse tracking during seekbar drag
+  // Global mouse tracking during seekbar drag — serialized read loop.
+  //
+  // A cold ImageVideo frame loads in ~55 ms on a network mount (~18 reads/s
+  // measured), but mousemove fires ~10x faster. Issuing setFrameIdx on every
+  // move (or even once per animation frame) requests reads faster than the
+  // mount can serve them, so they pile up and the painted frame trails the
+  // cursor — fast OR slow drag.
+  //
+  // Instead we mirror PyQt SLEAP's video worker: never more than one read in
+  // flight. Each animation frame we record only the latest cursor X, and issue
+  // it ONLY when no read is loading (frameLoading is cleared by VideoPlayer when
+  // the previous frame finishes). Intermediate positions we flew past are
+  // dropped. The frame then tracks the cursor with one read of latency (~55 ms)
+  // instead of an unbounded backlog, and a slow drag (moves slower than reads
+  // complete) drops nothing.
+  //
+  // Scoped to drag only — single clicks, arrow-steps, and playback are
+  // unchanged. Note: this can't beat the mount's ~18 frames/s on *cold* frames;
+  // warm/prefetched frames load in ~0 ms and scrub at full rate.
   useEffect(() => {
     if (!isDragging) return;
 
     document.body.style.userSelect = "none";
 
+    // Mark scrubbing. VideoPlayer reads this to (a) skip the expensive per-frame
+    // histogram (OffscreenCanvas + getImageData ≈ 10 MB/frame, which can
+    // OOM-crash the renderer at fast scrub rates) and (b) pass
+    // getFrame({ prefetch: false }) so the backend skips its read-ahead window —
+    // wasted while scrubbing (we jump past those frames) and ~3.6x slower
+    // foreground reads under the 6-wide prefetch concurrency on a slow mount.
+    useAppStore.getState().set("isScrubbing", true);
+
+    let pendingX: number | null = null; // latest cursor position (coalesced)
+    let lastIssuedX: number | null = null; // position we last issued a read for
+    let lastScrubFrame: number | null = null; // last frame the bar glided to
+    let rafId = 0;
+    const tick = () => {
+      if (pendingX !== null) {
+        const cursorFrame = resolveScrubFrame(pendingX);
+        // Smooth playhead: glide the bar to the cursor every frame, decoupled
+        // from the gated image load below — so the bar follows even when the
+        // backend can't decode that fast.
+        if (cursorFrame !== lastScrubFrame) {
+          lastScrubFrame = cursorFrame;
+          setScrubFrame(cursorFrame);
+        }
+        // Gated image load: at most one read in flight, always the latest frame.
+        if (pendingX !== lastIssuedX && !useAppStore.getState().frameLoading) {
+          lastIssuedX = pendingX;
+          // Only claim the gate + issue when the frame actually changes — issuing
+          // the frame already showing wouldn't trigger a read to clear the gate,
+          // jamming the loop.
+          if (cursorFrame !== useAppStore.getState().frameIdx) {
+            useAppStore.getState().set("frameLoading", true); // claim the slot now
+            setFrameIdx(cursorFrame);
+          }
+        }
+      }
+      rafId = requestAnimationFrame(tick);
+    };
+    rafId = requestAnimationFrame(tick);
+
     const handleGlobalMouseMove = (e: MouseEvent) => {
-      setFrameIdx(resolveScrubFrame(e.clientX));
+      pendingX = e.clientX; // only the latest position survives to the next tick
     };
 
     const handleGlobalMouseUp = () => {
@@ -428,6 +497,18 @@ export function Seekbar() {
     window.addEventListener("mouseup", handleGlobalMouseUp);
 
     return () => {
+      cancelAnimationFrame(rafId);
+      // Scrub over — re-enable the per-frame histogram. Set before the flush
+      // below so the final frame computes its histogram.
+      useAppStore.getState().set("isScrubbing", false);
+      // Apply the final cursor position so release lands exactly where the user
+      // let go, even if it was mid-read when they released.
+      if (pendingX !== null && pendingX !== lastIssuedX) {
+        setFrameIdx(resolveScrubFrame(pendingX));
+      }
+      // Drag over: hand the playhead back to the loaded frame (frameIdx now
+      // holds the release position, so the bar stays put — no backward jump).
+      setScrubFrame(null);
       document.body.style.userSelect = "";
       window.removeEventListener("mousemove", handleGlobalMouseMove);
       window.removeEventListener("mouseup", handleGlobalMouseUp);
@@ -576,18 +657,21 @@ export function Seekbar() {
       }
     }
 
-    // Draw current frame indicator
-    const curX = frameToX(frameIdx);
+    // Draw current frame indicator. While scrubbing, follow the cursor
+    // (scrubFrame) so the bar glides smoothly even if the image load lags;
+    // otherwise track the actually-loaded frame.
+    const curX = frameToX(scrubFrame ?? frameIdx);
     ctx.fillStyle = "#fff";
     ctx.fillRect(curX - 1, 0, 2, h);
 
-    // Draw hover indicator
-    if (hoverFrame !== null) {
+    // Draw hover indicator — suppressed during a drag, where the solid bar
+    // already sits at the cursor (otherwise the two lines overlap).
+    if (hoverFrame !== null && scrubFrame === null) {
       const hx = frameToX(hoverFrame);
       ctx.fillStyle = "rgba(255,255,255,0.3)";
       ctx.fillRect(hx - 0.5, 0, 1, h);
     }
-  }, [frameIdx, totalFrames, headerData, labels, palette, hoverFrame, video, frameRange]);
+  }, [frameIdx, scrubFrame, totalFrames, headerData, labels, palette, hoverFrame, video, frameRange]);
 
   // Playback animation loop
   useEffect(() => {

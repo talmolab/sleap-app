@@ -8,6 +8,8 @@ import { applyHashState, initUrlStateSync } from "./lib/urlState";
 import { loadProjectFromPath } from "./lib/loadProject";
 import { isTauri } from "./platform";
 import { setupCloseHandler } from "./lib/quit";
+import { toast } from "./lib/notify";
+import { probeWebCodecs, readWebCodecsEnv } from "./lib/webcodecsProbe";
 
 // Consume the pending "initial file" slot in Rust and load it. The slot is
 // populated either from a CLI argument on launch or from a macOS file-association
@@ -37,6 +39,21 @@ export default function App() {
   useEffect(() => {
     const scale = useAppStore.getState().uiScale;
     document.documentElement.style.setProperty("--ui-scale", String(scale));
+  }, []);
+
+  // One-time WebCodecs capability check (cross-platform build stability). The
+  // Mp4Box / MediaBunny video backends require the VideoDecoder API; the Linux
+  // desktop WebView (WebKitGTK) frequently lacks it, so MP4/WebM/MKV would
+  // silently decode to blank frames. Warn up front instead of per-file.
+  // (Browsers and macOS/Windows desktop normally have WebCodecs → no-op.)
+  useEffect(() => {
+    const result = probeWebCodecs(readWebCodecsEnv());
+    if (!result.supported && result.title) {
+      toast.warning(result.title, {
+        description: result.description,
+        duration: 12000,
+      });
+    }
   }, []);
 
   const projectLoaded = useAppStore((s) => s.projectLoaded);

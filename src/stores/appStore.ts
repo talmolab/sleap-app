@@ -54,6 +54,8 @@ export interface AppState {
   // === UI layout state ===
   uiScale: number;
   sidebarCollapsed: boolean;
+  /** Which side the panel sidebar docks on (#UX-wins). Persisted. */
+  sidebarSide: "left" | "right";
   sidebarActivePanel: string;
   panelOrder: string[];
   hiddenPanels: string[];
@@ -63,6 +65,8 @@ export interface AppState {
   showLabels: boolean;
   showEdges: boolean;
   showNonVisibleNodes: boolean;
+  /** Show a full-canvas crosshair at the cursor while zoomed in (#UX-wins). Persisted. */
+  showCrosshair: boolean;
   edgeStyle: EdgeStyle;
   fit: boolean;
   fitSelection: boolean;
@@ -79,6 +83,21 @@ export interface AppState {
   lutMin: number;
   lutMax: number;
   frameHistogram: Uint32Array | null;
+  /**
+   * True while VideoPlayer has a frame read in flight. Transient (never
+   * persisted); read via getState() — do NOT subscribe with a selector or it
+   * will re-render on every frame. Used by the seekbar scrub loop to serialize
+   * reads: it never issues a new frame while one is loading, so a drag tracks
+   * the cursor with one read of latency instead of a growing backlog (#137 perf).
+   */
+  frameLoading: boolean;
+  /**
+   * True while the user is dragging the seekbar (scrubbing). Transient (never
+   * persisted); read via getState(), don't subscribe. Lets VideoPlayer skip
+   * expensive per-frame work (the histogram) during a fast scrub, which would
+   * otherwise churn ~10 MB/frame and can OOM-crash the WebView renderer.
+   */
+  isScrubbing: boolean;
   colormap: string;
   rotation: 0 | 90 | 180 | 270;
   seekbarHeaderGraph: StatisticGraphType;
@@ -102,6 +121,13 @@ export interface AppState {
   // === Loading state ===
   isLoading: boolean;
   loadingMessage: string;
+  /**
+   * 0–100 determinate load progress for the overlay bar. Transient (not
+   * persisted). Set via the 3rd arg of setLoading; reset to 0 when the overlay
+   * is dismissed. Stays put across setLoading calls that omit a progress value
+   * (e.g. "Locating videos…"), so the bar holds rather than jumping back.
+   */
+  loadingProgress: number;
 
   // === Dialog state ===
   inferenceDialogOpen: boolean;
@@ -135,7 +161,7 @@ export interface AppState {
   markChanged: () => void;
   touchFrame: () => void;
   clearChanges: () => void;
-  setLoading: (loading: boolean, message?: string) => void;
+  setLoading: (loading: boolean, message?: string, progress?: number) => void;
   setInferenceDialogOpen: (open: boolean) => void;
   setNewProjectDialogOpen: (open: boolean) => void;
   setGoToFrameDialogOpen: (open: boolean) => void;
@@ -162,6 +188,7 @@ export const PERSISTED_KEYS: (keyof AppState)[] = [
   "showLabels",
   "showEdges",
   "showNonVisibleNodes",
+  "showCrosshair",
   "colorPredicted",
   "trailLength",
   "insetSize",
@@ -174,6 +201,7 @@ export const PERSISTED_KEYS: (keyof AppState)[] = [
   "panelOrder",
   "hiddenPanels",
   "sidebarCollapsed",
+  "sidebarSide",
   "sidebarActivePanel",
   "uiScale",
 ];
@@ -218,6 +246,7 @@ export const useAppStore = create<AppState>()(
       // UI layout state
       uiScale: 1,
       sidebarCollapsed: false,
+      sidebarSide: "right",
       sidebarActivePanel: "videos",
       panelOrder: [...DEFAULT_PANEL_ORDER],
       hiddenPanels: [],
@@ -227,6 +256,7 @@ export const useAppStore = create<AppState>()(
       showLabels: true,
       showEdges: true,
       showNonVisibleNodes: true,
+      showCrosshair: false,
       edgeStyle: "Line" as EdgeStyle,
       fit: false,
       fitSelection: false,
@@ -243,6 +273,8 @@ export const useAppStore = create<AppState>()(
       lutMin: 0,
       lutMax: 255,
       frameHistogram: null,
+      frameLoading: false,
+      isScrubbing: false,
       colormap: "grayscale",
       rotation: 0 as 0 | 90 | 180 | 270,
       seekbarHeaderGraph: "instance-count" as StatisticGraphType,
@@ -265,6 +297,7 @@ export const useAppStore = create<AppState>()(
       // Loading state
       isLoading: false,
       loadingMessage: "",
+      loadingProgress: 0,
 
       // Dialog state
       inferenceDialogOpen: false,
@@ -407,10 +440,15 @@ export const useAppStore = create<AppState>()(
           state.hasChanges = false;
         }),
 
-      setLoading: (loading, message) =>
+      setLoading: (loading, message, progress) =>
         set((state) => {
           state.isLoading = loading;
           state.loadingMessage = message ?? "";
+          // Determinate progress: update only when a value is supplied, so
+          // messages without a percent (e.g. "Locating videos…") hold the bar
+          // rather than snapping it to 0. Reset once the overlay is dismissed.
+          if (progress !== undefined) state.loadingProgress = progress;
+          if (!loading) state.loadingProgress = 0;
         }),
 
       setInferenceDialogOpen: (open) =>

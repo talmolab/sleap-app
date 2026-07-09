@@ -18,6 +18,8 @@ import {
   isVideoMissing,
   classifyVideoError,
   videoIssue,
+  getVideoPathCandidates,
+  computePrefixSwap,
   SUPPORTED_VIDEO_EXTS,
 } from "@/lib/resolveVideos";
 
@@ -248,5 +250,103 @@ describe("backendKindForFilename (format → backend dispatch)", () => {
     for (const name of ["clip.avi", "clip.xyz", "noextension", ""]) {
       expect(backendKindForFilename(name)).toBeNull();
     }
+  });
+});
+
+describe("getVideoPathCandidates (relative-path resolution, #188)", () => {
+  it("walks the .slp's ancestors so a relative path anchored above it resolves", () => {
+    // The exact reported layout: .slp three levels down from the root the video
+    // path is relative to (tests/data/slp_hdf5/*.slp vs tests/data/json_format_v1/*.mp4,
+    // both relative to /home/u/sleap). Windows separator in the stored path.
+    const video = new Video({
+      filename: "tests/data/json_format_v1\\centered_pair_low_quality.mp4",
+      openBackend: false,
+    });
+    const candidates = getVideoPathCandidates(
+      video,
+      "/home/u/sleap/tests/data/slp_hdf5/centered_pair.slp"
+    );
+
+    // The real location (grafted onto the 3rd ancestor) must be offered...
+    expect(candidates).toContain(
+      "/home/u/sleap/tests/data/json_format_v1/centered_pair_low_quality.mp4"
+    );
+    // ...and the old doubled path (graft onto the .slp dir) is still first,
+    // preserving prior behavior for videos that DO sit beside the .slp.
+    expect(candidates[0]).toBe(
+      "/home/u/sleap/tests/data/slp_hdf5/tests/data/json_format_v1/centered_pair_low_quality.mp4"
+    );
+    // The doubled (wrong) path is offered before the real one (closest-first).
+    const wrong = candidates.indexOf(
+      "/home/u/sleap/tests/data/slp_hdf5/tests/data/json_format_v1/centered_pair_low_quality.mp4"
+    );
+    const right = candidates.indexOf(
+      "/home/u/sleap/tests/data/json_format_v1/centered_pair_low_quality.mp4"
+    );
+    expect(wrong).toBeLessThan(right);
+  });
+
+  it("resolves a video sitting beside the .slp (depth-0 graft)", () => {
+    const video = new Video({ filename: "clip.mp4", openBackend: false });
+    const candidates = getVideoPathCandidates(
+      video,
+      "/data/proj/session.slp"
+    );
+    expect(candidates).toContain("/data/proj/clip.mp4");
+  });
+
+  it("offers an absolute path as-is and never grafts it onto the .slp dir", () => {
+    const video = new Video({
+      filename: "/mnt/store/clip.mp4",
+      openBackend: false,
+    });
+    const candidates = getVideoPathCandidates(video, "/data/proj/session.slp");
+    expect(candidates[0]).toBe("/mnt/store/clip.mp4");
+    expect(candidates).not.toContain("/data/proj/mnt/store/clip.mp4");
+  });
+
+  it("always includes the basename in the .slp dir as a fallback", () => {
+    const video = new Video({
+      filename: "some/deep/tree/clip.mp4",
+      openBackend: false,
+    });
+    const candidates = getVideoPathCandidates(video, "/data/proj/session.slp");
+    expect(candidates).toContain("/data/proj/clip.mp4");
+  });
+});
+
+describe("computePrefixSwap (locate-one-relocate-siblings, #188)", () => {
+  it("derives the anchoring root when the stored path was fully relative", () => {
+    // old stored relative, located at <root>/<same relative> -> oldPrefix empty,
+    // newPrefix is the root to prepend onto the other relative siblings.
+    const swap = computePrefixSwap(
+      "tests/data/json_format_v1\\centered_pair_low_quality.mp4",
+      "/home/u/sleap/tests/data/json_format_v1/centered_pair_low_quality.mp4"
+    );
+    expect(swap).toEqual({
+      oldPrefix: "",
+      newPrefix: "/home/u/sleap",
+    });
+  });
+
+  it("derives a head swap when only the leading directories changed", () => {
+    const swap = computePrefixSwap(
+      "D:\\old\\proj\\videos\\a.mp4",
+      "/mnt/new/proj/videos/a.mp4"
+    );
+    // Common tail: proj/videos/a.mp4 -> heads differ.
+    expect(swap).toEqual({ oldPrefix: "D:/old", newPrefix: "/mnt/new" });
+  });
+
+  it("returns null when the basenames differ (a rename, not a move)", () => {
+    expect(
+      computePrefixSwap("/old/dir/a.mp4", "/new/dir/b.mp4")
+    ).toBeNull();
+  });
+
+  it("returns null for a no-op (paths already agree)", () => {
+    expect(
+      computePrefixSwap("/same/dir/a.mp4", "/same/dir/a.mp4")
+    ).toBeNull();
   });
 });

@@ -239,11 +239,23 @@ button,
   transition: width 200ms ease, opacity 150ms ease;
 }
 
-/* Toast copy button: hidden by default, visible on hover */
-[data-sonner-toast] [data-copy-btn] {
-  opacity: 0;
-  transition: opacity 150ms ease;
-}
-[data-sonner-toast]:hover [data-copy-btn] {
+/* Toast action buttons (copy + sonner's close X): always visible and clearly
+   actionable, not hover-only. Copy sits top-right, the X top-left — no overlap. */
+[data-sonner-toast] [data-copy-btn],
+[data-sonner-toast] [data-close-button] {
   opacity: 1;
+}
+
+/* Loading overlay progress bar: a forward-sweeping shimmer that signals active
+   work even between progress ticks. */
+@keyframes progress-shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(300%);
+  }
+}
+.progress-shimmer {
+  animation: progress-shimmer 1.3s ease-in-out infinite;
 }

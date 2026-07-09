@@ -34,8 +34,15 @@ import { ExportDialog } from "../dialogs/ExportDialog";
 import { ShortcutsDialog } from "../dialogs/ShortcutsDialog";
 import { HelpDialog } from "../dialogs/HelpDialog";
 import { useAppStore } from "../../stores/appStore";
-import { PanelRightClose, PanelRightOpen, GripVertical } from "lucide-react";
+import {
+  PanelRightClose,
+  PanelRightOpen,
+  PanelLeftClose,
+  PanelLeftOpen,
+  GripVertical,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Progress } from "@/components/ui/progress";
 import {
   notificationListeners,
   getUnreadCount,
@@ -101,6 +108,8 @@ export function AppShell() {
   const projectLoaded = useAppStore((s) => s.projectLoaded);
   const isLoading = useAppStore((s) => s.isLoading);
   const loadingMessage = useAppStore((s) => s.loadingMessage);
+  const loadingProgress = useAppStore((s) => s.loadingProgress);
+  const sidebarSide = useAppStore((s) => s.sidebarSide);
 
   // Dialog state
   const deletePredictionsDialogOpen = useAppStore(
@@ -139,7 +148,14 @@ export function AppShell() {
       <ErrorBoundary>
         <div className="flex-1 flex overflow-hidden relative">
           {projectLoaded ? (
-            <div className="flex-1 flex min-w-0 h-full">
+            <div
+              className={cn(
+                "flex-1 flex min-w-0 h-full",
+                // Sidebar on the left → reverse the row so it docks left of the
+                // canvas. The Sidebar mirrors its own internals to match.
+                sidebarSide === "left" && "flex-row-reverse"
+              )}
+            >
               {/* Video player takes remaining space */}
               <div className="flex-1 flex flex-col min-w-0 h-full">
                 <VideoPlayer />
@@ -152,13 +168,21 @@ export function AppShell() {
             <WelcomeScreen />
           )}
 
-          {/* Loading overlay */}
+          {/* Loading overlay: determinate progress bar + stage message, with a
+              forward "pulse" shimmer that signals active work even between
+              progress ticks. */}
           {isLoading && (
             <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
-              <div className="flex flex-col items-center gap-3">
-                <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-                <p className="text-sm text-muted-foreground">
-                  {loadingMessage || "Loading..."}
+              <div className="flex w-72 max-w-[80%] flex-col items-center gap-3">
+                <div className="relative w-full">
+                  <Progress value={loadingProgress} className="h-2" />
+                  <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-full">
+                    <div className="progress-shimmer h-full w-1/3 bg-gradient-to-r from-transparent via-white/25 to-transparent" />
+                  </div>
+                </div>
+                <p className="text-center text-sm text-muted-foreground">
+                  {/* Strip the trailing "(NN%)" — the bar shows the number now. */}
+                  {loadingMessage.replace(/\s*\(\d+%\)\s*$/, "") || "Loading..."}
                 </p>
               </div>
             </div>
@@ -190,10 +214,13 @@ export function AppShell() {
       />
       <PathResolutionHost />
 
-      {/* Toast notifications */}
+      {/* Toast notifications. closeButton renders an always-visible X (see the
+          data-[sonner-toast] rules in index.css that keep it and the copy
+          button shown, not hover-only). */}
       <Toaster
         theme="dark"
         position="bottom-right"
+        closeButton
         toastOptions={{
           className: "bg-card border-border text-foreground",
         }}
@@ -208,7 +235,12 @@ function Sidebar() {
   const activePanel = useAppStore((s) => s.sidebarActivePanel);
   const panelOrder = useAppStore((s) => s.panelOrder);
   const hiddenPanels = useAppStore((s) => s.hiddenPanels);
+  const sidebarSide = useAppStore((s) => s.sidebarSide);
   const set = useAppStore((s) => s.set);
+
+  // When docked left, the whole sidebar (rail | panel | resize) mirrors so the
+  // icon rail sits on the window edge and the resize handle faces the canvas.
+  const onLeft = sidebarSide === "left";
 
   // Sidebar resize state
   const [panelWidth, setPanelWidth] = useState(320);
@@ -259,8 +291,11 @@ function Sidebar() {
 
     const handleMove = (e: MouseEvent) => {
       if (!isResizing.current) return;
-      // Dragging left increases width (sidebar is on right)
-      const delta = startX.current - e.clientX;
+      // Drag toward the canvas widens the panel: leftward for a right-docked
+      // sidebar, rightward for a left-docked one.
+      const delta = onLeft
+        ? e.clientX - startX.current
+        : startX.current - e.clientX;
       const newWidth = Math.max(220, Math.min(600, startWidth.current + delta));
       setPanelWidth(newWidth);
     };
@@ -275,7 +310,7 @@ function Sidebar() {
 
     window.addEventListener("mousemove", handleMove);
     window.addEventListener("mouseup", handleUp);
-  }, [panelWidth]);
+  }, [panelWidth, onLeft]);
 
   // Pointer-based drag-to-reorder. Native HTML5 DnD proved unreliable here: the
   // app's global file-drop handlers and (in the desktop webview) Tauri's
@@ -360,7 +395,7 @@ function Sidebar() {
   const showPanel = !collapsed && activeVisible && !!ActiveComponent;
 
   return (
-    <div className="flex h-full shrink-0">
+    <div className={cn("flex h-full shrink-0", onLeft && "flex-row-reverse")}>
       {/* Resize handle (only when a panel is shown) */}
       {showPanel && (
         <div
@@ -394,8 +429,10 @@ function Sidebar() {
       <div className="relative w-11 shrink-0">
         <div
           className={cn(
-            "absolute right-0 top-0 z-30 h-full flex flex-col overflow-hidden",
-            "bg-card border-l border-border",
+            "absolute top-0 z-30 h-full flex flex-col overflow-hidden",
+            // Rail hugs the window edge and hover-expands over the canvas.
+            onLeft ? "left-0 border-r" : "right-0 border-l",
+            "bg-card border-border",
             "transition-[width] duration-150 ease-out",
             railExpanded && "shadow-xl"
           )}
@@ -422,7 +459,13 @@ function Sidebar() {
           >
             <span className="flex items-center justify-center w-11 shrink-0">
               {collapsed ? (
-                <PanelRightOpen className="h-4 w-4" />
+                onLeft ? (
+                  <PanelLeftOpen className="h-4 w-4" />
+                ) : (
+                  <PanelRightOpen className="h-4 w-4" />
+                )
+              ) : onLeft ? (
+                <PanelLeftClose className="h-4 w-4" />
               ) : (
                 <PanelRightClose className="h-4 w-4" />
               )}
@@ -462,9 +505,14 @@ function Sidebar() {
                   dragId === panel.id && "opacity-40"
                 )}
               >
-                {/* Active indicator bar */}
+                {/* Active indicator bar — sits on the canvas-facing edge. */}
                 {isActive && (
-                  <div className="absolute left-0 top-1.5 bottom-1.5 w-0.5 bg-primary rounded-r" />
+                  <div
+                    className={cn(
+                      "absolute top-1.5 bottom-1.5 w-0.5 bg-primary",
+                      onLeft ? "right-0 rounded-l" : "left-0 rounded-r"
+                    )}
+                  />
                 )}
                 <span className="relative flex items-center justify-center w-11 shrink-0">
                   <Icon className="h-[18px] w-[18px]" />

@@ -180,9 +180,15 @@ export function remapInstancePoints(
     const src = srcName != null ? oldByName.get(srcName) : undefined;
 
     if (src) {
+      // Copy each field explicitly — do NOT spread `src`. Since sleap-io.js
+      // 0.5.x, `instance.points[i]` is a columnar proxy whose xy/visible/
+      // complete/score are prototype getters, so `{ ...src }` (own-enumerable
+      // only) silently drops them all. Mirrors `clonePoints` in editCommands.
       return {
-        ...src,
         xy: [src.xy[0], src.xy[1]] as [number, number],
+        visible: src.visible,
+        complete: src.complete,
+        score: src.score,
         name: newNode.name,
       };
     }

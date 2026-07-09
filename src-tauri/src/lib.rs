@@ -36,6 +36,37 @@ fn read_image_file(path: String) -> Result<tauri::ipc::Response, String> {
         .map_err(|e| format!("read_image_file({path}): {e}"))
 }
 
+/// Read a byte range `[offset, offset+length)` from a file natively (`std::fs`).
+/// The "dumb byte pipe" for the B-seam range reader: returns raw bytes via the
+/// binary IPC channel and does ZERO decoding. A short read at EOF returns fewer
+/// bytes (never an error), so the last chunk of a file works.
+#[tauri::command]
+fn read_range(path: String, offset: u64, length: u32) -> Result<tauri::ipc::Response, String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(&path).map_err(|e| format!("read_range open({path}): {e}"))?;
+    f.seek(SeekFrom::Start(offset))
+        .map_err(|e| format!("read_range seek({offset}): {e}"))?;
+    let mut buf = vec![0u8; length as usize];
+    let mut filled = 0usize;
+    while filled < buf.len() {
+        match f.read(&mut buf[filled..]) {
+            Ok(0) => break, // EOF
+            Ok(n) => filled += n,
+            Err(e) => return Err(format!("read_range read: {e}")),
+        }
+    }
+    buf.truncate(filled);
+    Ok(tauri::ipc::Response::new(buf))
+}
+
+/// Total size (bytes) of a file — the range reader's declared file length.
+#[tauri::command]
+fn file_size(path: String) -> Result<u64, String> {
+    std::fs::metadata(&path)
+        .map(|m| m.len())
+        .map_err(|e| format!("file_size({path}): {e}"))
+}
+
 /// Reveal a file in the OS file manager (Finder / Explorer / xdg-open).
 #[tauri::command]
 fn reveal_in_file_manager(path: String) -> Result<(), String> {
@@ -160,6 +191,8 @@ pub fn run() {
     .invoke_handler(tauri::generate_handler![
         get_initial_file,
         read_image_file,
+        read_range,
+        file_size,
         reveal_in_file_manager,
         open_preferences_directory,
         environment::detect_uv,

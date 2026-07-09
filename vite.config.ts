@@ -87,6 +87,14 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true,
+    // Cross-origin isolation: required so the streaming Worker can use
+    // SharedArrayBuffer + Atomics (the B-seam native range-read bridge). Note this
+    // makes h5wasm load same-origin (see H5WASM_URL in loadProject.ts) since COEP
+    // blocks the cross-origin CDN importScripts.
+    headers: {
+      "Cross-Origin-Opener-Policy": "same-origin",
+      "Cross-Origin-Embedder-Policy": "require-corp",
+    },
     // Don't watch the Rust build output. Under `bun run tauri:dev`, cargo is
     // actively writing/locking .dll files in src-tauri/target/ while it
     // compiles; chokidar attaching to a locked file throws EBUSY on Windows

@@ -210,11 +210,20 @@ export function resolveVideoPath(
 }
 
 /**
+ * How far up the .slp's parent chain we graft a relative video path before
+ * giving up (see candidate 2 below). Bounds the worst-case number of `exists`
+ * probes per genuinely-missing video; 8 comfortably covers realistic project
+ * nesting while staying cheap on slow mounts.
+ */
+const MAX_ANCESTOR_WALK = 8;
+
+/**
  * Generate candidate absolute paths for a video file, given the project path.
  * Returns paths to try in priority order:
- * 1. The raw filename if it's already absolute
- * 2. The relative path resolved against the project directory
- * 3. The basename resolved against the project directory (for moved projects)
+ * 1. The raw filename if it's already absolute.
+ * 2. The relative path grafted onto the project directory AND each of its
+ *    ancestors, closest-first (see #188).
+ * 3. The basename resolved against the project directory (for moved projects).
  */
 export function getVideoPathCandidates(
   video: Video,
@@ -232,22 +241,35 @@ export function getVideoPathCandidates(
     raw.startsWith("/") || /^[A-Za-z]:[\\/]/.test(raw);
 
   const candidates: string[] = [];
+  const add = (p: string) => {
+    if (p && !candidates.includes(p)) candidates.push(p);
+  };
 
-  // 1. If absolute, try as-is
+  // 1. If absolute, try as-is.
   if (isAbsolute) {
-    candidates.push(raw);
+    add(raw);
+  } else {
+    // 2. Graft the relative path onto the .slp's directory AND each ancestor,
+    //    closest-first. SLEAP stores video paths relative to the directory the
+    //    project was saved from — often an ANCESTOR of where the .slp ended up
+    //    (e.g. the .slp sits in tests/data/slp_hdf5/ but the video path is
+    //    tests/data/json_format_v1/clip.mp4, relative to the repo root three
+    //    levels up). Grafting only onto the .slp dir — the old behavior, now
+    //    the i=0 iteration — produced a doubled, always-missing path; walking
+    //    ancestors reaches the real file. Mirrors SLEAP-python's on-load
+    //    resolution intent (#188).
+    const relative = raw.replace(/[\\/]/g, sep);
+    let dir = projectDir;
+    for (let i = 0; i <= MAX_ANCESTOR_WALK; i++) {
+      add(dir + sep + relative);
+      const cut = dir.lastIndexOf(sep);
+      if (cut <= 0) break; // reached the filesystem root
+      dir = dir.substring(0, cut);
+    }
   }
 
-  // 2. Relative path resolved against project dir
-  if (!isAbsolute) {
-    candidates.push(projectDir + sep + raw.replace(/[\\/]/g, sep));
-  }
-
-  // 3. Basename only, in project dir (for moved/reorganized projects)
-  const basenameCandidate = projectDir + sep + baseName;
-  if (!candidates.includes(basenameCandidate)) {
-    candidates.push(basenameCandidate);
-  }
+  // 3. Basename only, in the project dir (for moved/reorganized projects).
+  add(projectDir + sep + baseName);
 
   return candidates;
 }
@@ -431,10 +453,136 @@ export async function resolveExternalVideos(
 }
 
 /**
+ * Given a video path as originally stored (`oldPath`) and the absolute path the
+ * user just located it at (`newPath`), derive the leading-prefix substitution
+ * that maps one to the other: the longest common trailing run of path segments
+ * is the unchanged tail, and the differing heads are `oldPrefix` → `newPrefix`.
+ *
+ * Port of SLEAP-python's `find_changed_subpath` (`sleap/io/pathutils.py`): once
+ * one moved video is located, the same head swap usually relocates its siblings.
+ * `oldPrefix` is `""` when the stored path was fully relative (the whole path is
+ * the common tail) — i.e. "prepend `newPrefix` to the relative siblings".
+ *
+ * Returns null when the basenames don't line up (user picked an unrelated file —
+ * don't propagate) or the swap is a no-op. Separator-insensitive (compares on
+ * `/`). Exported for unit testing.
+ */
+export function computePrefixSwap(
+  oldPath: string,
+  newPath: string
+): { oldPrefix: string; newPrefix: string } | null {
+  const oldParts = oldPath.replace(/\\/g, "/").split("/");
+  const newParts = newPath.replace(/\\/g, "/").split("/");
+
+  let common = 0;
+  let oi = oldParts.length - 1;
+  let ni = newParts.length - 1;
+  while (oi >= 0 && ni >= 0 && oldParts[oi] === newParts[ni]) {
+    common++;
+    oi--;
+    ni--;
+  }
+
+  // Basenames must match: otherwise the user located a differently-named file
+  // (a rename), which shouldn't relocate siblings.
+  if (common === 0) return null;
+
+  const oldPrefix = oldParts.slice(0, oldParts.length - common).join("/");
+  const newPrefix = newParts.slice(0, newParts.length - common).join("/");
+
+  // No-op swap (paths already agree up to the shared tail).
+  if (oldPrefix === newPrefix) return null;
+
+  return { oldPrefix, newPrefix };
+}
+
+/** Minimal filesystem surface needed to relocate-and-verify a sibling video. */
+interface FsProbe {
+  exists: (path: string) => Promise<boolean>;
+  readFile: (path: string) => Promise<Uint8Array>;
+}
+
+/**
+ * After one missing video is located, relocate the OTHER missing videos by
+ * applying the same `oldPrefix` → `newPrefix` head swap, adopting a result only
+ * if the file actually exists AND its backend opens. Tauri-only (needs real
+ * filesystem access). Returns the number of siblings resolved.
+ *
+ * Port of SLEAP-python's `filenames_prefix_change` — the existence check is the
+ * safety net that keeps a coincidental basename match from adopting a wrong file.
+ */
+async function propagatePrefixSwap(
+  labels: Labels,
+  located: Video,
+  oldPrefix: string,
+  newPrefix: string,
+  fs: FsProbe
+): Promise<number> {
+  let count = 0;
+  for (const video of labels.videos) {
+    if (video === located) continue;
+    if (!isVideoMissing(video)) continue;
+    // Image sequences are lists of frames, not a single-file head swap.
+    if (isImageSequenceVideo(video)) continue;
+
+    const stored = (
+      Array.isArray(video.filename) ? video.filename[0] ?? "" : video.filename
+    ).replace(/\\/g, "/");
+    if (!stored) continue;
+
+    // Boundary-safe prefix match. Empty oldPrefix ⇒ the stored paths were
+    // relative; only relative siblings qualify (never prepend onto an absolute).
+    let rest: string;
+    if (oldPrefix === "") {
+      const isAbs = stored.startsWith("/") || /^[A-Za-z]:\//.test(stored);
+      if (isAbs) continue;
+      rest = stored;
+    } else {
+      if (!stored.startsWith(oldPrefix)) continue;
+      const nextChar = stored[oldPrefix.length];
+      if (nextChar !== undefined && nextChar !== "/") continue; // not a dir boundary
+      rest = stored.slice(oldPrefix.length).replace(/^\/+/, "");
+    }
+
+    const base = newPrefix.replace(/\/+$/, "");
+    const candidate = base ? `${base}/${rest}` : rest;
+    try {
+      if (!(await fs.exists(candidate))) continue;
+      const bytes = await fs.readFile(candidate);
+      const file = new File([bytes], getBasename(candidate), {
+        type: "video/mp4",
+      });
+      const ok = await assignVideoBackend(video, file, { silent: true });
+      if (ok) {
+        const orig = Array.isArray(video.filename)
+          ? video.filename[0] ?? ""
+          : video.filename;
+        if (orig !== candidate) {
+          (video.backendMetadata as Record<string, unknown>).sourceFilename =
+            orig;
+        }
+        video.filename = candidate;
+        count++;
+      }
+    } catch (err) {
+      console.warn(`[video] prefix-swap relocate failed for "${candidate}":`, err);
+    }
+  }
+  return count;
+}
+
+/**
  * Open a file picker for a single video and assign its backend.
  * Returns true if a video was successfully loaded.
+ *
+ * When `labels` is provided and we resolve a real path (Tauri), the same path
+ * change is propagated to the other missing videos (#188) — locate one moved
+ * video and its siblings under the same moved root come back too.
  */
-export async function resolveVideoFile(video: Video): Promise<boolean> {
+export async function resolveVideoFile(
+  video: Video,
+  labels?: Labels
+): Promise<boolean> {
   const platform = await getPlatform();
   console.log(`[video] Picking video file via ${platform.isTauri ? "Tauri" : "browser"} dialog`);
 
@@ -449,6 +597,9 @@ export async function resolveVideoFile(video: Video): Promise<boolean> {
   if (typeof result === "string") {
     // Tauri: got a file path — read bytes and create a File object
     console.log(`[video] Loading video from path: ${result}`);
+    const oldFilename = Array.isArray(video.filename)
+      ? video.filename[0] ?? ""
+      : video.filename;
     try {
       const bytes = await platform.readFile(result);
       const name = getBasename(result);
@@ -459,6 +610,25 @@ export async function resolveVideoFile(video: Video): Promise<boolean> {
       // Update the video's filename to the resolved absolute path
       video.filename = result;
       toast.success(`Loaded video: ${name}`);
+
+      // Propagate the same move to the other missing videos (#188).
+      if (labels) {
+        const swap = computePrefixSwap(oldFilename, result);
+        if (swap) {
+          const n = await propagatePrefixSwap(
+            labels,
+            video,
+            swap.oldPrefix,
+            swap.newPrefix,
+            platform
+          );
+          if (n > 0) {
+            toast.success(
+              `Located ${n} more video${n > 1 ? "s" : ""} by the same path change`
+            );
+          }
+        }
+      }
       return true;
     } catch (err) {
       console.error(`[video] Failed to read video file "${result}":`, err);

@@ -50,6 +50,7 @@ export function VideoPlayer() {
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
   const insetCanvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const crosshairRef = useRef<HTMLDivElement>(null);
 
   // State from store
   const video = useAppStore((s) => s.video);
@@ -76,6 +77,7 @@ export function VideoPlayer() {
   const defaultToPan = useAppStore((s) => s.defaultToPan);
   const fitSelection = useAppStore((s) => s.fitSelection);
   const areaDeleteMode = useAppStore((s) => s.areaDeleteMode);
+  const showCrosshair = useAppStore((s) => s.showCrosshair);
 
   // Local zoom/pan state
   const [zoom, setZoom] = useState(1);
@@ -156,7 +158,7 @@ export function VideoPlayer() {
   const renderedInstancesRef = useRef<RenderedInstance[]>([]);
 
   // Store frame as ImageBitmap so we can re-draw with transforms
-  const frameBitmapRef = useRef<ImageBitmap | null>(null);
+  const frameBitmapRef = useRef<OffscreenCanvas | null>(null);
 
   // Track container dimensions for fit-to-window rendering
   const [containerSize, setContainerSize] = useState<[number, number]>([0, 0]);
@@ -409,7 +411,12 @@ export function VideoPlayer() {
 
   // Load the current frame (convert to ImageBitmap, trigger dimension update)
   useEffect(() => {
-    if (!video || !video.backend) return;
+    if (!video || !video.backend) {
+      // Release the scrub gate even when we can't read, so the seekbar loop
+      // never jams waiting on a read that will never happen.
+      useAppStore.getState().set("frameLoading", false);
+      return;
+    }
 
     let cancelled = false;
     const t0 = performance.now();
@@ -417,20 +424,34 @@ export function VideoPlayer() {
 
     (async () => {
       try {
-        const frame = await video.getFrame(frameIdx);
+        // While scrubbing, skip the backend's read-ahead prefetch: those frames
+        // are scrubbed past (wasted) and their reads saturate a slow mount,
+        // slowing the frame we actually want (~3.6x on the VAST mount). Mirrors
+        // PyQt's worker, which does no read-ahead while scrubbing.
+        const frame = await video.getFrame(frameIdx, {
+          prefetch: !useAppStore.getState().isScrubbing,
+        });
         if (debugFlags.logSeeking) console.debug(`[seek] getFrame(${frameIdx}) returned ${frame?.constructor?.name ?? "null"} in ${(performance.now() - t0).toFixed(1)}ms`);
         if (cancelled || !frame) {
           if (debugFlags.logSeeking && cancelled) console.debug(`[seek] frame ${frameIdx} cancelled`);
           return;
         }
 
-        let bmp: ImageBitmap;
+        // Copy the backend's frame into an OffscreenCanvas we own via a fast GPU
+        // blit (drawImage) / putImageData — NOT createImageBitmap(). The MP4
+        // backend caches & reuses the returned ImageBitmap, so we can't hold or
+        // close it; the old defensive `createImageBitmap(frame)` clone did that
+        // but is pathologically slow in WKWebView (~300 ms for a 1280x1024 frame,
+        // which dominated every seek). A drawImage into our own canvas is ~1-5 ms
+        // and leaves the backend's cache untouched.
+        let bmp: OffscreenCanvas;
 
         if (frame instanceof ImageBitmap) {
-          // Clone so we don't close the backend's cached copy
-          bmp = await createImageBitmap(frame);
+          bmp = new OffscreenCanvas(frame.width, frame.height);
+          bmp.getContext("2d")?.drawImage(frame, 0, 0);
         } else if (frame instanceof ImageData) {
-          bmp = await createImageBitmap(frame);
+          bmp = new OffscreenCanvas(frame.width, frame.height);
+          bmp.getContext("2d")?.putImageData(frame, 0, 0);
         } else if (frame instanceof ArrayBuffer || frame instanceof Uint8Array) {
           const bytes =
             frame instanceof ArrayBuffer ? new Uint8Array(frame) : frame;
@@ -438,41 +459,33 @@ export function VideoPlayer() {
           if (!shape) return;
           const [, h, w] = shape;
           const imageData = new ImageData(new Uint8ClampedArray(bytes), w, h);
-          bmp = await createImageBitmap(imageData);
+          bmp = new OffscreenCanvas(w, h);
+          bmp.getContext("2d")?.putImageData(imageData, 0, 0);
         } else {
           return;
         }
 
         if (cancelled) {
-          bmp.close();
           if (debugFlags.logSeeking) console.debug(`[seek] frame ${frameIdx} cancelled after decode`);
           return;
         }
 
-        // Compute histogram from raw frame pixels
-        {
-          const offscreen = new OffscreenCanvas(bmp.width, bmp.height);
-          const offCtx = offscreen.getContext("2d");
-          if (offCtx) {
-            offCtx.drawImage(bmp, 0, 0);
-            const imgData = offCtx.getImageData(0, 0, bmp.width, bmp.height);
-            const hist = new Uint32Array(256);
-            const d = imgData.data;
-            for (let i = 0; i < d.length; i += 4) {
-              hist[d[i + 1]]++;
-            }
-            useAppStore.getState().set("frameHistogram", hist);
-          }
-        }
-
-        // Close previous bitmap
-        frameBitmapRef.current?.close();
+        // Histogram is computed OFF this path — see the debounced effect below.
+        // It needs a full-frame getImageData (a GPU->CPU readback that costs
+        // ~200-340ms in WKWebView); running it here blocked every seek. The frame
+        // now paints immediately and the histogram catches up when nav settles.
         frameBitmapRef.current = bmp;
         setFrameDims((prev) => (prev[0] === bmp.width && prev[1] === bmp.height ? prev : [bmp.width, bmp.height]));
         setBitmapVersion((v) => v + 1);
         if (debugFlags.logSeeking) console.debug(`[seek] frame ${frameIdx} rendered (${bmp.width}x${bmp.height}) total ${(performance.now() - t0).toFixed(1)}ms`);
       } catch (err) {
         console.error("Failed to render frame:", err);
+      } finally {
+        // Release the scrub serialization gate so the seekbar drag loop can
+        // issue the next frame. Set unconditionally: during a scrub only one
+        // read is in flight at a time (the loop won't issue while loading), and
+        // for non-scrub seeks this is a harmless no-op.
+        useAppStore.getState().set("frameLoading", false);
       }
     })();
 
@@ -480,6 +493,26 @@ export function VideoPlayer() {
       cancelled = true;
     };
   }, [video, frameIdx, overlayVersion]);
+
+  // Frame histogram, computed OFF the seek path. A full-frame getImageData is a
+  // GPU->CPU readback (~200-340ms in WKWebView) — doing it inline blocked every
+  // jump. Keyed on bitmapVersion and debounced, so rapid arrow/scrub navigation
+  // pays it once (when nav settles), never per intermediate frame. Skipped while
+  // scrubbing. `bmp` is now an OffscreenCanvas we own, so we read straight from
+  // its context (no extra canvas/drawImage).
+  useEffect(() => {
+    if (useAppStore.getState().isScrubbing) return;
+    const id = setTimeout(() => {
+      const bmp = frameBitmapRef.current;
+      const offCtx = bmp?.getContext("2d");
+      if (!bmp || !offCtx) return;
+      const d = offCtx.getImageData(0, 0, bmp.width, bmp.height).data;
+      const hist = new Uint32Array(256);
+      for (let i = 0; i < d.length; i += 4) hist[d[i + 1]]++;
+      useAppStore.getState().set("frameHistogram", hist);
+    }, 150);
+    return () => clearTimeout(id);
+  }, [bitmapVersion]);
 
   // Render the frame with fit-to-window base transform + user zoom/pan
   useEffect(() => {
@@ -1678,6 +1711,20 @@ export function VideoPlayer() {
     [canvasToScene, markerSize, showNonVisibleNodes]
   );
 
+  // Full-canvas crosshair while zoomed (View ▸ "Crosshair When Zoomed"). Only
+  // meaningful zoomed in, where precise keypoint placement matters. Positioned by
+  // writing CSS vars straight to the DOM on move — no per-move React re-render.
+  const crosshairActive = showCrosshair && zoom > 1;
+
+  const handleCrosshairMove = (e: React.MouseEvent) => {
+    const el = crosshairRef.current;
+    const cont = containerRef.current;
+    if (!el || !cont) return;
+    const rect = cont.getBoundingClientRect();
+    el.style.setProperty("--cx", `${e.clientX - rect.left}px`);
+    el.style.setProperty("--cy", `${e.clientY - rect.top}px`);
+  };
+
   return (
     <div className="flex flex-col flex-1 min-h-0">
       {/* Canvas container */}
@@ -1687,6 +1734,16 @@ export function VideoPlayer() {
           "flex-1 relative overflow-hidden bg-background min-h-0",
           isPanning ? "cursor-grabbing" : isZoomDragging ? "cursor-zoom-in" : (shouldPan && isCmdHeld) ? "cursor-zoom-in" : shouldPan ? "cursor-grab" : isDragging ? "cursor-grabbing" : areaDeleteMode ? "cursor-crosshair" : interactionMode === "marquee" ? "cursor-crosshair" : isPlacingNodes ? "cursor-cell" : hoveredNode ? "cursor-pointer" : "cursor-default"
         )}
+        onMouseMove={crosshairActive ? handleCrosshairMove : undefined}
+        onMouseLeave={
+          crosshairActive
+            ? () => {
+                const el = crosshairRef.current;
+                el?.style.setProperty("--cx", "-9999px");
+                el?.style.setProperty("--cy", "-9999px");
+              }
+            : undefined
+        }
       >
         {/* Video frame layer */}
         <canvas
@@ -1712,6 +1769,28 @@ export function VideoPlayer() {
           className="absolute z-30 pointer-events-none rounded-lg border-2 border-white/30 shadow-lg"
           style={{ display: "none", width: INSET_SIZE, height: INSET_SIZE }}
         />
+
+        {/* Full-canvas crosshair guide (screen-space, follows cursor). Lines are
+            positioned via the --cx/--cy CSS vars written on mousemove; starts
+            offscreen until the first move. */}
+        {crosshairActive && (
+          <div
+            ref={crosshairRef}
+            className="absolute inset-0 z-20 pointer-events-none"
+            style={
+              { "--cx": "-9999px", "--cy": "-9999px" } as React.CSSProperties
+            }
+          >
+            <div
+              className="absolute left-0 right-0 h-px bg-primary/70"
+              style={{ top: "var(--cy)" }}
+            />
+            <div
+              className="absolute top-0 bottom-0 w-px bg-primary/70"
+              style={{ left: "var(--cx)" }}
+            />
+          </div>
+        )}
         {/* Node hover tooltip */}
         {hoveredNode && labeledFrame && (() => {
           const lfInst = labeledFrame.instances[hoveredNode.instanceIdx];
@@ -1830,7 +1909,7 @@ export function VideoPlayer() {
                 variant="outline"
                 size="sm"
                 onClick={async () => {
-                  const ok = await resolveVideoFile(video);
+                  const ok = await resolveVideoFile(video, labels ?? undefined);
                   // Re-render either way: on success to show the video, on
                   // failure so a newly recorded backendError (e.g. unsupported
                   // codec) updates this placeholder's message.

@@ -132,6 +132,11 @@ export function useKeyboardShortcuts() {
         e.preventDefault();
         store().toggle("showEdges");
       },
+      [DEFAULT_SHORTCUTS["toggle node visibility"]]: (e) => {
+        if (isTextInput(e)) return;
+        e.preventDefault();
+        store().toggle("showNonVisibleNodes");
+      },
       [DEFAULT_SHORTCUTS.fit]: (e) => {
         e.preventDefault();
         store().toggle("fit");
