@@ -5,7 +5,12 @@
  * CSV export, JSON save-as, prediction deletion variants, and package export.
  */
 
-import { Labels, PredictedInstance, Skeleton } from "@talmolab/sleap-io.js";
+import {
+  Labels,
+  PredictedInstance,
+  Skeleton,
+  labelsToCsv,
+} from "@talmolab/sleap-io.js";
 import { UpdateTopic } from "../types";
 import type { Command } from "./types";
 import type { CommandContext } from "./CommandContext";
@@ -13,12 +18,58 @@ import { loadProjectFromFile, loadProjectFromPath } from "../lib/loadProject";
 import { saveProjectAsSlp } from "../lib/saveProject";
 import { getPlatform } from "../platform/index";
 import {
-  generateCSV,
   downloadFile,
   suggestSaveFilename,
   generatePackageJSON,
 } from "../lib/exportUtils";
 import { toast } from "@/lib/notify";
+
+/**
+ * Save text to a user-chosen location. Tauri: native save dialog + writeFile.
+ * Browser: File System Access `showSaveFilePicker` when available, else a plain
+ * download. Returns the saved path/name, or null if the user cancelled.
+ */
+async function saveTextFile(
+  content: string,
+  suggestedName: string,
+  filter: { name: string; ext: string; mime: string }
+): Promise<string | null> {
+  const platform = await getPlatform();
+
+  if (platform.isTauri) {
+    const savePath = await platform.showSaveDialog({
+      filters: [{ name: filter.name, extensions: [filter.ext] }],
+      defaultName: suggestedName,
+    });
+    if (!savePath) return null;
+    await platform.writeFile(savePath, new TextEncoder().encode(content));
+    return savePath;
+  }
+
+  if ("showSaveFilePicker" in window) {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const handle = await (window as any).showSaveFilePicker({
+        suggestedName,
+        types: [
+          {
+            description: filter.name,
+            accept: { [filter.mime]: [`.${filter.ext}`] },
+          },
+        ],
+      });
+      const writable = await handle.createWritable();
+      await writable.write(content);
+      await writable.close();
+      return handle.name as string;
+    } catch {
+      return null; // user cancelled the picker
+    }
+  }
+
+  downloadFile(content, suggestedName, filter.mime);
+  return suggestedName;
+}
 
 /** Reset state to an empty project. */
 export const NewProjectCommand: Command = {
@@ -120,25 +171,36 @@ export const ExportJsonCommand: Command = {
   },
 };
 
-/** Export all labels data as a CSV file for analysis. */
+/**
+ * Export the project as a SLEAP Analysis CSV via sleap-io's canonical
+ * `labelsToCsv` (wide format: one row per instance per frame, alphabetical
+ * `{node}.x/.y/.score` columns) — parity with Python SLEAP's analysis CSV,
+ * replacing the app's earlier hand-rolled long-format exporter. Saves through a
+ * native dialog on desktop; downloads in the browser.
+ */
 export const ExportCSVCommand: Command = {
   name: "ExportCSV",
   topics: [],
-  execute(ctx: CommandContext, params?: Record<string, unknown>) {
+  async execute(ctx: CommandContext, params?: Record<string, unknown>) {
     const { labels, filename } = ctx.state;
     if (!labels) return;
 
+    // Default includeEmpty=true (NaN rows padding each video to its full span),
+    // matching the Export dialog default and Python's analysis export.
     const includeEmpty = params?.includeEmpty !== false;
 
     try {
-      const csv = generateCSV(labels, { includeEmpty });
+      const csv = labelsToCsv(labels, { includeEmpty });
       const baseName = filename
-        ? filename.replace(/\.slp$/, "").replace(/\.json$/, "")
+        ? filename.replace(/\.(slp|json)$/i, "")
         : "labels";
-      downloadFile(csv, `${baseName}.csv`, "text/csv");
-      toast.success("CSV exported", {
-        description: `${baseName}.csv`,
+      const saved = await saveTextFile(csv, `${baseName}.csv`, {
+        name: "CSV",
+        ext: "csv",
+        mime: "text/csv",
       });
+      if (!saved) return; // user cancelled
+      toast.success("CSV exported", { description: saved });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       toast.error("Failed to export CSV", { description: msg });
@@ -159,45 +221,14 @@ export const SaveAsJsonCommand: Command = {
       const dict = labels.toDict();
       const json = JSON.stringify(dict, null, 2);
       const suggestedName = suggestSaveFilename(filename);
-      const platform = await getPlatform();
-
-      if (platform.isTauri) {
-        const savePath = await platform.showSaveDialog({
-          filters: [{ name: "JSON", extensions: ["json"] }],
-          defaultName: suggestedName,
-        });
-        if (!savePath) return;
-        const encoder = new TextEncoder();
-        await platform.writeFile(savePath, encoder.encode(json));
-        ctx.state.clearChanges();
-        toast.success("JSON saved", { description: savePath });
-      } else if ("showSaveFilePicker" in window) {
-        try {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const handle = await (window as any).showSaveFilePicker({
-            suggestedName,
-            types: [
-              {
-                description: "JSON File",
-                accept: { "application/json": [".json"] },
-              },
-            ],
-          });
-          const writable = await handle.createWritable();
-          await writable.write(json);
-          await writable.close();
-          ctx.state.clearChanges();
-          toast.success("JSON saved", { description: handle.name });
-        } catch {
-          // User cancelled
-          return;
-        }
-      } else {
-        // Fallback: simple download
-        downloadFile(json, suggestedName, "application/json");
-        ctx.state.clearChanges();
-        toast.success("JSON saved", { description: suggestedName });
-      }
+      const saved = await saveTextFile(json, suggestedName, {
+        name: "JSON",
+        ext: "json",
+        mime: "application/json",
+      });
+      if (!saved) return; // user cancelled
+      ctx.state.clearChanges();
+      toast.success("JSON saved", { description: saved });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       toast.error("Failed to save JSON", { description: msg });
