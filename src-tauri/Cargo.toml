@@ -27,6 +27,14 @@ tauri-plugin-shell = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 
+# SPIKE (spike/tauri-localhost-origin): serve the frontend over a real
+# http://localhost origin instead of the tauri:// custom scheme. On macOS,
+# WKWebView refuses `crossOriginIsolated` for a custom scheme even with valid
+# COOP/COEP — so SharedArrayBuffer (and the B-seam range reader for >1 GB
+# pkg.slp) is unavailable in the packaged app. An http(s)/localhost origin does
+# isolate. Release-only; dev already uses the Vite http origin.
+tauri-plugin-localhost = "2"
+
 # Dev-only UI automation bridge. Lets the `tauri-pilot` CLI inspect and drive
 # the WebView (see CLAUDE.md → "Driving the desktop GUI"). `init()` is a no-op
 # in release builds, so it never ships in the production app. Requires the

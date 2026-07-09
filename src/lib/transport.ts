@@ -9,6 +9,8 @@
  * (_handleDataChannelMessage) is identical for both.
  */
 
+import { sleapCmd } from "@/lib/sleapPlugin";
+
 // ── Config ───────────────────────────────────────────────────────
 
 const SIGNALING_HTTP =
@@ -89,7 +91,7 @@ export class RustTransport implements Transport {
       return;
     }
     import("@tauri-apps/api/core").then(({ invoke }) => {
-      invoke("rtc_send", { msg }).catch((err: unknown) => {
+      invoke(sleapCmd("rtc_send"), { msg }).catch((err: unknown) => {
         console.error("[transport:rust] Send failed:", err);
       });
     });
@@ -101,7 +103,7 @@ export class RustTransport implements Transport {
 
   close(): void {
     import("@tauri-apps/api/core").then(({ invoke }) => {
-      invoke("rtc_disconnect_worker").catch(() => {});
+      invoke(sleapCmd("rtc_disconnect_worker")).catch(() => {});
     });
     this._ready = false;
     this._handler = null;

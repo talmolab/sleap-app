@@ -1,7 +1,11 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
-  "identifier": "default",
-  "description": "Default capabilities for SLEAP Label",
+  "identifier": "localhost",
+  "description": "SPIKE (spike/tauri-localhost-origin): grant the same permissions to the main window when it is served from the http://localhost origin (tauri-plugin-localhost). A window loading http://localhost is REMOTE context, so the default (local) capability does NOT apply and invoke/IPC would be blocked without this. local:false keeps this inert for dev / flag-off (tauri:// or devUrl) builds. Port must match LOCALHOST_PORT in src/lib.rs.",
+  "local": false,
+  "remote": {
+    "urls": ["http://localhost:1430"]
+  },
   "windows": ["main"],
   "permissions": [
     "core:default",

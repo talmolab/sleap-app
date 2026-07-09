@@ -55,6 +55,7 @@ import {
 import { PALETTES } from "../../lib/colorPalettes";
 import { QC_MODE_CHOICES } from "../../lib/instanceVisibility";
 import { toast } from "@/lib/notify";
+import { sleapCmd } from "@/lib/sleapPlugin";
 import {
   Menubar,
   MenubarMenu,
@@ -192,7 +193,9 @@ function FileMenu() {
                 if (!projectPath) return;
                 const { invoke } = await import("@tauri-apps/api/core");
                 try {
-                  await invoke("reveal_in_file_manager", { path: projectPath });
+                  await invoke(sleapCmd("reveal_in_file_manager"), {
+                    path: projectPath,
+                  });
                 } catch (e) {
                   const { toast } = await import("@/lib/notify");
                   toast.error("Failed to reveal project file", {
@@ -207,7 +210,7 @@ function FileMenu() {
               onClick={async () => {
                 const { invoke } = await import("@tauri-apps/api/core");
                 try {
-                  await invoke("open_preferences_directory");
+                  await invoke(sleapCmd("open_preferences_directory"));
                 } catch (e) {
                   const { toast } = await import("@/lib/notify");
                   toast.error("Failed to open preferences directory", {

@@ -158,6 +158,51 @@ fn normalize_path(path: PathBuf) -> PathBuf {
     parts.iter().collect()
 }
 
+/// SPIKE (spike/tauri-localhost-origin): the inlined "sleap" plugin bundling the range
+/// reader's byte-pipe commands (`read_range`, `file_size`) so they resolve as
+/// `plugin:sleap|...` and stay reachable from the http://localhost (remote) origin. The
+/// runtime `R` is inferred from the return type, so no `Wry` hardcoding.
+fn sleap_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
+    tauri::plugin::Builder::new("sleap")
+        .invoke_handler(tauri::generate_handler![
+            read_range,
+            file_size,
+            get_initial_file,
+            read_image_file,
+            reveal_in_file_manager,
+            open_preferences_directory,
+            environment::detect_uv,
+            environment::detect_gpu,
+            environment::list_uv_tools,
+            environment::list_python_interpreters,
+            environment::list_downloadable_pythons,
+            environment::check_python,
+            environment::install_python,
+            environment::install_uv_tool,
+            environment::upgrade_uv_tool,
+            environment::update_uv,
+            environment::install_uv,
+            environment::run_python_command,
+            environment::cancel_command,
+            environment::start_zmq_relay,
+            environment::send_training_stop,
+            environment::stop_zmq_relay,
+            environment::start_progress_relay,
+            environment::stop_progress_relay,
+            rtc::rtc_join_room,
+            rtc::rtc_connect_worker,
+            rtc::rtc_send,
+            rtc::rtc_disconnect_worker,
+            rtc::rtc_leave_room,
+        ])
+        .build()
+}
+
+/// SPIKE (spike/tauri-localhost-origin): fixed port for the http://localhost origin.
+/// Fixed (not portpicker) so the static capability `capabilities/localhost.json` can
+/// match `http://localhost:1430` exactly — keep the two in sync.
+const LOCALHOST_PORT: u16 = 1430;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   // Extract the first non-flag argument as a file path to open on launch.
@@ -182,58 +227,81 @@ pub fn run() {
       .map(|p| p.to_string_lossy().into_owned());
   println!("[sleap-label] file_arg: {:?}", file_arg);
 
-  let builder = tauri::Builder::default()
+  // SPIKE (spike/tauri-localhost-origin): serve the frontend over http://localhost
+  // for any BUNDLED build so WKWebView grants crossOriginIsolated (→ SharedArrayBuffer
+  // for the B-seam range reader). `tauri::is_dev()` is false for both `tauri build`
+  // and `tauri build --debug` (bundled assets, tauri:// scheme) and true only under
+  // `tauri dev` (which already uses the Vite http origin) — it's the same signal Tauri
+  // uses to pick devUrl vs bundled assets, so our window URL always matches the asset
+  // mode. Escape hatch: SLEAP_ORIGIN=custom keeps the tauri:// scheme (A/B the flip).
+  let use_localhost = !tauri::is_dev()
+    && std::env::var("SLEAP_ORIGIN").map(|v| v != "custom").unwrap_or(true);
+
+  let mut builder = tauri::Builder::default()
     .manage(InitialFile(Mutex::new(file_arg)))
     .manage(RunningProcess(Mutex::new(None)))
     .manage(ZmqRelay(Mutex::new(None)))
     .manage(ProgressRelay(Mutex::new(None)))
     .manage(tokio::sync::Mutex::new(rtc::RtcState::new()))
-    .invoke_handler(tauri::generate_handler![
-        get_initial_file,
-        read_image_file,
-        read_range,
-        file_size,
-        reveal_in_file_manager,
-        open_preferences_directory,
-        environment::detect_uv,
-        environment::detect_gpu,
-        environment::list_uv_tools,
-        environment::list_python_interpreters,
-        environment::list_downloadable_pythons,
-        environment::check_python,
-        environment::install_python,
-        environment::install_uv_tool,
-        environment::upgrade_uv_tool,
-        environment::update_uv,
-        environment::install_uv,
-        environment::run_python_command,
-        environment::cancel_command,
-        environment::start_zmq_relay,
-        environment::send_training_stop,
-        environment::stop_zmq_relay,
-        environment::start_progress_relay,
-        environment::stop_progress_relay,
-        rtc::rtc_join_room,
-        rtc::rtc_connect_worker,
-        rtc::rtc_send,
-        rtc::rtc_disconnect_worker,
-        rtc::rtc_leave_room,
-    ])
+    // All native commands live in the inlined `sleap` plugin (see sleap_plugin()) so they
+    // resolve as `plugin:sleap|…` and stay reachable when the app is served from the
+    // http://localhost origin (bare custom commands are blocked there — see build.rs).
     .plugin(tauri_plugin_fs::init())
     .plugin(tauri_plugin_dialog::init())
     .plugin(tauri_plugin_shell::init())
     .plugin(tauri_plugin_updater::Builder::new().build())
     .plugin(tauri_plugin_process::init())
-    .setup(|app| {
-      if cfg!(debug_assertions) {
-        app.handle().plugin(
-          tauri_plugin_log::Builder::default()
-            .level(log::LevelFilter::Info)
-            .build(),
-        )?;
-      }
-      Ok(())
-    });
+    // SPIKE (spike/tauri-localhost-origin): expose read_range + file_size as an INLINED
+    // plugin so they're reachable from the http://localhost (remote) origin — bare custom
+    // commands are blocked there (see build.rs). Command names become
+    // `plugin:sleap|read_range` / `plugin:sleap|file_size` (see nativeRange.ts).
+    .plugin(sleap_plugin());
+
+  // Register the localhost HTTP server only when we actually serve over it
+  // (bundled build + flag on). Inject COOP/COEP on every response — the plugin does
+  // NOT set them itself, and without them the http origin wouldn't be isolated either.
+  if use_localhost {
+    builder = builder.plugin(
+      tauri_plugin_localhost::Builder::new(LOCALHOST_PORT)
+        .host("localhost")
+        .on_request(|_req, resp| {
+          resp.add_header("Cross-Origin-Opener-Policy", "same-origin");
+          resp.add_header("Cross-Origin-Embedder-Policy", "require-corp");
+        })
+        .build(),
+    );
+  }
+
+  let builder = builder.setup(move |app| {
+    if cfg!(debug_assertions) {
+      app.handle().plugin(
+        tauri_plugin_log::Builder::default()
+          .level(log::LevelFilter::Info)
+          .build(),
+      )?;
+    }
+
+    // Build the main window here (removed from tauri.conf.json) so its URL can be
+    // http://localhost:PORT in release. Dev / flag-off use WebviewUrl::App, which
+    // resolves to the Vite devUrl (debug) or the tauri:// scheme (release).
+    let url = if use_localhost {
+      tauri::WebviewUrl::External(
+        format!("http://localhost:{LOCALHOST_PORT}")
+          .parse()
+          .expect("valid localhost url"),
+      )
+    } else {
+      tauri::WebviewUrl::App("index.html".into())
+    };
+    tauri::WebviewWindowBuilder::new(app, "main", url)
+      .title("SLEAP")
+      .inner_size(1280.0, 800.0)
+      .min_inner_size(800.0, 600.0)
+      .resizable(true)
+      .build()?;
+
+    Ok(())
+  });
 
   // tauri-pilot: dev-only bridge that lets the `tauri-pilot` CLI drive the
   // WebView for UI inspection and automation. Registered here in the builder
