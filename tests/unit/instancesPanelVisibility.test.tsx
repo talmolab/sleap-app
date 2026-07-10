@@ -102,11 +102,16 @@ describe("InstancesPanel per-instance visibility columns (Task 5)", () => {
     const visBoxes = screen.getAllByRole("checkbox", { name: /visibility/i });
     expect(visBoxes.length).toBe(2);
     // Boxes start checked (nothing hidden, no view-only).
-    expect((visBoxes[0] as HTMLInputElement).checked).toBe(true);
+    expect(visBoxes[0]).toBeChecked();
 
     fireEvent.click(visBoxes[0]);
 
     expect(useAppStore.getState().hiddenInstances.size).toBe(1);
+    // The panel must re-render off the store change: re-query and confirm the
+    // box now reflects hidden (guards the subscription, the task's main risk).
+    expect(
+      screen.getAllByRole("checkbox", { name: /visibility/i })[0],
+    ).not.toBeChecked();
   });
 
   it("View Only is radio-like: clicking a second row moves the focus", async () => {
@@ -122,6 +127,10 @@ describe("InstancesPanel per-instance visibility columns (Task 5)", () => {
     );
     expect(useAppStore.getState().viewOnlyInstance).not.toBeNull();
     expect(useAppStore.getState().viewOnlyInstance).toBe(inst0);
+    // Panel re-renders off the store: box[0] now reads checked.
+    expect(
+      screen.getAllByRole("checkbox", { name: /view only/i })[0],
+    ).toBeChecked();
 
     fireEvent.click(
       screen.getAllByRole("checkbox", { name: /view only/i })[1],
@@ -129,6 +138,12 @@ describe("InstancesPanel per-instance visibility columns (Task 5)", () => {
     const viewOnly = useAppStore.getState().viewOnlyInstance;
     expect(viewOnly).not.toBeNull();
     expect(viewOnly).toBe(inst1);
+    // Focus moved: box[1] is checked, box[0] is not.
+    const viewOnlyBoxes = screen.getAllByRole("checkbox", {
+      name: /view only/i,
+    });
+    expect(viewOnlyBoxes[1]).toBeChecked();
+    expect(viewOnlyBoxes[0]).not.toBeChecked();
   });
 
   it("clicking a row's Invisible Nodes records a per-instance override", async () => {

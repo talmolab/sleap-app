@@ -62,6 +62,7 @@ function IconHeader({ icon: Icon, label }: { icon: LucideIcon; label: string }) 
           <TooltipTrigger asChild>
             <span className="inline-flex justify-center">
               <Icon className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />
+              <span className="sr-only">{label}</span>
             </span>
           </TooltipTrigger>
           <TooltipContent side="top">
@@ -92,14 +93,18 @@ function VisibilityCheckbox({
   onChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
 }) {
   return (
-    <TableCell className={cn("py-0.5 px-1 text-center", muted && "opacity-40")}>
+    <TableCell
+      className={cn("py-0.5 px-1 text-center", muted && "opacity-40")}
+      // A native title= on a disabled <input> isn't reliably shown on hover, so
+      // the read-only hint lives on the enclosing cell instead.
+      title={disabled ? "Set Display: Manual to edit" : undefined}
+    >
       <input
         type="checkbox"
         aria-label={label}
-        className="h-3.5 w-3.5 cursor-pointer accent-orange-500 align-middle"
+        className="h-3.5 w-3.5 cursor-pointer accent-primary align-middle"
         checked={checked}
         disabled={disabled}
-        title={disabled ? "Set Display: Manual to edit" : undefined}
         onClick={(e) => e.stopPropagation()}
         onChange={onChange}
       />
@@ -429,23 +434,17 @@ export function InstancesPanel() {
                     )}
                     viewOnlyActive={viewOnlyInstance !== null}
                     readOnly={visibilityReadOnly}
-                    onToggleVisibility={(e) => {
-                      e.stopPropagation();
-                      setInstanceHidden(inst, e.target.checked === false);
-                    }}
-                    onToggleViewOnly={(e) => {
-                      e.stopPropagation();
+                    onToggleVisibility={(e) =>
+                      setInstanceHidden(inst, !e.target.checked)
+                    }
+                    onToggleViewOnly={() =>
                       setViewOnlyInstance(
                         viewOnlyInstance === inst ? null : inst,
-                      );
-                    }}
-                    onToggleInvisibleNodes={(e) => {
-                      e.stopPropagation();
-                      setInstanceInvisibleOverride(
-                        inst,
-                        e.target.checked ? true : false,
-                      );
-                    }}
+                      )
+                    }
+                    onToggleInvisibleNodes={(e) =>
+                      setInstanceInvisibleOverride(inst, e.target.checked)
+                    }
                   />
                 );
               })}
