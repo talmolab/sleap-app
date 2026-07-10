@@ -9,9 +9,11 @@
  */
 
 import { useState, useRef, useCallback, useEffect } from "react";
-import { Clipboard, Check } from "lucide-react";
+import { Clipboard, Check, Eye, Focus, Ghost } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { useAppStore } from "../../stores/appStore";
 import { rgbToCSS, getInstanceColor } from "../../lib/colorPalettes";
+import { instanceShowsNonVisible } from "@/lib/instanceVisibility";
 import {
   commandContext,
   AddInstance,
@@ -51,6 +53,60 @@ function formatPointsAsPython(instance: Instance | PredictedInstance): string {
   return `np.array([\n${rows.join(",\n")}\n])`;
 }
 
+/** Compact icon column header with a hover tooltip (the panel is narrow). */
+function IconHeader({ icon: Icon, label }: { icon: LucideIcon; label: string }) {
+  return (
+    <TableHead className="py-1 px-1 text-center w-8 h-auto">
+      <TooltipProvider delayDuration={300}>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="inline-flex justify-center">
+              <Icon className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />
+            </span>
+          </TooltipTrigger>
+          <TooltipContent side="top">
+            <p>{label}</p>
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
+    </TableHead>
+  );
+}
+
+/**
+ * One per-instance visibility checkbox cell. Stops click propagation so
+ * toggling a box never also selects the row. Muted (but still clickable) when
+ * `muted` is set (view-only greying); disabled in non-manual QC modes.
+ */
+function VisibilityCheckbox({
+  label,
+  checked,
+  disabled,
+  muted,
+  onChange,
+}: {
+  label: string;
+  checked: boolean;
+  disabled: boolean;
+  muted?: boolean;
+  onChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
+}) {
+  return (
+    <TableCell className={cn("py-0.5 px-1 text-center", muted && "opacity-40")}>
+      <input
+        type="checkbox"
+        aria-label={label}
+        className="h-3.5 w-3.5 cursor-pointer accent-orange-500 align-middle"
+        checked={checked}
+        disabled={disabled}
+        title={disabled ? "Set Display: Manual to edit" : undefined}
+        onClick={(e) => e.stopPropagation()}
+        onChange={onChange}
+      />
+    </TableCell>
+  );
+}
+
 function InstanceRow({
   instance,
   index,
@@ -60,6 +116,14 @@ function InstanceRow({
   labels,
   distinctlyColor,
   colorPredicted,
+  visibilityChecked,
+  viewOnlyChecked,
+  invisibleNodesChecked,
+  viewOnlyActive,
+  readOnly,
+  onToggleVisibility,
+  onToggleViewOnly,
+  onToggleInvisibleNodes,
 }: {
   instance: Instance | PredictedInstance;
   index: number;
@@ -69,6 +133,14 @@ function InstanceRow({
   labels: Labels | null;
   distinctlyColor: string;
   colorPredicted: boolean;
+  visibilityChecked: boolean;
+  viewOnlyChecked: boolean;
+  invisibleNodesChecked: boolean;
+  viewOnlyActive: boolean;
+  readOnly: boolean;
+  onToggleVisibility: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  onToggleViewOnly: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  onToggleInvisibleNodes: (e: React.ChangeEvent<HTMLInputElement>) => void;
 }) {
   const predicted = isPredicted(instance);
   const color = getInstanceColor(
@@ -116,6 +188,25 @@ function InstanceRow({
       <TableCell className="py-0.5 px-2 text-xs text-right tabular-nums text-muted-foreground">
         {score !== null ? score.toFixed(2) : "--"}
       </TableCell>
+      <VisibilityCheckbox
+        label="Visibility"
+        checked={visibilityChecked}
+        disabled={readOnly}
+        muted={viewOnlyActive}
+        onChange={onToggleVisibility}
+      />
+      <VisibilityCheckbox
+        label="View Only"
+        checked={viewOnlyChecked}
+        disabled={readOnly}
+        onChange={onToggleViewOnly}
+      />
+      <VisibilityCheckbox
+        label="Invisible Nodes"
+        checked={invisibleNodesChecked}
+        disabled={readOnly}
+        onChange={onToggleInvisibleNodes}
+      />
     </TableRow>
   );
 }
@@ -189,6 +280,22 @@ export function InstancesPanel() {
   const palette = useAppStore((s) => s.palette);
   const distinctlyColor = useAppStore((s) => s.distinctlyColor);
   const colorPredicted = useAppStore((s) => s.colorPredicted);
+
+  // Per-instance visibility state + actions (Task 5). These live in the store
+  // keyed by instance object identity and are read/written here; the overlay
+  // renderer applies them elsewhere.
+  const hiddenInstances = useAppStore((s) => s.hiddenInstances);
+  const viewOnlyInstance = useAppStore((s) => s.viewOnlyInstance);
+  const showNonVisibleOverride = useAppStore((s) => s.showNonVisibleOverride);
+  const showNonVisibleNodes = useAppStore((s) => s.showNonVisibleNodes);
+  const qcDisplayMode = useAppStore((s) => s.qcDisplayMode);
+  const setInstanceHidden = useAppStore((s) => s.setInstanceHidden);
+  const setViewOnlyInstance = useAppStore((s) => s.setViewOnlyInstance);
+  const setInstanceInvisibleOverride = useAppStore(
+    (s) => s.setInstanceInvisibleOverride,
+  );
+  // The QC mode owns this state programmatically; only "manual" allows editing.
+  const visibilityReadOnly = qcDisplayMode !== "manual";
 
   // Local multi-select state
   const [selectedIndices, setSelectedIndices] = useState<Set<number>>(
@@ -292,22 +399,56 @@ export function InstancesPanel() {
                 <TableHead className="py-1 px-2 text-xs font-normal text-right h-auto">
                   Score
                 </TableHead>
+                <IconHeader icon={Eye} label="Visibility" />
+                <IconHeader icon={Focus} label="View Only" />
+                <IconHeader icon={Ghost} label="Invisible Nodes" />
               </TableRow>
             </TableHeader>
             <TableBody>
-              {instances.map((inst, i) => (
-                <InstanceRow
-                  key={i}
-                  instance={inst}
-                  index={i}
-                  isSelected={selectedIndices.has(i)}
-                  onSelect={(e) => handleSelect(i, e)}
-                  palette={palette}
-                  labels={labels}
-                  distinctlyColor={distinctlyColor}
-                  colorPredicted={colorPredicted}
-                />
-              ))}
+              {instances.map((inst, i) => {
+                const visibilityChecked =
+                  !hiddenInstances.has(inst) &&
+                  (!viewOnlyInstance || viewOnlyInstance === inst);
+                return (
+                  <InstanceRow
+                    key={i}
+                    instance={inst}
+                    index={i}
+                    isSelected={selectedIndices.has(i)}
+                    onSelect={(e) => handleSelect(i, e)}
+                    palette={palette}
+                    labels={labels}
+                    distinctlyColor={distinctlyColor}
+                    colorPredicted={colorPredicted}
+                    visibilityChecked={visibilityChecked}
+                    viewOnlyChecked={viewOnlyInstance === inst}
+                    invisibleNodesChecked={instanceShowsNonVisible(
+                      { showNonVisibleOverride },
+                      inst,
+                      showNonVisibleNodes,
+                    )}
+                    viewOnlyActive={viewOnlyInstance !== null}
+                    readOnly={visibilityReadOnly}
+                    onToggleVisibility={(e) => {
+                      e.stopPropagation();
+                      setInstanceHidden(inst, e.target.checked === false);
+                    }}
+                    onToggleViewOnly={(e) => {
+                      e.stopPropagation();
+                      setViewOnlyInstance(
+                        viewOnlyInstance === inst ? null : inst,
+                      );
+                    }}
+                    onToggleInvisibleNodes={(e) => {
+                      e.stopPropagation();
+                      setInstanceInvisibleOverride(
+                        inst,
+                        e.target.checked ? true : false,
+                      );
+                    }}
+                  />
+                );
+              })}
             </TableBody>
           </Table>
         )}
