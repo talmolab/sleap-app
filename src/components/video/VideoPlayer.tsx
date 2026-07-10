@@ -29,6 +29,7 @@ import {
   type RenderedInstance,
   type RenderedNode,
 } from "../../canvas/SkeletonRenderer";
+import { instanceVisible, instanceShowsNonVisible } from "@/lib/instanceVisibility";
 import { getPaletteColor, getInstanceColor, rgbToCSS } from "../../lib/colorPalettes";
 import { COLORMAPS } from "../../lib/colormaps";
 import { renderTrails } from "../../canvas/TrailRenderer";
@@ -61,6 +62,9 @@ export function VideoPlayer() {
   const showLabels = useAppStore((s) => s.showLabels);
   const showEdges = useAppStore((s) => s.showEdges);
   const showNonVisibleNodes = useAppStore((s) => s.showNonVisibleNodes);
+  const hiddenInstances = useAppStore((s) => s.hiddenInstances);
+  const viewOnlyInstance = useAppStore((s) => s.viewOnlyInstance);
+  const showNonVisibleOverride = useAppStore((s) => s.showNonVisibleOverride);
   const colorPredicted = useAppStore((s) => s.colorPredicted);
   const fit = useAppStore((s) => s.fit);
   const edgeStyle = useAppStore((s) => s.edgeStyle);
@@ -636,6 +640,7 @@ export function VideoPlayer() {
 
     // Build renderable instances
     const tracks = labels?.tracks ?? [];
+    const vis = { showInstances, hiddenInstances, viewOnlyInstance, showNonVisibleOverride };
     const instances: RenderedInstance[] = labeledFrame.instances.map(
       (inst, idx) => {
         const isPredicted = inst instanceof PredictedInstance;
@@ -685,6 +690,8 @@ export function VideoPlayer() {
           isSelected: inst === selectedInstance,
           trackName: inst.track?.name ?? null,
           score: isPredicted ? inst.score : undefined,
+          visible: instanceVisible(vis, inst),
+          showNonVisible: instanceShowsNonVisible(vis, inst, showNonVisibleNodes),
         };
       }
     );
@@ -737,7 +744,7 @@ export function VideoPlayer() {
     // Compute effective selection (includes live marquee preview)
     let effectiveSelection = selectedNodes;
     if (marqueeStart && marqueeEnd) {
-      const marqueeHits = nodesInRect(instances, marqueeStart.x, marqueeStart.y, marqueeEnd.x, marqueeEnd.y, showNonVisibleNodes);
+      const marqueeHits = nodesInRect(instances, marqueeStart.x, marqueeStart.y, marqueeEnd.x, marqueeEnd.y);
       if (marqueeHits.size > 0 || selectedNodes.size > 0) {
         effectiveSelection = new Set([...selectedNodes, ...marqueeHits]);
       }
@@ -790,6 +797,9 @@ export function VideoPlayer() {
     showLabels,
     showEdges,
     showNonVisibleNodes,
+    hiddenInstances,
+    viewOnlyInstance,
+    showNonVisibleOverride,
     colorPredicted,
     edgeStyle,
     markerSize,
@@ -1177,7 +1187,7 @@ export function VideoPlayer() {
       if (shouldPan && !areaDeleteMode) {
         const instances = renderedInstancesRef.current;
         const nt = (markerSize * 2) / zoom;
-        const hit = hitTestNode(instances, x, y, nt, showNonVisibleNodes);
+        const hit = hitTestNode(instances, x, y, nt);
         if (hit && !instances[hit.instanceIdx]?.isPredicted) {
           // Node hit in pan mode — fall through to normal node drag handling below
         } else {
@@ -1245,7 +1255,7 @@ export function VideoPlayer() {
       const instanceThreshold = 30 / zoom;
 
       // Try to hit a node first
-      const nodeHit = hitTestNode(instances, x, y, nodeThreshold, showNonVisibleNodes);
+      const nodeHit = hitTestNode(instances, x, y, nodeThreshold);
       if (nodeHit) {
         const key = makeNodeKey(nodeHit.instanceIdx, nodeHit.nodeIdx);
         const lf = useAppStore.getState().labeledFrame;
@@ -1313,7 +1323,7 @@ export function VideoPlayer() {
       setMarqueeStart({ x, y });
       setMarqueeEnd({ x, y });
     },
-    [canvasToScene, markerSize, panX, panY, zoom, shouldPan, isCmdHeld, offsetX, offsetY, selectedNodes, showNonVisibleNodes, areaDeleteMode]
+    [canvasToScene, markerSize, panX, panY, zoom, shouldPan, isCmdHeld, offsetX, offsetY, selectedNodes, areaDeleteMode]
   );
 
   const handleMouseMove = useCallback(
@@ -1441,7 +1451,7 @@ export function VideoPlayer() {
 
       const instances = renderedInstancesRef.current;
       const nodeThreshold = (markerSize * 2) / zoom;
-      const hit = hitTestNode(instances, x, y, nodeThreshold, showNonVisibleNodes);
+      const hit = hitTestNode(instances, x, y, nodeThreshold);
 
       if (hit) {
         const prevIdx = hoveredNode?.instanceIdx;
@@ -1460,7 +1470,7 @@ export function VideoPlayer() {
         useAppStore.getState().bumpOverlayVersion();
       }
     },
-    [isDragging, isPanning, isZoomDragging, dragNodeInfo, canvasToScene, panStart, constrainPan, zoom, interactionMode, selectedNodes, markerSize, hoveredNode, showNonVisibleNodes, offsetX, offsetY, isPlacingNodes, isShiftHeld, isAreaDeleting, areaDeleteStart]
+    [isDragging, isPanning, isZoomDragging, dragNodeInfo, canvasToScene, panStart, constrainPan, zoom, interactionMode, selectedNodes, markerSize, hoveredNode, offsetX, offsetY, isPlacingNodes, isShiftHeld, isAreaDeleting, areaDeleteStart]
   );
 
   const handleMouseUp = useCallback(() => {
@@ -1497,7 +1507,7 @@ export function VideoPlayer() {
 
     if (interactionMode === "marquee" && marqueeStart && marqueeEnd) {
       const instances = renderedInstancesRef.current;
-      const newSelection = nodesInRect(instances, marqueeStart.x, marqueeStart.y, marqueeEnd.x, marqueeEnd.y, showNonVisibleNodes);
+      const newSelection = nodesInRect(instances, marqueeStart.x, marqueeStart.y, marqueeEnd.x, marqueeEnd.y);
       if (shiftHeldOnMouseDown.current) {
         setSelectedNodes((prev) => new Set([...prev, ...newSelection]));
       } else {
@@ -1613,7 +1623,7 @@ export function VideoPlayer() {
       const instanceThreshold = 30 / zoom;
 
       // Check if double-clicking on a node
-      const nodeHit = hitTestNode(instances, x, y, nodeThreshold, showNonVisibleNodes);
+      const nodeHit = hitTestNode(instances, x, y, nodeThreshold);
       if (nodeHit) {
         const inst = instances[nodeHit.instanceIdx];
         // Predicted: convert to user instance
@@ -1669,7 +1679,7 @@ export function VideoPlayer() {
       const instances = renderedInstancesRef.current;
 
       // Check if right-clicking on a node
-      const nodeHit = hitTestNode(instances, x, y, markerSize * 2, showNonVisibleNodes);
+      const nodeHit = hitTestNode(instances, x, y, markerSize * 2);
       if (nodeHit) {
         const lf = useAppStore.getState().labeledFrame;
         if (lf) {
@@ -1708,7 +1718,7 @@ export function VideoPlayer() {
         nodeIdx: null,
       });
     },
-    [canvasToScene, markerSize, showNonVisibleNodes]
+    [canvasToScene, markerSize]
   );
 
   // Full-canvas crosshair while zoomed (View ▸ "Crosshair When Zoomed"). Only

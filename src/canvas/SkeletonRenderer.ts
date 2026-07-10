@@ -33,6 +33,10 @@ export interface RenderedInstance {
   isSelected: boolean;
   trackName: string | null;
   score?: number;
+  /** Per-instance canvas visibility (#2755). Instance is skipped when false. */
+  visible: boolean;
+  /** Per-instance "show occluded nodes" (#2782), overriding the global flag. */
+  showNonVisible: boolean;
 }
 
 export interface RenderOptions {
@@ -79,7 +83,11 @@ export function renderInstances(
   });
 
   for (const instance of sorted) {
-    renderInstance(ctx, instance, opts);
+    if (!instance.visible) continue; // #2755 per-instance hide
+    renderInstance(ctx, instance, {
+      ...opts,
+      showNonVisibleNodes: instance.showNonVisible, // #2782 per-instance occluded
+    });
   }
 }
 
@@ -300,17 +308,17 @@ export function hitTestNode(
   instances: RenderedInstance[],
   canvasX: number,
   canvasY: number,
-  threshold: number = 10,
-  includeNonVisible: boolean = false
+  threshold: number = 10
 ): { instanceIdx: number; nodeIdx: number } | null {
   let best: { instanceIdx: number; nodeIdx: number; dist: number } | null =
     null;
 
   for (let i = instances.length - 1; i >= 0; i--) {
     const inst = instances[i];
+    if (!inst.visible) continue; // #2755 per-instance hide
     for (let j = 0; j < inst.nodes.length; j++) {
       const node = inst.nodes[j];
-      if (!node.visible && !includeNonVisible) continue;
+      if (!node.visible && !inst.showNonVisible) continue;
       if (!node.visible && isNaN(node.x)) continue; // truly unplaced
       const dx = node.x - canvasX;
       const dy = node.y - canvasY;
@@ -337,6 +345,7 @@ export function hitTestInstance(
 
   for (let i = instances.length - 1; i >= 0; i--) {
     const inst = instances[i];
+    if (!inst.visible) continue; // #2755 per-instance hide
     const visible = inst.nodes.filter((n) => n.visible);
     if (visible.length === 0) continue;
 
@@ -371,8 +380,7 @@ export function nodesInRect(
   x1: number,
   y1: number,
   x2: number,
-  y2: number,
-  includeNonVisible: boolean = false
+  y2: number
 ): Set<string> {
   const minX = Math.min(x1, x2);
   const maxX = Math.max(x1, x2);
@@ -382,9 +390,10 @@ export function nodesInRect(
 
   for (let i = 0; i < instances.length; i++) {
     const inst = instances[i];
+    if (!inst.visible) continue; // #2755 per-instance hide
     for (let j = 0; j < inst.nodes.length; j++) {
       const node = inst.nodes[j];
-      if (!node.visible && !includeNonVisible) continue;
+      if (!node.visible && !inst.showNonVisible) continue;
       if (isNaN(node.x)) continue; // truly unplaced
       if (node.x >= minX && node.x <= maxX && node.y >= minY && node.y <= maxY) {
         result.add(makeNodeKey(i, j));
