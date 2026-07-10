@@ -9,8 +9,7 @@ import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import { persist } from "zustand/middleware";
 import { subscribeWithSelector } from "zustand/middleware";
-import { enableMapSet } from "immer";
-enableMapSet();
+import { enableMapSet, type Draft } from "immer";
 import type {
   Labels,
   LabeledFrame,
@@ -36,6 +35,21 @@ import {
   reconcileHiddenPanels,
   nextVisiblePanel,
 } from "@/lib/panelLayout";
+
+// Required before immer can draft Set/Map fields (hiddenInstances /
+// showNonVisibleOverride). Idempotent global; must run before store creation.
+enableMapSet();
+
+/**
+ * Reset the transient per-instance visibility fields on an immer draft. Shared
+ * by the initializer, frame/video changes, project load, and the explicit
+ * reset action so the lifecycle stays in one place.
+ */
+function clearTransientVisibility(state: Draft<AppState>) {
+  state.hiddenInstances = new Set<Instance>();
+  state.viewOnlyInstance = null;
+  state.showNonVisibleOverride = new Map<Instance, boolean>();
+}
 
 export interface AppState {
   // === Project state ===
@@ -360,6 +374,9 @@ export const useAppStore = create<AppState>()(
           state.frameIdx = 0;
           state.instance = null;
           state.labeledFrame = null;
+          // setLabels sets video/frame directly (not via setVideo), so drop any
+          // stale identity-keyed transients from the previous project.
+          clearTransientVisibility(state);
         }),
 
       setVideo: (video) =>
@@ -367,9 +384,7 @@ export const useAppStore = create<AppState>()(
           if (video !== state.video) {
             // Per-instance visibility is scoped to the current frame/video —
             // reset it whenever the video actually changes.
-            state.hiddenInstances = new Set<Instance>();
-            state.viewOnlyInstance = null;
-            state.showNonVisibleOverride = new Map<Instance, boolean>();
+            clearTransientVisibility(state);
           }
           state.video = video;
           state.frameIdx = 0;
@@ -379,21 +394,23 @@ export const useAppStore = create<AppState>()(
 
       setFrameIdx: (idx) =>
         set((state) => {
-          if (idx !== state.frameIdx) {
-            // Per-instance visibility is scoped to the current frame — reset it
-            // whenever the frame actually changes (SLEAP QC-panel parity).
-            state.hiddenInstances = new Set<Instance>();
-            state.viewOnlyInstance = null;
-            state.showNonVisibleOverride = new Map<Instance, boolean>();
-          }
           const video = state.video;
+          let next: number;
           if (video && video.shape) {
             const maxFrame = (video.shape[0] ?? 1) - 1;
-            state.frameIdx = Math.max(0, Math.min(idx, maxFrame));
+            next = Math.max(0, Math.min(idx, maxFrame));
           } else {
             // No shape info — allow any non-negative index
-            state.frameIdx = Math.max(0, idx);
+            next = Math.max(0, idx);
           }
+          if (next !== state.frameIdx) {
+            // Per-instance visibility is scoped to the current frame — reset it
+            // whenever the frame actually changes (SLEAP QC-panel parity). Guard
+            // on the clamped target so an out-of-range idx at the boundary is a
+            // no-op rather than a spurious clear.
+            clearTransientVisibility(state);
+          }
+          state.frameIdx = next;
           state.instance = null;
           // Compute labeledFrame synchronously to avoid race condition during fast scrubbing
           if (state.labels && state.video) {
@@ -470,9 +487,7 @@ export const useAppStore = create<AppState>()(
 
       resetInstanceVisibility: () =>
         set((state) => {
-          state.hiddenInstances = new Set<Instance>();
-          state.viewOnlyInstance = null;
-          state.showNonVisibleOverride = new Map<Instance, boolean>();
+          clearTransientVisibility(state);
         }),
 
       setInstance: (instance) =>

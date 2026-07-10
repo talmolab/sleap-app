@@ -564,4 +564,44 @@ describe("per-instance visibility state", () => {
     expect(s2.showNonVisibleOverride.size).toBe(0);
     expect(s2.qcDisplayMode).toBe("selected_only");
   });
+
+  it("setFrameIdx to the CURRENT (or same-after-clamp) frame preserves transients", () => {
+    const video = {
+      filename: "t.mp4",
+      shape: [100, 480, 640, 3],
+    } as unknown as Video;
+    useAppStore.setState({ video, frameIdx: 99 });
+    const st = useAppStore.getState();
+    st.setInstanceHidden(a, true);
+    st.setViewOnlyInstance(b); // setInstanceHidden cleared view-only; re-set it
+    st.setInstanceInvisibleOverride(a, false);
+
+    // Same index → no-op, transients survive.
+    useAppStore.getState().setFrameIdx(99);
+    let s = useAppStore.getState();
+    expect(s.frameIdx).toBe(99);
+    expect(s.hiddenInstances.has(a)).toBe(true);
+    expect(s.viewOnlyInstance).toBe(b);
+    expect(s.showNonVisibleOverride.get(a)).toBe(false);
+
+    // Out-of-range-high idx clamps back to 99 (already parked there) → still a no-op.
+    useAppStore.getState().setFrameIdx(500);
+    s = useAppStore.getState();
+    expect(s.frameIdx).toBe(99);
+    expect(s.hiddenInstances.has(a)).toBe(true);
+    expect(s.viewOnlyInstance).toBe(b);
+    expect(s.showNonVisibleOverride.get(a)).toBe(false);
+  });
+
+  it("resetInstanceVisibility clears all three transient fields", () => {
+    const st = useAppStore.getState();
+    st.setInstanceHidden(a, true);
+    st.setViewOnlyInstance(b);
+    st.setInstanceInvisibleOverride(a, false);
+    useAppStore.getState().resetInstanceVisibility();
+    const s = useAppStore.getState();
+    expect(s.hiddenInstances.size).toBe(0);
+    expect(s.viewOnlyInstance).toBeNull();
+    expect(s.showNonVisibleOverride.size).toBe(0);
+  });
 });
