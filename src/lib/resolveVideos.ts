@@ -14,11 +14,13 @@ import {
   createVideoBackend,
   type VideoBackend,
   type VideoBackendError,
+  type RangeSource,
 } from "@talmolab/sleap-io.js";
 import { toast } from "@/lib/notify";
 import type { Labels } from "../types";
 import { getPlatform } from "../platform/index";
 import { tailGraftCandidates } from "./pathCandidates";
+import { fileSize, readRange } from "./nativeRange";
 
 /** Extract just the basename from a path or filename. */
 export function getBasename(filename: string | string[]): string {
@@ -409,10 +411,10 @@ export async function resolveExternalVideos(
           const found = await options.exists(candidatePath);
           if (found) {
             console.log(`[video] Found at: ${candidatePath}`);
-            const bytes = await options.readFile(candidatePath);
-            const name = getBasename(candidatePath);
-            const file = new File([bytes], name, { type: "video/mp4" });
-            const ok = await assignVideoBackend(video, file, { silent: true });
+            // Lazy byte-range open (no whole-file read) — see assignVideoBackendFromPath.
+            const ok = await assignVideoBackendFromPath(video, candidatePath, {
+              silent: true,
+            });
             if (ok) {
               // Preserve the original SLP path in metadata before updating
               const origFilename = Array.isArray(video.filename)
@@ -564,11 +566,9 @@ async function propagatePrefixSwap(
     const candidate = base ? `${base}/${rest}` : rest;
     try {
       if (!(await fs.exists(candidate))) continue;
-      const bytes = await fs.readFile(candidate);
-      const file = new File([bytes], getBasename(candidate), {
-        type: "video/mp4",
+      const ok = await assignVideoBackendFromPath(video, candidate, {
+        silent: true,
       });
-      const ok = await assignVideoBackend(video, file, { silent: true });
       if (ok) {
         const orig = Array.isArray(video.filename)
           ? video.filename[0] ?? ""
@@ -611,18 +611,16 @@ export async function resolveVideoFile(
   if (!result) return false;
 
   if (typeof result === "string") {
-    // Tauri: got a file path — read bytes and create a File object
+    // Tauri: got a file path — open it lazily by byte range (no whole-file read,
+    // so a multi-GB video doesn't freeze/crash the WebView).
     console.log(`[video] Loading video from path: ${result}`);
     const oldFilename = Array.isArray(video.filename)
       ? video.filename[0] ?? ""
       : video.filename;
     try {
-      const bytes = await platform.readFile(result);
       const name = getBasename(result);
-      console.log(`[video] Read ${bytes.byteLength} bytes for "${name}"`);
-      const file = new File([bytes], name, { type: "video/mp4" });
-      const ok = await assignVideoBackend(video, file);
-      if (!ok) return false; // assignVideoBackend already surfaced the reason
+      const ok = await assignVideoBackendFromPath(video, result);
+      if (!ok) return false; // assignVideoBackendFromPath already surfaced the reason
       // Update the video's filename to the resolved absolute path
       video.filename = result;
       toast.success(`Loaded video: ${name}`);
@@ -743,10 +741,13 @@ export async function resolveAllVideoFiles(
     );
 
     if (match) {
-      const file = await match.getFile();
-      await assignVideoBackend(video, file);
-      // Update filename to resolved path for Tauri
-      if (match.path) video.filename = match.path;
+      if (match.path) {
+        // Tauri: lazy byte-range open by path (no whole-file read).
+        await assignVideoBackendFromPath(video, match.path);
+        video.filename = match.path;
+      } else {
+        await assignVideoBackend(video, await match.getFile());
+      }
       matchCount++;
     }
   }
@@ -757,8 +758,13 @@ export async function resolveAllVideoFiles(
     unresolvedVideos.length === 1 &&
     picked.length === 1
   ) {
-    const file = await picked[0].getFile();
-    await assignVideoBackend(unresolvedVideos[0], file);
+    const only = picked[0];
+    if (only.path) {
+      await assignVideoBackendFromPath(unresolvedVideos[0], only.path);
+      unresolvedVideos[0].filename = only.path;
+    } else {
+      await assignVideoBackend(unresolvedVideos[0], await only.getFile());
+    }
     matchCount = 1;
   }
 
@@ -799,30 +805,67 @@ async function createBackendForFile(file: File): Promise<VideoBackend> {
 }
 
 /**
- * Create the appropriate video backend from a user-picked File and assign it to
- * a Video, probing shape/fps. Dispatches by extension (see
- * {@link createBackendForFile}); shared by standalone-video add AND external
- * SLP-video resolution, so all paths support every {@link SUPPORTED_VIDEO_EXTS}
- * format.
+ * A lazy on-disk byte source for a native video path (desktop/Tauri): reads
+ * byte ranges via the native `read_range` command instead of materializing the
+ * whole file. The video counterpart of the HDF5 range source the `.slp`
+ * streaming reader uses.
  */
-export async function assignVideoBackend(
+function makeVideoRangeSource(path: string): Promise<RangeSource> {
+  return fileSize(path).then((size) => ({
+    size,
+    readRange: (offset: number, length: number) =>
+      readRange(path, offset, length),
+  }));
+}
+
+/**
+ * Build a backend that reads a native video path lazily by byte range, so a
+ * multi-GB external video is never read whole into memory (the desktop
+ * freeze/crash). MP4 → Mp4Box, the MediaBunny formats → MediaBunny, both via a
+ * {@link RangeSource}. `.seq` has no range backend and its files are small, so
+ * it falls back to a full read.
+ */
+async function createBackendForPath(path: string): Promise<VideoBackend> {
+  const name = getBasename(path);
+  const kind = backendKindForFilename(name);
+  if (kind === "mediabunny") {
+    return MediaBunnyVideoBackend.fromRangeSource(
+      await makeVideoRangeSource(path),
+      name
+    );
+  }
+  if (kind === "seq") {
+    const platform = await getPlatform();
+    return SeqVideoBackend.create(
+      new File([await platform.readFile(path)], name)
+    );
+  }
+  // mp4box + unknown/extension-less names (historical mp4box default).
+  return new Mp4BoxVideoBackend(await makeVideoRangeSource(path), {
+    filename: name,
+  });
+}
+
+/**
+ * Attach a freshly-built backend to a Video, probing frame 0 to validate decode
+ * and capture shape/fps. Shared by the File and native-path entry points.
+ *
+ * The frame-0 probe also guards SeqVideoBackend, which sets `shape` from the
+ * header at create(): without a decode check a `.seq` with an undecodable codec
+ * (e.g. Bayer) would pass buildStandaloneVideo's `!video.shape` guard as a
+ * black, error-free video. A failed probe nulls the backend and records WHY (so
+ * the UI shows "unsupported codec" vs "not found") rather than leaving a
+ * half-open backend that isVideoMissing would miscount as resolved.
+ */
+async function probeAndAssignBackend(
   video: Video,
-  file: File,
+  create: () => Promise<VideoBackend>,
+  name: string,
   opts?: { silent?: boolean }
 ): Promise<boolean> {
   try {
-    const kind = backendKindForFilename(file.name) ?? "mp4box";
-    console.log(
-      `[video] Creating ${kind} backend for "${file.name}" (${file.size} bytes)`
-    );
-    const backend = await createBackendForFile(file);
+    const backend = await create();
     video.backend = backend;
-    // Probe frame 0 to warm the cache AND validate the file decodes. Treat a
-    // null result as failure: Mp4Box/MediaBunny only set `shape` after a
-    // successful decode, but SeqVideoBackend sets `shape` from the header at
-    // create() — so without this check a .seq with an undecodable codec (e.g.
-    // Bayer) would pass buildStandaloneVideo's !video.shape guard as a black,
-    // error-free video. The throw is caught below (records the reason).
     const frame = await backend.getFrame(0);
     if (!frame) {
       throw new Error("could not decode the first video frame");
@@ -835,20 +878,53 @@ export async function assignVideoBackend(
     );
     return true;
   } catch (err) {
-    console.error(`Failed to load video backend for ${file.name}:`, err);
-    // Don't leave a half-open backend attached: callers (and isVideoMissing)
-    // treat a non-null backend as success, which would mask the failure and
-    // mis-count it as "auto-resolved". Null it and record WHY so the UI can show
-    // an actionable reason (e.g. unsupported codec) instead of "not found".
+    console.error(`Failed to load video backend for ${name}:`, err);
     video.backend = null;
     video.backendError = classifyVideoError(err);
     if (!opts?.silent) {
-      toast.error(`Failed to load video: ${file.name}`, {
+      toast.error(`Failed to load video: ${name}`, {
         description: err instanceof Error ? err.message : String(err),
       });
     }
     return false;
   }
+}
+
+/**
+ * Build the backend for a user-picked File and assign it (probing shape/fps).
+ * Dispatches by extension (see {@link createBackendForFile}). Browser Files are
+ * disk-backed, so slicing reads lazily — no whole-file copy needed here.
+ */
+export async function assignVideoBackend(
+  video: Video,
+  file: File,
+  opts?: { silent?: boolean }
+): Promise<boolean> {
+  return probeAndAssignBackend(
+    video,
+    () => createBackendForFile(file),
+    file.name,
+    opts
+  );
+}
+
+/**
+ * Desktop counterpart of {@link assignVideoBackend}: build the backend from a
+ * native file PATH via a lazy {@link RangeSource}, so opening a large external
+ * video reads only the container index + the viewed frames instead of the whole
+ * file. Use this on every Tauri path where the alternative is `readFile(path)`.
+ */
+export async function assignVideoBackendFromPath(
+  video: Video,
+  path: string,
+  opts?: { silent?: boolean }
+): Promise<boolean> {
+  return probeAndAssignBackend(
+    video,
+    () => createBackendForPath(path),
+    getBasename(path),
+    opts
+  );
 }
 
 /**
