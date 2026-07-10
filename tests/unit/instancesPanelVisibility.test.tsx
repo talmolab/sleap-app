@@ -179,4 +179,26 @@ describe("InstancesPanel per-instance visibility columns (Task 5)", () => {
       }
     }
   });
+
+  it("clicking a checkbox hides the right instance and never changes selection", async () => {
+    const { inst0, inst1 } = loadTwoInstanceFrame();
+    // Pre-select instance 1; toggling instance 0's boxes must not steal it.
+    useAppStore.setState({ instance: inst1 });
+
+    const { InstancesPanel } = await import(
+      "@/components/panels/InstancesPanel"
+    );
+    render(<InstancesPanel />);
+
+    fireEvent.click(screen.getAllByRole("checkbox", { name: /visibility/i })[0]);
+    // The clicked row's instance (inst0) is hidden — not some other row — and the
+    // stopPropagation guard keeps the selected instance (inst1) untouched.
+    expect(useAppStore.getState().hiddenInstances.has(inst0)).toBe(true);
+    expect(useAppStore.getState().instance).toBe(inst1);
+
+    fireEvent.click(
+      screen.getAllByRole("checkbox", { name: /invisible nodes/i })[1],
+    );
+    expect(useAppStore.getState().instance).toBe(inst1);
+  });
 });
