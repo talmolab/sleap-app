@@ -420,9 +420,15 @@ export function renderSelectedNodeHighlights(
 
   for (const key of selectedNodes) {
     const { instanceIdx, nodeIdx } = parseNodeKey(key);
-    const node = instances[instanceIdx]?.nodes[nodeIdx];
+    const inst = instances[instanceIdx];
+    // #2755: a hidden instance draws nothing — not even its selection rings, or
+    // the white halo would leak the positions of nodes that are meant to be
+    // hidden. Occluded-node visibility follows the same per-instance flag
+    // (#2782) the node dots use, so rings and dots never disagree.
+    if (!inst || !inst.visible) continue;
+    const node = inst.nodes[nodeIdx];
     if (!node || isNaN(node.x)) continue;
-    if (!node.visible && !opts.showNonVisibleNodes) continue;
+    if (!node.visible && !inst.showNonVisible) continue;
 
     const baseRadius = node.visible ? opts.markerSize : opts.markerSize / 2;
     const radius = (baseRadius + 3) / opts.zoom;

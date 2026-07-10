@@ -1634,10 +1634,12 @@ export function VideoPlayer() {
           useAppStore.getState().bumpOverlayVersion();
           return;
         }
-        // User instance: select all nodes in this instance
+        // User instance: select all nodes in this instance. Honor THIS
+        // instance's occluded-node flag (#2782) so double-select matches what
+        // the canvas actually draws, not the global default.
         const keys = new Set<string>();
         inst.nodes.forEach((n, nIdx) => {
-          if (n.visible || showNonVisibleNodes) keys.add(makeNodeKey(nodeHit.instanceIdx, nIdx));
+          if (n.visible || inst.showNonVisible) keys.add(makeNodeKey(nodeHit.instanceIdx, nIdx));
         });
         if (e.shiftKey) {
           setSelectedNodes((prev) => new Set([...prev, ...keys]));

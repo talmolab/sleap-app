@@ -1,5 +1,11 @@
 import { describe, it, expect } from "../bun-test";
-import { renderInstances, type RenderedInstance } from "@/canvas/SkeletonRenderer";
+import {
+  renderInstances,
+  hitTestNode,
+  hitTestInstance,
+  nodesInRect,
+  type RenderedInstance,
+} from "@/canvas/SkeletonRenderer";
 
 /** Minimal CanvasRenderingContext2D spy — counts arc() calls (one per drawn node). */
 function mockCtx() {
@@ -52,5 +58,37 @@ describe("renderInstances per-instance flags", () => {
     const offCtx = mockCtx();
     renderInstances(offCtx, [{ ...occluded, showNonVisible: false }], { showInstances: true });
     expect((offCtx as unknown as { __calls: { arc: number } }).__calls.arc).toBe(0);
+  });
+});
+
+describe("hit-testing honors per-instance visibility", () => {
+  const occludedInst = (over: Partial<RenderedInstance>) =>
+    inst({ nodes: [{ x: 1, y: 1, visible: false, complete: false, name: "n" }], ...over });
+
+  it("hitTestNode skips hidden instances (#2755 — not click-selectable)", () => {
+    expect(hitTestNode([inst({ visible: false })], 1, 1, 10)).toBeNull();
+    // sanity: the same instance visible IS hit
+    expect(hitTestNode([inst({ visible: true })], 1, 1, 10)).toEqual({
+      instanceIdx: 0,
+      nodeIdx: 0,
+    });
+  });
+
+  it("hitTestNode hits an occluded node only when inst.showNonVisible is true", () => {
+    expect(hitTestNode([occludedInst({ showNonVisible: true })], 1, 1, 10)).toEqual({
+      instanceIdx: 0,
+      nodeIdx: 0,
+    });
+    expect(hitTestNode([occludedInst({ showNonVisible: false })], 1, 1, 10)).toBeNull();
+  });
+
+  it("hitTestInstance skips hidden instances", () => {
+    expect(hitTestInstance([inst({ visible: false })], 1, 1, 30)).toBeNull();
+    expect(hitTestInstance([inst({ visible: true })], 1, 1, 30)).toBe(0);
+  });
+
+  it("nodesInRect skips hidden instances", () => {
+    expect(nodesInRect([inst({ visible: false })], 0, 0, 2, 2).size).toBe(0);
+    expect(nodesInRect([inst({ visible: true })], 0, 0, 2, 2).size).toBe(1);
   });
 });
