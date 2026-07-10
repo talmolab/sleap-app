@@ -271,6 +271,19 @@ pub fn run() {
           println!("[sleap-label] opened file: {path}");
           *_app_handle.state::<InitialFile>().0.lock().unwrap() = Some(path);
           let _ = _app_handle.emit("open-file", ());
+
+          // #199: bring the already-running app to the foreground so the newly
+          // opened project is actually visible. Without this the file loads into
+          // a window that may be minimized, hidden, or on another Space — from
+          // the user's view nothing happens. On macOS `set_focus()` activates the
+          // app (NSApp activate) and does makeKeyAndOrderFront, which also
+          // switches to the window's Space; `unminimize()`/`show()` cover the
+          // minimized/hidden cases first.
+          if let Some(window) = _app_handle.get_webview_window("main") {
+            let _ = window.unminimize();
+            let _ = window.show();
+            let _ = window.set_focus();
+          }
         }
       }
     }
