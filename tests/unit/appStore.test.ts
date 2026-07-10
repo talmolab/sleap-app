@@ -508,3 +508,60 @@ describe("panel visibility & reset (#135)", () => {
     expect(s.sidebarActivePanel).toBe("debug");
   });
 });
+
+describe("per-instance visibility state", () => {
+  const a = { id: "a" } as unknown as Instance;
+  const b = { id: "b" } as unknown as Instance;
+
+  beforeEach(() => {
+    useAppStore.setState(useAppStore.getInitialState());
+  });
+
+  it("qcDisplayMode is persisted and defaults to manual", () => {
+    expect(useAppStore.getState().qcDisplayMode).toBe("manual");
+    expect(PERSISTED_KEYS).toContain("qcDisplayMode");
+  });
+
+  it("setInstanceHidden toggles the hidden set and exits view-only", () => {
+    const st = useAppStore.getState();
+    st.setViewOnlyInstance(b);
+    expect(useAppStore.getState().viewOnlyInstance).toBe(b);
+    st.setInstanceHidden(a, true);
+    expect(useAppStore.getState().hiddenInstances.has(a)).toBe(true);
+    expect(useAppStore.getState().viewOnlyInstance).toBeNull(); // exits view-only
+    st.setInstanceHidden(a, false);
+    expect(useAppStore.getState().hiddenInstances.has(a)).toBe(false);
+  });
+
+  it("setViewOnlyInstance is radio-like (single target or null)", () => {
+    const st = useAppStore.getState();
+    st.setViewOnlyInstance(a);
+    expect(useAppStore.getState().viewOnlyInstance).toBe(a);
+    st.setViewOnlyInstance(b);
+    expect(useAppStore.getState().viewOnlyInstance).toBe(b);
+    st.setViewOnlyInstance(null);
+    expect(useAppStore.getState().viewOnlyInstance).toBeNull();
+  });
+
+  it("setInstanceInvisibleOverride sets and clears the per-instance override", () => {
+    const st = useAppStore.getState();
+    st.setInstanceInvisibleOverride(a, false);
+    expect(useAppStore.getState().showNonVisibleOverride.get(a)).toBe(false);
+    st.setInstanceInvisibleOverride(a, undefined);
+    expect(useAppStore.getState().showNonVisibleOverride.has(a)).toBe(false);
+  });
+
+  it("changing frame clears the 3 transient maps but keeps qcDisplayMode", () => {
+    const st = useAppStore.getState();
+    st.setQcDisplayMode("selected_only");
+    st.setInstanceHidden(a, true);
+    st.setViewOnlyInstance(b);
+    st.setInstanceInvisibleOverride(a, false);
+    useAppStore.getState().setFrameIdx(5); // real change from 0
+    const s2 = useAppStore.getState();
+    expect(s2.hiddenInstances.size).toBe(0);
+    expect(s2.viewOnlyInstance).toBeNull();
+    expect(s2.showNonVisibleOverride.size).toBe(0);
+    expect(s2.qcDisplayMode).toBe("selected_only");
+  });
+});
