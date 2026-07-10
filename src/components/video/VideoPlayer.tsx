@@ -30,6 +30,7 @@ import {
   type RenderedNode,
 } from "../../canvas/SkeletonRenderer";
 import { instanceVisible, instanceShowsNonVisible } from "@/lib/instanceVisibility";
+import { useQcVisibility } from "@/hooks/useQcVisibility";
 import { getPaletteColor, getInstanceColor, rgbToCSS } from "../../lib/colorPalettes";
 import { COLORMAPS } from "../../lib/colormaps";
 import { renderTrails } from "../../canvas/TrailRenderer";
@@ -603,6 +604,11 @@ export function VideoPlayer() {
 
   // Render skeleton overlay
   const labeledFrame = useAppStore((s) => s.labeledFrame);
+
+  // Drive QC display modes: reactively write per-instance visibility flags into
+  // the transient store based on the current frame's instances. Manual mode is a
+  // no-op, leaving the per-instance columns in control.
+  useQcVisibility(labeledFrame?.instances ?? []);
 
   // Clear multi-node selection on frame change
   useEffect(() => {

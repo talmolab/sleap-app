@@ -15,6 +15,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
+import { QC_MODE_CHOICES } from "@/lib/instanceVisibility";
 import { ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useState, useRef, useEffect, useCallback } from "react";
@@ -75,6 +76,35 @@ function Toggle({
       />
       {label}
     </label>
+  );
+}
+
+/** Label-QC display-mode selector. Overwrites the per-instance visibility
+ *  columns while a non-manual mode is active (see useQcVisibility). Built from
+ *  QC_MODE_CHOICES so it can never drift from the View-menu submenu. */
+function DisplayModeSelect() {
+  const qcDisplayMode = useAppStore((s) => s.qcDisplayMode);
+  const setQcDisplayMode = useAppStore((s) => s.setQcDisplayMode);
+
+  return (
+    <div className="space-y-1">
+      <span className="text-xs text-muted-foreground">Display</span>
+      <Select
+        value={qcDisplayMode}
+        onValueChange={(v) => setQcDisplayMode(v as typeof qcDisplayMode)}
+      >
+        <SelectTrigger size="sm" className="h-7 text-xs w-full">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {QC_MODE_CHOICES.map(([label, mode]) => (
+            <SelectItem key={mode} value={mode}>
+              {label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
   );
 }
 
@@ -360,6 +390,7 @@ export function ViewPanel() {
         <Toggle label="Show labels" storeKey="showLabels" />
         <Toggle label="Show edges" storeKey="showEdges" />
         <Toggle label="Show non-visible nodes" storeKey="showNonVisibleNodes" />
+        <DisplayModeSelect />
       </Section>
 
       {/* Style settings */}
