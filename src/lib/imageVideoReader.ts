@@ -16,6 +16,14 @@
  * sequence"` so the UI can offer "Locate image folder…".
  */
 
+import {
+  isAbsolutePath,
+  pathBasename,
+  pathDirname,
+  pathSep,
+  tailGraftCandidates,
+} from "./pathCandidates";
+
 /** The directory of the currently-loading/loaded project, for path resolution. */
 let projectDir: string | null = null;
 
@@ -24,35 +32,41 @@ export function setImageProjectDir(dir: string | null): void {
   projectDir = dir;
 }
 
-function basename(p: string): string {
-  const parts = p.split(/[\\/]/);
-  return parts[parts.length - 1] ?? p;
-}
-
-function isAbsolute(p: string): boolean {
-  return p.startsWith("/") || /^[A-Za-z]:[\\/]/.test(p);
-}
-
 /**
  * Ordered absolute-path candidates for a stored image path, given the project
- * directory: the path as-is (if absolute), the path resolved against the
- * project dir (if relative), and the basename in the project dir (moved
- * projects). Falls back to the raw path when no project dir is known.
+ * directory:
+ *   1. the path as-is (if absolute — same-machine reopen),
+ *   2. the full relative path grafted onto the project dir (if relative —
+ *      keeps subfolders, so it's tried first),
+ *   3. the basename in the project dir (moved-project fallback),
+ *   4. progressively longer TRAILING tails grafted onto the project dir
+ *      (`<subdir>/basename`, …) — reaches images that moved WITH their parent
+ *      subfolder(s) under a new root (a cross-machine absolute path whose files
+ *      now live in a subfolder beside the reopened `.slp`).
+ * Falls back to the raw path when no project dir is known.
  */
 export function imagePathCandidates(
   rawPath: string,
   dir: string | null
 ): string[] {
   const candidates: string[] = [];
-  const abs = isAbsolute(rawPath);
-  if (abs) candidates.push(rawPath);
+  const add = (p: string) => {
+    if (p && !candidates.includes(p)) candidates.push(p);
+  };
+  const abs = isAbsolutePath(rawPath);
+  if (abs) add(rawPath);
   if (dir) {
-    const sep = dir.includes("\\") ? "\\" : "/";
-    if (!abs) candidates.push(dir + sep + rawPath.replace(/[\\/]/g, sep));
-    const baseCand = dir + sep + basename(rawPath);
-    if (!candidates.includes(baseCand)) candidates.push(baseCand);
+    const sep = pathSep(dir);
+    const base = dir.replace(/[\\/]+$/, "");
+    // Relative paths: the full relative path (subfolders kept) is the primary
+    // candidate — tried before the basename/tail grafts below.
+    if (!abs) add(base + sep + rawPath.replace(/[\\/]/g, sep));
+    // Basename-in-dir is always offered (the classic moved-project fallback);
+    // `tailGraftCandidates` alone omits it for a single-segment path.
+    add(base + sep + pathBasename(rawPath));
+    for (const c of tailGraftCandidates(rawPath, base)) add(c);
   }
-  if (candidates.length === 0) candidates.push(rawPath);
+  if (candidates.length === 0) add(rawPath);
   return candidates;
 }
 
@@ -64,26 +78,30 @@ export function createImageReader(
   readFile: (path: string) => Promise<Uint8Array>,
   exists: (path: string) => Promise<boolean>
 ): (path: string) => Promise<Uint8Array> {
-  // Resolve the candidate strategy ONCE and reuse it. Every image in a sequence
-  // shares one directory and one resolution rule (absolute as-is / relative /
-  // basename-in-project-dir), so once the first frame resolves we apply the same
-  // candidate index to later frames and `readFile` directly — skipping the
-  // per-frame `exists()` stat, which on a network mount is a full round-trip
-  // (measured ~17 ms/frame). If a cached strategy's read later fails (e.g. a
-  // different video in the project needs a different rule), we re-resolve.
-  let resolvedIndex: number | null = null;
+  // Resolve the candidate strategy ONCE and reuse it, KEYED BY SOURCE DIRECTORY.
+  // Every image in one sequence shares a directory and one resolution rule
+  // (absolute as-is / relative / basename / subfolder-tail), so once the first
+  // frame resolves we apply the same candidate index to later frames of that
+  // sequence and `readFile` directly — skipping the per-frame `exists()` stat,
+  // a full network round-trip (~17 ms/frame). The dir key is essential: this
+  // reader is a single global instance shared across ALL image videos in the
+  // project, and a cached index reused for a DIFFERENT sequence could point at
+  // an unrelated same-basename file (silent wrong bytes). A cached read that
+  // later fails re-resolves.
+  let cached: { dir: string; index: number } | null = null;
   return async (path: string): Promise<Uint8Array> => {
     const candidates = imagePathCandidates(path, projectDir);
-    if (resolvedIndex !== null && resolvedIndex < candidates.length) {
+    const dir = pathDirname(path);
+    if (cached && cached.dir === dir && cached.index < candidates.length) {
       try {
-        return await readFile(candidates[resolvedIndex]);
+        return await readFile(candidates[cached.index]);
       } catch {
-        resolvedIndex = null; // strategy stopped working — fall through to re-resolve
+        cached = null; // strategy stopped working — fall through to re-resolve
       }
     }
     for (let i = 0; i < candidates.length; i++) {
       if (await exists(candidates[i])) {
-        resolvedIndex = i;
+        cached = { dir, index: i };
         return readFile(candidates[i]);
       }
     }

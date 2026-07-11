@@ -28,9 +28,33 @@ describe("imagePathCandidates", () => {
     ]);
   });
 
-  it("adds a basename-in-project-dir fallback for an absolute (moved) path", () => {
+  it("grafts trailing tails of an absolute (moved) path onto the project dir", () => {
+    // basename first (moved-project fallback), then the one-subfolder graft that
+    // reaches images nested under the project dir. The full foreign path is never
+    // reproduced under the project dir.
     expect(imagePathCandidates("/old/imgs/a.png", "/proj")).toEqual([
       "/old/imgs/a.png",
+      "/proj/a.png",
+      "/proj/imgs/a.png",
+    ]);
+  });
+
+  it("reaches a cross-machine absolute image in a subfolder beside the .slp", () => {
+    // The reported case: a Linux-absolute image path reopened on a Windows mount,
+    // with the images now in a `raw_images` subfolder next to the project.
+    const cands = imagePathCandidates(
+      "/home/talmo/proj/raw_images/f0.jpg",
+      "L:\\proj"
+    );
+    expect(cands[0]).toBe("/home/talmo/proj/raw_images/f0.jpg");
+    expect(cands).toContain("L:\\proj\\raw_images\\f0.jpg");
+  });
+
+  it("still offers basename-in-project-dir for a root-level absolute path (1 segment)", () => {
+    // Regression: the tail-graft must not drop the classic moved-project
+    // fallback for a single-segment absolute path (e.g. /a.png).
+    expect(imagePathCandidates("/a.png", "/proj")).toEqual([
+      "/a.png",
       "/proj/a.png",
     ]);
   });
@@ -63,6 +87,19 @@ describe("createImageReader", () => {
     const readFile = async (p: string) => files[p];
     const reader = createImageReader(readFile, exists);
     expect(Array.from(await reader("/old/loc/a.png"))).toEqual([9]);
+  });
+
+  it("resolves a cross-machine absolute path via a subfolder tail-graft", async () => {
+    setImageProjectDir("L:\\proj");
+    const files: Record<string, Uint8Array> = {
+      "L:\\proj\\raw_images\\f0.jpg": new Uint8Array([4, 2]),
+    };
+    const exists = async (p: string) => p in files;
+    const readFile = async (p: string) => files[p];
+    const reader = createImageReader(readFile, exists);
+    expect(
+      Array.from(await reader("/home/talmo/proj/raw_images/f0.jpg"))
+    ).toEqual([4, 2]);
   });
 
   it("throws when no candidate exists (drives the load guard)", async () => {
@@ -115,6 +152,26 @@ describe("createImageReader (resolve-once)", () => {
     await reader("/old/b.jpg"); // direct -> /proj/b.jpg (0 stats)
     expect(reads).toEqual(["/proj/a.jpg", "/proj/b.jpg"]);
     expect(existsCalls.length).toBe(2);
+  });
+
+  it("does not reuse a cached index across a DIFFERENT source directory (no wrong bytes)", async () => {
+    // One reader instance serves every image video in a project. Video A's frame
+    // resolves at the basename-in-project-dir candidate (index 1). Video B's real
+    // frame is the absolute path (index 0), but a stray same-basename file exists
+    // in the project dir. Blindly reusing A's index 1 would read the stray; the
+    // dir-scoped cache must re-resolve for B and return the correct file.
+    setImageProjectDir("/proj");
+    const files: Record<string, Uint8Array> = {
+      "/proj/a.jpg": new Uint8Array([1]), // A resolves here (basename)
+      "/rootB/b.jpg": new Uint8Array([9]), // B's real file (absolute)
+      "/proj/b.jpg": new Uint8Array([7]), // stray same-basename in project dir
+    };
+    const exists = async (p: string) => p in files;
+    const readFile = async (p: string) => files[p];
+    const reader = createImageReader(readFile, exists);
+    expect(Array.from(await reader("/rootA/a.jpg"))).toEqual([1]); // caches index 1 for /rootA
+    // /rootB differs from /rootA -> re-resolve -> absolute /rootB/b.jpg (index 0) wins.
+    expect(Array.from(await reader("/rootB/b.jpg"))).toEqual([9]);
   });
 
   it("re-resolves when the cached strategy's read fails", async () => {

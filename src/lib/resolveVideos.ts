@@ -19,6 +19,7 @@ import { toast } from "@/lib/notify";
 import type { Labels } from "../types";
 import { getPlatform } from "../platform/index";
 import { imagePathCandidates } from "./imageVideoReader";
+import { tailGraftCandidates } from "./pathCandidates";
 
 /** Extract just the basename from a path or filename. */
 export function getBasename(filename: string | string[]): string {
@@ -33,11 +34,34 @@ function pathSep(p: string): string {
 }
 
 /**
- * Re-resolve an image-sequence's stored frame paths against a user-picked folder
- * by basename. Returns one `located` path per input frame, IN ORDER (positions
- * preserved so they stay aligned with label frame indices), plus the `missing`
- * original frame paths whose basename wasn't found in the folder. Pure +
- * decoder-independent — unit-tested here; the actual decode is covered by E2E.
+ * Up to `count` frame indices spread across a sequence of length `n`: the first,
+ * the last, and an even spread between. Probing several frames — not just frame
+ * 0 — means a sequence whose frame 0 is specifically missing (deleted/renamed)
+ * but whose other frames are present is still recognized as resolvable and its
+ * subfolder depth is still detectable.
+ */
+function sampleIndices(n: number, count = 8): number[] {
+  if (n <= 0) return [];
+  if (n <= count) return Array.from({ length: n }, (_, i) => i);
+  const step = (n - 1) / (count - 1);
+  const out = new Set<number>();
+  for (let i = 0; i < count; i++) out.add(Math.round(i * step));
+  return [...out];
+}
+
+/**
+ * Re-resolve an image-sequence's stored frame paths against a user-picked folder.
+ * Returns one `located` path per input frame, IN ORDER (positions preserved so
+ * they stay aligned with label frame indices), plus the `missing` original frame
+ * paths not found under the folder.
+ *
+ * The folder need NOT be the exact leaf directory: we detect the subfolder
+ * depth by voting across a sample of frames (probing `<folder>/<basename>`,
+ * `<folder>/<subdir>/<basename>`, …) and apply the winning depth to every frame
+ * (they share a layout). So the user can pick ANY ancestor — the project folder,
+ * a parent — instead of opening the leaf image directory, which on a network
+ * mount with 10k+ files can freeze the native file dialog. Pure +
+ * decoder-independent (unit-tested here; the decode is covered by E2E).
  */
 export async function resolveImageFramesInFolder(
   frames: string[],
@@ -46,7 +70,35 @@ export async function resolveImageFramesInFolder(
 ): Promise<{ located: string[]; missing: string[] }> {
   const sep = pathSep(folder);
   const dir = folder.replace(/[\\/]+$/, "");
-  const located = frames.map((f) => dir + sep + getBasename(f));
+
+  // Detect the subfolder depth by VOTING across a sample of frames, not frame 0
+  // alone. For each sampled frame, `tailGraftCandidates` yields `<dir>/<last-k
+  // segments>` for k = 1, 2, …; take the closest (smallest k) that exists and
+  // vote for it. The most-voted depth wins (tie → shallower). This survives a
+  // missing frame 0 (other frames still vote) and a stray same-named copy in an
+  // ancestor (one frame votes shallow, the rest vote the true subfolder depth,
+  // and the majority wins). Falls back to 1 when nothing resolves.
+  const votes = new Map<number, number>();
+  for (const idx of sampleIndices(frames.length)) {
+    const cands = tailGraftCandidates(frames[idx], dir, { includeFullPath: true });
+    for (let i = 0; i < cands.length; i++) {
+      if (await exists(cands[i])) {
+        votes.set(i + 1, (votes.get(i + 1) ?? 0) + 1);
+        break;
+      }
+    }
+  }
+  const depth =
+    votes.size > 0
+      ? [...votes.entries()].sort((a, b) => b[1] - a[1] || a[0] - b[0])[0][0]
+      : 1;
+
+  const tailOf = (f: string): string => {
+    const segs = f.split(/[\\/]/).filter(Boolean);
+    return segs.slice(Math.max(0, segs.length - depth)).join(sep);
+  };
+
+  const located = frames.map((f) => dir + sep + tailOf(f));
   const missing: string[] = [];
   for (let i = 0; i < frames.length; i++) {
     if (!(await exists(located[i]))) missing.push(frames[i]);
@@ -245,9 +297,19 @@ export function getVideoPathCandidates(
     if (p && !candidates.includes(p)) candidates.push(p);
   };
 
-  // 1. If absolute, try as-is.
+  // 1. If absolute, try as-is, then graft its trailing tails onto the project
+  //    dir — a cross-machine absolute path (e.g. a Linux `/home/...` path on a
+  //    Windows mount) whose file now lives in a subfolder beside the `.slp`.
+  //    The full foreign path is never reproduced (tailGraftCandidates stops one
+  //    segment short), so the old "never graft an absolute onto the .slp dir"
+  //    contract is only relaxed for genuine trailing-subpath matches.
   if (isAbsolute) {
     add(raw);
+    for (const c of tailGraftCandidates(raw, projectDir, {
+      maxDepth: MAX_ANCESTOR_WALK,
+    })) {
+      add(c);
+    }
   } else {
     // 2. Graft the relative path onto the .slp's directory AND each ancestor,
     //    closest-first. SLEAP stores video paths relative to the directory the
@@ -285,27 +347,33 @@ export interface AutoResolveOptions {
 }
 
 /**
- * True if the first image of an image-sequence resolves on disk, trying the same
- * ordered candidates the desktop image reader uses (absolute as-is, relative to
- * the project dir, basename-in-project-dir). An ImageVideoBackend built with a
- * known shape decodes nothing up front, so it would succeed even when every
- * image is missing — this guards against accepting such a blank backend.
+ * True if ANY sampled image of an image-sequence resolves on disk, trying the
+ * same ordered candidates the desktop image reader uses (absolute as-is,
+ * relative to the project dir, basename, subfolder tails). Samples several
+ * frames (not just frame 0) so a sequence whose frame 0 is specifically missing
+ * but whose other frames are present is still recognized. An ImageVideoBackend
+ * built with a known shape decodes nothing up front, so it would look valid even
+ * when every image is missing — this guards against accepting such a blank
+ * backend.
  */
-async function imageSequenceFirstFrameExists(
+async function imageSequenceHasResolvableFrame(
   video: Video,
   options: AutoResolveOptions
 ): Promise<boolean> {
-  const first = Array.isArray(video.filename)
-    ? video.filename[0] ?? ""
-    : video.filename;
-  if (!first) return false;
+  const frames = Array.isArray(video.filename)
+    ? video.filename
+    : [video.filename];
   const sep = options.projectPath.includes("\\") ? "\\" : "/";
   const projectDir = options.projectPath.substring(
     0,
     options.projectPath.lastIndexOf(sep)
   );
-  for (const candidate of imagePathCandidates(first, projectDir)) {
-    if (await options.exists(candidate)) return true;
+  for (const idx of sampleIndices(frames.length)) {
+    const f = frames[idx];
+    if (!f) continue;
+    for (const candidate of imagePathCandidates(f, projectDir)) {
+      if (await options.exists(candidate)) return true;
+    }
   }
   return false;
 }
@@ -342,6 +410,35 @@ export async function resolveExternalVideos(
     })
   );
 
+  // Image sequences build a NON-NULL backend from the stored shape without
+  // reading any frame (ImageVideoBackend.create() skips its frame-0 decode when
+  // a shape is known), so a sequence whose files can't be found still looks
+  // "present" (backend !== null, no "ready" to reject) and renders blank with no
+  // "Locate folder…" affordance. When we have filesystem access, verify a sample
+  // of frames actually resolves; if none do, null the backend and flag it
+  // image-sequence so it counts as missing and surfaces the locate flow. (Runs
+  // before the isVideoMissing filter below so the downgraded video is picked up.)
+  // `downgraded` lets the auto-resolve loop skip re-probing what we just proved
+  // unresolvable (avoids a second full stat pass on a slow mount).
+  const downgraded = new Set<Video>();
+  if (options) {
+    for (const video of labels.videos) {
+      if (video.backend === null) continue;
+      if (video.hasEmbeddedImages) continue; // embedded pkg images aren't on disk
+      if (!isImageSequenceVideo(video)) continue;
+      if (await imageSequenceHasResolvableFrame(video, options)) continue;
+      console.warn(
+        `[video] ImageVideo frames not found near "${options.projectPath}"; flagging missing for the locate flow`
+      );
+      video.backend = null;
+      video.backendError = {
+        kind: "image-sequence",
+        message: "Image files not found near the project.",
+      };
+      downgraded.add(video);
+    }
+  }
+
   const unresolvedVideos = labels.videos.filter(isVideoMissing);
   if (unresolvedVideos.length === 0) return;
 
@@ -358,15 +455,18 @@ export async function resolveExternalVideos(
       // resolved. Never route them to mp4box (that hangs on a JPEG). If the
       // reader can't find the images, leave it unresolved for the locate flow.
       if (isImageSequenceVideo(video)) {
+        // Already proven unresolvable in the downgrade pass above — don't stat
+        // the same frames again on a slow mount.
+        if (downgraded.has(video)) continue;
         const ref = Array.isArray(video.filename)
           ? video.filename[0]
           : video.filename;
         // A known shape makes ImageVideoBackend.create() skip its frame-0
         // decode, so it builds even when no image exists — a non-null but blank
-        // backend with no "Locate image folder…" affordance. Verify the first
-        // image actually resolves before accepting it; otherwise leave the
+        // backend with no "Locate image folder…" affordance. Verify a sample of
+        // images actually resolves before accepting it; otherwise leave the
         // video unresolved so the Videos panel flags it missing.
-        if (!(await imageSequenceFirstFrameExists(video, options))) {
+        if (!(await imageSequenceHasResolvableFrame(video, options))) {
           console.warn(
             `[video] ImageVideo images not found near "${ref}"; leaving unresolved for the locate flow`
           );

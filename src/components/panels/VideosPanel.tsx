@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/table";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import {
   Dialog,
@@ -322,8 +323,15 @@ export function VideosPanel() {
   const missingVideos = videos.filter(isVideoMissing);
   // "Locate All Missing" only handles regular videos: its multi-file video
   // picker can't select images, so image sequences are located per-row via
-  // their own folder pick (handleLocateImageFolder).
+  // their own folder pick (the Locate-folder dialog / applyImageFolder).
   const missingResolvable = missingVideos.filter((v) => !isImageSequenceVideo(v));
+
+  // Image-sequence Locate-folder dialog: the video awaiting a folder, plus the
+  // path field (populated by Browse… or pasted directly). null = closed.
+  // `resolving` guards the (slow, per-frame) resolve against re-entrant submits.
+  const [locateFolder, setLocateFolder] = useState<Video | null>(null);
+  const [folderPathInput, setFolderPathInput] = useState("");
+  const [resolving, setResolving] = useState(false);
 
   // Pending confirm-trim state for Replace Video: set when the chosen
   // replacement is shorter than the current video's labeled frames, so some
@@ -354,19 +362,40 @@ export function VideosPanel() {
     }
   };
 
-  const handleLocateImageFolder = async (video: Video) => {
+  // Apply a picked/typed folder to the pending image-sequence video. The folder
+  // may be any ancestor of the images (resolveImageSequenceVideo detects the
+  // subfolder depth), so the user never has to open the leaf image directory —
+  // which on a network mount with 10k+ files can freeze the native dialog.
+  const applyImageFolder = async (video: Video, folder: string) => {
+    if (resolving) return; // ignore re-entrant submits (double-click / Enter)
+    setResolving(true);
+    try {
+      const platform = await getPlatform();
+      const ok = await resolveImageSequenceVideo(
+        video,
+        folder.trim(),
+        platform.exists
+      );
+      if (ok) {
+        setLocateFolder(null);
+        bumpOverlayVersion();
+        // If this is the current video, force a frame re-load
+        if (video === currentVideo) {
+          setVideo(video);
+          setFrameIdx(frameIdx);
+        }
+      }
+    } finally {
+      setResolving(false);
+    }
+  };
+
+  // Native folder picker used from inside the Locate-folder dialog. Fills the
+  // path field so the user can review/edit before confirming.
+  const handleBrowseImageFolder = async () => {
     const platform = await getPlatform();
     const folder = await platform.showOpenDialog({ directory: true });
-    if (!folder || typeof folder !== "string") return;
-    const ok = await resolveImageSequenceVideo(video, folder, platform.exists);
-    if (ok) {
-      bumpOverlayVersion();
-      // If this is the current video, force a frame re-load
-      if (video === currentVideo) {
-        setVideo(video);
-        setFrameIdx(frameIdx);
-      }
-    }
+    if (folder && typeof folder === "string") setFolderPathInput(folder);
   };
 
   const handleLocateAll = async () => {
@@ -531,7 +560,11 @@ export function VideosPanel() {
                   canLocateFolder={isTauri}
                   onSelect={() => setVideo(video)}
                   onLocate={() => handleLocateVideo(video)}
-                  onLocateFolder={() => handleLocateImageFolder(video)}
+                  onLocateFolder={() => {
+                    setFolderPathInput("");
+                    setResolving(false);
+                    setLocateFolder(video);
+                  }}
                 />
               ))}
             </TableBody>
@@ -665,6 +698,75 @@ export function VideosPanel() {
               }}
             >
               Remove
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Locate image folder dialog (image sequences): Browse… or paste a path */}
+      <Dialog
+        open={locateFolder !== null}
+        onOpenChange={(open) => {
+          if (!open) setLocateFolder(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Locate image folder</DialogTitle>
+            <DialogDescription>
+              Choose the folder that contains this sequence&apos;s images — or any
+              parent of it. Paste a path to avoid opening large folders on slow
+              network drives.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex gap-1">
+            <Input
+              autoFocus
+              className="h-8 text-xs font-mono"
+              placeholder="Folder path…"
+              value={folderPathInput}
+              disabled={resolving}
+              onChange={(e) => setFolderPathInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (
+                  e.key === "Enter" &&
+                  !resolving &&
+                  folderPathInput.trim() &&
+                  locateFolder
+                ) {
+                  applyImageFolder(locateFolder, folderPathInput);
+                }
+              }}
+            />
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 shrink-0"
+              disabled={resolving}
+              onClick={handleBrowseImageFolder}
+            >
+              Browse…
+            </Button>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={resolving}
+              onClick={() => setLocateFolder(null)}
+            >
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              disabled={!folderPathInput.trim() || resolving}
+              onClick={() => {
+                if (locateFolder && folderPathInput.trim()) {
+                  applyImageFolder(locateFolder, folderPathInput);
+                }
+              }}
+            >
+              {resolving ? "Locating…" : "Locate"}
             </Button>
           </DialogFooter>
         </DialogContent>
