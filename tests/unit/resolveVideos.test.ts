@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect } from "../bun-test";
-import { Labels, Video, setImageBytesReader } from "@talmolab/sleap-io.js";
+import { Labels, Video } from "@talmolab/sleap-io.js";
 import {
   buildStandaloneVideo,
   addVideoFileToLabels,
@@ -233,71 +233,23 @@ describe("resolveImageFramesInFolder", () => {
   });
 });
 
-describe("resolveExternalVideos (image-sequence existence check)", () => {
-  // A known shape lets ImageVideoBackend.create() skip its frame-0 decode, so a
-  // backend builds WITHOUT touching disk. That means an image sequence whose
-  // files are all missing would still get a non-null (blank) backend and never
-  // surface the "Locate image folder…" affordance. The loader must verify the
-  // first image actually resolves on disk before accepting the backend.
-  function imageSeqVideo(paths: string[]): Video {
+describe("resolveExternalVideos (image sequences delegated to the SLP reader)", () => {
+  // Image sequences (ImageVideo) are now resolved and opened by the SLP reader
+  // itself via the injected FsResolver (issue #213 / sleap-io.js#216): a resolvable
+  // one arrives with a working backend, a missing one with backend === null +
+  // backendError.kind === "image-sequence". resolveExternalVideos must NOT try to
+  // re-resolve or rebuild them — and, above all, must never route a frame LIST into
+  // the single-file (mp4box) path, which hangs on a JPEG.
+  function missingImageSeq(paths: string[]): Video {
     const v = new Video({ filename: paths, openBackend: false });
     v.backend = null;
+    v.backendError = { kind: "image-sequence", message: "not found" };
     v.shape = [paths.length, 8, 8, 1];
     return v;
   }
 
-  it("leaves a missing image-sequence unresolved (flagged missing), not a blank backend", async () => {
-    // Stub the reader so create() can't fail for lack of one — it must never be
-    // reached: with the images missing we bail BEFORE building the backend.
-    setImageBytesReader(async () => new Uint8Array());
-    try {
-      const video = imageSeqVideo(["/gone/a.jpg", "/gone/b.jpg", "/gone/c.jpg"]);
-      const labels = new Labels();
-      labels.addVideo(video);
-
-      await resolveExternalVideos(labels, {
-        projectPath: "/proj/labels.slp",
-        exists: async () => false, // nothing exists on disk
-        readFile: async () => new Uint8Array(),
-      });
-
-      expect(video.backend).toBeNull();
-      expect(isVideoMissing(video)).toBe(true);
-    } finally {
-      setImageBytesReader(null);
-    }
-  });
-
-  it("resolves an image-sequence when its first image exists on disk", async () => {
-    setImageBytesReader(async () => new Uint8Array());
-    try {
-      const video = imageSeqVideo(["/imgs/a.jpg", "/imgs/b.jpg", "/imgs/c.jpg"]);
-      const labels = new Labels();
-      labels.addVideo(video);
-
-      await resolveExternalVideos(labels, {
-        projectPath: "/proj/labels.slp",
-        exists: async () => true, // images present
-        readFile: async () => new Uint8Array(),
-      });
-
-      expect(video.backend).not.toBeNull();
-      expect(isVideoMissing(video)).toBe(false);
-    } finally {
-      setImageBytesReader(null);
-    }
-  });
-
-  // The real desktop bug: on load the ImageVideoBackend builds NON-NULL from the
-  // stored shape without reading a frame, so a sequence whose files are missing
-  // looks present and renders blank. resolveExternalVideos must downgrade it.
-  it("downgrades a non-null image-sequence backend to missing when frame 0 can't be found", async () => {
-    const video = new Video({
-      filename: ["/gone/a.jpg", "/gone/b.jpg"],
-      openBackend: false,
-    });
-    video.backend = { getFrame: async () => null } as never; // non-null, no "ready"
-    video.shape = [2, 8, 8, 1];
+  it("leaves a missing image sequence flagged missing (never builds a blank backend)", async () => {
+    const video = missingImageSeq(["/gone/a.jpg", "/gone/b.jpg", "/gone/c.jpg"]);
     const labels = new Labels();
     labels.addVideo(video);
 
@@ -311,43 +263,40 @@ describe("resolveExternalVideos (image-sequence existence check)", () => {
     expect(isVideoMissing(video)).toBe(true);
   });
 
-  it("keeps a non-null image-sequence backend when frame 0 resolves via a subfolder", async () => {
-    const video = new Video({
-      filename: ["/home/u/proj/raw/a.jpg"],
-      openBackend: false,
+  it("never routes a frame list into the single-file path, even if every path 'exists'", async () => {
+    // The failure this guards: feeding a JPEG list to mp4box (which hangs). Even a
+    // filesystem that claims every candidate exists and returns bytes must not
+    // cause an image sequence to be opened as a single-file video — it is skipped.
+    const video = missingImageSeq(["/gone/a.jpg", "/gone/b.jpg"]);
+    const labels = new Labels();
+    labels.addVideo(video);
+
+    let readFileCalled = false;
+    await resolveExternalVideos(labels, {
+      projectPath: "/proj/labels.slp",
+      exists: async () => true, // pretend everything resolves
+      readFile: async () => {
+        readFileCalled = true;
+        return new Uint8Array([0, 0, 0]);
+      },
     });
-    video.backend = { getFrame: async () => null } as never;
+
+    expect(readFileCalled).toBe(false); // the frame list was skipped, not read
+    expect(video.backend).toBeNull();
+  });
+
+  it("leaves an already-opened image sequence untouched", async () => {
+    // The loader built a working backend for a resolvable sequence;
+    // resolveExternalVideos must not disturb it.
+    const video = new Video({ filename: ["/imgs/a.jpg"], openBackend: false });
+    video.backend = { getFrame: async () => null } as never; // non-null (loader-built)
     video.shape = [1, 8, 8, 1];
     const labels = new Labels();
     labels.addVideo(video);
 
     await resolveExternalVideos(labels, {
       projectPath: "/proj/labels.slp",
-      // Only the subfolder-grafted candidate exists (mirrors the reported layout).
-      exists: async (p: string) => p === "/proj/raw/a.jpg",
-      readFile: async () => new Uint8Array(),
-    });
-
-    expect(video.backend).not.toBeNull();
-    expect(isVideoMissing(video)).toBe(false);
-  });
-
-  it("does NOT downgrade when frame 0 is missing but later frames are present", async () => {
-    // The verify samples several frames, so a sequence whose frame 0 was deleted
-    // but whose other frames resolve must stay usable (not flagged missing).
-    const video = new Video({
-      filename: ["/gone/000.jpg", "/proj/imgs/001.jpg", "/proj/imgs/002.jpg"],
-      openBackend: false,
-    });
-    video.backend = { getFrame: async () => null } as never;
-    video.shape = [3, 8, 8, 1];
-    const labels = new Labels();
-    labels.addVideo(video);
-
-    await resolveExternalVideos(labels, {
-      projectPath: "/proj/labels.slp",
-      exists: async (p: string) =>
-        p === "/proj/imgs/001.jpg" || p === "/proj/imgs/002.jpg", // frame 0 absent
+      exists: async () => false,
       readFile: async () => new Uint8Array(),
     });
 

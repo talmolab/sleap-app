@@ -18,7 +18,6 @@ import {
 import { toast } from "@/lib/notify";
 import type { Labels } from "../types";
 import { getPlatform } from "../platform/index";
-import { imagePathCandidates } from "./imageVideoReader";
 import { tailGraftCandidates } from "./pathCandidates";
 
 /** Extract just the basename from a path or filename. */
@@ -347,45 +346,20 @@ export interface AutoResolveOptions {
 }
 
 /**
- * True if ANY sampled image of an image-sequence resolves on disk, trying the
- * same ordered candidates the desktop image reader uses (absolute as-is,
- * relative to the project dir, basename, subfolder tails). Samples several
- * frames (not just frame 0) so a sequence whose frame 0 is specifically missing
- * but whose other frames are present is still recognized. An ImageVideoBackend
- * built with a known shape decodes nothing up front, so it would look valid even
- * when every image is missing — this guards against accepting such a blank
- * backend.
- */
-async function imageSequenceHasResolvableFrame(
-  video: Video,
-  options: AutoResolveOptions
-): Promise<boolean> {
-  const frames = Array.isArray(video.filename)
-    ? video.filename
-    : [video.filename];
-  const sep = options.projectPath.includes("\\") ? "\\" : "/";
-  const projectDir = options.projectPath.substring(
-    0,
-    options.projectPath.lastIndexOf(sep)
-  );
-  for (const idx of sampleIndices(frames.length)) {
-    const f = frames[idx];
-    if (!f) continue;
-    for (const candidate of imagePathCandidates(f, projectDir)) {
-      if (await options.exists(candidate)) return true;
-    }
-  }
-  return false;
-}
-
-/**
  * After loadSlp() returns, detect videos with no backend (external MP4s that
  * couldn't be resolved) and attempt auto-resolution.
  *
- * In Tauri mode (when options are provided), tries to resolve each video's
- * path relative to the project directory, reads the file via the FS plugin,
- * and creates a backend from the bytes. Falls back to showing a toast for
- * any videos that can't be auto-resolved.
+ * In Tauri mode (when options are provided), tries to resolve each single-file
+ * video's path relative to the project directory, reads the file via the FS
+ * plugin, and creates a backend from the bytes. Falls back to showing a toast
+ * for any videos that can't be auto-resolved.
+ *
+ * Image sequences (ImageVideo) are NOT handled here: the SLP reader resolves and
+ * opens them itself via the injected FsResolver (issue #213 / sleap-io.js#216),
+ * so a resolvable sequence already carries a working backend and an unresolvable
+ * one already carries backend === null + backendError.kind === "image-sequence".
+ * This function only skips them (never routes a frame list into the single-file
+ * path) and leaves the missing ones for the Locate-folder flow.
  */
 export async function resolveExternalVideos(
   labels: Labels,
@@ -410,35 +384,6 @@ export async function resolveExternalVideos(
     })
   );
 
-  // Image sequences build a NON-NULL backend from the stored shape without
-  // reading any frame (ImageVideoBackend.create() skips its frame-0 decode when
-  // a shape is known), so a sequence whose files can't be found still looks
-  // "present" (backend !== null, no "ready" to reject) and renders blank with no
-  // "Locate folder…" affordance. When we have filesystem access, verify a sample
-  // of frames actually resolves; if none do, null the backend and flag it
-  // image-sequence so it counts as missing and surfaces the locate flow. (Runs
-  // before the isVideoMissing filter below so the downgraded video is picked up.)
-  // `downgraded` lets the auto-resolve loop skip re-probing what we just proved
-  // unresolvable (avoids a second full stat pass on a slow mount).
-  const downgraded = new Set<Video>();
-  if (options) {
-    for (const video of labels.videos) {
-      if (video.backend === null) continue;
-      if (video.hasEmbeddedImages) continue; // embedded pkg images aren't on disk
-      if (!isImageSequenceVideo(video)) continue;
-      if (await imageSequenceHasResolvableFrame(video, options)) continue;
-      console.warn(
-        `[video] ImageVideo frames not found near "${options.projectPath}"; flagging missing for the locate flow`
-      );
-      video.backend = null;
-      video.backendError = {
-        kind: "image-sequence",
-        message: "Image files not found near the project.",
-      };
-      downgraded.add(video);
-    }
-  }
-
   const unresolvedVideos = labels.videos.filter(isVideoMissing);
   if (unresolvedVideos.length === 0) return;
 
@@ -447,42 +392,13 @@ export async function resolveExternalVideos(
   // Try auto-resolution if we have filesystem access and a project path
   if (options) {
     for (const video of unresolvedVideos) {
-      // Image-sequence (ImageVideo): build an ImageVideoBackend via the factory,
-      // which uses the injected image reader (set in loadProjectFromPath) to
-      // resolve each frame's path against the project dir. The browser's
-      // streaming reader leaves external videos backendless — including image
-      // sequences — so we create them here, the same place external MP4s are
-      // resolved. Never route them to mp4box (that hangs on a JPEG). If the
-      // reader can't find the images, leave it unresolved for the locate flow.
-      if (isImageSequenceVideo(video)) {
-        // Already proven unresolvable in the downgrade pass above — don't stat
-        // the same frames again on a slow mount.
-        if (downgraded.has(video)) continue;
-        const ref = Array.isArray(video.filename)
-          ? video.filename[0]
-          : video.filename;
-        // A known shape makes ImageVideoBackend.create() skip its frame-0
-        // decode, so it builds even when no image exists — a non-null but blank
-        // backend with no "Locate image folder…" affordance. Verify a sample of
-        // images actually resolves before accepting it; otherwise leave the
-        // video unresolved so the Videos panel flags it missing.
-        if (!(await imageSequenceHasResolvableFrame(video, options))) {
-          console.warn(
-            `[video] ImageVideo images not found near "${ref}"; leaving unresolved for the locate flow`
-          );
-          continue;
-        }
-        try {
-          const backend = await createVideoBackend(video.filename, {
-            shape: video.shape ?? undefined,
-          });
-          video.backend = backend;
-          resolvedCount++;
-        } catch (err) {
-          console.warn(`[video] ImageVideo not resolved "${ref}":`, err);
-        }
-        continue;
-      }
+      // Image sequences (ImageVideo) are resolved and opened by the SLP reader
+      // itself via the injected FsResolver (issue #213). A missing one arrives
+      // here with backend === null + backendError.kind === "image-sequence";
+      // there is nothing to auto-resolve — leave it for the Locate-folder flow
+      // and, crucially, never route a frame list into the single-file (mp4box)
+      // path below, which would hang on a JPEG.
+      if (isImageSequenceVideo(video)) continue;
       const candidates = getVideoPathCandidates(video, options.projectPath);
       console.log(
         `[video] Resolving "${Array.isArray(video.filename) ? video.filename[0] : video.filename}", candidates:`,
