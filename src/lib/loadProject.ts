@@ -19,7 +19,6 @@ import {
 import { useAppStore } from "../stores/appStore";
 import { toast } from "@/lib/notify";
 import { resolveExternalVideos } from "./resolveVideos";
-import { setImageProjectDir, createImageReader } from "./imageVideoReader";
 import { installTauriFsResolver } from "./fsResolver";
 import { fileSize, readRange } from "./nativeRange";
 
@@ -140,32 +139,26 @@ export async function loadProjectFromPath(
   store.setLoading(true, `Reading ${filename}...`);
 
   try {
-    // Make ImageVideo (image-sequence) frames resolvable on desktop: resolve
-    // relative image paths against the project directory, and read their bytes
-    // through Tauri's plugin-fs. This MUST be set before loadSlp, which opens
-    // ImageVideoBackend inline (it decodes frame 0 for the shape). When a path
-    // can't be resolved the reader throws and sleap-io.js's load guard records
-    // video.backendError instead of aborting the load.
-    const sep = path.includes("\\") ? "\\" : "/";
-    setImageProjectDir(path.substring(0, path.lastIndexOf(sep)));
     if (exists) {
       // Register the FS resolver BEFORE loadSlp so sleap-io.js resolves external
-      // and ImageVideo source paths against the labels dir itself (issue #213),
-      // withholding an unreadable image sequence as backendError.kind ===
-      // "image-sequence". Uses the plugin-fs `exists` (path resolution is a
-      // handful of probes per video, not the per-frame hot path).
+      // and ImageVideo source paths against the labels dir itself (issue #213):
+      // it builds a working backend when the media resolves and withholds an
+      // unreadable image sequence as backendError.kind === "image-sequence". Uses
+      // the plugin-fs `exists` (path resolution is a handful of probes per video,
+      // not the per-frame hot path).
       installTauriFsResolver(exists);
-      // Read image bytes via a native Rust command (std::fs::read) instead of the
-      // fs plugin, whose per-call path scope-validation adds ~4 s/frame on SMB
-      // mounts (vs ~32 ms native) — pathological for ImageVideo, which reads one
-      // image per displayed frame. The plugin's exists()/readFile are still used
-      // for path resolution (once per video) and the .slp itself.
+      // Inject the ImageVideo byte reader. Reads via a native Rust command
+      // (std::fs::read) rather than the fs plugin, whose per-call path scope
+      // validation adds ~4 s/frame on SMB mounts (vs ~32 ms native) —
+      // pathological for ImageVideo (one read per displayed frame). Paths arrive
+      // already resolved (the FsResolver ran during loadSlp), so the reader reads
+      // each one directly — no candidate generation.
       const { invoke } = await import("@tauri-apps/api/core");
       const nativeReadImage = async (p: string): Promise<Uint8Array> => {
         const buf = await invoke<ArrayBuffer>("read_image_file", { path: p });
         return new Uint8Array(buf);
       };
-      setImageBytesReader(createImageReader(nativeReadImage, exists));
+      setImageBytesReader(nativeReadImage);
     }
 
     // Adaptive load: stream large files lazily via native range reads (B-seam)

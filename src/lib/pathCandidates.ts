@@ -1,6 +1,8 @@
 /**
- * Pure path-candidate helpers shared by the external-video resolver
- * (`resolveVideos.ts`) and the desktop ImageVideo reader (`imageVideoReader.ts`).
+ * Pure path-candidate helpers for the external-video resolver (`resolveVideos.ts`):
+ * single-file candidate generation (`getVideoPathCandidates`) and the
+ * Locate-folder flow (`resolveImageFramesInFolder`). ImageVideo/external
+ * resolution during load is handled upstream by sleap-io.js's FsResolver.
  *
  * The central idea is the **trailing-tail graft**: media saved on one machine and
  * reopened on another often keeps its *sub*folder structure while its root moves
