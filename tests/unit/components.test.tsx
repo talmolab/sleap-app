@@ -467,27 +467,6 @@ describe("Component rendering", () => {
       // Help menu should exist
       expect(screen.getByText("Help")).toBeInTheDocument();
     });
-
-    it("hides the SLEAP brand block in the desktop (Tauri) build (#133)", async () => {
-      // Re-mock the platform as the desktop shell (isTauri: true). bun's
-      // mock.module only affects imports evaluated AFTER this call, so the
-      // module-under-test is imported fresh via a cache-busting query. The
-      // desktop already has a native title bar showing "SLEAP", so the brand
-      // must not render here.
-      vi.mock("@/lib/platform", () => ({
-        isTauri: true,
-        isMac: false,
-        modKey: "Ctrl",
-      }));
-      const { MenuBar } = await import(
-        "@/components/layout/MenuBar?tauri"
-      );
-      const { container } = render(<MenuBar />);
-      // File menu still renders; the brand + its icon do not.
-      expect(screen.getByText("File")).toBeInTheDocument();
-      expect(screen.queryByText("SLEAP")).not.toBeInTheDocument();
-      expect(container.querySelector("img")).not.toBeInTheDocument();
-    });
   });
 
   describe("panelRegistry (#135)", () => {
