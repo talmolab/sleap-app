@@ -18,6 +18,7 @@ export function useFileIO() {
 
     const result = await platform.showOpenDialog({
       filters: [{ name: "SLEAP Labels", extensions: ["slp"] }],
+      excludeAcceptAll: true,
     });
 
     if (!result) return; // User cancelled

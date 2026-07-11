@@ -81,8 +81,9 @@ export function StatusBar() {
             )}
             <Separator orientation="vertical" className="h-3.5" />
             <span className="tabular-nums whitespace-nowrap">
-              Frame {(frameIdx + 1).toLocaleString()}
-              {totalFrames !== null ? ` / ${totalFrames.toLocaleString()}` : ""}
+              {/* 0-based frame index (matches the seekbar/overlay convention). */}
+              Frame {frameIdx.toLocaleString()}
+              {totalFrames !== null ? ` / ${(totalFrames - 1).toLocaleString()}` : ""}
             </span>
             <Separator orientation="vertical" className="h-3.5" />
             <span className="whitespace-nowrap">
@@ -125,10 +126,10 @@ export function StatusBar() {
               <>
                 <Separator orientation="vertical" className="h-3.5" />
                 <span className="whitespace-nowrap">
-                  {/* 1-based to stay consistent with the Frame counter above.
+                  {/* 0-based to stay consistent with the Frame counter above.
                       frameRange stores 0-based inclusive indices. */}
-                  Frames {(frameRange[0] + 1).toLocaleString()}-
-                  {(frameRange[1] + 1).toLocaleString()} selected
+                  Frames {frameRange[0].toLocaleString()}-
+                  {frameRange[1].toLocaleString()} selected
                 </span>
               </>
             )}

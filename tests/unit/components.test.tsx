@@ -139,8 +139,8 @@ describe("Component rendering", () => {
         "@/components/layout/StatusBar"
       );
       render(<StatusBar />);
-      // StatusBar now shows a 1-based frame counter (PyQt parity): frameIdx 42 -> "Frame 43".
-      expect(screen.getByText(/Frame 43/)).toBeInTheDocument();
+      // StatusBar shows a 0-based frame counter: frameIdx 42 of 100 -> "Frame 42 / 99".
+      expect(screen.getByText(/Frame 42 \/ 99/)).toBeInTheDocument();
     });
 
     it("shows user-labeled frame count", async () => {
@@ -334,7 +334,7 @@ describe("Component rendering", () => {
       expect(screen.getByText(/\[NEGATIVE FRAME\]/)).toBeInTheDocument();
     });
 
-    it("shows the selection range 1-based (consistent with Frame counter)", async () => {
+    it("shows the selection range 0-based (consistent with Frame counter)", async () => {
       const vid = { filename: "a.mp4", shape: [100, 1, 1, 1] };
       useAppStore.setState({
         filename: "test.slp",
@@ -350,12 +350,12 @@ describe("Component rendering", () => {
         } as unknown as import("@/types").Labels,
         projectLoaded: true,
         video: vid as unknown as import("@/types").Video,
-        // 0-based inclusive [4, 9] -> displayed 1-based as "Frames 5-10 selected".
+        // 0-based inclusive [4, 9] -> displayed 0-based as "Frames 4-9 selected".
         frameRange: [4, 9],
       });
       const { StatusBar } = await import("@/components/layout/StatusBar");
       render(<StatusBar />);
-      expect(screen.getByText(/Frames 5-10 selected/)).toBeInTheDocument();
+      expect(screen.getByText(/Frames 4-9 selected/)).toBeInTheDocument();
     });
   });
 

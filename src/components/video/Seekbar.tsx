@@ -707,7 +707,6 @@ export function Seekbar() {
     <div className="flex flex-col shrink-0">
       {/* Instance count header graph - uses same flex layout as seekbar row for alignment */}
       <div className="flex items-center h-4 bg-card border-t border-border px-2 gap-2">
-        <div className="w-24 shrink-0" />
         <div ref={headerContainerRef} className="flex-1 overflow-hidden">
           <canvas
             ref={headerCanvasRef}
@@ -782,11 +781,8 @@ export function Seekbar() {
       </div>
 
       <div className="flex items-center h-10 bg-card border-t border-border px-2 gap-2">
-        {/* Frame counter */}
-        <div className="text-xs text-muted-foreground w-24 text-right tabular-nums shrink-0">
-          {totalFrames > 0 ? `${frameIdx} / ${totalFrames - 1}` : "---"}
-        </div>
-
+        {/* Frame counter removed — the frame index is shown only in the status
+            bar now (was also duplicated here and as an on-frame overlay). */}
         {/* Seekbar canvas */}
         <div
           ref={containerRef}

@@ -110,6 +110,7 @@ export const OpenProjectCommand: Command = {
     console.log(`[open] Opening project via ${platform.isTauri ? "Tauri" : "browser"} dialog`);
     const result = await platform.showOpenDialog({
       filters: [{ name: "SLEAP Labels", extensions: ["slp"] }],
+      excludeAcceptAll: true,
     });
 
     if (!result) return;
