@@ -72,7 +72,25 @@ import {
 
 export function MenuBar() {
   return (
-    <Menubar className="h-8 rounded-none border-0 border-b border-border bg-card pl-2 pr-0 gap-0 shadow-none">
+    <Menubar
+      className={`h-8 rounded-none border-0 border-b border-border bg-card pr-0 gap-0 shadow-none ${
+        // Web deployments have no OS title bar to carry the app's identity, so
+        // show a SLEAP icon + wordmark on the left. The desktop (Tauri) build
+        // already has a native title bar showing "SLEAP", so it's hidden there
+        // to avoid the redundancy that removed it originally (#133 / #142).
+        isTauri ? "pl-2" : "pl-0"
+      }`}
+    >
+      {!isTauri && (
+        <div className="flex items-center gap-1.5 px-3 text-sm font-semibold tracking-wider text-primary select-none">
+          <img
+            src={`${import.meta.env.BASE_URL}icon.png`}
+            alt=""
+            className="h-4 w-4"
+          />
+          SLEAP
+        </div>
+      )}
       <FileMenu />
       <EditMenu />
       <GoMenu />

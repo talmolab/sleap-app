@@ -435,14 +435,19 @@ describe("Component rendering", () => {
       expect(container).toBeTruthy();
     });
 
-    it("does not render a redundant SLEAP brand block (#133)", async () => {
+    it("renders the SLEAP icon + wordmark in web mode (#133)", async () => {
+      // The top-level platform mock reports isTauri: false (web deployment),
+      // where there is no OS title bar — so the brand block should render.
       const { MenuBar } = await import(
         "@/components/layout/MenuBar"
       );
-      render(<MenuBar />);
-      // The icon + "SLEAP" wordmark was removed as redundant — the OS title bar
-      // (desktop) and browser tab already display "SLEAP".
-      expect(screen.queryByText("SLEAP")).not.toBeInTheDocument();
+      const { container } = render(<MenuBar />);
+      expect(screen.getByText("SLEAP")).toBeInTheDocument();
+      // Icon uses alt="" (decorative; the wordmark carries the text), so query
+      // the element directly rather than by accessible role/name.
+      const icon = container.querySelector("img");
+      expect(icon).toBeInTheDocument();
+      expect(icon?.getAttribute("src")).toContain("icon.png");
     });
 
     it("renders all menu triggers including Help", async () => {
@@ -461,6 +466,27 @@ describe("Component rendering", () => {
       expect(screen.getByText("Tracks")).toBeInTheDocument();
       // Help menu should exist
       expect(screen.getByText("Help")).toBeInTheDocument();
+    });
+
+    it("hides the SLEAP brand block in the desktop (Tauri) build (#133)", async () => {
+      // Re-mock the platform as the desktop shell (isTauri: true). bun's
+      // mock.module only affects imports evaluated AFTER this call, so the
+      // module-under-test is imported fresh via a cache-busting query. The
+      // desktop already has a native title bar showing "SLEAP", so the brand
+      // must not render here.
+      vi.mock("@/lib/platform", () => ({
+        isTauri: true,
+        isMac: false,
+        modKey: "Ctrl",
+      }));
+      const { MenuBar } = await import(
+        "@/components/layout/MenuBar?tauri"
+      );
+      const { container } = render(<MenuBar />);
+      // File menu still renders; the brand + its icon do not.
+      expect(screen.getByText("File")).toBeInTheDocument();
+      expect(screen.queryByText("SLEAP")).not.toBeInTheDocument();
+      expect(container.querySelector("img")).not.toBeInTheDocument();
     });
   });
 
