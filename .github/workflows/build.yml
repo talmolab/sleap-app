@@ -127,6 +127,7 @@ jobs:
         with:
           name: sleap-app-${{ matrix.target }}
           path: artifacts/*
+          retention-days: 7
           if-no-files-found: error
 
   release:
