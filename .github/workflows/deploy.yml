@@ -5,6 +5,18 @@ on:
     branches: [main]
   release:
     types: [published]
+  # Manual deploy from the Actions tab (or `gh workflow run deploy.yml`).
+  # Pick the target; the selected branch/tag in the run's ref is what gets built.
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Deploy target"
+        type: choice
+        default: dev
+        options:
+          - dev
+          - prod
+        required: true
 
 # Serialize deploys to avoid race conditions on gh-pages branch
 concurrency:
@@ -29,6 +41,10 @@ jobs:
             echo "path=" >> "$GITHUB_OUTPUT"
             echo "base=/" >> "$GITHUB_OUTPUT"
             echo "label=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.target }}" == "prod" ]]; then
+            echo "path=" >> "$GITHUB_OUTPUT"
+            echo "base=/" >> "$GITHUB_OUTPUT"
+            echo "label=manual-prod ${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
           else
             echo "path=dev" >> "$GITHUB_OUTPUT"
             echo "base=/dev/" >> "$GITHUB_OUTPUT"
