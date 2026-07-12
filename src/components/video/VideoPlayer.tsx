@@ -1834,15 +1834,15 @@ export function VideoPlayer() {
           );
         })()}
 
-        {/* Frame info overlay */}
-        <Badge
-          variant="secondary"
-          className="absolute bottom-2 left-2 pointer-events-none rounded-md bg-black/60 text-white/80 border-none"
-        >
-          Frame {frameIdx}
-          {video?.shape && ` / ${video.shape[0] - 1}`}
-          {zoom !== 1 && ` | ${(zoom * 100).toFixed(0)}%`}
-        </Badge>
+        {/* Zoom level overlay (frame index lives only in the status bar now) */}
+        {zoom !== 1 && (
+          <Badge
+            variant="secondary"
+            className="absolute bottom-2 left-2 pointer-events-none rounded-md bg-black/60 text-white/80 border-none"
+          >
+            {(zoom * 100).toFixed(0)}%
+          </Badge>
+        )}
 
         {/* Area-delete mode indicator */}
         {areaDeleteMode && (

@@ -73,6 +73,12 @@ function createWebPlatform(): PlatformAPI {
           const handles = await (window as any).showOpenFilePicker({
             types,
             multiple: multi,
+            // Chromium offers an "All Files" fallback alongside our type filter(s)
+            // by default (and can default/remember that choice across dialogs),
+            // which lets unrelated files (e.g. .exe) show up in a filtered picker
+            // like Open Project. Exclude it whenever we actually have filters to
+            // enforce.
+            excludeAcceptAllOption: !!types,
           });
           const files: File[] = await Promise.all(
             // eslint-disable-next-line @typescript-eslint/no-explicit-any

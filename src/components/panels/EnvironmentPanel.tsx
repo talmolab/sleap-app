@@ -248,7 +248,7 @@ export function EnvironmentPanel() {
       <div className="p-2 text-xs text-muted-foreground">
         <p>Environment detection is only available in the desktop app.</p>
         <p className="mt-1">
-          Run <code className="bg-muted px-1 rounded">sleap-label</code> as a
+          Run <code className="bg-muted px-1 rounded">sleap</code> as a
           desktop application to configure Python environments.
         </p>
       </div>
