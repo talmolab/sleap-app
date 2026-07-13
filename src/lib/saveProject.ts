@@ -10,6 +10,7 @@ import { saveSlpToBytes } from "@talmolab/sleap-io.js";
 import { useAppStore } from "../stores/appStore";
 import { toast } from "@/lib/notify";
 import { getPlatform } from "../platform/index";
+import { planEmbedPreservingSave } from "./embedPreservingSave";
 
 /**
  * Save a Labels object as an SLP file.
@@ -36,13 +37,43 @@ export async function saveProjectAsSlp(
   let displayName = saveName;
 
   try {
-    const bytes = await saveSlpToBytes(labels);
     const platform = await getPlatform();
+    const existingPath =
+      platform.isTauri && !forceDialog ? store.projectPath : null;
+
+    // Embedded (pkg.slp) projects: saveSlpToBytes drops the embedded image
+    // datasets unless an embed mode is passed (#213). The plan picks the mode
+    // and temporarily marks not-otherwise-covered embedded frames as
+    // suggestions so the save is lossless.
+    const plan = await planEmbedPreservingSave(labels);
+    let bytes: Uint8Array;
+    try {
+      if (plan.unreadable.length > 0) {
+        if (existingPath) {
+          // Overwriting in place would destroy images we cannot re-read.
+          toast.error("Save aborted to protect embedded frames", {
+            description:
+              `${plan.unreadable.length} embedded video(s) could not be read back. ` +
+              "The file was NOT overwritten. Use Save As to write a copy.",
+          });
+          return;
+        }
+        toast.warning("Some embedded frames will be missing", {
+          description:
+            `${plan.unreadable.length} embedded video(s) could not be read back; ` +
+            "the saved copy will not include their images. The original file is untouched.",
+        });
+      }
+      bytes = await saveSlpToBytes(
+        labels,
+        plan.embed ? { embed: plan.embed } : undefined
+      );
+    } finally {
+      plan.restore();
+    }
     console.log(`[save] Saving project via ${platform.isTauri ? "Tauri" : "browser"} backend (${bytes.byteLength} bytes)`);
 
     if (platform.isTauri) {
-      const existingPath = !forceDialog ? store.projectPath : null;
-
       if (existingPath) {
         await platform.writeFile(existingPath, bytes);
         displayName = existingPath;
@@ -52,6 +83,16 @@ export async function saveProjectAsSlp(
           defaultName: saveName,
         });
         if (!savePath) return;
+        if (plan.unreadable.length > 0 && savePath === store.projectPath) {
+          // Same protection as the in-place branch: this copy is missing
+          // embedded images, so it must not replace the original.
+          toast.error("Save aborted to protect embedded frames", {
+            description:
+              "The chosen path is the open project file, and some embedded " +
+              "videos could not be read back. Pick a different file name.",
+          });
+          return;
+        }
         await platform.writeFile(savePath, bytes);
         store.set("projectPath", savePath);
         displayName = savePath;
