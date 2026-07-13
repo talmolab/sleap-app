@@ -47,8 +47,9 @@ export function ActiveLearningPanel() {
 
   const nodeNames = skeleton?.nodes.map((n) => n.name);
 
-  // Live count of seeded frames (frames with ≥1 user instance) and centroids.
-  const { seededFrames, seededCentroids } = useMemo(() => {
+  // Live count of seeded frames (frames with ≥1 user instance), centroids, and
+  // whether a suggested-frame pool exists to seed on.
+  const { seededFrames, seededCentroids, hasSuggestions } = useMemo(() => {
     const labels = useAppStore.getState().labels;
     let frames = 0;
     let centroids = 0;
@@ -59,7 +60,11 @@ export function ActiveLearningPanel() {
         centroids += n;
       }
     }
-    return { seededFrames: frames, seededCentroids: centroids };
+    return {
+      seededFrames: frames,
+      seededCentroids: centroids,
+      hasSuggestions: !!labels && labels.suggestions.length > 0,
+    };
     // overlayVersion drives the recount; labels is mutated in place.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [overlayVersion, projectLoaded]);
@@ -67,6 +72,24 @@ export function ActiveLearningPanel() {
   const trainThreshold = config?.localize.seedFrames ?? 20;
   const trainingRunning = trainingStatus === "running";
   const trainingDone = trainingStatus === "completed";
+  const isSeeding = labelingMode === "seed";
+
+  // The single recommended next step. Exactly one panel button is highlighted
+  // (filled); everything else is a quiet outline, so the user always knows what
+  // to click next. While actively seeding, the Seed button itself is the lit
+  // one (it shows the active mode), so nothing else competes.
+  type NextAction = "add-frames" | "seed" | "train" | "generate-crops";
+  const nextAction: NextAction =
+    seededFrames === 0 && !hasSuggestions
+      ? "add-frames"
+      : seededFrames < trainThreshold
+        ? "seed"
+        : trainingDone
+          ? "generate-crops"
+          : trainingRunning
+            ? "seed"
+            : "train";
+  const primaryIs = (a: NextAction) => !isSeeding && nextAction === a;
 
   const adoptFromSkeleton = () => {
     if (!nodeNames || nodeNames.length === 0) {
@@ -282,7 +305,11 @@ export function ActiveLearningPanel() {
               defaultValue={config.localize.seedFrames}
               className="h-8 w-20"
             />
-            <Button size="sm" variant="outline" onClick={addFrames}>
+            <Button
+              size="sm"
+              variant={primaryIs("add-frames") ? "default" : "outline"}
+              onClick={addFrames}
+            >
               Add frames
             </Button>
           </div>
@@ -291,10 +318,10 @@ export function ActiveLearningPanel() {
           <Button
             size="sm"
             className="w-full"
-            variant={labelingMode === "seed" ? "default" : "outline"}
+            variant={isSeeding || primaryIs("seed") ? "default" : "outline"}
             onClick={toggleSeeding}
           >
-            {labelingMode === "seed" ? "Stop seeding" : "Seed centroids"}
+            {isSeeding ? "Stop seeding" : "Seed centroids"}
           </Button>
 
           <div className="text-xs">
@@ -309,7 +336,12 @@ export function ActiveLearningPanel() {
             </div>
           ) : seededFrames >= trainThreshold ? (
             <div className="space-y-1">
-              <Button size="sm" className="w-full" onClick={goToTraining}>
+              <Button
+                size="sm"
+                className="w-full"
+                variant={primaryIs("train") ? "default" : "outline"}
+                onClick={goToTraining}
+              >
                 Train centroid locator →
               </Button>
               <p className="text-[11px] text-muted-foreground leading-snug">
@@ -330,7 +362,12 @@ export function ActiveLearningPanel() {
           )}
 
           {/* Step 4 — crops for Phase 2 */}
-          <Button size="sm" className="w-full" onClick={doGenerateCrops}>
+          <Button
+            size="sm"
+            className="w-full"
+            variant={primaryIs("generate-crops") ? "default" : "outline"}
+            onClick={doGenerateCrops}
+          >
             Generate crops for Phase 2
           </Button>
         </Section>
