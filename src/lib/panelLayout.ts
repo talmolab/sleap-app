@@ -22,6 +22,7 @@ export const DEFAULT_PANEL_ORDER = [
   "frames",
   "training",
   "inference",
+  "active-learning",
   "environment",
   "connect",
   "notifications",
