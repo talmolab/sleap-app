@@ -12,6 +12,7 @@ import { useRef } from "react";
 import { useAppStore } from "../../stores/appStore";
 import { useActiveLearningStore } from "../../stores/activeLearningStore";
 import { generateCrops } from "@/lib/activeLearning/generateCrops";
+import { configFromSkeleton } from "@/lib/activeLearning/config";
 import { generateSuggestionFrames } from "@/lib/suggestionStrategies";
 import { toast } from "@/lib/notify";
 import { Button } from "@/components/ui/button";
@@ -40,6 +41,24 @@ export function ActiveLearningPanel() {
   const seedCountRef = useRef<HTMLInputElement>(null);
 
   const nodeNames = skeleton?.nodes.map((n) => n.name);
+
+  const adoptFromSkeleton = () => {
+    if (!nodeNames || nodeNames.length === 0) {
+      toast.error("This project has no skeleton nodes yet");
+      return;
+    }
+    const result = useActiveLearningStore
+      .getState()
+      .setConfig(configFromSkeleton(nodeNames), nodeNames);
+    if (result.ok) {
+      toast.success(
+        `Started a workflow from ${nodeNames.length} skeleton nodes — split "Keypoints" into ` +
+          "ordered passes and set the centroid in the .yaml as you like",
+      );
+    } else {
+      toast.warning(`Workflow loaded with ${result.errors.length} issue(s) — see below`);
+    }
+  };
 
   const adoptDefault = () => {
     const result = useActiveLearningStore.getState().useDefaultConfig(nodeNames);
@@ -180,14 +199,23 @@ export function ActiveLearningPanel() {
             <p className="text-xs text-muted-foreground">
               Define the loop: rounds and which keypoints belong to each labeling pass.
             </p>
-            <div className="flex gap-1.5">
-              <Button size="sm" onClick={adoptDefault}>
-                Use default
+            <div className="flex flex-wrap gap-1.5">
+              <Button size="sm" onClick={adoptFromSkeleton} disabled={!nodeNames?.length}>
+                From skeleton
               </Button>
               <Button size="sm" variant="outline" onClick={() => fileRef.current?.click()}>
                 Import .yaml…
               </Button>
+              <Button size="sm" variant="ghost" onClick={adoptDefault}>
+                Use default
+              </Button>
             </div>
+            {nodeNames?.length ? (
+              <p className="text-[11px] text-muted-foreground leading-snug">
+                "From skeleton" starts a valid config with all {nodeNames.length} node(s) in one
+                pass — split it into ordered passes in the .yaml.
+              </p>
+            ) : null}
           </div>
         )}
         <input

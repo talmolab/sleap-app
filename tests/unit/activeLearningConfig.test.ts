@@ -11,6 +11,8 @@ import {
   normalizeActiveLearningConfig,
   validateActiveLearningConfig,
   allPassNodes,
+  configFromSkeleton,
+  pickCentroidNode,
   type ActiveLearningConfig,
 } from "@/lib/activeLearning/config";
 
@@ -118,6 +120,29 @@ describe("active-learning config", () => {
     });
     const result = validateActiveLearningConfig(cfg);
     expect(result.warnings.some((w) => w.includes('"shared"'))).toBe(true);
+  });
+
+  it("picks a central-body node as the centroid, else the first node", () => {
+    // Real als2h skeleton node names.
+    const als2h = [
+      "Nose", "Head", "Ear_L", "Shoulder_left", "Neck", "Ear_R", "Shoulder_right",
+      "Haunch_left", "Haunch_right", "Tail_1", "Tail_0", "TTI", "Tail_2", "TailTip", "Trunk",
+    ];
+    expect(pickCentroidNode(als2h)).toBe("Trunk");
+    expect(pickCentroidNode(["p0", "p1", "p2"])).toBe("p0");
+    expect(pickCentroidNode([])).toBe("");
+  });
+
+  it("builds a valid one-pass starter config from skeleton node names", () => {
+    const nodes = ["Nose", "Head", "TTI", "Trunk", "TailTip"];
+    const cfg = configFromSkeleton(nodes);
+    expect(cfg.labelKeypoints.passes).toHaveLength(1);
+    expect(cfg.labelKeypoints.passes[0].nodes).toEqual(nodes);
+    expect(cfg.localize.centroidNode).toBe("Trunk");
+    // Every node is covered and the centroid is real → clean validation.
+    const result = validateActiveLearningConfig(cfg, nodes);
+    expect(result.ok).toBe(true);
+    expect(result.warnings).toEqual([]);
   });
 
   it("errors on empty passes, bad fraction, low maxRounds, and future version", () => {

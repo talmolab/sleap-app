@@ -267,6 +267,44 @@ export function firstEnabledPhase(config: ActiveLearningConfig): ActiveLearningP
   return null;
 }
 
+/**
+ * Guess a reasonable centroid/anchor node from a skeleton's node names: prefer
+ * a central-body name, else fall back to the first node. Only a starting guess
+ * — the user edits `localize.centroidNode` to taste.
+ */
+export function pickCentroidNode(nodeNames: string[]): string {
+  const central = /trunk|thorax|centroid|center|body|spine|abdomen/i;
+  return nodeNames.find((n) => central.test(n)) ?? nodeNames[0] ?? "";
+}
+
+/**
+ * Build a VALID starter config from a skeleton's node names: every node goes
+ * into a single "Keypoints" pass and the centroid is guessed via
+ * {@link pickCentroidNode}. This lets "define the workflow" work for any
+ * skeleton without hand-writing node names — the user then splits the one pass
+ * into ordered passes and adjusts the centroid.
+ */
+export function configFromSkeleton(
+  nodeNames: string[],
+  centroidNode?: string,
+): ActiveLearningConfig {
+  const d = DEFAULT_ACTIVE_LEARNING_CONFIG;
+  return {
+    ...d,
+    localize: {
+      ...d.localize,
+      centroidNode: centroidNode ?? pickCentroidNode(nodeNames),
+    },
+    labelKeypoints: {
+      order: "pass-major",
+      passes:
+        nodeNames.length > 0
+          ? [{ name: "Keypoints", nodes: [...nodeNames], guide: "none" }]
+          : d.labelKeypoints.passes,
+    },
+  };
+}
+
 /** Flat, de-duplicated list of every node named across all labeling passes. */
 export function allPassNodes(config: ActiveLearningConfig): string[] {
   const seen = new Set<string>();
