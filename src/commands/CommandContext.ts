@@ -8,7 +8,8 @@
 
 import { Instance, LabeledFrame, PredictedInstance } from "@talmolab/sleap-io.js";
 import { useAppStore, type AppState } from "../stores/appStore";
-import type { UpdateTopic, Track, Video } from "../types";
+import { UpdateTopic } from "../types";
+import type { Track, Video } from "../types";
 import type { Command } from "./types";
 
 /** Record of an executed command for change tracking. */
@@ -308,6 +309,7 @@ export class CommandContext {
 
     const redoSnapshot = this.restoreSnapshot(snapshot);
     this.redoStack.push(redoSnapshot);
+    this.afterUndoRedo();
     return true;
   }
 
@@ -318,7 +320,19 @@ export class CommandContext {
 
     const undoSnapshot = this.restoreSnapshot(snapshot);
     this.undoStack.push(undoSnapshot);
+    this.afterUndoRedo();
     return true;
+  }
+
+  /**
+   * After an undo/redo: force a canvas redraw (restoreSnapshot mutates the
+   * frame's instances in place, so the LabeledFrame reference may not change)
+   * and notify listeners so undo/redo-aware UI (e.g. the Edit menu's enabled
+   * state) refreshes — neither happens automatically otherwise.
+   */
+  private afterUndoRedo(): void {
+    this.state.bumpOverlayVersion?.();
+    this.signalUpdate([UpdateTopic.Frame, UpdateTopic.Instance, UpdateTopic.Tracks]);
   }
 
   /** Check if undo is available. */

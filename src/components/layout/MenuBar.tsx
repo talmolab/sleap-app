@@ -5,6 +5,7 @@
  * All actions are wired to the command system via CommandContext.
  */
 
+import { useEffect, useState } from "react";
 import { useAppStore, type NavigationDomain } from "../../stores/appStore";
 import { PANELS } from "./panelRegistry";
 import { modKey, isTauri } from "../../lib/platform";
@@ -235,6 +236,13 @@ function FileMenu() {
 }
 
 function EditMenu() {
+  // Re-render whenever the command stack changes so undo/redo enabled-state and
+  // labels stay live (canUndo/canRedo are read from the non-reactive context).
+  const [, bumpStackVersion] = useState(0);
+  useEffect(
+    () => commandContext.onUpdate(() => bumpStackVersion((n) => n + 1)),
+    [],
+  );
   // Subscribe to reactive state so undo/redo labels update
   useAppStore((s) => s.labeledFrame);
   useAppStore((s) => s.hasChanges);

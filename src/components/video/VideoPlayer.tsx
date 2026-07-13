@@ -1207,6 +1207,18 @@ export function VideoPlayer() {
     }
   }, [selectedInstance, frameIdx, labelingMode]);
 
+  // In centroid-seeding, reset to the full-frame view whenever the frame/video
+  // changes (or on entering seed mode), so each new animal is framed at 100%
+  // instead of inheriting the previous frame's zoom/pan.
+  useEffect(() => {
+    if (labelingMode !== "seed") return;
+    viewRef.current = { zoom: 1, panX: 0, panY: 0 };
+    setZoom(1);
+    setPanX(0);
+    setPanY(0);
+    zoomMode.current = "fit-frame";
+  }, [frameIdx, video, labelingMode]);
+
   const handleMouseDown = useCallback(
     (e: React.MouseEvent) => {
       // Middle-click panning
@@ -1269,6 +1281,14 @@ export function VideoPlayer() {
       // node/instance hit-testing below. Each click is its own undo entry.
       if (store.labelingMode === "seed") {
         e.preventDefault();
+        // Option/Alt-drag pans (Space advances frames in seed mode, and plain
+        // left-click drops a centroid, so panning needs its own modifier —
+        // also works on a trackpad with no middle button).
+        if (e.altKey) {
+          setIsPanning(true);
+          setPanStart({ x: e.clientX - panX, y: e.clientY - panY });
+          return;
+        }
         const [sx, sy] = toSourceCoords(useAppStore.getState().video, x, y);
         commandContext.execute(SeedCentroid, { x: sx, y: sy });
         store.bumpOverlayVersion();
