@@ -210,6 +210,51 @@ fn pick_localhost_port() -> u16 {
     .unwrap_or(1430)
 }
 
+/// Path of the file that remembers the localhost port between launches
+/// (`~/.sleap-app/localhost-port`).
+fn localhost_port_file() -> Option<PathBuf> {
+  dirs::home_dir().map(|h| h.join(".sleap-app").join("localhost-port"))
+}
+
+/// Can we currently bind `127.0.0.1:<port>` (i.e. is the port free)? There's an
+/// inherent TOCTOU gap before the localhost plugin rebinds it — the same gap
+/// `pick_localhost_port` already has — but the window is tiny for a desktop-local port.
+fn port_is_free(port: u16) -> bool {
+  port != 0 && std::net::TcpListener::bind(("127.0.0.1", port)).is_ok()
+}
+
+/// Resolve the localhost origin port, PREFERRING a previously persisted port so the
+/// app's origin (`http://localhost:<port>`) stays STABLE across launches. WKWebView,
+/// WebKitGTK, and WebView2 all key `localStorage` + `IndexedDB` by origin *including the
+/// port*, so a fresh random port every launch would silently reset persisted UI prefs,
+/// the selected Python env, connect settings, and auth tokens. We remember the chosen
+/// port in `~/.sleap-app/localhost-port` and reuse it while it's still free; only if it's
+/// taken (a second instance, some other process) do we pick a new free port and rewrite
+/// the file. File I/O is best-effort — any failure just falls through to a fresh pick.
+fn resolve_localhost_port() -> u16 {
+  let port_file = localhost_port_file();
+
+  // Reuse the saved port when it parses and is still bindable.
+  if let Some(saved) = port_file
+    .as_ref()
+    .and_then(|p| std::fs::read_to_string(p).ok())
+    .and_then(|s| s.trim().parse::<u16>().ok())
+    .filter(|&p| port_is_free(p))
+  {
+    return saved;
+  }
+
+  // No usable saved port: pick a fresh free one and persist it (best-effort).
+  let port = pick_localhost_port();
+  if let Some(path) = port_file {
+    if let Some(parent) = path.parent() {
+      let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&path, port.to_string());
+  }
+  port
+}
+
 /// Runtime replacement for the old static `capabilities/localhost.json`: grants the
 /// main window's permission set to the `http://localhost:<port>` REMOTE origin for the
 /// auto-picked port. A window served over http://localhost is remote context, so the
@@ -289,9 +334,12 @@ pub fn run() {
   // in our env before the first WebView spawns its WebKitWebProcess, which inherits it.
   #[cfg(target_os = "linux")]
   std::env::set_var("JSC_useSharedArrayBuffer", "1");
-  // Auto-picked once here, then reused for the localhost server, the window URL, and
-  // the runtime capability so all three always agree. 0 when unused (tauri:// / dev).
-  let localhost_port = if use_localhost { pick_localhost_port() } else { 0 };
+  // Resolved once here (persisted port reused when free, else a fresh free pick), then
+  // reused for the localhost server, the window URL, and the runtime capability so all
+  // three always agree. A STABLE port keeps the origin stable across launches, which is
+  // what preserves origin-scoped localStorage/IndexedDB (prefs, Python env, auth). 0
+  // when unused (tauri:// / dev).
+  let localhost_port = if use_localhost { resolve_localhost_port() } else { 0 };
 
   let mut builder = tauri::Builder::default()
     .manage(InitialFile(Mutex::new(file_arg)))
