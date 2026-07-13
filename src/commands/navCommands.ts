@@ -66,6 +66,36 @@ export const GoPrevLabeledFrame: Command = {
 };
 
 /** Navigate to the next suggestion frame. */
+/**
+ * All suggestions in a stable GLOBAL order: video order (as in `labels.videos`)
+ * then frame index. Suggestion navigation must span videos — SLEAP training
+ * packages store one single-frame video per suggestion, so filtering to the
+ * current video would strand the user on a one-frame video (Space appears
+ * dead). For a single-video project this collapses to frame-index order.
+ */
+function orderedSuggestions(ctx: CommandContext) {
+  const { labels } = ctx.state;
+  if (!labels) return [];
+  const vidIndex = new Map(labels.videos.map((v, i) => [v, i] as const));
+  return [...labels.suggestions].sort((a, b) => {
+    const va = vidIndex.get(a.video) ?? 0;
+    const vb = vidIndex.get(b.video) ?? 0;
+    return va !== vb ? va - vb : a.frameIdx - b.frameIdx;
+  });
+}
+
+/** Navigate to a suggestion, switching video first when it lives elsewhere. */
+function goToSuggestion(
+  ctx: CommandContext,
+  target: { video: CommandContext["state"]["video"]; frameIdx: number },
+) {
+  if (target.video && target.video !== ctx.state.video) {
+    ctx.state.setVideo(target.video);
+  }
+  ctx.state.setFrameIdx(target.frameIdx);
+}
+
+/** Navigate to the next suggestion frame (across videos, wrapping). */
 export const GoNextSuggestion: Command = {
   name: "GoNextSuggestion",
   topics: [UpdateTopic.Frame, UpdateTopic.Suggestions],
@@ -73,24 +103,26 @@ export const GoNextSuggestion: Command = {
     const { labels, video, frameIdx } = ctx.state;
     if (!labels || !video) return;
 
-    // Filter suggestions for current video, sorted by frame index
-    const suggestions = labels.suggestions
-      .filter((s) => s.video === video)
-      .sort((a, b) => a.frameIdx - b.frameIdx);
+    const sugg = orderedSuggestions(ctx);
+    if (sugg.length === 0) return;
 
-    if (suggestions.length === 0) return;
+    const vidIndex = new Map(labels.videos.map((v, i) => [v, i] as const));
+    const curV = vidIndex.get(video) ?? 0;
+    const idx = sugg.findIndex((s) => s.video === video && s.frameIdx === frameIdx);
 
-    const next = suggestions.find((s) => s.frameIdx > frameIdx);
-    if (next) {
-      ctx.state.setFrameIdx(next.frameIdx);
-    } else {
-      // Wrap around
-      ctx.state.setFrameIdx(suggestions[0].frameIdx);
-    }
+    const target =
+      idx !== -1
+        ? sugg[(idx + 1) % sugg.length]
+        : sugg.find((s) => {
+            const sv = vidIndex.get(s.video) ?? 0;
+            return sv > curV || (sv === curV && s.frameIdx > frameIdx);
+          }) ?? sugg[0];
+
+    goToSuggestion(ctx, target);
   },
 };
 
-/** Navigate to the previous suggestion frame. */
+/** Navigate to the previous suggestion frame (across videos, wrapping). */
 export const GoPrevSuggestion: Command = {
   name: "GoPrevSuggestion",
   topics: [UpdateTopic.Frame, UpdateTopic.Suggestions],
@@ -98,19 +130,22 @@ export const GoPrevSuggestion: Command = {
     const { labels, video, frameIdx } = ctx.state;
     if (!labels || !video) return;
 
-    const suggestions = labels.suggestions
-      .filter((s) => s.video === video)
-      .sort((a, b) => a.frameIdx - b.frameIdx);
+    const sugg = orderedSuggestions(ctx);
+    if (sugg.length === 0) return;
 
-    if (suggestions.length === 0) return;
+    const vidIndex = new Map(labels.videos.map((v, i) => [v, i] as const));
+    const curV = vidIndex.get(video) ?? 0;
+    const idx = sugg.findIndex((s) => s.video === video && s.frameIdx === frameIdx);
 
-    const prev = [...suggestions].reverse().find((s) => s.frameIdx < frameIdx);
-    if (prev) {
-      ctx.state.setFrameIdx(prev.frameIdx);
-    } else {
-      // Wrap around
-      ctx.state.setFrameIdx(suggestions[suggestions.length - 1].frameIdx);
-    }
+    const target =
+      idx !== -1
+        ? sugg[(idx - 1 + sugg.length) % sugg.length]
+        : [...sugg].reverse().find((s) => {
+            const sv = vidIndex.get(s.video) ?? 0;
+            return sv < curV || (sv === curV && s.frameIdx < frameIdx);
+          }) ?? sugg[sugg.length - 1];
+
+    goToSuggestion(ctx, target);
   },
 };
 
