@@ -252,6 +252,21 @@ export function serializeActiveLearningConfig(config: ActiveLearningConfig): str
   return yaml.dump(config, { noRefs: true, lineWidth: 100 });
 }
 
+/** The phases of the active-learning loop, in canonical order. */
+export type ActiveLearningPhase = "localize" | "labelKeypoints" | "mine";
+
+/**
+ * The first phase that is actually enabled/usable for a config, or `null` if
+ * none are. Localize runs only when enabled; label-keypoints runs whenever it
+ * has passes; mine runs only when enabled.
+ */
+export function firstEnabledPhase(config: ActiveLearningConfig): ActiveLearningPhase | null {
+  if (config.localize.enabled) return "localize";
+  if (config.labelKeypoints.passes.length > 0) return "labelKeypoints";
+  if (config.mine.enabled) return "mine";
+  return null;
+}
+
 /** Flat, de-duplicated list of every node named across all labeling passes. */
 export function allPassNodes(config: ActiveLearningConfig): string[] {
   const seen = new Set<string>();
