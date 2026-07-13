@@ -23,6 +23,13 @@ export interface PlatformAPI {
     filters?: FileFilter[];
     multiple?: boolean;
     directory?: boolean;
+    /**
+     * Web only: when true, drop the File System Access picker's implicit
+     * "All Files (*.*)" option so the user is confined to the declared
+     * `filters` (e.g. project open → *.slp only). Ignored on Tauri, whose
+     * native dialog already restricts to the filter extensions.
+     */
+    excludeAcceptAll?: boolean;
   }): Promise<string | string[] | File | File[] | null>;
   /** Show a file save dialog. Returns path or null if cancelled. */
   showSaveDialog(options?: {
@@ -73,6 +80,9 @@ function createWebPlatform(): PlatformAPI {
           const handles = await (window as any).showOpenFilePicker({
             types,
             multiple: multi,
+            // Confine to the declared types (drop the implicit "All Files"
+            // option) when the caller asks — e.g. project open → *.slp only.
+            excludeAcceptAllOption: options?.excludeAcceptAll ?? false,
           });
           const files: File[] = await Promise.all(
             // eslint-disable-next-line @typescript-eslint/no-explicit-any

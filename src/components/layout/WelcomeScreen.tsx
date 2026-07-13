@@ -43,9 +43,6 @@ export function WelcomeScreen() {
       onDrop={handleDrop}
       onDragOver={handleDragOver}
     >
-      {/* Dim overlay */}
-      <div className="absolute inset-0 bg-background/85" />
-
       <div className="relative z-10 flex flex-col items-center gap-2">
         {error && (
           <div className="max-w-sm text-center text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-md border border-destructive/20">

@@ -44,7 +44,12 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { toImageCoords, toSourceCoords } from "@/lib/cropTransform";
-import { isVideoMissing, resolveVideoFile, videoIssue } from "../../lib/resolveVideos";
+import {
+  isVideoMissing,
+  resolveVideoFile,
+  videoIssue,
+  ensureVideoBackend,
+} from "../../lib/resolveVideos";
 import { Film } from "lucide-react";
 
 export function VideoPlayer() {
@@ -416,7 +421,7 @@ export function VideoPlayer() {
 
   // Load the current frame (convert to ImageBitmap, trigger dimension update)
   useEffect(() => {
-    if (!video || !video.backend) {
+    if (!video) {
       // Release the scrub gate even when we can't read, so the seekbar loop
       // never jams waiting on a read that will never happen.
       useAppStore.getState().set("frameLoading", false);
@@ -429,13 +434,38 @@ export function VideoPlayer() {
 
     (async () => {
       try {
+        // Lazy video backends: the decoder is deferred at load (open one video,
+        // not all N). Open it on first view, then read. ensureVideoBackend clears
+        // lazyPath after opening, so this whole block is skipped from then on.
+        if (!video.backend) {
+          const meta = video.backendMetadata as
+            | Record<string, unknown>
+            | undefined;
+          if (typeof meta?.lazyPath === "string") {
+            const { readFile } = await import("@tauri-apps/plugin-fs");
+            await ensureVideoBackend(video, readFile);
+          }
+          if (cancelled) return;
+          if (!video.backend) {
+            useAppStore.getState().set("frameLoading", false);
+            return;
+          }
+        }
         // While scrubbing, skip the backend's read-ahead prefetch: those frames
         // are scrubbed past (wasted) and their reads saturate a slow mount,
         // slowing the frame we actually want (~3.6x on the VAST mount). Mirrors
         // PyQt's worker, which does no read-ahead while scrubbing.
+        const framesBefore = video.shape?.[0] ?? null;
         const frame = await video.getFrame(frameIdx, {
           prefetch: !useAppStore.getState().isScrubbing,
         });
+        // A deferred embedded backend (lazyVideoMetadata) reads its per-video
+        // metadata on this first getFrame and corrects video.shape[0] to the true
+        // source frame count — nudge the store so the seekbar/status bar re-read
+        // the real extent instead of the JSON-seeded (labeled-count) stand-in.
+        if ((video.shape?.[0] ?? null) !== framesBefore) {
+          useAppStore.getState().markVideoUpdated();
+        }
         if (debugFlags.logSeeking) console.debug(`[seek] getFrame(${frameIdx}) returned ${frame?.constructor?.name ?? "null"} in ${(performance.now() - t0).toFixed(1)}ms`);
         if (cancelled || !frame) {
           if (debugFlags.logSeeking && cancelled) console.debug(`[seek] frame ${frameIdx} cancelled`);
@@ -1852,15 +1882,16 @@ export function VideoPlayer() {
           );
         })()}
 
-        {/* Frame info overlay */}
-        <Badge
-          variant="secondary"
-          className="absolute bottom-2 left-2 pointer-events-none rounded-md bg-black/60 text-white/80 border-none"
-        >
-          Frame {frameIdx}
-          {video?.shape && ` / ${video.shape[0] - 1}`}
-          {zoom !== 1 && ` | ${(zoom * 100).toFixed(0)}%`}
-        </Badge>
+        {/* Zoom-level overlay. The frame counter lives in the status bar only
+            (was previously duplicated here and beside the seekbar). */}
+        {zoom !== 1 && (
+          <Badge
+            variant="secondary"
+            className="absolute bottom-2 left-2 pointer-events-none rounded-md bg-black/60 text-white/80 border-none"
+          >
+            {(zoom * 100).toFixed(0)}%
+          </Badge>
+        )}
 
         {/* Area-delete mode indicator */}
         {areaDeleteMode && (

@@ -19,13 +19,25 @@ import {
 import { useAppStore } from "../stores/appStore";
 import { toast } from "@/lib/notify";
 import { resolveExternalVideos } from "./resolveVideos";
-import { setImageProjectDir, createImageReader } from "./imageVideoReader";
+import { installTauriFsResolver } from "./fsResolver";
 import { fileSize, readRange } from "./nativeRange";
 
 // Files larger than this open via the B-seam native range reader (lazy, on-disk)
 // instead of reading the whole file into WASM memory. Below it, eager is simpler
 // and avoids per-chunk IPC overhead.
 const RANGE_READER_THRESHOLD = 1_000_000_000; // 1 GB
+
+// Defer opening external video decoders until a video is first viewed (open one,
+// not all N): resolveExternalVideos records the located path and
+// ensureVideoBackend opens the decoder on first view.
+const LAZY_VIDEO_BACKENDS = true;
+
+// Open large embedded pkg.slp fast: build videos from videos_json alone and defer
+// every per-video HDF5 read to a backend that reads them on first view
+// (sleap-io.js `lazyVideoMetadata`). Cuts a many-video open from ~30s to ~3s by
+// skipping the ~13 serial reads/video for videos never opened. Set false for the
+// eager path (reads all per-video metadata up front).
+const LAZY_VIDEO_METADATA = true;
 
 // Serve h5wasm same-origin so the streaming Worker can load it under cross-origin
 // isolation (COOP/COEP) — COEP blocks the default cross-origin CDN importScripts.
@@ -63,14 +75,32 @@ function reportParseProgress(current: number, total: number, message?: string): 
  * far from 0 (e.g. 76978+) — so frame 0 is usually an empty/black non-embedded
  * position, making a fully-loaded project look blank on open. Selects that
  * frame's video too (multi-video packages). No-op when there are no labeled
- * frames. (Full effect needs the sleap-io.js frame-axis fix so shape[0] spans
- * the original range; otherwise setFrameIdx clamps — but never a regression.)
+ * frames.
+ *
+ * For a deferred (lazyVideoMetadata) backend we pre-open it here so video.shape[0]
+ * is the true source frame count BEFORE setFrameIdx runs — otherwise setFrameIdx
+ * would clamp the first labeled frame (a large source index) down into the
+ * JSON-seeded range and the opening view would land off-target/blank.
  */
-function openFirstLabeledFrame(labels: Labels): void {
+async function openFirstLabeledFrame(labels: Labels): Promise<void> {
   const firstLF = labels.labeledFrames[0];
   if (!firstLF) return;
   const store = useAppStore.getState();
-  if (firstLF.video) store.setVideo(firstLF.video);
+  const video = firstLF.video;
+  if (video) {
+    store.setVideo(video);
+    const backend = video.backend as unknown as {
+      ensureLoaded?: () => Promise<void>;
+    } | null;
+    if (backend?.ensureLoaded) {
+      try {
+        await backend.ensureLoaded();
+        store.markVideoUpdated();
+      } catch {
+        /* non-deferred backend or a read failure — keep the seeded shape */
+      }
+    }
+  }
   store.setFrameIdx(firstLF.frameIdx);
 }
 
@@ -100,7 +130,7 @@ export async function loadProjectFromFile(file: File): Promise<boolean> {
     store.setLoading(true, "Locating videos...");
     await resolveExternalVideos(labels);
     store.setLabels(labels, file.name);
-    openFirstLabeledFrame(labels);
+    await openFirstLabeledFrame(labels);
     toast.success(`Loaded ${file.name}`, {
       description: `${labels.videos.length} video(s), ${labels.labeledFrames.length} labeled frames`,
     });
@@ -139,26 +169,26 @@ export async function loadProjectFromPath(
   store.setLoading(true, `Reading ${filename}...`);
 
   try {
-    // Make ImageVideo (image-sequence) frames resolvable on desktop: resolve
-    // relative image paths against the project directory, and read their bytes
-    // through Tauri's plugin-fs. This MUST be set before loadSlp, which opens
-    // ImageVideoBackend inline (it decodes frame 0 for the shape). When a path
-    // can't be resolved the reader throws and sleap-io.js's load guard records
-    // video.backendError instead of aborting the load.
-    const sep = path.includes("\\") ? "\\" : "/";
-    setImageProjectDir(path.substring(0, path.lastIndexOf(sep)));
     if (exists) {
-      // Read image bytes via a native Rust command (std::fs::read) instead of the
-      // fs plugin, whose per-call path scope-validation adds ~4 s/frame on SMB
-      // mounts (vs ~32 ms native) — pathological for ImageVideo, which reads one
-      // image per displayed frame. The plugin's exists()/readFile are still used
-      // for path resolution (once per video) and the .slp itself.
+      // Register the FS resolver BEFORE loadSlp so sleap-io.js resolves external
+      // and ImageVideo source paths against the labels dir itself (issue #213):
+      // it builds a working backend when the media resolves and withholds an
+      // unreadable image sequence as backendError.kind === "image-sequence". Uses
+      // the plugin-fs `exists` (path resolution is a handful of probes per video,
+      // not the per-frame hot path).
+      installTauriFsResolver(exists);
+      // Inject the ImageVideo byte reader. Reads via a native Rust command
+      // (std::fs::read) rather than the fs plugin, whose per-call path scope
+      // validation adds ~4 s/frame on SMB mounts (vs ~32 ms native) —
+      // pathological for ImageVideo (one read per displayed frame). Paths arrive
+      // already resolved (the FsResolver ran during loadSlp), so the reader reads
+      // each one directly — no candidate generation.
       const { invoke } = await import("@tauri-apps/api/core");
       const nativeReadImage = async (p: string): Promise<Uint8Array> => {
         const buf = await invoke<ArrayBuffer>("read_image_file", { path: p });
         return new Uint8Array(buf);
       };
-      setImageBytesReader(createImageReader(nativeReadImage, exists));
+      setImageBytesReader(nativeReadImage);
     }
 
     // Adaptive load: stream large files lazily via native range reads (B-seam)
@@ -181,7 +211,11 @@ export async function loadProjectFromPath(
           readRange(path, offset, length),
       };
       labels = await readSlpStreaming(rangeSource, {
-        openVideos: true,
+        // Embedded (pkg.slp) videos: build from videos_json and open each video's
+        // backend on first view (LAZY_VIDEO_METADATA) so a many-video package
+        // opens fast. Eager path (openVideos) reads all per-video metadata now.
+        openVideos: !LAZY_VIDEO_METADATA,
+        lazyVideoMetadata: LAZY_VIDEO_METADATA,
         filenameHint: path,
         h5wasmUrl: H5WASM_URL,
         onProgress: reportParseProgress,
@@ -203,13 +237,14 @@ export async function loadProjectFromPath(
         projectPath: path,
         exists,
         readFile,
+        lazy: LAZY_VIDEO_BACKENDS,
       });
     } else {
       await resolveExternalVideos(labels);
     }
 
     store.setLabels(labels, filename, path);
-    openFirstLabeledFrame(labels);
+    await openFirstLabeledFrame(labels);
 
     toast.success(`Loaded ${filename}`, {
       description: `${labels.videos.length} video(s), ${labels.labeledFrames.length} labeled frames`,
