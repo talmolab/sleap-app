@@ -8,9 +8,10 @@
  * separately). "Dashboard + next-action": it recommends steps but never gates.
  */
 
-import { useRef } from "react";
+import { useMemo, useRef } from "react";
 import { useAppStore } from "../../stores/appStore";
 import { useActiveLearningStore } from "../../stores/activeLearningStore";
+import { useTrainingStore } from "../../stores/trainingStore";
 import { generateCrops } from "@/lib/activeLearning/generateCrops";
 import { configFromSkeleton } from "@/lib/activeLearning/config";
 import { generateSuggestionFrames } from "@/lib/suggestionStrategies";
@@ -36,11 +37,36 @@ export function ActiveLearningPanel() {
   const validation = useActiveLearningStore((s) => s.validation);
   const round = useActiveLearningStore((s) => s.round);
   const phase = useActiveLearningStore((s) => s.phase);
+  // Label edits bump overlayVersion (see the seed click branch in VideoPlayer),
+  // so it's our reactive trigger for recounting seeded centroids.
+  const overlayVersion = useAppStore((s) => s.overlayVersion);
+  const trainingStatus = useTrainingStore((s) => s.status);
 
   const fileRef = useRef<HTMLInputElement>(null);
   const seedCountRef = useRef<HTMLInputElement>(null);
 
   const nodeNames = skeleton?.nodes.map((n) => n.name);
+
+  // Live count of seeded frames (frames with ≥1 user instance) and centroids.
+  const { seededFrames, seededCentroids } = useMemo(() => {
+    const labels = useAppStore.getState().labels;
+    let frames = 0;
+    let centroids = 0;
+    if (labels) {
+      for (const lf of labels.labeledFrames) {
+        const n = lf.userInstances.length;
+        if (n > 0) frames++;
+        centroids += n;
+      }
+    }
+    return { seededFrames: frames, seededCentroids: centroids };
+    // overlayVersion drives the recount; labels is mutated in place.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [overlayVersion, projectLoaded]);
+
+  const trainThreshold = config?.localize.seedFrames ?? 20;
+  const trainingRunning = trainingStatus === "running";
+  const trainingDone = trainingStatus === "completed";
 
   const adoptFromSkeleton = () => {
     if (!nodeNames || nodeNames.length === 0) {
@@ -111,6 +137,14 @@ export function ActiveLearningPanel() {
     }
     useAppStore.getState().enterSeedMode(idx);
     toast.info("Seeding: click to drop a centroid · right-click to remove · Space = next frame · Esc = stop");
+  };
+
+  const goToTraining = () => {
+    useAppStore.getState().set("sidebarActivePanel", "training");
+    toast.info(
+      "In Training, pick the Centroid profile and start it. Training runs in the background — " +
+        "come back here and keep seeding while it trains.",
+    );
   };
 
   const doGenerateCrops = () => {
@@ -232,36 +266,73 @@ export function ActiveLearningPanel() {
       </Section>
 
       {config && (
-        <Section title="Phase 1 · Localize">
-          <div className="space-y-1.5">
-            <div className="flex items-center gap-1.5">
-              <Input
-                ref={seedCountRef}
-                type="number"
-                min={1}
-                defaultValue={config.localize.seedFrames}
-                className="h-8 w-20"
-              />
-              <Button size="sm" variant="outline" onClick={addFrames}>
-                Add frames
-              </Button>
-            </div>
-            <Button
-              size="sm"
-              className="w-full"
-              variant={labelingMode === "seed" ? "default" : "outline"}
-              onClick={toggleSeeding}
-            >
-              {labelingMode === "seed" ? "Stop seeding" : "Seed centroids"}
+        <Section title="Phase 1 · Localize (iterative)">
+          <p className="text-[11px] text-muted-foreground leading-snug">
+            A loop, not one shot: seed a batch of body-centers → train the locator → keep
+            seeding while it trains → when its accuracy plateaus, generate crops. Repeat if it
+            misses animals.
+          </p>
+
+          {/* Step 1 — build a pool of frames to seed on */}
+          <div className="flex items-center gap-1.5">
+            <Input
+              ref={seedCountRef}
+              type="number"
+              min={1}
+              defaultValue={config.localize.seedFrames}
+              className="h-8 w-20"
+            />
+            <Button size="sm" variant="outline" onClick={addFrames}>
+              Add frames
             </Button>
-            <Button size="sm" className="w-full" onClick={doGenerateCrops}>
-              Generate crops for Phase 2
-            </Button>
-            <p className="text-[11px] text-muted-foreground leading-snug">
-              Seed a body-center on each frame (one click per animal), then generate crops
-              centered on those points.
-            </p>
           </div>
+
+          {/* Step 2 — seed one body-center per animal, one click each */}
+          <Button
+            size="sm"
+            className="w-full"
+            variant={labelingMode === "seed" ? "default" : "outline"}
+            onClick={toggleSeeding}
+          >
+            {labelingMode === "seed" ? "Stop seeding" : "Seed centroids"}
+          </Button>
+
+          <div className="text-xs">
+            Seeded <span className="font-medium">{seededFrames}</span> / {trainThreshold} frames
+            {seededCentroids !== seededFrames ? ` · ${seededCentroids} centroids` : ""}
+          </div>
+
+          {/* Step 3 — train the locator, prompted once enough frames are seeded */}
+          {trainingRunning ? (
+            <div className="rounded border border-border px-2 py-1.5 text-[11px] text-muted-foreground leading-snug">
+              Locator training in the background — keep seeding; new labels feed the next round.
+            </div>
+          ) : seededFrames >= trainThreshold ? (
+            <div className="space-y-1">
+              <Button size="sm" className="w-full" onClick={goToTraining}>
+                Train centroid locator →
+              </Button>
+              <p className="text-[11px] text-muted-foreground leading-snug">
+                Enough seeded to train. It runs in the background — keep seeding meanwhile.
+              </p>
+            </div>
+          ) : (
+            <p className="text-[11px] text-muted-foreground leading-snug">
+              Seed {trainThreshold - seededFrames} more frame(s) to kick off locator training.
+            </p>
+          )}
+
+          {trainingDone && (
+            <div className="rounded border border-emerald-600/40 px-2 py-1.5 text-[11px] text-emerald-600 dark:text-emerald-500 leading-snug">
+              Locator trained. If it's matching well on held-out frames, generate crops — otherwise
+              seed the misses and retrain.
+            </div>
+          )}
+
+          {/* Step 4 — crops for Phase 2 */}
+          <Button size="sm" className="w-full" onClick={doGenerateCrops}>
+            Generate crops for Phase 2
+          </Button>
         </Section>
       )}
     </div>
