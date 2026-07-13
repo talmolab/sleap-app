@@ -285,6 +285,11 @@ pub fn run() {
   // Auto-picked once here, then reused for the localhost server, the window URL, and
   // the runtime capability so all three always agree. 0 when unused (tauri:// / dev).
   let localhost_port = if use_localhost { pick_localhost_port() } else { 0 };
+  // [isolation] TEMPORARY probe for PR #202 x-platform validation — shows the
+  // auto-picked port from the terminal. Remove before un-drafting (grep "[isolation]").
+  if use_localhost {
+    println!("[isolation] serving app over http://localhost:{localhost_port} (auto-picked)");
+  }
 
   let mut builder = tauri::Builder::default()
     .manage(InitialFile(Mutex::new(file_arg)))

@@ -21,6 +21,17 @@ declare global {
 }
 window.sleap = { loadSlp, Mp4BoxVideoBackend, store: useAppStore, commandContext, loadProjectFromFile };
 
+// [isolation] TEMPORARY probe for PR #202 (localhost-origin) cross-platform validation.
+// Confirms the packaged app is crossOriginIsolated (→ SharedArrayBuffer → the >1GB
+// .pkg.slp range reader) and reports the actual origin. Remove before un-drafting.
+// grep "[isolation]" to find both this and the Rust-side port log.
+console.log("[isolation]", {
+  origin: location.origin,
+  crossOriginIsolated: globalThis.crossOriginIsolated,
+  hasSharedArrayBuffer: typeof SharedArrayBuffer !== "undefined",
+  isSecureContext: globalThis.isSecureContext,
+});
+
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <App />
