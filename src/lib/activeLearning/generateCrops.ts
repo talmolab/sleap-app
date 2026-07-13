@@ -104,6 +104,12 @@ export interface GenerateCropsResult {
   count: number;
   /** Instances skipped for having no usable center. */
   skipped: number;
+  /**
+   * Instances skipped because their source video's backend isn't open — video
+   * backends are lazy (#195), so a video that's never been viewed can't be
+   * cropped. The caller should prompt the user to view those videos first.
+   */
+  unopened: number;
 }
 
 /**
@@ -123,13 +129,19 @@ export function generateCrops(
 
   const skeleton = source.skeletons[0];
   if (!skeleton) {
-    return { labels: new Labels({ skeletons: source.skeletons }), count: 0, skipped: 0 };
+    return {
+      labels: new Labels({ skeletons: source.skeletons }),
+      count: 0,
+      skipped: 0,
+      unopened: 0,
+    };
   }
   const anchorIdx = skeleton.nodes.findIndex((n) => n.name === anchorNode);
 
   const cropVideos: Video[] = [];
   const cropFrames: LabeledFrame[] = [];
   let skipped = 0;
+  let unopened = 0;
 
   for (const lf of source.labeledFrames) {
     for (const inst of lf.instances) {
@@ -143,10 +155,14 @@ export function generateCrops(
         continue;
       }
 
-      const cropVideo = lf.video.crop(null, {
-        center,
-        size: [cropSize, cropSize],
-      });
+      // Video.crop throws if the source backend isn't open (lazy backends, #195).
+      let cropVideo: Video;
+      try {
+        cropVideo = lf.video.crop(null, { center, size: [cropSize, cropSize] });
+      } catch {
+        unopened++;
+        continue;
+      }
 
       // Seed the crop's instance with the anchor point already placed.
       const cropInst = Instance.empty({ skeleton });
@@ -168,5 +184,5 @@ export function generateCrops(
     videos: cropVideos,
     skeletons: source.skeletons,
   });
-  return { labels, count: cropFrames.length, skipped };
+  return { labels, count: cropFrames.length, skipped, unopened };
 }

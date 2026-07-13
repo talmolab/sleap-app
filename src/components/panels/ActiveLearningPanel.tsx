@@ -103,13 +103,26 @@ export function ActiveLearningPanel() {
     // Crop around user-seeded centroids (the minimal path needs no locator).
     const result = generateCrops(labels, config, { from: "user" });
     if (result.count === 0) {
-      toast.error("No seeded centroids found. Seed some frames before generating crops.");
+      if (result.unopened > 0) {
+        toast.error(
+          `Can't crop ${result.unopened} instance(s) — view the source video first so its ` +
+            "decoder opens, then try again.",
+        );
+      } else {
+        toast.error("No seeded centroids found. Seed some frames before generating crops.");
+      }
       return;
     }
     useAppStore.getState().setLabels(result.labels, "crops.slp");
     useActiveLearningStore.getState().setPhase("labelKeypoints");
+    const extra = [
+      result.skipped ? `skipped ${result.skipped}` : "",
+      result.unopened ? `${result.unopened} need the video opened` : "",
+    ]
+      .filter(Boolean)
+      .join(", ");
     toast.success(
-      `Generated ${result.count} crop(s)${result.skipped ? `, skipped ${result.skipped}` : ""}. ` +
+      `Generated ${result.count} crop(s)${extra ? ` (${extra})` : ""}. ` +
         "Now in the crop project for Phase-2 labeling — save to keep it.",
     );
   };
