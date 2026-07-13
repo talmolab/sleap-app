@@ -159,7 +159,9 @@ export function ActiveLearningPanel() {
       return;
     }
     useAppStore.getState().enterSeedMode(idx);
-    toast.info("Seeding: click to drop a centroid · right-click to remove · Space = next frame · Esc = stop");
+    toast.info(
+      "Labeling centroids — click a body-center on each animal. Use the top bar (or Space) to advance frames.",
+    );
   };
 
   const goToTraining = () => {
@@ -321,7 +323,7 @@ export function ActiveLearningPanel() {
             variant={isSeeding || primaryIs("seed") ? "default" : "outline"}
             onClick={toggleSeeding}
           >
-            {isSeeding ? "Stop seeding" : "Seed centroids"}
+            {isSeeding ? "Stop labeling centroids" : "Start labeling centroids"}
           </Button>
 
           <div className="text-xs">

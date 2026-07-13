@@ -196,6 +196,19 @@ export function VideoPlayer() {
         // Don't hijack space when typing in an input/textarea
         const tag = (e.target as HTMLElement)?.tagName;
         if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+
+        // In centroid-seeding mode, Space advances to the next frame instead of
+        // pan/zoom (which owns Space elsewhere). Mirrors the top-bar button.
+        if (useAppStore.getState().labelingMode === "seed") {
+          e.preventDefault();
+          const s = useAppStore.getState();
+          if (s.labels && s.labels.suggestions.length > 0) {
+            commandContext.execute(GoNextSuggestion);
+          } else {
+            s.incrementFrameIdx(1);
+          }
+          return;
+        }
         e.preventDefault();
 
         const now = performance.now();
@@ -1949,33 +1962,6 @@ export function VideoPlayer() {
             {" "}({selectedInstance.points.filter((p) => !isNaN(p.xy[0])).length} placed)
             {" · Tab/Shift+Tab to cycle · Esc to exit"}
           </Badge>
-        )}
-
-        {/* Centroid-seeding banner with visible advance / done controls */}
-        {labelingMode === "seed" && (
-          <div className="absolute top-2 left-1/2 -translate-x-1/2 flex items-center gap-2 rounded-md bg-primary px-2 py-1 text-xs text-primary-foreground shadow-md pointer-events-auto">
-            <span>Seeding — click to drop · right-click to remove</span>
-            <button
-              type="button"
-              className="rounded bg-primary-foreground/20 px-1.5 py-0.5 font-medium hover:bg-primary-foreground/30"
-              onClick={() => {
-                const s = useAppStore.getState();
-                const hasSuggestions =
-                  !!s.labels && s.labels.suggestions.some((sg) => sg.video === s.video);
-                if (hasSuggestions) commandContext.execute(GoNextSuggestion);
-                else s.incrementFrameIdx(1);
-              }}
-            >
-              Next frame (Space) →
-            </button>
-            <button
-              type="button"
-              className="rounded px-1.5 py-0.5 hover:bg-primary-foreground/20"
-              onClick={() => useAppStore.getState().exitSeedMode()}
-            >
-              Done (Esc)
-            </button>
-          </div>
         )}
 
         {/* Selection count indicator */}

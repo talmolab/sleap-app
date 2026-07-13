@@ -22,6 +22,7 @@ import { MenuBar } from "./MenuBar";
 import { StatusBar } from "./StatusBar";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { VideoPlayer } from "../video/VideoPlayer";
+import { SeedModeBar } from "./SeedModeBar";
 
 import { PANELS } from "./panelRegistry";
 import { reorderById } from "@/lib/panelLayout";
@@ -158,6 +159,7 @@ export function AppShell() {
             >
               {/* Video player takes remaining space */}
               <div className="flex-1 flex flex-col min-w-0 h-full">
+                <SeedModeBar />
                 <VideoPlayer />
               </div>
 

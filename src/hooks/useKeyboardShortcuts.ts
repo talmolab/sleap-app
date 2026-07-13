@@ -94,14 +94,18 @@ export function useKeyboardShortcuts() {
         commandContext.execute(GoPrevLabeledFrame);
       },
 
-      // Suggestion navigation
+      // Suggestion navigation. In seed mode VideoPlayer's own Space handler
+      // owns advancing (Space is otherwise pan/zoom there), so skip here to
+      // avoid a double-advance.
       [DEFAULT_SHORTCUTS["goto next suggestion"]]: (e) => {
         if (isTextInput(e)) return;
+        if (store().labelingMode === "seed") return;
         e.preventDefault();
         commandContext.execute(GoNextSuggestion);
       },
       [DEFAULT_SHORTCUTS["goto prev suggestion"]]: (e) => {
         if (isTextInput(e)) return;
+        if (store().labelingMode === "seed") return;
         e.preventDefault();
         commandContext.execute(GoPrevSuggestion);
       },
