@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "localhost",
-  "description": "SPIKE (spike/tauri-localhost-origin): grant the same permissions to the main window when it is served from the http://localhost origin (tauri-plugin-localhost). A window loading http://localhost is REMOTE context, so the default (local) capability does NOT apply and invoke/IPC would be blocked without this. local:false keeps this inert for dev / flag-off (tauri:// or devUrl) builds. Port must match LOCALHOST_PORT in src/lib.rs.",
+  "description": "SUPERSEDED by the runtime capability `localhost-dynamic` (see lib.rs localhost_capability), which grants these permissions to the AUTO-PICKED http://localhost:<port> origin. This static file only matches the rare fixed :1430 fallback and is otherwise inert (local:false keeps it off for dev / tauri:// builds). Safe to delete once the runtime path is x-platform-verified.",
   "local": false,
   "remote": {
     "urls": ["http://localhost:1430"]

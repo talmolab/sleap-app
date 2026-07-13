@@ -198,10 +198,56 @@ fn sleap_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
         .build()
 }
 
-/// SPIKE (spike/tauri-localhost-origin): fixed port for the http://localhost origin.
-/// Fixed (not portpicker) so the static capability `capabilities/localhost.json` can
-/// match `http://localhost:1430` exactly — keep the two in sync.
-const LOCALHOST_PORT: u16 = 1430;
+/// Auto-pick a free TCP port for the `http://localhost` origin. Picking a free port
+/// (instead of a fixed 1430) means a port already in use — a second app instance, a
+/// dev server, some other process — can't brick startup. Nothing is pinned: the
+/// runtime capability (`localhost_capability`) is built for whatever port we get, and
+/// the window URL uses the same value. Falls back to 1430 if the probe fails.
+fn pick_localhost_port() -> u16 {
+  std::net::TcpListener::bind("127.0.0.1:0")
+    .and_then(|listener| listener.local_addr())
+    .map(|addr| addr.port())
+    .unwrap_or(1430)
+}
+
+/// Runtime replacement for the old static `capabilities/localhost.json`: grants the
+/// main window's permission set to the `http://localhost:<port>` REMOTE origin for the
+/// auto-picked port. A window served over http://localhost is remote context, so the
+/// build-time (local) capabilities do NOT apply and every `invoke` / `plugin:sleap|…`
+/// call would be blocked without this. Mirrors the static file exactly (minus the
+/// editor-only `$schema`), with the dynamic port substituted. Added in `setup()`.
+fn localhost_capability(port: u16) -> String {
+  format!(
+    r#"{{
+  "identifier": "localhost-dynamic",
+  "description": "Runtime grant for the http://localhost origin with an auto-picked port (tauri-plugin-localhost).",
+  "local": false,
+  "remote": {{ "urls": ["http://localhost:{port}"] }},
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "pilot:default",
+    "fs:default",
+    "fs:allow-read-file",
+    "fs:allow-read-text-file",
+    "fs:allow-write-file",
+    "fs:allow-exists",
+    "fs:allow-stat",
+    {{ "identifier": "fs:scope", "allow": [{{ "path": "**" }}, {{ "path": "$HOME/.sleap-rtc/**" }}] }},
+    "dialog:default",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "shell:allow-open",
+    "updater:default",
+    "process:default",
+    "core:window:allow-close",
+    "core:window:allow-destroy",
+    "core:window:allow-set-title",
+    "sleap:default"
+  ]
+}}"#
+  )
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -236,6 +282,9 @@ pub fn run() {
   // mode. Escape hatch: SLEAP_ORIGIN=custom keeps the tauri:// scheme (A/B the flip).
   let use_localhost = !tauri::is_dev()
     && std::env::var("SLEAP_ORIGIN").map(|v| v != "custom").unwrap_or(true);
+  // Auto-picked once here, then reused for the localhost server, the window URL, and
+  // the runtime capability so all three always agree. 0 when unused (tauri:// / dev).
+  let localhost_port = if use_localhost { pick_localhost_port() } else { 0 };
 
   let mut builder = tauri::Builder::default()
     .manage(InitialFile(Mutex::new(file_arg)))
@@ -262,7 +311,7 @@ pub fn run() {
   // NOT set them itself, and without them the http origin wouldn't be isolated either.
   if use_localhost {
     builder = builder.plugin(
-      tauri_plugin_localhost::Builder::new(LOCALHOST_PORT)
+      tauri_plugin_localhost::Builder::new(localhost_port)
         .host("localhost")
         .on_request(|_req, resp| {
           resp.add_header("Cross-Origin-Opener-Policy", "same-origin");
@@ -273,6 +322,7 @@ pub fn run() {
   }
 
   let builder = builder.setup(move |app| {
+    use tauri::Manager; // for add_capability (dynamic-acl)
     if cfg!(debug_assertions) {
       app.handle().plugin(
         tauri_plugin_log::Builder::default()
@@ -284,9 +334,17 @@ pub fn run() {
     // Build the main window here (removed from tauri.conf.json) so its URL can be
     // http://localhost:PORT in release. Dev / flag-off use WebviewUrl::App, which
     // resolves to the Vite devUrl (debug) or the tauri:// scheme (release).
+    // The window loads from the http://localhost:<port> REMOTE origin, so the
+    // build-time (local) capabilities don't apply — grant the same permission set to
+    // the auto-picked origin at runtime (replaces the old static localhost.json, which
+    // could only pin a fixed port). Must be added before the window's webview loads.
+    if use_localhost {
+      app.add_capability(localhost_capability(localhost_port))?;
+    }
+
     let url = if use_localhost {
       tauri::WebviewUrl::External(
-        format!("http://localhost:{LOCALHOST_PORT}")
+        format!("http://localhost:{localhost_port}")
           .parse()
           .expect("valid localhost url"),
       )
