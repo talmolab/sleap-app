@@ -282,6 +282,13 @@ pub fn run() {
   // mode. Escape hatch: SLEAP_ORIGIN=custom keeps the tauri:// scheme (A/B the flip).
   let use_localhost = !tauri::is_dev()
     && std::env::var("SLEAP_ORIGIN").map(|v| v != "custom").unwrap_or(true);
+  // WebKitGTK gates SharedArrayBuffer behind a JavaScriptCore runtime option: even a
+  // fully cross-origin-isolated page (COOP+COEP over the localhost origin;
+  // `crossOriginIsolated === true`) gets NO SharedArrayBuffer constructor without it
+  // (verified on WebKitGTK 2.52.3). Same mechanism GNOME Web uses to opt in. Must be
+  // in our env before the first WebView spawns its WebKitWebProcess, which inherits it.
+  #[cfg(target_os = "linux")]
+  std::env::set_var("JSC_useSharedArrayBuffer", "1");
   // Auto-picked once here, then reused for the localhost server, the window URL, and
   // the runtime capability so all three always agree. 0 when unused (tauri:// / dev).
   let localhost_port = if use_localhost { pick_localhost_port() } else { 0 };
