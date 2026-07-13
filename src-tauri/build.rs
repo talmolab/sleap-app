@@ -10,17 +10,15 @@ fn main() {
     // capability. Unlike `AppManifest::commands`, an inlined plugin does NOT flip the
     // global app-ACL bit, so the app's other ~18 bare custom commands keep working on the
     // local (tauri://) build without needing per-command grants. NOTE: plugin commands are
-    // ACL-checked on local too, so `sleap:default` must be granted in BOTH default.json
-    // (local) and localhost.json (remote).
+    // ACL-checked on local too, so `sleap:default` must be granted for BOTH the local
+    // origin (default.json) and the remote http://localhost origin (the runtime
+    // `localhost_capability` added in lib.rs setup()).
     tauri_build::try_build(
         Attributes::new().plugin(
             "sleap",
             InlinedPlugin::new()
                 // Every custom command the app needs while served from http://localhost.
-                // Keep in sync with sleap_plugin()'s invoke_handler in lib.rs. Only the
-                // spike diagnostic `report_isolation` is intentionally left OUT (kept as a
-                // bare app command so the probe still demonstrates that bare custom
-                // commands are blocked on the remote origin).
+                // Keep in sync with sleap_plugin()'s invoke_handler in lib.rs.
                 .commands(&[
                     // file / native
                     "read_range",
