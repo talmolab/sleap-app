@@ -12,6 +12,7 @@ import { useMemo, useRef } from "react";
 import { useAppStore } from "../../stores/appStore";
 import { useActiveLearningStore } from "../../stores/activeLearningStore";
 import { useTrainingStore } from "../../stores/trainingStore";
+import { useInferenceStore, centroidInferenceConfig } from "../../stores/inferenceStore";
 import { generateCrops } from "@/lib/activeLearning/generateCrops";
 import { configFromSkeleton } from "@/lib/activeLearning/config";
 import { startCentroidLocatorTraining } from "@/lib/activeLearning/trainLocator";
@@ -42,6 +43,8 @@ export function ActiveLearningPanel() {
   // so it's our reactive trigger for recounting seeded centroids.
   const overlayVersion = useAppStore((s) => s.overlayVersion);
   const trainingStatus = useTrainingStore((s) => s.status);
+  const modelDirs = useTrainingStore((s) => s.modelOutputDirs);
+  const inferenceStatus = useInferenceStore((s) => s.status);
 
   const fileRef = useRef<HTMLInputElement>(null);
   const seedCountRef = useRef<HTMLInputElement>(null);
@@ -79,16 +82,16 @@ export function ActiveLearningPanel() {
   // (filled); everything else is a quiet outline, so the user always knows what
   // to click next. While actively seeding, the Seed button itself is the lit
   // one (it shows the active mode), so nothing else competes.
-  type NextAction = "add-frames" | "seed" | "train" | "generate-crops";
+  type NextAction = "add-frames" | "seed" | "train" | "predict-centroids";
   const nextAction: NextAction =
     seededFrames === 0 && !hasSuggestions
       ? "add-frames"
       : seededFrames < trainThreshold
         ? "seed"
-        : trainingDone
-          ? "generate-crops"
-          : trainingRunning
-            ? "seed"
+        : trainingRunning
+          ? "seed"
+          : trainingDone
+            ? "predict-centroids"
             : "train";
   const primaryIs = (a: NextAction) => !isSeeding && nextAction === a;
 
@@ -167,6 +170,16 @@ export function ActiveLearningPanel() {
 
   const startLocatorTraining = () => {
     if (config) void startCentroidLocatorTraining(config);
+  };
+
+  const runLocatorPredict = () => {
+    const dirs = useTrainingStore.getState().modelOutputDirs;
+    if (dirs.length === 0) {
+      toast.error("Train the centroid locator first.");
+      return;
+    }
+    void useInferenceStore.getState().startInference(centroidInferenceConfig(dirs));
+    toast.info("Running the locator on the suggested frames — predicted centroids merge in when done.");
   };
 
   const doGenerateCrops = () => {
@@ -355,19 +368,32 @@ export function ActiveLearningPanel() {
 
           {trainingDone && (
             <div className="rounded border border-emerald-600/40 px-2 py-1.5 text-[11px] text-emerald-600 dark:text-emerald-500 leading-snug">
-              Locator trained. If it's matching well on held-out frames, generate crops — otherwise
-              seed the misses and retrain.
+              Locator trained. Run it to predict centroids on the rest of your frames, then correct
+              misses and retrain.
             </div>
           )}
 
-          {/* Step 4 — crops for Phase 2 */}
+          {/* Step 4 — run the locator to predict centroids (closes the loop) */}
           <Button
             size="sm"
             className="w-full"
-            variant={primaryIs("generate-crops") ? "default" : "outline"}
+            variant={primaryIs("predict-centroids") ? "default" : "outline"}
+            disabled={modelDirs.length === 0 || inferenceStatus === "running"}
+            onClick={runLocatorPredict}
+          >
+            {inferenceStatus === "running"
+              ? "Predicting centroids…"
+              : "Run locator → predict centroids"}
+          </Button>
+
+          {/* Optional: persist a crop dataset (Phase-2 labeling uses live zoom, not baked crops) */}
+          <Button
+            size="sm"
+            variant="outline"
+            className="w-full"
             onClick={doGenerateCrops}
           >
-            Generate crops for Phase 2
+            Export crop dataset (optional)
           </Button>
         </Section>
       )}

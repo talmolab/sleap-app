@@ -19,7 +19,8 @@ export type PipelineType =
   | "bottom-up"
   | "single-animal"
   | "top-down-id"
-  | "bottom-up-id";
+  | "bottom-up-id"
+  | "centroid";
 
 export interface InferenceConfig {
   // Pipeline
@@ -75,6 +76,53 @@ export interface RemoteInferenceOptions {
   remote: true;
   dataPath: string;
   workerId: string;
+}
+
+/**
+ * Build an InferenceConfig for a standalone centroid-locator `predict` run
+ * (active-learning Phase 1). Predicts centroids on the suggestion frames,
+ * skipping already-seeded ones. Track-only fields are set inert (the centroid
+ * branch in runInference ignores them).
+ */
+export function centroidInferenceConfig(
+  modelPaths: string[],
+  overrides: Partial<InferenceConfig> = {},
+): InferenceConfig {
+  return {
+    pipeline: "centroid",
+    modelPaths,
+    videoIndex: "all",
+    frameRange: "suggestions",
+    sampleCount: 20,
+    excludeUserLabeled: true,
+    batchSize: 4,
+    device: "auto",
+    maxInstances: null,
+    peakThreshold: 0.2,
+    anchorPart: null,
+    integralRefinement: false,
+    integralPatchSize: 5,
+    nPoints: 10,
+    maxEdgeLengthRatio: 0.25,
+    distPenaltyWeight: 1.0,
+    minLineScores: 0.25,
+    tracking: false,
+    trackerMethod: "simple",
+    similarityMethod: "oks",
+    matchingMethod: "hungarian",
+    trackingWindowSize: 5,
+    maxTracks: null,
+    connectSingleBreaks: false,
+    robust: 0.95,
+    flowImgScale: 1.0,
+    flowWindowSize: 21,
+    flowMaxLevels: 3,
+    ensureChannels: "auto",
+    filterOverlapping: false,
+    filterMethod: "iou",
+    filterThreshold: 0.8,
+    ...overrides,
+  };
 }
 
 export type InferenceStatus =
@@ -173,6 +221,13 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
   },
 
   startInference: async (config: InferenceConfig, remoteOpts?: RemoteInferenceOptions) => {
+    // Centroid-only prediction uses `sleap-nn predict`, which the remote worker
+    // (track-only job spec) can't run — keep it desktop-local.
+    if (config.pipeline === "centroid" && remoteOpts?.remote) {
+      set({ status: "error", error: "Centroid prediction is desktop-only for now." });
+      return;
+    }
+
     set({
       status: "running",
       error: null,

@@ -347,16 +347,25 @@ export async function runInference(
     console.log("[inference] Wrote %d bytes to %s", bytes.byteLength, dataPath);
   }
 
-  // Build CLI args for sleap-nn track
+  // Build CLI args. A standalone centroid model can't run through `track`
+  // (that needs a paired centered-instance model); run it with `sleap-nn
+  // predict --centroid_output instance`, which emits single-node
+  // PredictedInstances. Track-only flags (--gui, --tracking, bottom-up,
+  // --filter_overlapping, --max_instances, --anchor_part) are guarded out below.
   const program = "sleap-nn";
-  const args = ["track", "--gui"];
+  const isCentroid = config.pipeline === "centroid";
+  const args = isCentroid ? ["predict"] : ["track", "--gui"];
 
-  // Core I/O
+  // Core I/O (identical for predict + track; predict accepts a .slp data_path,
+  // so frame filters like --only_suggested_frames still apply)
   args.push("--data_path", dataPath);
   for (const mp of config.modelPaths) {
     args.push("--model_paths", mp);
   }
   args.push("--output_path", outputPath);
+  if (isCentroid) {
+    args.push("--centroid_output", "instance");
+  }
 
   // Data selection
   if (config.videoIndex !== "all") {
@@ -406,27 +415,29 @@ export async function runInference(
     args.push("--exclude_user_labeled");
   }
 
-  // Inference settings
+  // Inference settings (batch/device/peak_threshold apply to predict too)
   args.push("--batch_size", String(config.batchSize));
   args.push("--device", config.device);
-  if (config.maxInstances != null) {
+  if (!isCentroid && config.maxInstances != null) {
     args.push("--max_instances", String(config.maxInstances));
   }
   args.push("--peak_threshold", String(config.peakThreshold));
-  if (config.anchorPart) {
+  if (!isCentroid && config.anchorPart) {
     args.push("--anchor_part", config.anchorPart);
   }
 
-  // Bottom-up advanced
-  if (config.integralRefinement) {
-    args.push("--integral_refinement", "integral");
-    args.push("--integral_patch_size", String(config.integralPatchSize));
-  }
-  if (config.pipeline === "bottom-up" || config.pipeline === "bottom-up-id") {
-    args.push("--n_points", String(config.nPoints));
-    args.push("--max_edge_length_ratio", String(config.maxEdgeLengthRatio));
-    args.push("--dist_penalty_weight", String(config.distPenaltyWeight));
-    args.push("--min_line_scores", String(config.minLineScores));
+  // Bottom-up advanced (track-only; the centroid model outputs single points)
+  if (!isCentroid) {
+    if (config.integralRefinement) {
+      args.push("--integral_refinement", "integral");
+      args.push("--integral_patch_size", String(config.integralPatchSize));
+    }
+    if (config.pipeline === "bottom-up" || config.pipeline === "bottom-up-id") {
+      args.push("--n_points", String(config.nPoints));
+      args.push("--max_edge_length_ratio", String(config.maxEdgeLengthRatio));
+      args.push("--dist_penalty_weight", String(config.distPenaltyWeight));
+      args.push("--min_line_scores", String(config.minLineScores));
+    }
   }
 
   // Preprocessing
@@ -436,8 +447,8 @@ export async function runInference(
     args.push("--ensure_grayscale");
   }
 
-  // Tracking
-  if (config.tracking) {
+  // Tracking (track-only)
+  if (!isCentroid && config.tracking) {
     args.push("--tracking");
     if (config.trackerMethod === "flow") {
       args.push("--use_flow");
@@ -459,8 +470,8 @@ export async function runInference(
     }
   }
 
-  // Post-processing
-  if (config.filterOverlapping) {
+  // Post-processing (track-only)
+  if (!isCentroid && config.filterOverlapping) {
     args.push("--filter_overlapping");
     args.push("--filter_overlapping_method", config.filterMethod);
     args.push("--filter_overlapping_threshold", String(config.filterThreshold));
