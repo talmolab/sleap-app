@@ -145,6 +145,45 @@ describe("active-learning config", () => {
     expect(result.warnings).toEqual([]);
   });
 
+  it("has locator training defaults (fast preset, minimal aug)", () => {
+    const t = DEFAULT_ACTIVE_LEARNING_CONFIG.localize;
+    expect(t.trainAfter).toBe(100);
+    expect(t.training.backbone).toBe("unet");
+    expect(t.training.inputScale).toBe(0.5);
+    expect(t.training.augmentation).toBe("minimal");
+    expect(t.training.earlyStop).toBe(true);
+  });
+
+  it("merges a partial training block and coerces a bad backbone", () => {
+    const parsed = parseActiveLearningConfig(
+      "localize:\n  trainAfter: 150\n  training:\n    maxEpochs: 50\n    backbone: bogus\n",
+    );
+    expect(parsed.localize.trainAfter).toBe(150);
+    expect(parsed.localize.training.maxEpochs).toBe(50);
+    // Bad backbone falls back to default; untouched fields keep defaults.
+    expect(parsed.localize.training.backbone).toBe("unet");
+    expect(parsed.localize.training.inputScale).toBe(0.5);
+  });
+
+  it("errors on bad locator training params", () => {
+    const cfg: ActiveLearningConfig = {
+      ...DEFAULT_ACTIVE_LEARNING_CONFIG,
+      localize: {
+        ...DEFAULT_ACTIVE_LEARNING_CONFIG.localize,
+        trainAfter: 0,
+        training: {
+          ...DEFAULT_ACTIVE_LEARNING_CONFIG.localize.training,
+          inputScale: 2,
+          maxEpochs: 0,
+          batchSize: 0,
+        },
+      },
+    };
+    const result = validateActiveLearningConfig(cfg);
+    expect(result.ok).toBe(false);
+    expect(result.errors.length).toBeGreaterThanOrEqual(4);
+  });
+
   it("errors on empty passes, bad fraction, low maxRounds, and future version", () => {
     const cfg: ActiveLearningConfig = {
       ...DEFAULT_ACTIVE_LEARNING_CONFIG,

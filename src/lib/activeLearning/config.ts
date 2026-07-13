@@ -36,15 +36,39 @@ export interface LoopConfig {
   stopWhen: { metricPlateau: boolean };
 }
 
-/** Phase 1: localize animals (seed centroids → locator → crops). */
+export type LocatorBackbone = "unet" | "convnext" | "swint";
+
+/** Augmentation preset for the locator (rotation is kept since orientation varies). */
+export type LocatorAugmentation = "minimal" | "rotation" | "rotation-intensity";
+
+/** Training params for the Phase-1 centroid locator (a fast, retrainable model). */
+export interface LocatorTrainingConfig {
+  backbone: LocatorBackbone;
+  /** Input downscale factor in (0, 1] — 0.5 = half resolution. */
+  inputScale: number;
+  maxEpochs: number;
+  batchSize: number;
+  augmentation: LocatorAugmentation;
+  /** Stop when the val metric plateaus (drives the "good enough" cue). */
+  earlyStop: boolean;
+}
+
+/** Phase 1: localize animals (seed centroids → locator → zoom-to-label). */
 export interface LocalizeConfig {
   enabled: boolean;
-  /** Skeleton node clicked once per animal during centroid seeding. */
+  /** Skeleton node clicked once per animal during centroid seeding + locator anchor. */
   centroidNode: string;
-  /** Side length (px) of the centered-instance crops the locator exports. */
+  /**
+   * Default zoom-to-instance window (px) for Phase-2 labeling. NOT a baked crop
+   * — Phase-2 zooms the live view to the centroid at this size, adjustable per
+   * instance with a slider, so a too-tight setting never clips a keypoint.
+   */
   cropSize: number;
   /** How many starter frames to seed before the first locator training. */
   seedFrames: number;
+  /** Prompt to train the locator once this many centroids have been seeded. */
+  trainAfter: number;
+  training: LocatorTrainingConfig;
 }
 
 /** One ordered group of keypoints labeled together in a single pass. */
@@ -110,6 +134,15 @@ export const DEFAULT_ACTIVE_LEARNING_CONFIG: ActiveLearningConfig = {
     centroidNode: "body_center",
     cropSize: 256,
     seedFrames: 20,
+    trainAfter: 100,
+    training: {
+      backbone: "unet",
+      inputScale: 0.5,
+      maxEpochs: 100,
+      batchSize: 4,
+      augmentation: "minimal",
+      earlyStop: true,
+    },
   },
   labelKeypoints: {
     order: "pass-major",
@@ -160,6 +193,12 @@ function str(v: unknown, fallback: string): string {
   return typeof v === "string" ? v : fallback;
 }
 
+function oneOf<T extends string>(v: unknown, allowed: readonly T[], fallback: T): T {
+  return typeof v === "string" && (allowed as readonly string[]).includes(v)
+    ? (v as T)
+    : fallback;
+}
+
 function strArray(v: unknown, fallback: string[]): string[] {
   if (!Array.isArray(v)) return fallback;
   const out = v.filter((x): x is string => typeof x === "string");
@@ -187,6 +226,7 @@ export function normalizeActiveLearningConfig(raw: unknown): ActiveLearningConfi
 
   const loop = asRecord(root.loop);
   const localize = asRecord(root.localize);
+  const localizeTraining = asRecord(localize.training);
   const labelKeypoints = asRecord(root.labelKeypoints);
   const mine = asRecord(root.mine);
   const consistency = asRecord(root.consistency);
@@ -218,6 +258,23 @@ export function normalizeActiveLearningConfig(raw: unknown): ActiveLearningConfi
       centroidNode: str(localize.centroidNode, d.localize.centroidNode),
       cropSize: num(localize.cropSize, d.localize.cropSize),
       seedFrames: num(localize.seedFrames, d.localize.seedFrames),
+      trainAfter: num(localize.trainAfter, d.localize.trainAfter),
+      training: {
+        backbone: oneOf(
+          localizeTraining.backbone,
+          ["unet", "convnext", "swint"] as const,
+          d.localize.training.backbone,
+        ),
+        inputScale: num(localizeTraining.inputScale, d.localize.training.inputScale),
+        maxEpochs: num(localizeTraining.maxEpochs, d.localize.training.maxEpochs),
+        batchSize: num(localizeTraining.batchSize, d.localize.training.batchSize),
+        augmentation: oneOf(
+          localizeTraining.augmentation,
+          ["minimal", "rotation", "rotation-intensity"] as const,
+          d.localize.training.augmentation,
+        ),
+        earlyStop: bool(localizeTraining.earlyStop, d.localize.training.earlyStop),
+      },
     },
     labelKeypoints: {
       order: order === "crop-major" ? "crop-major" : "pass-major",
@@ -345,6 +402,23 @@ export function validateActiveLearningConfig(
 
   if (config.localize.enabled && config.localize.cropSize <= 0) {
     errors.push(`localize.cropSize must be positive (got ${config.localize.cropSize}).`);
+  }
+
+  if (config.localize.trainAfter < 1) {
+    errors.push(`localize.trainAfter must be at least 1 (got ${config.localize.trainAfter}).`);
+  }
+
+  if (config.localize.enabled) {
+    const t = config.localize.training;
+    if (t.inputScale <= 0 || t.inputScale > 1) {
+      errors.push(`localize.training.inputScale must be in (0, 1] (got ${t.inputScale}).`);
+    }
+    if (t.maxEpochs < 1) {
+      errors.push(`localize.training.maxEpochs must be at least 1 (got ${t.maxEpochs}).`);
+    }
+    if (t.batchSize < 1) {
+      errors.push(`localize.training.batchSize must be at least 1 (got ${t.batchSize}).`);
+    }
   }
 
   if (config.consistency.fraction < 0 || config.consistency.fraction > 1) {
