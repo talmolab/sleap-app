@@ -99,6 +99,8 @@ export interface AppState {
   trailShade: string;
   lutMin: number;
   lutMax: number;
+  /** Auto-contrast: derive the LUT from each frame's histogram (per-frame stretch). */
+  autoContrast: boolean;
   frameHistogram: Uint32Array | null;
   /**
    * True while VideoPlayer has a frame read in flight. Transient (never
@@ -230,6 +232,7 @@ export const PERSISTED_KEYS: (keyof AppState)[] = [
   "showNonVisibleNodes",
   "showCrosshair",
   "colorPredicted",
+  "autoContrast",
   "trailLength",
   "insetSize",
   "insetZoom",
@@ -313,6 +316,7 @@ export const useAppStore = create<AppState>()(
       trailShade: "Normal",
       lutMin: 0,
       lutMax: 255,
+      autoContrast: false,
       frameHistogram: null,
       frameLoading: false,
       isScrubbing: false,

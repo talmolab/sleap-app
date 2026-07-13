@@ -157,6 +157,8 @@ function IntensityHistogram() {
   const histogram = useAppStore((s) => s.frameHistogram);
   const lutMin = useAppStore((s) => s.lutMin);
   const lutMax = useAppStore((s) => s.lutMax);
+  const autoContrast = useAppStore((s) => s.autoContrast);
+  const toggle = useAppStore((s) => s.toggle);
   const set = useAppStore((s) => s.set);
 
   const [dragging, setDragging] = useState<"min" | "max" | null>(null);
@@ -254,15 +256,23 @@ function IntensityHistogram() {
 
   return (
     <div className="space-y-2">
+      <label className="flex items-center gap-2 text-xs cursor-pointer">
+        <input
+          type="checkbox"
+          checked={autoContrast}
+          onChange={() => toggle("autoContrast")}
+        />
+        Auto-contrast (per frame)
+      </label>
       <canvas
         ref={canvasRef}
         width={HIST_WIDTH}
         height={HIST_HEIGHT}
-        className="w-full rounded border border-border cursor-ew-resize"
+        className={`w-full rounded border border-border ${autoContrast ? "opacity-50" : "cursor-ew-resize"}`}
         style={{ height: HIST_HEIGHT }}
-        onMouseDown={handleMouseDown}
+        onMouseDown={autoContrast ? undefined : handleMouseDown}
       />
-      <div className="flex items-center gap-2">
+      <div className={`flex items-center gap-2 ${autoContrast ? "opacity-50" : ""}`}>
         <div className="flex items-center gap-1">
           <span className="text-[10px] text-muted-foreground">Min</span>
           <input
@@ -270,6 +280,7 @@ function IntensityHistogram() {
             min={0}
             max={254}
             value={lutMin}
+            disabled={autoContrast}
             onChange={(e) => set("lutMin", Math.min(Number(e.target.value) || 0, lutMax - 1))}
             className="w-12 h-6 text-xs tabular-nums bg-background border border-border rounded px-1 text-foreground"
           />
@@ -281,6 +292,7 @@ function IntensityHistogram() {
             min={1}
             max={255}
             value={lutMax}
+            disabled={autoContrast}
             onChange={(e) => set("lutMax", Math.max(Number(e.target.value) || 255, lutMin + 1))}
             className="w-12 h-6 text-xs tabular-nums bg-background border border-border rounded px-1 text-foreground"
           />
@@ -289,6 +301,7 @@ function IntensityHistogram() {
           variant="subtle"
           size="xs"
           className="ml-auto text-[10px] h-6"
+          disabled={autoContrast}
           onClick={() => {
             set("lutMin", 0);
             set("lutMax", 255);

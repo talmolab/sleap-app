@@ -9,7 +9,7 @@
  * Mirrors SLEAP's QtVideoPlayer.
  */
 
-import { useRef, useEffect, useCallback, useState } from "react";
+import { useRef, useEffect, useCallback, useState, useMemo } from "react";
 import { PredictedInstance } from "@talmolab/sleap-io.js";
 import { useAppStore } from "../../stores/appStore";
 import { debugFlags } from "../panels/DebugPanel";
@@ -85,8 +85,43 @@ export function VideoPlayer() {
   const trailLength = useAppStore((s) => s.trailLength);
   const lutMin = useAppStore((s) => s.lutMin);
   const lutMax = useAppStore((s) => s.lutMax);
+  const autoContrast = useAppStore((s) => s.autoContrast);
+  const frameHistogram = useAppStore((s) => s.frameHistogram);
   const colormap = useAppStore((s) => s.colormap);
   const rotation = useAppStore((s) => s.rotation);
+
+  // Per-frame auto-contrast levels: percentile-clipped min/max from the frame
+  // histogram. Only applied when `autoContrast` is on; the manual lutMin/lutMax
+  // are left untouched so toggling is instant and non-destructive.
+  const [autoLutMin, autoLutMax] = useMemo(() => {
+    if (!frameHistogram) return [0, 255] as [number, number];
+    let total = 0;
+    for (let i = 0; i < 256; i++) total += frameHistogram[i];
+    if (total === 0) return [0, 255] as [number, number];
+    const clip = 0.005; // ignore the darkest/brightest 0.5% (hot/dead pixels)
+    const loTarget = total * clip;
+    const hiTarget = total * (1 - clip);
+    let cum = 0;
+    let lo = 0;
+    for (let i = 0; i < 256; i++) {
+      cum += frameHistogram[i];
+      if (cum >= loTarget) {
+        lo = i;
+        break;
+      }
+    }
+    cum = 0;
+    let hi = 255;
+    for (let i = 0; i < 256; i++) {
+      cum += frameHistogram[i];
+      if (cum >= hiTarget) {
+        hi = i;
+        break;
+      }
+    }
+    if (hi <= lo) hi = Math.min(255, lo + 1);
+    return [lo, hi] as [number, number];
+  }, [frameHistogram]);
   const defaultToPan = useAppStore((s) => s.defaultToPan);
   const fitSelection = useAppStore((s) => s.fitSelection);
   const areaDeleteMode = useAppStore((s) => s.areaDeleteMode);
@@ -601,7 +636,10 @@ export function VideoPlayer() {
     }
     ctx.imageSmoothingEnabled = baseScale * zoom <= 2;
     try {
-      const needsLUT = lutMin > 0 || lutMax < 255;
+      // Auto-contrast overrides the manual LUT with per-frame percentile levels.
+      const effLutMin = autoContrast ? autoLutMin : lutMin;
+      const effLutMax = autoContrast ? autoLutMax : lutMax;
+      const needsLUT = effLutMin > 0 || effLutMax < 255;
       const cmapLUT = COLORMAPS[colormap] ?? null;
       if (needsLUT || cmapLUT) {
         const offscreen = new OffscreenCanvas(bmp.width, bmp.height);
@@ -609,13 +647,13 @@ export function VideoPlayer() {
         offCtx.drawImage(bmp, 0, 0);
         const imgData = offCtx.getImageData(0, 0, bmp.width, bmp.height);
         const d = imgData.data;
-        const range = lutMax - lutMin || 1;
+        const range = effLutMax - effLutMin || 1;
         for (let i = 0; i < d.length; i += 4) {
           let r = d[i], g = d[i + 1], b = d[i + 2];
           if (needsLUT) {
-            r = Math.max(0, Math.min(255, ((r - lutMin) / range) * 255));
-            g = Math.max(0, Math.min(255, ((g - lutMin) / range) * 255));
-            b = Math.max(0, Math.min(255, ((b - lutMin) / range) * 255));
+            r = Math.max(0, Math.min(255, ((r - effLutMin) / range) * 255));
+            g = Math.max(0, Math.min(255, ((g - effLutMin) / range) * 255));
+            b = Math.max(0, Math.min(255, ((b - effLutMin) / range) * 255));
           }
           if (cmapLUT) {
             // Use luminance of the (possibly LUT-adjusted) pixel to index colormap
@@ -634,7 +672,7 @@ export function VideoPlayer() {
       // Bitmap was closed (detached) by a racing frame load — skip, next frame will redraw
     }
     ctx.restore();
-  }, [frameDims, containerSize, zoom, panX, panY, baseScale, offsetX, offsetY, bitmapVersion, lutMin, lutMax, colormap, rotation]);
+  }, [frameDims, containerSize, zoom, panX, panY, baseScale, offsetX, offsetY, bitmapVersion, lutMin, lutMax, autoContrast, autoLutMin, autoLutMax, colormap, rotation]);
 
   // Find the current labeled frame and update store
   useEffect(() => {
