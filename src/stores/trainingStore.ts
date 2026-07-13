@@ -49,7 +49,8 @@ export type ModelType =
   | "top_down"
   | "bottom_up"
   | "top_down_id"
-  | "bottom_up_id";
+  | "bottom_up_id"
+  | "centroid";
 
 export type Backbone = "unet" | "convnext" | "swint";
 
@@ -294,6 +295,8 @@ export function getConfigSlots(modelType: ModelType): string[] {
     case "top_down":
     case "top_down_id":
       return ["centroid", "centered_instance"];
+    case "centroid":
+      return ["centroid"];
     default:
       return ["config"];
   }
@@ -1266,8 +1269,17 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         set({ modelOutputDirs: trainedModelPaths });
 
         // ── Post-training inference ───────────────────────────
+        // Centroid-only runs have no `sleap-nn track` pipeline (that needs a
+        // paired centered-instance model); standalone centroid prediction uses
+        // `sleap-nn predict`, which isn't wired yet. Skip auto-inference so a
+        // locator run doesn't mis-route to a broken top-down `track` command.
         const inferenceTarget = localOpts?.inferenceTarget;
-        if (inferenceTarget && inferenceTarget !== "nothing" && trainedModelPaths.length > 0) {
+        if (
+          inferenceTarget &&
+          inferenceTarget !== "nothing" &&
+          trainedModelPaths.length > 0 &&
+          config.modelType !== "centroid"
+        ) {
           set((s) => ({
             log: appendLog(s.log, `— Training complete. Running inference (${inferenceTarget}) with models: ${trainedModelPaths.join(", ")}...`),
           }));

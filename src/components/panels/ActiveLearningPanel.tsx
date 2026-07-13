@@ -14,6 +14,7 @@ import { useActiveLearningStore } from "../../stores/activeLearningStore";
 import { useTrainingStore } from "../../stores/trainingStore";
 import { generateCrops } from "@/lib/activeLearning/generateCrops";
 import { configFromSkeleton } from "@/lib/activeLearning/config";
+import { startCentroidLocatorTraining } from "@/lib/activeLearning/trainLocator";
 import { generateSuggestionFrames } from "@/lib/suggestionStrategies";
 import { toast } from "@/lib/notify";
 import { Button } from "@/components/ui/button";
@@ -69,7 +70,7 @@ export function ActiveLearningPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [overlayVersion, projectLoaded]);
 
-  const trainThreshold = config?.localize.seedFrames ?? 20;
+  const trainThreshold = config?.localize.trainAfter ?? 100;
   const trainingRunning = trainingStatus === "running";
   const trainingDone = trainingStatus === "completed";
   const isSeeding = labelingMode === "seed";
@@ -164,12 +165,8 @@ export function ActiveLearningPanel() {
     );
   };
 
-  const goToTraining = () => {
-    useAppStore.getState().set("sidebarActivePanel", "training");
-    toast.info(
-      "In Training, pick the Centroid profile and start it. Training runs in the background — " +
-        "come back here and keep seeding while it trains.",
-    );
+  const startLocatorTraining = () => {
+    if (config) void startCentroidLocatorTraining(config);
   };
 
   const doGenerateCrops = () => {
@@ -342,7 +339,7 @@ export function ActiveLearningPanel() {
                 size="sm"
                 className="w-full"
                 variant={primaryIs("train") ? "default" : "outline"}
-                onClick={goToTraining}
+                onClick={startLocatorTraining}
               >
                 Train centroid locator →
               </Button>

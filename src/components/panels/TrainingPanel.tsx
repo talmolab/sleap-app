@@ -52,6 +52,7 @@ const MODEL_TYPE_OPTIONS: { value: ModelType; label: string }[] = [
   { value: "bottom_up", label: "Bottom-Up" },
   { value: "top_down_id", label: "Top-Down + ID" },
   { value: "bottom_up_id", label: "Bottom-Up + ID" },
+  { value: "centroid", label: "Centroid (locator)" },
 ];
 
 // ── Skeleton ↔ Pipeline Compatibility & Recommendation ───────────────────────

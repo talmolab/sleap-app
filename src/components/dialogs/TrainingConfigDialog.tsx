@@ -54,6 +54,7 @@ const MODEL_TYPE_LABELS: Record<ModelType, string> = {
   bottom_up: "Bottom-Up",
   top_down_id: "Top-Down + ID",
   bottom_up_id: "Bottom-Up + ID",
+  centroid: "Centroid (locator)",
 };
 
 const MODEL_TYPE_DESCRIPTIONS: Record<ModelType, string> = {
@@ -62,6 +63,7 @@ const MODEL_TYPE_DESCRIPTIONS: Record<ModelType, string> = {
   bottom_up: 'This pipeline uses a single "bottom-up" model that predicts confidence maps for all body parts and part affinity fields to group them into individual animals.',
   top_down_id: 'This pipeline uses two models: a "centroid" model to locate and crop around each animal in the frame, and a "top-down identity" model that predicts node locations and classifies identity for each individual animal.',
   bottom_up_id: 'This pipeline uses a single "bottom-up identity" model that predicts confidence maps, part affinity fields for grouping, and identity classification maps.',
+  centroid: 'This pipeline trains only a "centroid" model that locates each animal by a chosen anchor part — used to crop/zoom around animals or to seed active-learning. It does not predict body-part locations on its own.',
 };
 
 const PIPELINE_NAV = [
