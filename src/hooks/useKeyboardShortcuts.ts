@@ -306,6 +306,8 @@ export function useKeyboardShortcuts() {
           s.set("areaDeleteMode", false);
         } else if (s.labelingMode === "place") {
           s.exitPlacementMode();
+        } else if (s.labelingMode === "seed") {
+          s.exitSeedMode();
         } else {
           s.setInstance(null);
         }

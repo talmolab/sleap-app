@@ -135,8 +135,10 @@ export interface AppState {
   clipboardInstance: Instance | null;
 
   // === Labeling mode state (transient, not persisted) ===
-  labelingMode: "select" | "place";
+  labelingMode: "select" | "place" | "seed";
   placementNodeIdx: number | null;
+  /** Skeleton node index a "seed" click places (the centroid/body-center node). */
+  seedNodeIdx: number;
 
   // === Frame range ===
   frameRange: [number, number] | null;
@@ -207,6 +209,9 @@ export interface AppState {
   setHelpDialogOpen: (open: boolean) => void;
   enterPlacementMode: () => void;
   exitPlacementMode: () => void;
+  /** Enter centroid-seeding mode; each click drops a new one-node instance. */
+  enterSeedMode: (nodeIdx?: number) => void;
+  exitSeedMode: () => void;
   togglePanelVisibility: (panelId: string) => void;
   resetPanels: () => void;
   toggle: (key: keyof AppState) => void;
@@ -329,8 +334,9 @@ export const useAppStore = create<AppState>()(
       clipboardInstance: null,
 
       // Labeling mode state (transient)
-      labelingMode: "select" as "select" | "place",
+      labelingMode: "select" as "select" | "place" | "seed",
       placementNodeIdx: null as number | null,
+      seedNodeIdx: 0,
 
       // Frame range
       frameRange: null,
@@ -600,6 +606,17 @@ export const useAppStore = create<AppState>()(
         set((state) => {
           state.labelingMode = "select";
           state.placementNodeIdx = null;
+        }),
+
+      enterSeedMode: (nodeIdx?: number) =>
+        set((state) => {
+          state.labelingMode = "seed";
+          if (typeof nodeIdx === "number") state.seedNodeIdx = nodeIdx;
+        }),
+
+      exitSeedMode: () =>
+        set((state) => {
+          state.labelingMode = "select";
         }),
 
       // Toggle a sidebar panel's visibility (#135). Hiding the currently-active

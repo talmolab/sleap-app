@@ -39,6 +39,8 @@ import {
   ConvertPredictionToInstance,
   BeginEdit,
   DeletePredictionsByArea,
+  SeedCentroid,
+  DeleteSelectedInstance,
 } from "../../commands";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -1246,8 +1248,20 @@ export function VideoPlayer() {
       const currentInstance = useAppStore.getState().instance;
       shiftHeldOnMouseDown.current = e.shiftKey;
 
-      // Node placement mode: place the target node (with undo snapshot)
       const store = useAppStore.getState();
+
+      // Centroid-seeding mode: every empty-space click drops a NEW one-node
+      // instance (no existing selection required), so we return before the
+      // node/instance hit-testing below. Each click is its own undo entry.
+      if (store.labelingMode === "seed") {
+        e.preventDefault();
+        const [sx, sy] = toSourceCoords(useAppStore.getState().video, x, y);
+        commandContext.execute(SeedCentroid, { x: sx, y: sy });
+        store.bumpOverlayVersion();
+        return;
+      }
+
+      // Node placement mode: place the target node (with undo snapshot)
       if (store.labelingMode === "place" && currentInstance && !("score" in currentInstance)) {
         const targetIdx = store.placementNodeIdx;
         if (targetIdx !== null && targetIdx >= 0 && targetIdx < currentInstance.points.length) {
@@ -1716,6 +1730,24 @@ export function VideoPlayer() {
       const { x, y } = canvasToScene(e.clientX, e.clientY);
       const instances = renderedInstancesRef.current;
 
+      // Seeding mode: right-click removes the clicked seed (fix a misclick), or
+      // undoes the last dropped centroid when clicking empty space. No menu.
+      if (useAppStore.getState().labelingMode === "seed") {
+        const seedNodeHit = hitTestNode(instances, x, y, markerSize * 2);
+        const instIdx = seedNodeHit
+          ? seedNodeHit.instanceIdx
+          : hitTestInstance(instances, x, y);
+        const lf = useAppStore.getState().labeledFrame;
+        if (instIdx !== null && lf) {
+          useAppStore.getState().setInstance(lf.instances[instIdx]);
+          commandContext.execute(DeleteSelectedInstance);
+        } else {
+          commandContext.undo();
+        }
+        useAppStore.getState().bumpOverlayVersion();
+        return;
+      }
+
       // Check if right-clicking on a node
       const nodeHit = hitTestNode(instances, x, y, markerSize * 2);
       if (nodeHit) {
@@ -1780,7 +1812,7 @@ export function VideoPlayer() {
         ref={containerRef}
         className={cn(
           "flex-1 relative overflow-hidden bg-background min-h-0",
-          isPanning ? "cursor-grabbing" : isZoomDragging ? "cursor-zoom-in" : (shouldPan && isCmdHeld) ? "cursor-zoom-in" : shouldPan ? "cursor-grab" : isDragging ? "cursor-grabbing" : areaDeleteMode ? "cursor-crosshair" : interactionMode === "marquee" ? "cursor-crosshair" : isPlacingNodes ? "cursor-cell" : hoveredNode ? "cursor-pointer" : "cursor-default"
+          isPanning ? "cursor-grabbing" : isZoomDragging ? "cursor-zoom-in" : (shouldPan && isCmdHeld) ? "cursor-zoom-in" : shouldPan ? "cursor-grab" : isDragging ? "cursor-grabbing" : areaDeleteMode ? "cursor-crosshair" : interactionMode === "marquee" ? "cursor-crosshair" : labelingMode === "seed" ? "cursor-cell" : isPlacingNodes ? "cursor-cell" : hoveredNode ? "cursor-pointer" : "cursor-default"
         )}
         onMouseMove={crosshairActive ? handleCrosshairMove : undefined}
         onMouseLeave={

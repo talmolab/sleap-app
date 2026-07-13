@@ -49,6 +49,7 @@ export {
 // Edit commands
 export {
   AddInstance,
+  SeedCentroid,
   DeleteSelectedInstance,
   SetPointLocation,
   CopyInstance,

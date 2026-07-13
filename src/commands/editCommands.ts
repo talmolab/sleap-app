@@ -76,6 +76,64 @@ export const AddInstance: Command = {
   },
 };
 
+/**
+ * Drop a single "centroid" point as a new instance (active-learning Phase 1).
+ *
+ * Unlike {@link AddInstance} (which places every node via `placeInstance` and
+ * enters placement mode), this creates an empty instance and marks ONLY the
+ * seed node visible at the clicked location — the one-click-per-animal seeding
+ * interaction. Each click is its own undoable command, so Ctrl+Z removes
+ * exactly one dropped centroid.
+ *
+ * Params: `{ x, y }` in SOURCE coordinates; optional `nodeIdx` (defaults to the
+ * store's `seedNodeIdx`, i.e. the configured centroid node).
+ */
+export const SeedCentroid: Command = {
+  name: "SeedCentroid",
+  topics: [UpdateTopic.Frame, UpdateTopic.Instance],
+  execute(ctx: CommandContext, params?: Record<string, unknown>) {
+    const { labels, video, frameIdx, skeleton } = ctx.state;
+    if (!labels || !video || !skeleton) return;
+
+    if (skeleton.nodes.length === 0) {
+      toast.info("Add at least one node to the skeleton before seeding.");
+      return;
+    }
+
+    const x = params?.x;
+    const y = params?.y;
+    if (typeof x !== "number" || typeof y !== "number") return;
+
+    const rawIdx = params?.nodeIdx;
+    let nodeIdx =
+      typeof rawIdx === "number" ? rawIdx : useAppStore.getState().seedNodeIdx;
+    if (nodeIdx < 0 || nodeIdx >= skeleton.nodes.length) nodeIdx = 0;
+
+    // Find or create the LabeledFrame for this video + frame (mirrors AddInstance).
+    const currentFrames = labels.find({ video, frameIdx });
+    let lf: LabeledFrame;
+    if (currentFrames.length > 0) {
+      lf = currentFrames[0];
+    } else {
+      lf = new LabeledFrame({ video, frameIdx });
+      labels.append(lf);
+    }
+
+    // Empty instance = all nodes NaN/invisible; mark just the seed node.
+    // Index-assign (never spread) so the columnar PointView writes back.
+    const instance = Instance.empty({ skeleton });
+    instance.points[nodeIdx].xy = [x, y];
+    instance.points[nodeIdx].visible = true;
+    instance.points[nodeIdx].complete = true;
+
+    lf.instances.push(instance);
+
+    ctx.state.setLabeledFrame(lf);
+    ctx.state.setInstance(instance);
+    ctx.state.markChanged();
+  },
+};
+
 /** Remove the currently selected instance from its frame. */
 export const DeleteSelectedInstance: Command = {
   name: "DeleteSelectedInstance",
