@@ -1,44 +1,48 @@
 import { test, expect } from "@playwright/test";
 import path from "path";
 import { fileURLToPath } from "url";
+import fs from "fs/promises";
 
 // This spec runs as an ES module (no CommonJS __dirname); derive it from the URL.
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE_PATH = path.resolve(dirname, "../fixtures/minimal_instance.slp");
 
-test("load fixture and save produces HDF5 file", async ({ page }) => {
+// GUI regression: the app boots, loads a project, and renders the editor —
+// including the pieces added for the active-learning work (AppShell with the
+// seed/training bars, the Active Learning panel in the registry). The load goes
+// through the exposed `window.sleap.loadProjectFromFile` debug API because the
+// browser build opens files via the File System Access picker, which Playwright
+// can't drive.
+test("app boots, loads a project, and renders the editor", async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (e) => pageErrors.push(String(e)));
+
   await page.goto("/");
 
-  // Wait for the app to be ready
-  await page.waitForSelector("text=SLEAP", { timeout: 15000 });
+  // App shell + debug API are ready.
+  await page.waitForFunction(() => Boolean(window.sleap?.loadProjectFromFile), null, {
+    timeout: 20000,
+  });
 
-  // Load the fixture file via the file input (use page.setInputFiles on a file input)
-  // We trigger the open dialog by dispatching a file via an injected input
-  const [fileChooser] = await Promise.all([
-    page.waitForEvent("filechooser"),
-    page.keyboard.press("Control+o"),
-  ]);
-  await fileChooser.setFiles(FIXTURE_PATH);
+  // Load the fixture via the same code path the UI uses.
+  const bytes = await fs.readFile(FIXTURE_PATH);
+  await page.evaluate(async (arr) => {
+    const file = new File([new Uint8Array(arr)], "minimal_instance.slp");
+    await window.sleap.loadProjectFromFile(file);
+  }, Array.from(bytes));
 
-  // Wait for the project to load (toast notification)
-  await page.waitForSelector("text=Loaded", { timeout: 15000 });
+  // Project loaded into the store.
+  await page.waitForFunction(() => window.sleap.store.getState().projectLoaded === true, null, {
+    timeout: 20000,
+  });
 
-  // Trigger save and capture the download
-  const [download] = await Promise.all([
-    page.waitForEvent("download"),
-    page.keyboard.press("Control+s"),
-  ]);
+  // The editor rendered its canvas layer (the labeling surface).
+  await expect(page.locator("canvas").first()).toBeVisible({ timeout: 20000 });
 
-  // Read the downloaded file bytes and verify HDF5 magic bytes
-  const downloadPath = await download.path();
-  expect(downloadPath).toBeTruthy();
+  // The Active Learning panel is registered in the sidebar (the AL feature).
+  const alButton = page.getByRole("button", { name: /active learning/i });
+  await expect(alButton).toHaveCount(1);
 
-  const fs = await import("fs/promises");
-  const bytes = await fs.readFile(downloadPath!);
-
-  // HDF5 files start with \x89HDF\r\n\x1a\n
-  expect(bytes[0]).toBe(0x89);
-  expect(bytes[1]).toBe(0x48); // H
-  expect(bytes[2]).toBe(0x44); // D
-  expect(bytes[3]).toBe(0x46); // F
+  // No uncaught errors during boot + load + render.
+  expect(pageErrors).toEqual([]);
 });

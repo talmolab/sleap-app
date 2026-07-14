@@ -9,5 +9,10 @@ export default defineConfig({
   },
   use: {
     baseURL: "http://localhost:5173",
+    // Use the system Google Chrome ("chrome" channel) rather than Playwright's
+    // downloaded chromium — the CI/dev browser download is fragile here, and the
+    // app only needs a Chromium engine to exercise. Falls back naturally if a
+    // future runner installs the bundled browser.
+    channel: "chrome",
   },
 });
