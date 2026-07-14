@@ -6,7 +6,7 @@
  */
 
 import type { Labels } from "@talmolab/sleap-io.js";
-import { saveSlpToBytes } from "@talmolab/sleap-io.js";
+import { loadSlp, saveSlpToBytes } from "@talmolab/sleap-io.js";
 import { useAppStore } from "../stores/appStore";
 import { toast } from "@/lib/notify";
 import { getPlatform } from "../platform/index";
@@ -52,6 +52,11 @@ export async function saveProjectAsSlp(
       });
       return;
     }
+    // Embedded-frame count now (backends open) for post-save verification (Feature 3).
+    const inEmbeddedCount = labels.videos.reduce(
+      (n, v) => n + (v.embeddedFrameIndices?.length ?? 0),
+      0
+    );
 
     // Embedded (pkg.slp) projects: saveSlpToBytes drops the embedded image
     // datasets unless an embed mode is passed (#213). The plan picks the mode
@@ -83,6 +88,25 @@ export async function saveProjectAsSlp(
     } finally {
       plan.restore();
     }
+
+    // Post-save verification (#213 backstop): confirm the written bytes kept every
+    // embedded frame before we touch disk. openVideos:true so the reloaded videos
+    // expose embeddedFrameIndices. (The size-guard already ensured this project is
+    // small enough to reload safely.)
+    if (isEmbedded) {
+      const verify = await loadSlp(bytes, { openVideos: true });
+      const outEmbeddedCount = verify.videos.reduce(
+        (n, v) => n + (v.embeddedFrameIndices?.length ?? 0),
+        0
+      );
+      if (outEmbeddedCount < inEmbeddedCount) {
+        toast.error("Save aborted — embedded frames would be lost", {
+          description: `Verification found ${outEmbeddedCount} of ${inEmbeddedCount} embedded frames in the output. Your file was not modified.`,
+        });
+        return;
+      }
+    }
+
     console.log(`[save] Saving project via ${platform.isTauri ? "Tauri" : "browser"} backend (${bytes.byteLength} bytes)`);
 
     if (platform.isTauri) {
