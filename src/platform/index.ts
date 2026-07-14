@@ -18,6 +18,8 @@ export interface PlatformAPI {
   readFile(path: string): Promise<Uint8Array>;
   /** Write binary data to a file. */
   writeFile(path: string, data: Uint8Array): Promise<void>;
+  /** Atomically rename/move a file (used for crash-safe in-place saves). */
+  rename(oldPath: string, newPath: string): Promise<void>;
   /** Show a file open dialog. Returns path(s)/File(s) or null if cancelled. */
   showOpenDialog(options?: {
     filters?: FileFilter[];
@@ -61,6 +63,10 @@ function createWebPlatform(): PlatformAPI {
 
     async writeFile(_path: string, _data: Uint8Array): Promise<void> {
       throw new Error("writeFile by path is not supported in browser mode.");
+    },
+
+    async rename(): Promise<void> {
+      throw new Error("rename by path is not supported in browser mode.");
     },
 
     async showOpenDialog(options): Promise<File | File[] | null> {
@@ -142,7 +148,7 @@ function createWebPlatform(): PlatformAPI {
 /** Create the Tauri-based platform implementation. */
 async function createTauriPlatform(): Promise<PlatformAPI> {
   // Dynamic imports so these don't fail in browser mode
-  const { readFile, writeFile, exists } = await import("@tauri-apps/plugin-fs");
+  const { readFile, writeFile, exists, rename } = await import("@tauri-apps/plugin-fs");
   const { open, save } = await import("@tauri-apps/plugin-dialog");
 
   return {
@@ -156,6 +162,11 @@ async function createTauriPlatform(): Promise<PlatformAPI> {
     async writeFile(path: string, data: Uint8Array): Promise<void> {
       console.log(`[platform] writeFile: ${path} (${data.byteLength} bytes)`);
       await writeFile(path, data);
+    },
+
+    async rename(oldPath: string, newPath: string): Promise<void> {
+      console.log(`[platform] rename: ${oldPath} -> ${newPath}`);
+      await rename(oldPath, newPath);
     },
 
     async showOpenDialog(options): Promise<string | string[] | null> {

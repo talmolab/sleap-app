@@ -87,7 +87,11 @@ export async function saveProjectAsSlp(
 
     if (platform.isTauri) {
       if (existingPath) {
-        await platform.writeFile(existingPath, bytes);
+        // Atomic replace: write a temp file then rename over the original so a
+        // crash mid-write can't corrupt the only copy (#213).
+        const tmpPath = `${existingPath}.saving.tmp`;
+        await platform.writeFile(tmpPath, bytes);
+        await platform.rename(tmpPath, existingPath);
         displayName = existingPath;
       } else {
         const savePath = await platform.showSaveDialog({
