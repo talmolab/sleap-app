@@ -86,19 +86,19 @@ export function startCentroidLocatorTraining(alConfig: ActiveLearningConfig): bo
     toast.error("Locator training runs in the desktop app only.");
     return false;
   }
-  // sleap-nn is normally a `uv tool` (its own venv), invoked as the `sleap-nn`
-  // command by runTraining — so it is NOT importable from a selected Python and
-  // needs no interpreter selected. Detect it the way the Inference panel does
-  // (the uv tool list); also accept a python-venv install (pythonCheck).
-  const env = useEnvironmentStore.getState();
-  const sleapNnAvailable =
-    env.tools.some((t) => t.name === "sleap-nn" || t.commands?.includes("sleap-nn")) ||
-    !!env.pythonCheck?.sleapNnVersion;
-  if (!sleapNnAvailable) {
-    toast.error("sleap-nn isn't detected. Install it in the Environment panel, then train.");
-    return false;
-  }
   if (!setupCentroidTraining(alConfig)) return false;
+
+  // Do NOT hard-block on sleap-nn detection. Environment detection is lazy (it
+  // runs when the Environment/Inference panel opens), so env.tools can be empty
+  // here even though sleap-nn is installed as a `uv tool`. run_python_command
+  // spawns `sleap-nn` with an augmented PATH (~/.local/bin, Homebrew), so a
+  // `uv tool install sleap-nn` runs regardless — and if it's genuinely missing
+  // the run fails and the TrainingProgressBar surfaces the error (no silent
+  // success). Kick off detection so the panels catch up.
+  const env = useEnvironmentStore.getState();
+  if (env.detectionStatus !== "done" && env.detectionStatus !== "checking") {
+    void env.refresh();
+  }
 
   void useTrainingStore.getState().startTraining({ inferenceTarget: "nothing" });
   return true;
