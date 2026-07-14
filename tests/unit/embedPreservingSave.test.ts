@@ -135,7 +135,7 @@ describe("embed-preserving save round trip", () => {
     expect(labels.suggestions.map((s) => s.frameIdx)).toEqual([30]);
 
     const reloaded = await loadSlp(
-      bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+      bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
       { openVideos: true }
     );
     const video = reloaded.videos[0];
@@ -156,7 +156,7 @@ describe("embed-preserving save round trip", () => {
     const { labels } = makeEmbeddedProject();
     const bytes = await saveSlpToBytes(labels); // pre-fix behavior
     const reloaded = await loadSlp(
-      bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+      bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
       { openVideos: false }
     );
     // No embedded image data survives — the videos_json entry no longer
