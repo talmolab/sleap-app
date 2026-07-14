@@ -77,8 +77,16 @@ function mockDeps(opts: {
   const saveSlpToBytes = vi.fn(
     async () => opts.saveBytes ?? new Uint8Array([1, 2, 3, 4])
   );
+  // The reloaded (verify) video carries a `close` spy so we can assert the
+  // save flow closes the backend it opened just to count (leak fix).
+  const verifyClose = vi.fn();
   const loadSlp = vi.fn(async () => ({
-    videos: [{ embeddedFrameIndices: opts.reloadedEmbeddedIndices ?? [1, 2, 3] }],
+    videos: [
+      {
+        embeddedFrameIndices: opts.reloadedEmbeddedIndices ?? [1, 2, 3],
+        close: verifyClose,
+      },
+    ],
   }));
 
   vi.mock("@/platform/index", () => ({
@@ -98,7 +106,7 @@ function mockDeps(opts: {
     loadSlp,
   }));
 
-  return { writeFile, rename, saveSlpToBytes, loadSlp };
+  return { writeFile, rename, saveSlpToBytes, loadSlp, verifyClose };
 }
 
 async function toastMock() {
@@ -151,7 +159,7 @@ describe("saveProjectAsSlp — safety guards (#213)", () => {
     store.set("hasChanges", true);
 
     // in=3 embedded frames, but the reloaded output only has 2 → data loss.
-    const { saveSlpToBytes, loadSlp, writeFile, rename } = mockDeps({
+    const { saveSlpToBytes, loadSlp, writeFile, rename, verifyClose } = mockDeps({
       isTauri: true,
       reloadedEmbeddedIndices: [1, 2],
     });
@@ -166,6 +174,8 @@ describe("saveProjectAsSlp — safety guards (#213)", () => {
     expect(writeFile).not.toHaveBeenCalled();
     expect(rename).not.toHaveBeenCalled();
     expect(toast.error).toHaveBeenCalled();
+    // The verify backend is closed even on the abort path (no wasm leak).
+    expect(verifyClose).toHaveBeenCalledTimes(1);
     // clearChanges() is never reached, so hasChanges stays true.
     expect(useAppStore.getState().hasChanges).toBe(true);
   });
@@ -178,7 +188,7 @@ describe("saveProjectAsSlp — safety guards (#213)", () => {
     store.set("hasChanges", true);
 
     // Reloaded output keeps all 3 embedded frames → verification passes.
-    const { saveSlpToBytes, loadSlp, writeFile, rename } = mockDeps({
+    const { saveSlpToBytes, loadSlp, writeFile, rename, verifyClose } = mockDeps({
       isTauri: true,
       reloadedEmbeddedIndices: [1, 2, 3],
     });
@@ -198,6 +208,8 @@ describe("saveProjectAsSlp — safety guards (#213)", () => {
     expect(rename).toHaveBeenCalledTimes(1);
     expect(String(rename.mock.calls[0][0])).toBe(tmpPath);
     expect(String(rename.mock.calls[0][1])).toBe("/data/proj.pkg.slp");
+    // Verify backend closed after counting (no wasm leak on the success path).
+    expect(verifyClose).toHaveBeenCalledTimes(1);
     // Success path: changes cleared, no error toast.
     expect(useAppStore.getState().hasChanges).toBe(false);
     expect(toast.success).toHaveBeenCalled();

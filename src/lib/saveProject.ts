@@ -12,6 +12,13 @@ import { toast } from "@/lib/notify";
 import { getPlatform } from "../platform/index";
 import { planEmbedPreservingSave } from "./embedPreservingSave";
 
+/** Total number of embedded frames across the given videos (#213). */
+function countEmbeddedFrames(
+  videos: readonly { embeddedFrameIndices?: number[] | null }[]
+): number {
+  return videos.reduce((n, v) => n + (v.embeddedFrameIndices?.length ?? 0), 0);
+}
+
 /**
  * Save a Labels object as an SLP file.
  *
@@ -52,17 +59,16 @@ export async function saveProjectAsSlp(
       });
       return;
     }
-    // Embedded-frame count now (backends open) for post-save verification (Feature 3).
-    const inEmbeddedCount = labels.videos.reduce(
-      (n, v) => n + (v.embeddedFrameIndices?.length ?? 0),
-      0
-    );
 
     // Embedded (pkg.slp) projects: saveSlpToBytes drops the embedded image
     // datasets unless an embed mode is passed (#213). The plan picks the mode
     // and temporarily marks not-otherwise-covered embedded frames as
     // suggestions so the save is lossless.
     const plan = await planEmbedPreservingSave(labels);
+    // Count embedded frames AFTER the plan: it runs ensureLoaded() on deferred
+    // backends, which is what populates embeddedFrameIndices. The input videos'
+    // indices don't change afterward, so this is the count to verify against.
+    const inEmbeddedCount = countEmbeddedFrames(labels.videos);
     let bytes: Uint8Array;
     try {
       if (plan.unreadable.length > 0) {
@@ -95,10 +101,14 @@ export async function saveProjectAsSlp(
     // small enough to reload safely.)
     if (isEmbedded) {
       const verify = await loadSlp(bytes, { openVideos: true });
-      const outEmbeddedCount = verify.videos.reduce(
-        (n, v) => n + (v.embeddedFrameIndices?.length ?? 0),
-        0
-      );
+      let outEmbeddedCount: number;
+      try {
+        outEmbeddedCount = countEmbeddedFrames(verify.videos);
+      } finally {
+        // Close backends we opened just to count — sleap-io.js has no
+        // FinalizationRegistry, so a discarded reload leaks wasm memory.
+        verify.videos.forEach((v) => v?.close?.());
+      }
       if (outEmbeddedCount < inEmbeddedCount) {
         toast.error("Save aborted — embedded frames would be lost", {
           description: `Verification found ${outEmbeddedCount} of ${inEmbeddedCount} embedded frames in the output. Your file was not modified.`,
