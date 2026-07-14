@@ -21,6 +21,7 @@ import { toast } from "@/lib/notify";
 import { resolveExternalVideos } from "./resolveVideos";
 import { installTauriFsResolver } from "./fsResolver";
 import { fileSize, readRange } from "./nativeRange";
+import { sleapCmd } from "./sleapPlugin";
 
 // Files larger than this open via the B-seam native range reader (lazy, on-disk)
 // instead of reading the whole file into WASM memory. Below it, eager is simpler
@@ -185,7 +186,9 @@ export async function loadProjectFromPath(
       // each one directly — no candidate generation.
       const { invoke } = await import("@tauri-apps/api/core");
       const nativeReadImage = async (p: string): Promise<Uint8Array> => {
-        const buf = await invoke<ArrayBuffer>("read_image_file", { path: p });
+        const buf = await invoke<ArrayBuffer>(sleapCmd("read_image_file"), {
+          path: p,
+        });
         return new Uint8Array(buf);
       };
       setImageBytesReader(nativeReadImage);

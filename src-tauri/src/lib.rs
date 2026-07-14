@@ -158,6 +158,142 @@ fn normalize_path(path: PathBuf) -> PathBuf {
     parts.iter().collect()
 }
 
+/// SPIKE (spike/tauri-localhost-origin): the inlined "sleap" plugin bundling the range
+/// reader's byte-pipe commands (`read_range`, `file_size`) so they resolve as
+/// `plugin:sleap|...` and stay reachable from the http://localhost (remote) origin. The
+/// runtime `R` is inferred from the return type, so no `Wry` hardcoding.
+fn sleap_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
+    tauri::plugin::Builder::new("sleap")
+        .invoke_handler(tauri::generate_handler![
+            read_range,
+            file_size,
+            get_initial_file,
+            read_image_file,
+            reveal_in_file_manager,
+            open_preferences_directory,
+            environment::detect_uv,
+            environment::detect_gpu,
+            environment::list_uv_tools,
+            environment::list_python_interpreters,
+            environment::list_downloadable_pythons,
+            environment::check_python,
+            environment::install_python,
+            environment::install_uv_tool,
+            environment::upgrade_uv_tool,
+            environment::update_uv,
+            environment::install_uv,
+            environment::run_python_command,
+            environment::cancel_command,
+            environment::start_zmq_relay,
+            environment::send_training_stop,
+            environment::stop_zmq_relay,
+            environment::start_progress_relay,
+            environment::stop_progress_relay,
+            rtc::rtc_join_room,
+            rtc::rtc_connect_worker,
+            rtc::rtc_send,
+            rtc::rtc_disconnect_worker,
+            rtc::rtc_leave_room,
+        ])
+        .build()
+}
+
+/// Auto-pick a free TCP port for the `http://localhost` origin. Picking a free port
+/// (instead of a fixed 1430) means a port already in use — a second app instance, a
+/// dev server, some other process — can't brick startup. Nothing is pinned: the
+/// runtime capability (`localhost_capability`) is built for whatever port we get, and
+/// the window URL uses the same value. Falls back to 1430 if the probe fails.
+fn pick_localhost_port() -> u16 {
+  std::net::TcpListener::bind("127.0.0.1:0")
+    .and_then(|listener| listener.local_addr())
+    .map(|addr| addr.port())
+    .unwrap_or(1430)
+}
+
+/// Path of the file that remembers the localhost port between launches
+/// (`~/.sleap-app/localhost-port`).
+fn localhost_port_file() -> Option<PathBuf> {
+  dirs::home_dir().map(|h| h.join(".sleap-app").join("localhost-port"))
+}
+
+/// Can we currently bind `127.0.0.1:<port>` (i.e. is the port free)? There's an
+/// inherent TOCTOU gap before the localhost plugin rebinds it — the same gap
+/// `pick_localhost_port` already has — but the window is tiny for a desktop-local port.
+fn port_is_free(port: u16) -> bool {
+  port != 0 && std::net::TcpListener::bind(("127.0.0.1", port)).is_ok()
+}
+
+/// Resolve the localhost origin port, PREFERRING a previously persisted port so the
+/// app's origin (`http://localhost:<port>`) stays STABLE across launches. WKWebView,
+/// WebKitGTK, and WebView2 all key `localStorage` + `IndexedDB` by origin *including the
+/// port*, so a fresh random port every launch would silently reset persisted UI prefs,
+/// the selected Python env, connect settings, and auth tokens. We remember the chosen
+/// port in `~/.sleap-app/localhost-port` and reuse it while it's still free; only if it's
+/// taken (a second instance, some other process) do we pick a new free port and rewrite
+/// the file. File I/O is best-effort — any failure just falls through to a fresh pick.
+fn resolve_localhost_port() -> u16 {
+  let port_file = localhost_port_file();
+
+  // Reuse the saved port when it parses and is still bindable.
+  if let Some(saved) = port_file
+    .as_ref()
+    .and_then(|p| std::fs::read_to_string(p).ok())
+    .and_then(|s| s.trim().parse::<u16>().ok())
+    .filter(|&p| port_is_free(p))
+  {
+    return saved;
+  }
+
+  // No usable saved port: pick a fresh free one and persist it (best-effort).
+  let port = pick_localhost_port();
+  if let Some(path) = port_file {
+    if let Some(parent) = path.parent() {
+      let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&path, port.to_string());
+  }
+  port
+}
+
+/// Runtime replacement for the old static `capabilities/localhost.json`: grants the
+/// main window's permission set to the `http://localhost:<port>` REMOTE origin for the
+/// auto-picked port. A window served over http://localhost is remote context, so the
+/// build-time (local) capabilities do NOT apply and every `invoke` / `plugin:sleap|…`
+/// call would be blocked without this. Mirrors the static file exactly (minus the
+/// editor-only `$schema`), with the dynamic port substituted. Added in `setup()`.
+fn localhost_capability(port: u16) -> String {
+  format!(
+    r#"{{
+  "identifier": "localhost-dynamic",
+  "description": "Runtime grant for the http://localhost origin with an auto-picked port (tauri-plugin-localhost).",
+  "local": false,
+  "remote": {{ "urls": ["http://localhost:{port}"] }},
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "pilot:default",
+    "fs:default",
+    "fs:allow-read-file",
+    "fs:allow-read-text-file",
+    "fs:allow-write-file",
+    "fs:allow-exists",
+    "fs:allow-stat",
+    {{ "identifier": "fs:scope", "allow": [{{ "path": "**" }}, {{ "path": "$HOME/.sleap-rtc/**" }}] }},
+    "dialog:default",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "shell:allow-open",
+    "updater:default",
+    "process:default",
+    "core:window:allow-close",
+    "core:window:allow-destroy",
+    "core:window:allow-set-title",
+    "sleap:default"
+  ]
+}}"#
+  )
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   // Extract the first non-flag argument as a file path to open on launch.
@@ -182,58 +318,103 @@ pub fn run() {
       .map(|p| p.to_string_lossy().into_owned());
   println!("[sleap-label] file_arg: {:?}", file_arg);
 
-  let builder = tauri::Builder::default()
+  // SPIKE (spike/tauri-localhost-origin): serve the frontend over http://localhost
+  // for any BUNDLED build so WKWebView grants crossOriginIsolated (→ SharedArrayBuffer
+  // for the B-seam range reader). `tauri::is_dev()` is false for both `tauri build`
+  // and `tauri build --debug` (bundled assets, tauri:// scheme) and true only under
+  // `tauri dev` (which already uses the Vite http origin) — it's the same signal Tauri
+  // uses to pick devUrl vs bundled assets, so our window URL always matches the asset
+  // mode. Escape hatch: SLEAP_ORIGIN=custom keeps the tauri:// scheme (A/B the flip).
+  let use_localhost = !tauri::is_dev()
+    && std::env::var("SLEAP_ORIGIN").map(|v| v != "custom").unwrap_or(true);
+  // WebKitGTK gates SharedArrayBuffer behind a JavaScriptCore runtime option: even a
+  // fully cross-origin-isolated page (COOP+COEP over the localhost origin;
+  // `crossOriginIsolated === true`) gets NO SharedArrayBuffer constructor without it
+  // (verified on WebKitGTK 2.52.3). Same mechanism GNOME Web uses to opt in. Must be
+  // in our env before the first WebView spawns its WebKitWebProcess, which inherits it.
+  #[cfg(target_os = "linux")]
+  std::env::set_var("JSC_useSharedArrayBuffer", "1");
+  // Resolved once here (persisted port reused when free, else a fresh free pick), then
+  // reused for the localhost server, the window URL, and the runtime capability so all
+  // three always agree. A STABLE port keeps the origin stable across launches, which is
+  // what preserves origin-scoped localStorage/IndexedDB (prefs, Python env, auth). 0
+  // when unused (tauri:// / dev).
+  let localhost_port = if use_localhost { resolve_localhost_port() } else { 0 };
+
+  let mut builder = tauri::Builder::default()
     .manage(InitialFile(Mutex::new(file_arg)))
     .manage(RunningProcess(Mutex::new(None)))
     .manage(ZmqRelay(Mutex::new(None)))
     .manage(ProgressRelay(Mutex::new(None)))
     .manage(tokio::sync::Mutex::new(rtc::RtcState::new()))
-    .invoke_handler(tauri::generate_handler![
-        get_initial_file,
-        read_image_file,
-        read_range,
-        file_size,
-        reveal_in_file_manager,
-        open_preferences_directory,
-        environment::detect_uv,
-        environment::detect_gpu,
-        environment::list_uv_tools,
-        environment::list_python_interpreters,
-        environment::list_downloadable_pythons,
-        environment::check_python,
-        environment::install_python,
-        environment::install_uv_tool,
-        environment::upgrade_uv_tool,
-        environment::update_uv,
-        environment::install_uv,
-        environment::run_python_command,
-        environment::cancel_command,
-        environment::start_zmq_relay,
-        environment::send_training_stop,
-        environment::stop_zmq_relay,
-        environment::start_progress_relay,
-        environment::stop_progress_relay,
-        rtc::rtc_join_room,
-        rtc::rtc_connect_worker,
-        rtc::rtc_send,
-        rtc::rtc_disconnect_worker,
-        rtc::rtc_leave_room,
-    ])
+    // All native commands live in the inlined `sleap` plugin (see sleap_plugin()) so they
+    // resolve as `plugin:sleap|…` and stay reachable when the app is served from the
+    // http://localhost origin (bare custom commands are blocked there — see build.rs).
     .plugin(tauri_plugin_fs::init())
     .plugin(tauri_plugin_dialog::init())
     .plugin(tauri_plugin_shell::init())
     .plugin(tauri_plugin_updater::Builder::new().build())
     .plugin(tauri_plugin_process::init())
-    .setup(|app| {
-      if cfg!(debug_assertions) {
-        app.handle().plugin(
-          tauri_plugin_log::Builder::default()
-            .level(log::LevelFilter::Info)
-            .build(),
-        )?;
-      }
-      Ok(())
-    });
+    // SPIKE (spike/tauri-localhost-origin): expose read_range + file_size as an INLINED
+    // plugin so they're reachable from the http://localhost (remote) origin — bare custom
+    // commands are blocked there (see build.rs). Command names become
+    // `plugin:sleap|read_range` / `plugin:sleap|file_size` (see nativeRange.ts).
+    .plugin(sleap_plugin());
+
+  // Register the localhost HTTP server only when we actually serve over it
+  // (bundled build + flag on). Inject COOP/COEP on every response — the plugin does
+  // NOT set them itself, and without them the http origin wouldn't be isolated either.
+  if use_localhost {
+    builder = builder.plugin(
+      tauri_plugin_localhost::Builder::new(localhost_port)
+        .host("localhost")
+        .on_request(|_req, resp| {
+          resp.add_header("Cross-Origin-Opener-Policy", "same-origin");
+          resp.add_header("Cross-Origin-Embedder-Policy", "require-corp");
+        })
+        .build(),
+    );
+  }
+
+  let builder = builder.setup(move |app| {
+    use tauri::Manager; // for add_capability (dynamic-acl)
+    if cfg!(debug_assertions) {
+      app.handle().plugin(
+        tauri_plugin_log::Builder::default()
+          .level(log::LevelFilter::Info)
+          .build(),
+      )?;
+    }
+
+    // Build the main window here (removed from tauri.conf.json) so its URL can be
+    // http://localhost:PORT in release. Dev / flag-off use WebviewUrl::App, which
+    // resolves to the Vite devUrl (debug) or the tauri:// scheme (release).
+    // The window loads from the http://localhost:<port> REMOTE origin, so the
+    // build-time (local) capabilities don't apply — grant the same permission set to
+    // the auto-picked origin at runtime (replaces the old static localhost.json, which
+    // could only pin a fixed port). Must be added before the window's webview loads.
+    if use_localhost {
+      app.add_capability(localhost_capability(localhost_port))?;
+    }
+
+    let url = if use_localhost {
+      tauri::WebviewUrl::External(
+        format!("http://localhost:{localhost_port}")
+          .parse()
+          .expect("valid localhost url"),
+      )
+    } else {
+      tauri::WebviewUrl::App("index.html".into())
+    };
+    tauri::WebviewWindowBuilder::new(app, "main", url)
+      .title("SLEAP")
+      .inner_size(1280.0, 800.0)
+      .min_inner_size(800.0, 600.0)
+      .resizable(true)
+      .build()?;
+
+    Ok(())
+  });
 
   // tauri-pilot: dev-only bridge that lets the `tauri-pilot` CLI drive the
   // WebView for UI inspection and automation. Registered here in the builder
@@ -271,6 +452,19 @@ pub fn run() {
           println!("[sleap-label] opened file: {path}");
           *_app_handle.state::<InitialFile>().0.lock().unwrap() = Some(path);
           let _ = _app_handle.emit("open-file", ());
+
+          // #199: bring the already-running app to the foreground so the newly
+          // opened project is actually visible. Without this the file loads into
+          // a window that may be minimized, hidden, or on another Space — from
+          // the user's view nothing happens. On macOS `set_focus()` activates the
+          // app (NSApp activate) and does makeKeyAndOrderFront, which also
+          // switches to the window's Space; `unminimize()`/`show()` cover the
+          // minimized/hidden cases first.
+          if let Some(window) = _app_handle.get_webview_window("main") {
+            let _ = window.unminimize();
+            let _ = window.show();
+            let _ = window.set_focus();
+          }
         }
       }
     }

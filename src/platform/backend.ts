@@ -6,6 +6,7 @@
  */
 
 import { isTauri } from "./index";
+import { sleapCmd } from "@/lib/sleapPlugin";
 import { saveSlpToBytes } from "@talmolab/sleap-io.js";
 import type { InferenceConfig } from "@/stores/inferenceStore";
 import type { UnlistenFn } from "@tauri-apps/api/event";
@@ -60,7 +61,7 @@ async function invokeCmd<T>(
   args?: Record<string, unknown>
 ): Promise<T> {
   const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<T>(cmd, args);
+  return invoke<T>(sleapCmd(cmd), args);
 }
 
 // === Detection commands ===
@@ -113,7 +114,7 @@ async function streamingInvoke<T = void>(
   const { invoke, Channel } = await import("@tauri-apps/api/core");
   const channel = new Channel<ProcessEvent>();
   channel.onmessage = onEvent;
-  return invoke<T>(cmd, { ...args, onEvent: channel });
+  return invoke<T>(sleapCmd(cmd), { ...args, onEvent: channel });
 }
 
 /** Install a Python version via `uv python install`. */
@@ -507,7 +508,7 @@ export async function rtcConnectWorker(
   const { invoke, Channel } = await import("@tauri-apps/api/core");
   const channel = new Channel<string>();
   channel.onmessage = onMessage;
-  return invoke("rtc_connect_worker", { workerId, onMessage: channel });
+  return invoke(sleapCmd("rtc_connect_worker"), { workerId, onMessage: channel });
 }
 
 export async function rtcSend(msg: string): Promise<void> {

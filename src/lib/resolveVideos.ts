@@ -108,14 +108,35 @@ export async function resolveImageFramesInFolder(
 }
 
 /**
+ * Rewrite an image-sequence video to its located absolute frame paths (stashing
+ * the original in `backendMetadata.sourceFilename`, positions preserved) and
+ * rebuild its `ImageVideoBackend` via the injected image reader. The `.slp`
+ * shape is passed through so construction does NOT decode frame 0 (a missing
+ * frame just renders blank later). Throws if the backend can't be built. Shared
+ * by the manual "Locate folder" flow and load-time auto-locate.
+ */
+async function applyImageSequenceLocation(
+  video: Video,
+  located: string[]
+): Promise<void> {
+  const origFilename = Array.isArray(video.filename)
+    ? video.filename[0] ?? ""
+    : video.filename;
+  const meta = video.backendMetadata as Record<string, unknown>;
+  if (meta.sourceFilename === undefined) meta.sourceFilename = origFilename;
+
+  video.filename = located;
+  video.backend = await createVideoBackend(video.filename, {
+    shape: video.shape ?? undefined,
+  });
+}
+
+/**
  * Locate a missing image-sequence (ImageVideo) by pointing it at a user-picked
- * folder. Re-resolves each stored frame to `<folder>/<basename>` (positions
- * preserved), rewrites `video.filename` to those absolute paths (stashing the
- * original in `backendMetadata.sourceFilename`), and rebuilds the
- * `ImageVideoBackend` via the injected image reader. The shape from the .slp is
- * passed through so construction does NOT need frame 0 to decode (a missing
- * frame 0 just renders blank later). Tauri-only — the browser injects no image
- * reader. Returns true if at least one frame resolved AND the backend built.
+ * folder. Re-resolves each stored frame under `folder` (positions preserved),
+ * rewrites `video.filename`, and rebuilds the backend. Tauri-only — the browser
+ * injects no image reader. Returns true if at least one frame resolved AND the
+ * backend built.
  */
 export async function resolveImageSequenceVideo(
   video: Video,
@@ -139,19 +160,8 @@ export async function resolveImageSequenceVideo(
     return false;
   }
 
-  // Preserve the original stored path for re-save / display (first wins; don't clobber).
-  const origFilename = Array.isArray(video.filename)
-    ? video.filename[0] ?? ""
-    : video.filename;
-  const meta = video.backendMetadata as Record<string, unknown>;
-  if (meta.sourceFilename === undefined) meta.sourceFilename = origFilename;
-
-  // Rewrite to located absolute paths (positions preserved) and rebuild the backend.
-  video.filename = located;
   try {
-    video.backend = await createVideoBackend(video.filename, {
-      shape: video.shape ?? undefined,
-    });
+    await applyImageSequenceLocation(video, located);
   } catch (err) {
     console.error(`[video] ImageVideo locate failed for "${folder}":`, err);
     toast.error("Could not open the image sequence", {
@@ -171,6 +181,48 @@ export async function resolveImageSequenceVideo(
     );
   }
   return true;
+}
+
+/**
+ * Auto-locate a missing image-sequence at load time by grafting its (often
+ * relative) frame paths onto the project directory AND its ancestors — the
+ * image-sequence analogue of the single-file candidate walk in
+ * {@link getVideoPathCandidates}. A cheap FIRST-frame probe picks the directory
+ * before the full per-frame existence pass, so directories that don't hold the
+ * media cost one probe, not one per frame. Silent (no toasts). Tauri-only.
+ * Returns true if the backend built. On failure the video is left for the
+ * manual "Locate folder" flow.
+ */
+async function autoLocateImageSequence(
+  video: Video,
+  projectPath: string,
+  exists: (path: string) => Promise<boolean>
+): Promise<boolean> {
+  const frames = Array.isArray(video.filename)
+    ? video.filename
+    : [video.filename];
+  if (frames.length === 0 || !frames[0]) return false;
+
+  const sep = projectPath.includes("\\") ? "\\" : "/";
+  let dir = projectPath.substring(0, projectPath.lastIndexOf(sep));
+
+  for (let i = 0; i <= MAX_ANCESTOR_WALK && dir; i++) {
+    const probe = await resolveImageFramesInFolder([frames[0]], dir, exists);
+    if (probe.missing.length === 0) {
+      const { located } = await resolveImageFramesInFolder(frames, dir, exists);
+      try {
+        await applyImageSequenceLocation(video, located);
+        return true;
+      } catch (err) {
+        console.error(`[video] ImageVideo auto-locate failed under "${dir}":`, err);
+        return false;
+      }
+    }
+    const cut = dir.lastIndexOf(sep);
+    if (cut <= 0) break;
+    dir = dir.substring(0, cut);
+  }
+  return false;
 }
 
 /** Check if a filename looks like a fetchable URL. */
@@ -438,13 +490,20 @@ export async function resolveExternalVideos(
   // Try auto-resolution if we have filesystem access and a project path
   if (options) {
     for (const video of unresolvedVideos) {
-      // Image sequences (ImageVideo) are resolved and opened by the SLP reader
-      // itself via the injected FsResolver (issue #213). A missing one arrives
-      // here with backend === null + backendError.kind === "image-sequence";
-      // there is nothing to auto-resolve — leave it for the Locate-folder flow
-      // and, crucially, never route a frame list into the single-file (mp4box)
-      // path below, which would hang on a JPEG.
-      if (isImageSequenceVideo(video)) continue;
+      // Image sequences (ImageVideo) never go through the single-file (mp4box)
+      // path below (it would hang on a JPEG). The SLP reader's FsResolver opens
+      // resolvable ones during loadSlp, but it does NOT graft RELATIVE frame
+      // paths onto the .slp directory — so a sequence whose frames sit beside
+      // the .slp (e.g. `frames/001.png` → `<slp_dir>/frames/001.png`) arrives
+      // here missing. Auto-locate those against the project dir + ancestors,
+      // the same walk single-file videos get (#215); leave the rest for the
+      // manual "Locate folder" flow.
+      if (isImageSequenceVideo(video)) {
+        if (await autoLocateImageSequence(video, options.projectPath, options.exists)) {
+          resolvedCount++;
+        }
+        continue;
+      }
       const candidates = getVideoPathCandidates(video, options.projectPath);
       console.log(
         `[video] Resolving "${Array.isArray(video.filename) ? video.filename[0] : video.filename}", candidates:`,

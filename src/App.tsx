@@ -10,6 +10,7 @@ import { isTauri } from "./platform";
 import { setupCloseHandler } from "./lib/quit";
 import { toast } from "./lib/notify";
 import { probeWebCodecs, readWebCodecsEnv } from "./lib/webcodecsProbe";
+import { sleapCmd } from "./lib/sleapPlugin";
 
 // Consume the pending "initial file" slot in Rust and load it. The slot is
 // populated either from a CLI argument on launch or from a macOS file-association
@@ -18,7 +19,9 @@ import { probeWebCodecs, readWebCodecsEnv } from "./lib/webcodecsProbe";
 // runs first loads the file, the other gets null and no-ops (no double-load).
 async function loadInitialFileIfAny() {
   const { invoke } = await import("@tauri-apps/api/core");
-  const path = await invoke<string | null>("get_initial_file");
+  // Prefixed for the inlined `sleap` plugin so it resolves from the
+  // http://localhost origin (bundled builds) as well as the dev origin.
+  const path = await invoke<string | null>(sleapCmd("get_initial_file"));
   if (!path) return;
   console.log("[app] Loading initial file:", path);
   const { readFile, exists } = await import("@tauri-apps/plugin-fs");
