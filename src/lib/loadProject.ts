@@ -204,6 +204,9 @@ export async function loadProjectFromPath(
 
     let labels: Labels;
     if (fileBytes > RANGE_READER_THRESHOLD) {
+      // Range-loaded (>1 GB): the save flow must refuse to re-embed this project
+      // (it can't fit the re-embedded output in wasm memory) — flag it (#213).
+      store.set("isRangeLoaded", true);
       store.setLoading(true, `Streaming ${filename}...`);
       const rangeSource = {
         size: fileBytes,
@@ -221,6 +224,9 @@ export async function loadProjectFromPath(
         onProgress: reportParseProgress,
       });
     } else {
+      // Eagerly loaded (fits in memory) — a fresh load is always explicit, so
+      // clear any stale range-loaded flag from a prior project (#213).
+      store.set("isRangeLoaded", false);
       const bytes = await readFile(path);
       store.setLoading(true, `Parsing ${filename}...`);
       labels = await loadSlp(bytes, {

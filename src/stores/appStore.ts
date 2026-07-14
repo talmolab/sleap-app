@@ -58,6 +58,13 @@ export interface AppState {
   projectPath: string | null;
   hasChanges: boolean;
   projectLoaded: boolean;
+  /**
+   * True when the current project was opened via the large-file range reader
+   * (readSlpStreaming, >1 GB). Transient (never persisted); read via getState().
+   * The save flow refuses to re-embed such a project because saveSlpToBytes
+   * builds the whole output in wasm MEMFS and would OOM mid-save (#213).
+   */
+  isRangeLoaded: boolean;
 
   // === Selection state ===
   video: Video | null;
@@ -269,6 +276,7 @@ export const useAppStore = create<AppState>()(
       projectPath: null,
       hasChanges: false,
       projectLoaded: false,
+      isRangeLoaded: false,
 
       // Selection state
       video: null,

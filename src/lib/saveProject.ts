@@ -41,6 +41,18 @@ export async function saveProjectAsSlp(
     const existingPath =
       platform.isTauri && !forceDialog ? store.projectPath : null;
 
+    const isEmbedded = labels.videos.some((v) => v.hasEmbeddedImages);
+    // Size-guard (#213): a >1 GB embedded pkg is opened via the range reader and can't
+    // be re-embedded in wasm memory (saveSlpToBytes builds the whole file in MEMFS).
+    // Refuse fast rather than OOM mid-save.
+    if (isEmbedded && store.isRangeLoaded) {
+      toast.error("Save aborted — package too large to re-save here", {
+        description:
+          "This embedded package was opened via the large-file range reader and can't be re-embedded in memory yet. Use the desktop PyQt SLEAP app. Your file was not modified.",
+      });
+      return;
+    }
+
     // Embedded (pkg.slp) projects: saveSlpToBytes drops the embedded image
     // datasets unless an embed mode is passed (#213). The plan picks the mode
     // and temporarily marks not-otherwise-covered embedded frames as
