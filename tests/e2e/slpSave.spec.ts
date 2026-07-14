@@ -1,7 +1,10 @@
 import { test, expect } from "@playwright/test";
 import path from "path";
+import { fileURLToPath } from "url";
 
-const FIXTURE_PATH = path.resolve(__dirname, "../fixtures/minimal_instance.slp");
+// This spec runs as an ES module (no CommonJS __dirname); derive it from the URL.
+const dirname = path.dirname(fileURLToPath(import.meta.url));
+const FIXTURE_PATH = path.resolve(dirname, "../fixtures/minimal_instance.slp");
 
 test("load fixture and save produces HDF5 file", async ({ page }) => {
   await page.goto("/");
