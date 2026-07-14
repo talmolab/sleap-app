@@ -9,8 +9,10 @@
  */
 
 import { useTrainingStore, type ConfigHyperparams } from "@/stores/trainingStore";
+import { useEnvironmentStore } from "@/stores/environmentStore";
 import { getDefaultProfileForHead } from "@/lib/trainingProfiles";
 import { useAppStore } from "@/stores/appStore";
+import { isTauri } from "@/platform";
 import { toast } from "@/lib/notify";
 import type { ActiveLearningConfig, LocatorAugmentation } from "@/lib/activeLearning/config";
 
@@ -69,9 +71,30 @@ export function setupCentroidTraining(alConfig: ActiveLearningConfig): boolean {
   return true;
 }
 
-/** Configure + launch centroid-locator training (local/desktop only). */
-export async function startCentroidLocatorTraining(alConfig: ActiveLearningConfig): Promise<void> {
-  if (!setupCentroidTraining(alConfig)) return;
-  await useTrainingStore.getState().startTraining({ inferenceTarget: "nothing" });
-  toast.success("Locator training started — keep seeding; it runs in the background.");
+/**
+ * Configure + launch centroid-locator training (local/desktop only).
+ *
+ * Prechecks the runtime so we never claim "training started" when it can't:
+ * training needs the desktop app AND a selected Python with sleap-nn installed.
+ * On success it fires the run WITHOUT awaiting (startTraining resolves only when
+ * the whole run finishes, and reports failures via status "error" rather than
+ * throwing) — the top-bar TrainingProgressBar surfaces progress/errors/log.
+ * Returns true if a run was actually kicked off.
+ */
+export function startCentroidLocatorTraining(alConfig: ActiveLearningConfig): boolean {
+  if (!isTauri) {
+    toast.error("Locator training runs in the desktop app only.");
+    return false;
+  }
+  const env = useEnvironmentStore.getState();
+  if (!env.selectedPythonPath || !env.pythonCheck?.sleapNnVersion) {
+    toast.error(
+      "sleap-nn isn't set up. Open the Environment panel to select a Python with sleap-nn, then train.",
+    );
+    return false;
+  }
+  if (!setupCentroidTraining(alConfig)) return false;
+
+  void useTrainingStore.getState().startTraining({ inferenceTarget: "nothing" });
+  return true;
 }

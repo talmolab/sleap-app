@@ -24,6 +24,7 @@ import { ErrorBoundary } from "./ErrorBoundary";
 import { VideoPlayer } from "../video/VideoPlayer";
 import { SeedModeBar } from "./SeedModeBar";
 import { TrainPromptBanner } from "./TrainPromptBanner";
+import { TrainingProgressBar } from "./TrainingProgressBar";
 
 import { PANELS } from "./panelRegistry";
 import { reorderById } from "@/lib/panelLayout";
@@ -161,7 +162,7 @@ export function AppShell() {
               {/* Video player takes remaining space */}
               <div className="flex-1 flex flex-col min-w-0 h-full">
                 <SeedModeBar />
-                <TrainPromptBanner />
+                <TrainingProgressBar />
                 <VideoPlayer />
               </div>
 
@@ -171,6 +172,9 @@ export function AppShell() {
           ) : (
             <WelcomeScreen />
           )}
+
+          {/* Fixed bottom-right pop-out prompting locator training at threshold. */}
+          {projectLoaded && <TrainPromptBanner />}
 
           {/* Loading overlay: determinate progress bar + stage message, with a
               forward "pulse" shimmer that signals active work even between

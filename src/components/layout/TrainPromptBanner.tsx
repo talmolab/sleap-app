@@ -40,23 +40,28 @@ export function TrainPromptBanner() {
   const milestone = Math.floor(seeded / trainAfter) * trainAfter;
   if (milestone <= dismissedUpTo) return null;
 
+  // A big, fixed bottom-right pop-out (NOT a top strip) so it's noticeable even
+  // when the user is heads-down labeling. Persists until dismissed or training
+  // starts; re-arms at the next multiple.
   return (
-    <div className="flex items-center gap-2 border-b border-border bg-primary/10 px-3 py-1.5 text-xs">
-      <span className="font-medium">{seeded} labels reached</span>
-      <span className="text-muted-foreground">— enough to train a first locator.</span>
-      <div className="ml-auto flex items-center gap-1.5">
+    <div className="fixed bottom-4 right-4 z-50 w-80 rounded-lg border border-border bg-card p-4 shadow-xl">
+      <div className="text-sm font-semibold">🎯 {seeded} labels reached</div>
+      <p className="mt-1 text-xs text-muted-foreground leading-snug">
+        Enough to train a first centroid locator. It runs in the background while you keep seeding.
+      </p>
+      <div className="mt-3 flex flex-wrap gap-1.5">
         <Button
           size="sm"
-          variant="ghost"
-          className="h-7"
-          onClick={() => setDismissedUpTo(milestone)}
+          onClick={() => {
+            startCentroidLocatorTraining(config);
+            setDismissedUpTo(milestone);
+          }}
         >
-          Not now
+          Start training
         </Button>
         <Button
           size="sm"
           variant="outline"
-          className="h-7"
           onClick={() => {
             if (setupCentroidTraining(config)) {
               useAppStore.getState().set("sidebarActivePanel", "training");
@@ -66,15 +71,8 @@ export function TrainPromptBanner() {
         >
           Tweak configs
         </Button>
-        <Button
-          size="sm"
-          className="h-7"
-          onClick={() => {
-            void startCentroidLocatorTraining(config);
-            setDismissedUpTo(milestone);
-          }}
-        >
-          Start training
+        <Button size="sm" variant="ghost" onClick={() => setDismissedUpTo(milestone)}>
+          Not now
         </Button>
       </div>
     </div>
