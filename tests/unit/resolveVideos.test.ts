@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect } from "../bun-test";
-import { Labels, Video } from "@talmolab/sleap-io.js";
+import { Labels, Video, setImageBytesReader } from "@talmolab/sleap-io.js";
 import {
   buildStandaloneVideo,
   addVideoFileToLabels,
@@ -234,13 +234,12 @@ describe("resolveImageFramesInFolder", () => {
   });
 });
 
-describe("resolveExternalVideos (image sequences delegated to the SLP reader)", () => {
-  // Image sequences (ImageVideo) are now resolved and opened by the SLP reader
-  // itself via the injected FsResolver (issue #213 / sleap-io.js#216): a resolvable
-  // one arrives with a working backend, a missing one with backend === null +
-  // backendError.kind === "image-sequence". resolveExternalVideos must NOT try to
-  // re-resolve or rebuild them — and, above all, must never route a frame LIST into
-  // the single-file (mp4box) path, which hangs on a JPEG.
+describe("resolveExternalVideos (image sequences)", () => {
+  // Image sequences (ImageVideo) are opened by the SLP reader's FsResolver during
+  // loadSlp when their paths resolve. A missing one arrives here with
+  // backend === null + backendError.kind === "image-sequence". resolveExternalVideos
+  // then AUTO-locates it against the project dir + ancestors (#215) — but must never
+  // route a frame LIST into the single-file (mp4box) path, which hangs on a JPEG.
   function missingImageSeq(paths: string[]): Video {
     const v = new Video({ filename: paths, openBackend: false });
     v.backend = null;
@@ -249,7 +248,7 @@ describe("resolveExternalVideos (image sequences delegated to the SLP reader)", 
     return v;
   }
 
-  it("leaves a missing image sequence flagged missing (never builds a blank backend)", async () => {
+  it("leaves a genuinely-missing image sequence flagged missing", async () => {
     const video = missingImageSeq(["/gone/a.jpg", "/gone/b.jpg", "/gone/c.jpg"]);
     const labels = new Labels();
     labels.addVideo(video);
@@ -264,11 +263,12 @@ describe("resolveExternalVideos (image sequences delegated to the SLP reader)", 
     expect(isVideoMissing(video)).toBe(true);
   });
 
-  it("never routes a frame list into the single-file path, even if every path 'exists'", async () => {
+  it("never routes a frame list into the single-file (mp4box) path", async () => {
     // The failure this guards: feeding a JPEG list to mp4box (which hangs). Even a
-    // filesystem that claims every candidate exists and returns bytes must not
-    // cause an image sequence to be opened as a single-file video — it is skipped.
-    const video = missingImageSeq(["/gone/a.jpg", "/gone/b.jpg"]);
+    // filesystem that claims every candidate exists must resolve an image sequence
+    // via the image path (its own backend), never the single-file readFile path.
+    setImageBytesReader(async () => new Uint8Array([0]));
+    const video = missingImageSeq(["frames/a.jpg", "frames/b.jpg"]);
     const labels = new Labels();
     labels.addVideo(video);
 
@@ -282,8 +282,44 @@ describe("resolveExternalVideos (image sequences delegated to the SLP reader)", 
       },
     });
 
-    expect(readFileCalled).toBe(false); // the frame list was skipped, not read
-    expect(video.backend).toBeNull();
+    // The single-file (mp4box) path reads bytes via readFile; the image path never does.
+    expect(readFileCalled).toBe(false);
+    // It went through the image path: filenames were rewritten to located absolutes.
+    expect(Array.isArray(video.filename)).toBe(true);
+    expect((video.filename as string[]).every((f) => f.startsWith("/proj"))).toBe(true);
+  });
+
+  it("auto-locates a relative image sequence against the project dir (#215)", async () => {
+    setImageBytesReader(async () => new Uint8Array([0]));
+    // Frames stored RELATIVE to the .slp; the images live beside it under frames/.
+    const rel = ["frames/001.png", "frames/002.png", "frames/003.png"];
+    const video = missingImageSeq(rel);
+    const labels = new Labels();
+    labels.addVideo(video);
+
+    const present = new Set([
+      "/proj/dir/frames/001.png",
+      "/proj/dir/frames/002.png",
+      "/proj/dir/frames/003.png",
+    ]);
+
+    await resolveExternalVideos(labels, {
+      projectPath: "/proj/dir/sod1.slp",
+      exists: async (p) => present.has(p),
+      readFile: async () => new Uint8Array(),
+    });
+
+    // Frame paths rewritten to the located absolutes beside the .slp.
+    expect(video.filename).toEqual([
+      "/proj/dir/frames/001.png",
+      "/proj/dir/frames/002.png",
+      "/proj/dir/frames/003.png",
+    ]);
+    // Original relative path preserved for re-save.
+    expect((video.backendMetadata as Record<string, unknown>).sourceFilename).toBe(
+      "frames/001.png"
+    );
+    expect(isVideoMissing(video)).toBe(false);
   });
 
   it("leaves an already-opened image sequence untouched", async () => {
