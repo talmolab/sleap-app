@@ -376,6 +376,10 @@ export function InstancesPanel() {
         setInstance(instance);
       }
       lastClickedRef.current = index;
+      // Snap the canvas viewport to the clicked instance (pan-to-center at the
+      // current zoom). No-op in VideoPlayer if the current selection has no
+      // visible points; harmless when a Cmd/Ctrl+click cleared the selection.
+      useAppStore.getState().set("centerSelection", true);
     },
     [instances, selectedIndices, setInstance],
   );

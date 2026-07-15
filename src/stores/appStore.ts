@@ -87,6 +87,13 @@ export interface AppState {
   edgeStyle: EdgeStyle;
   fit: boolean;
   fitSelection: boolean;
+  /**
+   * One-shot request to pan the viewport so the selected instance is centered,
+   * at the current zoom (unlike `fitSelection`, which also zooms to fit). Set
+   * from the Instances panel on click; VideoPlayer consumes and clears it.
+   * Transient — not persisted.
+   */
+  centerSelection: boolean;
   colorPredicted: boolean;
   defaultToPan: boolean;
   palette: string;
@@ -296,6 +303,7 @@ export const useAppStore = create<AppState>()(
       edgeStyle: "Line" as EdgeStyle,
       fit: false,
       fitSelection: false,
+      centerSelection: false,
       colorPredicted: false,
       defaultToPan: false,
       palette: "standard",

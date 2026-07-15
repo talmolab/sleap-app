@@ -86,6 +86,7 @@ export function VideoPlayer() {
   const rotation = useAppStore((s) => s.rotation);
   const defaultToPan = useAppStore((s) => s.defaultToPan);
   const fitSelection = useAppStore((s) => s.fitSelection);
+  const centerSelection = useAppStore((s) => s.centerSelection);
   const areaDeleteMode = useAppStore((s) => s.areaDeleteMode);
   const showCrosshair = useAppStore((s) => s.showCrosshair);
 
@@ -1123,6 +1124,42 @@ export function VideoPlayer() {
     setPanY(newPanY);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fitSelection]);
+
+  // Snap view to the selected instance (one-shot): pan so the instance's
+  // visible-node bounding box is centered at the CURRENT zoom, without changing
+  // zoom. Fired when an instance is clicked in the Instances panel — unlike
+  // "Fit View to Selection" above, this keeps the zoom fixed so the jump stays
+  // un-disorienting. Does nothing if the instance has no visible points.
+  useEffect(() => {
+    if (!centerSelection || !selectedInstance) return;
+    // One-shot: clear the request immediately.
+    useAppStore.getState().set("centerSelection", false);
+
+    const [cw, ch] = containerSize;
+    if (cw === 0 || ch === 0) return;
+
+    const instances = renderedInstancesRef.current;
+    const selectedRendered = instances.find((ri) => ri.isSelected);
+    if (!selectedRendered) return;
+
+    const visibleNodes = selectedRendered.nodes.filter((n) => n.visible);
+    if (visibleNodes.length === 0) return;
+
+    const xs = visibleNodes.map((n) => n.x);
+    const ys = visibleNodes.map((n) => n.y);
+    const centerX = (Math.min(...xs) + Math.max(...xs)) / 2;
+    const centerY = (Math.min(...ys) + Math.max(...ys)) / 2;
+
+    // Pan so scene point (centerX, centerY) lands at the viewport center, at the
+    // current zoom (mirrors the centering math in the fit effects above).
+    const newPanX = cw / 2 - offsetX - centerX * baseScale * zoom;
+    const newPanY = ch / 2 - offsetY - centerY * baseScale * zoom;
+
+    viewRef.current = { zoom, panX: newPanX, panY: newPanY };
+    setPanX(newPanX);
+    setPanY(newPanY);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [centerSelection]);
 
   // Mouse handlers for interaction
   const canvasToScene = useCallback(
