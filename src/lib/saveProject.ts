@@ -10,6 +10,7 @@ import { saveSlpToBytes } from "@talmolab/sleap-io.js";
 import { useAppStore } from "../stores/appStore";
 import { toast } from "@/lib/notify";
 import { getPlatform } from "../platform/index";
+import { saveEmbeddedPkgStreaming } from "@/lib/saveEmbeddedPkgStreaming";
 
 /**
  * Save a Labels object as an SLP file.
@@ -36,15 +37,27 @@ export async function saveProjectAsSlp(
   let displayName = saveName;
 
   try {
-    const bytes = await saveSlpToBytes(labels);
     const platform = await getPlatform();
-    console.log(`[save] Saving project via ${platform.isTauri ? "Tauri" : "browser"} backend (${bytes.byteLength} bytes)`);
 
     if (platform.isTauri) {
       const existingPath = !forceDialog ? store.projectPath : null;
+      // The currently-open project's on-disk path — the streaming writer reads
+      // embedded images FROM here, regardless of whether we're saving in place
+      // or to a new Save-As destination.
+      const sourcePath = store.projectPath;
+      const hasEmbeddedImages = labels.videos.some((v) => v.hasEmbeddedImages);
 
       if (existingPath) {
-        await platform.writeFile(existingPath, bytes);
+        if (hasEmbeddedImages && sourcePath) {
+          console.log(
+            `[save] Saving via streaming embedded-pkg writer (Tauri, in-place): ${existingPath}`
+          );
+          await saveEmbeddedPkgStreaming(labels, existingPath, sourcePath);
+        } else {
+          console.log(`[save] Saving via in-memory backend (Tauri, in-place): ${existingPath}`);
+          const bytes = await saveSlpToBytes(labels);
+          await platform.writeFile(existingPath, bytes);
+        }
         displayName = existingPath;
       } else {
         const savePath = await platform.showSaveDialog({
@@ -52,12 +65,24 @@ export async function saveProjectAsSlp(
           defaultName: saveName,
         });
         if (!savePath) return;
-        await platform.writeFile(savePath, bytes);
+
+        if (hasEmbeddedImages && sourcePath) {
+          console.log(
+            `[save] Saving via streaming embedded-pkg writer (Tauri, Save As): ${savePath}`
+          );
+          await saveEmbeddedPkgStreaming(labels, savePath, sourcePath);
+        } else {
+          console.log(`[save] Saving via in-memory backend (Tauri, Save As): ${savePath}`);
+          const bytes = await saveSlpToBytes(labels);
+          await platform.writeFile(savePath, bytes);
+        }
         store.set("projectPath", savePath);
         displayName = savePath;
       }
     } else if ("showSaveFilePicker" in window) {
       // Browser: File System Access API (always shows picker)
+      const bytes = await saveSlpToBytes(labels);
+      console.log(`[save] Saving via browser File System Access API (${bytes.byteLength} bytes)`);
       try {
         const blob = new Blob([bytes], { type: "application/octet-stream" });
         const handle = await (
@@ -86,6 +111,8 @@ export async function saveProjectAsSlp(
       }
     } else {
       // Fallback: anchor download
+      const bytes = await saveSlpToBytes(labels);
+      console.log(`[save] Saving via browser anchor download (${bytes.byteLength} bytes)`);
       const blob = new Blob([bytes], { type: "application/octet-stream" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");

@@ -23,6 +23,13 @@ fn main() {
                     // file / native
                     "read_range",
                     "file_size",
+                    "write_open",
+                    "write_open_append",
+                    "write_at",
+                    "read_at",
+                    "truncate_file",
+                    "write_close",
+                    "rename_file",
                     "get_initial_file",
                     "read_image_file",
                     "reveal_in_file_manager",
