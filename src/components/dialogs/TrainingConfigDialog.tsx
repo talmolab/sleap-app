@@ -18,7 +18,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Search, HelpCircle } from "lucide-react";
-import type { ConfigFile, ConfigHyperparams, Backbone, ModelType } from "@/stores/trainingStore";
+import type { ConfigFile, ConfigHyperparams, Backbone, ModelType, DataPipeline } from "@/stores/trainingStore";
 import { getSlotLabel, getConfigSlots, useTrainingStore } from "@/stores/trainingStore";
 import { useConnectStore } from "@/stores/connectStore";
 import { useAppStore } from "@/stores/appStore";
@@ -121,7 +121,7 @@ const PIPELINE_FIELD_DEFS = {
   filterOverlapping: { id: "field-filteroverlap", label: "Filter Overlapping Instances", keywords: "iou oks nms overlap" },
   secPerformance: { id: "pipeline-performance", label: "Performance" },
   dataPipeline: { id: "field-datapipeline", label: "Data Pipeline", hint: "How training data is loaded. 'Cache in Memory' is fastest but uses more RAM. 'Stream' reads from disk each epoch. 'Cache to Disk' saves processed data to disk.", keywords: "cache memory stream disk" },
-  dataloaderWorkers: { id: "field-dataloaderworkers", label: "Dataloader Workers", hint: "Number of parallel workers for loading training data. More workers = faster data loading but more CPU/memory usage. 0 = main thread only." },
+  dataloaderWorkers: { id: "field-dataloaderworkers", label: "Dataloader Workers", hint: "Number of parallel workers for loading training data. More workers = faster data loading but more CPU/memory usage. 0 = main thread only. Only takes effect with a caching pipeline (Cache in Memory / Cache to Disk); the Stream pipeline forces 0." },
   accelerator: { id: "field-accelerator", label: "Accelerator", hint: "Hardware to use for training. 'Auto' detects available hardware. Use 'cuda' for NVIDIA GPUs, 'mps' for Apple Silicon, or 'cpu' for CPU-only (slow).", keywords: "gpu cuda mps cpu device hardware" },
   numDevices: { id: "field-numdevices", label: "Number of Devices", hint: "Number of GPUs/devices to use for training. Set to 1 for single-GPU training.", keywords: "gpu devices" },
   secWandb: { id: "pipeline-wandb", label: "WandB", keywords: "weights and biases w&b logging" },
@@ -1076,21 +1076,25 @@ export function TrainingConfigDialog({
                           </SelectContent>
                         </Select>
                       </div>
-                      <div id={PIPELINE_FIELD_DEFS.maxInstances.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+                      {/* Max Instances and Filter Overlapping Instances are inference-time
+                          post-processing concepts (max detections per frame, NMS/IOU/OKS
+                          overlap filtering) with no sleap-nn training key — disabled here so
+                          the training dialog doesn't imply they affect training. */}
+                      <div id={PIPELINE_FIELD_DEFS.maxInstances.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4 opacity-50">
                         <span className="text-sm text-muted-foreground flex items-center gap-1.5">
                           {PIPELINE_FIELD_DEFS.maxInstances.label}
                           <HintBubble text="Maximum number of animal instances to detect per frame. Leave empty or check 'No max' for no limit." />
                         </span>
-                        <Input type="number" placeholder="1" className="h-8 text-sm w-16" />
+                        <Input type="number" placeholder="1" disabled className="h-8 text-sm w-16" />
                       </div>
-                      <label className="flex items-center gap-1.5 cursor-pointer">
-                        <input type="checkbox" defaultChecked className="accent-primary" />
+                      <label className="flex items-center gap-1.5 opacity-50">
+                        <input type="checkbox" defaultChecked disabled className="accent-primary" />
                         <span className="text-sm">No max</span>
                       </label>
                     </div>
                     <div className="flex items-center gap-4">
-                      <label id={PIPELINE_FIELD_DEFS.filterOverlapping.id} data-search-field="" className="flex items-center gap-1.5 cursor-pointer scroll-mt-4">
-                        <input type="checkbox" className="accent-primary" />
+                      <label id={PIPELINE_FIELD_DEFS.filterOverlapping.id} data-search-field="" className="flex items-center gap-1.5 scroll-mt-4 opacity-50">
+                        <input type="checkbox" disabled className="accent-primary" />
                         <span className="text-sm">{PIPELINE_FIELD_DEFS.filterOverlapping.label}</span>
                       </label>
                       <div className="flex items-center gap-2 opacity-50">
@@ -1124,7 +1128,7 @@ export function TrainingConfigDialog({
                         {PIPELINE_FIELD_DEFS.dataPipeline.label}
                         <HintBubble text="How training data is loaded. 'Cache in Memory' is fastest but uses more RAM. 'Stream' reads from disk each epoch. 'Cache to Disk' saves processed data to disk." />
                       </span>
-                      <Select value="memory">
+                      <Select value={firstHp?.dataPipeline ?? "memory"} onValueChange={(v) => configs.forEach((c) => onUpdateSlot(c.slot, { dataPipeline: v as DataPipeline }))}>
                         <SelectTrigger className="h-8 text-sm w-40"><SelectValue /></SelectTrigger>
                         <SelectContent>
                           <SelectItem value="stream">Stream (no caching)</SelectItem>
@@ -1136,9 +1140,9 @@ export function TrainingConfigDialog({
                     <div id={PIPELINE_FIELD_DEFS.dataloaderWorkers.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
                       <span className="text-sm text-muted-foreground flex items-center gap-1.5">
                         {PIPELINE_FIELD_DEFS.dataloaderWorkers.label}
-                        <HintBubble text="Number of parallel workers for loading training data. More workers = faster data loading but more CPU/memory usage. 0 = main thread only." />
+                        <HintBubble text="Number of parallel workers for loading training data. More workers = faster data loading but more CPU/memory usage. 0 = main thread only. Only takes effect with a caching pipeline (Cache in Memory / Cache to Disk); the Stream pipeline forces 0." />
                       </span>
-                      <Input type="number" value={0} min={0} max={16} className="h-8 text-sm w-16" />
+                      <Input type="number" value={firstHp?.dataloaderWorkers ?? 0} min={0} max={16} onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { dataloaderWorkers: Number(e.target.value) }))} className="h-8 text-sm w-16" />
                     </div>
                   </div>
                   <div className="flex items-center gap-6 flex-wrap">
@@ -1162,10 +1166,10 @@ export function TrainingConfigDialog({
                         {PIPELINE_FIELD_DEFS.numDevices.label}
                         <HintBubble text="Number of GPUs/devices to use for training. Set to 1 for single-GPU training." />
                       </span>
-                      <Input type="number" value={1} min={1} max={8} className="h-8 text-sm w-16" />
+                      <Input type="number" value={firstHp?.numDevices === "auto" ? 1 : (firstHp?.numDevices ?? 1)} min={1} max={8} disabled={(firstHp?.numDevices ?? "auto") === "auto"} onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { numDevices: Math.max(1, Number(e.target.value)) }))} className="h-8 text-sm w-16" />
                     </div>
                     <label className="flex items-center gap-1.5 cursor-pointer">
-                      <input type="checkbox" className="accent-primary" />
+                      <input type="checkbox" checked={(firstHp?.numDevices ?? "auto") === "auto"} onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { numDevices: e.target.checked ? "auto" : 1 }))} className="accent-primary" />
                       <span className="text-sm">Auto</span>
                     </label>
                   </div>

@@ -512,6 +512,124 @@ trainer_config:
     });
   });
 
+  describe("applyHyperparamsToYaml - performance", () => {
+    const baseYaml = `
+data_config:
+  preprocessing: {}
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config:
+  train_data_loader: {}
+  val_data_loader: {}
+`;
+
+    it("maps dataPipeline 'memory' → data_pipeline_fw torch_dataset_cache_img_memory", () => {
+      const hp = { ...defaultHyperparams, dataPipeline: "memory" as const };
+      const doc = yaml.load(applyHyperparamsToYaml(baseYaml, hp)) as Record<string, any>;
+      expect(doc.data_config.data_pipeline_fw).toBe("torch_dataset_cache_img_memory");
+    });
+
+    it("maps dataPipeline 'disk' → data_pipeline_fw torch_dataset_cache_img_disk", () => {
+      const hp = { ...defaultHyperparams, dataPipeline: "disk" as const };
+      const doc = yaml.load(applyHyperparamsToYaml(baseYaml, hp)) as Record<string, any>;
+      expect(doc.data_config.data_pipeline_fw).toBe("torch_dataset_cache_img_disk");
+    });
+
+    it("maps dataPipeline 'stream' → data_pipeline_fw torch_dataset", () => {
+      const hp = { ...defaultHyperparams, dataPipeline: "stream" as const };
+      const doc = yaml.load(applyHyperparamsToYaml(baseYaml, hp)) as Record<string, any>;
+      expect(doc.data_config.data_pipeline_fw).toBe("torch_dataset");
+    });
+
+    it("writes dataloaderWorkers to both train and val loaders (caching pipeline)", () => {
+      const hp = { ...defaultHyperparams, dataPipeline: "memory" as const, dataloaderWorkers: 4 };
+      const doc = yaml.load(applyHyperparamsToYaml(baseYaml, hp)) as Record<string, any>;
+      expect(doc.trainer_config.train_data_loader.num_workers).toBe(4);
+      expect(doc.trainer_config.val_data_loader.num_workers).toBe(4);
+    });
+
+    it("clamps num_workers to 0 when pipeline is 'stream' (torch_dataset)", () => {
+      const hp = { ...defaultHyperparams, dataPipeline: "stream" as const, dataloaderWorkers: 8 };
+      const doc = yaml.load(applyHyperparamsToYaml(baseYaml, hp)) as Record<string, any>;
+      expect(doc.trainer_config.train_data_loader.num_workers).toBe(0);
+      expect(doc.trainer_config.val_data_loader.num_workers).toBe(0);
+    });
+
+    it("writes numDevices 'auto' to trainer_devices", () => {
+      const hp = { ...defaultHyperparams, numDevices: "auto" as const };
+      const doc = yaml.load(applyHyperparamsToYaml(baseYaml, hp)) as Record<string, any>;
+      expect(doc.trainer_config.trainer_devices).toBe("auto");
+    });
+
+    it("writes numeric numDevices to trainer_devices", () => {
+      const hp = { ...defaultHyperparams, numDevices: 2 };
+      const doc = yaml.load(applyHyperparamsToYaml(baseYaml, hp)) as Record<string, any>;
+      expect(doc.trainer_config.trainer_devices).toBe(2);
+    });
+  });
+
+  describe("parseYamlConfig - performance", () => {
+    it("parses dataPipeline, dataloaderWorkers, and numDevices", () => {
+      const yamlText = `
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+data_config:
+  data_pipeline_fw: torch_dataset_cache_img_memory
+trainer_config:
+  train_data_loader:
+    num_workers: 4
+  trainer_devices: 2
+`;
+      const result = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
+      expect(result!.hyperparams.dataPipeline).toBe("memory");
+      expect(result!.hyperparams.dataloaderWorkers).toBe(4);
+      expect(result!.hyperparams.numDevices).toBe(2);
+    });
+
+    it("defaults numDevices to 'auto' when trainer_devices is absent/null", () => {
+      const yamlText = `
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+data_config:
+  data_pipeline_fw: torch_dataset
+trainer_config:
+  trainer_devices: null
+`;
+      const result = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
+      expect(result!.hyperparams.numDevices).toBe("auto");
+      expect(result!.hyperparams.dataPipeline).toBe("stream");
+    });
+
+    it("round-trips performance fields through parse → apply", () => {
+      const yamlText = `
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+data_config:
+  data_pipeline_fw: torch_dataset_cache_img_disk
+trainer_config:
+  train_data_loader:
+    num_workers: 3
+  val_data_loader:
+    num_workers: 3
+  trainer_devices: 4
+`;
+      const parsed = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
+      const doc = yaml.load(applyHyperparamsToYaml(yamlText, parsed!.hyperparams)) as Record<string, any>;
+      expect(doc.data_config.data_pipeline_fw).toBe("torch_dataset_cache_img_disk");
+      expect(doc.trainer_config.train_data_loader.num_workers).toBe(3);
+      expect(doc.trainer_config.val_data_loader.num_workers).toBe(3);
+      expect(doc.trainer_config.trainer_devices).toBe(4);
+    });
+  });
+
   describe("parseYamlConfig - data and optimization", () => {
     it("parses cropSize from preprocessing", () => {
       const yamlText = `
