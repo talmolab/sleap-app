@@ -1,25 +1,30 @@
 /**
  * Active-Learning panel (issue #212): define the workflow config and drive the
- * Phase-1 loop — add starter frames, seed centroids (one click each), and
- * generate crops for Phase-2 labeling.
+ * Phase-1 loop — add starter frames, seed centroids (one click each), train a
+ * centroid locator, then run it to predict centroids on the rest.
  *
  * This panel orchestrates; it doesn't do compute. Training/inference run
- * through the existing Training/Inference panels (centroid-only wiring lands
- * separately). "Dashboard + next-action": it recommends steps but never gates.
+ * through the existing Training/Inference stores. "Dashboard + next-action": it
+ * recommends steps but never gates.
  */
 
-import { useMemo, useRef } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useAppStore } from "../../stores/appStore";
 import { useActiveLearningStore } from "../../stores/activeLearningStore";
 import { useTrainingStore } from "../../stores/trainingStore";
 import { useInferenceStore, centroidInferenceConfig } from "../../stores/inferenceStore";
-import { generateCrops } from "@/lib/activeLearning/generateCrops";
 import { configFromSkeleton } from "@/lib/activeLearning/config";
 import { startCentroidLocatorTraining } from "@/lib/activeLearning/trainLocator";
 import { generateSuggestionFrames } from "@/lib/suggestionStrategies";
 import { toast } from "@/lib/notify";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+
+/** Last path segment of a model directory, for a compact display. */
+function modelBasename(path: string): string {
+  const parts = path.replace(/[/\\]+$/, "").split(/[/\\]/);
+  return parts[parts.length - 1] || path;
+}
 
 /** Small labeled section wrapper matching the other panels' density. */
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -48,6 +53,10 @@ export function ActiveLearningPanel() {
 
   const fileRef = useRef<HTMLInputElement>(null);
   const seedCountRef = useRef<HTMLInputElement>(null);
+  // Explicitly-picked centroid-model dir (survives restarts / new machines,
+  // where this-session training state is empty). Falls back to the last model
+  // trained this session.
+  const [selectedModelDir, setSelectedModelDir] = useState<string | null>(null);
 
   const nodeNames = skeleton?.nodes.map((n) => n.name);
 
@@ -77,6 +86,9 @@ export function ActiveLearningPanel() {
   const trainingRunning = trainingStatus === "running";
   const trainingDone = trainingStatus === "completed";
   const isSeeding = labelingMode === "seed";
+  // The model the locator runs on: an explicit pick wins, else the most recent
+  // model trained this session.
+  const effectiveModelDir = selectedModelDir ?? modelDirs[modelDirs.length - 1] ?? null;
 
   // The single recommended next step. Exactly one panel button is highlighted
   // (filled); everything else is a quiet outline, so the user always knows what
@@ -172,47 +184,28 @@ export function ActiveLearningPanel() {
     if (config) void startCentroidLocatorTraining(config);
   };
 
-  const runLocatorPredict = () => {
-    const dirs = useTrainingStore.getState().modelOutputDirs;
-    if (dirs.length === 0) {
-      toast.error("Train the centroid locator first.");
-      return;
+  const selectLocatorModel = async () => {
+    try {
+      const { open: tauriOpen } = await import("@tauri-apps/plugin-dialog");
+      const selected = await tauriOpen({
+        directory: true,
+        title: "Select centroid model directory",
+      });
+      if (typeof selected === "string") setSelectedModelDir(selected);
+    } catch (e) {
+      toast.error(
+        `Couldn't open the model picker: ${e instanceof Error ? e.message : String(e)}`,
+      );
     }
-    void useInferenceStore.getState().startInference(centroidInferenceConfig(dirs));
-    toast.info("Running the locator on the suggested frames — predicted centroids merge in when done.");
   };
 
-  const doGenerateCrops = () => {
-    const labels = useAppStore.getState().labels;
-    if (!labels || !config) {
-      toast.error("Define a workflow and seed some frames first");
+  const runLocatorPredict = () => {
+    if (!effectiveModelDir) {
+      toast.error("Select a trained centroid model first (or train one above).");
       return;
     }
-    // Crop around user-seeded centroids (the minimal path needs no locator).
-    const result = generateCrops(labels, config, { from: "user" });
-    if (result.count === 0) {
-      if (result.unopened > 0) {
-        toast.error(
-          `Can't crop ${result.unopened} instance(s) — view the source video first so its ` +
-            "decoder opens, then try again.",
-        );
-      } else {
-        toast.error("No seeded centroids found. Seed some frames before generating crops.");
-      }
-      return;
-    }
-    useAppStore.getState().setLabels(result.labels, "crops.slp");
-    useActiveLearningStore.getState().setPhase("labelKeypoints");
-    const extra = [
-      result.skipped ? `skipped ${result.skipped}` : "",
-      result.unopened ? `${result.unopened} need the video opened` : "",
-    ]
-      .filter(Boolean)
-      .join(", ");
-    toast.success(
-      `Generated ${result.count} crop(s)${extra ? ` (${extra})` : ""}. ` +
-        "Now in the crop project for Phase-2 labeling — save to keep it.",
-    );
+    void useInferenceStore.getState().startInference(centroidInferenceConfig([effectiveModelDir]));
+    toast.info("Running the locator on the suggested frames — predicted centroids merge in when done.");
   };
 
   if (!projectLoaded) {
@@ -304,7 +297,7 @@ export function ActiveLearningPanel() {
         <Section title="Phase 1 · Localize (iterative)">
           <p className="text-[11px] text-muted-foreground leading-snug">
             A loop, not one shot: seed a batch of body-centers → train the locator → keep
-            seeding while it trains → when its accuracy plateaus, generate crops. Repeat if it
+            seeding while it trains → run it to predict centroids on the rest. Repeat if it
             misses animals.
           </p>
 
@@ -373,28 +366,46 @@ export function ActiveLearningPanel() {
             </div>
           )}
 
-          {/* Step 4 — run the locator to predict centroids (closes the loop) */}
-          <Button
-            size="sm"
-            className="w-full"
-            variant={primaryIs("predict-centroids") ? "default" : "outline"}
-            disabled={modelDirs.length === 0 || inferenceStatus === "running"}
-            onClick={runLocatorPredict}
-          >
-            {inferenceStatus === "running"
-              ? "Predicting centroids…"
-              : "Run locator → predict centroids"}
-          </Button>
-
-          {/* Optional: persist a crop dataset (Phase-2 labeling uses live zoom, not baked crops) */}
-          <Button
-            size="sm"
-            variant="outline"
-            className="w-full"
-            onClick={doGenerateCrops}
-          >
-            Export crop dataset (optional)
-          </Button>
+          {/* Step 4 — run the locator to predict centroids (closes the loop).
+              A model can come from this session's training OR be picked from
+              disk, so predicting works after a restart / on another machine. */}
+          <div className="space-y-1">
+            <div className="flex items-center gap-1.5">
+              <Button
+                size="sm"
+                variant="outline"
+                className="shrink-0"
+                onClick={selectLocatorModel}
+              >
+                {effectiveModelDir ? "Change model…" : "Select model…"}
+              </Button>
+              <span
+                className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground"
+                title={effectiveModelDir ?? undefined}
+              >
+                {effectiveModelDir
+                  ? modelBasename(effectiveModelDir)
+                  : "No centroid model selected"}
+              </span>
+            </div>
+            <Button
+              size="sm"
+              className="w-full"
+              variant={primaryIs("predict-centroids") ? "default" : "outline"}
+              disabled={!effectiveModelDir || inferenceStatus === "running"}
+              onClick={runLocatorPredict}
+            >
+              {inferenceStatus === "running"
+                ? "Predicting centroids…"
+                : "Run locator → predict centroids"}
+            </Button>
+            {!effectiveModelDir && (
+              <p className="text-[11px] text-muted-foreground leading-snug">
+                Train a locator above, or pick a trained centroid model directory (the run
+                folder containing <code>best.ckpt</code>).
+              </p>
+            )}
+          </div>
         </Section>
       )}
     </div>
