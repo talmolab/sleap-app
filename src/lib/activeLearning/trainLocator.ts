@@ -62,6 +62,12 @@ export function setupCentroidTraining(alConfig: ActiveLearningConfig): boolean {
   const tr = alConfig.localize.training;
   t.updateConfigHyperparams("centroid", {
     scale: tr.inputScale,
+    // Pass the anchor node through as-is. A null centroidNode (arbitrary mode
+    // via YAML) leaves anchor_part null, so the locator anchors on the computed
+    // instance centroid rather than a named node — trainingStore skips the
+    // write when null. A fabricated name here ("centroid") would crash sleap-nn
+    // when no such node exists. (The panel's arbitrary flow adds a real
+    // "centroid" node and sets centroidNode to it, so it comes through named.)
     anchorPart: alConfig.localize.centroidNode,
     maxEpochs: tr.maxEpochs,
     batchSize: tr.batchSize,

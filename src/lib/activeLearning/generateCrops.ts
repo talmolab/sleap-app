@@ -124,7 +124,9 @@ export function generateCrops(
   opts: GenerateCropsOptions = {},
 ): GenerateCropsResult {
   const cropSize = opts.cropSize ?? config.localize.cropSize;
-  const anchorNode = opts.anchorNode ?? config.localize.centroidNode;
+  // Arbitrary-centroid mode (centroidNode === null) has no named anchor → crop
+  // around the instance bbox center (instanceCropCenter's fallback).
+  const anchorNode = opts.anchorNode ?? config.localize.centroidNode ?? undefined;
   const from = opts.from ?? "predicted";
 
   const skeleton = source.skeletons[0];

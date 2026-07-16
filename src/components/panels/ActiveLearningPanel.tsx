@@ -15,10 +15,19 @@ import { useTrainingStore } from "../../stores/trainingStore";
 import { useInferenceStore, centroidInferenceConfig } from "../../stores/inferenceStore";
 import { configFromSkeleton } from "@/lib/activeLearning/config";
 import { startCentroidLocatorTraining } from "@/lib/activeLearning/trainLocator";
+import {
+  buildWorkList,
+  passDims,
+  nodeIndicesForPass,
+  linearIndex,
+  totalSteps,
+} from "@/lib/activeLearning/passEngine";
 import { generateSuggestionFrames } from "@/lib/suggestionStrategies";
+import { commandContext, AddNodeCommand } from "@/commands";
 import { toast } from "@/lib/notify";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Slider } from "@/components/ui/slider";
 
 /** Last path segment of a model directory, for a compact display. */
 function modelBasename(path: string): string {
@@ -50,6 +59,10 @@ export function ActiveLearningPanel() {
   const trainingStatus = useTrainingStore((s) => s.status);
   const modelDirs = useTrainingStore((s) => s.modelOutputDirs);
   const inferenceStatus = useInferenceStore((s) => s.status);
+  // Phase-2 pass-engine state.
+  const passCursor = useAppStore((s) => s.passCursor);
+  const passDimsState = useAppStore((s) => s.passDims);
+  const passZoomWindow = useAppStore((s) => s.passZoomWindow);
 
   const fileRef = useRef<HTMLInputElement>(null);
   const seedCountRef = useRef<HTMLInputElement>(null);
@@ -86,6 +99,7 @@ export function ActiveLearningPanel() {
   const trainingRunning = trainingStatus === "running";
   const trainingDone = trainingStatus === "completed";
   const isSeeding = labelingMode === "seed";
+  const isKeypointPass = labelingMode === "keypointPass";
   // The model the locator runs on: an explicit pick wins, else the most recent
   // model trained this session.
   const effectiveModelDir = selectedModelDir ?? modelDirs[modelDirs.length - 1] ?? null;
@@ -131,6 +145,48 @@ export function ActiveLearningPanel() {
     else toast.warning(`Workflow loaded with ${result.errors.length} issue(s) — see below`);
   };
 
+  // Arbitrary centroid: add a free "centroid" anchor node to the pose skeleton
+  // (drop it anywhere per animal) and point the config at it, stripping it from
+  // the labeling passes. Everything downstream runs the normal node path.
+  // Ensure a free "centroid" anchor node exists in the skeleton and the config
+  // points at it (stripping it from the passes). Returns the anchor's node index
+  // in the (possibly just-grown) skeleton, or -1 if there's no workflow yet.
+  const ensureArbitraryAnchor = (): number => {
+    const currentSkeleton = useAppStore.getState().skeleton;
+    const currentConfig = useActiveLearningStore.getState().config;
+    if (!currentSkeleton || !currentConfig) return -1;
+    const ANCHOR = "centroid";
+    // AddNode also grows every existing instance's point array to match.
+    if (!currentSkeleton.nodes.some((n) => n.name === ANCHOR)) {
+      void commandContext.execute(AddNodeCommand, { name: ANCHOR });
+    }
+    const names = useAppStore.getState().skeleton?.nodes.map((n) => n.name) ?? [];
+    const nextConfig = {
+      ...currentConfig,
+      localize: { ...currentConfig.localize, centroidNode: ANCHOR },
+      labelKeypoints: {
+        ...currentConfig.labelKeypoints,
+        passes: currentConfig.labelKeypoints.passes
+          .map((p) => ({ ...p, nodes: p.nodes.filter((n) => n !== ANCHOR) }))
+          .filter((p) => p.nodes.length > 0),
+      },
+    };
+    useActiveLearningStore.getState().setConfig(nextConfig, names);
+    useAppStore.getState().bumpOverlayVersion();
+    return names.indexOf(ANCHOR);
+  };
+
+  const useArbitraryCentroid = () => {
+    if (!useActiveLearningStore.getState().config) {
+      toast.error("Define a workflow first");
+      return;
+    }
+    ensureArbitraryAnchor();
+    toast.success(
+      'Using a free "centroid" anchor — seed it anywhere on each animal; every pose node stays labelable.',
+    );
+  };
+
   const importYaml = async (file: File) => {
     try {
       const text = await file.text();
@@ -169,10 +225,21 @@ export function ActiveLearningPanel() {
       toast.error("Define a workflow first");
       return;
     }
-    const idx = skeleton.nodes.findIndex((n) => n.name === config.localize.centroidNode);
-    if (idx < 0) {
-      toast.error(`Centroid node "${config.localize.centroidNode}" is not in the skeleton`);
-      return;
+    let idx: number;
+    if (config.localize.centroidNode === null) {
+      // Arbitrary centroid: materialize a free "centroid" anchor node, then
+      // seed onto it (there's no named pose node to place otherwise).
+      idx = ensureArbitraryAnchor();
+      if (idx < 0) {
+        toast.error("Couldn't set up an arbitrary centroid anchor.");
+        return;
+      }
+    } else {
+      idx = skeleton.nodes.findIndex((n) => n.name === config.localize.centroidNode);
+      if (idx < 0) {
+        toast.error(`Centroid node "${config.localize.centroidNode}" is not in the skeleton`);
+        return;
+      }
     }
     useAppStore.getState().enterSeedMode(idx);
     toast.info(
@@ -208,6 +275,42 @@ export function ActiveLearningPanel() {
     toast.info("Running the locator on the suggested frames — predicted centroids merge in when done.");
   };
 
+  // Phase 2: skip training and label keypoints directly on the seeded/predicted
+  // centroids — a guided, zoom-to-centroid multi-pass sweep over every instance.
+  const startKeypointPasses = () => {
+    const labels = useAppStore.getState().labels;
+    if (!labels || !config || !skeleton) {
+      toast.error("Define a workflow and seed some centroids first.");
+      return;
+    }
+    const names = skeleton.nodes.map((n) => n.name);
+    const workList = buildWorkList(labels, config);
+    if (workList.length === 0) {
+      toast.error("Nothing to label yet — seed or predict some centroids first.");
+      return;
+    }
+    const dims = passDims(config, workList, names);
+    if (dims.nodeCountForPass.every((n) => n === 0)) {
+      toast.error("No pass nodes match the skeleton — check the workflow's passes.");
+      return;
+    }
+    const nodeIndices = config.labelKeypoints.passes.map((p) => nodeIndicesForPass(p, names));
+    useActiveLearningStore.getState().setPhase("labelKeypoints");
+    useAppStore.getState().enterKeypointPassMode({
+      workList,
+      dims,
+      nodeIndices,
+      zoomWindow: config.localize.cropSize,
+    });
+    toast.info(
+      `Labeling keypoints on ${workList.length} instance(s) across ${dims.passCount} pass(es).`,
+    );
+  };
+
+  const stopKeypointPasses = () => {
+    useAppStore.getState().exitKeypointPassMode();
+  };
+
   if (!projectLoaded) {
     return (
       <div className="p-3 text-xs text-muted-foreground">
@@ -226,9 +329,23 @@ export function ActiveLearningPanel() {
               phase <span className="font-medium">{phase ?? "idle"}</span>
             </div>
             <div className="text-muted-foreground">
-              {config.labelKeypoints.passes.length} pass(es) · centroid node{" "}
-              <code>{config.localize.centroidNode}</code> · crop {config.localize.cropSize}px
+              {config.labelKeypoints.passes.length} pass(es) · centroid{" "}
+              {config.localize.centroidNode === null ? (
+                <code>arbitrary</code>
+              ) : (
+                <code>{config.localize.centroidNode}</code>
+              )}{" "}
+              · crop {config.localize.cropSize}px
             </div>
+            {config.localize.centroidNode !== "centroid" && (
+              <button
+                type="button"
+                className="text-[11px] text-primary underline underline-offset-2 hover:opacity-80"
+                onClick={useArbitraryCentroid}
+              >
+                Use a free centroid anchor instead
+              </button>
+            )}
             {validation && validation.errors.length > 0 && (
               <ul className="text-destructive list-disc pl-4">
                 {validation.errors.map((e, i) => (
@@ -406,6 +523,83 @@ export function ActiveLearningPanel() {
               </p>
             )}
           </div>
+        </Section>
+      )}
+
+      {config && (
+        <Section title="Phase 2 · Label keypoints">
+          <p className="text-[11px] text-muted-foreground leading-snug">
+            Skip ahead and label keypoints directly on the seeded centroids: a
+            guided sweep that zooms to each animal and walks the passes
+            pass-by-pass. No locator model needed.
+          </p>
+
+          {!isKeypointPass ? (
+            <>
+              <Button
+                size="sm"
+                className="w-full"
+                variant="outline"
+                disabled={seededFrames === 0}
+                onClick={startKeypointPasses}
+              >
+                Label keypoints on {seededCentroids || "seeded"} centroid(s) →
+              </Button>
+              {seededFrames === 0 && (
+                <p className="text-[11px] text-muted-foreground leading-snug">
+                  Seed (or predict) some centroids first — Phase 2 labels one instance per centroid.
+                </p>
+              )}
+            </>
+          ) : (
+            <div className="space-y-2">
+              {passCursor && passDimsState ? (
+                <div className="text-xs space-y-0.5">
+                  <div>
+                    Pass{" "}
+                    <span className="font-medium">
+                      {passCursor.passIdx + 1}/{passDimsState.passCount}
+                    </span>
+                    {config.labelKeypoints.passes[passCursor.passIdx]?.name
+                      ? ` · ${config.labelKeypoints.passes[passCursor.passIdx].name}`
+                      : ""}
+                  </div>
+                  <div className="text-muted-foreground">
+                    Instance {passCursor.itemIdx + 1}/{passDimsState.itemCount} · placement{" "}
+                    {linearIndex(passCursor, passDimsState) + 1}/{totalSteps(passDimsState)}
+                  </div>
+                </div>
+              ) : (
+                <div className="rounded border border-emerald-600/40 px-2 py-1.5 text-[11px] text-emerald-600 dark:text-emerald-500 leading-snug">
+                  All passes complete. Stop to review, then train a pose model.
+                </div>
+              )}
+
+              <div className="space-y-1">
+                <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                  <span>Zoom window</span>
+                  <span>{passZoomWindow}px</span>
+                </div>
+                <Slider
+                  min={32}
+                  max={1024}
+                  step={16}
+                  value={[passZoomWindow]}
+                  onValueChange={(v) =>
+                    useAppStore.getState().setPassZoomWindow(v[0] ?? passZoomWindow)
+                  }
+                />
+              </div>
+
+              <Button size="sm" className="w-full" variant="default" onClick={stopKeypointPasses}>
+                Stop labeling keypoints
+              </Button>
+              <p className="text-[11px] text-muted-foreground leading-snug">
+                Click = place · right-click = not visible · <kbd>s</kbd> skip ·{" "}
+                <kbd>b</kbd> back · <kbd>Esc</kbd> exit
+              </p>
+            </div>
+          )}
         </Section>
       )}
     </div>

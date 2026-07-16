@@ -35,6 +35,17 @@ import {
   reconcileHiddenPanels,
   nextVisiblePanel,
 } from "@/lib/panelLayout";
+import {
+  advance as advancePassCursor,
+  stepBack as stepBackPassCursor,
+  initialCursor as initialPassCursor,
+  finalCursor as finalPassCursor,
+  resolveItemInstance,
+  type PassItem,
+  type PassCursor,
+  type PassDims,
+} from "@/lib/activeLearning/passEngine";
+export type { PassItem, PassCursor, PassDims };
 
 // Required before immer can draft Set/Map fields (hiddenInstances /
 // showNonVisibleOverride). Idempotent global; must run before store creation.
@@ -137,10 +148,22 @@ export interface AppState {
   clipboardInstance: Instance | null;
 
   // === Labeling mode state (transient, not persisted) ===
-  labelingMode: "select" | "place" | "seed";
+  labelingMode: "select" | "place" | "seed" | "keypointPass";
   placementNodeIdx: number | null;
   /** Skeleton node index a "seed" click places (the centroid/body-center node). */
   seedNodeIdx: number;
+
+  // === Phase-2 keypoint-pass state (transient, not persisted) ===
+  /** Ordered (frame, instance) units the multi-pass sweep walks. */
+  passWorkList: PassItem[];
+  /** Fixed pass/item/node counts for the current sweep. */
+  passDims: PassDims | null;
+  /** Skeleton node indices per pass, in click order (`[passIdx][k]`). */
+  passNodeIndices: number[][];
+  /** Position in the sweep; `null` while active means the sweep is complete. */
+  passCursor: PassCursor | null;
+  /** Live zoom-to-centroid window (px); adjustable during Phase-2 labeling. */
+  passZoomWindow: number;
 
   // === Frame range ===
   frameRange: [number, number] | null;
@@ -214,6 +237,22 @@ export interface AppState {
   /** Enter centroid-seeding mode; each click drops a new one-node instance. */
   enterSeedMode: (nodeIdx?: number) => void;
   exitSeedMode: () => void;
+  /** Enter Phase-2 keypoint-pass labeling with a prebuilt work list + dims. */
+  enterKeypointPassMode: (args: {
+    workList: PassItem[];
+    dims: PassDims;
+    nodeIndices: number[][];
+    zoomWindow?: number;
+  }) => void;
+  exitKeypointPassMode: () => void;
+  /** Advance the pass cursor (place/skip); navigates on item change. */
+  passAdvance: () => void;
+  /** Step the pass cursor back one node; navigates on item change. */
+  passStepBack: () => void;
+  /** Set the zoom-to-centroid window (px) for Phase-2 labeling. */
+  setPassZoomWindow: (px: number) => void;
+  /** Sync frame/instance selection to the current pass cursor. */
+  syncPassSelection: () => void;
   togglePanelVisibility: (panelId: string) => void;
   resetPanels: () => void;
   toggle: (key: keyof AppState) => void;
@@ -338,9 +377,16 @@ export const useAppStore = create<AppState>()(
       clipboardInstance: null,
 
       // Labeling mode state (transient)
-      labelingMode: "select" as "select" | "place" | "seed",
+      labelingMode: "select" as "select" | "place" | "seed" | "keypointPass",
       placementNodeIdx: null as number | null,
       seedNodeIdx: 0,
+
+      // Phase-2 keypoint-pass state (transient)
+      passWorkList: [] as PassItem[],
+      passDims: null as PassDims | null,
+      passNodeIndices: [] as number[][],
+      passCursor: null as PassCursor | null,
+      passZoomWindow: 256,
 
       // Frame range
       frameRange: null,
@@ -391,6 +437,14 @@ export const useAppStore = create<AppState>()(
           state.frameIdx = 0;
           state.instance = null;
           state.labeledFrame = null;
+          // A new project invalidates any in-progress labeling mode: the pass
+          // work list references the OLD project's instances, so leaving it
+          // active would mutate the wrong data on the next click.
+          state.labelingMode = "select";
+          state.passCursor = null;
+          state.passWorkList = [];
+          state.passDims = null;
+          state.passNodeIndices = [];
           // setLabels sets video/frame directly (not via setVideo), so drop any
           // stale identity-keyed transients from the previous project.
           clearTransientVisibility(state);
@@ -622,6 +676,79 @@ export const useAppStore = create<AppState>()(
         set((state) => {
           state.labelingMode = "select";
         }),
+
+      enterKeypointPassMode: ({ workList, dims, nodeIndices, zoomWindow }) => {
+        const cur = initialPassCursor(dims);
+        set((state) => {
+          state.labelingMode = "keypointPass";
+          state.passWorkList = workList;
+          state.passDims = dims;
+          state.passNodeIndices = nodeIndices;
+          state.passCursor = cur;
+          if (typeof zoomWindow === "number" && zoomWindow > 0) {
+            state.passZoomWindow = zoomWindow;
+          }
+        });
+        // Frame the first item. Guard on a non-null cursor: an empty sweep
+        // leaves the mode active but with nothing selected.
+        if (cur) get().syncPassSelection();
+      },
+
+      exitKeypointPassMode: () =>
+        set((state) => {
+          state.labelingMode = "select";
+          state.passCursor = null;
+          state.passWorkList = [];
+          state.passDims = null;
+          state.passNodeIndices = [];
+        }),
+
+      passAdvance: () => {
+        const { passCursor, passDims } = get();
+        if (!passCursor || !passDims) return;
+        const next = advancePassCursor(passCursor, passDims);
+        const prevItem = passCursor.itemIdx;
+        set((state) => {
+          state.passCursor = next;
+        });
+        // next === null → sweep complete; mode stays so the panel/HUD can show
+        // the "done" state and VideoPlayer stops re-zooming. Only re-navigate
+        // when the work item actually changes (advancing within an item must
+        // not deselect the in-progress instance).
+        if (next && next.itemIdx !== prevItem) get().syncPassSelection();
+      },
+
+      passStepBack: () => {
+        const { passCursor, passDims } = get();
+        if (!passDims) return;
+        // From the completed (null) state, step back INTO the last position.
+        const prev = passCursor
+          ? stepBackPassCursor(passCursor, passDims)
+          : finalPassCursor(passDims);
+        if (!prev) return;
+        const prevItem = passCursor ? passCursor.itemIdx : -1;
+        set((state) => {
+          state.passCursor = prev;
+        });
+        if (prev.itemIdx !== prevItem) get().syncPassSelection();
+      },
+
+      setPassZoomWindow: (px) =>
+        set((state) => {
+          state.passZoomWindow = Math.max(16, px);
+        }),
+
+      syncPassSelection: () => {
+        const s = get();
+        const cur = s.passCursor;
+        if (!cur || !s.labels) return;
+        const item = s.passWorkList[cur.itemIdx];
+        if (!item) return;
+        const video = s.labels.videos[item.videoIdx];
+        if (video && video !== s.video) get().setVideo(video);
+        get().setFrameIdx(item.frameIdx);
+        get().setInstance(resolveItemInstance(s.labels, item));
+      },
 
       // Toggle a sidebar panel's visibility (#135). Hiding the currently-active
       // panel auto-switches the active panel to the next visible one; hiding the

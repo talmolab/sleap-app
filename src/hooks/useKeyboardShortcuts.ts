@@ -96,16 +96,19 @@ export function useKeyboardShortcuts() {
 
       // Suggestion navigation. In seed mode VideoPlayer's own Space handler
       // owns advancing (Space is otherwise pan/zoom there), so skip here to
-      // avoid a double-advance.
+      // avoid a double-advance. In keypointPass mode the pass cursor owns the
+      // frame, so free Space-navigation would desync it — skip there too.
       [DEFAULT_SHORTCUTS["goto next suggestion"]]: (e) => {
         if (isTextInput(e)) return;
-        if (store().labelingMode === "seed") return;
+        const m = store().labelingMode;
+        if (m === "seed" || m === "keypointPass") return;
         e.preventDefault();
         commandContext.execute(GoNextSuggestion);
       },
       [DEFAULT_SHORTCUTS["goto prev suggestion"]]: (e) => {
         if (isTextInput(e)) return;
-        if (store().labelingMode === "seed") return;
+        const m = store().labelingMode;
+        if (m === "seed" || m === "keypointPass") return;
         e.preventDefault();
         commandContext.execute(GoPrevSuggestion);
       },
@@ -192,6 +195,9 @@ export function useKeyboardShortcuts() {
       },
       [DEFAULT_SHORTCUTS["delete instance"]]: (e) => {
         e.preventDefault();
+        // Deleting an instance mid-pass would splice the frame's instances and
+        // shift the work-list indices the sweep resolves against — block it.
+        if (store().labelingMode === "keypointPass") return;
         commandContext.execute(DeleteSelectedInstance);
       },
 
@@ -206,6 +212,8 @@ export function useKeyboardShortcuts() {
       },
       [DEFAULT_SHORTCUTS["delete track"]]: (e) => {
         e.preventDefault();
+        // See "delete instance": splicing an instance mid-pass desyncs the sweep.
+        if (store().labelingMode === "keypointPass") return;
         if (confirm("Delete this instance and its track?")) {
           commandContext.execute(DeleteInstanceAndTrack);
         }
@@ -312,10 +320,35 @@ export function useKeyboardShortcuts() {
           s.exitPlacementMode();
         } else if (s.labelingMode === "seed") {
           s.exitSeedMode();
+        } else if (s.labelingMode === "keypointPass") {
+          s.exitKeypointPassMode();
         } else {
           s.setInstance(null);
         }
       },
+
+      // Phase-2 keypoint pass: s = skip the current node (leave it unplaced and
+      // advance); b / Backspace = step back one node. All gated on the mode so
+      // they're inert everywhere else.
+      KeyS: (e) => {
+        if (isTextInput(e)) return;
+        if (store().labelingMode !== "keypointPass") return;
+        e.preventDefault();
+        store().passAdvance();
+      },
+      KeyB: (e) => {
+        if (isTextInput(e)) return;
+        if (store().labelingMode !== "keypointPass") return;
+        e.preventDefault();
+        store().passStepBack();
+      },
+      Backspace: (e) => {
+        if (isTextInput(e)) return;
+        if (store().labelingMode !== "keypointPass") return;
+        e.preventDefault();
+        store().passStepBack();
+      },
+
       [DEFAULT_SHORTCUTS["select next"]]: (e) => {
         if (isTextInput(e)) return;
         e.preventDefault();

@@ -10,8 +10,10 @@
  */
 
 import { useRef, useEffect, useCallback, useState, useMemo } from "react";
-import { PredictedInstance } from "@talmolab/sleap-io.js";
+import { Instance, PredictedInstance } from "@talmolab/sleap-io.js";
 import { useAppStore } from "../../stores/appStore";
+import { useActiveLearningStore } from "../../stores/activeLearningStore";
+import { linearIndex, totalSteps } from "@/lib/activeLearning/passEngine";
 import { debugFlags } from "../panels/DebugPanel";
 import { Seekbar } from "./Seekbar";
 import { ContextMenu } from "./ContextMenu";
@@ -54,6 +56,22 @@ import {
   ensureVideoBackend,
 } from "../../lib/resolveVideos";
 import { Film } from "lucide-react";
+
+/**
+ * Clone an instance's points into plain objects — used to adopt a predicted
+ * centroid as a fresh user Instance during a Phase-2 keypoint pass (mirrors the
+ * ConvertPredictionToInstance clone). Element-assign, never spread the columnar
+ * PointView.
+ */
+function clonePointsForAdopt(points: Instance["points"]) {
+  return points.map((p) => ({
+    xy: [p.xy[0], p.xy[1]] as [number, number],
+    visible: p.visible,
+    complete: p.complete,
+    name: p.name,
+    score: p.score,
+  }));
+}
 
 export function VideoPlayer() {
   const frameCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -404,6 +422,9 @@ export function VideoPlayer() {
       if (e.metaKey || e.ctrlKey) return;
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      // In keypointPass, Backspace is the pass step-back key — don't also let it
+      // delete a (possibly stale-selected) instance out from under the sweep.
+      if (useAppStore.getState().labelingMode === "keypointPass") return;
       if (selectedNodes.size === 0) return;
 
       const lf = useAppStore.getState().labeledFrame;
@@ -923,6 +944,20 @@ export function VideoPlayer() {
   const placementNodeIdx = useAppStore((s) => s.placementNodeIdx);
   const isPlacingNodes = labelingMode === "place" && selectedInstance !== null;
 
+  // Phase-2 keypoint-pass state (drives zoom-to-centroid + click-to-place).
+  const passCursor = useAppStore((s) => s.passCursor);
+  const passWorkList = useAppStore((s) => s.passWorkList);
+  const passNodeIndices = useAppStore((s) => s.passNodeIndices);
+  const passZoomWindow = useAppStore((s) => s.passZoomWindow);
+  const passDims = useAppStore((s) => s.passDims);
+  const alConfig = useActiveLearningStore((s) => s.config);
+  const isKeypointPass = labelingMode === "keypointPass";
+  // Skeleton node index the next click places, or null when the sweep is done.
+  const passTargetNodeIdx =
+    isKeypointPass && passCursor
+      ? passNodeIndices[passCursor.passIdx]?.[passCursor.nodeIdx] ?? null
+      : null;
+
   // Render zoomed inset during node drag or placement mode
   const INSET_SIZE = useAppStore((s) => s.insetSize);
   const INSET_ZOOM = useAppStore((s) => s.insetZoom);
@@ -1257,6 +1292,37 @@ export function VideoPlayer() {
     zoomMode.current = "fit-frame";
   }, [frameIdx, video, labelingMode]);
 
+  // Phase-2 keypoint pass: frame the current work item by zooming a
+  // passZoomWindow-px window onto its centroid. Non-destructive (points stay in
+  // source coords — this only moves the viewport), mirroring the fit-to-bbox
+  // math above. Keyed on the ITEM (not the full cursor) so advancing node-by-
+  // node within an instance keeps whatever zoom the user dialed in; it re-frames
+  // only when the item changes or the window is resized. (Rotation isn't
+  // compensated here, matching the other fit paths; AL projects run unrotated.)
+  const passItemIdx = passCursor?.itemIdx ?? -1;
+  useEffect(() => {
+    if (!isKeypointPass || passItemIdx < 0) return;
+    const item = passWorkList[passItemIdx];
+    if (!item) return;
+    const [cw, ch] = containerSize;
+    if (cw === 0 || ch === 0) return;
+
+    const win = passZoomWindow;
+    // centroidXY is in SOURCE coords; the pan math below works in crop-local
+    // image space, so map through the crop origin (identity when uncropped).
+    const [centerX, centerY] = toImageCoords(video, item.centroidXY[0], item.centroidXY[1]);
+    const newZoom = Math.min(cw / (win * baseScale), ch / (win * baseScale), 10);
+    const newPanX = cw / 2 - offsetX - centerX * baseScale * newZoom;
+    const newPanY = ch / 2 - offsetY - centerY * baseScale * newZoom;
+
+    viewRef.current = { zoom: newZoom, panX: newPanX, panY: newPanY };
+    setZoom(newZoom);
+    setPanX(newPanX);
+    setPanY(newPanY);
+    zoomMode.current = "free";
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isKeypointPass, passItemIdx, passZoomWindow, video, containerSize, baseScale, offsetX, offsetY]);
+
   const handleMouseDown = useCallback(
     (e: React.MouseEvent) => {
       // Middle-click panning
@@ -1329,6 +1395,61 @@ export function VideoPlayer() {
         }
         const [sx, sy] = toSourceCoords(useAppStore.getState().video, x, y);
         commandContext.execute(SeedCentroid, { x: sx, y: sy });
+        store.bumpOverlayVersion();
+        return;
+      }
+
+      // Phase-2 keypoint-pass mode: left-click places the current pass's target
+      // node on the current work-item instance, then advances the cursor. Each
+      // placement is its own undo entry (BeginEdit snapshot). Space/pan-mode or
+      // Alt-drag pans, so the user can reposition without leaving the mode.
+      if (store.labelingMode === "keypointPass") {
+        e.preventDefault();
+        if (shouldPan || e.altKey) {
+          setIsPanning(true);
+          setPanStart({ x: e.clientX - panX, y: e.clientY - panY });
+          return;
+        }
+        const cur = store.passCursor;
+        const curItem = cur && store.labels ? store.passWorkList[cur.itemIdx] : undefined;
+        if (!cur || !curItem || !store.labels) return;
+        // The click's canvas→source mapping is only valid on the item's own
+        // frame/video — if navigation drifted, snap back instead of placing.
+        if (
+          store.frameIdx !== curItem.frameIdx ||
+          store.labels.videos[curItem.videoIdx] !== store.video
+        ) {
+          store.syncPassSelection();
+          store.bumpOverlayVersion();
+          return;
+        }
+        // Resolve the item's instance FRESH from the frame — never trust
+        // store.instance, which an undo, InstancesPanel click, or select-next
+        // can point elsewhere (index-based resolution survives undo's cloning).
+        const lf = store.labels.find({ video: store.video!, frameIdx: curItem.frameIdx })[0];
+        const nIdx = store.passNodeIndices[cur.passIdx]?.[cur.nodeIdx] ?? -1;
+        let target = lf?.instances[curItem.instanceIdx] ?? null;
+        if (!lf || !target || nIdx < 0 || nIdx >= target.points.length) return;
+        commandContext.execute(BeginEdit);
+        // A predicted centroid is adopted as a user instance IN PLACE (same
+        // index) on first touch, so its keypoints count as ground truth and the
+        // work item keeps resolving to it. Undo restores the prediction.
+        if (target instanceof PredictedInstance) {
+          const adopted = new Instance({
+            skeleton: target.skeleton,
+            points: clonePointsForAdopt(target.points),
+            track: target.track,
+          });
+          lf.instances.splice(curItem.instanceIdx, 1, adopted);
+          target = adopted;
+        }
+        store.setInstance(target);
+        target.points[nIdx].xy = toSourceCoords(useAppStore.getState().video, x, y);
+        target.points[nIdx].visible = true;
+        target.points[nIdx].complete = true;
+        store.markChanged();
+        store.touchFrame();
+        store.passAdvance();
         store.bumpOverlayVersion();
         return;
       }
@@ -1802,6 +1923,49 @@ export function VideoPlayer() {
       const { x, y } = canvasToScene(e.clientX, e.clientY);
       const instances = renderedInstancesRef.current;
 
+      // Phase-2 keypoint pass: right-click marks the current target node as not
+      // visible (occluded → a real labeling decision) and advances. No menu.
+      if (useAppStore.getState().labelingMode === "keypointPass") {
+        const store = useAppStore.getState();
+        const cur = store.passCursor;
+        const curItem = cur && store.labels ? store.passWorkList[cur.itemIdx] : undefined;
+        if (!cur || !curItem || !store.labels) return;
+        if (
+          store.frameIdx !== curItem.frameIdx ||
+          store.labels.videos[curItem.videoIdx] !== store.video
+        ) {
+          store.syncPassSelection();
+          store.bumpOverlayVersion();
+          return;
+        }
+        // Resolve fresh from the frame (see the left-click path) — don't trust
+        // store.instance.
+        const lf = store.labels.find({ video: store.video!, frameIdx: curItem.frameIdx })[0];
+        const nIdx = store.passNodeIndices[cur.passIdx]?.[cur.nodeIdx] ?? -1;
+        let inst = lf?.instances[curItem.instanceIdx] ?? null;
+        if (!lf || !inst || nIdx < 0 || nIdx >= inst.points.length) return;
+        commandContext.execute(BeginEdit);
+        // Same adopt-on-touch as left-click: marking a predicted centroid's node
+        // occluded is a real labeling decision, so materialize it as user data.
+        if (inst instanceof PredictedInstance) {
+          const adopted = new Instance({
+            skeleton: inst.skeleton,
+            points: clonePointsForAdopt(inst.points),
+            track: inst.track,
+          });
+          lf.instances.splice(curItem.instanceIdx, 1, adopted);
+          inst = adopted;
+        }
+        store.setInstance(inst);
+        inst.points[nIdx].visible = false;
+        inst.points[nIdx].complete = true;
+        store.markChanged();
+        store.touchFrame();
+        store.passAdvance();
+        store.bumpOverlayVersion();
+        return;
+      }
+
       // Seeding mode: right-click removes the clicked seed (fix a misclick), or
       // undoes the last dropped centroid when clicking empty space. No menu.
       if (useAppStore.getState().labelingMode === "seed") {
@@ -1884,7 +2048,7 @@ export function VideoPlayer() {
         ref={containerRef}
         className={cn(
           "flex-1 relative overflow-hidden bg-background min-h-0",
-          isPanning ? "cursor-grabbing" : isZoomDragging ? "cursor-zoom-in" : (shouldPan && isCmdHeld) ? "cursor-zoom-in" : shouldPan ? "cursor-grab" : isDragging ? "cursor-grabbing" : areaDeleteMode ? "cursor-crosshair" : interactionMode === "marquee" ? "cursor-crosshair" : labelingMode === "seed" ? "cursor-cell" : isPlacingNodes ? "cursor-cell" : hoveredNode ? "cursor-pointer" : "cursor-default"
+          isPanning ? "cursor-grabbing" : isZoomDragging ? "cursor-zoom-in" : (shouldPan && isCmdHeld) ? "cursor-zoom-in" : shouldPan ? "cursor-grab" : isDragging ? "cursor-grabbing" : areaDeleteMode ? "cursor-crosshair" : interactionMode === "marquee" ? "cursor-crosshair" : labelingMode === "seed" ? "cursor-cell" : isKeypointPass ? "cursor-cell" : isPlacingNodes ? "cursor-cell" : hoveredNode ? "cursor-pointer" : "cursor-default"
         )}
         onMouseMove={crosshairActive ? handleCrosshairMove : undefined}
         onMouseLeave={
@@ -2020,6 +2184,35 @@ export function VideoPlayer() {
             {" "}({selectedInstance.points.filter((p) => !isNaN(p.xy[0])).length} placed)
             {" · Tab/Shift+Tab to cycle · Esc to exit"}
           </Badge>
+        )}
+
+        {/* Phase-2 keypoint-pass indicator */}
+        {isKeypointPass && passDims && (
+          passCursor ? (
+            <Badge
+              variant="default"
+              className="absolute top-2 left-1/2 -translate-x-1/2 pointer-events-none rounded-md max-w-[92%]"
+            >
+              {alConfig?.labelKeypoints.passes[passCursor.passIdx]?.name ??
+                `Pass ${passCursor.passIdx + 1}`}
+              {" · "}
+              {(passTargetNodeIdx !== null &&
+                selectedInstance?.skeleton.nodes[passTargetNodeIdx]?.name) ||
+                `node ${passTargetNodeIdx}`}
+              {" · "}
+              instance {passCursor.itemIdx + 1}/{passDims.itemCount}
+              {" · "}
+              {linearIndex(passCursor, passDims) + 1}/{totalSteps(passDims)}
+              {" · click = place · right-click = not visible · s skip · b back · Esc exit"}
+            </Badge>
+          ) : (
+            <Badge
+              variant="secondary"
+              className="absolute top-2 left-1/2 -translate-x-1/2 pointer-events-none rounded-md bg-emerald-600 text-white border-none"
+            >
+              Phase 2 complete — all {totalSteps(passDims)} placements swept · Esc to exit
+            </Badge>
+          )
         )}
 
         {/* Selection count indicator */}

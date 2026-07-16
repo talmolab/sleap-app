@@ -59,7 +59,7 @@ describe("generateCrops integration", () => {
       shape,
       getFrame: async () => null,
     } as unknown as NonNullable<Video["backend"]>;
-    const video = new Video({ filename: "stub.mp4", backend: stubBackend, shape });
+    const video = new Video({ filename: "stub.mp4", backend: stubBackend });
 
     const skeleton = new Skeleton({ nodes: ["body_center", "head"], name: "test" });
     const inst = Instance.empty({ skeleton });

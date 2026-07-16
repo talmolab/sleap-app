@@ -310,6 +310,12 @@ export class CommandContext {
     const redoSnapshot = this.restoreSnapshot(snapshot);
     this.redoStack.push(redoSnapshot);
     this.afterUndoRedo();
+    // In a Phase-2 keypoint pass, each placement advanced the cursor outside the
+    // undo snapshot, so restoring the point data alone would leave the cursor
+    // ahead of the (now un-placed) node. Step it back in lockstep — 1 undo = 1
+    // placement in this guided mode. A no-op at the sweep start is harmless.
+    const s = useAppStore.getState();
+    if (s.labelingMode === "keypointPass") s.passStepBack();
     return true;
   }
 
@@ -321,6 +327,9 @@ export class CommandContext {
     const undoSnapshot = this.restoreSnapshot(snapshot);
     this.undoStack.push(undoSnapshot);
     this.afterUndoRedo();
+    // Mirror undo(): re-advance the cursor when redoing a placement.
+    const s = useAppStore.getState();
+    if (s.labelingMode === "keypointPass") s.passAdvance();
     return true;
   }
 

@@ -56,8 +56,13 @@ export interface LocatorTrainingConfig {
 /** Phase 1: localize animals (seed centroids → locator → zoom-to-label). */
 export interface LocalizeConfig {
   enabled: boolean;
-  /** Skeleton node clicked once per animal during centroid seeding + locator anchor. */
-  centroidNode: string;
+  /**
+   * Skeleton node clicked once per animal during centroid seeding + locator
+   * anchor. `null` = ARBITRARY centroid: the anchor is a free point (not a pose
+   * node), so every pose node is labeled by a pass and the locator's anchor is
+   * the instance centroid rather than a named node.
+   */
+  centroidNode: string | null;
   /**
    * Default zoom-to-instance window (px) for Phase-2 labeling. NOT a baked crop
    * — Phase-2 zooms the live view to the centroid at this size, adjustable per
@@ -255,7 +260,12 @@ export function normalizeActiveLearningConfig(raw: unknown): ActiveLearningConfi
     },
     localize: {
       enabled: bool(localize.enabled, d.localize.enabled),
-      centroidNode: str(localize.centroidNode, d.localize.centroidNode),
+      // An explicit `null` selects the ARBITRARY-centroid mode; anything else
+      // coerces to a node name (falling back to the default when absent).
+      centroidNode:
+        localize.centroidNode === null
+          ? null
+          : str(localize.centroidNode, d.localize.centroidNode ?? ""),
       cropSize: num(localize.cropSize, d.localize.cropSize),
       seedFrames: num(localize.seedFrames, d.localize.seedFrames),
       trainAfter: num(localize.trainAfter, d.localize.trainAfter),
@@ -456,13 +466,22 @@ export function validateActiveLearningConfig(
         errors.push(`Pass node "${node}" is not in the skeleton.`);
       }
     }
-    if (config.localize.enabled && !known.has(config.localize.centroidNode)) {
+    // A `null` centroidNode is the arbitrary-centroid mode (anchor is a free
+    // point, not a skeleton node), so there's nothing to check against the
+    // skeleton — only validate a named node.
+    if (
+      config.localize.enabled &&
+      config.localize.centroidNode !== null &&
+      !known.has(config.localize.centroidNode)
+    ) {
       errors.push(`localize.centroidNode "${config.localize.centroidNode}" is not in the skeleton.`);
     }
     const covered = new Set(allPassNodes(config));
     // The centroid node is placed during Phase-1 seeding, not a keypoint pass,
     // so it is legitimately absent from the passes — don't warn about it.
-    if (config.localize.enabled) covered.add(config.localize.centroidNode);
+    if (config.localize.enabled && config.localize.centroidNode !== null) {
+      covered.add(config.localize.centroidNode);
+    }
     for (const node of skeletonNodeNames) {
       if (!covered.has(node)) {
         warnings.push(`Skeleton node "${node}" is not labeled by any pass.`);
