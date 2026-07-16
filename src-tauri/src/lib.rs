@@ -79,6 +79,13 @@ struct WriteHandle(Mutex<Option<std::fs::File>>);
 /// `create(true).truncate(true)` mirrors starting a fresh save file.
 #[tauri::command]
 fn write_open(state: tauri::State<WriteHandle>, path: String) -> Result<(), String> {
+    // Ensure the parent directory exists — the streaming writer may stage into a
+    // freshly-resolved local dir (e.g. the app cache dir) that hasn't been
+    // created yet. create_dir_all is a no-op when it already exists.
+    if let Some(parent) = std::path::Path::new(&path).parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("write_open({path}): create parent dir: {e}"))?;
+    }
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -99,6 +106,10 @@ fn write_open(state: tauri::State<WriteHandle>, path: String) -> Result<(), Stri
 /// append phase must read AND extend, never clobber.
 #[tauri::command]
 fn write_open_append(state: tauri::State<WriteHandle>, path: String) -> Result<(), String> {
+    if let Some(parent) = std::path::Path::new(&path).parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("write_open_append({path}): create parent dir: {e}"))?;
+    }
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -202,6 +213,33 @@ fn write_close(state: tauri::State<WriteHandle>) -> Result<(), String> {
 #[tauri::command]
 fn rename_file(from: String, to: String) -> Result<(), String> {
     std::fs::rename(&from, &to).map_err(|e| format!("rename_file({from} -> {to}): {e}"))
+}
+
+/// Bulk sequential copy `from` -> `to` (`std::fs::copy`, one streamed pass). Used by the
+/// streaming pkg.slp writer's local-temp-staging path: the file is built AND verified on
+/// LOCAL disk (many small, latency-cheap ops), then copied to the possibly-network
+/// destination in ONE sequential pass. `std::fs::rename` can't cross filesystems, so a
+/// local→network publish needs a copy; doing it as a single sequential transfer is
+/// throughput-bound (fast even over SMB) instead of paying per-op network latency for the
+/// writer's many scattered reads/writes. Overwrites `to` if it exists.
+#[tauri::command]
+fn copy_file(from: String, to: String) -> Result<(), String> {
+    std::fs::copy(&from, &to)
+        .map(|_| ())
+        .map_err(|e| format!("copy_file({from} -> {to}): {e}"))
+}
+
+/// Delete a file (`std::fs::remove_file`). Used by the streaming pkg.slp writer's cleanup
+/// path to FULLY remove temp/stage files on failure (and the local stage file on success),
+/// instead of leaving 0-byte `*.sleap-tmp-*` stubs behind. A missing file is treated as
+/// success so cleanup is idempotent and never masks the real error.
+#[tauri::command]
+fn remove_file(path: String) -> Result<(), String> {
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("remove_file({path}): {e}")),
+    }
 }
 
 /// Reveal a file in the OS file manager (Finder / Explorer / xdg-open).
@@ -311,6 +349,8 @@ fn sleap_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
             truncate_file,
             write_close,
             rename_file,
+            copy_file,
+            remove_file,
             get_initial_file,
             read_image_file,
             reveal_in_file_manager,

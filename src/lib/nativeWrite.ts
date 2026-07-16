@@ -71,3 +71,22 @@ export async function writeClose(): Promise<void> {
 export async function renameFile(from: string, to: string): Promise<void> {
   return invoke(sleapCmd("rename_file"), { from, to });
 }
+
+/**
+ * Bulk sequential copy `from` -> `to` (native `std::fs::copy`, one streamed pass).
+ * Used by the streaming pkg.slp writer to publish a file built + verified on LOCAL disk
+ * to a possibly-network destination in a single throughput-bound transfer (rename can't
+ * cross filesystems). Overwrites `to` if it exists.
+ */
+export async function copyFile(from: string, to: string): Promise<void> {
+  return invoke(sleapCmd("copy_file"), { from, to });
+}
+
+/**
+ * Delete `path` (native `std::fs::remove_file`). Used to FULLY remove the streaming
+ * writer's temp/stage files on cleanup rather than leaving 0-byte stubs. A missing file
+ * is not an error, so cleanup is idempotent.
+ */
+export async function removeFile(path: string): Promise<void> {
+  return invoke(sleapCmd("remove_file"), { path });
+}

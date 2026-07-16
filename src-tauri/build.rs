@@ -30,6 +30,8 @@ fn main() {
                     "truncate_file",
                     "write_close",
                     "rename_file",
+                    "copy_file",
+                    "remove_file",
                     "get_initial_file",
                     "read_image_file",
                     "reveal_in_file_manager",
