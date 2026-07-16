@@ -512,9 +512,27 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
               log: [`$ ${result.command}`, ...state.log],
             }));
           }
+          if (!result.success) {
+            // The process failed (or produced no output). Surface it rather than
+            // masking it with a doomed merge attempt — and make sure we never
+            // leave the UI stuck on "running" (which greys the Run-locator button
+            // with no way to recover). `handleProcessEvent`'s "finished" event
+            // usually sets status="error" already; this backstops the case where
+            // the run ends without one.
+            const cur = useInferenceStore.getState();
+            if (cur.status !== "error" && cur.status !== "cancelled") {
+              set({
+                status: "error",
+                error: cur.error ?? "Inference failed to produce output — see log.",
+              });
+            }
+            return;
+          }
           if (result.outputPath) {
             set({ outputPath: result.outputPath });
             await useInferenceStore.getState().loadAndMergeResults();
+          } else {
+            set({ status: "completed" });
           }
         }
       } catch (e) {
