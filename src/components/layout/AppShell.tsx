@@ -26,6 +26,7 @@ import { SeedModeBar } from "./SeedModeBar";
 import { TrainPromptBanner } from "./TrainPromptBanner";
 import { TrainingProgressBar } from "./TrainingProgressBar";
 import { InferenceProgressBar } from "./InferenceProgressBar";
+import { KeypointPassBar } from "./KeypointPassBar";
 
 import { PANELS } from "./panelRegistry";
 import { reorderById } from "@/lib/panelLayout";
@@ -163,6 +164,7 @@ export function AppShell() {
               {/* Video player takes remaining space */}
               <div className="flex-1 flex flex-col min-w-0 h-full">
                 <SeedModeBar />
+                <KeypointPassBar />
                 <TrainingProgressBar />
                 <InferenceProgressBar />
                 <VideoPlayer />

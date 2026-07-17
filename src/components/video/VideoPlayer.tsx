@@ -12,8 +12,6 @@
 import { useRef, useEffect, useCallback, useState, useMemo } from "react";
 import { Instance, PredictedInstance } from "@talmolab/sleap-io.js";
 import { useAppStore } from "../../stores/appStore";
-import { useActiveLearningStore } from "../../stores/activeLearningStore";
-import { linearIndex, totalSteps } from "@/lib/activeLearning/passEngine";
 import { debugFlags } from "../panels/DebugPanel";
 import { Seekbar } from "./Seekbar";
 import { ContextMenu } from "./ContextMenu";
@@ -944,19 +942,12 @@ export function VideoPlayer() {
   const placementNodeIdx = useAppStore((s) => s.placementNodeIdx);
   const isPlacingNodes = labelingMode === "place" && selectedInstance !== null;
 
-  // Phase-2 keypoint-pass state (drives zoom-to-centroid + click-to-place).
+  // Phase-2 keypoint-pass state (drives zoom-to-centroid; click-to-place reads
+  // the rest via getState()). The progress HUD is the full-width KeypointPassBar.
   const passCursor = useAppStore((s) => s.passCursor);
   const passWorkList = useAppStore((s) => s.passWorkList);
-  const passNodeIndices = useAppStore((s) => s.passNodeIndices);
   const passZoomWindow = useAppStore((s) => s.passZoomWindow);
-  const passDims = useAppStore((s) => s.passDims);
-  const alConfig = useActiveLearningStore((s) => s.config);
   const isKeypointPass = labelingMode === "keypointPass";
-  // Skeleton node index the next click places, or null when the sweep is done.
-  const passTargetNodeIdx =
-    isKeypointPass && passCursor
-      ? passNodeIndices[passCursor.passIdx]?.[passCursor.nodeIdx] ?? null
-      : null;
 
   // Render zoomed inset during node drag or placement mode
   const INSET_SIZE = useAppStore((s) => s.insetSize);
@@ -2186,34 +2177,8 @@ export function VideoPlayer() {
           </Badge>
         )}
 
-        {/* Phase-2 keypoint-pass indicator */}
-        {isKeypointPass && passDims && (
-          passCursor ? (
-            <Badge
-              variant="default"
-              className="absolute top-2 left-1/2 -translate-x-1/2 pointer-events-none rounded-md max-w-[92%]"
-            >
-              {alConfig?.labelKeypoints.passes[passCursor.passIdx]?.name ??
-                `Pass ${passCursor.passIdx + 1}`}
-              {" · "}
-              {(passTargetNodeIdx !== null &&
-                selectedInstance?.skeleton.nodes[passTargetNodeIdx]?.name) ||
-                `node ${passTargetNodeIdx}`}
-              {" · "}
-              instance {passCursor.itemIdx + 1}/{passDims.itemCount}
-              {" · "}
-              {linearIndex(passCursor, passDims) + 1}/{totalSteps(passDims)}
-              {" · click = place · right-click = not visible · s skip · b back · Esc exit"}
-            </Badge>
-          ) : (
-            <Badge
-              variant="secondary"
-              className="absolute top-2 left-1/2 -translate-x-1/2 pointer-events-none rounded-md bg-emerald-600 text-white border-none"
-            >
-              Phase 2 complete — all {totalSteps(passDims)} placements swept · Esc to exit
-            </Badge>
-          )
-        )}
+        {/* Phase-2 keypoint-pass progress lives in the full-width KeypointPassBar
+            (top of the video pane), not a floating badge. */}
 
         {/* Selection count indicator */}
         {selectedNodes.size > 0 && !isPlacingNodes && (

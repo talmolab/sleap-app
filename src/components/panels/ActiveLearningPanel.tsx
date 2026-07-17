@@ -28,21 +28,13 @@ import { toast } from "@/lib/notify";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { ActiveLearningConfigDialog } from "@/components/dialogs/ActiveLearningConfigDialog";
 
 /** Last path segment of a model directory, for a compact display. */
 function modelBasename(path: string): string {
   const parts = path.replace(/[/\\]+$/, "").split(/[/\\]/);
   return parts[parts.length - 1] || path;
-}
-
-/** Small labeled section wrapper matching the other panels' density. */
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <div className="border-b border-border px-2 py-2 space-y-2">
-      <div className="text-xs font-medium text-muted-foreground">{title}</div>
-      {children}
-    </div>
-  );
 }
 
 export function ActiveLearningPanel() {
@@ -70,6 +62,7 @@ export function ActiveLearningPanel() {
   // where this-session training state is empty). Falls back to the last model
   // trained this session.
   const [selectedModelDir, setSelectedModelDir] = useState<string | null>(null);
+  const [configDialogOpen, setConfigDialogOpen] = useState(false);
 
   const nodeNames = skeleton?.nodes.map((n) => n.name);
 
@@ -320,288 +313,320 @@ export function ActiveLearningPanel() {
   }
 
   return (
-    <div className="flex flex-col h-full overflow-y-auto text-sm">
-      <Section title="Workflow">
-        {config ? (
-          <div className="space-y-1 text-xs">
-            <div>
-              Round <span className="font-medium">{round}</span> / {config.loop.maxRounds} ·
-              phase <span className="font-medium">{phase ?? "idle"}</span>
-            </div>
-            <div className="text-muted-foreground">
-              {config.labelKeypoints.passes.length} pass(es) · centroid{" "}
-              {config.localize.centroidNode === null ? (
-                <code>arbitrary</code>
-              ) : (
-                <code>{config.localize.centroidNode}</code>
-              )}{" "}
-              · crop {config.localize.cropSize}px
-            </div>
-            {config.localize.centroidNode !== "centroid" && (
-              <button
-                type="button"
-                className="text-[11px] text-primary underline underline-offset-2 hover:opacity-80"
-                onClick={useArbitraryCentroid}
-              >
-                Use a free centroid anchor instead
-              </button>
-            )}
-            {validation && validation.errors.length > 0 && (
-              <ul className="text-destructive list-disc pl-4">
-                {validation.errors.map((e, i) => (
-                  <li key={i}>{e}</li>
-                ))}
-              </ul>
-            )}
-            {validation && validation.warnings.length > 0 && (
-              <ul className="text-amber-600 dark:text-amber-500 list-disc pl-4">
-                {validation.warnings.map((w, i) => (
-                  <li key={i}>{w}</li>
-                ))}
-              </ul>
-            )}
-            <div className="flex gap-1.5 pt-1">
-              <Button size="sm" variant="outline" onClick={() => fileRef.current?.click()}>
-                Replace…
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => useActiveLearningStore.getState().clear()}
-              >
-                Clear
-              </Button>
-            </div>
-          </div>
-        ) : (
-          <div className="space-y-2">
-            <p className="text-xs text-muted-foreground">
-              Define the loop: rounds and which keypoints belong to each labeling pass.
-            </p>
-            <div className="flex flex-wrap gap-1.5">
-              <Button size="sm" onClick={adoptFromSkeleton} disabled={!nodeNames?.length}>
-                From skeleton
-              </Button>
-              <Button size="sm" variant="outline" onClick={() => fileRef.current?.click()}>
-                Import .yaml…
-              </Button>
-              <Button size="sm" variant="ghost" onClick={adoptDefault}>
-                Use default
-              </Button>
-            </div>
-            {nodeNames?.length ? (
-              <p className="text-[11px] text-muted-foreground leading-snug">
-                "From skeleton" starts a valid config with all {nodeNames.length} node(s) in one
-                pass — split it into ordered passes in the .yaml.
-              </p>
-            ) : null}
-          </div>
-        )}
-        <input
-          ref={fileRef}
-          type="file"
-          accept=".yaml,.yml"
-          className="hidden"
-          onChange={(e) => {
-            const f = e.target.files?.[0];
-            if (f) void importYaml(f);
-            e.target.value = "";
-          }}
-        />
-      </Section>
+    <div className="flex h-full min-h-0 flex-col text-sm">
+      <Tabs defaultValue="setup" className="flex h-full min-h-0 flex-col gap-0">
+        <TabsList className="m-2 shrink-0">
+          <TabsTrigger value="setup">Setup</TabsTrigger>
+          <TabsTrigger value="localize" disabled={!config}>
+            Localize
+          </TabsTrigger>
+          <TabsTrigger value="keypoints" disabled={!config}>
+            Keypoints
+          </TabsTrigger>
+        </TabsList>
 
-      {config && (
-        <Section title="Phase 1 · Localize (iterative)">
-          <p className="text-[11px] text-muted-foreground leading-snug">
-            A loop, not one shot: seed a batch of body-centers → train the locator → keep
-            seeding while it trains → run it to predict centroids on the rest. Repeat if it
-            misses animals.
-          </p>
-
-          {/* Step 1 — build a pool of frames to seed on */}
-          <div className="flex items-center gap-1.5">
-            <Input
-              ref={seedCountRef}
-              type="number"
-              min={1}
-              defaultValue={config.localize.seedFrames}
-              className="h-8 w-20"
-            />
-            <Button
-              size="sm"
-              variant={primaryIs("add-frames") ? "default" : "outline"}
-              onClick={addFrames}
-            >
-              Add frames
-            </Button>
-          </div>
-
-          {/* Step 2 — seed one body-center per animal, one click each */}
-          <Button
-            size="sm"
-            className="w-full"
-            variant={isSeeding || primaryIs("seed") ? "default" : "outline"}
-            onClick={toggleSeeding}
-          >
-            {isSeeding ? "Stop labeling centroids" : "Start labeling centroids"}
-          </Button>
-
-          <div className="text-xs">
-            Seeded <span className="font-medium">{seededFrames}</span> / {trainThreshold} frames
-            {seededCentroids !== seededFrames ? ` · ${seededCentroids} centroids` : ""}
-          </div>
-
-          {/* Step 3 — train the locator, prompted once enough frames are seeded */}
-          {trainingRunning ? (
-            <div className="rounded border border-border px-2 py-1.5 text-[11px] text-muted-foreground leading-snug">
-              Locator training in the background — keep seeding; new labels feed the next round.
-            </div>
-          ) : seededFrames >= trainThreshold ? (
-            <div className="space-y-1">
-              <Button
-                size="sm"
-                className="w-full"
-                variant={primaryIs("train") ? "default" : "outline"}
-                onClick={startLocatorTraining}
-              >
-                Train centroid locator →
-              </Button>
-              <p className="text-[11px] text-muted-foreground leading-snug">
-                Enough seeded to train. It runs in the background — keep seeding meanwhile.
-              </p>
-            </div>
-          ) : (
-            <p className="text-[11px] text-muted-foreground leading-snug">
-              Seed {trainThreshold - seededFrames} more frame(s) to kick off locator training.
-            </p>
-          )}
-
-          {trainingDone && (
-            <div className="rounded border border-emerald-600/40 px-2 py-1.5 text-[11px] text-emerald-600 dark:text-emerald-500 leading-snug">
-              Locator trained. Run it to predict centroids on the rest of your frames, then correct
-              misses and retrain.
-            </div>
-          )}
-
-          {/* Step 4 — run the locator to predict centroids (closes the loop).
-              A model can come from this session's training OR be picked from
-              disk, so predicting works after a restart / on another machine. */}
-          <div className="space-y-1">
-            <div className="flex items-center gap-1.5">
-              <Button
-                size="sm"
-                variant="outline"
-                className="shrink-0"
-                onClick={selectLocatorModel}
-              >
-                {effectiveModelDir ? "Change model…" : "Select model…"}
-              </Button>
-              <span
-                className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground"
-                title={effectiveModelDir ?? undefined}
-              >
-                {effectiveModelDir
-                  ? modelBasename(effectiveModelDir)
-                  : "No centroid model selected"}
-              </span>
-            </div>
-            <Button
-              size="sm"
-              className="w-full"
-              variant={primaryIs("predict-centroids") ? "default" : "outline"}
-              disabled={!effectiveModelDir || inferenceStatus === "running"}
-              onClick={runLocatorPredict}
-            >
-              {inferenceStatus === "running"
-                ? "Predicting centroids…"
-                : "Run locator → predict centroids"}
-            </Button>
-            {!effectiveModelDir && (
-              <p className="text-[11px] text-muted-foreground leading-snug">
-                Train a locator above, or pick a trained centroid model directory (the run
-                folder containing <code>best.ckpt</code>).
-              </p>
-            )}
-          </div>
-        </Section>
-      )}
-
-      {config && (
-        <Section title="Phase 2 · Label keypoints">
-          <p className="text-[11px] text-muted-foreground leading-snug">
-            Skip ahead and label keypoints directly on the seeded centroids: a
-            guided sweep that zooms to each animal and walks the passes
-            pass-by-pass. No locator model needed.
-          </p>
-
-          {!isKeypointPass ? (
-            <>
-              <Button
-                size="sm"
-                className="w-full"
-                variant="outline"
-                disabled={seededFrames === 0}
-                onClick={startKeypointPasses}
-              >
-                Label keypoints on {seededCentroids || "seeded"} centroid(s) →
-              </Button>
-              {seededFrames === 0 && (
-                <p className="text-[11px] text-muted-foreground leading-snug">
-                  Seed (or predict) some centroids first — Phase 2 labels one instance per centroid.
+        {/* ---- Setup ---- */}
+        <TabsContent value="setup" className="m-0 min-h-0 flex-1 overflow-y-auto">
+          <div className="space-y-2 px-2 pb-3">
+            {config ? (
+              <div className="space-y-1 text-xs">
+                <div>
+                  Round <span className="font-medium">{round}</span> / {config.loop.maxRounds} · phase{" "}
+                  <span className="font-medium">{phase ?? "idle"}</span>
+                </div>
+                <div className="text-muted-foreground">
+                  {config.labelKeypoints.passes.length} pass(es) · centroid{" "}
+                  {config.localize.centroidNode === null ? (
+                    <code>arbitrary</code>
+                  ) : (
+                    <code>{config.localize.centroidNode}</code>
+                  )}{" "}
+                  · crop {config.localize.cropSize}px
+                </div>
+                {config.localize.centroidNode !== "centroid" && (
+                  <button
+                    type="button"
+                    className="text-[11px] text-primary underline underline-offset-2 hover:opacity-80"
+                    onClick={useArbitraryCentroid}
+                  >
+                    Use a free centroid anchor instead
+                  </button>
+                )}
+                {validation && validation.errors.length > 0 && (
+                  <ul className="list-disc pl-4 text-destructive">
+                    {validation.errors.map((e, i) => (
+                      <li key={i}>{e}</li>
+                    ))}
+                  </ul>
+                )}
+                {validation && validation.warnings.length > 0 && (
+                  <ul className="list-disc pl-4 text-amber-600 dark:text-amber-500">
+                    {validation.warnings.map((w, i) => (
+                      <li key={i}>{w}</li>
+                    ))}
+                  </ul>
+                )}
+                <div className="flex flex-wrap gap-1.5 pt-1">
+                  <Button size="sm" onClick={() => setConfigDialogOpen(true)}>
+                    Edit workflow…
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => fileRef.current?.click()}>
+                    Replace…
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => useActiveLearningStore.getState().clear()}
+                  >
+                    Clear
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <p className="text-xs text-muted-foreground">
+                  Define the loop: rounds and which keypoints belong to each labeling pass.
                 </p>
-              )}
-            </>
-          ) : (
-            <div className="space-y-2">
-              {passCursor && passDimsState ? (
-                <div className="text-xs space-y-0.5">
-                  <div>
-                    Pass{" "}
-                    <span className="font-medium">
-                      {passCursor.passIdx + 1}/{passDimsState.passCount}
-                    </span>
-                    {config.labelKeypoints.passes[passCursor.passIdx]?.name
-                      ? ` · ${config.labelKeypoints.passes[passCursor.passIdx].name}`
-                      : ""}
-                  </div>
-                  <div className="text-muted-foreground">
-                    Instance {passCursor.itemIdx + 1}/{passDimsState.itemCount} · placement{" "}
-                    {linearIndex(passCursor, passDimsState) + 1}/{totalSteps(passDimsState)}
-                  </div>
+                <div className="flex flex-wrap gap-1.5">
+                  <Button size="sm" onClick={adoptFromSkeleton} disabled={!nodeNames?.length}>
+                    From skeleton
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => fileRef.current?.click()}>
+                    Import .yaml…
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={adoptDefault}>
+                    Use default
+                  </Button>
                 </div>
-              ) : (
-                <div className="rounded border border-emerald-600/40 px-2 py-1.5 text-[11px] text-emerald-600 dark:text-emerald-500 leading-snug">
-                  All passes complete. Stop to review, then train a pose model.
-                </div>
-              )}
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="w-full"
+                  disabled={!nodeNames?.length}
+                  onClick={() => setConfigDialogOpen(true)}
+                >
+                  Build workflow in the editor…
+                </Button>
+                {nodeNames?.length ? (
+                  <p className="text-[11px] leading-snug text-muted-foreground">
+                    "From skeleton" starts a valid config with all {nodeNames.length} node(s) in one
+                    pass — then use <span className="font-medium">Edit workflow…</span> to split it
+                    into ordered passes.
+                  </p>
+                ) : null}
+              </div>
+            )}
+          </div>
+        </TabsContent>
 
-              <div className="space-y-1">
-                <div className="flex items-center justify-between text-[11px] text-muted-foreground">
-                  <span>Zoom window</span>
-                  <span>{passZoomWindow}px</span>
-                </div>
-                <Slider
-                  min={32}
-                  max={1024}
-                  step={16}
-                  value={[passZoomWindow]}
-                  onValueChange={(v) =>
-                    useAppStore.getState().setPassZoomWindow(v[0] ?? passZoomWindow)
-                  }
+        {/* ---- Localize (Phase 1) ---- */}
+        <TabsContent value="localize" className="m-0 min-h-0 flex-1 overflow-y-auto">
+          {config && (
+            <div className="space-y-2 px-2 pb-3 pt-1">
+              <p className="text-[11px] leading-snug text-muted-foreground">
+                A loop, not one shot: seed a batch of body-centers → train the locator → keep
+                seeding while it trains → run it to predict centroids on the rest. Repeat if it
+                misses animals.
+              </p>
+
+              {/* Step 1 — build a pool of frames to seed on */}
+              <div className="flex items-center gap-1.5">
+                <Input
+                  ref={seedCountRef}
+                  type="number"
+                  min={1}
+                  defaultValue={config.localize.seedFrames}
+                  className="h-8 w-20"
                 />
+                <Button
+                  size="sm"
+                  variant={primaryIs("add-frames") ? "default" : "outline"}
+                  onClick={addFrames}
+                >
+                  Add frames
+                </Button>
               </div>
 
-              <Button size="sm" className="w-full" variant="default" onClick={stopKeypointPasses}>
-                Stop labeling keypoints
+              {/* Step 2 — seed one body-center per animal, one click each */}
+              <Button
+                size="sm"
+                className="w-full"
+                variant={isSeeding || primaryIs("seed") ? "default" : "outline"}
+                onClick={toggleSeeding}
+              >
+                {isSeeding ? "Stop labeling centroids" : "Start labeling centroids"}
               </Button>
-              <p className="text-[11px] text-muted-foreground leading-snug">
-                Click = place · right-click = not visible · <kbd>s</kbd> skip ·{" "}
-                <kbd>b</kbd> back · <kbd>Esc</kbd> exit
-              </p>
+
+              <div className="text-xs">
+                Seeded <span className="font-medium">{seededFrames}</span> / {trainThreshold} frames
+                {seededCentroids !== seededFrames ? ` · ${seededCentroids} centroids` : ""}
+              </div>
+
+              {/* Step 3 — train the locator, prompted once enough frames are seeded */}
+              {trainingRunning ? (
+                <div className="rounded border border-border px-2 py-1.5 text-[11px] leading-snug text-muted-foreground">
+                  Locator training in the background — keep seeding; new labels feed the next round.
+                </div>
+              ) : seededFrames >= trainThreshold ? (
+                <div className="space-y-1">
+                  <Button
+                    size="sm"
+                    className="w-full"
+                    variant={primaryIs("train") ? "default" : "outline"}
+                    onClick={startLocatorTraining}
+                  >
+                    Train centroid locator →
+                  </Button>
+                  <p className="text-[11px] leading-snug text-muted-foreground">
+                    Enough seeded to train. It runs in the background — keep seeding meanwhile.
+                  </p>
+                </div>
+              ) : (
+                <p className="text-[11px] leading-snug text-muted-foreground">
+                  Seed {trainThreshold - seededFrames} more frame(s) to kick off locator training.
+                </p>
+              )}
+
+              {trainingDone && (
+                <div className="rounded border border-emerald-600/40 px-2 py-1.5 text-[11px] leading-snug text-emerald-600 dark:text-emerald-500">
+                  Locator trained. Run it to predict centroids on the rest of your frames, then
+                  correct misses and retrain.
+                </div>
+              )}
+
+              {/* Step 4 — run the locator to predict centroids (closes the loop). */}
+              <div className="space-y-1">
+                <div className="flex items-center gap-1.5">
+                  <Button size="sm" variant="outline" className="shrink-0" onClick={selectLocatorModel}>
+                    {effectiveModelDir ? "Change model…" : "Select model…"}
+                  </Button>
+                  <span
+                    className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground"
+                    title={effectiveModelDir ?? undefined}
+                  >
+                    {effectiveModelDir ? modelBasename(effectiveModelDir) : "No centroid model selected"}
+                  </span>
+                </div>
+                <Button
+                  size="sm"
+                  className="w-full"
+                  variant={primaryIs("predict-centroids") ? "default" : "outline"}
+                  disabled={!effectiveModelDir || inferenceStatus === "running"}
+                  onClick={runLocatorPredict}
+                >
+                  {inferenceStatus === "running"
+                    ? "Predicting centroids…"
+                    : "Run locator → predict centroids"}
+                </Button>
+                {!effectiveModelDir && (
+                  <p className="text-[11px] leading-snug text-muted-foreground">
+                    Train a locator above, or pick a trained centroid model directory (the run folder
+                    containing <code>best.ckpt</code>).
+                  </p>
+                )}
+              </div>
             </div>
           )}
-        </Section>
-      )}
+        </TabsContent>
+
+        {/* ---- Keypoints (Phase 2) ---- */}
+        <TabsContent value="keypoints" className="m-0 min-h-0 flex-1 overflow-y-auto">
+          {config && (
+            <div className="space-y-2 px-2 pb-3 pt-1">
+              <p className="text-[11px] leading-snug text-muted-foreground">
+                Label keypoints directly on the seeded/predicted centroids: a guided sweep that zooms
+                to each animal and walks the passes. Progress + the node sequence show in the top bar.
+              </p>
+
+              {!isKeypointPass ? (
+                <>
+                  <Button
+                    size="sm"
+                    className="w-full"
+                    variant="outline"
+                    disabled={seededFrames === 0}
+                    onClick={startKeypointPasses}
+                  >
+                    Label keypoints on {seededCentroids || "seeded"} centroid(s) →
+                  </Button>
+                  {seededFrames === 0 && (
+                    <p className="text-[11px] leading-snug text-muted-foreground">
+                      Seed (or predict) some centroids first — Phase 2 labels one instance per centroid.
+                    </p>
+                  )}
+                </>
+              ) : (
+                <div className="space-y-2">
+                  {passCursor && passDimsState ? (
+                    <div className="space-y-0.5 text-xs">
+                      <div>
+                        Pass{" "}
+                        <span className="font-medium">
+                          {passCursor.passIdx + 1}/{passDimsState.passCount}
+                        </span>
+                        {config.labelKeypoints.passes[passCursor.passIdx]?.name
+                          ? ` · ${config.labelKeypoints.passes[passCursor.passIdx].name}`
+                          : ""}
+                      </div>
+                      <div className="text-muted-foreground">
+                        Instance {passCursor.itemIdx + 1}/{passDimsState.itemCount} · placement{" "}
+                        {linearIndex(passCursor, passDimsState) + 1}/{totalSteps(passDimsState)}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="rounded border border-emerald-600/40 px-2 py-1.5 text-[11px] leading-snug text-emerald-600 dark:text-emerald-500">
+                      All passes complete. Stop to review, then train a pose model.
+                    </div>
+                  )}
+
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                      <span>Zoom window</span>
+                      <span>{passZoomWindow}px</span>
+                    </div>
+                    <Slider
+                      min={32}
+                      max={1024}
+                      step={16}
+                      value={[passZoomWindow]}
+                      onValueChange={(v) =>
+                        useAppStore.getState().setPassZoomWindow(v[0] ?? passZoomWindow)
+                      }
+                    />
+                  </div>
+
+                  <Button size="sm" className="w-full" variant="default" onClick={stopKeypointPasses}>
+                    Stop labeling keypoints
+                  </Button>
+                  <p className="text-[11px] leading-snug text-muted-foreground">
+                    Click = place · right-click = not visible · <kbd>s</kbd> skip · <kbd>b</kbd> back ·{" "}
+                    <kbd>Esc</kbd> exit
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+        </TabsContent>
+      </Tabs>
+
+      {/* Hidden import input (shared by Replace… / Import .yaml…). */}
+      <input
+        ref={fileRef}
+        type="file"
+        accept=".yaml,.yml"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) void importYaml(f);
+          e.target.value = "";
+        }}
+      />
+
+      <ActiveLearningConfigDialog
+        open={configDialogOpen}
+        onOpenChange={setConfigDialogOpen}
+        nodeNames={nodeNames ?? []}
+      />
     </div>
   );
 }
