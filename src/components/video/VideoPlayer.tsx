@@ -50,7 +50,7 @@ import {
   videoIssue,
   ensureVideoBackend,
 } from "../../lib/resolveVideos";
-import { Film } from "lucide-react";
+import { Film, Frame } from "lucide-react";
 
 export function VideoPlayer() {
   const frameCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -87,6 +87,7 @@ export function VideoPlayer() {
   const defaultToPan = useAppStore((s) => s.defaultToPan);
   const fitSelection = useAppStore((s) => s.fitSelection);
   const centerSelection = useAppStore((s) => s.centerSelection);
+  const resetViewNonce = useAppStore((s) => s.resetViewNonce);
   const areaDeleteMode = useAppStore((s) => s.areaDeleteMode);
   const showCrosshair = useAppStore((s) => s.showCrosshair);
 
@@ -1161,6 +1162,23 @@ export function VideoPlayer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [centerSelection]);
 
+  // Reset the view to default (zoom=1, no pan, fit-frame) on demand. Driven by a
+  // one-shot nonce bumped from the toolbar button / 'R' hotkey — mirrors the
+  // `fit`/`centerSelection` store-signal pattern (the toolbar/hotkey live
+  // outside this component and can't call setZoom/setPan directly). The initial
+  // nonce of 0 is skipped so a fresh mount doesn't fire a spurious reset.
+  useEffect(() => {
+    if (resetViewNonce === 0) return;
+    viewRef.current = { zoom: 1, panX: 0, panY: 0 };
+    setZoom(1);
+    setPanX(0);
+    setPanY(0);
+    // Restart the double-tap-space zoom cycle from a clean "free" state so the
+    // next cycle behaves predictably after an explicit reset.
+    zoomMode.current = "free";
+    savedFreeView.current = { zoom: 1, panX: 0, panY: 0 };
+  }, [resetViewNonce]);
+
   // Mouse handlers for interaction
   const canvasToScene = useCallback(
     (clientX: number, clientY: number) => {
@@ -1919,16 +1937,29 @@ export function VideoPlayer() {
           );
         })()}
 
-        {/* Zoom-level overlay. The frame counter lives in the status bar only
-            (was previously duplicated here and beside the seekbar). */}
-        {zoom !== 1 && (
-          <Badge
+        {/* View controls overlay: reset-view button + zoom-level readout. The
+            frame counter lives in the status bar only (was previously
+            duplicated here and beside the seekbar). */}
+        <div className="absolute bottom-2 left-2 z-20 flex items-center gap-1.5">
+          <Button
             variant="secondary"
-            className="absolute bottom-2 left-2 pointer-events-none rounded-md bg-black/60 text-white/80 border-none"
+            size="icon-xs"
+            className="pointer-events-auto rounded-md bg-black/60 text-white/80 border-none hover:bg-black/70 hover:text-white"
+            title="Reset view (R)"
+            aria-label="Reset view (R)"
+            onClick={() => useAppStore.getState().resetView()}
           >
-            {(zoom * 100).toFixed(0)}%
-          </Badge>
-        )}
+            <Frame />
+          </Button>
+          {zoom !== 1 && (
+            <Badge
+              variant="secondary"
+              className="pointer-events-none rounded-md bg-black/60 text-white/80 border-none"
+            >
+              {(zoom * 100).toFixed(0)}%
+            </Badge>
+          )}
+        </div>
 
         {/* Area-delete mode indicator */}
         {areaDeleteMode && (

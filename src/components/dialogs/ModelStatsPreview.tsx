@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
+import { RotateCcw } from "lucide-react";
 import { useAppStore } from "@/stores/appStore";
+import { Button } from "@/components/ui/button";
 import { computeReceptiveField, computeCropSize, computeParamCount } from "@/lib/modelStats";
 import type { ConfigHyperparams } from "@/stores/trainingStore";
 
@@ -177,31 +179,46 @@ export function ModelStatsPreview({ hp, maxStride, filters, filtersRate, outputS
       <div className="flex gap-6">
         {/* Thumbnail canvas */}
         <div className="shrink-0">
-          <canvas
-            ref={canvasRef}
-            width={THUMBNAIL_SIZE * DPR}
-            height={THUMBNAIL_SIZE * DPR}
-            style={{ width: THUMBNAIL_SIZE, height: THUMBNAIL_SIZE }}
-            className="rounded border border-border cursor-crosshair"
-            onWheel={(e) => {
-              e.preventDefault();
-              setZoom((z) => Math.max(0.5, Math.min(10, z * (e.deltaY < 0 ? 1.15 : 0.87))));
-            }}
-            onMouseDown={(e) => {
-              dragRef.current = { startX: e.clientX, startY: e.clientY, panX: pan.x, panY: pan.y };
-            }}
-            onMouseMove={(e) => {
-              const rect = canvasRef.current!.getBoundingClientRect();
-              setMousePos({ x: e.clientX - rect.left, y: e.clientY - rect.top });
-              if (!dragRef.current) return;
-              setPan({
-                x: dragRef.current.panX + (e.clientX - dragRef.current.startX),
-                y: dragRef.current.panY + (e.clientY - dragRef.current.startY),
-              });
-            }}
-            onMouseUp={() => { dragRef.current = null; }}
-            onMouseLeave={() => { dragRef.current = null; setMousePos(null); }}
-          />
+          <div className="relative" style={{ width: THUMBNAIL_SIZE, height: THUMBNAIL_SIZE }}>
+            <canvas
+              ref={canvasRef}
+              width={THUMBNAIL_SIZE * DPR}
+              height={THUMBNAIL_SIZE * DPR}
+              style={{ width: THUMBNAIL_SIZE, height: THUMBNAIL_SIZE }}
+              className="rounded border border-border cursor-crosshair"
+              onWheel={(e) => {
+                e.preventDefault();
+                setZoom((z) => Math.max(0.5, Math.min(10, z * (e.deltaY < 0 ? 1.15 : 0.87))));
+              }}
+              onMouseDown={(e) => {
+                dragRef.current = { startX: e.clientX, startY: e.clientY, panX: pan.x, panY: pan.y };
+              }}
+              onMouseMove={(e) => {
+                const rect = canvasRef.current!.getBoundingClientRect();
+                setMousePos({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+                if (!dragRef.current) return;
+                setPan({
+                  x: dragRef.current.panX + (e.clientX - dragRef.current.startX),
+                  y: dragRef.current.panY + (e.clientY - dragRef.current.startY),
+                });
+              }}
+              onMouseUp={() => { dragRef.current = null; }}
+              onMouseLeave={() => { dragRef.current = null; setMousePos(null); }}
+            />
+            {/* Reset the zoom/pan of this preview back to its default view. */}
+            <Button
+              type="button"
+              variant="secondary"
+              size="icon-xs"
+              title="Reset view"
+              aria-label="Reset view"
+              disabled={zoom === 1 && pan.x === 0 && pan.y === 0}
+              onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }); }}
+              className="absolute top-1.5 right-1.5 shadow-sm"
+            >
+              <RotateCcw />
+            </Button>
+          </div>
         </div>
 
         {/* Stats text */}

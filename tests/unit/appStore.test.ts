@@ -434,6 +434,25 @@ describe("appStore", () => {
     useAppStore.getState().set("seekbarHeaderGraph", "tracking-score");
     expect(useAppStore.getState().seekbarHeaderGraph).toBe("tracking-score");
   });
+
+  describe("resetView", () => {
+    it("initializes resetViewNonce to 0", () => {
+      resetStore();
+      expect(useAppStore.getState().resetViewNonce).toBe(0);
+    });
+
+    it("increments resetViewNonce on each call (one-shot signal)", () => {
+      resetStore();
+      useAppStore.getState().resetView();
+      expect(useAppStore.getState().resetViewNonce).toBe(1);
+      useAppStore.getState().resetView();
+      expect(useAppStore.getState().resetViewNonce).toBe(2);
+    });
+
+    it("is not persisted (transient view signal)", () => {
+      expect(PERSISTED_KEYS).not.toContain("resetViewNonce");
+    });
+  });
 });
 
 describe("PERSISTED_KEYS (layout + scale persistence)", () => {

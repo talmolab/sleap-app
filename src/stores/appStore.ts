@@ -94,6 +94,14 @@ export interface AppState {
    * Transient — not persisted.
    */
   centerSelection: boolean;
+  /**
+   * Monotonically-increasing one-shot signal to reset the main video canvas
+   * view to its default (zoom = 1, no pan, fit-frame). Bumped by `resetView`
+   * from the toolbar button / `R` hotkey; VideoPlayer subscribes and applies
+   * the reset when it changes. A nonce (not a boolean) so back-to-back resets
+   * each fire without a separate clear step. Transient — not persisted.
+   */
+  resetViewNonce: number;
   colorPredicted: boolean;
   defaultToPan: boolean;
   palette: string;
@@ -200,6 +208,7 @@ export interface AppState {
   resetInstanceVisibility: () => void;
   setInstance: (instance: Instance | null) => void;
   setLabeledFrame: (frame: LabeledFrame | null) => void;
+  resetView: () => void;
   markChanged: () => void;
   touchFrame: () => void;
   clearChanges: () => void;
@@ -304,6 +313,7 @@ export const useAppStore = create<AppState>()(
       fit: false,
       fitSelection: false,
       centerSelection: false,
+      resetViewNonce: 0,
       colorPredicted: false,
       defaultToPan: false,
       palette: "standard",
@@ -518,6 +528,13 @@ export const useAppStore = create<AppState>()(
       setLabeledFrame: (frame) =>
         set((state) => {
           state.labeledFrame = frame;
+        }),
+
+      // Reset the main video canvas view to its default (zoom = 1, no pan,
+      // fit-frame). One-shot: bump a nonce that VideoPlayer subscribes to.
+      resetView: () =>
+        set((state) => {
+          state.resetViewNonce += 1;
         }),
 
       markChanged: () =>
