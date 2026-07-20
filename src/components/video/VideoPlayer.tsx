@@ -86,6 +86,7 @@ export function VideoPlayer() {
   const rotation = useAppStore((s) => s.rotation);
   const defaultToPan = useAppStore((s) => s.defaultToPan);
   const fitSelection = useAppStore((s) => s.fitSelection);
+  const centerSelection = useAppStore((s) => s.centerSelection);
   const areaDeleteMode = useAppStore((s) => s.areaDeleteMode);
   const showCrosshair = useAppStore((s) => s.showCrosshair);
 
@@ -527,7 +528,7 @@ export function VideoPlayer() {
     return () => {
       cancelled = true;
     };
-  }, [video, frameIdx, overlayVersion]);
+  }, [video, frameIdx]);
 
   // Frame histogram, computed OFF the seek path. A full-frame getImageData is a
   // GPU->CPU readback (~200-340ms in WKWebView) — doing it inline blocked every
@@ -1124,6 +1125,42 @@ export function VideoPlayer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fitSelection]);
 
+  // Snap view to the selected instance (one-shot): pan so the instance's
+  // visible-node bounding box is centered at the CURRENT zoom, without changing
+  // zoom. Fired when an instance is clicked in the Instances panel — unlike
+  // "Fit View to Selection" above, this keeps the zoom fixed so the jump stays
+  // un-disorienting. Does nothing if the instance has no visible points.
+  useEffect(() => {
+    if (!centerSelection || !selectedInstance) return;
+    // One-shot: clear the request immediately.
+    useAppStore.getState().set("centerSelection", false);
+
+    const [cw, ch] = containerSize;
+    if (cw === 0 || ch === 0) return;
+
+    const instances = renderedInstancesRef.current;
+    const selectedRendered = instances.find((ri) => ri.isSelected);
+    if (!selectedRendered) return;
+
+    const visibleNodes = selectedRendered.nodes.filter((n) => n.visible);
+    if (visibleNodes.length === 0) return;
+
+    const xs = visibleNodes.map((n) => n.x);
+    const ys = visibleNodes.map((n) => n.y);
+    const centerX = (Math.min(...xs) + Math.max(...xs)) / 2;
+    const centerY = (Math.min(...ys) + Math.max(...ys)) / 2;
+
+    // Pan so scene point (centerX, centerY) lands at the viewport center, at the
+    // current zoom (mirrors the centering math in the fit effects above).
+    const newPanX = cw / 2 - offsetX - centerX * baseScale * zoom;
+    const newPanY = ch / 2 - offsetY - centerY * baseScale * zoom;
+
+    viewRef.current = { zoom, panX: newPanX, panY: newPanY };
+    setPanX(newPanX);
+    setPanY(newPanY);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [centerSelection]);
+
   // Mouse handlers for interaction
   const canvasToScene = useCallback(
     (clientX: number, clientY: number) => {
@@ -1222,7 +1259,7 @@ export function VideoPlayer() {
       // In pan mode, check for node hits first so nodes are still draggable
       if (shouldPan && !areaDeleteMode) {
         const instances = renderedInstancesRef.current;
-        const nt = (markerSize * 2) / zoom;
+        const nt = (markerSize * 2) / (baseScale * zoom);
         const hit = hitTestNode(instances, x, y, nt);
         if (hit && !instances[hit.instanceIdx]?.isPredicted) {
           // Node hit in pan mode — fall through to normal node drag handling below
@@ -1287,8 +1324,8 @@ export function VideoPlayer() {
       }
 
       const instances = renderedInstancesRef.current;
-      const nodeThreshold = (markerSize * 2) / zoom;
-      const instanceThreshold = 30 / zoom;
+      const nodeThreshold = (markerSize * 2) / (baseScale * zoom);
+      const instanceThreshold = 30 / (baseScale * zoom);
 
       // Try to hit a node first
       const nodeHit = hitTestNode(instances, x, y, nodeThreshold);
@@ -1359,7 +1396,7 @@ export function VideoPlayer() {
       setMarqueeStart({ x, y });
       setMarqueeEnd({ x, y });
     },
-    [canvasToScene, markerSize, panX, panY, zoom, shouldPan, isCmdHeld, offsetX, offsetY, selectedNodes, areaDeleteMode]
+    [canvasToScene, markerSize, panX, panY, zoom, baseScale, shouldPan, isCmdHeld, offsetX, offsetY, selectedNodes, areaDeleteMode]
   );
 
   const handleMouseMove = useCallback(
@@ -1486,7 +1523,7 @@ export function VideoPlayer() {
       }
 
       const instances = renderedInstancesRef.current;
-      const nodeThreshold = (markerSize * 2) / zoom;
+      const nodeThreshold = (markerSize * 2) / (baseScale * zoom);
       const hit = hitTestNode(instances, x, y, nodeThreshold);
 
       if (hit) {
@@ -1506,7 +1543,7 @@ export function VideoPlayer() {
         useAppStore.getState().bumpOverlayVersion();
       }
     },
-    [isDragging, isPanning, isZoomDragging, dragNodeInfo, canvasToScene, panStart, constrainPan, zoom, interactionMode, selectedNodes, markerSize, hoveredNode, offsetX, offsetY, isPlacingNodes, isShiftHeld, isAreaDeleting, areaDeleteStart]
+    [isDragging, isPanning, isZoomDragging, dragNodeInfo, canvasToScene, panStart, constrainPan, zoom, baseScale, interactionMode, selectedNodes, markerSize, hoveredNode, offsetX, offsetY, isPlacingNodes, isShiftHeld, isAreaDeleting, areaDeleteStart]
   );
 
   const handleMouseUp = useCallback(() => {
@@ -1655,8 +1692,8 @@ export function VideoPlayer() {
       const instances = renderedInstancesRef.current;
 
       // Scale hit test thresholds by 1/zoom
-      const nodeThreshold = (markerSize * 2) / zoom;
-      const instanceThreshold = 30 / zoom;
+      const nodeThreshold = (markerSize * 2) / (baseScale * zoom);
+      const instanceThreshold = 30 / (baseScale * zoom);
 
       // Check if double-clicking on a node
       const nodeHit = hitTestNode(instances, x, y, nodeThreshold);
@@ -1706,7 +1743,7 @@ export function VideoPlayer() {
         setPanY(0);
       }
     },
-    [canvasToScene, markerSize, zoom, shouldPan]
+    [canvasToScene, markerSize, zoom, baseScale, shouldPan]
   );
 
   // Right-click context menu
@@ -1717,7 +1754,7 @@ export function VideoPlayer() {
       const instances = renderedInstancesRef.current;
 
       // Check if right-clicking on a node
-      const nodeHit = hitTestNode(instances, x, y, markerSize * 2);
+      const nodeHit = hitTestNode(instances, x, y, (markerSize * 2) / (baseScale * zoom));
       if (nodeHit) {
         const lf = useAppStore.getState().labeledFrame;
         if (lf) {
@@ -1733,7 +1770,7 @@ export function VideoPlayer() {
       }
 
       // Check if right-clicking on an instance
-      const instHit = hitTestInstance(instances, x, y);
+      const instHit = hitTestInstance(instances, x, y, 30 / (baseScale * zoom));
       if (instHit !== null) {
         const lf = useAppStore.getState().labeledFrame;
         if (lf) {
@@ -1756,7 +1793,7 @@ export function VideoPlayer() {
         nodeIdx: null,
       });
     },
-    [canvasToScene, markerSize]
+    [canvasToScene, markerSize, zoom, baseScale]
   );
 
   // Full-canvas crosshair while zoomed (View ▸ "Crosshair When Zoomed"). Only

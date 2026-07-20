@@ -710,17 +710,17 @@ export function Seekbar() {
   }, []);
 
   return (
-    <div className="flex flex-col shrink-0">
-      {/* Instance count header graph - uses same flex layout as seekbar row for alignment */}
-      <div className="flex items-center h-4 bg-card border-t border-border px-2 gap-2">
-        <div ref={headerContainerRef} className="flex-1 overflow-hidden">
+    <div className="grid grid-cols-[1fr_auto] shrink-0">
+      {/* Instance count header graph - subgrid aligns canvas with seekbar below */}
+      <div className="grid grid-cols-subgrid col-span-full items-center h-4 bg-card border-t border-border px-2 gap-2">
+        <div ref={headerContainerRef} className="overflow-hidden min-w-0">
           <canvas
             ref={headerCanvasRef}
             className="w-full h-full"
             style={{ display: "block" }}
           />
         </div>
-        <div className="flex gap-1 shrink-0 items-center">
+        <div className="flex gap-1 shrink-0 items-center justify-self-end">
           {/* Graph-type picker */}
           <Popover>
             <PopoverTrigger asChild>
@@ -786,13 +786,11 @@ export function Seekbar() {
         </div>
       </div>
 
-      <div className="flex items-center h-10 bg-card border-t border-border px-2 gap-2">
-        {/* Frame counter removed — the frame index is shown only in the status
-            bar now (was also duplicated here and as an on-frame overlay). */}
+      <div className="grid grid-cols-subgrid col-span-full items-center h-10 bg-card border-t border-border px-2 gap-2">
         {/* Seekbar canvas */}
         <div
           ref={containerRef}
-          className="flex-1 h-6 rounded cursor-pointer overflow-hidden"
+          className="h-6 rounded cursor-pointer overflow-hidden min-w-0"
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
