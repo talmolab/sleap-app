@@ -152,6 +152,12 @@ export interface AppState {
   placementNodeIdx: number | null;
   /** Skeleton node index a "seed" click places (the centroid/body-center node). */
   seedNodeIdx: number;
+  /**
+   * When true, a "seed" click creates a first-class `UserCentroid` annotation
+   * on `frame.centroids` instead of an Instance point — the centroid-annotation
+   * model for a separate (non-keypoint) centroid anchor.
+   */
+  seedCentroidAnnotation: boolean;
 
   // === Phase-2 keypoint-pass state (transient, not persisted) ===
   /** Ordered (frame, instance) units the multi-pass sweep walks. */
@@ -234,8 +240,12 @@ export interface AppState {
   setHelpDialogOpen: (open: boolean) => void;
   enterPlacementMode: () => void;
   exitPlacementMode: () => void;
-  /** Enter centroid-seeding mode; each click drops a new one-node instance. */
-  enterSeedMode: (nodeIdx?: number) => void;
+  /**
+   * Enter centroid-seeding mode. Each click drops a new one-node instance, or —
+   * when `centroidAnnotation` is true — a first-class `UserCentroid` on
+   * `frame.centroids`.
+   */
+  enterSeedMode: (nodeIdx?: number, centroidAnnotation?: boolean) => void;
   exitSeedMode: () => void;
   /** Enter Phase-2 keypoint-pass labeling with a prebuilt work list + dims. */
   enterKeypointPassMode: (args: {
@@ -380,6 +390,7 @@ export const useAppStore = create<AppState>()(
       labelingMode: "select" as "select" | "place" | "seed" | "keypointPass",
       placementNodeIdx: null as number | null,
       seedNodeIdx: 0,
+      seedCentroidAnnotation: false,
 
       // Phase-2 keypoint-pass state (transient)
       passWorkList: [] as PassItem[],
@@ -441,6 +452,7 @@ export const useAppStore = create<AppState>()(
           // work list references the OLD project's instances, so leaving it
           // active would mutate the wrong data on the next click.
           state.labelingMode = "select";
+          state.seedCentroidAnnotation = false;
           state.passCursor = null;
           state.passWorkList = [];
           state.passDims = null;
@@ -666,15 +678,17 @@ export const useAppStore = create<AppState>()(
           state.placementNodeIdx = null;
         }),
 
-      enterSeedMode: (nodeIdx?: number) =>
+      enterSeedMode: (nodeIdx?: number, centroidAnnotation?: boolean) =>
         set((state) => {
           state.labelingMode = "seed";
           if (typeof nodeIdx === "number") state.seedNodeIdx = nodeIdx;
+          state.seedCentroidAnnotation = centroidAnnotation ?? false;
         }),
 
       exitSeedMode: () =>
         set((state) => {
           state.labelingMode = "select";
+          state.seedCentroidAnnotation = false;
         }),
 
       enterKeypointPassMode: ({ workList, dims, nodeIndices, zoomWindow }) => {

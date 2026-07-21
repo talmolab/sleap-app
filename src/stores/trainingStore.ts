@@ -1315,6 +1315,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
             maxInstances: null,
             peakThreshold: 0.2,
             anchorPart: null,
+            centroidOutput: "instance",
             integralRefinement: true,
             integralPatchSize: 5,
             nPoints: 10,

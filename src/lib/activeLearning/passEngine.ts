@@ -13,9 +13,10 @@
  * then move to the next pass. The cursor nests pass → item → node.
  */
 
-import type { Labels, Instance } from "@talmolab/sleap-io.js";
+import type { Labels, LabeledFrame, Instance } from "@talmolab/sleap-io.js";
 import type { ActiveLearningConfig, LabelPass, PassOrder } from "./config";
 import { instanceCropCenter } from "./generateCrops";
+import { poseSkeletonOf } from "./centroidPairing";
 
 /**
  * One (frame, instance) unit that every pass labels. Resolved to a live
@@ -108,29 +109,156 @@ export function nodeIndicesForPass(pass: LabelPass, skeletonNodeNames: string[])
  * skipped; `instanceIdx` indexes into the frame's full `instances` array.
  */
 export function buildWorkList(labels: Labels, config: ActiveLearningConfig): PassItem[] {
+  // Separate centroid annotations pair each `frame.centroids` entry with a pose
+  // instance; the other modes treat every instance as its own item.
+  if (config.localize.separateCentroid) return buildWorkListSeparate(labels);
+
   const anchorNode = config.localize.centroidNode ?? undefined;
   const videos = labels.videos;
-
-  const frames = [...labels.labeledFrames].sort((a, b) => {
-    const va = videos.indexOf(a.video);
-    const vb = videos.indexOf(b.video);
-    if (va !== vb) return va - vb;
-    return a.frameIdx - b.frameIdx;
-  });
-
   const items: PassItem[] = [];
-  for (const lf of frames) {
+  for (const lf of sortedFrames(labels)) {
     const videoIdx = videos.indexOf(lf.video);
     if (videoIdx < 0) continue;
     const insts = lf.instances;
     for (let i = 0; i < insts.length; i++) {
-      const inst = insts[i];
-      const center = instanceCropCenter(inst, inst.skeleton, anchorNode);
+      const center = instanceCropCenter(insts[i], insts[i].skeleton, anchorNode);
       if (!center) continue;
       items.push({ videoIdx, frameIdx: lf.frameIdx, instanceIdx: i, centroidXY: center });
     }
   }
   return items;
+}
+
+/** Frames ordered video → frameIdx (the sweep's item order). */
+function sortedFrames(labels: Labels): LabeledFrame[] {
+  const videos = labels.videos;
+  return [...labels.labeledFrames].sort((a, b) => {
+    const va = videos.indexOf(a.video);
+    const vb = videos.indexOf(b.video);
+    if (va !== vb) return va - vb;
+    return a.frameIdx - b.frameIdx;
+  });
+}
+
+/**
+ * Centroid-annotation work list: each first-class centroid annotation
+ * (`frame.centroids`) pairs with a pose instance, which is the one the passes
+ * label. The centroid supplies the zoom anchor only. Assumes pose instances
+ * already exist to pair with (see ensurePairedPoseInstances); unpaired
+ * centroids are skipped.
+ *
+ * Pairing is GEOMETRIC, not positional: a pose instance with placed points
+ * matches its nearest centroid (greedy, ascending distance), so a pose that was
+ * partially labeled in an earlier sweep stays glued to ITS animal even after
+ * instances are added, deleted, or reordered. Empty pose instances carry no
+ * geometry and are interchangeable — they pair with the remaining centroids in
+ * frame order.
+ */
+function buildWorkListSeparate(labels: Labels): PassItem[] {
+  const poseSkel = poseSkeletonOf(labels);
+  if (!poseSkel) return [];
+
+  const videos = labels.videos;
+  const items: PassItem[] = [];
+  for (const lf of sortedFrames(labels)) {
+    const videoIdx = videos.indexOf(lf.video);
+    if (videoIdx < 0) continue;
+
+    // First-class centroid annotations on this frame (user seeds + locator
+    // predictions), with a finite location. Each supplies a zoom anchor; the
+    // pose instance it pairs with is what the passes label.
+    const centroids: { center: [number, number] }[] = [];
+    for (const c of lf.centroids) {
+      const [x, y] = c.xy;
+      if (Number.isFinite(x) && Number.isFinite(y)) centroids.push({ center: [x, y] });
+    }
+    const poses: { inst: Instance; center: [number, number] | null }[] = [];
+    for (const inst of lf.instances) {
+      if (inst.skeleton !== poseSkel) continue;
+      poses.push({ inst, center: instanceCropCenter(inst, poseSkel, undefined) });
+    }
+    if (centroids.length === 0 || poses.length === 0) continue;
+
+    // Greedy nearest matching between placed poses and centroids, ascending by
+    // distance (ties broken by centroid then pose order, for determinism).
+    const candidates: { ci: number; pi: number; d: number }[] = [];
+    for (let ci = 0; ci < centroids.length; ci++) {
+      for (let pi = 0; pi < poses.length; pi++) {
+        const pc = poses[pi].center;
+        if (!pc) continue;
+        const dx = pc[0] - centroids[ci].center[0];
+        const dy = pc[1] - centroids[ci].center[1];
+        candidates.push({ ci, pi, d: dx * dx + dy * dy });
+      }
+    }
+    candidates.sort((a, b) => a.d - b.d || a.ci - b.ci || a.pi - b.pi);
+    const poseForCentroid = new Array<number>(centroids.length).fill(-1);
+    const centroidTaken = new Set<number>();
+    const poseTaken = new Set<number>();
+    for (const { ci, pi } of candidates) {
+      if (centroidTaken.has(ci) || poseTaken.has(pi)) continue;
+      poseForCentroid[ci] = pi;
+      centroidTaken.add(ci);
+      poseTaken.add(pi);
+    }
+    // Remaining centroids take the remaining (empty) poses in frame order.
+    let nextFree = 0;
+    for (let ci = 0; ci < centroids.length; ci++) {
+      if (poseForCentroid[ci] >= 0) continue;
+      while (nextFree < poses.length && poseTaken.has(nextFree)) nextFree++;
+      if (nextFree >= poses.length) break;
+      poseForCentroid[ci] = nextFree;
+      poseTaken.add(nextFree);
+    }
+
+    for (let ci = 0; ci < centroids.length; ci++) {
+      const pi = poseForCentroid[ci];
+      if (pi < 0) continue; // more centroids than poses — skipped, as before
+      items.push({
+        videoIdx,
+        frameIdx: lf.frameIdx,
+        instanceIdx: lf.instances.indexOf(poses[pi].inst),
+        centroidXY: centroids[ci].center,
+      });
+    }
+  }
+  return items;
+}
+
+/**
+ * Count seeded centroids for the dashboard: the annotations that would feed
+ * locator training as a centroid. With separate centroid annotations only
+ * user (non-predicted) `frame.centroids` count — the paired empty pose
+ * instances and ordinary pose labels never do. Otherwise any user instance with
+ * a usable crop center for the configured anchor counts. Predicted centroids /
+ * instances never count as seeded. Also reports frames with ≥1 counted centroid.
+ */
+export function countSeededCentroids(
+  labels: Labels,
+  config: ActiveLearningConfig | null,
+): { frames: number; centroids: number } {
+  const separate = config?.localize.separateCentroid ?? false;
+  const anchorNode = config?.localize.centroidNode ?? undefined;
+
+  let frames = 0;
+  let centroids = 0;
+  for (const lf of labels.labeledFrames) {
+    let n = 0;
+    if (separate) {
+      // First-class centroid annotations: count user (non-predicted) centroids
+      // on the frame. Pose labels and predicted centroids never inflate it.
+      for (const c of lf.centroids) {
+        if (!c.isPredicted) n++;
+      }
+    } else {
+      for (const inst of lf.userInstances) {
+        if (instanceCropCenter(inst, inst.skeleton, anchorNode)) n++;
+      }
+    }
+    if (n > 0) frames++;
+    centroids += n;
+  }
+  return { frames, centroids };
 }
 
 /** Fixed cursor dimensions for a config + work list against a skeleton. */

@@ -64,6 +64,18 @@ export interface LocalizeConfig {
    */
   centroidNode: string | null;
   /**
+   * For a FREE centroid anchor (`centroidNode` = "centroid"), where the anchor
+   * lives:
+   *  - `false`: a synthetic node ADDED to the pose skeleton — simple, but the
+   *    pose model would emit it as an extra node.
+   *  - `true`: a first-class centroid annotation (`UserCentroid` on
+   *    `frame.centroids`), separate from the pose keypoints, so the pose model
+   *    never treats it as a keypoint. Phase-2 pairs each centroid with a pose
+   *    instance.
+   * Ignored when `centroidNode` names a real pose node (NODE mode).
+   */
+  separateCentroid: boolean;
+  /**
    * Default zoom-to-instance window (px) for Phase-2 labeling. NOT a baked crop
    * — Phase-2 zooms the live view to the centroid at this size, adjustable per
    * instance with a slider, so a too-tight setting never clips a keypoint.
@@ -137,6 +149,7 @@ export const DEFAULT_ACTIVE_LEARNING_CONFIG: ActiveLearningConfig = {
   localize: {
     enabled: true,
     centroidNode: "body_center",
+    separateCentroid: false,
     cropSize: 256,
     seedFrames: 20,
     trainAfter: 100,
@@ -266,6 +279,7 @@ export function normalizeActiveLearningConfig(raw: unknown): ActiveLearningConfi
         localize.centroidNode === null
           ? null
           : str(localize.centroidNode, d.localize.centroidNode ?? ""),
+      separateCentroid: bool(localize.separateCentroid, d.localize.separateCentroid),
       cropSize: num(localize.cropSize, d.localize.cropSize),
       seedFrames: num(localize.seedFrames, d.localize.seedFrames),
       trainAfter: num(localize.trainAfter, d.localize.trainAfter),
@@ -466,20 +480,26 @@ export function validateActiveLearningConfig(
         errors.push(`Pass node "${node}" is not in the skeleton.`);
       }
     }
-    // A `null` centroidNode is the arbitrary-centroid mode (anchor is a free
-    // point, not a skeleton node), so there's nothing to check against the
-    // skeleton — only validate a named node.
+    // Only validate the centroid against the pose skeleton when it's actually a
+    // pose node: a `null` centroid is unmaterialized, and a separate centroid
+    // annotation lives outside the pose skeleton by design.
     if (
       config.localize.enabled &&
       config.localize.centroidNode !== null &&
+      !config.localize.separateCentroid &&
       !known.has(config.localize.centroidNode)
     ) {
       errors.push(`localize.centroidNode "${config.localize.centroidNode}" is not in the skeleton.`);
     }
     const covered = new Set(allPassNodes(config));
     // The centroid node is placed during Phase-1 seeding, not a keypoint pass,
-    // so it is legitimately absent from the passes — don't warn about it.
-    if (config.localize.enabled && config.localize.centroidNode !== null) {
+    // so it is legitimately absent from the passes — don't warn about it. (A
+    // separate-skeleton centroid isn't a pose node at all, so skip it too.)
+    if (
+      config.localize.enabled &&
+      config.localize.centroidNode !== null &&
+      !config.localize.separateCentroid
+    ) {
       covered.add(config.localize.centroidNode);
     }
     for (const node of skeletonNodeNames) {

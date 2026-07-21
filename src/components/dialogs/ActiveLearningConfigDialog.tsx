@@ -50,7 +50,9 @@ interface Props {
   nodeNames: string[];
 }
 
-const ARBITRARY = "__arbitrary__";
+// Centroid Select sentinels for the two free-anchor flavors (vs. a real node).
+const FREE_SEPARATE = "__free_separate__"; // separate first-class centroid annotation (frame.centroids)
+const FREE_POSE = "__free_pose__"; // synthetic anchor node added to the pose skeleton
 
 /** Deep clone via JSON (config is plain JSON data). */
 function clone(c: ActiveLearningConfig): ActiveLearningConfig {
@@ -253,16 +255,35 @@ export function ActiveLearningConfigDialog({ open, onOpenChange, nodeNames }: Pr
               />
               <Field label="Centroid anchor">
                 <Select
-                  value={draft.localize.centroidNode === null ? ARBITRARY : draft.localize.centroidNode}
+                  value={
+                    draft.localize.separateCentroid
+                      ? FREE_SEPARATE
+                      : draft.localize.centroidNode === "centroid" ||
+                          draft.localize.centroidNode === null
+                        ? FREE_POSE
+                        : draft.localize.centroidNode
+                  }
                   onValueChange={(v) =>
-                    edit((d) => (d.localize.centroidNode = v === ARBITRARY ? null : v))
+                    edit((d) => {
+                      if (v === FREE_SEPARATE) {
+                        d.localize.centroidNode = "centroid";
+                        d.localize.separateCentroid = true;
+                      } else if (v === FREE_POSE) {
+                        d.localize.centroidNode = "centroid";
+                        d.localize.separateCentroid = false;
+                      } else {
+                        d.localize.centroidNode = v;
+                        d.localize.separateCentroid = false;
+                      }
+                    })
                   }
                 >
                   <SelectTrigger className="h-8">
                     <SelectValue placeholder="Select a node…" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value={ARBITRARY}>Free anchor (arbitrary)</SelectItem>
+                    <SelectItem value={FREE_SEPARATE}>Free anchor — separate annotation</SelectItem>
+                    <SelectItem value={FREE_POSE}>Free anchor — pose skeleton</SelectItem>
                     {nodeNames.map((n) => (
                       <SelectItem key={n} value={n}>
                         {n}
@@ -271,6 +292,13 @@ export function ActiveLearningConfigDialog({ open, onOpenChange, nodeNames }: Pr
                   </SelectContent>
                 </Select>
               </Field>
+              <p className="pl-40 text-[11px] leading-snug text-muted-foreground">
+                {draft.localize.separateCentroid
+                  ? "Separate: the centroid is a standalone annotation — never a pose keypoint."
+                  : draft.localize.centroidNode === "centroid"
+                    ? "Free anchor added to the pose skeleton (the pose model will emit it)."
+                    : "A pose node doubles as the localization anchor."}
+              </p>
               <Field label="Crop / zoom window (px)">
                 <NumberInput
                   value={draft.localize.cropSize}

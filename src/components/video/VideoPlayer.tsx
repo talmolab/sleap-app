@@ -17,6 +17,7 @@ import { Seekbar } from "./Seekbar";
 import { ContextMenu } from "./ContextMenu";
 import {
   renderInstances,
+  renderCentroids,
   hitTestNode,
   hitTestInstance,
   renderSelectedNodeHighlights,
@@ -849,6 +850,17 @@ export function VideoPlayer() {
     };
 
     renderInstances(ctx, instances, renderOpts);
+
+    // First-class centroid annotations (frame.centroids): drawn as amber
+    // crosshair rings, distinct from skeleton nodes. Coords go through the same
+    // crop transform as instance nodes.
+    if (labeledFrame.centroids.length > 0) {
+      const renderedCentroids = labeledFrame.centroids.map((c) => {
+        const [cx, cy] = toImageCoords(video, c.x, c.y);
+        return { x: cx, y: cy, predicted: c.isPredicted };
+      });
+      renderCentroids(ctx, renderedCentroids, renderOpts);
+    }
 
     // Compute effective selection (includes live marquee preview)
     let effectiveSelection = selectedNodes;

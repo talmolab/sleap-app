@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect } from "../bun-test";
-import { Labels, LabeledFrame, Instance, PredictedInstance, Skeleton, Video } from "@talmolab/sleap-io.js";
+import { Labels, LabeledFrame, Instance, PredictedInstance, Skeleton, Video, UserCentroid, PredictedCentroid } from "@talmolab/sleap-io.js";
 import { normalizeActiveLearningConfig, type ActiveLearningConfig } from "@/lib/activeLearning/config";
 import {
   nodeIndicesForPass,
@@ -19,6 +19,7 @@ import {
   totalSteps,
   linearIndex,
   resolveItemInstance,
+  countSeededCentroids,
   type PassCursor,
   type PassDims,
 } from "@/lib/activeLearning/passEngine";
@@ -220,6 +221,204 @@ describe("resolveItemInstance", () => {
     const resolved = resolveItemInstance(labels, item);
     expect(resolved).toBe(clone);
     expect(resolved).not.toBe(orig);
+  });
+});
+
+describe("buildWorkList (first-class centroid annotations)", () => {
+  function makeSeparateConfig(passes: { name: string; nodes: string[] }[]): ActiveLearningConfig {
+    return normalizeActiveLearningConfig({
+      localize: { centroidNode: "centroid", separateCentroid: true },
+      labelKeypoints: { passes: passes.map((p) => ({ ...p, guide: "none" })) },
+    });
+  }
+
+  it("pairs each frame.centroid with a pose instance (empty poses in frame order)", () => {
+    const pose = makeSkeleton();
+    const v0 = stubVideo("a.mp4");
+    const config = makeSeparateConfig([{ name: "P1", nodes: ["head", "nose"] }]);
+
+    const p0 = Instance.empty({ skeleton: pose });
+    const p1 = Instance.empty({ skeleton: pose });
+    const c0 = new UserCentroid({ x: 50, y: 60 });
+    const c1 = new UserCentroid({ x: 70, y: 80 });
+
+    // Empty poses carry no geometry, so they pair with the centroids in frame
+    // order (c0↔p0, c1↔p1).
+    const labels = new Labels({
+      videos: [v0],
+      skeletons: [pose],
+      labeledFrames: [
+        new LabeledFrame({ video: v0, frameIdx: 0, instances: [p0, p1], centroids: [c0, c1] }),
+      ],
+    });
+
+    const items = buildWorkList(labels, config);
+    expect(items.length).toBe(2);
+    expect(items[0].centroidXY).toEqual([50, 60]);
+    expect(items[1].centroidXY).toEqual([70, 80]);
+    // instanceIdx points at the POSE instances (what the passes label).
+    expect(resolveItemInstance(labels, items[0])).toBe(p0);
+    expect(resolveItemInstance(labels, items[1])).toBe(p1);
+    const names = pose.nodes.map((n) => n.name);
+    expect(passDims(config, items, names).nodeCountForPass).toEqual([2]);
+  });
+
+  it("skips centroids with no paired pose instance", () => {
+    const pose = makeSkeleton();
+    const v0 = stubVideo("a.mp4");
+    const config = makeSeparateConfig([{ name: "P1", nodes: ["head"] }]);
+    // Two centroids but only one pose instance → only the first pairs.
+    const p0 = Instance.empty({ skeleton: pose });
+    const labels = new Labels({
+      videos: [v0],
+      skeletons: [pose],
+      labeledFrames: [
+        new LabeledFrame({
+          video: v0,
+          frameIdx: 0,
+          instances: [p0],
+          centroids: [new UserCentroid({ x: 1, y: 1 }), new UserCentroid({ x: 2, y: 2 })],
+        }),
+      ],
+    });
+    const items = buildWorkList(labels, config);
+    expect(items.length).toBe(1);
+    expect(items[0].centroidXY).toEqual([1, 1]);
+  });
+
+  it("keeps a partially-labeled pose glued to its NEAREST centroid, not its array slot", () => {
+    const pose = makeSkeleton();
+    const v0 = stubVideo("a.mp4");
+    const config = makeSeparateConfig([{ name: "P1", nodes: ["head"] }]);
+
+    const c0 = new UserCentroid({ x: 10, y: 10 });
+    const c1 = new UserCentroid({ x: 100, y: 100 });
+    // pA was labeled near c1 in an earlier sweep; pB is still empty. Array
+    // order (pA first) would pair pA with c0 — the WRONG animal.
+    const pA = makeInstance(pose, { head: [98, 102] });
+    const pB = Instance.empty({ skeleton: pose });
+
+    const labels = new Labels({
+      videos: [v0],
+      skeletons: [pose],
+      labeledFrames: [
+        new LabeledFrame({ video: v0, frameIdx: 0, instances: [pA, pB], centroids: [c0, c1] }),
+      ],
+    });
+
+    const items = buildWorkList(labels, config);
+    expect(items.length).toBe(2);
+    // c0 takes the leftover empty pose; c1 keeps its labeled partner.
+    expect(items[0].centroidXY).toEqual([10, 10]);
+    expect(resolveItemInstance(labels, items[0])).toBe(pB);
+    expect(items[1].centroidXY).toEqual([100, 100]);
+    expect(resolveItemInstance(labels, items[1])).toBe(pA);
+  });
+
+  it("deleting a centroid doesn't shift the surviving pairings", () => {
+    const pose = makeSkeleton();
+    const v0 = stubVideo("a.mp4");
+    const config = makeSeparateConfig([{ name: "P1", nodes: ["head"] }]);
+
+    // Two labeled poses, but the first animal's centroid was deleted. Order
+    // pairing would hand the surviving centroid (near pB) to pA.
+    const pA = makeInstance(pose, { head: [10, 12] });
+    const pB = makeInstance(pose, { head: [100, 98] });
+
+    const labels = new Labels({
+      videos: [v0],
+      skeletons: [pose],
+      labeledFrames: [
+        new LabeledFrame({
+          video: v0,
+          frameIdx: 0,
+          instances: [pA, pB],
+          centroids: [new UserCentroid({ x: 100, y: 100 })],
+        }),
+      ],
+    });
+
+    const items = buildWorkList(labels, config);
+    expect(items.length).toBe(1);
+    expect(items[0].centroidXY).toEqual([100, 100]);
+    expect(resolveItemInstance(labels, items[0])).toBe(pB);
+  });
+});
+
+describe("countSeededCentroids", () => {
+  it("separate centroid: counts user centroids on frame.centroids — not pose labels", () => {
+    const pose = makeSkeleton();
+    const v0 = stubVideo("a.mp4");
+    const config = normalizeActiveLearningConfig({
+      localize: { centroidNode: "centroid", separateCentroid: true },
+      labelKeypoints: { passes: [{ name: "P1", nodes: ["head"], guide: "none" }] },
+    });
+
+    // A pre-existing full pose label on the frame must NOT count; only the
+    // first-class UserCentroid annotations do. A predicted centroid is excluded.
+    const pFull = makeInstance(pose, { head: [1, 1], nose: [2, 2] });
+    const lf = new LabeledFrame({ video: v0, frameIdx: 0, instances: [pFull] });
+    lf.centroids = [
+      new UserCentroid({ x: 10, y: 10 }),
+      new UserCentroid({ x: 50, y: 50 }),
+      new PredictedCentroid({ x: 99, y: 99, score: 0.9 }),
+    ];
+
+    const labels = new Labels({
+      videos: [v0],
+      skeletons: [pose],
+      labeledFrames: [lf],
+    });
+
+    expect(countSeededCentroids(labels, config)).toEqual({ frames: 1, centroids: 2 });
+  });
+
+  it("separate centroid: a frame with pose labels but no centroids counts zero", () => {
+    const pose = makeSkeleton();
+    const v0 = stubVideo("a.mp4");
+    const config = normalizeActiveLearningConfig({
+      localize: { centroidNode: "centroid", separateCentroid: true },
+      labelKeypoints: { passes: [{ name: "P1", nodes: ["head"], guide: "none" }] },
+    });
+    const pFull = makeInstance(pose, { head: [1, 1] });
+    const labels = new Labels({
+      videos: [v0],
+      skeletons: [pose],
+      labeledFrames: [new LabeledFrame({ video: v0, frameIdx: 0, instances: [pFull] })],
+    });
+    expect(countSeededCentroids(labels, config)).toEqual({ frames: 0, centroids: 0 });
+  });
+
+  it("anchor-node mode: counts user instances with a usable crop center, skipping empties and predictions", () => {
+    const skeleton = makeSkeleton();
+    const v0 = stubVideo("a.mp4");
+    const config = makeConfig([{ name: "P1", nodes: ["head"] }]);
+
+    const seeded = makeInstance(skeleton, { body_center: [10, 10] });
+    const empty = Instance.empty({ skeleton });
+    const predicted = new PredictedInstance({
+      skeleton,
+      points: skeleton.nodes.map((n) => ({
+        xy: n.name === "body_center" ? ([5, 5] as [number, number]) : ([NaN, NaN] as [number, number]),
+        visible: n.name === "body_center",
+        complete: false,
+        name: n.name,
+        score: 0.9,
+      })),
+      score: 0.9,
+    });
+
+    const labels = new Labels({
+      videos: [v0],
+      skeletons: [skeleton],
+      labeledFrames: [
+        new LabeledFrame({ video: v0, frameIdx: 0, instances: [seeded, empty, predicted] }),
+        new LabeledFrame({ video: v0, frameIdx: 1, instances: [Instance.empty({ skeleton })] }),
+      ],
+    });
+
+    // Frame 1 holds only an empty instance → not a seeded frame.
+    expect(countSeededCentroids(labels, config)).toEqual({ frames: 1, centroids: 1 });
   });
 });
 

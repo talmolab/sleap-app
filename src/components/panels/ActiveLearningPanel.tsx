@@ -21,9 +21,11 @@ import {
   nodeIndicesForPass,
   linearIndex,
   totalSteps,
+  countSeededCentroids,
 } from "@/lib/activeLearning/passEngine";
+import type { Skeleton } from "@talmolab/sleap-io.js";
 import { generateSuggestionFrames } from "@/lib/suggestionStrategies";
-import { commandContext, AddNodeCommand } from "@/commands";
+import { commandContext, AddNodeCommand, PairPoseInstances } from "@/commands";
 import { toast } from "@/lib/notify";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -66,27 +68,24 @@ export function ActiveLearningPanel() {
 
   const nodeNames = skeleton?.nodes.map((n) => n.name);
 
-  // Live count of seeded frames (frames with ≥1 user instance), centroids, and
-  // whether a suggested-frame pool exists to seed on.
+  // Live count of seeded frames/centroids (config-aware: with separate centroid
+  // annotations only seeded `frame.centroids` count, so pose labels and the
+  // paired empty pose instances never inflate it), and whether a suggested-frame
+  // pool exists to seed on.
   const { seededFrames, seededCentroids, hasSuggestions } = useMemo(() => {
     const labels = useAppStore.getState().labels;
-    let frames = 0;
-    let centroids = 0;
-    if (labels) {
-      for (const lf of labels.labeledFrames) {
-        const n = lf.userInstances.length;
-        if (n > 0) frames++;
-        centroids += n;
-      }
+    if (!labels) {
+      return { seededFrames: 0, seededCentroids: 0, hasSuggestions: false };
     }
+    const { frames, centroids } = countSeededCentroids(labels, config);
     return {
       seededFrames: frames,
       seededCentroids: centroids,
-      hasSuggestions: !!labels && labels.suggestions.length > 0,
+      hasSuggestions: labels.suggestions.length > 0,
     };
     // overlayVersion drives the recount; labels is mutated in place.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [overlayVersion, projectLoaded]);
+  }, [overlayVersion, projectLoaded, config]);
 
   const trainThreshold = config?.localize.trainAfter ?? 100;
   const trainingRunning = trainingStatus === "running";
@@ -138,46 +137,77 @@ export function ActiveLearningPanel() {
     else toast.warning(`Workflow loaded with ${result.errors.length} issue(s) — see below`);
   };
 
-  // Arbitrary centroid: add a free "centroid" anchor node to the pose skeleton
-  // (drop it anywhere per animal) and point the config at it, stripping it from
-  // the labeling passes. Everything downstream runs the normal node path.
-  // Ensure a free "centroid" anchor node exists in the skeleton and the config
-  // points at it (stripping it from the passes). Returns the anchor's node index
-  // in the (possibly just-grown) skeleton, or -1 if there's no workflow yet.
-  const ensureArbitraryAnchor = (): number => {
-    const currentSkeleton = useAppStore.getState().skeleton;
+  // Materialize a free "centroid" anchor and point the config at it, returning
+  // the seed target ({ skeleton, nodeIdx }) or null. Two flavors:
+  //  - separate=true: a first-class centroid annotation — seeds become
+  //    `UserCentroid`s on `frame.centroids`, separate from the pose keypoints;
+  //    the pose skeleton is left untouched.
+  //  - separate=false: a synthetic "centroid" node added to the pose skeleton
+  //    (grows every instance) and stripped from the passes.
+  const ensureArbitraryAnchor = (
+    separate: boolean,
+  ): { skeleton: Skeleton; nodeIdx: number } | null => {
+    const labels = useAppStore.getState().labels;
+    const poseSkel = useAppStore.getState().skeleton;
     const currentConfig = useActiveLearningStore.getState().config;
-    if (!currentSkeleton || !currentConfig) return -1;
+    if (!labels || !poseSkel || !currentConfig) return null;
     const ANCHOR = "centroid";
+
+    if (separate) {
+      // First-class centroid annotations: NO dedicated skeleton. Seeds become
+      // `UserCentroid`s on `frame.centroids` (see SeedCentroid), so we only need
+      // to point the config at "centroid" mode. The returned target is a
+      // success signal for callers; centroid seeding uses
+      // enterSeedMode(centroidAnnotation=true), not this skeleton/nodeIdx.
+      useActiveLearningStore.getState().setConfig(
+        {
+          ...currentConfig,
+          localize: { ...currentConfig.localize, centroidNode: ANCHOR, separateCentroid: true },
+        },
+        poseSkel.nodes.map((n) => n.name),
+      );
+      useAppStore.getState().markChanged();
+      useAppStore.getState().bumpOverlayVersion();
+      return { skeleton: poseSkel, nodeIdx: 0 };
+    }
+
     // AddNode also grows every existing instance's point array to match.
-    if (!currentSkeleton.nodes.some((n) => n.name === ANCHOR)) {
+    if (!poseSkel.nodes.some((n) => n.name === ANCHOR)) {
       void commandContext.execute(AddNodeCommand, { name: ANCHOR });
     }
-    const names = useAppStore.getState().skeleton?.nodes.map((n) => n.name) ?? [];
-    const nextConfig = {
-      ...currentConfig,
-      localize: { ...currentConfig.localize, centroidNode: ANCHOR },
-      labelKeypoints: {
-        ...currentConfig.labelKeypoints,
-        passes: currentConfig.labelKeypoints.passes
-          .map((p) => ({ ...p, nodes: p.nodes.filter((n) => n !== ANCHOR) }))
-          .filter((p) => p.nodes.length > 0),
+    const poseNow = useAppStore.getState().skeleton;
+    if (!poseNow) return null;
+    const names = poseNow.nodes.map((n) => n.name);
+    useActiveLearningStore.getState().setConfig(
+      {
+        ...currentConfig,
+        localize: { ...currentConfig.localize, centroidNode: ANCHOR, separateCentroid: false },
+        labelKeypoints: {
+          ...currentConfig.labelKeypoints,
+          passes: currentConfig.labelKeypoints.passes
+            .map((p) => ({ ...p, nodes: p.nodes.filter((n) => n !== ANCHOR) }))
+            .filter((p) => p.nodes.length > 0),
+        },
       },
-    };
-    useActiveLearningStore.getState().setConfig(nextConfig, names);
+      names,
+    );
     useAppStore.getState().bumpOverlayVersion();
-    return names.indexOf(ANCHOR);
+    return { skeleton: poseNow, nodeIdx: names.indexOf(ANCHOR) };
   };
 
+  // Panel quick-link: switch to a separate first-class centroid annotation.
+  // The pose-node anchor variant stays available via the config editor's
+  // centroid picker.
   const useArbitraryCentroid = () => {
     if (!useActiveLearningStore.getState().config) {
       toast.error("Define a workflow first");
       return;
     }
-    ensureArbitraryAnchor();
-    toast.success(
-      'Using a free "centroid" anchor — seed it anywhere on each animal; every pose node stays labelable.',
-    );
+    if (ensureArbitraryAnchor(true)) {
+      toast.success(
+        'Using a free "centroid" annotation — seed it anywhere; the pose skeleton stays all keypoints.',
+      );
+    }
   };
 
   const importYaml = async (file: File) => {
@@ -218,23 +248,37 @@ export function ActiveLearningPanel() {
       toast.error("Define a workflow first");
       return;
     }
-    let idx: number;
+    // First-class centroid annotations: configure the "centroid" mode and seed
+    // `UserCentroid`s on `frame.centroids` — no skeleton or node index involved.
+    if (config.localize.separateCentroid) {
+      ensureArbitraryAnchor(true);
+      useAppStore.getState().enterSeedMode(undefined, true);
+      toast.info(
+        "Labeling centroids — click a body-center on each animal. Use the top bar (or Space) to advance frames.",
+      );
+      return;
+    }
+
+    // Resolve where seed clicks land: a synthetic pose "centroid" node or a
+    // real pose node (NODE mode).
+    let target: { skeleton: Skeleton; nodeIdx: number } | null;
     if (config.localize.centroidNode === null) {
-      // Arbitrary centroid: materialize a free "centroid" anchor node, then
-      // seed onto it (there's no named pose node to place otherwise).
-      idx = ensureArbitraryAnchor();
-      if (idx < 0) {
-        toast.error("Couldn't set up an arbitrary centroid anchor.");
-        return;
-      }
+      target = ensureArbitraryAnchor(false);
     } else {
-      idx = skeleton.nodes.findIndex((n) => n.name === config.localize.centroidNode);
+      const idx = skeleton.nodes.findIndex((n) => n.name === config.localize.centroidNode);
       if (idx < 0) {
         toast.error(`Centroid node "${config.localize.centroidNode}" is not in the skeleton`);
         return;
       }
+      target = { skeleton, nodeIdx: idx };
     }
-    useAppStore.getState().enterSeedMode(idx);
+    if (!target) {
+      toast.error("Couldn't set up a centroid to seed.");
+      return;
+    }
+    // Seeds always land on the active pose skeleton; `target.nodeIdx` selects
+    // which node a click places.
+    useAppStore.getState().enterSeedMode(target.nodeIdx);
     toast.info(
       "Labeling centroids — click a body-center on each animal. Use the top bar (or Space) to advance frames.",
     );
@@ -270,11 +314,17 @@ export function ActiveLearningPanel() {
 
   // Phase 2: skip training and label keypoints directly on the seeded/predicted
   // centroids — a guided, zoom-to-centroid multi-pass sweep over every instance.
-  const startKeypointPasses = () => {
+  const startKeypointPasses = async () => {
     const labels = useAppStore.getState().labels;
     if (!labels || !config || !skeleton) {
       toast.error("Define a workflow and seed some centroids first.");
       return;
+    }
+    // Separate centroid annotations: each seeded centroid needs a paired (empty)
+    // pose instance for the passes to label. Create them up front (as ONE
+    // undoable command) so the work list can pair them.
+    if (config.localize.separateCentroid) {
+      await commandContext.execute(PairPoseInstances);
     }
     const names = skeleton.nodes.map((n) => n.name);
     const workList = buildWorkList(labels, config);
@@ -340,16 +390,21 @@ export function ActiveLearningPanel() {
                     <code>arbitrary</code>
                   ) : (
                     <code>{config.localize.centroidNode}</code>
-                  )}{" "}
+                  )}
+                  {config.localize.separateCentroid
+                    ? " (separate annotation)"
+                    : config.localize.centroidNode === "centroid"
+                      ? " (pose anchor)"
+                      : ""}{" "}
                   · crop {config.localize.cropSize}px
                 </div>
-                {config.localize.centroidNode !== "centroid" && (
+                {!config.localize.separateCentroid && (
                   <button
                     type="button"
                     className="text-[11px] text-primary underline underline-offset-2 hover:opacity-80"
                     onClick={useArbitraryCentroid}
                   >
-                    Use a free centroid anchor instead
+                    Use a separate centroid annotation →
                   </button>
                 )}
                 {validation && validation.errors.length > 0 && (

@@ -39,6 +39,12 @@ export interface InferenceConfig {
   maxInstances: number | null;
   peakThreshold: number;
   anchorPart: string | null;
+  /**
+   * For the centroid pipeline, what sleap-nn emits: `"instance"` → single-node
+   * PredictedInstances (legacy), `"centroid"` → first-class PredictedCentroids
+   * on `frame.centroids` (the annotation model). Ignored for other pipelines.
+   */
+  centroidOutput: "instance" | "centroid";
 
   // Bottom-up advanced
   integralRefinement: boolean;
@@ -100,6 +106,9 @@ export function centroidInferenceConfig(
     maxInstances: null,
     peakThreshold: 0.2,
     anchorPart: null,
+    // Emit first-class PredictedCentroids on frame.centroids so they merge into
+    // the annotation model and feed the Phase-2 work list (buildWorkListSeparate).
+    centroidOutput: "centroid",
     integralRefinement: false,
     integralPatchSize: 5,
     nPoints: 10,

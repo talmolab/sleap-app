@@ -6,7 +6,7 @@
  * SetInstancePointLocations, DeleteFramePredictions, ConvertPredictionToInstance.
  */
 
-import { Instance, LabeledFrame, PredictedInstance } from "@talmolab/sleap-io.js";
+import { Instance, LabeledFrame, PredictedInstance, UserCentroid } from "@talmolab/sleap-io.js";
 import type { Labels } from "@talmolab/sleap-io.js";
 import { UpdateTopic } from "../types";
 import type { Command } from "./types";
@@ -15,6 +15,10 @@ import { useAppStore } from "../stores/appStore";
 import { merge } from "@/lib/merge";
 import { toast } from "@/lib/notify";
 import { placeInstance, findNearestPriorFrame } from "@/lib/instancePlacement";
+import {
+  ensurePairedPoseInstances,
+  poseSkeletonOf,
+} from "@/lib/activeLearning/centroidPairing";
 
 /** Create a new Instance on the current frame using the selected placement method. */
 export const AddInstance: Command = {
@@ -92,22 +96,12 @@ export const SeedCentroid: Command = {
   name: "SeedCentroid",
   topics: [UpdateTopic.Frame, UpdateTopic.Instance],
   execute(ctx: CommandContext, params?: Record<string, unknown>) {
-    const { labels, video, frameIdx, skeleton } = ctx.state;
-    if (!labels || !video || !skeleton) return;
-
-    if (skeleton.nodes.length === 0) {
-      toast.info("Add at least one node to the skeleton before seeding.");
-      return;
-    }
+    const { labels, video, frameIdx } = ctx.state;
+    if (!labels || !video) return;
 
     const x = params?.x;
     const y = params?.y;
     if (typeof x !== "number" || typeof y !== "number") return;
-
-    const rawIdx = params?.nodeIdx;
-    let nodeIdx =
-      typeof rawIdx === "number" ? rawIdx : useAppStore.getState().seedNodeIdx;
-    if (nodeIdx < 0 || nodeIdx >= skeleton.nodes.length) nodeIdx = 0;
 
     // Find or create the LabeledFrame for this video + frame (mirrors AddInstance).
     const currentFrames = labels.find({ video, frameIdx });
@@ -118,6 +112,31 @@ export const SeedCentroid: Command = {
       lf = new LabeledFrame({ video, frameIdx });
       labels.append(lf);
     }
+
+    // First-class centroid-annotation mode: drop a `UserCentroid` on
+    // `frame.centroids` — a free anchor that need not be a pose node, and never
+    // touches the pose skeleton. Undo is handled by the frame snapshot, which
+    // now captures centroids (see CommandContext).
+    if (ctx.state.seedCentroidAnnotation) {
+      lf.centroids = [...lf.centroids, new UserCentroid({ x, y })];
+      ctx.state.setLabeledFrame(lf);
+      ctx.state.markChanged();
+      return;
+    }
+
+    // Instance-point seeding (a real pose node, or a synthetic "centroid" node
+    // on the pose skeleton). Seeds land on the active pose skeleton.
+    const skeleton = ctx.state.skeleton;
+    if (!skeleton) return;
+    if (skeleton.nodes.length === 0) {
+      toast.info("Add at least one node to the skeleton before seeding.");
+      return;
+    }
+
+    const rawIdx = params?.nodeIdx;
+    let nodeIdx =
+      typeof rawIdx === "number" ? rawIdx : useAppStore.getState().seedNodeIdx;
+    if (nodeIdx < 0 || nodeIdx >= skeleton.nodes.length) nodeIdx = 0;
 
     // Empty instance = all nodes NaN/invisible; mark just the seed node.
     // Index-assign (never spread) so the columnar PointView writes back.
@@ -131,6 +150,35 @@ export const SeedCentroid: Command = {
     ctx.state.setLabeledFrame(lf);
     ctx.state.setInstance(instance);
     ctx.state.markChanged();
+  },
+};
+
+/**
+ * Ensure every first-class centroid annotation (`frame.centroids`) has a pose
+ * instance to pair with, creating empty pose instances where frames have more
+ * centroids than poses (see ensurePairedPoseInstances).
+ *
+ * All created instances span many frames, so this is one all-frames undo step.
+ * When everything is already paired it is a true no-op: no undo entry, no
+ * dirty flag.
+ */
+export const PairPoseInstances: Command = {
+  name: "PairPoseInstances",
+  topics: [UpdateTopic.Frame, UpdateTopic.Instance],
+  skipAutoSnapshot: true,
+  execute(ctx: CommandContext) {
+    const { labels } = ctx.state;
+    if (!labels) return;
+    const poseSkel = poseSkeletonOf(labels) ?? ctx.state.skeleton;
+    if (!poseSkel) return;
+
+    const snapshot = ctx.takeAllFramesSnapshot("PairPoseInstances");
+    const created = ensurePairedPoseInstances(labels, poseSkel);
+    if (created === 0) return;
+
+    ctx.pushUndoSnapshot(snapshot);
+    ctx.state.markChanged();
+    ctx.state.bumpOverlayVersion();
   },
 };
 
@@ -464,8 +512,10 @@ export const MergePredictions: Command = {
     ctx.pushUndoSnapshot(snapshot);
     ctx.state.markChanged();
 
+    const centroidNote =
+      result.centroidsAdded > 0 ? `, ${result.centroidsAdded} centroid(s)` : "";
     toast.success(
-      `Merged ${result.instancesAdded} prediction(s). ${result.framesAdded} new frame(s), ${result.conflicts} conflict(s).`
+      `Merged ${result.instancesAdded} prediction(s)${centroidNote}. ${result.framesAdded} new frame(s), ${result.conflicts} conflict(s).`
     );
   },
 };

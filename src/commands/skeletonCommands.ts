@@ -22,11 +22,15 @@ import { remapInstancePoints } from "../lib/skeletonIO";
 
 /** Snapshot of skeleton + all instance points for undo. */
 interface SkeletonSnapshot {
+  /** The skeleton the command edited (nodes/edges are restored onto it). */
+  skeleton: Skeleton | null;
   nodes: Node[];
   edges: Edge[];
   /** For each labeled frame, the points arrays for every instance. */
   instancePoints: {
     instance: Instance;
+    /** The skeleton this instance belonged to at snapshot time. */
+    skeleton: Skeleton;
     points: Instance["points"];
   }[];
 }
@@ -48,8 +52,23 @@ function clonePoint(p: Instance["points"][0]): Instance["points"][0] {
 /** Take a snapshot of the current skeleton and all instance points. */
 function takeSkeletonSnapshot(ctx: CommandContext): SkeletonSnapshot {
   const { labels, skeleton } = ctx.state;
-  const nodes = skeleton ? [...skeleton.nodes] : [];
-  const edges = skeleton ? [...skeleton.edges] : [];
+  // Deep-clone the Node/Edge objects, not just the arrays. RenameNode mutates
+  // a Node's `.name` IN PLACE, so a shallow `[...skeleton.nodes]` would share
+  // that Node object with the live skeleton — the rename would corrupt the
+  // "before" snapshot too, and undo couldn't restore the old name. Clone nodes
+  // and rebuild edges against the clones so the snapshot is a true point-in-time
+  // copy for structural AND in-place edits alike.
+  const nodeClones = skeleton ? skeleton.nodes.map((n) => new Node(n.name)) : [];
+  const nodeIndex = new Map<Node, number>();
+  skeleton?.nodes.forEach((n, i) => nodeIndex.set(n, i));
+  const cloneEndpoint = (n: Node): Node => {
+    const i = nodeIndex.get(n);
+    return i !== undefined ? nodeClones[i] : new Node(n.name);
+  };
+  const nodes = nodeClones;
+  const edges = skeleton
+    ? skeleton.edges.map((e) => new Edge(cloneEndpoint(e.source), cloneEndpoint(e.destination)))
+    : [];
 
   const instancePoints: SkeletonSnapshot["instancePoints"] = [];
   if (labels) {
@@ -57,13 +76,14 @@ function takeSkeletonSnapshot(ctx: CommandContext): SkeletonSnapshot {
       for (const inst of lf.instances) {
         instancePoints.push({
           instance: inst,
+          skeleton: inst.skeleton,
           points: inst.points.map(clonePoint),
         });
       }
     }
   }
 
-  return { nodes, edges, instancePoints };
+  return { skeleton: skeleton ?? null, nodes, edges, instancePoints };
 }
 
 /** Restore skeleton state from a snapshot. */
@@ -71,15 +91,18 @@ function restoreSkeletonSnapshot(
   ctx: CommandContext,
   snapshot: SkeletonSnapshot
 ) {
-  const { labels, skeleton } = ctx.state;
+  const { labels } = ctx.state;
+  const skeleton = snapshot.skeleton ?? ctx.state.skeleton;
   if (!skeleton) return;
 
   skeleton.nodes = snapshot.nodes;
   skeleton.edges = snapshot.edges;
   skeleton.rebuildCache(skeleton.nodes);
 
-  // Restore instance points AND re-point every instance at the restored
-  // skeleton. The snapshot's `instancePoints` is captured in
+  // Restore instance points AND each instance's CAPTURED skeleton reference —
+  // never the edited skeleton blindly, or a multi-skeleton project would have
+  // instances of another skeleton reassigned to the edited one by an undo. The
+  // snapshot's `instancePoints` is captured in
   // `labeledFrames` → `instances` iteration order; we re-walk the CURRENT live
   // instances in that same order and assign positionally. This matters because
   // the frame-level undo (run just before this, via the interceptor) replaces
@@ -97,7 +120,7 @@ function restoreSkeletonSnapshot(
         liveInstances[i].points = snapshot.instancePoints[i].points.map(
           clonePoint
         );
-        liveInstances[i].skeleton = skeleton;
+        liveInstances[i].skeleton = snapshot.instancePoints[i].skeleton;
       }
       restoredPositionally = true;
     }
@@ -108,7 +131,7 @@ function restoreSkeletonSnapshot(
   if (!restoredPositionally) {
     for (const entry of snapshot.instancePoints) {
       entry.instance.points = entry.points.map(clonePoint);
-      entry.instance.skeleton = skeleton;
+      entry.instance.skeleton = entry.skeleton;
     }
   }
 
@@ -122,8 +145,9 @@ function restoreSkeletonSnapshot(
 /**
  * Add a node to the skeleton.
  *
- * Also adds a corresponding NaN point to every existing instance so that
- * point arrays stay aligned with the skeleton node list.
+ * Also adds a corresponding NaN point to every instance OF THIS skeleton so
+ * that point arrays stay aligned with the skeleton node list. Instances of
+ * other skeletons in a multi-skeleton project are untouched.
  *
  * Params: { name: string }
  */
@@ -140,48 +164,17 @@ export const AddNodeCommand: Command = {
 
     // Snapshot before mutation
     const before = takeSkeletonSnapshot(ctx);
-    ctx.pushUndoSnapshot({
-      commandName: "AddNode",
-      frame: null,
-      allFrames: null,
-      tracks: labels ? [...labels.tracks] : [],
-      selectedIdx: -1,
-      activeVideo: ctx.state.video,
-      activeFrameIdx: ctx.state.frameIdx,
-    });
-
-    // Store the before snapshot for undo via a closure-based approach:
-    // We'll use the CommandContext's undo system which restores via restoreSnapshot.
-    // But since skeleton changes aren't captured by the standard snapshot system,
-    // we need to intercept undo. We'll store the before state and register a
-    // custom restore. However, the existing undo system works on instance frames,
-    // not skeleton. So we manually manage undo by popping the auto-snapshot and
-    // pushing our own.
-
-    // Actually, since we set skipAutoSnapshot and pushed our own snapshot above,
-    // the standard undo will restore frame/track state. But we also need to
-    // restore skeleton state. The simplest approach: mutate the skeleton and
-    // instances in-place, and let the undo system handle frame-level restore.
-    // For skeleton state, we'll need to hook into undo ourselves.
-
-    // Simpler approach: since the undo stack snapshot doesn't capture skeleton
-    // state, we pop the snapshot we just pushed and instead do a manual
-    // before/after that includes skeleton state.
-
-    // Pop the snapshot we pushed
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const undoStack = (ctx as any).undoStack as unknown[];
-    if (undoStack) undoStack.pop();
 
     // Add the node
     const newNode = new Node(name.trim());
     skeleton.nodes.push(newNode);
     skeleton.rebuildCache(skeleton.nodes);
 
-    // Add a NaN point to every instance
+    // Add a NaN point to every instance of this skeleton
     if (labels) {
       for (const lf of labels.labeledFrames) {
         for (const inst of lf.instances) {
+          if (inst.skeleton !== skeleton) continue;
           // Reassign, don't push: since sleap-io.js 0.5.x `inst.points` is a
           // columnar-backed snapshot array, so an in-place `.push()` is dropped.
           // Element writes go through proxies, but structural changes must set
@@ -214,7 +207,7 @@ export const AddNodeCommand: Command = {
  * Delete a node from the skeleton.
  *
  * Removes the node, any edges referencing it, and the corresponding point
- * from every instance.
+ * from every instance of this skeleton.
  *
  * Params: { nodeIdx: number }
  */
@@ -243,10 +236,11 @@ export const DeleteNodeCommand: Command = {
     skeleton.nodes.splice(nodeIdx, 1);
     skeleton.rebuildCache(skeleton.nodes);
 
-    // Remove corresponding point from every instance
+    // Remove corresponding point from every instance of this skeleton
     if (labels) {
       for (const lf of labels.labeledFrames) {
         for (const inst of lf.instances) {
+          if (inst.skeleton !== skeleton) continue;
           if (nodeIdx < inst.points.length) {
             // Reassign, don't splice in place: `inst.points` is a columnar
             // snapshot array since sleap-io.js 0.5.x (see AddNode).
@@ -330,7 +324,7 @@ export const DeleteEdgeCommand: Command = {
 /**
  * Rename a node in the skeleton.
  *
- * Also updates the name in all instance point arrays.
+ * Also updates the name in the point arrays of this skeleton's instances.
  *
  * Params: { nodeIdx: number, newName: string }
  */
@@ -358,10 +352,11 @@ export const RenameNodeCommand: Command = {
     node.name = newName.trim();
     skeleton.rebuildCache(skeleton.nodes);
 
-    // Update point names in all instances
+    // Update point names in all instances of this skeleton
     if (labels) {
       for (const lf of labels.labeledFrames) {
         for (const inst of lf.instances) {
+          if (inst.skeleton !== skeleton) continue;
           if (nodeIdx < inst.points.length) {
             inst.points[nodeIdx].name = newName.trim();
           }
@@ -477,11 +472,14 @@ export const OpenSkeletonCommand: Command = {
       }
     }
 
-    // Remap every instance's points by name/link, then re-point at the skeleton.
+    // Remap points for every instance of the imported-onto skeleton. Instances
+    // of other skeletons in a multi-skeleton project keep their own skeleton and
+    // points untouched. The skeleton object is rebuilt in place,
+    // so `inst.skeleton` refs are already correct — no reassignment needed.
     for (const lf of labels.labeledFrames) {
       for (const inst of lf.instances) {
+        if (inst.skeleton !== skeleton) continue;
         inst.points = remapInstancePoints(inst, oldNodes, newNodes, linkMap);
-        inst.skeleton = skeleton;
       }
     }
 
@@ -515,16 +513,18 @@ function applyTemplate(
 
   skeleton.rebuildCache(skeleton.nodes);
 
-  // Update all instance points to match new node count
+  // Reset points to match the new node count — only for instances of the
+  // replaced skeleton; other skeletons' instances in a multi-skeleton project
+  // keep their points and skeleton reference.
   for (const lf of labels.labeledFrames) {
     for (const inst of lf.instances) {
+      if (inst.skeleton !== skeleton) continue;
       inst.points = newNodes.map((node) => ({
         xy: [NaN, NaN] as [number, number],
         visible: false,
         complete: false,
         name: node.name,
       }));
-      inst.skeleton = skeleton;
     }
   }
 }

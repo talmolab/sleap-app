@@ -365,7 +365,7 @@ export async function runInference(
   }
   args.push("--output_path", outputPath);
   if (isCentroid) {
-    args.push("--centroid_output", "instance");
+    args.push("--centroid_output", config.centroidOutput ?? "instance");
   }
 
   // Data selection

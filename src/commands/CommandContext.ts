@@ -6,7 +6,14 @@
  * to update. Includes frame-level undo/redo via instance snapshots.
  */
 
-import { Instance, LabeledFrame, PredictedInstance } from "@talmolab/sleap-io.js";
+import {
+  Instance,
+  LabeledFrame,
+  PredictedInstance,
+  UserCentroid,
+  PredictedCentroid,
+} from "@talmolab/sleap-io.js";
+import type { Centroid } from "@talmolab/sleap-io.js";
 import { useAppStore, type AppState } from "../stores/appStore";
 import { UpdateTopic } from "../types";
 import type { Track, Video } from "../types";
@@ -24,6 +31,8 @@ interface SingleFrameData {
   videoRef: Video;
   frameIdx: number;
   instances: Instance[];
+  /** First-class centroid annotations on the frame (undoable alongside instances). */
+  centroids: Centroid[];
 }
 
 /** Snapshot of frame state for undo/redo. */
@@ -79,6 +88,33 @@ function cloneInstances(instances: Instance[]): Instance[] {
   });
 }
 
+/**
+ * Deep-clone centroid annotations, preserving concrete type (UserCentroid vs
+ * PredictedCentroid). The `.instance` back-link is copied by reference — seeded
+ * centroids carry `instance = null`, so no remap is needed yet; when predicted
+ * centroids gain instance links, this will need index-based remapping like
+ * `cloneInstances` does for tracks.
+ */
+function cloneCentroids(centroids: Centroid[]): Centroid[] {
+  return centroids.map((c) => {
+    const base = {
+      x: c.x,
+      y: c.y,
+      z: c.z,
+      track: c.track,
+      trackingScore: c.trackingScore,
+      instance: c.instance,
+      category: c.category,
+      name: c.name,
+      source: c.source,
+    };
+    if (c instanceof PredictedCentroid) {
+      return new PredictedCentroid({ ...base, score: c.score });
+    }
+    return new UserCentroid(base);
+  });
+}
+
 /** Callbacks that can be registered to react to update topics. */
 type UpdateListener = (topics: UpdateTopic[]) => void;
 
@@ -111,6 +147,7 @@ export class CommandContext {
           videoRef: video,
           frameIdx,
           instances: cloneInstances(lf.instances),
+          centroids: cloneCentroids(lf.centroids),
         };
         if (instance) {
           selectedIdx = lf.instances.indexOf(instance);
@@ -141,6 +178,7 @@ export class CommandContext {
           videoRef: lf.video,
           frameIdx: lf.frameIdx,
           instances: cloneInstances(lf.instances),
+          centroids: cloneCentroids(lf.centroids),
         });
       }
       if (video && instance) {
@@ -196,6 +234,7 @@ export class CommandContext {
           frameIdx: frameData.frameIdx,
         });
         lf.instances = cloneInstances(frameData.instances);
+        lf.centroids = cloneCentroids(frameData.centroids);
         labels.labeledFrames.push(lf);
       }
 
@@ -225,6 +264,7 @@ export class CommandContext {
         // Restore instances on existing frame
         const lf = frames[0];
         lf.instances = cloneInstances(snapshot.frame.instances);
+        lf.centroids = cloneCentroids(snapshot.frame.centroids);
         this.state.setLabeledFrame(lf);
 
         // Restore selection
@@ -243,6 +283,7 @@ export class CommandContext {
           frameIdx: snapshot.frame.frameIdx,
         });
         lf.instances = cloneInstances(snapshot.frame.instances);
+        lf.centroids = cloneCentroids(snapshot.frame.centroids);
         labels.labeledFrames.push(lf);
         this.state.setLabeledFrame(lf);
         this.state.setInstance(null);

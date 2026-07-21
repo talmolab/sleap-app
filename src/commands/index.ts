@@ -50,6 +50,7 @@ export {
 export {
   AddInstance,
   SeedCentroid,
+  PairPoseInstances,
   DeleteSelectedInstance,
   SetPointLocation,
   CopyInstance,

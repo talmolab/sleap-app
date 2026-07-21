@@ -526,3 +526,50 @@ export function renderMarqueeRect(
   ctx.setLineDash([]);
   ctx.restore();
 }
+
+/** A first-class centroid annotation to draw (coords already in image space). */
+export interface RenderedCentroid {
+  x: number;
+  y: number;
+  /** Predicted (locator output) vs user-seeded — drawn dimmer/dashed. */
+  predicted: boolean;
+}
+
+/**
+ * Render first-class centroid annotations (`frame.centroids`) as a crosshair
+ * ring, distinct from skeleton node markers. Drawn in the same source-coord
+ * transform as {@link renderInstances}; sizes divide by `opts.zoom` so markers
+ * stay a constant on-screen size. User centroids are solid amber; predicted
+ * centroids are a dashed, dimmer ring.
+ */
+export function renderCentroids(
+  ctx: CanvasRenderingContext2D,
+  centroids: RenderedCentroid[],
+  opts: RenderOptions,
+): void {
+  if (centroids.length === 0) return;
+  const zoom = opts.zoom || 1;
+  const r = (opts.markerSize + 2) / zoom;
+  const arm = (opts.markerSize + 5) / zoom;
+
+  ctx.save();
+  for (const c of centroids) {
+    if (!Number.isFinite(c.x) || !Number.isFinite(c.y)) continue;
+    ctx.strokeStyle = c.predicted ? "rgba(255, 193, 7, 0.6)" : "rgba(255, 193, 7, 0.95)";
+    ctx.lineWidth = 1.5 / zoom;
+    ctx.setLineDash(c.predicted ? [3 / zoom, 3 / zoom] : []);
+    // Ring
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, r, 0, Math.PI * 2);
+    ctx.stroke();
+    // Crosshair
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.moveTo(c.x - arm, c.y);
+    ctx.lineTo(c.x + arm, c.y);
+    ctx.moveTo(c.x, c.y - arm);
+    ctx.lineTo(c.x, c.y + arm);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
