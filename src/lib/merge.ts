@@ -25,6 +25,8 @@ export interface MergeResult {
   instancesAdded: number;
   instancesSkipped: number;
   conflicts: number;
+  /** First-class centroid annotations (`frame.centroids`) carried over. */
+  centroidsAdded: number;
 }
 
 /**
@@ -104,6 +106,7 @@ export function merge(
     instancesAdded: 0,
     instancesSkipped: 0,
     conflicts: 0,
+    centroidsAdded: 0,
   };
 
   // -------------------------------------------------------------------------
@@ -171,6 +174,18 @@ export function merge(
       return inst;
     });
 
+    // Remap first-class centroid annotations (`frame.centroids`). Centroid-only
+    // model output (e.g. the AL locator, `--centroid_output centroid`) writes
+    // these with no instances, so without carrying them across the merge would
+    // silently drop every predicted centroid. Only `track` needs remapping; the
+    // `instance` back-link (if any) points into `source` and is re-established
+    // app-side by the pairing step, so it is left untouched (null for
+    // centroid-only predictions).
+    const remappedCentroids = sourceFrame.centroids.map((c) => {
+      if (c.track) c.track = trackMap.get(c.track) ?? c.track;
+      return c;
+    });
+
     // Find existing frame in target
     const existingFrames = target.find({
       video: targetVideo,
@@ -184,9 +199,11 @@ export function merge(
         frameIdx: sourceFrame.frameIdx,
         instances: remappedInstances,
       });
+      if (remappedCentroids.length > 0) newFrame.centroids = remappedCentroids;
       target.append(newFrame);
       result.framesAdded++;
       result.instancesAdded += remappedInstances.length;
+      result.centroidsAdded += remappedCentroids.length;
     } else {
       // Match exists: merge instances using the chosen strategy
       const targetFrame = existingFrames[0];
@@ -207,6 +224,15 @@ export function merge(
           threshold,
           result
         );
+      }
+
+      // Merge centroids independently of the instance strategy: keep the user's
+      // own centroids and replace any previously-predicted ones with the source
+      // set, so re-running the locator refreshes rather than accumulates.
+      if (remappedCentroids.length > 0) {
+        const userCentroids = targetFrame.centroids.filter((c) => !c.isPredicted);
+        targetFrame.centroids = [...userCentroids, ...remappedCentroids];
+        result.centroidsAdded += remappedCentroids.length;
       }
     }
   }

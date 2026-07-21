@@ -20,6 +20,8 @@ import {
   Video,
   Skeleton,
   Track,
+  UserCentroid,
+  PredictedCentroid,
 } from "@talmolab/sleap-io.js";
 import { merge, centroid, centroidDistance } from "@/lib/merge";
 
@@ -773,5 +775,92 @@ describe("MergeResult counts", () => {
     const result = merge(target, source, { instanceMatchThreshold: 10 });
     expect(result.instancesSkipped).toBe(1);
     expect(result.conflicts).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// First-class centroid annotations (`frame.centroids`)
+//
+// Regression: the AL locator predicts centroid-only SLPs (`--centroid_output
+// centroid`) — frames carrying `PredictedCentroid`s and NO instances. merge()
+// previously only ever touched `frame.instances`, so every predicted centroid
+// was silently dropped and the locator scale-up loop was a no-op.
+// ---------------------------------------------------------------------------
+
+describe("merge — centroids", () => {
+  it("carries predicted centroids onto a NEW frame (centroid-only source)", () => {
+    const skel = makeSkeleton(["a", "b"]);
+    const video = makeVideo("v.mp4");
+    // A centroid-only prediction frame: no instances, one PredictedCentroid.
+    const srcFrame = new LabeledFrame({ video, frameIdx: 7, instances: [] });
+    srcFrame.centroids = [new PredictedCentroid({ x: 40, y: 50, score: 0.9 })];
+    const source = makeLabels([srcFrame], [skel], [video]);
+    const target = makeLabels([], [skel], [makeVideo("v.mp4")]);
+
+    const result = merge(target, source);
+
+    expect(result.centroidsAdded).toBe(1);
+    expect(result.framesAdded).toBe(1);
+    const merged = target.labeledFrames[0];
+    expect(merged.centroids.length).toBe(1);
+    expect(merged.centroids[0].isPredicted).toBe(true);
+    expect(merged.centroids[0].xy).toEqual([40, 50]);
+  });
+
+  it("keeps user centroids and replaces predicted ones on an EXISTING frame", () => {
+    const skel = makeSkeleton(["a", "b"]);
+    const video = makeVideo("v.mp4");
+
+    const tgtFrame = new LabeledFrame({ video, frameIdx: 3, instances: [] });
+    tgtFrame.centroids = [
+      new UserCentroid({ x: 10, y: 10 }), // must survive
+      new PredictedCentroid({ x: 11, y: 11, score: 0.5 }), // stale — must go
+    ];
+    const target = makeLabels([tgtFrame], [skel], [video]);
+
+    const srcFrame = new LabeledFrame({
+      video: makeVideo("v.mp4"),
+      frameIdx: 3,
+      instances: [],
+    });
+    srcFrame.centroids = [new PredictedCentroid({ x: 80, y: 80, score: 0.95 })];
+    const source = makeLabels([srcFrame], [skel], [srcFrame.video]);
+
+    const result = merge(target, source);
+
+    expect(result.centroidsAdded).toBe(1);
+    expect(result.framesAdded).toBe(0);
+    const merged = target.labeledFrames[0];
+    const users = merged.centroids.filter((c) => !c.isPredicted);
+    const preds = merged.centroids.filter((c) => c.isPredicted);
+    expect(users.length).toBe(1);
+    expect(users[0].xy).toEqual([10, 10]);
+    // The stale prediction was replaced, not accumulated.
+    expect(preds.length).toBe(1);
+    expect(preds[0].xy).toEqual([80, 80]);
+  });
+
+  it("does not touch existing centroids when the source frame has none", () => {
+    const skel = makeSkeleton(["a", "b"]);
+    const video = makeVideo("v.mp4");
+
+    const tgtFrame = new LabeledFrame({ video, frameIdx: 1, instances: [] });
+    tgtFrame.centroids = [new PredictedCentroid({ x: 5, y: 5, score: 0.4 })];
+    const target = makeLabels([tgtFrame], [skel], [video]);
+
+    // Instance-only source frame (no centroids) for the same frame index.
+    const srcFrame = new LabeledFrame({
+      video: makeVideo("v.mp4"),
+      frameIdx: 1,
+      instances: [makePredictedInstance(skel, [[9, 9]])],
+    });
+    const source = makeLabels([srcFrame], [skel], [srcFrame.video]);
+
+    const result = merge(target, source);
+
+    expect(result.centroidsAdded).toBe(0);
+    // Existing predicted centroid is left intact when the merge carries none.
+    expect(target.labeledFrames[0].centroids.length).toBe(1);
+    expect(target.labeledFrames[0].centroids[0].xy).toEqual([5, 5]);
   });
 });
