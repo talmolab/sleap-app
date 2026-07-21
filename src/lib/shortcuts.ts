@@ -45,6 +45,7 @@ export const DEFAULT_SHORTCUTS: Record<string, string> = {
 
   // View
   fit: "$mod+Equal",
+  "reset view": "KeyR",
   "show instances": "KeyH",
   "show labels": "$mod+Tab",
   "show edges": "$mod+Shift+Tab",

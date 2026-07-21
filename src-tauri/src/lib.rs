@@ -67,6 +67,181 @@ fn file_size(path: String) -> Result<u64, String> {
         .map_err(|e| format!("file_size({path}): {e}"))
 }
 
+/// SPIKE (spike/write-bseam): holds the single, persistent read-write file handle for the
+/// "write B-seam" feasibility spike. Unlike `read_range` (which opens the file fresh on
+/// every call), HDF5's seek-back-and-patch write pattern needs writes and reads to hit the
+/// SAME open `std::fs::File` descriptor so reads observe prior writes reliably via the OS
+/// page cache. Only one save is in flight at a time, hence a single slot (not a map).
+struct WriteHandle(Mutex<Option<std::fs::File>>);
+
+/// Open (or re-create) the file backing the write B-seam and stash it as the single
+/// persistent read-write handle used by `write_at` / `read_at` / `truncate_file`.
+/// `create(true).truncate(true)` mirrors starting a fresh save file.
+#[tauri::command]
+fn write_open(state: tauri::State<WriteHandle>, path: String) -> Result<(), String> {
+    // Ensure the parent directory exists — the streaming writer may stage into a
+    // freshly-resolved local dir (e.g. the app cache dir) that hasn't been
+    // created yet. create_dir_all is a no-op when it already exists.
+    if let Some(parent) = std::path::Path::new(&path).parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("write_open({path}): create parent dir: {e}"))?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&path)
+        .map_err(|e| format!("write_open({path}): {e}"))?;
+    let mut guard = state.0.lock().map_err(|e| format!("write_open({path}): {e}"))?;
+    *guard = Some(file);
+    Ok(())
+}
+
+/// SPIKE (spike/write-bseam): open an EXISTING file for append (no truncate) and stash it
+/// as the single persistent read-write handle, like `write_open` but WITHOUT
+/// `.truncate(true)` — the file's existing bytes stay intact on disk. Used by the
+/// streaming writer's dual-bridge dest-file open, where the destination already has
+/// content (e.g. the small pose-table half already written on the main thread) that the
+/// append phase must read AND extend, never clobber.
+#[tauri::command]
+fn write_open_append(state: tauri::State<WriteHandle>, path: String) -> Result<(), String> {
+    if let Some(parent) = std::path::Path::new(&path).parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("write_open_append({path}): create parent dir: {e}"))?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(&path)
+        .map_err(|e| format!("write_open_append({path}): {e}"))?;
+    let mut guard = state.0.lock().map_err(|e| format!("write_open_append({path}): {e}"))?;
+    *guard = Some(file);
+    Ok(())
+}
+
+/// Write bytes at an absolute offset into the held write-B-seam handle.
+///
+/// Bytes travel over the **raw binary IPC channel** (never a JSON number-array — that's
+/// ~10x size blowup and would make the large-file stage of this spike unusable). To avoid
+/// mixing a numeric `offset` arg with a raw body (Tauri commands take either all-JSON args
+/// or a single raw `Request` body, not both), the JS caller prepends the offset as an
+/// 8-byte little-endian `u64` to the front of the raw body: `[offset:8][payload bytes...]`.
+#[tauri::command]
+fn write_at(state: tauri::State<WriteHandle>, request: tauri::ipc::Request) -> Result<(), String> {
+    use std::io::{Seek, SeekFrom, Write};
+    let bytes = match request.body() {
+        tauri::ipc::InvokeBody::Raw(bytes) => bytes,
+        tauri::ipc::InvokeBody::Json(_) => {
+            return Err("write_at: expected a raw binary body, got JSON".to_string());
+        }
+    };
+    if bytes.len() < 8 {
+        return Err(format!(
+            "write_at: body too short for an 8-byte offset prefix ({} bytes)",
+            bytes.len()
+        ));
+    }
+    let offset = u64::from_le_bytes(bytes[0..8].try_into().unwrap());
+    let payload = &bytes[8..];
+
+    let mut guard = state.0.lock().map_err(|e| format!("write_at({offset}): {e}"))?;
+    let file = guard
+        .as_mut()
+        .ok_or_else(|| format!("write_at({offset}): no open write handle (call write_open first)"))?;
+    file.seek(SeekFrom::Start(offset))
+        .map_err(|e| format!("write_at seek({offset}): {e}"))?;
+    file.write_all(payload)
+        .map_err(|e| format!("write_at write({offset}): {e}"))?;
+    Ok(())
+}
+
+/// Read back `[offset, offset+length)` from the SAME open write-B-seam handle (not a fresh
+/// `std::fs::File::open` like `read_range`), so reads see writes made via `write_at` on this
+/// handle. Mirrors `read_range`'s seek + looped read + short-read-at-EOF behavior exactly.
+#[tauri::command]
+fn read_at(state: tauri::State<WriteHandle>, offset: u64, length: u32) -> Result<tauri::ipc::Response, String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut guard = state.0.lock().map_err(|e| format!("read_at({offset}): {e}"))?;
+    let file = guard
+        .as_mut()
+        .ok_or_else(|| format!("read_at({offset}): no open write handle (call write_open first)"))?;
+    file.seek(SeekFrom::Start(offset))
+        .map_err(|e| format!("read_at seek({offset}): {e}"))?;
+    let mut buf = vec![0u8; length as usize];
+    let mut filled = 0usize;
+    while filled < buf.len() {
+        match file.read(&mut buf[filled..]) {
+            Ok(0) => break, // EOF
+            Ok(n) => filled += n,
+            Err(e) => return Err(format!("read_at read: {e}")),
+        }
+    }
+    buf.truncate(filled);
+    Ok(tauri::ipc::Response::new(buf))
+}
+
+/// Truncate (or extend) the held write-B-seam handle to exactly `length` bytes.
+#[tauri::command]
+fn truncate_file(state: tauri::State<WriteHandle>, length: u64) -> Result<(), String> {
+    let mut guard = state.0.lock().map_err(|e| format!("truncate_file({length}): {e}"))?;
+    let file = guard
+        .as_mut()
+        .ok_or_else(|| format!("truncate_file({length}): no open write handle (call write_open first)"))?;
+    file.set_len(length)
+        .map_err(|e| format!("truncate_file({length}): {e}"))
+}
+
+/// Flush and close the held write-B-seam handle, freeing the slot for the next save.
+#[tauri::command]
+fn write_close(state: tauri::State<WriteHandle>) -> Result<(), String> {
+    use std::io::Write;
+    let mut guard = state.0.lock().map_err(|e| format!("write_close: {e}"))?;
+    if let Some(mut file) = guard.take() {
+        file.flush().map_err(|e| format!("write_close: {e}"))?;
+        // `file` drops here, closing the OS descriptor.
+    }
+    Ok(())
+}
+
+/// Atomically replace `to` with `from` on the same filesystem (`std::fs::rename`). Used by
+/// the streaming pkg.slp writer (Phase 3) to swap a verified-complete temp file over the
+/// real destination as the LAST step of a save — the original `to` is only ever destroyed
+/// by this rename, and only after the temp has been fully written and independently
+/// verified, so a failure anywhere before this call leaves the original untouched.
+#[tauri::command]
+fn rename_file(from: String, to: String) -> Result<(), String> {
+    std::fs::rename(&from, &to).map_err(|e| format!("rename_file({from} -> {to}): {e}"))
+}
+
+/// Bulk sequential copy `from` -> `to` (`std::fs::copy`, one streamed pass). Used by the
+/// streaming pkg.slp writer's local-temp-staging path: the file is built AND verified on
+/// LOCAL disk (many small, latency-cheap ops), then copied to the possibly-network
+/// destination in ONE sequential pass. `std::fs::rename` can't cross filesystems, so a
+/// local→network publish needs a copy; doing it as a single sequential transfer is
+/// throughput-bound (fast even over SMB) instead of paying per-op network latency for the
+/// writer's many scattered reads/writes. Overwrites `to` if it exists.
+#[tauri::command]
+fn copy_file(from: String, to: String) -> Result<(), String> {
+    std::fs::copy(&from, &to)
+        .map(|_| ())
+        .map_err(|e| format!("copy_file({from} -> {to}): {e}"))
+}
+
+/// Delete a file (`std::fs::remove_file`). Used by the streaming pkg.slp writer's cleanup
+/// path to FULLY remove temp/stage files on failure (and the local stage file on success),
+/// instead of leaving 0-byte `*.sleap-tmp-*` stubs behind. A missing file is treated as
+/// success so cleanup is idempotent and never masks the real error.
+#[tauri::command]
+fn remove_file(path: String) -> Result<(), String> {
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("remove_file({path}): {e}")),
+    }
+}
+
 /// Reveal a file in the OS file manager (Finder / Explorer / xdg-open).
 #[tauri::command]
 fn reveal_in_file_manager(path: String) -> Result<(), String> {
@@ -167,6 +342,15 @@ fn sleap_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
         .invoke_handler(tauri::generate_handler![
             read_range,
             file_size,
+            write_open,
+            write_open_append,
+            write_at,
+            read_at,
+            truncate_file,
+            write_close,
+            rename_file,
+            copy_file,
+            remove_file,
             get_initial_file,
             read_image_file,
             reveal_in_file_manager,
@@ -346,6 +530,7 @@ pub fn run() {
     .manage(RunningProcess(Mutex::new(None)))
     .manage(ZmqRelay(Mutex::new(None)))
     .manage(ProgressRelay(Mutex::new(None)))
+    .manage(WriteHandle(Mutex::new(None)))
     .manage(tokio::sync::Mutex::new(rtc::RtcState::new()))
     // All native commands live in the inlined `sleap` plugin (see sleap_plugin()) so they
     // resolve as `plugin:sleap|…` and stay reachable when the app is served from the

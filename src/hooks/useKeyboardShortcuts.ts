@@ -148,6 +148,13 @@ export function useKeyboardShortcuts() {
         e.preventDefault();
         store().toggle("fit");
       },
+      // Reset the video canvas view to default (zoom=1, no pan). Plain letter
+      // key, so ignore it while typing in an input.
+      [DEFAULT_SHORTCUTS["reset view"]]: (e) => {
+        if (isTextInput(e)) return;
+        e.preventDefault();
+        store().resetView();
+      },
       [DEFAULT_SHORTCUTS["toggle pan mode"]]: (e) => {
         if (isTextInput(e)) return;
         e.preventDefault();

@@ -54,6 +54,21 @@ export type ModelType =
 
 export type Backbone = "unet" | "convnext" | "swint";
 
+/** UI-level data-pipeline choice; maps to sleap-nn's `data_config.data_pipeline_fw`. */
+export type DataPipeline = "stream" | "memory" | "disk";
+
+/** UI enum ↔ sleap-nn `data_pipeline_fw` value. */
+const DATA_PIPELINE_FW: Record<DataPipeline, string> = {
+  stream: "torch_dataset",
+  memory: "torch_dataset_cache_img_memory",
+  disk: "torch_dataset_cache_img_disk",
+};
+const DATA_PIPELINE_FROM_FW: Record<string, DataPipeline> = {
+  torch_dataset: "stream",
+  torch_dataset_cache_img_memory: "memory",
+  torch_dataset_cache_img_disk: "disk",
+};
+
 export interface TrainingConfig {
   // Model
   modelType: ModelType;
@@ -123,6 +138,10 @@ export interface ConfigHyperparams {
   maxHardKeypoints: number | null;
   trainingMode: "reuse_config" | "resume" | "reuse_model";
   accelerator: "auto" | "cuda" | "mps" | "cpu";
+  // Performance
+  dataPipeline: DataPipeline;
+  dataloaderWorkers: number;
+  numDevices: number | "auto";
 }
 
 export const defaultHyperparams: ConfigHyperparams = {
@@ -176,6 +195,9 @@ export const defaultHyperparams: ConfigHyperparams = {
   maxHardKeypoints: null,
   trainingMode: "reuse_config",
   accelerator: "auto",
+  dataPipeline: "memory",
+  dataloaderWorkers: 0,
+  numDevices: "auto",
 };
 
 export interface ConfigFile {
@@ -330,6 +352,17 @@ export function applyHyperparamsToYaml(yamlText: string, hp: ConfigHyperparams):
   trainer.max_epochs = hp.maxEpochs;
   if (!trainer.train_data_loader) trainer.train_data_loader = {};
   (trainer.train_data_loader as Record<string, unknown>).batch_size = hp.batchSize;
+
+  // Performance — data pipeline + dataloader workers
+  const dataPipelineFw = DATA_PIPELINE_FW[hp.dataPipeline] ?? DATA_PIPELINE_FW.stream;
+  data.data_pipeline_fw = dataPipelineFw;
+  // sleap-nn only supports multiprocessing dataloader workers with a caching
+  // pipeline; the streaming `torch_dataset` path requires num_workers == 0.
+  const numWorkers = dataPipelineFw === "torch_dataset" ? 0 : hp.dataloaderWorkers;
+  (trainer.train_data_loader as Record<string, unknown>).num_workers = numWorkers;
+  if (!trainer.val_data_loader) trainer.val_data_loader = {};
+  (trainer.val_data_loader as Record<string, unknown>).num_workers = numWorkers;
+
   if (!trainer.optimizer) trainer.optimizer = {};
   (trainer.optimizer as Record<string, unknown>).lr = hp.learningRate;
   if (hp.runName) trainer.run_name = hp.runName;
@@ -358,6 +391,9 @@ export function applyHyperparamsToYaml(yamlText: string, hp: ConfigHyperparams):
 
   // Override accelerator so configs from CUDA machines work on CPU/MPS
   trainer.trainer_accelerator = hp.accelerator;
+
+  // Number of devices ("auto" or a positive integer)
+  trainer.trainer_devices = hp.numDevices;
 
   // Early stopping
   if (!trainer.early_stopping) trainer.early_stopping = {};
@@ -737,6 +773,11 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         maxHardKeypoints: typeof ohkmCfg.max_hard_keypoints === "number" ? ohkmCfg.max_hard_keypoints : null,
         trainingMode: "reuse_config" as const,
         accelerator: (typeof trainer.trainer_accelerator === "string" ? trainer.trainer_accelerator : "auto") as ConfigHyperparams["accelerator"],
+        dataPipeline: (typeof dataConfig.data_pipeline_fw === "string"
+          ? DATA_PIPELINE_FROM_FW[dataConfig.data_pipeline_fw]
+          : undefined) ?? defaultHyperparams.dataPipeline,
+        dataloaderWorkers: typeof trainLoader.num_workers === "number" ? trainLoader.num_workers : 0,
+        numDevices: typeof trainer.trainer_devices === "number" ? trainer.trainer_devices : "auto",
       };
 
       // Also auto-fill data paths into the global config

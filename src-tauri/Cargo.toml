@@ -48,8 +48,14 @@ tauri-plugin-localhost = "2"
 # 1.x runtime" — because it bound its named pipe in the synchronous `setup`
 # hook. That was fixed upstream in #115, and 0.7.0 also restored eval on the
 # Windows / Linux WebViews (#110). Both fixes shipped in 0.7.0, so the old
-# git-commit pin is no longer needed.)
-tauri-plugin-pilot = "0.7.0"
+# git-commit pin is no longer needed.
+# 0.7.1 (#127) deleted the old macOS native WKWebView eval path (which failed on
+# Tahoe with "native WebKit eval callback returned an error") and now routes eval
+# results via the __callback IPC command on every platform — so `tauri-pilot eval`
+# (and ipc/logs/snapshot, which ride the same channel) work on macOS again. 0.7.2
+# adds `--version` + a ping that warns on plugin/CLI drift. Keep the CLI matched
+# (`cargo install tauri-pilot-cli --version 0.7.2`).)
+tauri-plugin-pilot = "0.7.2"
 
 libc = "0.2"
 
