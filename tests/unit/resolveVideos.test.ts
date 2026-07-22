@@ -498,12 +498,8 @@ describe("lazy video backends (defer decoder open, #perf)", () => {
   it("ensureVideoBackend is a no-op for a video that wasn't lazily deferred", async () => {
     const video = new Video({ filename: "/proj/clip.mp4", openBackend: false });
     video.backend = null; // missing, but no lazyPath → nothing deferred to open
-    let called = false;
-    const ok = await ensureVideoBackend(video, async () => {
-      called = true;
-      return new Uint8Array();
-    });
-    expect(called).toBe(false);
+    const ok = await ensureVideoBackend(video);
     expect(ok).toBe(false);
+    expect(video.backend).toBeNull();
   });
 });

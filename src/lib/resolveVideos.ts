@@ -249,23 +249,25 @@ function getLazyPath(video: Video): string | undefined {
 /**
  * Open a lazily-deferred video's backend on first use. When
  * {@link resolveExternalVideos} runs with `lazy`, it records the resolved path
- * in `backendMetadata.lazyPath` without reading the file; this reads it and
- * builds the decoder on demand (the LUC3D pattern). No-op if already open or not
- * deferred. Clears `lazyPath` after the attempt (success or failure), so a video
- * that fails to decode falls through to the normal missing/unsupported flow.
+ * in `backendMetadata.lazyPath` without opening the file; this opens the decoder
+ * on demand (the LUC3D pattern). No-op if already open or not deferred. Clears
+ * `lazyPath` after the attempt (success or failure), so a video that fails to
+ * decode falls through to the normal missing/unsupported flow.
+ *
+ * Opens via {@link assignVideoBackendFromPath} — a byte-range (RangeSource)
+ * open, NOT a whole-file read — so deferring a multi-GB external video and then
+ * viewing it doesn't pull the entire file into the WebView renderer (which OOMs
+ * and crashes it). This mirrors the manual-locate path; only the timing differs.
+ * (Before this, the first-view open read the whole file via `readFile`, which
+ * re-introduced for the lazy path the exact OOM the range reader (#200) fixed
+ * for the eager/locate paths — the lazy feature (#195) landed minutes later and
+ * opened the old whole-file way.)
  */
-export async function ensureVideoBackend(
-  video: Video,
-  readFile: (path: string) => Promise<Uint8Array>
-): Promise<boolean> {
+export async function ensureVideoBackend(video: Video): Promise<boolean> {
   const lazyPath = getLazyPath(video);
   if (video.backend || !lazyPath) return video.backend !== null;
   try {
-    const bytes = await readFile(lazyPath);
-    const file = new File([bytes], getBasename(lazyPath), {
-      type: "video/mp4",
-    });
-    return await assignVideoBackend(video, file, { silent: true });
+    return await assignVideoBackendFromPath(video, lazyPath, { silent: true });
   } finally {
     delete (video.backendMetadata as Record<string, unknown>).lazyPath;
   }
