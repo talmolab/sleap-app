@@ -55,26 +55,26 @@ function makeInstance(skeleton: Skeleton, points: Record<string, [number, number
 function makeConfig(passes: { name: string; nodes: string[] }[]): ActiveLearningConfig {
   return normalizeActiveLearningConfig({
     localize: { centroidNode: "body_center" },
-    labelKeypoints: { passes: passes.map((p) => ({ ...p, guide: "none" })) },
+    labelKeypoints: { passes: passes.map((p) => ({ ...p, axis: false })) },
   });
 }
 
 describe("nodeIndicesForPass", () => {
   it("maps node names to skeleton indices in click order", () => {
     expect(
-      nodeIndicesForPass({ name: "p", nodes: ["nose", "head"], guide: "none" }, NODE_NAMES),
+      nodeIndicesForPass({ name: "p", nodes: ["nose", "head"], axis: false }, NODE_NAMES),
     ).toEqual([2, 1]);
   });
 
   it("drops names not in the skeleton", () => {
     expect(
-      nodeIndicesForPass({ name: "p", nodes: ["head", "ghost", "tail"], guide: "none" }, NODE_NAMES),
+      nodeIndicesForPass({ name: "p", nodes: ["head", "ghost", "tail"], axis: false }, NODE_NAMES),
     ).toEqual([1, 5]);
   });
 
   it("dedupes repeated names, preserving first position", () => {
     expect(
-      nodeIndicesForPass({ name: "p", nodes: ["head", "head", "nose"], guide: "none" }, NODE_NAMES),
+      nodeIndicesForPass({ name: "p", nodes: ["head", "head", "nose"], axis: false }, NODE_NAMES),
     ).toEqual([1, 2]);
   });
 });
@@ -228,7 +228,7 @@ describe("buildWorkList (first-class centroid annotations)", () => {
   function makeSeparateConfig(passes: { name: string; nodes: string[] }[]): ActiveLearningConfig {
     return normalizeActiveLearningConfig({
       localize: { centroidNode: "centroid", separateCentroid: true },
-      labelKeypoints: { passes: passes.map((p) => ({ ...p, guide: "none" })) },
+      labelKeypoints: { passes: passes.map((p) => ({ ...p, axis: false })) },
     });
   }
 
@@ -351,7 +351,7 @@ describe("countSeededCentroids", () => {
     const v0 = stubVideo("a.mp4");
     const config = normalizeActiveLearningConfig({
       localize: { centroidNode: "centroid", separateCentroid: true },
-      labelKeypoints: { passes: [{ name: "P1", nodes: ["head"], guide: "none" }] },
+      labelKeypoints: { passes: [{ name: "P1", nodes: ["head"], axis: false }] },
     });
 
     // A pre-existing full pose label on the frame must NOT count; only the
@@ -378,7 +378,7 @@ describe("countSeededCentroids", () => {
     const v0 = stubVideo("a.mp4");
     const config = normalizeActiveLearningConfig({
       localize: { centroidNode: "centroid", separateCentroid: true },
-      labelKeypoints: { passes: [{ name: "P1", nodes: ["head"], guide: "none" }] },
+      labelKeypoints: { passes: [{ name: "P1", nodes: ["head"], axis: false }] },
     });
     const pFull = makeInstance(pose, { head: [1, 1] });
     const labels = new Labels({

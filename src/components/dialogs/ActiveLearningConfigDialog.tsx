@@ -177,8 +177,11 @@ export function ActiveLearningConfigDialog({ open, onOpenChange, nodeNames }: Pr
     // Mark the project dirty so the workflow gets written into the .slp on the
     // next save (it's persisted in the project's provenance — see persistence.ts).
     useAppStore.getState().markChanged();
-    if (result.ok) toast.success("Workflow saved");
-    else toast.warning(`Workflow saved with ${result.errors.length} issue(s)`);
+    // Be explicit that this only stages the workflow — it lands in the .slp when
+    // the PROJECT is saved (⌘S). Otherwise "saved" reads as already-on-disk.
+    const tail = "— save the project (⌘S) to store it in the .slp";
+    if (result.ok) toast.success(`Workflow updated ${tail}`);
+    else toast.warning(`Workflow updated with ${result.errors.length} issue(s) ${tail}`);
     onOpenChange(false);
   };
 
@@ -427,6 +430,16 @@ export function ActiveLearningConfigDialog({ open, onOpenChange, nodeNames }: Pr
 
             {/* ---- Passes ---- */}
             <TabsContent value="passes" className="mt-2 space-y-3">
+              <p className="text-[11px] leading-snug text-muted-foreground">
+                A <b>pass</b> is a group of keypoints labeled together, in click
+                order — split the skeleton into as many passes as you like and
+                reorder them. <b>Order</b> sets the sweep: <i>pass-major</i>{" "}
+                labels one pass across every crop before the next pass
+                (repetition → consistent placement); <i>crop-major</i> finishes
+                all passes on one crop before moving on (each crop seen once).
+                Mark one pass as the <b>Axis</b> to turn its first → last node
+                into a reference line shown while labeling the other passes.
+              </p>
               <div className="flex items-center justify-between">
                 <Select
                   value={draft.labelKeypoints.order}
@@ -453,7 +466,7 @@ export function ActiveLearningConfigDialog({ open, onOpenChange, nodeNames }: Pr
                       d.labelKeypoints.passes.push({
                         name: `Pass ${d.labelKeypoints.passes.length + 1}`,
                         nodes: [],
-                        guide: "none",
+                        axis: false,
                       }),
                     )
                   }
@@ -474,20 +487,27 @@ export function ActiveLearningConfigDialog({ open, onOpenChange, nodeNames }: Pr
                           edit((d) => (d.labelKeypoints.passes[pi].name = e.target.value))
                         }
                       />
-                      <Select
-                        value={pass.guide}
-                        onValueChange={(v) =>
-                          edit((d) => (d.labelKeypoints.passes[pi].guide = v === "axis" ? "axis" : "none"))
-                        }
+                      <label
+                        className="flex items-center gap-1.5 whitespace-nowrap px-1.5 text-xs text-muted-foreground"
+                        title="Use this pass as the axis: its first and last nodes define a reference line drawn on the crop while labeling the other passes. Only one pass can be the axis."
                       >
-                        <SelectTrigger className="h-8 w-24">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="none">no guide</SelectItem>
-                          <SelectItem value="axis">axis</SelectItem>
-                        </SelectContent>
-                      </Select>
+                        <input
+                          type="checkbox"
+                          className="h-4 w-4 accent-primary"
+                          checked={pass.axis}
+                          onChange={(e) =>
+                            edit((d) => {
+                              // Single axis: this pass takes it (or clears it);
+                              // all others are turned off.
+                              const on = e.target.checked;
+                              d.labelKeypoints.passes.forEach(
+                                (p, j) => (p.axis = on && j === pi),
+                              );
+                            })
+                          }
+                        />
+                        Axis
+                      </label>
                       <Button
                         size="sm"
                         variant="ghost"
@@ -522,6 +542,14 @@ export function ActiveLearningConfigDialog({ open, onOpenChange, nodeNames }: Pr
                         <Trash2 className="h-3.5 w-3.5" />
                       </Button>
                     </div>
+
+                    {pass.axis && (
+                      <p className="text-[11px] leading-snug text-muted-foreground">
+                        {pass.nodes.length >= 2
+                          ? `Axis line: ${pass.nodes[0]} → ${pass.nodes[pass.nodes.length - 1]} — shown as a guide while labeling the other passes.`
+                          : "Add at least 2 nodes so the axis has two endpoints."}
+                      </p>
+                    )}
 
                     {/* Ordered node rows (the click order = the labeling order). */}
                     <div className="space-y-1">

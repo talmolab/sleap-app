@@ -24,9 +24,6 @@ export const ACTIVE_LEARNING_CONFIG_VERSION = 1;
 /** Order in which Phase-2 labeling sweeps the crop set. */
 export type PassOrder = "pass-major" | "crop-major";
 
-/** Optional on-canvas guide drawn while labeling a pass. */
-export type PassGuide = "none" | "axis";
-
 /** Frame-mining strategy names (subset of {@link suggestionStrategies}). */
 export type MineStrategy = "prediction_score" | "velocity" | "max_displacement";
 
@@ -93,7 +90,16 @@ export interface LabelPass {
   name: string;
   /** Skeleton node names, in the order they are clicked. */
   nodes: string[];
-  guide: PassGuide;
+  /**
+   * When true, THIS pass defines the animal's axis line: its first and last
+   * nodes are the line's endpoints, and that line is drawn on the crop as a
+   * reference guide while labeling the OTHER passes (helpful for placing
+   * left/right pairs symmetrically). At most one pass is the axis — a single
+   * reference line — which {@link normalizeActiveLearningConfig} enforces.
+   * (Rendering the guide on the labeling canvas is a follow-up; the config +
+   * builder capture the intent today.)
+   */
+  axis: boolean;
 }
 
 /** Phase 2: multi-pass keypoint labeling. */
@@ -165,14 +171,16 @@ export const DEFAULT_ACTIVE_LEARNING_CONFIG: ActiveLearningConfig = {
   labelKeypoints: {
     order: "pass-major",
     passes: [
-      { name: "Body Axis", nodes: ["tti", "trunk", "neck", "head", "nose"], guide: "none" },
+      // "Body Axis" is the axis pass: its first & last nodes (tti → nose) define
+      // the reference line shown while labeling the later passes.
+      { name: "Body Axis", nodes: ["tti", "trunk", "neck", "head", "nose"], axis: true },
       {
         name: "Anterior",
         nodes: ["left_ear", "right_ear", "left_shoulder", "right_shoulder"],
-        guide: "axis",
+        axis: false,
       },
-      { name: "Posterior", nodes: ["left_haunch", "right_haunch"], guide: "none" },
-      { name: "Tail", nodes: ["tail_base", "tail_mid", "tail_tip"], guide: "none" },
+      { name: "Posterior", nodes: ["left_haunch", "right_haunch"], axis: false },
+      { name: "Tail", nodes: ["tail_base", "tail_mid", "tail_tip"], axis: false },
     ],
   },
   mine: {
@@ -225,11 +233,11 @@ function strArray(v: unknown, fallback: string[]): string[] {
 
 function normalizePass(raw: unknown, index: number): LabelPass {
   const r = asRecord(raw);
-  const guide = str(r.guide, "none");
   return {
     name: str(r.name, `Pass ${index + 1}`),
     nodes: strArray(r.nodes, []),
-    guide: guide === "axis" ? "axis" : "none",
+    // Back-compat: the retired per-pass `guide: "axis"` maps onto the axis flag.
+    axis: r.axis === true || r.guide === "axis",
   };
 }
 
@@ -250,9 +258,18 @@ export function normalizeActiveLearningConfig(raw: unknown): ActiveLearningConfi
   const consistency = asRecord(root.consistency);
 
   const order = str(labelKeypoints.order, d.labelKeypoints.order);
+  // Fresh objects either way (clone the defaults) so the single-axis pass below
+  // never mutates the shared DEFAULT constant.
   const passes = Array.isArray(labelKeypoints.passes)
     ? labelKeypoints.passes.map(normalizePass)
-    : d.labelKeypoints.passes;
+    : d.labelKeypoints.passes.map((p) => ({ ...p }));
+  // At most one pass is the axis (a single reference line): keep the first
+  // axis-flagged pass, clear the rest.
+  let axisClaimed = false;
+  for (const p of passes) {
+    if (p.axis && !axisClaimed) axisClaimed = true;
+    else if (p.axis) p.axis = false;
+  }
 
   const strategies = (
     Array.isArray(mine.strategies)
@@ -380,7 +397,7 @@ export function configFromSkeleton(
       order: "pass-major",
       passes:
         nodeNames.length > 0
-          ? [{ name: "Keypoints", nodes: [...nodeNames], guide: "none" }]
+          ? [{ name: "Keypoints", nodes: [...nodeNames], axis: false }]
           : d.labelKeypoints.passes,
     },
   };
@@ -461,6 +478,12 @@ export function validateActiveLearningConfig(
   for (const pass of passes) {
     if (pass.nodes.length === 0) {
       errors.push(`Pass "${pass.name}" has no nodes.`);
+    }
+    // The axis pass needs two endpoints (first + last node) to form a line.
+    if (pass.axis && pass.nodes.length < 2) {
+      warnings.push(
+        `Axis pass "${pass.name}" has fewer than 2 nodes, so no axis line can be drawn.`,
+      );
     }
     for (const node of pass.nodes) {
       const prev = nodeToPass.get(node);

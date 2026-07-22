@@ -70,17 +70,32 @@ describe("active-learning config", () => {
       "labelKeypoints:\n  passes:\n    - { name: Only, nodes: [a, b] }\n",
     );
     expect(parsed.labelKeypoints.passes).toEqual([
-      { name: "Only", nodes: ["a", "b"], guide: "none" },
+      { name: "Only", nodes: ["a", "b"], axis: false },
     ]);
     expect(allPassNodes(parsed)).toEqual(["a", "b"]);
   });
 
-  it("coerces numeric strings and defaults an out-of-set guide", () => {
+  it("coerces numeric strings and defaults the axis flag to false", () => {
     const parsed = parseActiveLearningConfig(
-      "loop:\n  maxRounds: '4'\nlabelKeypoints:\n  passes:\n    - { name: P, nodes: [x], guide: bogus }\n",
+      "loop:\n  maxRounds: '4'\nlabelKeypoints:\n  passes:\n    - { name: P, nodes: [x] }\n",
     );
     expect(parsed.loop.maxRounds).toBe(4);
-    expect(parsed.labelKeypoints.passes[0].guide).toBe("none");
+    expect(parsed.labelKeypoints.passes[0].axis).toBe(false);
+  });
+
+  it("maps the legacy per-pass guide:axis onto the axis flag", () => {
+    const parsed = parseActiveLearningConfig(
+      "labelKeypoints:\n  passes:\n    - { name: A, nodes: [x, y], guide: axis }\n    - { name: B, nodes: [z] }\n",
+    );
+    expect(parsed.labelKeypoints.passes[0].axis).toBe(true);
+    expect(parsed.labelKeypoints.passes[1].axis).toBe(false);
+  });
+
+  it("keeps at most one axis pass (first wins)", () => {
+    const parsed = parseActiveLearningConfig(
+      "labelKeypoints:\n  passes:\n    - { name: A, nodes: [a, b], axis: true }\n    - { name: B, nodes: [c, d], axis: true }\n",
+    );
+    expect(parsed.labelKeypoints.passes.map((p) => p.axis)).toEqual([true, false]);
   });
 
   it("filters unknown mining strategies and bad pass order", () => {

@@ -43,7 +43,7 @@ function near(a: number, b: number) { return Math.abs(a - b) < 1e-6; }
 function alConfig() {
   return normalizeActiveLearningConfig({
     localize: { centroidNode: "centroid", separateCentroid: true, cropSize: CROP },
-    labelKeypoints: { passes: [{ name: "P1", nodes: ["snout", "tailbase"], guide: "none" }] },
+    labelKeypoints: { passes: [{ name: "P1", nodes: ["snout", "tailbase"], axis: false }] },
   });
 }
 

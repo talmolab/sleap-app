@@ -42,7 +42,7 @@ function setup() {
 const centroidConfig = () =>
   normalizeActiveLearningConfig({
     localize: { centroidNode: "centroid", separateCentroid: true },
-    labelKeypoints: { passes: [{ name: "P1", nodes: ["head"], guide: "none" }] },
+    labelKeypoints: { passes: [{ name: "P1", nodes: ["head"], axis: false }] },
   });
 
 describe("centroid-annotation seeding", () => {
