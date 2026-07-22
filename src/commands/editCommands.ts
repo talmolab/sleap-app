@@ -248,11 +248,14 @@ export const ConvertPredictionToInstance: Command = {
     const predicted = lf.instances[instanceIdx];
     if (!predicted || !(predicted instanceof PredictedInstance)) return;
 
-    // Clone as a user Instance (no score property)
+    // Clone as a user Instance (no score property), keeping the fromPredicted
+    // link so the user→prediction provenance round-trips to the SLP (Python
+    // parity — sleap-io.js persists Instance.fromPredicted).
     const userInstance = new Instance({
       skeleton: predicted.skeleton,
       points: clonePoints(predicted.points),
       track: predicted.track,
+      fromPredicted: predicted,
     });
 
     // Replace the predicted instance with the user instance
@@ -261,6 +264,68 @@ export const ConvertPredictionToInstance: Command = {
     ctx.state.setLabeledFrame(lf);
     ctx.state.setInstance(userInstance);
     ctx.state.markChanged();
+  },
+};
+
+/**
+ * Accept ALL predicted instances on the current frame as user instances in one
+ * action (PyQt "Add Instances from All Predictions on Current Frame").
+ *
+ * REPLACE-in-place — each predicted instance is swapped for a cloned user
+ * Instance at the same position — to match this app's single-instance
+ * double-click accept ({@link ConvertPredictionToInstance}) rather than PyQt's
+ * append-alongside. Non-predicted instances are left untouched. Provenance
+ * (fromPredicted) and track are preserved. Single-frame op → single-frame undo.
+ */
+export const AddInstancesFromAllPredictions: Command = {
+  name: "AddInstancesFromAllPredictions",
+  topics: [UpdateTopic.Frame, UpdateTopic.Instance],
+  // Manage our own snapshot so a no-predictions invocation (e.g. via hotkey)
+  // doesn't leave a spurious no-op entry on the undo stack.
+  skipAutoSnapshot: true,
+  execute(ctx: CommandContext) {
+    const { labels, video, frameIdx } = ctx.state;
+    if (!labels || !video) return;
+
+    const frames = labels.find({ video, frameIdx });
+    if (frames.length === 0) return;
+
+    const lf = frames[0];
+    const predictedCount = lf.instances.filter(
+      (inst) => inst instanceof PredictedInstance
+    ).length;
+    if (predictedCount === 0) {
+      toast.info("No predictions on this frame to accept.");
+      return;
+    }
+
+    // Snapshot BEFORE mutating (single frame) for undo.
+    const snapshot = ctx.takeSnapshot("AddInstancesFromAllPredictions");
+    ctx.pushUndoSnapshot(snapshot);
+
+    // Swap each predicted instance in place for a user Instance, keeping the
+    // fromPredicted link (Python-parity provenance) and track.
+    let firstConverted: Instance | null = null;
+    lf.instances = lf.instances.map((inst) => {
+      if (!(inst instanceof PredictedInstance)) return inst;
+      const userInstance = new Instance({
+        skeleton: inst.skeleton,
+        points: clonePoints(inst.points),
+        track: inst.track,
+        fromPredicted: inst,
+      });
+      if (!firstConverted) firstConverted = userInstance;
+      return userInstance;
+    });
+
+    ctx.state.setLabeledFrame(lf);
+    if (firstConverted) ctx.state.setInstance(firstConverted);
+    ctx.state.markChanged();
+
+    toast.success(
+      `Accepted ${predictedCount} prediction${predictedCount > 1 ? "s" : ""} as ` +
+        `user instance${predictedCount > 1 ? "s" : ""}`
+    );
   },
 };
 

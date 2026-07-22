@@ -18,6 +18,7 @@ import {
   commandContext,
   AddInstance,
   DeleteSelectedInstance,
+  AddInstancesFromAllPredictions,
 } from "../../commands";
 import { cn } from "@/lib/utils";
 import {
@@ -313,6 +314,7 @@ export function InstancesPanel() {
     labels && video ? labels.find({ video, frameIdx }) : [];
   const labeledFrame = labeledFrames.length > 0 ? labeledFrames[0] : null;
   const instances = labeledFrame?.instances ?? [];
+  const hasPredictions = instances.some(isPredicted);
 
   // Derive the selected index from the store's currentInstance
   const currentIndex = currentInstance
@@ -496,6 +498,32 @@ export function InstancesPanel() {
         >
           Delete Instance
         </Button>
+        <TooltipProvider delayDuration={300}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              {/* Wrapper span keeps the tooltip hoverable while disabled. */}
+              <span className="inline-flex">
+                <Button
+                  variant="subtle"
+                  size="xs"
+                  disabled={!hasPredictions}
+                  onClick={() =>
+                    commandContext.execute(AddInstancesFromAllPredictions)
+                  }
+                >
+                  Accept Predictions
+                </Button>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent side="top">
+              <p>
+                {hasPredictions
+                  ? "Convert all predictions on this frame to editable user instances"
+                  : "No predictions on this frame"}
+              </p>
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
       </div>
     </div>
   );
