@@ -12,7 +12,6 @@ import { UpdateTopic } from "../types";
 import type { Command } from "./types";
 import type { CommandContext } from "./CommandContext";
 import { useAppStore } from "../stores/appStore";
-import { merge } from "@/lib/merge";
 import { toast } from "@/lib/notify";
 import { placeInstance, findNearestPriorFrame } from "@/lib/instancePlacement";
 
@@ -456,7 +455,7 @@ export const MergePredictions: Command = {
   name: "MergePredictions",
   topics: [UpdateTopic.Labels, UpdateTopic.Frame, UpdateTopic.Instance],
   skipAutoSnapshot: true,
-  execute(ctx, params) {
+  async execute(ctx, params) {
     const { labels } = ctx.state;
     if (!labels) return;
 
@@ -467,12 +466,27 @@ export const MergePredictions: Command = {
       (params?.strategy as "auto" | "replace_predictions") ?? "auto";
 
     const snapshot = ctx.takeAllFramesSnapshot("MergePredictions");
-    const result = merge(labels, predictions, { frameStrategy: strategy });
+    // Route through sleap-io.js's Labels.merge (issue #226). Match tracks by
+    // NAME — io's default is object IDENTITY, which would duplicate every track
+    // because the predictions are loaded from a separate file and never share
+    // Track objects with the project. Match videos by BASENAME — the predictions
+    // reference the same video under a possibly-different (compute-node) path.
+    // Unlike the retired hand-rolled merge, io carries centroids/bboxes/masks/
+    // rois + fromPredicted provenance, so the active-learning locator's
+    // centroid-only output now survives the merge.
+    const result = await labels.merge(predictions, {
+      track: "name",
+      video: "basename",
+      frame: strategy,
+    });
     ctx.pushUndoSnapshot(snapshot);
     ctx.state.markChanged();
 
+    const conflicts = result.conflicts.length;
     toast.success(
-      `Merged ${result.instancesAdded} prediction(s). ${result.framesAdded} new frame(s), ${result.conflicts} conflict(s).`
+      `Merged ${result.instancesAdded} prediction(s) across ${result.framesMerged} frame(s)` +
+        (conflicts > 0 ? `, ${conflicts} conflict(s)` : "") +
+        "."
     );
   },
 };
