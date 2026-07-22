@@ -23,6 +23,7 @@ import {
   computePrefixSwap,
   SUPPORTED_VIDEO_EXTS,
 } from "@/lib/resolveVideos";
+import { useAppStore } from "@/stores/appStore";
 
 function fakeFile(name: string): File {
   return new File([new Uint8Array([0])], name, { type: "video/mp4" });
@@ -501,5 +502,61 @@ describe("lazy video backends (defer decoder open, #perf)", () => {
     const ok = await ensureVideoBackend(video);
     expect(ok).toBe(false);
     expect(video.backend).toBeNull();
+  });
+});
+
+describe("resolveExternalVideos (persisted prefix-swap reapply on open)", () => {
+  // .slp lives under /Volumes/talmo/elise; the video's stored compute-node path
+  // is under a SIBLING subtree /root/vast/mustafa. Tail-grafting onto the .slp
+  // dir + ancestors can never reach /Volumes/talmo/mustafa — only a remembered
+  // /root/vast → /Volumes/talmo swap does.
+  const storedPath = "/root/vast/mustafa/session/clip.mp4";
+  const realPath = "/Volumes/talmo/mustafa/session/clip.mp4";
+  const projectPath = "/Volumes/talmo/elise/proj.slp";
+
+  const missingVideo = () => {
+    const video = new Video({ filename: storedPath, openBackend: false });
+    video.backend = null;
+    const labels = new Labels();
+    labels.addVideo(video);
+    return { video, labels };
+  };
+
+  it("reaches a sibling subtree using a remembered swap the tail-graft can't", async () => {
+    const { video, labels } = missingVideo();
+    useAppStore.setState({
+      videoPrefixSwaps: [
+        { oldPrefix: "/root/vast", newPrefix: "/Volumes/talmo" },
+      ],
+    });
+    try {
+      await resolveExternalVideos(labels, {
+        projectPath,
+        exists: async (p) => p === realPath, // only the swapped path exists
+        readFile: async () => new Uint8Array(),
+        lazy: true,
+      });
+      expect(
+        (video.backendMetadata as Record<string, unknown>).lazyPath,
+      ).toBe(realPath);
+      expect(isVideoMissing(video)).toBe(false);
+    } finally {
+      useAppStore.setState({ videoPrefixSwaps: [] });
+    }
+  });
+
+  it("without a remembered swap, the sibling-subtree file is NOT auto-located", async () => {
+    const { video, labels } = missingVideo();
+    useAppStore.setState({ videoPrefixSwaps: [] });
+    await resolveExternalVideos(labels, {
+      projectPath,
+      exists: async (p) => p === realPath,
+      readFile: async () => new Uint8Array(),
+      lazy: true,
+    });
+    expect(
+      (video.backendMetadata as Record<string, unknown>).lazyPath,
+    ).toBeUndefined();
+    expect(isVideoMissing(video)).toBe(true);
   });
 });

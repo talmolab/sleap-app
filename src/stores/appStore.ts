@@ -24,6 +24,10 @@ import type {
 import type { StatisticGraphType, Reduction } from "@/lib/statisticSeries";
 import type { QcMode } from "@/lib/instanceVisibility";
 import {
+  mergeVideoPrefixSwap,
+  type VideoPrefixSwap,
+} from "@/lib/videoPrefixSwaps";
+import {
   navigableDomain,
   stepLabeled,
   type NavigationDomain,
@@ -149,6 +153,16 @@ export interface AppState {
   clipboardTrack: Track | null;
   clipboardInstance: Instance | null;
 
+  // === Video path resolution (persisted preference) ===
+  /**
+   * Remembered video path prefix swaps (e.g. /root/vast → /Volumes/talmo),
+   * learned when the user locates a missing video and reapplied on future opens
+   * so projects from the same relocated root auto-resolve without re-locating.
+   * Persisted; a deliberate superset of PyQt (see @/lib/videoPrefixSwaps). Read
+   * via getState() — don't subscribe with a selector.
+   */
+  videoPrefixSwaps: VideoPrefixSwap[];
+
   // === Labeling mode state (transient, not persisted) ===
   labelingMode: "select" | "place";
   placementNodeIdx: number | null;
@@ -205,6 +219,8 @@ export interface AppState {
   setViewOnlyInstance: (instance: Instance | null) => void;
   setInstanceInvisibleOverride: (instance: Instance, value: boolean | undefined) => void;
   setQcDisplayMode: (mode: QcMode) => void;
+  /** Remember a learned video path prefix swap (deduped, newest-first, capped). */
+  addVideoPrefixSwap: (swap: VideoPrefixSwap) => void;
   resetInstanceVisibility: () => void;
   setInstance: (instance: Instance | null) => void;
   setLabeledFrame: (frame: LabeledFrame | null) => void;
@@ -249,6 +265,7 @@ export const PERSISTED_KEYS: (keyof AppState)[] = [
   "seekbarHeaderReduction",
   "navigationDomain",
   "qcDisplayMode",
+  "videoPrefixSwaps",
   // Layout + scale persistence (PyQt saveState/restoreState parity).
   "panelOrder",
   "hiddenPanels",
@@ -345,6 +362,9 @@ export const useAppStore = create<AppState>()(
       instanceInitMethod: "best" as InstancePlacementMethod,
       clipboardTrack: null,
       clipboardInstance: null,
+
+      // Video path resolution (persisted preference)
+      videoPrefixSwaps: [] as VideoPrefixSwap[],
 
       // Labeling mode state (transient)
       labelingMode: "select" as "select" | "place",
@@ -514,6 +534,15 @@ export const useAppStore = create<AppState>()(
         set((state) => {
           state.qcDisplayMode = mode;
         }),
+
+      addVideoPrefixSwap: (swap) => {
+        // Compute from the finalized array (not the immer draft) so the pure
+        // merge helper sees plain objects, then reassign.
+        const next = mergeVideoPrefixSwap(get().videoPrefixSwaps, swap);
+        set((state) => {
+          state.videoPrefixSwaps = next;
+        });
+      },
 
       resetInstanceVisibility: () =>
         set((state) => {

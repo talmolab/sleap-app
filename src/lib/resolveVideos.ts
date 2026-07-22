@@ -20,7 +20,9 @@ import { toast } from "@/lib/notify";
 import type { Labels } from "../types";
 import { getPlatform } from "../platform/index";
 import { tailGraftCandidates } from "./pathCandidates";
+import { applyPrefixSwap } from "./videoPrefixSwaps";
 import { fileSize, readRange } from "./nativeRange";
+import { useAppStore } from "@/stores/appStore";
 
 /** Extract just the basename from a path or filename. */
 export function getBasename(filename: string | string[]): string {
@@ -491,6 +493,12 @@ export async function resolveExternalVideos(
 
   // Try auto-resolution if we have filesystem access and a project path
   if (options) {
+    // Remembered prefix swaps (e.g. /root/vast → /Volumes/talmo) learned from a
+    // past manual locate. Reapplying them here reaches SIBLING subtrees that the
+    // tail-graft candidates below can't (they only graft onto the .slp's own
+    // dir + ancestors). Each swapped path is still gated by exists() in the
+    // candidate loop, so a stale/coincidental mapping never adopts a wrong file.
+    const savedSwaps = useAppStore.getState().videoPrefixSwaps;
     for (const video of unresolvedVideos) {
       // Image sequences (ImageVideo) never go through the single-file (mp4box)
       // path below (it would hang on a JPEG). The SLP reader's FsResolver opens
@@ -506,7 +514,19 @@ export async function resolveExternalVideos(
         }
         continue;
       }
-      const candidates = getVideoPathCandidates(video, options.projectPath);
+      // Persisted-swap candidates first (they can reach sibling subtrees),
+      // then the tail-graft candidates. Dedupe, preserving order.
+      const stored = Array.isArray(video.filename)
+        ? video.filename[0] ?? ""
+        : video.filename;
+      const swapCandidates = savedSwaps
+        .map((s) => applyPrefixSwap(stored, s.oldPrefix, s.newPrefix))
+        .filter((p): p is string => p !== null);
+      const raw = [
+        ...swapCandidates,
+        ...getVideoPathCandidates(video, options.projectPath),
+      ];
+      const candidates = raw.filter((p, i) => p !== "" && raw.indexOf(p) === i);
       console.log(
         `[video] Resolving "${Array.isArray(video.filename) ? video.filename[0] : video.filename}", candidates:`,
         candidates
@@ -658,27 +678,13 @@ async function propagatePrefixSwap(
     // Image sequences are lists of frames, not a single-file head swap.
     if (isImageSequenceVideo(video)) continue;
 
-    const stored = (
-      Array.isArray(video.filename) ? video.filename[0] ?? "" : video.filename
-    ).replace(/\\/g, "/");
-    if (!stored) continue;
+    const stored = Array.isArray(video.filename)
+      ? video.filename[0] ?? ""
+      : video.filename;
 
-    // Boundary-safe prefix match. Empty oldPrefix ⇒ the stored paths were
-    // relative; only relative siblings qualify (never prepend onto an absolute).
-    let rest: string;
-    if (oldPrefix === "") {
-      const isAbs = stored.startsWith("/") || /^[A-Za-z]:\//.test(stored);
-      if (isAbs) continue;
-      rest = stored;
-    } else {
-      if (!stored.startsWith(oldPrefix)) continue;
-      const nextChar = stored[oldPrefix.length];
-      if (nextChar !== undefined && nextChar !== "/") continue; // not a dir boundary
-      rest = stored.slice(oldPrefix.length).replace(/^\/+/, "");
-    }
-
-    const base = newPrefix.replace(/\/+$/, "");
-    const candidate = base ? `${base}/${rest}` : rest;
+    // Boundary-safe head swap (shared with the reapply-on-open path).
+    const candidate = applyPrefixSwap(stored, oldPrefix, newPrefix);
+    if (!candidate) continue;
     try {
       if (!(await fs.exists(candidate))) continue;
       const ok = await assignVideoBackendFromPath(video, candidate, {
@@ -744,6 +750,10 @@ export async function resolveVideoFile(
       if (labels) {
         const swap = computePrefixSwap(oldFilename, result);
         if (swap) {
+          // Remember the swap globally so future opens of OTHER projects from
+          // the same relocated root auto-resolve without re-locating. Safe: it's
+          // only ever adopted when the remapped file exists (superset of PyQt).
+          useAppStore.getState().addVideoPrefixSwap(swap);
           const n = await propagatePrefixSwap(
             labels,
             video,
