@@ -19,6 +19,7 @@ import { saveLabelsInPlace } from "@/lib/saveLabelsInPlace";
 import { shouldStreamEmbeddedSave } from "@/lib/saveRouting";
 import { fileSize } from "@/lib/nativeRange";
 import { renameFile, removeFile } from "@/lib/nativeWrite";
+import { syncActiveLearningProvenance } from "@/lib/activeLearning/persistence";
 
 /**
  * Human-readable byte size for the save progress text (e.g. "3.8 GB", "742 MB").
@@ -88,6 +89,11 @@ export async function saveProjectAsSlp(
   let displayName = saveName;
 
   try {
+    // Persist the active-learning workflow (if any) into the project's
+    // provenance so it travels with the .slp. Done before serialization so
+    // every save path — including the in-place gate's metadata check — sees it.
+    syncActiveLearningProvenance(labels);
+
     const platform = await getPlatform();
 
     if (platform.isTauri) {

@@ -35,6 +35,7 @@ import {
   reconcileHiddenPanels,
   nextVisiblePanel,
 } from "@/lib/panelLayout";
+import { hydrateActiveLearningStore } from "@/lib/activeLearning/persistence";
 import {
   advance as advancePassCursor,
   stepBack as stepBackPassCursor,
@@ -448,7 +449,7 @@ export const useAppStore = create<AppState>()(
       videoRevision: 0,
 
       // Actions
-      setLabels: (labels, filename, projectPath) =>
+      setLabels: (labels, filename, projectPath) => {
         set((state) => {
           state.labels = labels;
           state.filename = filename ?? null;
@@ -478,7 +479,12 @@ export const useAppStore = create<AppState>()(
           // setLabels sets video/frame directly (not via setVideo), so drop any
           // stale identity-keyed transients from the previous project.
           clearTransientVisibility(state);
-        }),
+        });
+        // Adopt (or clear) the active-learning workflow saved in this project's
+        // provenance. Done after the appStore update, outside the immer producer,
+        // since it drives a separate store. Covers every load path + New Project.
+        hydrateActiveLearningStore(labels);
+      },
 
       setVideo: (video) =>
         set((state) => {

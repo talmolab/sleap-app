@@ -41,7 +41,10 @@ import {
   type MineStrategy,
 } from "@/lib/activeLearning/config";
 import { useActiveLearningStore } from "@/stores/activeLearningStore";
-import { ArrowUp, ArrowDown, Plus, Trash2, X } from "lucide-react";
+import { useAppStore } from "@/stores/appStore";
+import { getPlatform, isTauri } from "@/platform";
+import { downloadFile } from "@/lib/exportUtils";
+import { ArrowUp, ArrowDown, Download, Plus, Trash2, X } from "lucide-react";
 
 interface Props {
   open: boolean;
@@ -171,6 +174,9 @@ export function ActiveLearningConfigDialog({ open, onOpenChange, nodeNames }: Pr
 
   const save = () => {
     const result = useActiveLearningStore.getState().setConfig(draft, nodeNames);
+    // Mark the project dirty so the workflow gets written into the .slp on the
+    // next save (it's persisted in the project's provenance — see persistence.ts).
+    useAppStore.getState().markChanged();
     if (result.ok) toast.success("Workflow saved");
     else toast.warning(`Workflow saved with ${result.errors.length} issue(s)`);
     onOpenChange(false);
@@ -184,6 +190,36 @@ export function ActiveLearningConfigDialog({ open, onOpenChange, nodeNames }: Pr
       toast.success("Parsed YAML into the editor");
     } catch (e) {
       setYamlError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  // Write the workflow to a YAML file so it survives reloads — the AL store
+  // isn't persisted, so the in-memory config is otherwise lost on reload/close.
+  // Serializes the editor `draft` (the workflow itself), matching the footer's
+  // "Save workflow"; the raw YAML textarea is just a view/escape-hatch. Native
+  // save dialog on desktop; Blob download in the browser. Re-import the file
+  // via the panel's "Import .yaml…".
+  const saveToFile = async () => {
+    const yaml = serializeActiveLearningConfig(draft);
+    const defaultName = "active-learning.yaml";
+    try {
+      if (isTauri) {
+        const platform = await getPlatform();
+        const path = await platform.showSaveDialog({
+          defaultName,
+          filters: [{ name: "Workflow YAML", extensions: ["yaml", "yml"] }],
+        });
+        if (!path) return; // user cancelled
+        await platform.writeFile(path, new TextEncoder().encode(yaml));
+        toast.success(`Saved workflow to ${path.replace(/^.*[/\\]/, "")}`);
+      } else {
+        downloadFile(yaml, defaultName, "text/yaml");
+        toast.success(`Saved ${defaultName}`);
+      }
+    } catch (err) {
+      toast.error(
+        `Could not save workflow: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   };
 
@@ -604,8 +640,9 @@ export function ActiveLearningConfigDialog({ open, onOpenChange, nodeNames }: Pr
             {/* ---- YAML ---- */}
             <TabsContent value="yaml" className="mt-2 space-y-2">
               <p className="text-[11px] text-muted-foreground">
-                Raw view of the current editor state. Edit and “Apply” to load it back, or copy it to
-                save as an <code>active-learning.yaml</code>.
+                Raw view of the current editor state. Edit and “Apply” to load it back, or use{" "}
+                “Save to file” to write an <code>active-learning.yaml</code> you can re-import later
+                (the workflow isn’t otherwise persisted across reloads).
               </p>
               <textarea
                 className="h-64 w-full resize-none rounded border border-border bg-background p-2 font-mono text-xs"
@@ -634,6 +671,9 @@ export function ActiveLearningConfigDialog({ open, onOpenChange, nodeNames }: Pr
                   }}
                 >
                   Copy
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => void saveToFile()}>
+                  <Download className="h-3.5 w-3.5" /> Save to file…
                 </Button>
               </div>
             </TabsContent>
