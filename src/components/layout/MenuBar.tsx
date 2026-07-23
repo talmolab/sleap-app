@@ -57,6 +57,7 @@ import { PALETTES } from "../../lib/colorPalettes";
 import { QC_MODE_CHOICES } from "../../lib/instanceVisibility";
 import { toast } from "@/lib/notify";
 import { sleapCmd } from "@/lib/sleapPlugin";
+import { openNewInstance } from "@/lib/newInstance";
 import {
   Menubar,
   MenubarMenu,
@@ -121,7 +122,7 @@ function FileMenu() {
     <MenubarMenu>
       <MenubarTrigger className="px-3 h-8 text-xs rounded-none">File</MenubarTrigger>
       <MenubarContent>
-        <MenubarItem onClick={() => useAppStore.getState().setNewProjectDialogOpen(true)}>
+        <MenubarItem onClick={() => void openNewInstance()}>
           New Project... <MenubarShortcut>{modKey}+N</MenubarShortcut>
         </MenubarItem>
         <MenubarItem onClick={() => exec(OpenProjectCommand)}>
