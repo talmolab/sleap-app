@@ -876,18 +876,38 @@ export function VideoPlayer() {
     if (labeledFrame.centroids.length > 0) {
       const renderedCentroids = labeledFrame.centroids.map((c, i) => {
         const [cx, cy] = toImageCoords(video, c.x, c.y);
-        // Color each centroid distinctly: match its paired pose instance's
-        // color when linked, else its track's, else a sequential palette index
-        // so multiple centroids in one frame stay distinguishable.
-        let idx = i;
-        if (c.instance) {
-          const ii = labeledFrame.instances.indexOf(c.instance);
-          if (ii >= 0) idx = ii;
-        } else if (c.track) {
-          const ti = tracks.indexOf(c.track);
-          if (ti >= 0) idx = ti;
+        // Give each centroid the SAME color as the instance it belongs to, so a
+        // centroid visually coordinates with its animal. Prefer the explicit
+        // back-link; user-seeded centroids have none (pairing is by count, not
+        // identity — see ensurePairedPoseInstances), so fall back to the
+        // spatially nearest instance by its mean visible-node position. That's
+        // index-aligned with `instances`, whose `.color` already reflects the
+        // active palette/track/predicted settings. Last resort: sequential index.
+        let matchIdx = c.instance ? labeledFrame.instances.indexOf(c.instance) : -1;
+        if (matchIdx < 0) {
+          let bestD = Infinity;
+          instances.forEach((ri, ii) => {
+            let sx = 0, sy = 0, n = 0;
+            for (const node of ri.nodes) {
+              if (node.visible && Number.isFinite(node.x) && Number.isFinite(node.y)) {
+                sx += node.x;
+                sy += node.y;
+                n += 1;
+              }
+            }
+            if (n === 0) return;
+            const d = (sx / n - cx) ** 2 + (sy / n - cy) ** 2;
+            if (d < bestD) {
+              bestD = d;
+              matchIdx = ii;
+            }
+          });
         }
-        return { x: cx, y: cy, predicted: c.isPredicted, color: getPaletteColor(palette, idx) };
+        const color =
+          matchIdx >= 0 && instances[matchIdx]
+            ? instances[matchIdx].color
+            : getPaletteColor(palette, i);
+        return { x: cx, y: cy, predicted: c.isPredicted, color };
       });
       renderCentroids(ctx, renderedCentroids, renderOpts);
     }
