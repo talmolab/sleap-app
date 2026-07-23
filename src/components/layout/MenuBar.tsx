@@ -829,26 +829,16 @@ function LabelsMenu() {
 }
 
 function PredictMenu() {
-  const set = useAppStore((s) => s.set);
+  const openPanel = useAppStore((s) => s.openPanel);
 
   return (
     <MenubarMenu>
       <MenubarTrigger className="px-3 h-8 text-xs rounded-none">Predict</MenubarTrigger>
       <MenubarContent>
-        <MenubarItem
-          onClick={() => {
-            set("sidebarActivePanel", "training");
-            set("sidebarCollapsed", false);
-          }}
-        >
+        <MenubarItem onClick={() => openPanel("training")}>
           Training...
         </MenubarItem>
-        <MenubarItem
-          onClick={() => {
-            set("sidebarActivePanel", "inference");
-            set("sidebarCollapsed", false);
-          }}
-        >
+        <MenubarItem onClick={() => openPanel("inference")}>
           Inference / Run Prediction...
         </MenubarItem>
         <MenubarSeparator />

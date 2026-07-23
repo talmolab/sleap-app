@@ -24,7 +24,7 @@ import { ErrorBoundary } from "./ErrorBoundary";
 import { VideoPlayer } from "../video/VideoPlayer";
 
 import { PANELS } from "./panelRegistry";
-import { reorderById } from "@/lib/panelLayout";
+import { reorderById, visibleOpenPanels } from "@/lib/panelLayout";
 import { WelcomeScreen } from "./WelcomeScreen";
 import { GoToFrameDialog } from "../dialogs/GoToFrameDialog";
 import { NewProjectDialog } from "../dialogs/NewProjectDialog";
@@ -40,6 +40,9 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   GripVertical,
+  ChevronDown,
+  ChevronRight,
+  X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Progress } from "@/components/ui/progress";
@@ -232,11 +235,15 @@ export function AppShell() {
 /** Collapsible sidebar with vertical icon strip + expandable panel content. */
 function Sidebar() {
   const collapsed = useAppStore((s) => s.sidebarCollapsed);
-  const activePanel = useAppStore((s) => s.sidebarActivePanel);
+  const openPanels = useAppStore((s) => s.sidebarOpenPanels);
+  const collapsedSections = useAppStore((s) => s.sidebarCollapsedSections);
   const panelOrder = useAppStore((s) => s.panelOrder);
   const hiddenPanels = useAppStore((s) => s.hiddenPanels);
   const sidebarSide = useAppStore((s) => s.sidebarSide);
   const set = useAppStore((s) => s.set);
+  const togglePanelOpenAction = useAppStore((s) => s.togglePanelOpen);
+  const toggleSectionCollapsed = useAppStore((s) => s.toggleSectionCollapsed);
+  const closePanel = useAppStore((s) => s.closePanel);
 
   // When docked left, the whole sidebar (rail | panel | resize) mirrors so the
   // icon rail sits on the window edge and the resize handle faces the canvas.
@@ -267,13 +274,10 @@ function Sidebar() {
   }, []);
 
   const togglePanel = (panelId: string) => {
-    if (collapsed || activePanel !== panelId) {
-      set("sidebarActivePanel", panelId);
-      set("sidebarCollapsed", false);
-      if (panelId === "notifications") markAllRead();
-    } else {
-      set("sidebarCollapsed", true);
-    }
+    togglePanelOpenAction(panelId);
+    // Opening (or interacting with) the notifications panel clears its unread
+    // badge, matching the previous single-panel behavior.
+    if (panelId === "notifications") markAllRead();
   };
 
   const toggleCollapse = () => {
@@ -388,15 +392,17 @@ function Sidebar() {
     .map((id) => PANELS.find((p) => p.id === id))
     .filter(Boolean) as (typeof PANELS)[number][];
 
-  // The active panel's content shows only when it is itself visible; hiding the
-  // active panel (or hiding every panel) leaves the strip empty.
-  const activeVisible = !hiddenPanels.includes(activePanel);
-  const ActiveComponent = PANELS.find((p) => p.id === activePanel)?.component;
-  const showPanel = !collapsed && activeVisible && !!ActiveComponent;
+  // Panels shown in the stack, in panelOrder: open AND not hidden. The column
+  // shows only when at least one such panel exists and the sidebar isn't
+  // globally collapsed (hiding every panel, or collapsing, leaves the rail bare).
+  const stackPanels = visibleOpenPanels(panelOrder, openPanels, hiddenPanels)
+    .map((id) => PANELS.find((p) => p.id === id))
+    .filter(Boolean) as (typeof PANELS)[number][];
+  const showPanel = !collapsed && stackPanels.length > 0;
 
   return (
     <div className={cn("flex h-full shrink-0", onLeft && "flex-row-reverse")}>
-      {/* Resize handle (only when a panel is shown) */}
+      {/* Resize handle (only when the column is shown) */}
       {showPanel && (
         <div
           className="w-1 cursor-col-resize hover:bg-primary/50 active:bg-primary bg-border transition-colors"
@@ -404,22 +410,57 @@ function Sidebar() {
         />
       )}
 
-      {/* Expanded (click-pinned) panel content */}
+      {/* Stack of open panels — each a collapsible section. Expanded sections
+          share the column height (flex-1); collapsed ones show header only. */}
       {showPanel && (
         <div
           className="h-full bg-card flex flex-col overflow-hidden"
           style={{ width: panelWidth }}
         >
-          {/* Panel header */}
-          <div className="flex items-center h-9 px-3 border-b border-border shrink-0">
-            <span className="text-sm font-medium text-foreground tracking-wide">
-              {PANELS.find((p) => p.id === activePanel)?.label}
-            </span>
-          </div>
-          {/* Panel content */}
-          <div className="flex-1 overflow-auto p-2 min-h-0">
-            <ActiveComponent />
-          </div>
+          {stackPanels.map((panel) => {
+            const Body = panel.component;
+            const sectionCollapsed = collapsedSections.includes(panel.id);
+            return (
+              <div
+                key={panel.id}
+                className={cn(
+                  "flex flex-col min-h-0 border-b border-border last:border-b-0",
+                  sectionCollapsed ? "shrink-0" : "flex-1"
+                )}
+              >
+                {/* Section header: chevron toggles the body; ✕ closes the panel. */}
+                <div className="flex items-center h-9 pl-1 pr-1.5 border-b border-border shrink-0">
+                  <button
+                    onClick={() => toggleSectionCollapsed(panel.id)}
+                    className="flex items-center gap-1 flex-1 min-w-0 h-full text-left text-muted-foreground hover:text-foreground transition-colors"
+                    aria-expanded={!sectionCollapsed}
+                  >
+                    {sectionCollapsed ? (
+                      <ChevronRight className="h-3.5 w-3.5 shrink-0" />
+                    ) : (
+                      <ChevronDown className="h-3.5 w-3.5 shrink-0" />
+                    )}
+                    <span className="text-sm font-medium text-foreground tracking-wide truncate">
+                      {panel.label}
+                    </span>
+                  </button>
+                  <button
+                    onClick={() => closePanel(panel.id)}
+                    aria-label={`Close ${panel.label}`}
+                    className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors shrink-0"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+                {/* Section body */}
+                {!sectionCollapsed && (
+                  <div className="flex-1 overflow-auto p-2 min-h-0">
+                    <Body />
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -484,8 +525,8 @@ function Sidebar() {
           {/* Panel rows (reorderable; labels revealed on hover) */}
           {orderedPanels.map((panel) => {
             const Icon = panel.icon;
-            const isActive =
-              !collapsed && activeVisible && activePanel === panel.id;
+            // Highlight every panel currently open in the stack (not just one).
+            const isActive = !collapsed && openPanels.includes(panel.id);
             const isDragTarget =
               dragOverId === panel.id && dragId !== panel.id;
 

@@ -6,10 +6,15 @@
 import { describe, it, expect } from "../bun-test";
 import {
   DEFAULT_PANEL_ORDER,
+  DEFAULT_OPEN_PANELS,
   reconcilePanelOrder,
   reconcileHiddenPanels,
   reorderById,
   nextVisiblePanel,
+  toggleId,
+  reconcileOpenPanels,
+  visibleOpenPanels,
+  migrateOpenPanels,
 } from "@/lib/panelLayout";
 
 describe("reconcilePanelOrder", () => {
@@ -111,5 +116,69 @@ describe("nextVisiblePanel", () => {
 
   it("returns null when nothing else is visible (allow-empty)", () => {
     expect(nextVisiblePanel(order, ["b", "c", "d"], "a")).toBeNull();
+  });
+});
+
+describe("toggleId", () => {
+  it("appends an id not already present", () => {
+    expect(toggleId(["a", "b"], "c")).toEqual(["a", "b", "c"]);
+  });
+
+  it("removes an id already present", () => {
+    expect(toggleId(["a", "b", "c"], "b")).toEqual(["a", "c"]);
+  });
+
+  it("returns a copy (does not mutate the input)", () => {
+    const list = ["a"];
+    expect(toggleId(list, "b")).not.toBe(list);
+    expect(list).toEqual(["a"]);
+  });
+});
+
+describe("reconcileOpenPanels", () => {
+  it("defaults to empty", () => {
+    expect(reconcileOpenPanels()).toEqual([]);
+    expect(reconcileOpenPanels(null)).toEqual([]);
+  });
+
+  it("keeps only known ids and de-dupes", () => {
+    expect(
+      reconcileOpenPanels(["videos", "ghost", "videos", "skeleton"]),
+    ).toEqual(["videos", "skeleton"]);
+  });
+});
+
+describe("visibleOpenPanels", () => {
+  it("returns panelOrder ∩ open − hidden, in panelOrder order", () => {
+    const order = ["videos", "skeleton", "instances", "view"];
+    // open given out of order → result follows panelOrder.
+    expect(visibleOpenPanels(order, ["view", "videos"], [])).toEqual([
+      "videos",
+      "view",
+    ]);
+  });
+
+  it("excludes hidden panels even when they are open", () => {
+    const order = ["videos", "skeleton", "instances"];
+    expect(
+      visibleOpenPanels(order, ["videos", "skeleton"], ["skeleton"]),
+    ).toEqual(["videos"]);
+  });
+});
+
+describe("migrateOpenPanels", () => {
+  it("honors a stored open set — including an intentionally-empty one", () => {
+    expect(migrateOpenPanels(["skeleton"], "videos")).toEqual(["skeleton"]);
+    // Empty means the user closed every panel; it must NOT re-open one.
+    expect(migrateOpenPanels([], "videos")).toEqual([]);
+  });
+
+  it("migrates a legacy single active panel when no open set was stored", () => {
+    expect(migrateOpenPanels(null, "instances")).toEqual(["instances"]);
+  });
+
+  it("falls back to the default when neither is available/known", () => {
+    expect(migrateOpenPanels(null, null)).toEqual([...DEFAULT_OPEN_PANELS]);
+    expect(migrateOpenPanels(null, "ghost")).toEqual([...DEFAULT_OPEN_PANELS]);
   });
 });

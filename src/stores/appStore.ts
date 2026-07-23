@@ -35,9 +35,12 @@ import {
 export type { NavigationDomain };
 import {
   DEFAULT_PANEL_ORDER,
+  DEFAULT_OPEN_PANELS,
   reconcilePanelOrder,
   reconcileHiddenPanels,
-  nextVisiblePanel,
+  reconcileOpenPanels,
+  migrateOpenPanels,
+  toggleId,
 } from "@/lib/panelLayout";
 
 // Required before immer can draft Set/Map fields (hiddenInstances /
@@ -77,7 +80,18 @@ export interface AppState {
   sidebarCollapsed: boolean;
   /** Which side the panel sidebar docks on (#UX-wins). Persisted. */
   sidebarSide: "left" | "right";
-  sidebarActivePanel: string;
+  /**
+   * Panels currently OPEN in the sidebar stack (a subset of `panelOrder`),
+   * rendered as collapsible sections top-to-bottom in panelOrder. Replaces the
+   * old single `sidebarActivePanel` so several panels can stay open at once.
+   * Persisted.
+   */
+  sidebarOpenPanels: string[];
+  /**
+   * Open panels whose body is collapsed to a header-only strip. A subset of
+   * `sidebarOpenPanels`. Persisted.
+   */
+  sidebarCollapsedSections: string[];
   panelOrder: string[];
   hiddenPanels: string[];
 
@@ -241,6 +255,16 @@ export interface AppState {
   exitPlacementMode: () => void;
   togglePanelVisibility: (panelId: string) => void;
   resetPanels: () => void;
+  /** Rail click: uncollapse the column and open `panelId` if it's collapsed;
+   *  otherwise toggle `panelId` in/out of the open stack. */
+  togglePanelOpen: (panelId: string) => void;
+  /** Ensure `panelId` is open + expanded and the column uncollapsed (used by
+   *  menus that jump to a specific panel, e.g. Training/Inference). */
+  openPanel: (panelId: string) => void;
+  /** Close a section (✕): remove it from the open stack. */
+  closePanel: (panelId: string) => void;
+  /** Toggle a section's body between expanded and header-only (chevron). */
+  toggleSectionCollapsed: (panelId: string) => void;
   toggle: (key: keyof AppState) => void;
   set: <K extends keyof AppState>(key: K, value: AppState[K]) => void;
   bumpOverlayVersion: () => void;
@@ -271,7 +295,8 @@ export const PERSISTED_KEYS: (keyof AppState)[] = [
   "hiddenPanels",
   "sidebarCollapsed",
   "sidebarSide",
-  "sidebarActivePanel",
+  "sidebarOpenPanels",
+  "sidebarCollapsedSections",
   "uiScale",
 ];
 
@@ -316,7 +341,8 @@ export const useAppStore = create<AppState>()(
       uiScale: 1,
       sidebarCollapsed: false,
       sidebarSide: "right",
-      sidebarActivePanel: "videos",
+      sidebarOpenPanels: [...DEFAULT_OPEN_PANELS],
+      sidebarCollapsedSections: [],
       panelOrder: [...DEFAULT_PANEL_ORDER],
       hiddenPanels: [],
 
@@ -667,14 +693,13 @@ export const useAppStore = create<AppState>()(
             hidden.delete(panelId);
           } else {
             hidden.add(panelId);
-            if (state.sidebarActivePanel === panelId) {
-              const next = nextVisiblePanel(
-                state.panelOrder,
-                [...hidden],
-                panelId,
-              );
-              if (next) state.sidebarActivePanel = next;
-            }
+            // Hiding a panel removes it from the rail entirely, so it can't stay
+            // open in the stack — close its section (and any collapsed marker).
+            state.sidebarOpenPanels = state.sidebarOpenPanels.filter(
+              (id) => id !== panelId,
+            );
+            state.sidebarCollapsedSections =
+              state.sidebarCollapsedSections.filter((id) => id !== panelId);
           }
           state.hiddenPanels = [...hidden];
         }),
@@ -684,15 +709,56 @@ export const useAppStore = create<AppState>()(
         set((state) => {
           state.panelOrder = [...DEFAULT_PANEL_ORDER];
           state.hiddenPanels = [];
-          // hidden is now empty, so any known active panel is visible again;
-          // only normalize an active id that no longer exists.
-          if (
-            !(DEFAULT_PANEL_ORDER as readonly string[]).includes(
-              state.sidebarActivePanel,
-            )
-          ) {
-            state.sidebarActivePanel = DEFAULT_PANEL_ORDER[0];
+          state.sidebarOpenPanels = [...DEFAULT_OPEN_PANELS];
+          state.sidebarCollapsedSections = [];
+        }),
+
+      // Rail click: reveal a collapsed column (opening the clicked panel too),
+      // otherwise toggle the clicked panel in/out of the open stack.
+      togglePanelOpen: (panelId) =>
+        set((state) => {
+          if (state.sidebarCollapsed) {
+            state.sidebarCollapsed = false;
+            if (!state.sidebarOpenPanels.includes(panelId)) {
+              state.sidebarOpenPanels = [...state.sidebarOpenPanels, panelId];
+            }
+            return;
           }
+          const wasOpen = state.sidebarOpenPanels.includes(panelId);
+          state.sidebarOpenPanels = toggleId(state.sidebarOpenPanels, panelId);
+          if (wasOpen) {
+            // Closing: drop any collapsed marker so a re-open starts expanded.
+            state.sidebarCollapsedSections =
+              state.sidebarCollapsedSections.filter((id) => id !== panelId);
+          }
+        }),
+
+      // Programmatically open + expand a panel and reveal the column.
+      openPanel: (panelId) =>
+        set((state) => {
+          state.sidebarCollapsed = false;
+          if (!state.sidebarOpenPanels.includes(panelId)) {
+            state.sidebarOpenPanels = [...state.sidebarOpenPanels, panelId];
+          }
+          state.sidebarCollapsedSections =
+            state.sidebarCollapsedSections.filter((id) => id !== panelId);
+        }),
+
+      closePanel: (panelId) =>
+        set((state) => {
+          state.sidebarOpenPanels = state.sidebarOpenPanels.filter(
+            (id) => id !== panelId,
+          );
+          state.sidebarCollapsedSections =
+            state.sidebarCollapsedSections.filter((id) => id !== panelId);
+        }),
+
+      toggleSectionCollapsed: (panelId) =>
+        set((state) => {
+          state.sidebarCollapsedSections = toggleId(
+            state.sidebarCollapsedSections,
+            panelId,
+          );
         }),
 
       toggle: (key) =>
@@ -726,6 +792,8 @@ export const useAppStore = create<AppState>()(
       merge: (persisted, current) => {
         const p = (persisted ?? {}) as Partial<AppState> & {
           navigateLabeledOnly?: boolean;
+          // Legacy single-open-panel field, migrated into sidebarOpenPanels.
+          sidebarActivePanel?: string;
         };
         const merged = {
           ...current,
@@ -734,8 +802,18 @@ export const useAppStore = create<AppState>()(
           navigationDomain: navigationDomainFromPersisted(p),
           panelOrder: reconcilePanelOrder(p.panelOrder),
           hiddenPanels: reconcileHiddenPanels(p.hiddenPanels),
+          // Seed the open-panel stack: a stored set wins; a legacy single
+          // active panel migrates when no set was stored (see migrateOpenPanels).
+          sidebarOpenPanels: migrateOpenPanels(
+            p.sidebarOpenPanels,
+            p.sidebarActivePanel,
+          ),
+          sidebarCollapsedSections: reconcileOpenPanels(
+            p.sidebarCollapsedSections,
+          ),
         };
         delete (merged as { navigateLabeledOnly?: boolean }).navigateLabeledOnly;
+        delete (merged as { sidebarActivePanel?: string }).sidebarActivePanel;
         return merged;
       },
     },
