@@ -67,6 +67,14 @@ export interface AppState {
    * persisted (a File cannot be serialized).
    */
   projectFile: File | null;
+  /**
+   * The durable FileSystemFileHandle the project was opened from (browser File
+   * System Access API), when available. PREFERRED over projectFile for the large
+   * re-save's image source: `getFile()` re-reads fresh bytes, whereas a `File`
+   * snapshot goes stale after focus changes / time / on network volumes. Null on
+   * Tauri, the `<input>` fallback, and new projects. NOT persisted.
+   */
+  projectFileHandle: FileSystemFileHandle | null;
   hasChanges: boolean;
   projectLoaded: boolean;
 
@@ -219,7 +227,8 @@ export interface AppState {
     labels: Labels,
     filename?: string,
     projectPath?: string,
-    projectFile?: File | null
+    projectFile?: File | null,
+    projectFileHandle?: FileSystemFileHandle | null
   ) => void;
   setVideo: (video: Video) => void;
   markVideoUpdated: () => void;
@@ -313,6 +322,7 @@ export const useAppStore = create<AppState>()(
       filename: null,
       projectPath: null,
       projectFile: null,
+      projectFileHandle: null,
       hasChanges: false,
       projectLoaded: false,
 
@@ -414,12 +424,13 @@ export const useAppStore = create<AppState>()(
       videoRevision: 0,
 
       // Actions
-      setLabels: (labels, filename, projectPath, projectFile) =>
+      setLabels: (labels, filename, projectPath, projectFile, projectFileHandle) =>
         set((state) => {
           state.labels = labels;
           state.filename = filename ?? null;
           state.projectPath = projectPath ?? null;
           state.projectFile = projectFile ?? null;
+          state.projectFileHandle = projectFileHandle ?? null;
           state.projectLoaded = true;
           state.hasChanges = false;
 

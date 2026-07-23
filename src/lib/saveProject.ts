@@ -22,6 +22,7 @@ import { renameFile, removeFile } from "@/lib/nativeWrite";
 import {
   saveEmbeddedPkgOpfs,
   isOpfsSaveSupported,
+  pickSlpSaveDestination,
 } from "@/lib/saveEmbeddedPkgOpfs";
 
 /**
@@ -263,23 +264,27 @@ export async function saveProjectAsSlp(
       // no source File, OPFS unavailable, or a video needing fresh encoding, which
       // the embed plan rejects) uses the in-memory save.
       const hasEmbeddedImages = labels.videos.some((v) => v.hasEmbeddedImages);
-      const sourceFile = store.projectFile;
-      let savedViaOpfs = false;
-      if (hasEmbeddedImages && sourceFile && isOpfsSaveSupported()) {
+      // Prefer the durable handle (re-read fresh at save time) over the File
+      // snapshot, which can go stale by the time we read the images.
+      const source = store.projectFileHandle ?? store.projectFile;
+      if (hasEmbeddedImages && source && isOpfsSaveSupported()) {
+        // Acquire the destination NOW, synchronously off the save gesture:
+        // showSaveFilePicker requires transient activation, which the slow OPFS
+        // build (h5wasm worker + image copy) would otherwise consume, causing a
+        // "Must be handling a user gesture" SecurityError.
+        let destHandle: FileSystemFileHandle;
         try {
-          store.setLoading(true, "Saving large project (streaming to disk)...");
-          console.log("[save] Saving via browser OPFS streaming writer");
-          displayName = await saveEmbeddedPkgOpfs(labels, sourceFile, saveName);
-          savedViaOpfs = true;
+          destHandle = await pickSlpSaveDestination(saveName);
         } catch (err) {
           if (err instanceof DOMException && err.name === "AbortError") return;
-          console.warn(
-            "[save] OPFS streaming save failed; falling back to in-memory save",
-            err
-          );
+          throw err;
         }
-      }
-      if (!savedViaOpfs) {
+        store.setLoading(true, "Saving large project (streaming to disk)...");
+        console.log("[save] Saving via browser OPFS streaming writer");
+        // Past the picker there is no gesture left to open another one, so a
+        // build/stream failure here surfaces as a save error (the outer catch).
+        displayName = await saveEmbeddedPkgOpfs(labels, source, destHandle);
+      } else {
         const name = await saveBrowserInMemory(labels, saveName);
         if (name === null) return; // user cancelled the save dialog
         displayName = name;

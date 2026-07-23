@@ -12,14 +12,20 @@
  *      `video{i}/video` image datasets straight from the SOURCE file (the file
  *      the user opened, read on demand via WORKERFS) into the OPFS file — never
  *      materializing the images in the wasm heap. Uses an OPFS sync-access handle,
- *      so it needs NO SharedArrayBuffer / cross-origin isolation (works on plain
- *      GitHub Pages).
- *   3. Export the finished OPFS file to the user's chosen location.
+ *      so it needs NO SharedArrayBuffer / cross-origin isolation.
+ *   3. Stream the finished OPFS file into the user's chosen destination.
  *
- * SCOPE: re-save / Save As of an ALREADY-embedded pkg.slp (the images are copied
- * from the opened source file). Brand-new embedding of fresh video frames is a
- * deferred follow-up (`buildSerializableEmbedPlan` throws for the encode path,
- * which the caller treats as "fall back to the in-memory save").
+ * USER-GESTURE ORDERING: `showSaveFilePicker` requires transient activation,
+ * which the slow build in step 2 would consume. So the caller picks the
+ * destination FIRST (via {@link pickSlpSaveDestination}, synchronously off the
+ * save keystroke) and passes the handle in here; the build + stream then run with
+ * no further gesture requirement.
+ *
+ * SCOPE: re-save / Save As of an ALREADY-embedded pkg.slp. Chromium only (needs
+ * `showSaveFilePicker`); Firefox/Safari fall back to the in-memory save until a
+ * service-worker streamed download lands. Brand-new embedding of fresh video
+ * frames is a deferred follow-up (`buildSerializableEmbedPlan` throws for the
+ * encode path).
  */
 
 import {
@@ -36,39 +42,78 @@ const H5WASM_URL =
     ? `${location.origin}/h5wasm/h5wasm.js`
     : undefined;
 
-/** True if the runtime can back the OPFS streaming save (secure context + OPFS). */
+/**
+ * True if the runtime can back the OPFS streaming save AND deliver it to disk:
+ * a secure context with OPFS, Workers, and the File System Access save picker
+ * (Chromium). Firefox/Safari lack `showSaveFilePicker`, so they use the
+ * in-memory save until a streamed-download export lands.
+ */
 export function isOpfsSaveSupported(): boolean {
   return (
     typeof navigator !== "undefined" &&
     !!navigator.storage &&
     typeof navigator.storage.getDirectory === "function" &&
-    typeof Worker !== "undefined"
+    typeof Worker !== "undefined" &&
+    typeof window !== "undefined" &&
+    "showSaveFilePicker" in window
   );
 }
 
 /**
- * Stream-save `labels` (an already-embedded pkg.slp) to the user's disk using
- * the OPFS writer, reading embedded images from `sourceFile` (the opened file).
- * Returns the saved file name. Throws `DOMException("AbortError")` if the user
- * cancels the save-location picker; throws any other error so the caller can
- * fall back to the in-memory save.
+ * Prompt for the save destination. MUST be called synchronously off the user's
+ * save gesture (keystroke / click) — before the slow OPFS build — because
+ * `showSaveFilePicker` requires transient activation. Throws
+ * `DOMException("AbortError")` if the user cancels.
+ */
+export async function pickSlpSaveDestination(
+  saveName: string
+): Promise<FileSystemFileHandle> {
+  const picker = (
+    window as unknown as {
+      showSaveFilePicker: (opts: unknown) => Promise<FileSystemFileHandle>;
+    }
+  ).showSaveFilePicker;
+  return picker({
+    types: [
+      {
+        description: "SLEAP Labels",
+        accept: { "application/octet-stream": [".slp"] },
+      },
+    ],
+    suggestedName: saveName,
+  });
+}
+
+/**
+ * Stream-save `labels` (an already-embedded pkg.slp) into the pre-acquired
+ * `destHandle`, reading embedded images from `sourceFile` (the opened file) via
+ * the OPFS writer. Returns the saved file name. Throws on any failure.
  */
 export async function saveEmbeddedPkgOpfs(
   labels: Labels,
-  sourceFile: File,
-  saveName: string
+  source: FileSystemFileHandle | File,
+  destHandle: FileSystemFileHandle
 ): Promise<string> {
+  // Re-read the source FRESH: a File snapshot captured at open time may be stale
+  // by now (the native Save dialog stole focus, time elapsed, or it lives on a
+  // network volume) → WORKERFS readAsArrayBuffer would throw "permission problems
+  // ... after a reference to a file was acquired". A FileSystemFileHandle re-reads
+  // the current bytes; a bare File is used as-is (best effort).
+  const sourceFile = "getFile" in source ? await source.getFile() : source;
+
   // 1. Small structure (labels/metadata, no embedded images).
   const structureBytes = await saveSlpStructureToBytes(labels, { embed: false });
 
   // Plan the raw-copy of already-embedded images. Throws if any video would need
-  // the encode (new-embed) path — the caller catches that and falls back.
+  // the encode (new-embed) path — out of scope for this re-save writer.
   const plan = await buildSerializableEmbedPlan(labels, false, sourceFile.name);
 
   const opfsPath = `sleap-save-${Date.now()}-${Math.random()
     .toString(16)
     .slice(2)}.slp`;
 
+  // 2. Build the file into OPFS: seed the structure, then copy image datasets
+  //    from the source (WORKERFS) into OPFS (sync-handle device), in the Worker.
   const writer = new StreamingH5Writer();
   try {
     await writer.openAppendOpfs(
@@ -92,60 +137,18 @@ export async function saveEmbeddedPkgOpfs(
     await writer.close().catch(() => {});
   }
 
-  // 3. Publish the OPFS file to the user's chosen destination, then clean up.
+  // 3. Stream the OPFS file into the user's chosen destination (no whole-file
+  //    buffer), then clean up the OPFS staging file.
   try {
-    return await exportOpfsFileToDisk(opfsPath, saveName);
+    const root = await navigator.storage.getDirectory();
+    const fh = await root.getFileHandle(opfsPath, { create: false });
+    const file = await fh.getFile();
+    const writable = await destHandle.createWritable();
+    await file.stream().pipeTo(writable as unknown as WritableStream<Uint8Array>);
+    return destHandle.name;
   } finally {
     await removeOpfsFile(opfsPath);
   }
-}
-
-/**
- * Copy the OPFS-staged file to the user's real disk WITHOUT loading it all into
- * memory. Chromium: `showSaveFilePicker` + a streamed pipe. Firefox/Safari: an
- * anchor download (RAM-bounded — a service-worker streamed download is the
- * multi-GB-safe follow-up).
- */
-async function exportOpfsFileToDisk(
-  opfsPath: string,
-  saveName: string
-): Promise<string> {
-  const root = await navigator.storage.getDirectory();
-  const fh = await root.getFileHandle(opfsPath, { create: false });
-  const file = await fh.getFile();
-
-  const picker = (
-    window as unknown as {
-      showSaveFilePicker?: (opts: unknown) => Promise<FileSystemFileHandle>;
-    }
-  ).showSaveFilePicker;
-
-  if (picker) {
-    const handle = await picker({
-      types: [
-        {
-          description: "SLEAP Labels",
-          accept: { "application/octet-stream": [".slp"] },
-        },
-      ],
-      suggestedName: saveName,
-    });
-    const writable = await handle.createWritable();
-    // Stream the OPFS file to disk in chunks — never a whole-file buffer.
-    await file.stream().pipeTo(writable as unknown as WritableStream<Uint8Array>);
-    return handle.name;
-  }
-
-  // Fallback (Firefox/Safari): anchor download. NOTE: this reads the file through
-  // a blob URL and is not multi-GB-safe; the streamed-download (service worker)
-  // path is the follow-up for those browsers.
-  const url = URL.createObjectURL(file);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = saveName;
-  a.click();
-  URL.revokeObjectURL(url);
-  return saveName;
 }
 
 async function removeOpfsFile(opfsPath: string): Promise<void> {
