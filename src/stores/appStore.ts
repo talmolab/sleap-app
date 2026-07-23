@@ -60,6 +60,19 @@ export interface AppState {
   labels: Labels | null;
   filename: string | null;
   projectPath: string | null;
+  /**
+   * The opened project File (browser). Retained so a re-save has the source at
+   * hand. A snapshot — prefer `projectFileHandle` for writing, since a File can
+   * go stale.
+   */
+  projectFile: File | null;
+  /**
+   * The durable `FileSystemFileHandle` from a browser file-picker open, when
+   * available. Lets a plain Save write BACK to the opened file in place (no
+   * Save-As dialog), matching a native/PyQt save. Null for drag-drop / `<input>`
+   * opens (no handle) and outside Chromium.
+   */
+  projectFileHandle: FileSystemFileHandle | null;
   hasChanges: boolean;
   projectLoaded: boolean;
 
@@ -208,7 +221,13 @@ export interface AppState {
   videoRevision: number;
 
   // === Actions ===
-  setLabels: (labels: Labels, filename?: string, projectPath?: string) => void;
+  setLabels: (
+    labels: Labels,
+    filename?: string,
+    projectPath?: string,
+    projectFile?: File | null,
+    projectFileHandle?: FileSystemFileHandle | null,
+  ) => void;
   setVideo: (video: Video) => void;
   markVideoUpdated: () => void;
   setFrameIdx: (idx: number) => void;
@@ -300,6 +319,8 @@ export const useAppStore = create<AppState>()(
       labels: null,
       filename: null,
       projectPath: null,
+      projectFile: null,
+      projectFileHandle: null,
       hasChanges: false,
       projectLoaded: false,
 
@@ -401,11 +422,13 @@ export const useAppStore = create<AppState>()(
       videoRevision: 0,
 
       // Actions
-      setLabels: (labels, filename, projectPath) =>
+      setLabels: (labels, filename, projectPath, projectFile, projectFileHandle) =>
         set((state) => {
           state.labels = labels;
           state.filename = filename ?? null;
           state.projectPath = projectPath ?? null;
+          state.projectFile = projectFile ?? null;
+          state.projectFileHandle = projectFileHandle ?? null;
           state.projectLoaded = true;
           state.hasChanges = false;
 

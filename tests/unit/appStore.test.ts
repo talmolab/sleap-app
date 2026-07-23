@@ -105,6 +105,24 @@ describe("appStore", () => {
 
       expect(useAppStore.getState().filename).toBeNull();
     });
+
+    it("retains the opened File and FileSystemFileHandle for in-place re-save", () => {
+      const labels = mockLabels();
+      const file = { name: "proj.slp" } as unknown as File;
+      const handle = { name: "proj.slp", kind: "file" } as unknown as FileSystemFileHandle;
+      useAppStore.getState().setLabels(labels, "proj.slp", undefined, file, handle);
+
+      const state = useAppStore.getState();
+      expect(state.projectFile).toBe(file);
+      expect(state.projectFileHandle).toBe(handle);
+    });
+
+    it("defaults the retained File/handle to null when not provided", () => {
+      useAppStore.getState().setLabels(mockLabels(), "proj.slp");
+      const state = useAppStore.getState();
+      expect(state.projectFile).toBeNull();
+      expect(state.projectFileHandle).toBeNull();
+    });
   });
 
   describe("setVideo", () => {
