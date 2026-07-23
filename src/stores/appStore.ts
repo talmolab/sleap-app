@@ -60,6 +60,13 @@ export interface AppState {
   labels: Labels | null;
   filename: string | null;
   projectPath: string | null;
+  /**
+   * The browser File the current project was opened from (file picker), retained
+   * so a large embedded-pkg re-save can read its images back via the OPFS
+   * streaming writer (WORKERFS source). Null on Tauri / new projects. NOT
+   * persisted (a File cannot be serialized).
+   */
+  projectFile: File | null;
   hasChanges: boolean;
   projectLoaded: boolean;
 
@@ -208,7 +215,12 @@ export interface AppState {
   videoRevision: number;
 
   // === Actions ===
-  setLabels: (labels: Labels, filename?: string, projectPath?: string) => void;
+  setLabels: (
+    labels: Labels,
+    filename?: string,
+    projectPath?: string,
+    projectFile?: File | null
+  ) => void;
   setVideo: (video: Video) => void;
   markVideoUpdated: () => void;
   setFrameIdx: (idx: number) => void;
@@ -300,6 +312,7 @@ export const useAppStore = create<AppState>()(
       labels: null,
       filename: null,
       projectPath: null,
+      projectFile: null,
       hasChanges: false,
       projectLoaded: false,
 
@@ -401,11 +414,12 @@ export const useAppStore = create<AppState>()(
       videoRevision: 0,
 
       // Actions
-      setLabels: (labels, filename, projectPath) =>
+      setLabels: (labels, filename, projectPath, projectFile) =>
         set((state) => {
           state.labels = labels;
           state.filename = filename ?? null;
           state.projectPath = projectPath ?? null;
+          state.projectFile = projectFile ?? null;
           state.projectLoaded = true;
           state.hasChanges = false;
 

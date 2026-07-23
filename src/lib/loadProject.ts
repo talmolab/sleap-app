@@ -130,7 +130,9 @@ export async function loadProjectFromFile(file: File): Promise<boolean> {
     });
     store.setLoading(true, "Locating videos...");
     await resolveExternalVideos(labels);
-    store.setLabels(labels, file.name);
+    // Retain the source File so a large embedded-pkg re-save can stream its
+    // images back out via the OPFS writer (see saveEmbeddedPkgOpfs).
+    store.setLabels(labels, file.name, undefined, file);
     await openFirstLabeledFrame(labels);
     toast.success(`Loaded ${file.name}`, {
       description: `${labels.videos.length} video(s), ${labels.labeledFrames.length} labeled frames`,

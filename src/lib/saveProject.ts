@@ -19,6 +19,10 @@ import { saveLabelsInPlace } from "@/lib/saveLabelsInPlace";
 import { shouldStreamEmbeddedSave } from "@/lib/saveRouting";
 import { fileSize } from "@/lib/nativeRange";
 import { renameFile, removeFile } from "@/lib/nativeWrite";
+import {
+  saveEmbeddedPkgOpfs,
+  isOpfsSaveSupported,
+} from "@/lib/saveEmbeddedPkgOpfs";
 
 /**
  * Human-readable byte size for the save progress text (e.g. "3.8 GB", "742 MB").
@@ -36,6 +40,58 @@ function formatBytes(n: number): string {
  *  progress message. */
 function sizeSuffix(bytes: number | null): string {
   return bytes != null ? ` (${formatBytes(bytes)})` : "";
+}
+
+/**
+ * In-memory browser save (small files, or when the OPFS streaming path is
+ * unavailable / falls back): serialize the whole file to bytes and deliver via
+ * the File System Access API (Chromium) or an anchor download (elsewhere).
+ * Returns the saved name, or null if the user cancelled the save-location picker.
+ */
+async function saveBrowserInMemory(
+  labels: Labels,
+  saveName: string
+): Promise<string | null> {
+  const bytes = await saveSlpToBytes(labels);
+  if ("showSaveFilePicker" in window) {
+    console.log(
+      `[save] Saving via browser File System Access API (${bytes.byteLength} bytes)`
+    );
+    try {
+      const blob = new Blob([bytes], { type: "application/octet-stream" });
+      const handle = await (
+        window as unknown as {
+          showSaveFilePicker: (opts: unknown) => Promise<FileSystemFileHandle>;
+        }
+      ).showSaveFilePicker({
+        types: [
+          {
+            description: "SLEAP Labels",
+            accept: { "application/octet-stream": [".slp"] },
+          },
+        ],
+        suggestedName: saveName,
+      });
+      const writable = await handle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+      return handle.name;
+    } catch (err: unknown) {
+      if (err instanceof DOMException && err.name === "AbortError") return null;
+      throw err;
+    }
+  }
+  console.log(
+    `[save] Saving via browser anchor download (${bytes.byteLength} bytes)`
+  );
+  const blob = new Blob([bytes], { type: "application/octet-stream" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = saveName;
+  a.click();
+  URL.revokeObjectURL(url);
+  return saveName;
 }
 
 /**
@@ -200,47 +256,34 @@ export async function saveProjectAsSlp(
         store.set("projectPath", savePath);
         displayName = savePath;
       }
-    } else if ("showSaveFilePicker" in window) {
-      // Browser: File System Access API (always shows picker)
-      const bytes = await saveSlpToBytes(labels);
-      console.log(`[save] Saving via browser File System Access API (${bytes.byteLength} bytes)`);
-      try {
-        const blob = new Blob([bytes], { type: "application/octet-stream" });
-        const handle = await (
-          window as unknown as {
-            showSaveFilePicker: (
-              opts: unknown
-            ) => Promise<FileSystemFileHandle>;
-          }
-        ).showSaveFilePicker({
-          types: [
-            {
-              description: "SLEAP Labels",
-              accept: { "application/octet-stream": [".slp"] },
-            },
-          ],
-          suggestedName: saveName,
-        });
-        const writable = await handle.createWritable();
-        await writable.write(blob);
-        await writable.close();
-        displayName = handle.name;
-      } catch (err: unknown) {
-        // User cancelled the save dialog
-        if (err instanceof DOMException && err.name === "AbortError") return;
-        throw err;
-      }
     } else {
-      // Fallback: anchor download
-      const bytes = await saveSlpToBytes(labels);
-      console.log(`[save] Saving via browser anchor download (${bytes.byteLength} bytes)`);
-      const blob = new Blob([bytes], { type: "application/octet-stream" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = saveName;
-      a.click();
-      URL.revokeObjectURL(url);
+      // Browser save. Route a large, already-embedded re-save through the OPFS
+      // streaming writer (no ~4GB wasm-heap wall, no SharedArrayBuffer / COOP+COEP)
+      // — it needs the opened File as the image source. Anything else (small files,
+      // no source File, OPFS unavailable, or a video needing fresh encoding, which
+      // the embed plan rejects) uses the in-memory save.
+      const hasEmbeddedImages = labels.videos.some((v) => v.hasEmbeddedImages);
+      const sourceFile = store.projectFile;
+      let savedViaOpfs = false;
+      if (hasEmbeddedImages && sourceFile && isOpfsSaveSupported()) {
+        try {
+          store.setLoading(true, "Saving large project (streaming to disk)...");
+          console.log("[save] Saving via browser OPFS streaming writer");
+          displayName = await saveEmbeddedPkgOpfs(labels, sourceFile, saveName);
+          savedViaOpfs = true;
+        } catch (err) {
+          if (err instanceof DOMException && err.name === "AbortError") return;
+          console.warn(
+            "[save] OPFS streaming save failed; falling back to in-memory save",
+            err
+          );
+        }
+      }
+      if (!savedViaOpfs) {
+        const name = await saveBrowserInMemory(labels, saveName);
+        if (name === null) return; // user cancelled the save dialog
+        displayName = name;
+      }
     }
 
     store.clearChanges();
