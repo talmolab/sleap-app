@@ -16,7 +16,10 @@ import {
   tempPathFor,
 } from "@/lib/saveEmbeddedPkgStreaming";
 import { saveLabelsInPlace } from "@/lib/saveLabelsInPlace";
-import { shouldStreamEmbeddedSave } from "@/lib/saveRouting";
+import {
+  shouldStreamEmbeddedSave,
+  shouldOpfsStreamBrowserSave,
+} from "@/lib/saveRouting";
 import { fileSize } from "@/lib/nativeRange";
 import { renameFile, removeFile } from "@/lib/nativeWrite";
 import {
@@ -259,16 +262,29 @@ export async function saveProjectAsSlp(
         displayName = savePath;
       }
     } else {
-      // Browser save. Route a large, already-embedded re-save through the OPFS
+      // Browser save. Route a LARGE, already-embedded re-save through the OPFS
       // streaming writer (no ~4GB wasm-heap wall, no SharedArrayBuffer / COOP+COEP)
-      // — it needs the opened File as the image source. Anything else (small files,
-      // no source File, OPFS unavailable, or a video needing fresh encoding, which
-      // the embed plan rejects) uses the in-memory save.
+      // — it needs the opened File as the image source. Anything else (small files
+      // below the streaming threshold, no source File, OPFS unavailable, or a video
+      // needing fresh encoding, which the embed plan rejects) uses the faster
+      // in-memory save (which still preserves already-embedded frames).
       const hasEmbeddedImages = labels.videos.some((v) => v.hasEmbeddedImages);
       // Prefer the durable handle (re-read fresh at save time) over the File
       // snapshot, which can go stale by the time we read the images.
       const source = store.projectFileHandle ?? store.projectFile;
-      if (hasEmbeddedImages && source && isOpfsSaveSupported()) {
+      // Size proxy for the OPFS-vs-in-memory decision: the opened source File's
+      // byte size. The raw-copy path never ADDS embedded data, so this tracks the
+      // output size closely and errs high (the safe direction) — see saveRouting.
+      // projectFile is always retained on open, even when the handle is preferred
+      // for reads. null (no File) => treated conservatively as over-threshold.
+      const estimatedOutputBytes = store.projectFile?.size ?? null;
+      const useOpfsSave = shouldOpfsStreamBrowserSave({
+        hasEmbeddedImages,
+        hasSource: !!source,
+        isOpfsSupported: isOpfsSaveSupported(),
+        estimatedOutputBytes,
+      });
+      if (useOpfsSave && source) {
         // Acquire the destination NOW, synchronously off the save gesture:
         // showSaveFilePicker requires transient activation, which the slow OPFS
         // build (h5wasm worker + image copy) would otherwise consume, causing a

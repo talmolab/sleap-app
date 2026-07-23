@@ -75,3 +75,42 @@ export function shouldStreamEmbeddedSave({
   if (estimatedOutputBytes === null) return true;
   return estimatedOutputBytes > STREAMING_SAVE_THRESHOLD_BYTES;
 }
+
+/**
+ * Decide whether a BROWSER embedded-pkg save should use the OPFS streaming
+ * writer instead of the in-memory save. The browser analogue of
+ * {@link shouldStreamEmbeddedSave}: same size logic and threshold, but gated on
+ * OPFS/`showSaveFilePicker` availability (Chromium) rather than the Tauri
+ * runtime, and on having an opened source File/handle to copy images FROM.
+ *
+ * Small embedded files take the faster in-memory path (`saveSlpToBytes`, which
+ * still preserves already-embedded frames); only outputs that would approach the
+ * ~4 GB wasm heap wall route to OPFS. The estimate is the source File's `.size`
+ * (the raw-copy path never ADDS embedded data, so source size is a close,
+ * high-side-safe proxy — see the module header). A `null` estimate is treated
+ * conservatively as "over threshold" (stream), matching the desktop path.
+ *
+ * @param hasEmbeddedImages    At least one video carries embedded images.
+ * @param hasSource            The opened project is retained (File/handle) to
+ *                             copy embedded blobs FROM (required by the writer).
+ * @param isOpfsSupported      OPFS + Worker + `showSaveFilePicker` are available.
+ * @param estimatedOutputBytes Estimated output size in bytes, or `null` when
+ *                             unknown — treated conservatively as "over
+ *                             threshold".
+ */
+export function shouldOpfsStreamBrowserSave({
+  hasEmbeddedImages,
+  hasSource,
+  isOpfsSupported,
+  estimatedOutputBytes,
+}: {
+  hasEmbeddedImages: boolean;
+  hasSource: boolean;
+  isOpfsSupported: boolean;
+  estimatedOutputBytes: number | null;
+}): boolean {
+  if (!hasEmbeddedImages || !hasSource || !isOpfsSupported) return false;
+  // Unknown size => be safe and stream (it works for any size, just slower).
+  if (estimatedOutputBytes === null) return true;
+  return estimatedOutputBytes > STREAMING_SAVE_THRESHOLD_BYTES;
+}
