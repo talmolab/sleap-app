@@ -24,6 +24,7 @@ import {
   isOpfsSaveSupported,
   pickSlpSaveDestination,
 } from "@/lib/saveEmbeddedPkgOpfs";
+import { isSameSaveTarget } from "@/lib/saveTargetGuard";
 
 /**
  * Human-readable byte size for the save progress text (e.g. "3.8 GB", "742 MB").
@@ -278,6 +279,21 @@ export async function saveProjectAsSlp(
         } catch (err) {
           if (err instanceof DOMException && err.name === "AbortError") return;
           throw err;
+        }
+        // DATA-LOSS GUARD: refuse to overwrite the currently-open project. The
+        // OPFS writer reads embedded images FROM the source while streaming the
+        // result INTO the destination; if they're the same on-disk file, the
+        // destination's createWritable() truncates the only copy, so any
+        // mid-save failure would zero the original (this already destroyed a
+        // test file). The browser has no atomic temp+rename over an arbitrary
+        // open file, so in-place browser re-save isn't safe yet — send the user
+        // back to pick a new filename before anything is written.
+        if (await isSameSaveTarget(source, destHandle)) {
+          toast.warning("Choose a different filename", {
+            description:
+              "Saving over the currently-open project isn't supported in the browser yet. Pick a new filename so the original stays safe.",
+          });
+          return;
         }
         store.setLoading(true, "Saving large project (streaming to disk)...");
         console.log("[save] Saving via browser OPFS streaming writer");
