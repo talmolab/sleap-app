@@ -131,7 +131,7 @@ export function KeypointPassBar() {
             <div className="mb-2 font-medium">Keypoint-pass shortcuts</div>
             <div className="space-y-1.5">
               <KeyRow keys="Click" action="Place current node" />
-              <KeyRow keys="Right-click" action="Mark not visible" />
+              <KeyRow keys="Right-click" action="Place not-visible point" />
               <KeyRow keys="S" action="Skip node" />
               <KeyRow keys="B / ⌫" action="Step back" />
               <KeyRow keys="⌥ / Space drag" action="Pan" />

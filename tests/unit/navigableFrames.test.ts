@@ -11,6 +11,7 @@ import {
   labeledFrameIndices,
   stepLabeled,
   nearestFrameInDomain,
+  suggestionPrefetchTargets,
 } from "@/lib/navigableFrames";
 import { useAppStore } from "@/stores/appStore";
 import {
@@ -19,6 +20,7 @@ import {
   LabeledFrame,
   Skeleton,
   Video,
+  type SuggestionFrame,
 } from "@talmolab/sleap-io.js";
 
 /** Build a backend-less project with labeled frames at the given indices. */
@@ -210,5 +212,57 @@ describe("incrementFrameIdx (labeled-only mode)", () => {
 
     useAppStore.getState().incrementFrameIdx(1);
     expect(useAppStore.getState().frameIdx).toBe(1);
+  });
+});
+
+describe("suggestionPrefetchTargets", () => {
+  /** A project with suggestion frames at the given indices in its one video. */
+  function withSuggestions(frameIndices: number[]) {
+    const { labels, video, skeleton } = makeProject([]);
+    for (const f of frameIndices) {
+      labels.suggestions.push({ video, frameIdx: f } as SuggestionFrame);
+    }
+    return { labels, video, skeleton };
+  }
+
+  it("returns the next N suggestions strictly after the current frame", () => {
+    const { labels, video } = withSuggestions([5, 10, 15, 20]);
+    expect(suggestionPrefetchTargets(labels, video, 5, 2)).toEqual([10, 15]);
+  });
+
+  it("starts at the first suggestion after an unlabeled current frame", () => {
+    const { labels, video } = withSuggestions([5, 10, 15, 20]);
+    expect(suggestionPrefetchTargets(labels, video, 12, 2)).toEqual([15, 20]);
+  });
+
+  it("wraps past the last suggestion back to the first", () => {
+    const { labels, video } = withSuggestions([5, 10, 15]);
+    expect(suggestionPrefetchTargets(labels, video, 15, 2)).toEqual([5, 10]);
+  });
+
+  it("clamps count to the number of suggestions (no duplicates)", () => {
+    const { labels, video } = withSuggestions([5, 10]);
+    expect(suggestionPrefetchTargets(labels, video, 0, 5)).toEqual([5, 10]);
+  });
+
+  it("ignores suggestions that live in other videos", () => {
+    const { labels, video } = withSuggestions([5, 10]);
+    const other = new Video({
+      filename: "other.mp4",
+      backendMetadata: { shape: [50, 480, 640, 3] },
+      openBackend: false,
+    });
+    labels.videos.push(other);
+    labels.suggestions.push({ video: other, frameIdx: 7 } as SuggestionFrame);
+    expect(suggestionPrefetchTargets(labels, video, 0, 4)).toEqual([5, 10]);
+  });
+
+  it("returns [] for empty/absent inputs or non-positive count", () => {
+    const { labels, video } = withSuggestions([5, 10]);
+    expect(suggestionPrefetchTargets(labels, video, 0, 0)).toEqual([]);
+    expect(suggestionPrefetchTargets(null, video, 0, 4)).toEqual([]);
+    expect(suggestionPrefetchTargets(labels, null, 0, 4)).toEqual([]);
+    const empty = makeProject([]);
+    expect(suggestionPrefetchTargets(empty.labels, empty.video, 0, 4)).toEqual([]);
   });
 });

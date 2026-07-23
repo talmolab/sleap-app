@@ -19,9 +19,11 @@ import {
   totalSteps,
   linearIndex,
   resolveItemInstance,
+  nextUnlabeledCursor,
   countSeededCentroids,
   type PassCursor,
   type PassDims,
+  type PassItem,
 } from "@/lib/activeLearning/passEngine";
 
 const NODE_NAMES = ["body_center", "head", "nose", "left_ear", "right_ear", "tail"];
@@ -655,5 +657,65 @@ describe("passDims", () => {
       nodeCountForPass: [2, 2],
       order: "pass-major",
     });
+  });
+});
+
+describe("nextUnlabeledCursor", () => {
+  // One video/frame/instance; a single pass over head, nose, tail. `placed`
+  // names the points marked complete (via makeInstance).
+  function scenario(placed: string[]) {
+    const skeleton = makeSkeleton();
+    const video = stubVideo("a.mp4");
+    const points: Record<string, [number, number]> = {};
+    for (const p of placed) points[p] = [1, 1];
+    const inst = makeInstance(skeleton, points);
+    const lf = new LabeledFrame({ video, frameIdx: 0 });
+    lf.instances.push(inst);
+    const labels = new Labels({ videos: [video], skeletons: [skeleton] });
+    labels.labeledFrames.push(lf);
+    const workList: PassItem[] = [
+      { videoIdx: 0, frameIdx: 0, instanceIdx: 0, centroidXY: [0, 0] },
+    ];
+    const passNodeIndices = [[1, 2, 5]]; // head, nose, tail
+    const dims: PassDims = {
+      passCount: 1,
+      itemCount: 1,
+      nodeCountForPass: [3],
+      order: "pass-major",
+    };
+    return { labels, workList, passNodeIndices, dims };
+  }
+
+  it("from the start, lands on the first node whose point is not complete", () => {
+    const { labels, workList, passNodeIndices, dims } = scenario(["head"]);
+    expect(
+      nextUnlabeledCursor(labels, workList, dims, passNodeIndices, null),
+    ).toEqual({ passIdx: 0, itemIdx: 0, nodeIdx: 1 }); // head done → nose
+  });
+
+  it("with nothing placed, lands on the very first node", () => {
+    const { labels, workList, passNodeIndices, dims } = scenario([]);
+    expect(
+      nextUnlabeledCursor(labels, workList, dims, passNodeIndices, null),
+    ).toEqual({ passIdx: 0, itemIdx: 0, nodeIdx: 0 });
+  });
+
+  it("searches forward (exclusive) from a given cursor", () => {
+    const { labels, workList, passNodeIndices, dims } = scenario(["head"]);
+    // From nose (nodeIdx 1): advance past it → tail (nodeIdx 2), still undecided.
+    expect(
+      nextUnlabeledCursor(labels, workList, dims, passNodeIndices, {
+        passIdx: 0,
+        itemIdx: 0,
+        nodeIdx: 1,
+      }),
+    ).toEqual({ passIdx: 0, itemIdx: 0, nodeIdx: 2 });
+  });
+
+  it("returns null when every node is already decided", () => {
+    const { labels, workList, passNodeIndices, dims } = scenario(["head", "nose", "tail"]);
+    expect(
+      nextUnlabeledCursor(labels, workList, dims, passNodeIndices, null),
+    ).toBeNull();
   });
 });

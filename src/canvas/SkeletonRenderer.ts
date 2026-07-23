@@ -533,6 +533,12 @@ export interface RenderedCentroid {
   y: number;
   /** Predicted (locator output) vs user-seeded — drawn dimmer/dashed. */
   predicted: boolean;
+  /**
+   * Palette color for this centroid, so multiple centroids in a frame are
+   * distinguishable (and match their paired instance/track color). Falls back
+   * to amber when omitted.
+   */
+  color?: RGB;
 }
 
 /**
@@ -555,7 +561,10 @@ export function renderCentroids(
   ctx.save();
   for (const c of centroids) {
     if (!Number.isFinite(c.x) || !Number.isFinite(c.y)) continue;
-    ctx.strokeStyle = c.predicted ? "rgba(255, 193, 7, 0.6)" : "rgba(255, 193, 7, 0.95)";
+    // Per-centroid palette color (amber fallback keeps old callers working);
+    // predicted centroids stay dimmer + dashed like before.
+    const rgb: RGB = c.color ?? [255, 193, 7];
+    ctx.strokeStyle = rgbToCSS(rgb, c.predicted ? 0.6 : 0.95);
     ctx.lineWidth = 1.5 / zoom;
     ctx.setLineDash(c.predicted ? [3 / zoom, 3 / zoom] : []);
     // Ring

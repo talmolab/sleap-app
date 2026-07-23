@@ -52,6 +52,7 @@ export {
   SeedCentroid,
   PairPoseInstances,
   DeleteSelectedInstance,
+  DeleteCentroid,
   SetPointLocation,
   CopyInstance,
   PasteInstance,

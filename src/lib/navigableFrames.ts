@@ -104,6 +104,39 @@ export function nearestFrameInDomain(
   return best;
 }
 
+/**
+ * Frame indices of the next `count` SUGGESTION frames at/after `frameIdx` that
+ * live in `video` itself, ascending and wrapping past the last one.
+ *
+ * The active-learning workflow steps through suggestion frames (Space →
+ * GoNextSuggestion); on a slow mount the next crop can stall on a cold read.
+ * Warming these ahead of time keeps that workflow responsive. Only suggestions
+ * in the CURRENT video are returned — cross-video targets would need another
+ * backend opened, so they're out of scope for a cheap fire-and-forget warm-up.
+ * Pure so it can be unit-tested without a video backend.
+ */
+export function suggestionPrefetchTargets(
+  labels: Labels | null,
+  video: Video | null,
+  frameIdx: number,
+  count: number
+): number[] {
+  if (!labels || !video || count <= 0) return [];
+  const idxs = labels.suggestions
+    .filter((s) => s.video === video)
+    .map((s) => s.frameIdx)
+    .sort((a, b) => a - b);
+  if (idxs.length === 0) return [];
+  // First suggestion strictly after the current frame; wrap to the start.
+  let start = idxs.findIndex((i) => i > frameIdx);
+  if (start === -1) start = 0;
+  const out: number[] = [];
+  for (let k = 0; k < Math.min(count, idxs.length); k++) {
+    out.push(idxs[(start + k) % idxs.length]);
+  }
+  return out;
+}
+
 /** Which frames navigation steps through (#137). */
 export type NavigationDomain = "all" | "labeled" | "imaged";
 

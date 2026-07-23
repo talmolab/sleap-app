@@ -41,6 +41,7 @@ import {
   stepBack as stepBackPassCursor,
   initialCursor as initialPassCursor,
   finalCursor as finalPassCursor,
+  nextUnlabeledCursor,
   resolveItemInstance,
   type PassItem,
   type PassCursor,
@@ -276,6 +277,12 @@ export interface AppState {
   passAdvance: () => void;
   /** Step the pass cursor back one node; navigates on item change. */
   passStepBack: () => void;
+  /**
+   * Jump the pass cursor to the first UNLABELED node (searching from the start),
+   * skipping the pre-seeded anchor and anything already decided. Used to resume
+   * Phase-2 where labeling left off. Returns true if an unlabeled node was found.
+   */
+  passJumpToUnlabeled: () => boolean;
   /** Set the zoom-to-centroid window (px) for Phase-2 labeling. */
   setPassZoomWindow: (px: number) => void;
   /** Sync frame/instance selection to the current pass cursor. */
@@ -776,6 +783,23 @@ export const useAppStore = create<AppState>()(
           state.passCursor = prev;
         });
         if (prev.itemIdx !== prevItem) get().syncPassSelection();
+      },
+
+      passJumpToUnlabeled: () => {
+        const s = get();
+        if (!s.labels || !s.passDims || s.passWorkList.length === 0) return false;
+        const cur = nextUnlabeledCursor(
+          s.labels,
+          s.passWorkList,
+          s.passDims,
+          s.passNodeIndices,
+          null,
+        );
+        set((state) => {
+          state.passCursor = cur;
+        });
+        if (cur) get().syncPassSelection();
+        return !!cur;
       },
 
       setPassZoomWindow: (px) =>

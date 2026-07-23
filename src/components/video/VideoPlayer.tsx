@@ -48,6 +48,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { toImageCoords, toSourceCoords } from "@/lib/cropTransform";
+import { suggestionPrefetchTargets } from "@/lib/navigableFrames";
 import {
   isVideoMissing,
   resolveVideoFile,
@@ -539,6 +540,22 @@ export function VideoPlayer() {
         if ((video.shape?.[0] ?? null) !== framesBefore) {
           useAppStore.getState().markVideoUpdated();
         }
+        // Warm the next few SUGGESTION frames so the active-learning
+        // Space-through-suggestions workflow isn't blocked on cold reads.
+        // Fire-and-forget; skip while scrubbing. `prefetch:false` so each warmed
+        // frame doesn't recursively kick off the backend's own sequential
+        // read-ahead and fight the concurrency limit.
+        if (!useAppStore.getState().isScrubbing) {
+          const warm = suggestionPrefetchTargets(
+            useAppStore.getState().labels,
+            video,
+            frameIdx,
+            4
+          );
+          for (const t of warm) {
+            if (t !== frameIdx) void video.getFrame(t, { prefetch: false }).catch(() => {});
+          }
+        }
         if (debugFlags.logSeeking) console.debug(`[seek] getFrame(${frameIdx}) returned ${frame?.constructor?.name ?? "null"} in ${(performance.now() - t0).toFixed(1)}ms`);
         if (cancelled || !frame) {
           if (debugFlags.logSeeking && cancelled) console.debug(`[seek] frame ${frameIdx} cancelled`);
@@ -857,9 +874,20 @@ export function VideoPlayer() {
     // crosshair rings, distinct from skeleton nodes. Coords go through the same
     // crop transform as instance nodes.
     if (labeledFrame.centroids.length > 0) {
-      const renderedCentroids = labeledFrame.centroids.map((c) => {
+      const renderedCentroids = labeledFrame.centroids.map((c, i) => {
         const [cx, cy] = toImageCoords(video, c.x, c.y);
-        return { x: cx, y: cy, predicted: c.isPredicted };
+        // Color each centroid distinctly: match its paired pose instance's
+        // color when linked, else its track's, else a sequential palette index
+        // so multiple centroids in one frame stay distinguishable.
+        let idx = i;
+        if (c.instance) {
+          const ii = labeledFrame.instances.indexOf(c.instance);
+          if (ii >= 0) idx = ii;
+        } else if (c.track) {
+          const ti = tracks.indexOf(c.track);
+          if (ti >= 0) idx = ti;
+        }
+        return { x: cx, y: cy, predicted: c.isPredicted, color: getPaletteColor(palette, idx) };
       });
       renderCentroids(ctx, renderedCentroids, renderOpts);
     }
@@ -2015,6 +2043,10 @@ export function VideoPlayer() {
           inst = adopted;
         }
         store.setInstance(inst);
+        // Place a present-but-INVISIBLE point at the click (occluded → a real
+        // decision WITH a location) instead of leaving the node NaN/unlabeled.
+        // `complete = true` marks it decided, so resume/next-unlabeled skips it.
+        inst.points[nIdx].xy = toSourceCoords(store.video, x, y);
         inst.points[nIdx].visible = false;
         inst.points[nIdx].complete = true;
         store.markChanged();

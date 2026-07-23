@@ -18,6 +18,7 @@ import {
   commandContext,
   AddInstance,
   DeleteSelectedInstance,
+  DeleteCentroid,
 } from "../../commands";
 import { cn } from "@/lib/utils";
 import {
@@ -461,6 +462,48 @@ export function InstancesPanel() {
         <>
           <Separator />
           <InstanceDetailPanel instance={currentInstance} />
+        </>
+      )}
+
+      {/* First-class centroid annotations (frame.centroids) aren't pose
+          instances, so they never appear in the table above and can't be
+          removed via "Delete Instance". List them here with a per-row delete so
+          an accidental double-seed can be fixed (undoable via the frame
+          snapshot). */}
+      {labeledFrame && labeledFrame.centroids.length > 0 && (
+        <>
+          <Separator />
+          <div className="p-2">
+            <div className="mb-1 text-xs font-medium text-muted-foreground">
+              Centroids ({labeledFrame.centroids.length})
+            </div>
+            <div className="space-y-1">
+              {labeledFrame.centroids.map((c, i) => (
+                <div
+                  key={i}
+                  className="flex items-center justify-between gap-2 text-sm"
+                >
+                  <span className="truncate">
+                    {c.isPredicted ? "Predicted" : "Centroid"} {i + 1}
+                    <span className="ml-1 text-xs text-muted-foreground">
+                      ({c.x.toFixed(0)}, {c.y.toFixed(0)})
+                    </span>
+                  </span>
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    className="h-6 px-2 text-destructive"
+                    aria-label={`Delete centroid ${i + 1}`}
+                    onClick={() =>
+                      commandContext.execute(DeleteCentroid, { centroidIdx: i })
+                    }
+                  >
+                    Delete
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </div>
         </>
       )}
 

@@ -207,6 +207,37 @@ export const DeleteSelectedInstance: Command = {
 };
 
 /**
+ * Remove one first-class centroid annotation (`frame.centroids`) by index from
+ * the current frame — e.g. to fix an accidental double-seed, since centroids
+ * are never selectable pose instances and so can't go through
+ * DeleteSelectedInstance. Undo is handled by the frame snapshot, which captures
+ * centroids (see CommandContext). Pass `{ centroidIdx }`.
+ */
+export const DeleteCentroid: Command = {
+  name: "DeleteCentroid",
+  topics: [UpdateTopic.Frame, UpdateTopic.Instance],
+  execute(ctx: CommandContext, params?: Record<string, unknown>) {
+    const { labels, video, frameIdx } = ctx.state;
+    if (!labels || !video) return;
+
+    const idx = params?.centroidIdx;
+    if (typeof idx !== "number") return;
+
+    const frames = labels.find({ video, frameIdx });
+    if (frames.length === 0) return;
+    const lf = frames[0];
+    if (idx < 0 || idx >= lf.centroids.length) return;
+
+    // Reassign (don't mutate in place) so downstream ref checks notice; the
+    // frame object stays the same, so bump the overlay to force a redraw.
+    lf.centroids = lf.centroids.filter((_, i) => i !== idx);
+    ctx.state.setLabeledFrame(lf);
+    ctx.state.markChanged();
+    ctx.state.bumpOverlayVersion();
+  },
+};
+
+/**
  * Update a point's x,y coordinates on the selected instance.
  *
  * Params:

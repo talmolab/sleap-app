@@ -407,3 +407,38 @@ export function resolveItemInstance(labels: Labels, item: PassItem): Instance | 
   if (frames.length === 0) return null;
   return frames[0].instances[item.instanceIdx] ?? null;
 }
+
+/**
+ * The next cursor whose target point is NOT yet decided — searching forward from
+ * `from` (exclusive), or from the very start when `from` is `null`. A point is
+ * "decided" iff its `complete` flag is set: both left-click (place a visible
+ * point) and right-click (mark not-visible) set `complete = true`, while freshly
+ * seeded points default to `complete = false`. So this finds the first node
+ * still needing a labeling decision, skipping everything already done.
+ *
+ * Powers (a) "resume where I left off" — pass `from = null` after re-entering the
+ * mode to land on the first undecided node, skipping the pre-seeded anchor and
+ * anything already labeled — and (b) skipping already-decided nodes generally.
+ * Returns `null` when every remaining node is decided (the sweep is done).
+ *
+ * Data-aware (reads the live points), unlike the pure-index {@link advance}.
+ */
+export function nextUnlabeledCursor(
+  labels: Labels,
+  workList: PassItem[],
+  dims: PassDims,
+  passNodeIndices: number[][],
+  from: PassCursor | null,
+): PassCursor | null {
+  let c = from ? advance(from, dims) : initialCursor(dims);
+  while (c) {
+    const item = workList[c.itemIdx];
+    const inst = item ? resolveItemInstance(labels, item) : null;
+    const nIdx = passNodeIndices[c.passIdx]?.[c.nodeIdx] ?? -1;
+    const point =
+      inst && nIdx >= 0 && nIdx < inst.points.length ? inst.points[nIdx] : null;
+    if (point && !point.complete) return c;
+    c = advance(c, dims);
+  }
+  return null;
+}

@@ -314,7 +314,7 @@ export function ActiveLearningPanel() {
 
   // Phase 2: skip training and label keypoints directly on the seeded/predicted
   // centroids — a guided, zoom-to-centroid multi-pass sweep over every instance.
-  const startKeypointPasses = async () => {
+  const startKeypointPasses = async (resume = false) => {
     const labels = useAppStore.getState().labels;
     if (!labels || !config || !skeleton) {
       toast.error("Define a workflow and seed some centroids first.");
@@ -345,9 +345,20 @@ export function ActiveLearningPanel() {
       nodeIndices,
       zoomWindow: config.localize.cropSize,
     });
-    toast.info(
-      `Labeling keypoints on ${workList.length} instance(s) across ${dims.passCount} pass(es).`,
-    );
+    if (resume) {
+      // Skip the pre-seeded anchor + anything already labeled, landing on the
+      // first node still needing a decision (see nextUnlabeledCursor).
+      const found = useAppStore.getState().passJumpToUnlabeled();
+      toast.info(
+        found
+          ? `Resumed at the next unlabeled node — ${workList.length} instance(s), ${dims.passCount} pass(es).`
+          : `Everything's already labeled across ${workList.length} instance(s).`,
+      );
+    } else {
+      toast.info(
+        `Labeling keypoints on ${workList.length} instance(s) across ${dims.passCount} pass(es).`,
+      );
+    }
   };
 
   const stopKeypointPasses = () => {
@@ -600,10 +611,20 @@ export function ActiveLearningPanel() {
                     className="w-full"
                     variant="outline"
                     disabled={seededFrames === 0}
-                    onClick={startKeypointPasses}
+                    onClick={() => startKeypointPasses()}
                   >
                     Label keypoints on {seededCentroids || "seeded"} centroid(s) →
                   </Button>
+                  {seededFrames > 0 && (
+                    <Button
+                      size="sm"
+                      className="w-full"
+                      variant="ghost"
+                      onClick={() => startKeypointPasses(true)}
+                    >
+                      Resume where I left off →
+                    </Button>
+                  )}
                   {seededFrames === 0 && (
                     <p className="text-[11px] leading-snug text-muted-foreground">
                       Seed (or predict) some centroids first — Phase 2 labels one instance per centroid.
