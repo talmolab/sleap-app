@@ -465,6 +465,8 @@ function ViewMenu() {
   const instance = useAppStore((s) => s.instance);
   const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed);
   const sidebarSide = useAppStore((s) => s.sidebarSide);
+  const sidebarMultiPanel = useAppStore((s) => s.sidebarMultiPanel);
+  const setSidebarMultiPanel = useAppStore((s) => s.setSidebarMultiPanel);
   const showCrosshair = useAppStore((s) => s.showCrosshair);
   const uiScale = useAppStore((s) => s.uiScale);
   const qcDisplayMode = useAppStore((s) => s.qcDisplayMode);
@@ -493,6 +495,12 @@ function ViewMenu() {
           onCheckedChange={(c) => setVal("sidebarSide", c ? "left" : "right")}
         >
           Sidebar on Left
+        </MenubarCheckboxItem>
+        <MenubarCheckboxItem
+          checked={sidebarMultiPanel}
+          onCheckedChange={(c) => setSidebarMultiPanel(c === true)}
+        >
+          Allow Multiple Panels
         </MenubarCheckboxItem>
         <MenubarCheckboxItem
           checked={fit}

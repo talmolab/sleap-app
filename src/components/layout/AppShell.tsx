@@ -14,7 +14,7 @@
  * └─────────────────────────────────────────────────┘
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { PathResolutionDialog } from "../dialogs/PathResolutionDialog";
 import type { ResolvedPath } from "@/lib/pathMappings";
 import { Toaster } from "sonner";
@@ -251,6 +251,13 @@ function Sidebar() {
 
   // Sidebar resize state
   const [panelWidth, setPanelWidth] = useState(320);
+  // Per-section flex-grow weights for the stacked panels (keyed by panel id).
+  // Local + non-persisted, matching panelWidth; a section defaults to weight 1.
+  // Dragging a divider between two expanded sections redistributes weight
+  // between just that pair, leaving the others untouched.
+  const [sectionWeights, setSectionWeights] = useState<Record<string, number>>(
+    {},
+  );
   const isResizing = useRef(false);
   const startX = useRef(0);
   const startWidth = useRef(0);
@@ -315,6 +322,59 @@ function Sidebar() {
     window.addEventListener("mousemove", handleMove);
     window.addEventListener("mouseup", handleUp);
   }, [panelWidth, onLeft]);
+
+  // Drag the divider between two adjacent expanded sections to adjust their
+  // relative heights. Captures the pair's current pixel heights + weights, then
+  // moves pixels from one to the other (clamped to a min), converting back to
+  // weights via the pair's local density so only these two sections change.
+  const handleSectionResizeStart = useCallback(
+    (e: React.MouseEvent, aboveId: string, belowId: string) => {
+      e.preventDefault();
+      const container = e.currentTarget.parentElement;
+      if (!container) return;
+      const aboveEl = container.querySelector<HTMLElement>(
+        `[data-section-id="${aboveId}"]`,
+      );
+      const belowEl = container.querySelector<HTMLElement>(
+        `[data-section-id="${belowId}"]`,
+      );
+      if (!aboveEl || !belowEl) return;
+
+      const startY = e.clientY;
+      const h0Above = aboveEl.offsetHeight;
+      const h0Below = belowEl.offsetHeight;
+      const sumH = h0Above + h0Below;
+      const wAbove0 = sectionWeights[aboveId] ?? 1;
+      const wBelow0 = sectionWeights[belowId] ?? 1;
+      const density = sumH / (wAbove0 + wBelow0); // px per weight unit
+      const MIN = 80; // px — keep a section from collapsing to an unusable sliver
+
+      document.body.style.cursor = "row-resize";
+      document.body.style.userSelect = "none";
+
+      const onMove = (ev: MouseEvent) => {
+        const hAbove = Math.max(
+          MIN,
+          Math.min(sumH - MIN, h0Above + (ev.clientY - startY)),
+        );
+        const hBelow = sumH - hAbove;
+        setSectionWeights((w) => ({
+          ...w,
+          [aboveId]: hAbove / density,
+          [belowId]: hBelow / density,
+        }));
+      };
+      const onUp = () => {
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+      };
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+    },
+    [sectionWeights],
+  );
 
   // Pointer-based drag-to-reorder. Native HTML5 DnD proved unreliable here: the
   // app's global file-drop handlers and (in the desktop webview) Tauri's
@@ -417,17 +477,41 @@ function Sidebar() {
           className="h-full bg-card flex flex-col overflow-hidden"
           style={{ width: panelWidth }}
         >
-          {stackPanels.map((panel) => {
+          {stackPanels.map((panel, idx) => {
             const Body = panel.component;
             const sectionCollapsed = collapsedSections.includes(panel.id);
+            const prev = stackPanels[idx - 1];
+            // A drag handle sits between two DOM-adjacent EXPANDED sections
+            // (collapsed sections are fixed header strips — nothing to resize).
+            const showSplitter =
+              !!prev &&
+              !collapsedSections.includes(prev.id) &&
+              !sectionCollapsed;
             return (
-              <div
-                key={panel.id}
-                className={cn(
-                  "flex flex-col min-h-0 border-b border-border last:border-b-0",
-                  sectionCollapsed ? "shrink-0" : "flex-1"
+              <Fragment key={panel.id}>
+                {showSplitter && (
+                  <div
+                    className="h-1 shrink-0 cursor-row-resize bg-transparent hover:bg-primary/50 active:bg-primary transition-colors"
+                    onMouseDown={(e) =>
+                      handleSectionResizeStart(e, prev.id, panel.id)
+                    }
+                  />
                 )}
-              >
+                <div
+                  data-section-id={panel.id}
+                  className={cn(
+                    "flex flex-col min-h-0 border-b border-border last:border-b-0",
+                    sectionCollapsed && "shrink-0"
+                  )}
+                  style={
+                    sectionCollapsed
+                      ? undefined
+                      : {
+                          flexGrow: sectionWeights[panel.id] ?? 1,
+                          flexBasis: 0,
+                        }
+                  }
+                >
                 {/* Section header: chevron toggles the body; ✕ closes the panel. */}
                 <div className="flex items-center h-9 pl-1 pr-1.5 border-b border-border shrink-0">
                   <button
@@ -458,7 +542,8 @@ function Sidebar() {
                     <Body />
                   </div>
                 )}
-              </div>
+                </div>
+              </Fragment>
             );
           })}
         </div>

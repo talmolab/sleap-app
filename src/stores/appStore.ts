@@ -92,6 +92,13 @@ export interface AppState {
    * `sidebarOpenPanels`. Persisted.
    */
   sidebarCollapsedSections: string[];
+  /**
+   * When true, clicking a rail icon opens panels ADDITIVELY (multiple stacked
+   * sections). When false (default), the sidebar behaves one-at-a-time: a rail
+   * click shows exactly that panel. Toggled from View > Allow multiple panels.
+   * Persisted.
+   */
+  sidebarMultiPanel: boolean;
   panelOrder: string[];
   hiddenPanels: string[];
 
@@ -265,6 +272,8 @@ export interface AppState {
   closePanel: (panelId: string) => void;
   /** Toggle a section's body between expanded and header-only (chevron). */
   toggleSectionCollapsed: (panelId: string) => void;
+  /** Enable/disable multi-panel mode; disabling trims the stack to one panel. */
+  setSidebarMultiPanel: (enabled: boolean) => void;
   toggle: (key: keyof AppState) => void;
   set: <K extends keyof AppState>(key: K, value: AppState[K]) => void;
   bumpOverlayVersion: () => void;
@@ -297,6 +306,7 @@ export const PERSISTED_KEYS: (keyof AppState)[] = [
   "sidebarSide",
   "sidebarOpenPanels",
   "sidebarCollapsedSections",
+  "sidebarMultiPanel",
   "uiScale",
 ];
 
@@ -343,6 +353,7 @@ export const useAppStore = create<AppState>()(
       sidebarSide: "right",
       sidebarOpenPanels: [...DEFAULT_OPEN_PANELS],
       sidebarCollapsedSections: [],
+      sidebarMultiPanel: false,
       panelOrder: [...DEFAULT_PANEL_ORDER],
       hiddenPanels: [],
 
@@ -717,6 +728,23 @@ export const useAppStore = create<AppState>()(
       // otherwise toggle the clicked panel in/out of the open stack.
       togglePanelOpen: (panelId) =>
         set((state) => {
+          // Single-panel mode (default): classic one-at-a-time rail. A click
+          // shows exactly that panel; clicking the sole open panel hides the
+          // column.
+          if (!state.sidebarMultiPanel) {
+            const soleOpen =
+              state.sidebarOpenPanels.length === 1 &&
+              state.sidebarOpenPanels[0] === panelId;
+            if (!state.sidebarCollapsed && soleOpen) {
+              state.sidebarCollapsed = true;
+            } else {
+              state.sidebarCollapsed = false;
+              state.sidebarOpenPanels = [panelId];
+              state.sidebarCollapsedSections = [];
+            }
+            return;
+          }
+          // Multi-panel mode: stack toggle.
           if (state.sidebarCollapsed) {
             state.sidebarCollapsed = false;
             if (!state.sidebarOpenPanels.includes(panelId)) {
@@ -733,10 +761,16 @@ export const useAppStore = create<AppState>()(
           }
         }),
 
-      // Programmatically open + expand a panel and reveal the column.
+      // Programmatically open + expand a panel and reveal the column. In single
+      // mode this shows exactly that panel; in multi mode it's added to the stack.
       openPanel: (panelId) =>
         set((state) => {
           state.sidebarCollapsed = false;
+          if (!state.sidebarMultiPanel) {
+            state.sidebarOpenPanels = [panelId];
+            state.sidebarCollapsedSections = [];
+            return;
+          }
           if (!state.sidebarOpenPanels.includes(panelId)) {
             state.sidebarOpenPanels = [...state.sidebarOpenPanels, panelId];
           }
@@ -759,6 +793,25 @@ export const useAppStore = create<AppState>()(
             state.sidebarCollapsedSections,
             panelId,
           );
+        }),
+
+      setSidebarMultiPanel: (enabled) =>
+        set((state) => {
+          state.sidebarMultiPanel = enabled;
+          // Collapsing back to one-at-a-time: keep the topmost open panel (first
+          // in panelOrder), drop the rest and any stale collapsed markers.
+          if (!enabled && state.sidebarOpenPanels.length > 1) {
+            const keep = state.panelOrder.find((id) =>
+              state.sidebarOpenPanels.includes(id),
+            );
+            state.sidebarOpenPanels = keep
+              ? [keep]
+              : state.sidebarOpenPanels.slice(0, 1);
+            state.sidebarCollapsedSections =
+              state.sidebarCollapsedSections.filter((id) =>
+                state.sidebarOpenPanels.includes(id),
+              );
+          }
         }),
 
       toggle: (key) =>
