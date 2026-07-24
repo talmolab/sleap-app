@@ -43,6 +43,11 @@ export interface DraftManifestEntry {
    *  the RIGHT images (or leaves a video blank) even if the video set diverged
    *  or the wrong file was re-picked. */
   videoSignatures: string[];
+  /** Whether the project uses embedded images (a large pkg.slp). Restore uses
+   *  it to decide HOW to re-attach images: embedded → re-open the original +
+   *  graft its backends; not embedded (external videos / regular .slp) → just
+   *  resolve the external videos by path. */
+  embedded: boolean;
 }
 
 function openDb(): Promise<IDBDatabase> {
@@ -117,6 +122,7 @@ export async function recordDraftSave(
     videoSignatures: labels.videos.map((v) =>
       videoSignature({ filename: v.filename, shape: v.shape }),
     ),
+    embedded: labels.videos.some((v) => v.hasEmbeddedImages),
   });
   void requestOpfsPersistence();
 }

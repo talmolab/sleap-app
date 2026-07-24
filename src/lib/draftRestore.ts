@@ -112,68 +112,84 @@ export async function restoreDraft(entry: DraftManifestEntry): Promise<boolean> 
   const store = useAppStore.getState();
   store.setLoading(true, "Restoring unsaved work...");
   try {
-    const sourceHandle = await resolveSourceHandle(entry);
-    if (!sourceHandle) return false; // cancelled the re-picker
-
-    // Draft labels (imageless — don't open its empty backends).
     const draftFile = await readOpfsFile(entry.draftPath);
-    const draftLabels = await loadSlp(draftFile, {
-      openVideos: false,
-      h5: { h5wasmUrl: H5WASM_URL },
-    });
 
-    // Original, opened lazily for its on-demand image backends. Reuse the same
-    // parse-progress reporter as Open Project so the overlay shows a real bar,
-    // not just a spinner.
-    store.setLoading(true, "Re-opening the original for images...");
-    const originalFile = await sourceHandle.getFile();
-    const originalLabels = await loadSlp(originalFile, {
-      openVideos: true,
-      h5: { h5wasmUrl: H5WASM_URL },
-      onProgress: reportParseProgress,
-    });
-
-    // Match the draft's videos to the original by SIGNATURE (identity), not
-    // position, so a removed/reordered video — or a wrong re-picked file — never
-    // silently grafts the wrong images. Prefer the signatures recorded at save
-    // time (captured with live backends); fall back to the loaded draft's.
-    const draftSigs =
-      entry.videoSignatures?.length === draftLabels.videos.length
-        ? entry.videoSignatures
-        : draftLabels.videos.map((v) =>
-            videoSignature({ filename: v.filename, shape: v.shape }),
-          );
-    const { matched, total } = graftBackends(draftLabels, originalLabels, draftSigs);
-    if (matched === 0 && total > 0) {
-      // No video lined up — almost certainly the wrong file was selected. Abort
-      // rather than load an all-blank project over the user's labels.
-      toast.error("That file doesn't match the saved draft", {
-        description:
-          "None of the draft's videos were found in the selected file. Restore cancelled — choose the original project file.",
+    if (entry.embedded) {
+      // LARGE embedded pkg: the draft is imageless, so re-attach the ORIGINAL's
+      // images. Re-permission the source (or re-pick), load the draft + original
+      // (lazy), and graft backends by SIGNATURE (identity, not position) so a
+      // removed/reordered video — or a wrong re-picked file — never silently
+      // grafts the wrong images.
+      const sourceHandle = await resolveSourceHandle(entry);
+      if (!sourceHandle) return false; // cancelled the re-picker
+      const draftLabels = await loadSlp(draftFile, {
+        openVideos: false,
+        h5: { h5wasmUrl: H5WASM_URL },
       });
-      return false;
-    }
-    if (matched < total) {
-      toast.warning("Some videos couldn't be matched", {
-        description: `${total - matched} of ${total} video(s) weren't found in the original; those frames will be blank.`,
+      store.setLoading(true, "Re-opening the original for images...");
+      const originalFile = await sourceHandle.getFile();
+      const originalLabels = await loadSlp(originalFile, {
+        openVideos: true,
+        h5: { h5wasmUrl: H5WASM_URL },
+        onProgress: reportParseProgress,
       });
+      const draftSigs =
+        entry.videoSignatures?.length === draftLabels.videos.length
+          ? entry.videoSignatures
+          : draftLabels.videos.map((v) =>
+              videoSignature({ filename: v.filename, shape: v.shape }),
+            );
+      const { matched, total } = graftBackends(
+        draftLabels,
+        originalLabels,
+        draftSigs,
+      );
+      if (matched === 0 && total > 0) {
+        // No video lined up — almost certainly the wrong file was selected.
+        toast.error("That file doesn't match the saved draft", {
+          description:
+            "None of the draft's videos were found in the selected file. Restore cancelled — choose the original project file.",
+        });
+        return false;
+      }
+      if (matched < total) {
+        toast.warning("Some videos couldn't be matched", {
+          description: `${total - matched} of ${total} video(s) weren't found in the original; those frames will be blank.`,
+        });
+      }
+      await resolveExternalVideos(draftLabels);
+      store.setLabels(
+        draftLabels,
+        entry.displayName,
+        undefined,
+        originalFile,
+        sourceHandle,
+      );
+    } else {
+      // Regular/small project: the draft already holds the full labels + external
+      // video references. Load it and resolve those videos by path (may prompt).
+      // Re-link the original .slp handle (if any) so a later ⌘S can write back in
+      // place — permission is (re-)requested on that first write, not here.
+      const draftLabels = await loadSlp(draftFile, {
+        openVideos: true,
+        h5: { h5wasmUrl: H5WASM_URL },
+        onProgress: reportParseProgress,
+      });
+      store.setLoading(true, "Locating videos...");
+      await resolveExternalVideos(draftLabels);
+      store.setLabels(
+        draftLabels,
+        entry.displayName,
+        undefined,
+        undefined,
+        entry.sourceHandle,
+      );
     }
-    await resolveExternalVideos(draftLabels);
 
-    // Make the restored draft the active project: keep the original as the image
-    // source + the same draft path so further ⌘S/auto-save continue it, and it
-    // still needs an explicit Export to reach disk.
-    store.setLabels(
-      draftLabels,
-      entry.displayName,
-      undefined,
-      originalFile,
-      sourceHandle,
-    );
     store.set("labelsDraftPath", entry.draftPath);
     store.set("pendingExport", true);
     toast.success("Restored unsaved work", {
-      description: `${entry.displayName} — export to disk when ready`,
+      description: `${entry.displayName} — ${entry.embedded ? "export" : "save"} to disk when ready`,
     });
     return true;
   } catch (err) {

@@ -427,6 +427,16 @@ export async function saveProjectAsSlp(
         const name = await saveBrowserInMemory(labels, saveName, forceDialog);
         if (name === null) return; // user cancelled the save dialog
         displayName = name;
+        // Wrote the file to DISK → it's now current, so drop any crash-recovery
+        // draft + its manifest entry + the pending-export flag (nothing left to
+        // recover). Auto-save re-creates a draft only if the user edits again.
+        const draft = store.labelsDraftPath;
+        if (draft) {
+          void removeLabelsDraft(draft);
+          void deleteDraftEntry(draft);
+          store.set("labelsDraftPath", null);
+        }
+        store.set("pendingExport", false);
       }
     }
 

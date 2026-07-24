@@ -5,10 +5,11 @@
  * you stop — instant, silent, no toast, no image copy. The heavy full-file
  * "compile" stays a manual, explicit Export.
  *
- * Only large embedded pkgs in the browser get auto-save (the case where a manual
- * save is otherwise expensive); small files and the desktop are untouched —
- * their normal ⌘S is already cheap. Eligibility reuses the same routing as ⌘S
- * (`decideBrowserSaveAction` → "save-labels-draft").
+ * EVERY browser project gets this crash-recovery net (the browser is an unstable
+ * environment), not just large pkgs. For a large embedded pkg the draft is also
+ * ⌘S's primary save target, so a draft-write marks the project clean; for a
+ * small/regular .slp the draft is ONLY a net (⌘S writes disk), so it stays dirty
+ * until saved to disk. The desktop is untouched (its ⌘S already writes to disk).
  */
 import { useAppStore } from "@/stores/appStore";
 import { isTauri } from "@/lib/platform";
@@ -38,15 +39,25 @@ export async function maybeAutosaveLabelsDraft(
   if (inFlight || isTauri) return;
   const store = useAppStore.getState();
   const labels = store.labels;
-  // Don't race a manual save/compile (they own the loading overlay). If there is
-  // still work, re-arm so we retry once it settles rather than stalling.
-  if (!labels || !store.hasChanges || store.isLoading) {
-    if (labels && store.hasChanges && reArm) reArm();
+  // OPFS is where the draft lives (broadly available — not gated on the Chromium
+  // save picker). Don't race a manual save/compile (they own the overlay).
+  const hasOpfs =
+    typeof navigator !== "undefined" &&
+    !!navigator.storage &&
+    typeof navigator.storage.getDirectory === "function";
+  if (!labels || !store.hasChanges || store.isLoading || !hasOpfs) {
+    if (labels && store.hasChanges && hasOpfs && reArm) reArm();
     return;
   }
 
+  // Auto-save a crash-recovery draft for ANY browser project — not just large
+  // pkgs. Whether ⌘S's PRIMARY target is the draft (large embedded pkg) or the
+  // disk file (small/regular .slp) decides whether a successful draft-write also
+  // marks the project clean: for a large pkg the draft IS the save, so clearing
+  // hasChanges is correct; for a small file the disk copy is still stale, so it
+  // stays dirty (the draft is only a safety net) until ⌘S writes disk.
   const source = store.projectFileHandle ?? store.projectFile;
-  const eligible =
+  const targetIsDraft =
     decideBrowserSaveAction({
       hasEmbeddedImages: labels.videos.some((v) => v.hasEmbeddedImages),
       hasSource: !!source,
@@ -54,7 +65,6 @@ export async function maybeAutosaveLabelsDraft(
       estimatedOutputBytes: store.projectFile?.size ?? null,
       forceDialog: false,
     }) === "save-labels-draft";
-  if (!eligible) return;
 
   inFlight = true;
   const seqAtStart = store.editSeq;
@@ -71,12 +81,11 @@ export async function maybeAutosaveLabelsDraft(
       savedAt: Date.now(),
     });
     store.set("pendingExport", true);
-    // Only mark clean if NO edit landed during the write; otherwise keep it
-    // dirty and re-arm so the trailing edit is persisted (not silently dropped).
-    if (useAppStore.getState().editSeq === seqAtStart) {
+    // Mark clean only when the draft is the primary save target AND no edit
+    // landed mid-write. A mid-write edit already re-armed via the editSeq
+    // subscription; a small file stays dirty until ⌘S writes disk.
+    if (targetIsDraft && useAppStore.getState().editSeq === seqAtStart) {
       store.clearChanges();
-    } else if (reArm) {
-      reArm();
     }
     console.log("[autosave] labels draft saved ->", draftPath);
   } catch (err) {
