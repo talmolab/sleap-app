@@ -51,16 +51,32 @@ function sizeSuffix(bytes: number | null): string {
 }
 
 /**
+ * Outcome of an in-memory browser save.
+ *  - `durable: true`  — a VERIFIED write to a file we hold (File System Access
+ *    in-place overwrite or Save-As): the bytes are on disk, so the crash-recovery
+ *    draft can be dropped.
+ *  - `durable: false` — a fire-and-forget anchor download (non-Chromium): the
+ *    browser was HANDED a blob but we never see whether it landed, and it writes
+ *    a NEW copy in Downloads, not the opened file. The recovery draft must be
+ *    KEPT as a safety net in this case.
+ */
+interface InMemorySaveResult {
+  name: string;
+  durable: boolean;
+}
+
+/**
  * In-memory browser save (small files, or when the OPFS streaming path is
  * unavailable / falls back): serialize the whole file to bytes and deliver via
  * the File System Access API (Chromium) or an anchor download (elsewhere).
- * Returns the saved name, or null if the user cancelled the save-location picker.
+ * Returns the saved name + whether the write was durable (see
+ * {@link InMemorySaveResult}), or null if the user cancelled the location picker.
  */
 async function saveBrowserInMemory(
   labels: Labels,
   saveName: string,
   forceDialog: boolean
-): Promise<string | null> {
+): Promise<InMemorySaveResult | null> {
   const store = useAppStore.getState();
   const bytes = await saveSlpToBytes(labels);
   const blob = new Blob([bytes], { type: "application/octet-stream" });
@@ -80,7 +96,7 @@ async function saveBrowserInMemory(
           const writable = await existingHandle.createWritable();
           await writable.write(blob);
           await writable.close();
-          return existingHandle.name;
+          return { name: existingHandle.name, durable: true };
         }
       } catch (err) {
         // Stale handle / revoked permission / write failure → fall back to the
@@ -115,14 +131,16 @@ async function saveBrowserInMemory(
       await writable.close();
       store.set("projectFileHandle", handle);
       store.set("filename", handle.name);
-      return handle.name;
+      return { name: handle.name, durable: true };
     } catch (err: unknown) {
       if (err instanceof DOMException && err.name === "AbortError") return null;
       throw err;
     }
   }
 
-  // Non-Chromium: anchor download.
+  // Non-Chromium: anchor download. This is NOT durable — the browser is handed a
+  // blob (landing a NEW copy in Downloads, not the opened file) with no way to
+  // observe success/failure, so the caller must KEEP the crash-recovery draft.
   console.log(
     `[save] Saving via browser anchor download (${bytes.byteLength} bytes)`
   );
@@ -131,8 +149,10 @@ async function saveBrowserInMemory(
   a.href = url;
   a.download = saveName;
   a.click();
-  URL.revokeObjectURL(url);
-  return saveName;
+  // Revoke on the next tick, not synchronously: revoking immediately after
+  // click() can abort the download before the browser has read the blob.
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+  return { name: saveName, durable: false };
 }
 
 /**
@@ -424,19 +444,26 @@ export async function saveProjectAsSlp(
       } else {
         // action === "in-memory": small/regular file. Overwrite the opened file
         // in place (#234) when possible, else Save-As, else anchor download.
-        const name = await saveBrowserInMemory(labels, saveName, forceDialog);
-        if (name === null) return; // user cancelled the save dialog
-        displayName = name;
-        // Wrote the file to DISK → it's now current, so drop any crash-recovery
-        // draft + its manifest entry + the pending-export flag (nothing left to
-        // recover). Auto-save re-creates a draft only if the user edits again.
-        const draft = store.labelsDraftPath;
-        if (draft) {
-          void removeLabelsDraft(draft);
-          void deleteDraftEntry(draft);
-          store.set("labelsDraftPath", null);
+        const res = await saveBrowserInMemory(labels, saveName, forceDialog);
+        if (res === null) return; // user cancelled the save dialog
+        displayName = res.name;
+        if (res.durable) {
+          // VERIFIED write to disk (in-place or Save-As) → the disk copy is now
+          // current, so drop any crash-recovery draft + its manifest entry + the
+          // pending-export flag (nothing left to recover). Auto-save re-creates a
+          // draft only if the user edits again.
+          const draft = store.labelsDraftPath;
+          if (draft) {
+            void removeLabelsDraft(draft);
+            void deleteDraftEntry(draft);
+            store.set("labelsDraftPath", null);
+          }
+          store.set("pendingExport", false);
         }
-        store.set("pendingExport", false);
+        // else: anchor download — unverifiable and NOT the opened file, so KEEP
+        // the recovery draft as a safety net. A later durable save / Export /
+        // discard clears it; if the download silently failed, the user can still
+        // resume from the draft.
       }
     }
 

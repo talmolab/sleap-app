@@ -50,8 +50,34 @@ describe("buildBackendGraftPlan", () => {
     expect(buildBackendGraftPlan(["B", "C"], ["C", "Z"])).toEqual([null, 0]);
   });
 
-  it("consumes each original at most once for duplicate signatures", () => {
-    // Two draft videos with the same signature, only one matching original.
-    expect(buildBackendGraftPlan(["d", "d"], ["d", "e"])).toEqual([0, null]);
+  it("grafts positionally when the sets are identical, even with duplicate signatures", () => {
+    // Same videos, same order (the common resume case): a 1:1 positional graft is
+    // exact even when several videos share a signature (e.g. same-shape embedded
+    // videos, whose signature collapses to `.|<shape>`).
+    const sigs = ["d", "d", "e"];
+    expect(buildBackendGraftPlan(sigs, sigs)).toEqual([0, 1, 2]);
+  });
+
+  it("refuses ambiguous duplicate-signature matches once the set diverged", () => {
+    // draft [d,d] (a video was removed) vs original [d,d,d]: the two draft videos
+    // are indistinguishable, so a positional guess could attach the WRONG footage.
+    // Refuse both (→ blank frames + a warning) rather than risk a silent mis-graft.
+    expect(buildBackendGraftPlan(["d", "d"], ["d", "d", "d"])).toEqual([
+      null,
+      null,
+    ]);
+    // Duplicate on the draft side with a single original match: still ambiguous
+    // (which draft 'd' is the real one?), so refuse rather than guess.
+    expect(buildBackendGraftPlan(["d", "d"], ["d", "e"])).toEqual([null, null]);
+  });
+
+  it("still matches globally-unique signatures under divergence", () => {
+    // Unique signatures are unambiguous regardless of order/removal, so they graft
+    // even when other (duplicate) videos in the set can't be resolved.
+    expect(buildBackendGraftPlan(["u", "d", "d"], ["d", "d", "u"])).toEqual([
+      2,
+      null,
+      null,
+    ]);
   });
 });

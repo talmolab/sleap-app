@@ -16,6 +16,7 @@ import { resolveExternalVideos } from "@/lib/resolveVideos";
 import { removeLabelsDraft } from "@/lib/labelsDraft";
 import { deleteDraftEntry, type DraftManifestEntry } from "@/lib/draftManifest";
 import { videoSignature, buildBackendGraftPlan } from "@/lib/videoGraft";
+import { isDraftStaleVsDisk } from "@/lib/draftStaleness";
 import { toast } from "@/lib/notify";
 
 const H5WASM_URL =
@@ -78,6 +79,48 @@ async function resolveSourceHandle(
   }
   // No usable handle → re-select.
   return pickOriginal();
+}
+
+/**
+ * For a REGULAR restore, decide whether it's safe to re-link the original .slp's
+ * write handle so a later ⌘S overwrites it IN PLACE. If the on-disk file changed
+ * since this draft was saved (another session edited + saved it), the draft is
+ * stale relative to disk — return null to force Save-As, so ⌘S can't silently
+ * clobber the newer file (the draft's own edits are still restored either way).
+ * Also returns null when freshness can't be verified (no handle / read
+ * permission denied / read error): the safe default is Save-As, never a silent
+ * in-place overwrite. Must run in a user gesture (the Restore click) so the read
+ * permission prompt is allowed.
+ */
+async function safeRestoreWriteHandle(
+  entry: DraftManifestEntry,
+): Promise<FileSystemFileHandle | null> {
+  const handle = entry.sourceHandle as
+    | (FileSystemFileHandle & PermissionedHandle)
+    | null;
+  if (!handle) return null; // drag-drop / bare-File open: no in-place handle anyway
+  try {
+    if (handle.requestPermission && handle.queryPermission) {
+      const state = await handle.queryPermission({ mode: "read" });
+      if (
+        state !== "granted" &&
+        (await handle.requestPermission({ mode: "read" })) !== "granted"
+      ) {
+        return null; // can't read to verify freshness → don't risk a silent clobber
+      }
+    }
+    const current = await handle.getFile();
+    if (isDraftStaleVsDisk(entry.savedAt, current.lastModified)) {
+      toast.warning("The file on disk is newer than this draft", {
+        description:
+          "Restored your unsaved edits, but the file changed since — use Save As to avoid overwriting the newer version.",
+      });
+      return null; // force Save-As rather than overwrite the diverged disk file
+    }
+    return handle;
+  } catch {
+    return null; // unverifiable → safe fallback (Save-As on the next save)
+  }
 }
 
 /** Graft each original video's (lazy) backend onto the draft's video at the same
@@ -177,12 +220,16 @@ export async function restoreDraft(entry: DraftManifestEntry): Promise<boolean> 
       });
       store.setLoading(true, "Locating videos...");
       await resolveExternalVideos(draftLabels);
+      // Re-link the original .slp handle so a later ⌘S can write back in place —
+      // but only when the on-disk file hasn't diverged from this draft (else force
+      // Save-As so we never silently overwrite newer on-disk edits).
+      const writeHandle = await safeRestoreWriteHandle(entry);
       store.setLabels(
         draftLabels,
         entry.displayName,
         undefined,
         undefined,
-        entry.sourceHandle,
+        writeHandle,
       );
     }
 
