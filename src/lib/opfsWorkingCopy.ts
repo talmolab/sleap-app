@@ -194,6 +194,7 @@ export async function seedWorkingCopy(
   labels: Labels,
   source: File | FileSystemFileHandle,
   opfsPath: string,
+  onProgress?: (done: number, total: number) => void,
 ): Promise<WorkingCopy> {
   // Ask the browser to keep OPFS persistent before we rely on it as the durable
   // home for edits saved locally but not yet exported (best-effort).
@@ -214,7 +215,7 @@ export async function seedWorkingCopy(
       H5WASM_URL,
     );
     if (plan.entries.length > 0) {
-      const res = await writer.appendEmbeddedVideos(plan.entries);
+      const res = await writer.appendEmbeddedVideos(plan.entries, onProgress);
       if (res.success !== true) {
         throw new Error(
           `seedWorkingCopy: appendEmbeddedVideos failed: ${
@@ -347,11 +348,27 @@ export async function commitToWorkingCopy(
 export async function exportWorkingCopy(
   wc: WorkingCopy,
   destHandle: FileSystemFileHandle,
+  onProgress?: (written: number, total: number) => void,
 ): Promise<string> {
   const root = await navigator.storage.getDirectory();
   const fh = await root.getFileHandle(wc.opfsPath, { create: false });
   const file = await fh.getFile();
+  const total = file.size;
   const writable = await destHandle.createWritable();
-  await file.stream().pipeTo(writable as unknown as WritableStream<Uint8Array>);
+  let source: ReadableStream<Uint8Array> = file.stream();
+  if (onProgress) {
+    // Count bytes as they flow through so the caller can show export progress;
+    // never buffers (one chunk passes through at a time).
+    let written = 0;
+    const counter = new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        written += chunk.byteLength;
+        onProgress(written, total);
+        controller.enqueue(chunk);
+      },
+    });
+    source = file.stream().pipeThrough(counter);
+  }
+  await source.pipeTo(writable as unknown as WritableStream<Uint8Array>);
   return destHandle.name;
 }

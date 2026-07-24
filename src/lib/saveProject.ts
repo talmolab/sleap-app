@@ -307,9 +307,26 @@ export async function saveProjectAsSlp(
           }
           // Seeding copies the embedded images into OPFS once — as slow as a
           // full save; every subsequent ⌘S is then an instant in-place patch.
-          store.setLoading(true, "Preparing fast save (one-time)...");
+          // The copy reports per-frame progress (throttled once-per-percent in
+          // the worker) so the overlay shows a real bar, not just a spinner.
+          store.setLoading(
+            true,
+            "Preparing fast save — copying images (one-time)..."
+          );
           console.log("[save] Seeding OPFS working copy (browser fast-save)");
-          wc = await seedWorkingCopy(labels, source, newWorkingCopyPath(saveName));
+          wc = await seedWorkingCopy(
+            labels,
+            source,
+            newWorkingCopyPath(saveName),
+            (done, total) => {
+              const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+              store.setLoading(
+                true,
+                `Preparing fast save — copying images (${pct}%)`,
+                pct
+              );
+            }
+          );
         } else {
           // Usually an instant label-table patch; a structural edit (track/video
           // change) re-seeds a fresh copy, which is slower but still local.
@@ -372,7 +389,17 @@ export async function saveProjectAsSlp(
           }
           store.setLoading(true, "Exporting to disk...");
           console.log("[save] Exporting OPFS working copy to disk");
-          displayName = await exportWorkingCopy(wc, destHandle);
+          let lastExportPct = -1;
+          displayName = await exportWorkingCopy(
+            wc,
+            destHandle,
+            (written, total) => {
+              const pct = total > 0 ? Math.round((written / total) * 100) : 0;
+              if (pct === lastExportPct) return; // throttle to once-per-percent
+              lastExportPct = pct;
+              store.setLoading(true, `Exporting to disk (${pct}%)`, pct);
+            }
+          );
         } else {
           if (!source) {
             throw new Error("no opened source to stream the embedded pkg from");
