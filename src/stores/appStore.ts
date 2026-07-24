@@ -47,6 +47,10 @@ import {
   type PassCursor,
   type PassDims,
 } from "@/lib/activeLearning/passEngine";
+import {
+  resolveReviewInstance,
+  type ReviewItem,
+} from "@/lib/activeLearning/reviewQueue";
 export type { PassItem, PassCursor, PassDims };
 
 // Required before immer can draft Set/Map fields (hiddenInstances /
@@ -165,7 +169,7 @@ export interface AppState {
   clipboardInstance: Instance | null;
 
   // === Labeling mode state (transient, not persisted) ===
-  labelingMode: "select" | "place" | "seed" | "keypointPass";
+  labelingMode: "select" | "place" | "seed" | "keypointPass" | "correct";
   placementNodeIdx: number | null;
   /** Skeleton node index a "seed" click places (the centroid/body-center node). */
   seedNodeIdx: number;
@@ -187,6 +191,20 @@ export interface AppState {
   passCursor: PassCursor | null;
   /** Live zoom-to-centroid window (px); adjustable during Phase-2 labeling. */
   passZoomWindow: number;
+
+  // === Phase-3 keypoint-correction state (transient, not persisted) ===
+  /** Predicted instances queued for review, worst single keypoint first. */
+  correctQueue: ReviewItem[];
+  /**
+   * Position in the queue. A value in `[0, correctQueue.length)` is the item
+   * being corrected; `correctQueue.length` (past the end) means the sweep is
+   * complete but the mode stays active so the HUD can show the "done" state.
+   */
+  correctCursor: number;
+  /** Live zoom-to-instance window (px) for Phase-3 correction. */
+  correctZoomWindow: number;
+  /** Keypoints at/below this confidence are flagged (ring + sidebar color). */
+  correctScoreThreshold: number;
 
   // === Frame range ===
   frameRange: [number, number] | null;
@@ -287,6 +305,27 @@ export interface AppState {
   setPassZoomWindow: (px: number) => void;
   /** Sync frame/instance selection to the current pass cursor. */
   syncPassSelection: () => void;
+  /** Enter Phase-3 correction with a prebuilt review queue (worst-first). */
+  enterCorrectMode: (args: {
+    queue: ReviewItem[];
+    zoomWindow?: number;
+    scoreThreshold?: number;
+  }) => void;
+  exitCorrectMode: () => void;
+  /** Advance to the next queued item (accepting happens in the UI/command layer). */
+  correctAdvance: () => void;
+  /** Step back to the previous queued item. */
+  correctBack: () => void;
+  /** Set the zoom-to-instance window (px) for Phase-3 correction. */
+  setCorrectZoomWindow: (px: number) => void;
+  /** Sync frame/instance selection to the current correction cursor. */
+  syncCorrectSelection: () => void;
+  /**
+   * Move the correction cursor to the queue item at (video, frameIdx,
+   * instanceIdx) and frame it, if such an item exists. Used by undo/redo to land
+   * the cursor exactly on the restored item. No-op when it isn't in the queue.
+   */
+  correctSyncToFrame: (video: Video, frameIdx: number, instanceIdx: number) => void;
   togglePanelVisibility: (panelId: string) => void;
   resetPanels: () => void;
   toggle: (key: keyof AppState) => void;
@@ -413,7 +452,7 @@ export const useAppStore = create<AppState>()(
       clipboardInstance: null,
 
       // Labeling mode state (transient)
-      labelingMode: "select" as "select" | "place" | "seed" | "keypointPass",
+      labelingMode: "select" as "select" | "place" | "seed" | "keypointPass" | "correct",
       placementNodeIdx: null as number | null,
       seedNodeIdx: 0,
       seedCentroidAnnotation: false,
@@ -424,6 +463,12 @@ export const useAppStore = create<AppState>()(
       passNodeIndices: [] as number[][],
       passCursor: null as PassCursor | null,
       passZoomWindow: 256,
+
+      // Phase-3 keypoint-correction state (transient)
+      correctQueue: [] as ReviewItem[],
+      correctCursor: 0,
+      correctZoomWindow: 256,
+      correctScoreThreshold: 0.3,
 
       // Frame range
       frameRange: null,
@@ -483,6 +528,9 @@ export const useAppStore = create<AppState>()(
           state.passWorkList = [];
           state.passDims = null;
           state.passNodeIndices = [];
+          // The correction queue references the OLD project's instances too.
+          state.correctQueue = [];
+          state.correctCursor = 0;
           // setLabels sets video/frame directly (not via setVideo), so drop any
           // stale identity-keyed transients from the previous project.
           clearTransientVisibility(state);
@@ -817,6 +865,84 @@ export const useAppStore = create<AppState>()(
         if (video && video !== s.video) get().setVideo(video);
         get().setFrameIdx(item.frameIdx);
         get().setInstance(resolveItemInstance(s.labels, item));
+      },
+
+      enterCorrectMode: ({ queue, zoomWindow, scoreThreshold }) => {
+        set((state) => {
+          state.labelingMode = "correct";
+          // A pre-existing area-delete mode would splice predictions on click and
+          // desync the queue — clear it on entry.
+          state.areaDeleteMode = false;
+          state.correctQueue = queue;
+          state.correctCursor = 0;
+          if (typeof zoomWindow === "number" && zoomWindow > 0) {
+            state.correctZoomWindow = zoomWindow;
+          }
+          if (typeof scoreThreshold === "number") {
+            state.correctScoreThreshold = scoreThreshold;
+          }
+        });
+        // Frame the first item. An empty queue leaves the mode active but with
+        // nothing selected (the panel/HUD shows an "all clear" state).
+        if (queue.length > 0) get().syncCorrectSelection();
+      },
+
+      exitCorrectMode: () =>
+        set((state) => {
+          state.labelingMode = "select";
+          state.correctQueue = [];
+          state.correctCursor = 0;
+        }),
+
+      correctAdvance: () => {
+        const { correctCursor, correctQueue } = get();
+        // Clamp at length (past the end = the completed state); the mode stays
+        // so the HUD can show "done" and VideoPlayer stops re-zooming.
+        const next = Math.min(correctCursor + 1, correctQueue.length);
+        set((state) => {
+          state.correctCursor = next;
+        });
+        if (next < correctQueue.length) get().syncCorrectSelection();
+      },
+
+      correctBack: () => {
+        const { correctCursor } = get();
+        const prev = Math.max(0, correctCursor - 1);
+        set((state) => {
+          state.correctCursor = prev;
+        });
+        get().syncCorrectSelection();
+      },
+
+      setCorrectZoomWindow: (px) =>
+        set((state) => {
+          state.correctZoomWindow = Math.max(16, px);
+        }),
+
+      syncCorrectSelection: () => {
+        const s = get();
+        if (!s.labels) return;
+        const item = s.correctQueue[s.correctCursor];
+        if (!item) return;
+        const video = s.labels.videos[item.videoIdx];
+        if (video && video !== s.video) get().setVideo(video);
+        get().setFrameIdx(item.frameIdx);
+        get().setInstance(resolveReviewInstance(s.labels, item));
+      },
+
+      correctSyncToFrame: (video, frameIdx, instanceIdx) => {
+        const s = get();
+        if (s.labelingMode !== "correct" || !s.labels) return;
+        const videoIdx = s.labels.videos.indexOf(video);
+        if (videoIdx < 0) return;
+        const idx = s.correctQueue.findIndex(
+          (it) => it.videoIdx === videoIdx && it.frameIdx === frameIdx && it.instanceIdx === instanceIdx,
+        );
+        if (idx < 0) return;
+        set((state) => {
+          state.correctCursor = idx;
+        });
+        get().syncCorrectSelection();
       },
 
       // Toggle a sidebar panel's visibility (#135). Hiding the currently-active

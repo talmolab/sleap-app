@@ -37,6 +37,14 @@ export interface RenderedInstance {
   visible: boolean;
   /** Per-instance "show occluded nodes" (#2782), overriding the global flag. */
   showNonVisible: boolean;
+  /**
+   * Phase-3 correction: skeleton node indices to ring as low-confidence, so the
+   * eye lands on the predictions most likely to be wrong. Driven by the review
+   * queue's score SNAPSHOT (not the live points), so the rings survive the
+   * adopt-on-touch conversion that strips per-point scores. Set only on the
+   * instance under review, so ordinary predicted overlays are unaffected.
+   */
+  highlightNodeIdxs?: number[];
 }
 
 export interface RenderOptions {
@@ -62,6 +70,9 @@ const DEFAULT_OPTIONS: RenderOptions = {
   colorPredicted: false,
   zoom: 1,
 };
+
+/** Warning color for low-confidence keypoint rings in correction mode. */
+const CONFIDENCE_WARN_COLOR: RGB = [255, 64, 64];
 
 /**
  * Render all skeleton instances onto a canvas context.
@@ -127,6 +138,17 @@ function renderInstance(
     renderNode(ctx, node, nodeColor, isPredicted, opts);
   });
 
+  // Phase-3 correction: ring the flagged low-confidence keypoints on top of the
+  // markers so they stand out. Only the instance under review sets these.
+  if (instance.highlightNodeIdxs && instance.highlightNodeIdxs.length > 0) {
+    for (const nIdx of instance.highlightNodeIdxs) {
+      const node = nodes[nIdx];
+      if (!node) continue;
+      if (!node.visible && !opts.showNonVisibleNodes) continue;
+      renderConfidenceRing(ctx, node, opts);
+    }
+  }
+
   // Draw node labels (skip for predicted unless colorPredicted is on)
   if (opts.showLabels && (!isPredicted || opts.colorPredicted)) {
     nodes.forEach((node, nIdx) => {
@@ -180,6 +202,20 @@ function renderNode(
     ctx.fillStyle = "transparent";
     ctx.stroke();
   }
+}
+
+/** A bold warning ring around a low-confidence keypoint (Phase-3 correction). */
+function renderConfidenceRing(
+  ctx: CanvasRenderingContext2D,
+  node: RenderedNode,
+  opts: RenderOptions
+): void {
+  const radius = (opts.markerSize * 2.2) / opts.zoom;
+  ctx.beginPath();
+  ctx.arc(node.x, node.y, radius, 0, Math.PI * 2);
+  ctx.strokeStyle = rgbToCSS(CONFIDENCE_WARN_COLOR, 0.95);
+  ctx.lineWidth = 2 / opts.zoom;
+  ctx.stroke();
 }
 
 function renderLineEdge(
