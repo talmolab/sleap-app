@@ -133,11 +133,12 @@ export async function loadProjectFromFile(file: File): Promise<boolean> {
     store.setLoading(true, "Locating videos...");
     await resolveExternalVideos(labels);
     // Retain the source File AND, when this open came from the file picker, its
-    // durable FileSystemFileHandle, so a large embedded-pkg re-save can re-read
-    // the images fresh via the OPFS writer (see saveEmbeddedPkgOpfs). The handle
-    // is preferred because a File snapshot goes stale after the native Save
-    // dialog / elapsed time / on network volumes. Name-match guards against a
-    // stale handle left over from a prior pick (e.g. a later drag-drop open).
+    // durable FileSystemFileHandle, so a plain Save can write back to the opened
+    // file in place (#234) AND a large embedded-pkg re-save/export can re-read
+    // its images fresh via the OPFS writer (see saveProjectAsSlp /
+    // saveEmbeddedPkgOpfs). The handle is preferred because a File snapshot goes
+    // stale after a dialog / elapsed time / on a network volume. Name-match
+    // guards against a stale handle from a prior pick (a later drag-drop sets none).
     const picked = consumeLastBrowserFileHandle();
     const handle = picked && picked.name === file.name ? picked : null;
     store.setLabels(labels, file.name, undefined, file, handle);

@@ -30,6 +30,7 @@ import {
 import { newDraftPath, removeLabelsDraft } from "@/lib/labelsDraft";
 import { recordDraftSave, deleteDraftEntry } from "@/lib/draftManifest";
 import { isSameSaveTarget } from "@/lib/saveTargetGuard";
+import { shouldOverwriteOpenedFile } from "@/lib/browserSaveTarget";
 
 /**
  * Human-readable byte size for the save progress text (e.g. "3.8 GB", "742 MB").
@@ -57,15 +58,45 @@ function sizeSuffix(bytes: number | null): string {
  */
 async function saveBrowserInMemory(
   labels: Labels,
-  saveName: string
+  saveName: string,
+  forceDialog: boolean
 ): Promise<string | null> {
+  const store = useAppStore.getState();
   const bytes = await saveSlpToBytes(labels);
+  const blob = new Blob([bytes], { type: "application/octet-stream" });
+
   if ("showSaveFilePicker" in window) {
+    // SAVE (not Save-As) with a retained handle → overwrite the opened file in
+    // place — no dialog, matching a native / PyQt save (#234). createWritable
+    // writes atomically via a swap file, so overwriting the same file is safe;
+    // the first such save may prompt once for write permission.
+    const existingHandle = store.projectFileHandle;
+    if (shouldOverwriteOpenedFile({ forceDialog, hasHandle: !!existingHandle }) && existingHandle) {
+      try {
+        if (await ensureReadWritePermission(existingHandle)) {
+          console.log(
+            `[save] Saving in place to the opened file (browser): ${existingHandle.name} (${bytes.byteLength} bytes)`
+          );
+          const writable = await existingHandle.createWritable();
+          await writable.write(blob);
+          await writable.close();
+          return existingHandle.name;
+        }
+      } catch (err) {
+        // Stale handle / revoked permission / write failure → fall back to the
+        // Save-As picker rather than surfacing an error.
+        console.warn(
+          "[save] in-place save to the opened file failed; prompting Save As",
+          err
+        );
+      }
+    }
+    // Save-As, no retained handle, or a failed in-place attempt: prompt for a
+    // location, then RETAIN the chosen handle so subsequent saves write in place.
     console.log(
-      `[save] Saving via browser File System Access API (${bytes.byteLength} bytes)`
+      `[save] Saving via browser Save-As picker (${bytes.byteLength} bytes)`
     );
     try {
-      const blob = new Blob([bytes], { type: "application/octet-stream" });
       const handle = await (
         window as unknown as {
           showSaveFilePicker: (opts: unknown) => Promise<FileSystemFileHandle>;
@@ -82,16 +113,19 @@ async function saveBrowserInMemory(
       const writable = await handle.createWritable();
       await writable.write(blob);
       await writable.close();
+      store.set("projectFileHandle", handle);
+      store.set("filename", handle.name);
       return handle.name;
     } catch (err: unknown) {
       if (err instanceof DOMException && err.name === "AbortError") return null;
       throw err;
     }
   }
+
+  // Non-Chromium: anchor download.
   console.log(
     `[save] Saving via browser anchor download (${bytes.byteLength} bytes)`
   );
-  const blob = new Blob([bytes], { type: "application/octet-stream" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -124,6 +158,29 @@ async function writeSlpBytesAtomic(
     await removeFile(tempPath).catch(() => {});
     throw err;
   }
+}
+
+/**
+ * Ensure we hold readwrite permission on `handle` so a Save can overwrite the
+ * opened file without a Save-As dialog. Queries first (silent when already
+ * granted — e.g. a prior save this session), then requests (a one-time browser
+ * "allow this site to edit this file?" prompt). Returns false when permission
+ * isn't granted, so the caller falls back to the Save-As picker. Must be reached
+ * within the save gesture for the request prompt to be allowed.
+ */
+async function ensureReadWritePermission(
+  handle: FileSystemFileHandle
+): Promise<boolean> {
+  const h = handle as FileSystemFileHandle & {
+    queryPermission?: (d: { mode: "readwrite" }) => Promise<PermissionState>;
+    requestPermission?: (d: { mode: "readwrite" }) => Promise<PermissionState>;
+  };
+  // Engines without the permission API: assume writable and let the write
+  // attempt (guarded by the caller's try/catch) be the arbiter.
+  if (!h.queryPermission || !h.requestPermission) return true;
+  const opts = { mode: "readwrite" as const };
+  if ((await h.queryPermission(opts)) === "granted") return true;
+  return (await h.requestPermission(opts)) === "granted";
 }
 
 /**
@@ -365,8 +422,9 @@ export async function saveProjectAsSlp(
           store.set("labelsDraftPath", null);
         }
       } else {
-        // action === "in-memory"
-        const name = await saveBrowserInMemory(labels, saveName);
+        // action === "in-memory": small/regular file. Overwrite the opened file
+        // in place (#234) when possible, else Save-As, else anchor download.
+        const name = await saveBrowserInMemory(labels, saveName, forceDialog);
         if (name === null) return; // user cancelled the save dialog
         displayName = name;
       }

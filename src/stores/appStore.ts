@@ -62,17 +62,17 @@ export interface AppState {
   projectPath: string | null;
   /**
    * The browser File the current project was opened from (file picker), retained
-   * so a large embedded-pkg re-save can read its images back via the OPFS
-   * streaming writer (WORKERFS source). Null on Tauri / new projects. NOT
-   * persisted (a File cannot be serialized).
+   * so a re-save/export can read its images back via the OPFS streaming writer
+   * (WORKERFS source). A snapshot — prefer `projectFileHandle` for writing. Null
+   * on Tauri / new projects. NOT persisted (a File cannot be serialized).
    */
   projectFile: File | null;
   /**
-   * The durable FileSystemFileHandle the project was opened from (browser File
-   * System Access API), when available. PREFERRED over projectFile for the large
-   * re-save's image source: `getFile()` re-reads fresh bytes, whereas a `File`
-   * snapshot goes stale after focus changes / time / on network volumes. Null on
-   * Tauri, the `<input>` fallback, and new projects. NOT persisted.
+   * The durable `FileSystemFileHandle` from a browser file-picker open, when
+   * available. PREFERRED over `projectFile`: `getFile()` re-reads fresh bytes,
+   * and it lets a plain Save write BACK to the opened file in place (no Save-As
+   * dialog, matching a native/PyQt save) as well as a large-pkg re-save/export
+   * re-read the source. Null for drag-drop / `<input>` opens and outside Chromium.
    */
   projectFileHandle: FileSystemFileHandle | null;
   hasChanges: boolean;

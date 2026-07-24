@@ -48,14 +48,13 @@ function detectTauri(): boolean {
   );
 }
 
-/** Create the browser-based platform implementation. */
 /**
- * The FileSystemFileHandle(s) from the most recent browser File System Access
- * open, retained so a later re-save can re-read the source with a FRESH
- * `getFile()`. A plain `File` snapshot goes stale after focus changes (e.g. the
- * native Save dialog), elapsed time, or on network volumes — reading it then
- * throws "permission problems that have occurred after a reference to a file was
- * acquired". Reset at the start of every showOpenDialog call; empty for the
+ * The `FileSystemFileHandle`(s) from the most recent File System Access open,
+ * retained so a later Save can write BACK to the opened file in place (no
+ * Save-As dialog) AND a re-save/export can re-read the source with a FRESH
+ * `getFile()`. Only the durable handle can do either; a plain `File` snapshot
+ * can't be written to and goes stale after focus changes / time / on network
+ * volumes. Reset at the start of every showOpenDialog call; left empty for the
  * `<input>` fallback (which yields no handles).
  */
 let _lastBrowserFileHandles: FileSystemFileHandle[] = [];
@@ -70,6 +69,7 @@ export function consumeLastBrowserFileHandle(): FileSystemFileHandle | null {
   return h;
 }
 
+/** Create the browser-based platform implementation. */
 function createWebPlatform(): PlatformAPI {
   return {
     isTauri: false,
@@ -106,7 +106,8 @@ function createWebPlatform(): PlatformAPI {
             // option) when the caller asks — e.g. project open → *.slp only.
             excludeAcceptAllOption: options?.excludeAcceptAll ?? false,
           });
-          // Retain the handles so a later re-save can re-read the source fresh.
+          // Retain the handles so a later Save can write back in place and a
+          // re-save/export can re-read the source fresh.
           _lastBrowserFileHandles = handles as FileSystemFileHandle[];
           const files: File[] = await Promise.all(
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
