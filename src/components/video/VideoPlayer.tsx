@@ -516,8 +516,8 @@ export function VideoPlayer() {
             | Record<string, unknown>
             | undefined;
           if (typeof meta?.lazyPath === "string") {
-            const { readFile } = await import("@tauri-apps/plugin-fs");
-            await ensureVideoBackend(video, readFile);
+            // Opens by byte-range internally (RangeSource) — no whole-file read.
+            await ensureVideoBackend(video);
           }
           if (cancelled) return;
           if (!video.backend) {

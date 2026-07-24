@@ -42,6 +42,7 @@ import {
   PasteInstance,
   DeleteFramePredictions,
   DeleteAllPredictions,
+  AddInstancesFromAllPredictions,
   AddTrack,
   SetInstanceTrack,
   TransposeInstances,
@@ -789,6 +790,12 @@ function LabelsMenu() {
           Delete Instance <MenubarShortcut>{modKey}+Backspace</MenubarShortcut>
         </MenubarItem>
         <MenubarSeparator />
+        <MenubarItem
+          disabled={!projectLoaded}
+          onClick={() => exec(AddInstancesFromAllPredictions)}
+        >
+          Accept All Predictions on Current Frame
+        </MenubarItem>
         <MenubarItem
           disabled={!projectLoaded}
           onClick={() => exec(DeleteFramePredictions)}

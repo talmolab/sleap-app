@@ -133,8 +133,12 @@ export class CommandContext {
   /** Listeners notified when topics are signaled. */
   private listeners: Set<UpdateListener> = new Set();
 
-  /** Take a snapshot of the current frame state. */
-  private takeSnapshot(commandName: string): UndoSnapshot {
+  /**
+   * Take a snapshot of the current frame state. Public so a command using
+   * `skipAutoSnapshot` can manage its own single-frame undo (the single-frame
+   * analogue of {@link takeAllFramesSnapshot}).
+   */
+  takeSnapshot(commandName: string): UndoSnapshot {
     const { labels, video, frameIdx, instance } = this.state;
     let frame: SingleFrameData | null = null;
     let selectedIdx = -1;

@@ -48,6 +48,25 @@ function detectTauri(): boolean {
   );
 }
 
+/**
+ * The `FileSystemFileHandle`(s) from the most recent File System Access open,
+ * retained so a later Save can write BACK to the opened file in place (no
+ * Save-As dialog). Only the durable handle can do this; a plain `File` snapshot
+ * can't be written to. Reset at the start of every showOpenDialog call; left
+ * empty for the `<input>` fallback (which yields no handles).
+ */
+let _lastBrowserFileHandles: FileSystemFileHandle[] = [];
+/**
+ * Take (and clear) the handle from the most recent File System Access open.
+ * Cleared on read so a later non-picker open (e.g. drag-drop, which sets no
+ * handle) can't accidentally reuse a stale handle from a prior pick.
+ */
+export function consumeLastBrowserFileHandle(): FileSystemFileHandle | null {
+  const h = _lastBrowserFileHandles[0] ?? null;
+  _lastBrowserFileHandles = [];
+  return h;
+}
+
 /** Create the browser-based platform implementation. */
 function createWebPlatform(): PlatformAPI {
   return {
@@ -65,6 +84,7 @@ function createWebPlatform(): PlatformAPI {
 
     async showOpenDialog(options): Promise<File | File[] | null> {
       const multi = options?.multiple ?? false;
+      _lastBrowserFileHandles = []; // reset; filled below only on the FSA path
 
       // Try File System Access API first (Chrome/Edge)
       if ("showOpenFilePicker" in window) {
@@ -84,6 +104,8 @@ function createWebPlatform(): PlatformAPI {
             // option) when the caller asks — e.g. project open → *.slp only.
             excludeAcceptAllOption: options?.excludeAcceptAll ?? false,
           });
+          // Retain the handles so a later Save can write back in place.
+          _lastBrowserFileHandles = handles as FileSystemFileHandle[];
           const files: File[] = await Promise.all(
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             handles.map((h: any) => h.getFile() as Promise<File>)
