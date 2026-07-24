@@ -347,10 +347,48 @@ export class CommandContext {
     }
   }
 
+  /**
+   * Navigate the view to a snapshot's frame. Undo/redo restore a frame BY its
+   * own (video, frameIdx), not the active one, so in guided sweeps the active
+   * frame can differ from the frame being restored — leaving the image showing
+   * one frame and the overlay another, and making the redo before-snapshot
+   * capture the wrong frame. Navigating first keeps image + overlay consistent
+   * and lets redo round-trip. A no-op when already on that frame.
+   */
+  private navigateToSnapshotFrame(snapshot: UndoSnapshot): void {
+    const video = snapshot.allFrames ? snapshot.activeVideo : snapshot.frame?.videoRef;
+    const frameIdx = snapshot.allFrames ? snapshot.activeFrameIdx : snapshot.frame?.frameIdx;
+    if (!video || frameIdx == null) return;
+    if (video !== this.state.video) this.state.setVideo(video);
+    this.state.setFrameIdx(frameIdx);
+  }
+
+  /**
+   * Land the correction cursor on the queue item the snapshot belongs to (its
+   * frame + selected instance), so after an undo/redo the cursor, view, and bar
+   * all point at the item whose data just changed. Uses the snapshot's STORED
+   * selectedIdx (captured when the command ran), not live state. No-op outside
+   * correct mode or when the item isn't in the queue.
+   */
+  private correctResyncFromSnapshot(snapshot: UndoSnapshot): void {
+    const video = snapshot.allFrames ? snapshot.activeVideo : snapshot.frame?.videoRef;
+    const frameIdx = snapshot.allFrames ? snapshot.activeFrameIdx : snapshot.frame?.frameIdx;
+    if (!video || frameIdx == null || snapshot.selectedIdx < 0) return;
+    this.state.correctSyncToFrame(video, frameIdx, snapshot.selectedIdx);
+  }
+
   /** Undo the last mutating command. Returns true if an undo was performed. */
   undo(): boolean {
     const snapshot = this.undoStack.pop();
     if (!snapshot) return false;
+
+    // In a correction sweep, Accept advances the view to the NEXT item's frame
+    // before this command's frame is restored. Navigate back to the edited frame
+    // first so the restore (and its redo before-snapshot) act on the right frame
+    // and the overlay never mismatches the image.
+    if (useAppStore.getState().labelingMode === "correct") {
+      this.navigateToSnapshotFrame(snapshot);
+    }
 
     const redoSnapshot = this.restoreSnapshot(snapshot);
     this.redoStack.push(redoSnapshot);
@@ -360,7 +398,14 @@ export class CommandContext {
     // ahead of the (now un-placed) node. Step it back in lockstep — 1 undo = 1
     // placement in this guided mode. A no-op at the sweep start is harmless.
     const s = useAppStore.getState();
-    if (s.labelingMode === "keypointPass") s.passStepBack();
+    if (s.labelingMode === "keypointPass") {
+      s.passStepBack();
+    } else if (s.labelingMode === "correct") {
+      // Land the cursor back on the item whose data just reverted (works whether
+      // it was an Accept that advanced the cursor or a drag/right-click that
+      // didn't) so the view, cursor, and bar stay in agreement.
+      this.correctResyncFromSnapshot(snapshot);
+    }
     return true;
   }
 
@@ -369,12 +414,20 @@ export class CommandContext {
     const snapshot = this.redoStack.pop();
     if (!snapshot) return false;
 
+    if (useAppStore.getState().labelingMode === "correct") {
+      this.navigateToSnapshotFrame(snapshot);
+    }
+
     const undoSnapshot = this.restoreSnapshot(snapshot);
     this.undoStack.push(undoSnapshot);
     this.afterUndoRedo();
-    // Mirror undo(): re-advance the cursor when redoing a placement.
+    // Mirror undo(): re-advance the cursor when redoing a placement/acceptance.
     const s = useAppStore.getState();
-    if (s.labelingMode === "keypointPass") s.passAdvance();
+    if (s.labelingMode === "keypointPass") {
+      s.passAdvance();
+    } else if (s.labelingMode === "correct") {
+      this.correctResyncFromSnapshot(snapshot);
+    }
     return true;
   }
 

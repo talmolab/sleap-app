@@ -101,14 +101,15 @@ export function useKeyboardShortcuts() {
       [DEFAULT_SHORTCUTS["goto next suggestion"]]: (e) => {
         if (isTextInput(e)) return;
         const m = store().labelingMode;
-        if (m === "seed" || m === "keypointPass") return;
+        // Correct mode owns Space (accept + advance), handled in VideoPlayer.
+        if (m === "seed" || m === "keypointPass" || m === "correct") return;
         e.preventDefault();
         commandContext.execute(GoNextSuggestion);
       },
       [DEFAULT_SHORTCUTS["goto prev suggestion"]]: (e) => {
         if (isTextInput(e)) return;
         const m = store().labelingMode;
-        if (m === "seed" || m === "keypointPass") return;
+        if (m === "seed" || m === "keypointPass" || m === "correct") return;
         e.preventDefault();
         commandContext.execute(GoPrevSuggestion);
       },
@@ -166,6 +167,8 @@ export function useKeyboardShortcuts() {
         if (isTextInput(e)) return;
         e.preventDefault();
         const { labelingMode, instance, enterPlacementMode, exitPlacementMode } = store();
+        // Don't switch into placement mid-sweep — it orphans the pass/queue.
+        if (labelingMode === "keypointPass" || labelingMode === "correct") return;
         if (labelingMode === "place") {
           exitPlacementMode();
         } else if (instance) {
@@ -198,13 +201,18 @@ export function useKeyboardShortcuts() {
       // Instance editing (via command system)
       [DEFAULT_SHORTCUTS["add instance"]]: (e) => {
         e.preventDefault();
+        // Adding an instance mid-sweep changes the frame's instance count and
+        // desyncs the work-list/queue indices — block it.
+        const m = store().labelingMode;
+        if (m === "keypointPass" || m === "correct") return;
         commandContext.execute(AddInstance);
       },
       [DEFAULT_SHORTCUTS["delete instance"]]: (e) => {
         e.preventDefault();
-        // Deleting an instance mid-pass would splice the frame's instances and
-        // shift the work-list indices the sweep resolves against — block it.
-        if (store().labelingMode === "keypointPass") return;
+        // Deleting an instance mid-sweep would splice the frame's instances and
+        // shift the work-list/queue indices the sweep resolves against — block it.
+        const m = store().labelingMode;
+        if (m === "keypointPass" || m === "correct") return;
         commandContext.execute(DeleteSelectedInstance);
       },
 
@@ -219,8 +227,9 @@ export function useKeyboardShortcuts() {
       },
       [DEFAULT_SHORTCUTS["delete track"]]: (e) => {
         e.preventDefault();
-        // See "delete instance": splicing an instance mid-pass desyncs the sweep.
-        if (store().labelingMode === "keypointPass") return;
+        // See "delete instance": splicing an instance mid-sweep desyncs it.
+        const m = store().labelingMode;
+        if (m === "keypointPass" || m === "correct") return;
         if (confirm("Delete this instance and its track?")) {
           commandContext.execute(DeleteInstanceAndTrack);
         }
@@ -313,6 +322,9 @@ export function useKeyboardShortcuts() {
       // Delete predictions from area (Ctrl+K)
       [DEFAULT_SHORTCUTS["delete area predictions"]]: (e) => {
         e.preventDefault();
+        // Area-delete splices predictions out of the frame, desyncing a sweep.
+        const m = store().labelingMode;
+        if (m === "keypointPass" || m === "correct") return;
         store().toggle("areaDeleteMode");
       },
 
@@ -329,31 +341,53 @@ export function useKeyboardShortcuts() {
           s.exitSeedMode();
         } else if (s.labelingMode === "keypointPass") {
           s.exitKeypointPassMode();
+        } else if (s.labelingMode === "correct") {
+          s.exitCorrectMode();
         } else {
           s.setInstance(null);
         }
       },
 
-      // Phase-2 keypoint pass: s = skip the current node (leave it unplaced and
-      // advance); b / Backspace = step back one node. All gated on the mode so
-      // they're inert everywhere else.
+      // Phase-2 keypoint pass / Phase-3 correction step keys. s = skip (advance
+      // without placing/accepting); b / Backspace = step back. Gated on the mode
+      // so they're inert everywhere else.
       KeyS: (e) => {
         if (isTextInput(e)) return;
-        if (store().labelingMode !== "keypointPass") return;
-        e.preventDefault();
-        store().passAdvance();
+        const m = store().labelingMode;
+        if (m === "keypointPass") {
+          e.preventDefault();
+          store().passAdvance();
+        } else if (m === "correct") {
+          // Skip: leave this prediction as-is (unaccepted) and move on. Guard
+          // key-repeat so holding S can't skip the whole queue in one press.
+          if (e.repeat) return;
+          e.preventDefault();
+          store().correctAdvance();
+        }
       },
       KeyB: (e) => {
         if (isTextInput(e)) return;
-        if (store().labelingMode !== "keypointPass") return;
-        e.preventDefault();
-        store().passStepBack();
+        const m = store().labelingMode;
+        if (m === "keypointPass") {
+          e.preventDefault();
+          store().passStepBack();
+        } else if (m === "correct") {
+          if (e.repeat) return;
+          e.preventDefault();
+          store().correctBack();
+        }
       },
       Backspace: (e) => {
         if (isTextInput(e)) return;
-        if (store().labelingMode !== "keypointPass") return;
-        e.preventDefault();
-        store().passStepBack();
+        const m = store().labelingMode;
+        if (m === "keypointPass") {
+          e.preventDefault();
+          store().passStepBack();
+        } else if (m === "correct") {
+          if (e.repeat) return;
+          e.preventDefault();
+          store().correctBack();
+        }
       },
 
       [DEFAULT_SHORTCUTS["select next"]]: (e) => {

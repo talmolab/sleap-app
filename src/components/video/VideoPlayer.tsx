@@ -49,6 +49,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { toImageCoords, toSourceCoords } from "@/lib/cropTransform";
 import { suggestionPrefetchTargets } from "@/lib/navigableFrames";
+import { acceptAndAdvanceCorrection } from "@/lib/activeLearning/correctionActions";
 import {
   isVideoMissing,
   resolveVideoFile,
@@ -85,6 +86,13 @@ export function VideoPlayer() {
   const frameIdx = useAppStore((s) => s.frameIdx);
   const labels = useAppStore((s) => s.labels);
   const selectedInstance = useAppStore((s) => s.instance);
+  // Phase-3 correction selectors, declared early so BOTH the render effect's
+  // low-confidence highlight and the zoom-to-instance effect below can use them.
+  const correctQueue = useAppStore((s) => s.correctQueue);
+  const correctCursor = useAppStore((s) => s.correctCursor);
+  const correctZoomWindow = useAppStore((s) => s.correctZoomWindow);
+  const correctScoreThreshold = useAppStore((s) => s.correctScoreThreshold);
+  const isCorrect = useAppStore((s) => s.labelingMode === "correct");
   const showInstances = useAppStore((s) => s.showInstances);
   const showLabels = useAppStore((s) => s.showLabels);
   const showEdges = useAppStore((s) => s.showEdges);
@@ -264,6 +272,18 @@ export function VideoPlayer() {
           }
           return;
         }
+
+        // Phase-3 correction: Space ACCEPTS the current instance — adopting the
+        // prediction as a user label (even untouched, since reviewing endorses
+        // it) — and advances to the next queued item. A dragged instance is
+        // already adopted, so the convert no-ops and we just advance. Suppressed
+        // when a modal has focus, so Space behind a dialog can't silently accept.
+        if (useAppStore.getState().labelingMode === "correct") {
+          if ((e.target as HTMLElement)?.closest?.('[role="dialog"]')) return;
+          e.preventDefault();
+          acceptAndAdvanceCorrection();
+          return;
+        }
         e.preventDefault();
 
         const now = performance.now();
@@ -424,9 +444,10 @@ export function VideoPlayer() {
       if (e.metaKey || e.ctrlKey) return;
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-      // In keypointPass, Backspace is the pass step-back key — don't also let it
-      // delete a (possibly stale-selected) instance out from under the sweep.
-      if (useAppStore.getState().labelingMode === "keypointPass") return;
+      // In keypointPass/correct, Backspace is the step-back key — don't also let
+      // it delete a (possibly stale-selected) instance out from under the sweep.
+      const mode = useAppStore.getState().labelingMode;
+      if (mode === "keypointPass" || mode === "correct") return;
       if (selectedNodes.size === 0) return;
 
       const lf = useAppStore.getState().labeledFrame;
@@ -767,6 +788,23 @@ export function VideoPlayer() {
       return;
     }
 
+    // Phase-3: which instance on THIS frame is under review, and which of its
+    // keypoints are flagged. Read from the queue snapshot (item.pointScores), so
+    // the rings survive the adopt-on-touch conversion that strips per-point
+    // scores, and stick to the review item rather than wandering with selection.
+    let reviewInstanceIdx = -1;
+    const reviewFlaggedNodes: number[] = [];
+    if (isCorrect) {
+      const item = correctQueue[correctCursor];
+      if (item && item.frameIdx === frameIdx && labels?.videos[item.videoIdx] === video) {
+        reviewInstanceIdx = item.instanceIdx;
+        for (let i = 0; i < item.pointScores.length; i++) {
+          const sc = item.pointScores[i];
+          if (sc !== null && sc <= correctScoreThreshold) reviewFlaggedNodes.push(i);
+        }
+      }
+    }
+
     // Build renderable instances
     const tracks = labels?.tracks ?? [];
     const vis = { showInstances, hiddenInstances, viewOnlyInstance, showNonVisibleOverride };
@@ -821,6 +859,9 @@ export function VideoPlayer() {
           score: isPredicted ? inst.score : undefined,
           visible: instanceVisible(vis, inst),
           showNonVisible: instanceShowsNonVisible(vis, inst, showNonVisibleNodes),
+          // Ring the flagged low-confidence keypoints on the instance under
+          // review (Phase 3), from the queue snapshot so they survive adoption.
+          highlightNodeIdxs: idx === reviewInstanceIdx ? reviewFlaggedNodes : undefined,
         };
       }
     );
@@ -997,6 +1038,10 @@ export function VideoPlayer() {
     video,
     frameIdx,
     rotation,
+    isCorrect,
+    correctScoreThreshold,
+    correctQueue,
+    correctCursor,
   ]);
 
   // Check if we're in explicit placement mode
@@ -1429,6 +1474,30 @@ export function VideoPlayer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isKeypointPass, passItemIdx, passZoomWindow, video, containerSize, baseScale, offsetX, offsetY]);
 
+  // Phase-3 correction: frame the instance under review the same way — zoom a
+  // correctZoomWindow-px window onto its centroid. Keyed on the cursor so each
+  // advance re-frames; adjusting the zoom slider re-frames too.
+  useEffect(() => {
+    if (!isCorrect) return;
+    const item = correctQueue[correctCursor];
+    if (!item) return;
+    const [cw, ch] = containerSize;
+    if (cw === 0 || ch === 0) return;
+    if (!Number.isFinite(item.centroidXY[0]) || !Number.isFinite(item.centroidXY[1])) return;
+
+    const win = correctZoomWindow;
+    const [centerX, centerY] = toImageCoords(video, item.centroidXY[0], item.centroidXY[1]);
+    const newZoom = Math.min(cw / (win * baseScale), ch / (win * baseScale), 10);
+    const newPanX = cw / 2 - offsetX - centerX * baseScale * newZoom;
+    const newPanY = ch / 2 - offsetY - centerY * baseScale * newZoom;
+
+    viewRef.current = { zoom: newZoom, panX: newPanX, panY: newPanY };
+    setZoom(newZoom);
+    setPanX(newPanX);
+    setPanY(newPanY);
+    zoomMode.current = "free";
+  }, [isCorrect, correctCursor, correctQueue, correctZoomWindow, video, containerSize, baseScale, offsetX, offsetY]);
+
   const handleMouseDown = useCallback(
     (e: React.MouseEvent) => {
       // Middle-click panning
@@ -1462,7 +1531,14 @@ export function VideoPlayer() {
         const instances = renderedInstancesRef.current;
         const nt = (markerSize * 2) / (baseScale * zoom);
         const hit = hitTestNode(instances, x, y, nt);
-        if (hit && !instances[hit.instanceIdx]?.isPredicted) {
+        // Predicted nodes aren't normally draggable, so a hit on one pans — but
+        // in Phase-3 correction dragging a predicted node adopts+corrects it, so
+        // fall through to the node handler there instead of panning.
+        const hitDraggable =
+          hit &&
+          (!instances[hit.instanceIdx]?.isPredicted ||
+            useAppStore.getState().labelingMode === "correct");
+        if (hitDraggable) {
           // Node hit in pan mode — fall through to normal node drag handling below
         } else {
           e.preventDefault();
@@ -1629,9 +1705,45 @@ export function VideoPlayer() {
 
         if (lf) useAppStore.getState().setInstance(lf.instances[nodeHit.instanceIdx]);
 
-        // Start dragging if it's a user instance
+        // Start dragging. User instances drag directly. In Phase-3 correction,
+        // dragging a PREDICTED keypoint first ADOPTS the instance as a user
+        // instance in place (same index) so the fix counts as ground truth and
+        // the queue keeps resolving to it; undo restores the prediction.
         const inst = instances[nodeHit.instanceIdx];
-        if (!inst.isPredicted) {
+        const dragStore = useAppStore.getState();
+        // Only the instance UNDER REVIEW is adopt-draggable in correct mode —
+        // dragging a stray prediction must not silently convert it to a label.
+        const reviewItem =
+          dragStore.labelingMode === "correct"
+            ? dragStore.correctQueue[dragStore.correctCursor]
+            : undefined;
+        const isReviewInst =
+          !!reviewItem &&
+          !!lf &&
+          nodeHit.instanceIdx === reviewItem.instanceIdx &&
+          dragStore.frameIdx === reviewItem.frameIdx &&
+          dragStore.labels?.videos[reviewItem.videoIdx] === dragStore.video;
+        if (inst.isPredicted && isReviewInst && lf) {
+          const predicted = lf.instances[nodeHit.instanceIdx];
+          if (predicted instanceof PredictedInstance) {
+            // Snapshot only when we actually adopt (avoids a no-op undo entry).
+            commandContext.execute(BeginEdit);
+            const adopted = new Instance({
+              skeleton: predicted.skeleton,
+              points: clonePointsForAdopt(predicted.points),
+              track: predicted.track,
+            });
+            lf.instances.splice(nodeHit.instanceIdx, 1, adopted);
+            dragStore.setInstance(adopted);
+            setDragNodeInfo(nodeHit);
+            setIsDragging(true);
+            setInteractionMode("dragging");
+            lastDragPos.current = { x, y };
+            dragStartClient.current = { clientX: e.clientX, clientY: e.clientY };
+            dragStore.markChanged();
+            dragStore.touchFrame();
+          }
+        } else if (!inst.isPredicted) {
           commandContext.execute(BeginEdit);
           setDragNodeInfo(nodeHit);
           setIsDragging(true);
@@ -2072,6 +2184,45 @@ export function VideoPlayer() {
         store.markChanged();
         store.touchFrame();
         store.passAdvance();
+        store.bumpOverlayVersion();
+        return;
+      }
+
+      // Phase-3 correction: right-click a keypoint on the instance under review
+      // to mark it NOT visible (occluded), adopting the prediction first if
+      // needed. Position is kept; it does NOT advance (mark several, then Space).
+      if (useAppStore.getState().labelingMode === "correct") {
+        const store = useAppStore.getState();
+        const item = store.correctQueue[store.correctCursor];
+        if (!item || !store.labels) return;
+        const nodeHit = hitTestNode(instances, x, y, (markerSize * 2) / (baseScale * zoom));
+        if (
+          !nodeHit ||
+          nodeHit.instanceIdx !== item.instanceIdx ||
+          store.frameIdx !== item.frameIdx ||
+          store.labels.videos[item.videoIdx] !== store.video
+        ) {
+          return;
+        }
+        const lf = store.labels.find({ video: store.video!, frameIdx: item.frameIdx })[0];
+        let inst = lf?.instances[item.instanceIdx] ?? null;
+        const nIdx = nodeHit.nodeIdx;
+        if (!lf || !inst || nIdx < 0 || nIdx >= inst.points.length) return;
+        commandContext.execute(BeginEdit);
+        if (inst instanceof PredictedInstance) {
+          const adopted = new Instance({
+            skeleton: inst.skeleton,
+            points: clonePointsForAdopt(inst.points),
+            track: inst.track,
+          });
+          lf.instances.splice(item.instanceIdx, 1, adopted);
+          inst = adopted;
+        }
+        store.setInstance(inst);
+        inst.points[nIdx].visible = false;
+        inst.points[nIdx].complete = true;
+        store.markChanged();
+        store.touchFrame();
         store.bumpOverlayVersion();
         return;
       }
