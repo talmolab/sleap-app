@@ -65,7 +65,11 @@ export function formatLoadProgress(
   return `${message ?? "Parsing"}... (${pct}%)`;
 }
 
-function reportParseProgress(current: number, total: number, message?: string): void {
+export function reportParseProgress(
+  current: number,
+  total: number,
+  message?: string
+): void {
   const pct = total > 0 ? Math.round((current / total) * 100) : 0;
   useAppStore
     .getState()

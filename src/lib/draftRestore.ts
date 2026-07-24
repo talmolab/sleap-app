@@ -11,6 +11,7 @@
  */
 import { loadSlp, type Labels } from "@talmolab/sleap-io.js";
 import { useAppStore } from "@/stores/appStore";
+import { reportParseProgress } from "@/lib/loadProject";
 import { resolveExternalVideos } from "@/lib/resolveVideos";
 import { removeLabelsDraft } from "@/lib/labelsDraft";
 import { deleteDraftEntry, type DraftManifestEntry } from "@/lib/draftManifest";
@@ -106,12 +107,15 @@ export async function restoreDraft(entry: DraftManifestEntry): Promise<boolean> 
       h5: { h5wasmUrl: H5WASM_URL },
     });
 
-    // Original, opened lazily for its on-demand image backends.
+    // Original, opened lazily for its on-demand image backends. Reuse the same
+    // parse-progress reporter as Open Project so the overlay shows a real bar,
+    // not just a spinner.
     store.setLoading(true, "Re-opening the original for images...");
     const originalFile = await sourceHandle.getFile();
     const originalLabels = await loadSlp(originalFile, {
       openVideos: true,
       h5: { h5wasmUrl: H5WASM_URL },
+      onProgress: reportParseProgress,
     });
 
     const grafted = graftBackends(draftLabels, originalLabels);
