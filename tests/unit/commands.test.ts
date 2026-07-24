@@ -16,6 +16,7 @@ import {
   DeleteAllPredictions,
   SetPointLocation,
   ConvertPredictionToInstance,
+  AddInstancesFromAllPredictions,
   BeginEdit,
   MoveInstance,
   RotateInstance,
@@ -1197,6 +1198,132 @@ describe("Edit commands (new)", () => {
     it("does nothing without instanceIdx", async () => {
       setupProjectInStore({ numFrames: 1, numInstancesPerFrame: 0, withPredictions: true });
       expect(() => ctx.execute(ConvertPredictionToInstance)).not.toThrow();
+    });
+
+    it("carries the fromPredicted provenance link", async () => {
+      const project = setupProjectInStore({
+        numFrames: 1,
+        numInstancesPerFrame: 0,
+        withPredictions: true,
+      });
+      const lf = project.labeledFrames[0];
+      useAppStore.getState().setFrameIdx(lf.frameIdx);
+      const pred = lf.instances[0];
+
+      await ctx.execute(ConvertPredictionToInstance, { instanceIdx: 0 });
+
+      const userInst = lf.instances[0] as Instance;
+      expect(userInst.fromPredicted).toBe(pred as PredictedInstance);
+    });
+  });
+
+  describe("AddInstancesFromAllPredictions", () => {
+    /** Frame with 1 user instance + 2 predicted instances. */
+    function frameWithTwoPredictions() {
+      const project = setupProjectInStore({
+        numFrames: 1,
+        numInstancesPerFrame: 1,
+        withPredictions: true, // adds 1 predicted
+      });
+      const lf = project.labeledFrames[0];
+      // Add a second predicted instance so we exercise "accept ALL".
+      lf.instances.push(
+        new PredictedInstance({
+          skeleton: project.skeleton,
+          points: project.skeleton.nodes.map((node, n) => ({
+            xy: [300 + n, 400 + n] as [number, number],
+            visible: true,
+            complete: true,
+            name: node.name,
+            score: 0.9,
+          })),
+          score: 0.9,
+        }),
+      );
+      useAppStore.getState().setFrameIdx(lf.frameIdx);
+      return { project, lf };
+    }
+
+    it("replaces every predicted instance in place, leaving user instances", async () => {
+      const { lf } = frameWithTwoPredictions();
+      const userBefore = lf.instances.find(
+        (i) => !(i instanceof PredictedInstance),
+      );
+      expect(lf.instances.length).toBe(3);
+
+      await ctx.execute(AddInstancesFromAllPredictions);
+
+      // Same count (replace-in-place, not append) and no predictions remain.
+      expect(lf.instances.length).toBe(3);
+      expect(lf.instances.some((i) => i instanceof PredictedInstance)).toBe(
+        false,
+      );
+      // The pre-existing user instance is untouched (same reference).
+      expect(lf.instances).toContain(userBefore!);
+    });
+
+    it("preserves fromPredicted provenance on the converted instances", async () => {
+      const { lf } = frameWithTwoPredictions();
+      const predsBefore = lf.instances.filter(
+        (i) => i instanceof PredictedInstance,
+      ) as PredictedInstance[];
+
+      await ctx.execute(AddInstancesFromAllPredictions);
+
+      const converted = lf.instances.filter(
+        (i) => (i as Instance).fromPredicted != null,
+      ) as Instance[];
+      expect(converted.length).toBe(2);
+      for (const inst of converted) {
+        expect(predsBefore).toContain(inst.fromPredicted as PredictedInstance);
+      }
+    });
+
+    it("selects a converted user instance and marks changes", async () => {
+      const { lf } = frameWithTwoPredictions();
+
+      await ctx.execute(AddInstancesFromAllPredictions);
+
+      const selected = useAppStore.getState().instance;
+      expect(selected).not.toBeNull();
+      expect(selected instanceof PredictedInstance).toBe(false);
+      expect(lf.instances).toContain(selected!);
+      expect(useAppStore.getState().hasChanges).toBe(true);
+    });
+
+    it("is undoable — restores the predictions", async () => {
+      const { lf } = frameWithTwoPredictions();
+
+      await ctx.execute(AddInstancesFromAllPredictions);
+      expect(lf.instances.some((i) => i instanceof PredictedInstance)).toBe(
+        false,
+      );
+
+      expect(ctx.undo()).toBe(true);
+
+      const restored = useAppStore
+        .getState()
+        .labels!.find({ video: useAppStore.getState().video!, frameIdx: lf.frameIdx })[0];
+      expect(
+        restored.instances.filter((i) => i instanceof PredictedInstance).length,
+      ).toBe(2);
+    });
+
+    it("no-ops (no undo entry) when the frame has no predictions", async () => {
+      const project = setupProjectInStore({
+        numFrames: 1,
+        numInstancesPerFrame: 1,
+        withPredictions: false,
+      });
+      const lf = project.labeledFrames[0];
+      useAppStore.getState().setFrameIdx(lf.frameIdx);
+      const before = [...lf.instances];
+
+      await ctx.execute(AddInstancesFromAllPredictions);
+
+      expect(lf.instances).toEqual(before);
+      // skipAutoSnapshot + early return ⇒ nothing pushed onto the undo stack.
+      expect(ctx.canUndo).toBe(false);
     });
   });
 

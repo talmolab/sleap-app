@@ -20,6 +20,7 @@ import { shouldStreamEmbeddedSave } from "@/lib/saveRouting";
 import { fileSize } from "@/lib/nativeRange";
 import { renameFile, removeFile } from "@/lib/nativeWrite";
 import { syncActiveLearningProvenance } from "@/lib/activeLearning/persistence";
+import { shouldOverwriteOpenedFile } from "@/lib/browserSaveTarget";
 
 /**
  * Human-readable byte size for the save progress text (e.g. "3.8 GB", "742 MB").
@@ -62,6 +63,29 @@ async function writeSlpBytesAtomic(
     await removeFile(tempPath).catch(() => {});
     throw err;
   }
+}
+
+/**
+ * Ensure we hold readwrite permission on `handle` so a Save can overwrite the
+ * opened file without a Save-As dialog. Queries first (silent when already
+ * granted — e.g. a prior save this session), then requests (a one-time browser
+ * "allow this site to edit this file?" prompt). Returns false when permission
+ * isn't granted, so the caller falls back to the Save-As picker. Must be reached
+ * within the save gesture for the request prompt to be allowed.
+ */
+async function ensureReadWritePermission(
+  handle: FileSystemFileHandle
+): Promise<boolean> {
+  const h = handle as FileSystemFileHandle & {
+    queryPermission?: (d: { mode: "readwrite" }) => Promise<PermissionState>;
+    requestPermission?: (d: { mode: "readwrite" }) => Promise<PermissionState>;
+  };
+  // Engines without the permission API: assume writable and let the write
+  // attempt (guarded by the caller's try/catch) be the arbiter.
+  if (!h.queryPermission || !h.requestPermission) return true;
+  const opts = { mode: "readwrite" as const };
+  if ((await h.queryPermission(opts)) === "granted") return true;
+  return (await h.requestPermission(opts)) === "granted";
 }
 
 /**
@@ -207,34 +231,78 @@ export async function saveProjectAsSlp(
         displayName = savePath;
       }
     } else if ("showSaveFilePicker" in window) {
-      // Browser: File System Access API (always shows picker)
+      // Browser (File System Access API).
       const bytes = await saveSlpToBytes(labels);
-      console.log(`[save] Saving via browser File System Access API (${bytes.byteLength} bytes)`);
-      try {
-        const blob = new Blob([bytes], { type: "application/octet-stream" });
-        const handle = await (
-          window as unknown as {
-            showSaveFilePicker: (
-              opts: unknown
-            ) => Promise<FileSystemFileHandle>;
+      const blob = new Blob([bytes], { type: "application/octet-stream" });
+
+      const existingHandle = store.projectFileHandle;
+      const overwriteInPlace = shouldOverwriteOpenedFile({
+        forceDialog,
+        hasHandle: !!existingHandle,
+      });
+
+      // SAVE (not Save-As) with a retained handle: overwrite the opened file in
+      // place — no dialog, matching a native / PyQt save. The bytes are fully
+      // built above and createWritable writes atomically via a swap file, so
+      // overwriting the same file can't corrupt it. The first such save may
+      // prompt once for write permission; it's silent for the rest of the session.
+      let savedInPlace = false;
+      if (overwriteInPlace && existingHandle) {
+        try {
+          if (await ensureReadWritePermission(existingHandle)) {
+            console.log(
+              `[save] Saving in place to the opened file (browser): ${existingHandle.name} (${bytes.byteLength} bytes)`
+            );
+            const writable = await existingHandle.createWritable();
+            await writable.write(blob);
+            await writable.close();
+            displayName = existingHandle.name;
+            savedInPlace = true;
           }
-        ).showSaveFilePicker({
-          types: [
-            {
-              description: "SLEAP Labels",
-              accept: { "application/octet-stream": [".slp"] },
-            },
-          ],
-          suggestedName: saveName,
-        });
-        const writable = await handle.createWritable();
-        await writable.write(blob);
-        await writable.close();
-        displayName = handle.name;
-      } catch (err: unknown) {
-        // User cancelled the save dialog
-        if (err instanceof DOMException && err.name === "AbortError") return;
-        throw err;
+        } catch (err) {
+          // Stale handle / revoked permission / write failure → fall back to the
+          // Save-As picker rather than surfacing an error.
+          console.warn(
+            "[save] in-place save to the opened file failed; prompting Save As",
+            err
+          );
+        }
+      }
+
+      if (!savedInPlace) {
+        // Save-As, no retained handle, or a failed in-place attempt: prompt for a
+        // location, then RETAIN the chosen handle so subsequent saves write back
+        // to it in place.
+        console.log(
+          `[save] Saving via browser Save-As picker (${bytes.byteLength} bytes)`
+        );
+        try {
+          const handle = await (
+            window as unknown as {
+              showSaveFilePicker: (
+                opts: unknown
+              ) => Promise<FileSystemFileHandle>;
+            }
+          ).showSaveFilePicker({
+            types: [
+              {
+                description: "SLEAP Labels",
+                accept: { "application/octet-stream": [".slp"] },
+              },
+            ],
+            suggestedName: saveName,
+          });
+          const writable = await handle.createWritable();
+          await writable.write(blob);
+          await writable.close();
+          store.set("projectFileHandle", handle);
+          store.set("filename", handle.name);
+          displayName = handle.name;
+        } catch (err: unknown) {
+          // User cancelled the save dialog
+          if (err instanceof DOMException && err.name === "AbortError") return;
+          throw err;
+        }
       }
     } else {
       // Fallback: anchor download

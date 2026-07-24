@@ -59,6 +59,7 @@ export {
   DeleteFramePredictions,
   DeleteAllPredictions,
   ConvertPredictionToInstance,
+  AddInstancesFromAllPredictions,
   BeginEdit,
   MoveInstance,
   RotateInstance,

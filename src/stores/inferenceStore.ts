@@ -134,6 +134,24 @@ export function centroidInferenceConfig(
   };
 }
 
+/** Frame-merge strategy passed through to `MergePredictions` (io Labels.merge). */
+export type MergeStrategyOption = "auto" | "replace_predictions";
+
+/**
+ * Which frame strategy a pipeline's results should merge back with.
+ *
+ * The centroid/locator pipeline REPLACES predictions on matched frames so
+ * re-running the locator refreshes its predicted centroids rather than
+ * accumulating stale ones — io's "auto" keeps unmatched old predictions, so a
+ * centroid that moved more than the match radius between runs would duplicate
+ * (two predicted centroids per animal → duplicate Phase-2 work items). This
+ * mirrors the retired hand-rolled merge's keep-user/replace-predicted
+ * semantics. Every other pipeline keeps io's "auto" default.
+ */
+export function mergeStrategyForPipeline(pipeline: PipelineType): MergeStrategyOption {
+  return pipeline === "centroid" ? "replace_predictions" : "auto";
+}
+
 export type InferenceStatus =
   | "idle"
   | "running"
@@ -155,7 +173,7 @@ interface InferenceState {
   reset: () => void;
   cancelInference: () => Promise<void>;
   startInference: (config: InferenceConfig, remoteOpts?: RemoteInferenceOptions) => Promise<void>;
-  loadAndMergeResults: () => Promise<void>;
+  loadAndMergeResults: (strategy?: MergeStrategyOption) => Promise<void>;
 }
 
 const initialState = {
@@ -506,7 +524,10 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
               const platform = await getPlatform();
               const bytes = await platform.readFile(result.outputPath);
               const predictions = await loadSlp(bytes, { openVideos: false, h5: { filenameHint: result.outputPath } });
-              await commandContext.execute(MergePredictions, { predictions });
+              await commandContext.execute(MergePredictions, {
+                predictions,
+                strategy: mergeStrategyForPipeline(config.pipeline),
+              });
             }
             if (!result.success) {
               set({ status: "error", error: `Video ${vi + 1} failed` });
@@ -539,7 +560,9 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
           }
           if (result.outputPath) {
             set({ outputPath: result.outputPath });
-            await useInferenceStore.getState().loadAndMergeResults();
+            await useInferenceStore.getState().loadAndMergeResults(
+              mergeStrategyForPipeline(config.pipeline),
+            );
           } else {
             set({ status: "completed" });
           }
@@ -553,7 +576,7 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
     }
   },
 
-  loadAndMergeResults: async () => {
+  loadAndMergeResults: async (strategy: MergeStrategyOption = "auto") => {
     const { outputPath } = useInferenceStore.getState();
     if (!outputPath) return;
 
@@ -571,7 +594,7 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
         predictions.tracks?.length ?? 0,
       );
 
-      await commandContext.execute(MergePredictions, { predictions });
+      await commandContext.execute(MergePredictions, { predictions, strategy });
       set({ status: "idle" });
     } catch (e) {
       set({

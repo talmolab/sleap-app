@@ -17,6 +17,7 @@ import {
   type Labels,
 } from "@talmolab/sleap-io.js";
 import { useAppStore } from "../stores/appStore";
+import { consumeLastBrowserFileHandle } from "../platform/index";
 import { toast } from "@/lib/notify";
 import { resolveExternalVideos } from "./resolveVideos";
 import { installTauriFsResolver } from "./fsResolver";
@@ -130,7 +131,13 @@ export async function loadProjectFromFile(file: File): Promise<boolean> {
     });
     store.setLoading(true, "Locating videos...");
     await resolveExternalVideos(labels);
-    store.setLabels(labels, file.name);
+    // Retain the source File AND, when this open came from the file picker, its
+    // durable FileSystemFileHandle, so a plain Save can write back to the opened
+    // file in place (see saveProjectAsSlp). Name-match guards against a stale
+    // handle left over from a prior pick (e.g. a later drag-drop open sets none).
+    const picked = consumeLastBrowserFileHandle();
+    const handle = picked && picked.name === file.name ? picked : null;
+    store.setLabels(labels, file.name, undefined, file, handle);
     await openFirstLabeledFrame(labels);
     toast.success(`Loaded ${file.name}`, {
       description: `${labels.videos.length} video(s), ${labels.labeledFrames.length} labeled frames`,
