@@ -15,6 +15,7 @@ import { reportParseProgress } from "@/lib/loadProject";
 import { resolveExternalVideos } from "@/lib/resolveVideos";
 import { removeLabelsDraft } from "@/lib/labelsDraft";
 import { deleteDraftEntry, type DraftManifestEntry } from "@/lib/draftManifest";
+import { videoSignature, buildBackendGraftPlan } from "@/lib/videoGraft";
 import { toast } from "@/lib/notify";
 
 const H5WASM_URL =
@@ -81,12 +82,26 @@ async function resolveSourceHandle(
 
 /** Graft each original video's (lazy) backend onto the draft's video at the same
  *  index, so the restored labels render frames from the original on demand. */
-function graftBackends(draft: Labels, original: Labels): number {
-  const n = Math.min(draft.videos.length, original.videos.length);
-  for (let i = 0; i < n; i++) {
-    draft.videos[i].backend = original.videos[i].backend;
-  }
-  return n;
+function graftBackends(
+  draft: Labels,
+  original: Labels,
+  draftSigs: string[],
+): { matched: number; total: number } {
+  const originalSigs = original.videos.map((v) =>
+    videoSignature({ filename: v.filename, shape: v.shape }),
+  );
+  const plan = buildBackendGraftPlan(draftSigs, originalSigs);
+  let matched = 0;
+  plan.forEach((origIdx, i) => {
+    if (origIdx != null) {
+      // Same video (by signature) — attach its on-demand backend.
+      draft.videos[i].backend = original.videos[origIdx].backend;
+      matched++;
+    }
+    // else: no matching original video → leave backend null (blank frames),
+    // NEVER graft a mismatched video's images.
+  });
+  return { matched, total: draft.videos.length };
 }
 
 /**
@@ -118,13 +133,29 @@ export async function restoreDraft(entry: DraftManifestEntry): Promise<boolean> 
       onProgress: reportParseProgress,
     });
 
-    const grafted = graftBackends(draftLabels, originalLabels);
-    if (grafted < draftLabels.videos.length) {
-      // Video sets diverged (e.g. a video was added/removed since) — some frames
-      // will lack images. Surface it rather than silently showing black frames.
-      toast.warning("Some videos couldn't be matched", {
+    // Match the draft's videos to the original by SIGNATURE (identity), not
+    // position, so a removed/reordered video — or a wrong re-picked file — never
+    // silently grafts the wrong images. Prefer the signatures recorded at save
+    // time (captured with live backends); fall back to the loaded draft's.
+    const draftSigs =
+      entry.videoSignatures?.length === draftLabels.videos.length
+        ? entry.videoSignatures
+        : draftLabels.videos.map((v) =>
+            videoSignature({ filename: v.filename, shape: v.shape }),
+          );
+    const { matched, total } = graftBackends(draftLabels, originalLabels, draftSigs);
+    if (matched === 0 && total > 0) {
+      // No video lined up — almost certainly the wrong file was selected. Abort
+      // rather than load an all-blank project over the user's labels.
+      toast.error("That file doesn't match the saved draft", {
         description:
-          "The original file's videos don't line up with the saved draft; those frames may be blank.",
+          "None of the draft's videos were found in the selected file. Restore cancelled — choose the original project file.",
+      });
+      return false;
+    }
+    if (matched < total) {
+      toast.warning("Some videos couldn't be matched", {
+        description: `${total - matched} of ${total} video(s) weren't found in the original; those frames will be blank.`,
       });
     }
     await resolveExternalVideos(draftLabels);
@@ -146,6 +177,15 @@ export async function restoreDraft(entry: DraftManifestEntry): Promise<boolean> 
     });
     return true;
   } catch (err) {
+    if (err instanceof DOMException && err.name === "NotFoundError") {
+      // The draft's OPFS file is gone (discarded elsewhere / evicted). Prune the
+      // stale manifest entry so it stops reappearing as a phantom restore card.
+      void deleteDraftEntry(entry.draftPath);
+      toast.error("That unsaved draft is no longer available", {
+        description: "It was removed or evicted; the entry has been cleared.",
+      });
+      return false;
+    }
     const msg = err instanceof Error ? err.message : String(err);
     toast.error("Couldn't restore unsaved work", { description: msg });
     console.error("[restoreDraft] failed:", err);

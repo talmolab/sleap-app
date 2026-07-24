@@ -292,6 +292,9 @@ export async function saveProjectAsSlp(
         // saved locally; the disk file is written only on an explicit Export.
         store.setLoading(true, "Saving labels...");
         const draftPath = store.labelsDraftPath ?? newDraftPath(saveName);
+        // Commit the draft path synchronously (before any await) so a concurrent
+        // auto-save sees it and doesn't mint a second draft (first-save race).
+        store.set("labelsDraftPath", draftPath);
         // Persist the draft + record it in the manifest (with the original's
         // handle) so it's recoverable after a tab close (see draftManifest.ts).
         await recordDraftSave(labels, {
@@ -300,7 +303,6 @@ export async function saveProjectAsSlp(
           displayName: saveName,
           savedAt: Date.now(),
         });
-        store.set("labelsDraftPath", draftPath);
         store.set("pendingExport", true);
         store.clearChanges();
         console.log(`[save] Saved labels draft -> ${draftPath}`);

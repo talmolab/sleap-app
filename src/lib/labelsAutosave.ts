@@ -27,16 +27,23 @@ let inFlight = false;
 /**
  * Auto-save the current labels to the OPFS draft IF the project is a browser
  * large-embedded-pkg with unsaved edits and no save/compile already running.
- * Silent (no toast/overlay). Best-effort: on failure it leaves `hasChanges` set
- * so a later auto-save or manual ⌘S retries.
+ * Silent (no toast/overlay). `reArm` (when given) is invoked to reschedule a
+ * retry whenever this run is skipped (busy), fails, or an edit lands mid-save —
+ * because the edit-counter subscription only fires on NEW edits, so a run that
+ * can't complete must re-arm itself or autosave would stall until the next edit.
  */
-export async function maybeAutosaveLabelsDraft(): Promise<void> {
+export async function maybeAutosaveLabelsDraft(
+  reArm?: () => void,
+): Promise<void> {
   if (inFlight || isTauri) return;
   const store = useAppStore.getState();
   const labels = store.labels;
-  // Don't race a manual save/compile (they own the loading overlay), and only
-  // act when there is something to save.
-  if (!labels || !store.hasChanges || store.isLoading) return;
+  // Don't race a manual save/compile (they own the loading overlay). If there is
+  // still work, re-arm so we retry once it settles rather than stalling.
+  if (!labels || !store.hasChanges || store.isLoading) {
+    if (labels && store.hasChanges && reArm) reArm();
+    return;
+  }
 
   const source = store.projectFileHandle ?? store.projectFile;
   const eligible =
@@ -50,42 +57,55 @@ export async function maybeAutosaveLabelsDraft(): Promise<void> {
   if (!eligible) return;
 
   inFlight = true;
+  const seqAtStart = store.editSeq;
   try {
+    // Mint + COMMIT the draft path synchronously (before any await) so a
+    // concurrent manual ⌘S sees it and doesn't mint a second draft.
     const draftPath =
       store.labelsDraftPath ?? newDraftPath(store.filename ?? undefined);
+    store.set("labelsDraftPath", draftPath);
     await recordDraftSave(labels, {
       draftPath,
       sourceHandle: store.projectFileHandle,
       displayName: store.filename ?? "project",
       savedAt: Date.now(),
     });
-    store.set("labelsDraftPath", draftPath);
     store.set("pendingExport", true);
-    store.clearChanges();
+    // Only mark clean if NO edit landed during the write; otherwise keep it
+    // dirty and re-arm so the trailing edit is persisted (not silently dropped).
+    if (useAppStore.getState().editSeq === seqAtStart) {
+      store.clearChanges();
+    } else if (reArm) {
+      reArm();
+    }
     console.log("[autosave] labels draft saved ->", draftPath);
   } catch (err) {
-    // Keep hasChanges set (don't clear) so the next edit/⌘S retries.
+    // Keep hasChanges set + re-arm so a later tick retries.
     console.warn("[autosave] failed:", err);
+    if (reArm) reArm();
   } finally {
     inFlight = false;
   }
 }
 
 /**
- * Wire debounced auto-save to label edits. Subscribes to `hasChanges`; each time
- * it flips true, (re)arms a debounce timer that auto-saves the draft once edits
- * settle. Returns an unsubscribe/teardown. Call once (e.g. an AppShell effect).
+ * Wire debounced auto-save to label edits. Subscribes to the `editSeq` counter
+ * (bumped on every edit — unlike the `hasChanges` boolean, which transitions
+ * only once), so each edit resets the debounce; the save fires once edits
+ * settle. Skips/failures re-arm themselves. Returns a teardown. Call once.
  */
 export function setupLabelsAutosave(): () => void {
   let timer: ReturnType<typeof setTimeout> | null = null;
+  const arm = (): void => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      void maybeAutosaveLabelsDraft(arm);
+    }, AUTOSAVE_DEBOUNCE_MS);
+  };
   const unsub = useAppStore.subscribe(
-    (s) => s.hasChanges,
-    (hasChanges) => {
-      if (!hasChanges) return;
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => {
-        void maybeAutosaveLabelsDraft();
-      }, AUTOSAVE_DEBOUNCE_MS);
+    (s) => s.editSeq,
+    () => {
+      if (useAppStore.getState().hasChanges) arm();
     },
   );
   return () => {

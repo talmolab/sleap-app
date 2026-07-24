@@ -26,6 +26,16 @@ function fakeHandle(
   } as unknown as FileSystemFileHandle;
 }
 
+/** A handle with NO isSameEntry but a getFile() — models the destination the
+ *  bare-File (drag-drop) path compares against. */
+function fakeFileHandle(file: File): FileSystemFileHandle {
+  return {
+    name: file.name,
+    kind: "file",
+    getFile: async () => file,
+  } as unknown as FileSystemFileHandle;
+}
+
 describe("isSameSaveTarget", () => {
   it("is true when the source handle reports the destination as the same entry", async () => {
     const dest = fakeHandle("train.pkg.slp", async () => true);
@@ -39,9 +49,32 @@ describe("isSameSaveTarget", () => {
     expect(await isSameSaveTarget(source, dest)).toBe(false);
   });
 
-  it("is false (best effort) for a bare File source with no identity to compare", async () => {
+  it("is TRUE for a bare File source when the destination's file matches (name+size+lastModified)", async () => {
+    // Drag-drop open (bare File) that the user then re-picks as the export
+    // target: match by name+size+lastModified so the guard still fires.
+    const bytes = new Uint8Array([1, 2, 3]);
+    const source = new File([bytes], "train.pkg.slp", { lastModified: 42 });
+    const dest = fakeFileHandle(
+      new File([bytes], "train.pkg.slp", { lastModified: 42 }),
+    );
+    expect(await isSameSaveTarget(source, dest)).toBe(true);
+  });
+
+  it("is false for a bare File source when the destination differs", async () => {
+    const source = new File([new Uint8Array([1, 2, 3])], "train.pkg.slp", {
+      lastModified: 42,
+    });
+    const dest = fakeFileHandle(
+      new File([new Uint8Array([9, 9, 9, 9])], "other.pkg.slp", {
+        lastModified: 99,
+      }),
+    );
+    expect(await isSameSaveTarget(source, dest)).toBe(false);
+  });
+
+  it("is false (best effort) for a bare File when the destination can't be read", async () => {
     const file = new File([new Uint8Array([1, 2, 3])], "train.pkg.slp");
-    const dest = fakeHandle("train.pkg.slp", async () => true);
+    const dest = fakeHandle("train.pkg.slp", async () => true); // no getFile()
     expect(await isSameSaveTarget(file, dest)).toBe(false);
   });
 

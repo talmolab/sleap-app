@@ -11,6 +11,7 @@
  */
 import { useAppStore, type AppState } from "@/stores/appStore";
 import { removeLabelsDraft } from "@/lib/labelsDraft";
+import { deleteDraftEntry } from "@/lib/draftManifest";
 
 /** True when replacing the project would lose work: in-memory edits, or a labels
  *  draft saved locally but not yet exported/compiled to disk. Pure. */
@@ -36,9 +37,10 @@ export function discardPromptMessage(opts: {
 /**
  * Prompt (only when there is unsaved work) before replacing the current
  * project; returns true to proceed. On a confirmed discard, the local labels
- * draft is removed best-effort (fire-and-forget) so it doesn't orphan —
- * `setLabels` only nulls the in-memory path, not the OPFS file. Reads the live
- * store, so callers need not pass state.
+ * draft is removed best-effort — BOTH its OPFS file and its manifest entry, so
+ * it doesn't reappear as a phantom (un-restorable) "Restore unsaved work?" card.
+ * `setLabels` only nulls the in-memory path. Reads the live store, so callers
+ * need not pass state.
  */
 export function confirmDiscardUnsavedWork(verb: string): boolean {
   const store = useAppStore.getState();
@@ -48,6 +50,9 @@ export function confirmDiscardUnsavedWork(verb: string): boolean {
   );
   if (!proceed) return false;
   const draft = store.labelsDraftPath;
-  if (draft) void removeLabelsDraft(draft);
+  if (draft) {
+    void removeLabelsDraft(draft);
+    void deleteDraftEntry(draft);
+  }
   return true;
 }

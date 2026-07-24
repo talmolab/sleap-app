@@ -18,6 +18,7 @@ import {
   saveLabelsDraft,
   requestOpfsPersistence,
 } from "@/lib/labelsDraft";
+import { videoSignature } from "@/lib/videoGraft";
 
 const DB_NAME = "sleap-app";
 const DB_VERSION = 1;
@@ -35,8 +36,13 @@ export interface DraftManifestEntry {
   displayName: string;
   /** Last-saved wall-clock time (ms) — shown as "saved N ago" + newest-first. */
   savedAt: number;
-  /** Video count, used to sanity-check the graft against the original on restore. */
+  /** Video count (kept for display/telemetry). */
   videoCount: number;
+  /** Per-video identity signatures ({@link videoSignature}), in draft-video
+   *  order. Restore matches these against the re-opened original so it grafts
+   *  the RIGHT images (or leaves a video blank) even if the video set diverged
+   *  or the wrong file was re-picked. */
+  videoSignatures: string[];
 }
 
 function openDb(): Promise<IDBDatabase> {
@@ -108,6 +114,9 @@ export async function recordDraftSave(
     displayName: opts.displayName,
     savedAt: opts.savedAt,
     videoCount: labels.videos.length,
+    videoSignatures: labels.videos.map((v) =>
+      videoSignature({ filename: v.filename, shape: v.shape }),
+    ),
   });
   void requestOpfsPersistence();
 }

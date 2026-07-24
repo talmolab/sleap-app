@@ -77,6 +77,13 @@ export interface AppState {
   projectFileHandle: FileSystemFileHandle | null;
   hasChanges: boolean;
   /**
+   * Monotonic edit counter — bumped on EVERY label edit (markChanged), even when
+   * `hasChanges` is already true. The draft auto-save subscribes to this (not the
+   * boolean `hasChanges`, which only transitions once) so each edit re-arms the
+   * debounce, and so an edit landing mid-save is detected and not dropped.
+   */
+  editSeq: number;
+  /**
    * OPFS path of the browser large-pkg fast-save's labels DRAFT (a bare-bones
    * imageless .slp), or null. Set once a large embedded pkg has been ⌘S/auto-
    * saved this session; the labels live here durably while the images stay in
@@ -339,6 +346,7 @@ export const useAppStore = create<AppState>()(
       projectFile: null,
       projectFileHandle: null,
       hasChanges: false,
+      editSeq: 0,
       labelsDraftPath: null,
       pendingExport: false,
       projectLoaded: false,
@@ -615,6 +623,7 @@ export const useAppStore = create<AppState>()(
       markChanged: () =>
         set((state) => {
           state.hasChanges = true;
+          state.editSeq += 1;
           state.lastInteractedFrame = state.frameIdx;
         }),
 
