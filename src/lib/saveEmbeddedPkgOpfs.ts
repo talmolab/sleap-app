@@ -92,7 +92,8 @@ export async function pickSlpSaveDestination(
 export async function saveEmbeddedPkgOpfs(
   labels: Labels,
   source: FileSystemFileHandle | File,
-  destHandle: FileSystemFileHandle
+  destHandle: FileSystemFileHandle,
+  onProgress?: (done: number, total: number) => void
 ): Promise<string> {
   // Re-read the source FRESH: a File snapshot captured at open time may be stale
   // by now (the native Save dialog stole focus, time elapsed, or it lives on a
@@ -124,7 +125,7 @@ export async function saveEmbeddedPkgOpfs(
       H5WASM_URL
     );
     if (plan.entries.length > 0) {
-      const res = await writer.appendEmbeddedVideos(plan.entries);
+      const res = await writer.appendEmbeddedVideos(plan.entries, onProgress);
       if (res.success !== true) {
         throw new Error(
           `saveEmbeddedPkgOpfs: appendEmbeddedVideos failed: ${

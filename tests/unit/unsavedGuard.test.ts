@@ -9,40 +9,40 @@ import { hasUnsavedWork, discardPromptMessage } from "@/lib/unsavedGuard";
 
 describe("hasUnsavedWork", () => {
   it("is false only when there are no in-memory edits and nothing pending export", () => {
-    expect(
-      hasUnsavedWork({ hasChanges: false, workingCopyPendingExport: false }),
-    ).toBe(false);
+    expect(hasUnsavedWork({ hasChanges: false, pendingExport: false })).toBe(
+      false,
+    );
   });
 
   it("is true when there are in-memory edits", () => {
-    expect(
-      hasUnsavedWork({ hasChanges: true, workingCopyPendingExport: false }),
-    ).toBe(true);
+    expect(hasUnsavedWork({ hasChanges: true, pendingExport: false })).toBe(
+      true,
+    );
   });
 
-  it("is true when a working copy has edits saved locally but not yet exported", () => {
-    expect(
-      hasUnsavedWork({ hasChanges: false, workingCopyPendingExport: true }),
-    ).toBe(true);
+  it("is true when a labels draft is saved locally but not yet exported", () => {
+    expect(hasUnsavedWork({ hasChanges: false, pendingExport: true })).toBe(
+      true,
+    );
   });
 });
 
 describe("discardPromptMessage", () => {
   it("warns about in-memory unsaved changes when nothing is pending export", () => {
     const m = discardPromptMessage({
-      workingCopyPendingExport: false,
+      pendingExport: false,
       verb: "Opening a new project",
     });
     expect(m).toContain("unsaved changes");
     expect(m).toContain("Opening a new project");
   });
 
-  it("warns that browser-saved edits are not yet on disk when a copy is pending export", () => {
+  it("warns that browser-saved edits are not yet on disk when pending export", () => {
     const m = discardPromptMessage({
-      workingCopyPendingExport: true,
+      pendingExport: true,
       verb: "Creating a new project",
     });
-    expect(m).toContain("not yet written to disk");
+    expect(m).toContain("not yet exported to disk");
     expect(m).toContain("Creating a new project");
   });
 });

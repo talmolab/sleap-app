@@ -14,10 +14,10 @@ export function resolveQuitConfirm(confirmed: boolean) {
 
 async function confirmUnsaved(): Promise<boolean> {
   const store = useAppStore.getState();
-  // Also prompt when a browser large-pkg working copy has edits saved to OPFS
-  // but not yet exported to disk. (On desktop workingCopyPendingExport is always
-  // false, so this is unchanged there.) Quit does NOT delete the working copy —
-  // it should survive for a future resume-on-open.
+  // Also prompt when a browser large-pkg labels draft has edits saved locally
+  // but not yet exported to disk. (On desktop pendingExport is always false, so
+  // this is unchanged there.) Quit does NOT delete the draft — it should survive
+  // for a future resume-on-open.
   if (!hasUnsavedWork(store)) return true;
 
   store.set("quitConfirmOpen", true);

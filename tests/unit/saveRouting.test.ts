@@ -157,12 +157,11 @@ const actionBase = {
   hasSource: true,
   isOpfsSupported: true,
   estimatedOutputBytes: STREAMING_SAVE_THRESHOLD_BYTES + 1,
-  hasWorkingCopy: false,
   forceDialog: false,
 };
 
-describe("decideBrowserSaveAction", () => {
-  it("uses the in-memory save for a small file with no working copy (⌘S or Save As)", () => {
+describe("decideBrowserSaveAction (EDL model)", () => {
+  it("uses the in-memory save for a small file (⌘S or Save As)", () => {
     const small = STREAMING_SAVE_THRESHOLD_BYTES - 1;
     expect(
       decideBrowserSaveAction({ ...actionBase, estimatedOutputBytes: small }),
@@ -176,7 +175,7 @@ describe("decideBrowserSaveAction", () => {
     ).toBe("in-memory");
   });
 
-  it("falls back to the in-memory save when OPFS is unavailable and there's no working copy", () => {
+  it("falls back to the in-memory save when OPFS is unavailable", () => {
     expect(
       decideBrowserSaveAction({
         ...actionBase,
@@ -186,40 +185,13 @@ describe("decideBrowserSaveAction", () => {
     ).toBe("in-memory");
   });
 
-  it("SEEDS a working copy on the first ⌘S of a large embedded pkg (no working copy yet)", () => {
-    expect(decideBrowserSaveAction(actionBase)).toBe("seed-working-copy");
+  it("saves the labels DRAFT on ⌘S of a large embedded pkg (instant, no image copy)", () => {
+    expect(decideBrowserSaveAction(actionBase)).toBe("save-labels-draft");
   });
 
-  it("streams a full file to disk on Save As of a large pkg with no working copy", () => {
+  it("COMPILES the full pkg to disk on Save As / Export of a large embedded pkg", () => {
     expect(
       decideBrowserSaveAction({ ...actionBase, forceDialog: true }),
-    ).toBe("opfs-stream");
-  });
-
-  it("COMMITS to an existing working copy on ⌘S, regardless of size/source/OPFS", () => {
-    // A working copy is self-contained and authoritative: commit even if the
-    // original source is gone, the estimate is small, or OPFS looks unsupported
-    // (it can't be — a copy could only exist if OPFS worked to create it).
-    expect(
-      decideBrowserSaveAction({ ...actionBase, hasWorkingCopy: true }),
-    ).toBe("commit-working-copy");
-    expect(
-      decideBrowserSaveAction({
-        ...actionBase,
-        hasWorkingCopy: true,
-        hasSource: false,
-        estimatedOutputBytes: STREAMING_SAVE_THRESHOLD_BYTES - 1,
-      }),
-    ).toBe("commit-working-copy");
-  });
-
-  it("EXPORTS an existing working copy to disk on Save As", () => {
-    expect(
-      decideBrowserSaveAction({
-        ...actionBase,
-        hasWorkingCopy: true,
-        forceDialog: true,
-      }),
-    ).toBe("export-working-copy");
+    ).toBe("compile-export");
   });
 });

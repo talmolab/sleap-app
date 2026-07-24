@@ -33,7 +33,6 @@ import {
   type NavigationDomain,
 } from "@/lib/navigableFrames";
 export type { NavigationDomain };
-import type { WorkingCopy } from "@/lib/opfsWorkingCopy";
 import {
   DEFAULT_PANEL_ORDER,
   reconcilePanelOrder,
@@ -78,19 +77,20 @@ export interface AppState {
   projectFileHandle: FileSystemFileHandle | null;
   hasChanges: boolean;
   /**
-   * Active OPFS working copy for the browser large-embedded-pkg fast-save. Non-
-   * null once a large pkg has been ⌘S-saved this session: ⌘S then patches this
-   * durable OPFS copy in place instead of rewriting multi-GB to disk. Reset on
-   * project load. NOT persisted (holds an io baseline snapshot; the copy itself
-   * lives in OPFS and is re-discovered via the resume manifest, a later piece).
+   * OPFS path of the browser large-pkg fast-save's labels DRAFT (a bare-bones
+   * imageless .slp), or null. Set once a large embedded pkg has been ⌘S/auto-
+   * saved this session; the labels live here durably while the images stay in
+   * the original. Reset on project load. NOT persisted (resume-on-open, a later
+   * piece, will re-discover it via a manifest).
    */
-  workingCopy: WorkingCopy | null;
+  labelsDraftPath: string | null;
   /**
-   * True when the working copy has edits not yet exported to the user's disk
-   * file (every ⌘S sets it; an explicit Save As / Export clears it). Drives the
-   * "saved locally — export to disk" status + the beforeunload warning.
+   * True when there are label edits saved to the local draft but NOT yet
+   * compiled/exported to the user's disk file (⌘S / auto-save sets it; an
+   * explicit Export clears it). Drives the "saved locally — export to disk"
+   * status + the unsaved-work guards.
    */
-  workingCopyPendingExport: boolean;
+  pendingExport: boolean;
   projectLoaded: boolean;
 
   // === Selection state ===
@@ -339,8 +339,8 @@ export const useAppStore = create<AppState>()(
       projectFile: null,
       projectFileHandle: null,
       hasChanges: false,
-      workingCopy: null,
-      workingCopyPendingExport: false,
+      labelsDraftPath: null,
+      pendingExport: false,
       projectLoaded: false,
 
       // Selection state
@@ -450,10 +450,10 @@ export const useAppStore = create<AppState>()(
           state.projectFileHandle = projectFileHandle ?? null;
           state.projectLoaded = true;
           state.hasChanges = false;
-          // A newly-loaded project has no working copy yet (and no stale one
-          // from a previous project) — the first large-pkg ⌘S seeds one.
-          state.workingCopy = null;
-          state.workingCopyPendingExport = false;
+          // A newly-loaded project has no labels draft yet (and no stale one
+          // from a previous project) — the first large-pkg ⌘S writes one.
+          state.labelsDraftPath = null;
+          state.pendingExport = false;
 
           // Set first video and skeleton
           if (labels.videos.length > 0) {
