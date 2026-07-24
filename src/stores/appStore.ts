@@ -33,6 +33,7 @@ import {
   type NavigationDomain,
 } from "@/lib/navigableFrames";
 export type { NavigationDomain };
+import type { WorkingCopy } from "@/lib/opfsWorkingCopy";
 import {
   DEFAULT_PANEL_ORDER,
   reconcilePanelOrder,
@@ -76,6 +77,20 @@ export interface AppState {
    */
   projectFileHandle: FileSystemFileHandle | null;
   hasChanges: boolean;
+  /**
+   * Active OPFS working copy for the browser large-embedded-pkg fast-save. Non-
+   * null once a large pkg has been ⌘S-saved this session: ⌘S then patches this
+   * durable OPFS copy in place instead of rewriting multi-GB to disk. Reset on
+   * project load. NOT persisted (holds an io baseline snapshot; the copy itself
+   * lives in OPFS and is re-discovered via the resume manifest, a later piece).
+   */
+  workingCopy: WorkingCopy | null;
+  /**
+   * True when the working copy has edits not yet exported to the user's disk
+   * file (every ⌘S sets it; an explicit Save As / Export clears it). Drives the
+   * "saved locally — export to disk" status + the beforeunload warning.
+   */
+  workingCopyPendingExport: boolean;
   projectLoaded: boolean;
 
   // === Selection state ===
@@ -324,6 +339,8 @@ export const useAppStore = create<AppState>()(
       projectFile: null,
       projectFileHandle: null,
       hasChanges: false,
+      workingCopy: null,
+      workingCopyPendingExport: false,
       projectLoaded: false,
 
       // Selection state
@@ -433,6 +450,10 @@ export const useAppStore = create<AppState>()(
           state.projectFileHandle = projectFileHandle ?? null;
           state.projectLoaded = true;
           state.hasChanges = false;
+          // A newly-loaded project has no working copy yet (and no stale one
+          // from a previous project) — the first large-pkg ⌘S seeds one.
+          state.workingCopy = null;
+          state.workingCopyPendingExport = false;
 
           // Set first video and skeleton
           if (labels.videos.length > 0) {

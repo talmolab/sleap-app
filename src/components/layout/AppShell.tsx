@@ -125,10 +125,15 @@ export function AppShell() {
   const helpDialogOpen = useAppStore((s) => s.helpDialogOpen);
   const setHelpDialogOpen = useAppStore((s) => s.setHelpDialogOpen);
 
-  // Unsaved changes protection: warn before closing/refreshing
+  // Unsaved changes protection: warn before closing/refreshing when there are
+  // in-memory edits (hasChanges) OR a large-pkg working copy with edits saved
+  // locally to OPFS but not yet exported to disk (workingCopyPendingExport) —
+  // the latter survives in OPFS (resume-on-open can restore it) but the user
+  // hasn't written the file to disk yet, so a close still deserves a warning.
   useEffect(() => {
     const handler = (e: BeforeUnloadEvent) => {
-      if (useAppStore.getState().hasChanges) {
+      const s = useAppStore.getState();
+      if (s.hasChanges || s.workingCopyPendingExport) {
         e.preventDefault();
       }
     };

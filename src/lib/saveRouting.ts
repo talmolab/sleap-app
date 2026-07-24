@@ -114,3 +114,68 @@ export function shouldOpfsStreamBrowserSave({
   if (estimatedOutputBytes === null) return true;
   return estimatedOutputBytes > STREAMING_SAVE_THRESHOLD_BYTES;
 }
+
+/**
+ * What a BROWSER save of `labels` should do, once the large-embedded-pkg
+ * fast-save (OPFS working copy) is in play.
+ *
+ *  - `in-memory` — small file / no source / OPFS unavailable: the existing
+ *    whole-file in-memory save (still preserves already-embedded frames).
+ *  - `seed-working-copy` — first ⌘S of a large embedded pkg with no working
+ *    copy yet: build the durable OPFS working copy (instant subsequent saves).
+ *  - `commit-working-copy` — a later ⌘S of a large embedded pkg whose working
+ *    copy already exists: patch it in place (or re-seed on a structural change).
+ *  - `export-working-copy` — Save As / Export of a large pkg WITH a working
+ *    copy: stream that already-built copy to the chosen disk destination.
+ *  - `opfs-stream` — Save As / Export of a large pkg with NO working copy yet:
+ *    the existing full OPFS stream-to-disk (builds + writes in one shot).
+ *
+ * ⌘S never writes multi-GB to disk anymore — it maintains the working copy;
+ * the explicit Save As / Export (`forceDialog`) is the disk write. Small files
+ * are unaffected.
+ *
+ * INVARIANT: once a working copy EXISTS, it always wins — ⌘S commits to it,
+ * Save As exports it — regardless of size/source/OPFS-support. The working copy
+ * is a self-contained pkg, so a commit (patch or re-seed) needs neither the
+ * original source file nor a fresh size estimate; this also keeps resume-on-open
+ * correct (a reopened tab whose original source is gone can still save). Only
+ * when there is NO working copy yet do the eligibility + threshold gates
+ * ({@link shouldOpfsStreamBrowserSave}) decide seed-vs-stream-vs-in-memory.
+ */
+export type BrowserSaveAction =
+  | "in-memory"
+  | "seed-working-copy"
+  | "commit-working-copy"
+  | "export-working-copy"
+  | "opfs-stream";
+
+export function decideBrowserSaveAction({
+  hasEmbeddedImages,
+  hasSource,
+  isOpfsSupported,
+  estimatedOutputBytes,
+  hasWorkingCopy,
+  forceDialog,
+}: {
+  hasEmbeddedImages: boolean;
+  hasSource: boolean;
+  isOpfsSupported: boolean;
+  estimatedOutputBytes: number | null;
+  hasWorkingCopy: boolean;
+  forceDialog: boolean;
+}): BrowserSaveAction {
+  // An existing working copy is authoritative (it holds every image already).
+  if (hasWorkingCopy) {
+    return forceDialog ? "export-working-copy" : "commit-working-copy";
+  }
+  // No working copy yet: only a large embedded pkg gets the OPFS treatment;
+  // everything else uses the whole-file in-memory save.
+  const largePkg = shouldOpfsStreamBrowserSave({
+    hasEmbeddedImages,
+    hasSource,
+    isOpfsSupported,
+    estimatedOutputBytes,
+  });
+  if (!largePkg) return "in-memory";
+  return forceDialog ? "opfs-stream" : "seed-working-copy";
+}

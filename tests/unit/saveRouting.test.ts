@@ -2,6 +2,7 @@ import { describe, it, expect } from "../bun-test";
 import {
   shouldStreamEmbeddedSave,
   shouldOpfsStreamBrowserSave,
+  decideBrowserSaveAction,
   STREAMING_SAVE_THRESHOLD_BYTES,
 } from "@/lib/saveRouting";
 
@@ -148,5 +149,77 @@ describe("shouldOpfsStreamBrowserSave", () => {
         estimatedOutputBytes: null,
       }),
     ).toBe(false);
+  });
+});
+
+const actionBase = {
+  hasEmbeddedImages: true,
+  hasSource: true,
+  isOpfsSupported: true,
+  estimatedOutputBytes: STREAMING_SAVE_THRESHOLD_BYTES + 1,
+  hasWorkingCopy: false,
+  forceDialog: false,
+};
+
+describe("decideBrowserSaveAction", () => {
+  it("uses the in-memory save for a small file with no working copy (⌘S or Save As)", () => {
+    const small = STREAMING_SAVE_THRESHOLD_BYTES - 1;
+    expect(
+      decideBrowserSaveAction({ ...actionBase, estimatedOutputBytes: small }),
+    ).toBe("in-memory");
+    expect(
+      decideBrowserSaveAction({
+        ...actionBase,
+        estimatedOutputBytes: small,
+        forceDialog: true,
+      }),
+    ).toBe("in-memory");
+  });
+
+  it("falls back to the in-memory save when OPFS is unavailable and there's no working copy", () => {
+    expect(
+      decideBrowserSaveAction({
+        ...actionBase,
+        isOpfsSupported: false,
+        forceDialog: true,
+      }),
+    ).toBe("in-memory");
+  });
+
+  it("SEEDS a working copy on the first ⌘S of a large embedded pkg (no working copy yet)", () => {
+    expect(decideBrowserSaveAction(actionBase)).toBe("seed-working-copy");
+  });
+
+  it("streams a full file to disk on Save As of a large pkg with no working copy", () => {
+    expect(
+      decideBrowserSaveAction({ ...actionBase, forceDialog: true }),
+    ).toBe("opfs-stream");
+  });
+
+  it("COMMITS to an existing working copy on ⌘S, regardless of size/source/OPFS", () => {
+    // A working copy is self-contained and authoritative: commit even if the
+    // original source is gone, the estimate is small, or OPFS looks unsupported
+    // (it can't be — a copy could only exist if OPFS worked to create it).
+    expect(
+      decideBrowserSaveAction({ ...actionBase, hasWorkingCopy: true }),
+    ).toBe("commit-working-copy");
+    expect(
+      decideBrowserSaveAction({
+        ...actionBase,
+        hasWorkingCopy: true,
+        hasSource: false,
+        estimatedOutputBytes: STREAMING_SAVE_THRESHOLD_BYTES - 1,
+      }),
+    ).toBe("commit-working-copy");
+  });
+
+  it("EXPORTS an existing working copy to disk on Save As", () => {
+    expect(
+      decideBrowserSaveAction({
+        ...actionBase,
+        hasWorkingCopy: true,
+        forceDialog: true,
+      }),
+    ).toBe("export-working-copy");
   });
 });

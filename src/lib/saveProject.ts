@@ -18,7 +18,7 @@ import {
 import { saveLabelsInPlace } from "@/lib/saveLabelsInPlace";
 import {
   shouldStreamEmbeddedSave,
-  shouldOpfsStreamBrowserSave,
+  decideBrowserSaveAction,
 } from "@/lib/saveRouting";
 import { fileSize } from "@/lib/nativeRange";
 import { renameFile, removeFile } from "@/lib/nativeWrite";
@@ -27,6 +27,13 @@ import {
   isOpfsSaveSupported,
   pickSlpSaveDestination,
 } from "@/lib/saveEmbeddedPkgOpfs";
+import {
+  seedWorkingCopy,
+  commitToWorkingCopy,
+  exportWorkingCopy,
+  newWorkingCopyPath,
+  type WorkingCopy,
+} from "@/lib/opfsWorkingCopy";
 import { isSameSaveTarget } from "@/lib/saveTargetGuard";
 
 /**
@@ -262,33 +269,73 @@ export async function saveProjectAsSlp(
         displayName = savePath;
       }
     } else {
-      // Browser save. Route a LARGE, already-embedded re-save through the OPFS
-      // streaming writer (no ~4GB wasm-heap wall, no SharedArrayBuffer / COOP+COEP)
-      // — it needs the opened File as the image source. Anything else (small files
-      // below the streaming threshold, no source File, OPFS unavailable, or a video
-      // needing fresh encoding, which the embed plan rejects) uses the faster
-      // in-memory save (which still preserves already-embedded frames).
+      // Browser save. A LARGE already-embedded pkg.slp uses a durable OPFS
+      // working copy: ⌘S seeds it once then patches it IN PLACE (instant — no
+      // multi-GB disk write), and an explicit Save As / Export streams that copy
+      // to the user's chosen file. Everything else (small files, no opened
+      // source, OPFS/picker unavailable) uses the whole-file in-memory save
+      // (which still preserves already-embedded frames). Routing decided by
+      // decideBrowserSaveAction — see saveRouting.ts.
       const hasEmbeddedImages = labels.videos.some((v) => v.hasEmbeddedImages);
       // Prefer the durable handle (re-read fresh at save time) over the File
       // snapshot, which can go stale by the time we read the images.
       const source = store.projectFileHandle ?? store.projectFile;
-      // Size proxy for the OPFS-vs-in-memory decision: the opened source File's
-      // byte size. The raw-copy path never ADDS embedded data, so this tracks the
-      // output size closely and errs high (the safe direction) — see saveRouting.
-      // projectFile is always retained on open, even when the handle is preferred
-      // for reads. null (no File) => treated conservatively as over-threshold.
+      const workingCopy = store.workingCopy;
+      // Size proxy for the seed-vs-in-memory decision: the opened File's byte
+      // size. The raw-copy path never ADDS embedded data, so this tracks output
+      // size closely and errs high (the safe side). null => over-threshold.
       const estimatedOutputBytes = store.projectFile?.size ?? null;
-      const useOpfsSave = shouldOpfsStreamBrowserSave({
+      const action = decideBrowserSaveAction({
         hasEmbeddedImages,
         hasSource: !!source,
         isOpfsSupported: isOpfsSaveSupported(),
         estimatedOutputBytes,
+        hasWorkingCopy: !!workingCopy,
+        forceDialog,
       });
-      if (useOpfsSave && source) {
+
+      if (action === "seed-working-copy" || action === "commit-working-copy") {
+        // ⌘S fast-save: maintain the durable OPFS working copy. No disk picker;
+        // the edit is safe in OPFS and the user writes it to disk with an
+        // explicit Save As / Export (which clears the pending-export flag).
+        let wc: WorkingCopy;
+        if (action === "seed-working-copy") {
+          // A large-pkg seed is only routed here when a source is present (the
+          // routing gate requires it); assert for the type narrower.
+          if (!source) {
+            throw new Error("no opened source to seed the working copy from");
+          }
+          // Seeding copies the embedded images into OPFS once — as slow as a
+          // full save; every subsequent ⌘S is then an instant in-place patch.
+          store.setLoading(true, "Preparing fast save (one-time)...");
+          console.log("[save] Seeding OPFS working copy (browser fast-save)");
+          wc = await seedWorkingCopy(labels, source, newWorkingCopyPath(saveName));
+        } else {
+          // Usually an instant label-table patch; a structural edit (track/video
+          // change) re-seeds a fresh copy, which is slower but still local.
+          store.setLoading(true, "Saving locally...");
+          console.log(
+            "[save] Committing edit to OPFS working copy (browser fast-save)"
+          );
+          wc = await commitToWorkingCopy(labels, workingCopy!, {
+            projectName: saveName,
+          });
+        }
+        store.set("workingCopy", wc);
+        store.set("workingCopyPendingExport", true);
+        store.clearChanges();
+        toast.success("Saved locally", {
+          description:
+            "Saved in your browser. Use Save As to write the full file to disk.",
+        });
+        return; // handled with our own toast — skip the shared success below
+      }
+
+      if (action === "export-working-copy" || action === "opfs-stream") {
+        // Save As / Export: write the full file to the user's chosen disk file.
         // Acquire the destination NOW, synchronously off the save gesture:
-        // showSaveFilePicker requires transient activation, which the slow OPFS
-        // build (h5wasm worker + image copy) would otherwise consume, causing a
-        // "Must be handling a user gesture" SecurityError.
+        // showSaveFilePicker requires transient activation, which the slow build
+        // / stream would otherwise consume ("Must be handling a user gesture").
         let destHandle: FileSystemFileHandle;
         try {
           destHandle = await pickSlpSaveDestination(saveName);
@@ -296,27 +343,35 @@ export async function saveProjectAsSlp(
           if (err instanceof DOMException && err.name === "AbortError") return;
           throw err;
         }
-        // DATA-LOSS GUARD: refuse to overwrite the currently-open project. The
-        // OPFS writer reads embedded images FROM the source while streaming the
-        // result INTO the destination; if they're the same on-disk file, the
-        // destination's createWritable() truncates the only copy, so any
-        // mid-save failure would zero the original (this already destroyed a
-        // test file). The browser has no atomic temp+rename over an arbitrary
-        // open file, so in-place browser re-save isn't safe yet — send the user
-        // back to pick a new filename before anything is written.
-        if (await isSameSaveTarget(source, destHandle)) {
+        // DATA-LOSS GUARD: never stream INTO the file we read images FROM — the
+        // destination's createWritable() truncates it first, so a mid-save
+        // failure would zero the only copy (this already destroyed a test file).
+        // Exporting the working copy reads OPFS (not `source`), but the guard
+        // still protects the currently-open original from being overwritten.
+        if (source && (await isSameSaveTarget(source, destHandle))) {
           toast.warning("Choose a different filename", {
             description:
               "Saving over the currently-open project isn't supported in the browser yet. Pick a new filename so the original stays safe.",
           });
           return;
         }
-        store.setLoading(true, "Saving large project (streaming to disk)...");
-        console.log("[save] Saving via browser OPFS streaming writer");
         // Past the picker there is no gesture left to open another one, so a
         // build/stream failure here surfaces as a save error (the outer catch).
-        displayName = await saveEmbeddedPkgOpfs(labels, source, destHandle);
+        if (action === "export-working-copy" && workingCopy) {
+          store.setLoading(true, "Exporting to disk...");
+          console.log("[save] Exporting OPFS working copy to disk");
+          displayName = await exportWorkingCopy(workingCopy, destHandle);
+        } else {
+          if (!source) {
+            throw new Error("no opened source to stream the embedded pkg from");
+          }
+          store.setLoading(true, "Saving large project (streaming to disk)...");
+          console.log("[save] Saving via browser OPFS streaming writer");
+          displayName = await saveEmbeddedPkgOpfs(labels, source, destHandle);
+        }
+        store.set("workingCopyPendingExport", false);
       } else {
+        // action === "in-memory"
         const name = await saveBrowserInMemory(labels, saveName);
         if (name === null) return; // user cancelled the save dialog
         displayName = name;
