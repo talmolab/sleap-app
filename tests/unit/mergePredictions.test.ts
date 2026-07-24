@@ -30,6 +30,7 @@ import {
   Instance,
   PredictedInstance,
   PredictedCentroid,
+  UserCentroid,
   PredictedBoundingBox,
   Video,
   Skeleton,
@@ -179,6 +180,42 @@ describe("MergePredictions — centroid survival (active-learning locator fix)",
     const merged = frameAt(currentLabels(), baseVideo, 5);
     expect(merged.centroids.length).toBe(1);
     expect(merged.centroids[0].xy).toEqual([7, 8]);
+  });
+
+  // Locator re-runs merge with strategy "replace_predictions" (see
+  // mergeStrategyForPipeline) so predicted centroids REFRESH rather than
+  // accumulate. This resurrects a case from the retired hand-rolled merge that
+  // io's "auto" (keep-unmatched-predictions) would otherwise regress.
+  it("replace_predictions refreshes predicted centroids but keeps user ones", async () => {
+    const skeleton = makeSkeleton();
+    const baseVideo = makeVideo();
+    const baseFrame = new LabeledFrame({
+      video: baseVideo,
+      frameIdx: 0,
+      instances: [userInst(skeleton, 10, 10)],
+      centroids: [
+        new UserCentroid({ x: 1, y: 1 }),
+        new PredictedCentroid({ x: 10, y: 10, score: 0.5 }), // stale locator output
+      ],
+    });
+    setupBase({ skeleton, video: baseVideo, frames: [baseFrame] });
+
+    // Fresh locator run: the centroid moved far (would NOT match under "auto").
+    const predVideo = makeVideo("/compute-node/test.mp4");
+    const predFrame = new LabeledFrame({
+      video: predVideo,
+      frameIdx: 0,
+      centroids: [new PredictedCentroid({ x: 90, y: 90, score: 0.9 })],
+    });
+    const predictions = new Labels({ labeledFrames: [predFrame], videos: [predVideo] });
+
+    await ctx.execute(MergePredictions, { predictions, strategy: "replace_predictions" });
+
+    const merged = frameAt(currentLabels(), baseVideo, 0);
+    const user = merged.centroids.filter((c) => !c.isPredicted);
+    const pred = merged.centroids.filter((c) => c.isPredicted);
+    expect(user.map((c) => c.xy)).toEqual([[1, 1]]); // user centroid untouched
+    expect(pred.map((c) => c.xy)).toEqual([[90, 90]]); // stale (10,10) refreshed, not accumulated
   });
 });
 

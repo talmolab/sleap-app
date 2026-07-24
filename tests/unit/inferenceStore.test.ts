@@ -1,9 +1,21 @@
 import { describe, it, expect, beforeEach } from "../bun-test";
-import { useInferenceStore } from "@/stores/inferenceStore";
+import { useInferenceStore, mergeStrategyForPipeline } from "@/stores/inferenceStore";
 
 function resetStore() {
   useInferenceStore.setState(useInferenceStore.getInitialState());
 }
+
+describe("mergeStrategyForPipeline", () => {
+  it("replaces predicted centroids for the locator pipeline (refresh, don't accumulate)", () => {
+    expect(mergeStrategyForPipeline("centroid")).toBe("replace_predictions");
+  });
+
+  it("keeps io's auto strategy for pose pipelines", () => {
+    expect(mergeStrategyForPipeline("top-down")).toBe("auto");
+    expect(mergeStrategyForPipeline("bottom-up")).toBe("auto");
+    expect(mergeStrategyForPipeline("single-animal")).toBe("auto");
+  });
+});
 
 describe("inferenceStore", () => {
   beforeEach(() => {
