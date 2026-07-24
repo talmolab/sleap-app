@@ -26,6 +26,7 @@ import { VideoPlayer } from "../video/VideoPlayer";
 import { PANELS } from "./panelRegistry";
 import { reorderById } from "@/lib/panelLayout";
 import { hasUnsavedWork } from "@/lib/unsavedGuard";
+import { setupLabelsAutosave } from "@/lib/labelsAutosave";
 import { WelcomeScreen } from "./WelcomeScreen";
 import { GoToFrameDialog } from "../dialogs/GoToFrameDialog";
 import { NewProjectDialog } from "../dialogs/NewProjectDialog";
@@ -140,6 +141,11 @@ export function AppShell() {
     window.addEventListener("beforeunload", handler);
     return () => window.removeEventListener("beforeunload", handler);
   }, []);
+
+  // EDL-style auto-save: for a browser large embedded pkg, persist the labels
+  // draft to OPFS a beat after edits settle (instant, silent). Small files /
+  // desktop are untouched (setupLabelsAutosave gates on eligibility).
+  useEffect(() => setupLabelsAutosave(), []);
 
   // Drag-and-drop to open a project is intentionally limited to the WelcomeScreen
   // (no project loaded) so a stray drop can never silently replace a project the
