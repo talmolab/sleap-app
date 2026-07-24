@@ -25,6 +25,7 @@ import { VideoPlayer } from "../video/VideoPlayer";
 
 import { PANELS } from "./panelRegistry";
 import { reorderById } from "@/lib/panelLayout";
+import { hasUnsavedWork } from "@/lib/unsavedGuard";
 import { WelcomeScreen } from "./WelcomeScreen";
 import { GoToFrameDialog } from "../dialogs/GoToFrameDialog";
 import { NewProjectDialog } from "../dialogs/NewProjectDialog";
@@ -132,8 +133,7 @@ export function AppShell() {
   // hasn't written the file to disk yet, so a close still deserves a warning.
   useEffect(() => {
     const handler = (e: BeforeUnloadEvent) => {
-      const s = useAppStore.getState();
-      if (s.hasChanges || s.workingCopyPendingExport) {
+      if (hasUnsavedWork(useAppStore.getState())) {
         e.preventDefault();
       }
     };

@@ -22,6 +22,7 @@ import {
   loadAnalysisProjectFromPath,
 } from "../lib/loadProject";
 import { saveProjectAsSlp } from "../lib/saveProject";
+import { confirmDiscardUnsavedWork } from "../lib/unsavedGuard";
 import { getPlatform } from "../platform/index";
 import {
   downloadFile,
@@ -131,13 +132,9 @@ export const NewProjectCommand: Command = {
   name: "NewProject",
   topics: [UpdateTopic.Project, UpdateTopic.Labels],
   execute(ctx: CommandContext) {
-    // Check for unsaved changes before creating a new project
-    if (ctx.state.hasChanges) {
-      const confirmed = window.confirm(
-        "You have unsaved changes. Creating a new project will discard them. Continue?"
-      );
-      if (!confirmed) return;
-    }
+    // Confirm discarding unsaved work (in-memory edits OR a not-yet-exported
+    // OPFS working copy) before creating a new project.
+    if (!confirmDiscardUnsavedWork("Creating a new project")) return;
 
     // Seed an empty skeleton so the editor lands in a usable state: the
     // Skeleton panel (and its template dropdown) require a non-null skeleton —

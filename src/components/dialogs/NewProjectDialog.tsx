@@ -36,6 +36,7 @@ import {
 } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { toast } from "@/lib/notify";
+import { confirmDiscardUnsavedWork } from "@/lib/unsavedGuard";
 import { X } from "lucide-react";
 
 /** Sentinel for the "no template, empty skeleton" choice. */
@@ -73,13 +74,9 @@ export function NewProjectDialog() {
   }, []);
 
   const handleCreate = useCallback(async () => {
-    // Creating discards the current project — confirm if there are edits.
-    if (useAppStore.getState().hasChanges) {
-      const ok = window.confirm(
-        "You have unsaved changes. Creating a new project will discard them. Continue?"
-      );
-      if (!ok) return;
-    }
+    // Creating discards the current project — confirm if there is unsaved work
+    // (in-memory edits OR a not-yet-exported OPFS working copy).
+    if (!confirmDiscardUnsavedWork("Creating a new project")) return;
 
     setCreating(true);
     try {

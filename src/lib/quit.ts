@@ -1,5 +1,6 @@
 import { isTauri } from "./platform";
 import { useAppStore } from "../stores/appStore";
+import { hasUnsavedWork } from "./unsavedGuard";
 
 let pendingQuitResolve: ((confirmed: boolean) => void) | null = null;
 
@@ -13,7 +14,11 @@ export function resolveQuitConfirm(confirmed: boolean) {
 
 async function confirmUnsaved(): Promise<boolean> {
   const store = useAppStore.getState();
-  if (!store.hasChanges) return true;
+  // Also prompt when a browser large-pkg working copy has edits saved to OPFS
+  // but not yet exported to disk. (On desktop workingCopyPendingExport is always
+  // false, so this is unchanged there.) Quit does NOT delete the working copy —
+  // it should survive for a future resume-on-open.
+  if (!hasUnsavedWork(store)) return true;
 
   store.set("quitConfirmOpen", true);
   return new Promise<boolean>((resolve) => {
@@ -47,8 +52,7 @@ export async function setupCloseHandler(): Promise<void> {
   const appWindow = getCurrentWindow();
 
   await appWindow.onCloseRequested(async (event) => {
-    const { hasChanges } = useAppStore.getState();
-    if (hasChanges) {
+    if (hasUnsavedWork(useAppStore.getState())) {
       event.preventDefault();
       if (await confirmUnsaved()) {
         await forceQuit();

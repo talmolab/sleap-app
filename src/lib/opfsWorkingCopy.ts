@@ -37,10 +37,12 @@
  *
  * SCOPE: this is the fast path for an already-embedded pkg. Adding a brand-new
  * video whose frames must be encoded is NOT covered — `buildSerializableEmbedPlan`
- * throws for the encode path, surfacing as a seed error the caller turns into a
- * full Save-As. Regular/small `.slp` files save to disk directly and never use a
- * working copy. Chromium only (needs OPFS + Worker); the caller gates on
- * `isOpfsSaveSupported()` before routing here.
+ * throws for the encode path; that error propagates to `saveProjectAsSlp`'s catch
+ * as a "Failed to save project" toast (there is no automatic Save-As fallback — a
+ * large pkg needing fresh-frame encoding can't be browser fast-saved yet).
+ * Regular/small `.slp` files save to disk directly and never use a working copy.
+ * Chromium only (needs OPFS + Worker); the caller gates on `isOpfsSaveSupported()`
+ * before routing here.
  */
 import {
   StreamingH5Writer,
@@ -132,6 +134,35 @@ async function opfsFileSize(opfsPath: string): Promise<number> {
   return file.size;
 }
 
+/**
+ * Best-effort request that the browser keep OPFS data persistent (exempt from
+ * eviction under storage pressure). Safe to call repeatedly. Returns whether
+ * persistence is granted (false if unsupported/denied); the working copy is
+ * usable either way, but a grant makes eviction of a multi-GB copy far less
+ * likely. Warns when not granted so the "durable" contract isn't silently false.
+ */
+export async function requestOpfsPersistence(): Promise<boolean> {
+  try {
+    if (
+      typeof navigator !== "undefined" &&
+      navigator.storage &&
+      typeof navigator.storage.persist === "function"
+    ) {
+      const granted = await navigator.storage.persist();
+      if (!granted) {
+        console.warn(
+          "[opfsWorkingCopy] storage.persist() not granted — the OPFS working " +
+            "copy is best-effort and may be evicted under storage pressure",
+        );
+      }
+      return granted;
+    }
+  } catch (err) {
+    console.warn("[opfsWorkingCopy] storage.persist() failed:", err);
+  }
+  return false;
+}
+
 /** Best-effort removal of an OPFS file (missing file is not an error). */
 export async function removeOpfsFile(opfsPath: string): Promise<void> {
   try {
@@ -156,14 +187,17 @@ export async function removeWorkingCopy(wc: WorkingCopy): Promise<void> {
  * copy) and returns its handle with a fresh in-place baseline.
  *
  * Throws if `source` needs the new-embed encode path (`buildSerializableEmbedPlan`
- * rejects it) — out of scope for the fast path; the caller falls back to a full
- * Save-As.
+ * rejects it) — out of scope for the fast path; the throw surfaces to the
+ * caller's save error (no automatic fallback).
  */
 export async function seedWorkingCopy(
   labels: Labels,
   source: File | FileSystemFileHandle,
   opfsPath: string,
 ): Promise<WorkingCopy> {
+  // Ask the browser to keep OPFS persistent before we rely on it as the durable
+  // home for edits saved locally but not yet exported (best-effort).
+  await requestOpfsPersistence();
   // Re-read a handle FRESH (a File captured earlier may be stale after a dialog
   // stole focus / on a network volume) — see saveEmbeddedPkgOpfs.
   const sourceFile = "getFile" in source ? await source.getFile() : source;
@@ -263,8 +297,13 @@ function defaultCommitOps(projectName?: string): CommitOps {
  *
  * DATA SAFETY: on a re-seed we build the new copy FIRST and only remove the old
  * one after the new one exists, so a seed failure throws with the recoverable
- * old copy intact. Returns the current {@link WorkingCopy} (same handle when
- * patched; a new path when re-seeded — the caller persists whichever it gets).
+ * old copy intact. A THROWN patch failure is treated exactly like a structural
+ * needs-reseed — an in-place patch is not journaled, so a mid-write throw may
+ * leave the working copy's LABEL TABLES half-written; re-seeding rebuilds a
+ * fresh, valid copy from the old copy's own (untouched) image datasets rather
+ * than leaving a possibly-corrupt file as the authoritative export source.
+ * Returns the current {@link WorkingCopy} (same handle when patched; a new path
+ * when re-seeded — the caller persists whichever it gets).
  *
  * `opts.ops` overrides any lifecycle op (tests inject fakes); `opts.projectName`
  * names re-seeded working copies.
@@ -276,11 +315,22 @@ export async function commitToWorkingCopy(
 ): Promise<WorkingCopy> {
   const ops = { ...defaultCommitOps(opts.projectName), ...opts.ops };
 
-  const res = await ops.save(labels, wc);
+  let res: SaveWorkingCopyResult;
+  try {
+    res = await ops.save(labels, wc);
+  } catch (err) {
+    // Patch threw (I/O / quota / worker error) — the label tables may be
+    // half-written. Fall through to a re-seed, which overwrites them wholesale
+    // from the current labels while raw-copying the intact image datasets.
+    res = {
+      kind: "needs-reseed",
+      reason: `in-place patch failed (${err instanceof Error ? err.message : String(err)})`,
+    };
+  }
   if (res.kind === "patched") return res.workingCopy;
 
-  // Structural change → re-seed. Build the fresh copy from the old copy's own
-  // images BEFORE removing the old one (data safety).
+  // Structural change (or a failed patch) → re-seed. Build the fresh copy from
+  // the old copy's own images BEFORE removing the old one (data safety).
   const source = await ops.reseedSource(wc);
   const freshPath = ops.newPath();
   const next = await ops.seed(labels, source, freshPath);

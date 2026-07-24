@@ -19,6 +19,7 @@ import {
 import { useAppStore } from "../stores/appStore";
 import { consumeLastBrowserFileHandle } from "../platform/index";
 import { toast } from "@/lib/notify";
+import { confirmDiscardUnsavedWork } from "./unsavedGuard";
 import { resolveExternalVideos } from "./resolveVideos";
 import { installTauriFsResolver } from "./fsResolver";
 import { fileSize, readRange } from "./nativeRange";
@@ -113,13 +114,9 @@ async function openFirstLabeledFrame(labels: Labels): Promise<void> {
 export async function loadProjectFromFile(file: File): Promise<boolean> {
   const store = useAppStore.getState();
 
-  // Check for unsaved changes
-  if (store.hasChanges) {
-    const confirmed = window.confirm(
-      "You have unsaved changes. Opening a new project will discard them. Continue?"
-    );
-    if (!confirmed) return false;
-  }
+  // Confirm discarding unsaved work (in-memory edits OR a not-yet-exported OPFS
+  // working copy) before replacing the current project.
+  if (!confirmDiscardUnsavedWork("Opening a new project")) return false;
 
   store.setLoading(true, `Reading ${file.name}...`);
 
@@ -167,13 +164,9 @@ export async function loadProjectFromPath(
 ): Promise<boolean> {
   const store = useAppStore.getState();
 
-  // Check for unsaved changes
-  if (store.hasChanges) {
-    const confirmed = window.confirm(
-      "You have unsaved changes. Opening a new project will discard them. Continue?"
-    );
-    if (!confirmed) return false;
-  }
+  // Confirm discarding unsaved work (in-memory edits OR a not-yet-exported OPFS
+  // working copy) before replacing the current project.
+  if (!confirmDiscardUnsavedWork("Opening a new project")) return false;
 
   const filename = path.split(/[\\/]/).pop() ?? path;
   store.setLoading(true, `Reading ${filename}...`);
@@ -303,12 +296,7 @@ function readAnalysisLabels(source: AnalysisSource): Promise<Labels> {
 export async function loadAnalysisProjectFromFile(file: File): Promise<boolean> {
   const store = useAppStore.getState();
 
-  if (store.hasChanges) {
-    const confirmed = window.confirm(
-      "You have unsaved changes. Importing a file will discard them. Continue?"
-    );
-    if (!confirmed) return false;
-  }
+  if (!confirmDiscardUnsavedWork("Importing a file")) return false;
 
   store.setLoading(true, `Reading ${file.name}...`);
 
@@ -347,12 +335,7 @@ export async function loadAnalysisProjectFromPath(
 ): Promise<boolean> {
   const store = useAppStore.getState();
 
-  if (store.hasChanges) {
-    const confirmed = window.confirm(
-      "You have unsaved changes. Importing a file will discard them. Continue?"
-    );
-    if (!confirmed) return false;
-  }
+  if (!confirmDiscardUnsavedWork("Importing a file")) return false;
 
   const filename = path.split(/[\\/]/).pop() ?? path;
   store.setLoading(true, `Reading ${filename}...`);

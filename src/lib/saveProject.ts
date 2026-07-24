@@ -358,9 +358,21 @@ export async function saveProjectAsSlp(
         // Past the picker there is no gesture left to open another one, so a
         // build/stream failure here surfaces as a save error (the outer catch).
         if (action === "export-working-copy" && workingCopy) {
+          // Bring the working copy CURRENT with any edits made since the last
+          // ⌘S before streaming it — otherwise we'd export stale bytes (the
+          // working copy only reflects the last seed/commit) and then clear the
+          // dirty flag, silently dropping the newest edits from the disk file.
+          // This is the cheap in-place label patch on the common path (a
+          // structural edit re-seeds); no multi-GB image re-copy.
+          let wc = workingCopy;
+          if (store.hasChanges) {
+            store.setLoading(true, "Saving changes...");
+            wc = await commitToWorkingCopy(labels, wc, { projectName: saveName });
+            store.set("workingCopy", wc);
+          }
           store.setLoading(true, "Exporting to disk...");
           console.log("[save] Exporting OPFS working copy to disk");
-          displayName = await exportWorkingCopy(workingCopy, destHandle);
+          displayName = await exportWorkingCopy(wc, destHandle);
         } else {
           if (!source) {
             throw new Error("no opened source to stream the embedded pkg from");

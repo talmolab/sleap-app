@@ -132,6 +132,45 @@ describe("commitToWorkingCopy (patch-or-reseed orchestration)", () => {
     ]);
   });
 
+  it("treats a THROWN patch failure as needs-reseed (rebuilds a clean copy instead of propagating)", async () => {
+    // An in-place patch that throws may have left the working copy's label
+    // tables half-written; rather than surface the error (and leave a possibly-
+    // corrupt copy as the authoritative export source), commit should re-seed.
+    const calls: string[] = [];
+    const old = wc("sleap-wc-old-1.slp");
+    const fresh = wc("sleap-wc-new-2.slp");
+    const ops: CommitOps = {
+      save: async () => {
+        calls.push("save");
+        throw new Error("updateLabelsInPlace failed");
+      },
+      reseedSource: async (w) => {
+        calls.push("reseedSource:" + w.opfsPath);
+        return SOURCE;
+      },
+      newPath: () => {
+        calls.push("newPath");
+        return fresh.opfsPath;
+      },
+      seed: async (_l, _s, path) => {
+        calls.push("seed:" + path);
+        return fresh;
+      },
+      remove: async (p) => {
+        calls.push("remove:" + p);
+      },
+    };
+    const out = await commitToWorkingCopy(LABELS, old, { ops });
+    expect(out).toBe(fresh);
+    expect(calls).toEqual([
+      "save",
+      "reseedSource:sleap-wc-old-1.slp",
+      "newPath",
+      "seed:sleap-wc-new-2.slp",
+      "remove:sleap-wc-old-1.slp",
+    ]);
+  });
+
   it("does NOT remove the old copy if the re-seed fails (old copy stays recoverable)", async () => {
     const calls: string[] = [];
     const old = wc("sleap-wc-old-1.slp");
