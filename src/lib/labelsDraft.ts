@@ -78,3 +78,32 @@ export async function removeLabelsDraft(opfsPath: string): Promise<void> {
     // best-effort cleanup
   }
 }
+
+/**
+ * Best-effort request that the browser keep OPFS data persistent (exempt from
+ * eviction under storage pressure). Safe to call repeatedly. Returns whether
+ * persistence is granted (false if unsupported/denied); the draft is usable
+ * either way, but a grant is what makes resume-after-close reliable (an evicted
+ * draft can't be restored). Warns when not granted.
+ */
+export async function requestOpfsPersistence(): Promise<boolean> {
+  try {
+    if (
+      typeof navigator !== "undefined" &&
+      navigator.storage &&
+      typeof navigator.storage.persist === "function"
+    ) {
+      const granted = await navigator.storage.persist();
+      if (!granted) {
+        console.warn(
+          "[labelsDraft] storage.persist() not granted — the labels draft is " +
+            "best-effort and may be evicted; resume-after-close is not guaranteed",
+        );
+      }
+      return granted;
+    }
+  } catch (err) {
+    console.warn("[labelsDraft] storage.persist() failed:", err);
+  }
+  return false;
+}

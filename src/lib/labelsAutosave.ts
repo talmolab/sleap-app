@@ -14,7 +14,8 @@ import { useAppStore } from "@/stores/appStore";
 import { isTauri } from "@/lib/platform";
 import { decideBrowserSaveAction } from "@/lib/saveRouting";
 import { isOpfsSaveSupported } from "@/lib/saveEmbeddedPkgOpfs";
-import { saveLabelsDraft, newDraftPath } from "@/lib/labelsDraft";
+import { newDraftPath } from "@/lib/labelsDraft";
+import { recordDraftSave } from "@/lib/draftManifest";
 
 /** Save the draft this long after edits settle. */
 export const AUTOSAVE_DEBOUNCE_MS = 1500;
@@ -50,8 +51,14 @@ export async function maybeAutosaveLabelsDraft(): Promise<void> {
 
   inFlight = true;
   try {
-    const draftPath = store.labelsDraftPath ?? newDraftPath(store.filename ?? undefined);
-    await saveLabelsDraft(labels, draftPath);
+    const draftPath =
+      store.labelsDraftPath ?? newDraftPath(store.filename ?? undefined);
+    await recordDraftSave(labels, {
+      draftPath,
+      sourceHandle: store.projectFileHandle,
+      displayName: store.filename ?? "project",
+      savedAt: Date.now(),
+    });
     store.set("labelsDraftPath", draftPath);
     store.set("pendingExport", true);
     store.clearChanges();

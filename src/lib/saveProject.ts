@@ -27,11 +27,8 @@ import {
   isOpfsSaveSupported,
   pickSlpSaveDestination,
 } from "@/lib/saveEmbeddedPkgOpfs";
-import {
-  saveLabelsDraft,
-  newDraftPath,
-  removeLabelsDraft,
-} from "@/lib/labelsDraft";
+import { newDraftPath, removeLabelsDraft } from "@/lib/labelsDraft";
+import { recordDraftSave, deleteDraftEntry } from "@/lib/draftManifest";
 import { isSameSaveTarget } from "@/lib/saveTargetGuard";
 
 /**
@@ -295,13 +292,18 @@ export async function saveProjectAsSlp(
         // saved locally; the disk file is written only on an explicit Export.
         store.setLoading(true, "Saving labels...");
         const draftPath = store.labelsDraftPath ?? newDraftPath(saveName);
-        const bytes = await saveLabelsDraft(labels, draftPath);
+        // Persist the draft + record it in the manifest (with the original's
+        // handle) so it's recoverable after a tab close (see draftManifest.ts).
+        await recordDraftSave(labels, {
+          draftPath,
+          sourceHandle: store.projectFileHandle,
+          displayName: saveName,
+          savedAt: Date.now(),
+        });
         store.set("labelsDraftPath", draftPath);
         store.set("pendingExport", true);
         store.clearChanges();
-        console.log(
-          `[save] Saved labels draft (${bytes} bytes) -> ${draftPath}`
-        );
+        console.log(`[save] Saved labels draft -> ${draftPath}`);
         toast.success("Saved locally", {
           description:
             "Labels saved instantly in your browser. Use Save As to export the full file to disk.",
@@ -350,12 +352,14 @@ export async function saveProjectAsSlp(
             store.setLoading(true, `Exporting to disk (${pct}%)`, pct);
           }
         );
-        // Exported to disk: clear the pending flag and drop the local draft
-        // (its edits now live in the on-disk file).
+        // Exported to disk: clear the pending flag and drop the local draft +
+        // its manifest entry (its edits now live in the on-disk file, so there
+        // is nothing left to recover).
         store.set("pendingExport", false);
         const draft = store.labelsDraftPath;
         if (draft) {
           void removeLabelsDraft(draft);
+          void deleteDraftEntry(draft);
           store.set("labelsDraftPath", null);
         }
       } else {
