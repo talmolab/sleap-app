@@ -31,3 +31,40 @@ export function isDraftStaleVsDisk(
 ): boolean {
   return diskLastModified - draftSavedAt > slackMs;
 }
+
+/** Identity snapshot of the source file recorded when the draft was saved. */
+export interface SourceSnapshot {
+  /** `File.size` (bytes) of the source when the draft was saved. */
+  size?: number;
+  /** `File.lastModified` (ms epoch) of the source when the draft was saved. */
+  lastModified?: number;
+}
+
+/**
+ * True when the current on-disk file differs from the snapshot recorded at
+ * draft-save — by size OR modification time. A stronger, EXACT replacement for
+ * {@link isDraftStaleVsDisk}: both values come from `File` (same clock/source
+ * then and now), so it needs no slack, catches size changes, and — unlike the
+ * timestamp-vs-savedAt heuristic — closes false-negative holes (an external edit
+ * whose mtime lands at/*before* our draft-write clock).
+ *
+ * Returns false when the snapshot is incomplete (nothing recorded to compare);
+ * the caller then falls back to {@link isDraftStaleVsDisk} (drafts written before
+ * this snapshot existed).
+ *
+ * A size-preserving external edit (e.g. an in-place point move by another
+ * session) still bumps mtime, so it's caught. A cloud-sync mtime bump with
+ * identical content also trips this (a SAFE false positive → just forces
+ * Save-As); telling those apart would require hashing the file, which this cheap
+ * check intentionally avoids.
+ */
+export function isSourceChanged(
+  recorded: SourceSnapshot,
+  current: { size: number; lastModified: number },
+): boolean {
+  if (recorded.size == null || recorded.lastModified == null) return false;
+  return (
+    current.size !== recorded.size ||
+    current.lastModified !== recorded.lastModified
+  );
+}

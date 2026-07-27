@@ -379,6 +379,10 @@ export async function saveProjectAsSlp(
           sourceHandle: store.projectFileHandle,
           displayName: saveName,
           savedAt: Date.now(),
+          // Identity snapshot of the opened source (see draftManifest.ts) so a
+          // later restore can detect an on-disk divergence before overwriting.
+          sourceSize: store.projectFile?.size,
+          sourceLastModified: store.projectFile?.lastModified,
         });
         store.set("pendingExport", true);
         store.clearChanges();

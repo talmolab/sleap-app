@@ -48,6 +48,14 @@ export interface DraftManifestEntry {
    *  graft its backends; not embedded (external videos / regular .slp) → just
    *  resolve the external videos by path. */
   embedded: boolean;
+  /** Source file's `File.size` (bytes) when the draft was saved — half of the
+   *  identity snapshot restore uses to decide whether the on-disk file diverged
+   *  since (see {@link isSourceChanged}). Optional: absent on drafts written
+   *  before the snapshot existed (restore then falls back to a mtime check). */
+  sourceSize?: number;
+  /** Source file's `File.lastModified` (ms epoch) when the draft was saved —
+   *  the other half of the identity snapshot. Optional (see `sourceSize`). */
+  sourceLastModified?: number;
 }
 
 function openDb(): Promise<IDBDatabase> {
@@ -110,6 +118,10 @@ export async function recordDraftSave(
     sourceHandle: FileSystemFileHandle | null;
     displayName: string;
     savedAt: number;
+    /** Source file's size/lastModified (from the opened `File`) — the identity
+     *  snapshot restore compares against to detect an on-disk divergence. */
+    sourceSize?: number;
+    sourceLastModified?: number;
   },
 ): Promise<void> {
   await saveLabelsDraft(labels, opts.draftPath);
@@ -123,6 +135,8 @@ export async function recordDraftSave(
       videoSignature({ filename: v.filename, shape: v.shape }),
     ),
     embedded: labels.videos.some((v) => v.hasEmbeddedImages),
+    sourceSize: opts.sourceSize,
+    sourceLastModified: opts.sourceLastModified,
   });
   void requestOpfsPersistence();
 }

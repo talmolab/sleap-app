@@ -4,7 +4,7 @@
  * session/tab edited + saved it), which makes the draft stale relative to disk.
  */
 import { describe, it, expect } from "../bun-test";
-import { isDraftStaleVsDisk } from "@/lib/draftStaleness";
+import { isDraftStaleVsDisk, isSourceChanged } from "@/lib/draftStaleness";
 
 describe("isDraftStaleVsDisk", () => {
   it("is false when the disk file predates the draft (normal case)", () => {
@@ -31,5 +31,45 @@ describe("isDraftStaleVsDisk", () => {
   it("honors an explicit slack override", () => {
     expect(isDraftStaleVsDisk(10_000, 15_000, /*slackMs*/ 10_000)).toBe(false);
     expect(isDraftStaleVsDisk(10_000, 25_000, /*slackMs*/ 10_000)).toBe(true);
+  });
+});
+
+describe("isSourceChanged", () => {
+  it("is false when size AND mtime both match the recorded snapshot", () => {
+    expect(
+      isSourceChanged(
+        { size: 18_120, lastModified: 1_000 },
+        { size: 18_120, lastModified: 1_000 },
+      ),
+    ).toBe(false);
+  });
+
+  it("is true when the size differs (real content change)", () => {
+    expect(
+      isSourceChanged(
+        { size: 18_120, lastModified: 1_000 },
+        { size: 19_000, lastModified: 1_000 },
+      ),
+    ).toBe(true);
+  });
+
+  it("is true when the mtime differs (e.g. a same-size in-place edit)", () => {
+    // A size-preserving external edit still bumps mtime, so it's caught.
+    expect(
+      isSourceChanged(
+        { size: 18_120, lastModified: 1_000 },
+        { size: 18_120, lastModified: 2_000 },
+      ),
+    ).toBe(true);
+  });
+
+  it("is false (can't compare) when the snapshot is incomplete — caller falls back", () => {
+    expect(
+      isSourceChanged({ lastModified: 1_000 }, { size: 18_120, lastModified: 1_000 }),
+    ).toBe(false);
+    expect(
+      isSourceChanged({ size: 18_120 }, { size: 18_120, lastModified: 1_000 }),
+    ).toBe(false);
+    expect(isSourceChanged({}, { size: 18_120, lastModified: 1_000 })).toBe(false);
   });
 });

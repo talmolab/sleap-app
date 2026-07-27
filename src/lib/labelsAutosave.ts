@@ -79,6 +79,10 @@ export async function maybeAutosaveLabelsDraft(
       sourceHandle: store.projectFileHandle,
       displayName: store.filename ?? "project",
       savedAt: Date.now(),
+      // Identity snapshot of the source we based this draft on, so restore can
+      // detect if the on-disk file diverges before a later in-place ⌘S.
+      sourceSize: store.projectFile?.size,
+      sourceLastModified: store.projectFile?.lastModified,
     });
     store.set("pendingExport", true);
     // Mark clean only when the draft is the primary save target AND no edit

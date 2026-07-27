@@ -16,7 +16,7 @@ import { resolveExternalVideos } from "@/lib/resolveVideos";
 import { removeLabelsDraft } from "@/lib/labelsDraft";
 import { deleteDraftEntry, type DraftManifestEntry } from "@/lib/draftManifest";
 import { videoSignature, buildBackendGraftPlan } from "@/lib/videoGraft";
-import { isDraftStaleVsDisk } from "@/lib/draftStaleness";
+import { isDraftStaleVsDisk, isSourceChanged } from "@/lib/draftStaleness";
 import { toast } from "@/lib/notify";
 
 const H5WASM_URL =
@@ -110,10 +110,20 @@ async function safeRestoreWriteHandle(
       }
     }
     const current = await handle.getFile();
-    if (isDraftStaleVsDisk(entry.savedAt, current.lastModified)) {
-      toast.warning("The file on disk is newer than this draft", {
+    // Prefer the exact size+mtime identity snapshot (recorded at draft-save); if
+    // it's absent (a draft written before the snapshot existed), fall back to the
+    // coarser mtime-vs-savedAt check.
+    const changed =
+      entry.sourceLastModified != null
+        ? isSourceChanged(
+            { size: entry.sourceSize, lastModified: entry.sourceLastModified },
+            current,
+          )
+        : isDraftStaleVsDisk(entry.savedAt, current.lastModified);
+    if (changed) {
+      toast.warning("The file on disk has changed since this draft", {
         description:
-          "Restored your unsaved edits, but the file changed since — use Save As to avoid overwriting the newer version.",
+          "Restored your unsaved edits, but the file changed since — use Save As to avoid overwriting the other version.",
       });
       return null; // force Save-As rather than overwrite the diverged disk file
     }
