@@ -25,6 +25,7 @@ import type {
   WorkerResponse,
 } from "@/lib/statisticSeriesWorkerCore";
 import { drawHeaderSeries } from "@/lib/headerSeriesRender";
+import { isUserLabeledFrame } from "@/lib/frameLabeling";
 import { navigableDomain, nearestFrameInDomain } from "@/lib/navigableFrames";
 import {
   createSeriesCache,
@@ -584,15 +585,17 @@ export function Seekbar() {
     const byTrack: number[][] = tracks.map(() => []);
     const marks: Array<[number, boolean]> = [];
     for (const lf of labels.find({ video })) {
-      if (lf.instances.length === 0) continue;
-      let hasUser = false;
+      // A frame is "user-labeled" if it has any manual annotation — incl. a
+      // user-placed centroid with no skeleton instance (io.js isUserLabeled).
+      const userLabeled = isUserLabeledFrame(lf);
+      // Skip only truly empty frames; a centroid-only frame still gets a mark.
+      if (lf.instances.length === 0 && !userLabeled) continue;
       for (const inst of lf.instances) {
         const track = (inst as { track?: unknown }).track ?? null;
         const ti = track === null ? -1 : trackIdxOf.get(track) ?? -1;
         if (ti >= 0) byTrack[ti].push(lf.frameIdx);
-        if (!("score" in (inst as object))) hasUser = true;
       }
-      marks.push([lf.frameIdx, hasUser]);
+      marks.push([lf.frameIdx, userLabeled]);
     }
     return { byTrack, marks };
     // eslint-disable-next-line react-hooks/exhaustive-deps

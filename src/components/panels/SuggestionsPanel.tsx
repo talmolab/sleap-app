@@ -17,6 +17,7 @@ import {
 } from "../../lib/suggestionEdits";
 import { toast } from "@/lib/notify";
 import { cn } from "@/lib/utils";
+import { frameHasUserLabels } from "@/lib/frameLabeling";
 import {
   Table,
   TableBody,
@@ -124,24 +125,6 @@ function computeFrameScore(
   return { min: scores[0], mean, scores };
 }
 
-/** Check if a frame has user-labeled instances. */
-function hasUserLabels(
-  suggestion: SuggestionFrame,
-  labels: { find: (opts: { video: Video; frameIdx: number }) => { instances: { skeleton: unknown }[] }[] } | null
-): boolean {
-  if (!labels) return false;
-
-  const frames = labels.find({
-    video: suggestion.video,
-    frameIdx: suggestion.frameIdx,
-  });
-  if (frames.length === 0) return false;
-
-  return frames[0].instances.some(
-    (inst) => !(inst instanceof PredictedInstance)
-  );
-}
-
 /** Target video set for generation: all videos or just the current one. */
 type GenerationTarget = "all" | "current";
 
@@ -228,8 +211,7 @@ export function SuggestionsPanel({
       originalIndex: i,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       score: computeFrameScore(s, labels as any),
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      hasLabels: hasUserLabels(s, labels as any),
+      hasLabels: frameHasUserLabels(labels, s.video, s.frameIdx),
     }));
 
     // Sort

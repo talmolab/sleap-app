@@ -9,6 +9,7 @@ import { useState, useMemo, useRef, useEffect, useLayoutEffect } from "react";
 import { useAppStore } from "../../stores/appStore";
 import { computeVirtualWindow } from "../../lib/virtualWindow";
 import { cn } from "@/lib/utils";
+import { isUserLabeledFrame } from "@/lib/frameLabeling";
 import { Instance } from "@talmolab/sleap-io.js";
 import type { Video } from "../../types";
 import {
@@ -494,9 +495,11 @@ export function FramesPanel() {
     if (!labels) return [];
 
     return labels.labeledFrames
-      // Skip empty LabeledFrames (no instances) — e.g. pkg.slp leftovers after
-      // removing predictions. They carry no annotation and no image.
-      .filter((lf) => lf.instances.length > 0)
+      // Keep any frame with instances (poses/predictions) OR other user labeling
+      // — e.g. a user-placed centroid with no skeleton instance. Skip only TRULY
+      // empty frames (no instances and not user-labeled), e.g. pkg.slp leftovers
+      // after removing predictions.
+      .filter((lf) => lf.instances.length > 0 || isUserLabeledFrame(lf))
       .map((lf) => {
       const userInstances = lf.userInstances;
       const predicted = lf.predictedInstances;
