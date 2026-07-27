@@ -15,7 +15,7 @@ import { useAppStore } from "@/stores/appStore";
 import { isTauri } from "@/lib/platform";
 import { decideBrowserSaveAction } from "@/lib/saveRouting";
 import { isOpfsSaveSupported } from "@/lib/saveEmbeddedPkgOpfs";
-import { newDraftPath } from "@/lib/labelsDraft";
+import { newDraftPath, isLabelsDraftSupported } from "@/lib/labelsDraft";
 import { recordDraftSave } from "@/lib/draftManifest";
 
 /** Save the draft this long after edits settle. */
@@ -24,6 +24,19 @@ export const AUTOSAVE_DEBOUNCE_MS = 1500;
 /** Serialize the whole draft each time, so overlapping runs would double-write;
  *  a single-flight guard keeps only one in flight. */
 let inFlight = false;
+
+/** Explain (once) why crash-recovery auto-save is off in this browser, so a
+ *  silent no-op doesn't look like a bug. */
+let warnedDraftUnsupported = false;
+function warnDraftUnsupportedOnce(): void {
+  if (warnedDraftUnsupported) return;
+  warnedDraftUnsupported = true;
+  console.info(
+    "[autosave] crash-recovery draft disabled in this browser " +
+      "(no FileSystemFileHandle.createWritable — e.g. Safari). Your edits still " +
+      "save normally via ⌘S / Save As.",
+  );
+}
 
 /**
  * Auto-save the current labels to the OPFS draft IF the project is a browser
@@ -39,14 +52,17 @@ export async function maybeAutosaveLabelsDraft(
   if (inFlight || isTauri) return;
   const store = useAppStore.getState();
   const labels = store.labels;
-  // OPFS is where the draft lives (broadly available — not gated on the Chromium
-  // save picker). Don't race a manual save/compile (they own the overlay).
-  const hasOpfs =
-    typeof navigator !== "undefined" &&
-    !!navigator.storage &&
-    typeof navigator.storage.getDirectory === "function";
-  if (!labels || !store.hasChanges || store.isLoading || !hasOpfs) {
-    if (labels && store.hasChanges && hasOpfs && reArm) reArm();
+  // The draft is WRITTEN to OPFS via createWritable, which Safari's OPFS lacks
+  // (see isLabelsDraftSupported). Where unsupported, skip the draft entirely —
+  // no error, no re-arm/retry loop — and note it once; ⌘S still saves normally.
+  if (!isLabelsDraftSupported()) {
+    if (labels && store.hasChanges) warnDraftUnsupportedOnce();
+    return;
+  }
+  // Don't race a manual save/compile (they own the overlay), and only save when
+  // the project is actually dirty and loaded.
+  if (!labels || !store.hasChanges || store.isLoading) {
+    if (labels && store.hasChanges && reArm) reArm();
     return;
   }
 

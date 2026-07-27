@@ -46,12 +46,42 @@ export async function serializeLabelsDraft(labels: Labels): Promise<Uint8Array> 
   return saveSlpStructureToBytes(labels, { embed: false });
 }
 
+/**
+ * Whether this browser can WRITE a labels draft to OPFS from the main thread.
+ * Requires `navigator.storage.getDirectory` AND
+ * `FileSystemFileHandle.createWritable`. Safari implements OPFS (getDirectory)
+ * but NOT the async `createWritable` writable stream — it only offers the
+ * Worker-only `createSyncAccessHandle` — so the main-thread draft writer can't
+ * run there. When this is false, callers SKIP the draft (auto-save no-ops)
+ * instead of throwing: crash-recovery is simply unavailable in that browser
+ * until a Worker-based writer is added, while ⌘S still saves normally. (Reading
+ * a draft via `getFile` works regardless, but drafts are never written cross-
+ * browser anyway — OPFS is per-browser.)
+ */
+export function isLabelsDraftSupported(): boolean {
+  return (
+    typeof navigator !== "undefined" &&
+    !!navigator.storage &&
+    typeof navigator.storage.getDirectory === "function" &&
+    typeof FileSystemFileHandle !== "undefined" &&
+    typeof FileSystemFileHandle.prototype?.createWritable === "function"
+  );
+}
+
 /** Overwrite the OPFS draft file at `opfsPath` with `bytes` (small file, written
- *  from the main thread via `createWritable` — no worker/sync-handle needed). */
+ *  from the main thread via `createWritable` — no worker/sync-handle needed).
+ *  Callers must gate on {@link isLabelsDraftSupported}; the guard here just turns
+ *  an unsupported engine (e.g. Safari) into a clear error rather than a cryptic
+ *  `createWritable is not a function`. */
 export async function writeLabelsDraft(
   opfsPath: string,
   bytes: Uint8Array,
 ): Promise<void> {
+  if (!isLabelsDraftSupported()) {
+    throw new Error(
+      "OPFS labels-draft write is unsupported in this browser (no FileSystemFileHandle.createWritable)",
+    );
+  }
   const root = await navigator.storage.getDirectory();
   const fh = await root.getFileHandle(opfsPath, { create: true });
   const writable = await fh.createWritable();
