@@ -37,7 +37,7 @@ import {
   isImageSequenceVideo,
   resolveImageSequenceVideo,
   resolveVideoFile,
-  resolveAllVideoFiles,
+  resolveAllVideosFromFolder,
   resolveVideoPath,
   pickAndAddVideos,
   pickVideoFiles,
@@ -399,7 +399,10 @@ export function VideosPanel() {
   };
 
   const handleLocateAll = async () => {
-    const count = await resolveAllVideoFiles(missingResolvable);
+    // Pick ONE folder and match all missing videos by basename (browser,
+    // Chromium); falls back to a multi-file picker where showDirectoryPicker is
+    // unavailable or on Tauri. Explicit action — never auto-run on project load.
+    const count = await resolveAllVideosFromFolder(missingResolvable);
     if (count > 0) {
       bumpOverlayVersion();
       // If the current video was resolved, force a frame re-load
