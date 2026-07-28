@@ -357,7 +357,14 @@ describe("resolveItemInstance", () => {
     const v0 = stubVideo("a.mp4");
     const labels = new Labels({ videos: [v0], skeletons: [skeleton], labeledFrames: [] });
     expect(
-      resolveItemInstance(labels, { videoIdx: 0, frameIdx: 9, instanceIdx: 0, centroidXY: [0, 0] }),
+      resolveItemInstance(labels, {
+        videoIdx: 0,
+        frameIdx: 9,
+        instanceIdx: 0,
+        centroidXY: [0, 0],
+        predicted: false,
+        centroidIdx: null,
+      }),
     ).toBeNull();
   });
 
@@ -869,7 +876,14 @@ describe("passDims", () => {
       { name: "P2", nodes: ["left_ear", "right_ear", "ghost"] },
     ]);
     const workList = [
-      { videoIdx: 0, frameIdx: 0, instanceIdx: 0, centroidXY: [0, 0] as [number, number] },
+      {
+        videoIdx: 0,
+        frameIdx: 0,
+        instanceIdx: 0,
+        centroidXY: [0, 0] as [number, number],
+        predicted: false,
+        centroidIdx: null,
+      },
     ];
     // "ghost" is not in the skeleton → P2 has 2 placeable nodes, not 3.
     expect(passDims(config, workList, NODE_NAMES)).toEqual({
@@ -895,7 +909,14 @@ describe("nextUnlabeledCursor", () => {
     const labels = new Labels({ videos: [video], skeletons: [skeleton] });
     labels.labeledFrames.push(lf);
     const workList: PassItem[] = [
-      { videoIdx: 0, frameIdx: 0, instanceIdx: 0, centroidXY: [0, 0] },
+      {
+        videoIdx: 0,
+        frameIdx: 0,
+        instanceIdx: 0,
+        centroidXY: [0, 0],
+        predicted: false,
+        centroidIdx: null,
+      },
     ];
     const passNodeIndices = [[1, 2, 5]]; // head, nose, tail
     const dims: PassDims = {

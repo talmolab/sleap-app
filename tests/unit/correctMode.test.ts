@@ -8,7 +8,6 @@ import { describe, it, expect, beforeEach } from "../bun-test";
 import {
   Labels,
   LabeledFrame,
-  Instance,
   PredictedInstance,
   Skeleton,
   Video,

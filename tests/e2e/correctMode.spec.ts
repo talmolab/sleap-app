@@ -65,8 +65,17 @@ test("Phase-3 correct mode: queue, rings, accept, skip, back, exit", async ({ pa
   expect(shape, "video shape must resolve for correct mode to convert").not.toBeNull();
   expect(shape![0]).toBeGreaterThan(1000);
 
-  // 3. Enter correct mode through the real UI: sidebar panel -> Start correcting.
-  await page.getByRole("button", { name: /correct/i }).first().click();
+  // 3. Enter correct mode through the real UI. "Correct predictions" is the
+  // rightmost tab of the Active-Learning panel now (not a standalone sidebar
+  // panel), so open that panel and select the tab.
+  await page.evaluate(() => {
+    window.sleap.store.setState({
+      sidebarOpenPanels: ["active-learning"],
+      sidebarCollapsedSections: [],
+      sidebarCollapsed: false,
+    });
+  });
+  await page.getByRole("tab", { name: /^Correct$/ }).click();
   const startBtn = page.getByRole("button", { name: /start correcting/i });
   await expect(startBtn).toBeEnabled({ timeout: 15000 });
   await startBtn.click();

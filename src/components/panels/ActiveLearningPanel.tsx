@@ -462,8 +462,18 @@ export function ActiveLearningPanel() {
         <TabsList
           variant="line"
           className={cn(
-            "sticky top-0 z-10 -mx-2 -mt-2 h-9 w-[calc(100%+1rem)] shrink-0 justify-start",
-            "gap-0 overflow-x-auto rounded-none border-b border-border bg-card p-0 px-1",
+            "sticky top-0 z-10 -mx-2 -mt-2 w-[calc(100%+1rem)] shrink-0 justify-start",
+            "gap-0 rounded-none border-b border-border bg-card p-0 px-1",
+            // Height comes from the triggers, NOT a fixed h-9. The primitive
+            // hard-codes h-9 via a group-data variant, so the override has to
+            // match that specificity to win.
+            "group-data-[orientation=horizontal]/tabs:h-auto",
+            // No overflow on either axis. An earlier `overflow-x-auto` here is what
+            // produced the stray vertical scrollbar: per CSS, if one axis isn't
+            // `visible` the other computes to `auto`, and the horizontal scrollbar
+            // gutter then shrank the content box until the triggers no longer fit.
+            // Four short labels fit the panel's width, so nothing needs to scroll.
+            "overflow-visible",
           )}
         >
           {AL_TABS.map(({ value, label, disabled }) => (
@@ -471,11 +481,14 @@ export function ActiveLearningPanel() {
               key={value}
               value={value}
               disabled={disabled}
-              // `after:` is the primitive's active underline; pull it down onto
-              // the strip's border so the two read as one line.
+              // `after:` is the primitive's active underline. Kept INSIDE the
+              // trigger box (bottom-0, not a negative offset) so it can't be
+              // clipped by the strip's overflow and needs no extra height; the
+              // strip's own border-b sits directly beneath it, so the two still
+              // read as one line.
               className={cn(
-                "h-9 flex-none rounded-none border-0 px-2.5 text-xs",
-                "after:bottom-[-1px] after:h-[2px] after:bg-primary",
+                "h-8 flex-none rounded-none border-0 px-2.5 text-xs",
+                "after:bottom-0 after:h-[2px] after:bg-primary",
                 "data-[state=active]:bg-transparent data-[state=active]:text-foreground",
               )}
             >
