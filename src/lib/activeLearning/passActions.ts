@@ -1,24 +1,34 @@
 /**
  * Phase-2 sweep actions that span the store and the command system, shared by
- * the keyboard shortcut and the sweep UI buttons so "reject" behaves identically
+ * the keyboard shortcut and the sweep UI buttons so they behave identically
  * everywhere.
  *
- * Rejecting is for FALSE POSITIVES from the locator: the model claimed an animal
- * where there isn't one, so there is nothing to label. It deletes the offending
- * detection rather than flagging it, because the data model has no per-centroid
- * "rejected" state (`isNegative` is frame-level, which would wrongly suppress
- * the real animals sharing that frame). One consequence worth knowing: the
- * centroid pipeline merges with `replace_predictions`, so re-running the locator
- * re-predicts from scratch and a rejected detection can come back.
+ * Two different "this one is no good" verdicts live here, and they are NOT
+ * interchangeable:
+ *
+ *  - REJECT — a FALSE POSITIVE from the locator: the model claimed an animal
+ *    where there isn't one, so there is nothing to label. It deletes the
+ *    offending detection rather than flagging it, because the data model has no
+ *    per-centroid "rejected" state (`isNegative` is frame-level, which would
+ *    wrongly suppress the real animals sharing that frame). One consequence
+ *    worth knowing: the centroid pipeline merges with `replace_predictions`, so
+ *    re-running the locator re-predicts from scratch and a rejected detection
+ *    can come back.
+ *
+ *  - SKIP — the detection is RIGHT but the animal isn't labelable (occluded,
+ *    tangled, half out of frame). The centroid stays, so the locator keeps its
+ *    true positive; only the keypoint work is written off. See
+ *    {@link markInstanceDecided} for how that is recorded.
  */
 
 import { PredictedInstance } from "@talmolab/sleap-io.js";
 import { useAppStore } from "@/stores/appStore";
 import { useActiveLearningStore } from "@/stores/activeLearningStore";
-import { commandContext, DeleteCentroid, DeleteSelectedInstance } from "@/commands";
+import { commandContext, BeginEdit, DeleteCentroid, DeleteSelectedInstance } from "@/commands";
 import { toast } from "@/lib/notify";
 import {
   buildWorkList,
+  markInstanceDecided,
   passDims,
   nodeIndicesForPass,
   resolveItemInstance,
@@ -42,6 +52,70 @@ function hasPlacedPoints(inst: { points: { visible: boolean; complete: boolean }
     if (p.complete || p.visible) return true;
   }
   return false;
+}
+
+/**
+ * Skip the WHOLE instance under the sweep cursor: write off every keypoint on
+ * this animal and move to the next one still needing work.
+ *
+ * For the pose that just isn't worth labeling — badly occluded, tangled with a
+ * neighbour, half out of frame. `s` only skips the current NODE and leaves it
+ * undecided, so a resume walks straight back into the same bad animal, node by
+ * node, for every pass; this decides all of them at once.
+ *
+ * The centroid is left alone on purpose (that's the difference from
+ * {@link rejectCurrentPassItem}) — the locator was right that there's an animal
+ * there, and deleting the annotation would teach it otherwise. Recorded via
+ * {@link markInstanceDecided}, so it holds across a resume AND a save/reload,
+ * and `⌘Z` puts it back.
+ *
+ * Like reject, this snaps to the item's frame and re-verifies it landed before
+ * mutating: `setFrameIdx` clamps to the video's frame count, so on a deferred
+ * video whose count is still a stand-in the target frame can clamp elsewhere and
+ * we would write the skip onto the wrong frame's instance.
+ *
+ * The work list is NOT rebuilt — nothing is added or removed, so every index
+ * stays valid (unlike reject, which splices).
+ *
+ * @returns true if the instance was skipped.
+ */
+export function skipCurrentPassItem(): boolean {
+  const s0 = useAppStore.getState();
+  if (s0.labelingMode !== "keypointPass") return false;
+
+  const cursor = s0.passCursor;
+  if (!cursor || !s0.labels) return false;
+  const item = s0.passWorkList[cursor.itemIdx];
+  if (!item) return false;
+
+  if (!onItemFrame(item)) {
+    s0.syncPassSelection();
+    if (!onItemFrame(item)) {
+      toast.error("Couldn't navigate to that frame — nothing was skipped.");
+      return false;
+    }
+  }
+
+  const s = useAppStore.getState();
+  if (!s.labels) return false;
+  const inst = resolveItemInstance(s.labels, item);
+  if (!inst) {
+    toast.error("Couldn't resolve that instance — nothing was skipped.");
+    return false;
+  }
+
+  commandContext.execute(BeginEdit);
+  markInstanceDecided(inst);
+  s.markChanged();
+  s.touchFrame();
+  s.bumpOverlayVersion();
+
+  // Forward from here, not from the start: an earlier node the labeler chose to
+  // leave with `s` is still undecided, and snapping back to it would undo the
+  // whole point of moving on.
+  const more = useAppStore.getState().passJumpToUnlabeled({ from: "cursor" });
+  if (!more) toast.success("Skipped — nothing left to label.");
+  return true;
 }
 
 /**

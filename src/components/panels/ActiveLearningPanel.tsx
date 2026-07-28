@@ -15,7 +15,7 @@ import { useTrainingStore } from "../../stores/trainingStore";
 import { useInferenceStore, centroidInferenceConfig } from "../../stores/inferenceStore";
 import { configFromSkeleton } from "@/lib/activeLearning/config";
 import { startCentroidLocatorTraining } from "@/lib/activeLearning/trainLocator";
-import { rejectCurrentPassItem } from "@/lib/activeLearning/passActions";
+import { rejectCurrentPassItem, skipCurrentPassItem } from "@/lib/activeLearning/passActions";
 import {
   buildWorkList,
   passDims,
@@ -25,7 +25,7 @@ import {
   countSeededCentroids,
 } from "@/lib/activeLearning/passEngine";
 import type { Skeleton } from "@talmolab/sleap-io.js";
-import { generateSuggestionFrames } from "@/lib/suggestionStrategies";
+import { sampleFramesAcrossVideos } from "@/lib/suggestionStrategies";
 import { commandContext, AddNodeCommand, PairPoseInstances } from "@/commands";
 import { toast } from "@/lib/notify";
 import { Button } from "@/components/ui/button";
@@ -87,7 +87,7 @@ export function ActiveLearningPanel() {
   // annotations only seeded `frame.centroids` count, so pose labels and the
   // paired empty pose instances never inflate it), and whether a suggested-frame
   // pool exists to seed on.
-  const { seededFrames, seededCentroids, labelableCentroids, hasSuggestions } = useMemo(() => {
+  const { seededFrames, seededCentroids, labelableCentroids, hasSuggestions, videoCount } = useMemo(() => {
     const labels = useAppStore.getState().labels;
     if (!labels) {
       return {
@@ -95,6 +95,7 @@ export function ActiveLearningPanel() {
         seededCentroids: 0,
         labelableCentroids: 0,
         hasSuggestions: false,
+        videoCount: 0,
       };
     }
     // Two different questions. `seeded*` = human work, which is what gates
@@ -108,6 +109,7 @@ export function ActiveLearningPanel() {
       seededCentroids: centroids,
       labelableCentroids: labelable,
       hasSuggestions: labels.suggestions.length > 0,
+      videoCount: labels.videos.length,
     };
     // overlayVersion drives the recount; labels is mutated in place.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -271,15 +273,27 @@ export function ActiveLearningPanel() {
       return;
     }
     const count = Math.max(1, Number(seedCountRef.current?.value) || config?.localize.seedFrames || 200);
-    const next = generateSuggestionFrames(labels, {
-      method: "random",
-      videos: labels.videos,
-      perVideo: count,
-    });
-    labels.suggestions = next;
+    // A TOTAL for the project, not a per-video count: `sampleFramesAcrossVideos`
+    // splits the budget by video length, so a 3-video project gets `count`
+    // frames rather than 3 × count.
+    //
+    // `spread` (stratified/jittered), not `random`: a seeding pool wants even
+    // coverage of the whole recording. Sampling already excludes frames in the
+    // pool, so each click ADDS a batch that interleaves with what's there.
+    const added = sampleFramesAcrossVideos(labels, labels.videos, count, "spread");
+    if (added.length === 0) {
+      toast.error(
+        "No frames to suggest — open a video (its length has to be known) or clear some of the existing pool.",
+      );
+      return;
+    }
+    labels.suggestions = [...(labels.suggestions ?? []), ...added];
     useAppStore.getState().markChanged();
     useAppStore.getState().bumpOverlayVersion();
-    toast.success(`Added ${next.length} suggested frames — press Space to step through them`);
+    const short = added.length < count ? ` (${count} asked for; the rest are already queued)` : "";
+    toast.success(
+      `Added ${added.length} frames spread across ${labels.videos.length} video(s)${short} — press Space to step through them`,
+    );
   };
 
   const toggleSeeding = () => {
@@ -607,21 +621,28 @@ export function ActiveLearningPanel() {
               </p>
 
               {/* Step 1 — build a pool of frames to seed on */}
-              <div className="flex items-center gap-1.5">
-                <Input
-                  ref={seedCountRef}
-                  type="number"
-                  min={1}
-                  defaultValue={config.localize.seedFrames}
-                  className="h-8 w-20"
-                />
-                <Button
-                  size="sm"
-                  variant={primaryIs("add-frames") ? "default" : "outline"}
-                  onClick={addFrames}
-                >
-                  Add frames
-                </Button>
+              <div className="space-y-1">
+                <div className="flex items-center gap-1.5">
+                  <Input
+                    ref={seedCountRef}
+                    type="number"
+                    min={1}
+                    defaultValue={config.localize.seedFrames}
+                    className="h-8 w-20"
+                    aria-label="Frames to add in total"
+                  />
+                  <Button
+                    size="sm"
+                    variant={primaryIs("add-frames") ? "default" : "outline"}
+                    onClick={addFrames}
+                  >
+                    Add frames
+                  </Button>
+                </div>
+                <p className="text-[11px] leading-snug text-muted-foreground">
+                  Total across all {videoCount} video(s), spread evenly over each one (not
+                  clumped, not strictly periodic). Click again to add another batch in the gaps.
+                </p>
               </div>
 
               {/* Step 2 — seed one body-center per animal, one click each */}
@@ -812,6 +833,16 @@ export function ActiveLearningPanel() {
                     />
                   </div>
 
+                  {passCursor && (
+                    <Button
+                      size="sm"
+                      className="w-full"
+                      variant="outline"
+                      onClick={() => skipCurrentPassItem()}
+                    >
+                      Skip this instance (⇧S)
+                    </Button>
+                  )}
                   {currentItemPredicted && (
                     <Button
                       size="sm"
@@ -827,8 +858,9 @@ export function ActiveLearningPanel() {
                     Stop labeling keypoints
                   </Button>
                   <p className="text-[11px] leading-snug text-muted-foreground">
-                    Click = place · right-click = not visible · <kbd>s</kbd> skip · <kbd>b</kbd> back ·{" "}
-                    <kbd>x</kbd> reject a wrong prediction · <kbd>Esc</kbd> exit
+                    Click = place · right-click = not visible · <kbd>s</kbd> skip node ·{" "}
+                    <kbd>⇧s</kbd> skip the whole animal (bad pose — keeps the centroid) ·{" "}
+                    <kbd>b</kbd> back · <kbd>x</kbd> reject a wrong prediction · <kbd>Esc</kbd> exit
                   </p>
                 </div>
               )}

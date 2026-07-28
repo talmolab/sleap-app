@@ -78,7 +78,11 @@ export interface LocalizeConfig {
    * instance with a slider, so a too-tight setting never clips a keypoint.
    */
   cropSize: number;
-  /** How many starter frames to seed before the first locator training. */
+  /**
+   * How many starter frames one "Add frames" batch puts in the seeding pool — a
+   * TOTAL for the project, split across its videos by length, not a per-video
+   * count.
+   */
   seedFrames: number;
   /** Prompt to train the locator once this many centroids have been seeded. */
   trainAfter: number;

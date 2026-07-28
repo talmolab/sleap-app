@@ -29,6 +29,8 @@ import {
   velocityFrames,
   maxDisplacementFrames,
   sampleFrames,
+  allocateAcrossVideos,
+  sampleFramesAcrossVideos,
   applyFrameRangePostFilter,
 } from "@/lib/suggestionStrategies";
 import type { SuggestionFrame } from "@/types";
@@ -628,5 +630,169 @@ describe("generateSuggestionFrames", () => {
       perVideo: 0,
     });
     expect(out).toEqual([]);
+  });
+});
+
+/** A deterministic LCG so jittered sampling is reproducible in assertions. */
+function makeRng(seed: number): () => number {
+  let s = seed >>> 0;
+  return () => {
+    s = (s * 1664525 + 1013904223) >>> 0;
+    return s / 0x100000000;
+  };
+}
+
+describe("sampleFrames spread (stratified/jittered)", () => {
+  it("returns exactly perVideo unique picks, one per equal-width bin", () => {
+    const video = makeVideo(100);
+    const labels = makeLabels(makeVideo(0), makeSkeleton(), []);
+    labels.suggestions = [];
+    const out = sampleFrames(labels, video, 10, "spread", null, makeRng(7));
+
+    expect(out.length).toBe(10);
+    expect(new Set(out).size).toBe(10); // bins are disjoint
+    expect([...out].sort((a, b) => a - b)).toEqual(out); // ascending
+    // n=100, 10 bins -> bin i covers [10i, 10i+10)
+    out.forEach((f, i) => {
+      expect(f).toBeGreaterThanOrEqual(i * 10);
+      expect(f).toBeLessThan((i + 1) * 10);
+    });
+  });
+
+  it("covers the whole video — unlike random, no bin is ever left empty", () => {
+    const video = makeVideo(1000);
+    const labels = makeLabels(makeVideo(0), makeSkeleton(), []);
+    labels.suggestions = [];
+    // Every decile must be represented, for any seed.
+    for (const seed of [1, 42, 99, 12345]) {
+      const out = sampleFrames(labels, video, 10, "spread", null, makeRng(seed));
+      const deciles = new Set(out.map((f) => Math.floor(f / 100)));
+      expect(deciles.size).toBe(10);
+    }
+  });
+
+  it("is not strictly periodic, so it can't alias a periodic recording", () => {
+    const video = makeVideo(1000);
+    const labels = makeLabels(makeVideo(0), makeSkeleton(), []);
+    labels.suggestions = [];
+    const out = sampleFrames(labels, video, 20, "spread", null, makeRng(3));
+    const gaps = new Set(out.slice(1).map((f, i) => f - out[i]));
+    expect(gaps.size).toBeGreaterThan(1); // stride would give exactly one gap
+  });
+
+  it("is reproducible with an injected rng and returns all when n <= perVideo", () => {
+    const labels = makeLabels(makeVideo(0), makeSkeleton(), []);
+    labels.suggestions = [];
+    const big = makeVideo(100);
+    expect(sampleFrames(labels, big, 9, "spread", null, makeRng(5))).toEqual(
+      sampleFrames(labels, big, 9, "spread", null, makeRng(5)),
+    );
+    const tiny = makeVideo(4);
+    expect(sampleFrames(labels, tiny, 10, "spread", null, makeRng(5))).toEqual([0, 1, 2, 3]);
+  });
+
+  it("spreads over the REMAINING candidates, so a second batch fills the gaps", () => {
+    const video = makeVideo(100);
+    const labels = makeLabels(makeVideo(0), makeSkeleton(), []);
+    labels.suggestions = [];
+    const first = sampleFrames(labels, video, 10, "spread", null, makeRng(11));
+    labels.suggestions = first.map((frameIdx) => ({ video, frameIdx }) as SuggestionFrame);
+    const second = sampleFrames(labels, video, 10, "spread", null, makeRng(11));
+    expect(second.length).toBe(10);
+    expect(second.some((f) => first.includes(f))).toBe(false);
+  });
+});
+
+describe("allocateAcrossVideos", () => {
+  it("splits a TOTAL budget instead of handing each video the full count", () => {
+    const videos = [makeVideo(1000, "a.mp4"), makeVideo(1000, "b.mp4"), makeVideo(1000, "c.mp4")];
+    const alloc = allocateAcrossVideos(videos, 99);
+    expect(alloc).toEqual([33, 33, 33]);
+    expect(alloc.reduce((s, n) => s + n, 0)).toBe(99);
+  });
+
+  it("weights longer videos more heavily and still sums to the budget", () => {
+    const videos = [makeVideo(900, "long.mp4"), makeVideo(100, "short.mp4")];
+    const alloc = allocateAcrossVideos(videos, 100);
+    expect(alloc).toEqual([90, 10]);
+  });
+
+  it("hands the flooring leftover to the largest fractional shares", () => {
+    const videos = [makeVideo(100, "a.mp4"), makeVideo(100, "b.mp4"), makeVideo(100, "c.mp4")];
+    const alloc = allocateAcrossVideos(videos, 10);
+    expect(alloc.reduce((s, n) => s + n, 0)).toBe(10);
+    expect([...alloc].sort()).toEqual([3, 3, 4]);
+  });
+
+  it("gives every sampleable video at least one frame", () => {
+    const videos = [makeVideo(10000, "long.mp4"), makeVideo(5, "blink.mp4")];
+    const alloc = allocateAcrossVideos(videos, 100);
+    expect(alloc[1]).toBeGreaterThanOrEqual(1);
+    expect(alloc.reduce((s, n) => s + n, 0)).toBe(100);
+  });
+
+  it("trims back to the exact budget when the min-1 floor overshoots", () => {
+    // 1 long video + 3 one-frame videos, budget 4: proportional shares are
+    // ~3.99/0.004/0.004/0.004, so flooring + the min-1 floor wants 3+1+1+1 = 6.
+    const videos = [
+      makeVideo(1000, "long.mp4"),
+      makeVideo(1, "x.mp4"),
+      makeVideo(1, "y.mp4"),
+      makeVideo(1, "z.mp4"),
+    ];
+    const alloc = allocateAcrossVideos(videos, 4);
+    expect(alloc.reduce((s, n) => s + n, 0)).toBe(4);
+    expect(alloc).toEqual([1, 1, 1, 1]);
+  });
+
+  it("gives one each to the longest when there are fewer frames than videos", () => {
+    const videos = [makeVideo(10, "a.mp4"), makeVideo(1000, "b.mp4"), makeVideo(500, "c.mp4")];
+    expect(allocateAcrossVideos(videos, 2)).toEqual([0, 1, 1]);
+  });
+
+  it("skips videos of unknown length and handles a non-positive budget", () => {
+    const known = makeVideo(100, "known.mp4");
+    const unknown = new Video({ filename: "u.mp4", openBackend: false });
+    expect(allocateAcrossVideos([known, unknown], 10)).toEqual([10, 0]);
+    expect(allocateAcrossVideos([known], 0)).toEqual([0]);
+    expect(allocateAcrossVideos([unknown], 10)).toEqual([0]);
+  });
+});
+
+describe("sampleFramesAcrossVideos", () => {
+  it("returns `total` frames for the PROJECT, not total per video", () => {
+    const videos = [makeVideo(500, "a.mp4"), makeVideo(500, "b.mp4"), makeVideo(500, "c.mp4")];
+    const labels = new Labels({ videos, skeletons: [makeSkeleton()] });
+    labels.suggestions = [];
+    const out = sampleFramesAcrossVideos(labels, videos, 30, "spread", null, makeRng(1));
+
+    expect(out.length).toBe(30); // NOT 90
+    for (const video of videos) {
+      expect(out.filter((s) => s.video === video).length).toBe(10);
+    }
+  });
+
+  it("spreads each video's share over that video's whole length", () => {
+    const videos = [makeVideo(1000, "a.mp4"), makeVideo(1000, "b.mp4")];
+    const labels = new Labels({ videos, skeletons: [makeSkeleton()] });
+    labels.suggestions = [];
+    const out = sampleFramesAcrossVideos(labels, videos, 20, "spread", null, makeRng(2));
+    for (const video of videos) {
+      const idxs = out.filter((s) => s.video === video).map((s) => s.frameIdx);
+      expect(idxs.length).toBe(10);
+      expect(Math.min(...idxs)).toBeLessThan(100);
+      expect(Math.max(...idxs)).toBeGreaterThanOrEqual(900);
+    }
+  });
+
+  it("comes in under budget rather than re-offering queued frames", () => {
+    const video = makeVideo(12);
+    const labels = new Labels({ videos: [video], skeletons: [makeSkeleton()] });
+    labels.suggestions = Array.from(
+      { length: 10 },
+      (_, i) => ({ video, frameIdx: i }) as SuggestionFrame,
+    );
+    const out = sampleFramesAcrossVideos(labels, [video], 8, "spread", null, makeRng(4));
+    expect(out.map((s) => s.frameIdx).sort((a, b) => a - b)).toEqual([10, 11]);
   });
 });

@@ -50,8 +50,14 @@ export interface GenerateParams {
   frameRange?: { enabled: boolean; frameFrom: number; frameTo: number };
 }
 
-/** Sampling kind for {@link sampleFrames}. */
-export type SamplingMethod = "stride" | "random";
+/**
+ * Sampling kind for {@link sampleFrames}.
+ *
+ * `stride` and `random` are the PyQt ports. `spread` is ours: stratified
+ * (jittered) sampling — see {@link sampleFrames} — for building a seeding pool
+ * that covers the whole video without either clumping or aliasing.
+ */
+export type SamplingMethod = "stride" | "random" | "spread";
 
 /** `len(video)` — frame count from the (already-probed) shape, or 0. */
 function videoLength(video: Video): number {
@@ -250,6 +256,16 @@ export interface CandidateRange {
  *  - `"random"`: if `n <= perVideo`, return all candidates; otherwise pick
  *    `perVideo` UNIQUE indices using `rng` (default Math.random; expected to
  *    return `[0, 1)`). Deterministic given a deterministic `rng`.
+ *  - `"spread"`: stratified/jittered — split the candidates into `perVideo`
+ *    contiguous equal-width bins and take one random frame from each. Bins are
+ *    disjoint and ascending, so the picks are unique and evenly distributed by
+ *    construction. This is the sampler for building a LABELING pool: pure
+ *    `random` clumps (a uniform draw leaves gaps and doubles up by chance, so a
+ *    batch can over-sample one stretch of behavior), while pure `stride` is
+ *    perfectly periodic and so aliases against anything periodic in the
+ *    recording — a stimulus cycle, a rotating arena, a light flicker — sampling
+ *    the same phase every time. Jittered bins give both properties: full
+ *    coverage, no fixed period.
  *
  * `perVideo <= 0` -> []. Returned indices are sorted ascending.
  */
@@ -297,6 +313,19 @@ export function sampleFrames(
     return out; // candidates are ascending, so out is ascending
   }
 
+  if (sampling === "spread") {
+    if (n <= perVideo) return [...candidates]; // already ascending
+    // `n > perVideo`, so every bin is at least one candidate wide.
+    const out: number[] = [];
+    for (let i = 0; i < perVideo; i++) {
+      const lo = Math.floor((i * n) / perVideo);
+      const hi = Math.floor(((i + 1) * n) / perVideo); // exclusive
+      // The clamp guards a pathological rng() === 1.0 (see below).
+      out.push(candidates[Math.min(lo + Math.floor(rng() * (hi - lo)), hi - 1)]);
+    }
+    return out; // bins ascending + disjoint -> ascending + unique
+  }
+
   // random
   if (n <= perVideo) return [...candidates]; // already ascending
   // Partial Fisher-Yates over a copy: pick `perVideo` unique indices.
@@ -316,6 +345,112 @@ export function sampleFrames(
   }
   picked.sort((a, b) => a - b);
   return picked;
+}
+
+/**
+ * Split a TOTAL frame budget across videos, proportional to their lengths.
+ *
+ * `sampleFrames` is per-video by construction, so a caller that wants "N frames
+ * for this project" (not "N frames per video") has to divide the budget first —
+ * otherwise a 3-video project silently gets 3N. Longer videos earn more of the
+ * budget, since they hold more distinct behavior to cover.
+ *
+ * Videos of unknown/zero length (an unprobed backend) get nothing — sampling
+ * them would return [] anyway. Every video that CAN be sampled gets at least 1
+ * whenever the budget allows, so a short video is still represented; the
+ * leftover after flooring goes to the largest fractional shares
+ * (largest-remainder), and if the min-1 floor overshoots — many very short
+ * videos next to one long one — the largest allocations give frames back until
+ * the total is exact.
+ *
+ * Returns one count per input video, in input order, summing to `total`
+ * (or less only when there are more videos than frames to go around).
+ */
+export function allocateAcrossVideos(videos: Video[], total: number): number[] {
+  const lengths = videos.map(videoLength);
+  const out = lengths.map(() => 0);
+  if (total <= 0) return out;
+
+  const eligible = lengths
+    .map((len, i) => ({ i, len }))
+    .filter((e) => e.len > 0);
+  if (eligible.length === 0) return out;
+
+  // Fewer frames than videos: one each to the longest, rather than spreading so
+  // thin that nothing gets a usable sample.
+  if (total <= eligible.length) {
+    const byLength = [...eligible].sort((a, b) => b.len - a.len || a.i - b.i);
+    for (let k = 0; k < total; k++) out[byLength[k].i] = 1;
+    return out;
+  }
+
+  const sumLen = eligible.reduce((s, e) => s + e.len, 0);
+  const share = new Map<number, number>();
+  for (const e of eligible) {
+    const exact = (total * e.len) / sumLen;
+    share.set(e.i, exact);
+    out[e.i] = Math.max(1, Math.floor(exact));
+  }
+  let spent = out.reduce((s, n) => s + n, 0);
+
+  // Hand out the flooring leftover, largest fractional part first.
+  const byRemainder = [...eligible].sort((a, b) => {
+    const fa = (share.get(a.i) ?? 0) % 1;
+    const fb = (share.get(b.i) ?? 0) % 1;
+    return fb - fa || a.i - b.i;
+  });
+  for (let k = 0; spent < total; k++, spent++) {
+    out[byRemainder[k % byRemainder.length].i] += 1;
+  }
+
+  // Give back what the min-1 floor overshot, always from the largest allocation
+  // and never below 1.
+  while (spent > total) {
+    let victim = -1;
+    for (const e of eligible) {
+      if (out[e.i] <= 1) continue;
+      if (victim < 0 || out[e.i] > out[victim]) victim = e.i;
+    }
+    if (victim < 0) break; // every video is already at its floor of 1
+    out[victim] -= 1;
+    spent -= 1;
+  }
+  return out;
+}
+
+/**
+ * Sample a TOTAL of `total` frames across `videos` — the project-wide flavor of
+ * {@link sampleFrames}, splitting the budget with {@link allocateAcrossVideos}.
+ *
+ * Each video's own share still excludes frames already in `labels.suggestions`,
+ * so calling this again ADDS a fresh batch that interleaves with the existing
+ * pool instead of re-offering frames already queued. A video whose candidates
+ * are exhausted simply contributes fewer than its share (the result can come in
+ * under `total`); the budget is not redistributed.
+ */
+export function sampleFramesAcrossVideos(
+  labels: Labels,
+  videos: Video[],
+  total: number,
+  sampling: SamplingMethod,
+  candidateRange: CandidateRange | null = null,
+  rng: () => number = Math.random,
+): SuggestionFrame[] {
+  const budgets = allocateAcrossVideos(videos, total);
+  const out: SuggestionFrame[] = [];
+  videos.forEach((video, i) => {
+    for (const frameIdx of sampleFrames(
+      labels,
+      video,
+      budgets[i],
+      sampling,
+      candidateRange,
+      rng,
+    )) {
+      out.push({ video, frameIdx } as SuggestionFrame);
+    }
+  });
+  return out;
 }
 
 /** Frame-range descriptor used by the global post-filter and sampling. */

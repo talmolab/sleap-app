@@ -473,6 +473,48 @@ export function resolveItemInstance(labels: Labels, item: PassItem): Instance | 
 }
 
 /**
+ * Mark every node of a pose instance as DECIDED without inventing any labels —
+ * the data-level meaning of "skip this whole animal, it isn't labelable".
+ *
+ * Skipping an INSTANCE is a different act from skipping a NODE: pressing `s`
+ * moves the cursor on and leaves the point undecided, so a resume comes straight
+ * back to it. This sets the same `complete` flag every real labeling decision
+ * sets (left-click places, right-click marks occluded), which is what
+ * {@link nextUnlabeledCursor} reads — so the skip survives both a resume and a
+ * save/reload, since `complete` is a persisted SLP point column. No separate
+ * "skipped" bookkeeping, and `⌘Z` undoes it like any other edit.
+ *
+ * Two cases per point, so a skip never destroys existing work:
+ *  - UNPLACED (no finite location) -> declined: `visible = false`, still no
+ *    location. This is exactly SLEAP's encoding for "this keypoint is not
+ *    labelable here", which is the honest thing to record for a bad pose.
+ *  - ALREADY PLACED (a seeded anchor, an earlier pass, a prediction) -> left
+ *    exactly as it is; only `complete` changes. Critical in anchor-node mode,
+ *    where clearing the seeded anchor's `visible` would both destroy the
+ *    locator's training label and drop the item from {@link buildWorkList}
+ *    (see {@link instanceCropCenter}, which ignores non-visible points).
+ *
+ * Deliberately does NOT touch the centroid: the detection is still a true
+ * positive the locator should keep learning from. Deleting a wrong detection is
+ * `rejectCurrentPassItem`, a different action.
+ *
+ * @returns how many points this call newly marked decided (0 if it was already
+ *   fully decided).
+ */
+export function markInstanceDecided(inst: Instance | PredictedInstance): number {
+  let marked = 0;
+  for (let i = 0; i < inst.points.length; i++) {
+    const p = inst.points[i];
+    if (p.complete) continue;
+    const placed = Number.isFinite(p.xy[0]) && Number.isFinite(p.xy[1]);
+    if (!placed) p.visible = false;
+    p.complete = true;
+    marked += 1;
+  }
+  return marked;
+}
+
+/**
  * The next cursor whose target point is NOT yet decided — searching forward from
  * `from` (exclusive), or from the very start when `from` is `null`. A point is
  * "decided" iff its `complete` flag is set: both left-click (place a visible

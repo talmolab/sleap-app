@@ -11,6 +11,7 @@
 import { useAppStore } from "../../stores/appStore";
 import { useActiveLearningStore } from "../../stores/activeLearningStore";
 import { advance, linearIndex, totalSteps } from "@/lib/activeLearning/passEngine";
+import { skipCurrentPassItem } from "@/lib/activeLearning/passActions";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { modKey } from "../../lib/platform";
@@ -133,6 +134,8 @@ export function KeypointPassBar() {
               <KeyRow keys="Click" action="Place current node" />
               <KeyRow keys="Right-click" action="Place not-visible point" />
               <KeyRow keys="S" action="Skip node" />
+              <KeyRow keys="⇧S" action="Skip whole instance" />
+              <KeyRow keys="X" action="Reject wrong detection" />
               <KeyRow keys="B / ⌫" action="Step back" />
               <KeyRow keys="⌥ / Space drag" action="Pan" />
               <KeyRow keys={`${modKey}+Z`} action="Undo" />
@@ -154,7 +157,16 @@ export function KeypointPassBar() {
           className="h-7"
           onClick={() => useAppStore.getState().passAdvance()}
         >
-          Skip (S)
+          Skip node (S)
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7"
+          title="This animal isn't labelable — write off all its keypoints and move on. The centroid stays."
+          onClick={() => skipCurrentPassItem()}
+        >
+          Skip instance (⇧S)
         </Button>
         <Button size="sm" variant="ghost" className="h-7" onClick={done}>
           Done (Esc)

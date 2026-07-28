@@ -12,7 +12,7 @@ import { DEFAULT_SHORTCUTS, STEP_SIZES } from "../lib/shortcuts";
 import { useAppStore } from "../stores/appStore";
 import { Track } from "@talmolab/sleap-io.js";
 import { quitApp } from "../lib/quit";
-import { rejectCurrentPassItem } from "../lib/activeLearning/passActions";
+import { rejectCurrentPassItem, skipCurrentPassItem } from "../lib/activeLearning/passActions";
 import { openNewInstance } from "../lib/newInstance";
 import {
   commandContext,
@@ -356,6 +356,19 @@ export function useKeyboardShortcuts() {
       // Phase-2 keypoint pass / Phase-3 correction step keys. s = skip (advance
       // without placing/accepting); b / Backspace = step back. Gated on the mode
       // so they're inert everywhere else.
+      //
+      // Shift+S = skip the whole INSTANCE (this animal isn't labelable), not just
+      // the current node. Declared before the bare `KeyS` for readability only —
+      // tinykeys matches modifiers exactly, so `KeyS` never fires with Shift held
+      // and the two can't both run.
+      "Shift+KeyS": (e) => {
+        if (isTextInput(e)) return;
+        if (store().labelingMode !== "keypointPass") return;
+        // Repeat-guarded: holding the key would write off a run of animals.
+        if (e.repeat) return;
+        e.preventDefault();
+        skipCurrentPassItem();
+      },
       KeyS: (e) => {
         if (isTextInput(e)) return;
         const m = store().labelingMode;

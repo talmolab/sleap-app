@@ -20,6 +20,7 @@ import {
   linearIndex,
   resolveItemInstance,
   nextUnlabeledCursor,
+  markInstanceDecided,
   countSeededCentroids,
   type PassCursor,
   type PassDims,
@@ -959,5 +960,138 @@ describe("nextUnlabeledCursor", () => {
     expect(
       nextUnlabeledCursor(labels, workList, dims, passNodeIndices, null),
     ).toBeNull();
+  });
+});
+
+describe("markInstanceDecided (skip a whole instance)", () => {
+  it("declines every unplaced node: not visible, decided, still no location", () => {
+    const skeleton = makeSkeleton();
+    const inst = Instance.empty({ skeleton });
+    expect(markInstanceDecided(inst)).toBe(NODE_NAMES.length);
+    for (const p of inst.points) {
+      expect(p.complete).toBe(true);
+      expect(p.visible).toBe(false);
+      expect(Number.isFinite(p.xy[0])).toBe(false); // no label was invented
+    }
+  });
+
+  it("leaves already-placed points exactly as they are", () => {
+    const skeleton = makeSkeleton();
+    // A seeded anchor: placed and visible, but not yet marked decided — which is
+    // how seeding leaves it (see enterSeedMode / the VideoPlayer seed branch).
+    const inst = Instance.empty({ skeleton });
+    inst.points[0].xy = [12, 34];
+    inst.points[0].visible = true;
+
+    expect(markInstanceDecided(inst)).toBe(NODE_NAMES.length);
+    expect(inst.points[0].xy).toEqual([12, 34]);
+    expect(inst.points[0].visible).toBe(true); // NOT cleared
+    expect(inst.points[0].complete).toBe(true);
+    expect(inst.points[1].visible).toBe(false);
+  });
+
+  it("keeps the skipped instance in an anchor-mode work list", () => {
+    // Clearing a seeded anchor's `visible` would leave instanceCropCenter with
+    // nothing to center on and silently drop the item from the sweep.
+    const skeleton = makeSkeleton();
+    const video = stubVideo("a.mp4");
+    const inst = makeInstance(skeleton, { body_center: [50, 60] });
+    const lf = new LabeledFrame({ video, frameIdx: 0 });
+    lf.instances.push(inst);
+    const labels = new Labels({ videos: [video], skeletons: [skeleton] });
+    labels.labeledFrames.push(lf);
+    const config = makeConfig([{ name: "p", nodes: ["head", "tail"] }]);
+
+    markInstanceDecided(inst);
+    const items = buildWorkList(labels, config);
+    expect(items.length).toBe(1);
+    expect(items[0].centroidXY).toEqual([50, 60]);
+  });
+
+  it("counts only NEWLY decided points, so a second skip is a no-op", () => {
+    const skeleton = makeSkeleton();
+    const inst = makeInstance(skeleton, { head: [1, 2] }); // already complete
+    expect(markInstanceDecided(inst)).toBe(NODE_NAMES.length - 1);
+    expect(markInstanceDecided(inst)).toBe(0);
+  });
+
+  it("makes resume walk past the skipped instance to the next one", () => {
+    const skeleton = makeSkeleton();
+    const video = stubVideo("a.mp4");
+    const bad = Instance.empty({ skeleton }); // the animal we skip
+    const good = Instance.empty({ skeleton });
+    const lf = new LabeledFrame({ video, frameIdx: 0 });
+    lf.instances.push(bad, good);
+    const labels = new Labels({ videos: [video], skeletons: [skeleton] });
+    labels.labeledFrames.push(lf);
+    const workList: PassItem[] = [0, 1].map((instanceIdx) => ({
+      videoIdx: 0,
+      frameIdx: 0,
+      instanceIdx,
+      centroidXY: [0, 0] as [number, number],
+      predicted: false,
+      centroidIdx: null,
+    }));
+    const passNodeIndices = [[1, 2]]; // head, nose
+    const dims: PassDims = {
+      passCount: 1,
+      itemCount: 2,
+      nodeCountForPass: [2],
+      order: "pass-major",
+    };
+
+    // Before the skip, a resume lands on the bad animal's first node.
+    expect(nextUnlabeledCursor(labels, workList, dims, passNodeIndices, null)).toEqual({
+      passIdx: 0,
+      itemIdx: 0,
+      nodeIdx: 0,
+    });
+
+    markInstanceDecided(bad);
+
+    // After it, both a resume (from the start) and a forward step land on the
+    // NEXT animal — the skip holds instead of trapping the sweep node by node.
+    expect(nextUnlabeledCursor(labels, workList, dims, passNodeIndices, null)).toEqual({
+      passIdx: 0,
+      itemIdx: 1,
+      nodeIdx: 0,
+    });
+    expect(
+      nextUnlabeledCursor(labels, workList, dims, passNodeIndices, {
+        passIdx: 0,
+        itemIdx: 0,
+        nodeIdx: 0,
+      }),
+    ).toEqual({ passIdx: 0, itemIdx: 1, nodeIdx: 0 });
+  });
+
+  it("holds across every remaining pass, not just the current one", () => {
+    const skeleton = makeSkeleton();
+    const video = stubVideo("a.mp4");
+    const bad = Instance.empty({ skeleton });
+    const lf = new LabeledFrame({ video, frameIdx: 0 });
+    lf.instances.push(bad);
+    const labels = new Labels({ videos: [video], skeletons: [skeleton] });
+    labels.labeledFrames.push(lf);
+    const workList: PassItem[] = [
+      {
+        videoIdx: 0,
+        frameIdx: 0,
+        instanceIdx: 0,
+        centroidXY: [0, 0],
+        predicted: false,
+        centroidIdx: null,
+      },
+    ];
+    const passNodeIndices = [[1], [2], [5]]; // three single-node passes
+    const dims: PassDims = {
+      passCount: 3,
+      itemCount: 1,
+      nodeCountForPass: [1, 1, 1],
+      order: "pass-major",
+    };
+
+    markInstanceDecided(bad);
+    expect(nextUnlabeledCursor(labels, workList, dims, passNodeIndices, null)).toBeNull();
   });
 });

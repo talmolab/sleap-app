@@ -376,11 +376,14 @@ export interface AppState {
   /** Step the pass cursor back one node; navigates on item change. */
   passStepBack: () => void;
   /**
-   * Jump the pass cursor to the first UNLABELED node (searching from the start),
-   * skipping the pre-seeded anchor and anything already decided. Used to resume
-   * Phase-2 where labeling left off. Returns true if an unlabeled node was found.
+   * Jump the pass cursor to the next UNLABELED node, skipping the pre-seeded
+   * anchor and anything already decided. Searches from the START of the sweep by
+   * default (that's "resume Phase-2 where labeling left off"); `from: "cursor"`
+   * searches FORWARD from the current position instead, so an action that just
+   * decided a run of points moves on rather than snapping back to something the
+   * labeler already chose to leave. Returns true if an unlabeled node was found.
    */
-  passJumpToUnlabeled: () => boolean;
+  passJumpToUnlabeled: (options?: { from?: "start" | "cursor" }) => boolean;
   /** Set the zoom-to-centroid window (px) for Phase-2 labeling. */
   setPassZoomWindow: (px: number) => void;
   /** Sync frame/instance selection to the current pass cursor. */
@@ -954,7 +957,7 @@ export const useAppStore = create<AppState>()(
         if (prev.itemIdx !== prevItem) get().syncPassSelection();
       },
 
-      passJumpToUnlabeled: () => {
+      passJumpToUnlabeled: (options) => {
         const s = get();
         if (!s.labels || !s.passDims || s.passWorkList.length === 0) return false;
         const cur = nextUnlabeledCursor(
@@ -962,7 +965,7 @@ export const useAppStore = create<AppState>()(
           s.passWorkList,
           s.passDims,
           s.passNodeIndices,
-          null,
+          options?.from === "cursor" ? s.passCursor : null,
         );
         set((state) => {
           state.passCursor = cur;

@@ -345,7 +345,7 @@ export function ActiveLearningConfigDialog({ open, onOpenChange, nodeNames }: Pr
                   onChange={(n) => edit((d) => (d.localize.cropSize = n))}
                 />
               </Field>
-              <Field label="Starter frames">
+              <Field label="Starter frames per batch (total, all videos)">
                 <NumberInput
                   value={draft.localize.seedFrames}
                   min={1}
