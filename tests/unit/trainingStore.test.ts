@@ -255,6 +255,58 @@ trainer_config: {}
       const doc = yaml.load(result) as Record<string, any>;
       expect(doc.data_config.use_same_data_for_val).toBe(true);
     });
+
+    /** Just enough shape to read a head's confmaps without an `any` cast. */
+    type HeadsDoc = {
+      model_config: {
+        head_configs: Record<string, { confmaps: Record<string, unknown> }>;
+      };
+    };
+    const confmapsOf = (yamlText: string, head: string): Record<string, unknown> =>
+      (yaml.load(yamlText) as HeadsDoc).model_config.head_configs[head].confmaps;
+
+    // sleap-nn >=0.3.1 (#704): the centroid head trains against ONE centroid
+    // definition per dataset. Left unset sleap-nn infers one and warns loudly; we
+    // always know which we mean, so it has to reach the YAML.
+    it("writes centroid_source onto the centroid head's confmaps", () => {
+      const input = `
+data_config: {}
+model_config:
+  head_configs:
+    centroid:
+      confmaps:
+        sigma: 1.5
+trainer_config: {}
+`;
+      const src = (centroidSource: "user" | "computed" | null) =>
+        confmapsOf(
+          applyHyperparamsToYaml(input, { ...defaultHyperparams, centroidSource }),
+          "centroid",
+        );
+
+      expect(src("user").centroid_source).toBe("user");
+      expect(src("computed").centroid_source).toBe("computed");
+      // Unset stays ABSENT rather than an explicit null, so sleap-nn's own
+      // default/inference path is untouched for non-active-learning runs.
+      expect("centroid_source" in src(null)).toBe(false);
+    });
+
+    it("does not put centroid_source on a non-centroid head", () => {
+      const input = `
+data_config: {}
+model_config:
+  head_configs:
+    centered_instance:
+      confmaps:
+        sigma: 1.5
+trainer_config: {}
+`;
+      const confmaps = confmapsOf(
+        applyHyperparamsToYaml(input, { ...defaultHyperparams, centroidSource: "user" }),
+        "centered_instance",
+      );
+      expect("centroid_source" in confmaps).toBe(false);
+    });
   });
 
   describe("applyHyperparamsToYaml - augmentation", () => {

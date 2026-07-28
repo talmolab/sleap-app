@@ -105,6 +105,14 @@ export interface ConfigHyperparams {
   // Model — head
   outputStride: number;
   anchorPart: string | null;
+  /**
+   * Centroid-head only (`model_config.head_configs.centroid.confmaps.centroid_source`,
+   * sleap-nn >=0.3.1 / #704): which centroid definition the head trains against.
+   * `"user"` = first-class `UserCentroid` annotations (pose-only frames dropped),
+   * `"computed"` = derived from keypoints (user centroids ignored), `null` = leave
+   * unset and let sleap-nn infer it, which it does with a loud warning.
+   */
+  centroidSource: "user" | "computed" | null;
   // Loss weights (per sub-head, only used by multi-head model types)
   confmapsLossWeight: number;
   pafsLossWeight: number;
@@ -166,6 +174,7 @@ export const defaultHyperparams: ConfigHyperparams = {
   upInterpolate: true,
   outputStride: 2,
   anchorPart: null,
+  centroidSource: null,
   confmapsLossWeight: 1.0,
   pafsLossWeight: 1.0,
   classLossWeight: 1.0,
@@ -436,8 +445,8 @@ export function applyHyperparamsToYaml(yamlText: string, hp: ConfigHyperparams):
     model.backbone_config = backboneConfig;
   }
 
-  // Head params — output_stride and anchor_part
-  for (const [, headVal] of Object.entries(headConfigs)) {
+  // Head params — output_stride, anchor_part, and (centroid head) centroid_source
+  for (const [headName, headVal] of Object.entries(headConfigs)) {
     if (headVal && typeof headVal === "object") {
       const head = headVal as Record<string, unknown>;
       if (head.confmaps && typeof head.confmaps === "object") {
@@ -445,10 +454,21 @@ export function applyHyperparamsToYaml(yamlText: string, hp: ConfigHyperparams):
         if (hp.anchorPart !== null) {
           (head.confmaps as Record<string, unknown>).anchor_part = hp.anchorPart;
         }
+        // sleap-nn >=0.3.1 (#704): the centroid head must train against ONE
+        // centroid definition for the whole dataset. Left unset it infers one and
+        // warns; we always know which we mean, so say it. "user" trains on
+        // `UserCentroid` annotations (and DROPS pose-only frames); "computed"
+        // derives every centroid from keypoints and IGNORES user centroids.
+        if (headName === "centroid" && hp.centroidSource !== null) {
+          (head.confmaps as Record<string, unknown>).centroid_source = hp.centroidSource;
+        }
       } else {
         head.output_stride = hp.outputStride;
         if (hp.anchorPart !== null) {
           head.anchor_part = hp.anchorPart;
+        }
+        if (headName === "centroid" && hp.centroidSource !== null) {
+          head.centroid_source = hp.centroidSource;
         }
       }
     }
@@ -651,18 +671,24 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       // Extract backbone model params
       const unetConfig = (backboneConfig[activeBackbone.toLowerCase()] ?? {}) as Record<string, unknown>;
 
-      // Extract output_stride and anchor_part from head configs
+      // Extract output_stride, anchor_part and centroid_source from head configs
       let outputStride = 2;
       let anchorPart: string | null = null;
+      let centroidSource: "user" | "computed" | null = null;
+      const readCentroidSource = (v: unknown) => {
+        if (v === "user" || v === "computed") centroidSource = v;
+      };
       for (const headVal of Object.values(headConfigs)) {
         if (headVal && typeof headVal === "object") {
           const head = headVal as Record<string, unknown>;
           if (typeof head.output_stride === "number") outputStride = head.output_stride;
           if (typeof head.anchor_part === "string") anchorPart = head.anchor_part;
+          readCentroidSource(head.centroid_source);
           const confmaps = head.confmaps as Record<string, unknown> | undefined;
           if (confmaps) {
             if (typeof confmaps.output_stride === "number") outputStride = confmaps.output_stride;
             if (typeof confmaps.anchor_part === "string") anchorPart = confmaps.anchor_part;
+            readCentroidSource(confmaps.centroid_source);
           }
         }
       }
@@ -744,6 +770,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         upInterpolate: typeof unetConfig.up_interpolate === "boolean" ? unetConfig.up_interpolate : true,
         outputStride,
         anchorPart,
+        centroidSource,
         confmapsLossWeight,
         pafsLossWeight,
         classLossWeight,

@@ -68,6 +68,13 @@ export function setupCentroidTraining(alConfig: ActiveLearningConfig): boolean {
     // otherwise not exist in the pose skeleton. In the named-anchor modes, pass
     // the configured pose node through; trainingStore skips the write when null.
     anchorPart: alConfig.localize.separateCentroid ? null : alConfig.localize.centroidNode,
+    // sleap-nn >=0.3.1 (#704) resolves the centroid target ONCE per dataset and
+    // warns loudly if we don't say which we mean. We always know: the free
+    // annotation mode trains on `UserCentroid`s ("user"), the anchor-node mode
+    // derives them from keypoints ("computed"). Declaring it also makes the
+    // frame-dropping explicit — "user" drops pose-only frames, and "computed"
+    // ignores any user centroids.
+    centroidSource: alConfig.localize.separateCentroid ? "user" : "computed",
     maxEpochs: tr.maxEpochs,
     batchSize: tr.batchSize,
     stopOnPlateau: tr.earlyStop,
