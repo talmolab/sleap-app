@@ -87,7 +87,7 @@ export function ActiveLearningPanel() {
   // annotations only seeded `frame.centroids` count, so pose labels and the
   // paired empty pose instances never inflate it), and whether a suggested-frame
   // pool exists to seed on.
-  const { seededFrames, seededCentroids, labelableCentroids, hasSuggestions, videoCount } = useMemo(() => {
+  const { seededFrames, seededCentroids, labelableCentroids, hasSuggestions, suggestionCount, videoCount } = useMemo(() => {
     const labels = useAppStore.getState().labels;
     if (!labels) {
       return {
@@ -95,6 +95,7 @@ export function ActiveLearningPanel() {
         seededCentroids: 0,
         labelableCentroids: 0,
         hasSuggestions: false,
+        suggestionCount: 0,
         videoCount: 0,
       };
     }
@@ -109,6 +110,7 @@ export function ActiveLearningPanel() {
       seededCentroids: centroids,
       labelableCentroids: labelable,
       hasSuggestions: labels.suggestions.length > 0,
+      suggestionCount: labels.suggestions.length,
       videoCount: labels.videos.length,
     };
     // overlayVersion drives the recount; labels is mutated in place.
@@ -291,9 +293,44 @@ export function ActiveLearningPanel() {
     useAppStore.getState().markChanged();
     useAppStore.getState().bumpOverlayVersion();
     const short = added.length < count ? ` (${count} asked for; the rest are already queued)` : "";
+    // Report the resulting POOL SIZE, not just the batch: this button adds, and a
+    // count on its own reads like it replaced what was there.
     toast.success(
-      `Added ${added.length} frames spread across ${labels.videos.length} video(s)${short} — press Space to step through them`,
+      `Added ${added.length} frame(s)${short} — pool is now ${labels.suggestions.length} across ${labels.videos.length} video(s). Press Space to step through them.`,
     );
+  };
+
+  /**
+   * Empty the starter-frame pool — the reset counterpart to "Add to pool".
+   *
+   * Suggestions live outside the command system (nothing mutates them through a
+   * Command), so ⌘Z cannot reach this. Rather than a modal confirm in a panel
+   * this narrow, the toast carries the restore: the old array is kept alive by
+   * the closure, and the undo is refused if the project changed underneath it —
+   * those suggestions reference the previous project's `Video` objects.
+   */
+  const clearFramePool = () => {
+    const labels = useAppStore.getState().labels;
+    if (!labels) return;
+    const previous = labels.suggestions;
+    if (previous.length === 0) {
+      toast.info("The starter-frame pool is already empty.");
+      return;
+    }
+    labels.suggestions = [];
+    useAppStore.getState().markChanged();
+    useAppStore.getState().bumpOverlayVersion();
+    toast.success(`Cleared the pool — ${previous.length} frame(s) removed.`, {
+      action: {
+        label: "Undo",
+        onClick: () => {
+          if (useAppStore.getState().labels !== labels) return; // different project now
+          labels.suggestions = previous;
+          useAppStore.getState().markChanged();
+          useAppStore.getState().bumpOverlayVersion();
+        },
+      },
+    });
   };
 
   const toggleSeeding = () => {
@@ -620,7 +657,9 @@ export function ActiveLearningPanel() {
                 misses animals.
               </p>
 
-              {/* Step 1 — build a pool of frames to seed on */}
+              {/* Step 1 — build a pool of frames to seed on. The button says "Add
+                  to pool" because it APPENDS: each click samples around what's
+                  already queued rather than replacing it. "Clear" is the reset. */}
               <div className="space-y-1">
                 <div className="flex items-center gap-1.5">
                   <Input
@@ -628,7 +667,7 @@ export function ActiveLearningPanel() {
                     type="number"
                     min={1}
                     defaultValue={config.localize.seedFrames}
-                    className="h-8 w-20"
+                    className="h-8 w-16"
                     aria-label="Frames to add in total"
                   />
                   <Button
@@ -636,12 +675,22 @@ export function ActiveLearningPanel() {
                     variant={primaryIs("add-frames") ? "default" : "outline"}
                     onClick={addFrames}
                   >
-                    Add frames
+                    Add to pool
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={suggestionCount === 0}
+                    onClick={clearFramePool}
+                  >
+                    Clear
                   </Button>
                 </div>
                 <p className="text-[11px] leading-snug text-muted-foreground">
-                  Total across all {videoCount} video(s), spread evenly over each one (not
-                  clumped, not strictly periodic). Click again to add another batch in the gaps.
+                  Pool: <span className="font-medium text-foreground">{suggestionCount}</span>{" "}
+                  frame(s) across {videoCount} video(s). Each click adds that many more — a total
+                  for the project, not per video — spread into the gaps.{" "}
+                  <span className="font-medium">Clear</span> empties the pool.
                 </p>
               </div>
 

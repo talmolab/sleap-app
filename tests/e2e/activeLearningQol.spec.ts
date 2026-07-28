@@ -74,7 +74,7 @@ test("Add frames spends a total budget across videos, spread evenly", async ({ p
   await page.getByRole("tab", { name: /^Localize$/ }).click();
   const countInput = page.getByLabel("Frames to add in total");
   await countInput.fill("30");
-  await page.getByRole("button", { name: /^Add frames$/ }).click();
+  await page.getByRole("button", { name: /^Add to pool$/ }).click();
 
   const first = await page.evaluate(() => {
     const labels = window.sleap.store.getState().labels!;
@@ -106,7 +106,7 @@ test("Add frames spends a total budget across videos, spread evenly", async ({ p
   }
 
   // A second click ADDS a batch in the gaps instead of re-offering the same pool.
-  await page.getByRole("button", { name: /^Add frames$/ }).click();
+  await page.getByRole("button", { name: /^Add to pool$/ }).click();
   const second = await page.evaluate(() => {
     const labels = window.sleap.store.getState().labels!;
     return {
@@ -117,6 +117,24 @@ test("Add frames spends a total budget across videos, spread evenly", async ({ p
   });
   expect(second.total).toBe(60);
   expect(second.unique).toBe(60); // no frame offered twice
+
+  // The panel says so too, so "adds" isn't something you have to discover.
+  await expect(page.getByText(/^Pool: 60 frame\(s\) across 2 video\(s\)/)).toBeVisible();
+
+  // Clear is the reset, and its toast carries the undo (suggestions aren't in the
+  // command system, so ⌘Z can't reach them).
+  await page.getByRole("button", { name: /^Clear$/ }).click();
+  await page.waitForFunction(
+    () => window.sleap.store.getState().labels!.suggestions.length === 0,
+    null,
+    { timeout: 15000 },
+  );
+  await page.getByRole("button", { name: /^Undo$/ }).click();
+  await page.waitForFunction(
+    () => window.sleap.store.getState().labels!.suggestions.length === 60,
+    null,
+    { timeout: 15000 },
+  );
 
   expect(pageErrors, "no uncaught page errors").toEqual([]);
 });
