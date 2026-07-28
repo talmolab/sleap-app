@@ -64,7 +64,10 @@ export function TrainPromptBanner() {
           variant="outline"
           onClick={() => {
             if (setupCentroidTraining(config)) {
-              useAppStore.getState().set("sidebarActivePanel", "training");
+              // #233 replaced the single `sidebarActivePanel` with an open-panel
+              // stack; `togglePanelOpen` reveals a collapsed column and opens the
+              // panel in both single- and multi-panel modes.
+              useAppStore.getState().togglePanelOpen("training");
             }
             setDismissedUpTo(milestone);
           }}

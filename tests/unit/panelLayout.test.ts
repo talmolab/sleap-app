@@ -6,37 +6,28 @@
 import { describe, it, expect } from "../bun-test";
 import {
   DEFAULT_PANEL_ORDER,
+  DEFAULT_OPEN_PANELS,
   reconcilePanelOrder,
   reconcileHiddenPanels,
-  reconcileActivePanel,
   reorderById,
   nextVisiblePanel,
+  toggleId,
+  reconcileOpenPanels,
+  visibleOpenPanels,
+  migrateOpenPanels,
 } from "@/lib/panelLayout";
 
-describe("reconcileActivePanel", () => {
-  it("keeps an id that still exists", () => {
-    expect(reconcileActivePanel("skeleton")).toBe("skeleton");
-    expect(reconcileActivePanel("active-learning")).toBe("active-learning");
-  });
-
-  it("redirects the retired 'correct' panel to the panel that absorbed it", () => {
-    // Phase-3 correction moved from a standalone panel to an Active-Learning
-    // tab; without this a returning user rehydrates to an empty sidebar body.
-    expect(reconcileActivePanel("correct")).toBe("active-learning");
-  });
-
-  it("falls back to the first default panel for unknown/empty ids", () => {
-    expect(reconcileActivePanel()).toBe(DEFAULT_PANEL_ORDER[0]);
-    expect(reconcileActivePanel(null)).toBe(DEFAULT_PANEL_ORDER[0]);
-    expect(reconcileActivePanel("")).toBe(DEFAULT_PANEL_ORDER[0]);
-    expect(reconcileActivePanel("no-such-panel")).toBe(DEFAULT_PANEL_ORDER[0]);
-  });
-
-  it("never returns a retired id", () => {
+describe("retired panel ids", () => {
+  it("never resurrects the retired 'correct' panel from a legacy active id", () => {
+    // "Correct predictions" moved from a standalone panel to an Active-Learning
+    // tab, so its id left DEFAULT_PANEL_ORDER. A returning user's persisted
+    // `sidebarActivePanel: "correct"` must not migrate into the open stack — it
+    // would resolve to no component and render an empty sidebar body.
     expect(DEFAULT_PANEL_ORDER as readonly string[]).not.toContain("correct");
-    expect(DEFAULT_PANEL_ORDER as readonly string[]).toContain(
-      reconcileActivePanel("correct"),
-    );
+    expect(migrateOpenPanels(null, "correct")).toEqual([...DEFAULT_OPEN_PANELS]);
+    expect(reconcileOpenPanels(["correct"])).toEqual([]);
+    // A still-valid legacy id is honored as before.
+    expect(migrateOpenPanels(null, "skeleton")).toEqual(["skeleton"]);
   });
 });
 
@@ -139,5 +130,69 @@ describe("nextVisiblePanel", () => {
 
   it("returns null when nothing else is visible (allow-empty)", () => {
     expect(nextVisiblePanel(order, ["b", "c", "d"], "a")).toBeNull();
+  });
+});
+
+describe("toggleId", () => {
+  it("appends an id not already present", () => {
+    expect(toggleId(["a", "b"], "c")).toEqual(["a", "b", "c"]);
+  });
+
+  it("removes an id already present", () => {
+    expect(toggleId(["a", "b", "c"], "b")).toEqual(["a", "c"]);
+  });
+
+  it("returns a copy (does not mutate the input)", () => {
+    const list = ["a"];
+    expect(toggleId(list, "b")).not.toBe(list);
+    expect(list).toEqual(["a"]);
+  });
+});
+
+describe("reconcileOpenPanels", () => {
+  it("defaults to empty", () => {
+    expect(reconcileOpenPanels()).toEqual([]);
+    expect(reconcileOpenPanels(null)).toEqual([]);
+  });
+
+  it("keeps only known ids and de-dupes", () => {
+    expect(
+      reconcileOpenPanels(["videos", "ghost", "videos", "skeleton"]),
+    ).toEqual(["videos", "skeleton"]);
+  });
+});
+
+describe("visibleOpenPanels", () => {
+  it("returns panelOrder ∩ open − hidden, in panelOrder order", () => {
+    const order = ["videos", "skeleton", "instances", "view"];
+    // open given out of order → result follows panelOrder.
+    expect(visibleOpenPanels(order, ["view", "videos"], [])).toEqual([
+      "videos",
+      "view",
+    ]);
+  });
+
+  it("excludes hidden panels even when they are open", () => {
+    const order = ["videos", "skeleton", "instances"];
+    expect(
+      visibleOpenPanels(order, ["videos", "skeleton"], ["skeleton"]),
+    ).toEqual(["videos"]);
+  });
+});
+
+describe("migrateOpenPanels", () => {
+  it("honors a stored open set — including an intentionally-empty one", () => {
+    expect(migrateOpenPanels(["skeleton"], "videos")).toEqual(["skeleton"]);
+    // Empty means the user closed every panel; it must NOT re-open one.
+    expect(migrateOpenPanels([], "videos")).toEqual([]);
+  });
+
+  it("migrates a legacy single active panel when no open set was stored", () => {
+    expect(migrateOpenPanels(null, "instances")).toEqual(["instances"]);
+  });
+
+  it("falls back to the default when neither is available/known", () => {
+    expect(migrateOpenPanels(null, null)).toEqual([...DEFAULT_OPEN_PANELS]);
+    expect(migrateOpenPanels(null, "ghost")).toEqual([...DEFAULT_OPEN_PANELS]);
   });
 });

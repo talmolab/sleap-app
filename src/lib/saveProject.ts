@@ -16,10 +16,21 @@ import {
   tempPathFor,
 } from "@/lib/saveEmbeddedPkgStreaming";
 import { saveLabelsInPlace } from "@/lib/saveLabelsInPlace";
-import { shouldStreamEmbeddedSave } from "@/lib/saveRouting";
+import {
+  shouldStreamEmbeddedSave,
+  decideBrowserSaveAction,
+} from "@/lib/saveRouting";
 import { fileSize } from "@/lib/nativeRange";
 import { renameFile, removeFile } from "@/lib/nativeWrite";
 import { syncActiveLearningProvenance } from "@/lib/activeLearning/persistence";
+import {
+  saveEmbeddedPkgOpfs,
+  isOpfsSaveSupported,
+  pickSlpSaveDestination,
+} from "@/lib/saveEmbeddedPkgOpfs";
+import { newDraftPath, removeLabelsDraft } from "@/lib/labelsDraft";
+import { recordDraftSave, deleteDraftEntry } from "@/lib/draftManifest";
+import { isSameSaveTarget } from "@/lib/saveTargetGuard";
 import { shouldOverwriteOpenedFile } from "@/lib/browserSaveTarget";
 
 /**
@@ -38,6 +49,111 @@ function formatBytes(n: number): string {
  *  progress message. */
 function sizeSuffix(bytes: number | null): string {
   return bytes != null ? ` (${formatBytes(bytes)})` : "";
+}
+
+/**
+ * Outcome of an in-memory browser save.
+ *  - `durable: true`  — a VERIFIED write to a file we hold (File System Access
+ *    in-place overwrite or Save-As): the bytes are on disk, so the crash-recovery
+ *    draft can be dropped.
+ *  - `durable: false` — a fire-and-forget anchor download (non-Chromium): the
+ *    browser was HANDED a blob but we never see whether it landed, and it writes
+ *    a NEW copy in Downloads, not the opened file. The recovery draft must be
+ *    KEPT as a safety net in this case.
+ */
+interface InMemorySaveResult {
+  name: string;
+  durable: boolean;
+}
+
+/**
+ * In-memory browser save (small files, or when the OPFS streaming path is
+ * unavailable / falls back): serialize the whole file to bytes and deliver via
+ * the File System Access API (Chromium) or an anchor download (elsewhere).
+ * Returns the saved name + whether the write was durable (see
+ * {@link InMemorySaveResult}), or null if the user cancelled the location picker.
+ */
+async function saveBrowserInMemory(
+  labels: Labels,
+  saveName: string,
+  forceDialog: boolean
+): Promise<InMemorySaveResult | null> {
+  const store = useAppStore.getState();
+  const bytes = await saveSlpToBytes(labels);
+  const blob = new Blob([bytes], { type: "application/octet-stream" });
+
+  if ("showSaveFilePicker" in window) {
+    // SAVE (not Save-As) with a retained handle → overwrite the opened file in
+    // place — no dialog, matching a native / PyQt save (#234). createWritable
+    // writes atomically via a swap file, so overwriting the same file is safe;
+    // the first such save may prompt once for write permission.
+    const existingHandle = store.projectFileHandle;
+    if (shouldOverwriteOpenedFile({ forceDialog, hasHandle: !!existingHandle }) && existingHandle) {
+      try {
+        if (await ensureReadWritePermission(existingHandle)) {
+          console.log(
+            `[save] Saving in place to the opened file (browser): ${existingHandle.name} (${bytes.byteLength} bytes)`
+          );
+          const writable = await existingHandle.createWritable();
+          await writable.write(blob);
+          await writable.close();
+          return { name: existingHandle.name, durable: true };
+        }
+      } catch (err) {
+        // Stale handle / revoked permission / write failure → fall back to the
+        // Save-As picker rather than surfacing an error.
+        console.warn(
+          "[save] in-place save to the opened file failed; prompting Save As",
+          err
+        );
+      }
+    }
+    // Save-As, no retained handle, or a failed in-place attempt: prompt for a
+    // location, then RETAIN the chosen handle so subsequent saves write in place.
+    console.log(
+      `[save] Saving via browser Save-As picker (${bytes.byteLength} bytes)`
+    );
+    try {
+      const handle = await (
+        window as unknown as {
+          showSaveFilePicker: (opts: unknown) => Promise<FileSystemFileHandle>;
+        }
+      ).showSaveFilePicker({
+        types: [
+          {
+            description: "SLEAP Labels",
+            accept: { "application/octet-stream": [".slp"] },
+          },
+        ],
+        suggestedName: saveName,
+      });
+      const writable = await handle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+      store.set("projectFileHandle", handle);
+      store.set("filename", handle.name);
+      return { name: handle.name, durable: true };
+    } catch (err: unknown) {
+      if (err instanceof DOMException && err.name === "AbortError") return null;
+      throw err;
+    }
+  }
+
+  // Non-Chromium: anchor download. This is NOT durable — the browser is handed a
+  // blob (landing a NEW copy in Downloads, not the opened file) with no way to
+  // observe success/failure, so the caller must KEEP the crash-recovery draft.
+  console.log(
+    `[save] Saving via browser anchor download (${bytes.byteLength} bytes)`
+  );
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = saveName;
+  a.click();
+  // Revoke on the next tick, not synchronously: revoking immediately after
+  // click() can abort the download before the browser has read the blob.
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+  return { name: saveName, durable: false };
 }
 
 /**
@@ -230,91 +346,135 @@ export async function saveProjectAsSlp(
         store.set("projectPath", savePath);
         displayName = savePath;
       }
-    } else if ("showSaveFilePicker" in window) {
-      // Browser (File System Access API).
-      const bytes = await saveSlpToBytes(labels);
-      const blob = new Blob([bytes], { type: "application/octet-stream" });
-
-      const existingHandle = store.projectFileHandle;
-      const overwriteInPlace = shouldOverwriteOpenedFile({
+    } else {
+      // Browser save (EDL model): for a LARGE embedded pkg.slp the LABELS are the
+      // working project and the images are a referenced, unchanging asset.
+      //  - ⌘S / auto-save  -> persist ONLY the labels to a small OPFS draft
+      //    (instant; no multi-GB image copy — the images stay in the original).
+      //  - Save As / Export -> "compile" the full pkg.slp by merging the current
+      //    labels with the ORIGINAL file's images (the one image pass, on demand).
+      // Everything else (small files, no opened source, OPFS/picker unavailable)
+      // uses the whole-file in-memory save. Routing: decideBrowserSaveAction.
+      const hasEmbeddedImages = labels.videos.some((v) => v.hasEmbeddedImages);
+      // Prefer the durable handle (re-read fresh at save time) over the File
+      // snapshot, which can go stale by the time we read the images.
+      const source = store.projectFileHandle ?? store.projectFile;
+      // Size proxy for the large-pkg decision: the opened File's byte size.
+      const estimatedOutputBytes = store.projectFile?.size ?? null;
+      const action = decideBrowserSaveAction({
+        hasEmbeddedImages,
+        hasSource: !!source,
+        isOpfsSupported: isOpfsSaveSupported(),
+        estimatedOutputBytes,
         forceDialog,
-        hasHandle: !!existingHandle,
       });
 
-      // SAVE (not Save-As) with a retained handle: overwrite the opened file in
-      // place — no dialog, matching a native / PyQt save. The bytes are fully
-      // built above and createWritable writes atomically via a swap file, so
-      // overwriting the same file can't corrupt it. The first such save may
-      // prompt once for write permission; it's silent for the rest of the session.
-      let savedInPlace = false;
-      if (overwriteInPlace && existingHandle) {
-        try {
-          if (await ensureReadWritePermission(existingHandle)) {
-            console.log(
-              `[save] Saving in place to the opened file (browser): ${existingHandle.name} (${bytes.byteLength} bytes)`
-            );
-            const writable = await existingHandle.createWritable();
-            await writable.write(blob);
-            await writable.close();
-            displayName = existingHandle.name;
-            savedInPlace = true;
-          }
-        } catch (err) {
-          // Stale handle / revoked permission / write failure → fall back to the
-          // Save-As picker rather than surfacing an error.
-          console.warn(
-            "[save] in-place save to the opened file failed; prompting Save As",
-            err
-          );
-        }
+      if (action === "save-labels-draft") {
+        // ⌘S / auto-save: persist just the labels (a bare-bones imageless .slp)
+        // to a small OPFS draft. Instant — no image copy. The edit is durably
+        // saved locally; the disk file is written only on an explicit Export.
+        store.setLoading(true, "Saving labels...");
+        const draftPath = store.labelsDraftPath ?? newDraftPath(saveName);
+        // Commit the draft path synchronously (before any await) so a concurrent
+        // auto-save sees it and doesn't mint a second draft (first-save race).
+        store.set("labelsDraftPath", draftPath);
+        // Persist the draft + record it in the manifest (with the original's
+        // handle) so it's recoverable after a tab close (see draftManifest.ts).
+        await recordDraftSave(labels, {
+          draftPath,
+          sourceHandle: store.projectFileHandle,
+          displayName: saveName,
+          savedAt: Date.now(),
+          // Identity snapshot of the opened source (see draftManifest.ts) so a
+          // later restore can detect an on-disk divergence before overwriting.
+          sourceSize: store.projectFile?.size,
+          sourceLastModified: store.projectFile?.lastModified,
+        });
+        store.set("pendingExport", true);
+        store.clearChanges();
+        console.log(`[save] Saved labels draft -> ${draftPath}`);
+        toast.success("Saved locally", {
+          description:
+            "Labels saved instantly in your browser. Use Save As to export the full file to disk.",
+        });
+        return; // handled with our own toast — skip the shared success below
       }
 
-      if (!savedInPlace) {
-        // Save-As, no retained handle, or a failed in-place attempt: prompt for a
-        // location, then RETAIN the chosen handle so subsequent saves write back
-        // to it in place.
-        console.log(
-          `[save] Saving via browser Save-As picker (${bytes.byteLength} bytes)`
-        );
+      if (action === "compile-export") {
+        // Save As / Export: compile the full pkg.slp to the chosen disk file by
+        // merging the current labels with the original's images. Acquire the
+        // destination NOW, synchronously off the save gesture (transient
+        // activation), before the slow compile consumes it.
+        if (!source) {
+          throw new Error("no opened source to compile the embedded pkg from");
+        }
+        let destHandle: FileSystemFileHandle;
         try {
-          const handle = await (
-            window as unknown as {
-              showSaveFilePicker: (
-                opts: unknown
-              ) => Promise<FileSystemFileHandle>;
-            }
-          ).showSaveFilePicker({
-            types: [
-              {
-                description: "SLEAP Labels",
-                accept: { "application/octet-stream": [".slp"] },
-              },
-            ],
-            suggestedName: saveName,
-          });
-          const writable = await handle.createWritable();
-          await writable.write(blob);
-          await writable.close();
-          store.set("projectFileHandle", handle);
-          store.set("filename", handle.name);
-          displayName = handle.name;
-        } catch (err: unknown) {
-          // User cancelled the save dialog
+          destHandle = await pickSlpSaveDestination(saveName);
+        } catch (err) {
           if (err instanceof DOMException && err.name === "AbortError") return;
           throw err;
         }
+        // DATA-LOSS GUARD: never compile INTO the file we read images FROM — the
+        // destination's createWritable() truncates it first, so a mid-write
+        // failure would zero the only copy (this already destroyed a test file).
+        if (await isSameSaveTarget(source, destHandle)) {
+          toast.warning("Choose a different filename", {
+            description:
+              "Saving over the currently-open project isn't supported in the browser yet. Pick a new filename so the original stays safe.",
+          });
+          return;
+        }
+        // Past the picker there is no gesture left to open another one, so a
+        // build/stream failure here surfaces as a save error (the outer catch).
+        store.setLoading(true, "Exporting to disk...");
+        console.log("[save] Compiling full pkg.slp to disk (browser export)");
+        let lastPct = -1;
+        displayName = await saveEmbeddedPkgOpfs(
+          labels,
+          source,
+          destHandle,
+          (done, total) => {
+            const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+            if (pct === lastPct) return; // throttle to once-per-percent
+            lastPct = pct;
+            store.setLoading(true, `Exporting to disk (${pct}%)`, pct);
+          }
+        );
+        // Exported to disk: clear the pending flag and drop the local draft +
+        // its manifest entry (its edits now live in the on-disk file, so there
+        // is nothing left to recover).
+        store.set("pendingExport", false);
+        const draft = store.labelsDraftPath;
+        if (draft) {
+          void removeLabelsDraft(draft);
+          void deleteDraftEntry(draft);
+          store.set("labelsDraftPath", null);
+        }
+      } else {
+        // action === "in-memory": small/regular file. Overwrite the opened file
+        // in place (#234) when possible, else Save-As, else anchor download.
+        const res = await saveBrowserInMemory(labels, saveName, forceDialog);
+        if (res === null) return; // user cancelled the save dialog
+        displayName = res.name;
+        if (res.durable) {
+          // VERIFIED write to disk (in-place or Save-As) → the disk copy is now
+          // current, so drop any crash-recovery draft + its manifest entry + the
+          // pending-export flag (nothing left to recover). Auto-save re-creates a
+          // draft only if the user edits again.
+          const draft = store.labelsDraftPath;
+          if (draft) {
+            void removeLabelsDraft(draft);
+            void deleteDraftEntry(draft);
+            store.set("labelsDraftPath", null);
+          }
+          store.set("pendingExport", false);
+        }
+        // else: anchor download — unverifiable and NOT the opened file, so KEEP
+        // the recovery draft as a safety net. A later durable save / Export /
+        // discard clears it; if the download silently failed, the user can still
+        // resume from the draft.
       }
-    } else {
-      // Fallback: anchor download
-      const bytes = await saveSlpToBytes(labels);
-      console.log(`[save] Saving via browser anchor download (${bytes.byteLength} bytes)`);
-      const blob = new Blob([bytes], { type: "application/octet-stream" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = saveName;
-      a.click();
-      URL.revokeObjectURL(url);
     }
 
     store.clearChanges();

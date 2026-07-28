@@ -19,6 +19,7 @@ import {
 import { useAppStore } from "../stores/appStore";
 import { consumeLastBrowserFileHandle } from "../platform/index";
 import { toast } from "@/lib/notify";
+import { confirmDiscardUnsavedWork } from "./unsavedGuard";
 import { resolveExternalVideos } from "./resolveVideos";
 import { installTauriFsResolver } from "./fsResolver";
 import { fileSize, readRange } from "./nativeRange";
@@ -64,7 +65,11 @@ export function formatLoadProgress(
   return `${message ?? "Parsing"}... (${pct}%)`;
 }
 
-function reportParseProgress(current: number, total: number, message?: string): void {
+export function reportParseProgress(
+  current: number,
+  total: number,
+  message?: string
+): void {
   const pct = total > 0 ? Math.round((current / total) * 100) : 0;
   useAppStore
     .getState()
@@ -113,13 +118,9 @@ async function openFirstLabeledFrame(labels: Labels): Promise<void> {
 export async function loadProjectFromFile(file: File): Promise<boolean> {
   const store = useAppStore.getState();
 
-  // Check for unsaved changes
-  if (store.hasChanges) {
-    const confirmed = window.confirm(
-      "You have unsaved changes. Opening a new project will discard them. Continue?"
-    );
-    if (!confirmed) return false;
-  }
+  // Confirm discarding unsaved work (in-memory edits OR a not-yet-exported OPFS
+  // working copy) before replacing the current project.
+  if (!confirmDiscardUnsavedWork("Opening a new project")) return false;
 
   store.setLoading(true, `Reading ${file.name}...`);
 
@@ -133,8 +134,11 @@ export async function loadProjectFromFile(file: File): Promise<boolean> {
     await resolveExternalVideos(labels);
     // Retain the source File AND, when this open came from the file picker, its
     // durable FileSystemFileHandle, so a plain Save can write back to the opened
-    // file in place (see saveProjectAsSlp). Name-match guards against a stale
-    // handle left over from a prior pick (e.g. a later drag-drop open sets none).
+    // file in place (#234) AND a large embedded-pkg re-save/export can re-read
+    // its images fresh via the OPFS writer (see saveProjectAsSlp /
+    // saveEmbeddedPkgOpfs). The handle is preferred because a File snapshot goes
+    // stale after a dialog / elapsed time / on a network volume. Name-match
+    // guards against a stale handle from a prior pick (a later drag-drop sets none).
     const picked = consumeLastBrowserFileHandle();
     const handle = picked && picked.name === file.name ? picked : null;
     store.setLabels(labels, file.name, undefined, file, handle);
@@ -165,13 +169,9 @@ export async function loadProjectFromPath(
 ): Promise<boolean> {
   const store = useAppStore.getState();
 
-  // Check for unsaved changes
-  if (store.hasChanges) {
-    const confirmed = window.confirm(
-      "You have unsaved changes. Opening a new project will discard them. Continue?"
-    );
-    if (!confirmed) return false;
-  }
+  // Confirm discarding unsaved work (in-memory edits OR a not-yet-exported OPFS
+  // working copy) before replacing the current project.
+  if (!confirmDiscardUnsavedWork("Opening a new project")) return false;
 
   const filename = path.split(/[\\/]/).pop() ?? path;
   store.setLoading(true, `Reading ${filename}...`);
@@ -301,12 +301,7 @@ function readAnalysisLabels(source: AnalysisSource): Promise<Labels> {
 export async function loadAnalysisProjectFromFile(file: File): Promise<boolean> {
   const store = useAppStore.getState();
 
-  if (store.hasChanges) {
-    const confirmed = window.confirm(
-      "You have unsaved changes. Importing a file will discard them. Continue?"
-    );
-    if (!confirmed) return false;
-  }
+  if (!confirmDiscardUnsavedWork("Importing a file")) return false;
 
   store.setLoading(true, `Reading ${file.name}...`);
 
@@ -345,12 +340,7 @@ export async function loadAnalysisProjectFromPath(
 ): Promise<boolean> {
   const store = useAppStore.getState();
 
-  if (store.hasChanges) {
-    const confirmed = window.confirm(
-      "You have unsaved changes. Importing a file will discard them. Continue?"
-    );
-    if (!confirmed) return false;
-  }
+  if (!confirmDiscardUnsavedWork("Importing a file")) return false;
 
   const filename = path.split(/[\\/]/).pop() ?? path;
   store.setLoading(true, `Reading ${filename}...`);

@@ -13,6 +13,7 @@ import { useAppStore } from "../stores/appStore";
 import { Track } from "@talmolab/sleap-io.js";
 import { quitApp } from "../lib/quit";
 import { rejectCurrentPassItem } from "../lib/activeLearning/passActions";
+import { openNewInstance } from "../lib/newInstance";
 import {
   commandContext,
   OpenProjectCommand,
@@ -285,7 +286,10 @@ export function useKeyboardShortcuts() {
       },
       [DEFAULT_SHORTCUTS.new]: (e) => {
         e.preventDefault();
-        store().setNewProjectDialogOpen(true);
+        // Open a fresh instance (new tab / native window) at the Welcome screen;
+        // the current project stays put. The create-empty flow lives on the
+        // Welcome screen's New Project button (NewProjectDialog).
+        void openNewInstance();
       },
       [DEFAULT_SHORTCUTS.save]: (e) => {
         e.preventDefault();

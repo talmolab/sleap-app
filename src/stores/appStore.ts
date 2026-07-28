@@ -35,10 +35,12 @@ import {
 export type { NavigationDomain };
 import {
   DEFAULT_PANEL_ORDER,
+  DEFAULT_OPEN_PANELS,
   reconcilePanelOrder,
   reconcileHiddenPanels,
-  reconcileActivePanel,
-  nextVisiblePanel,
+  reconcileOpenPanels,
+  migrateOpenPanels,
+  toggleId,
 } from "@/lib/panelLayout";
 import { hydrateActiveLearningStore } from "@/lib/activeLearning/persistence";
 import {
@@ -79,19 +81,43 @@ export interface AppState {
   filename: string | null;
   projectPath: string | null;
   /**
-   * The opened project File (browser). Retained so a re-save has the source at
-   * hand. A snapshot — prefer `projectFileHandle` for writing, since a File can
-   * go stale.
+   * The browser File the current project was opened from (file picker), retained
+   * so a re-save/export can read its images back via the OPFS streaming writer
+   * (WORKERFS source). A snapshot — prefer `projectFileHandle` for writing. Null
+   * on Tauri / new projects. NOT persisted (a File cannot be serialized).
    */
   projectFile: File | null;
   /**
    * The durable `FileSystemFileHandle` from a browser file-picker open, when
-   * available. Lets a plain Save write BACK to the opened file in place (no
-   * Save-As dialog), matching a native/PyQt save. Null for drag-drop / `<input>`
-   * opens (no handle) and outside Chromium.
+   * available. PREFERRED over `projectFile`: `getFile()` re-reads fresh bytes,
+   * and it lets a plain Save write BACK to the opened file in place (no Save-As
+   * dialog, matching a native/PyQt save) as well as a large-pkg re-save/export
+   * re-read the source. Null for drag-drop / `<input>` opens and outside Chromium.
    */
   projectFileHandle: FileSystemFileHandle | null;
   hasChanges: boolean;
+  /**
+   * Monotonic edit counter — bumped on EVERY label edit (markChanged), even when
+   * `hasChanges` is already true. The draft auto-save subscribes to this (not the
+   * boolean `hasChanges`, which only transitions once) so each edit re-arms the
+   * debounce, and so an edit landing mid-save is detected and not dropped.
+   */
+  editSeq: number;
+  /**
+   * OPFS path of the browser large-pkg fast-save's labels DRAFT (a bare-bones
+   * imageless .slp), or null. Set once a large embedded pkg has been ⌘S/auto-
+   * saved this session; the labels live here durably while the images stay in
+   * the original. Reset on project load. NOT persisted (resume-on-open, a later
+   * piece, will re-discover it via a manifest).
+   */
+  labelsDraftPath: string | null;
+  /**
+   * True when there are label edits saved to the local draft but NOT yet
+   * compiled/exported to the user's disk file (⌘S / auto-save sets it; an
+   * explicit Export clears it). Drives the "saved locally — export to disk"
+   * status + the unsaved-work guards.
+   */
+  pendingExport: boolean;
   projectLoaded: boolean;
 
   // === Selection state ===
@@ -108,7 +134,25 @@ export interface AppState {
   sidebarCollapsed: boolean;
   /** Which side the panel sidebar docks on (#UX-wins). Persisted. */
   sidebarSide: "left" | "right";
-  sidebarActivePanel: string;
+  /**
+   * Panels currently OPEN in the sidebar stack (a subset of `panelOrder`),
+   * rendered as collapsible sections top-to-bottom in panelOrder. Replaces the
+   * old single `sidebarActivePanel` so several panels can stay open at once.
+   * Persisted.
+   */
+  sidebarOpenPanels: string[];
+  /**
+   * Open panels whose body is collapsed to a header-only strip. A subset of
+   * `sidebarOpenPanels`. Persisted.
+   */
+  sidebarCollapsedSections: string[];
+  /**
+   * When true, clicking a rail icon opens panels ADDITIVELY (multiple stacked
+   * sections). When false (default), the sidebar behaves one-at-a-time: a rail
+   * click shows exactly that panel. Toggled from View > Allow multiple panels.
+   * Persisted.
+   */
+  sidebarMultiPanel: boolean;
   panelOrder: string[];
   hiddenPanels: string[];
 
@@ -280,7 +324,7 @@ export interface AppState {
     filename?: string,
     projectPath?: string,
     projectFile?: File | null,
-    projectFileHandle?: FileSystemFileHandle | null,
+    projectFileHandle?: FileSystemFileHandle | null
   ) => void;
   setVideo: (video: Video) => void;
   markVideoUpdated: () => void;
@@ -364,6 +408,18 @@ export interface AppState {
   correctSyncToFrame: (video: Video, frameIdx: number, instanceIdx: number) => void;
   togglePanelVisibility: (panelId: string) => void;
   resetPanels: () => void;
+  /** Rail click: uncollapse the column and open `panelId` if it's collapsed;
+   *  otherwise toggle `panelId` in/out of the open stack. */
+  togglePanelOpen: (panelId: string) => void;
+  /** Ensure `panelId` is open + expanded and the column uncollapsed (used by
+   *  menus that jump to a specific panel, e.g. Training/Inference). */
+  openPanel: (panelId: string) => void;
+  /** Close a section (✕): remove it from the open stack. */
+  closePanel: (panelId: string) => void;
+  /** Toggle a section's body between expanded and header-only (chevron). */
+  toggleSectionCollapsed: (panelId: string) => void;
+  /** Enable/disable multi-panel mode; disabling trims the stack to one panel. */
+  setSidebarMultiPanel: (enabled: boolean) => void;
   toggle: (key: keyof AppState) => void;
   set: <K extends keyof AppState>(key: K, value: AppState[K]) => void;
   bumpOverlayVersion: () => void;
@@ -395,7 +451,9 @@ export const PERSISTED_KEYS: (keyof AppState)[] = [
   "hiddenPanels",
   "sidebarCollapsed",
   "sidebarSide",
-  "sidebarActivePanel",
+  "sidebarOpenPanels",
+  "sidebarCollapsedSections",
+  "sidebarMultiPanel",
   "uiScale",
 ];
 
@@ -427,6 +485,9 @@ export const useAppStore = create<AppState>()(
       projectFile: null,
       projectFileHandle: null,
       hasChanges: false,
+      editSeq: 0,
+      labelsDraftPath: null,
+      pendingExport: false,
       projectLoaded: false,
 
       // Selection state
@@ -442,7 +503,9 @@ export const useAppStore = create<AppState>()(
       uiScale: 1,
       sidebarCollapsed: false,
       sidebarSide: "right",
-      sidebarActivePanel: "videos",
+      sidebarOpenPanels: [...DEFAULT_OPEN_PANELS],
+      sidebarCollapsedSections: [],
+      sidebarMultiPanel: false,
       panelOrder: [...DEFAULT_PANEL_ORDER],
       hiddenPanels: [],
 
@@ -552,6 +615,10 @@ export const useAppStore = create<AppState>()(
           state.projectFileHandle = projectFileHandle ?? null;
           state.projectLoaded = true;
           state.hasChanges = false;
+          // A newly-loaded project has no labels draft yet (and no stale one
+          // from a previous project) — the first large-pkg ⌘S writes one.
+          state.labelsDraftPath = null;
+          state.pendingExport = false;
 
           // Set first video and skeleton
           if (labels.videos.length > 0) {
@@ -730,6 +797,7 @@ export const useAppStore = create<AppState>()(
       markChanged: () =>
         set((state) => {
           state.hasChanges = true;
+          state.editSeq += 1;
           state.lastInteractedFrame = state.frameIdx;
         }),
 
@@ -1009,14 +1077,13 @@ export const useAppStore = create<AppState>()(
             hidden.delete(panelId);
           } else {
             hidden.add(panelId);
-            if (state.sidebarActivePanel === panelId) {
-              const next = nextVisiblePanel(
-                state.panelOrder,
-                [...hidden],
-                panelId,
-              );
-              if (next) state.sidebarActivePanel = next;
-            }
+            // Hiding a panel removes it from the rail entirely, so it can't stay
+            // open in the stack — close its section (and any collapsed marker).
+            state.sidebarOpenPanels = state.sidebarOpenPanels.filter(
+              (id) => id !== panelId,
+            );
+            state.sidebarCollapsedSections =
+              state.sidebarCollapsedSections.filter((id) => id !== panelId);
           }
           state.hiddenPanels = [...hidden];
         }),
@@ -1026,14 +1093,97 @@ export const useAppStore = create<AppState>()(
         set((state) => {
           state.panelOrder = [...DEFAULT_PANEL_ORDER];
           state.hiddenPanels = [];
-          // hidden is now empty, so any known active panel is visible again;
-          // only normalize an active id that no longer exists.
-          if (
-            !(DEFAULT_PANEL_ORDER as readonly string[]).includes(
-              state.sidebarActivePanel,
-            )
-          ) {
-            state.sidebarActivePanel = DEFAULT_PANEL_ORDER[0];
+          state.sidebarOpenPanels = [...DEFAULT_OPEN_PANELS];
+          state.sidebarCollapsedSections = [];
+        }),
+
+      // Rail click: reveal a collapsed column (opening the clicked panel too),
+      // otherwise toggle the clicked panel in/out of the open stack.
+      togglePanelOpen: (panelId) =>
+        set((state) => {
+          // Single-panel mode (default): classic one-at-a-time rail. A click
+          // shows exactly that panel; clicking the sole open panel hides the
+          // column.
+          if (!state.sidebarMultiPanel) {
+            const soleOpen =
+              state.sidebarOpenPanels.length === 1 &&
+              state.sidebarOpenPanels[0] === panelId;
+            if (!state.sidebarCollapsed && soleOpen) {
+              state.sidebarCollapsed = true;
+            } else {
+              state.sidebarCollapsed = false;
+              state.sidebarOpenPanels = [panelId];
+              state.sidebarCollapsedSections = [];
+            }
+            return;
+          }
+          // Multi-panel mode: stack toggle.
+          if (state.sidebarCollapsed) {
+            state.sidebarCollapsed = false;
+            if (!state.sidebarOpenPanels.includes(panelId)) {
+              state.sidebarOpenPanels = [...state.sidebarOpenPanels, panelId];
+            }
+            return;
+          }
+          const wasOpen = state.sidebarOpenPanels.includes(panelId);
+          state.sidebarOpenPanels = toggleId(state.sidebarOpenPanels, panelId);
+          if (wasOpen) {
+            // Closing: drop any collapsed marker so a re-open starts expanded.
+            state.sidebarCollapsedSections =
+              state.sidebarCollapsedSections.filter((id) => id !== panelId);
+          }
+        }),
+
+      // Programmatically open + expand a panel and reveal the column. In single
+      // mode this shows exactly that panel; in multi mode it's added to the stack.
+      openPanel: (panelId) =>
+        set((state) => {
+          state.sidebarCollapsed = false;
+          if (!state.sidebarMultiPanel) {
+            state.sidebarOpenPanels = [panelId];
+            state.sidebarCollapsedSections = [];
+            return;
+          }
+          if (!state.sidebarOpenPanels.includes(panelId)) {
+            state.sidebarOpenPanels = [...state.sidebarOpenPanels, panelId];
+          }
+          state.sidebarCollapsedSections =
+            state.sidebarCollapsedSections.filter((id) => id !== panelId);
+        }),
+
+      closePanel: (panelId) =>
+        set((state) => {
+          state.sidebarOpenPanels = state.sidebarOpenPanels.filter(
+            (id) => id !== panelId,
+          );
+          state.sidebarCollapsedSections =
+            state.sidebarCollapsedSections.filter((id) => id !== panelId);
+        }),
+
+      toggleSectionCollapsed: (panelId) =>
+        set((state) => {
+          state.sidebarCollapsedSections = toggleId(
+            state.sidebarCollapsedSections,
+            panelId,
+          );
+        }),
+
+      setSidebarMultiPanel: (enabled) =>
+        set((state) => {
+          state.sidebarMultiPanel = enabled;
+          // Collapsing back to one-at-a-time: keep the topmost open panel (first
+          // in panelOrder), drop the rest and any stale collapsed markers.
+          if (!enabled && state.sidebarOpenPanels.length > 1) {
+            const keep = state.panelOrder.find((id) =>
+              state.sidebarOpenPanels.includes(id),
+            );
+            state.sidebarOpenPanels = keep
+              ? [keep]
+              : state.sidebarOpenPanels.slice(0, 1);
+            state.sidebarCollapsedSections =
+              state.sidebarCollapsedSections.filter((id) =>
+                state.sidebarOpenPanels.includes(id),
+              );
           }
         }),
 
@@ -1068,6 +1218,8 @@ export const useAppStore = create<AppState>()(
       merge: (persisted, current) => {
         const p = (persisted ?? {}) as Partial<AppState> & {
           navigateLabeledOnly?: boolean;
+          // Legacy single-open-panel field, migrated into sidebarOpenPanels.
+          sidebarActivePanel?: string;
         };
         const merged = {
           ...current,
@@ -1076,9 +1228,21 @@ export const useAppStore = create<AppState>()(
           navigationDomain: navigationDomainFromPersisted(p),
           panelOrder: reconcilePanelOrder(p.panelOrder),
           hiddenPanels: reconcileHiddenPanels(p.hiddenPanels),
-          sidebarActivePanel: reconcileActivePanel(p.sidebarActivePanel),
+          // Seed the open-panel stack: a stored set wins; a legacy single
+          // active panel migrates when no set was stored (see migrateOpenPanels).
+          // A retired id (e.g. the old standalone "correct" panel, now an
+          // Active-Learning tab) is not in DEFAULT_PANEL_ORDER, so it drops here
+          // rather than resolving to a panel that no longer exists.
+          sidebarOpenPanels: migrateOpenPanels(
+            p.sidebarOpenPanels,
+            p.sidebarActivePanel,
+          ),
+          sidebarCollapsedSections: reconcileOpenPanels(
+            p.sidebarCollapsedSections,
+          ),
         };
         delete (merged as { navigateLabeledOnly?: boolean }).navigateLabeledOnly;
+        delete (merged as { sidebarActivePanel?: string }).sidebarActivePanel;
         return merged;
       },
     },

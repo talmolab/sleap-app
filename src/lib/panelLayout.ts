@@ -13,6 +13,10 @@
  * defaults" restores it, and `reconcilePanelOrder` uses it to know which ids
  * are valid. A test asserts the `PANELS` registry's ids match this set exactly.
  */
+/** Panels open in the stack by default (single-open, matching the old default
+ *  active panel). Seeds `sidebarOpenPanels`. */
+export const DEFAULT_OPEN_PANELS = ["videos"] as const;
+
 export const DEFAULT_PANEL_ORDER = [
   "videos",
   "skeleton",
@@ -49,30 +53,6 @@ export function reconcileHiddenPanels(stored?: readonly string[] | null): string
 }
 
 /**
- * Panels that were removed as standalone entries, mapped to where their content
- * now lives. A persisted `sidebarActivePanel` pointing at a retired id would
- * otherwise resolve to no component at all — the sidebar renders its icon rail
- * with an empty body until the user happens to click another panel.
- */
-const RETIRED_PANEL_REDIRECTS: Record<string, string> = {
-  // "Correct predictions" became the rightmost tab of the Active-Learning panel.
-  correct: "active-learning",
-};
-
-/**
- * Reconcile a persisted `sidebarActivePanel`: keep it if it still exists, send
- * retired ids to whichever panel absorbed them, and otherwise fall back to the
- * first default panel.
- */
-export function reconcileActivePanel(stored?: string | null): string {
-  const known = new Set<string>(DEFAULT_PANEL_ORDER);
-  if (stored && known.has(stored)) return stored;
-  const redirect = stored ? RETIRED_PANEL_REDIRECTS[stored] : undefined;
-  if (redirect && known.has(redirect)) return redirect;
-  return DEFAULT_PANEL_ORDER[0];
-}
-
-/**
  * Move `fromId` to `toId`'s position within `order`, operating on the FULL
  * order by id. Callers must pass ids (not filtered render indices) — once the
  * strip hides panels, a rendered index no longer maps to a `panelOrder` index.
@@ -106,4 +86,56 @@ export function nextVisiblePanel(
   const hiddenSet = new Set(hidden);
   hiddenSet.add(excluding);
   return order.find((id) => !hiddenSet.has(id)) ?? null;
+}
+
+/**
+ * Toggle `id`'s membership in `list`: append it when absent, drop it when
+ * present. Returns a copy. Used for both the open-panel set and the
+ * collapsed-section set (plain membership toggles).
+ */
+export function toggleId(list: readonly string[], id: string): string[] {
+  return list.includes(id) ? list.filter((x) => x !== id) : [...list, id];
+}
+
+/** Drop unknown/duplicate ids from a persisted open-panels set. */
+export function reconcileOpenPanels(
+  stored?: readonly string[] | null,
+): string[] {
+  const known = new Set<string>(DEFAULT_PANEL_ORDER);
+  return [...new Set((stored ?? []).filter((id) => known.has(id)))];
+}
+
+/**
+ * The panels to render in the stack, in `panelOrder`: those that are open AND
+ * not hidden. (A hidden panel is removed from the rail entirely, so it can't be
+ * open — but intersect defensively.)
+ */
+export function visibleOpenPanels(
+  order: readonly string[],
+  open: readonly string[],
+  hidden: readonly string[],
+): string[] {
+  const openSet = new Set(open);
+  const hiddenSet = new Set(hidden);
+  return order.filter((id) => openSet.has(id) && !hiddenSet.has(id));
+}
+
+/**
+ * Seed the open-panel set on load. A stored set (even an intentionally-empty
+ * one — the user closed every panel) is honored as-is; only a truly absent key
+ * (legacy blob / fresh install) migrates the old single `sidebarActivePanel`,
+ * falling back to {@link DEFAULT_OPEN_PANELS}.
+ */
+export function migrateOpenPanels(
+  storedOpen?: readonly string[] | null,
+  legacyActive?: string | null,
+): string[] {
+  if (storedOpen != null) return reconcileOpenPanels(storedOpen);
+  if (
+    legacyActive &&
+    (DEFAULT_PANEL_ORDER as readonly string[]).includes(legacyActive)
+  ) {
+    return [legacyActive];
+  }
+  return [...DEFAULT_OPEN_PANELS];
 }

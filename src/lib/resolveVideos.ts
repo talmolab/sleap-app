@@ -911,6 +911,141 @@ export async function resolveAllVideoFiles(
   return matchCount;
 }
 
+/** Minimal structural shapes so the folder scan works with real
+ *  File System Access handles AND plain mock objects in unit tests. */
+interface FsEntryLike {
+  kind: string;
+}
+interface FsDirLike extends FsEntryLike {
+  entries(): AsyncIterableIterator<[string, FsEntryLike]>;
+}
+
+/** How deep to recurse / how many entries to visit when scanning a picked
+ *  folder for missing videos — bounds the cost on a large / network mount. */
+const MAX_VIDEO_SCAN_DEPTH = 8;
+const MAX_VIDEO_SCAN_ENTRIES = 20000;
+
+/**
+ * Recursively scan a picked directory for files whose lowercased basename is in
+ * `wantedKeys`, returning the first handle found per key. Bounded by depth and a
+ * total-entry budget (network-mount safety) and early-exits once every wanted
+ * key is found. Decoupled from the real File System Access API (structural
+ * `FsDirLike`) so the walk is unit-testable with a mock tree.
+ */
+export async function collectHandlesByBasename(
+  dir: FsDirLike,
+  wantedKeys: Set<string>,
+  opts?: { maxDepth?: number; maxEntries?: number }
+): Promise<Map<string, FsEntryLike>> {
+  const found = new Map<string, FsEntryLike>();
+  const maxDepth = opts?.maxDepth ?? MAX_VIDEO_SCAN_DEPTH;
+  const maxEntries = opts?.maxEntries ?? MAX_VIDEO_SCAN_ENTRIES;
+  let visited = 0;
+
+  const walk = async (d: FsDirLike, depth: number): Promise<void> => {
+    if (depth > maxDepth) return;
+    for await (const [name, handle] of d.entries()) {
+      if (found.size >= wantedKeys.size) return; // every key matched — stop
+      if (++visited > maxEntries) return; // budget exhausted (mount safety)
+      if (handle.kind === "file") {
+        const key = name.toLowerCase();
+        if (wantedKeys.has(key) && !found.has(key)) found.set(key, handle);
+      } else if (handle.kind === "directory") {
+        await walk(handle as FsDirLike, depth + 1);
+      }
+    }
+  };
+
+  await walk(dir, 0);
+  return found;
+}
+
+/**
+ * Locate all missing (regular, single-file) videos from ONE user-picked folder:
+ * recursively match each missing video by basename under the folder and open its
+ * backend. The browser-convenience analogue of the desktop's auto-resolve — pick
+ * the folder once instead of each file. Chromium only (needs
+ * `showDirectoryPicker`); elsewhere / on Tauri it falls back to the multi-file
+ * picker ({@link resolveAllVideoFiles}). Session-only: opens the decoder from the
+ * picked File but does NOT rewrite `video.filename` (a browser File exposes no
+ * absolute path to persist). An EXPLICIT action only — never auto-run on load
+ * (embedded pkg.slp / ImageVideo projects have nothing to locate). Returns the
+ * number of videos resolved.
+ */
+export async function resolveAllVideosFromFolder(
+  videos: Video[]
+): Promise<number> {
+  const missing = videos.filter(
+    (v) => isVideoMissing(v) && !isImageSequenceVideo(v)
+  );
+  if (missing.length === 0) {
+    toast.info("No missing videos to locate.");
+    return 0;
+  }
+
+  const platform = await getPlatform();
+  if (
+    platform.isTauri ||
+    typeof window === "undefined" ||
+    !("showDirectoryPicker" in window)
+  ) {
+    // No folder picker available — select the files directly instead.
+    return resolveAllVideoFiles(videos);
+  }
+
+  let dirHandle: FsDirLike;
+  try {
+    dirHandle = await (
+      window as unknown as {
+        showDirectoryPicker: (o?: unknown) => Promise<FsDirLike>;
+      }
+    ).showDirectoryPicker({ id: "sleap-locate-videos", mode: "read" });
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") return 0;
+    throw err;
+  }
+
+  // Each missing video's lowercased basename → the video(s) wanting that name.
+  const wanted = new Map<string, Video[]>();
+  for (const v of missing) {
+    const key = getBasename(v.filename).toLowerCase();
+    const list = wanted.get(key);
+    if (list) list.push(v);
+    else wanted.set(key, [v]);
+  }
+
+  const found = await collectHandlesByBasename(dirHandle, new Set(wanted.keys()));
+
+  let count = 0;
+  for (const [key, vids] of wanted) {
+    const handle = found.get(key) as FileSystemFileHandle | undefined;
+    if (!handle) continue;
+    let file: File;
+    try {
+      file = await handle.getFile();
+    } catch {
+      continue;
+    }
+    for (const v of vids) {
+      if (await assignVideoBackend(v, file, { silent: true })) count++;
+    }
+  }
+
+  if (count > 0) {
+    toast.success(
+      `Located ${count} video${count > 1 ? "s" : ""} from the folder`
+    );
+  }
+  const remaining = missing.length - count;
+  if (remaining > 0) {
+    toast.warning(
+      `${remaining} video${remaining > 1 ? "s" : ""} not found in that folder`,
+      { description: "Pick a folder that contains the missing video file(s)." }
+    );
+  }
+  return count;
+}
+
 /**
  * Build the sleap-io.js backend for a user-picked file, dispatching by
  * extension: MP4 → Mp4Box, WebM/MKV/MOV/Ogg/MPEG-TS → MediaBunny, `.seq` → Seq.

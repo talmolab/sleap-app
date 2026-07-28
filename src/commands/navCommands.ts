@@ -8,6 +8,7 @@
 import { UpdateTopic } from "../types";
 import type { Command } from "./types";
 import type { CommandContext } from "./CommandContext";
+import { isUserLabeledFrame } from "@/lib/frameLabeling";
 
 /** Navigate to the next frame that has labels (any instance). */
 export const GoNextLabeledFrame: Command = {
@@ -204,7 +205,9 @@ export const GoNextUserFrame: Command = {
     if (!labels || !video) return;
 
     const userFrames = labels.find({ video })
-      .filter((lf) => lf.instances.some((i) => !("score" in i)))
+      // "user-labeled" = any manual annotation (incl. a user centroid), not just
+      // a non-predicted skeleton instance — mirrors io.js isUserLabeled.
+      .filter((lf) => isUserLabeledFrame(lf))
       .map((lf) => lf.frameIdx)
       .sort((a, b) => a - b);
 

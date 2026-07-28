@@ -1,6 +1,8 @@
 import { describe, it, expect } from "../bun-test";
 import {
   shouldStreamEmbeddedSave,
+  shouldOpfsStreamBrowserSave,
+  decideBrowserSaveAction,
   STREAMING_SAVE_THRESHOLD_BYTES,
 } from "@/lib/saveRouting";
 
@@ -75,5 +77,121 @@ describe("shouldStreamEmbeddedSave", () => {
   it("keeps the threshold conservatively below the ~4 GB wasm wall", () => {
     expect(STREAMING_SAVE_THRESHOLD_BYTES).toBe(3 * 1024 * 1024 * 1024);
     expect(STREAMING_SAVE_THRESHOLD_BYTES).toBeLessThan(4 * 1024 * 1024 * 1024);
+  });
+});
+
+const browserBase = {
+  hasEmbeddedImages: true,
+  hasSource: true,
+  isOpfsSupported: true,
+  estimatedOutputBytes: STREAMING_SAVE_THRESHOLD_BYTES + 1,
+};
+
+describe("shouldOpfsStreamBrowserSave", () => {
+  it("does not stream when there are no embedded images", () => {
+    expect(
+      shouldOpfsStreamBrowserSave({ ...browserBase, hasEmbeddedImages: false }),
+    ).toBe(false);
+  });
+
+  it("does not stream without an opened source to copy images from", () => {
+    expect(
+      shouldOpfsStreamBrowserSave({ ...browserBase, hasSource: false }),
+    ).toBe(false);
+  });
+
+  it("does not stream when OPFS/showSaveFilePicker is unavailable", () => {
+    // No streaming capability => must fall back to the in-memory save.
+    expect(
+      shouldOpfsStreamBrowserSave({ ...browserBase, isOpfsSupported: false }),
+    ).toBe(false);
+  });
+
+  it("uses the in-memory path when the estimate is below the threshold", () => {
+    expect(
+      shouldOpfsStreamBrowserSave({
+        ...browserBase,
+        estimatedOutputBytes: STREAMING_SAVE_THRESHOLD_BYTES - 1,
+      }),
+    ).toBe(false);
+  });
+
+  it("does not stream at exactly the threshold (strictly-greater gate)", () => {
+    expect(
+      shouldOpfsStreamBrowserSave({
+        ...browserBase,
+        estimatedOutputBytes: STREAMING_SAVE_THRESHOLD_BYTES,
+      }),
+    ).toBe(false);
+  });
+
+  it("streams when the estimate exceeds the threshold", () => {
+    expect(
+      shouldOpfsStreamBrowserSave({
+        ...browserBase,
+        estimatedOutputBytes: STREAMING_SAVE_THRESHOLD_BYTES + 1,
+      }),
+    ).toBe(true);
+  });
+
+  it("streams conservatively when the size estimate is unknown (null)", () => {
+    expect(
+      shouldOpfsStreamBrowserSave({ ...browserBase, estimatedOutputBytes: null }),
+    ).toBe(true);
+  });
+
+  it("does not stream on unknown size when the capability is missing", () => {
+    // The size fallback must not override the eligibility gates.
+    expect(
+      shouldOpfsStreamBrowserSave({
+        ...browserBase,
+        isOpfsSupported: false,
+        estimatedOutputBytes: null,
+      }),
+    ).toBe(false);
+  });
+});
+
+const actionBase = {
+  hasEmbeddedImages: true,
+  hasSource: true,
+  isOpfsSupported: true,
+  estimatedOutputBytes: STREAMING_SAVE_THRESHOLD_BYTES + 1,
+  forceDialog: false,
+};
+
+describe("decideBrowserSaveAction (EDL model)", () => {
+  it("uses the in-memory save for a small file (⌘S or Save As)", () => {
+    const small = STREAMING_SAVE_THRESHOLD_BYTES - 1;
+    expect(
+      decideBrowserSaveAction({ ...actionBase, estimatedOutputBytes: small }),
+    ).toBe("in-memory");
+    expect(
+      decideBrowserSaveAction({
+        ...actionBase,
+        estimatedOutputBytes: small,
+        forceDialog: true,
+      }),
+    ).toBe("in-memory");
+  });
+
+  it("falls back to the in-memory save when OPFS is unavailable", () => {
+    expect(
+      decideBrowserSaveAction({
+        ...actionBase,
+        isOpfsSupported: false,
+        forceDialog: true,
+      }),
+    ).toBe("in-memory");
+  });
+
+  it("saves the labels DRAFT on ⌘S of a large embedded pkg (instant, no image copy)", () => {
+    expect(decideBrowserSaveAction(actionBase)).toBe("save-labels-draft");
+  });
+
+  it("COMPILES the full pkg to disk on Save As / Export of a large embedded pkg", () => {
+    expect(
+      decideBrowserSaveAction({ ...actionBase, forceDialog: true }),
+    ).toBe("compile-export");
   });
 });

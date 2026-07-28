@@ -75,3 +75,91 @@ export function shouldStreamEmbeddedSave({
   if (estimatedOutputBytes === null) return true;
   return estimatedOutputBytes > STREAMING_SAVE_THRESHOLD_BYTES;
 }
+
+/**
+ * Decide whether a BROWSER embedded-pkg save should use the OPFS streaming
+ * writer instead of the in-memory save. The browser analogue of
+ * {@link shouldStreamEmbeddedSave}: same size logic and threshold, but gated on
+ * OPFS/`showSaveFilePicker` availability (Chromium) rather than the Tauri
+ * runtime, and on having an opened source File/handle to copy images FROM.
+ *
+ * Small embedded files take the faster in-memory path (`saveSlpToBytes`, which
+ * still preserves already-embedded frames); only outputs that would approach the
+ * ~4 GB wasm heap wall route to OPFS. The estimate is the source File's `.size`
+ * (the raw-copy path never ADDS embedded data, so source size is a close,
+ * high-side-safe proxy — see the module header). A `null` estimate is treated
+ * conservatively as "over threshold" (stream), matching the desktop path.
+ *
+ * @param hasEmbeddedImages    At least one video carries embedded images.
+ * @param hasSource            The opened project is retained (File/handle) to
+ *                             copy embedded blobs FROM (required by the writer).
+ * @param isOpfsSupported      OPFS + Worker + `showSaveFilePicker` are available.
+ * @param estimatedOutputBytes Estimated output size in bytes, or `null` when
+ *                             unknown — treated conservatively as "over
+ *                             threshold".
+ */
+export function shouldOpfsStreamBrowserSave({
+  hasEmbeddedImages,
+  hasSource,
+  isOpfsSupported,
+  estimatedOutputBytes,
+}: {
+  hasEmbeddedImages: boolean;
+  hasSource: boolean;
+  isOpfsSupported: boolean;
+  estimatedOutputBytes: number | null;
+}): boolean {
+  if (!hasEmbeddedImages || !hasSource || !isOpfsSupported) return false;
+  // Unknown size => be safe and stream (it works for any size, just slower).
+  if (estimatedOutputBytes === null) return true;
+  return estimatedOutputBytes > STREAMING_SAVE_THRESHOLD_BYTES;
+}
+
+/**
+ * What a BROWSER save of `labels` should do, under the EDL-style fast-save
+ * (labels = working project; the embedded `pkg.slp` = a compiled export).
+ *
+ *  - `in-memory` — small file / no source / OPFS unavailable: the existing
+ *    whole-file in-memory save (still preserves already-embedded frames).
+ *  - `save-labels-draft` — ⌘S / auto-save of a large embedded pkg: persist ONLY
+ *    the labels (a bare-bones imageless `.slp`) to a small OPFS file. Instant —
+ *    no multi-GB image copy. The images never change on a label edit, so they
+ *    stay referenced in the original, not copied.
+ *  - `compile-export` — explicit Save As / Export (`forceDialog`) of a large
+ *    embedded pkg: "compile" the full `pkg.slp` by merging the current labels
+ *    with the ORIGINAL file's images (see saveEmbeddedPkgOpfs). This is the one
+ *    unavoidable image pass, paid once, on demand.
+ *
+ * ⌘S never writes multi-GB to disk — it saves the tiny labels draft; the disk
+ * write happens only on the explicit Export. Small files are unaffected.
+ * Eligibility + threshold reuse {@link shouldOpfsStreamBrowserSave}.
+ */
+export type BrowserSaveAction =
+  | "in-memory"
+  | "save-labels-draft"
+  | "compile-export";
+
+export function decideBrowserSaveAction({
+  hasEmbeddedImages,
+  hasSource,
+  isOpfsSupported,
+  estimatedOutputBytes,
+  forceDialog,
+}: {
+  hasEmbeddedImages: boolean;
+  hasSource: boolean;
+  isOpfsSupported: boolean;
+  estimatedOutputBytes: number | null;
+  forceDialog: boolean;
+}): BrowserSaveAction {
+  // Only a large embedded pkg gets the EDL treatment; everything else uses the
+  // whole-file in-memory save (fast enough, and it needs no source/OPFS).
+  const largePkg = shouldOpfsStreamBrowserSave({
+    hasEmbeddedImages,
+    hasSource,
+    isOpfsSupported,
+    estimatedOutputBytes,
+  });
+  if (!largePkg) return "in-memory";
+  return forceDialog ? "compile-export" : "save-labels-draft";
+}

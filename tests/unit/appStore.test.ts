@@ -4,7 +4,7 @@
 
 import { describe, it, expect, beforeEach } from "../bun-test";
 import { useAppStore, PERSISTED_KEYS } from "@/stores/appStore";
-import { DEFAULT_PANEL_ORDER } from "@/lib/panelLayout";
+import { DEFAULT_PANEL_ORDER, DEFAULT_OPEN_PANELS } from "@/lib/panelLayout";
 import type { Labels, Video, Skeleton, Instance } from "@/types";
 
 /** Helper to reset the store between tests. */
@@ -478,7 +478,9 @@ describe("PERSISTED_KEYS (layout + scale persistence)", () => {
     expect(PERSISTED_KEYS).toContain("panelOrder");
     expect(PERSISTED_KEYS).toContain("hiddenPanels");
     expect(PERSISTED_KEYS).toContain("sidebarCollapsed");
-    expect(PERSISTED_KEYS).toContain("sidebarActivePanel");
+    expect(PERSISTED_KEYS).toContain("sidebarOpenPanels");
+    expect(PERSISTED_KEYS).toContain("sidebarCollapsedSections");
+    expect(PERSISTED_KEYS).toContain("sidebarMultiPanel");
     expect(PERSISTED_KEYS).toContain("uiScale");
   });
 
@@ -508,41 +510,177 @@ describe("panel visibility & reset (#135)", () => {
     expect(useAppStore.getState().hiddenPanels).not.toContain("debug");
   });
 
-  it("auto-switches the active panel when the active panel is hidden", () => {
-    useAppStore.setState({ sidebarActivePanel: "videos" });
-    useAppStore.getState().togglePanelVisibility("videos");
-    const s = useAppStore.getState();
-    expect(s.hiddenPanels).toContain("videos");
-    // "skeleton" is next in DEFAULT_PANEL_ORDER and visible.
-    expect(s.sidebarActivePanel).toBe("skeleton");
-  });
-
-  it("leaves the active panel as-is when hiding the last visible one (allow empty)", () => {
-    // Hide everything except the active panel, then hide the active one too.
-    const all = [...DEFAULT_PANEL_ORDER];
+  it("hiding an open panel closes its section (removes it from the stack)", () => {
     useAppStore.setState({
-      sidebarActivePanel: "videos",
-      hiddenPanels: all.filter((id) => id !== "videos"),
+      sidebarOpenPanels: ["videos", "skeleton"],
+      sidebarCollapsedSections: ["videos"],
     });
     useAppStore.getState().togglePanelVisibility("videos");
     const s = useAppStore.getState();
     expect(s.hiddenPanels).toContain("videos");
-    // No other visible panel to switch to → active unchanged.
-    expect(s.sidebarActivePanel).toBe("videos");
+    expect(s.sidebarOpenPanels).toEqual(["skeleton"]);
+    expect(s.sidebarCollapsedSections).not.toContain("videos");
   });
 
-  it("resetPanels restores default order and clears hidden panels", () => {
+  it("resetPanels restores default order, visibility, and the open stack", () => {
     useAppStore.setState({
       panelOrder: [...DEFAULT_PANEL_ORDER].reverse(),
       hiddenPanels: ["videos", "debug"],
-      sidebarActivePanel: "debug",
+      sidebarOpenPanels: ["debug", "view", "frames"],
+      sidebarCollapsedSections: ["view"],
     });
     useAppStore.getState().resetPanels();
     const s = useAppStore.getState();
     expect(s.panelOrder).toEqual([...DEFAULT_PANEL_ORDER]);
     expect(s.hiddenPanels).toEqual([]);
-    // "debug" is a valid id, so it stays selected (now visible again).
-    expect(s.sidebarActivePanel).toBe("debug");
+    expect(s.sidebarOpenPanels).toEqual([...DEFAULT_OPEN_PANELS]);
+    expect(s.sidebarCollapsedSections).toEqual([]);
+  });
+});
+
+describe("open-panel stack actions (multi-panel sidebar)", () => {
+  beforeEach(() => {
+    resetStore();
+    // These actions' additive/stacking behavior only applies in multi-panel mode.
+    useAppStore.setState({ sidebarMultiPanel: true });
+  });
+
+  it("togglePanelOpen adds a closed panel and removes an open one", () => {
+    useAppStore.setState({ sidebarOpenPanels: ["videos"], sidebarCollapsed: false });
+    useAppStore.getState().togglePanelOpen("skeleton");
+    expect(useAppStore.getState().sidebarOpenPanels).toEqual([
+      "videos",
+      "skeleton",
+    ]);
+    useAppStore.getState().togglePanelOpen("videos");
+    expect(useAppStore.getState().sidebarOpenPanels).toEqual(["skeleton"]);
+  });
+
+  it("togglePanelOpen on a collapsed column reveals it and opens the panel", () => {
+    useAppStore.setState({
+      sidebarOpenPanels: ["videos"],
+      sidebarCollapsed: true,
+    });
+    useAppStore.getState().togglePanelOpen("skeleton");
+    const s = useAppStore.getState();
+    expect(s.sidebarCollapsed).toBe(false);
+    expect(s.sidebarOpenPanels).toEqual(["videos", "skeleton"]);
+  });
+
+  it("closing a panel also clears its collapsed-section marker", () => {
+    useAppStore.setState({
+      sidebarOpenPanels: ["videos", "skeleton"],
+      sidebarCollapsedSections: ["skeleton"],
+    });
+    useAppStore.getState().closePanel("skeleton");
+    const s = useAppStore.getState();
+    expect(s.sidebarOpenPanels).toEqual(["videos"]);
+    expect(s.sidebarCollapsedSections).toEqual([]);
+  });
+
+  it("openPanel ensures the panel is open, expanded, and the column visible", () => {
+    useAppStore.setState({
+      sidebarOpenPanels: ["videos"],
+      sidebarCollapsedSections: ["training"],
+      sidebarCollapsed: true,
+    });
+    // training is marked collapsed but not open; openPanel should open + expand it.
+    useAppStore.getState().openPanel("training");
+    const s = useAppStore.getState();
+    expect(s.sidebarCollapsed).toBe(false);
+    expect(s.sidebarOpenPanels).toContain("training");
+    expect(s.sidebarCollapsedSections).not.toContain("training");
+  });
+
+  it("toggleSectionCollapsed flips a section body between expanded and header-only", () => {
+    useAppStore.setState({
+      sidebarOpenPanels: ["videos"],
+      sidebarCollapsedSections: [],
+    });
+    useAppStore.getState().toggleSectionCollapsed("videos");
+    expect(useAppStore.getState().sidebarCollapsedSections).toEqual(["videos"]);
+    useAppStore.getState().toggleSectionCollapsed("videos");
+    expect(useAppStore.getState().sidebarCollapsedSections).toEqual([]);
+  });
+});
+
+describe("single vs multi panel mode", () => {
+  beforeEach(() => {
+    resetStore();
+  });
+
+  it("defaults to single-panel mode (one at a time)", () => {
+    expect(useAppStore.getState().sidebarMultiPanel).toBe(false);
+  });
+
+  it("single mode: clicking a rail icon shows exactly that panel (replaces)", () => {
+    useAppStore.setState({
+      sidebarMultiPanel: false,
+      sidebarOpenPanels: ["videos"],
+      sidebarCollapsed: false,
+    });
+    useAppStore.getState().togglePanelOpen("skeleton");
+    expect(useAppStore.getState().sidebarOpenPanels).toEqual(["skeleton"]);
+  });
+
+  it("single mode: clicking the sole open panel collapses the column", () => {
+    useAppStore.setState({
+      sidebarMultiPanel: false,
+      sidebarOpenPanels: ["videos"],
+      sidebarCollapsed: false,
+    });
+    useAppStore.getState().togglePanelOpen("videos");
+    const s = useAppStore.getState();
+    expect(s.sidebarCollapsed).toBe(true);
+    expect(s.sidebarOpenPanels).toEqual(["videos"]);
+  });
+
+  it("single mode: openPanel shows exactly that panel", () => {
+    useAppStore.setState({
+      sidebarMultiPanel: false,
+      sidebarOpenPanels: ["videos"],
+    });
+    useAppStore.getState().openPanel("training");
+    expect(useAppStore.getState().sidebarOpenPanels).toEqual(["training"]);
+  });
+
+  it("multi mode: clicking rail icons stacks panels additively", () => {
+    useAppStore.setState({
+      sidebarMultiPanel: true,
+      sidebarOpenPanels: ["videos"],
+      sidebarCollapsed: false,
+    });
+    useAppStore.getState().togglePanelOpen("skeleton");
+    expect(useAppStore.getState().sidebarOpenPanels).toEqual([
+      "videos",
+      "skeleton",
+    ]);
+  });
+
+  it("disabling multi mode trims the stack to the topmost open panel (panelOrder)", () => {
+    useAppStore.setState({
+      sidebarMultiPanel: true,
+      panelOrder: [...DEFAULT_PANEL_ORDER],
+      sidebarOpenPanels: ["instances", "videos", "skeleton"],
+      sidebarCollapsedSections: ["instances"],
+    });
+    useAppStore.getState().setSidebarMultiPanel(false);
+    const s = useAppStore.getState();
+    expect(s.sidebarMultiPanel).toBe(false);
+    // "videos" is first in DEFAULT_PANEL_ORDER among the open set.
+    expect(s.sidebarOpenPanels).toEqual(["videos"]);
+    expect(s.sidebarCollapsedSections).toEqual([]);
+  });
+
+  it("enabling multi mode leaves the open set unchanged", () => {
+    useAppStore.setState({
+      sidebarMultiPanel: false,
+      sidebarOpenPanels: ["videos"],
+    });
+    useAppStore.getState().setSidebarMultiPanel(true);
+    const s = useAppStore.getState();
+    expect(s.sidebarMultiPanel).toBe(true);
+    expect(s.sidebarOpenPanels).toEqual(["videos"]);
   });
 });
 

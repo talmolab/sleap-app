@@ -97,7 +97,7 @@ bun run tauri:build  # Desktop installer (.msi / .dmg / .deb)
 ```bash
 sudo apt-get install libwebkit2gtk-4.1-dev libgtk-3-dev \
   libjavascriptcoregtk-4.1-dev librsvg2-dev patchelf \
-  libglib2.0-dev libayatana-appindicator3-dev
+  libglib2.0-dev libayatana-appindicator3-dev libdbus-1-dev
 ```
 
 ### sleap-io.js Dependency
@@ -168,6 +168,15 @@ tests/                           # bun unit tests + Playwright E2E
 - **`overlayVersion` counter** -- bumped to force overlay re-renders when mutable data changes without React state changes
 - **Reference equality** -- all `labeledFrame` lookups use `===` on video objects (avoids a basename-matching bug in sleap-io.js `Labels.find()`)
 - **Platform abstraction** -- `src/platform/` abstracts file I/O so the same codebase runs in Tauri and the browser
+
+## Deployment
+
+Deployment is automated via GitHub Actions:
+
+- **On merge to `main`** -- the browser app is built and deployed to the **dev** site at [https://app.sleap.ai/dev/](https://app.sleap.ai/dev/) (`.github/workflows/deploy.yml`, published to the `gh-pages` branch).
+- **On GitHub Release** (published) -- the browser app is deployed to **production** at [https://app.sleap.ai](https://app.sleap.ai), and the Tauri desktop installers are built for all three platforms and attached to the release (`.github/workflows/build.yml`): Linux `.deb` / `.AppImage`, macOS `.dmg`, and Windows `.msi` / `.exe`, along with a `latest.json` auto-update manifest.
+
+Both targets can also be run manually from the **Actions** tab (`deploy.yml` / `build.yml` `workflow_dispatch`).
 
 ## License
 

@@ -22,8 +22,34 @@ import {
   getVideoPathCandidates,
   computePrefixSwap,
   SUPPORTED_VIDEO_EXTS,
+  collectHandlesByBasename,
+  resolveAllVideosFromFolder,
+  isImageSequenceVideo,
 } from "@/lib/resolveVideos";
 import { useAppStore } from "@/stores/appStore";
+
+// Minimal mock File System Access handle tree for the folder-scan tests.
+type MockHandle =
+  | { kind: "file" }
+  | {
+      kind: "directory";
+      entries: () => AsyncIterableIterator<[string, MockHandle]>;
+    };
+function fileHandle(): MockHandle {
+  return { kind: "file" };
+}
+function dirHandle(children: Record<string, MockHandle>): MockHandle {
+  return {
+    kind: "directory",
+    entries: async function* () {
+      for (const [name, h] of Object.entries(children)) {
+        yield [name, h] as [string, MockHandle];
+      }
+    },
+  };
+}
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const asDir = (h: MockHandle) => h as any;
 
 function fakeFile(name: string): File {
   return new File([new Uint8Array([0])], name, { type: "video/mp4" });
@@ -558,5 +584,79 @@ describe("resolveExternalVideos (persisted prefix-swap reapply on open)", () => 
       (video.backendMetadata as Record<string, unknown>).lazyPath,
     ).toBeUndefined();
     expect(isVideoMissing(video)).toBe(true);
+  });
+});
+
+describe("collectHandlesByBasename (folder video re-match scan)", () => {
+  it("finds a top-level file by case-insensitive basename", async () => {
+    const target = fileHandle();
+    const tree = dirHandle({ "Video.MP4": target, "other.mp4": fileHandle() });
+    const found = await collectHandlesByBasename(asDir(tree), new Set(["video.mp4"]));
+    expect(found.get("video.mp4")).toBe(target);
+    expect(found.size).toBe(1);
+  });
+
+  it("recurses into subdirectories", async () => {
+    const target = fileHandle();
+    const tree = dirHandle({
+      sub: dirHandle({ deep: dirHandle({ "clip.mp4": target }) }),
+    });
+    const found = await collectHandlesByBasename(asDir(tree), new Set(["clip.mp4"]));
+    expect(found.get("clip.mp4")).toBe(target);
+  });
+
+  it("respects maxDepth (a file too deep is not found)", async () => {
+    const target = fileHandle();
+    const tree = dirHandle({ a: dirHandle({ b: dirHandle({ "clip.mp4": target }) }) });
+    const found = await collectHandlesByBasename(asDir(tree), new Set(["clip.mp4"]), {
+      maxDepth: 1,
+    });
+    expect(found.size).toBe(0);
+  });
+
+  it("stops after the entry budget is exhausted", async () => {
+    const target = fileHandle();
+    // clip.mp4 is the 3rd entry; a budget of 2 never reaches it.
+    const tree = dirHandle({ x1: fileHandle(), x2: fileHandle(), "clip.mp4": target });
+    const found = await collectHandlesByBasename(asDir(tree), new Set(["clip.mp4"]), {
+      maxEntries: 2,
+    });
+    expect(found.size).toBe(0);
+  });
+
+  it("finds every wanted key when present", async () => {
+    const a = fileHandle();
+    const b = fileHandle();
+    const tree = dirHandle({ "a.mp4": a, nested: dirHandle({ "b.mp4": b }) });
+    const found = await collectHandlesByBasename(
+      asDir(tree),
+      new Set(["a.mp4", "b.mp4"]),
+    );
+    expect(found.get("a.mp4")).toBe(a);
+    expect(found.get("b.mp4")).toBe(b);
+    expect(found.size).toBe(2);
+  });
+});
+
+describe("resolveAllVideosFromFolder — image-sequence safety", () => {
+  it("ignores image-sequence videos: no folder prompt, no change, returns 0", async () => {
+    // A missing ImageVideo (frame-path list). The folder re-match must skip it —
+    // image sequences have their own per-row locate flow, and this proves the
+    // 'Locate All Missing' folder pick never touches (let alone rewrites) them.
+    const imgSeq = new Video({
+      filename: ["/imgs/frame000.png", "/imgs/frame001.png"],
+      backend: null,
+      openBackend: false,
+    });
+    expect(isVideoMissing(imgSeq)).toBe(true);
+    expect(isImageSequenceVideo(imgSeq)).toBe(true);
+
+    // Only image sequences present → early return BEFORE any folder picker,
+    // and the video object is left untouched (filename unchanged).
+    const before = imgSeq.filename;
+    const count = await resolveAllVideosFromFolder([imgSeq]);
+    expect(count).toBe(0);
+    expect(imgSeq.filename).toBe(before);
+    expect(imgSeq.backend).toBeNull();
   });
 });
