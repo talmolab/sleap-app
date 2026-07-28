@@ -620,10 +620,20 @@ export const MergePredictions: Command = {
     ctx.state.markChanged();
 
     const conflicts = result.conflicts.length;
-    toast.success(
-      `Merged ${result.instancesAdded} prediction(s) across ${result.framesMerged} frame(s)` +
-        (conflicts > 0 ? `, ${conflicts} conflict(s)` : "") +
-        "."
-    );
+    // A run that merged nothing is not a success worth a green toast — it usually
+    // means the frame filter matched no frames (e.g. `--only_suggested_frames`
+    // against a saved project whose suggestions were never saved), which
+    // otherwise looks identical to "the model found no animals".
+    if (result.framesMerged === 0 && result.instancesAdded === 0) {
+      toast.warning(
+        "No predictions merged — the run matched no frames. Check the frame range, and that the frames you expect are saved in the project.",
+      );
+    } else {
+      toast.success(
+        `Merged ${result.instancesAdded} prediction(s) across ${result.framesMerged} frame(s)` +
+          (conflicts > 0 ? `, ${conflicts} conflict(s)` : "") +
+          "."
+      );
+    }
   },
 };

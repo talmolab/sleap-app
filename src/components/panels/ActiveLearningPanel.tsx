@@ -355,6 +355,14 @@ export function ActiveLearningPanel() {
       toast.error("Define a workflow first.");
       return;
     }
+    // The locator runs `sleap-nn predict --data_path <the SAVED .slp>`, so any
+    // unsaved seed or starter frame is invisible to it. Unsaved starter frames
+    // are the trap: with `--only_suggested_frames` the run matches ZERO frames,
+    // exits 0, and reports success having predicted nothing.
+    if (useAppStore.getState().hasChanges) {
+      toast.error("Save the project first — the locator reads the saved .slp, so unsaved seeds and starter frames are ignored.");
+      return;
+    }
     // Always ask for first-class `PredictedCentroid`s: that's the representation
     // Phase 2 pairs with a pose instance, and the one that round-trips through
     // the `.slp` centroid group for Python. The `instance` alternative emits a
