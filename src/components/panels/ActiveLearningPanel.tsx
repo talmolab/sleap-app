@@ -623,24 +623,33 @@ export function ActiveLearningPanel() {
                 <div className="rounded border border-border px-2 py-1.5 text-[11px] leading-snug text-muted-foreground">
                   Locator training in the background — keep seeding; new labels feed the next round.
                 </div>
-              ) : seededFrames >= trainThreshold ? (
+              ) : (
+                /* Step 3 — train the locator. `trainAfter` is a RECOMMENDATION,
+                   not a wall: this panel advises and never gates, and hiding the
+                   button below the threshold made training unreachable from the
+                   UI on any project smaller than it (default 100 frames) with no
+                   override. Below the threshold it stays available, just not
+                   styled as the recommended next step. */
                 <div className="space-y-1">
                   <Button
                     size="sm"
                     className="w-full"
-                    variant={primaryIs("train") ? "default" : "outline"}
+                    variant={
+                      seededFrames >= trainThreshold && primaryIs("train") ? "default" : "outline"
+                    }
+                    disabled={seededFrames === 0}
                     onClick={startLocatorTraining}
                   >
                     Train centroid locator →
                   </Button>
                   <p className="text-[11px] leading-snug text-muted-foreground">
-                    Enough seeded to train. It runs in the background — keep seeding meanwhile.
+                    {seededFrames === 0
+                      ? "Seed at least one centroid to train on."
+                      : seededFrames >= trainThreshold
+                        ? "Enough seeded to train. It runs in the background — keep seeding meanwhile."
+                        : `${trainThreshold - seededFrames} more frame(s) recommended, but you can train now on ${seededFrames} — it runs in the background.`}
                   </p>
                 </div>
-              ) : (
-                <p className="text-[11px] leading-snug text-muted-foreground">
-                  Seed {trainThreshold - seededFrames} more frame(s) to kick off locator training.
-                </p>
               )}
 
               {trainingDone && (

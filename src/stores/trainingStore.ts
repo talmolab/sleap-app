@@ -1224,7 +1224,11 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
           }));
 
           const configYaml = applyHyperparamsToYaml(cf.content, cf.hyperparams);
-          const ts = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 15);
+          // YYYYMMDDHHMMSS = 14 chars. Taking 15 also grabbed the fractional
+          // seconds' ".", so every run directory ended in a dot — which Win32
+          // silently strips from path components, leaving the recorded model path
+          // unable to match what's actually on disk.
+          const ts = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14);
           const runName = cf.hyperparams.runName || `${cf.modelType}_${ts}`;
 
           set((s) => ({
@@ -1356,7 +1360,12 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
             maxInstances: null,
             peakThreshold: 0.2,
             anchorPart: null,
-            centroidOutput: "instance",
+            // Centroid-only runs emit first-class PredictedCentroids on
+            // `frame.centroids`. The "instance" alternative writes them as
+            // single-node instances on a DEDICATED 1-node "centroid" skeleton,
+            // which permanently adds a junk skeleton to the user's project and
+            // can't be labeled by any pose pass.
+            centroidOutput: "centroid",
             integralRefinement: true,
             integralPatchSize: 5,
             nPoints: 10,

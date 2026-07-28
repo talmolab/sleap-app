@@ -25,6 +25,7 @@ import {
   type PassDims,
   type PassItem,
 } from "@/lib/activeLearning/passEngine";
+import { poseSkeletonOf } from "@/lib/activeLearning/centroidPairing";
 
 const NODE_NAMES = ["body_center", "head", "nose", "left_ear", "right_ear", "tail"];
 
@@ -305,6 +306,34 @@ describe("buildWorkList", () => {
     const seedsOnly = buildWorkList(labels, config, { includePredicted: false });
     expect(seedsOnly).toHaveLength(1);
     expect(seedsOnly[0].centroidIdx).toBe(1);
+  });
+});
+
+describe("poseSkeletonOf", () => {
+  it("skips a lone-\"centroid\" skeleton even when it comes first", () => {
+    // `--centroid_output instance` leaves a 1-node "centroid" skeleton in the
+    // project. If it were ordered first, treating it as THE pose skeleton would
+    // make every real pose instance look foreign and empty the whole sweep.
+    const pose = makeSkeleton();
+    const centroidSkel = new Skeleton({ nodes: ["centroid"], name: "centroid" });
+    const v0 = stubVideo("a.mp4");
+    const labels = new Labels({
+      videos: [v0],
+      skeletons: [centroidSkel, pose],
+      labeledFrames: [],
+    });
+    expect(poseSkeletonOf(labels)).toBe(pose);
+  });
+
+  it("still returns the only skeleton when that IS the centroid one", () => {
+    const centroidSkel = new Skeleton({ nodes: ["centroid"], name: "centroid" });
+    const labels = new Labels({
+      videos: [stubVideo("a.mp4")],
+      skeletons: [centroidSkel],
+      labeledFrames: [],
+    });
+    expect(poseSkeletonOf(labels)).toBe(centroidSkel);
+    expect(poseSkeletonOf(new Labels({ videos: [], skeletons: [], labeledFrames: [] }))).toBeNull();
   });
 });
 

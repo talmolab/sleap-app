@@ -11,9 +11,22 @@
 import { Instance } from "@talmolab/sleap-io.js";
 import type { Labels, Skeleton } from "@talmolab/sleap-io.js";
 
-/** The pose skeleton to pair centroids against — the project's first skeleton. */
+/**
+ * The pose skeleton to pair centroids against.
+ *
+ * Normally the project's first skeleton, but a project can pick up a SECOND,
+ * 1-node skeleton called "centroid": that's how `sleap-nn predict
+ * --centroid_output instance` represents detections, and once merged it stays in
+ * the file. If such a skeleton were ever ordered first, returning it would make
+ * every pose instance look foreign and the whole sweep would come up empty — so
+ * skip a lone-"centroid" skeleton when a real pose skeleton exists.
+ */
 export function poseSkeletonOf(labels: Labels): Skeleton | null {
-  return labels.skeletons[0] ?? null;
+  const skels = labels.skeletons;
+  if (skels.length === 0) return null;
+  const isCentroidOnly = (s: Skeleton) =>
+    s.nodes.length === 1 && s.nodes[0]?.name.toLowerCase() === "centroid";
+  return skels.find((s) => !isCentroidOnly(s)) ?? skels[0];
 }
 
 /**
