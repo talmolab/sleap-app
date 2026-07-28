@@ -8,9 +8,37 @@ import {
   DEFAULT_PANEL_ORDER,
   reconcilePanelOrder,
   reconcileHiddenPanels,
+  reconcileActivePanel,
   reorderById,
   nextVisiblePanel,
 } from "@/lib/panelLayout";
+
+describe("reconcileActivePanel", () => {
+  it("keeps an id that still exists", () => {
+    expect(reconcileActivePanel("skeleton")).toBe("skeleton");
+    expect(reconcileActivePanel("active-learning")).toBe("active-learning");
+  });
+
+  it("redirects the retired 'correct' panel to the panel that absorbed it", () => {
+    // Phase-3 correction moved from a standalone panel to an Active-Learning
+    // tab; without this a returning user rehydrates to an empty sidebar body.
+    expect(reconcileActivePanel("correct")).toBe("active-learning");
+  });
+
+  it("falls back to the first default panel for unknown/empty ids", () => {
+    expect(reconcileActivePanel()).toBe(DEFAULT_PANEL_ORDER[0]);
+    expect(reconcileActivePanel(null)).toBe(DEFAULT_PANEL_ORDER[0]);
+    expect(reconcileActivePanel("")).toBe(DEFAULT_PANEL_ORDER[0]);
+    expect(reconcileActivePanel("no-such-panel")).toBe(DEFAULT_PANEL_ORDER[0]);
+  });
+
+  it("never returns a retired id", () => {
+    expect(DEFAULT_PANEL_ORDER as readonly string[]).not.toContain("correct");
+    expect(DEFAULT_PANEL_ORDER as readonly string[]).toContain(
+      reconcileActivePanel("correct"),
+    );
+  });
+});
 
 describe("reconcilePanelOrder", () => {
   it("returns the full default order for empty/undefined input", () => {

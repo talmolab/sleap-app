@@ -8,13 +8,14 @@
  * recommends steps but never gates.
  */
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useAppStore } from "../../stores/appStore";
 import { useActiveLearningStore } from "../../stores/activeLearningStore";
 import { useTrainingStore } from "../../stores/trainingStore";
 import { useInferenceStore, centroidInferenceConfig } from "../../stores/inferenceStore";
 import { configFromSkeleton } from "@/lib/activeLearning/config";
 import { startCentroidLocatorTraining } from "@/lib/activeLearning/trainLocator";
+import { rejectCurrentPassItem } from "@/lib/activeLearning/passActions";
 import {
   buildWorkList,
   passDims,
@@ -32,6 +33,8 @@ import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { ActiveLearningConfigDialog } from "@/components/dialogs/ActiveLearningConfigDialog";
+import { CorrectionPanel } from "@/components/panels/CorrectionPanel";
+import { cn } from "@/lib/utils";
 
 /** Last path segment of a model directory, for a compact display. */
 function modelBasename(path: string): string {
@@ -57,6 +60,11 @@ export function ActiveLearningPanel() {
   const passCursor = useAppStore((s) => s.passCursor);
   const passDimsState = useAppStore((s) => s.passDims);
   const passZoomWindow = useAppStore((s) => s.passZoomWindow);
+  // Reject is only meaningful on a locator detection, so the button only shows
+  // when the cursor is parked on one.
+  const currentItemPredicted = useAppStore(
+    (s) => s.passWorkList[s.passCursor?.itemIdx ?? -1]?.predicted ?? false,
+  );
 
   const fileRef = useRef<HTMLInputElement>(null);
   const seedCountRef = useRef<HTMLInputElement>(null);
@@ -68,30 +76,65 @@ export function ActiveLearningPanel() {
 
   const nodeNames = skeleton?.nodes.map((n) => n.name);
 
+  // Whether the Phase-2 sweep visits the locator's detections as well as human
+  // seeds. Panel-local (like the correction setup fields): "Resume" rebuilds the
+  // work list and `passJumpToUnlabeled` re-finds the first undecided point, so
+  // the list needn't be byte-identical across starts. Declared HERE because the
+  // seeded/labelable count below reads it during render.
+  const [includePredicted, setIncludePredicted] = useState(true);
+
   // Live count of seeded frames/centroids (config-aware: with separate centroid
   // annotations only seeded `frame.centroids` count, so pose labels and the
   // paired empty pose instances never inflate it), and whether a suggested-frame
   // pool exists to seed on.
-  const { seededFrames, seededCentroids, hasSuggestions } = useMemo(() => {
+  const { seededFrames, seededCentroids, labelableCentroids, hasSuggestions } = useMemo(() => {
     const labels = useAppStore.getState().labels;
     if (!labels) {
-      return { seededFrames: 0, seededCentroids: 0, hasSuggestions: false };
+      return {
+        seededFrames: 0,
+        seededCentroids: 0,
+        labelableCentroids: 0,
+        hasSuggestions: false,
+      };
     }
+    // Two different questions. `seeded*` = human work, which is what gates
+    // locator TRAINING (a prediction must never count toward "enough labels to
+    // train on"). `labelable` = what the Phase-2 sweep would actually visit,
+    // which includes the locator's detections when the sweep is set to.
     const { frames, centroids } = countSeededCentroids(labels, config);
+    const labelable = countSeededCentroids(labels, config, { includePredicted }).centroids;
     return {
       seededFrames: frames,
       seededCentroids: centroids,
+      labelableCentroids: labelable,
       hasSuggestions: labels.suggestions.length > 0,
     };
     // overlayVersion drives the recount; labels is mutated in place.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [overlayVersion, projectLoaded, config]);
+  }, [overlayVersion, projectLoaded, config, includePredicted]);
 
   const trainThreshold = config?.localize.trainAfter ?? 100;
   const trainingRunning = trainingStatus === "running";
   const trainingDone = trainingStatus === "completed";
   const isSeeding = labelingMode === "seed";
   const isKeypointPass = labelingMode === "keypointPass";
+  const isCorrecting = labelingMode === "correct";
+
+  // Tab strip. "Correct" is deliberately NOT gated on `config`: the correction
+  // sweep works on any project holding scored predictions, with or without an
+  // active-learning workflow (that's the whole point of it being decoupled).
+  const [tab, setTab] = useState("setup");
+  const AL_TABS = [
+    { value: "setup", label: "Setup", disabled: false },
+    { value: "localize", label: "Localize", disabled: !config },
+    { value: "keypoints", label: "Keypoints", disabled: !config },
+    { value: "correct", label: "Correct", disabled: false },
+  ];
+  // Entering the sweep (from here, the top bar, or a shortcut) reveals the tab
+  // that doubles as the live per-keypoint confidence readout.
+  useEffect(() => {
+    if (isCorrecting) setTab("correct");
+  }, [isCorrecting]);
   // The model the locator runs on: an explicit pick wins, else the most recent
   // model trained this session.
   const effectiveModelDir = selectedModelDir ?? modelDirs[modelDirs.length - 1] ?? null;
@@ -308,7 +351,27 @@ export function ActiveLearningPanel() {
       toast.error("Select a trained centroid model first (or train one above).");
       return;
     }
-    void useInferenceStore.getState().startInference(centroidInferenceConfig([effectiveModelDir]));
+    if (!config) {
+      toast.error("Define a workflow first.");
+      return;
+    }
+    // Always ask for first-class `PredictedCentroid`s: that's the representation
+    // Phase 2 pairs with a pose instance, and the one that round-trips through
+    // the `.slp` centroid group for Python. The `instance` alternative emits a
+    // DEDICATED 1-node "centroid" skeleton, which no pass can label — so it is
+    // not a substitute here (see DEFAULT_ACTIVE_LEARNING_CONFIG.localize).
+    void useInferenceStore.getState().startInference(
+      centroidInferenceConfig([effectiveModelDir]),
+    );
+    if (!config.localize.separateCentroid) {
+      // Anchor-node workflows have no centroid column for Phase 2 to read, so
+      // the detections would render but never enter the sweep. Say so instead of
+      // silently producing unreachable work.
+      toast.warning(
+        "This workflow anchors on a pose node, so predicted centroids won't enter the keypoint sweep — switch to a separate centroid annotation in Setup.",
+      );
+      return;
+    }
     toast.info("Running the locator on the suggested frames — predicted centroids merge in when done.");
   };
 
@@ -327,9 +390,13 @@ export function ActiveLearningPanel() {
       await commandContext.execute(PairPoseInstances);
     }
     const names = skeleton.nodes.map((n) => n.name);
-    const workList = buildWorkList(labels, config);
+    const workList = buildWorkList(labels, config, { includePredicted });
     if (workList.length === 0) {
-      toast.error("Nothing to label yet — seed or predict some centroids first.");
+      toast.error(
+        includePredicted
+          ? "Nothing to label yet — seed or predict some centroids first."
+          : "No seeded centroids — tick “Also label on predicted centroids” to include the locator's detections.",
+      );
       return;
     }
     const dims = passDims(config, workList, names);
@@ -375,15 +442,38 @@ export function ActiveLearningPanel() {
 
   return (
     <div className="flex h-full min-h-0 flex-col text-sm">
-      <Tabs defaultValue="setup" className="flex h-full min-h-0 flex-col gap-0">
-        <TabsList className="m-2 shrink-0">
-          <TabsTrigger value="setup">Setup</TabsTrigger>
-          <TabsTrigger value="localize" disabled={!config}>
-            Localize
-          </TabsTrigger>
-          <TabsTrigger value="keypoints" disabled={!config}>
-            Keypoints
-          </TabsTrigger>
+      <Tabs
+        value={tab}
+        onValueChange={setTab}
+        className="flex h-full min-h-0 flex-col gap-0"
+      >
+        {/* Underline tab strip docked flush to the top of the panel frame. The
+            negative margins cancel the panel wrapper's p-2 so the strip spans
+            the full width and its hairline reads as the frame's own divider;
+            `sticky` keeps it put if the panel ever scrolls as a whole. */}
+        <TabsList
+          variant="line"
+          className={cn(
+            "sticky top-0 z-10 -mx-2 -mt-2 h-9 w-[calc(100%+1rem)] shrink-0 justify-start",
+            "gap-0 overflow-x-auto rounded-none border-b border-border bg-card p-0 px-1",
+          )}
+        >
+          {AL_TABS.map(({ value, label, disabled }) => (
+            <TabsTrigger
+              key={value}
+              value={value}
+              disabled={disabled}
+              // `after:` is the primitive's active underline; pull it down onto
+              // the strip's border so the two read as one line.
+              className={cn(
+                "h-9 flex-none rounded-none border-0 px-2.5 text-xs",
+                "after:bottom-[-1px] after:h-[2px] after:bg-primary",
+                "data-[state=active]:bg-transparent data-[state=active]:text-foreground",
+              )}
+            >
+              {label}
+            </TabsTrigger>
+          ))}
         </TabsList>
 
         {/* ---- Setup ---- */}
@@ -606,16 +696,35 @@ export function ActiveLearningPanel() {
 
               {!isKeypointPass ? (
                 <>
+                  <label className="flex items-start gap-2 text-[11px] leading-snug">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      checked={includePredicted}
+                      onChange={(e) => setIncludePredicted(e.target.checked)}
+                    />
+                    <span>
+                      Also label on predicted centroids
+                      <span className="block text-muted-foreground">
+                        Include the locator&apos;s detections, not just your own seeds. Reject a
+                        wrong one with <kbd>x</kbd> during the sweep.
+                      </span>
+                    </span>
+                  </label>
                   <Button
                     size="sm"
                     className="w-full"
                     variant="outline"
-                    disabled={seededFrames === 0}
+                    // Gate on what the sweep can actually visit, NOT on human
+                    // seeds: after "run locator" every centroid may be predicted,
+                    // and gating on seeds alone would block the sweep on exactly
+                    // the detections Phase 1 just produced.
+                    disabled={labelableCentroids === 0}
                     onClick={() => startKeypointPasses()}
                   >
-                    Label keypoints on {seededCentroids || "seeded"} centroid(s) →
+                    Label keypoints on {labelableCentroids || "seeded"} centroid(s) →
                   </Button>
-                  {seededFrames > 0 && (
+                  {labelableCentroids > 0 && (
                     <Button
                       size="sm"
                       className="w-full"
@@ -625,9 +734,11 @@ export function ActiveLearningPanel() {
                       Resume where I left off →
                     </Button>
                   )}
-                  {seededFrames === 0 && (
+                  {labelableCentroids === 0 && (
                     <p className="text-[11px] leading-snug text-muted-foreground">
-                      Seed (or predict) some centroids first — Phase 2 labels one instance per centroid.
+                      {seededCentroids === 0 && !includePredicted
+                        ? "No seeded centroids — tick the box above to label the locator's detections, or seed some by hand."
+                        : "Seed (or predict) some centroids first — Phase 2 labels one instance per centroid."}
                     </p>
                   )}
                 </>
@@ -671,17 +782,33 @@ export function ActiveLearningPanel() {
                     />
                   </div>
 
+                  {currentItemPredicted && (
+                    <Button
+                      size="sm"
+                      className="w-full text-destructive"
+                      variant="outline"
+                      onClick={() => rejectCurrentPassItem({ includePredicted })}
+                    >
+                      Reject this detection (X)
+                    </Button>
+                  )}
+
                   <Button size="sm" className="w-full" variant="default" onClick={stopKeypointPasses}>
                     Stop labeling keypoints
                   </Button>
                   <p className="text-[11px] leading-snug text-muted-foreground">
                     Click = place · right-click = not visible · <kbd>s</kbd> skip · <kbd>b</kbd> back ·{" "}
-                    <kbd>Esc</kbd> exit
+                    <kbd>x</kbd> reject a wrong prediction · <kbd>Esc</kbd> exit
                   </p>
                 </div>
               )}
             </div>
           )}
+        </TabsContent>
+
+        {/* ---- Correct (Phase 3) ---- */}
+        <TabsContent value="correct" className="m-0 min-h-0 flex-1 overflow-y-auto">
+          <CorrectionPanel />
         </TabsContent>
       </Tabs>
 

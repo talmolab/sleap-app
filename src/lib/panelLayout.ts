@@ -23,7 +23,6 @@ export const DEFAULT_PANEL_ORDER = [
   "training",
   "inference",
   "active-learning",
-  "correct",
   "environment",
   "connect",
   "notifications",
@@ -47,6 +46,30 @@ export function reconcilePanelOrder(stored?: readonly string[] | null): string[]
 export function reconcileHiddenPanels(stored?: readonly string[] | null): string[] {
   const known = new Set<string>(DEFAULT_PANEL_ORDER);
   return [...new Set((stored ?? []).filter((id) => known.has(id)))];
+}
+
+/**
+ * Panels that were removed as standalone entries, mapped to where their content
+ * now lives. A persisted `sidebarActivePanel` pointing at a retired id would
+ * otherwise resolve to no component at all — the sidebar renders its icon rail
+ * with an empty body until the user happens to click another panel.
+ */
+const RETIRED_PANEL_REDIRECTS: Record<string, string> = {
+  // "Correct predictions" became the rightmost tab of the Active-Learning panel.
+  correct: "active-learning",
+};
+
+/**
+ * Reconcile a persisted `sidebarActivePanel`: keep it if it still exists, send
+ * retired ids to whichever panel absorbed them, and otherwise fall back to the
+ * first default panel.
+ */
+export function reconcileActivePanel(stored?: string | null): string {
+  const known = new Set<string>(DEFAULT_PANEL_ORDER);
+  if (stored && known.has(stored)) return stored;
+  const redirect = stored ? RETIRED_PANEL_REDIRECTS[stored] : undefined;
+  if (redirect && known.has(redirect)) return redirect;
+  return DEFAULT_PANEL_ORDER[0];
 }
 
 /**

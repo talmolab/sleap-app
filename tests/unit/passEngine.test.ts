@@ -54,9 +54,14 @@ function makeInstance(skeleton: Skeleton, points: Record<string, [number, number
 }
 
 /** Config with the given passes and a body_center centroid. */
+/**
+ * Anchor-node-mode config: the centroid is the real pose node `body_center`.
+ * `separateCentroid` is explicit because the DEFAULT is now the free first-class
+ * centroid annotation, which takes a different work-list path entirely.
+ */
 function makeConfig(passes: { name: string; nodes: string[] }[]): ActiveLearningConfig {
   return normalizeActiveLearningConfig({
-    localize: { centroidNode: "body_center" },
+    localize: { centroidNode: "body_center", separateCentroid: false },
     labelKeypoints: { passes: passes.map((p) => ({ ...p, axis: false })) },
   });
 }
@@ -177,6 +182,129 @@ describe("buildWorkList", () => {
     expect(items[1].centroidXY).toEqual([50, 60]);
     // The predicted instance resolves by index for adopt-on-touch.
     expect(resolveItemInstance(labels, items[1])).toBe(predicted);
+    // Only the locator's item is rejectable; anchor-node mode has no
+    // first-class centroid behind it.
+    expect(items.map((it) => it.predicted)).toEqual([false, true]);
+    expect(items.map((it) => it.centroidIdx)).toEqual([null, null]);
+  });
+
+  it("anchor-node mode: includePredicted=false drops the locator's detections", () => {
+    const skeleton = makeSkeleton();
+    const v0 = stubVideo("a.mp4");
+    const config = makeConfig([{ name: "P1", nodes: ["head"] }]);
+    const seeded = makeInstance(skeleton, { body_center: [10, 10] });
+    const predicted = new PredictedInstance({
+      skeleton,
+      points: skeleton.nodes.map((n) => ({
+        xy: n.name === "body_center" ? ([50, 60] as [number, number]) : ([NaN, NaN] as [number, number]),
+        visible: n.name === "body_center",
+        complete: n.name === "body_center",
+        name: n.name,
+        score: 0.9,
+      })),
+      score: 0.9,
+    });
+    const labels = new Labels({
+      videos: [v0],
+      skeletons: [skeleton],
+      labeledFrames: [new LabeledFrame({ video: v0, frameIdx: 0, instances: [seeded, predicted] })],
+    });
+
+    const seedsOnly = buildWorkList(labels, config, { includePredicted: false });
+    expect(seedsOnly).toHaveLength(1);
+    expect(seedsOnly[0].instanceIdx).toBe(0);
+    expect(seedsOnly[0].predicted).toBe(false);
+    // Default stays "include" — the locator's output is the point of Phase 1.
+    expect(buildWorkList(labels, config)).toHaveLength(2);
+  });
+
+  it("anchor-node mode: skips instances that aren't on the pose skeleton", () => {
+    // `sleap-nn predict --centroid_output instance` writes detections as
+    // single-node instances on a DEDICATED 1-node "centroid" skeleton. A pass
+    // can't place pose nodes on those, so they must never become work items.
+    const pose = makeSkeleton();
+    const centroidSkel = new Skeleton({ nodes: ["centroid"], name: "centroid" });
+    const v0 = stubVideo("a.mp4");
+    const config = makeConfig([{ name: "P1", nodes: ["head"] }]);
+
+    const realPose = makeInstance(pose, { body_center: [10, 10] });
+    const centroidOnly = new PredictedInstance({
+      skeleton: centroidSkel,
+      points: [{ xy: [50, 60], visible: true, complete: true, name: "centroid", score: 0.9 }],
+      score: 0.9,
+    });
+    const labels = new Labels({
+      videos: [v0],
+      // skeletons[0] is the pose skeleton (what poseSkeletonOf returns).
+      skeletons: [pose, centroidSkel],
+      labeledFrames: [
+        new LabeledFrame({ video: v0, frameIdx: 0, instances: [realPose, centroidOnly] }),
+      ],
+    });
+
+    const items = buildWorkList(labels, config);
+    expect(items).toHaveLength(1);
+    expect(items[0].instanceIdx).toBe(0);
+    expect(resolveItemInstance(labels, items[0])).toBe(realPose);
+  });
+
+  it("separate mode: flags predicted centroids, records their frame index, and can exclude them", () => {
+    const pose = makeSkeleton();
+    const v0 = stubVideo("a.mp4");
+    const config = normalizeActiveLearningConfig({
+      localize: { centroidNode: "centroid", separateCentroid: true },
+      labelKeypoints: { passes: [{ name: "P1", nodes: ["head"], axis: false }] },
+    });
+    // Two empty poses to pair with; one user centroid + one predicted centroid.
+    const lf = new LabeledFrame({
+      video: v0,
+      frameIdx: 0,
+      instances: [Instance.empty({ skeleton: pose }), Instance.empty({ skeleton: pose })],
+    });
+    lf.centroids = [
+      new UserCentroid({ x: 10, y: 10 }),
+      new PredictedCentroid({ x: 90, y: 90, score: 0.8 }),
+    ];
+    const labels = new Labels({ videos: [v0], skeletons: [pose], labeledFrames: [lf] });
+
+    const all = buildWorkList(labels, config);
+    expect(all).toHaveLength(2);
+    const predItem = all.find((it) => it.predicted);
+    expect(predItem).toBeDefined();
+    // centroidIdx indexes the FULL frame.centroids array, so reject deletes the
+    // right annotation.
+    expect(predItem!.centroidIdx).toBe(1);
+    expect(all.find((it) => !it.predicted)!.centroidIdx).toBe(0);
+
+    const seedsOnly = buildWorkList(labels, config, { includePredicted: false });
+    expect(seedsOnly).toHaveLength(1);
+    expect(seedsOnly[0].predicted).toBe(false);
+    expect(seedsOnly[0].centroidIdx).toBe(0);
+  });
+
+  it("separate mode: excluding predictions must not renumber the surviving centroidIdx", () => {
+    // Predicted centroid FIRST: a builder that numbered the FILTERED array would
+    // report 0 for the user centroid and reject would delete the wrong one.
+    const pose = makeSkeleton();
+    const v0 = stubVideo("a.mp4");
+    const config = normalizeActiveLearningConfig({
+      localize: { centroidNode: "centroid", separateCentroid: true },
+      labelKeypoints: { passes: [{ name: "P1", nodes: ["head"], axis: false }] },
+    });
+    const lf = new LabeledFrame({
+      video: v0,
+      frameIdx: 0,
+      instances: [Instance.empty({ skeleton: pose }), Instance.empty({ skeleton: pose })],
+    });
+    lf.centroids = [
+      new PredictedCentroid({ x: 90, y: 90, score: 0.8 }),
+      new UserCentroid({ x: 10, y: 10 }),
+    ];
+    const labels = new Labels({ videos: [v0], skeletons: [pose], labeledFrames: [lf] });
+
+    const seedsOnly = buildWorkList(labels, config, { includePredicted: false });
+    expect(seedsOnly).toHaveLength(1);
+    expect(seedsOnly[0].centroidIdx).toBe(1);
   });
 });
 
@@ -373,6 +501,70 @@ describe("countSeededCentroids", () => {
     });
 
     expect(countSeededCentroids(labels, config)).toEqual({ frames: 1, centroids: 2 });
+  });
+
+  it("separate centroid: includePredicted counts the locator's detections too", () => {
+    // Regression: right after "run locator" EVERY centroid can be predicted. The
+    // seeded count (which gates locator training) must stay 0, but the labelable
+    // count (which gates the Phase-2 sweep) has to see them or the sweep is
+    // blocked on exactly the detections Phase 1 just produced.
+    const pose = makeSkeleton();
+    const v0 = stubVideo("a.mp4");
+    const config = normalizeActiveLearningConfig({
+      localize: { centroidNode: "centroid", separateCentroid: true },
+      labelKeypoints: { passes: [{ name: "P1", nodes: ["head"], axis: false }] },
+    });
+    const lf = new LabeledFrame({ video: v0, frameIdx: 0, instances: [] });
+    lf.centroids = [
+      new PredictedCentroid({ x: 10, y: 10, score: 0.9 }),
+      new PredictedCentroid({ x: 90, y: 90, score: 0.8 }),
+    ];
+    const labels = new Labels({ videos: [v0], skeletons: [pose], labeledFrames: [lf] });
+
+    expect(countSeededCentroids(labels, config)).toEqual({ frames: 0, centroids: 0 });
+    expect(countSeededCentroids(labels, config, { includePredicted: true })).toEqual({
+      frames: 1,
+      centroids: 2,
+    });
+  });
+
+  it("anchor-node mode: includePredicted counts predicted instances, ignoring foreign skeletons", () => {
+    const pose = makeSkeleton();
+    const centroidSkel = new Skeleton({ nodes: ["centroid"], name: "centroid" });
+    const v0 = stubVideo("a.mp4");
+    const config = makeConfig([{ name: "P1", nodes: ["head"] }]);
+
+    const seeded = makeInstance(pose, { body_center: [10, 10] });
+    const predictedPose = new PredictedInstance({
+      skeleton: pose,
+      points: pose.nodes.map((n) => ({
+        xy: n.name === "body_center" ? ([50, 60] as [number, number]) : ([NaN, NaN] as [number, number]),
+        visible: n.name === "body_center",
+        complete: n.name === "body_center",
+        name: n.name,
+        score: 0.9,
+      })),
+      score: 0.9,
+    });
+    // The locator's 1-node "centroid" skeleton instance must never be counted.
+    const foreign = new PredictedInstance({
+      skeleton: centroidSkel,
+      points: [{ xy: [70, 70], visible: true, complete: true, name: "centroid", score: 0.9 }],
+      score: 0.9,
+    });
+    const labels = new Labels({
+      videos: [v0],
+      skeletons: [pose, centroidSkel],
+      labeledFrames: [
+        new LabeledFrame({ video: v0, frameIdx: 0, instances: [seeded, predictedPose, foreign] }),
+      ],
+    });
+
+    expect(countSeededCentroids(labels, config)).toEqual({ frames: 1, centroids: 1 });
+    expect(countSeededCentroids(labels, config, { includePredicted: true })).toEqual({
+      frames: 1,
+      centroids: 2,
+    });
   });
 
   it("separate centroid: a frame with pose labels but no centroids counts zero", () => {

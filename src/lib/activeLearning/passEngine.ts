@@ -14,6 +14,7 @@
  */
 
 import type { Labels, LabeledFrame, Instance } from "@talmolab/sleap-io.js";
+import { PredictedInstance } from "@talmolab/sleap-io.js";
 import type { ActiveLearningConfig, LabelPass, PassOrder } from "./config";
 import { instanceCropCenter } from "./generateCrops";
 import { poseSkeletonOf } from "./centroidPairing";
@@ -38,6 +39,29 @@ export interface PassItem {
   instanceIdx: number;
   /** Zoom anchor (the centroid/anchor point) in SOURCE coords. Static per item. */
   centroidXY: [number, number];
+  /**
+   * True when this item came from the locator rather than a human seed — a
+   * predicted pose instance (anchor-node mode) or a predicted `frame.centroids`
+   * entry (separate-annotation mode). Only these can be REJECTED as a false
+   * positive; a human's own seed is deleted deliberately, not rejected.
+   */
+  predicted: boolean;
+  /**
+   * Index into `frame.centroids` for the first-class centroid backing this item,
+   * or null in anchor-node mode (where the anchor lives on the pose instance
+   * itself). Rejecting a separate-mode item removes this centroid.
+   */
+  centroidIdx: number | null;
+}
+
+/** Options for {@link buildWorkList}. */
+export interface BuildWorkListOptions {
+  /**
+   * Include items that came from the locator (default true). Turning this off
+   * restricts the sweep to human-seeded centroids, for when the locator is still
+   * poor enough that its detections would waste labeling effort.
+   */
+  includePredicted?: boolean;
 }
 
 /** Cursor into the pass-major sweep. */
@@ -108,12 +132,20 @@ export function nodeIndicesForPass(pass: LabelPass, skeletonNodeNames: string[])
  * body-center still yields a zoom anchor. Instances with no usable points are
  * skipped; `instanceIdx` indexes into the frame's full `instances` array.
  */
-export function buildWorkList(labels: Labels, config: ActiveLearningConfig): PassItem[] {
+export function buildWorkList(
+  labels: Labels,
+  config: ActiveLearningConfig,
+  options: BuildWorkListOptions = {},
+): PassItem[] {
+  const includePredicted = options.includePredicted ?? true;
   // Separate centroid annotations pair each `frame.centroids` entry with a pose
   // instance; the other modes treat every instance as its own item.
-  if (config.localize.separateCentroid) return buildWorkListSeparate(labels);
+  if (config.localize.separateCentroid) {
+    return buildWorkListSeparate(labels, includePredicted);
+  }
 
   const anchorNode = config.localize.centroidNode ?? undefined;
+  const poseSkel = poseSkeletonOf(labels);
   const videos = labels.videos;
   const items: PassItem[] = [];
   for (const lf of sortedFrames(labels)) {
@@ -121,9 +153,24 @@ export function buildWorkList(labels: Labels, config: ActiveLearningConfig): Pas
     if (videoIdx < 0) continue;
     const insts = lf.instances;
     for (let i = 0; i < insts.length; i++) {
-      const center = instanceCropCenter(insts[i], insts[i].skeleton, anchorNode);
+      const inst = insts[i];
+      // Skip instances that aren't on the pose skeleton. `sleap-nn predict
+      // --centroid_output instance` writes its detections as single-node
+      // instances on a DEDICATED 1-node "centroid" skeleton; a pass can't place
+      // pose nodes on those, so admitting them would queue unlabelable work.
+      if (poseSkel && inst.skeleton !== poseSkel) continue;
+      const predicted = inst instanceof PredictedInstance;
+      if (predicted && !includePredicted) continue;
+      const center = instanceCropCenter(inst, inst.skeleton, anchorNode);
       if (!center) continue;
-      items.push({ videoIdx, frameIdx: lf.frameIdx, instanceIdx: i, centroidXY: center });
+      items.push({
+        videoIdx,
+        frameIdx: lf.frameIdx,
+        instanceIdx: i,
+        centroidXY: center,
+        predicted,
+        centroidIdx: null,
+      });
     }
   }
   return items;
@@ -154,7 +201,7 @@ function sortedFrames(labels: Labels): LabeledFrame[] {
  * geometry and are interchangeable — they pair with the remaining centroids in
  * frame order.
  */
-function buildWorkListSeparate(labels: Labels): PassItem[] {
+function buildWorkListSeparate(labels: Labels, includePredicted: boolean): PassItem[] {
   const poseSkel = poseSkeletonOf(labels);
   if (!poseSkel) return [];
 
@@ -167,11 +214,13 @@ function buildWorkListSeparate(labels: Labels): PassItem[] {
     // First-class centroid annotations on this frame (user seeds + locator
     // predictions), with a finite location. Each supplies a zoom anchor; the
     // pose instance it pairs with is what the passes label.
-    const centroids: { center: [number, number] }[] = [];
-    for (const c of lf.centroids) {
+    const centroids: { center: [number, number]; predicted: boolean; idx: number }[] = [];
+    lf.centroids.forEach((c, idx) => {
       const [x, y] = c.xy;
-      if (Number.isFinite(x) && Number.isFinite(y)) centroids.push({ center: [x, y] });
-    }
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+      if (c.isPredicted && !includePredicted) return;
+      centroids.push({ center: [x, y], predicted: c.isPredicted, idx });
+    });
     const poses: { inst: Instance; center: [number, number] | null }[] = [];
     for (const inst of lf.instances) {
       if (inst.skeleton !== poseSkel) continue;
@@ -219,6 +268,10 @@ function buildWorkListSeparate(labels: Labels): PassItem[] {
         frameIdx: lf.frameIdx,
         instanceIdx: lf.instances.indexOf(poses[pi].inst),
         centroidXY: centroids[ci].center,
+        predicted: centroids[ci].predicted,
+        // Index into the FULL `frame.centroids` array (not the filtered list),
+        // so rejecting removes the right annotation.
+        centroidIdx: centroids[ci].idx,
       });
     }
   }
@@ -236,22 +289,33 @@ function buildWorkListSeparate(labels: Labels): PassItem[] {
 export function countSeededCentroids(
   labels: Labels,
   config: ActiveLearningConfig | null,
+  options: BuildWorkListOptions = {},
 ): { frames: number; centroids: number } {
+  // Predictions are counted only when the sweep would actually visit them, so
+  // this stays in step with `buildWorkList` — the count gates the "Label
+  // keypoints" button, and a count that ignored the locator would block the
+  // sweep on a project whose centroids are ALL predicted.
+  const includePredicted = options.includePredicted ?? false;
   const separate = config?.localize.separateCentroid ?? false;
   const anchorNode = config?.localize.centroidNode ?? undefined;
+  const poseSkel = poseSkeletonOf(labels);
 
   let frames = 0;
   let centroids = 0;
   for (const lf of labels.labeledFrames) {
     let n = 0;
     if (separate) {
-      // First-class centroid annotations: count user (non-predicted) centroids
-      // on the frame. Pose labels and predicted centroids never inflate it.
+      // First-class centroid annotations: user seeds always count; the locator's
+      // predictions only when the sweep is set to include them.
       for (const c of lf.centroids) {
-        if (!c.isPredicted) n++;
+        if (!c.isPredicted || includePredicted) n++;
       }
     } else {
-      for (const inst of lf.userInstances) {
+      const insts = includePredicted ? lf.instances : lf.userInstances;
+      for (const inst of insts) {
+        // Foreign-skeleton instances (the locator's 1-node "centroid" skeleton)
+        // are never labelable — mirror buildWorkList and skip them.
+        if (poseSkel && inst.skeleton !== poseSkel) continue;
         if (instanceCropCenter(inst, inst.skeleton, anchorNode)) n++;
       }
     }

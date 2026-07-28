@@ -37,6 +37,7 @@ import {
   DEFAULT_PANEL_ORDER,
   reconcilePanelOrder,
   reconcileHiddenPanels,
+  reconcileActivePanel,
   nextVisiblePanel,
 } from "@/lib/panelLayout";
 import { hydrateActiveLearningStore } from "@/lib/activeLearning/persistence";
@@ -1075,6 +1076,7 @@ export const useAppStore = create<AppState>()(
           navigationDomain: navigationDomainFromPersisted(p),
           panelOrder: reconcilePanelOrder(p.panelOrder),
           hiddenPanels: reconcileHiddenPanels(p.hiddenPanels),
+          sidebarActivePanel: reconcileActivePanel(p.sidebarActivePanel),
         };
         delete (merged as { navigateLabeledOnly?: boolean }).navigateLabeledOnly;
         return merged;

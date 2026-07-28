@@ -154,8 +154,16 @@ export const DEFAULT_ACTIVE_LEARNING_CONFIG: ActiveLearningConfig = {
   },
   localize: {
     enabled: true,
-    centroidNode: "body_center",
-    separateCentroid: false,
+    // Default to a FREE centroid annotation rather than anchoring on a pose
+    // node. Two reasons: the pose model never sees the centroid as a keypoint,
+    // and the locator's own output is centroid-shaped — `sleap-nn predict
+    // --centroid_output` emits either `PredictedCentroid`s on `frame.centroids`
+    // or single-node instances on a DEDICATED 1-node "centroid" skeleton. Only
+    // the first-class form pairs cleanly with a pose instance for Phase 2; the
+    // 1-node instances can't hold a 24-node pass. Both fields must agree —
+    // `separateCentroid` is ignored unless `centroidNode` is the free "centroid".
+    centroidNode: "centroid",
+    separateCentroid: true,
     cropSize: 256,
     seedFrames: 20,
     trainAfter: 100,
@@ -377,21 +385,29 @@ export function pickCentroidNode(nodeNames: string[]): string {
 
 /**
  * Build a VALID starter config from a skeleton's node names: every node goes
- * into a single "Keypoints" pass and the centroid is guessed via
- * {@link pickCentroidNode}. This lets "define the workflow" work for any
- * skeleton without hand-writing node names — the user then splits the one pass
- * into ordered passes and adjusts the centroid.
+ * into a single "Keypoints" pass, and the centroid defaults to the free
+ * first-class annotation (see `DEFAULT_ACTIVE_LEARNING_CONFIG.localize`) so the
+ * locator's output pairs cleanly with a pose instance in Phase 2.
+ *
+ * Pass an explicit `centroidNode` to anchor on a real pose node instead
+ * ({@link pickCentroidNode} guesses a sensible one) — that switches to
+ * anchor-node mode, where the seed places that node and the pose model will emit
+ * it as an ordinary keypoint.
  */
 export function configFromSkeleton(
   nodeNames: string[],
   centroidNode?: string,
 ): ActiveLearningConfig {
   const d = DEFAULT_ACTIVE_LEARNING_CONFIG;
+  const anchorOnPoseNode = centroidNode !== undefined;
   return {
     ...d,
     localize: {
       ...d.localize,
-      centroidNode: centroidNode ?? pickCentroidNode(nodeNames),
+      centroidNode: centroidNode ?? d.localize.centroidNode,
+      // Anchoring on a real pose node is anchor-node mode by definition; the
+      // two fields must never disagree.
+      separateCentroid: anchorOnPoseNode ? false : d.localize.separateCentroid,
     },
     labelKeypoints: {
       order: "pass-major",

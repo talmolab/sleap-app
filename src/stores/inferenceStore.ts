@@ -106,8 +106,12 @@ export function centroidInferenceConfig(
     maxInstances: null,
     peakThreshold: 0.2,
     anchorPart: null,
-    // Emit first-class PredictedCentroids on frame.centroids so they merge into
-    // the annotation model and feed the Phase-2 work list (buildWorkListSeparate).
+    // Defaults suit the separate-annotation mode: first-class PredictedCentroids
+    // on `frame.centroids`, feeding the Phase-2 work list via
+    // `buildWorkListSeparate`. In anchor-node mode the caller MUST override this
+    // to "instance" (and pass `anchorPart`), because that mode's `buildWorkList`
+    // walks `frame.instances` and never reads `frame.centroids` — otherwise the
+    // detections render on the canvas but the sweep never visits them.
     centroidOutput: "centroid",
     integralRefinement: false,
     integralPatchSize: 5,

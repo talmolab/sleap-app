@@ -12,6 +12,7 @@ import { DEFAULT_SHORTCUTS, STEP_SIZES } from "../lib/shortcuts";
 import { useAppStore } from "../stores/appStore";
 import { Track } from "@talmolab/sleap-io.js";
 import { quitApp } from "../lib/quit";
+import { rejectCurrentPassItem } from "../lib/activeLearning/passActions";
 import {
   commandContext,
   OpenProjectCommand,
@@ -376,6 +377,21 @@ export function useKeyboardShortcuts() {
           e.preventDefault();
           store().correctBack();
         }
+      },
+      // x = reject the locator detection under the cursor as a false positive
+      // (deletes it, then continues at the next undecided point). Repeat-guarded
+      // so holding the key can't wipe a run of detections.
+      //
+      // `includePredicted: true` is safe to hardcode here even though the sweep's
+      // checkbox lives in the panel: a reject requires the current item to BE a
+      // prediction, and when the user turned predictions off the work list holds
+      // none — so this rebuild can only ever run for a list that included them.
+      KeyX: (e) => {
+        if (isTextInput(e)) return;
+        if (store().labelingMode !== "keypointPass") return;
+        if (e.repeat) return;
+        e.preventDefault();
+        rejectCurrentPassItem({ includePredicted: true });
       },
       Backspace: (e) => {
         if (isTextInput(e)) return;

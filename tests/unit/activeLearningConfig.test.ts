@@ -17,8 +17,10 @@ import {
 } from "@/lib/activeLearning/config";
 
 /** Node names that cover the default rodent config (centroid + all passes). */
+// Skeleton that matches the default config's passes. No `body_center`: the
+// default centroid is now a FREE first-class annotation, not a pose node, so a
+// matching skeleton carries only nodes some pass actually labels.
 const DEFAULT_SKELETON_NODES = [
-  "body_center",
   "tti",
   "trunk",
   "neck",
@@ -148,16 +150,29 @@ describe("active-learning config", () => {
     expect(pickCentroidNode([])).toBe("");
   });
 
-  it("builds a valid one-pass starter config from skeleton node names", () => {
+  it("builds a valid one-pass starter config defaulting to a free centroid", () => {
     const nodes = ["Nose", "Head", "TTI", "Trunk", "TailTip"];
     const cfg = configFromSkeleton(nodes);
     expect(cfg.labelKeypoints.passes).toHaveLength(1);
     expect(cfg.labelKeypoints.passes[0].nodes).toEqual(nodes);
-    expect(cfg.localize.centroidNode).toBe("Trunk");
-    // Every node is covered and the centroid is real → clean validation.
+    // Defaults to the first-class centroid annotation, so the locator's output
+    // pairs with a pose instance in Phase 2 instead of being unreachable.
+    expect(cfg.localize.centroidNode).toBe("centroid");
+    expect(cfg.localize.separateCentroid).toBe(true);
+    // Every node is covered and the centroid is outside the skeleton by design.
     const result = validateActiveLearningConfig(cfg, nodes);
     expect(result.ok).toBe(true);
     expect(result.warnings).toEqual([]);
+  });
+
+  it("an explicit centroid node switches to anchor-node mode", () => {
+    const nodes = ["Nose", "Head", "TTI", "Trunk", "TailTip"];
+    const cfg = configFromSkeleton(nodes, pickCentroidNode(nodes));
+    expect(cfg.localize.centroidNode).toBe("Trunk");
+    // The two fields must never disagree: anchoring on a real pose node is
+    // anchor-node mode, so `separateCentroid` has to come back false.
+    expect(cfg.localize.separateCentroid).toBe(false);
+    expect(validateActiveLearningConfig(cfg, nodes).ok).toBe(true);
   });
 
   it("has locator training defaults (fast preset, minimal aug)", () => {

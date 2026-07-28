@@ -1,11 +1,12 @@
 /**
  * Phase-3 "Correct predictions" panel.
  *
- * Standalone by design: it works on ANY loaded project that contains scored
- * predicted instances — no active-learning workflow config required — so a
- * predictions `.slp` can be opened and corrected directly. When idle it sets up
- * the review queue (worst single keypoint first, capped at N); while active it
- * doubles as the per-keypoint confidence sidebar for the instance under review.
+ * Rendered as the rightmost tab of the Active-Learning panel, but decoupled from
+ * the loop: it works on ANY loaded project that contains scored predicted
+ * instances — no workflow config required — so a predictions `.slp` can be
+ * opened and corrected directly. When idle it sets up the review queue (worst
+ * single keypoint first, capped at N); while active it doubles as the
+ * per-keypoint confidence readout for the instance under review.
  */
 
 import { useMemo, useState } from "react";
@@ -155,22 +156,49 @@ export function CorrectionPanel() {
 
       <div>
         <div className="mb-1 text-muted-foreground">Keypoint confidence (worst first)</div>
-        <ul className="space-y-0.5">
+        <ul className="space-y-1">
           {rows.map((row, i) => {
             // Flag against the store threshold the queue/rings actually use, not
             // the local setup value (which resets if the panel remounts).
             const flagged = row.score !== null && row.score <= activeThreshold;
             return (
-              <li key={i} className="flex items-center justify-between gap-2">
-                <span className={cn(flagged && "font-medium text-red-500")}>{row.name}</span>
+              <li key={i} className="flex items-center gap-2">
                 <span
                   className={cn(
-                    "font-mono",
-                    row.score === null
-                      ? "text-muted-foreground"
-                      : flagged
-                        ? "text-red-500"
-                        : "text-muted-foreground",
+                    "w-[5.5rem] shrink-0 truncate",
+                    flagged && "font-medium text-red-500",
+                  )}
+                  title={row.name}
+                >
+                  {row.name}
+                </span>
+
+                {/* Confidence meter. The tick marks the flag threshold, so a bar
+                    falling short of it reads as "needs a look" at a glance. The
+                    number stays visible — the bar is redundant encoding, never
+                    the only signal (unscored points have no bar at all). */}
+                <div className="relative h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
+                  {row.score !== null && (
+                    <div
+                      className={cn(
+                        "absolute inset-y-0 left-0 rounded-full",
+                        flagged ? "bg-red-500" : "bg-foreground/40",
+                      )}
+                      style={{ width: `${Math.max(0, Math.min(1, row.score)) * 100}%` }}
+                    />
+                  )}
+                  {activeThreshold > 0 && activeThreshold < 1 && (
+                    <div
+                      className="absolute inset-y-0 w-px bg-foreground/30"
+                      style={{ left: `${activeThreshold * 100}%` }}
+                    />
+                  )}
+                </div>
+
+                <span
+                  className={cn(
+                    "w-8 shrink-0 text-right font-mono",
+                    flagged ? "text-red-500" : "text-muted-foreground",
                   )}
                 >
                   {row.score === null ? "—" : row.score.toFixed(2)}
