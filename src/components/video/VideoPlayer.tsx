@@ -448,6 +448,13 @@ export function VideoPlayer() {
           }
           if (cancelled) return;
           if (!video.backend) {
+            // No usable backend (missing file, failed lazy open, unsupported
+            // codec) — blank the canvas instead of leaving the previously
+            // viewed video's frame on screen, which reads as "nothing
+            // happened" when a Locate-video placeholder is the only cue.
+            frameBitmapRef.current = null;
+            setFrameDims((prev) => (prev[0] === 0 && prev[1] === 0 ? prev : [0, 0]));
+            setBitmapVersion((v) => v + 1);
             useAppStore.getState().set("frameLoading", false);
             return;
           }
@@ -554,7 +561,7 @@ export function VideoPlayer() {
   useEffect(() => {
     const canvas = frameCanvasRef.current;
     const bmp = frameBitmapRef.current;
-    if (!canvas || !bmp) return;
+    if (!canvas) return;
 
     const [cw, ch] = containerSize;
     if (cw === 0 || ch === 0) return;
@@ -564,6 +571,15 @@ export function VideoPlayer() {
     canvas.height = ch * dpr;
     canvas.style.width = `${cw}px`;
     canvas.style.height = `${ch}px`;
+
+    if (!bmp) {
+      // No frame to show (e.g. the current video's backend failed to
+      // resolve) — clear rather than leave the last-drawn video's frame up.
+      const clearCtx = canvas.getContext("2d");
+      clearCtx?.scale(dpr, dpr);
+      clearCtx?.clearRect(0, 0, cw, ch);
+      return;
+    }
 
     const ctx = canvas.getContext("2d");
     if (!ctx) return;

@@ -424,7 +424,23 @@ export const useAppStore = create<AppState>()(
             clearTransientVisibility(state);
           }
           state.video = video;
-          state.frameIdx = 0;
+          // Mirror legacy SLEAP's switch_frame(video): jump to the video's
+          // last labeled frame rather than hardcoding frame 0. Many pkg.slp
+          // videos only embed specific labeled source frames (not a
+          // contiguous range from 0) — landing on an unembedded frame 0
+          // makes getFrame() return null and silently leaves the PREVIOUS
+          // video's frame on screen (looks like the click did nothing).
+          let targetFrameIdx = 0;
+          const frames = state.labels?.labeledFrames;
+          if (frames) {
+            for (let i = frames.length - 1; i >= 0; i--) {
+              if (frames[i].video === video) {
+                targetFrameIdx = frames[i].frameIdx;
+                break;
+              }
+            }
+          }
+          state.frameIdx = targetFrameIdx;
           state.instance = null;
           state.labeledFrame = null;
         }),
