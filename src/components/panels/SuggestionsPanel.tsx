@@ -159,10 +159,17 @@ export interface SuggestionsPanelProps {
    * is unreliable in happy-dom.
    */
   initialMethod?: GenerationMethod;
+  /**
+   * Initial target video set. Production callers omit this (defaults to
+   * "current"); a test seam like {@link initialMethod} so a test can mount
+   * directly into the all-videos path without driving the Radix Target popover.
+   */
+  initialTarget?: GenerationTarget;
 }
 
 export function SuggestionsPanel({
   initialMethod = "stride",
+  initialTarget = "current",
 }: SuggestionsPanelProps = {}) {
   const labels = useAppStore((s) => s.labels);
   const currentVideo = useAppStore((s) => s.video);
@@ -214,7 +221,9 @@ export function SuggestionsPanel({
   } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   // Target (all videos vs current) + optional global frame-range restriction.
-  const [target, setTarget] = useState<GenerationTarget>("all");
+  // Default to the CURRENT video: least-surprising for a labeling workflow and,
+  // for image_features, avoids decoding every video in a multi-video project.
+  const [target, setTarget] = useState<GenerationTarget>(initialTarget);
   const [frameRangeEnabled, setFrameRangeEnabled] = useState(false);
   const [rangeFrom, setRangeFrom] = useState(1);
   const [rangeTo, setRangeTo] = useState(1000);
