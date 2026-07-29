@@ -21,6 +21,7 @@ import {
   commandContext,
   OpenProjectCommand,
   ImportAnalysisH5Command,
+  ImportCocoCommand,
   SaveProjectCommand,
   SaveAsProjectCommand,
   ExportJsonCommand,
@@ -130,6 +131,9 @@ function FileMenu() {
         </MenubarItem>
         <MenubarItem onClick={() => exec(ImportAnalysisH5Command)}>
           Import Analysis HDF5...
+        </MenubarItem>
+        <MenubarItem onClick={() => exec(ImportCocoCommand)}>
+          Import COCO...
         </MenubarItem>
         <MenubarSub>
           <MenubarSubTrigger disabled={!projectLoaded}>Replace Videos...</MenubarSubTrigger>

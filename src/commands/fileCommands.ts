@@ -20,6 +20,8 @@ import {
   loadProjectFromPath,
   loadAnalysisProjectFromFile,
   loadAnalysisProjectFromPath,
+  loadCocoProjectFromFile,
+  loadCocoProjectFromPath,
 } from "../lib/loadProject";
 import { saveProjectAsSlp } from "../lib/saveProject";
 import { confirmDiscardUnsavedWork } from "../lib/unsavedGuard";
@@ -199,6 +201,40 @@ export const ImportAnalysisH5Command: Command = {
       await loadAnalysisProjectFromPath(result, platform.readFile, platform.exists);
     } else if (result instanceof File) {
       await loadAnalysisProjectFromFile(result);
+    }
+
+    void ctx;
+  },
+};
+
+/**
+ * Import a COCO keypoint-detection dataset (annotations `.json`) as a new
+ * project.
+ *
+ * COCO stores keypoints inline and references image files externally. The reader
+ * (`readCoco`) builds one image-sequence video (its frames are the dataset
+ * images) with a labeled frame per annotated image; keypoint names become the
+ * skeleton nodes. Filtered to `.json` in the picker; the loader validates that
+ * the contents are actually COCO. On desktop, images are resolved relative to
+ * the JSON file's directory; in the browser they stay unresolved (import still
+ * succeeds — the user can relocate the video afterward).
+ */
+export const ImportCocoCommand: Command = {
+  name: "ImportCoco",
+  topics: [],
+  skipAutoSnapshot: true,
+  async execute(ctx: CommandContext) {
+    const platform = await getPlatform();
+    const result = await platform.showOpenDialog({
+      filters: [{ name: "COCO Annotations", extensions: ["json"] }],
+    });
+
+    if (!result) return;
+
+    if (typeof result === "string") {
+      await loadCocoProjectFromPath(result, platform.readFile, platform.exists);
+    } else if (result instanceof File) {
+      await loadCocoProjectFromFile(result);
     }
 
     void ctx;

@@ -14,6 +14,10 @@ import {
   readSlpStreaming,
   setImageBytesReader,
   loadAnalysisH5,
+  readCoco,
+  isCocoData,
+  type CocoJson,
+  type ReadCocoOptions,
   type Labels,
 } from "@talmolab/sleap-io.js";
 import { useAppStore } from "../stores/appStore";
@@ -112,6 +116,32 @@ async function openFirstLabeledFrame(labels: Labels): Promise<void> {
 }
 
 /**
+ * Route sleap-io.js's ImageVideo frame reads through a native Rust command
+ * (`std::fs::read`) instead of the Tauri fs plugin, whose per-call path-scope
+ * validation adds ~4 s/frame on SMB mounts (vs ~32 ms native) — pathological
+ * for ImageVideo (one read per displayed frame). Paths arrive already resolved,
+ * so the reader reads each one directly (no candidate generation). Call once,
+ * before opening a project whose videos may be image sequences (SLP with
+ * ImageVideo, or a COCO dataset). No-op outside a Tauri runtime: the dynamic
+ * `@tauri-apps/api/core` import fails there (e.g. under the unit-test runner)
+ * and is swallowed, leaving whatever image reader the browser build uses.
+ */
+async function installTauriImageReader(): Promise<void> {
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const nativeReadImage = async (p: string): Promise<Uint8Array> => {
+      const buf = await invoke<ArrayBuffer>(sleapCmd("read_image_file"), {
+        path: p,
+      });
+      return new Uint8Array(buf);
+    };
+    setImageBytesReader(nativeReadImage);
+  } catch {
+    /* not a Tauri runtime — keep the default reader */
+  }
+}
+
+/**
  * Load an SLP project from a File object.
  * Shows loading indicator, handles errors, and sends toast notifications.
  */
@@ -185,20 +215,8 @@ export async function loadProjectFromPath(
       // the plugin-fs `exists` (path resolution is a handful of probes per video,
       // not the per-frame hot path).
       installTauriFsResolver(exists);
-      // Inject the ImageVideo byte reader. Reads via a native Rust command
-      // (std::fs::read) rather than the fs plugin, whose per-call path scope
-      // validation adds ~4 s/frame on SMB mounts (vs ~32 ms native) —
-      // pathological for ImageVideo (one read per displayed frame). Paths arrive
-      // already resolved (the FsResolver ran during loadSlp), so the reader reads
-      // each one directly — no candidate generation.
-      const { invoke } = await import("@tauri-apps/api/core");
-      const nativeReadImage = async (p: string): Promise<Uint8Array> => {
-        const buf = await invoke<ArrayBuffer>(sleapCmd("read_image_file"), {
-          path: p,
-        });
-        return new Uint8Array(buf);
-      };
-      setImageBytesReader(nativeReadImage);
+      // Inject the native ImageVideo byte reader (see installTauriImageReader).
+      await installTauriImageReader();
     }
 
     // Adaptive load: stream large files lazily via native range reads (B-seam)
@@ -367,6 +385,155 @@ export async function loadAnalysisProjectFromPath(
     const msg = err instanceof Error ? err.message : String(err);
     toast.error("Failed to import Analysis HDF5", { description: msg });
     console.error("Failed to import Analysis HDF5:", err);
+    return false;
+  } finally {
+    store.setLoading(false);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// COCO keypoint-dataset import
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse a COCO annotations JSON string into {@link Labels} via sleap-io.js
+ * `readCoco`. We `JSON.parse` + validate up front (rather than handing the raw
+ * string to `readCoco`) so a wrong file yields a clear, user-facing error —
+ * "not valid JSON" vs "not a COCO dataset" — instead of a cryptic downstream
+ * throw. `readCoco` builds ONE image-sequence {@link Video} (its frames are the
+ * dataset images) plus one LabeledFrame per annotated image; keypoint names
+ * become the skeleton nodes. Image paths are resolved via `options.resolveImage`
+ * (see callers); the reader itself never touches the filesystem, which is what
+ * makes it browser-safe.
+ */
+function readCocoLabels(text: string, options?: ReadCocoOptions): Labels {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error("File is not valid JSON.");
+  }
+  if (!isCocoData(parsed)) {
+    throw new Error(
+      "File is not a COCO annotations dataset (needs top-level images, annotations, and categories arrays)."
+    );
+  }
+  return readCoco(parsed as CocoJson, options);
+}
+
+/**
+ * Resolve a COCO image `file_name` relative to the dataset root (the JSON file's
+ * directory) on desktop. Already-absolute paths (POSIX `/…` or Windows
+ * `C:\…`/`C:/…`) are kept as-is; relative ones are joined under the root. This
+ * callback is synchronous (io calls it inline while building videos), so the
+ * root is derived from the JSON path string by the caller rather than via an
+ * async Tauri path API.
+ */
+function resolveCocoImageUnderRoot(
+  fileName: string,
+  datasetRoot: string | undefined
+): string {
+  if (!datasetRoot) return fileName;
+  if (/^(\/|[A-Za-z]:[\\/])/.test(fileName)) return fileName;
+  return `${datasetRoot}/${fileName}`;
+}
+
+/**
+ * Import a COCO keypoints dataset from a File object (browser).
+ *
+ * The browser has no by-path filesystem read, so external image files can't be
+ * located: we fall back to io's default identity resolver (datasetRoot omitted →
+ * `file_name` kept verbatim). Import still succeeds — the skeleton, keypoints,
+ * and per-image labeled frames all load; the image-sequence video simply shows
+ * as missing until the user relocates it via the Videos panel.
+ */
+export async function loadCocoProjectFromFile(file: File): Promise<boolean> {
+  const store = useAppStore.getState();
+
+  if (!confirmDiscardUnsavedWork("Importing a file")) return false;
+
+  store.setLoading(true, `Reading ${file.name}...`);
+
+  try {
+    const text = await file.text();
+    store.setLoading(true, `Parsing ${file.name}...`);
+    const labels = readCocoLabels(text);
+    store.setLoading(true, "Locating videos...");
+    await resolveExternalVideos(labels);
+    store.setLabels(labels, file.name);
+    await openFirstLabeledFrame(labels);
+    toast.success(`Imported ${file.name}`, {
+      description: `${labels.videos.length} video(s), ${labels.labeledFrames.length} labeled frames`,
+    });
+    return true;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    toast.error("Failed to import COCO dataset", { description: msg });
+    console.error("Failed to import COCO dataset:", err);
+    return false;
+  } finally {
+    store.setLoading(false);
+  }
+}
+
+/**
+ * Import a COCO keypoints dataset from a file path (Tauri only).
+ *
+ * Resolves each image `file_name` relative to the JSON file's directory (the
+ * dataset root), then — like opening an SLP whose video is an image sequence —
+ * installs the desktop FS resolver + native image reader and runs
+ * {@link resolveExternalVideos} so the located frames render on first view.
+ */
+export async function loadCocoProjectFromPath(
+  path: string,
+  readFile: (path: string) => Promise<Uint8Array>,
+  exists?: (path: string) => Promise<boolean>
+): Promise<boolean> {
+  const store = useAppStore.getState();
+
+  if (!confirmDiscardUnsavedWork("Importing a file")) return false;
+
+  const filename = path.split(/[\\/]/).pop() ?? path;
+  store.setLoading(true, `Reading ${filename}...`);
+
+  try {
+    const bytes = await readFile(path);
+    store.setLoading(true, `Parsing ${filename}...`);
+    // Dataset root = the JSON file's directory (string dirname; the resolveImage
+    // callback is synchronous, so we can't await a Tauri path API here). Passed
+    // as datasetRoot AND to resolveImage, which additionally leaves any
+    // already-absolute file_names untouched.
+    const datasetRoot = path
+      .slice(0, path.length - filename.length)
+      .replace(/[\\/]$/, "");
+    const text = new TextDecoder().decode(bytes);
+    const labels = readCocoLabels(text, {
+      datasetRoot,
+      resolveImage: resolveCocoImageUnderRoot,
+    });
+
+    store.setLoading(true, "Locating videos...");
+    if (exists) {
+      // Desktop: build the ImageVideo backend via the native byte reader and
+      // resolve the (now absolute) image-sequence paths against the dataset dir,
+      // exactly like opening an SLP that references an image sequence.
+      installTauriFsResolver(exists);
+      await installTauriImageReader();
+      await resolveExternalVideos(labels, { projectPath: path, exists, readFile });
+    } else {
+      await resolveExternalVideos(labels);
+    }
+
+    store.setLabels(labels, filename, path);
+    await openFirstLabeledFrame(labels);
+    toast.success(`Imported ${filename}`, {
+      description: `${labels.videos.length} video(s), ${labels.labeledFrames.length} labeled frames`,
+    });
+    return true;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    toast.error("Failed to import COCO dataset", { description: msg });
+    console.error("Failed to import COCO dataset:", err);
     return false;
   } finally {
     store.setLoading(false);

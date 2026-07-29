@@ -15,6 +15,7 @@ export {
   NewProjectCommand,
   OpenProjectCommand,
   ImportAnalysisH5Command,
+  ImportCocoCommand,
   SaveProjectCommand,
   SaveAsProjectCommand,
   ExportJsonCommand,
