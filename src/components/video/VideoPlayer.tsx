@@ -694,8 +694,53 @@ export function VideoPlayer() {
     ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, cw, ch);
 
+    // Apply the fit + zoom/pan + rotation transform (image-pixel space). Shared
+    // so the ROI overlay can be drawn on the early-return path too.
+    const applyImageTransform = () => {
+      ctx.translate(offsetX + panX, offsetY + panY);
+      ctx.scale(baseScale * zoom, baseScale * zoom);
+      if (rotation === 90) {
+        ctx.translate(fh, 0);
+        ctx.rotate(Math.PI / 2);
+      } else if (rotation === 180) {
+        ctx.translate(fw, fh);
+        ctx.rotate(Math.PI);
+      } else if (rotation === 270) {
+        ctx.translate(0, fw);
+        ctx.rotate((3 * Math.PI) / 2);
+      }
+    };
+    // Image-features ROI overlay (persisted region + live rubber-band). Drawn
+    // whenever ROI-draw mode is active — independent of instances, so it must
+    // render on unlabeled frames / when instances are hidden too. Assumes the
+    // image transform is already applied.
+    const paintRoi = () => {
+      if (!imageFeatureRoiDrawActive) return;
+      const persisted = video ? imageFeatureRois.get(video) : undefined;
+      if (persisted) {
+        renderRoiRect(
+          ctx,
+          persisted.x,
+          persisted.y,
+          persisted.x + persisted.width,
+          persisted.y + persisted.height,
+          baseScale * zoom
+        );
+      }
+      if (roiStart && roiEnd) {
+        renderRoiRect(ctx, roiStart.x, roiStart.y, roiEnd.x, roiEnd.y, baseScale * zoom);
+      }
+    };
+
     if (!labeledFrame || !showInstances) {
       renderedInstancesRef.current = [];
+      // The ROI overlay is independent of instance rendering — still draw it.
+      if (imageFeatureRoiDrawActive) {
+        ctx.save();
+        applyImageTransform();
+        paintRoi();
+        ctx.restore();
+      }
       return;
     }
 
@@ -827,24 +872,8 @@ export function VideoPlayer() {
       renderMarqueeRect(ctx, marqueeStart.x, marqueeStart.y, marqueeEnd.x, marqueeEnd.y, baseScale * zoom);
     }
 
-    // Render image-features ROI: the persisted region for this video plus the
-    // live rubber-band while drawing (only while ROI-draw mode is active).
-    if (imageFeatureRoiDrawActive) {
-      const persisted = video ? imageFeatureRois.get(video) : undefined;
-      if (persisted) {
-        renderRoiRect(
-          ctx,
-          persisted.x,
-          persisted.y,
-          persisted.x + persisted.width,
-          persisted.y + persisted.height,
-          baseScale * zoom
-        );
-      }
-      if (roiStart && roiEnd) {
-        renderRoiRect(ctx, roiStart.x, roiStart.y, roiEnd.x, roiEnd.y, baseScale * zoom);
-      }
-    }
+    // Image-features ROI overlay (also drawn on the early-return path above).
+    paintRoi();
 
     // Render area-delete rectangle (red dashed)
     if (areaDeleteStart && areaDeleteEnd) {
