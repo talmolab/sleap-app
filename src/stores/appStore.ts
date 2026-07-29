@@ -23,6 +23,7 @@ import type {
 } from "../types";
 import type { StatisticGraphType, Reduction } from "@/lib/statisticSeries";
 import type { QcMode } from "@/lib/instanceVisibility";
+import type { CropRect } from "@/lib/imageFeaturesCore";
 import {
   mergeVideoPrefixSwap,
   type VideoPrefixSwap,
@@ -191,6 +192,20 @@ export interface AppState {
   seekbarHeaderReduction: Reduction;
   /** Which frames stepping/playback/seekbar are confined to (#137). */
   navigationDomain: NavigationDomain;
+
+  // === Image-features suggestions ROI (transient; session-only, NOT persisted) ===
+  /**
+   * Per-video crop region (source-frame pixels) used by the image-features
+   * suggestion method to focus clustering on a field-of-view. Session-only,
+   * like every other suggestion-generation parameter.
+   */
+  imageFeatureRois: Map<Video, CropRect>;
+  /** True while the canvas is in ROI-draw mode (drag to set the region). */
+  imageFeatureRoiDrawActive: boolean;
+  /** Set (or clear, when `rect` is null) the current video's image-features ROI. */
+  setImageFeatureRoi: (video: Video, rect: CropRect | null) => void;
+  /** Toggle canvas ROI-draw mode. */
+  setImageFeatureRoiDrawActive: (active: boolean) => void;
 
   // Per-instance visibility (transient; reset on frame change; NOT persisted)
   hiddenInstances: Set<Instance>;
@@ -534,6 +549,20 @@ export const useAppStore = create<AppState>()(
           state.frameIdx = targetFrameIdx;
           state.instance = null;
           state.labeledFrame = null;
+        }),
+
+      imageFeatureRois: new Map(),
+      imageFeatureRoiDrawActive: false,
+      setImageFeatureRoi: (video, rect) =>
+        set((state) => {
+          // Draft Video/Map types are structurally identical to the runtime ones.
+          const rois = state.imageFeatureRois as Map<Video, CropRect>;
+          if (rect) rois.set(video, rect);
+          else rois.delete(video);
+        }),
+      setImageFeatureRoiDrawActive: (active) =>
+        set((state) => {
+          state.imageFeatureRoiDrawActive = active;
         }),
 
       markVideoUpdated: () =>

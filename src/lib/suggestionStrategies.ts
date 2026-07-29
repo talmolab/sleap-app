@@ -20,7 +20,10 @@ export type GenerationMethod =
   | "frame_chunk"
   | "prediction_score"
   | "velocity"
-  | "max_displacement";
+  | "max_displacement"
+  // Decodes frames + clusters them (PCA + k-means); runs via the async
+  // orchestrator in lib/imageFeatures.ts, NOT the sync dispatcher below.
+  | "image_features";
 
 export interface GenerateParams {
   method: GenerationMethod;

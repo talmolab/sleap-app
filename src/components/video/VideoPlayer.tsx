@@ -23,6 +23,7 @@ import {
   renderHoveredNodeHighlight,
   renderHoverInstanceBBox,
   renderMarqueeRect,
+  renderRoiRect,
   nodesInRect,
   makeNodeKey,
   parseNodeKey,
@@ -89,6 +90,10 @@ export function VideoPlayer() {
   const resetViewNonce = useAppStore((s) => s.resetViewNonce);
   const areaDeleteMode = useAppStore((s) => s.areaDeleteMode);
   const showCrosshair = useAppStore((s) => s.showCrosshair);
+  // Image-features ROI crop tool (shared with the Suggestions panel).
+  const imageFeatureRoiDrawActive = useAppStore((s) => s.imageFeatureRoiDrawActive);
+  const setImageFeatureRoi = useAppStore((s) => s.setImageFeatureRoi);
+  const imageFeatureRois = useAppStore((s) => s.imageFeatureRois);
 
   // Local zoom/pan state
   const [zoom, setZoom] = useState(1);
@@ -120,9 +125,12 @@ export function VideoPlayer() {
 
   // Multi-node selection state (local/ephemeral)
   const [selectedNodes, setSelectedNodes] = useState<Set<string>>(new Set());
-  const [interactionMode, setInteractionMode] = useState<"idle" | "marquee" | "dragging">("idle");
+  const [interactionMode, setInteractionMode] = useState<"idle" | "marquee" | "dragging" | "roi">("idle");
   const [marqueeStart, setMarqueeStart] = useState<{ x: number; y: number } | null>(null);
   const [marqueeEnd, setMarqueeEnd] = useState<{ x: number; y: number } | null>(null);
+  // Image-features ROI rubber-band (image-pixel coords; live only while drawing).
+  const [roiStart, setRoiStart] = useState<{ x: number; y: number } | null>(null);
+  const [roiEnd, setRoiEnd] = useState<{ x: number; y: number } | null>(null);
   // Area-delete rectangle state
   const [areaDeleteStart, setAreaDeleteStart] = useState<{ x: number; y: number } | null>(null);
   const [areaDeleteEnd, setAreaDeleteEnd] = useState<{ x: number; y: number } | null>(null);
@@ -819,6 +827,25 @@ export function VideoPlayer() {
       renderMarqueeRect(ctx, marqueeStart.x, marqueeStart.y, marqueeEnd.x, marqueeEnd.y, baseScale * zoom);
     }
 
+    // Render image-features ROI: the persisted region for this video plus the
+    // live rubber-band while drawing (only while ROI-draw mode is active).
+    if (imageFeatureRoiDrawActive) {
+      const persisted = video ? imageFeatureRois.get(video) : undefined;
+      if (persisted) {
+        renderRoiRect(
+          ctx,
+          persisted.x,
+          persisted.y,
+          persisted.x + persisted.width,
+          persisted.y + persisted.height,
+          baseScale * zoom
+        );
+      }
+      if (roiStart && roiEnd) {
+        renderRoiRect(ctx, roiStart.x, roiStart.y, roiEnd.x, roiEnd.y, baseScale * zoom);
+      }
+    }
+
     // Render area-delete rectangle (red dashed)
     if (areaDeleteStart && areaDeleteEnd) {
       const adx1 = areaDeleteStart.x;
@@ -873,6 +900,11 @@ export function VideoPlayer() {
     hoveredNode,
     marqueeStart,
     marqueeEnd,
+    roiStart,
+    roiEnd,
+    imageFeatureRoiDrawActive,
+    imageFeatureRois,
+    video,
     areaDeleteStart,
     areaDeleteEnd,
     labels,
@@ -1241,6 +1273,16 @@ export function VideoPlayer() {
 
       if (e.button !== 0) return; // Only left-click for interaction
 
+      // Image-features ROI draw mode takes priority: drag to set the crop region.
+      if (imageFeatureRoiDrawActive) {
+        e.preventDefault();
+        const p = canvasToScene(e.clientX, e.clientY);
+        setInteractionMode("roi");
+        setRoiStart(p);
+        setRoiEnd(p);
+        return;
+      }
+
       // Cmd/Ctrl+pan-mode+left-click: zoom-drag mode
       if (shouldPan && (isCmdHeld || e.metaKey || e.ctrlKey)) {
         e.preventDefault();
@@ -1397,7 +1439,7 @@ export function VideoPlayer() {
       setMarqueeStart({ x, y });
       setMarqueeEnd({ x, y });
     },
-    [canvasToScene, markerSize, panX, panY, zoom, baseScale, shouldPan, isCmdHeld, offsetX, offsetY, selectedNodes, areaDeleteMode]
+    [canvasToScene, markerSize, panX, panY, zoom, baseScale, shouldPan, isCmdHeld, offsetX, offsetY, selectedNodes, areaDeleteMode, imageFeatureRoiDrawActive]
   );
 
   const handleMouseMove = useCallback(
@@ -1440,6 +1482,13 @@ export function VideoPlayer() {
       if (isAreaDeleting && areaDeleteStart) {
         const { x, y } = canvasToScene(e.clientX, e.clientY);
         setAreaDeleteEnd({ x, y });
+        useAppStore.getState().bumpOverlayVersion();
+        return;
+      }
+
+      // ROI-draw mode: update the region rubber-band.
+      if (interactionMode === "roi") {
+        setRoiEnd(canvasToScene(e.clientX, e.clientY));
         useAppStore.getState().bumpOverlayVersion();
         return;
       }
@@ -1579,6 +1628,23 @@ export function VideoPlayer() {
       setIsPanning(false);
     }
 
+    if (interactionMode === "roi" && roiStart && roiEnd) {
+      const x = Math.min(roiStart.x, roiEnd.x);
+      const y = Math.min(roiStart.y, roiEnd.y);
+      const width = Math.abs(roiEnd.x - roiStart.x);
+      const height = Math.abs(roiEnd.y - roiStart.y);
+      const currentVideo = useAppStore.getState().video;
+      // Ignore an accidental click / tiny drag (preserve any existing region).
+      if (currentVideo && width > 2 && height > 2) {
+        setImageFeatureRoi(currentVideo, { x, y, width, height });
+      }
+      setRoiStart(null);
+      setRoiEnd(null);
+      setInteractionMode("idle");
+      useAppStore.getState().bumpOverlayVersion();
+      return;
+    }
+
     if (interactionMode === "marquee" && marqueeStart && marqueeEnd) {
       const instances = renderedInstancesRef.current;
       const newSelection = nodesInRect(instances, marqueeStart.x, marqueeStart.y, marqueeEnd.x, marqueeEnd.y);
@@ -1601,7 +1667,7 @@ export function VideoPlayer() {
       dragStartClient.current = null;
       setInteractionMode("idle");
     }
-  }, [isDragging, isPanning, isZoomDragging, interactionMode, marqueeStart, marqueeEnd, isAreaDeleting, areaDeleteStart, areaDeleteEnd]);
+  }, [isDragging, isPanning, isZoomDragging, interactionMode, marqueeStart, marqueeEnd, isAreaDeleting, areaDeleteStart, areaDeleteEnd, roiStart, roiEnd, setImageFeatureRoi]);
 
   // Zoom with mouse wheel (towards pointer), Alt+Scroll for rotation
   // Use native event listener with { passive: false } so preventDefault() works
@@ -1839,7 +1905,7 @@ export function VideoPlayer() {
         ref={containerRef}
         className={cn(
           "flex-1 relative overflow-hidden bg-background min-h-0",
-          isPanning ? "cursor-grabbing" : isZoomDragging ? "cursor-zoom-in" : (shouldPan && isCmdHeld) ? "cursor-zoom-in" : shouldPan ? "cursor-grab" : isDragging ? "cursor-grabbing" : areaDeleteMode ? "cursor-crosshair" : interactionMode === "marquee" ? "cursor-crosshair" : isPlacingNodes ? "cursor-cell" : hoveredNode ? "cursor-pointer" : "cursor-default"
+          imageFeatureRoiDrawActive ? "cursor-crosshair" : isPanning ? "cursor-grabbing" : isZoomDragging ? "cursor-zoom-in" : (shouldPan && isCmdHeld) ? "cursor-zoom-in" : shouldPan ? "cursor-grab" : isDragging ? "cursor-grabbing" : areaDeleteMode ? "cursor-crosshair" : interactionMode === "marquee" ? "cursor-crosshair" : isPlacingNodes ? "cursor-cell" : hoveredNode ? "cursor-pointer" : "cursor-default"
         )}
         onMouseMove={crosshairActive ? handleCrosshairMove : undefined}
         onMouseLeave={

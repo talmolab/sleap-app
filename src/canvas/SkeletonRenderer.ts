@@ -526,3 +526,30 @@ export function renderMarqueeRect(
   ctx.setLineDash([]);
   ctx.restore();
 }
+
+/**
+ * Draw the image-features ROI crop region (solid orange, translucent fill) in
+ * image-pixel space. Distinct from {@link renderMarqueeRect} so the persistent
+ * generation region reads differently from an ephemeral node selection.
+ */
+export function renderRoiRect(
+  ctx: CanvasRenderingContext2D,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  zoom: number
+): void {
+  const minX = Math.min(x1, x2);
+  const minY = Math.min(y1, y2);
+  const w = Math.abs(x2 - x1);
+  const h = Math.abs(y2 - y1);
+
+  ctx.save();
+  ctx.fillStyle = "rgba(249, 115, 22, 0.12)";
+  ctx.fillRect(minX, minY, w, h);
+  ctx.strokeStyle = "rgba(249, 115, 22, 0.9)";
+  ctx.lineWidth = 1.5 / zoom;
+  ctx.strokeRect(minX, minY, w, h);
+  ctx.restore();
+}
