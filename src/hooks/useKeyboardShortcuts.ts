@@ -332,6 +332,39 @@ export function useKeyboardShortcuts() {
         }
       },
 
+      // Cycle through instances on the current frame and zoom to fit each one
+      // (Shift+Down / Shift+Up), mirroring the legacy sleap desktop app.
+      [DEFAULT_SHORTCUTS["select next instance zoom"]]: (e) => {
+        if (isTextInput(e)) return;
+        e.preventDefault();
+        const { labeledFrame, instance } = store();
+        if (!labeledFrame) return;
+        const instances = labeledFrame.instances;
+        if (instances.length === 0) return;
+        if (!instance) {
+          store().setInstance(instances[0]);
+        } else {
+          const idx = instances.indexOf(instance);
+          store().setInstance(instances[(idx + 1) % instances.length]);
+        }
+        store().set("fitSelection", true);
+      },
+      [DEFAULT_SHORTCUTS["select prev instance zoom"]]: (e) => {
+        if (isTextInput(e)) return;
+        e.preventDefault();
+        const { labeledFrame, instance } = store();
+        if (!labeledFrame) return;
+        const instances = labeledFrame.instances;
+        if (instances.length === 0) return;
+        if (!instance) {
+          store().setInstance(instances[instances.length - 1]);
+        } else {
+          const idx = instances.indexOf(instance);
+          store().setInstance(instances[(idx - 1 + instances.length) % instances.length]);
+        }
+        store().set("fitSelection", true);
+      },
+
       // Go to frame (Ctrl+J)
       [DEFAULT_SHORTCUTS["goto frame"]]: (e) => {
         e.preventDefault();

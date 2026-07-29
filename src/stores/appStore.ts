@@ -92,13 +92,6 @@ export interface AppState {
   fit: boolean;
   fitSelection: boolean;
   /**
-   * One-shot request to pan the viewport so the selected instance is centered,
-   * at the current zoom (unlike `fitSelection`, which also zooms to fit). Set
-   * from the Instances panel on click; VideoPlayer consumes and clears it.
-   * Transient — not persisted.
-   */
-  centerSelection: boolean;
-  /**
    * Monotonically-increasing one-shot signal to reset the main video canvas
    * view to its default (zoom = 1, no pan, fit-frame). Bumped by `resetView`
    * from the toolbar button / `R` hotkey; VideoPlayer subscribes and applies
@@ -329,7 +322,6 @@ export const useAppStore = create<AppState>()(
       edgeStyle: "Line" as EdgeStyle,
       fit: false,
       fitSelection: false,
-      centerSelection: false,
       resetViewNonce: 0,
       colorPredicted: false,
       defaultToPan: false,
