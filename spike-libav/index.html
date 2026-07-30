@@ -1,0 +1,33 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>libav.js H.264 shim spike</title>
+    <style>
+      body { font: 13px/1.5 ui-monospace, monospace; margin: 16px; background: #111; color: #ddd; }
+      #verdict { font-size: 20px; font-weight: bold; padding: 10px 14px; border-radius: 8px; margin: 8px 0; display: inline-block; }
+      .pass { background: #113d1a; color: #6ee787; border: 1px solid #2ea043; }
+      .fail { background: #3d1113; color: #ff7b72; border: 1px solid #da3633; }
+      .pending { background: #33320f; color: #e3d34a; border: 1px solid #9e8c1e; }
+      #log { white-space: pre-wrap; background: #1a1a1a; padding: 10px; border-radius: 6px; max-height: 340px; overflow: auto; }
+      .row { display: flex; gap: 4px; flex-wrap: wrap; margin: 6px 0; align-items: center; }
+      .row canvas { border: 1px solid #333; image-rendering: pixelated; }
+      .label { width: 70px; color: #888; }
+      h3 { margin: 14px 0 4px; }
+      #rows { margin: 10px 0; border: 1px solid #333; border-radius: 6px; overflow: hidden; max-width: 900px; }
+      .trow { display: flex; border-bottom: 1px solid #2a2a2a; }
+      .trow:last-child { border-bottom: none; }
+      .thead { font-weight: bold; color: #9ecbff; background: #1a1a1a; }
+      .tcell { flex: 1; padding: 7px 10px; min-width: 80px; border-right: 1px solid #2a2a2a; }
+      .tcell:last-child { border-right: none; }
+    </style>
+  </head>
+  <body>
+    <h2>libav.js H.264 CustomVideoDecoder — correctness spike</h2>
+    <div id="verdict" class="pending">running…</div>
+    <div id="rows"></div>
+    <h3>Log</h3>
+    <div id="log"></div>
+    <script type="module" src="/main.ts"></script>
+  </body>
+</html>
