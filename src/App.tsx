@@ -9,7 +9,12 @@ import { loadProjectFromPath } from "./lib/loadProject";
 import { isTauri } from "./platform";
 import { setupCloseHandler } from "./lib/quit";
 import { toast } from "./lib/notify";
-import { probeWebCodecs, readWebCodecsEnv } from "./lib/webcodecsProbe";
+import {
+  configureLibavDecoder,
+  registerLibavH264Decoder,
+  nativeH264DecodableSync,
+  overrideNativeH264Decodable,
+} from "@talmolab/sleap-io.js";
 import { sleapCmd } from "./lib/sleapPlugin";
 
 // Consume the pending "initial file" slot in Rust and load it. The slot is
@@ -44,19 +49,39 @@ export default function App() {
     document.documentElement.style.setProperty("--ui-scale", String(scale));
   }, []);
 
-  // One-time WebCodecs capability check (cross-platform build stability). The
-  // Mp4Box / MediaBunny video backends require the VideoDecoder API; the Linux
-  // desktop WebView (WebKitGTK) frequently lacks it, so MP4/WebM/MKV would
-  // silently decode to blank frames. Warn up front instead of per-file.
-  // (Browsers and macOS/Windows desktop normally have WebCodecs → no-op.)
+  // Register the libav.js H.264 software-decoder fallback, and warn only when it
+  // is actually needed. On Linux/WebKitGTK many systems can't decode H.264 with
+  // hardware acceleration; the fallback decodes it in WASM so MP4 videos render
+  // instead of showing blank frames. macOS, Windows, and Linux-with-codec keep
+  // using native decode — the decoder self-gates on a real `isConfigSupported`
+  // probe (this supersedes the old API-presence-only webcodecsProbe check).
   useEffect(() => {
-    const result = probeWebCodecs(readWebCodecsEnv());
-    if (!result.supported && result.title) {
-      toast.warning(result.title, {
-        description: result.description,
-        duration: 12000,
+    (async () => {
+      configureLibavDecoder({
+        wasmBaseUrl: `${import.meta.env.BASE_URL}decoders/libav-h264`,
       });
-    }
+      // Dev/test: force the software path even where native H.264 works, to
+      // exercise the fallback end-to-end. Enable with VITE_FORCE_LIBAV_H264=1 or
+      // a `?forceLibavH264` URL parameter.
+      const forced =
+        import.meta.env.VITE_FORCE_LIBAV_H264 === "1" ||
+        new URLSearchParams(window.location.search).has("forceLibavH264");
+      if (forced) overrideNativeH264Decodable(false);
+
+      await registerLibavH264Decoder(); // registers + resolves the native probe
+
+      if (nativeH264DecodableSync() === false) {
+        toast.info("Using software video decoding", {
+          description:
+            "This system can't decode H.264 with hardware acceleration, so video is " +
+            "decoded in software (WASM). Playback and scrubbing may be slower, " +
+            "especially at 1080p.",
+          duration: 9000,
+        });
+      }
+    })().catch((err) => {
+      console.warn("[app] libav H.264 fallback setup failed:", err);
+    });
   }, []);
 
   const projectLoaded = useAppStore((s) => s.projectLoaded);
