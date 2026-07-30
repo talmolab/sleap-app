@@ -33,6 +33,10 @@ async function loadInitialFileIfAny() {
   await loadProjectFromPath(path, readFile, exists);
 }
 
+// Guards the one-time "software decoding" toast against React StrictMode, which
+// double-invokes effects in dev (the toast would otherwise appear twice).
+let softwareDecodingToastShown = false;
+
 export default function App() {
   useKeyboardShortcuts();
   useWindowTitle();
@@ -70,7 +74,8 @@ export default function App() {
 
       await registerLibavH264Decoder(); // registers + resolves the native probe
 
-      if (nativeH264DecodableSync() === false) {
+      if (nativeH264DecodableSync() === false && !softwareDecodingToastShown) {
+        softwareDecodingToastShown = true;
         toast.info("Using software video decoding", {
           description:
             "This system can't decode H.264 with hardware acceleration, so video is " +
