@@ -23,6 +23,49 @@ describe("videoSignature", () => {
       videoSignature({ filename: ".", shape: [90, 8, 8, 1] }),
     );
   });
+
+  it("is container-independent for EMBEDDED videos (shape-only)", () => {
+    // Embedded pkg videos have no stored filename; sleap-io resolves
+    // `Video.filename` to the CONTAINING `.slp` file. So the same embedded video
+    // reports the pkg path on a fresh open but the OPFS draft path after a restore
+    // — and the call sites pass NO explicit flag, only `{filename, shape}`. Its
+    // signature MUST NOT depend on that container path, or a post-restore ⌘S
+    // records draft-prefixed signatures that can't match the re-opened original
+    // and restore aborts with "none of the draft's videos were found". A `.slp`
+    // filename is the tell that it's a container, not a real per-video name.
+    const fromPkg = videoSignature({
+      filename: "train copy.pkg.slp",
+      shape: [7632, 480, 640, 3],
+    });
+    const fromDraft = videoSignature({
+      filename: "sleap-draft-train-copy.pkg-ms56dsn6-ea453b5a.slp",
+      shape: [7632, 480, 640, 3],
+    });
+    expect(fromPkg).toBe(fromDraft);
+    // An explicit `embedded: true` flag also forces shape-only, for callers that
+    // know a video is embedded regardless of its filename.
+    expect(
+      videoSignature({ filename: "x.mp4", shape: [7632, 480, 640, 3], embedded: true }),
+    ).toBe(
+      videoSignature({ filename: "y.mp4", shape: [7632, 480, 640, 3], embedded: true }),
+    );
+  });
+
+  it("still uses filename basename + shape for NON-embedded videos", () => {
+    // External MediaVideo: the filename is a real, stable video path — keep it so
+    // reorder/wrong-file detection still works for these formats.
+    expect(
+      videoSignature({ filename: "/data/a.mp4", shape: [100, 720, 1280, 1], embedded: false }),
+    ).toBe("a.mp4|100x720x1280x1");
+    // `embedded` omitted (or false) behaves exactly as before (back-compat).
+    expect(
+      videoSignature({ filename: "/data/a.mp4", shape: [100, 720, 1280, 1] }),
+    ).toBe("a.mp4|100x720x1280x1");
+    // Image sequence: filename is a string[] (first frame's basename).
+    expect(
+      videoSignature({ filename: ["/imgs/frame0.png"], shape: [10, 8, 8, 3], embedded: false }),
+    ).toBe("frame0.png|10x8x8x3");
+  });
 });
 
 describe("buildBackendGraftPlan", () => {
@@ -79,5 +122,24 @@ describe("buildBackendGraftPlan", () => {
       null,
       null,
     ]);
+  });
+
+  it("matches EMBEDDED videos across a restore despite the container filename change", () => {
+    // End-to-end reproduction of the reported bug: after a restore, a subsequent
+    // ⌘S records signatures whose filename is the OPFS draft path; the next restore
+    // compares them to the re-opened original (the pkg path). With embedded videos
+    // signed shape-only, the two sets are identical and graft 1:1 by position.
+    const shapes = [
+      [7632, 480, 640, 3],
+      [8397, 480, 640, 3],
+      [9704, 240, 320, 3],
+    ];
+    const draftSigs = shapes.map((s) =>
+      videoSignature({ filename: "sleap-draft-x.slp", shape: s }),
+    );
+    const originalSigs = shapes.map((s) =>
+      videoSignature({ filename: "train copy.pkg.slp", shape: s }),
+    );
+    expect(buildBackendGraftPlan(draftSigs, originalSigs)).toEqual([0, 1, 2]);
   });
 });

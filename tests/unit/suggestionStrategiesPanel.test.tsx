@@ -288,15 +288,16 @@ describe("SuggestionsPanel generation methods (#162)", () => {
     expect(screen.queryByText("0.70")).not.toBeInTheDocument(); // not the point-mean
   });
 
-  it("default-method (stride) Generate replaces suggestions across ALL videos", async () => {
-    // Default path: no Radix interaction. Default method is stride, Target
-    // defaults to All videos.
+  it("default target (current video): Generate restricts to the active video", async () => {
+    // Default path: no Radix interaction. Default method is stride; Target now
+    // defaults to the CURRENT video.
     const skel = makeSkeleton();
     const v1 = makeVideo(100, "v1.mp4");
     const v2 = makeVideo(100, "v2.mp4");
     const labels = new Labels({ videos: [v1, v2], skeletons: [skel] });
     labels.suggestions = [];
     useAppStore.getState().setLabels(labels, "test.slp");
+    useAppStore.getState().setVideo(v1); // active video
 
     const { SuggestionsPanel } = await import(
       "@/components/panels/SuggestionsPanel"
@@ -306,64 +307,33 @@ describe("SuggestionsPanel generation methods (#162)", () => {
     fireEvent.click(screen.getByRole("button", { name: /^generate$/i }));
 
     const result = useAppStore.getState().labels?.suggestions ?? [];
-    // Default perVideo (20) strided over 100 frames -> 20 per video, 2 videos.
-    expect(result.length).toBe(40);
-    expect(result.some((s) => s.video === v1)).toBe(true);
-    expect(result.some((s) => s.video === v2)).toBe(true);
+    // Default perVideo (20) strided over 100 frames, current video (v1) only.
+    expect(result.length).toBe(20);
+    expect(result.every((s) => s.video === v1)).toBe(true);
   });
 
-  it("Target switches the video set (Current video restricts to the active video; else All-videos default spans both)", async () => {
+  it("Target = All videos spans every video (initialTarget seam)", async () => {
     const skel = makeSkeleton();
     const v1 = makeVideo(100, "v1.mp4");
     const v2 = makeVideo(100, "v2.mp4");
     const labels = new Labels({ videos: [v1, v2], skeletons: [skel] });
     labels.suggestions = [];
     useAppStore.getState().setLabels(labels, "test.slp");
-    // Make v2 the active video.
-    useAppStore.getState().setVideo(v2);
+    useAppStore.getState().setVideo(v1); // active video (should be ignored for "all")
 
     const { SuggestionsPanel } = await import(
       "@/components/panels/SuggestionsPanel"
     );
-    // frame_chunk over both videos is deterministic and per-video, so the video
-    // set is directly observable in the result.
-    render(<SuggestionsPanel initialMethod="frame_chunk" />);
-    fireEvent.change(screen.getByLabelText(/frame chunk from/i), {
-      target: { value: "1" },
-    });
-    fireEvent.change(screen.getByLabelText(/frame chunk to/i), {
-      target: { value: "3" },
-    });
-
-    // Best-effort: open the Target Select and click "Current video". If the
-    // Radix popover doesn't open in happy-dom, fall back to the All-videos path.
-    let switchedToCurrent = false;
-    const targetTrigger = screen.getByLabelText(/target videos/i);
-    fireEvent.pointerDown(targetTrigger, { button: 0, ctrlKey: false });
-    const currentOption = screen.queryByRole("option", {
-      name: /current video/i,
-    });
-    if (currentOption) {
-      fireEvent.click(currentOption);
-      switchedToCurrent =
-        screen
-          .getByLabelText(/target videos/i)
-          .textContent?.toLowerCase()
-          .includes("current") ?? false;
-    }
+    // Mount directly into the all-videos path (avoids driving the Radix Target
+    // popover, unreliable in happy-dom).
+    render(<SuggestionsPanel initialTarget="all" />);
 
     fireEvent.click(screen.getByRole("button", { name: /^generate$/i }));
 
     const result = useAppStore.getState().labels?.suggestions ?? [];
-    expect(result.length).toBeGreaterThan(0);
-    if (switchedToCurrent) {
-      // Restricted to the active video (v2) only.
-      expect(result.every((s) => s.video === v2)).toBe(true);
-    } else {
-      // Fallback (documented happy-dom limitation): All-videos default spans
-      // both videos.
-      expect(result.some((s) => s.video === v1)).toBe(true);
-      expect(result.some((s) => s.video === v2)).toBe(true);
-    }
+    // 20 strided frames per video, spanning both videos.
+    expect(result.length).toBe(40);
+    expect(result.some((s) => s.video === v1)).toBe(true);
+    expect(result.some((s) => s.video === v2)).toBe(true);
   });
 });

@@ -37,6 +37,8 @@ export const DEFAULT_SHORTCUTS: Record<string, string> = {
   "goto frame": "$mod+KeyJ",
   "select to frame": "$mod+Shift+KeyJ",
   "select next": "Backquote",
+  "select next instance zoom": "Shift+ArrowDown",
+  "select prev instance zoom": "Shift+ArrowUp",
   "clear selection": "Escape",
 
   // Labels

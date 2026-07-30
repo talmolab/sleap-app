@@ -18,18 +18,36 @@ export interface VideoIdentity {
   /** `[frames, H, W, C]` (or a subset). Includes the frame count at [0], so the
    *  signature discriminates same-named videos of different length. */
   shape?: number[] | null;
+  /** Optional explicit override: when true, the video is signed by SHAPE ALONE
+   *  (see {@link videoSignature}). Usually inferred from a `.slp` container
+   *  filename, so callers need not set it. */
+  embedded?: boolean;
 }
 
-/** Path-independent identity: `basename(filename) | shape`. Embedded videos may
- *  share a filename (".") so the shape (incl. frame count) adds discrimination;
- *  image sequences use the first frame's basename. */
+/**
+ * Path-independent identity: `basename(filename) | shape` for external videos and
+ * image sequences (their filename is a real, stable per-video name), but SHAPE
+ * ALONE for EMBEDDED (pkg.slp) videos.
+ *
+ * Embedded videos have no per-video filename of their own — sleap-io resolves
+ * `Video.filename` to the CONTAINING `.slp` file, which is the original pkg on a
+ * fresh open but the OPFS labels-draft after a restore. Including that container
+ * path would make the SAME video sign differently before vs. after a restore, so
+ * a post-restore ⌘S records draft-prefixed signatures that no longer match the
+ * re-opened original and restore aborts ("none of the draft's videos were
+ * found"). We therefore drop the filename for embedded videos, keeping only the
+ * shape (frames+H+W+C) — which round-trips identically. An embedded video is
+ * detected by an explicit `embedded` flag OR a `.slp`/`.pkg.slp` container
+ * filename (a real video/image name never has that extension).
+ */
 export function videoSignature(v: VideoIdentity): string {
   const raw = Array.isArray(v.filename)
     ? (v.filename[0] ?? "")
     : (v.filename ?? "");
   const name = raw.split(/[\\/]/).pop() ?? "";
   const shape = Array.isArray(v.shape) ? v.shape.join("x") : "";
-  return `${name}|${shape}`;
+  const isEmbedded = v.embedded === true || /\.slp$/i.test(name);
+  return isEmbedded ? `|${shape}` : `${name}|${shape}`;
 }
 
 /**

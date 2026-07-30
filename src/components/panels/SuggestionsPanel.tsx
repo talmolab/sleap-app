@@ -5,7 +5,7 @@
  * score display, and configurable generation methods.
  */
 
-import { useState, useMemo, useReducer } from "react";
+import { useState, useMemo, useReducer, useRef } from "react";
 import { useAppStore } from "../../stores/appStore";
 import { commandContext } from "../../commands/CommandContext";
 import { GoNextSuggestion, GoPrevSuggestion } from "../../commands/navCommands";
@@ -59,6 +59,11 @@ import {
   type GenerationMethod,
   type GenerateParams,
 } from "../../lib/suggestionStrategies";
+import {
+  runImageFeatureSuggestions,
+  type ImageFeaturesParams,
+  type ProgressPhase,
+} from "../../lib/imageFeatures";
 
 /** Extract just the basename from a file path. */
 function basename(path: string | string[]): string {
@@ -136,6 +141,7 @@ const METHOD_LABELS: Record<GenerationMethod, string> = {
   prediction_score: "Prediction score",
   velocity: "Velocity",
   max_displacement: "Max displacement",
+  image_features: "Image features",
 };
 
 /** Parse a positive-int input value, falling back to the previous value. */
@@ -153,10 +159,17 @@ export interface SuggestionsPanelProps {
    * is unreliable in happy-dom.
    */
   initialMethod?: GenerationMethod;
+  /**
+   * Initial target video set. Production callers omit this (defaults to
+   * "current"); a test seam like {@link initialMethod} so a test can mount
+   * directly into the all-videos path without driving the Radix Target popover.
+   */
+  initialTarget?: GenerationTarget;
 }
 
 export function SuggestionsPanel({
   initialMethod = "stride",
+  initialTarget = "current",
 }: SuggestionsPanelProps = {}) {
   const labels = useAppStore((s) => s.labels);
   const currentVideo = useAppStore((s) => s.video);
@@ -164,6 +177,11 @@ export function SuggestionsPanel({
   const skeleton = useAppStore((s) => s.skeleton);
   const setVideo = useAppStore((s) => s.setVideo);
   const setFrameIdx = useAppStore((s) => s.setFrameIdx);
+  // Image-features ROI crop tool (session-only store state; shared with the canvas).
+  const roiDrawActive = useAppStore((s) => s.imageFeatureRoiDrawActive);
+  const setRoiDrawActive = useAppStore((s) => s.setImageFeatureRoiDrawActive);
+  const setImageFeatureRoi = useAppStore((s) => s.setImageFeatureRoi);
+  const imageFeatureRois = useAppStore((s) => s.imageFeatureRois);
   // THE "underlying labels/instances changed" signal (bumped on canvas label
   // edits). Subscribing here re-renders the panel when frames are labeled
   // elsewhere; see Seekbar.tsx for the same pattern.
@@ -185,8 +203,27 @@ export function SuggestionsPanel({
   const [velocityThreshold, setVelocityThreshold] = useState(0.1);
   // max_displacement param.
   const [displacementThreshold, setDisplacementThreshold] = useState(10);
+  // image_features params (PyQt defaults; own state, NOT the stride/random perVideo).
+  const [ifSampleCount, setIfSampleCount] = useState(200);
+  const [ifSampleMethod, setIfSampleMethod] = useState<"stride" | "random">("stride");
+  const [ifScaleCap, setIfScaleCap] = useState(128);
+  const [ifNClusters, setIfNClusters] = useState(5);
+  const [ifPerCluster, setIfPerCluster] = useState(5);
+  const [ifPcaComponents, setIfPcaComponents] = useState(5);
+  const [ifSeed, setIfSeed] = useState(0);
+  const [ifAdvancedOpen, setIfAdvancedOpen] = useState(false);
+  // image_features async generation state (decode + worker).
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [ifProgress, setIfProgress] = useState<{
+    phase: ProgressPhase;
+    done: number;
+    total: number;
+  } | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
   // Target (all videos vs current) + optional global frame-range restriction.
-  const [target, setTarget] = useState<GenerationTarget>("all");
+  // Default to the CURRENT video: least-surprising for a labeling workflow and,
+  // for image_features, avoids decoding every video in a multi-video project.
+  const [target, setTarget] = useState<GenerationTarget>(initialTarget);
   const [frameRangeEnabled, setFrameRangeEnabled] = useState(false);
   const [rangeFrom, setRangeFrom] = useState(1);
   const [rangeTo, setRangeTo] = useState(1000);
@@ -286,12 +323,61 @@ export function SuggestionsPanel({
    * applySuggestions helper). Pure dispatch — algorithm lives in
    * lib/suggestionStrategies.
    */
+  /**
+   * image_features generation: async decode + Worker clustering, with a live
+   * 2-phase progress bar and cancellation. On success it replaces the
+   * suggestion list exactly like the sync path; abort/error toast and leave the
+   * existing suggestions untouched.
+   */
+  const handleGenerateImageFeatures = async (videos: Video[]) => {
+    if (!labels) return;
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setIsGenerating(true);
+    setIfProgress({ phase: "decoding", done: 0, total: 0 });
+    try {
+      const params: ImageFeaturesParams = {
+        perVideo: ifSampleCount,
+        sampleMethod: ifSampleMethod,
+        scaleCap: ifScaleCap,
+        pcaComponents: ifPcaComponents,
+        nClusters: ifNClusters,
+        perCluster: ifPerCluster,
+        seed: ifSeed,
+        roiByVideo: imageFeatureRois,
+      };
+      const next = await runImageFeatureSuggestions(labels, videos, params, {
+        signal: controller.signal,
+        onProgress: (phase, done, total) => setIfProgress({ phase, done, total }),
+      });
+      applySuggestions(next);
+      setSelectedIdx(null);
+      toast.success(`Generated ${next.length} suggestion(s)`);
+    } catch (err) {
+      if ((err as Error)?.name === "AbortError") {
+        toast.info("Generation canceled");
+      } else {
+        console.error("Image-features generation failed:", err);
+        toast.error("Image-features generation failed");
+      }
+    } finally {
+      setIsGenerating(false);
+      setIfProgress(null);
+      abortRef.current = null;
+      setRoiDrawActive(false);
+    }
+  };
+
   const handleGenerate = () => {
     if (!labels) return;
     const videos =
       target === "current" && currentVideo
         ? [currentVideo]
         : labels.videos ?? [];
+    if (method === "image_features") {
+      void handleGenerateImageFeatures(videos);
+      return;
+    }
     const params: GenerateParams = {
       method,
       videos,
@@ -369,8 +455,8 @@ export function SuggestionsPanel({
               <SelectItem value="max_displacement">
                 {METHOD_LABELS.max_displacement}
               </SelectItem>
-              <SelectItem value="image_features" disabled>
-                Image Features
+              <SelectItem value="image_features">
+                {METHOD_LABELS.image_features}
               </SelectItem>
             </SelectContent>
           </Select>
@@ -556,6 +642,172 @@ export function SuggestionsPanel({
               className="h-7 w-16 text-xs"
               aria-label="Displacement threshold"
             />
+          </div>
+        )}
+
+        {method === "image_features" && (
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs text-muted-foreground shrink-0 flex-1">
+                Sample
+              </span>
+              <Input
+                type="number"
+                min={1}
+                max={3000}
+                value={ifSampleCount}
+                onChange={(e) =>
+                  setIfSampleCount(
+                    Math.max(1, parseIntInput(e.target.value, ifSampleCount))
+                  )
+                }
+                className="h-7 w-16 text-xs"
+                aria-label="Sample count"
+              />
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs text-muted-foreground shrink-0">
+                Sample by
+              </span>
+              <Select
+                value={ifSampleMethod}
+                onValueChange={(v) => setIfSampleMethod(v as "stride" | "random")}
+              >
+                <SelectTrigger
+                  className="h-7 text-xs flex-1"
+                  size="sm"
+                  aria-label="Sample method"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="stride">Stride</SelectItem>
+                  <SelectItem value="random">Random</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs text-muted-foreground shrink-0 flex-1">
+                Resolution
+              </span>
+              <Input
+                type="number"
+                min={16}
+                max={1024}
+                value={ifScaleCap}
+                onChange={(e) =>
+                  setIfScaleCap(
+                    Math.max(16, parseIntInput(e.target.value, ifScaleCap))
+                  )
+                }
+                className="h-7 w-16 text-xs"
+                aria-label="Resolution cap"
+              />
+              <span className="text-xs text-muted-foreground">px</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs text-muted-foreground shrink-0 flex-1">
+                Clusters
+              </span>
+              <Input
+                type="number"
+                min={1}
+                value={ifNClusters}
+                onChange={(e) =>
+                  setIfNClusters(
+                    Math.max(1, parseIntInput(e.target.value, ifNClusters))
+                  )
+                }
+                className="h-7 w-16 text-xs"
+                aria-label="Clusters"
+              />
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs text-muted-foreground shrink-0 flex-1">
+                Frames per cluster
+              </span>
+              <Input
+                type="number"
+                min={1}
+                value={ifPerCluster}
+                onChange={(e) =>
+                  setIfPerCluster(
+                    Math.max(1, parseIntInput(e.target.value, ifPerCluster))
+                  )
+                }
+                className="h-7 w-16 text-xs"
+                aria-label="Frames per cluster"
+              />
+            </div>
+            <p className="text-xs text-muted-foreground leading-snug">
+              ≈ {ifNClusters * ifPerCluster} suggestions per video.
+            </p>
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs text-muted-foreground shrink-0 flex-1">
+                Seed
+              </span>
+              <Input
+                type="number"
+                value={ifSeed}
+                onChange={(e) => setIfSeed(parseIntInput(e.target.value, ifSeed))}
+                className="h-7 w-16 text-xs"
+                aria-label="Seed"
+              />
+              <Button
+                variant="subtle"
+                size="xs"
+                aria-label="Reroll seed"
+                title="Reroll seed"
+                onClick={() => setIfSeed(Math.floor(Math.random() * 2 ** 31))}
+              >
+                {"⟳"}
+              </Button>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <Button
+                variant={roiDrawActive ? "default" : "subtle"}
+                size="xs"
+                disabled={!currentVideo}
+                onClick={() => setRoiDrawActive(!roiDrawActive)}
+              >
+                {roiDrawActive ? "Drawing…" : "Set region"}
+              </Button>
+              {currentVideo && imageFeatureRois.has(currentVideo) && (
+                <Button
+                  variant="subtle"
+                  size="xs"
+                  onClick={() => setImageFeatureRoi(currentVideo, null)}
+                >
+                  Clear region
+                </Button>
+              )}
+            </div>
+            <button
+              type="button"
+              className="text-xs text-muted-foreground underline decoration-dotted"
+              onClick={() => setIfAdvancedOpen((o) => !o)}
+            >
+              {ifAdvancedOpen ? "▾ Advanced" : "▸ Advanced"}
+            </button>
+            {ifAdvancedOpen && (
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs text-muted-foreground shrink-0 flex-1">
+                  PCA components
+                </span>
+                <Input
+                  type="number"
+                  min={1}
+                  value={ifPcaComponents}
+                  onChange={(e) =>
+                    setIfPcaComponents(
+                      Math.max(1, parseIntInput(e.target.value, ifPcaComponents))
+                    )
+                  }
+                  className="h-7 w-16 text-xs"
+                  aria-label="PCA components"
+                />
+              </div>
+            )}
           </div>
         )}
 
@@ -760,12 +1012,33 @@ export function SuggestionsPanel({
             Next {"▶"}
           </Button>
         </div>
-        {/* Edit row: Add current · Remove · Generate · Clear */}
+        {/* Image-features generation progress (2-phase: decoding then clustering). */}
+        {isGenerating && (
+          <div className="space-y-1">
+            <div className="h-1.5 w-full overflow-hidden rounded bg-muted">
+              <div
+                className="h-full bg-primary transition-all"
+                style={{
+                  width:
+                    ifProgress && ifProgress.total > 0
+                      ? `${(ifProgress.done / ifProgress.total) * 100}%`
+                      : "100%",
+                }}
+              />
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {ifProgress?.phase === "clustering"
+                ? "Clustering…"
+                : `Decoding ${ifProgress?.done ?? 0}/${ifProgress?.total ?? 0}`}
+            </p>
+          </div>
+        )}
+        {/* Edit row: Add current · Remove · Generate/Cancel · Clear */}
         <div className="flex gap-1">
           <Button
             variant="subtle"
             size="xs"
-            disabled={!currentVideo}
+            disabled={!currentVideo || isGenerating}
             onClick={addCurrentFrame}
           >
             Add current
@@ -773,18 +1046,28 @@ export function SuggestionsPanel({
           <Button
             variant="subtle"
             size="xs"
-            disabled={selectedIdx === null}
+            disabled={selectedIdx === null || isGenerating}
             onClick={removeSelected}
           >
             Remove
           </Button>
-          <Button variant="subtle" size="xs" onClick={handleGenerate}>
-            Generate
-          </Button>
+          {isGenerating ? (
+            <Button
+              variant="subtle"
+              size="xs"
+              onClick={() => abortRef.current?.abort()}
+            >
+              Cancel
+            </Button>
+          ) : (
+            <Button variant="subtle" size="xs" onClick={handleGenerate}>
+              Generate
+            </Button>
+          )}
           <Button
             variant="subtle"
             size="xs"
-            disabled={suggestions.length === 0}
+            disabled={suggestions.length === 0 || isGenerating}
             onClick={() => setClearConfirmOpen(true)}
           >
             Clear

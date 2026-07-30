@@ -171,11 +171,11 @@ Use this to track which PyQt features have been ported to sleap-app.
 - [x] Stride sampling
 - [x] Random sampling
 - [ ] Image features method (PCA + K-means)
-- [ ] Prediction score method
-- [ ] Velocity method
-- [ ] Frame chunk method
-- [ ] Max point displacement method
-- [ ] Add current frame as suggestion
+- [x] Prediction score method
+- [x] Velocity method
+- [x] Frame chunk method
+- [x] Max point displacement method
+- [x] Add current frame as suggestion
 
 **Videos Panel:**
 - [x] Video list with details

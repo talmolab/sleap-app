@@ -23,6 +23,7 @@ import type {
 } from "../types";
 import type { StatisticGraphType, Reduction } from "@/lib/statisticSeries";
 import type { QcMode } from "@/lib/instanceVisibility";
+import type { CropRect } from "@/lib/imageFeaturesCore";
 import {
   mergeVideoPrefixSwap,
   type VideoPrefixSwap,
@@ -167,13 +168,6 @@ export interface AppState {
   fit: boolean;
   fitSelection: boolean;
   /**
-   * One-shot request to pan the viewport so the selected instance is centered,
-   * at the current zoom (unlike `fitSelection`, which also zooms to fit). Set
-   * from the Instances panel on click; VideoPlayer consumes and clears it.
-   * Transient — not persisted.
-   */
-  centerSelection: boolean;
-  /**
    * Monotonically-increasing one-shot signal to reset the main video canvas
    * view to its default (zoom = 1, no pan, fit-frame). Bumped by `resetView`
    * from the toolbar button / `R` hotkey; VideoPlayer subscribes and applies
@@ -217,6 +211,20 @@ export interface AppState {
   seekbarHeaderReduction: Reduction;
   /** Which frames stepping/playback/seekbar are confined to (#137). */
   navigationDomain: NavigationDomain;
+
+  // === Image-features suggestions ROI (transient; session-only, NOT persisted) ===
+  /**
+   * Per-video crop region (source-frame pixels) used by the image-features
+   * suggestion method to focus clustering on a field-of-view. Session-only,
+   * like every other suggestion-generation parameter.
+   */
+  imageFeatureRois: Map<Video, CropRect>;
+  /** True while the canvas is in ROI-draw mode (drag to set the region). */
+  imageFeatureRoiDrawActive: boolean;
+  /** Set (or clear, when `rect` is null) the current video's image-features ROI. */
+  setImageFeatureRoi: (video: Video, rect: CropRect | null) => void;
+  /** Toggle canvas ROI-draw mode. */
+  setImageFeatureRoiDrawActive: (active: boolean) => void;
 
   // Per-instance visibility (transient; reset on frame change; NOT persisted)
   hiddenInstances: Set<Instance>;
@@ -521,7 +529,6 @@ export const useAppStore = create<AppState>()(
       edgeStyle: "Line" as EdgeStyle,
       fit: false,
       fitSelection: false,
-      centerSelection: false,
       resetViewNonce: 0,
       colorPredicted: false,
       defaultToPan: false,
@@ -663,9 +670,39 @@ export const useAppStore = create<AppState>()(
             clearTransientVisibility(state);
           }
           state.video = video;
-          state.frameIdx = 0;
+          // Mirror legacy SLEAP's switch_frame(video): jump to the video's
+          // last labeled frame rather than hardcoding frame 0. Many pkg.slp
+          // videos only embed specific labeled source frames (not a
+          // contiguous range from 0) — landing on an unembedded frame 0
+          // makes getFrame() return null and silently leaves the PREVIOUS
+          // video's frame on screen (looks like the click did nothing).
+          let targetFrameIdx = 0;
+          const frames = state.labels?.labeledFrames;
+          if (frames) {
+            for (let i = frames.length - 1; i >= 0; i--) {
+              if (frames[i].video === video) {
+                targetFrameIdx = frames[i].frameIdx;
+                break;
+              }
+            }
+          }
+          state.frameIdx = targetFrameIdx;
           state.instance = null;
           state.labeledFrame = null;
+        }),
+
+      imageFeatureRois: new Map(),
+      imageFeatureRoiDrawActive: false,
+      setImageFeatureRoi: (video, rect) =>
+        set((state) => {
+          // Draft Video/Map types are structurally identical to the runtime ones.
+          const rois = state.imageFeatureRois as Map<Video, CropRect>;
+          if (rect) rois.set(video, rect);
+          else rois.delete(video);
+        }),
+      setImageFeatureRoiDrawActive: (active) =>
+        set((state) => {
+          state.imageFeatureRoiDrawActive = active;
         }),
 
       markVideoUpdated: () =>

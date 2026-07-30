@@ -60,11 +60,14 @@ function sampleIndices(n: number, count = 8): number[] {
  *
  * The folder need NOT be the exact leaf directory: we detect the subfolder
  * depth by voting across a sample of frames (probing `<folder>/<basename>`,
- * `<folder>/<subdir>/<basename>`, …) and apply the winning depth to every frame
- * (they share a layout). So the user can pick ANY ancestor — the project folder,
- * a parent — instead of opening the leaf image directory, which on a network
- * mount with 10k+ files can freeze the native file dialog. Pure +
- * decoder-independent (unit-tested here; the decode is covered by E2E).
+ * `<folder>/<subdir>/<basename>`, …) and apply the winning depth to every frame.
+ * So the user can pick ANY ancestor — the project folder, a parent — instead of
+ * opening the leaf image directory, which on a network mount with 10k+ files can
+ * freeze the native file dialog. Frames that DON'T match the voted depth (a
+ * mixed-depth sequence, e.g. a COCO dataset with images at varying subfolder
+ * depths) fall back to per-frame resolution, so no frame is lost to the
+ * majority's layout. Pure + decoder-independent (unit-tested here; the decode is
+ * covered by E2E).
  */
 export async function resolveImageFramesInFolder(
   frames: string[],
@@ -104,7 +107,26 @@ export async function resolveImageFramesInFolder(
   const located = frames.map((f) => dir + sep + tailOf(f));
   const missing: string[] = [];
   for (let i = 0; i < frames.length; i++) {
-    if (!(await exists(located[i]))) missing.push(frames[i]);
+    if (await exists(located[i])) continue;
+    // The voted depth is wrong for THIS frame — a mixed-depth sequence (e.g. a
+    // COCO dataset with images at varying subfolder depths, some in the root and
+    // some under subdirs). Resolve it at its OWN depth: keep its stored path
+    // as-is (an already-correct absolute path), else graft progressively longer
+    // tails under `dir`, closest-first. Only mismatched frames pay these extra
+    // probes; a uniform sequence resolves entirely at the voted depth as before.
+    const perFrame = [
+      frames[i],
+      ...tailGraftCandidates(frames[i], dir, { includeFullPath: true }),
+    ];
+    let resolved: string | null = null;
+    for (const cand of perFrame) {
+      if (await exists(cand)) {
+        resolved = cand;
+        break;
+      }
+    }
+    if (resolved) located[i] = resolved;
+    else missing.push(frames[i]);
   }
   return { located, missing };
 }

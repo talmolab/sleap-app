@@ -24,6 +24,7 @@ import {
   renderHoveredNodeHighlight,
   renderHoverInstanceBBox,
   renderMarqueeRect,
+  renderRoiRect,
   nodesInRect,
   makeNodeKey,
   parseNodeKey,
@@ -150,10 +151,13 @@ export function VideoPlayer() {
   }, [frameHistogram]);
   const defaultToPan = useAppStore((s) => s.defaultToPan);
   const fitSelection = useAppStore((s) => s.fitSelection);
-  const centerSelection = useAppStore((s) => s.centerSelection);
   const resetViewNonce = useAppStore((s) => s.resetViewNonce);
   const areaDeleteMode = useAppStore((s) => s.areaDeleteMode);
   const showCrosshair = useAppStore((s) => s.showCrosshair);
+  // Image-features ROI crop tool (shared with the Suggestions panel).
+  const imageFeatureRoiDrawActive = useAppStore((s) => s.imageFeatureRoiDrawActive);
+  const setImageFeatureRoi = useAppStore((s) => s.setImageFeatureRoi);
+  const imageFeatureRois = useAppStore((s) => s.imageFeatureRois);
 
   // Local zoom/pan state
   const [zoom, setZoom] = useState(1);
@@ -185,9 +189,12 @@ export function VideoPlayer() {
 
   // Multi-node selection state (local/ephemeral)
   const [selectedNodes, setSelectedNodes] = useState<Set<string>>(new Set());
-  const [interactionMode, setInteractionMode] = useState<"idle" | "marquee" | "dragging">("idle");
+  const [interactionMode, setInteractionMode] = useState<"idle" | "marquee" | "dragging" | "roi">("idle");
   const [marqueeStart, setMarqueeStart] = useState<{ x: number; y: number } | null>(null);
   const [marqueeEnd, setMarqueeEnd] = useState<{ x: number; y: number } | null>(null);
+  // Image-features ROI rubber-band (image-pixel coords; live only while drawing).
+  const [roiStart, setRoiStart] = useState<{ x: number; y: number } | null>(null);
+  const [roiEnd, setRoiEnd] = useState<{ x: number; y: number } | null>(null);
   // Area-delete rectangle state
   const [areaDeleteStart, setAreaDeleteStart] = useState<{ x: number; y: number } | null>(null);
   const [areaDeleteEnd, setAreaDeleteEnd] = useState<{ x: number; y: number } | null>(null);
@@ -542,6 +549,13 @@ export function VideoPlayer() {
           }
           if (cancelled) return;
           if (!video.backend) {
+            // No usable backend (missing file, failed lazy open, unsupported
+            // codec) — blank the canvas instead of leaving the previously
+            // viewed video's frame on screen, which reads as "nothing
+            // happened" when a Locate-video placeholder is the only cue.
+            frameBitmapRef.current = null;
+            setFrameDims((prev) => (prev[0] === 0 && prev[1] === 0 ? prev : [0, 0]));
+            setBitmapVersion((v) => v + 1);
             useAppStore.getState().set("frameLoading", false);
             return;
           }
@@ -664,7 +678,7 @@ export function VideoPlayer() {
   useEffect(() => {
     const canvas = frameCanvasRef.current;
     const bmp = frameBitmapRef.current;
-    if (!canvas || !bmp) return;
+    if (!canvas) return;
 
     const [cw, ch] = containerSize;
     if (cw === 0 || ch === 0) return;
@@ -674,6 +688,15 @@ export function VideoPlayer() {
     canvas.height = ch * dpr;
     canvas.style.width = `${cw}px`;
     canvas.style.height = `${ch}px`;
+
+    if (!bmp) {
+      // No frame to show (e.g. the current video's backend failed to
+      // resolve) — clear rather than leave the last-drawn video's frame up.
+      const clearCtx = canvas.getContext("2d");
+      clearCtx?.scale(dpr, dpr);
+      clearCtx?.clearRect(0, 0, cw, ch);
+      return;
+    }
 
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
@@ -783,8 +806,53 @@ export function VideoPlayer() {
     ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, cw, ch);
 
+    // Apply the fit + zoom/pan + rotation transform (image-pixel space). Shared
+    // so the ROI overlay can be drawn on the early-return path too.
+    const applyImageTransform = () => {
+      ctx.translate(offsetX + panX, offsetY + panY);
+      ctx.scale(baseScale * zoom, baseScale * zoom);
+      if (rotation === 90) {
+        ctx.translate(fh, 0);
+        ctx.rotate(Math.PI / 2);
+      } else if (rotation === 180) {
+        ctx.translate(fw, fh);
+        ctx.rotate(Math.PI);
+      } else if (rotation === 270) {
+        ctx.translate(0, fw);
+        ctx.rotate((3 * Math.PI) / 2);
+      }
+    };
+    // Image-features ROI overlay (persisted region + live rubber-band). Drawn
+    // whenever ROI-draw mode is active — independent of instances, so it must
+    // render on unlabeled frames / when instances are hidden too. Assumes the
+    // image transform is already applied.
+    const paintRoi = () => {
+      if (!imageFeatureRoiDrawActive) return;
+      const persisted = video ? imageFeatureRois.get(video) : undefined;
+      if (persisted) {
+        renderRoiRect(
+          ctx,
+          persisted.x,
+          persisted.y,
+          persisted.x + persisted.width,
+          persisted.y + persisted.height,
+          baseScale * zoom
+        );
+      }
+      if (roiStart && roiEnd) {
+        renderRoiRect(ctx, roiStart.x, roiStart.y, roiEnd.x, roiEnd.y, baseScale * zoom);
+      }
+    };
+
     if (!labeledFrame || !showInstances) {
       renderedInstancesRef.current = [];
+      // The ROI overlay is independent of instance rendering — still draw it.
+      if (imageFeatureRoiDrawActive) {
+        ctx.save();
+        applyImageTransform();
+        paintRoi();
+        ctx.restore();
+      }
       return;
     }
 
@@ -978,6 +1046,9 @@ export function VideoPlayer() {
       renderMarqueeRect(ctx, marqueeStart.x, marqueeStart.y, marqueeEnd.x, marqueeEnd.y, baseScale * zoom);
     }
 
+    // Image-features ROI overlay (also drawn on the early-return path above).
+    paintRoi();
+
     // Render area-delete rectangle (red dashed)
     if (areaDeleteStart && areaDeleteEnd) {
       const adx1 = areaDeleteStart.x;
@@ -1032,6 +1103,11 @@ export function VideoPlayer() {
     hoveredNode,
     marqueeStart,
     marqueeEnd,
+    roiStart,
+    roiEnd,
+    imageFeatureRoiDrawActive,
+    imageFeatureRois,
+    video,
     areaDeleteStart,
     areaDeleteEnd,
     labels,
@@ -1268,7 +1344,11 @@ export function VideoPlayer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fit, labeledFrame]);
 
-  // Fit view to selected instance (one-shot action triggered from menu)
+  // Fit view to selected instance (one-shot action): zooms and pans so the
+  // selected instance's visible-node bounding box (+ padding) fills the
+  // viewport. Triggered from the "Fit View to Selection" menu item, the
+  // Shift+Up/Down cycle-instance shortcut, and clicking an instance in the
+  // Instances panel.
   useEffect(() => {
     if (!fitSelection || !selectedInstance) return;
     // Reset the flag immediately so this is a one-shot action
@@ -1311,45 +1391,9 @@ export function VideoPlayer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fitSelection]);
 
-  // Snap view to the selected instance (one-shot): pan so the instance's
-  // visible-node bounding box is centered at the CURRENT zoom, without changing
-  // zoom. Fired when an instance is clicked in the Instances panel — unlike
-  // "Fit View to Selection" above, this keeps the zoom fixed so the jump stays
-  // un-disorienting. Does nothing if the instance has no visible points.
-  useEffect(() => {
-    if (!centerSelection || !selectedInstance) return;
-    // One-shot: clear the request immediately.
-    useAppStore.getState().set("centerSelection", false);
-
-    const [cw, ch] = containerSize;
-    if (cw === 0 || ch === 0) return;
-
-    const instances = renderedInstancesRef.current;
-    const selectedRendered = instances.find((ri) => ri.isSelected);
-    if (!selectedRendered) return;
-
-    const visibleNodes = selectedRendered.nodes.filter((n) => n.visible);
-    if (visibleNodes.length === 0) return;
-
-    const xs = visibleNodes.map((n) => n.x);
-    const ys = visibleNodes.map((n) => n.y);
-    const centerX = (Math.min(...xs) + Math.max(...xs)) / 2;
-    const centerY = (Math.min(...ys) + Math.max(...ys)) / 2;
-
-    // Pan so scene point (centerX, centerY) lands at the viewport center, at the
-    // current zoom (mirrors the centering math in the fit effects above).
-    const newPanX = cw / 2 - offsetX - centerX * baseScale * zoom;
-    const newPanY = ch / 2 - offsetY - centerY * baseScale * zoom;
-
-    viewRef.current = { zoom, panX: newPanX, panY: newPanY };
-    setPanX(newPanX);
-    setPanY(newPanY);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [centerSelection]);
-
   // Reset the view to default (zoom=1, no pan, fit-frame) on demand. Driven by a
   // one-shot nonce bumped from the toolbar button / 'R' hotkey — mirrors the
-  // `fit`/`centerSelection` store-signal pattern (the toolbar/hotkey live
+  // `fit`/`fitSelection` store-signal pattern (the toolbar/hotkey live
   // outside this component and can't call setZoom/setPan directly). The initial
   // nonce of 0 is skipped so a fresh mount doesn't fire a spurious reset.
   useEffect(() => {
@@ -1509,6 +1553,16 @@ export function VideoPlayer() {
       }
 
       if (e.button !== 0) return; // Only left-click for interaction
+
+      // Image-features ROI draw mode takes priority: drag to set the crop region.
+      if (imageFeatureRoiDrawActive) {
+        e.preventDefault();
+        const p = canvasToScene(e.clientX, e.clientY);
+        setInteractionMode("roi");
+        setRoiStart(p);
+        setRoiEnd(p);
+        return;
+      }
 
       // Cmd/Ctrl+pan-mode+left-click: zoom-drag mode
       if (shouldPan && (isCmdHeld || e.metaKey || e.ctrlKey)) {
@@ -1784,7 +1838,7 @@ export function VideoPlayer() {
       setMarqueeStart({ x, y });
       setMarqueeEnd({ x, y });
     },
-    [canvasToScene, markerSize, panX, panY, zoom, baseScale, shouldPan, isCmdHeld, offsetX, offsetY, selectedNodes, areaDeleteMode]
+    [canvasToScene, markerSize, panX, panY, zoom, baseScale, shouldPan, isCmdHeld, offsetX, offsetY, selectedNodes, areaDeleteMode, imageFeatureRoiDrawActive]
   );
 
   const handleMouseMove = useCallback(
@@ -1827,6 +1881,13 @@ export function VideoPlayer() {
       if (isAreaDeleting && areaDeleteStart) {
         const { x, y } = canvasToScene(e.clientX, e.clientY);
         setAreaDeleteEnd({ x, y });
+        useAppStore.getState().bumpOverlayVersion();
+        return;
+      }
+
+      // ROI-draw mode: update the region rubber-band.
+      if (interactionMode === "roi") {
+        setRoiEnd(canvasToScene(e.clientX, e.clientY));
         useAppStore.getState().bumpOverlayVersion();
         return;
       }
@@ -1966,6 +2027,23 @@ export function VideoPlayer() {
       setIsPanning(false);
     }
 
+    if (interactionMode === "roi" && roiStart && roiEnd) {
+      const x = Math.min(roiStart.x, roiEnd.x);
+      const y = Math.min(roiStart.y, roiEnd.y);
+      const width = Math.abs(roiEnd.x - roiStart.x);
+      const height = Math.abs(roiEnd.y - roiStart.y);
+      const currentVideo = useAppStore.getState().video;
+      // Ignore an accidental click / tiny drag (preserve any existing region).
+      if (currentVideo && width > 2 && height > 2) {
+        setImageFeatureRoi(currentVideo, { x, y, width, height });
+      }
+      setRoiStart(null);
+      setRoiEnd(null);
+      setInteractionMode("idle");
+      useAppStore.getState().bumpOverlayVersion();
+      return;
+    }
+
     if (interactionMode === "marquee" && marqueeStart && marqueeEnd) {
       const instances = renderedInstancesRef.current;
       const newSelection = nodesInRect(instances, marqueeStart.x, marqueeStart.y, marqueeEnd.x, marqueeEnd.y);
@@ -1988,7 +2066,7 @@ export function VideoPlayer() {
       dragStartClient.current = null;
       setInteractionMode("idle");
     }
-  }, [isDragging, isPanning, isZoomDragging, interactionMode, marqueeStart, marqueeEnd, isAreaDeleting, areaDeleteStart, areaDeleteEnd]);
+  }, [isDragging, isPanning, isZoomDragging, interactionMode, marqueeStart, marqueeEnd, isAreaDeleting, areaDeleteStart, areaDeleteEnd, roiStart, roiEnd, setImageFeatureRoi]);
 
   // Zoom with mouse wheel (towards pointer), Alt+Scroll for rotation
   // Use native event listener with { passive: false } so preventDefault() works
@@ -2249,9 +2327,30 @@ export function VideoPlayer() {
       const nodeHit = hitTestNode(instances, x, y, (markerSize * 2) / (baseScale * zoom));
       if (nodeHit) {
         const lf = useAppStore.getState().labeledFrame;
-        if (lf) {
-          useAppStore.getState().setInstance(lf.instances[nodeHit.instanceIdx]);
+        const inst = lf?.instances[nodeHit.instanceIdx];
+        if (inst) {
+          useAppStore.getState().setInstance(inst);
         }
+
+        // Right-click directly toggles a single node's visibility, mirroring
+        // legacy sleap — no menu pops up for this click. Predicted instances
+        // can't be edited, and a node that's part of a multi-node selection
+        // keeps going through the menu so the "toggle N selected" action
+        // stays reachable.
+        const nodeKey = makeNodeKey(nodeHit.instanceIdx, nodeHit.nodeIdx);
+        const isMultiSelected = selectedNodes.size > 1 && selectedNodes.has(nodeKey);
+        if (inst && !(inst instanceof PredictedInstance) && !isMultiSelected) {
+          const point = inst.points[nodeHit.nodeIdx];
+          if (point) {
+            commandContext.execute(BeginEdit);
+            point.visible = !point.visible;
+            useAppStore.getState().markChanged();
+            useAppStore.getState().touchFrame();
+            useAppStore.getState().bumpOverlayVersion();
+          }
+          return;
+        }
+
         setContextMenu({
           x: e.clientX,
           y: e.clientY,
@@ -2285,7 +2384,7 @@ export function VideoPlayer() {
         nodeIdx: null,
       });
     },
-    [canvasToScene, markerSize, zoom, baseScale]
+    [canvasToScene, markerSize, zoom, baseScale, selectedNodes]
   );
 
   // Full-canvas crosshair while zoomed (View ▸ "Crosshair When Zoomed"). Only
@@ -2309,7 +2408,7 @@ export function VideoPlayer() {
         ref={containerRef}
         className={cn(
           "flex-1 relative overflow-hidden bg-background min-h-0",
-          isPanning ? "cursor-grabbing" : isZoomDragging ? "cursor-zoom-in" : (shouldPan && isCmdHeld) ? "cursor-zoom-in" : shouldPan ? "cursor-grab" : isDragging ? "cursor-grabbing" : areaDeleteMode ? "cursor-crosshair" : interactionMode === "marquee" ? "cursor-crosshair" : labelingMode === "seed" ? "cursor-cell" : isKeypointPass ? "cursor-cell" : isPlacingNodes ? "cursor-cell" : hoveredNode ? "cursor-pointer" : "cursor-default"
+          imageFeatureRoiDrawActive ? "cursor-crosshair" : isPanning ? "cursor-grabbing" : isZoomDragging ? "cursor-zoom-in" : (shouldPan && isCmdHeld) ? "cursor-zoom-in" : shouldPan ? "cursor-grab" : isDragging ? "cursor-grabbing" : areaDeleteMode ? "cursor-crosshair" : interactionMode === "marquee" ? "cursor-crosshair" : labelingMode === "seed" ? "cursor-cell" : isKeypointPass ? "cursor-cell" : isPlacingNodes ? "cursor-cell" : hoveredNode ? "cursor-pointer" : "cursor-default"
         )}
         onMouseMove={crosshairActive ? handleCrosshairMove : undefined}
         onMouseLeave={

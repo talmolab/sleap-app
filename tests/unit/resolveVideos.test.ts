@@ -216,6 +216,38 @@ describe("resolveImageFramesInFolder", () => {
     expect(missing).toEqual([]);
   });
 
+  it("resolves a MIXED-depth sequence (frames at different subdir depths) per-frame", async () => {
+    // COCO datasets can reference images at varying depths (some in the folder
+    // root, some in subfolders). A single voted depth applied to every frame
+    // would drop the subfolder for the odd-depth frames; each frame must resolve
+    // at its OWN depth.
+    const frames = ["/old/a.png", "/old/sub/b.png"];
+    const present = new Set(["/imgs/a.png", "/imgs/sub/b.png"]);
+    const exists = async (p: string) => present.has(p);
+    const { located, missing } = await resolveImageFramesInFolder(
+      frames,
+      "/imgs",
+      exists
+    );
+    expect(located).toEqual(["/imgs/a.png", "/imgs/sub/b.png"]);
+    expect(missing).toEqual([]);
+  });
+
+  it("keeps an already-correct absolute frame path that isn't under the folder", async () => {
+    // A frame whose stored absolute path already exists (e.g. COCO with absolute
+    // file_names) should be kept as-is when it can't be grafted under the folder.
+    const frames = ["/mnt/data/a.png"];
+    const present = new Set(["/mnt/data/a.png"]);
+    const exists = async (p: string) => present.has(p);
+    const { located, missing } = await resolveImageFramesInFolder(
+      frames,
+      "/imgs",
+      exists
+    );
+    expect(located).toEqual(["/mnt/data/a.png"]);
+    expect(missing).toEqual([]);
+  });
+
   it("recovers present frames when frame 0 is missing (depth voted from other frames)", async () => {
     // Frame 0 was deleted; the rest live in a subfolder under the picked parent.
     // Depth must be voted from the surviving frames, not defaulted to basename.
