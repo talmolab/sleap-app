@@ -22,6 +22,8 @@ import {
   loadAnalysisProjectFromPath,
   loadCocoProjectFromFile,
   loadCocoProjectFromPath,
+  loadDlcFromTauriDir,
+  loadDlcFromBrowserDir,
 } from "../lib/loadProject";
 import { saveProjectAsSlp } from "../lib/saveProject";
 import { confirmDiscardUnsavedWork } from "../lib/unsavedGuard";
@@ -237,6 +239,103 @@ export const ImportCocoCommand: Command = {
       await loadCocoProjectFromFile(result);
     }
 
+    void ctx;
+  },
+};
+
+/** Directory of the given file path (POSIX or Windows separators). */
+function parentDir(p: string): string {
+  const cut = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
+  return cut > 0 ? p.slice(0, cut) : p;
+}
+
+/**
+ * Browser directory picker (File System Access API). Returns the chosen
+ * directory handle, or null if unavailable or cancelled. DLC datasets are file
+ * trees, so the browser must pick a folder (a single-file pick can't reach
+ * sibling images/config); Tauri uses the native file/dir dialog instead.
+ */
+async function pickBrowserDlcDir(): Promise<unknown | null> {
+  if (typeof window === "undefined" || !("showDirectoryPicker" in window)) {
+    toast.error("Folder picker not available in this browser", {
+      description:
+        "DeepLabCut import needs the File System Access API (Chrome/Edge), " +
+        "or use the desktop app.",
+    });
+    return null;
+  }
+  try {
+    return await (
+      window as unknown as {
+        showDirectoryPicker: (o?: unknown) => Promise<unknown>;
+      }
+    ).showDirectoryPicker({ id: "sleap-import-dlc", mode: "read" });
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") return null;
+    throw err;
+  }
+}
+
+/**
+ * Import a single DeepLabCut dataset (File > Import > DeepLabCut dataset...).
+ * Tauri: pick a `.csv` or `config.yaml` and import its folder (a `config.yaml`
+ * imports the whole project; a bare CSV imports that dataset). Browser: pick the
+ * dataset/project folder (File System Access API).
+ */
+export const ImportDlcCommand: Command = {
+  name: "ImportDlc",
+  topics: [],
+  skipAutoSnapshot: true,
+  async execute(ctx: CommandContext) {
+    const platform = await getPlatform();
+    if (platform.isTauri) {
+      const result = await platform.showOpenDialog({
+        filters: [{ name: "DeepLabCut dataset", extensions: ["yaml", "csv"] }],
+      });
+      if (typeof result !== "string") return;
+      // Enumerate the picked file's folder, but import exactly what was picked
+      // (a config .yaml → its project; a .csv → that dataset).
+      await loadDlcFromTauriDir(
+        parentDir(result),
+        "single",
+        platform.readFile,
+        platform.exists,
+        result
+      );
+    } else {
+      const dir = await pickBrowserDlcDir();
+      if (!dir) return;
+      await loadDlcFromBrowserDir(dir, "single");
+    }
+    void ctx;
+  },
+};
+
+/**
+ * Import many DeepLabCut datasets from a parent folder, merged into one project
+ * (File > Import > Multiple DeepLabCut datasets from folder...). Loads every
+ * dataset CSV one folder deep and unifies them (matches PyQt SLEAP).
+ */
+export const ImportDlcFolderCommand: Command = {
+  name: "ImportDlcFolder",
+  topics: [],
+  skipAutoSnapshot: true,
+  async execute(ctx: CommandContext) {
+    const platform = await getPlatform();
+    if (platform.isTauri) {
+      const result = await platform.showOpenDialog({ directory: true });
+      if (typeof result !== "string") return;
+      await loadDlcFromTauriDir(
+        result,
+        "folder",
+        platform.readFile,
+        platform.exists
+      );
+    } else {
+      const dir = await pickBrowserDlcDir();
+      if (!dir) return;
+      await loadDlcFromBrowserDir(dir, "folder");
+    }
     void ctx;
   },
 };

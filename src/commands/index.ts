@@ -16,6 +16,8 @@ export {
   OpenProjectCommand,
   ImportAnalysisH5Command,
   ImportCocoCommand,
+  ImportDlcCommand,
+  ImportDlcFolderCommand,
   SaveProjectCommand,
   SaveAsProjectCommand,
   ExportJsonCommand,

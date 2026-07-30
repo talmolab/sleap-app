@@ -22,6 +22,8 @@ import {
   OpenProjectCommand,
   ImportAnalysisH5Command,
   ImportCocoCommand,
+  ImportDlcCommand,
+  ImportDlcFolderCommand,
   SaveProjectCommand,
   SaveAsProjectCommand,
   ExportJsonCommand,
@@ -134,6 +136,12 @@ function FileMenu() {
         </MenubarItem>
         <MenubarItem onClick={() => exec(ImportCocoCommand)}>
           Import COCO...
+        </MenubarItem>
+        <MenubarItem onClick={() => exec(ImportDlcCommand)}>
+          DeepLabCut dataset...
+        </MenubarItem>
+        <MenubarItem onClick={() => exec(ImportDlcFolderCommand)}>
+          Multiple DeepLabCut datasets from folder...
         </MenubarItem>
         <MenubarSub>
           <MenubarSubTrigger disabled={!projectLoaded}>Replace Videos...</MenubarSubTrigger>
