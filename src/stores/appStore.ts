@@ -255,6 +255,7 @@ export interface AppState {
   selectToFrameDialogOpen: boolean;
   deletePredictionsDialogOpen: boolean;
   exportDialogOpen: boolean;
+  exportClipDialogOpen: boolean;
   shortcutsDialogOpen: boolean;
   helpDialogOpen: boolean;
   quitConfirmOpen: boolean;
@@ -307,6 +308,7 @@ export interface AppState {
   setSelectToFrameDialogOpen: (open: boolean) => void;
   setDeletePredictionsDialogOpen: (open: boolean) => void;
   setExportDialogOpen: (open: boolean) => void;
+  setExportClipDialogOpen: (open: boolean) => void;
   setShortcutsDialogOpen: (open: boolean) => void;
   setHelpDialogOpen: (open: boolean) => void;
   enterPlacementMode: () => void;
@@ -478,6 +480,7 @@ export const useAppStore = create<AppState>()(
       selectToFrameDialogOpen: false,
       deletePredictionsDialogOpen: false,
       exportDialogOpen: false,
+      exportClipDialogOpen: false,
       shortcutsDialogOpen: false,
       helpDialogOpen: false,
       quitConfirmOpen: false,
@@ -755,6 +758,11 @@ export const useAppStore = create<AppState>()(
       setExportDialogOpen: (open) =>
         set((state) => {
           state.exportDialogOpen = open;
+        }),
+
+      setExportClipDialogOpen: (open) =>
+        set((state) => {
+          state.exportClipDialogOpen = open;
         }),
 
       setShortcutsDialogOpen: (open) =>

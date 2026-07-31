@@ -190,6 +190,12 @@ function FileMenu() {
         >
           Export Labels Package...
         </MenubarItem>
+        <MenubarItem
+          disabled={!projectLoaded}
+          onClick={() => useAppStore.getState().setExportClipDialogOpen(true)}
+        >
+          Export Labeled Clip (Video)...
+        </MenubarItem>
         {isTauri && (
           <>
             <MenubarSeparator />

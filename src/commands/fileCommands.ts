@@ -85,7 +85,7 @@ async function saveTextFile(
  * writeFile. Browser: File System Access `showSaveFilePicker` when available,
  * else a download. Returns the saved path/name, or null if the user cancelled.
  */
-async function saveBytesFile(
+export async function saveBytesFile(
   bytes: Uint8Array,
   suggestedName: string,
   filter: { name: string; ext: string }

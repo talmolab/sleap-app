@@ -33,6 +33,7 @@ import { NewProjectDialog } from "../dialogs/NewProjectDialog";
 import { SelectToFrameDialog } from "../dialogs/SelectToFrameDialog";
 import { DeletePredictionsDialog } from "../dialogs/DeletePredictionsDialog";
 import { ExportDialog } from "../dialogs/ExportDialog";
+import { ExportClipDialog } from "../dialogs/ExportClipDialog";
 import { ShortcutsDialog } from "../dialogs/ShortcutsDialog";
 import { HelpDialog } from "../dialogs/HelpDialog";
 import { useAppStore } from "../../stores/appStore";
@@ -218,6 +219,7 @@ export function AppShell() {
         open={exportDialogOpen}
         onOpenChange={setExportDialogOpen}
       />
+      <ExportClipDialog />
       <ShortcutsDialog
         open={shortcutsDialogOpen}
         onOpenChange={setShortcutsDialogOpen}
