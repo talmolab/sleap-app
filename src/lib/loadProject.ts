@@ -126,7 +126,7 @@ async function openFirstLabeledFrame(labels: Labels): Promise<void> {
  * `@tauri-apps/api/core` import fails there (e.g. under the unit-test runner)
  * and is swallowed, leaving whatever image reader the browser build uses.
  */
-async function installTauriImageReader(): Promise<void> {
+export async function installTauriImageReader(): Promise<void> {
   try {
     const { invoke } = await import("@tauri-apps/api/core");
     const nativeReadImage = async (p: string): Promise<Uint8Array> => {

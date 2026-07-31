@@ -6,6 +6,7 @@ import { useWindowTitle } from "./hooks/useWindowTitle";
 import { useAppStore } from "./stores/appStore";
 import { applyHashState, initUrlStateSync } from "./lib/urlState";
 import { loadProjectFromPath } from "./lib/loadProject";
+import { maybeRestoreTauriDraft } from "./lib/draftRestoreTauri";
 import { isTauri } from "./platform";
 import { setupCloseHandler } from "./lib/quit";
 import { toast } from "./lib/notify";
@@ -63,12 +64,18 @@ export default function App() {
   const hashApplied = useRef(false);
 
   // Open a file passed on launch — a CLI argument, or a macOS file-association
-  // open that fired before the webview was ready (Tauri only).
+  // open that fired before the webview was ready (Tauri only). If nothing was
+  // opened on launch, offer to recover any lingering crash-recovery draft (a
+  // desktop autosave that survived a crash / unsaved quit). Chained AFTER the
+  // initial-file load so a file-association launch wins and we don't double-prompt.
   useEffect(() => {
     if (!isTauri) return;
-    loadInitialFileIfAny().catch((err) => {
-      console.warn("[app] Failed to load initial file:", err);
-    });
+    (async () => {
+      await loadInitialFileIfAny().catch((err) => {
+        console.warn("[app] Failed to load initial file:", err);
+      });
+      await maybeRestoreTauriDraft();
+    })();
   }, []);
 
   // macOS file-association / "Open With" opens while the app is already running

@@ -29,6 +29,7 @@ import {
 } from "@/lib/saveEmbeddedPkgOpfs";
 import { newDraftPath, removeLabelsDraft } from "@/lib/labelsDraft";
 import { recordDraftSave, deleteDraftEntry } from "@/lib/draftManifest";
+import { removeTauriDraft } from "@/lib/tauriDraft";
 import { isSameSaveTarget } from "@/lib/saveTargetGuard";
 import { shouldOverwriteOpenedFile } from "@/lib/browserSaveTarget";
 
@@ -339,6 +340,16 @@ export async function saveProjectAsSlp(
         }
         store.set("projectPath", savePath);
         displayName = savePath;
+      }
+
+      // A verified write to the real disk file makes the crash-recovery draft
+      // redundant — drop it + its manifest entry so it can't trigger a spurious
+      // "recover unsaved work?" prompt on the next launch. (A cancelled Save-As
+      // returned above, before reaching here, so the draft is kept in that case.)
+      const tauriDraft = store.labelsDraftPath;
+      if (tauriDraft) {
+        void removeTauriDraft(tauriDraft);
+        store.set("labelsDraftPath", null);
       }
     } else {
       // Browser save (EDL model): for a LARGE embedded pkg.slp the LABELS are the

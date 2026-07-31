@@ -1,15 +1,19 @@
 /**
- * Debounced background auto-save of the labels DRAFT for the browser EDL-style
- * fast-save (see labelsDraft.ts). Like a video editor auto-saving its edit list:
- * as you edit, the labels are persisted to a small local OPFS draft a beat after
- * you stop — instant, silent, no toast, no image copy. The heavy full-file
- * "compile" stays a manual, explicit Export.
+ * Debounced background auto-save of the labels DRAFT — a crash-recovery net for
+ * BOTH runtimes. Like a video editor auto-saving its edit list: as you edit, the
+ * labels are persisted to a small local draft a beat after you stop — instant,
+ * silent, no toast, no image copy (refs only, NO pixels → no memory ceiling).
  *
- * EVERY browser project gets this crash-recovery net (the browser is an unstable
- * environment), not just large pkgs. For a large embedded pkg the draft is also
- * ⌘S's primary save target, so a draft-write marks the project clean; for a
- * small/regular .slp the draft is ONLY a net (⌘S writes disk), so it stays dirty
- * until saved to disk. The desktop is untouched (its ⌘S already writes to disk).
+ *  - Browser: writes the draft to OPFS (see labelsDraft.ts). EVERY browser project
+ *    gets it (the browser is unstable). For a large embedded pkg the draft is also
+ *    ⌘S's primary save target, so a draft-write marks the project clean; for a
+ *    small/regular .slp the draft is ONLY a net, so it stays dirty until ⌘S.
+ *  - Desktop (Tauri): writes the SAME imageless draft to an app-local data dir
+ *    (see tauriDraft.ts). Here the draft is PURELY a crash-recovery net — ⌘S
+ *    writes the real disk file — so a draft-write NEVER marks the project clean;
+ *    it stays dirty vs disk until ⌘S, which clears the draft. On launch, a
+ *    lingering draft means unsaved work when the app last stopped → recover prompt
+ *    (see draftRestoreTauri.ts).
  */
 import { useAppStore } from "@/stores/appStore";
 import { isTauri } from "@/lib/platform";
@@ -17,6 +21,7 @@ import { decideBrowserSaveAction } from "@/lib/saveRouting";
 import { isOpfsSaveSupported } from "@/lib/saveEmbeddedPkgOpfs";
 import { newDraftPath, isLabelsDraftSupported } from "@/lib/labelsDraft";
 import { recordDraftSave } from "@/lib/draftManifest";
+import { newTauriDraftPath, recordTauriDraftSave } from "@/lib/tauriDraft";
 
 /** Save the draft this long after edits settle. */
 export const AUTOSAVE_DEBOUNCE_MS = 1500;
@@ -49,7 +54,12 @@ function warnDraftUnsupportedOnce(): void {
 export async function maybeAutosaveLabelsDraft(
   reArm?: () => void,
 ): Promise<void> {
-  if (inFlight || isTauri) return;
+  if (inFlight) return;
+  // Desktop: a disk-backed crash-recovery net (never marks the project clean).
+  if (isTauri) {
+    await maybeAutosaveTauriDraft(reArm);
+    return;
+  }
   const store = useAppStore.getState();
   const labels = store.labels;
   // The draft is WRITTEN to OPFS via createWritable, which Safari's OPFS lacks
@@ -111,6 +121,71 @@ export async function maybeAutosaveLabelsDraft(
   } catch (err) {
     // Keep hasChanges set + re-arm so a later tick retries.
     console.warn("[autosave] failed:", err);
+    if (reArm) reArm();
+  } finally {
+    inFlight = false;
+  }
+}
+
+/**
+ * Desktop (Tauri) auto-save: write the imageless labels draft to an app-local
+ * data dir a beat after edits settle — a pure crash-recovery net. Unlike the
+ * browser large-pkg case, this NEVER calls `clearChanges()`: ⌘S writes the real
+ * disk file, so the project stays dirty vs disk until then (and a successful ⌘S /
+ * discard clears the draft). Keeps the shared single-flight guard + `reArm` retry.
+ */
+async function maybeAutosaveTauriDraft(reArm?: () => void): Promise<void> {
+  const store = useAppStore.getState();
+  const labels = store.labels;
+  // Only save when the project is actually dirty and loaded (and not mid-load).
+  if (!labels || !store.hasChanges || store.isLoading) {
+    if (labels && store.hasChanges && reArm) reArm();
+    return;
+  }
+
+  inFlight = true;
+  try {
+    // Mint (once per session) or reuse the draft path. The full disk path is
+    // resolved async (app-data dir), then committed to the store so continued
+    // edits + a later ⌘S target/clear the same draft.
+    const minting = !store.labelsDraftPath;
+    const draftPath =
+      store.labelsDraftPath ??
+      (await newTauriDraftPath(store.filename ?? undefined));
+    store.set("labelsDraftPath", draftPath);
+
+    // Capture the ORIGINAL file's identity snapshot ONCE, when minting, so
+    // restore can detect an on-disk divergence before re-linking for an in-place
+    // ⌘S. The source doesn't change while editing in memory, so later saves keep
+    // the recorded snapshot (recordTauriDraftSave preserves it). Best-effort.
+    let sourceSize: number | undefined;
+    let sourceLastModified: number | undefined;
+    if (minting && store.projectPath) {
+      try {
+        const { stat } = await import("@tauri-apps/plugin-fs");
+        const info = await stat(store.projectPath);
+        sourceSize = info.size ?? undefined;
+        sourceLastModified = info.mtime
+          ? new Date(info.mtime).getTime()
+          : undefined;
+      } catch {
+        /* best-effort snapshot — restore falls back to re-linking in place */
+      }
+    }
+
+    await recordTauriDraftSave(labels, {
+      draftPath,
+      projectPath: store.projectPath,
+      displayName: store.filename ?? "project",
+      savedAt: Date.now(),
+      sourceSize,
+      sourceLastModified,
+    });
+    // NOTE: intentionally NO store.clearChanges() — desktop ⌘S owns the disk
+    // file; the draft is only a net, so the project stays dirty until ⌘S.
+    console.log("[autosave] Tauri labels draft saved ->", draftPath);
+  } catch (err) {
+    console.warn("[autosave] Tauri draft failed:", err);
     if (reArm) reArm();
   } finally {
     inFlight = false;
