@@ -6,7 +6,6 @@ import { useWindowTitle } from "./hooks/useWindowTitle";
 import { useAppStore } from "./stores/appStore";
 import { applyHashState, initUrlStateSync } from "./lib/urlState";
 import { loadProjectFromPath } from "./lib/loadProject";
-import { maybeRestoreTauriDraft } from "./lib/draftRestoreTauri";
 import { isTauri } from "./platform";
 import { setupCloseHandler } from "./lib/quit";
 import { toast } from "./lib/notify";
@@ -64,17 +63,16 @@ export default function App() {
   const hashApplied = useRef(false);
 
   // Open a file passed on launch — a CLI argument, or a macOS file-association
-  // open that fired before the webview was ready (Tauri only). If nothing was
-  // opened on launch, offer to recover any lingering crash-recovery draft (a
-  // desktop autosave that survived a crash / unsaved quit). Chained AFTER the
-  // initial-file load so a file-association launch wins and we don't double-prompt.
+  // open that fired before the webview was ready (Tauri only). Crash-recovery
+  // drafts are NOT auto-restored here — the WelcomeScreen "Restore unsaved work?"
+  // card surfaces them for both runtimes (see recoverableDrafts.ts), so recovery
+  // is a user click (never a racy auto-prompt) and is trivially escapable.
   useEffect(() => {
     if (!isTauri) return;
     (async () => {
       await loadInitialFileIfAny().catch((err) => {
         console.warn("[app] Failed to load initial file:", err);
       });
-      await maybeRestoreTauriDraft();
     })();
   }, []);
 

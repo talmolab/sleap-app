@@ -35,7 +35,6 @@ import {
   type Labels,
 } from "@talmolab/sleap-io.js";
 import { useAppStore } from "@/stores/appStore";
-import { isTauri } from "@/lib/platform";
 import { toast } from "@/lib/notify";
 import {
   reportParseProgress,
@@ -46,11 +45,6 @@ import { installTauriFsResolver } from "@/lib/fsResolver";
 import { fileSize, readRange } from "@/lib/nativeRange";
 import { videoSignature, buildBackendGraftPlan } from "@/lib/videoGraft";
 import { isSourceChanged } from "@/lib/draftStaleness";
-import {
-  listTauriDraftEntries,
-  removeTauriDraft,
-  tauriDraftExists,
-} from "@/lib/tauriDraft";
 import type { TauriDraftManifestEntry } from "@/lib/tauriDraftManifest";
 
 // Same threshold + h5wasm URL as loadProject.ts: files over ~1 GB open via the
@@ -260,44 +254,5 @@ export async function restoreTauriDraft(
     return false;
   } finally {
     store.setLoading(false);
-  }
-}
-
-/**
- * On launch, offer to recover the newest lingering draft (crash / unsaved quit).
- * No-op when: not Tauri, a project is already loaded (e.g. a file-association
- * launch), or no recorded draft still exists on disk. On decline, the draft +
- * manifest entry are removed so it won't re-prompt. Best-effort — never throws.
- */
-export async function maybeRestoreTauriDraft(): Promise<void> {
-  if (!isTauri) return;
-  // Don't fight an initial-file / drag-drop open that already loaded a project.
-  if (useAppStore.getState().projectLoaded) return;
-  try {
-    const entries = await listTauriDraftEntries();
-    // Newest entry whose draft file still exists on disk.
-    let entry: TauriDraftManifestEntry | null = null;
-    for (const e of entries) {
-      if (await tauriDraftExists(e.draftPath)) {
-        entry = e;
-        break;
-      }
-    }
-    if (!entry) return;
-    // Re-check: an initial-file open may have completed while we read the manifest.
-    if (useAppStore.getState().projectLoaded) return;
-
-    const accepted = window.confirm(
-      `Recover unsaved work from "${entry.displayName}"?\n\n` +
-        "SLEAP found labels that weren't saved to disk before it last closed. " +
-        "Choose Cancel to discard them.",
-    );
-    if (accepted) {
-      await restoreTauriDraft(entry);
-    } else {
-      await removeTauriDraft(entry.draftPath);
-    }
-  } catch (err) {
-    console.warn("[draftRestoreTauri] recovery check failed:", err);
   }
 }
