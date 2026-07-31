@@ -13,6 +13,7 @@ import { useAppStore } from "../stores/appStore";
 import { Track } from "@talmolab/sleap-io.js";
 import { quitApp } from "../lib/quit";
 import { openNewInstance } from "../lib/newInstance";
+import { dismiss } from "../lib/notify";
 import {
   commandContext,
   OpenProjectCommand,
@@ -245,6 +246,14 @@ export function useKeyboardShortcuts() {
       [DEFAULT_SHORTCUTS["goto next track spawn"]]: (e) => {
         e.preventDefault();
         commandContext.execute(GoNextTrackSpawnFrame);
+      },
+
+      // Dismiss ALL currently-stacked on-screen toasts at once. The no-id form
+      // of sonner's dismiss clears the whole live stack. (This is distinct from
+      // the NotificationsPanel "Clear" button, which empties history.)
+      [DEFAULT_SHORTCUTS["dismiss all toasts"]]: (e) => {
+        e.preventDefault();
+        dismiss();
       },
 
       // Undo/Redo

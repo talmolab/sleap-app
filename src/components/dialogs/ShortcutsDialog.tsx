@@ -71,6 +71,7 @@ const CATEGORIES: Record<string, string[]> = {
     "copy track",
     "paste track",
   ],
+  Notifications: ["dismiss all toasts"],
 };
 
 export function ShortcutsDialog({ open, onOpenChange }: ShortcutsDialogProps) {

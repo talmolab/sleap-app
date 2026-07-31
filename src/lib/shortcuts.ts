@@ -85,6 +85,9 @@ export const DEFAULT_SHORTCUTS: Record<string, string> = {
   // Color
   "color predicted": "",
   "show trails": "",
+
+  // Notifications
+  "dismiss all toasts": "$mod+Shift+KeyD",
 };
 
 /** Frame step sizes for keyboard navigation. */
