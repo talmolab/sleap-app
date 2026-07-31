@@ -45,6 +45,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { toImageCoords, toSourceCoords } from "@/lib/cropTransform";
+import { shouldPrefetch } from "@/lib/videoPrefetch";
 import {
   isVideoMissing,
   resolveVideoFile,
@@ -178,6 +179,14 @@ export function VideoPlayer() {
 
   // Store frame as ImageBitmap so we can re-draw with transforms
   const frameBitmapRef = useRef<OffscreenCanvas | null>(null);
+
+  // Previous requested frame index, so the load effect can measure the jump
+  // distance and disable read-ahead prefetch on large discrete jumps (which
+  // otherwise fire wasted 8-ahead/2-behind reads on a slow mount). null until
+  // the first frame is requested. `lastVideoRef` lets us reset it on a video
+  // switch so the new video's first frame counts as a fresh first-load.
+  const prevFrameIdxRef = useRef<number | null>(null);
+  const lastVideoRef = useRef<typeof video>(null);
 
   // Track container dimensions for fit-to-window rendering
   const [containerSize, setContainerSize] = useState<[number, number]>([0, 0]);
@@ -441,6 +450,27 @@ export function VideoPlayer() {
     const t0 = performance.now();
     if (debugFlags.logSeeking) console.debug(`[seek] requesting frame ${frameIdx}`);
 
+    // A video switch starts a fresh sequential-viewing session: drop the stale
+    // previous index so this first frame is a first-load (prefetch ON), not a
+    // giant jump measured against the old video's frame index.
+    if (lastVideoRef.current !== video) {
+      lastVideoRef.current = video;
+      prevFrameIdxRef.current = null;
+    }
+
+    // Read-ahead prefetch decision (see shouldPrefetch): ON for sequential
+    // stepping/playback (jump within a couple of frames), OFF for a scrub or a
+    // large discrete jump (Next/Prev Suggestion, Next/Prev Labeled Frame,
+    // Go-to-frame) whose read-ahead frames are never viewed. Record this
+    // request as the baseline for the next one's jump-distance measurement.
+    const prevFrameIdx = prevFrameIdxRef.current;
+    prevFrameIdxRef.current = frameIdx;
+    const prefetch = shouldPrefetch({
+      prev: prevFrameIdx,
+      next: frameIdx,
+      isScrubbing: useAppStore.getState().isScrubbing,
+    });
+
     (async () => {
       try {
         // Lazy video backends: the decoder is deferred at load (open one video,
@@ -467,14 +497,8 @@ export function VideoPlayer() {
             return;
           }
         }
-        // While scrubbing, skip the backend's read-ahead prefetch: those frames
-        // are scrubbed past (wasted) and their reads saturate a slow mount,
-        // slowing the frame we actually want (~3.6x on the VAST mount). Mirrors
-        // PyQt's worker, which does no read-ahead while scrubbing.
         const framesBefore = video.shape?.[0] ?? null;
-        const frame = await video.getFrame(frameIdx, {
-          prefetch: !useAppStore.getState().isScrubbing,
-        });
+        const frame = await video.getFrame(frameIdx, { prefetch });
         // A deferred embedded backend (lazyVideoMetadata) reads its per-video
         // metadata on this first getFrame and corrects video.shape[0] to the true
         // source frame count — nudge the store so the seekbar/status bar re-read
