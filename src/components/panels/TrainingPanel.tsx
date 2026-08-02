@@ -13,6 +13,7 @@ import type { ModelType, ConfigFile, ConfigHyperparams } from "@/stores/training
 import { useConnectStore } from "@/stores/connectStore";
 import { RemoteFileBrowser } from "@/components/dialogs/RemoteFileBrowser";
 import { TrainingConfigDialog } from "@/components/dialogs/TrainingConfigDialog";
+import { ModelMetricsDialog } from "@/components/dialogs/ModelMetricsDialog";
 import { LossViewerDialog } from "@/components/monitors/LossViewerDialog";
 import { slotToHeadType, getDefaultProfileForHead } from "@/lib/trainingProfiles";
 import { useAppStore } from "@/stores/appStore";
@@ -42,6 +43,7 @@ import {
   Square,
   Settings2,
   LineChart,
+  BarChart3,
 } from "lucide-react";
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -477,6 +479,7 @@ export function TrainingPanel() {
 
   // Config dialog state
   const [configDialogOpen, setConfigDialogOpen] = useState(false);
+  const [metricsDialogOpen, setMetricsDialogOpen] = useState(false);
 
   // Loss viewer modal: which model's curves are open (null = closed).
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
@@ -1023,6 +1026,16 @@ export function TrainingPanel() {
           </div>
         )}
         {status === "completed" && (
+          <Button
+            variant="outline"
+            className="w-full h-8 text-xs"
+            onClick={() => setMetricsDialogOpen(true)}
+          >
+            <BarChart3 className="h-3.5 w-3.5 mr-1" />
+            View Metrics
+          </Button>
+        )}
+        {status === "completed" && (
           <Button className="w-full h-8 text-xs" onClick={() => reset()}>
             Train Again
           </Button>
@@ -1277,6 +1290,12 @@ export function TrainingPanel() {
         onSkipUserLabeledChange={setSkipUserLabeled}
         existingPredictions={existingPredictions}
         onExistingPredictionsChange={setExistingPredictions}
+      />
+
+      <ModelMetricsDialog
+        open={metricsDialogOpen}
+        onOpenChange={setMetricsDialogOpen}
+        runDirs={modelOutputDirs}
       />
     </div>
   );
