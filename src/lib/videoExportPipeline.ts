@@ -23,6 +23,8 @@ import type { Video } from "@/types";
 import type { RenderedInstance } from "@/canvas/SkeletonRenderer";
 import {
   CLIP_EXPORT_CODEC,
+  expandFrameBytesToRGBA,
+  inferFrameChannels,
   type ClipDrawContext,
   type ClipEncoder,
   type ClipExportDeps,
@@ -128,12 +130,14 @@ export async function decodeExportFrame(
     const shape = video.shape;
     if (!shape) return null;
     const [, h, w] = shape;
+    // Raw decoder output may be grayscale (1ch), RGB (3ch), or RGBA (4ch).
+    // `ImageData` only accepts tightly packed RGBA (w*h*4); the previous code
+    // assumed 4 channels and threw / rendered garbage for 1- or 3-channel
+    // sources. Detect the real channel count and expand to RGBA first.
+    const channels = inferFrameChannels(bytes.length, w, h, shape[3]);
+    const rgba = expandFrameBytesToRGBA(bytes, w, h, channels);
     const c = new OffscreenCanvas(w, h);
-    c.getContext("2d")?.putImageData(
-      new ImageData(new Uint8ClampedArray(bytes), w, h),
-      0,
-      0
-    );
+    c.getContext("2d")?.putImageData(new ImageData(rgba, w, h), 0, 0);
     return c;
   }
   try {

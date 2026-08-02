@@ -94,6 +94,112 @@ export function computeClipOutputDimensions(
   return { width: even(sourceWidth), height: even(sourceHeight) };
 }
 
+/** Minimum / maximum allowed clip scale factor (no upscaling — PyQt parity). */
+export const CLIP_SCALE_MIN = 0.1;
+export const CLIP_SCALE_MAX = 1.0;
+
+/**
+ * Clamp a user-entered scale factor to `[CLIP_SCALE_MIN, CLIP_SCALE_MAX]`.
+ * PyQt SLEAP's export never upscales, so values above 1.0 are capped at 1.0 and
+ * values below 0.1 are raised to 0.1. A non-finite input falls back to 1.0. Pure.
+ */
+export function clampClipScale(scale: number): number {
+  if (!Number.isFinite(scale)) return 1;
+  return Math.min(CLIP_SCALE_MAX, Math.max(CLIP_SCALE_MIN, scale));
+}
+
+/**
+ * Determine the channel count of a raw single-frame byte buffer. Prefers the
+ * video's declared channel dimension (`shape[3]`); otherwise infers it from the
+ * byte length divided by `width*height`. Only 1 (grayscale), 3 (RGB) and 4
+ * (RGBA) are recognised; anything else falls back to 1 (grayscale). Pure.
+ */
+export function inferFrameChannels(
+  byteLength: number,
+  width: number,
+  height: number,
+  declaredChannels?: number | null
+): number {
+  if (
+    declaredChannels === 1 ||
+    declaredChannels === 3 ||
+    declaredChannels === 4
+  ) {
+    return declaredChannels;
+  }
+  const px = width * height;
+  if (px > 0 && byteLength % px === 0) {
+    const c = byteLength / px;
+    if (c === 1 || c === 3 || c === 4) return c;
+  }
+  return 1;
+}
+
+/**
+ * Expand raw single-frame pixel bytes (grayscale / RGB / RGBA) into a tightly
+ * packed RGBA `Uint8ClampedArray` of length `width*height*4`, ready for
+ * `ImageData`. Grayscale (1ch) replicates the single value across R/G/B and sets
+ * alpha 255; RGB (3ch) copies R/G/B and sets alpha 255; RGBA (4ch) is copied
+ * through. Guards against a short input by treating missing samples as 0. Pure —
+ * this is the fix for the earlier RGBA-only assumption that threw / produced
+ * garbage for grayscale and RGB sources.
+ */
+export function expandFrameBytesToRGBA(
+  bytes: Uint8Array,
+  width: number,
+  height: number,
+  channels: number
+): Uint8ClampedArray {
+  const px = Math.max(0, width) * Math.max(0, height);
+  const out = new Uint8ClampedArray(px * 4);
+  if (channels === 4) {
+    out.set(bytes.subarray(0, Math.min(bytes.length, px * 4)));
+    return out;
+  }
+  if (channels === 3) {
+    for (let i = 0; i < px; i++) {
+      const s = i * 3;
+      const d = i * 4;
+      out[d] = bytes[s] ?? 0;
+      out[d + 1] = bytes[s + 1] ?? 0;
+      out[d + 2] = bytes[s + 2] ?? 0;
+      out[d + 3] = 255;
+    }
+    return out;
+  }
+  // Grayscale (1ch) or any unexpected count: broadcast the single sample.
+  for (let i = 0; i < px; i++) {
+    const v = bytes[i] ?? 0;
+    const d = i * 4;
+    out[d] = v;
+    out[d + 1] = v;
+    out[d + 2] = v;
+    out[d + 3] = 255;
+  }
+  return out;
+}
+
+/** Clip-export background choices surfaced in the dialog (PyQt parity). */
+export type ClipBackground = "original" | "black" | "white" | "grey";
+
+/**
+ * Map a {@link ClipBackground} choice to the CSS colour painted behind each
+ * frame (`params.background`). `"original"` returns `undefined` so the core keeps
+ * its default (the video frame shows through; gaps are black). Pure.
+ */
+export function clipBackgroundColor(bg: ClipBackground): string | undefined {
+  switch (bg) {
+    case "black":
+      return "#000000";
+    case "white":
+      return "#ffffff";
+    case "grey":
+      return "#808080";
+    default:
+      return undefined;
+  }
+}
+
 /**
  * Derive the suggested `.mp4` filename for a clip, from the project filename and
  * the exported range: `labels.clip_10-20.mp4`. Strips a trailing `.slp`/`.json`;

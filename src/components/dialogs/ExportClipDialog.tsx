@@ -4,9 +4,10 @@
  * Renders a range of the currently-open video with the skeleton/instance
  * overlay composited on top and encodes it to an H.264 mp4 (parity with PyQt
  * SLEAP's File → Export labeled clip). MVP scope: current video, a frame range,
- * fps, and an optional scale factor. Marker size / edges / colours follow the
- * current View settings; background is the video frame (black where a frame is
- * missing). See {@link module:@/lib/videoExport} for the pipeline.
+ * fps, a scale factor (clamped to [0.1, 1.0] — no upscaling, PyQt parity), and a
+ * background choice (original video / black / white / grey). Marker size / edges
+ * / colours follow the current View settings. See {@link module:@/lib/videoExport}
+ * for the pipeline.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -27,13 +28,25 @@ import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   resolveClipFrameRange,
   computeClipOutputDimensions,
   deriveClipFilename,
   evaluateClipEncodeSupport,
   buildExportRenderedInstances,
   runClipExport,
+  clampClipScale,
+  clipBackgroundColor,
+  CLIP_SCALE_MIN,
+  CLIP_SCALE_MAX,
   ClipExportCancelled,
+  type ClipBackground,
 } from "@/lib/videoExport";
 
 type Phase = "form" | "checking" | "unsupported" | "encoding";
@@ -66,6 +79,7 @@ export function ExportClipDialog() {
   const [endInput, setEndInput] = useState("0");
   const [fpsInput, setFpsInput] = useState("30");
   const [scaleInput, setScaleInput] = useState("1");
+  const [background, setBackground] = useState<ClipBackground>("original");
   const [phase, setPhase] = useState<Phase>("form");
   const [supportMessage, setSupportMessage] = useState("");
   const [progress, setProgress] = useState({ done: 0, total: 0 });
@@ -82,6 +96,7 @@ export function ExportClipDialog() {
     setEndInput(String(Math.max(0, totalFrames - 1)));
     setFpsInput(String(sourceFps && sourceFps > 0 ? Math.round(sourceFps) : 30));
     setScaleInput("1");
+    setBackground("original");
 
     let cancelled = false;
     (async () => {
@@ -140,11 +155,13 @@ export function ExportClipDialog() {
       toast.error("Invalid frame rate", { description: "Enter an fps greater than 0." });
       return;
     }
-    const scale = parseFloat(scaleInput);
-    if (!Number.isFinite(scale) || scale <= 0) {
+    const parsedScale = parseFloat(scaleInput);
+    if (!Number.isFinite(parsedScale) || parsedScale <= 0) {
       toast.error("Invalid scale", { description: "Enter a scale factor greater than 0." });
       return;
     }
+    // No upscaling (PyQt parity): clamp the value actually used to [0.1, 1.0].
+    const scale = clampClipScale(parsedScale);
 
     const output = computeClipOutputDimensions(sourceWidth, sourceHeight, scale);
 
@@ -192,6 +209,7 @@ export function ExportClipDialog() {
           sourceWidth,
           sourceHeight,
           output,
+          background: clipBackgroundColor(background),
           renderOptions: {
             markerSize,
             nodeLabelSize,
@@ -238,6 +256,7 @@ export function ExportClipDialog() {
     endInput,
     fpsInput,
     scaleInput,
+    background,
     totalFrames,
     sourceWidth,
     sourceHeight,
@@ -319,12 +338,31 @@ export function ExportClipDialog() {
                 <Input
                   id="clip-scale"
                   type="number"
-                  min={0.1}
+                  min={CLIP_SCALE_MIN}
+                  max={CLIP_SCALE_MAX}
                   step={0.1}
                   value={scaleInput}
                   onChange={(e) => setScaleInput(e.target.value)}
                   disabled={encoding}
                 />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="clip-background">Background</Label>
+                <Select
+                  value={background}
+                  onValueChange={(v) => setBackground(v as ClipBackground)}
+                  disabled={encoding}
+                >
+                  <SelectTrigger id="clip-background" className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="original">Original video</SelectItem>
+                    <SelectItem value="black">Black</SelectItem>
+                    <SelectItem value="white">White</SelectItem>
+                    <SelectItem value="grey">Grey</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
             </div>
             <p className="text-xs text-muted-foreground">

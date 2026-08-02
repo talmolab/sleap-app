@@ -14,6 +14,12 @@ import {
   evaluateClipEncodeSupport,
   buildExportRenderedInstances,
   runClipExport,
+  clampClipScale,
+  clipBackgroundColor,
+  inferFrameChannels,
+  expandFrameBytesToRGBA,
+  CLIP_SCALE_MIN,
+  CLIP_SCALE_MAX,
   ClipExportCancelled,
   CLIP_EXPORT_CODEC,
   CLIP_EXPORT_UNSUPPORTED_MESSAGE,
@@ -454,5 +460,161 @@ describe("runClipExport (integration, stubbed)", () => {
     expect(enc.events.filter((e) => e === "add")).toHaveLength(1);
     expect(enc.events).toContain("cancel");
     expect(seen).toBeGreaterThanOrEqual(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pure: scale clamp (no upscaling — PyQt parity)
+// ---------------------------------------------------------------------------
+
+describe("clampClipScale", () => {
+  it("caps values above 1.0 at the max (no upscaling)", () => {
+    expect(clampClipScale(2)).toBe(CLIP_SCALE_MAX);
+    expect(clampClipScale(1.5)).toBe(1);
+    expect(clampClipScale(100)).toBe(1);
+  });
+
+  it("raises values below 0.1 to the min", () => {
+    expect(clampClipScale(0.05)).toBe(CLIP_SCALE_MIN);
+    expect(clampClipScale(0)).toBe(0.1);
+    expect(clampClipScale(-3)).toBe(0.1);
+  });
+
+  it("passes through in-range values unchanged", () => {
+    expect(clampClipScale(0.1)).toBe(0.1);
+    expect(clampClipScale(0.5)).toBe(0.5);
+    expect(clampClipScale(1)).toBe(1);
+  });
+
+  it("falls back to 1 for a non-finite input", () => {
+    expect(clampClipScale(NaN)).toBe(1);
+    expect(clampClipScale(Infinity)).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pure: background choice → CSS colour (dialog plumbing)
+// ---------------------------------------------------------------------------
+
+describe("clipBackgroundColor", () => {
+  it("maps black/white/grey to CSS colours", () => {
+    expect(clipBackgroundColor("black")).toBe("#000000");
+    expect(clipBackgroundColor("white")).toBe("#ffffff");
+    expect(clipBackgroundColor("grey")).toBe("#808080");
+  });
+
+  it("returns undefined for 'original' so the core keeps its default", () => {
+    expect(clipBackgroundColor("original")).toBeUndefined();
+  });
+});
+
+describe("runClipExport background plumbing", () => {
+  it("paints the frame background with params.background", async () => {
+    const fills: string[] = [];
+    const ctx = {
+      fillStyle: "",
+      fillRect() {
+        fills.push(ctx.fillStyle as string);
+      },
+      drawImage() {},
+      setTransform() {},
+    } as unknown as ClipDrawContext;
+
+    await runClipExport(
+      { ...baseParams, background: "#ffffff" },
+      {
+        decodeFrame: async () => null,
+        overlayForFrame: () => [],
+        ctx,
+        encoder: fakeEncoder(),
+        renderOverlay: () => {},
+      }
+    );
+
+    // One background fill per frame, using the threaded colour.
+    expect(fills).toEqual(["#ffffff", "#ffffff", "#ffffff"]);
+  });
+
+  it("defaults to black when no background is provided", async () => {
+    const fills: string[] = [];
+    const ctx = {
+      fillStyle: "",
+      fillRect() {
+        fills.push(ctx.fillStyle as string);
+      },
+      drawImage() {},
+      setTransform() {},
+    } as unknown as ClipDrawContext;
+
+    await runClipExport(baseParams, {
+      decodeFrame: async () => null,
+      overlayForFrame: () => [],
+      ctx,
+      encoder: fakeEncoder(),
+      renderOverlay: () => {},
+    });
+
+    expect(fills.every((c) => c === "#000000")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pure: raw-frame channel detection + RGBA expansion (the decode channel fix)
+// ---------------------------------------------------------------------------
+
+describe("inferFrameChannels", () => {
+  it("prefers a valid declared channel count (1/3/4)", () => {
+    expect(inferFrameChannels(999, 4, 4, 1)).toBe(1);
+    expect(inferFrameChannels(999, 4, 4, 3)).toBe(3);
+    expect(inferFrameChannels(999, 4, 4, 4)).toBe(4);
+  });
+
+  it("infers from byte length / (w*h) when the declared count is absent/invalid", () => {
+    const px = 4 * 4; // 16 pixels
+    expect(inferFrameChannels(px * 1, 4, 4, null)).toBe(1);
+    expect(inferFrameChannels(px * 3, 4, 4, undefined)).toBe(3);
+    expect(inferFrameChannels(px * 4, 4, 4, 0)).toBe(4);
+  });
+
+  it("falls back to grayscale (1) when nothing matches", () => {
+    expect(inferFrameChannels(7, 4, 4, null)).toBe(1); // 7 not divisible by 16
+    expect(inferFrameChannels(0, 0, 0, null)).toBe(1); // no pixels
+  });
+});
+
+describe("expandFrameBytesToRGBA", () => {
+  it("broadcasts a single grayscale sample across R/G/B with opaque alpha", () => {
+    // 2x1 grayscale image: [50, 200]
+    const out = expandFrameBytesToRGBA(new Uint8Array([50, 200]), 2, 1, 1);
+    expect(Array.from(out)).toEqual([50, 50, 50, 255, 200, 200, 200, 255]);
+  });
+
+  it("copies RGB triplets and sets alpha to 255", () => {
+    // 2x1 RGB image: red, green
+    const out = expandFrameBytesToRGBA(
+      new Uint8Array([255, 0, 0, 0, 255, 0]),
+      2,
+      1,
+      3
+    );
+    expect(Array.from(out)).toEqual([255, 0, 0, 255, 0, 255, 0, 255]);
+  });
+
+  it("passes RGBA through unchanged", () => {
+    const rgba = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
+    const out = expandFrameBytesToRGBA(rgba, 2, 1, 4);
+    expect(Array.from(out)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+  });
+
+  it("always yields exactly width*height*4 bytes", () => {
+    expect(expandFrameBytesToRGBA(new Uint8Array(9), 3, 3, 1).length).toBe(36);
+    expect(expandFrameBytesToRGBA(new Uint8Array(27), 3, 3, 3).length).toBe(36);
+    expect(expandFrameBytesToRGBA(new Uint8Array(36), 3, 3, 4).length).toBe(36);
+  });
+
+  it("zero-fills missing samples from a short buffer instead of throwing", () => {
+    // Ask for 2 RGB pixels but only supply 3 bytes (1 pixel worth).
+    const out = expandFrameBytesToRGBA(new Uint8Array([10, 20, 30]), 2, 1, 3);
+    expect(Array.from(out)).toEqual([10, 20, 30, 255, 0, 0, 0, 255]);
   });
 });
