@@ -308,7 +308,7 @@ describe("Dialog components", () => {
 
       expect(screen.getByText("Analysis CSV")).toBeInTheDocument();
       expect(screen.getByText("Save As JSON")).toBeInTheDocument();
-      expect(screen.getByText("Labels Package")).toBeInTheDocument();
+      expect(screen.getByText("JSON Package")).toBeInTheDocument();
     });
 
     it("returns null when no labels", async () => {

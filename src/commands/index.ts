@@ -34,6 +34,21 @@ export {
   ExportPackageCommand,
 } from "./fileCommands";
 
+// Export Labels Package (embedded-image .pkg.slp) commands
+export {
+  ExportUserLabelsPackageCommand,
+  ExportTrainingPackageCommand,
+  ExportFullPackageCommand,
+  exportLabelsPackage,
+  embedModeForLevel,
+  derivePackageFilename,
+  frameCountForLevel,
+  countUserFrames,
+  countTrainingFrames,
+  countFullFrames,
+} from "./exportPackageCommands";
+export type { ExportPackageLevel, EmbedMode } from "./exportPackageCommands";
+
 // Navigation commands
 export {
   GoNextLabeledFrame,

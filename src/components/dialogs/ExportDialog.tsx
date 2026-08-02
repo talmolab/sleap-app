@@ -117,7 +117,7 @@ export function ExportDialog({ open, onOpenChange }: ExportDialogProps) {
             onClick={handleExportPackage}
           >
             <div className="text-left">
-              <div className="font-medium">Labels Package</div>
+              <div className="font-medium">JSON Package</div>
               <div className="text-xs text-muted-foreground">
                 Export a self-contained JSON package with video manifest.
               </div>

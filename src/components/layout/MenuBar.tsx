@@ -861,6 +861,10 @@ function PredictMenu() {
   const setModelMetricsDialogOpen = useAppStore(
     (s) => s.setModelMetricsDialogOpen
   );
+  const projectLoaded = useAppStore((s) => s.projectLoaded);
+  const setExportPackageDialogOpen = useAppStore(
+    (s) => s.setExportPackageDialogOpen
+  );
 
   return (
     <MenubarMenu>
@@ -874,13 +878,10 @@ function PredictMenu() {
         </MenubarItem>
         <MenubarSeparator />
         <MenubarItem
-          onClick={() =>
-            alert(
-              "Export Training Package is not yet implemented.\n\nThis will bundle labels and video frames for training with sleap-nn."
-            )
-          }
+          disabled={!projectLoaded}
+          onClick={() => setExportPackageDialogOpen(true)}
         >
-          Export Training Package...
+          Export Labels Package...
         </MenubarItem>
         <MenubarItem
           onClick={() =>

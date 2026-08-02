@@ -257,6 +257,7 @@ export interface AppState {
   exportDialogOpen: boolean;
   exportClipDialogOpen: boolean;
   modelMetricsDialogOpen: boolean;
+  exportPackageDialogOpen: boolean;
   shortcutsDialogOpen: boolean;
   helpDialogOpen: boolean;
   quitConfirmOpen: boolean;
@@ -311,6 +312,7 @@ export interface AppState {
   setExportDialogOpen: (open: boolean) => void;
   setExportClipDialogOpen: (open: boolean) => void;
   setModelMetricsDialogOpen: (open: boolean) => void;
+  setExportPackageDialogOpen: (open: boolean) => void;
   setShortcutsDialogOpen: (open: boolean) => void;
   setHelpDialogOpen: (open: boolean) => void;
   enterPlacementMode: () => void;
@@ -484,6 +486,7 @@ export const useAppStore = create<AppState>()(
       exportDialogOpen: false,
       exportClipDialogOpen: false,
       modelMetricsDialogOpen: false,
+      exportPackageDialogOpen: false,
       shortcutsDialogOpen: false,
       helpDialogOpen: false,
       quitConfirmOpen: false,
@@ -771,6 +774,11 @@ export const useAppStore = create<AppState>()(
       setModelMetricsDialogOpen: (open) =>
         set((state) => {
           state.modelMetricsDialogOpen = open;
+        }),
+
+      setExportPackageDialogOpen: (open) =>
+        set((state) => {
+          state.exportPackageDialogOpen = open;
         }),
 
       setShortcutsDialogOpen: (open) =>
