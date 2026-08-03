@@ -93,6 +93,18 @@ describe("ModelMetricsDialog", () => {
       screen.getByText("VOC with OKS scores - mean Average Precision (mAP)"),
     ).toBeInTheDocument();
   });
+
+  it("opens standalone with no run dirs, prompting to add models", async () => {
+    // The Predict-menu "Evaluation Metrics for Trained Models…" entry opens the
+    // dialog with whatever modelOutputDirs are known — empty on a fresh session.
+    render(<ModelMetricsDialog open onOpenChange={() => {}} runDirs={[]} />);
+    expect(
+      await screen.findByText(/No trained models\./i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Add Trained Model/i }),
+    ).toBeInTheDocument();
+  });
 });
 
 describe("DetailedModelMetricsDialog", () => {

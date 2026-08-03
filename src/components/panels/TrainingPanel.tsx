@@ -13,7 +13,6 @@ import type { ModelType, ConfigFile, ConfigHyperparams } from "@/stores/training
 import { useConnectStore } from "@/stores/connectStore";
 import { RemoteFileBrowser } from "@/components/dialogs/RemoteFileBrowser";
 import { TrainingConfigDialog } from "@/components/dialogs/TrainingConfigDialog";
-import { ModelMetricsDialog } from "@/components/dialogs/ModelMetricsDialog";
 import { LossViewerDialog } from "@/components/monitors/LossViewerDialog";
 import { slotToHeadType, getDefaultProfileForHead } from "@/lib/trainingProfiles";
 import { useAppStore } from "@/stores/appStore";
@@ -479,7 +478,6 @@ export function TrainingPanel() {
 
   // Config dialog state
   const [configDialogOpen, setConfigDialogOpen] = useState(false);
-  const [metricsDialogOpen, setMetricsDialogOpen] = useState(false);
 
   // Loss viewer modal: which model's curves are open (null = closed).
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
@@ -509,6 +507,9 @@ export function TrainingPanel() {
   const projectPath = useAppStore((s) => s.projectPath);
   const skeleton = useAppStore((s) => s.skeleton);
   const labels = useAppStore((s) => s.labels);
+  const setModelMetricsDialogOpen = useAppStore(
+    (s) => s.setModelMetricsDialogOpen
+  );
   const skeletonCompat = useMemo(() => getSkeletonCompatibility(skeleton), [skeleton]);
   const pipelineRec = useMemo(() => recommendPipeline(labels as LabelsLike | null), [labels]);
 
@@ -1029,7 +1030,7 @@ export function TrainingPanel() {
           <Button
             variant="outline"
             className="w-full h-8 text-xs"
-            onClick={() => setMetricsDialogOpen(true)}
+            onClick={() => setModelMetricsDialogOpen(true)}
           >
             <BarChart3 className="h-3.5 w-3.5 mr-1" />
             View Metrics
@@ -1290,12 +1291,6 @@ export function TrainingPanel() {
         onSkipUserLabeledChange={setSkipUserLabeled}
         existingPredictions={existingPredictions}
         onExistingPredictionsChange={setExistingPredictions}
-      />
-
-      <ModelMetricsDialog
-        open={metricsDialogOpen}
-        onOpenChange={setMetricsDialogOpen}
-        runDirs={modelOutputDirs}
       />
     </div>
   );

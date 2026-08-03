@@ -849,6 +849,9 @@ function LabelsMenu() {
 
 function PredictMenu() {
   const openPanel = useAppStore((s) => s.openPanel);
+  const setModelMetricsDialogOpen = useAppStore(
+    (s) => s.setModelMetricsDialogOpen
+  );
 
   return (
     <MenubarMenu>
@@ -880,6 +883,9 @@ function PredictMenu() {
           Import Predictions...
         </MenubarItem>
         <MenubarSeparator />
+        <MenubarItem onClick={() => setModelMetricsDialogOpen(true)}>
+          Evaluation Metrics for Trained Models...
+        </MenubarItem>
         <MenubarItem disabled>
           Visualize Model Outputs...
           <MenubarShortcut className="text-xs opacity-60">Coming Soon</MenubarShortcut>

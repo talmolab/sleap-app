@@ -34,9 +34,11 @@ import { SelectToFrameDialog } from "../dialogs/SelectToFrameDialog";
 import { DeletePredictionsDialog } from "../dialogs/DeletePredictionsDialog";
 import { ExportDialog } from "../dialogs/ExportDialog";
 import { ExportClipDialog } from "../dialogs/ExportClipDialog";
+import { ModelMetricsDialog } from "../dialogs/ModelMetricsDialog";
 import { ShortcutsDialog } from "../dialogs/ShortcutsDialog";
 import { HelpDialog } from "../dialogs/HelpDialog";
 import { useAppStore } from "../../stores/appStore";
+import { useTrainingStore } from "../../stores/trainingStore";
 import {
   PanelRightClose,
   PanelRightOpen,
@@ -126,6 +128,11 @@ export function AppShell() {
   );
   const exportDialogOpen = useAppStore((s) => s.exportDialogOpen);
   const setExportDialogOpen = useAppStore((s) => s.setExportDialogOpen);
+  const modelMetricsDialogOpen = useAppStore((s) => s.modelMetricsDialogOpen);
+  const setModelMetricsDialogOpen = useAppStore(
+    (s) => s.setModelMetricsDialogOpen
+  );
+  const modelOutputDirs = useTrainingStore((s) => s.modelOutputDirs);
   const shortcutsDialogOpen = useAppStore((s) => s.shortcutsDialogOpen);
   const setShortcutsDialogOpen = useAppStore((s) => s.setShortcutsDialogOpen);
   const helpDialogOpen = useAppStore((s) => s.helpDialogOpen);
@@ -221,6 +228,11 @@ export function AppShell() {
         onOpenChange={setExportDialogOpen}
       />
       <ExportClipDialog />
+      <ModelMetricsDialog
+        open={modelMetricsDialogOpen}
+        onOpenChange={setModelMetricsDialogOpen}
+        runDirs={modelOutputDirs}
+      />
       <ShortcutsDialog
         open={shortcutsDialogOpen}
         onOpenChange={setShortcutsDialogOpen}
