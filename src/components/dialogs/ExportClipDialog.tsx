@@ -73,7 +73,6 @@ export function ExportClipDialog() {
   const totalFrames = video?.shape?.[0] ?? 0;
   const sourceHeight = video?.shape?.[1] ?? 0;
   const sourceWidth = video?.shape?.[2] ?? 0;
-  const sourceFps = video?.fps ?? null;
 
   const [startInput, setStartInput] = useState("0");
   const [endInput, setEndInput] = useState("0");
@@ -93,14 +92,47 @@ export function ExportClipDialog() {
     setSupportMessage("");
     setProgress({ done: 0, total: 0 });
     setStartInput("0");
-    setEndInput(String(Math.max(0, totalFrames - 1)));
-    setFpsInput(String(sourceFps && sourceFps > 0 ? Math.round(sourceFps) : 30));
     setScaleInput("1");
     setBackground("original");
 
     let cancelled = false;
     (async () => {
-      const dims = computeClipOutputDimensions(sourceWidth, sourceHeight, 1);
+      // A freshly-added video may not have been probed yet, so `video.shape` can
+      // be missing at dialog-open time. Ensure the backend's dimensions are known
+      // BEFORE the encode-capability check — otherwise the source dims are 0, the
+      // output floors to 2×2 (computeClipOutputDimensions), and canEncodeVideo
+      // wrongly reports "unsupported" for an otherwise-supported codec. Mirrors
+      // the resolveVideos probe (getFrame(0) → backend.shape).
+      let shape = video.shape;
+      if ((!shape || !shape[1] || !shape[2]) && video.backend) {
+        try {
+          await video.backend.getFrame(0);
+          if (video.backend.shape) video.shape = video.backend.shape;
+          shape = video.shape;
+        } catch {
+          // Fall through to the "dimensions unavailable" message below.
+        }
+      }
+      if (cancelled) return;
+
+      const nFrames = shape?.[0] ?? 0;
+      const srcH = shape?.[1] ?? 0;
+      const srcW = shape?.[2] ?? 0;
+      const fps = video.fps ?? null;
+
+      // Seed range/fps from the (possibly just-probed) dimensions.
+      setEndInput(String(Math.max(0, nFrames - 1)));
+      setFpsInput(String(fps && fps > 0 ? Math.round(fps) : 30));
+
+      if (!srcW || !srcH) {
+        setPhase("unsupported");
+        setSupportMessage(
+          "Video dimensions aren't available yet. Reopen the video (or wait for it to finish loading), then try exporting again."
+        );
+        return;
+      }
+
+      const dims = computeClipOutputDimensions(srcW, srcH, 1);
       // Lazy-load the mediabunny-backed pipeline so its WebCodecs wrapper isn't
       // in the app-startup bundle — only when the export dialog is opened.
       const { clipEncodeProbe } = await import("@/lib/videoExportPipeline");
@@ -116,7 +148,6 @@ export function ExportClipDialog() {
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, video]);
 
   const handleOpenChange = useCallback(
