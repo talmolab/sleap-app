@@ -766,6 +766,8 @@ export const useAppStore = create<AppState>()(
       setExportClipDialogOpen: (open) =>
         set((state) => {
           state.exportClipDialogOpen = open;
+        }),
+
       setModelMetricsDialogOpen: (open) =>
         set((state) => {
           state.modelMetricsDialogOpen = open;

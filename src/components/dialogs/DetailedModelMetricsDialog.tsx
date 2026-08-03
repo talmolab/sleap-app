@@ -62,11 +62,11 @@ function buildLabeledMetrics(m: ModelMetrics): LabeledMetric[] {
 // ── Inline SVG boxplot ───────────────────────────────────────────────────────
 
 const PAD_LEFT = 96;
-const PAD_RIGHT = 20;
+const PAD_RIGHT = 24;
 const PAD_TOP = 30;
-const ROW_H = 30;
+const ROW_H = 32;
 const AXIS_H = 40;
-const WIDTH = 540;
+const WIDTH = 720;
 
 function NodeDistanceBoxplot({
   dists,
@@ -136,8 +136,8 @@ function NodeDistanceBoxplot({
       {/* per-node rows */}
       {stats.map((s, i) => {
         const cy = PAD_TOP + i * ROW_H + ROW_H / 2;
-        const boxTop = cy - 7;
-        const boxH = 14;
+        const boxH = 18;
+        const boxTop = cy - boxH / 2;
         return (
           <g key={s.node} data-node={s.node}>
             <text
@@ -169,16 +169,16 @@ function NodeDistanceBoxplot({
                   className="stroke-muted-foreground"
                   strokeWidth={1}
                 />
-                <line x1={xPix(s.min)} y1={cy - 4} x2={xPix(s.min)} y2={cy + 4} className="stroke-muted-foreground" strokeWidth={1} />
-                <line x1={xPix(s.p95)} y1={cy - 4} x2={xPix(s.p95)} y2={cy + 4} className="stroke-muted-foreground" strokeWidth={1} />
+                <line x1={xPix(s.min)} y1={cy - 6} x2={xPix(s.min)} y2={cy + 6} className="stroke-muted-foreground" strokeWidth={1.5} />
+                <line x1={xPix(s.p95)} y1={cy - 6} x2={xPix(s.p95)} y2={cy + 6} className="stroke-muted-foreground" strokeWidth={1.5} />
                 {/* IQR box */}
                 <rect
                   x={xPix(s.q1)}
                   y={boxTop}
                   width={Math.max(1, xPix(s.q3) - xPix(s.q1))}
                   height={boxH}
-                  className="fill-primary/40 stroke-primary"
-                  strokeWidth={1}
+                  className="fill-primary/50 stroke-primary"
+                  strokeWidth={1.25}
                   rx={2}
                 />
                 {/* median */}
@@ -187,8 +187,8 @@ function NodeDistanceBoxplot({
                   y1={boxTop}
                   x2={xPix(s.median)}
                   y2={boxTop + boxH}
-                  className="stroke-primary"
-                  strokeWidth={2}
+                  className="stroke-primary-foreground"
+                  strokeWidth={2.5}
                 />
               </>
             )}
@@ -219,6 +219,19 @@ export function DetailedModelMetricsDialog({
   );
   const title = row ? (row.runName ?? runDirName(row.path)) : "Model Metrics";
   const hasDists = !!metrics?.distance && metrics.distance.dists.length > 0;
+  // Largest finite per-node distance. When 0 (e.g. centroid models, whose eval
+  // has no per-node pose error), every box collapses onto 0 — plotting it is
+  // just visual noise, so we show a note instead.
+  const maxDist = useMemo(() => {
+    let m = 0;
+    for (const row2 of metrics?.distance?.dists ?? []) {
+      for (const v of row2 ?? []) {
+        if (typeof v === "number" && Number.isFinite(v) && v > m) m = v;
+      }
+    }
+    return m;
+  }, [metrics]);
+  const hasSpread = hasDists && maxDist > 0;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -238,37 +251,44 @@ export function DetailedModelMetricsDialog({
               : "Metrics have not been generated for this model."}
           </p>
         ) : (
-          <ScrollArea className="max-h-[70vh] pr-3">
-            <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
-              {/* Scalar metrics */}
-              <div className="space-y-1.5">
+          <ScrollArea className="max-h-[72vh] pr-3">
+            {/* Per-node distance boxplot — full width so it's actually legible. */}
+            <div className="mb-6">
+              <div className="text-xs font-semibold text-foreground mb-1.5">
+                Per-node distance (ground truth vs prediction)
+              </div>
+              {hasSpread ? (
+                <NodeDistanceBoxplot
+                  dists={metrics.distance!.dists}
+                  nodeNames={row?.nodeNames ?? null}
+                />
+              ) : (
+                <p className="text-xs text-muted-foreground py-2">
+                  {hasDists
+                    ? "All per-node distances are 0 px — no spread to plot (expected for centroid models, which have no per-node pose error)."
+                    : "No per-node distance data available."}
+                </p>
+              )}
+            </div>
+
+            {/* Scalar metrics — two columns to reduce vertical clutter. */}
+            {labeled.length > 0 ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-1.5">
                 {labeled.map((row2) => (
-                  <div key={row2.label} className="flex items-baseline justify-between gap-3 text-[12px]">
+                  <div
+                    key={row2.label}
+                    className="flex items-baseline justify-between gap-3 text-[12px] border-b border-border/25 pb-1"
+                  >
                     <span className="text-muted-foreground">{row2.label}</span>
                     <span className="font-mono tabular-nums text-foreground shrink-0">
                       {fmt(row2.value)}
                     </span>
                   </div>
                 ))}
-                {labeled.length === 0 && (
-                  <p className="text-sm text-muted-foreground">No scalar metrics available.</p>
-                )}
               </div>
-
-              {/* Per-node distance boxplot */}
-              <div>
-                {hasDists ? (
-                  <NodeDistanceBoxplot
-                    dists={metrics.distance!.dists}
-                    nodeNames={row?.nodeNames ?? null}
-                  />
-                ) : (
-                  <p className="text-sm text-muted-foreground">
-                    No per-node distance data available.
-                  </p>
-                )}
-              </div>
-            </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">No scalar metrics available.</p>
+            )}
           </ScrollArea>
         )}
       </DialogContent>

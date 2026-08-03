@@ -32,7 +32,6 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { buildModelMetricsRow, runDirName } from "@/lib/metrics/loadModelMetrics";
 import type { ModelMetricsRow } from "@/lib/metrics/types";
 import { DetailedModelMetricsDialog } from "@/components/dialogs/DetailedModelMetricsDialog";
@@ -130,8 +129,10 @@ export function ModelMetricsDialog({
             </DialogDescription>
           </DialogHeader>
 
-          <ScrollArea className="max-h-[60vh] w-full">
-            <Table>
+          {/* Both-axis scroll so the wide 10-column table stays inside the
+              dialog instead of spilling past its right edge. */}
+          <div className="max-h-[60vh] w-full overflow-auto rounded-md border border-border/40">
+            <Table className="min-w-[860px]">
               <TableHeader>
                 <TableRow>
                   {COLUMNS.map((c) => (
@@ -177,7 +178,7 @@ export function ModelMetricsDialog({
                 })}
               </TableBody>
             </Table>
-          </ScrollArea>
+          </div>
 
           <DialogFooter className="sm:justify-between" showCloseButton>
             <Button variant="outline" size="sm" onClick={handleAddModels}>
