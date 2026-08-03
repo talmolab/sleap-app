@@ -16,12 +16,18 @@
 import type { InferenceConfig } from "@/stores/inferenceStore";
 
 /**
- * First `sleap-nn` version whose CLI exposes the `predict` subcommand
- * (renamed from `infer` in talmolab/sleap-nn#607, shipped in 0.2.0; the older
- * 0.1.x line only had the legacy `track`/`infer` commands). Used to nudge an
- * upgrade instead of spawning a `predict` that a stale install would reject.
+ * Minimum `sleap-nn` version the app targets with the `predict` subcommand.
+ *
+ * The `predict` command first appeared in 0.2.0 (renamed from `infer` in
+ * talmolab/sleap-nn#607), BUT its save path was broken through 0.3.0:
+ * `save_predictions` → sleap_io `Labels.save` crashed on `video.backend is None`
+ * (`AttributeError`), so inference ran but never wrote an output file. That was
+ * fixed in **0.3.1**. We therefore gate on the version where `predict` actually
+ * works end-to-end — not where the command first existed. Installs below this
+ * fall back to the legacy `track` command (present in every version), which
+ * saves correctly, so no user is blocked.
  */
-export const MIN_SLEAP_NN_PREDICT_VERSION = "0.2.0";
+export const MIN_SLEAP_NN_PREDICT_VERSION = "0.3.1";
 
 export interface BuildInferenceArgsOptions {
   /** Path to the input .slp (the project file or a serialized temp copy). */

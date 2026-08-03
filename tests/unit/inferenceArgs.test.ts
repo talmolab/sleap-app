@@ -191,8 +191,8 @@ describe("buildInferenceArgs — tracking / bottom-up / preprocessing / filter",
 });
 
 describe("isPredictSupported / version floor", () => {
-  it("MIN_SLEAP_NN_PREDICT_VERSION is 0.2.0", () => {
-    expect(MIN_SLEAP_NN_PREDICT_VERSION).toBe("0.2.0");
+  it("MIN_SLEAP_NN_PREDICT_VERSION is 0.3.1 (where predict save works, not where the command appeared)", () => {
+    expect(MIN_SLEAP_NN_PREDICT_VERSION).toBe("0.3.1");
   });
 
   it("allows unknown/empty/unparseable versions (don't block on uncertainty)", () => {
@@ -203,29 +203,32 @@ describe("isPredictSupported / version floor", () => {
     expect(isPredictSupported("0.3.0a1")).toBe(true); // no separator → unparseable → allowed
   });
 
-  it("blocks parseable versions below the floor", () => {
+  it("blocks parseable versions below the floor (incl. 0.2.0–0.3.0, where predict save is broken)", () => {
     expect(isPredictSupported("0.1.0")).toBe(false);
     expect(isPredictSupported("0.1.3")).toBe(false);
+    expect(isPredictSupported("0.2.0")).toBe(false);
+    expect(isPredictSupported("0.3.0")).toBe(false);
   });
 
   it("allows the floor and above", () => {
-    expect(isPredictSupported("0.2.0")).toBe(true);
     expect(isPredictSupported("0.3.1")).toBe(true);
+    expect(isPredictSupported("0.4.0")).toBe(true);
     expect(isPredictSupported("1.0.0")).toBe(true);
-    expect(isPredictSupported("0.3.0-rc1")).toBe(true); // separator → core 0.3.0 ≥ floor
+    expect(isPredictSupported("0.3.1-rc1")).toBe(true); // separator → core 0.3.1 ≥ floor
   });
 });
 
 describe("pickInferenceSubcommand — back-compat fallback (never blocks old users)", () => {
   it("uses `predict` on the floor and newer installs", () => {
-    expect(pickInferenceSubcommand("0.2.0")).toBe("predict");
     expect(pickInferenceSubcommand("0.3.1")).toBe("predict");
+    expect(pickInferenceSubcommand("0.4.0")).toBe("predict");
     expect(pickInferenceSubcommand("1.0.0")).toBe("predict");
   });
 
-  it("falls back to legacy `track` on installs that predate `predict` (< 0.2.0)", () => {
-    expect(pickInferenceSubcommand("0.1.0")).toBe("track");
-    expect(pickInferenceSubcommand("0.1.3")).toBe("track");
+  it("falls back to legacy `track` below the floor (< 0.3.1: no predict, or its save is broken)", () => {
+    expect(pickInferenceSubcommand("0.1.3")).toBe("track"); // predict didn't exist yet
+    expect(pickInferenceSubcommand("0.2.0")).toBe("track"); // predict exists but save is broken
+    expect(pickInferenceSubcommand("0.3.0")).toBe("track"); // ditto
   });
 
   it("uses `predict` when the version is unknown/unparseable (new installs report a version)", () => {
