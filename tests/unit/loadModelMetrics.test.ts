@@ -22,6 +22,7 @@ import {
   buildModelMetricsRow,
   resolveMetricsFile,
   normalizeMetrics,
+  looksLikeMetrics,
   summarizeMetrics,
   parseTimestampFromRunName,
   joinPath,
@@ -160,6 +161,82 @@ describe("normalizeMetrics tolerance", () => {
   it("reads mOKS from either a wrapper object or a bare number", () => {
     expect(normalizeMetrics({ mOKS: { mOKS: 0.5 } }).mOKS).toBe(0.5);
     expect(normalizeMetrics({ mOKS: 0.25 }).mOKS).toBe(0.25);
+  });
+});
+
+describe("real sleap-nn JSON edge cases (reconciliation)", () => {
+  // sleap-nn returns a scalar 0 (not an array) for the voc arrays when a split
+  // has 0 matched pairs (a degenerate/empty split). The loader must not choke on
+  // scalars where it types arrays, and must still surface the scalar headlines.
+  it("empty-split: scalar-0 voc + scalar dists don't throw and summarize cleanly", () => {
+    const emptySplit = {
+      voc_metrics: {
+        "oks_voc.mAP": 0,
+        "oks_voc.mAR": 0,
+        // normally arrays — come back as scalar 0 for an empty split:
+        "oks_voc.AP": 0,
+        "oks_voc.AR": 0,
+        "oks_voc.precisions": 0,
+        "oks_voc.recalls": 0,
+        "pck_voc.mAP": 0,
+        "pck_voc.mAR": 0,
+      },
+      mOKS: { mOKS: 0 },
+      distance_metrics: { avg: 0, p50: 0, p95: 0, dists: 0, frame_idxs: 0, video_paths: 0 },
+      pck_metrics: { mPCK: 0, "PCK@5": 0, "PCK@10": 0 },
+      visibility_metrics: { tp: 0, fp: 0, tn: 0, fn: 0, precision: 0, recall: 0 },
+    };
+    const m = normalizeMetrics(emptySplit, "val");
+    expect(m.mode).toBe("oks");
+    // scalar dists/frame_idxs are guarded to empty arrays (→ boxplot "no data").
+    expect(m.distance!.dists).toEqual([]);
+    expect(m.distance!.frame_idxs).toEqual([]);
+    const s = summarizeMetrics(m)!;
+    expect(s.oksMAP).toBe(0);
+    expect(s.mOKS).toBe(0);
+    expect(s.visPrecision).toBe(0);
+    expect(s.distAvg).toBe(0);
+  });
+
+  it("recognizes non-keypoint metric dicts via looksLikeMetrics", () => {
+    expect(looksLikeMetrics({ detection_metrics: {} })).toBe(true);
+    expect(looksLikeMetrics({ mask_metrics: {} })).toBe(true);
+    expect(looksLikeMetrics({ semantic_metrics: {} })).toBe(true);
+    expect(looksLikeMetrics({ voc_metrics: {} })).toBe(true);
+    expect(looksLikeMetrics({})).toBe(false);
+    expect(looksLikeMetrics(null)).toBe(false);
+  });
+
+  it("centroid model → mode 'centroid' with distance metrics, oks/voc null", () => {
+    const centroid = {
+      detection_metrics: { precision: 0.9, recall: 0.8 },
+      distance_metrics: {
+        avg: 2.0,
+        p95: 4.0,
+        dists: [[1.0, 2.0]],
+        frame_idxs: [0],
+        video_paths: ["/v.mp4"],
+      },
+    };
+    const m = normalizeMetrics(centroid, "val");
+    expect(m.mode).toBe("centroid");
+    expect(m.voc).toBeUndefined();
+    expect(m.distance!.avg).toBe(2.0);
+    expect(m.distance!.dists.length).toBe(1);
+    const s = summarizeMetrics(m)!;
+    expect(s.oksMAP).toBeNull();
+    expect(s.mOKS).toBeNull();
+    expect(s.distAvg).toBe(2.0);
+  });
+
+  it("mask model → mode 'mask' and degrades to null headline metrics without throwing", () => {
+    const mask = { mask_metrics: { iou: 0.7 }, mask_voc_metrics: {} };
+    const m = normalizeMetrics(mask, "val");
+    expect(m.mode).toBe("mask");
+    const s = summarizeMetrics(m)!;
+    expect(s.oksMAP).toBeNull();
+    expect(s.distAvg).toBeNull();
+    expect(s.visPrecision).toBeNull();
   });
 });
 
