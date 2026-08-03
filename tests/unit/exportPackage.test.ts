@@ -37,6 +37,7 @@ import {
   countFullFrames,
   frameCountForLevel,
   labelsForLevel,
+  packageLeavesFramesUnembedded,
 } from "@/commands/exportPackageCommands";
 import fs from "fs";
 import os from "os";
@@ -236,6 +237,69 @@ describe("Export Labels Package — per-level frame selection", () => {
     });
     const reloaded = await loadSlp(toArrayBuffer(bytes), { openVideos: false });
     expect(reloaded.labeledFrames.length).toBe(3);
+  });
+});
+
+describe("Export Labels Package — embed-warning accuracy (result-based)", () => {
+  function makeContinuousLabels(getFrame: () => unknown): Labels {
+    const skeleton = new Skeleton({ nodes: ["a"], name: "s" });
+    const backend = {
+      filename: "clip.mp4",
+      shape: [1, 1, 1, 3] as [number, number, number, number],
+      async getFrame() {
+        return getFrame();
+      },
+    };
+    const video = new Video({
+      filename: "clip.mp4",
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      backend: backend as any,
+      backendMetadata: { shape: [1, 1, 1, 3] },
+      embedded: false, // continuous source → at risk, forces the reload check
+    });
+    const labels = new Labels({ videos: [video], skeletons: [skeleton] });
+    const inst = Instance.empty({ skeleton });
+    inst.points[0].xy = [0, 0];
+    inst.points[0].visible = true;
+    labels.labeledFrames.push(
+      new LabeledFrame({ video, frameIdx: 0, instances: [inst] })
+    );
+    return labels;
+  }
+
+  it("does NOT warn when the export actually embedded (encoded-bytes source)", async () => {
+    // A backend that yields encoded PNG bytes DOES embed on any io — the warning
+    // must stay silent (this is the false-positive the fix removes).
+    const labels = makeContinuousLabels(() => PNG_1x1);
+    const bytes = await saveSlpToBytes(labels, { embed: "user" });
+    expect(await packageLeavesFramesUnembedded(labels, bytes)).toBe(false);
+  });
+
+  it("DOES warn when the export embedded nothing (no readable backend)", async () => {
+    // minimal_instance.slp references an external mp4 with no open backend, so
+    // nothing embeds — the warning is correct here.
+    const labels = await loadSlp(loadFixtureBytes("minimal_instance.slp"), {
+      openVideos: false,
+    });
+    const bytes = await saveSlpToBytes(labels, { embed: "user" });
+    expect(await packageLeavesFramesUnembedded(labels, bytes)).toBe(true);
+  });
+
+  it("short-circuits (no reload) when the source is already fully embedded", async () => {
+    // Every source video already has embedded images → nothing at risk. Passing
+    // empty bytes proves no reload happens (a reload would throw on empty input).
+    const skeleton = new Skeleton({ nodes: ["a"], name: "s" });
+    const video = new Video({
+      filename: "x.pkg.slp",
+      backendMetadata: { shape: [1, 1, 1, 1] },
+      openBackend: false,
+      embedded: true,
+    });
+    const labels = new Labels({ videos: [video], skeletons: [skeleton] });
+    expect(video.hasEmbeddedImages).toBe(true);
+    expect(await packageLeavesFramesUnembedded(labels, new Uint8Array())).toBe(
+      false
+    );
   });
 });
 

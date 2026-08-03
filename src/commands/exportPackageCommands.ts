@@ -40,7 +40,10 @@
  * Verified empirically 2026-08-01 (encode-path round-trip works with encoded
  * bytes; ImageBitmap → `hasEmbeddedImages: false`). The fix belongs in
  * sleap-io.js: rasterize + re-encode `ImageBitmap`/`ImageData` to PNG/JPEG
- * before storing. We surface a toast warning at export time (see below).
+ * before storing. We surface a toast warning at export time — but ONLY when the
+ * WRITTEN package genuinely left frames unembedded (see
+ * {@link packageLeavesFramesUnembedded}), so a build of io that CAN embed
+ * continuous frames never triggers a false warning.
  *
  * ── SUGGESTION IMAGES on `full` (follow-up, io-gated) ────────────────────────
  * PyQt's Level 3 is `all_labeled=T, suggested=T` → the ideal embed mode is
@@ -51,7 +54,7 @@
  */
 
 import type { Labels, Video } from "@talmolab/sleap-io.js";
-import { saveSlpToBytes } from "@talmolab/sleap-io.js";
+import { saveSlpToBytes, loadSlp } from "@talmolab/sleap-io.js";
 import type { Command } from "./types";
 import type { CommandContext } from "./CommandContext";
 import { saveBytesFile } from "./fileCommands";
@@ -151,6 +154,36 @@ export function labelsForLevel(
   return labels.extract(userLabeledFrameIndices(labels), false);
 }
 
+/**
+ * Whether the just-written package still links to an external video instead of
+ * embedding its frames — the accurate, RESULT-based signal for the export-time
+ * warning. Reloads `bytes` (metadata only; the embedded image datasets stay
+ * lazy) and checks each video's `hasEmbeddedImages`.
+ *
+ * Short-circuits to `false` when the SOURCE has no continuous video (every video
+ * already carries embedded images, e.g. a `.pkg.slp` source): nothing was at
+ * risk of failing to embed, so we skip the reload entirely — already-embedded
+ * (often large) projects never pay for the verification.
+ *
+ * Checking the WRITTEN result (not the source project's in-memory videos, which
+ * read as "not embedded" for an `.mp4` source even when the export DID embed
+ * them) makes the warning correct on any io: a build that can encode continuous
+ * frames embeds them → no warning; one that can't leaves an external ref → warn.
+ */
+export async function packageLeavesFramesUnembedded(
+  labels: Labels,
+  bytes: Uint8Array
+): Promise<boolean> {
+  // Only continuous (non-embedded) source videos can fail to embed.
+  if (!labels.videos.some((v) => !v.hasEmbeddedImages)) return false;
+  const ab = bytes.buffer.slice(
+    bytes.byteOffset,
+    bytes.byteOffset + bytes.byteLength
+  ) as ArrayBuffer;
+  const reloaded = await loadSlp(ab, { openVideos: false });
+  return reloaded.videos.some((v) => !v.hasEmbeddedImages);
+}
+
 /** Live frame count for a level, for the dialog's per-option preview. */
 export function frameCountForLevel(labels: Labels, level: ExportPackageLevel): number {
   switch (level) {
@@ -191,14 +224,25 @@ export async function exportLabelsPackage(
 
     toast.success("Labels package exported", { description: saved });
 
-    // IO GAP 1: continuous (non-embedded) videos don't get their frames embedded
-    // yet — warn so the user isn't misled into thinking the package is portable.
-    if (labels.videos.some((v) => !v.hasEmbeddedImages)) {
+    // Warn ONLY if the WRITTEN package genuinely left frames unembedded (accurate
+    // by construction — see packageLeavesFramesUnembedded). Checking the export
+    // result, not the source's in-memory state, means a build of io that CAN
+    // embed continuous (.mp4) frames never shows a spurious warning.
+    let missingEmbeds = false;
+    try {
+      missingEmbeds = await packageLeavesFramesUnembedded(labels, bytes);
+    } catch (e) {
+      // The verification reload failed (unexpected — these are our own bytes).
+      // The export itself already succeeded, so stay silent rather than surface a
+      // warning we can't stand behind.
+      console.warn("[ExportLabelsPackage] embed verification failed:", e);
+    }
+    if (missingEmbeds) {
       toast.warning("Frames from continuous videos were not embedded", {
         description:
-          "This project references a source video (e.g. .mp4). Embedding its " +
-          "frame images isn't supported yet, so the package links to the source " +
-          "video instead. Already-embedded (.pkg.slp) projects embed fully.",
+          "This project references a source video (e.g. .mp4) and its frame " +
+          "images could not be embedded, so the package links to the source " +
+          "video instead. Keep the source video alongside this package.",
       });
     }
   } catch (err) {
