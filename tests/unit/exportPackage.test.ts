@@ -36,6 +36,7 @@ import {
   countTrainingFrames,
   countFullFrames,
   frameCountForLevel,
+  labelsForLevel,
 } from "@/commands/exportPackageCommands";
 import fs from "fs";
 import os from "os";
@@ -76,7 +77,7 @@ describe("Export Labels Package — level → embed-mode mapping", () => {
   it("maps training → 'user+suggestions' (PyQt Level 2)", () => {
     expect(embedModeForLevel("training")).toBe("user+suggestions");
   });
-  it("maps full → 'all' (PyQt Level 3, approx — excludes suggestion-only)", () => {
+  it("maps full → 'all' (PyQt Level 3; suggestion images pending io all+suggestions)", () => {
     expect(embedModeForLevel("full")).toBe("all");
   });
 });
@@ -154,6 +155,87 @@ describe("Export Labels Package — frame-count selectors", () => {
     expect(frameCountForLevel(labels, "user")).toBe(1);
     expect(frameCountForLevel(labels, "training")).toBe(2);
     expect(frameCountForLevel(labels, "full")).toBe(3);
+  });
+});
+
+describe("Export Labels Package — per-level frame selection", () => {
+  /**
+   * frame 0: user instance; frame 1: predicted-only; frame 2: predicted-only;
+   * suggestions at frame 0 (coincident) and frame 5 (unlabeled).
+   * A realistic post-inference project: a few user labels amid many predictions.
+   */
+  function makeProject(): Labels {
+    const skeleton = new Skeleton({ nodes: ["a", "b"], name: "s" });
+    const video = new Video({
+      filename: "clip.mp4",
+      backendMetadata: { shape: [10, 2, 2, 1] },
+      openBackend: false,
+    });
+    const labels = new Labels({ videos: [video], skeletons: [skeleton] });
+
+    const userInst = Instance.empty({ skeleton });
+    userInst.points[0].xy = [1, 1];
+    userInst.points[0].visible = true;
+    labels.labeledFrames.push(
+      new LabeledFrame({ video, frameIdx: 0, instances: [userInst] })
+    );
+    for (const frameIdx of [1, 2]) {
+      const pred = PredictedInstance.fromArray([[2, 2], [3, 3]], skeleton, 0.9);
+      labels.labeledFrames.push(
+        new LabeledFrame({ video, frameIdx, instances: [pred] })
+      );
+    }
+    labels.suggestions.push(new SuggestionFrame({ video, frameIdx: 0 }));
+    labels.suggestions.push(new SuggestionFrame({ video, frameIdx: 5 }));
+    return labels;
+  }
+
+  it("user: drops predicted-only frames (keeps only user-labeled)", () => {
+    const subset = labelsForLevel(makeProject(), "user");
+    expect(subset.labeledFrames.length).toBe(1);
+    expect(subset.labeledFrames[0].frameIdx).toBe(0);
+    expect(subset.labeledFrames.every((f) => f.hasUserInstances)).toBe(true);
+  });
+
+  it("training: drops predicted-only frames but carries suggestions", () => {
+    const subset = labelsForLevel(makeProject(), "training");
+    expect(subset.labeledFrames.length).toBe(1);
+    expect(subset.labeledFrames[0].frameIdx).toBe(0);
+    // Suggestion frames for the video come along (for embed:"user+suggestions").
+    expect(subset.suggestions.length).toBe(2);
+  });
+
+  it("full: keeps every labeled frame, including predicted-only", () => {
+    const subset = labelsForLevel(makeProject(), "full");
+    expect(subset.labeledFrames.length).toBe(3);
+  });
+
+  it("does not mutate the source labels (copy:false shares videos safely)", () => {
+    const labels = makeProject();
+    const beforeFrames = labels.labeledFrames.length;
+    const beforeVideo = labels.videos[0];
+    labelsForLevel(labels, "user");
+    expect(labels.labeledFrames.length).toBe(beforeFrames);
+    expect(labels.videos[0]).toBe(beforeVideo); // same live-backed Video object
+  });
+
+  it("round-trip: exported user package contains only user frames", async () => {
+    const bytes = await saveSlpToBytes(labelsForLevel(makeProject(), "user"), {
+      embed: embedModeForLevel("user"),
+    });
+    const reloaded = await loadSlp(toArrayBuffer(bytes), { openVideos: false });
+    // The written package has ONE frame row, not the 3 labeled frames — the bug
+    // was that all 3 (incl. 2 predicted-only) were written regardless of level.
+    expect(reloaded.labeledFrames.length).toBe(1);
+    expect(countUserFrames(reloaded)).toBe(1);
+  });
+
+  it("round-trip: exported full package contains all labeled frames", async () => {
+    const bytes = await saveSlpToBytes(labelsForLevel(makeProject(), "full"), {
+      embed: embedModeForLevel("full"),
+    });
+    const reloaded = await loadSlp(toArrayBuffer(bytes), { openVideos: false });
+    expect(reloaded.labeledFrames.length).toBe(3);
   });
 });
 

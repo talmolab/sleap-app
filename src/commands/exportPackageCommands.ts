@@ -3,13 +3,31 @@
  *
  * PyQt SLEAP's "Export Labels Package" writes a self-contained `.pkg.slp` that
  * EMBEDS the labeled frame images, so the project is portable without the source
- * videos. Three levels mirror the PyQt dialog:
- *   - `user`     (Level 1): user-labeled frames only                → embed "user"
- *   - `training` (Level 2): user-labeled + suggested frames         → embed "user+suggestions"
- *   - `full`     (Level 3): all labeled frames (incl. predictions)  → embed "all"
+ * videos. Three levels mirror the PyQt dialog (`ExportUserLabelsPackage` /
+ * `ExportTrainingPackage` / `ExportFullPackage` in sleap `gui/commands.py`), which
+ * differ by two flags — `all_labeled` (include predicted-only frames) and
+ * `suggested` (include suggestion frames):
+ *   - `user`     (L1, all_labeled=F, suggested=F): user-labeled frames only
+ *   - `training` (L2, all_labeled=F, suggested=T): user-labeled + suggested frames
+ *   - `full`     (L3, all_labeled=T, suggested=T): all labeled frames (incl. predictions)
  *
- * The heavy lifting is io's `saveSlpToBytes(labels, { embed })`, which resolves
- * the frames to embed per mode via `collectFramesForEmbedding`.
+ * ── FRAME SELECTION (which LabeledFrames land in the package) ─────────────────
+ * `saveSlpToBytes`'s `embed` option controls only which frame IMAGES are embedded;
+ * it writes EVERY `labels.labeledFrame` to the package metadata regardless (the io
+ * writer mirrors PyQt/sleap-io here — both write `len(labels)` frame rows). So for
+ * a project with e.g. 40k predicted frames, a bare `embed:"user"` export still
+ * writes all 40k frame rows — only a handful get images. That is not what the PyQt
+ * levels mean. We therefore first build a per-level SUBSET of the labels via
+ * `Labels.extract(indices, false)` (`copy: false`):
+ *   - `user` / `training`: extract only the user-labeled frames (predicted-only
+ *     frames are dropped). `extract` also carries along the suggestion frames for
+ *     the extracted videos, so `training`'s `embed:"user+suggestions"` can embed
+ *     their images.
+ *   - `full`: no filtering — the whole project (all labeled frames) is exported.
+ * `copy: false` is REQUIRED: it shares the original `Video` objects (and their live
+ * backends) so embedding's `getFrame()` can still read pixels — a deep copy would
+ * sever the decoder/HDF5 handle. `saveSlpToBytes` does not mutate the videos it is
+ * given, so sharing them is safe.
  *
  * ── IO GAP 1 (continuous / mp4 sources do NOT embed) ──────────────────────────
  * io only embeds a frame when the video backend's `getFrame()` yields ENCODED
@@ -24,12 +42,12 @@
  * sleap-io.js: rasterize + re-encode `ImageBitmap`/`ImageData` to PNG/JPEG
  * before storing. We surface a toast warning at export time (see below).
  *
- * ── IO GAP 2 (Level 3 omits suggestion-only frames) ──────────────────────────
- * embed `"all"` embeds every LABELED frame but EXCLUDES suggestion-only frames —
- * there is no `"all+suggestions"` mode in io yet — so the Level 3 package omits
- * suggested-but-unlabeled frames. This is an approximation of PyQt Level 3; io
- * could add `"all+suggestions"` later. The dialog's Level 3 frame count still
- * shows the conceptual (labeled ∪ suggestions) total.
+ * ── SUGGESTION IMAGES on `full` (follow-up, io-gated) ────────────────────────
+ * PyQt's Level 3 is `all_labeled=T, suggested=T` → the ideal embed mode is
+ * `"all+suggestions"` (all labeled frame images PLUS suggestion frame images).
+ * That mode isn't in the published io (0.5.7) yet, so `full` uses `"all"` — every
+ * labeled frame's image, but not suggestion-only frame images. Bump to
+ * `"all+suggestions"` alongside the io embed-fix dep bump (both land together).
  */
 
 import type { Labels, Video } from "@talmolab/sleap-io.js";
@@ -48,10 +66,14 @@ export type EmbedMode = "user" | "user+suggestions" | "all";
 const LEVEL_TO_EMBED_MODE: Record<ExportPackageLevel, EmbedMode> = {
   user: "user",
   training: "user+suggestions",
+  // `full` should be "all+suggestions" (embed suggestion-frame images too), but
+  // that mode isn't in the published io (0.5.7) yet — "all" embeds all LABELED
+  // frames only. Bump to "all+suggestions" together with the io embed-fix dep
+  // bump (see the FRAME SELECTION / suggestion-image follow-up).
   full: "all",
 };
 
-/** Map a package level to the io `embed` mode (see IO GAP 2 for `full`/`all`). */
+/** Map a package level to the io `embed` mode (which frame IMAGES get embedded). */
 export function embedModeForLevel(level: ExportPackageLevel): EmbedMode {
   return LEVEL_TO_EMBED_MODE[level];
 }
@@ -103,6 +125,32 @@ export function countFullFrames(labels: Labels): number {
   return seen.size;
 }
 
+/** Indices into `labels.labeledFrames` of the user-labeled frames. */
+function userLabeledFrameIndices(labels: Labels): number[] {
+  const inds: number[] = [];
+  labels.labeledFrames.forEach((f, i) => {
+    if (f.hasUserInstances) inds.push(i);
+  });
+  return inds;
+}
+
+/**
+ * Build the subset of `labels` to actually write for a package level.
+ *
+ * `user`/`training` drop predicted-only frames by extracting just the
+ * user-labeled frames (`extract` also carries the suggestion frames for those
+ * videos along, which `training`'s embed mode then embeds). `full` exports the
+ * whole project unchanged. `copy: false` shares the original `Video` objects so
+ * their live backends remain readable for image embedding (see the module doc).
+ */
+export function labelsForLevel(
+  labels: Labels,
+  level: ExportPackageLevel
+): Labels {
+  if (level === "full") return labels;
+  return labels.extract(userLabeledFrameIndices(labels), false);
+}
+
 /** Live frame count for a level, for the dialog's per-option preview. */
 export function frameCountForLevel(labels: Labels, level: ExportPackageLevel): number {
   switch (level) {
@@ -129,7 +177,11 @@ export async function exportLabelsPackage(
 
   const mode = embedModeForLevel(level);
   try {
-    const bytes = await saveSlpToBytes(labels, { embed: mode });
+    // Restrict the package to the frames this level means (predicted-only frames
+    // are dropped for user/training) BEFORE serializing — `embed` alone would
+    // still write every frame's metadata. See the module doc (FRAME SELECTION).
+    const exportLabels = labelsForLevel(labels, level);
+    const bytes = await saveSlpToBytes(exportLabels, { embed: mode });
     const suggestedName = derivePackageFilename(filename);
     const saved = await saveBytesFile(bytes, suggestedName, {
       name: "SLEAP Labels Package",
