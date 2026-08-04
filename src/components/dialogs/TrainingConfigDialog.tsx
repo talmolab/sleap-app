@@ -22,6 +22,7 @@ import type { ConfigFile, ConfigHyperparams, Backbone, ModelType, DataPipeline }
 import { getSlotLabel, getConfigSlots, useTrainingStore } from "@/stores/trainingStore";
 import { useConnectStore } from "@/stores/connectStore";
 import { useAppStore } from "@/stores/appStore";
+import { isTauri } from "@/platform";
 import { ModelStatsPreview } from "@/components/dialogs/ModelStatsPreview";
 import { getBaselineProfilesForHead, getDefaultProfileForHead, slotToHeadType } from "@/lib/trainingProfiles";
 
@@ -147,6 +148,29 @@ const PIPELINE_FIELD_DEFS = {
 } satisfies Record<string, SearchField>;
 
 const HEAD_FIELD_DEFS = {
+  // Transfer learning. All three are `conditional` — the radio above them picks
+  // which pair is on screen, so the index must not require them to be present.
+  pretrainedBackbone: {
+    id: "field-pretrained-backbone",
+    label: "Pretrained backbone",
+    hint: "Initialize the backbone from an existing model's .ckpt (or a SLEAP .h5, UNet only). Head-independent, so a bottom-up or single-animal model can seed this run's backbone. The backbone architecture and input channels must match.",
+    keywords: "transfer learning pretrained backbone weights ckpt checkpoint fine-tune base",
+    conditional: true,
+  },
+  pretrainedHead: {
+    id: "field-pretrained-head",
+    label: "Pretrained head",
+    hint: "Initialize the output head from an existing model's .ckpt. Only transfers between matching head types — a centroid head cannot seed a bottom-up one.",
+    keywords: "transfer learning pretrained head weights ckpt checkpoint",
+    conditional: true,
+  },
+  resumeCkpt: {
+    id: "field-resume-ckpt",
+    label: "Resume from checkpoint",
+    hint: "Continue an interrupted run from this .ckpt, including optimizer state and epoch count. To merely borrow weights for a fresh run, use the pretrained fields instead.",
+    keywords: "resume continue checkpoint ckpt restart fine-tune",
+    conditional: true,
+  },
   secData: { id: "head-data", label: "Data" },
   validationFraction: { id: "field-validationfraction", label: "Validation Fraction", hint: 'Fraction of labeled frames to use as a validation set. Ignored if "Overfit Mode" is enabled.', keywords: "val fraction split" },
   overfitMode: { id: "field-overfitmode", label: "Overfit Mode (train=val)", hint: "If enabled, the same data will be used for both training and validation. This is useful for intentional overfitting on small datasets (fewer than 10 labeled frames) to test model capacity.", keywords: "overfit" },
@@ -263,6 +287,76 @@ function Toggle({ label, id, hint, checked, onChange }: { label: string; id?: st
   );
 }
 
+/**
+ * Path picker for a weights/checkpoint file.
+ *
+ * Desktop-only by nature: sleap-nn needs a real filesystem PATH, and a browser
+ * `<input type="file">` only ever yields file CONTENTS plus a bare basename. So
+ * outside Tauri the field degrades to a plain text box (paste a path that will
+ * be valid on whatever machine runs training) rather than a picker that would
+ * silently produce an unusable value.
+ */
+function CkptField({
+  label,
+  id,
+  hint,
+  value,
+  onChange,
+  placeholder,
+}: {
+  label: string;
+  id: string;
+  hint: string;
+  value: string | null;
+  onChange: (v: string | null) => void;
+  placeholder: string;
+}) {
+  const browse = async () => {
+    try {
+      const { open: tauriOpen } = await import("@tauri-apps/plugin-dialog");
+      const selected = await tauriOpen({
+        multiple: false,
+        title: label,
+        filters: [{ name: "Checkpoint", extensions: ["ckpt", "h5"] }],
+      });
+      if (typeof selected === "string") onChange(selected);
+    } catch {
+      // No Tauri dialog (browser build) — the text input is the fallback.
+    }
+  };
+  return (
+    <Field label={label} id={id} hint={hint}>
+      <div className="flex items-center gap-1.5">
+        <Input
+          className="h-7 text-xs flex-1 min-w-0"
+          value={value ?? ""}
+          placeholder={placeholder}
+          onChange={(e) => onChange(e.target.value.trim() || null)}
+        />
+        {isTauri && (
+          <button
+            type="button"
+            className="h-7 shrink-0 rounded border px-2 text-xs hover:bg-muted"
+            onClick={() => void browse()}
+          >
+            Browse…
+          </button>
+        )}
+        {value && (
+          <button
+            type="button"
+            className="h-7 shrink-0 rounded border px-2 text-xs hover:bg-muted"
+            onClick={() => onChange(null)}
+            title="Clear"
+          >
+            ✕
+          </button>
+        )}
+      </div>
+    </Field>
+  );
+}
+
 function SectionHeading({ id, label }: { id: string; label: string }) {
   return (
     <h3 id={id} data-search-field="" className="text-base font-medium pt-6 pb-3 first:pt-0 scroll-mt-4">
@@ -375,27 +469,64 @@ function HeadTabContent({
       </div>
 
       {/* ── Training mode radios ── */}
-      <div className="flex items-center gap-5 mb-5 pb-4 border-b">
-        {([
-          { value: "reuse_config" as const, label: "Reuse config (train from scratch)", alwaysEnabled: true },
-          { value: "resume" as const, label: "Resume training (fine-tune)", alwaysEnabled: false },
-          { value: "reuse_model" as const, label: "Reuse model (don't retrain)", alwaysEnabled: false },
-        ]).map((opt) => {
-          const disabled = !opt.alwaysEnabled && !configFile?.hasTrainedModel;
-          return (
-            <label key={opt.value} className={`flex items-center gap-1.5 ${disabled ? "opacity-40 cursor-not-allowed" : "cursor-pointer"}`}>
-              <input
-                type="radio"
-                name={`training-mode-${slot}`}
-                checked={trainingMode === opt.value}
-                onChange={() => onUpdate({ trainingMode: opt.value })}
-                className="accent-primary"
-                disabled={disabled}
-              />
-              <span className="text-sm">{opt.label}</span>
-            </label>
-          );
-        })}
+      <div className="mb-5 pb-4 border-b space-y-2">
+        <div className="flex items-center gap-5">
+          {([
+            { value: "reuse_config" as const, label: "Reuse config (train from scratch)", alwaysEnabled: true },
+            { value: "resume" as const, label: "Resume training (fine-tune)", alwaysEnabled: false },
+            { value: "reuse_model" as const, label: "Reuse model (don't retrain)", alwaysEnabled: false },
+          ]).map((opt) => {
+            const disabled = !opt.alwaysEnabled && !configFile?.hasTrainedModel;
+            return (
+              <label key={opt.value} className={`flex items-center gap-1.5 ${disabled ? "opacity-40 cursor-not-allowed" : "cursor-pointer"}`}>
+                <input
+                  type="radio"
+                  name={`training-mode-${slot}`}
+                  checked={trainingMode === opt.value}
+                  onChange={() => onUpdate({ trainingMode: opt.value })}
+                  className="accent-primary"
+                  disabled={disabled}
+                />
+                <span className="text-sm">{opt.label}</span>
+              </label>
+            );
+          })}
+        </div>
+
+        {/*
+          Start-from paths. These are what actually reach sleap-nn
+          (`model_config.pretrained_*_weights`, `trainer_config.resume_ckpt_path`)
+          — the radios above only choose which of them applies, and previously
+          reached nothing at all.
+
+          Backbone weights are offered in EVERY mode on purpose: seeding a
+          backbone from some other model is independent of whether this
+          particular config has a trained run of its own, which is what the
+          radios are gated on.
+        */}
+        {trainingMode === "resume" ? (
+          <CkptField
+            {...HEAD_FIELD_DEFS.resumeCkpt}
+            value={hp.resumeCkptPath}
+            onChange={(v) => onUpdate({ resumeCkptPath: v })}
+            placeholder="…/models/<run>/best.ckpt"
+          />
+        ) : (
+          <>
+            <CkptField
+              {...HEAD_FIELD_DEFS.pretrainedBackbone}
+              value={hp.pretrainedBackboneWeights}
+              onChange={(v) => onUpdate({ pretrainedBackboneWeights: v })}
+              placeholder="Train backbone from scratch"
+            />
+            <CkptField
+              {...HEAD_FIELD_DEFS.pretrainedHead}
+              value={hp.pretrainedHeadWeights}
+              onChange={(v) => onUpdate({ pretrainedHeadWeights: v })}
+              placeholder="Train head from scratch"
+            />
+          </>
+        )}
       </div>
 
       {/* ── Model Stats Preview (thumbnail + RF + crop size + params) ── */}

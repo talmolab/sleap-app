@@ -27,6 +27,11 @@ export const DEFAULT_PANEL_ORDER = [
   "training",
   "inference",
   "active-learning",
+  // Also reachable as the Active-Learning "Correct" tab. It gets its own
+  // top-level entry because correcting a predictions.slp is a standalone job
+  // that needs no workflow config — someone who just opened a predictions file
+  // has no reason to look inside a panel called "Active Learning".
+  "correct",
   "environment",
   "connect",
   "notifications",

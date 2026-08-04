@@ -510,6 +510,24 @@ export function TrainingPanel() {
   const skeletonCompat = useMemo(() => getSkeletonCompatibility(skeleton), [skeleton]);
   const pipelineRec = useMemo(() => recommendPipeline(labels as LabelsLike | null), [labels]);
 
+  // A panel that sent the user here (the AL Phase-2 → pose handoff) can preset
+  // the post-training inference scope, which lives in this component's state
+  // rather than the store. Drain it once on arrival so re-renders and manual
+  // edits afterwards aren't clobbered.
+  const pendingHandoff = useTrainingStore((s) => s.pendingHandoff);
+  const [mustChooseModelType, setMustChooseModelType] = useState(false);
+  useEffect(() => {
+    if (!pendingHandoff) return;
+    if (pendingHandoff.inferenceTarget !== undefined) {
+      setInferenceTarget(pendingHandoff.inferenceTarget);
+    }
+    if (pendingHandoff.skipUserLabeled !== undefined) {
+      setSkipUserLabeled(pendingHandoff.skipUserLabeled);
+    }
+    if (pendingHandoff.requireModelTypeChoice) setMustChooseModelType(true);
+    useTrainingStore.getState().setPendingHandoff(null);
+  }, [pendingHandoff]);
+
   // Elapsed time ticker
   const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
@@ -548,6 +566,7 @@ export function TrainingPanel() {
     hasData &&
     hasValidLossWeights &&
     !isModelTypeIncompatible &&
+    !mustChooseModelType &&
     status === "idle" &&
     (remoteEnabled ? !!selectedWorkerId : true);
 
@@ -635,12 +654,17 @@ export function TrainingPanel() {
               Model Type
             </span>
             <Select
-              value={config.modelType}
-              onValueChange={(v) => setConfig("modelType", v as ModelType)}
+              // "" keeps the Select controlled while showing the placeholder;
+              // `undefined` would flip it to uncontrolled mid-life.
+              value={mustChooseModelType ? "" : config.modelType}
+              onValueChange={(v) => {
+                setConfig("modelType", v as ModelType);
+                setMustChooseModelType(false);
+              }}
               disabled={isRunning}
             >
               <SelectTrigger className="h-7 text-xs">
-                <SelectValue />
+                <SelectValue placeholder="Choose a pipeline…" />
               </SelectTrigger>
               <SelectContent>
                 {MODEL_TYPE_OPTIONS.map((o) => {
@@ -656,15 +680,28 @@ export function TrainingPanel() {
                 })}
               </SelectContent>
             </Select>
-            {pipelineRec && config.modelType !== pipelineRec.recommended && !skeletonCompat.disabledTypes.has(config.modelType) && (
+            {mustChooseModelType && (
+              <p className="text-[10px] text-muted-foreground">
+                Pick a pipeline to continue — top-down, bottom-up and single-animal
+                all suit different data, so the hand-off doesn&apos;t guess for you.
+              </p>
+            )}
+            {/* While the user is being asked to choose, the recommendation is the
+                whole point — show it even though nothing is selected yet. */}
+            {pipelineRec &&
+              (mustChooseModelType ||
+                (config.modelType !== pipelineRec.recommended &&
+                  !skeletonCompat.disabledTypes.has(config.modelType))) && (
               <p className="text-[10px] text-green-400">
                 💡 Recommended: {MODEL_TYPE_OPTIONS.find((o) => o.value === pipelineRec.recommended)?.label} — {pipelineRec.reason}
               </p>
             )}
-            {skeletonCompat.warnings.has(config.modelType) && (
+            {/* These describe the CURRENT selection, so they'd be misleading
+                while the trigger is showing a placeholder. */}
+            {!mustChooseModelType && skeletonCompat.warnings.has(config.modelType) && (
               <p className="text-[10px] text-yellow-400">⚠ {skeletonCompat.warnings.get(config.modelType)}</p>
             )}
-            {isModelTypeIncompatible && (
+            {!mustChooseModelType && isModelTypeIncompatible && (
               <p className="text-[10px] text-red-400">Selected model type is incompatible with the current skeleton</p>
             )}
           </div>

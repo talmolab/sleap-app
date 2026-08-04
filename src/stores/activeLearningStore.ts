@@ -40,8 +40,35 @@ export interface ActiveLearningState {
 
   /** Enter a specific phase. */
   setPhase(phase: ActiveLearningPhase | null): void;
-  /** Advance to the next round, resetting to the first enabled phase. */
-  nextRound(): void;
+  /**
+   * Advance to the next round.
+   *
+   * Returns false and changes NOTHING when the loop can't advance: no config
+   * (the round counter is meaningless without one) or already at
+   * `config.loop.maxRounds` — the config asks for a bounded loop, so honour the
+   * bound rather than counting past it.
+   *
+   * By default the new round starts at {@link firstEnabledPhase}. Pass `phase`
+   * to land somewhere else: looping back from a finished correction sweep
+   * resumes at the phase that consumes those corrections, not at hand-seeding.
+   */
+  nextRound(opts?: { phase?: ActiveLearningPhase }): boolean;
+}
+
+/** Whether {@link ActiveLearningState.nextRound} would advance, and why not. */
+export function roundStatus(
+  state: Pick<ActiveLearningState, "config" | "round">,
+): { canAdvance: boolean; round: number; maxRounds: number | null; atFinalRound: boolean } {
+  const maxRounds = state.config?.loop.maxRounds ?? null;
+  if (maxRounds === null) {
+    return { canAdvance: false, round: state.round, maxRounds: null, atFinalRound: false };
+  }
+  return {
+    canAdvance: state.round < maxRounds,
+    round: state.round,
+    maxRounds,
+    atFinalRound: state.round >= maxRounds,
+  };
 }
 
 export const useActiveLearningStore = create<ActiveLearningState>((set, get) => ({
@@ -77,11 +104,14 @@ export const useActiveLearningStore = create<ActiveLearningState>((set, get) => 
     set({ phase });
   },
 
-  nextRound() {
+  nextRound(opts) {
     const { config, round } = get();
+    if (!roundStatus({ config, round }).canAdvance) return false;
     set({
       round: round + 1,
-      phase: config ? firstEnabledPhase(config) : null,
+      // config is non-null here — canAdvance requires it.
+      phase: opts?.phase ?? firstEnabledPhase(config!),
     });
+    return true;
   },
 }));

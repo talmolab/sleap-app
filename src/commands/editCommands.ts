@@ -17,6 +17,7 @@ import { placeInstance, findNearestPriorFrame } from "@/lib/instancePlacement";
 import {
   ensurePairedPoseInstances,
   poseSkeletonOf,
+  relinkCentroids,
 } from "@/lib/activeLearning/centroidPairing";
 
 /** Create a new Instance on the current frame using the selected placement method. */
@@ -154,12 +155,13 @@ export const SeedCentroid: Command = {
 
 /**
  * Ensure every first-class centroid annotation (`frame.centroids`) has a pose
- * instance to pair with, creating empty pose instances where frames have more
- * centroids than poses (see ensurePairedPoseInstances).
+ * instance to pair with — creating empty pose instances where frames have more
+ * centroids than poses — and record the binding on `centroid.instance`
+ * (see ensurePairedPoseInstances).
  *
- * All created instances span many frames, so this is one all-frames undo step.
- * When everything is already paired it is a true no-op: no undo entry, no
- * dirty flag.
+ * All created instances and links span many frames, so this is one all-frames
+ * undo step. When everything is already paired AND linked it is a true no-op:
+ * no undo entry, no dirty flag.
  */
 export const PairPoseInstances: Command = {
   name: "PairPoseInstances",
@@ -172,8 +174,8 @@ export const PairPoseInstances: Command = {
     if (!poseSkel) return;
 
     const snapshot = ctx.takeAllFramesSnapshot("PairPoseInstances");
-    const created = ensurePairedPoseInstances(labels, poseSkel);
-    if (created === 0) return;
+    const { created, linked } = ensurePairedPoseInstances(labels, poseSkel);
+    if (created === 0 && linked === 0) return;
 
     ctx.pushUndoSnapshot(snapshot);
     ctx.state.markChanged();
@@ -394,7 +396,9 @@ export const ConvertPredictionToInstance: Command = {
       fromPredicted: predicted,
     });
 
-    // Replace the predicted instance with the user instance
+    // Replace the predicted instance with the user instance, carrying any
+    // centroid back-link across the swap (it is by object identity).
+    relinkCentroids(lf, predicted, userInstance);
     lf.instances.splice(instanceIdx, 1, userInstance);
 
     ctx.state.setLabeledFrame(lf);
@@ -450,6 +454,7 @@ export const AddInstancesFromAllPredictions: Command = {
         track: inst.track,
         fromPredicted: inst,
       });
+      relinkCentroids(lf, inst, userInstance);
       if (!firstConverted) firstConverted = userInstance;
       return userInstance;
     });

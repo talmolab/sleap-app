@@ -15,6 +15,8 @@ import { useTrainingStore } from "../../stores/trainingStore";
 import { useInferenceStore, centroidInferenceConfig } from "../../stores/inferenceStore";
 import { configFromSkeleton } from "@/lib/activeLearning/config";
 import { startCentroidLocatorTraining } from "@/lib/activeLearning/trainLocator";
+import { setupPoseTraining } from "@/lib/activeLearning/trainPose";
+import { buildReviewQueue } from "@/lib/activeLearning/reviewQueue";
 import { rejectCurrentPassItem, skipCurrentPassItem } from "@/lib/activeLearning/passActions";
 import {
   buildWorkList,
@@ -56,6 +58,8 @@ export function ActiveLearningPanel() {
   const trainingStatus = useTrainingStore((s) => s.status);
   const modelDirs = useTrainingStore((s) => s.modelOutputDirs);
   const inferenceStatus = useInferenceStore((s) => s.status);
+  // Post-training inference merged predictions that are waiting for review.
+  const pendingReview = useAppStore((s) => s.pendingReview);
   // Phase-2 pass-engine state.
   const passCursor = useAppStore((s) => s.passCursor);
   const passDimsState = useAppStore((s) => s.passDims);
@@ -132,13 +136,26 @@ export function ActiveLearningPanel() {
     { value: "setup", label: "Setup", disabled: false },
     { value: "localize", label: "Localize", disabled: !config },
     { value: "keypoints", label: "Keypoints", disabled: !config },
-    { value: "correct", label: "Correct", disabled: false },
+    {
+      value: "correct",
+      // Badge the count so a finished run is visible from any tab.
+      label: pendingReview?.flagged ? `Correct (${pendingReview.flagged})` : "Correct",
+      disabled: false,
+    },
   ];
   // Entering the sweep (from here, the top bar, or a shortcut) reveals the tab
   // that doubles as the live per-keypoint confidence readout.
   useEffect(() => {
     if (isCorrecting) setTab("correct");
   }, [isCorrecting]);
+  // Predictions landed while the user was elsewhere: reveal the Correct tab so
+  // the handoff is discoverable — but NOT mid-sweep. Training runs for tens of
+  // minutes and people go back to labeling while they wait; yanking the tab out
+  // from under an active seed/keypoint pass would lose their place. The badge
+  // stays either way, so nothing is missed, it just waits its turn.
+  useEffect(() => {
+    if (pendingReview?.flagged && !isSeeding && !isKeypointPass) setTab("correct");
+  }, [pendingReview, isSeeding, isKeypointPass]);
   // The model the locator runs on: an explicit pick wins, else the most recent
   // model trained this session.
   const effectiveModelDir = selectedModelDir ?? modelDirs[modelDirs.length - 1] ?? null;
@@ -380,6 +397,39 @@ export function ActiveLearningPanel() {
 
   const startLocatorTraining = () => {
     if (config) void startCentroidLocatorTraining(config);
+  };
+
+  /**
+   * Phase-2 → Phase-3 bridge. Preps the training store (post-training inference
+   * scope, forced pipeline choice) and sends the user to the Training panel,
+   * which already knows how to recommend a pipeline and validate configs.
+   * Doesn't start the run — the pipeline is the user's call.
+   */
+  const handleTrainPose = () => {
+    if (!setupPoseTraining()) return;
+    useAppStore.getState().openPanel("training");
+  };
+
+  /**
+   * Consume the "predictions are waiting" signal: build the queue fresh from
+   * current labels (the merge could be minutes old and the user may have edited
+   * since) and enter the correction sweep.
+   */
+  const startReview = () => {
+    const { labels, correctZoomWindow, correctScoreThreshold } = useAppStore.getState();
+    if (!labels) return;
+    const queue = buildReviewQueue(labels, { scoreThreshold: correctScoreThreshold });
+    if (queue.length === 0) {
+      // Everything got corrected or deleted between the merge and this click.
+      useAppStore.getState().setPendingReview(null);
+      toast.info("Nothing left to review at the current threshold.");
+      return;
+    }
+    useAppStore.getState().enterCorrectMode({
+      queue,
+      zoomWindow: correctZoomWindow,
+      scoreThreshold: correctScoreThreshold,
+    });
   };
 
   const selectLocatorModel = async () => {
@@ -861,8 +911,17 @@ export function ActiveLearningPanel() {
                       </div>
                     </div>
                   ) : (
-                    <div className="rounded border border-emerald-600/40 px-2 py-1.5 text-[11px] leading-snug text-emerald-600 dark:text-emerald-500">
-                      All passes complete. Stop to review, then train a pose model.
+                    <div className="rounded border border-emerald-600/40 px-2 py-1.5 space-y-1.5">
+                      <div className="text-[11px] leading-snug text-emerald-600 dark:text-emerald-500">
+                        All passes complete. Stop to review, then train a pose model.
+                      </div>
+                      <Button
+                        size="sm"
+                        className="h-7 w-full text-[11px]"
+                        onClick={handleTrainPose}
+                      >
+                        Set up pose training →
+                      </Button>
                     </div>
                   )}
 
@@ -919,6 +978,40 @@ export function ActiveLearningPanel() {
 
         {/* ---- Correct (Phase 3) ---- */}
         <TabsContent value="correct" className="m-0 min-h-0 flex-1 overflow-y-auto">
+          {/* Handoff banner from a finished pose run. Only while NOT already
+              correcting — once the sweep is live the panel below is the UI. */}
+          {pendingReview && !isCorrecting && (
+            <div className="m-2 rounded border border-emerald-600/40 px-2 py-1.5 space-y-1.5">
+              {pendingReview.total === 0 ? (
+                <div className="text-[11px] leading-snug text-muted-foreground">
+                  Predictions merged, but none carry keypoint scores — nothing to rank.
+                </div>
+              ) : pendingReview.flagged === 0 ? (
+                <div className="text-[11px] leading-snug text-emerald-600 dark:text-emerald-500">
+                  {pendingReview.total} predictions merged and every keypoint scored above
+                  the flag threshold. Nothing needs correcting — lower the threshold below
+                  if you want to spot-check anyway.
+                </div>
+              ) : (
+                <>
+                  <div className="text-[11px] leading-snug text-emerald-600 dark:text-emerald-500">
+                    {pendingReview.flagged} of {pendingReview.total} predictions need review.
+                  </div>
+                  <Button size="sm" className="h-7 w-full text-[11px]" onClick={startReview}>
+                    Start review →
+                  </Button>
+                </>
+              )}
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-6 w-full text-[10px]"
+                onClick={() => useAppStore.getState().setPendingReview(null)}
+              >
+                Dismiss
+              </Button>
+            </div>
+          )}
           <CorrectionPanel />
         </TabsContent>
       </Tabs>

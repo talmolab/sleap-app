@@ -285,6 +285,22 @@ export interface AppState {
   correctZoomWindow: number;
   /** Keypoints at/below this confidence are flagged (ring + sidebar color). */
   correctScoreThreshold: number;
+  /**
+   * Set when a post-training inference run has merged predictions that are
+   * waiting to be reviewed — the Phase-2 → Phase-3 handoff signal.
+   *
+   * Deliberately NOT the same thing as entering correct mode: training +
+   * inference takes tens of minutes, so the user is usually elsewhere (often
+   * still mid keypoint-sweep) when it lands. Auto-entering would move the
+   * viewport and silently rebind Space/S/B/Esc under them. This just says
+   * "there is something to review", and the AL panel turns it into a badge and
+   * a one-click entry.
+   *
+   * `flagged` = instances with a keypoint at/below the score threshold (what
+   * the queue would contain); `total` = every scored prediction merged, so
+   * "nothing merged" reads differently from "merged, but all confident".
+   */
+  pendingReview: { flagged: number; total: number } | null;
 
   // === Frame range ===
   frameRange: [number, number] | null;
@@ -403,6 +419,8 @@ export interface AppState {
     scoreThreshold?: number;
   }) => void;
   exitCorrectMode: () => void;
+  /** Flag/clear "predictions merged and waiting for review" (see {@link AppState.pendingReview}). */
+  setPendingReview: (v: { flagged: number; total: number } | null) => void;
   /** Advance to the next queued item (accepting happens in the UI/command layer). */
   correctAdvance: () => void;
   /** Step back to the previous queued item. */
@@ -584,6 +602,7 @@ export const useAppStore = create<AppState>()(
       correctCursor: 0,
       correctZoomWindow: 256,
       correctScoreThreshold: 0.3,
+      pendingReview: null as { flagged: number; total: number } | null,
 
       // Frame range
       frameRange: null,
@@ -1036,6 +1055,9 @@ export const useAppStore = create<AppState>()(
           state.areaDeleteMode = false;
           state.correctQueue = queue;
           state.correctCursor = 0;
+          // Entering the sweep consumes the handoff signal — the badge has done
+          // its job and a stale count would keep re-announcing work in progress.
+          state.pendingReview = null;
           if (typeof zoomWindow === "number" && zoomWindow > 0) {
             state.correctZoomWindow = zoomWindow;
           }
@@ -1053,6 +1075,11 @@ export const useAppStore = create<AppState>()(
           state.labelingMode = "select";
           state.correctQueue = [];
           state.correctCursor = 0;
+        }),
+
+      setPendingReview: (v) =>
+        set((state) => {
+          state.pendingReview = v;
         }),
 
       correctAdvance: () => {

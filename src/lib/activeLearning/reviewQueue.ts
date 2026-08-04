@@ -187,6 +187,29 @@ export function buildReviewQueue(
 }
 
 /**
+ * Summarise what a fresh batch of predictions means for review, without
+ * building the queue the user will actually sweep.
+ *
+ * `total` counts every scored prediction; `flagged` counts the subset with a
+ * keypoint at/below `scoreThreshold` (what {@link buildReviewQueue} would
+ * return for that threshold). Keeping both lets the caller distinguish three
+ * outcomes that deserve different words: nothing merged, merged-but-confident,
+ * and genuinely needs-review.
+ */
+export function reviewSignal(
+  labels: Labels,
+  scoreThreshold: number,
+): { flagged: number; total: number } {
+  // One pass: the unthresholded queue already carries each item's worst score.
+  const all = buildReviewQueue(labels);
+  let flagged = 0;
+  for (const item of all) {
+    if (item.worstScore <= scoreThreshold) flagged += 1;
+  }
+  return { flagged, total: all.length };
+}
+
+/**
  * Resolve a queued item to its live `Instance`, or `null` if the frame or
  * instance no longer exists. Resolves by index every time so it survives undo
  * and the adopt-in-place conversion (mirrors passEngine's resolveItemInstance).

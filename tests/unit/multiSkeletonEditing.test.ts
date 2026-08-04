@@ -289,16 +289,29 @@ describe("PairPoseInstances command", () => {
     expect(poseCount()).toBe(0);
   });
 
-  it("is a true no-op when every centroid is already paired", async () => {
+  it("links each centroid to the pose instance it created", async () => {
+    const { labels } = setupSeeded(2);
+
+    await ctx.execute(PairPoseInstances);
+
+    const lf = labels.labeledFrames[0];
+    // Every centroid carries an explicit back-link, and no two share a pose.
+    const linked = lf.centroids.map((c) => lf.instances.indexOf(c.instance!));
+    expect(linked).toEqual([0, 1]);
+  });
+
+  it("is a true no-op when every centroid is already paired AND linked", async () => {
     setupSeeded(1);
-    await ctx.execute(PairPoseInstances); // pairs the one centroid
+    await ctx.execute(PairPoseInstances); // pairs + links the one centroid
     expect(ctx.canUndo).toBe(true);
 
     // Re-run on the already-paired project: no new undo entry, no dirty flag.
     resetStore();
     ctx = new CommandContext();
     const { labels, pose } = setupSeeded(1);
-    labels.labeledFrames[0].instances.push(Instance.empty({ skeleton: pose }));
+    const paired = Instance.empty({ skeleton: pose });
+    labels.labeledFrames[0].instances.push(paired);
+    labels.labeledFrames[0].centroids[0].instance = paired;
 
     await ctx.execute(PairPoseInstances);
 
@@ -307,5 +320,19 @@ describe("PairPoseInstances command", () => {
     expect(
       labels.labeledFrames[0].instances.filter((i) => i.skeleton === pose).length,
     ).toBe(1);
+  });
+
+  it("filling in a MISSING link is a real, undoable change (not a no-op)", async () => {
+    // Poses already exist but carry no back-link — e.g. a project paired by an
+    // older build. Assigning the links is a data change, so it must be undoable.
+    const { labels, pose } = setupSeeded(1);
+    const paired = Instance.empty({ skeleton: pose });
+    labels.labeledFrames[0].instances.push(paired);
+
+    await ctx.execute(PairPoseInstances);
+
+    expect(labels.labeledFrames[0].centroids[0].instance).toBe(paired);
+    expect(ctx.canUndo).toBe(true);
+    expect(useAppStore.getState().hasChanges).toBe(true);
   });
 });

@@ -26,7 +26,10 @@ import {
   type PassDims,
   type PassItem,
 } from "@/lib/activeLearning/passEngine";
-import { poseSkeletonOf } from "@/lib/activeLearning/centroidPairing";
+import {
+  pairCentroidsToPoses,
+  poseSkeletonOf,
+} from "@/lib/activeLearning/centroidPairing";
 
 const NODE_NAMES = ["body_center", "head", "nose", "left_ear", "right_ear", "tail"];
 
@@ -509,6 +512,120 @@ describe("buildWorkList (first-class centroid annotations)", () => {
     expect(items.length).toBe(1);
     expect(items[0].centroidXY).toEqual([100, 100]);
     expect(resolveItemInstance(labels, items[0])).toBe(pB);
+  });
+});
+
+/**
+ * The matching that used to be inlined in `buildWorkListSeparate`, now shared
+ * with the `centroid.instance` back-link the canvas colors centroids by. Result
+ * is parallel to `frame.centroids`, valued by index into `frame.instances`.
+ */
+describe("pairCentroidsToPoses", () => {
+  it("returns full-frame indices, parallel to frame.centroids", () => {
+    const pose = makeSkeleton();
+    const v0 = stubVideo("a.mp4");
+    const p0 = Instance.empty({ skeleton: pose });
+    const p1 = Instance.empty({ skeleton: pose });
+    const lf = new LabeledFrame({
+      video: v0,
+      frameIdx: 0,
+      instances: [p0, p1],
+      centroids: [new UserCentroid({ x: 1, y: 1 }), new UserCentroid({ x: 2, y: 2 })],
+    });
+    new Labels({ videos: [v0], skeletons: [pose], labeledFrames: [lf] });
+
+    expect(pairCentroidsToPoses(lf, pose)).toEqual([0, 1]);
+  });
+
+  it("skips foreign-skeleton instances when numbering poses", () => {
+    // The locator's 1-node "centroid" skeleton can sit FIRST in the frame; the
+    // returned index must still point at the real pose instance.
+    const pose = makeSkeleton();
+    const centroidSkel = new Skeleton({ nodes: ["centroid"], name: "centroid" });
+    const v0 = stubVideo("a.mp4");
+    const foreign = Instance.empty({ skeleton: centroidSkel });
+    const p0 = makeInstance(pose, { head: [10, 10] });
+    const lf = new LabeledFrame({
+      video: v0,
+      frameIdx: 0,
+      instances: [foreign, p0],
+      centroids: [new UserCentroid({ x: 11, y: 11 })],
+    });
+    new Labels({ videos: [v0], skeletons: [pose, centroidSkel], labeledFrames: [lf] });
+
+    expect(pairCentroidsToPoses(lf, pose)).toEqual([1]);
+  });
+
+  it("is mutually exclusive: two centroids never claim the same pose", () => {
+    // Both centroids sit right on top of pA; independent nearest-neighbour would
+    // hand pA to both. Greedy matching with mutual exclusion must not.
+    const pose = makeSkeleton();
+    const v0 = stubVideo("a.mp4");
+    const pA = makeInstance(pose, { head: [50, 50] });
+    const pB = makeInstance(pose, { head: [51, 51] });
+    const lf = new LabeledFrame({
+      video: v0,
+      frameIdx: 0,
+      instances: [pA, pB],
+      centroids: [new UserCentroid({ x: 50, y: 50 }), new UserCentroid({ x: 50, y: 50 })],
+    });
+    new Labels({ videos: [v0], skeletons: [pose], labeledFrames: [lf] });
+
+    const paired = pairCentroidsToPoses(lf, pose);
+    expect(new Set(paired).size).toBe(2);
+    expect(paired.every((i) => i >= 0)).toBe(true);
+  });
+
+  it("keys poses on the bbox anchor, so the match doesn't drift as nodes are added", () => {
+    // c0 owns the animal at ~(10,10); c1 the one at ~(100,100). pA starts with
+    // one node near c0 and grows toward the midline — the bbox anchor keeps it
+    // on c0's side of the bisector the whole time (a running MEAN of visible
+    // nodes would migrate and eventually flip).
+    const pose = makeSkeleton();
+    const v0 = stubVideo("a.mp4");
+    const pA = makeInstance(pose, { head: [10, 10] });
+    const pB = makeInstance(pose, { head: [100, 100] });
+    const lf = new LabeledFrame({
+      video: v0,
+      frameIdx: 0,
+      instances: [pA, pB],
+      centroids: [new UserCentroid({ x: 10, y: 10 }), new UserCentroid({ x: 100, y: 100 })],
+    });
+    new Labels({ videos: [v0], skeletons: [pose], labeledFrames: [lf] });
+
+    expect(pairCentroidsToPoses(lf, pose)).toEqual([0, 1]);
+    for (const [name, xy] of [
+      ["nose", [14, 14]],
+      ["left_ear", [18, 18]],
+      ["right_ear", [22, 22]],
+    ] as [string, [number, number]][]) {
+      const i = pose.nodes.findIndex((n) => n.name === name);
+      pA.points[i].xy = xy;
+      pA.points[i].visible = true;
+      expect(pairCentroidsToPoses(lf, pose)).toEqual([0, 1]);
+    }
+  });
+
+  it("marks unpairable centroids -1 (non-finite, filtered-out, or no pose left)", () => {
+    const pose = makeSkeleton();
+    const v0 = stubVideo("a.mp4");
+    const p0 = Instance.empty({ skeleton: pose });
+    const lf = new LabeledFrame({
+      video: v0,
+      frameIdx: 0,
+      instances: [p0],
+      centroids: [
+        new UserCentroid({ x: NaN, y: 5 }),
+        new PredictedCentroid({ x: 10, y: 10, score: 0.9 }),
+        new UserCentroid({ x: 20, y: 20 }),
+      ],
+    });
+    new Labels({ videos: [v0], skeletons: [pose], labeledFrames: [lf] });
+
+    // Only one pose: the non-finite centroid is out, the predicted one takes it.
+    expect(pairCentroidsToPoses(lf, pose)).toEqual([-1, 0, -1]);
+    // Excluding predictions hands that same pose to the surviving user centroid.
+    expect(pairCentroidsToPoses(lf, pose, { includePredicted: false })).toEqual([-1, -1, 0]);
   });
 });
 

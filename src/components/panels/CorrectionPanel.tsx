@@ -11,8 +11,11 @@
 
 import { useMemo, useState } from "react";
 import { useAppStore } from "../../stores/appStore";
+import { useActiveLearningStore, roundStatus } from "../../stores/activeLearningStore";
 import { buildReviewQueue, resolveReviewInstance } from "@/lib/activeLearning/reviewQueue";
 import { acceptAndAdvanceCorrection } from "@/lib/activeLearning/correctionActions";
+import { startNextRound } from "@/lib/activeLearning/loopRound";
+import { toast } from "@/lib/notify";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
@@ -27,6 +30,16 @@ export function CorrectionPanel() {
   const cursor = useAppStore((s) => s.correctCursor);
   const zoomWindow = useAppStore((s) => s.correctZoomWindow);
   const activeThreshold = useAppStore((s) => s.correctScoreThreshold);
+
+  // Loop bookkeeping, subscribed so the round button follows an advance. Null
+  // maxRounds = no workflow config, i.e. this panel is being used standalone on
+  // a predictions file and there is no loop to advance.
+  const alConfig = useActiveLearningStore((s) => s.config);
+  const alRound = useActiveLearningStore((s) => s.round);
+  const roundInfo = useMemo(
+    () => roundStatus({ config: alConfig, round: alRound }),
+    [alConfig, alRound],
+  );
 
   const [limit, setLimit] = useState(50);
   const [threshold, setThreshold] = useState(0.3);
@@ -114,6 +127,10 @@ export function CorrectionPanel() {
 
   const total = queue.length;
   const stop = () => useAppStore.getState().exitCorrectMode();
+  const nextRound = () => {
+    const outcome = startNextRound();
+    if (!outcome.ok) toast.error(outcome.reason);
+  };
 
   if (cursor >= total) {
     return (
@@ -122,7 +139,31 @@ export function CorrectionPanel() {
         <p className="text-emerald-600 dark:text-emerald-500">
           {total === 0 ? "Nothing to review." : `All ${total} reviewed.`}
         </p>
-        <Button size="sm" className="h-7 w-full" onClick={stop}>
+        {/*
+          Close the loop. Everything just accepted is a user label now, so the
+          project holds more training data than the model was trained on —
+          retraining on it is the point of the loop. Only shown with a workflow
+          config: this panel also serves a bare predictions .slp, which has no
+          rounds to advance.
+        */}
+        {roundInfo.maxRounds !== null && (
+          roundInfo.canAdvance ? (
+            <>
+              <Button size="sm" className="h-7 w-full" onClick={nextRound}>
+                Retrain → round {roundInfo.round + 1} of {roundInfo.maxRounds}
+              </Button>
+              <p className="text-muted-foreground">
+                Trains on your corrections, then predicts the next batch to review.
+              </p>
+            </>
+          ) : (
+            <p className="text-muted-foreground">
+              Round {roundInfo.round} of {roundInfo.maxRounds} — the configured loop is
+              complete. Raise <span className="font-mono">loop.maxRounds</span> to keep going.
+            </p>
+          )
+        )}
+        <Button size="sm" variant={roundInfo.canAdvance ? "outline" : "default"} className="h-7 w-full" onClick={stop}>
           Done
         </Button>
       </div>

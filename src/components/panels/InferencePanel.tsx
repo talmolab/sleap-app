@@ -7,7 +7,7 @@
  *  - Progress / log (when running or done, at bottom)
  */
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { useAppStore } from "../../stores/appStore";
 import { useEnvironmentStore } from "../../stores/environmentStore";
 import { useInferenceStore } from "../../stores/inferenceStore";
@@ -41,6 +41,13 @@ import {
   Settings2,
 } from "lucide-react";
 import { InferenceConfigDialog } from "@/components/dialogs/InferenceConfigDialog";
+import {
+  readModelDirInfo,
+  pipelineForHeadTypes,
+  modelCompatWarnings,
+  headTypeLabel,
+  type ModelDirInfo,
+} from "@/lib/modelDirInfo";
 
 // ── Types & Constants ─────────────────────────────────────────────────────────
 
@@ -239,6 +246,12 @@ export function InferencePanel() {
   // Config state
   const [pipeline, setPipeline] = useState<PipelineType>(DEFAULTS.pipeline);
   const [modelPaths, setModelPaths] = useState<string[]>([]);
+  /**
+   * What each local model directory actually contains, keyed by path. Populated
+   * by reading the dir's training_config.yaml when it's added, so a wrong pick
+   * is caught here instead of surfacing as an opaque sleap-nn failure later.
+   */
+  const [modelInfos, setModelInfos] = useState<Record<string, ModelDirInfo>>({});
   const [frameRange, setFrameRange] = useState<FrameRange>("suggestions");
   const [frameStart, setFrameStart] = useState("0");
   const [frameEnd, setFrameEnd] = useState("1000");
@@ -315,6 +328,24 @@ export function InferencePanel() {
   const isDone = inferenceStatus === "completed" || inferenceStatus === "error" || inferenceStatus === "cancelled";
   const activeModelPaths = remoteEnabled ? remoteModelPaths : modelPaths;
 
+  // What the selected models add up to. Remote paths live on the worker, so
+  // there's nothing local to introspect — detection is local-only.
+  const selectedInfos = useMemo(
+    () => (remoteEnabled ? [] : modelPaths.map((p) => modelInfos[p]).filter(Boolean)),
+    [remoteEnabled, modelPaths, modelInfos],
+  );
+  const detected = useMemo(
+    () => pipelineForHeadTypes(selectedInfos.map((i) => i.headType)),
+    [selectedInfos],
+  );
+  const compatWarnings = useMemo(() => modelCompatWarnings(selectedInfos), [selectedInfos]);
+  // Adopt what the models say they are. They're the ground truth — the picker
+  // is just a claim about them — and this is what lets an imported model work
+  // without the user knowing which pipeline it was trained as.
+  useEffect(() => {
+    if (detected.pipeline && detected.pipeline !== pipeline) setPipeline(detected.pipeline);
+  }, [detected.pipeline]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Custom range validation: check against current video's frame count
   const currentVideoFrameCount = video?.shape?.[0] ?? Infinity;
   const customRangeInvalid = frameRange === "custom" && (
@@ -327,7 +358,10 @@ export function InferencePanel() {
     isNaN(Number(frameEnd))
   );
 
-  const canRun = (remoteEnabled ? (!!selectedWorkerId && !!remoteDataPath) : sleapNnAvailable) && !isRunning && !isDone && activeModelPaths.length > 0 && !customRangeInvalid;
+  // `detected.problem` means the chosen dirs can't form a pipeline (two
+  // centroids, a lone centered-instance). sleap-nn would fail on that anyway,
+  // minutes in — refuse up front instead.
+  const canRun = (remoteEnabled ? (!!selectedWorkerId && !!remoteDataPath) : sleapNnAvailable) && !isRunning && !isDone && activeModelPaths.length > 0 && !customRangeInvalid && !detected.problem;
   const isTopDown = pipeline === "top-down" || pipeline === "top-down-id";
 
   if (!isTauri && connectionStatus !== "connected") {
@@ -345,7 +379,12 @@ export function InferencePanel() {
       const { open: tauriOpen } = await import("@tauri-apps/plugin-dialog");
       const selected = await tauriOpen({ directory: true, title: "Select Model Directory" });
       if (selected && !modelPaths.includes(selected as string)) {
-        setModelPaths((prev) => [...prev, selected as string]);
+        const path = selected as string;
+        setModelPaths((prev) => [...prev, path]);
+        // Introspect after adding, not before: a dir we can't read is still
+        // usable, it just gets a warning instead of a label.
+        const info = await readModelDirInfo(path);
+        setModelInfos((prev) => ({ ...prev, [path]: info }));
       }
     } catch { /* cancelled */ }
   };
@@ -448,10 +487,24 @@ export function InferencePanel() {
             </p>
           ) : (
             <div className="space-y-1">
-              {activeModelPaths.map((p, i) => (
+              {activeModelPaths.map((p, i) => {
+                const info = remoteEnabled ? undefined : modelInfos[p];
+                return (
                 <div key={i} className="flex items-center gap-1 rounded border bg-muted/50 px-2 py-1">
                   {remoteEnabled && <Folder className="h-3.5 w-3.5 text-primary flex-shrink-0" />}
                   <span className="text-[10px] truncate flex-1" title={p}>{remoteEnabled ? p : p.split(/[\\/]/).pop()}</span>
+                  {/* What the dir's training_config.yaml says this model is. */}
+                  {info?.headType && (
+                    <span
+                      className="text-[9px] shrink-0 rounded bg-primary/15 text-primary px-1 py-0.5"
+                      title={`${headTypeLabel(info.headType)}${info.backbone ? ` · ${info.backbone}` : ""}${info.inChannels ? ` · ${info.inChannels}ch` : ""}`}
+                    >
+                      {headTypeLabel(info.headType)}
+                    </span>
+                  )}
+                  {info?.error && (
+                    <span className="text-[9px] shrink-0 text-yellow-500" title={info.error}>⚠</span>
+                  )}
                   <button className="text-muted-foreground hover:text-destructive shrink-0"
                     onClick={() => {
                       if (remoteEnabled) {
@@ -464,6 +517,18 @@ export function InferencePanel() {
                     <X className="h-3 w-3" />
                   </button>
                 </div>
+                );
+              })}
+              {detected.problem && (
+                <p className="text-[10px] text-red-400">{detected.problem}</p>
+              )}
+              {!detected.problem && detected.pipeline && (
+                <p className="text-[10px] text-muted-foreground">
+                  Detected pipeline: <span className="text-foreground">{detected.pipeline}</span>
+                </p>
+              )}
+              {compatWarnings.map((w) => (
+                <p key={w} className="text-[10px] text-yellow-400">⚠ {w}</p>
               ))}
             </div>
           )}

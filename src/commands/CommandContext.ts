@@ -90,20 +90,31 @@ function cloneInstances(instances: Instance[]): Instance[] {
 
 /**
  * Deep-clone centroid annotations, preserving concrete type (UserCentroid vs
- * PredictedCentroid). The `.instance` back-link is copied by reference — seeded
- * centroids carry `instance = null`, so no remap is needed yet; when predicted
- * centroids gain instance links, this will need index-based remapping like
- * `cloneInstances` does for tracks.
+ * PredictedCentroid).
+ *
+ * The `.instance` back-link (which pairs a centroid with the pose instance it
+ * belongs to, and which the canvas colors centroids by) is remapped BY INDEX
+ * onto the matching clone — copying the reference would leave every snapshot
+ * pointing at a pre-clone `Instance` that is no longer in the frame, so the
+ * link would silently die on the first undo. `sourceInstances` and
+ * `clonedInstances` must be the same array before/after `cloneInstances`. A link
+ * to an instance that isn't in `sourceInstances` (already deleted) is dropped
+ * rather than carried over dangling.
  */
-function cloneCentroids(centroids: Centroid[]): Centroid[] {
+function cloneCentroids(
+  centroids: Centroid[],
+  sourceInstances: Instance[],
+  clonedInstances: Instance[],
+): Centroid[] {
   return centroids.map((c) => {
+    const instIdx = c.instance ? sourceInstances.indexOf(c.instance) : -1;
     const base = {
       x: c.x,
       y: c.y,
       z: c.z,
       track: c.track,
       trackingScore: c.trackingScore,
-      instance: c.instance,
+      instance: instIdx >= 0 ? (clonedInstances[instIdx] ?? null) : null,
       category: c.category,
       name: c.name,
       source: c.source,
@@ -147,11 +158,12 @@ export class CommandContext {
       const frames = labels.find({ video, frameIdx });
       if (frames.length > 0) {
         const lf = frames[0];
+        const instances = cloneInstances(lf.instances);
         frame = {
           videoRef: video,
           frameIdx,
-          instances: cloneInstances(lf.instances),
-          centroids: cloneCentroids(lf.centroids),
+          instances,
+          centroids: cloneCentroids(lf.centroids, lf.instances, instances),
         };
         if (instance) {
           selectedIdx = lf.instances.indexOf(instance);
@@ -178,11 +190,12 @@ export class CommandContext {
 
     if (labels) {
       for (const lf of labels.labeledFrames) {
+        const instances = cloneInstances(lf.instances);
         allFrames.push({
           videoRef: lf.video,
           frameIdx: lf.frameIdx,
-          instances: cloneInstances(lf.instances),
-          centroids: cloneCentroids(lf.centroids),
+          instances,
+          centroids: cloneCentroids(lf.centroids, lf.instances, instances),
         });
       }
       if (video && instance) {
@@ -238,7 +251,7 @@ export class CommandContext {
           frameIdx: frameData.frameIdx,
         });
         lf.instances = cloneInstances(frameData.instances);
-        lf.centroids = cloneCentroids(frameData.centroids);
+        lf.centroids = cloneCentroids(frameData.centroids, frameData.instances, lf.instances);
         labels.labeledFrames.push(lf);
       }
 
@@ -268,7 +281,11 @@ export class CommandContext {
         // Restore instances on existing frame
         const lf = frames[0];
         lf.instances = cloneInstances(snapshot.frame.instances);
-        lf.centroids = cloneCentroids(snapshot.frame.centroids);
+        lf.centroids = cloneCentroids(
+          snapshot.frame.centroids,
+          snapshot.frame.instances,
+          lf.instances,
+        );
         this.state.setLabeledFrame(lf);
 
         // Restore selection
@@ -287,7 +304,11 @@ export class CommandContext {
           frameIdx: snapshot.frame.frameIdx,
         });
         lf.instances = cloneInstances(snapshot.frame.instances);
-        lf.centroids = cloneCentroids(snapshot.frame.centroids);
+        lf.centroids = cloneCentroids(
+          snapshot.frame.centroids,
+          snapshot.frame.instances,
+          lf.instances,
+        );
         labels.labeledFrames.push(lf);
         this.state.setLabeledFrame(lf);
         this.state.setInstance(null);

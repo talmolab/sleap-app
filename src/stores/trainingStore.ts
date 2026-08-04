@@ -145,6 +145,30 @@ export interface ConfigHyperparams {
   minHardKeypoints: number;
   maxHardKeypoints: number | null;
   trainingMode: "reuse_config" | "resume" | "reuse_model";
+  /**
+   * Transfer learning: initialize this model's BACKBONE from an existing
+   * checkpoint (`model_config.pretrained_backbone_weights`).
+   *
+   * sleap-nn takes a path to a `.ckpt`, or a SLEAP `.h5` when the backbone is
+   * UNet (see sleap_nn/train.py). Backbone weights are independent of the head,
+   * which is the point: a bottom-up model can seed a top-down run's backbone.
+   * `null` = train the backbone from scratch.
+   */
+  pretrainedBackboneWeights: string | null;
+  /**
+   * Initialize the HEAD from an existing checkpoint
+   * (`model_config.pretrained_head_weights`). Unlike the backbone this only
+   * transfers between matching head types — a centroid head can't seed a
+   * bottom-up one. `null` = train the head from scratch.
+   */
+  pretrainedHeadWeights: string | null;
+  /**
+   * Genuinely RESUME an interrupted run from its checkpoint
+   * (`trainer_config.resume_ckpt_path`) — optimizer state and epoch count
+   * included. Distinct from the pretrained-weights fields, which start a fresh
+   * run that merely borrows weights.
+   */
+  resumeCkptPath: string | null;
   accelerator: "auto" | "cuda" | "mps" | "cpu";
   // Performance
   dataPipeline: DataPipeline;
@@ -203,6 +227,9 @@ export const defaultHyperparams: ConfigHyperparams = {
   minHardKeypoints: 2,
   maxHardKeypoints: null,
   trainingMode: "reuse_config",
+  pretrainedBackboneWeights: null,
+  pretrainedHeadWeights: null,
+  resumeCkptPath: null,
   accelerator: "auto",
   dataPipeline: "memory",
   dataloaderWorkers: 0,
@@ -302,7 +329,25 @@ interface TrainingState {
   modelOutputDirs: string[];
   log: string[]; // single shared log for all models
 
+  /**
+   * One-shot instructions from another panel that sent the user here (today:
+   * the active-learning Phase-2 → pose-training handoff).
+   *
+   * The post-training inference fields live in TrainingPanel's local state, not
+   * in `config`, so a caller can't preset them directly; the panel drains this
+   * on arrival and clears it. `requireModelTypeChoice` blocks Start until the
+   * user picks a pipeline explicitly — the AL handoff deliberately ships no
+   * default, since top-down vs bottom-up is a real decision about their data
+   * and `config.modelType` would otherwise silently stay whatever it last was.
+   */
+  pendingHandoff: {
+    inferenceTarget?: string;
+    skipUserLabeled?: boolean;
+    requireModelTypeChoice?: boolean;
+  } | null;
+
   // Actions
+  setPendingHandoff: (v: TrainingState["pendingHandoff"]) => void;
   setConfig: <K extends keyof TrainingConfig>(key: K, value: TrainingConfig[K]) => void;
   updateConfigHyperparams: (slot: string, updates: Partial<ConfigHyperparams>) => void;
   addConfigFile: (file: ConfigFile) => void;
@@ -394,6 +439,13 @@ export function applyHyperparamsToYaml(yamlText: string, hp: ConfigHyperparams):
   const preprocessing = data.preprocessing as Record<string, unknown>;
   preprocessing.scale = hp.scale;
   preprocessing.crop_size = hp.cropSize;
+
+  // Transfer learning / resume. Always written (including the nulls) so
+  // CLEARING a path in the UI actually clears it in the emitted config —
+  // writing only when set would let a stale value survive in the source YAML.
+  model.pretrained_backbone_weights = hp.pretrainedBackboneWeights;
+  model.pretrained_head_weights = hp.pretrainedHeadWeights;
+  trainer.resume_ckpt_path = hp.resumeCkptPath;
 
   // Seed
   trainer.seed = hp.randomSeed;
@@ -575,12 +627,15 @@ const initialState = {
   wandbUrl: null as string | null,
   modelOutputDirs: [] as string[],
   log: [] as string[],
+  pendingHandoff: null as TrainingState["pendingHandoff"],
 };
 
 // ── Store ─────────────────────────────────────────────────────────
 
 export const useTrainingStore = create<TrainingState>()((set, get) => ({
   ...initialState,
+
+  setPendingHandoff: (v) => set({ pendingHandoff: v }),
 
   setConfig: (key, value) =>
     set((state) => ({
@@ -798,7 +853,21 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         onlineMining: ohkmCfg.online_mining === true,
         minHardKeypoints: typeof ohkmCfg.min_hard_keypoints === "number" ? ohkmCfg.min_hard_keypoints : 2,
         maxHardKeypoints: typeof ohkmCfg.max_hard_keypoints === "number" ? ohkmCfg.max_hard_keypoints : null,
+        // Not persisted in the YAML — it's a UI-level choice about what to do
+        // with the config, not part of the config itself.
         trainingMode: "reuse_config" as const,
+        // Transfer-learning paths DO live in the YAML, so round-trip them
+        // instead of silently dropping a config that already sets them.
+        pretrainedBackboneWeights:
+          typeof modelConfig.pretrained_backbone_weights === "string"
+            ? modelConfig.pretrained_backbone_weights
+            : null,
+        pretrainedHeadWeights:
+          typeof modelConfig.pretrained_head_weights === "string"
+            ? modelConfig.pretrained_head_weights
+            : null,
+        resumeCkptPath:
+          typeof trainer.resume_ckpt_path === "string" ? trainer.resume_ckpt_path : null,
         accelerator: (typeof trainer.trainer_accelerator === "string" ? trainer.trainer_accelerator : "auto") as ConfigHyperparams["accelerator"],
         dataPipeline: (typeof dataConfig.data_pipeline_fw === "string"
           ? DATA_PIPELINE_FROM_FW[dataConfig.data_pipeline_fw]
@@ -1416,6 +1485,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
             filterThreshold: 0.8,
           };
 
+          let mergedAny = false;
           try {
             const { projectPath, labels: currentLabels } = useAppStore.getState();
 
@@ -1440,6 +1510,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
                 predictions.tracks?.length ?? 0,
               );
               await commandContext.execute(MergePredictions, { predictions });
+              mergedAny = true;
             };
 
             if (inferenceTarget === "random") {
@@ -1463,7 +1534,33 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
                 set((s) => ({ log: appendLog(s.log, "— Post-training inference failed (non-zero exit).") }));
               }
             }
-            set((s) => ({ log: appendLog(s.log, "— Predictions merged into project.") }));
+            if (!mergedAny) {
+              // Nothing was merged — a failed run, or a successful one that
+              // wrote no output. Say so instead of claiming a merge, and raise
+              // no review signal (there is nothing to review).
+              set((s) => ({ log: appendLog(s.log, "— No predictions were merged.") }));
+            } else {
+              set((s) => ({ log: appendLog(s.log, "— Predictions merged into project.") }));
+
+              // Phase-2 → Phase-3 handoff: surface what landed rather than
+              // seizing the UI. See AppState.pendingReview.
+              const { reviewSignal } = await import("@/lib/activeLearning/reviewQueue");
+              const app = useAppStore.getState();
+              if (app.labels) {
+                const { flagged, total } = reviewSignal(app.labels, app.correctScoreThreshold);
+                app.setPendingReview({ flagged, total });
+                set((s) => ({
+                  log: appendLog(
+                    s.log,
+                    total === 0
+                      ? "— No scored predictions to review."
+                      : flagged === 0
+                        ? `— ${total} predictions merged; none below the ${app.correctScoreThreshold} flag threshold.`
+                        : `— ${flagged} of ${total} predictions need review.`,
+                  ),
+                }));
+              }
+            }
           } catch (e) {
             console.error("[training] Post-training inference failed:", e);
             set((s) => ({

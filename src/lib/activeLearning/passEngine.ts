@@ -17,7 +17,7 @@ import type { Labels, LabeledFrame, Instance } from "@talmolab/sleap-io.js";
 import { PredictedInstance } from "@talmolab/sleap-io.js";
 import type { ActiveLearningConfig, LabelPass, PassOrder } from "./config";
 import { instanceCropCenter } from "./generateCrops";
-import { poseSkeletonOf } from "./centroidPairing";
+import { pairCentroidsToPoses, poseSkeletonOf } from "./centroidPairing";
 
 /**
  * One (frame, instance) unit that every pass labels. Resolved to a live
@@ -194,12 +194,12 @@ function sortedFrames(labels: Labels): LabeledFrame[] {
  * already exist to pair with (see ensurePairedPoseInstances); unpaired
  * centroids are skipped.
  *
- * Pairing is GEOMETRIC, not positional: a pose instance with placed points
- * matches its nearest centroid (greedy, ascending distance), so a pose that was
- * partially labeled in an earlier sweep stays glued to ITS animal even after
- * instances are added, deleted, or reordered. Empty pose instances carry no
- * geometry and are interchangeable — they pair with the remaining centroids in
- * frame order.
+ * The matching itself lives in {@link pairCentroidsToPoses} — the same helper
+ * that writes the `centroid.instance` back-link the canvas colors centroids by,
+ * so the sweep and the overlay agree on which animal a centroid belongs to.
+ * (Links, once written, are never re-decided; this recomputes the geometry, so
+ * the two can still drift if a pose is dragged onto a different animal between
+ * sweeps. Reading the link here instead is the follow-up in CENTROID_PLAN.)
  */
 function buildWorkListSeparate(labels: Labels, includePredicted: boolean): PassItem[] {
   const poseSkel = poseSkeletonOf(labels);
@@ -211,67 +211,20 @@ function buildWorkListSeparate(labels: Labels, includePredicted: boolean): PassI
     const videoIdx = videos.indexOf(lf.video);
     if (videoIdx < 0) continue;
 
-    // First-class centroid annotations on this frame (user seeds + locator
-    // predictions), with a finite location. Each supplies a zoom anchor; the
-    // pose instance it pairs with is what the passes label.
-    const centroids: { center: [number, number]; predicted: boolean; idx: number }[] = [];
-    lf.centroids.forEach((c, idx) => {
-      const [x, y] = c.xy;
-      if (!Number.isFinite(x) || !Number.isFinite(y)) return;
-      if (c.isPredicted && !includePredicted) return;
-      centroids.push({ center: [x, y], predicted: c.isPredicted, idx });
-    });
-    const poses: { inst: Instance; center: [number, number] | null }[] = [];
-    for (const inst of lf.instances) {
-      if (inst.skeleton !== poseSkel) continue;
-      poses.push({ inst, center: instanceCropCenter(inst, poseSkel, undefined) });
-    }
-    if (centroids.length === 0 || poses.length === 0) continue;
-
-    // Greedy nearest matching between placed poses and centroids, ascending by
-    // distance (ties broken by centroid then pose order, for determinism).
-    const candidates: { ci: number; pi: number; d: number }[] = [];
-    for (let ci = 0; ci < centroids.length; ci++) {
-      for (let pi = 0; pi < poses.length; pi++) {
-        const pc = poses[pi].center;
-        if (!pc) continue;
-        const dx = pc[0] - centroids[ci].center[0];
-        const dy = pc[1] - centroids[ci].center[1];
-        candidates.push({ ci, pi, d: dx * dx + dy * dy });
-      }
-    }
-    candidates.sort((a, b) => a.d - b.d || a.ci - b.ci || a.pi - b.pi);
-    const poseForCentroid = new Array<number>(centroids.length).fill(-1);
-    const centroidTaken = new Set<number>();
-    const poseTaken = new Set<number>();
-    for (const { ci, pi } of candidates) {
-      if (centroidTaken.has(ci) || poseTaken.has(pi)) continue;
-      poseForCentroid[ci] = pi;
-      centroidTaken.add(ci);
-      poseTaken.add(pi);
-    }
-    // Remaining centroids take the remaining (empty) poses in frame order.
-    let nextFree = 0;
-    for (let ci = 0; ci < centroids.length; ci++) {
-      if (poseForCentroid[ci] >= 0) continue;
-      while (nextFree < poses.length && poseTaken.has(nextFree)) nextFree++;
-      if (nextFree >= poses.length) break;
-      poseForCentroid[ci] = nextFree;
-      poseTaken.add(nextFree);
-    }
-
-    for (let ci = 0; ci < centroids.length; ci++) {
+    const poseForCentroid = pairCentroidsToPoses(lf, poseSkel, { includePredicted });
+    for (let ci = 0; ci < poseForCentroid.length; ci++) {
       const pi = poseForCentroid[ci];
-      if (pi < 0) continue; // more centroids than poses — skipped, as before
+      if (pi < 0) continue; // filtered out, or more centroids than poses
+      const c = lf.centroids[ci];
       items.push({
         videoIdx,
         frameIdx: lf.frameIdx,
-        instanceIdx: lf.instances.indexOf(poses[pi].inst),
-        centroidXY: centroids[ci].center,
-        predicted: centroids[ci].predicted,
-        // Index into the FULL `frame.centroids` array (not the filtered list),
-        // so rejecting removes the right annotation.
-        centroidIdx: centroids[ci].idx,
+        instanceIdx: pi,
+        centroidXY: [c.xy[0], c.xy[1]],
+        predicted: c.isPredicted,
+        // Index into the FULL `frame.centroids` array, so rejecting removes the
+        // right annotation.
+        centroidIdx: ci,
       });
     }
   }

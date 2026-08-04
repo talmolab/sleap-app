@@ -51,6 +51,7 @@ import { cn } from "@/lib/utils";
 import { toImageCoords, toSourceCoords } from "@/lib/cropTransform";
 import { suggestionPrefetchTargets } from "@/lib/navigableFrames";
 import { acceptAndAdvanceCorrection } from "@/lib/activeLearning/correctionActions";
+import { relinkCentroids } from "@/lib/activeLearning/centroidPairing";
 import {
   isVideoMissing,
   resolveVideoFile,
@@ -986,32 +987,16 @@ export function VideoPlayer() {
       const renderedCentroids = labeledFrame.centroids.map((c, i) => {
         const [cx, cy] = toImageCoords(video, c.x, c.y);
         // Give each centroid the SAME color as the instance it belongs to, so a
-        // centroid visually coordinates with its animal. Prefer the explicit
-        // back-link; user-seeded centroids have none (pairing is by count, not
-        // identity — see ensurePairedPoseInstances), so fall back to the
-        // spatially nearest instance by its mean visible-node position. That's
-        // index-aligned with `instances`, whose `.color` already reflects the
-        // active palette/track/predicted settings. Last resort: sequential index.
-        let matchIdx = c.instance ? labeledFrame.instances.indexOf(c.instance) : -1;
-        if (matchIdx < 0) {
-          let bestD = Infinity;
-          instances.forEach((ri, ii) => {
-            let sx = 0, sy = 0, n = 0;
-            for (const node of ri.nodes) {
-              if (node.visible && Number.isFinite(node.x) && Number.isFinite(node.y)) {
-                sx += node.x;
-                sy += node.y;
-                n += 1;
-              }
-            }
-            if (n === 0) return;
-            const d = (sx / n - cx) ** 2 + (sy / n - cy) ** 2;
-            if (d < bestD) {
-              bestD = d;
-              matchIdx = ii;
-            }
-          });
-        }
+        // centroid visually coordinates with its animal. Read the binding from
+        // the `centroid.instance` back-link, which `ensurePairedPoseInstances`
+        // assigns once (and the SLP persists) — NEVER re-derive it from geometry
+        // here: this runs on every repaint, so a per-frame guess would re-decide
+        // the pairing as keypoints are placed and the rings would change color
+        // mid-labeling. `labeledFrame.instances` is index-aligned with
+        // `instances`, whose `.color` already reflects the active palette/track/
+        // predicted settings. An unlinked centroid (e.g. seeded before pairing
+        // ran) falls back to its own stable palette slot.
+        const matchIdx = c.instance ? labeledFrame.instances.indexOf(c.instance) : -1;
         const color =
           matchIdx >= 0 && instances[matchIdx]
             ? instances[matchIdx].color
@@ -1676,6 +1661,9 @@ export function VideoPlayer() {
             points: clonePointsForAdopt(target.points),
             track: target.track,
           });
+          // Carry the centroid's back-link across the swap, or its ring would
+          // orphan and change color the moment the animal is first touched.
+          relinkCentroids(lf, target, adopted);
           lf.instances.splice(curItem.instanceIdx, 1, adopted);
           target = adopted;
         }
@@ -1787,6 +1775,7 @@ export function VideoPlayer() {
               points: clonePointsForAdopt(predicted.points),
               track: predicted.track,
             });
+            relinkCentroids(lf, predicted, adopted);
             lf.instances.splice(nodeHit.instanceIdx, 1, adopted);
             dragStore.setInstance(adopted);
             setDragNodeInfo(nodeHit);
@@ -2249,6 +2238,7 @@ export function VideoPlayer() {
             points: clonePointsForAdopt(inst.points),
             track: inst.track,
           });
+          relinkCentroids(lf, inst, adopted);
           lf.instances.splice(curItem.instanceIdx, 1, adopted);
           inst = adopted;
         }
@@ -2293,6 +2283,7 @@ export function VideoPlayer() {
             points: clonePointsForAdopt(inst.points),
             track: inst.track,
           });
+          relinkCentroids(lf, inst, adopted);
           lf.instances.splice(item.instanceIdx, 1, adopted);
           inst = adopted;
         }
