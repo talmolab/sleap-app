@@ -326,15 +326,21 @@ describe("Export Labels Package — io round-trip", () => {
     expect(reloaded.videos[0].hasEmbeddedImages).toBe(false);
   });
 
-  it("mp4 backend returning a DECODED frame embeds NO images (ImageBitmap dropped)", async () => {
+  it("mp4 backend returning a DECODED frame is PNG-encoded and embedded (io 0.5.8 #245)", async () => {
     // Faithful model of the browser mp4 path: getFrame() returns a decoded
-    // frame (ImageBitmap / ImageData-like), which io's frameToBytes() rejects.
+    // frame (ImageBitmap / ImageData-like). io 0.5.8 (#245) PNG-encodes these
+    // instead of dropping them, so the package now embeds the image.
     const skeleton = new Skeleton({ nodes: ["a"], name: "s" });
     const backend = {
       filename: "clip.mp4",
       shape: [1, 1, 1, 3] as [number, number, number, number],
       async getFrame() {
-        return { data: new Uint8Array([255, 0, 0]), width: 1, height: 1 };
+        // Valid 1x1 RGBA ImageData-like decoded frame.
+        return {
+          data: new Uint8ClampedArray([255, 0, 0, 255]),
+          width: 1,
+          height: 1,
+        };
       },
     };
     const video = new Video({
@@ -357,7 +363,7 @@ describe("Export Labels Package — io round-trip", () => {
       openVideos: false,
     });
     expect(reloaded.labeledFrames.length).toBe(1);
-    expect(reloaded.videos[0].hasEmbeddedImages).toBe(false);
+    expect(reloaded.videos[0].hasEmbeddedImages).toBe(true);
   });
 
   it("encoded-bytes source (models embedded pkg.slp): images round-trip byte-exact", async () => {
