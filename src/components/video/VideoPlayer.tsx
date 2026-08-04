@@ -51,7 +51,10 @@ import {
   resolveVideoFile,
   videoIssue,
   ensureVideoBackend,
+  relocateMissingImageFrames,
 } from "../../lib/resolveVideos";
+import { toast } from "@/lib/notify";
+import { getPlatform, isTauri } from "@/platform/index";
 import { Film, Frame, ImageOff } from "lucide-react";
 
 export function VideoPlayer() {
@@ -169,6 +172,15 @@ export function VideoPlayer() {
   // frame's file is missing/unreadable). Drives a non-blocking per-frame
   // placeholder; distinct from a wholly-missing video (see isVideoMissing).
   const [frameImageMissing, setFrameImageMissing] = useState(false);
+  // Frame indices whose image failed to read for the CURRENT video, accumulated
+  // as the user navigates. "Locate Image…" relocates exactly these against a
+  // picked folder — never re-probing the frames that already resolved. Reset
+  // whenever the video changes.
+  const missingFramesRef = useRef<Set<number>>(new Set());
+  const [relocating, setRelocating] = useState(false);
+  // Bumped to force the current frame to re-read after a relocation (frameIdx is
+  // unchanged, so the read effect wouldn't otherwise re-run).
+  const [readNonce, setReadNonce] = useState(0);
 
   // Context menu state
   const [contextMenu, setContextMenu] = useState<{
@@ -460,6 +472,8 @@ export function VideoPlayer() {
     if (lastVideoRef.current !== video) {
       lastVideoRef.current = video;
       prevFrameIdxRef.current = null;
+      // New video: forget the previous one's per-frame "missing" indices.
+      missingFramesRef.current = new Set();
     }
 
     // Read-ahead prefetch decision (see shouldPrefetch): ON for sequential
@@ -573,6 +587,9 @@ export function VideoPlayer() {
           setFrameDims((prev) => (prev[0] === 0 && prev[1] === 0 ? prev : [0, 0]));
           setBitmapVersion((v) => v + 1);
           setFrameImageMissing(true);
+          // Remember this frame so a later "Locate Image…" can relocate it (and
+          // any other frames found missing) without re-probing the whole list.
+          missingFramesRef.current.add(frameIdx);
         }
       } finally {
         // Release the scrub serialization gate so the seekbar drag loop can
@@ -586,7 +603,7 @@ export function VideoPlayer() {
     return () => {
       cancelled = true;
     };
-  }, [video, frameIdx]);
+  }, [video, frameIdx, readNonce]);
 
   // Frame histogram, computed OFF the seek path. A full-frame getImageData is a
   // GPU->CPU readback (~200-340ms in WKWebView) — doing it inline blocked every
@@ -2190,7 +2207,7 @@ export function VideoPlayer() {
             surgical per-frame "Locate…" action is a follow-up. */}
         {video && !isVideoMissing(video) && frameImageMissing && (
           <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none z-10">
-            <div className="flex flex-col items-center gap-2 max-w-md px-4 text-center">
+            <div className="flex flex-col items-center gap-2 max-w-md px-4 text-center pointer-events-auto">
               <ImageOff className="h-10 w-10 text-muted-foreground/40" />
               <p className="text-sm text-muted-foreground">
                 Frame image not found
@@ -2199,6 +2216,53 @@ export function VideoPlayer() {
                 This frame&apos;s image file couldn&apos;t be read. Other frames
                 are unaffected.
               </p>
+              {isTauri && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={relocating}
+                  onClick={async () => {
+                    if (!video) return;
+                    setRelocating(true);
+                    try {
+                      const platform = await getPlatform();
+                      const folder = await platform.showOpenDialog({
+                        directory: true,
+                        multiple: false,
+                      });
+                      if (typeof folder !== "string") return;
+                      // The current frame + any others already found missing;
+                      // relocate ONLY these against the picked folder (never the
+                      // frames that already resolved).
+                      missingFramesRef.current.add(frameIdx);
+                      const { located } = await relocateMissingImageFrames(
+                        video,
+                        [...missingFramesRef.current],
+                        folder,
+                        platform.exists,
+                      );
+                      if (located.length === 0) {
+                        toast.error("No matching images found in that folder");
+                        return;
+                      }
+                      for (const i of located)
+                        missingFramesRef.current.delete(i);
+                      useAppStore.getState().markVideoUpdated();
+                      setFrameImageMissing(false);
+                      setReadNonce((n) => n + 1); // re-read the current frame
+                      toast.success(
+                        `Located ${located.length} image${located.length > 1 ? "s" : ""}`,
+                      );
+                    } catch (err) {
+                      console.error("[video] Locate frame image failed:", err);
+                    } finally {
+                      setRelocating(false);
+                    }
+                  }}
+                >
+                  {relocating ? "Locating…" : "Locate Image…"}
+                </Button>
+              )}
             </div>
           </div>
         )}

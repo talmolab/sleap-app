@@ -156,6 +156,67 @@ async function applyImageSequenceLocation(
 }
 
 /**
+ * Surgically relocate a resolved ImageVideo's KNOWN-missing frames against a
+ * user-picked folder, WITHOUT re-probing the frames that already resolved. Only
+ * the `missingIdx` frames are probed (via {@link resolveImageFramesInFolder} on
+ * that subset); found frames keep their working paths untouched. Rewrites just
+ * the located frames' paths and rebuilds the backend (I/O-free — shape is known).
+ *
+ * Returns the frame indices actually located plus the winning head-swap (for
+ * optional persistence). Companion to the "Frame image not found" placeholder
+ * (see VideoPlayer): the user locates one missing frame's folder and the same
+ * folder is tried for the OTHER frames they've already found missing — the
+ * deliberate opposite of the load-time full-sequence sweep.
+ */
+export async function relocateMissingImageFrames(
+  video: Video,
+  missingIdx: number[],
+  folder: string,
+  exists: (path: string) => Promise<boolean>
+): Promise<{
+  located: number[];
+  swap: { oldPrefix: string; newPrefix: string } | null;
+}> {
+  const frames = Array.isArray(video.filename)
+    ? [...video.filename]
+    : [video.filename];
+  const subset = missingIdx
+    .filter((i) => typeof frames[i] === "string")
+    .map((i) => ({ i, stored: frames[i] as string }));
+  if (subset.length === 0) return { located: [], swap: null };
+
+  // Probe ONLY the known-missing subset against the picked folder.
+  const { located, missing } = await resolveImageFramesInFolder(
+    subset.map((e) => e.stored),
+    folder,
+    exists
+  );
+  const notFound = new Set(missing);
+  const fixedIdx: number[] = [];
+  let swap: { oldPrefix: string; newPrefix: string } | null = null;
+  for (let k = 0; k < subset.length; k++) {
+    const { i, stored } = subset[k];
+    if (notFound.has(stored)) continue; // not in this folder either — leave it
+    frames[i] = located[k];
+    fixedIdx.push(i);
+    swap ??= computePrefixSwap(stored, located[k]);
+  }
+  if (fixedIdx.length === 0) return { located: [], swap: null };
+
+  const meta = video.backendMetadata as Record<string, unknown>;
+  if (meta.sourceFilename === undefined) {
+    meta.sourceFilename = Array.isArray(video.filename)
+      ? video.filename[0] ?? ""
+      : video.filename;
+  }
+  video.filename = frames;
+  video.backend = await createVideoBackend(frames, {
+    shape: video.shape ?? undefined,
+  });
+  return { located: fixedIdx, swap };
+}
+
+/**
  * Locate a missing image-sequence (ImageVideo) by pointing it at a user-picked
  * folder. Re-resolves each stored frame under `folder` (positions preserved),
  * rewrites `video.filename`, and rebuilds the backend. Tauri-only — the browser
