@@ -211,11 +211,24 @@ export async function resolveImageSequenceVideo(
  * Auto-locate a missing image-sequence at load time by grafting its (often
  * relative) frame paths onto the project directory AND its ancestors — the
  * image-sequence analogue of the single-file candidate walk in
- * {@link getVideoPathCandidates}. A cheap FIRST-frame probe picks the directory
- * before the full per-frame existence pass, so directories that don't hold the
- * media cost one probe, not one per frame. Silent (no toasts). Tauri-only.
- * Returns true if the backend built. On failure the video is left for the
- * manual "Locate folder" flow.
+ * {@link getVideoPathCandidates}.
+ *
+ * Resolution is driven by the FIRST frame only: a cheap probe locates where
+ * frame 0 lands under each candidate directory, then the single head-swap that
+ * carried its stored path to its located path is applied to EVERY frame WITHOUT
+ * probing each one (mirrors io's `resolveVideoSource` + the single-file
+ * candidate walk). A uniform sequence — all frames in one folder, the normal
+ * case for a `.slp` ImageVideo — needs no more than this. The previous
+ * implementation ran a full per-frame existence pass here, which on a network
+ * mount cost one `exists()` round-trip PER FRAME (tens of thousands of probes
+ * for a large sequence; the dominant cost of opening such a project).
+ *
+ * Individual frames that don't follow the head-swap (a genuinely-missing file,
+ * or a rare mixed-depth sequence) keep their stored path and surface as a blank
+ * placeholder when navigated to — discovered lazily at view time, not by an
+ * eager load-time sweep. Silent (no toasts). Tauri-only. Returns true if the
+ * backend built. On failure the video is left for the manual "Locate folder"
+ * flow.
  */
 async function autoLocateImageSequence(
   video: Video,
@@ -231,9 +244,19 @@ async function autoLocateImageSequence(
   let dir = projectPath.substring(0, projectPath.lastIndexOf(sep));
 
   for (let i = 0; i <= MAX_ANCESTOR_WALK && dir; i++) {
+    // Cheap FIRST-frame probe: find where frame 0 lands under this directory.
     const probe = await resolveImageFramesInFolder([frames[0]], dir, exists);
     if (probe.missing.length === 0) {
-      const { located } = await resolveImageFramesInFolder(frames, dir, exists);
+      // Derive the head-swap (stored → located for frame 0) and apply it to the
+      // whole list — no per-frame probing. A null swap means frame 0 already
+      // resolved at its stored path (e.g. a still-valid absolute path); keep the
+      // stored paths verbatim. Frames that don't match the swap fall back to
+      // their stored path (located lazily at view time, else blank).
+      const located0 = probe.located[0] ?? frames[0];
+      const swap = computePrefixSwap(frames[0], located0);
+      const located = swap
+        ? frames.map((f) => applyPrefixSwap(f, swap.oldPrefix, swap.newPrefix) ?? f)
+        : frames.slice();
       try {
         await applyImageSequenceLocation(video, located);
         return true;

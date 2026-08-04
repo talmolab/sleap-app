@@ -52,7 +52,7 @@ import {
   videoIssue,
   ensureVideoBackend,
 } from "../../lib/resolveVideos";
-import { Film, Frame } from "lucide-react";
+import { Film, Frame, ImageOff } from "lucide-react";
 
 export function VideoPlayer() {
   const frameCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -165,6 +165,10 @@ export function VideoPlayer() {
   const [frameDims, setFrameDims] = useState<[number, number]>([0, 0]);
   // Counter to trigger frame canvas re-render when a new bitmap is loaded (even same dims)
   const [bitmapVersion, setBitmapVersion] = useState(0);
+  // The current frame's image couldn't be read (resolved backend, but this one
+  // frame's file is missing/unreadable). Drives a non-blocking per-frame
+  // placeholder; distinct from a wholly-missing video (see isVideoMissing).
+  const [frameImageMissing, setFrameImageMissing] = useState(false);
 
   // Context menu state
   const [contextMenu, setContextMenu] = useState<{
@@ -473,6 +477,9 @@ export function VideoPlayer() {
 
     (async () => {
       try {
+        // Fresh read: clear any prior per-frame "image missing" flag; the catch
+        // below re-raises it if this frame's image can't be read.
+        setFrameImageMissing(false);
         // Lazy video backends: the decoder is deferred at load (open one video,
         // not all N). Open it on first view, then read. ensureVideoBackend clears
         // lazyPath after opening, so this whole block is skipped from then on.
@@ -555,6 +562,18 @@ export function VideoPlayer() {
         if (debugFlags.logSeeking) console.debug(`[seek] frame ${frameIdx} rendered (${bmp.width}x${bmp.height}) total ${(performance.now() - t0).toFixed(1)}ms`);
       } catch (err) {
         console.error("Failed to render frame:", err);
+        // A resolved backend whose individual frame file can't be read (e.g. one
+        // missing image in an otherwise-located sequence). Blank the canvas —
+        // don't leave the previously-viewed frame up, which reads as "nothing
+        // happened" — and flag the per-frame placeholder. This is the lazy,
+        // at-view-time discovery that replaces the old eager load-time per-frame
+        // existence sweep.
+        if (!cancelled) {
+          frameBitmapRef.current = null;
+          setFrameDims((prev) => (prev[0] === 0 && prev[1] === 0 ? prev : [0, 0]));
+          setBitmapVersion((v) => v + 1);
+          setFrameImageMissing(true);
+        }
       } finally {
         // Release the scrub serialization gate so the seekbar drag loop can
         // issue the next frame. Set unconditionally: during a scrub only one
@@ -2161,6 +2180,25 @@ export function VideoPlayer() {
               >
                 Locate Video
               </Button>
+            </div>
+          </div>
+        )}
+
+        {/* Per-frame image-missing placeholder: the video itself resolved, but
+            THIS frame's image file couldn't be read (e.g. a single deleted image
+            in an otherwise-located sequence). Non-blocking + informational; a
+            surgical per-frame "Locate…" action is a follow-up. */}
+        {video && !isVideoMissing(video) && frameImageMissing && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none z-10">
+            <div className="flex flex-col items-center gap-2 max-w-md px-4 text-center">
+              <ImageOff className="h-10 w-10 text-muted-foreground/40" />
+              <p className="text-sm text-muted-foreground">
+                Frame image not found
+              </p>
+              <p className="text-xs text-muted-foreground/70">
+                This frame&apos;s image file couldn&apos;t be read. Other frames
+                are unaffected.
+              </p>
             </div>
           </div>
         )}
