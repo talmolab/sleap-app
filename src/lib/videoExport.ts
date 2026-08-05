@@ -226,6 +226,90 @@ export function clipExportReducer(
   }
 }
 
+/** Per-video status during a batch export. */
+export type ClipJobStatus = "queued" | "encoding" | "done" | "error" | "cancelled";
+
+/** Injected side-effects for {@link runClipExportBatch} (real encode/save, or fakes in tests). */
+export interface ClipBatchDeps {
+  /** Encode one config's clip → mp4 bytes (throws ClipExportCancelled on cancel). */
+  exportOne: (
+    config: ClipConfig,
+    cb: { signal: AbortSignal; onProgress: (done: number, total: number) => void }
+  ) => Promise<Uint8Array>;
+  /** Persist one config's bytes; returns a path/name, or null if it couldn't be saved. */
+  saveOne: (config: ClipConfig, bytes: Uint8Array) => Promise<string | null>;
+  /** Report a per-video status transition. */
+  onStatus: (
+    video: Video,
+    status: ClipJobStatus,
+    extra?: { progress?: { done: number; total: number }; error?: string }
+  ) => void;
+  /** Abort signal for the whole batch (Cancel). */
+  signal: AbortSignal;
+}
+
+/** Outcome tally for a batch export. */
+export interface ClipBatchSummary {
+  done: number;
+  failed: number;
+  cancelled: number;
+}
+
+/**
+ * Export the INCLUDED configs one at a time (sequential — one encoder at a
+ * time). A failed video is isolated (marked error, the batch continues); a
+ * cancelled video (ClipExportCancelled, or an already-aborted signal) cancels
+ * the rest. Pure orchestration — all encoding/saving is injected via
+ * {@link ClipBatchDeps}, so the sequencing/isolation/cancel logic is testable
+ * with fakes.
+ */
+export async function runClipExportBatch(
+  configs: readonly ClipConfig[],
+  deps: ClipBatchDeps
+): Promise<ClipBatchSummary> {
+  const included = configs.filter((c) => c.include);
+  const summary: ClipBatchSummary = { done: 0, failed: 0, cancelled: 0 };
+  let aborted = false;
+  for (const config of included) {
+    if (aborted || deps.signal.aborted) {
+      deps.onStatus(config.video, "cancelled");
+      summary.cancelled++;
+      continue;
+    }
+    deps.onStatus(config.video, "encoding", { progress: { done: 0, total: 0 } });
+    try {
+      const bytes = await deps.exportOne(config, {
+        signal: deps.signal,
+        onProgress: (done, total) =>
+          deps.onStatus(config.video, "encoding", { progress: { done, total } }),
+      });
+      const saved = await deps.saveOne(config, bytes);
+      if (saved === null) {
+        deps.onStatus(config.video, "error", { error: "Could not save the exported clip." });
+        summary.failed++;
+      } else {
+        deps.onStatus(config.video, "done");
+        summary.done++;
+      }
+    } catch (err) {
+      const cancelled =
+        err instanceof ClipExportCancelled ||
+        (err instanceof Error && err.name === "ClipExportCancelled");
+      if (cancelled) {
+        deps.onStatus(config.video, "cancelled");
+        summary.cancelled++;
+        aborted = true;
+      } else {
+        deps.onStatus(config.video, "error", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        summary.failed++;
+      }
+    }
+  }
+  return summary;
+}
+
 /** Output dimensions in pixels for a given scale factor. */
 export interface OutputDimensions {
   width: number;
@@ -359,12 +443,18 @@ export function clipBackgroundColor(bg: ClipBackground): string | undefined {
  */
 export function deriveClipFilename(
   projectFilename: string | null | undefined,
-  range: { start: number; end: number }
+  range: { start: number; end: number },
+  videoLabel?: string
 ): string {
   const base = projectFilename
     ? projectFilename.replace(/\.(slp|json)$/i, "")
     : "labels";
-  return `${base}.clip_${range.start}-${range.end}.mp4`;
+  // Optional per-video segment (batch export): strip the video's extension and
+  // sanitize to filename-safe chars so `<project>.<video>.clip_<a>-<b>.mp4`.
+  const vid = videoLabel
+    ? "." + videoLabel.replace(/\.[^.]+$/, "").replace(/[^\w-]+/g, "_")
+    : "";
+  return `${base}${vid}.clip_${range.start}-${range.end}.mp4`;
 }
 
 /** A single planned output frame: which source frame, and its mp4 timestamp. */

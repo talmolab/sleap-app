@@ -14,6 +14,8 @@ import {
   clampHandleDrag,
   buildInitialClipConfigs,
   clipExportReducer,
+  runClipExportBatch,
+  type ClipConfig,
   computeClipOutputDimensions,
   deriveClipFilename,
   planClipTimeline,
@@ -254,6 +256,91 @@ describe("clipExportReducer", () => {
     const st = mk();
     const other = buildInitialClipConfigs([vid(50, "c.mp4")], null, null);
     expect(clipExportReducer(st, { type: "reset", state: other })).toBe(other);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pure: per-video filename + sequential batch runner (Phase 3)
+// ---------------------------------------------------------------------------
+
+describe("deriveClipFilename with a per-video label", () => {
+  it("keeps the plain form when no video label is given", () => {
+    expect(deriveClipFilename("proj.slp", { start: 10, end: 20 })).toBe("proj.clip_10-20.mp4");
+  });
+  it("inserts a sanitized video label (extension stripped)", () => {
+    expect(deriveClipFilename("proj.slp", { start: 10, end: 20 }, "0001.jpg")).toBe("proj.0001.clip_10-20.mp4");
+    expect(deriveClipFilename("proj.slp", { start: 0, end: 5 }, "my video.mp4")).toBe("proj.my_video.clip_0-5.mp4");
+  });
+});
+
+describe("runClipExportBatch", () => {
+  const cfg = (video: Video, include: boolean): ClipConfig => ({
+    video,
+    include,
+    start: 0,
+    end: 10,
+    fps: 30,
+    scale: 1,
+    background: "original",
+  });
+
+  it("exports only the included videos, in order, reporting done", async () => {
+    const a = vid(100, "a");
+    const b = vid(100, "b");
+    const c = vid(100, "c");
+    const statuses: Array<[string, string]> = [];
+    const summary = await runClipExportBatch([cfg(a, true), cfg(b, false), cfg(c, true)], {
+      exportOne: async () => new Uint8Array([1]),
+      saveOne: async () => "/out/x.mp4",
+      onStatus: (v, s) => statuses.push([v.filename as string, s]),
+      signal: new AbortController().signal,
+    });
+    expect(summary).toEqual({ done: 2, failed: 0, cancelled: 0 });
+    expect(statuses.some(([f]) => f === "b")).toBe(false);
+    expect(statuses.filter(([, s]) => s === "done").map(([f]) => f)).toEqual(["a", "c"]);
+  });
+
+  it("isolates a failure and continues (failure-isolation)", async () => {
+    const a = vid(100, "a");
+    const b = vid(100, "b");
+    const summary = await runClipExportBatch([cfg(a, true), cfg(b, true)], {
+      exportOne: async (config) => {
+        if (config.video === a) throw new Error("boom");
+        return new Uint8Array([1]);
+      },
+      saveOne: async () => "/out/x.mp4",
+      onStatus: () => {},
+      signal: new AbortController().signal,
+    });
+    expect(summary).toEqual({ done: 1, failed: 1, cancelled: 0 });
+  });
+
+  it("cancels the remaining videos when a job is cancelled", async () => {
+    const a = vid(100, "a");
+    const b = vid(100, "b");
+    const summary = await runClipExportBatch([cfg(a, true), cfg(b, true)], {
+      exportOne: async () => {
+        throw new ClipExportCancelled();
+      },
+      saveOne: async () => "/out/x.mp4",
+      onStatus: () => {},
+      signal: new AbortController().signal,
+    });
+    expect(summary).toEqual({ done: 0, failed: 0, cancelled: 2 });
+  });
+
+  it("marks all cancelled when the signal is already aborted", async () => {
+    const a = vid(100, "a");
+    const b = vid(100, "b");
+    const ac = new AbortController();
+    ac.abort();
+    const summary = await runClipExportBatch([cfg(a, true), cfg(b, true)], {
+      exportOne: async () => new Uint8Array([1]),
+      saveOne: async () => "/out/x.mp4",
+      onStatus: () => {},
+      signal: ac.signal,
+    });
+    expect(summary).toEqual({ done: 0, failed: 0, cancelled: 2 });
   });
 });
 

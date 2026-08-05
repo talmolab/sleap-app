@@ -131,6 +131,41 @@ export async function saveBytesFile(
   return suggestedName;
 }
 
+/**
+ * Write bytes to `<dir>/<name>` (Tauri only — used by batch clip export to write
+ * each clip into a single chosen destination folder without a per-file dialog).
+ */
+export async function saveBytesToDir(
+  dir: string,
+  name: string,
+  bytes: Uint8Array
+): Promise<string> {
+  const platform = await getPlatform();
+  const path = dir.replace(/[/\\]$/, "") + "/" + name;
+  await platform.writeFile(path, bytes);
+  return path;
+}
+
+/**
+ * Choose where a batch of clips should go. Tauri: pick one destination FOLDER
+ * (each clip is written into it — avoids N save dialogs). Browser: no folder
+ * write, so fall back to a per-file download for each clip.
+ */
+export async function pickClipDestination(): Promise<
+  { mode: "dir"; dir: string } | { mode: "perFile" } | { mode: "cancelled" }
+> {
+  const platform = await getPlatform();
+  if (!platform.isTauri) return { mode: "perFile" };
+  const picked = await platform.showOpenDialog({ directory: true });
+  const dir =
+    typeof picked === "string"
+      ? picked
+      : Array.isArray(picked)
+        ? ((picked[0] as string | undefined) ?? null)
+        : null;
+  return dir ? { mode: "dir", dir } : { mode: "cancelled" };
+}
+
 /** Reset state to an empty project. */
 export const NewProjectCommand: Command = {
   name: "NewProject",

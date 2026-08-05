@@ -4,8 +4,34 @@
  * video the preview + settings show) is independent of inclusion (the checkbox).
  */
 import type { Video } from "../../types";
-import type { ClipConfig } from "@/lib/videoExport";
+import type { ClipConfig, ClipJobStatus } from "@/lib/videoExport";
 import { cn } from "@/lib/utils";
+
+/** Per-video runtime status shown on the right of each row during a batch export. */
+export interface ClipJobInfo {
+  status: ClipJobStatus;
+  progress?: { done: number; total: number };
+}
+
+function jobIndicator(job: ClipJobInfo): { text: string; cls: string } {
+  switch (job.status) {
+    case "encoding": {
+      const p =
+        job.progress && job.progress.total
+          ? Math.round((job.progress.done / job.progress.total) * 100)
+          : 0;
+      return { text: `${p}%`, cls: "text-foreground" };
+    }
+    case "done":
+      return { text: "✓", cls: "text-green-500" };
+    case "error":
+      return { text: "✗", cls: "text-red-500" };
+    case "cancelled":
+      return { text: "—", cls: "text-muted-foreground" };
+    default:
+      return { text: "○", cls: "text-muted-foreground" };
+  }
+}
 
 /** Basename of a video's filename (ImageVideo filenames are string[]). */
 function baseName(filename: string | string[]): string {
@@ -27,6 +53,10 @@ interface ClipVideoListProps {
   onFocus: (v: Video) => void;
   onToggleInclude: (v: Video) => void;
   onSetAll: (include: boolean) => void;
+  /** Per-video runtime status during a batch export (empty when idle). */
+  jobs?: Map<Video, ClipJobInfo>;
+  /** Disable include/select-all interaction (e.g. while exporting). */
+  disabled?: boolean;
 }
 
 export function ClipVideoList({
@@ -35,6 +65,8 @@ export function ClipVideoList({
   onFocus,
   onToggleInclude,
   onSetAll,
+  jobs,
+  disabled,
 }: ClipVideoListProps) {
   const nIncluded = configs.filter((c) => c.include).length;
   const allIncluded = configs.length > 0 && nIncluded === configs.length;
@@ -47,7 +79,8 @@ export function ClipVideoList({
         </span>
         <button
           type="button"
-          className="hover:text-foreground"
+          className="hover:text-foreground disabled:opacity-50"
+          disabled={disabled}
           onClick={() => onSetAll(!allIncluded)}
         >
           {allIncluded ? "Deselect all" : "Select all"}
@@ -56,6 +89,8 @@ export function ClipVideoList({
       <div className="overflow-auto min-h-0 flex-1">
         {configs.map((c, i) => {
           const isFocused = c.video === focused;
+          const job = jobs?.get(c.video);
+          const ind = job ? jobIndicator(job) : null;
           return (
             <button
               type="button"
@@ -70,6 +105,7 @@ export function ClipVideoList({
               <input
                 type="checkbox"
                 checked={c.include}
+                disabled={disabled}
                 aria-label={`Include ${baseName(c.video.filename)}`}
                 onClick={(e) => e.stopPropagation()}
                 onChange={() => onToggleInclude(c.video)}
@@ -77,9 +113,13 @@ export function ClipVideoList({
               <span className="flex-1 min-w-0 truncate">
                 {baseName(c.video.filename)}
               </span>
-              <span className="tabular-nums text-muted-foreground shrink-0">
-                {rangeSummary(c)}
-              </span>
+              {ind ? (
+                <span className={cn("tabular-nums shrink-0", ind.cls)}>{ind.text}</span>
+              ) : (
+                <span className="tabular-nums text-muted-foreground shrink-0">
+                  {rangeSummary(c)}
+                </span>
+              )}
             </button>
           );
         })}
