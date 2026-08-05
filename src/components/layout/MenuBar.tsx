@@ -151,18 +151,22 @@ function FileMenu() {
         <MenubarSub>
           <MenubarSubTrigger disabled={!projectLoaded}>Replace Videos...</MenubarSubTrigger>
           <MenubarSubContent>
-            {labels?.videos.map((v, idx) => (
-              <MenubarItem
-                key={idx}
-                onClick={async () => {
-                  const { resolveVideoFile } = await import("../../lib/resolveVideos");
-                  await resolveVideoFile(v, labels ?? undefined);
-                  useAppStore.getState().bumpOverlayVersion();
-                }}
-              >
-                {(Array.isArray(v.filename) ? v.filename[0] : v.filename)?.split("/").pop() || `Video ${idx + 1}`}
-              </MenubarItem>
-            ))}
+            {/* Bounded, scrollable so projects with many videos don't overflow
+                the screen (the sub-content itself is overflow-hidden). */}
+            <div className="max-h-[60vh] overflow-y-auto">
+              {labels?.videos.map((v, idx) => (
+                <MenubarItem
+                  key={idx}
+                  onClick={async () => {
+                    const { resolveVideoFile } = await import("../../lib/resolveVideos");
+                    await resolveVideoFile(v, labels ?? undefined);
+                    useAppStore.getState().bumpOverlayVersion();
+                  }}
+                >
+                  {(Array.isArray(v.filename) ? v.filename[0] : v.filename)?.split("/").pop() || `Video ${idx + 1}`}
+                </MenubarItem>
+              ))}
+            </div>
           </MenubarSubContent>
         </MenubarSub>
         <MenubarSeparator />

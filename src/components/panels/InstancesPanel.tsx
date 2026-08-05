@@ -263,11 +263,9 @@ function InstanceDetailPanel({
             <Clipboard className="h-3 w-3" />
           )}
         </Button>
-        <ScrollArea className="max-h-32">
-          <pre className="text-[10px] leading-tight font-mono bg-muted/50 rounded p-2 pr-8">
-            {pointsStr}
-          </pre>
-        </ScrollArea>
+        <pre className="text-[10px] leading-tight font-mono bg-muted/50 rounded p-2 pr-8 max-h-32 overflow-auto">
+          {pointsStr}
+        </pre>
       </div>
     </div>
   );
@@ -388,7 +386,7 @@ export function InstancesPanel() {
 
   return (
     <div className="flex flex-col h-full">
-      <ScrollArea className="flex-1">
+      <ScrollArea className="flex-1 min-h-0">
         {instances.length === 0 ? (
           <p className="text-xs text-muted-foreground p-2">
             No instances on this frame.
