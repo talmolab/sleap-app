@@ -12,6 +12,8 @@ import {
   pixelToFrame,
   frameToPixel,
   clampHandleDrag,
+  buildInitialClipConfigs,
+  clipExportReducer,
   computeClipOutputDimensions,
   deriveClipFilename,
   planClipTimeline,
@@ -157,6 +159,101 @@ describe("clampHandleDrag", () => {
   it("clamps the end handle to [start, len-1]", () => {
     expect(clampHandleDrag("end", 10, { start: 20, end: 80, len: 100 })).toBe(20);
     expect(clampHandleDrag("end", 200, { start: 20, end: 80, len: 100 })).toBe(99);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pure: multi-video config seeding + reducer (Phase 2)
+// ---------------------------------------------------------------------------
+
+function vid(len: number, name: string): Video {
+  return new Video({
+    filename: name,
+    backendMetadata: { shape: [len, 480, 640, 3] },
+    openBackend: false,
+  });
+}
+
+describe("buildInitialClipConfigs", () => {
+  it("seeds the current video from the selection, others full; only current included", () => {
+    const a = vid(100, "a.mp4");
+    const b = vid(200, "b.mp4");
+    const st = buildInitialClipConfigs([a, b], a, [10, 20]);
+    expect(st.focused).toBe(a);
+    expect(st.configs.length).toBe(2);
+    const ca = st.configs[0];
+    expect(ca.video).toBe(a);
+    expect(ca.include).toBe(true);
+    expect(ca.start).toBe(10);
+    expect(ca.end).toBe(20);
+    expect(ca.fps).toBe(30);
+    expect(ca.scale).toBe(1);
+    expect(ca.background).toBe("original");
+    const cb = st.configs[1];
+    expect(cb.include).toBe(false);
+    expect(cb.start).toBe(0);
+    expect(cb.end).toBe(199);
+  });
+
+  it("defaults the current video to the whole video when there is no selection", () => {
+    const a = vid(100, "a.mp4");
+    const st = buildInitialClipConfigs([a], a, null);
+    expect(st.configs[0].start).toBe(0);
+    expect(st.configs[0].end).toBe(99);
+    expect(st.configs[0].include).toBe(true);
+  });
+
+  it("focuses the first video and includes none when there is no current video", () => {
+    const a = vid(100, "a.mp4");
+    const b = vid(200, "b.mp4");
+    const st = buildInitialClipConfigs([a, b], null, null);
+    expect(st.focused).toBe(a);
+    expect(st.configs.every((c) => !c.include)).toBe(true);
+  });
+});
+
+describe("clipExportReducer", () => {
+  const mk = () =>
+    buildInitialClipConfigs([vid(100, "a.mp4"), vid(200, "b.mp4")], null, null);
+
+  it("focuses a video", () => {
+    const st = mk();
+    const b = st.configs[1].video;
+    expect(clipExportReducer(st, { type: "focus", video: b }).focused).toBe(b);
+  });
+
+  it("toggles include for one video without mutating the input", () => {
+    const st = mk();
+    const b = st.configs[1].video;
+    const ns = clipExportReducer(st, { type: "toggleInclude", video: b });
+    expect(ns.configs[1].include).toBe(true);
+    expect(st.configs[1].include).toBe(false);
+  });
+
+  it("sets all included on and off", () => {
+    const st = mk();
+    expect(
+      clipExportReducer(st, { type: "setAllIncluded", include: true }).configs.every((c) => c.include)
+    ).toBe(true);
+    expect(
+      clipExportReducer(st, { type: "setAllIncluded", include: false }).configs.every((c) => !c.include)
+    ).toBe(true);
+  });
+
+  it("sets range / fps / scale / background for a video", () => {
+    const st = mk();
+    const a = st.configs[0].video;
+    expect(clipExportReducer(st, { type: "setRange", video: a, start: 5, end: 50 }).configs[0].start).toBe(5);
+    expect(clipExportReducer(st, { type: "setRange", video: a, start: 5, end: 50 }).configs[0].end).toBe(50);
+    expect(clipExportReducer(st, { type: "setFps", video: a, fps: 24 }).configs[0].fps).toBe(24);
+    expect(clipExportReducer(st, { type: "setScale", video: a, scale: 0.5 }).configs[0].scale).toBe(0.5);
+    expect(clipExportReducer(st, { type: "setBackground", video: a, background: "black" }).configs[0].background).toBe("black");
+  });
+
+  it("resets the whole state (re-seed on dialog open)", () => {
+    const st = mk();
+    const other = buildInitialClipConfigs([vid(50, "c.mp4")], null, null);
+    expect(clipExportReducer(st, { type: "reset", state: other })).toBe(other);
   });
 });
 

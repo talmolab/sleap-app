@@ -1,0 +1,89 @@
+/**
+ * Video list for the Export Clips dialog: an include checkbox + click-to-focus
+ * row per video, with a range summary and a select-all/none header. Focus (which
+ * video the preview + settings show) is independent of inclusion (the checkbox).
+ */
+import type { Video } from "../../types";
+import type { ClipConfig } from "@/lib/videoExport";
+import { cn } from "@/lib/utils";
+
+/** Basename of a video's filename (ImageVideo filenames are string[]). */
+function baseName(filename: string | string[]): string {
+  const p = Array.isArray(filename) ? filename[0] ?? "" : filename;
+  const parts = p.split(/[\\/]/);
+  return parts[parts.length - 1] || p;
+}
+
+function rangeSummary(c: ClipConfig): string {
+  const len = c.video.shape?.[0] ?? 0;
+  return c.start === 0 && c.end === Math.max(0, len - 1)
+    ? "full"
+    : `${c.start}–${c.end}`;
+}
+
+interface ClipVideoListProps {
+  configs: ClipConfig[];
+  focused: Video | null;
+  onFocus: (v: Video) => void;
+  onToggleInclude: (v: Video) => void;
+  onSetAll: (include: boolean) => void;
+}
+
+export function ClipVideoList({
+  configs,
+  focused,
+  onFocus,
+  onToggleInclude,
+  onSetAll,
+}: ClipVideoListProps) {
+  const nIncluded = configs.filter((c) => c.include).length;
+  const allIncluded = configs.length > 0 && nIncluded === configs.length;
+
+  return (
+    <div className="flex flex-col min-h-0 h-full border border-border rounded overflow-hidden">
+      <div className="flex items-center justify-between px-2 h-8 border-b border-border text-xs text-muted-foreground shrink-0">
+        <span className="tabular-nums">
+          {nIncluded} / {configs.length} selected
+        </span>
+        <button
+          type="button"
+          className="hover:text-foreground"
+          onClick={() => onSetAll(!allIncluded)}
+        >
+          {allIncluded ? "Deselect all" : "Select all"}
+        </button>
+      </div>
+      <div className="overflow-auto min-h-0 flex-1">
+        {configs.map((c, i) => {
+          const isFocused = c.video === focused;
+          return (
+            <button
+              type="button"
+              key={i}
+              onClick={() => onFocus(c.video)}
+              title={baseName(c.video.filename)}
+              className={cn(
+                "flex items-center gap-2 w-full px-2 h-8 text-left text-xs border-b border-border/40 last:border-b-0",
+                isFocused ? "bg-accent text-foreground" : "hover:bg-accent/50"
+              )}
+            >
+              <input
+                type="checkbox"
+                checked={c.include}
+                aria-label={`Include ${baseName(c.video.filename)}`}
+                onClick={(e) => e.stopPropagation()}
+                onChange={() => onToggleInclude(c.video)}
+              />
+              <span className="flex-1 min-w-0 truncate">
+                {baseName(c.video.filename)}
+              </span>
+              <span className="tabular-nums text-muted-foreground shrink-0">
+                {rangeSummary(c)}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}

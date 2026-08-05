@@ -127,6 +127,105 @@ export function clampHandleDrag(
   return Math.max(bounds.start, Math.min(v, bounds.len - 1));
 }
 
+// ---------------------------------------------------------------------------
+// Multi-video export config + reducer (per-video ranges & settings)
+// ---------------------------------------------------------------------------
+
+/** Per-video export configuration — every setting is per-video (by design). */
+export interface ClipConfig {
+  video: Video;
+  include: boolean;
+  start: number;
+  end: number;
+  fps: number;
+  scale: number;
+  background: ClipBackground;
+}
+
+/** The export dialog's per-video state: one config per video + which is focused. */
+export interface ClipExportState {
+  configs: ClipConfig[];
+  focused: Video | null;
+}
+
+/** Actions for {@link clipExportReducer}. */
+export type ClipExportAction =
+  | { type: "focus"; video: Video }
+  | { type: "toggleInclude"; video: Video }
+  | { type: "setAllIncluded"; include: boolean }
+  | { type: "setRange"; video: Video; start: number; end: number }
+  | { type: "setFps"; video: Video; fps: number }
+  | { type: "setScale"; video: Video; scale: number }
+  | { type: "setBackground"; video: Video; background: ClipBackground }
+  | { type: "reset"; state: ClipExportState };
+
+/**
+ * Seed per-video export configs: the current video is included + focused with
+ * its range seeded from the timeline selection (via {@link computeInitialClipRange});
+ * every other video defaults to its whole range and is unchecked. fps defaults
+ * to the video's native rate (fallback 30). Pure.
+ */
+export function buildInitialClipConfigs(
+  videos: readonly Video[],
+  currentVideo: Video | null,
+  frameRange: readonly [number, number] | null
+): ClipExportState {
+  const configs: ClipConfig[] = videos.map((video) => {
+    const len = video.shape?.[0] ?? 0;
+    const isCurrent = video === currentVideo;
+    const { start, end } = isCurrent
+      ? computeInitialClipRange(frameRange, len)
+      : { start: 0, end: Math.max(0, len - 1) };
+    const fps = video.fps && video.fps > 0 ? Math.round(video.fps) : 30;
+    return {
+      video,
+      include: isCurrent,
+      start,
+      end,
+      fps,
+      scale: 1,
+      background: "original" as ClipBackground,
+    };
+  });
+  return { configs, focused: currentVideo ?? videos[0] ?? null };
+}
+
+/** Pure reducer for the export dialog's per-video config state. */
+export function clipExportReducer(
+  state: ClipExportState,
+  action: ClipExportAction
+): ClipExportState {
+  const patch = (video: Video, fields: Partial<ClipConfig>): ClipExportState => ({
+    ...state,
+    configs: state.configs.map((c) => (c.video === video ? { ...c, ...fields } : c)),
+  });
+  switch (action.type) {
+    case "focus":
+      return { ...state, focused: action.video };
+    case "setAllIncluded":
+      return { ...state, configs: state.configs.map((c) => ({ ...c, include: action.include })) };
+    case "toggleInclude":
+      return {
+        ...state,
+        configs: state.configs.map((c) =>
+          c.video === action.video ? { ...c, include: !c.include } : c
+        ),
+      };
+    case "setRange":
+      return patch(action.video, { start: action.start, end: action.end });
+    case "setFps":
+      return patch(action.video, { fps: action.fps });
+    case "setScale":
+      return patch(action.video, { scale: action.scale });
+    case "setBackground":
+      return patch(action.video, { background: action.background });
+    case "reset":
+      return action.state;
+    default:
+      return state;
+  }
+}
+
 /** Output dimensions in pixels for a given scale factor. */
 export interface OutputDimensions {
   width: number;
