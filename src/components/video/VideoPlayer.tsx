@@ -775,7 +775,10 @@ export function VideoPlayer() {
     // render on unlabeled frames / when instances are hidden too. Assumes the
     // image transform is already applied.
     const paintRoi = () => {
-      if (!imageFeatureRoiDrawActive) return;
+      // The persisted region stays visible whenever it exists — even after
+      // draw-mode auto-exits once a rectangle is set — so the user can keep it
+      // on screen while working on the canvas. It is cleared only when the Image
+      // Features view is left (SuggestionsPanel resetImageFeatureRoi).
       const persisted = video ? imageFeatureRois.get(video) : undefined;
       if (persisted) {
         renderRoiRect(
@@ -787,15 +790,18 @@ export function VideoPlayer() {
           baseScale * zoom
         );
       }
-      if (roiStart && roiEnd) {
+      // The live rubber-band only shows during an active draw.
+      if (imageFeatureRoiDrawActive && roiStart && roiEnd) {
         renderRoiRect(ctx, roiStart.x, roiStart.y, roiEnd.x, roiEnd.y, baseScale * zoom);
       }
     };
 
     if (!labeledFrame || !showInstances) {
       renderedInstancesRef.current = [];
-      // The ROI overlay is independent of instance rendering — still draw it.
-      if (imageFeatureRoiDrawActive) {
+      // The ROI overlay is independent of instance rendering — still draw it
+      // (the persisted region and/or the live rubber-band).
+      const hasRoi = video ? imageFeatureRois.has(video) : false;
+      if (imageFeatureRoiDrawActive || hasRoi) {
         ctx.save();
         applyImageTransform();
         paintRoi();
@@ -1726,6 +1732,11 @@ export function VideoPlayer() {
       // Ignore an accidental click / tiny drag (preserve any existing region).
       if (currentVideo && width > 2 && height > 2) {
         setImageFeatureRoi(currentVideo, { x, y, width, height });
+        // One-shot: exit draw-mode once a region is committed so the canvas is
+        // immediately usable again (labeling/panning). The rectangle stays
+        // visible (painted from the persisted region) and is cleared only when
+        // the Image Features view is left.
+        useAppStore.getState().setImageFeatureRoiDrawActive(false);
       }
       setRoiStart(null);
       setRoiEnd(null);
