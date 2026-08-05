@@ -15,7 +15,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { Crosshair, Hand, Minus, MousePointer2, Pencil, Plus } from "lucide-react";
+import { Crosshair, Minus, Pencil, Plus } from "lucide-react";
 import { isTauri } from "../../platform/index";
 import { computeStatusStats, instancesToShowCount } from "@/lib/statusStats";
 import { DEFAULT_SHORTCUTS } from "@/lib/shortcuts";
@@ -31,7 +31,6 @@ export function StatusBar() {
   const labeledFrame = useAppStore((s) => s.labeledFrame);
   const uiScale = useAppStore((s) => s.uiScale);
   const frameRange = useAppStore((s) => s.frameRange);
-  const defaultToPan = useAppStore((s) => s.defaultToPan);
   const labelingMode = useAppStore((s) => s.labelingMode);
   const showInstances = useAppStore((s) => s.showInstances);
 
@@ -185,25 +184,6 @@ export function StatusBar() {
             </TooltipContent>
           </Tooltip>
           <Separator orientation="vertical" className="h-3.5 mx-0.5" />
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant={defaultToPan ? "secondary" : "ghost"}
-                size="icon"
-                className="h-5 w-5"
-                onClick={() => useAppStore.getState().toggle("defaultToPan")}
-              >
-                {defaultToPan ? (
-                  <Hand className="h-3 w-3" />
-                ) : (
-                  <MousePointer2 className="h-3 w-3" />
-                )}
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="top">
-              <p>{defaultToPan ? "Pan mode (P to switch to Select)" : "Select mode (P to switch to Pan)"}</p>
-            </TooltipContent>
-          </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
