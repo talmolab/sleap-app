@@ -87,11 +87,16 @@ export function StatusBar() {
               </>
             )}
             <Separator orientation="vertical" className="h-3.5" />
-            <span className="tabular-nums whitespace-nowrap">
+            <button
+              type="button"
+              title="Go to frame (Ctrl+J)"
+              onClick={() => useAppStore.getState().setGoToFrameDialogOpen(true)}
+              className="tabular-nums whitespace-nowrap cursor-pointer rounded-sm px-1 -mx-1 hover:text-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            >
               {/* 0-based frame index (matches the seekbar/overlay convention). */}
               Frame {frameIdx.toLocaleString()}
               {totalFrames !== null ? ` / ${(totalFrames - 1).toLocaleString()}` : ""}
-            </span>
+            </button>
             <Separator orientation="vertical" className="h-3.5" />
             <span className="whitespace-nowrap">
               Labeled: {stats.userInVideo.toLocaleString()}
