@@ -92,6 +92,41 @@ export function computeInitialClipRange(
   return { start: Math.min(a, b), end: Math.max(a, b) };
 }
 
+/**
+ * Map a pixel x on a scrubbar track of width `trackPx` to a frame index in
+ * [0, len-1]. Clamps out-of-track pixels; returns 0 for a single-frame video
+ * or a zero-width track. Pure — used by the export preview scrubbar.
+ */
+export function pixelToFrame(px: number, trackPx: number, len: number): number {
+  if (len <= 1 || trackPx <= 0) return 0;
+  const frac = Math.max(0, Math.min(1, px / trackPx));
+  return Math.max(0, Math.min(len - 1, Math.round(frac * (len - 1))));
+}
+
+/**
+ * Inverse of {@link pixelToFrame}: the pixel x for a frame on a track of width
+ * `trackPx`. Returns 0 for a single-frame video. Pure.
+ */
+export function frameToPixel(frame: number, trackPx: number, len: number): number {
+  if (len <= 1) return 0;
+  const f = Math.max(0, Math.min(len - 1, frame));
+  return (f / (len - 1)) * trackPx;
+}
+
+/**
+ * Clamp a dragged in/out handle to a valid frame. The "start" handle is confined
+ * to [0, end]; the "end" handle to [start, len-1]. Floored to whole frames. Pure.
+ */
+export function clampHandleDrag(
+  endpoint: "start" | "end",
+  value: number,
+  bounds: { start: number; end: number; len: number }
+): number {
+  const v = Math.floor(value);
+  if (endpoint === "start") return Math.max(0, Math.min(v, bounds.end));
+  return Math.max(bounds.start, Math.min(v, bounds.len - 1));
+}
+
 /** Output dimensions in pixels for a given scale factor. */
 export interface OutputDimensions {
   width: number;

@@ -49,6 +49,7 @@ import {
   ClipExportCancelled,
   type ClipBackground,
 } from "@/lib/videoExport";
+import { ClipPreview } from "./ClipPreview";
 
 type Phase = "form" | "checking" | "unsupported" | "encoding";
 
@@ -328,9 +329,18 @@ export function ExportClipDialog() {
   const unsupported = phase === "unsupported";
   const checking = phase === "checking";
 
+  // Clamp the (possibly mid-typed) numeric inputs for the preview's region.
+  const previewMax = Math.max(0, totalFrames - 1);
+  const clampFrame = (n: number) =>
+    Number.isFinite(n) ? Math.max(0, Math.min(previewMax, n)) : 0;
+  const previewStart = clampFrame(parseInt(startInput, 10));
+  const previewEnd = Number.isFinite(parseInt(endInput, 10))
+    ? clampFrame(parseInt(endInput, 10))
+    : previewMax;
+
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="sm:max-w-[420px]">
+      <DialogContent className="sm:max-w-[560px]">
         <DialogHeader>
           <DialogTitle>Export Labeled Clip</DialogTitle>
           <DialogDescription>
@@ -343,6 +353,17 @@ export function ExportClipDialog() {
           <div className="py-2 text-sm text-muted-foreground">{supportMessage}</div>
         ) : (
           <div className="space-y-3 py-2">
+            {!encoding && (
+              <ClipPreview
+                video={video}
+                start={previewStart}
+                end={previewEnd}
+                onRangeChange={(s, e) => {
+                  setStartInput(String(s));
+                  setEndInput(String(e));
+                }}
+              />
+            )}
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">
                 <Label htmlFor="clip-start">Start frame</Label>

@@ -9,6 +9,9 @@ import {
 import {
   resolveClipFrameRange,
   computeInitialClipRange,
+  pixelToFrame,
+  frameToPixel,
+  clampHandleDrag,
   computeClipOutputDimensions,
   deriveClipFilename,
   planClipTimeline,
@@ -104,6 +107,56 @@ describe("computeInitialClipRange", () => {
   it("handles a video with no frames", () => {
     expect(computeInitialClipRange(null, 0)).toEqual({ start: 0, end: 0 });
     expect(computeInitialClipRange([3, 7], 0)).toEqual({ start: 0, end: 0 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pure: scrubbar pixel<->frame mapping + handle clamping (preview)
+// ---------------------------------------------------------------------------
+
+describe("pixelToFrame", () => {
+  it("maps track ends to first/last frame", () => {
+    expect(pixelToFrame(0, 100, 101)).toBe(0);
+    expect(pixelToFrame(100, 100, 101)).toBe(100);
+  });
+  it("maps the midpoint to the middle frame", () => {
+    expect(pixelToFrame(50, 100, 101)).toBe(50);
+  });
+  it("clamps out-of-track pixels", () => {
+    expect(pixelToFrame(-10, 100, 101)).toBe(0);
+    expect(pixelToFrame(200, 100, 101)).toBe(100);
+  });
+  it("returns 0 for a single-frame video or zero-width track", () => {
+    expect(pixelToFrame(50, 100, 1)).toBe(0);
+    expect(pixelToFrame(50, 0, 101)).toBe(0);
+  });
+});
+
+describe("frameToPixel", () => {
+  it("maps first/last frame to track ends", () => {
+    expect(frameToPixel(0, 100, 101)).toBe(0);
+    expect(frameToPixel(100, 100, 101)).toBe(100);
+  });
+  it("maps the middle frame to the midpoint", () => {
+    expect(frameToPixel(50, 100, 101)).toBe(50);
+  });
+  it("returns 0 for a single-frame video", () => {
+    expect(frameToPixel(0, 100, 1)).toBe(0);
+  });
+});
+
+describe("clampHandleDrag", () => {
+  it("passes an in-range start/end through (floored)", () => {
+    expect(clampHandleDrag("start", 30.9, { start: 20, end: 80, len: 100 })).toBe(30);
+    expect(clampHandleDrag("end", 60.9, { start: 20, end: 80, len: 100 })).toBe(60);
+  });
+  it("clamps the start handle to [0, end]", () => {
+    expect(clampHandleDrag("start", -5, { start: 20, end: 80, len: 100 })).toBe(0);
+    expect(clampHandleDrag("start", 90, { start: 20, end: 80, len: 100 })).toBe(80);
+  });
+  it("clamps the end handle to [start, len-1]", () => {
+    expect(clampHandleDrag("end", 10, { start: 20, end: 80, len: 100 })).toBe(20);
+    expect(clampHandleDrag("end", 200, { start: 20, end: 80, len: 100 })).toBe(99);
   });
 });
 
