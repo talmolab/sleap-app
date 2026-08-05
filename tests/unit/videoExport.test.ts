@@ -8,6 +8,7 @@ import {
 } from "@talmolab/sleap-io.js";
 import {
   resolveClipFrameRange,
+  computeInitialClipRange,
   computeClipOutputDimensions,
   deriveClipFilename,
   planClipTimeline,
@@ -72,6 +73,37 @@ describe("resolveClipFrameRange", () => {
   it("rejects NaN inputs", () => {
     const r = resolveClipFrameRange(NaN, 10, 100);
     expect(r.ok).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pure: initial dialog range seeded from the timeline selection
+// ---------------------------------------------------------------------------
+
+describe("computeInitialClipRange", () => {
+  it("defaults to the whole video when there is no selection", () => {
+    expect(computeInitialClipRange(null, 100)).toEqual({ start: 0, end: 99 });
+  });
+
+  it("seeds from an active timeline selection (0-based inclusive)", () => {
+    expect(computeInitialClipRange([10, 20], 100)).toEqual({ start: 10, end: 20 });
+  });
+
+  it("normalizes a reverse selection", () => {
+    expect(computeInitialClipRange([20, 10], 100)).toEqual({ start: 10, end: 20 });
+  });
+
+  it("clamps a stale/out-of-range selection into [0, nFrames-1]", () => {
+    expect(computeInitialClipRange([-5, 999], 100)).toEqual({ start: 0, end: 99 });
+  });
+
+  it("floors fractional selection bounds", () => {
+    expect(computeInitialClipRange([2.9, 5.1], 100)).toEqual({ start: 2, end: 5 });
+  });
+
+  it("handles a video with no frames", () => {
+    expect(computeInitialClipRange(null, 0)).toEqual({ start: 0, end: 0 });
+    expect(computeInitialClipRange([3, 7], 0)).toEqual({ start: 0, end: 0 });
   });
 });
 

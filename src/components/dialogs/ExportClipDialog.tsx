@@ -36,6 +36,7 @@ import {
 } from "@/components/ui/select";
 import {
   resolveClipFrameRange,
+  computeInitialClipRange,
   computeClipOutputDimensions,
   deriveClipFilename,
   evaluateClipEncodeSupport,
@@ -91,7 +92,15 @@ export function ExportClipDialog() {
     setPhase("checking");
     setSupportMessage("");
     setProgress({ done: 0, total: 0 });
-    setStartInput("0");
+    // Seed the frame range from the active timeline selection (frameRange) when
+    // present, else the whole video. Best-effort synchronously from the
+    // currently-known shape; re-seeded authoritatively after the probe below.
+    const seed0 = computeInitialClipRange(
+      useAppStore.getState().frameRange,
+      video?.shape?.[0] ?? 0
+    );
+    setStartInput(String(seed0.start));
+    setEndInput(String(seed0.end));
     setScaleInput("1");
     setBackground("original");
 
@@ -120,8 +129,14 @@ export function ExportClipDialog() {
       const srcW = shape?.[2] ?? 0;
       const fps = video.fps ?? null;
 
-      // Seed range/fps from the (possibly just-probed) dimensions.
-      setEndInput(String(Math.max(0, nFrames - 1)));
+      // Seed range/fps from the (possibly just-probed) dimensions. Range comes
+      // from the active timeline selection when present, else the whole video.
+      const seed = computeInitialClipRange(
+        useAppStore.getState().frameRange,
+        nFrames
+      );
+      setStartInput(String(seed.start));
+      setEndInput(String(seed.end));
       setFpsInput(String(fps && fps > 0 ? Math.round(fps) : 30));
 
       if (!srcW || !srcH) {

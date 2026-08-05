@@ -74,6 +74,24 @@ export function resolveClipFrameRange(
   return { ok: true, range: { start, end, count: end - start + 1 } };
 }
 
+/**
+ * Initial [start, end] to seed the Export Clip dialog. Uses the active timeline
+ * selection (`frameRange`, 0-based inclusive) when present, otherwise the whole
+ * video. Sorts + floors + clamps to [0, nFrames-1] so a reverse drag or a
+ * stale/out-of-range selection can never produce an invalid initial range. Pure.
+ */
+export function computeInitialClipRange(
+  frameRange: readonly [number, number] | null | undefined,
+  nFrames: number
+): { start: number; end: number } {
+  const maxIdx = Math.max(0, Math.floor(nFrames) - 1);
+  if (!frameRange) return { start: 0, end: maxIdx };
+  const clamp = (n: number) => Math.max(0, Math.min(Math.floor(n), maxIdx));
+  const a = clamp(frameRange[0]);
+  const b = clamp(frameRange[1]);
+  return { start: Math.min(a, b), end: Math.max(a, b) };
+}
+
 /** Output dimensions in pixels for a given scale factor. */
 export interface OutputDimensions {
   width: number;
