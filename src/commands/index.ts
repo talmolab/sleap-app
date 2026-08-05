@@ -75,6 +75,7 @@ export {
   DeleteAllPredictions,
   ConvertPredictionToInstance,
   AddInstancesFromAllPredictions,
+  AddInstancesFromAllPredictionsInProject,
   BeginEdit,
   MoveInstance,
   RotateInstance,

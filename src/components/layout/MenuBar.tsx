@@ -45,6 +45,7 @@ import {
   DeleteFramePredictions,
   DeleteAllPredictions,
   AddInstancesFromAllPredictions,
+  AddInstancesFromAllPredictionsInProject,
   AddTrack,
   SetInstanceTrack,
   TransposeInstances,
@@ -815,6 +816,13 @@ function LabelsMenu() {
           onClick={() => exec(AddInstancesFromAllPredictions)}
         >
           Accept All Predictions on Current Frame
+          <MenubarShortcut>{modKey}+Shift+A</MenubarShortcut>
+        </MenubarItem>
+        <MenubarItem
+          disabled={!projectLoaded}
+          onClick={() => exec(AddInstancesFromAllPredictionsInProject)}
+        >
+          Accept All Predictions
         </MenubarItem>
         <MenubarItem
           disabled={!projectLoaded}

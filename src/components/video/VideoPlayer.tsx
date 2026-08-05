@@ -186,6 +186,8 @@ export function VideoPlayer() {
   const [contextMenu, setContextMenu] = useState<{
     x: number;
     y: number;
+    /** Scene/frame coordinates of the click, for "Add Instance" placement. */
+    sceneLocation: [number, number];
     instanceIdx: number | null;
     nodeIdx: number | null;
   } | null>(null);
@@ -1522,11 +1524,18 @@ export function VideoPlayer() {
         const inst = instances[nodeHit.instanceIdx];
         if (!inst.isPredicted) {
           commandContext.execute(BeginEdit);
+          // Clicking a node marks it "complete" (confirmed by the user), same
+          // as PyQt SLEAP's QtNode.mousePressEvent -- turns its label green.
+          const targetPoint = lf?.instances[nodeHit.instanceIdx]?.points[nodeHit.nodeIdx];
+          if (targetPoint) targetPoint.complete = true;
           setDragNodeInfo(nodeHit);
           setIsDragging(true);
           setInteractionMode("dragging");
           lastDragPos.current = { x, y };
           dragStartClient.current = { clientX: e.clientX, clientY: e.clientY };
+          useAppStore.getState().markChanged();
+          useAppStore.getState().touchFrame();
+          useAppStore.getState().bumpOverlayVersion();
         }
         return;
       }
@@ -1941,6 +1950,7 @@ export function VideoPlayer() {
     (e: React.MouseEvent) => {
       e.preventDefault();
       const { x, y } = canvasToScene(e.clientX, e.clientY);
+      const sceneLocation = toSourceCoords(useAppStore.getState().video, x, y);
       const instances = renderedInstancesRef.current;
 
       // Check if right-clicking on a node
@@ -1974,6 +1984,7 @@ export function VideoPlayer() {
         setContextMenu({
           x: e.clientX,
           y: e.clientY,
+          sceneLocation,
           instanceIdx: nodeHit.instanceIdx,
           nodeIdx: nodeHit.nodeIdx,
         });
@@ -1990,6 +2001,7 @@ export function VideoPlayer() {
         setContextMenu({
           x: e.clientX,
           y: e.clientY,
+          sceneLocation,
           instanceIdx: instHit,
           nodeIdx: null,
         });
@@ -2000,6 +2012,7 @@ export function VideoPlayer() {
       setContextMenu({
         x: e.clientX,
         y: e.clientY,
+        sceneLocation,
         instanceIdx: null,
         nodeIdx: null,
       });
@@ -2310,6 +2323,7 @@ export function VideoPlayer() {
         <ContextMenu
           x={contextMenu.x}
           y={contextMenu.y}
+          sceneLocation={contextMenu.sceneLocation}
           instanceIdx={contextMenu.instanceIdx}
           nodeIdx={contextMenu.nodeIdx}
           selectedNodes={selectedNodes}

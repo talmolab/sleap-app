@@ -17,6 +17,7 @@ import {
   SetPointLocation,
   ConvertPredictionToInstance,
   AddInstancesFromAllPredictions,
+  AddInstancesFromAllPredictionsInProject,
   BeginEdit,
   MoveInstance,
   RotateInstance,
@@ -1323,6 +1324,94 @@ describe("Edit commands (new)", () => {
 
       expect(lf.instances).toEqual(before);
       // skipAutoSnapshot + early return ⇒ nothing pushed onto the undo stack.
+      expect(ctx.canUndo).toBe(false);
+    });
+  });
+
+  describe("AddInstancesFromAllPredictionsInProject", () => {
+    it("replaces every predicted instance across all frames, leaving user instances", async () => {
+      const project = setupProjectInStore({
+        numFrames: 3,
+        numInstancesPerFrame: 1,
+        withPredictions: true,
+      });
+
+      await ctx.execute(AddInstancesFromAllPredictionsInProject);
+
+      for (const lf of project.labeledFrames) {
+        expect(lf.instances.length).toBe(2); // 1 user + 1 accepted prediction
+        expect(
+          lf.instances.some((i) => i instanceof PredictedInstance),
+        ).toBe(false);
+      }
+    });
+
+    it("preserves fromPredicted provenance on the converted instances", async () => {
+      const project = setupProjectInStore({
+        numFrames: 3,
+        numInstancesPerFrame: 1,
+        withPredictions: true,
+      });
+      const predsBefore = project.labeledFrames.map(
+        (lf) =>
+          lf.instances.find(
+            (i) => i instanceof PredictedInstance,
+          ) as PredictedInstance,
+      );
+
+      await ctx.execute(AddInstancesFromAllPredictionsInProject);
+
+      project.labeledFrames.forEach((lf, i) => {
+        const converted = lf.instances.find(
+          (inst) => (inst as Instance).fromPredicted === predsBefore[i],
+        );
+        expect(converted).toBeDefined();
+      });
+    });
+
+    it("marks changes and is undoable across all frames", async () => {
+      const project = setupProjectInStore({
+        numFrames: 3,
+        numInstancesPerFrame: 1,
+        withPredictions: true,
+      });
+
+      await ctx.execute(AddInstancesFromAllPredictionsInProject);
+      expect(useAppStore.getState().hasChanges).toBe(true);
+      for (const lf of project.labeledFrames) {
+        expect(
+          lf.instances.some((i) => i instanceof PredictedInstance),
+        ).toBe(false);
+      }
+
+      expect(ctx.undo()).toBe(true);
+
+      const labels = useAppStore.getState().labels!;
+      for (const lf of project.labeledFrames) {
+        const restored = labels.find({
+          video: project.video,
+          frameIdx: lf.frameIdx,
+        })[0];
+        expect(
+          restored.instances.filter((i) => i instanceof PredictedInstance)
+            .length,
+        ).toBe(1);
+      }
+    });
+
+    it("no-ops when the project has no predictions", async () => {
+      const project = setupProjectInStore({
+        numFrames: 3,
+        numInstancesPerFrame: 1,
+        withPredictions: false,
+      });
+      const before = project.labeledFrames.map((lf) => [...lf.instances]);
+
+      await ctx.execute(AddInstancesFromAllPredictionsInProject);
+
+      project.labeledFrames.forEach((lf, i) => {
+        expect(lf.instances).toEqual(before[i]);
+      });
       expect(ctx.canUndo).toBe(false);
     });
   });

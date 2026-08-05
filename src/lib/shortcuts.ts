@@ -44,6 +44,7 @@ export const DEFAULT_SHORTCUTS: Record<string, string> = {
   // Labels
   "add instance": "$mod+KeyI",
   "delete instance": "$mod+Backspace",
+  "accept all predictions": "$mod+Shift+KeyA",
 
   // View
   fit: "$mod+Equal",

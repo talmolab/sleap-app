@@ -14,6 +14,13 @@ import type { EdgeStyle } from "../types";
 // which track they belong to.
 const PREDICTED_COLOR: RGB = [250, 204, 21]; // Tailwind yellow-400
 
+// Node-name label colors, matching PyQt SLEAP's QtNodeLabel.adjustStyle():
+// a label starts red ("incomplete" -- placed at a default/unconfirmed
+// position) and turns green once the user explicitly confirms it ("complete").
+const COMPLETE_COLOR: RGB = [80, 194, 159]; // greenish
+const INCOMPLETE_COLOR: RGB = [232, 45, 32]; // redish
+const MISSING_LABEL_COLOR: RGB = [128, 128, 128];
+
 export interface RenderedNode {
   x: number;
   y: number;
@@ -134,10 +141,9 @@ function renderInstance(
 
   // Draw node labels (skip for predicted unless colorPredicted is on)
   if (opts.showLabels && (!isPredicted || opts.colorPredicted)) {
-    nodes.forEach((node, nIdx) => {
+    nodes.forEach((node) => {
       if (!node.visible && !opts.showNonVisibleNodes) return;
-      const nodeColor = instance.nodeColors?.[nIdx] ?? color;
-      renderNodeLabel(ctx, node, nodeColor, opts);
+      renderNodeLabel(ctx, node, isPredicted, opts);
     });
   }
 
@@ -254,15 +260,34 @@ function renderWedgeEdge(
 function renderNodeLabel(
   ctx: CanvasRenderingContext2D,
   node: RenderedNode,
-  color: RGB,
+  isPredicted: boolean,
   opts: RenderOptions
 ): void {
   if (!node.name) return;
 
+  // Red until the user confirms the node's position, then green -- the
+  // node's "complete" state, not its track color (matches QtNodeLabel).
+  let labelColor: RGB;
+  let bold: boolean;
+  let italic = false;
+  if (isPredicted) {
+    labelColor = PREDICTED_COLOR;
+    bold = false;
+  } else if (!node.visible) {
+    labelColor = MISSING_LABEL_COLOR;
+    bold = true;
+    italic = true;
+  } else if (node.complete) {
+    labelColor = COMPLETE_COLOR;
+    bold = true;
+  } else {
+    labelColor = INCOMPLETE_COLOR;
+    bold = false;
+  }
+
   const fontSize = opts.nodeLabelSize / opts.zoom;
-  const weight = node.visible ? "bold" : "normal";
-  ctx.font = `${weight} ${fontSize}px sans-serif`;
-  ctx.fillStyle = rgbToCSS(color, 0.9);
+  ctx.font = `${italic ? "italic " : ""}${bold ? "bold " : ""}${fontSize}px sans-serif`;
+  ctx.fillStyle = rgbToCSS(labelColor, 0.9);
   ctx.textAlign = "left";
   ctx.textBaseline = "bottom";
   ctx.fillText(

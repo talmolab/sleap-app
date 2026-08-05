@@ -39,6 +39,27 @@ function hasPlacedPoints(inst: Instance): boolean {
 }
 
 /**
+ * Translate an instance's placed (non-NaN) points so their centroid lands at
+ * `target` -- used so "Add Instance" from the right-click context menu lands
+ * where the user actually clicked, rather than wherever the configured
+ * placement method (random/template/etc.) would otherwise put it. Ports the
+ * click-location offset PyQt SLEAP applies for its "best" placement method
+ * (see `AddInstance.set_visible_nodes`'s `location` handling in
+ * ../sleap/sleap/gui/commands.py), generalized to any placement method here.
+ */
+export function centerInstanceAt(instance: Instance, target: [number, number]): void {
+  const centroid = computeCentroid(instance);
+  if (!centroid) return;
+  const dx = target[0] - centroid[0];
+  const dy = target[1] - centroid[1];
+  for (const point of instance.points) {
+    if (!isNaN(point.xy[0]) && !isNaN(point.xy[1])) {
+      point.xy = [point.xy[0] + dx, point.xy[1] + dy];
+    }
+  }
+}
+
+/**
  * Place instance at center with small per-node spread.
  * Returns the instance with points set.
  */
@@ -60,7 +81,9 @@ function placeAtCenter(
       cy + radius * Math.sin(angle),
     ];
     instance.points[i].visible = true;
-    instance.points[i].complete = true;
+    // Auto-placed, not yet user-confirmed -- starts red, matching PyQt's
+    // default `mark_complete=False` for a freshly created instance.
+    instance.points[i].complete = false;
   }
   return instance;
 }
@@ -226,7 +249,8 @@ function placeRandom(
       y1 + h * 0.1 + Math.random() * h * 0.8,
     ];
     instance.points[i].visible = true;
-    instance.points[i].complete = true;
+    // Auto-placed, not yet user-confirmed -- starts red (mark_complete=False).
+    instance.points[i].complete = false;
   }
 
   return instance;

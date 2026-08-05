@@ -29,6 +29,7 @@ import {
   GoToStartFrame,
   GoToEndFrame,
   AddInstance,
+  AddInstancesFromAllPredictions,
   DeleteSelectedInstance,
   CopyInstance,
   PasteInstance,
@@ -198,6 +199,10 @@ export function useKeyboardShortcuts() {
       [DEFAULT_SHORTCUTS["delete instance"]]: (e) => {
         e.preventDefault();
         commandContext.execute(DeleteSelectedInstance);
+      },
+      [DEFAULT_SHORTCUTS["accept all predictions"]]: (e) => {
+        e.preventDefault();
+        commandContext.execute(AddInstancesFromAllPredictions);
       },
 
       // Track commands
