@@ -343,8 +343,8 @@ export function ExportClipDialog() {
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="sm:max-w-[760px]">
-        <DialogHeader>
+      <DialogContent className="sm:max-w-[760px] max-h-[85vh] flex flex-col overflow-hidden">
+        <DialogHeader className="shrink-0">
           <DialogTitle>Export Clips</DialogTitle>
           <DialogDescription>
             Export labeled clips (skeleton overlay burned in) to mp4. Pick a
@@ -356,9 +356,9 @@ export function ExportClipDialog() {
         {unsupported ? (
           <div className="py-2 text-sm text-muted-foreground">{supportMessage}</div>
         ) : (
-          <div className="flex gap-3 py-2" style={{ minHeight: 360 }}>
+          <div className="flex gap-3 py-2 flex-1 min-h-0">
             {/* Left: video list */}
-            <div className="w-56 shrink-0">
+            <div className="w-56 shrink-0 min-h-0">
               <ClipVideoList
                 configs={state.configs}
                 focused={focused}
@@ -371,7 +371,7 @@ export function ExportClipDialog() {
             </div>
 
             {/* Right: preview + per-video settings */}
-            <div className="flex-1 min-w-0 space-y-3">
+            <div className="flex-1 min-w-0 min-h-0 space-y-3 overflow-y-auto">
               {focused && focusedConfig && !encoding && (
                 <ClipPreview
                   key={focusedIndex}
@@ -411,7 +411,7 @@ export function ExportClipDialog() {
           </div>
         )}
 
-        <DialogFooter className="items-center">
+        <DialogFooter className="items-center shrink-0">
           {!unsupported && !encoding && (
             <span className="text-xs text-muted-foreground mr-auto">
               {nIncluded} of {state.configs.length} selected
