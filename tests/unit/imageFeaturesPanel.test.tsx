@@ -103,4 +103,42 @@ describe("SuggestionsPanel image-features controls", () => {
     await mountImageFeatures();
     expect(screen.getByRole("button", { name: /set region/i })).toBeInTheDocument();
   });
+
+  it("clears ROI draw-mode AND the drawn region when the panel unmounts", async () => {
+    const { unmount } = await mountImageFeatures();
+    const video = useAppStore.getState().video!;
+    // Draw a region + enter draw-mode, then leave the panel entirely (close /
+    // collapse / hide / single-panel switch all unmount the body).
+    useAppStore.getState().setImageFeatureRoi(video, { x: 0, y: 0, width: 10, height: 10 });
+    fireEvent.click(screen.getByRole("button", { name: /set region/i }));
+    expect(useAppStore.getState().imageFeatureRoiDrawActive).toBe(true);
+    expect(useAppStore.getState().imageFeatureRois.size).toBe(1);
+    unmount();
+    expect(useAppStore.getState().imageFeatureRoiDrawActive).toBe(false);
+    expect(useAppStore.getState().imageFeatureRois.size).toBe(0);
+  });
+
+  it("clears a stale ROI when the panel is showing a non-Image-Features method", async () => {
+    // Reproduces the "Allow Multiple Panels" / method-change leak: the panel is
+    // still mounted (never unmounts) but the active method is no longer
+    // image_features, so the ROI tool must be off and the region gone.
+    const { labels, video } = makeProject();
+    useAppStore.getState().setLabels(labels, "test.slp");
+    useAppStore.getState().setVideo(video);
+    useAppStore.getState().setImageFeatureRoiDrawActive(true);
+    useAppStore.getState().setImageFeatureRoi(video, { x: 0, y: 0, width: 10, height: 10 });
+    const { SuggestionsPanel } = await import("@/components/panels/SuggestionsPanel");
+    render(<SuggestionsPanel initialMethod="stride" />);
+    expect(useAppStore.getState().imageFeatureRoiDrawActive).toBe(false);
+    expect(useAppStore.getState().imageFeatureRois.size).toBe(0);
+  });
+
+  it("resetImageFeatureRoi clears both draw-mode and all regions", async () => {
+    const { video } = makeProject();
+    useAppStore.getState().setImageFeatureRoiDrawActive(true);
+    useAppStore.getState().setImageFeatureRoi(video, { x: 1, y: 2, width: 3, height: 4 });
+    useAppStore.getState().resetImageFeatureRoi();
+    expect(useAppStore.getState().imageFeatureRoiDrawActive).toBe(false);
+    expect(useAppStore.getState().imageFeatureRois.size).toBe(0);
+  });
 });

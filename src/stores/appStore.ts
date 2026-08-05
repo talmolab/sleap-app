@@ -206,6 +206,12 @@ export interface AppState {
   setImageFeatureRoi: (video: Video, rect: CropRect | null) => void;
   /** Toggle canvas ROI-draw mode. */
   setImageFeatureRoiDrawActive: (active: boolean) => void;
+  /**
+   * Reset the image-features ROI tool: exit draw-mode and drop ALL drawn
+   * regions. The region is transient (used only while generating), so it is
+   * cleared whenever the Image Features method/view is left.
+   */
+  resetImageFeatureRoi: () => void;
 
   // Per-instance visibility (transient; reset on frame change; NOT persisted)
   hiddenInstances: Set<Instance>;
@@ -572,6 +578,11 @@ export const useAppStore = create<AppState>()(
       setImageFeatureRoiDrawActive: (active) =>
         set((state) => {
           state.imageFeatureRoiDrawActive = active;
+        }),
+      resetImageFeatureRoi: () =>
+        set((state) => {
+          state.imageFeatureRoiDrawActive = false;
+          state.imageFeatureRois = new Map();
         }),
 
       markVideoUpdated: () =>
