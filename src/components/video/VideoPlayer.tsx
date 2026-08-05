@@ -453,6 +453,39 @@ export function VideoPlayer() {
   const offsetX = displayW > 0 && displayH > 0 ? (cw - displayW * baseScale) / 2 : 0;
   const offsetY = displayW > 0 && displayH > 0 ? (ch - displayH * baseScale) / 2 : 0;
 
+  // Keep the store's `visibleSceneRect` in sync with the current viewport, in
+  // frame/scene pixel coordinates -- the JS port of PyQt's
+  // `QtVideoPlayer.getVisibleRect()`. Transforms the canvas's four corners
+  // with the same inverse pan/zoom/rotation math as `canvasToScene` (defined
+  // below) and takes their axis-aligned bounding box. `AddInstance`'s random
+  // placement reads this so a new instance lands within view.
+  useEffect(() => {
+    if (cw <= 0 || ch <= 0 || fw <= 0 || fh <= 0) {
+      useAppStore.getState().set("visibleSceneRect", null);
+      return;
+    }
+    const toScene = (cx: number, cy: number): [number, number] => {
+      let sx = (cx - offsetX - panX) / (baseScale * zoom);
+      let sy = (cy - offsetY - panY) / (baseScale * zoom);
+      if (rotation === 90) {
+        const fx = sy, fy = fh - sx;
+        sx = fx; sy = fy;
+      } else if (rotation === 180) {
+        sx = fw - sx; sy = fh - sy;
+      } else if (rotation === 270) {
+        const fx = fw - sy, fy = sx;
+        sx = fx; sy = fy;
+      }
+      return [sx, sy];
+    };
+    const corners = [toScene(0, 0), toScene(cw, 0), toScene(0, ch), toScene(cw, ch)];
+    const xs = corners.map((c) => c[0]);
+    const ys = corners.map((c) => c[1]);
+    useAppStore.getState().set("visibleSceneRect", [
+      Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys),
+    ]);
+  }, [cw, ch, fw, fh, baseScale, offsetX, offsetY, panX, panY, zoom, rotation]);
+
   // Load the current frame (convert to ImageBitmap, trigger dimension update)
   useEffect(() => {
     if (!video) {
@@ -1627,13 +1660,14 @@ export function VideoPlayer() {
             }
           }
         } else {
-          // Single node drag
+          // Single node drag. Visibility is untouched -- matches PyQt SLEAP's
+          // QtNode.updatePoint(), which only updates x/y on drag; visibility
+          // only changes via the explicit toggle action.
           const instance = lf.instances[dragNodeInfo.instanceIdx];
           const point = instance?.points[dragNodeInfo.nodeIdx];
           if (point) {
             // Drag position is crop-local; store back in source coords.
             point.xy = toSourceCoords(useAppStore.getState().video, x, y);
-            point.visible = true;
           }
         }
 

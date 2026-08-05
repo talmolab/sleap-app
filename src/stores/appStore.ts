@@ -145,6 +145,15 @@ export interface AppState {
   showLabels: boolean;
   showEdges: boolean;
   showNonVisibleNodes: boolean;
+  /**
+   * Currently-visible portion of the video frame, in frame/scene pixel
+   * coordinates: `[x1, y1, x2, y2]`. Kept in sync by VideoPlayer on every
+   * zoom/pan/resize/rotate. Null before the canvas has real dimensions.
+   * Read by `AddInstance`'s "random" placement so a new instance lands within
+   * view (PyQt parity: `QtVideoPlayer.getVisibleRect()`), not just somewhere
+   * in the full underlying frame that may be off-screen when zoomed in.
+   */
+  visibleSceneRect: [number, number, number, number] | null;
   /** Show a full-canvas crosshair at the cursor while zoomed in (#UX-wins). Persisted. */
   showCrosshair: boolean;
   edgeStyle: EdgeStyle;
@@ -424,6 +433,7 @@ export const useAppStore = create<AppState>()(
       showLabels: true,
       showEdges: true,
       showNonVisibleNodes: true,
+      visibleSceneRect: null,
       showCrosshair: false,
       edgeStyle: "Line" as EdgeStyle,
       fit: false,

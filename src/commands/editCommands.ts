@@ -13,7 +13,11 @@ import type { Command } from "./types";
 import type { CommandContext } from "./CommandContext";
 import { useAppStore } from "../stores/appStore";
 import { toast } from "@/lib/notify";
-import { placeInstance, findNearestPriorFrame } from "@/lib/instancePlacement";
+import {
+  placeInstance,
+  findNearestPriorFrame,
+  fillMissingPredictedNodes,
+} from "@/lib/instancePlacement";
 
 /** Create a new Instance on the current frame using the selected placement method. */
 export const AddInstance: Command = {
@@ -46,7 +50,8 @@ export const AddInstance: Command = {
       skeleton,
       video,
       existingInstances,
-      priorFrame
+      priorFrame,
+      useAppStore.getState().visibleSceneRect
     );
 
     // Find or create the LabeledFrame for this video + frame
@@ -137,6 +142,25 @@ function clonePoints(points: Instance["points"]): Instance["points"] {
   return points.map((p) => ({
     xy: [p.xy[0], p.xy[1]] as [number, number],
     visible: p.visible,
+    complete: p.complete,
+    name: p.name,
+    score: p.score,
+  }));
+}
+
+/**
+ * Clone a predicted instance's points for conversion to a user Instance,
+ * forcing `visible` to match sleap_io's canonical rule (`visible = !isNaN(x)`)
+ * rather than trusting the model's `visible` flag as-is. A model can emit
+ * `visible: true` for a keypoint it failed to place (`xy: [NaN, NaN]`); left
+ * uncorrected, the renderer tries to draw a filled marker at NaN and nothing
+ * appears at all, instead of the hollow "invisible node" marker it draws for
+ * genuinely non-visible points.
+ */
+function clonePredictedPoints(points: Instance["points"]): Instance["points"] {
+  return points.map((p) => ({
+    xy: [p.xy[0], p.xy[1]] as [number, number],
+    visible: !Number.isNaN(p.xy[0]),
     complete: p.complete,
     name: p.name,
     score: p.score,
@@ -252,10 +276,11 @@ export const ConvertPredictionToInstance: Command = {
     // parity — sleap-io.js persists Instance.fromPredicted).
     const userInstance = new Instance({
       skeleton: predicted.skeleton,
-      points: clonePoints(predicted.points),
+      points: clonePredictedPoints(predicted.points),
       track: predicted.track,
       fromPredicted: predicted,
     });
+    fillMissingPredictedNodes(userInstance);
 
     // Replace the predicted instance with the user instance
     lf.instances.splice(instanceIdx, 1, userInstance);
@@ -309,10 +334,11 @@ export const AddInstancesFromAllPredictions: Command = {
       if (!(inst instanceof PredictedInstance)) return inst;
       const userInstance = new Instance({
         skeleton: inst.skeleton,
-        points: clonePoints(inst.points),
+        points: clonePredictedPoints(inst.points),
         track: inst.track,
         fromPredicted: inst,
       });
+      fillMissingPredictedNodes(userInstance);
       if (!firstConverted) firstConverted = userInstance;
       return userInstance;
     });

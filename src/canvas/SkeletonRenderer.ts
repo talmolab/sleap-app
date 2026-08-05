@@ -9,6 +9,11 @@
 import { rgbToCSS, type RGB } from "../lib/colorPalettes";
 import type { EdgeStyle } from "../types";
 
+// Predicted instances render in a fixed color (rather than their track's
+// palette color) so they read as "unconfirmed" at a glance, regardless of
+// which track they belong to.
+const PREDICTED_COLOR: RGB = [250, 204, 21]; // Tailwind yellow-400
+
 export interface RenderedNode {
   x: number;
   y: number;
@@ -162,9 +167,9 @@ function renderNode(
   ctx.arc(node.x, node.y, radius / opts.zoom, 0, Math.PI * 2);
 
   if (isPredicted) {
-    ctx.strokeStyle = rgbToCSS(color);
+    ctx.strokeStyle = rgbToCSS(PREDICTED_COLOR);
     ctx.lineWidth = 1 / opts.zoom;
-    ctx.fillStyle = "rgba(128, 128, 128, 0.5)";
+    ctx.fillStyle = rgbToCSS(PREDICTED_COLOR, 0.5);
     ctx.fill();
     ctx.stroke();
   } else if (node.visible) {
@@ -190,12 +195,24 @@ function renderLineEdge(
   isPredicted: boolean,
   opts: RenderOptions
 ): void {
+  // An edge touching a non-visible node reads as "inferred/occluded" --
+  // dashed and dimmer than a fully-detected edge.
+  const touchesInvisible = !src.visible || !dst.visible;
+  const alpha = isPredicted
+    ? touchesInvisible ? 0.25 : 0.5
+    : touchesInvisible ? 0.4 : 0.8;
+
+  ctx.save();
+  if (touchesInvisible) {
+    ctx.setLineDash([4 / opts.zoom, 3 / opts.zoom]);
+  }
   ctx.beginPath();
   ctx.moveTo(src.x, src.y);
   ctx.lineTo(dst.x, dst.y);
-  ctx.strokeStyle = rgbToCSS(color, isPredicted ? 0.5 : 0.8);
+  ctx.strokeStyle = isPredicted ? rgbToCSS(PREDICTED_COLOR, alpha) : rgbToCSS(color, alpha);
   ctx.lineWidth = (isPredicted ? 1 : 2) / opts.zoom;
   ctx.stroke();
+  ctx.restore();
 }
 
 function renderWedgeEdge(
@@ -217,13 +234,20 @@ function renderWedgeEdge(
   const srcWidth = (3 / opts.zoom);
   const dstWidth = (1 / opts.zoom);
 
+  // A wedge (filled shape) can't be dashed, so an edge touching a non-visible
+  // node just renders dimmer than a fully-detected one.
+  const touchesInvisible = !src.visible || !dst.visible;
+  const alpha = isPredicted
+    ? touchesInvisible ? 0.15 : 0.3
+    : touchesInvisible ? 0.3 : 0.6;
+
   ctx.beginPath();
   ctx.moveTo(src.x + nx * srcWidth, src.y + ny * srcWidth);
   ctx.lineTo(dst.x + nx * dstWidth, dst.y + ny * dstWidth);
   ctx.lineTo(dst.x - nx * dstWidth, dst.y - ny * dstWidth);
   ctx.lineTo(src.x - nx * srcWidth, src.y - ny * srcWidth);
   ctx.closePath();
-  ctx.fillStyle = rgbToCSS(color, isPredicted ? 0.3 : 0.6);
+  ctx.fillStyle = isPredicted ? rgbToCSS(PREDICTED_COLOR, alpha) : rgbToCSS(color, alpha);
   ctx.fill();
 }
 
@@ -236,7 +260,8 @@ function renderNodeLabel(
   if (!node.name) return;
 
   const fontSize = opts.nodeLabelSize / opts.zoom;
-  ctx.font = `${fontSize}px sans-serif`;
+  const weight = node.visible ? "bold" : "normal";
+  ctx.font = `${weight} ${fontSize}px sans-serif`;
   ctx.fillStyle = rgbToCSS(color, 0.9);
   ctx.textAlign = "left";
   ctx.textBaseline = "bottom";

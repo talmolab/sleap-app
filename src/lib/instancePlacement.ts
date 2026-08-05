@@ -190,19 +190,41 @@ function placeForceDirected(
   return instance;
 }
 
-/** "random" — random position within frame bounds with per-node jitter. */
-function placeRandom(skeleton: Skeleton, video: Video | null): Instance {
-  const [width, height] = getFrameDims(video);
+/**
+ * "random" — each node gets its own independent random position within the
+ * currently-visible portion of the frame (falling back to the full frame if
+ * the viewport isn't known yet, e.g. before the canvas has real dimensions).
+ * Ports PyQt SLEAP's `AddMissingInstanceNodes.get_xy_in_rect`, called once per
+ * node against `QtVideoPlayer.getVisibleRect()` -- nodes land scattered across
+ * the visible view, not clustered around one shared point, and can't end up
+ * off-screen when zoomed into part of a larger frame.
+ */
+function placeRandom(
+  skeleton: Skeleton,
+  video: Video | null,
+  visibleRect: [number, number, number, number] | null
+): Instance {
   const instance = Instance.empty({ skeleton });
 
-  const margin = 50;
-  const baseX = margin + Math.random() * (width - 2 * margin);
-  const baseY = margin + Math.random() * (height - 2 * margin);
+  let x1: number, y1: number, w: number, h: number;
+  if (visibleRect) {
+    [x1, y1] = visibleRect;
+    w = visibleRect[2] - visibleRect[0];
+    h = visibleRect[3] - visibleRect[1];
+  } else {
+    const [width, height] = getFrameDims(video);
+    x1 = 0;
+    y1 = 0;
+    w = width;
+    h = height;
+  }
 
   for (let i = 0; i < instance.points.length; i++) {
-    const jitterX = (Math.random() - 0.5) * 40; // ±20px
-    const jitterY = (Math.random() - 0.5) * 40;
-    instance.points[i].xy = [baseX + jitterX, baseY + jitterY];
+    // Matches get_xy_in_rect: uniform within an inset 80%-of-rect box.
+    instance.points[i].xy = [
+      x1 + w * 0.1 + Math.random() * w * 0.8,
+      y1 + h * 0.1 + Math.random() * h * 0.8,
+    ];
     instance.points[i].visible = true;
     instance.points[i].complete = true;
   }
@@ -311,6 +333,53 @@ function placePrediction(
  * @param priorFrame - The labeled frame from frameIdx-1 (for prior_frame method)
  * @returns A new Instance with points positioned according to the method
  */
+/**
+ * Give any NaN-coordinate ("undetected") points in a converted-from-prediction
+ * Instance a random position near the instance's own detected keypoints,
+ * marked not-visible. A model leaves occluded/undetected keypoints at NaN;
+ * left as NaN, the renderer can't draw anything there at all -- not even the
+ * hollow "invisible node" marker it uses for genuinely non-visible points --
+ * so the point silently disappears instead of showing up as an invisible
+ * (but draggable) marker.
+ *
+ * Anchored on this instance's own detected-point centroid/extent (a
+ * uniform-random point within that radius) rather than a full force-directed
+ * skeleton layout, but for the same reason PyQt SLEAP does: so missing nodes
+ * land on the animal instead of somewhere unrelated in the frame. Ports the
+ * centroid/extent anchoring from `AddUserInstancesFromPredictions
+ * .fill_missing_predicted_nodes` (see ../sleap/sleap/gui/commands.py) without
+ * porting its networkx spring-layout step. No-op if every node is detected,
+ * or if none are (no anchor to place around). Detected points, track, and
+ * fromPredicted are left untouched.
+ */
+export function fillMissingPredictedNodes(instance: Instance): void {
+  const missing: number[] = [];
+  const detected: [number, number][] = [];
+  instance.points.forEach((p, i) => {
+    if (isNaN(p.xy[0]) || isNaN(p.xy[1])) missing.push(i);
+    else detected.push(p.xy);
+  });
+  if (missing.length === 0 || detected.length === 0) return;
+
+  const cx = detected.reduce((s, p) => s + p[0], 0) / detected.length;
+  const cy = detected.reduce((s, p) => s + p[1], 0) / detected.length;
+  const xs = detected.map((p) => p[0]);
+  const ys = detected.map((p) => p[1]);
+  const extent = Math.hypot(
+    Math.max(...xs) - Math.min(...xs),
+    Math.max(...ys) - Math.min(...ys)
+  );
+  const scale = Math.max(extent / 2, 5);
+
+  for (const idx of missing) {
+    const angle = Math.random() * 2 * Math.PI;
+    const r = Math.random() * scale;
+    instance.points[idx].xy = [cx + r * Math.cos(angle), cy + r * Math.sin(angle)];
+    instance.points[idx].visible = false;
+    instance.points[idx].complete = false;
+  }
+}
+
 /** Find the nearest labeled frame before `frameIdx` for the given video. */
 export function findNearestPriorFrame(
   labels: Labels,
@@ -334,7 +403,8 @@ export function placeInstance(
   skeleton: Skeleton,
   video: Video | null,
   existingInstances: Instance[],
-  priorFrame: LabeledFrame | null
+  priorFrame: LabeledFrame | null,
+  visibleRect: [number, number, number, number] | null = null
 ): Instance {
   switch (method) {
     case "best":
@@ -344,7 +414,7 @@ export function placeInstance(
     case "force_directed":
       return placeForceDirected(skeleton, video, existingInstances);
     case "random":
-      return placeRandom(skeleton, video);
+      return placeRandom(skeleton, video, visibleRect);
     case "prior_frame":
       return placePriorFrame(skeleton, video, existingInstances, priorFrame);
     case "prediction":
