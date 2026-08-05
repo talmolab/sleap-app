@@ -350,15 +350,32 @@ function renderTrackLabel(
   ctx.fillText(text, centerX, minY - 14 / zoom);
 }
 
+/** Options enabling hitTestNode to also treat a node's rendered name label as part of its clickable area. */
+export interface LabelHitTestOptions {
+  zoom: number;
+  markerSize: number;
+  nodeLabelSize: number;
+}
+
 /**
  * Hit test: find the closest node to a canvas point.
  * Returns the instance index and node index, or null.
+ *
+ * When `labelHitTest` is given, a click landing on a node's rendered name
+ * label also counts as a hit on that node -- matching PyQt SLEAP, where
+ * QtNodeLabel.mousePressEvent/mouseMoveEvent/mouseReleaseEvent simply forward
+ * to the QtNode marker's own handlers, so clicking either moves the same
+ * point. Predicted instances aren't draggable, so their labels are excluded.
+ * The label's width is approximated (no canvas context available here to
+ * measure text) -- generous enough for a comfortable click target without
+ * needing pixel-perfect text metrics.
  */
 export function hitTestNode(
   instances: RenderedInstance[],
   canvasX: number,
   canvasY: number,
-  threshold: number = 10
+  threshold: number = 10,
+  labelHitTest?: LabelHitTestOptions
 ): { instanceIdx: number; nodeIdx: number } | null {
   let best: { instanceIdx: number; nodeIdx: number; dist: number } | null =
     null;
@@ -375,6 +392,21 @@ export function hitTestNode(
       const dist = Math.sqrt(dx * dx + dy * dy);
       if (dist < threshold && (!best || dist < best.dist)) {
         best = { instanceIdx: i, nodeIdx: j, dist };
+        continue;
+      }
+      if (labelHitTest && !inst.isPredicted && node.name) {
+        const { zoom, markerSize, nodeLabelSize } = labelHitTest;
+        const fontSize = nodeLabelSize / zoom;
+        const labelWidth = node.name.length * fontSize * 0.6; // rough glyph-width estimate
+        const lx = node.x + markerSize / zoom + 2 / zoom;
+        const ly = node.y - 2 / zoom - fontSize;
+        if (
+          canvasX >= lx && canvasX <= lx + labelWidth &&
+          canvasY >= ly && canvasY <= ly + fontSize &&
+          (!best || dist < best.dist)
+        ) {
+          best = { instanceIdx: i, nodeIdx: j, dist };
+        }
       }
     }
   }

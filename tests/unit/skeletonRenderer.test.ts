@@ -82,6 +82,27 @@ describe("hit-testing honors per-instance visibility", () => {
     expect(hitTestNode([occludedInst({ showNonVisible: false })], 1, 1, 10)).toBeNull();
   });
 
+  it("hitTestNode also hits a node's rendered name label when labelHitTest is given", () => {
+    const target = inst({ nodes: [{ x: 1, y: 1, visible: true, complete: true, name: "n" }] });
+    const labelOpts = { zoom: 1, markerSize: 4, nodeLabelSize: 12 };
+    // Point (10, -5): well outside the marker's own hit radius (dist ~10.8 from
+    // (1,1)), but inside where renderNodeLabel actually draws "n"'s text box.
+    expect(hitTestNode([target], 10, -5, 3)).toBeNull(); // no labelHitTest -> marker-only
+    expect(hitTestNode([target], 10, -5, 3, labelOpts)).toEqual({
+      instanceIdx: 0,
+      nodeIdx: 0,
+    });
+  });
+
+  it("hitTestNode excludes predicted instances from label hit-testing", () => {
+    const predicted = inst({
+      isPredicted: true,
+      nodes: [{ x: 1, y: 1, visible: true, complete: true, name: "n" }],
+    });
+    const labelOpts = { zoom: 1, markerSize: 4, nodeLabelSize: 12 };
+    expect(hitTestNode([predicted], 10, -5, 3, labelOpts)).toBeNull();
+  });
+
   it("hitTestInstance skips hidden instances", () => {
     expect(hitTestInstance([inst({ visible: false })], 1, 1, 30)).toBeNull();
     expect(hitTestInstance([inst({ visible: true })], 1, 1, 30)).toBe(0);
