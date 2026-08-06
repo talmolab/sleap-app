@@ -43,6 +43,11 @@ describe("makeToYPos", () => {
     expect(toY(10)).toBeCloseTo(20 - (10 - -1) * (20 / 11)); // top-ish
     expect(toY(0)).toBeCloseTo(20 - (0 - -1) * (20 / 11));
   });
+  it("topPad reserves headroom: max maps to topPad, not the top edge", () => {
+    // height=100, topPad=20 → the peak sits at y=20, leaving 20px above it.
+    const toY = makeToYPos(0, 10, 100, 20);
+    expect(toY(10)).toBeCloseTo(20);
+  });
   it("flat series (min === max) maps to the top — a full bar, matching PyQt", () => {
     // all-zero series: seriesMin = min-1 = -1, so value 0 maps to y=0 (top) =
     // a full bar. PyQt does NOT special-case flat series (this is the fix that

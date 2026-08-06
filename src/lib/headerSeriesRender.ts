@@ -55,15 +55,18 @@ export function makeToYPos(
   min: number,
   max: number,
   height: number,
+  topPad = 0,
 ): (val: number) => number {
   // seriesMin = min - 1 gives a one-unit bottom buffer (headroom) so the lowest
   // value never sits exactly on the baseline — PyQt's slider.py toYPos trick
   // (series_min = min - 1). Consequence: a flat series (min === max, e.g. an
   // all-zero Primary-Point-Displacement over untracked data) maps its value to
-  // the TOP = a full bar, exactly matching PyQt, which does NOT special-case
-  // flat series. denom = max - (min - 1) = max - min + 1 >= 1, never zero.
+  // the TOP of the drawable band = a full bar, matching PyQt. `topPad` reserves
+  // space at the top (for frame-number labels + headroom) so the peak doesn't
+  // touch the very top edge: the series is drawn into [topPad, height].
   const seriesMin = min - 1;
-  const scale = height / (max - seriesMin);
+  const usable = Math.max(1, height - topPad);
+  const scale = usable / (max - seriesMin);
   return (val: number) => height - (val - seriesMin) * scale;
 }
 
@@ -86,26 +89,32 @@ export function frameTickInterval(totalFrames: number, maxTicks = 24): number {
  * X maps frameIdx across width; Y via makeToYPos. Mirrors the QPainterPath
  * polyline in slider.py:882-894 (smooth line, step_chart=False).
  */
+// PyQt-style colors: bluish-purple fill under the curve, darker purple edge
+// (slider.py's poly brush is QColor(80,80,255,128)).
+export const HEADER_FILL = "rgba(99, 102, 241, 0.4)";
+export const HEADER_EDGE = "rgba(67, 56, 202, 0.95)";
+
 export function drawHeaderSeries(
   ctx: CanvasRenderingContext2D,
   series: Map<number, number>,
   totalFrames: number,
   width: number,
   height: number,
-): void {
-  if (series.size === 0 || totalFrames <= 1) return;
+  topPad = 0,
+): { min: number; max: number } | null {
+  if (series.size === 0 || totalFrames <= 1) return null;
   const { buckets, min, max } = downsampleSeries(series, width);
-  const toY = makeToYPos(min, max, height);
+  const toY = makeToYPos(min, max, height, topPad);
   const frameToX = (f: number) => (f / (totalFrames - 1)) * width;
 
   // Top-edge points in frame order.
   const pts: Array<[number, number]> = [];
   for (const [frame, val] of buckets) pts.push([frameToX(frame), toY(val)]);
-  if (pts.length === 0) return;
+  if (pts.length === 0) return null;
 
   // Filled area under the curve, anchored down to the baseline — PyQt fills the
   // polygon under the series (slider.py _draw_header), not just a stroked line.
-  ctx.fillStyle = "rgba(100, 149, 237, 0.4)";
+  ctx.fillStyle = HEADER_FILL;
   ctx.beginPath();
   ctx.moveTo(pts[0][0], height);
   for (const [x, y] of pts) ctx.lineTo(x, y);
@@ -113,10 +122,12 @@ export function drawHeaderSeries(
   ctx.closePath();
   ctx.fill();
 
-  // Stroke the top edge over the fill.
-  ctx.strokeStyle = "rgba(100, 149, 237, 0.9)";
+  // Stroke the top edge over the fill (darker purple, like PyQt).
+  ctx.strokeStyle = HEADER_EDGE;
   ctx.lineWidth = 1;
   ctx.beginPath();
   pts.forEach(([x, y], i) => (i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)));
   ctx.stroke();
+
+  return { min, max };
 }

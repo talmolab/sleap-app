@@ -25,7 +25,11 @@ import type {
   WorkerRequest,
   WorkerResponse,
 } from "@/lib/statisticSeriesWorkerCore";
-import { drawHeaderSeries, frameTickInterval } from "@/lib/headerSeriesRender";
+import {
+  drawHeaderSeries,
+  frameTickInterval,
+  HEADER_FILL,
+} from "@/lib/headerSeriesRender";
 import { resizeHeaderHeight } from "@/lib/seekbarHeaderHeight";
 import { isUserLabeledFrame } from "@/lib/frameLabeling";
 import { navigableDomain, nearestFrameInDomain } from "@/lib/navigableFrames";
@@ -95,7 +99,7 @@ function drawHeaderFrameMarkers(
   const step = frameTickInterval(totalFrames);
   ctx.save();
   ctx.lineWidth = 1;
-  ctx.font = "9px system-ui, sans-serif";
+  ctx.font = "11px system-ui, sans-serif";
   ctx.textBaseline = "top";
   for (let f = step; f < totalFrames; f += step) {
     const x = (f / (totalFrames - 1)) * w;
@@ -104,9 +108,35 @@ function drawHeaderFrameMarkers(
     ctx.moveTo(x, 0);
     ctx.lineTo(x, h);
     ctx.stroke();
-    ctx.fillStyle = "rgba(255, 255, 255, 0.55)";
-    ctx.fillText(String(f), x + 2, 1);
+    // Frame number moved down (y=4) so the drag handle straddling the top seam
+    // doesn't overshadow it, and enlarged for legibility.
+    ctx.fillStyle = "rgba(255, 255, 255, 0.7)";
+    ctx.fillText(String(f), x + 3, 4);
   }
+  ctx.restore();
+}
+
+/**
+ * Draw a minimal Y-axis scale (the graph's max at the top of the plot band, min
+ * at the baseline) on the left edge, so the height has a readable scale. Only
+ * when the header is tall enough to fit the labels without crowding the graph.
+ */
+function drawHeaderYScale(
+  ctx: CanvasRenderingContext2D,
+  min: number,
+  max: number,
+  h: number,
+  topPad: number,
+): void {
+  if (h < 44) return;
+  const fmt = (v: number) => (Number.isInteger(v) ? String(v) : v.toFixed(1));
+  ctx.save();
+  ctx.font = "10px system-ui, sans-serif";
+  ctx.fillStyle = "rgba(255, 255, 255, 0.55)";
+  ctx.textBaseline = "top";
+  ctx.fillText(fmt(max), 3, topPad + 2);
+  ctx.textBaseline = "bottom";
+  ctx.fillText(fmt(min), 3, h - 2);
   ctx.restore();
 }
 
@@ -613,6 +643,14 @@ export function Seekbar() {
 
     if (seekbarHeaderGraph === "none") return;
 
+    // Reserve a top band for the frame-number labels + headroom so peaks don't
+    // touch the very top edge (scales with height, capped).
+    const topPad = Math.round(Math.min(18, h * 0.35));
+    const usable = Math.max(1, h - topPad);
+
+    // The graph's value range, for the Y-axis scale labels.
+    let scale: { min: number; max: number } | null = null;
+
     if (seekbarHeaderGraph === "instance-count") {
       // Build instance count per frame
       const currentVideo = video;
@@ -626,20 +664,22 @@ export function Seekbar() {
 
       // Draw bar chart (skip if no instances; markers still draw below).
       if (maxCount > 0) {
-        ctx.fillStyle = "rgba(100, 149, 237, 0.5)";
+        ctx.fillStyle = HEADER_FILL;
         for (const [fi, count] of counts) {
           const x = (fi / (totalFrames - 1)) * w;
-          const barH = (count / maxCount) * h;
+          const barH = (count / maxCount) * usable; // leave `topPad` headroom
           ctx.fillRect(x, h - barH, Math.max(1, w / totalFrames), barH);
         }
+        scale = { min: 0, max: maxCount };
       }
     } else if (headerSeries) {
-      drawHeaderSeries(ctx, headerSeries, totalFrames, w, h);
+      scale = drawHeaderSeries(ctx, headerSeries, totalFrames, w, h, topPad);
     }
 
-    // Frame-index markers on top (every ~100 frames for a few-hundred-frame
-    // video) so a stretched header stays legible — PyQt parity.
+    // Frame-index markers (gridlines + labels) + a left-edge Y-axis scale, both
+    // on top of the graph — PyQt parity + readability.
     drawHeaderFrameMarkers(ctx, totalFrames, w, h);
+    if (scale) drawHeaderYScale(ctx, scale.min, scale.max, h, topPad);
   }, [totalFrames, labels, video, seekbarHeaderGraph, headerSeries, seekbarHeaderHeight]);
 
   // Precompute the seekbar header's static content (per-track occupied frames +
