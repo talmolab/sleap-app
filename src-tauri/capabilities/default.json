@@ -11,6 +11,7 @@
     "fs:allow-read-text-file",
     "fs:allow-write-file",
     "fs:allow-write-text-file",
+    "fs:allow-mkdir",
     "fs:allow-remove",
     "fs:allow-exists",
     "fs:allow-stat",
@@ -27,6 +28,9 @@
     "core:window:allow-close",
     "core:window:allow-destroy",
     "core:window:allow-set-title",
+    "core:window:allow-set-focus",
+    "core:window:allow-show",
+    "core:window:allow-unminimize",
     "core:webview:allow-create-webview-window",
     "sleap:default"
   ]

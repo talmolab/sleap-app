@@ -165,6 +165,23 @@ export async function restoreTauriDraft(
   entry: TauriDraftManifestEntry,
 ): Promise<boolean> {
   const store = useAppStore.getState();
+
+  // Dedup: if the original project this draft belongs to is already open in
+  // another window, focus that window instead of restoring a second copy — two
+  // windows editing the same file on disk would race on save.
+  if (entry.projectPath) {
+    const { getCurrentWindow } = await import("@tauri-apps/api/window");
+    const { resolveOpen, focusWindow } = await import("./windowRouting");
+    const r = await resolveOpen(entry.projectPath, getCurrentWindow().label);
+    if (r.action === "focus" && r.label) {
+      await focusWindow(r.label);
+      toast.info("Already open", {
+        description: `${entry.displayName} is open in another window.`,
+      });
+      return false;
+    }
+  }
+
   store.setLoading(true, "Recovering unsaved work...");
   try {
     const { readFile, exists } = await import("@tauri-apps/plugin-fs");

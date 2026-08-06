@@ -6,6 +6,7 @@ import { useWindowTitle } from "./hooks/useWindowTitle";
 import { useAppStore } from "./stores/appStore";
 import { applyHashState, initUrlStateSync } from "./lib/urlState";
 import { loadProjectFromPath } from "./lib/loadProject";
+import { readOpenFileParam } from "./lib/windowRouting";
 import { isTauri } from "./platform";
 import { setupCloseHandler } from "./lib/quit";
 import { toast } from "./lib/notify";
@@ -17,18 +18,21 @@ import {
 } from "@talmolab/sleap-io.js";
 import { sleapCmd } from "./lib/sleapPlugin";
 
-// Consume the pending "initial file" slot in Rust and load it. The slot is
-// populated either from a CLI argument on launch or from a macOS file-association
-// open (RunEvent::Opened). get_initial_file take()s the slot, so calling this
-// from both the launch poll and the `open-file` listener is race-safe: whoever
-// runs first loads the file, the other gets null and no-ops (no double-load).
-async function loadInitialFileIfAny() {
+// Drain (take, once) the pending "initial file" slot in Rust. The slot is
+// populated from a CLI argument on launch OR a macOS file-association open
+// (RunEvent::Opened). get_initial_file take()s the slot, so draining it from
+// both the launch poll and the `open-file` listener is race-safe: whoever runs
+// first gets the path, the other gets null (no double-handling).
+async function takeInitialFile(): Promise<string | null> {
   const { invoke } = await import("@tauri-apps/api/core");
   // Prefixed for the inlined `sleap` plugin so it resolves from the
   // http://localhost origin (bundled builds) as well as the dev origin.
-  const path = await invoke<string | null>(sleapCmd("get_initial_file"));
-  if (!path) return;
-  console.log("[app] Loading initial file:", path);
+  return invoke<string | null>(sleapCmd("get_initial_file"));
+}
+
+// Load `path` into THIS window directly (bypassing routing). Used for cold-start
+// opens and for a window spawned specifically to hold a file.
+async function loadPathHere(path: string): Promise<void> {
   const { readFile, exists } = await import("@tauri-apps/plugin-fs");
   await loadProjectFromPath(path, readFile, exists);
 }
@@ -92,35 +96,57 @@ export default function App() {
   const projectLoaded = useAppStore((s) => s.projectLoaded);
   const hashApplied = useRef(false);
 
-  // Open a file passed on launch — a CLI argument, or a macOS file-association
-  // open that fired before the webview was ready (Tauri only). Crash-recovery
+  // Cold-start open (Tauri only): either this window was spawned to hold a
+  // specific file (`?openFile=` — the "open in a new window" routing) or it's
+  // the initial window receiving a CLI-arg / macOS file-association path from the
+  // Rust slot. Both load directly into THIS window (no routing needed — a spawned
+  // window is dedicated, and at cold start nothing else is open). Crash-recovery
   // drafts are NOT auto-restored here — the WelcomeScreen "Restore unsaved work?"
-  // card surfaces them for both runtimes (see recoverableDrafts.ts), so recovery
-  // is a user click (never a racy auto-prompt) and is trivially escapable.
+  // card surfaces them (recoverableDrafts.ts), so recovery is an escapable click.
   useEffect(() => {
     if (!isTauri) return;
     (async () => {
-      await loadInitialFileIfAny().catch((err) => {
-        console.warn("[app] Failed to load initial file:", err);
-      });
+      const spawned = readOpenFileParam(window.location.search);
+      if (spawned) {
+        // Strip the param so a later reload of this window doesn't reopen the
+        // original file (this window may hold a different project by then).
+        const url = new URL(window.location.href);
+        url.searchParams.delete("openFile");
+        window.history.replaceState(null, "", url.toString());
+        await loadPathHere(spawned).catch((err) =>
+          console.warn("[app] Failed to open spawned-window file:", err)
+        );
+        return;
+      }
+      const path = await takeInitialFile();
+      if (path) {
+        console.log("[app] Loading initial file:", path);
+        await loadPathHere(path).catch((err) =>
+          console.warn("[app] Failed to load initial file:", err)
+        );
+      }
     })();
   }, []);
 
-  // macOS file-association / "Open With" opens while the app is already running
-  // (or that land after the launch poll above). Finder delivers these as an Apple
-  // Event, which Rust forwards as an `open-file` event; we then drain the same
-  // initial-file slot. Reuses loadProjectFromPath, so it inherits the
-  // unsaved-changes confirm and works on the welcome screen or in the editor.
+  // macOS "Open With" / file-association while the app is ALREADY running (or
+  // that lands after the launch poll). Finder delivers it as an Apple Event,
+  // which Rust forwards as a broadcast `open-file`; the first window to drain the
+  // slot routes the path through openOrFocusPath — focus the window that already
+  // has it, load into an empty window, or spawn a new one — so a running project
+  // is never clobbered.
   useEffect(() => {
     if (!isTauri) return;
     let active = true;
     let unlisten: (() => void) | undefined;
     (async () => {
       const { listen } = await import("@tauri-apps/api/event");
-      const fn = await listen("open-file", () => {
-        loadInitialFileIfAny().catch((err) => {
-          console.warn("[app] Failed to load opened file:", err);
-        });
+      const fn = await listen("open-file", async () => {
+        const path = await takeInitialFile();
+        if (!path) return;
+        const { openOrFocusPath } = await import("./lib/windowRouting");
+        await openOrFocusPath(path).catch((err) =>
+          console.warn("[app] Failed to route opened file:", err)
+        );
       });
       // Component may have unmounted before the listener resolved.
       if (active) unlisten = fn;
@@ -130,6 +156,53 @@ export default function App() {
       active = false;
       unlisten?.();
     };
+  }, []);
+
+  // Targeted load: openOrFocusPath sends `load-file` (emitTo) to a specific
+  // empty window when it routes an open there. Only the targeted window receives
+  // it; load the payload path in place.
+  useEffect(() => {
+    if (!isTauri) return;
+    let active = true;
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      const { listen } = await import("@tauri-apps/api/event");
+      const fn = await listen<{ path: string }>("load-file", async (event) => {
+        const path = event.payload?.path;
+        if (!path) return;
+        await loadPathHere(path).catch((err) =>
+          console.warn("[app] Failed to load routed file:", err)
+        );
+      });
+      if (active) unlisten = fn;
+      else fn();
+    })();
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, []);
+
+  // Keep the cross-window open-file registry (Rust WindowFiles) in sync with this
+  // window's project. Seeds `null` (empty/Welcome) immediately so routing can
+  // reuse this window, then updates on every projectPath change — which covers
+  // load, Save-As (path changes), and close-to-Welcome (clears to null).
+  useEffect(() => {
+    if (!isTauri) return;
+    let unsub: (() => void) | undefined;
+    (async () => {
+      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      const label = getCurrentWindow().label;
+      const { windowSetFile } = await import("./lib/windowRouting");
+      unsub = useAppStore.subscribe(
+        (s) => s.projectPath,
+        (projectPath) => {
+          windowSetFile(label, projectPath ?? null).catch(() => {});
+        },
+        { fireImmediately: true }
+      );
+    })();
+    return () => unsub?.();
   }, []);
 
   useEffect(() => {
@@ -166,8 +239,10 @@ export default function App() {
           p.toLowerCase().endsWith(".slp")
         );
         if (!slp) return;
-        const { readFile, exists } = await import("@tauri-apps/plugin-fs");
-        await loadProjectFromPath(slp, readFile, exists);
+        // Route so a drop of an already-open file focuses that window instead of
+        // loading a duplicate; on this empty window it otherwise loads in place.
+        const { openOrFocusPath } = await import("./lib/windowRouting");
+        await openOrFocusPath(slp);
       });
       // Component may have unmounted before the listener resolved.
       if (active) unlisten = fn;

@@ -6,7 +6,7 @@
 
 import { useCallback, useState } from "react";
 import { getPlatform } from "../platform";
-import { loadProjectFromFile, loadProjectFromPath } from "../lib/loadProject";
+import { loadProjectFromFile } from "../lib/loadProject";
 
 export function useFileIO() {
   const [loading, setLoading] = useState(false);
@@ -26,8 +26,11 @@ export function useFileIO() {
     setLoading(true);
     try {
       if (typeof result === "string") {
-        // Tauri path
-        await loadProjectFromPath(result, platform.readFile, platform.exists);
+        // Desktop path: route through the window gate (focus existing window /
+        // load into an empty one / spawn a new window) so an open never
+        // clobbers a loaded project and the same file never opens twice.
+        const { openOrFocusPath } = await import("../lib/windowRouting");
+        await openOrFocusPath(result);
       } else if (result instanceof File) {
         // Browser File object
         await loadProjectFromFile(result);

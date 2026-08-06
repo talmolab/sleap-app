@@ -33,6 +33,8 @@ fn main() {
                     "copy_file",
                     "remove_file",
                     "get_initial_file",
+                    "resolve_open",
+                    "window_set_file",
                     "read_image_file",
                     "reveal_in_file_manager",
                     "open_preferences_directory",

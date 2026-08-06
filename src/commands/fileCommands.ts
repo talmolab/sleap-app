@@ -17,7 +17,6 @@ import type { Command } from "./types";
 import type { CommandContext } from "./CommandContext";
 import {
   loadProjectFromFile,
-  loadProjectFromPath,
   loadAnalysisProjectFromFile,
   loadAnalysisProjectFromPath,
   loadCocoProjectFromFile,
@@ -167,8 +166,13 @@ export const OpenProjectCommand: Command = {
     if (!result) return;
 
     if (typeof result === "string") {
-      console.log(`[open] Loading from path: ${result}`);
-      await loadProjectFromPath(result, platform.readFile, platform.exists);
+      // A string path only comes back on desktop. Route through the window
+      // gate: focus the window that already has this file, load into an empty
+      // window, or spawn a new one — so opening never clobbers a loaded project
+      // and the same file never opens twice.
+      console.log(`[open] Routing open for path: ${result}`);
+      const { openOrFocusPath } = await import("@/lib/windowRouting");
+      await openOrFocusPath(result);
     } else if (result instanceof File) {
       console.log(`[open] Loading from File object: ${result.name} (${result.size} bytes)`);
       await loadProjectFromFile(result);
