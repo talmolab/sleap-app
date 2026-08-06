@@ -50,7 +50,7 @@ export const DEFAULT_SHORTCUTS: Record<string, string> = {
   fit: "$mod+Equal",
   "reset view": "KeyR",
   "show instances": "KeyH",
-  "show labels": "$mod+Tab",
+  "show labels": "KeyT",
   "show edges": "$mod+Shift+Tab",
   "toggle node visibility": "KeyV",
   "toggle pan mode": "KeyP",

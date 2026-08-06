@@ -277,11 +277,13 @@ function InstanceDetailPanel({
               key={i}
               className="grid grid-cols-[1fr_auto] gap-x-3 whitespace-nowrap"
             >
+              {/* Node name white; coords green when visible, "not visible" red
+                  — same red/green as the Frames tab (text-red-500/green-500). */}
               <span className="text-foreground truncate">{pt.name}</span>
               <span
                 className={cn(
                   "tabular-nums text-right",
-                  pt.visible ? "text-muted-foreground" : "italic opacity-60",
+                  pt.visible ? "text-green-500" : "text-red-500",
                 )}
               >
                 {pt.visible

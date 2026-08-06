@@ -55,7 +55,7 @@ import {
 } from "../../lib/resolveVideos";
 import { toast } from "@/lib/notify";
 import { getPlatform, isTauri } from "@/platform/index";
-import { Film, Frame, Hand, ImageOff, MousePointer2 } from "lucide-react";
+import { Film, Frame, Hand, ImageOff, MousePointer2, Tag } from "lucide-react";
 
 export function VideoPlayer() {
   const frameCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -2173,6 +2173,23 @@ export function VideoPlayer() {
             frame counter lives in the status bar only (was previously
             duplicated here and beside the seekbar). */}
         <div className="absolute bottom-2 left-2 z-20 flex items-center gap-1.5">
+          {/* Node-name label toggle (leftmost). Flips `showLabels` (the same
+              View → Show Labels state), so node names show/hide next to the
+              keypoints. Dimmed when off. Press T to toggle (see shortcuts). */}
+          <Button
+            variant="secondary"
+            size="icon-xs"
+            className={cn(
+              "pointer-events-auto rounded-md bg-black/60 border-none hover:bg-black/70 hover:text-white",
+              showLabels ? "text-white" : "text-white/40",
+            )}
+            title={showLabels ? "Hide node names (T)" : "Show node names (T)"}
+            aria-label="Toggle node name labels"
+            aria-pressed={showLabels}
+            onClick={() => useAppStore.getState().toggle("showLabels")}
+          >
+            <Tag />
+          </Button>
           {/* Pan vs. Select interaction-mode toggle. Sits immediately left of
               Reset view so this commonly-used control is visible on the canvas.
               Press P to toggle (see shortcuts). */}
