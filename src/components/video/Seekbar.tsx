@@ -10,7 +10,14 @@
  * - Instance count header graph
  */
 
-import { useRef, useCallback, useState, useEffect, useMemo } from "react";
+import {
+  useRef,
+  useCallback,
+  useState,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+} from "react";
 import { useAppStore } from "../../stores/appStore";
 import { getPaletteColor, rgbToCSS } from "../../lib/colorPalettes";
 import {
@@ -26,6 +33,7 @@ import type {
 } from "@/lib/statisticSeriesWorkerCore";
 import { drawHeaderSeries } from "@/lib/headerSeriesRender";
 import { isUserLabeledFrame } from "@/lib/frameLabeling";
+import { frameHoverInfo } from "@/lib/seekbarHoverInfo";
 import { navigableDomain, nearestFrameInDomain } from "@/lib/navigableFrames";
 import {
   createSeriesCache,
@@ -86,6 +94,7 @@ export function Seekbar() {
   const headerCanvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const headerContainerRef = useRef<HTMLDivElement>(null);
+  const tooltipRef = useRef<HTMLDivElement>(null);
 
   const video = useAppStore((s) => s.video);
   const frameIdx = useAppStore((s) => s.frameIdx);
@@ -300,6 +309,9 @@ export function Seekbar() {
 
   const [isDragging, setIsDragging] = useState(false);
   const [hoverFrame, setHoverFrame] = useState<number | null>(null);
+  // Cursor X within the seekbar container (px), used to position the floating
+  // hover-preview tooltip. Set alongside hoverFrame on mouse move; cleared on leave.
+  const [hoverX, setHoverX] = useState<number | null>(null);
   // While dragging, the solid playhead follows the cursor (this value) instead
   // of frameIdx, so it glides smoothly even while the image load lags behind on
   // a slow backend. null when not scrubbing → playhead tracks the loaded frame.
@@ -403,6 +415,9 @@ export function Seekbar() {
     (e: React.MouseEvent) => {
       const frame = pixelToFrame(e.clientX);
       setHoverFrame(frame);
+      // Record cursor X within the container so the hover tooltip can follow it.
+      const rect = e.currentTarget.getBoundingClientRect();
+      setHoverX(e.clientX - rect.left);
 
       if (isSelectingRange && rangeAnchor !== null) {
         const start = Math.min(rangeAnchor, frame);
@@ -426,9 +441,36 @@ export function Seekbar() {
 
   const handleMouseLeave = useCallback(() => {
     setHoverFrame(null);
+    setHoverX(null);
     setIsSelectingRange(false);
     setRangeAnchor(null);
   }, []);
+
+  // Tooltip lines for the frame under the cursor, computed by the pure
+  // formatter (mirrors PyQt get_val_tooltip). overlayVersion is a dep so counts
+  // refresh after labeling edits (labels is mutated in place).
+  const hoverInfo = useMemo(() => {
+    if (hoverFrame === null || !labels || !video) return null;
+    const lf = labels.find({ video, frameIdx: hoverFrame })[0] ?? null;
+    const isSuggested = (labels.suggestions ?? []).some(
+      (sf) => sf.video === video && sf.frameIdx === hoverFrame,
+    );
+    return frameHoverInfo(lf, hoverFrame, { isSuggested });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hoverFrame, labels, video, overlayVersion]);
+
+  // Position the hover tooltip centered on the cursor, clamped to the seekbar so
+  // it never spills off either edge. Measuring the rendered width (nowrap) lets
+  // the clamp account for the box, unlike a CSS-only translate. Layout effect
+  // runs pre-paint, so there's no flash at the default position.
+  useLayoutEffect(() => {
+    const tip = tooltipRef.current;
+    const container = containerRef.current;
+    if (!tip || !container || hoverX === null) return;
+    const cw = container.clientWidth;
+    const w = tip.offsetWidth;
+    tip.style.left = `${Math.max(0, Math.min(cw - w, hoverX - w / 2))}px`;
+  }, [hoverX, hoverInfo]);
 
   // Global mouse tracking during seekbar drag — serialized read loop.
   //
@@ -790,20 +832,37 @@ export function Seekbar() {
       </div>
 
       <div className="grid grid-cols-subgrid col-span-full items-center h-10 bg-card border-t border-border px-2 gap-2">
-        {/* Seekbar canvas */}
-        <div
-          ref={containerRef}
-          className="h-6 rounded cursor-pointer overflow-hidden min-w-0"
-          onMouseDown={handleMouseDown}
-          onMouseMove={handleMouseMove}
-          onMouseUp={handleMouseUp}
-          onMouseLeave={handleMouseLeave}
-        >
-          <canvas
-            ref={canvasRef}
-            className="w-full h-full"
-            style={{ display: "block" }}
-          />
+        {/* Seekbar canvas (relative wrapper hosts the floating hover tooltip) */}
+        <div className="relative min-w-0">
+          <div
+            ref={containerRef}
+            className="h-6 rounded cursor-pointer overflow-hidden min-w-0"
+            onMouseDown={handleMouseDown}
+            onMouseMove={handleMouseMove}
+            onMouseUp={handleMouseUp}
+            onMouseLeave={handleMouseLeave}
+          >
+            <canvas
+              ref={canvasRef}
+              className="w-full h-full"
+              style={{ display: "block" }}
+            />
+          </div>
+          {/* Hover-preview tooltip — floats above the bar near the cursor
+              (positioned by the layout effect above), suppressed while
+              scrubbing/selecting (the solid playhead is there). */}
+          {hoverInfo && hoverX !== null && scrubFrame === null && !isSelectingRange && (
+            <div
+              ref={tooltipRef}
+              className="pointer-events-none absolute bottom-full left-0 z-50 mb-1 whitespace-nowrap rounded-md border border-border bg-popover/95 px-2 py-1 text-[10px] leading-tight text-popover-foreground shadow-md backdrop-blur-sm"
+            >
+              {hoverInfo.lines.map((line, i) => (
+                <div key={i} className={i === 0 ? "font-medium tabular-nums" : "text-muted-foreground"}>
+                  {line}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Transport controls */}
