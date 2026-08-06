@@ -132,7 +132,12 @@ export async function recordDraftSave(
     savedAt: opts.savedAt,
     videoCount: labels.videos.length,
     videoSignatures: labels.videos.map((v) =>
-      videoSignature({ filename: v.filename, shape: v.shape }),
+      videoSignature({
+        filename: v.filename,
+        shape: v.shape,
+        embeddedFrameIndices: v.embeddedFrameIndices,
+        sourceName: v.originalVideo?.filename,
+      }),
     ),
     embedded: labels.videos.some((v) => v.hasEmbeddedImages),
     sourceSize: opts.sourceSize,
