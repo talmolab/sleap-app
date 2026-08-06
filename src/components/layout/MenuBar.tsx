@@ -947,11 +947,15 @@ function TracksMenu() {
           <MenubarSub>
             <MenubarSubTrigger disabled={!instance}>Set Instance Track</MenubarSubTrigger>
             <MenubarSubContent>
-              {labels.tracks.map((track, idx) => (
-                <MenubarItem key={idx} onClick={() => commandContext.execute(SetInstanceTrack, { trackIdx: idx })}>
-                  {track.name} {idx < 9 && <MenubarShortcut>{modKey}+{idx + 1}</MenubarShortcut>}
-                </MenubarItem>
-              ))}
+              {/* Bounded, scrollable so projects with many tracks don't overflow
+                  the screen (the sub-content itself is overflow-hidden). */}
+              <div className="max-h-[60vh] overflow-y-auto">
+                {labels.tracks.map((track, idx) => (
+                  <MenubarItem key={idx} onClick={() => commandContext.execute(SetInstanceTrack, { trackIdx: idx })}>
+                    {track.name} {idx < 9 && <MenubarShortcut>{modKey}+{idx + 1}</MenubarShortcut>}
+                  </MenubarItem>
+                ))}
+              </div>
             </MenubarSubContent>
           </MenubarSub>
         )}
@@ -1006,17 +1010,21 @@ function TracksMenu() {
           <MenubarSub>
             <MenubarSubTrigger disabled={!projectLoaded}>Delete Track</MenubarSubTrigger>
             <MenubarSubContent>
-              {labels.tracks.map((track, idx) => (
-                <MenubarItem
-                  key={idx}
-                  onClick={() => {
-                    if (confirm(`Delete track "${track.name}"?`))
-                      commandContext.execute(DeleteTrack, { trackIdx: idx });
-                  }}
-                >
-                  {track.name}
-                </MenubarItem>
-              ))}
+              {/* Bounded, scrollable so projects with many tracks don't overflow
+                  the screen (the sub-content itself is overflow-hidden). */}
+              <div className="max-h-[60vh] overflow-y-auto">
+                {labels.tracks.map((track, idx) => (
+                  <MenubarItem
+                    key={idx}
+                    onClick={() => {
+                      if (confirm(`Delete track "${track.name}"?`))
+                        commandContext.execute(DeleteTrack, { trackIdx: idx });
+                    }}
+                  >
+                    {track.name}
+                  </MenubarItem>
+                ))}
+              </div>
             </MenubarSubContent>
           </MenubarSub>
         )}
