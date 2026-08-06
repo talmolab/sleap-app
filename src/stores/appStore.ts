@@ -22,6 +22,7 @@ import type {
   InstancePlacementMethod,
 } from "../types";
 import type { StatisticGraphType, Reduction } from "@/lib/statisticSeries";
+import { SEEKBAR_HEADER_DEFAULT_HEIGHT } from "@/lib/seekbarHeaderHeight";
 import type { QcMode } from "@/lib/instanceVisibility";
 import type { CropRect } from "@/lib/imageFeaturesCore";
 import {
@@ -199,6 +200,11 @@ export interface AppState {
   rotation: 0 | 90 | 180 | 270;
   seekbarHeaderGraph: StatisticGraphType;
   seekbarHeaderReduction: Reduction;
+  /**
+   * Height (px) of the seekbar header graph, user-resizable via the drag handle
+   * on its top edge. Persisted; clamped to [MIN, MAX] (see seekbarHeaderHeight).
+   */
+  seekbarHeaderHeight: number;
   /** Which frames stepping/playback/seekbar are confined to (#137). */
   navigationDomain: NavigationDomain;
 
@@ -368,6 +374,7 @@ export const PERSISTED_KEYS: (keyof AppState)[] = [
   "defaultToPan",
   "seekbarHeaderGraph",
   "seekbarHeaderReduction",
+  "seekbarHeaderHeight",
   "navigationDomain",
   "qcDisplayMode",
   "videoPrefixSwaps",
@@ -464,6 +471,7 @@ export const useAppStore = create<AppState>()(
       rotation: 0 as 0 | 90 | 180 | 270,
       seekbarHeaderGraph: "instance-count" as StatisticGraphType,
       seekbarHeaderReduction: "sum" as Reduction,
+      seekbarHeaderHeight: SEEKBAR_HEADER_DEFAULT_HEIGHT,
       navigationDomain: "all" as NavigationDomain,
 
       // Per-instance visibility (transient) + QC display mode (persisted)
