@@ -56,16 +56,29 @@ export function makeToYPos(
   max: number,
   height: number,
 ): (val: number) => number {
-  // Degenerate / flat series (no variation, e.g. an all-zero series): sit on
-  // the baseline instead of pinning every point to the top edge. Without this,
-  // min === max maps to y=0 (top), reading as a misleading full-height line.
-  if (max <= min) {
-    return () => height - 1;
-  }
+  // seriesMin = min - 1 gives a one-unit bottom buffer (headroom) so the lowest
+  // value never sits exactly on the baseline — PyQt's slider.py toYPos trick
+  // (series_min = min - 1). Consequence: a flat series (min === max, e.g. an
+  // all-zero Primary-Point-Displacement over untracked data) maps its value to
+  // the TOP = a full bar, exactly matching PyQt, which does NOT special-case
+  // flat series. denom = max - (min - 1) = max - min + 1 >= 1, never zero.
   const seriesMin = min - 1;
-  const denom = max - seriesMin;
-  const scale = denom === 0 ? 0 : height / denom;
+  const scale = height / (max - seriesMin);
   return (val: number) => height - (val - seriesMin) * scale;
+}
+
+/**
+ * Frame-index spacing for header tick marks / gridlines. Ports PyQt
+ * slider.py:_add_tick_marks (674-689): 10 for short videos, otherwise the
+ * smallest of 10/100/1000/… that keeps the tick count at or below `maxTicks`.
+ * So a 300-frame video ticks every 100 (markers at 100/200/300).
+ */
+export function frameTickInterval(totalFrames: number, maxTicks = 24): number {
+  if (totalFrames < 20) return 10;
+  for (const step of [10, 100, 1000, 10000, 100000]) {
+    if (totalFrames / step <= maxTicks) return step;
+  }
+  return 1000000;
 }
 
 /**
@@ -85,19 +98,25 @@ export function drawHeaderSeries(
   const toY = makeToYPos(min, max, height);
   const frameToX = (f: number) => (f / (totalFrames - 1)) * width;
 
-  ctx.strokeStyle = "rgba(100, 149, 237, 0.8)";
+  // Top-edge points in frame order.
+  const pts: Array<[number, number]> = [];
+  for (const [frame, val] of buckets) pts.push([frameToX(frame), toY(val)]);
+  if (pts.length === 0) return;
+
+  // Filled area under the curve, anchored down to the baseline — PyQt fills the
+  // polygon under the series (slider.py _draw_header), not just a stroked line.
+  ctx.fillStyle = "rgba(100, 149, 237, 0.4)";
+  ctx.beginPath();
+  ctx.moveTo(pts[0][0], height);
+  for (const [x, y] of pts) ctx.lineTo(x, y);
+  ctx.lineTo(pts[pts.length - 1][0], height);
+  ctx.closePath();
+  ctx.fill();
+
+  // Stroke the top edge over the fill.
+  ctx.strokeStyle = "rgba(100, 149, 237, 0.9)";
   ctx.lineWidth = 1;
   ctx.beginPath();
-  let started = false;
-  for (const [frame, val] of buckets) {
-    const x = frameToX(frame);
-    const y = toY(val);
-    if (!started) {
-      ctx.moveTo(x, y);
-      started = true;
-    } else {
-      ctx.lineTo(x, y);
-    }
-  }
+  pts.forEach(([x, y], i) => (i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)));
   ctx.stroke();
 }

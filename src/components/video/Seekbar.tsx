@@ -17,6 +17,7 @@ import {
   computeStatisticSeries,
   getGraphSpec,
   GRAPH_SPECS,
+  reconcileReduction,
   type StatisticGraphType,
 } from "@/lib/statisticSeries";
 import type {
@@ -24,7 +25,7 @@ import type {
   WorkerRequest,
   WorkerResponse,
 } from "@/lib/statisticSeriesWorkerCore";
-import { drawHeaderSeries } from "@/lib/headerSeriesRender";
+import { drawHeaderSeries, frameTickInterval } from "@/lib/headerSeriesRender";
 import { resizeHeaderHeight } from "@/lib/seekbarHeaderHeight";
 import { isUserLabeledFrame } from "@/lib/frameLabeling";
 import { navigableDomain, nearestFrameInDomain } from "@/lib/navigableFrames";
@@ -78,6 +79,36 @@ const WORKER_GRAPHS: ReadonlySet<StatisticGraphType> = new Set<StatisticGraphTyp
   "primary-point-displacement",
   "min-centroid-proximity",
 ]);
+
+/**
+ * Draw frame-index gridlines + labels onto the header canvas every N frames
+ * (PyQt-style ticks — see frameTickInterval), so a stretched header stays
+ * legible: subtle full-height verticals + small frame numbers at the top.
+ */
+function drawHeaderFrameMarkers(
+  ctx: CanvasRenderingContext2D,
+  totalFrames: number,
+  w: number,
+  h: number,
+): void {
+  if (totalFrames <= 1) return;
+  const step = frameTickInterval(totalFrames);
+  ctx.save();
+  ctx.lineWidth = 1;
+  ctx.font = "9px system-ui, sans-serif";
+  ctx.textBaseline = "top";
+  for (let f = step; f < totalFrames; f += step) {
+    const x = (f / (totalFrames - 1)) * w;
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.12)";
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, h);
+    ctx.stroke();
+    ctx.fillStyle = "rgba(255, 255, 255, 0.55)";
+    ctx.fillText(String(f), x + 2, 1);
+  }
+  ctx.restore();
+}
 
 export function Seekbar() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -285,14 +316,8 @@ export function Seekbar() {
   const selectGraph = useCallback(
     (next: StatisticGraphType) => {
       setKey("seekbarHeaderGraph", next);
-      const spec = getGraphSpec(next);
-      if (
-        spec &&
-        spec.reductions.length > 0 &&
-        !spec.reductions.includes(seekbarHeaderReduction)
-      ) {
-        setKey("seekbarHeaderReduction", spec.defaultReduction);
-      }
+      const r = reconcileReduction(next, seekbarHeaderReduction);
+      if (r !== seekbarHeaderReduction) setKey("seekbarHeaderReduction", r);
     },
     [setKey, seekbarHeaderReduction]
   );
@@ -586,6 +611,8 @@ export function Seekbar() {
 
     if (totalFrames === 0 || !labels || !video) return;
 
+    if (seekbarHeaderGraph === "none") return;
+
     if (seekbarHeaderGraph === "instance-count") {
       // Build instance count per frame
       const currentVideo = video;
@@ -597,21 +624,22 @@ export function Seekbar() {
         if (lf.instances.length > maxCount) maxCount = lf.instances.length;
       }
 
-      if (maxCount === 0) return;
-
-      // Draw bar chart
-      ctx.fillStyle = "rgba(100, 149, 237, 0.5)";
-      for (const [fi, count] of counts) {
-        const x = (fi / (totalFrames - 1)) * w;
-        const barH = (count / maxCount) * h;
-        ctx.fillRect(x, h - barH, Math.max(1, w / totalFrames), barH);
+      // Draw bar chart (skip if no instances; markers still draw below).
+      if (maxCount > 0) {
+        ctx.fillStyle = "rgba(100, 149, 237, 0.5)";
+        for (const [fi, count] of counts) {
+          const x = (fi / (totalFrames - 1)) * w;
+          const barH = (count / maxCount) * h;
+          ctx.fillRect(x, h - barH, Math.max(1, w / totalFrames), barH);
+        }
       }
-      return;
+    } else if (headerSeries) {
+      drawHeaderSeries(ctx, headerSeries, totalFrames, w, h);
     }
 
-    if (seekbarHeaderGraph === "none" || !headerSeries) return;
-
-    drawHeaderSeries(ctx, headerSeries, totalFrames, w, h);
+    // Frame-index markers on top (every ~100 frames for a few-hundred-frame
+    // video) so a stretched header stays legible — PyQt parity.
+    drawHeaderFrameMarkers(ctx, totalFrames, w, h);
   }, [totalFrames, labels, video, seekbarHeaderGraph, headerSeries, seekbarHeaderHeight]);
 
   // Precompute the seekbar header's static content (per-track occupied frames +
@@ -764,9 +792,10 @@ export function Seekbar() {
         style={{ height: seekbarHeaderHeight }}
       >
         {/* Drag handle on the top edge — drag up to grow the header, down to
-            shrink. Sits on the border seam; a hairline appears on hover. */}
+            shrink. Sits on the border seam; shows a visible bar (like the
+            sidebar resize handle) that highlights on hover/drag. */}
         <div
-          className="group absolute inset-x-0 top-0 z-10 flex h-2 -translate-y-1/2 cursor-ns-resize items-center justify-center"
+          className="group absolute inset-x-0 top-0 z-10 flex h-3 -translate-y-1/2 cursor-ns-resize items-center justify-center"
           onPointerDown={handleResizePointerDown}
           onPointerMove={handleResizePointerMove}
           onPointerUp={handleResizePointerUp}
@@ -776,7 +805,7 @@ export function Seekbar() {
           aria-orientation="horizontal"
           aria-label="Resize seekbar header"
         >
-          <div className="h-px w-full bg-transparent transition-colors group-hover:bg-primary/60" />
+          <div className="h-1.5 w-full bg-border transition-colors group-hover:bg-primary/50 group-active:bg-primary" />
         </div>
         <div
           ref={headerContainerRef}

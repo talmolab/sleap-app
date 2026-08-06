@@ -1,6 +1,21 @@
 import { describe, it, expect } from "../bun-test";
-import { GRAPH_SPECS, getGraphSpec } from "@/lib/statisticSeries";
+import { GRAPH_SPECS, getGraphSpec, reconcileReduction } from "@/lib/statisticSeries";
 import type { Labels, Video } from "@/types";
+
+describe("reconcileReduction", () => {
+  it("keeps the current reduction when the target graph supports it", () => {
+    // point-score supports ["sum","min"]
+    expect(reconcileReduction("point-score", "min")).toBe("min");
+  });
+  it("falls back to the graph's default when unsupported", () => {
+    // tracking-score supports ["mean","min"], default "min"; "sum" unsupported
+    expect(reconcileReduction("tracking-score", "sum")).toBe("min");
+  });
+  it("keeps the current reduction for graphs with no reduction selector", () => {
+    // instance-count has reductions [] → never overrides
+    expect(reconcileReduction("instance-count", "max")).toBe("max");
+  });
+});
 
 interface MockPoint { xy: [number, number]; visible: boolean; score?: number; }
 interface MockInst {

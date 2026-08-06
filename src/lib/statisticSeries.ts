@@ -31,20 +31,41 @@ export interface GraphSpec {
   heavy: boolean;          // gate behind worker threshold
 }
 
+// Order mirrors PyQt's Tracks → Seekbar Header menu (app.py:1096-1110), with
+// Instance Count (a sleap-app extra) kept right after None as the default.
+// min/max/sum/mean stay as the side-button reduction selector (NOT expanded
+// into separate list entries as PyQt does).
 export const GRAPH_SPECS: GraphSpec[] = [
   { type: "none", label: "None", reductions: [], defaultReduction: "sum", heavy: false },
   { type: "instance-count", label: "Instance Count", reductions: [], defaultReduction: "sum", heavy: false },
-  { type: "point-count", label: "Point Count", reductions: [], defaultReduction: "sum", heavy: false },
-  { type: "point-score", label: "Point Score", reductions: ["sum", "min"], defaultReduction: "sum", heavy: false },
-  { type: "instance-score", label: "Instance Score", reductions: ["sum", "min"], defaultReduction: "sum", heavy: false },
   { type: "point-displacement", label: "Point Displacement", reductions: ["sum", "max", "mean"], defaultReduction: "sum", heavy: true },
   { type: "primary-point-displacement", label: "Primary Point Displacement", reductions: ["sum", "max", "mean"], defaultReduction: "sum", heavy: true },
-  { type: "min-centroid-proximity", label: "Min Centroid Proximity", reductions: [], defaultReduction: "sum", heavy: true },
   { type: "tracking-score", label: "Tracking Score", reductions: ["mean", "min"], defaultReduction: "min", heavy: false },
+  { type: "instance-score", label: "Instance Score", reductions: ["sum", "min"], defaultReduction: "sum", heavy: false },
+  { type: "point-score", label: "Point Score", reductions: ["sum", "min"], defaultReduction: "sum", heavy: false },
+  { type: "point-count", label: "Number of predicted points", reductions: [], defaultReduction: "sum", heavy: false },
+  { type: "min-centroid-proximity", label: "Min Centroid Proximity", reductions: [], defaultReduction: "sum", heavy: true },
 ];
 
 export function getGraphSpec(type: StatisticGraphType): GraphSpec | undefined {
   return GRAPH_SPECS.find((s) => s.type === type);
+}
+
+/**
+ * The reduction to use after switching to graph `next`: keep the current one if
+ * the new graph supports it, else fall back to the graph's default. Shared by
+ * the seekbar picker button and the Tracks → Seekbar Header menu so both stay
+ * consistent.
+ */
+export function reconcileReduction(
+  next: StatisticGraphType,
+  current: Reduction,
+): Reduction {
+  const spec = getGraphSpec(next);
+  if (spec && spec.reductions.length > 0 && !spec.reductions.includes(current)) {
+    return spec.defaultReduction;
+  }
+  return current;
 }
 
 import { reduceValues } from "./statisticSeriesCore";
@@ -219,7 +240,14 @@ export function primaryPointDisplacementSeries(
   const tracks = labels.tracks as unknown[];
   const trackCount = tracks.length;
   const series = new Map<number, number>();
-  if (trackCount === 0) return series;
+  if (trackCount === 0) {
+    // Untracked data: PyQt still returns a zero array (get_primary_point_-
+    // displacement_series builds a (n_frames, 0, 2) matrix → zeros), which the
+    // header renders as a FULL BAR (seriesMin = min-1). Match that — emit 0 per
+    // labeled frame rather than an empty series (which would draw nothing).
+    for (const lf of labels.find({ video })) series.set(lf.frameIdx, 0);
+    return series;
+  }
 
   const frames = labels.find({ video });
   let lastFrameIdx = 0;

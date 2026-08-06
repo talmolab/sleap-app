@@ -78,6 +78,12 @@ import {
   MenubarRadioGroup,
   MenubarRadioItem,
 } from "@/components/ui/menubar";
+import {
+  GRAPH_SPECS,
+  reconcileReduction,
+  type StatisticGraphType,
+  type Reduction,
+} from "@/lib/statisticSeries";
 
 export function MenuBar() {
   return (
@@ -921,6 +927,7 @@ function TracksMenu() {
   const projectLoaded = useAppStore((s) => s.projectLoaded);
   const instance = useAppStore((s) => s.instance);
   const labels = useAppStore((s) => s.labels);
+  const seekbarHeaderGraph = useAppStore((s) => s.seekbarHeaderGraph);
 
   const exec = (cmd: Parameters<typeof commandContext.execute>[0]) => {
     commandContext.execute(cmd);
@@ -1038,6 +1045,38 @@ function TracksMenu() {
         >
           Delete All Tracks
         </MenubarItem>
+        <MenubarSeparator />
+        {/* Seekbar Header graph picker (PyQt: Tracks → Seekbar Header). Two-way
+            synced with the picker button next to the scrubbar — both read/write
+            the same `seekbarHeaderGraph` store field. min/max stay on that
+            button's reduction selector, so only base graphs are listed here. */}
+        <MenubarSub>
+          <MenubarSubTrigger disabled={!projectLoaded}>
+            Seekbar Header
+          </MenubarSubTrigger>
+          <MenubarSubContent>
+            <MenubarRadioGroup
+              value={seekbarHeaderGraph}
+              onValueChange={(val) => {
+                const next = val as StatisticGraphType;
+                const store = useAppStore.getState();
+                store.set("seekbarHeaderGraph", next);
+                const r = reconcileReduction(
+                  next,
+                  store.seekbarHeaderReduction as Reduction,
+                );
+                if (r !== store.seekbarHeaderReduction)
+                  store.set("seekbarHeaderReduction", r);
+              }}
+            >
+              {GRAPH_SPECS.map((spec) => (
+                <MenubarRadioItem key={spec.type} value={spec.type}>
+                  {spec.label}
+                </MenubarRadioItem>
+              ))}
+            </MenubarRadioGroup>
+          </MenubarSubContent>
+        </MenubarSub>
       </MenubarContent>
     </MenubarMenu>
   );
