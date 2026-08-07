@@ -48,12 +48,13 @@ describe("makeToYPos", () => {
     const toY = makeToYPos(0, 10, 100, 20);
     expect(toY(10)).toBeCloseTo(20);
   });
-  it("flat series (min === max) maps to the top — a full bar, matching PyQt", () => {
-    // all-zero series: seriesMin = min-1 = -1, so value 0 maps to y=0 (top) =
-    // a full bar. PyQt does NOT special-case flat series (this is the fix that
-    // makes untracked Primary-Point-Displacement show a full bar like PyQt).
-    const toY = makeToYPos(0, 0, 16);
-    expect(toY(0)).toBe(0);
+  it("a constant positive series maps to the top (full bar)", () => {
+    // A flat non-zero series (e.g. constant tracking score 5): seriesMin = 4, so
+    // the value maps to y=0 (top). (An ALL-ZERO series is skipped entirely by
+    // drawHeaderSeries — see below — so this mapping only matters for constant
+    // positive values, which represent a real, if unvarying, measurement.)
+    const toY = makeToYPos(5, 5, 16);
+    expect(toY(5)).toBe(0);
   });
 });
 
@@ -83,6 +84,29 @@ describe("drawHeaderSeries", () => {
     // fill happens before the top-edge stroke; stroke is the final draw call.
     expect(calls[calls.length - 1]).toBe("stroke");
     expect(calls.indexOf("fill")).toBeLessThan(calls.lastIndexOf("stroke"));
+  });
+  it("draws nothing for an all-zero series (no value to show)", () => {
+    const calls: string[] = [];
+    const ctx = {
+      beginPath: () => calls.push("begin"),
+      moveTo: () => calls.push("moveTo"),
+      lineTo: () => calls.push("lineTo"),
+      closePath: () => calls.push("closePath"),
+      fill: () => calls.push("fill"),
+      stroke: () => calls.push("stroke"),
+      set strokeStyle(_v: string) {},
+      set fillStyle(_v: string) {},
+      set lineWidth(_v: number) {},
+    } as unknown as CanvasRenderingContext2D;
+    const result = drawHeaderSeries(
+      ctx,
+      new Map([[0, 0], [1, 0], [2, 0]]),
+      3,
+      100,
+      16,
+    );
+    expect(result).toBeNull();
+    expect(calls).toHaveLength(0);
   });
   it("no-ops on empty series", () => {
     let stroked = false;

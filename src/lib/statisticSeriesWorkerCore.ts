@@ -123,12 +123,9 @@ function primaryPointDisplacement(
   primaryNodeIdx: number,
 ): [number, number][] {
   const entries: [number, number][] = [];
-  if (trackCount === 0) {
-    // Untracked data: match PyQt (zero array → full bar); emit 0 per labeled
-    // frame rather than nothing. See statisticSeries.ts primaryPointDisplacementSeries.
-    for (const lf of frames) entries.push([lf.frameIdx, 0]);
-    return entries;
-  }
+  // Untracked data → all-zero displacement; return empty so nothing is drawn
+  // (the renderer also skips all-zero). See statisticSeries.ts.
+  if (trackCount === 0) return entries;
 
   let lastFrameIdx = 0;
   for (const lf of frames) if (lf.frameIdx > lastFrameIdx) lastFrameIdx = lf.frameIdx;

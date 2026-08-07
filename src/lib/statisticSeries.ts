@@ -240,14 +240,10 @@ export function primaryPointDisplacementSeries(
   const tracks = labels.tracks as unknown[];
   const trackCount = tracks.length;
   const series = new Map<number, number>();
-  if (trackCount === 0) {
-    // Untracked data: PyQt still returns a zero array (get_primary_point_-
-    // displacement_series builds a (n_frames, 0, 2) matrix → zeros), which the
-    // header renders as a FULL BAR (seriesMin = min-1). Match that — emit 0 per
-    // labeled frame rather than an empty series (which would draw nothing).
-    for (const lf of labels.find({ video })) series.set(lf.frameIdx, 0);
-    return series;
-  }
+  // Untracked data has no per-track anchor displacement (all zero). PyQt draws
+  // a full bar of zeros, but that misleadingly implies high values — we instead
+  // show nothing, so return an empty series (the renderer also skips all-zero).
+  if (trackCount === 0) return series;
 
   const frames = labels.find({ video });
   let lastFrameIdx = 0;

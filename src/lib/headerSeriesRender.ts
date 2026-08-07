@@ -104,6 +104,10 @@ export function drawHeaderSeries(
 ): { min: number; max: number } | null {
   if (series.size === 0 || totalFrames <= 1) return null;
   const { buckets, min, max } = downsampleSeries(series, width);
+  // No value to show (every value is 0, e.g. an all-zero Tracking-Score-min or
+  // untracked Primary-Point-Displacement): draw NOTHING rather than a full bar
+  // — a full purple bar would misleadingly imply high values.
+  if (max <= 0) return null;
   const toY = makeToYPos(min, max, height, topPad);
   const frameToX = (f: number) => (f / (totalFrames - 1)) * width;
 
