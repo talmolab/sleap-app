@@ -1094,9 +1094,10 @@ export function VideoPlayer() {
     } else {
       centerX = cursorScene.current!.x;
       centerY = cursorScene.current!.y;
-      // Find the selected instance in rendered instances
-      const selIdx = instances.findIndex((i) => i.isSelected);
-      if (selIdx !== -1) overlayInst = instances[selIdx];
+      // Hold-Shift / placement: overlay ALL instances (see the draw loop below)
+      // so hovering shows the keypoints of whatever is under the cursor — not
+      // only the selected instance (which previously left the loupe empty when
+      // nothing was selected or the cursor was over another instance).
     }
 
     inset.style.display = "block";
@@ -1166,18 +1167,24 @@ export function VideoPlayer() {
       iy: (py - sy) * effectiveZoom,
     });
 
-    if (overlayInst) {
+    // For a node drag, overlay just the dragged instance (and skip the node
+    // being dragged — the crosshair marks it). Otherwise (hold-Shift / node
+    // placement) overlay ALL instances, so hovering shows the keypoints of
+    // whatever is under the cursor. Nodes outside the magnified region are
+    // clipped out below, so only nearby keypoints actually draw.
+    const insetInstances = isDragInset && overlayInst ? [overlayInst] : instances;
+    for (const inst of insetInstances) {
       ctx.lineWidth = 1.5;
       ctx.globalAlpha = 0.7;
-      for (const edge of overlayInst.edges) {
-        const src = overlayInst.nodes[edge.srcIdx];
-        const dst = overlayInst.nodes[edge.dstIdx];
+      for (const edge of inst.edges) {
+        const src = inst.nodes[edge.srcIdx];
+        const dst = inst.nodes[edge.dstIdx];
         if (!src?.visible || !dst?.visible) continue;
         const s = toInset(src.x, src.y);
         const d = toInset(dst.x, dst.y);
-        const edgeColor = overlayInst.edgeColors
-          ? overlayInst.edgeColors[overlayInst.edges.indexOf(edge)]
-          : overlayInst.color;
+        const edgeColor = inst.edgeColors
+          ? inst.edgeColors[inst.edges.indexOf(edge)]
+          : inst.color;
         ctx.strokeStyle = rgbToCSS(edgeColor);
         ctx.beginPath();
         ctx.moveTo(s.ix, s.iy);
@@ -1185,15 +1192,15 @@ export function VideoPlayer() {
         ctx.stroke();
       }
 
-      // Draw other visible nodes as small dots
+      // Draw visible nodes as small dots (skip only the dragged node).
       ctx.globalAlpha = 0.6;
-      for (let nIdx = 0; nIdx < overlayInst.nodes.length; nIdx++) {
-        if (nIdx === skipNodeIdx) continue;
-        const n = overlayInst.nodes[nIdx];
+      for (let nIdx = 0; nIdx < inst.nodes.length; nIdx++) {
+        if (inst === overlayInst && nIdx === skipNodeIdx) continue;
+        const n = inst.nodes[nIdx];
         if (!n.visible) continue;
         const { ix, iy } = toInset(n.x, n.y);
         if (ix < -10 || ix > INSET_SIZE + 10 || iy < -10 || iy > INSET_SIZE + 10) continue;
-        const nodeColor = overlayInst.nodeColors ? overlayInst.nodeColors[nIdx] : overlayInst.color;
+        const nodeColor = inst.nodeColors ? inst.nodeColors[nIdx] : inst.color;
         ctx.fillStyle = rgbToCSS(nodeColor);
         ctx.beginPath();
         ctx.arc(ix, iy, 3, 0, Math.PI * 2);
