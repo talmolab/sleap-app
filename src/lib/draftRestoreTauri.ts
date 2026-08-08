@@ -205,35 +205,51 @@ export async function restoreTauriDraft(
       },
     });
 
-    if (entry.embedded && entry.projectPath && (await exists(entry.projectPath))) {
-      // Re-open the ORIGINAL pkg (lazily) and graft its image backends by
-      // signature so the recovered labels render frames from the original.
-      store.setLoading(true, "Re-opening the original for images...");
-      const originalLabels = await readLabelsFromPath(entry.projectPath, readFile);
-      const draftSigs =
-        entry.videoSignatures?.length === draftLabels.videos.length
-          ? entry.videoSignatures
-          : draftLabels.videos.map((v) =>
-              videoSignature({
-                filename: v.filename,
-                shape: v.shape,
-                embeddedFrameIndices: v.embeddedFrameIndices,
-                sourceName: v.originalVideo?.filename,
-              }),
-            );
-      const { matched, total } = graftBackends(
-        draftLabels,
-        originalLabels,
-        draftSigs,
-      );
-      if (matched === 0 && total > 0) {
-        toast.warning("Couldn't re-attach images", {
+    if (entry.embedded) {
+      // An embedded (pkg.slp) draft is imageless — its frames live ONLY in the
+      // original pkg. Re-open the original (lazily) and graft its image backends
+      // by signature so the recovered labels render frames. If the original is
+      // unavailable, we WARN rather than silently show blank frames (below).
+      const origPath = entry.projectPath;
+      const reachable = !!origPath && (await exists(origPath));
+      if (origPath && reachable) {
+        store.setLoading(true, "Re-opening the original for images...");
+        const originalLabels = await readLabelsFromPath(origPath, readFile);
+        const draftSigs =
+          entry.videoSignatures?.length === draftLabels.videos.length
+            ? entry.videoSignatures
+            : draftLabels.videos.map((v) =>
+                videoSignature({
+                  filename: v.filename,
+                  shape: v.shape,
+                  embeddedFrameIndices: v.embeddedFrameIndices,
+                  sourceName: v.originalVideo?.filename,
+                }),
+              );
+        const { matched, total } = graftBackends(
+          draftLabels,
+          originalLabels,
+          draftSigs,
+        );
+        if (matched === 0 && total > 0) {
+          toast.warning("Couldn't attach video frames", {
+            description:
+              "The recovered labels didn't match the original — locate the original .pkg.slp to view images.",
+          });
+        } else if (matched < total) {
+          toast.warning("Some videos couldn't be matched", {
+            description: `${total - matched} of ${total} video(s) weren't found in the original; those frames will be blank.`,
+          });
+        }
+      } else {
+        // Original pkg not available (never had a path, moved, or its volume
+        // isn't mounted). The draft has no pixels of its own, so frames stay
+        // blank — surface it instead of a silent black screen. Your labels are
+        // safe; the path is retained in the draft, so recovering images is just
+        // a matter of making the original reachable and resuming again.
+        toast.warning("Couldn't attach video frames", {
           description:
-            "The original project's videos didn't match the recovered draft; frames may be blank until you relocate the videos.",
-        });
-      } else if (matched < total) {
-        toast.warning("Some videos couldn't be matched", {
-          description: `${total - matched} of ${total} video(s) weren't found in the original; those frames will be blank.`,
+            "The original .pkg.slp isn't available — locate the original to view images.",
         });
       }
     }
