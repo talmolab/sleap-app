@@ -108,6 +108,32 @@ export function upsertManifestEntry(
   return [...rest, entry];
 }
 
+/**
+ * Merge a re-save's `next` entry onto the `prior` entry for the same draft,
+ * PRESERVING durable fields the re-save didn't (re-)supply. Pure.
+ *
+ * `projectPath` in particular must survive a transient null: a resume while the
+ * source volume was unmounted nulls `store.projectPath` (the `stat`/`exists`
+ * probes fail), so the next autosave passes `projectPath: null`. Blindly writing
+ * that would ERASE the original pkg's location and permanently orphan an embedded
+ * draft from its images (the draft only ever refers to the container for embedded
+ * frames). So a null path falls back to the prior one; only a real new path (a
+ * genuine Save-As) overrides, and a never-saved project stays null. The
+ * source-identity snapshot (`sourceSize`/`sourceLastModified`) is preserved the
+ * same way (an autosave only captures it when minting).
+ */
+export function mergeDraftEntry(
+  prior: TauriDraftManifestEntry | undefined,
+  next: TauriDraftManifestEntry,
+): TauriDraftManifestEntry {
+  return {
+    ...next,
+    projectPath: next.projectPath ?? prior?.projectPath ?? null,
+    sourceSize: next.sourceSize ?? prior?.sourceSize,
+    sourceLastModified: next.sourceLastModified ?? prior?.sourceLastModified,
+  };
+}
+
 /** Remove the entry with `draftPath` (e.g. after a real disk save or discard).
  *  Pure — returns a new array. */
 export function removeManifestEntry(

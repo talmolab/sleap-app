@@ -33,6 +33,7 @@ import {
   writeManifestWithFs,
   upsertManifestEntry,
   removeManifestEntry,
+  mergeDraftEntry,
   sortEntriesNewestFirst,
 } from "@/lib/tauriDraftManifest";
 
@@ -116,22 +117,31 @@ export async function recordTauriDraftSave(
   const bytes = await serializeLabelsDraft(labels);
   await writeFile(opts.draftPath, bytes);
 
-  // Upsert the manifest entry, preserving a prior identity snapshot.
+  // Upsert the manifest entry, PRESERVING durable fields (the original pkg's
+  // path + the source-identity snapshot) from any prior save of this same draft
+  // — see mergeDraftEntry. A resume while the source volume was unmounted nulls
+  // store.projectPath, so without this a re-save would erase the path and orphan
+  // the embedded draft from its images permanently.
   const entries = await readManifestWithFs(fs, mpath);
   const prior = entries.find((e) => e.draftPath === opts.draftPath);
-  const entry: TauriDraftManifestEntry = {
+  const entry: TauriDraftManifestEntry = mergeDraftEntry(prior, {
     draftPath: opts.draftPath,
     projectPath: opts.projectPath,
     displayName: opts.displayName,
     savedAt: opts.savedAt,
     videoCount: labels.videos.length,
     videoSignatures: labels.videos.map((v) =>
-      videoSignature({ filename: v.filename, shape: v.shape }),
+      videoSignature({
+        filename: v.filename,
+        shape: v.shape,
+        embeddedFrameIndices: v.embeddedFrameIndices,
+        sourceName: v.originalVideo?.filename,
+      }),
     ),
     embedded: labels.videos.some((v) => v.hasEmbeddedImages),
-    sourceSize: opts.sourceSize ?? prior?.sourceSize,
-    sourceLastModified: opts.sourceLastModified ?? prior?.sourceLastModified,
-  };
+    sourceSize: opts.sourceSize,
+    sourceLastModified: opts.sourceLastModified,
+  });
   await writeManifestWithFs(
     fs,
     dir,
