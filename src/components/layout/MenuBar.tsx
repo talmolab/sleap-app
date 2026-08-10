@@ -171,8 +171,12 @@ function FileMenu() {
                   key={idx}
                   onClick={async () => {
                     const { resolveVideoFile } = await import("../../lib/resolveVideos");
-                    await resolveVideoFile(v, labels ?? undefined);
+                    const ok = await resolveVideoFile(v, labels ?? undefined);
                     useAppStore.getState().bumpOverlayVersion();
+                    // Re-read the now-known shape so the seekbar/status bar
+                    // re-extend the timeline to the full video (videoRevision
+                    // is the memo dep; a bare in-place shape set won't trigger).
+                    if (ok) useAppStore.getState().markVideoUpdated();
                   }}
                 >
                   {(Array.isArray(v.filename) ? v.filename[0] : v.filename)?.split("/").pop() || `Video ${idx + 1}`}

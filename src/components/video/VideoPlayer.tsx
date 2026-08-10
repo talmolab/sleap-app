@@ -2310,6 +2310,12 @@ export function VideoPlayer() {
                   // codec) updates this placeholder's message.
                   useAppStore.getState().bumpOverlayVersion();
                   if (ok) {
+                    // resolveVideoFile just set video.shape[0] to the true
+                    // source frame count (in place). Bump videoRevision so the
+                    // seekbar + status-bar frame-total memos re-read it and
+                    // re-extend the timeline to the full video (otherwise it
+                    // stays clamped to the last labeled frame).
+                    useAppStore.getState().markVideoUpdated();
                     useAppStore.getState().setFrameIdx(frameIdx);
                   }
                 }}
