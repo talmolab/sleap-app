@@ -52,6 +52,7 @@ fn main() {
                     "install_uv",
                     "run_python_command",
                     "cancel_command",
+                    "export_nwb",
                     "start_zmq_relay",
                     "send_training_stop",
                     "stop_zmq_relay",

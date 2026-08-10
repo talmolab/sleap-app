@@ -49,6 +49,15 @@ export {
 } from "./exportPackageCommands";
 export type { ExportPackageLevel, EmbedMode } from "./exportPackageCommands";
 
+// Export NWB (ndx-pose) — Labels -> .nwb via the sleap-nn env's sleap-io (desktop)
+export {
+  ExportNwbCommand,
+  deriveNwbFilename,
+  tempSlpPathFor,
+  hasImageSequenceVideo,
+  isSleapNnMissingError,
+} from "./exportNwbCommands";
+
 // Navigation commands
 export {
   GoNextLabeledFrame,

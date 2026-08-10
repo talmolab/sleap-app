@@ -198,6 +198,18 @@ export async function cancelCommand(): Promise<void> {
 }
 
 /**
+ * Convert a SLEAP `.slp` file (on disk) to NWB (ndx-pose) by running sleap-io in
+ * the sleap-nn uv-tool venv — the same interpreter as training/inference, which
+ * already carries `pynwb` + `ndx-pose`. Rust removes `slpPath` (a temp handoff
+ * file) after. Rejects with `SLEAP_NN_NOT_INSTALLED` when the sleap-nn env is
+ * missing, or the trailing line of the Python error otherwise. Desktop only.
+ */
+export async function exportNwb(slpPath: string, nwbPath: string): Promise<void> {
+  if (!isTauri) throw new Error("NWB export requires the desktop app");
+  return invokeCmd<void>("export_nwb", { slpPath, nwbPath });
+}
+
+/**
  * Start ZMQ PUB relay on port 9000 for sending stop commands to sleap-nn.
  * Cleans up any stale processes on the port before binding.
  */

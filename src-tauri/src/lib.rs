@@ -466,6 +466,7 @@ fn sleap_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
             environment::install_uv,
             environment::run_python_command,
             environment::cancel_command,
+            environment::export_nwb,
             environment::start_zmq_relay,
             environment::send_training_stop,
             environment::stop_zmq_relay,

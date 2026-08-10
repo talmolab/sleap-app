@@ -29,6 +29,7 @@ import {
   ExportJsonCommand,
   ExportCSVCommand,
   ExportAnalysisH5Command,
+  ExportNwbCommand,
 
   ExportPackageCommand,
   GoNextLabeledFrame,
@@ -203,6 +204,9 @@ function FileMenu() {
             </MenubarItem>
             <MenubarItem onClick={() => exec(ExportAnalysisH5Command)}>
               Analysis HDF5...
+            </MenubarItem>
+            <MenubarItem onClick={() => exec(ExportNwbCommand)}>
+              NWB (ndx-pose)...
             </MenubarItem>
             <MenubarItem onClick={() => exec(ExportPackageCommand)}>
               Labels Package...
