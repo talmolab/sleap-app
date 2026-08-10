@@ -311,6 +311,7 @@ export function VideosPanel() {
   const setFrameIdx = useAppStore((s) => s.setFrameIdx);
   const frameIdx = useAppStore((s) => s.frameIdx);
   const bumpOverlayVersion = useAppStore((s) => s.bumpOverlayVersion);
+  const markVideoUpdated = useAppStore((s) => s.markVideoUpdated);
   const markChanged = useAppStore((s) => s.markChanged);
 
   // Filename search: case-insensitive substring match on each video's basename.
@@ -356,6 +357,11 @@ export function VideosPanel() {
     const ok = await resolveVideoFile(video, labels ?? undefined);
     if (ok) {
       bumpOverlayVersion();
+      // The backend just set video.shape[0] to the true source frame count
+      // (in place, same object). Bump videoRevision so the seekbar's
+      // shape-keyed memo re-reads it and re-extends the timeline to the full
+      // video (otherwise it stays clamped to the last labeled frame).
+      markVideoUpdated();
       // If this is the current video, force a frame re-load
       if (video === currentVideo) {
         setVideo(video);
@@ -381,6 +387,7 @@ export function VideosPanel() {
       if (ok) {
         setLocateFolder(null);
         bumpOverlayVersion();
+        markVideoUpdated(); // re-read the now-known shape → re-extend the seekbar
         // If this is the current video, force a frame re-load
         if (video === currentVideo) {
           setVideo(video);
@@ -407,6 +414,7 @@ export function VideosPanel() {
     const count = await resolveAllVideosFromFolder(missingResolvable);
     if (count > 0) {
       bumpOverlayVersion();
+      markVideoUpdated(); // re-read now-known shapes → re-extend the seekbar
       // If the current video was resolved, force a frame re-load
       if (currentVideo && !isVideoMissing(currentVideo)) {
         setVideo(currentVideo);

@@ -21,6 +21,7 @@ import {
   commandContext,
   OpenProjectCommand,
   ImportAnalysisH5Command,
+  ImportNwbCommand,
   ImportCocoCommand,
   ImportDlcCommand,
   ImportDlcFolderCommand,
@@ -144,6 +145,9 @@ function FileMenu() {
           <MenubarSubContent>
             <MenubarItem onClick={() => exec(ImportAnalysisH5Command)}>
               Analysis HDF5...
+            </MenubarItem>
+            <MenubarItem onClick={() => exec(ImportNwbCommand)}>
+              NWB dataset...
             </MenubarItem>
             <MenubarItem onClick={() => exec(ImportCocoCommand)}>
               COCO dataset...

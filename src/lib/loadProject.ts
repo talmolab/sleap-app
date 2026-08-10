@@ -14,6 +14,7 @@ import {
   readSlpStreaming,
   setImageBytesReader,
   loadAnalysisH5,
+  loadNwb,
   readCoco,
   isCocoData,
   type CocoJson,
@@ -393,6 +394,103 @@ export async function loadAnalysisProjectFromPath(
     const msg = err instanceof Error ? err.message : String(err);
     toast.error("Failed to import Analysis HDF5", { description: msg });
     console.error("Failed to import Analysis HDF5:", err);
+    return false;
+  } finally {
+    store.setLoading(false);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// NWB (ndx-pose) predictions import
+// ---------------------------------------------------------------------------
+
+/**
+ * `loadNwb` types its source as `string`, but the underlying `openH5File`
+ * accepts bytes (Uint8Array / ArrayBuffer) at runtime — that's how the browser
+ * reads an HDF5 file it has no path for. Mirrors {@link readAnalysisLabels}.
+ * Follow-up: widen `loadNwb`'s upstream signature and drop this cast.
+ */
+function readNwbLabels(source: AnalysisSource): Promise<Labels> {
+  return loadNwb(source as string);
+}
+
+/**
+ * Import an NWB (ndx-pose) predictions file (`.nwb`) into a new project.
+ *
+ * NWB predictions files are pose-data-only (no embedded pixels); the reader
+ * builds a {@link Video} from the file's stored `original_videos` path, which is
+ * then resolved like any external video (auto-located next to the file on
+ * desktop, or shown as missing — user can Replace Videos — in the browser).
+ */
+export async function loadNwbProjectFromFile(file: File): Promise<boolean> {
+  const store = useAppStore.getState();
+
+  if (!confirmDiscardUnsavedWork("Importing a file")) return false;
+
+  store.setLoading(true, `Reading ${file.name}...`);
+
+  try {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    store.setLoading(true, `Parsing ${file.name}...`);
+    const labels = await readNwbLabels(bytes);
+    store.setLoading(true, "Locating videos...");
+    await resolveExternalVideos(labels);
+    store.setLabels(labels, file.name);
+    openFirstLabeledFrame(labels);
+    toast.success(`Imported ${file.name}`, {
+      description: `${labels.videos.length} video(s), ${labels.labeledFrames.length} labeled frames`,
+    });
+    return true;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    toast.error("Failed to import NWB", { description: msg });
+    console.error("Failed to import NWB:", err);
+    return false;
+  } finally {
+    store.setLoading(false);
+  }
+}
+
+/**
+ * Import an NWB predictions file from a path (Tauri only). Reads the bytes via
+ * the platform, then imports like {@link loadNwbProjectFromFile}, resolving the
+ * stored video path relative to the NWB file's directory when filesystem access
+ * is available.
+ */
+export async function loadNwbProjectFromPath(
+  path: string,
+  readFile: (path: string) => Promise<Uint8Array>,
+  exists?: (path: string) => Promise<boolean>
+): Promise<boolean> {
+  const store = useAppStore.getState();
+
+  if (!confirmDiscardUnsavedWork("Importing a file")) return false;
+
+  const filename = path.split(/[\\/]/).pop() ?? path;
+  store.setLoading(true, `Reading ${filename}...`);
+
+  try {
+    const bytes = await readFile(path);
+    store.setLoading(true, `Parsing ${filename}...`);
+    const labels = await readNwbLabels(bytes);
+
+    store.setLoading(true, "Locating videos...");
+    if (exists) {
+      await resolveExternalVideos(labels, { projectPath: path, exists, readFile });
+    } else {
+      await resolveExternalVideos(labels);
+    }
+
+    store.setLabels(labels, filename, path);
+    openFirstLabeledFrame(labels);
+    toast.success(`Imported ${filename}`, {
+      description: `${labels.videos.length} video(s), ${labels.labeledFrames.length} labeled frames`,
+    });
+    return true;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    toast.error("Failed to import NWB", { description: msg });
+    console.error("Failed to import NWB:", err);
     return false;
   } finally {
     store.setLoading(false);
