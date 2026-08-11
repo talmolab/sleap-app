@@ -11,6 +11,8 @@ import {
   appendLogLine,
   lastErrorLine,
   subprocessFailureMessage,
+  logLineClassName,
+  isErrorLine,
 } from "@/lib/processLog";
 
 describe("appendLogLine", () => {
@@ -57,5 +59,23 @@ describe("subprocessFailureMessage", () => {
 
   it("handles a null exit code", () => {
     expect(subprocessFailureMessage("Inference", null, [])).toBe("Inference failed (exit code unknown)");
+  });
+});
+
+describe("logLineClassName", () => {
+  it("colors best / error / section lines and leaves plain lines unstyled", () => {
+    expect(logLineClassName("*** best *** val_loss=0.1")).toBe("text-green-400");
+    expect(logLineClassName("RuntimeError: boom")).toBe("text-destructive");
+    expect(logLineClassName("— Starting Centroid...")).toBe("text-yellow-400");
+    expect(logLineClassName("Epoch 3: 71% loss=0.1")).toBe("");
+  });
+});
+
+describe("isErrorLine", () => {
+  it("flags error / traceback / exception / failed lines", () => {
+    expect(isErrorLine("Traceback (most recent call last):")).toBe(true);
+    expect(isErrorLine("ValueError: bad config")).toBe(true);
+    expect(isErrorLine("Training failed for centroid")).toBe(true);
+    expect(isErrorLine("Epoch 3: 71% loss=0.1")).toBe(false);
   });
 });

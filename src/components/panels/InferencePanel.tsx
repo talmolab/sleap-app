@@ -39,8 +39,10 @@ import {
   ChevronRight,
   Copy,
   Settings2,
+  Maximize2,
 } from "lucide-react";
 import { InferenceConfigDialog } from "@/components/dialogs/InferenceConfigDialog";
+import { LogTerminalDialog } from "@/components/monitors/LogTerminalDialog";
 
 // ── Types & Constants ─────────────────────────────────────────────────────────
 
@@ -237,6 +239,7 @@ export function InferencePanel() {
 
   // Config state
   const [pipeline, setPipeline] = useState<PipelineType>(DEFAULTS.pipeline);
+  const [logDialogOpen, setLogDialogOpen] = useState(false);
   const [modelPaths, setModelPaths] = useState<string[]>([]);
   const [frameRange, setFrameRange] = useState<FrameRange>("suggestions");
   const [frameStart, setFrameStart] = useState("0");
@@ -804,11 +807,34 @@ export function InferencePanel() {
 
             {/* Log */}
             {log.length > 0 && (
-              <pre ref={logRef}
-                className="max-h-48 overflow-auto rounded border bg-muted p-1.5 text-[10px] font-mono whitespace-pre-wrap break-all">
-                {log.join("\n")}
-              </pre>
+              <div className="space-y-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] text-muted-foreground">Log</span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 px-1.5 text-[10px]"
+                    onClick={() => setLogDialogOpen(true)}
+                  >
+                    <Maximize2 className="h-3 w-3 mr-1" /> Expand
+                  </Button>
+                </div>
+                <pre
+                  ref={logRef}
+                  onClick={() => setLogDialogOpen(true)}
+                  title="Click to open the full log"
+                  className="max-h-48 overflow-auto rounded border bg-muted p-1.5 text-[10px] font-mono whitespace-pre-wrap break-all cursor-pointer hover:border-muted-foreground/50"
+                >
+                  {log.join("\n")}
+                </pre>
+              </div>
             )}
+            <LogTerminalDialog
+              open={logDialogOpen}
+              onOpenChange={setLogDialogOpen}
+              log={log}
+              title="Inference log"
+            />
 
             {/* Bottom actions: copy + dismiss */}
             {isDone && (

@@ -14,6 +14,7 @@ import { useConnectStore } from "@/stores/connectStore";
 import { RemoteFileBrowser } from "@/components/dialogs/RemoteFileBrowser";
 import { TrainingConfigDialog } from "@/components/dialogs/TrainingConfigDialog";
 import { LossViewerDialog } from "@/components/monitors/LossViewerDialog";
+import { LogTerminalDialog } from "@/components/monitors/LogTerminalDialog";
 import { slotToHeadType, getDefaultProfileForHead } from "@/lib/trainingProfiles";
 import { useAppStore } from "@/stores/appStore";
 import { isTauri } from "@/platform/index";
@@ -44,6 +45,7 @@ import {
   LineChart,
   BarChart3,
   Copy,
+  Maximize2,
 } from "lucide-react";
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -482,6 +484,7 @@ export function TrainingPanel() {
 
   // Loss viewer modal: which model's curves are open (null = closed).
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
+  const [logDialogOpen, setLogDialogOpen] = useState(false);
 
   // Remote state
   const [remoteEnabled, setRemoteEnabled] = useState(!isTauri);
@@ -1220,18 +1223,30 @@ export function TrainingPanel() {
               <div className="space-y-1">
                 <div className="flex items-center justify-between">
                   <span className="text-[10px] text-muted-foreground">Log</span>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-6 px-1.5 text-[10px]"
-                    onClick={() => navigator.clipboard.writeText(log.join("\n"))}
-                  >
-                    <Copy className="h-3 w-3 mr-1" /> Copy
-                  </Button>
+                  <div className="flex items-center gap-1">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 px-1.5 text-[10px]"
+                      onClick={() => setLogDialogOpen(true)}
+                    >
+                      <Maximize2 className="h-3 w-3 mr-1" /> Expand
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 px-1.5 text-[10px]"
+                      onClick={() => navigator.clipboard.writeText(log.join("\n"))}
+                    >
+                      <Copy className="h-3 w-3 mr-1" /> Copy
+                    </Button>
+                  </div>
                 </div>
                 <pre
                   ref={logRef}
-                  className="max-h-48 overflow-auto rounded border bg-muted p-1.5 text-[10px] font-mono whitespace-pre-wrap break-all"
+                  onClick={() => setLogDialogOpen(true)}
+                  title="Click to open the full log"
+                  className="max-h-48 overflow-auto rounded border bg-muted p-1.5 text-[10px] font-mono whitespace-pre-wrap break-all cursor-pointer hover:border-muted-foreground/50"
                 >
                   {logLines}
                 </pre>
@@ -1255,6 +1270,13 @@ export function TrainingPanel() {
           </div>
         </>
       )}
+
+      <LogTerminalDialog
+        open={logDialogOpen}
+        onOpenChange={setLogDialogOpen}
+        log={log}
+        title="Training log"
+      />
 
       <LossViewerDialog
         open={viewerIndex !== null}

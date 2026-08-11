@@ -45,3 +45,24 @@ export function subprocessFailureMessage(
   const cause = lastErrorLine(stderrTail);
   return cause ? `${base}: ${cause}` : base;
 }
+
+/**
+ * Whether a log line looks like an error/warning — used by the log terminal's
+ * "errors only" filter. Broader than the coloring check so a traceback body is
+ * kept alongside the exception line.
+ */
+export function isErrorLine(line: string): boolean {
+  return /error|traceback|exception|fail|\bwarn/i.test(line);
+}
+
+/**
+ * Tailwind text class for a log line by content, matching the training panel's
+ * coloring: best epoch → green, error → red, section marker (`—`) → yellow,
+ * otherwise unstyled. Shared by the inline log and the log terminal modal.
+ */
+export function logLineClassName(line: string): string {
+  if (line.includes("*** best ***")) return "text-green-400";
+  if (/error/i.test(line)) return "text-destructive";
+  if (line.startsWith("—")) return "text-yellow-400";
+  return "";
+}
