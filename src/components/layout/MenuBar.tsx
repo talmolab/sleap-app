@@ -23,6 +23,8 @@ import {
   OpenProjectCommand,
   ImportAnalysisH5Command,
   ImportCocoCommand,
+  ImportDlcCommand,
+  ImportDlcFolderCommand,
   SaveProjectCommand,
   SaveAsProjectCommand,
   ExportJsonCommand,
@@ -44,6 +46,7 @@ import {
   DeleteFramePredictions,
   DeleteAllPredictions,
   AddInstancesFromAllPredictions,
+  AddInstancesFromAllPredictionsInProject,
   AddTrack,
   SetInstanceTrack,
   TransposeInstances,
@@ -76,6 +79,12 @@ import {
   MenubarRadioGroup,
   MenubarRadioItem,
 } from "@/components/ui/menubar";
+import {
+  GRAPH_SPECS,
+  reconcileReduction,
+  type StatisticGraphType,
+  type Reduction,
+} from "@/lib/statisticSeries";
 
 export function MenuBar() {
   return (
@@ -130,27 +139,42 @@ function FileMenu() {
         <MenubarItem onClick={() => exec(OpenProjectCommand)}>
           Open Project... <MenubarShortcut>{modKey}+O</MenubarShortcut>
         </MenubarItem>
-        <MenubarItem onClick={() => exec(ImportAnalysisH5Command)}>
-          Import Analysis HDF5...
-        </MenubarItem>
-        <MenubarItem onClick={() => exec(ImportCocoCommand)}>
-          Import COCO...
-        </MenubarItem>
+        <MenubarSub>
+          <MenubarSubTrigger>Import</MenubarSubTrigger>
+          <MenubarSubContent>
+            <MenubarItem onClick={() => exec(ImportAnalysisH5Command)}>
+              Analysis HDF5...
+            </MenubarItem>
+            <MenubarItem onClick={() => exec(ImportCocoCommand)}>
+              COCO dataset...
+            </MenubarItem>
+            <MenubarItem onClick={() => exec(ImportDlcCommand)}>
+              DeepLabCut dataset...
+            </MenubarItem>
+            <MenubarItem onClick={() => exec(ImportDlcFolderCommand)}>
+              Multiple DeepLabCut datasets from folder...
+            </MenubarItem>
+          </MenubarSubContent>
+        </MenubarSub>
         <MenubarSub>
           <MenubarSubTrigger disabled={!projectLoaded}>Replace Videos...</MenubarSubTrigger>
           <MenubarSubContent>
-            {labels?.videos.map((v, idx) => (
-              <MenubarItem
-                key={idx}
-                onClick={async () => {
-                  const { resolveVideoFile } = await import("../../lib/resolveVideos");
-                  await resolveVideoFile(v, labels ?? undefined);
-                  useAppStore.getState().bumpOverlayVersion();
-                }}
-              >
-                {(Array.isArray(v.filename) ? v.filename[0] : v.filename)?.split("/").pop() || `Video ${idx + 1}`}
-              </MenubarItem>
-            ))}
+            {/* Bounded, scrollable so projects with many videos don't overflow
+                the screen (the sub-content itself is overflow-hidden). */}
+            <div className="max-h-[60vh] overflow-y-auto">
+              {labels?.videos.map((v, idx) => (
+                <MenubarItem
+                  key={idx}
+                  onClick={async () => {
+                    const { resolveVideoFile } = await import("../../lib/resolveVideos");
+                    await resolveVideoFile(v, labels ?? undefined);
+                    useAppStore.getState().bumpOverlayVersion();
+                  }}
+                >
+                  {(Array.isArray(v.filename) ? v.filename[0] : v.filename)?.split("/").pop() || `Video ${idx + 1}`}
+                </MenubarItem>
+              ))}
+            </div>
           </MenubarSubContent>
         </MenubarSub>
         <MenubarSeparator />
@@ -167,30 +191,32 @@ function FileMenu() {
           Save As... <MenubarShortcut>{modKey}+Shift+S</MenubarShortcut>
         </MenubarItem>
         <MenubarSeparator />
-        <MenubarItem
-          disabled={!projectLoaded}
-          onClick={() => exec(ExportJsonCommand)}
-        >
-          Export JSON...
-        </MenubarItem>
-        <MenubarItem
-          disabled={!projectLoaded}
-          onClick={() => exec(ExportCSVCommand)}
-        >
-          Export Analysis CSV...
-        </MenubarItem>
-        <MenubarItem
-          disabled={!projectLoaded}
-          onClick={() => exec(ExportAnalysisH5Command)}
-        >
-          Export Analysis HDF5...
-        </MenubarItem>
-        <MenubarItem
-          disabled={!projectLoaded}
-          onClick={() => exec(ExportPackageCommand)}
-        >
-          Export Labels Package...
-        </MenubarItem>
+        <MenubarSub>
+          <MenubarSubTrigger disabled={!projectLoaded}>
+            Export
+          </MenubarSubTrigger>
+          <MenubarSubContent>
+            <MenubarItem onClick={() => exec(ExportJsonCommand)}>
+              JSON...
+            </MenubarItem>
+            <MenubarItem onClick={() => exec(ExportCSVCommand)}>
+              Analysis CSV...
+            </MenubarItem>
+            <MenubarItem onClick={() => exec(ExportAnalysisH5Command)}>
+              Analysis HDF5...
+            </MenubarItem>
+            <MenubarItem onClick={() => exec(ExportPackageCommand)}>
+              Labels Package...
+            </MenubarItem>
+            <MenubarItem
+              onClick={() =>
+                useAppStore.getState().setExportClipDialogOpen(true)
+              }
+            >
+              Labeled Clip (Video)...
+            </MenubarItem>
+          </MenubarSubContent>
+        </MenubarSub>
         {isTauri && (
           <>
             <MenubarSeparator />
@@ -818,6 +844,13 @@ function LabelsMenu() {
           onClick={() => exec(AddInstancesFromAllPredictions)}
         >
           Accept All Predictions on Current Frame
+          <MenubarShortcut>{modKey}+Shift+A</MenubarShortcut>
+        </MenubarItem>
+        <MenubarItem
+          disabled={!projectLoaded}
+          onClick={() => exec(AddInstancesFromAllPredictionsInProject)}
+        >
+          Accept All Predictions
         </MenubarItem>
         <MenubarItem
           disabled={!projectLoaded || sweepActive}
@@ -861,6 +894,13 @@ function LabelsMenu() {
 
 function PredictMenu() {
   const openPanel = useAppStore((s) => s.openPanel);
+  const setModelMetricsDialogOpen = useAppStore(
+    (s) => s.setModelMetricsDialogOpen
+  );
+  const projectLoaded = useAppStore((s) => s.projectLoaded);
+  const setExportPackageDialogOpen = useAppStore(
+    (s) => s.setExportPackageDialogOpen
+  );
 
   return (
     <MenubarMenu>
@@ -874,13 +914,10 @@ function PredictMenu() {
         </MenubarItem>
         <MenubarSeparator />
         <MenubarItem
-          onClick={() =>
-            alert(
-              "Export Training Package is not yet implemented.\n\nThis will bundle labels and video frames for training with sleap-nn."
-            )
-          }
+          disabled={!projectLoaded}
+          onClick={() => setExportPackageDialogOpen(true)}
         >
-          Export Training Package...
+          Export Labels Package...
         </MenubarItem>
         <MenubarItem
           onClick={() =>
@@ -892,6 +929,9 @@ function PredictMenu() {
           Import Predictions...
         </MenubarItem>
         <MenubarSeparator />
+        <MenubarItem onClick={() => setModelMetricsDialogOpen(true)}>
+          Evaluation Metrics for Trained Models...
+        </MenubarItem>
         <MenubarItem disabled>
           Visualize Model Outputs...
           <MenubarShortcut className="text-xs opacity-60">Coming Soon</MenubarShortcut>
@@ -905,6 +945,7 @@ function TracksMenu() {
   const projectLoaded = useAppStore((s) => s.projectLoaded);
   const instance = useAppStore((s) => s.instance);
   const labels = useAppStore((s) => s.labels);
+  const seekbarHeaderGraph = useAppStore((s) => s.seekbarHeaderGraph);
 
   const exec = (cmd: Parameters<typeof commandContext.execute>[0]) => {
     commandContext.execute(cmd);
@@ -931,11 +972,15 @@ function TracksMenu() {
           <MenubarSub>
             <MenubarSubTrigger disabled={!instance}>Set Instance Track</MenubarSubTrigger>
             <MenubarSubContent>
-              {labels.tracks.map((track, idx) => (
-                <MenubarItem key={idx} onClick={() => commandContext.execute(SetInstanceTrack, { trackIdx: idx })}>
-                  {track.name} {idx < 9 && <MenubarShortcut>{modKey}+{idx + 1}</MenubarShortcut>}
-                </MenubarItem>
-              ))}
+              {/* Bounded, scrollable so projects with many tracks don't overflow
+                  the screen (the sub-content itself is overflow-hidden). */}
+              <div className="max-h-[60vh] overflow-y-auto">
+                {labels.tracks.map((track, idx) => (
+                  <MenubarItem key={idx} onClick={() => commandContext.execute(SetInstanceTrack, { trackIdx: idx })}>
+                    {track.name} {idx < 9 && <MenubarShortcut>{modKey}+{idx + 1}</MenubarShortcut>}
+                  </MenubarItem>
+                ))}
+              </div>
             </MenubarSubContent>
           </MenubarSub>
         )}
@@ -990,17 +1035,21 @@ function TracksMenu() {
           <MenubarSub>
             <MenubarSubTrigger disabled={!projectLoaded}>Delete Track</MenubarSubTrigger>
             <MenubarSubContent>
-              {labels.tracks.map((track, idx) => (
-                <MenubarItem
-                  key={idx}
-                  onClick={() => {
-                    if (confirm(`Delete track "${track.name}"?`))
-                      commandContext.execute(DeleteTrack, { trackIdx: idx });
-                  }}
-                >
-                  {track.name}
-                </MenubarItem>
-              ))}
+              {/* Bounded, scrollable so projects with many tracks don't overflow
+                  the screen (the sub-content itself is overflow-hidden). */}
+              <div className="max-h-[60vh] overflow-y-auto">
+                {labels.tracks.map((track, idx) => (
+                  <MenubarItem
+                    key={idx}
+                    onClick={() => {
+                      if (confirm(`Delete track "${track.name}"?`))
+                        commandContext.execute(DeleteTrack, { trackIdx: idx });
+                    }}
+                  >
+                    {track.name}
+                  </MenubarItem>
+                ))}
+              </div>
             </MenubarSubContent>
           </MenubarSub>
         )}
@@ -1022,6 +1071,38 @@ function TracksMenu() {
         >
           Delete All Tracks
         </MenubarItem>
+        <MenubarSeparator />
+        {/* Seekbar Header graph picker (PyQt: Tracks → Seekbar Header). Two-way
+            synced with the picker button next to the scrubbar — both read/write
+            the same `seekbarHeaderGraph` store field. min/max stay on that
+            button's reduction selector, so only base graphs are listed here. */}
+        <MenubarSub>
+          <MenubarSubTrigger disabled={!projectLoaded}>
+            Seekbar Header
+          </MenubarSubTrigger>
+          <MenubarSubContent>
+            <MenubarRadioGroup
+              value={seekbarHeaderGraph}
+              onValueChange={(val) => {
+                const next = val as StatisticGraphType;
+                const store = useAppStore.getState();
+                store.set("seekbarHeaderGraph", next);
+                const r = reconcileReduction(
+                  next,
+                  store.seekbarHeaderReduction as Reduction,
+                );
+                if (r !== store.seekbarHeaderReduction)
+                  store.set("seekbarHeaderReduction", r);
+              }}
+            >
+              {GRAPH_SPECS.map((spec) => (
+                <MenubarRadioItem key={spec.type} value={spec.type}>
+                  {spec.label}
+                </MenubarRadioItem>
+              ))}
+            </MenubarRadioGroup>
+          </MenubarSubContent>
+        </MenubarSub>
       </MenubarContent>
     </MenubarMenu>
   );

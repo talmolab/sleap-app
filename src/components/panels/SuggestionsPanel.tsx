@@ -5,7 +5,7 @@
  * score display, and configurable generation methods.
  */
 
-import { useState, useMemo, useReducer, useRef } from "react";
+import { useState, useMemo, useReducer, useRef, useEffect } from "react";
 import { useAppStore } from "../../stores/appStore";
 import { commandContext } from "../../commands/CommandContext";
 import { GoNextSuggestion, GoPrevSuggestion } from "../../commands/navCommands";
@@ -182,6 +182,7 @@ export function SuggestionsPanel({
   const setRoiDrawActive = useAppStore((s) => s.setImageFeatureRoiDrawActive);
   const setImageFeatureRoi = useAppStore((s) => s.setImageFeatureRoi);
   const imageFeatureRois = useAppStore((s) => s.imageFeatureRois);
+  const resetImageFeatureRoi = useAppStore((s) => s.resetImageFeatureRoi);
   // THE "underlying labels/instances changed" signal (bumped on canvas label
   // edits). Subscribing here re-renders the panel when frames are labeled
   // elsewhere; see Seekbar.tsx for the same pattern.
@@ -189,6 +190,25 @@ export function SuggestionsPanel({
 
   // --- Generation method + per-method params (PyQt defaults) ---
   const [method, setMethod] = useState<GenerationMethod>(initialMethod);
+
+  // The Image Features "Set region" tool (the canvas ROI-draw crosshair + the
+  // drawn region) is only meaningful while the Image Features method is on
+  // screen. It lives in GLOBAL store state shared with the canvas — VideoPlayer
+  // gates drag-capture on imageFeatureRoiDrawActive — so unless it is actively
+  // torn down it leaks: the canvas keeps hijacking drags into ROI mode on every
+  // tab. Reset it (exit draw-mode AND drop the transient region) whenever the
+  // active method isn't image_features, and on unmount (panel closed / collapsed
+  // / hidden, or — single-panel mode — switched away). This also covers "Allow
+  // Multiple Panels", where the panel never unmounts: a method change fires the
+  // first effect, so the reset doesn't depend on unmount.
+  useEffect(() => {
+    if (method !== "image_features") resetImageFeatureRoi();
+  }, [method, resetImageFeatureRoi]);
+  useEffect(() => {
+    return () => {
+      resetImageFeatureRoi();
+    };
+  }, [resetImageFeatureRoi]);
   // stride/random per-video count.
   const [perVideo, setPerVideo] = useState(20);
   // frame_chunk bounds (1-based).

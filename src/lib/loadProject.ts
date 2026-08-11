@@ -19,8 +19,16 @@ import {
   type CocoJson,
   type ReadCocoOptions,
   type Labels,
+  type DlcFileSystem,
 } from "@talmolab/sleap-io.js";
 import { useAppStore } from "../stores/appStore";
+import {
+  buildDlcLabels,
+  dlcProjectPathHint,
+  enumerateBrowserDlcDir,
+  enumerateTauriDlcDir,
+  joinPosix,
+} from "./dlcFileSystem";
 import { consumeLastBrowserFileHandle } from "../platform/index";
 import { toast } from "@/lib/notify";
 import { confirmDiscardUnsavedWork } from "./unsavedGuard";
@@ -126,7 +134,7 @@ async function openFirstLabeledFrame(labels: Labels): Promise<void> {
  * `@tauri-apps/api/core` import fails there (e.g. under the unit-test runner)
  * and is swallowed, leaving whatever image reader the browser build uses.
  */
-async function installTauriImageReader(): Promise<void> {
+export async function installTauriImageReader(): Promise<void> {
   try {
     const { invoke } = await import("@tauri-apps/api/core");
     const nativeReadImage = async (p: string): Promise<Uint8Array> => {
@@ -538,4 +546,128 @@ export async function loadCocoProjectFromPath(
   } finally {
     store.setLoading(false);
   }
+}
+
+/** Optional image/video resolution wiring for a DLC import (per runtime). */
+interface DlcResolve {
+  exists?: (path: string) => Promise<boolean>;
+  readFile?: (path: string) => Promise<Uint8Array>;
+  /** Installs the runtime's image-bytes reader before video resolution. */
+  installImageReader?: () => Promise<void> | void;
+}
+
+/**
+ * Core DLC import: build `Labels` from an already-enumerated {@link DlcFileSystem}
+ * tree, resolve the image-sequence video(s), and install into the store like
+ * opening a project. `mode` picks single-dataset vs merge-every-subdir-folder;
+ * `resolve` supplies the runtime's `exists`/`readFile`/image reader (omit for
+ * the annotations-only path exercised under the unit-test runner).
+ */
+export async function loadDlcFromFileSystem(
+  fs: DlcFileSystem,
+  root: string,
+  mode: "single" | "folder",
+  displayName: string,
+  resolve?: DlcResolve,
+  opts?: { entryFile?: string }
+): Promise<boolean> {
+  const store = useAppStore.getState();
+
+  if (!confirmDiscardUnsavedWork("Importing a file")) return false;
+
+  store.setLoading(true, `Reading ${displayName}...`);
+
+  try {
+    store.setLoading(true, `Parsing ${displayName}...`);
+    const labels = await buildDlcLabels(fs, root, mode, opts?.entryFile);
+
+    store.setLoading(true, "Locating videos...");
+    if (resolve?.installImageReader) await resolve.installImageReader();
+    if (resolve?.exists) {
+      await resolveExternalVideos(labels, {
+        projectPath: dlcProjectPathHint(fs, root),
+        exists: resolve.exists,
+        readFile:
+          resolve.readFile ??
+          (async () => {
+            throw new Error("readFile not available");
+          }),
+      });
+    } else {
+      await resolveExternalVideos(labels);
+    }
+
+    store.setLabels(labels, displayName);
+    await openFirstLabeledFrame(labels);
+    toast.success(`Imported ${displayName}`, {
+      description: `${labels.videos.length} video(s), ${labels.labeledFrames.length} labeled frames`,
+    });
+    return true;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    toast.error("Failed to import DeepLabCut dataset", { description: msg });
+    console.error("Failed to import DeepLabCut dataset:", err);
+    return false;
+  } finally {
+    store.setLoading(false);
+  }
+}
+
+/**
+ * Import DLC from a browser directory handle (File System Access API). Enumerates
+ * the picked folder, installs an image reader backed by the retained `File`
+ * handles (so frames render), and resolves the image-sequence video against the
+ * in-memory tree.
+ */
+export async function loadDlcFromBrowserDir(
+  dirHandle: unknown,
+  mode: "single" | "folder"
+): Promise<boolean> {
+  const tree = await enumerateBrowserDlcDir(
+    dirHandle as Parameters<typeof enumerateBrowserDlcDir>[0]
+  );
+  const { fileByPath } = tree;
+  return loadDlcFromFileSystem(tree.fs, tree.root, mode, tree.root, {
+    exists: async (p) => tree.fs.exists(p),
+    readFile: async (p) => {
+      const file = fileByPath.get(p);
+      if (!file) throw new Error(`Not found: ${p}`);
+      return new Uint8Array(await file.arrayBuffer());
+    },
+    installImageReader: () => {
+      setImageBytesReader(async (p: string) => {
+        const file = fileByPath.get(p);
+        if (!file) throw new Error(`Image not found: ${p}`);
+        return new Uint8Array(await file.arrayBuffer());
+      });
+    },
+  });
+}
+
+/**
+ * Import DLC from a directory path on disk (Tauri). Enumerates via the fs plugin,
+ * installs the native image reader, and resolves image-sequence frames against
+ * the real filesystem — exactly like opening an SLP whose video is an image
+ * sequence.
+ */
+export async function loadDlcFromTauriDir(
+  rootDir: string,
+  mode: "single" | "folder",
+  readFile: (path: string) => Promise<Uint8Array>,
+  exists: (path: string) => Promise<boolean>,
+  entryFile?: string
+): Promise<boolean> {
+  const tree = await enumerateTauriDlcDir(rootDir);
+  const displayName = (entryFile ?? rootDir).split(/[\\/]/).pop() || rootDir;
+  installTauriFsResolver(exists);
+  return loadDlcFromFileSystem(
+    tree.fs,
+    tree.root,
+    mode,
+    displayName,
+    { exists, readFile, installImageReader: installTauriImageReader },
+    // Normalize the picked path to the same POSIX form the enumerator keys the
+    // in-memory tree by (matters on Windows, where the native path uses `\`).
+    { entryFile: entryFile ? joinPosix(entryFile) : undefined }
+  );
 }

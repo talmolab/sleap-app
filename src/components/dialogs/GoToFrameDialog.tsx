@@ -25,6 +25,7 @@ export function GoToFrameDialog() {
   const setFrameIdx = useAppStore((s) => s.setFrameIdx);
 
   const [value, setValue] = useState("");
+  const [error, setError] = useState<string | null>(null);
 
   const totalFrames = video?.shape?.[0] ?? null;
   const maxFrame = totalFrames !== null ? totalFrames - 1 : null;
@@ -33,6 +34,7 @@ export function GoToFrameDialog() {
     (newOpen: boolean) => {
       if (newOpen) {
         setValue(String(frameIdx));
+        setError(null);
       }
       setOpen(newOpen);
     },
@@ -41,11 +43,20 @@ export function GoToFrameDialog() {
 
   const handleSubmit = useCallback(() => {
     const frame = parseInt(value, 10);
-    if (!isNaN(frame) && frame >= 0) {
-      setFrameIdx(frame);
-      setOpen(false);
+    // Warn on anything outside [0, maxFrame] (or non-numeric) and keep the
+    // dialog open so the user can correct it, rather than silently clamping.
+    if (isNaN(frame) || frame < 0 || (maxFrame !== null && frame > maxFrame)) {
+      setError(
+        maxFrame !== null
+          ? `Enter a frame between 0 and ${maxFrame}.`
+          : "Enter a frame number of 0 or greater."
+      );
+      return;
     }
-  }, [value, setFrameIdx, setOpen]);
+    setError(null);
+    setFrameIdx(frame);
+    setOpen(false);
+  }, [value, maxFrame, setFrameIdx, setOpen]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -69,16 +80,21 @@ export function GoToFrameDialog() {
             min={0}
             max={maxFrame ?? undefined}
             value={value}
-            onChange={(e) => setValue(e.target.value)}
+            onChange={(e) => {
+              setValue(e.target.value);
+              setError(null);
+            }}
             onKeyDown={handleKeyDown}
             placeholder={`Frame number (0${maxFrame !== null ? `-${maxFrame}` : ""})`}
             autoFocus
           />
-          {maxFrame !== null && (
+          {error ? (
+            <p className="text-xs text-destructive mt-1">{error}</p>
+          ) : maxFrame !== null ? (
             <p className="text-xs text-muted-foreground mt-1">
               Valid range: 0 to {maxFrame}
             </p>
-          )}
+          ) : null}
         </div>
         <DialogFooter>
           <Button variant="ghost" onClick={() => setOpen(false)}>

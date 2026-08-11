@@ -12,7 +12,12 @@
   },
   // `include` overrides (does not merge with) the parent's ["src"], so ambient
   // declaration files under src/ are not auto-loaded here. Explicitly include
-  // src/globals.d.ts so build-time globals (e.g. __APP_VERSION__, used by
-  // src/hooks/useWindowTitle.ts which the tests import) resolve.
-  "include": ["tests", "tests/**/*", "src/globals.d.ts"]
+  // the ones tests transitively rely on:
+  //   - src/globals.d.ts: build-time globals (e.g. __APP_VERSION__, used by
+  //     src/hooks/useWindowTitle.ts which the tests import).
+  //   - src/tinykeys.d.ts: the ambient `declare module "tinykeys"` typing used
+  //     by src/hooks/useKeyboardShortcuts.ts; without it, tests that import the
+  //     shortcuts hook see `tinykeys` as `any` (implicit-any errors on every
+  //     handler), even though the app build resolves it via `include: ["src"]`.
+  "include": ["tests", "tests/**/*", "src/globals.d.ts", "src/tinykeys.d.ts"]
 }

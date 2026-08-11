@@ -61,6 +61,7 @@ const CATEGORIES: Record<string, string[]> = {
   Editing: [
     "add instance",
     "delete instance",
+    "accept all predictions",
     "copy instance",
     "paste instance",
   ],
@@ -71,6 +72,7 @@ const CATEGORIES: Record<string, string[]> = {
     "copy track",
     "paste track",
   ],
+  Notifications: ["dismiss all toasts"],
 };
 
 export function ShortcutsDialog({ open, onOpenChange }: ShortcutsDialogProps) {

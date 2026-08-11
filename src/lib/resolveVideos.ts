@@ -156,6 +156,67 @@ async function applyImageSequenceLocation(
 }
 
 /**
+ * Surgically relocate a resolved ImageVideo's KNOWN-missing frames against a
+ * user-picked folder, WITHOUT re-probing the frames that already resolved. Only
+ * the `missingIdx` frames are probed (via {@link resolveImageFramesInFolder} on
+ * that subset); found frames keep their working paths untouched. Rewrites just
+ * the located frames' paths and rebuilds the backend (I/O-free — shape is known).
+ *
+ * Returns the frame indices actually located plus the winning head-swap (for
+ * optional persistence). Companion to the "Frame image not found" placeholder
+ * (see VideoPlayer): the user locates one missing frame's folder and the same
+ * folder is tried for the OTHER frames they've already found missing — the
+ * deliberate opposite of the load-time full-sequence sweep.
+ */
+export async function relocateMissingImageFrames(
+  video: Video,
+  missingIdx: number[],
+  folder: string,
+  exists: (path: string) => Promise<boolean>
+): Promise<{
+  located: number[];
+  swap: { oldPrefix: string; newPrefix: string } | null;
+}> {
+  const frames = Array.isArray(video.filename)
+    ? [...video.filename]
+    : [video.filename];
+  const subset = missingIdx
+    .filter((i) => typeof frames[i] === "string")
+    .map((i) => ({ i, stored: frames[i] as string }));
+  if (subset.length === 0) return { located: [], swap: null };
+
+  // Probe ONLY the known-missing subset against the picked folder.
+  const { located, missing } = await resolveImageFramesInFolder(
+    subset.map((e) => e.stored),
+    folder,
+    exists
+  );
+  const notFound = new Set(missing);
+  const fixedIdx: number[] = [];
+  let swap: { oldPrefix: string; newPrefix: string } | null = null;
+  for (let k = 0; k < subset.length; k++) {
+    const { i, stored } = subset[k];
+    if (notFound.has(stored)) continue; // not in this folder either — leave it
+    frames[i] = located[k];
+    fixedIdx.push(i);
+    swap ??= computePrefixSwap(stored, located[k]);
+  }
+  if (fixedIdx.length === 0) return { located: [], swap: null };
+
+  const meta = video.backendMetadata as Record<string, unknown>;
+  if (meta.sourceFilename === undefined) {
+    meta.sourceFilename = Array.isArray(video.filename)
+      ? video.filename[0] ?? ""
+      : video.filename;
+  }
+  video.filename = frames;
+  video.backend = await createVideoBackend(frames, {
+    shape: video.shape ?? undefined,
+  });
+  return { located: fixedIdx, swap };
+}
+
+/**
  * Locate a missing image-sequence (ImageVideo) by pointing it at a user-picked
  * folder. Re-resolves each stored frame under `folder` (positions preserved),
  * rewrites `video.filename`, and rebuilds the backend. Tauri-only — the browser
@@ -211,11 +272,24 @@ export async function resolveImageSequenceVideo(
  * Auto-locate a missing image-sequence at load time by grafting its (often
  * relative) frame paths onto the project directory AND its ancestors — the
  * image-sequence analogue of the single-file candidate walk in
- * {@link getVideoPathCandidates}. A cheap FIRST-frame probe picks the directory
- * before the full per-frame existence pass, so directories that don't hold the
- * media cost one probe, not one per frame. Silent (no toasts). Tauri-only.
- * Returns true if the backend built. On failure the video is left for the
- * manual "Locate folder" flow.
+ * {@link getVideoPathCandidates}.
+ *
+ * Resolution is driven by the FIRST frame only: a cheap probe locates where
+ * frame 0 lands under each candidate directory, then the single head-swap that
+ * carried its stored path to its located path is applied to EVERY frame WITHOUT
+ * probing each one (mirrors io's `resolveVideoSource` + the single-file
+ * candidate walk). A uniform sequence — all frames in one folder, the normal
+ * case for a `.slp` ImageVideo — needs no more than this. The previous
+ * implementation ran a full per-frame existence pass here, which on a network
+ * mount cost one `exists()` round-trip PER FRAME (tens of thousands of probes
+ * for a large sequence; the dominant cost of opening such a project).
+ *
+ * Individual frames that don't follow the head-swap (a genuinely-missing file,
+ * or a rare mixed-depth sequence) keep their stored path and surface as a blank
+ * placeholder when navigated to — discovered lazily at view time, not by an
+ * eager load-time sweep. Silent (no toasts). Tauri-only. Returns true if the
+ * backend built. On failure the video is left for the manual "Locate folder"
+ * flow.
  */
 async function autoLocateImageSequence(
   video: Video,
@@ -231,9 +305,19 @@ async function autoLocateImageSequence(
   let dir = projectPath.substring(0, projectPath.lastIndexOf(sep));
 
   for (let i = 0; i <= MAX_ANCESTOR_WALK && dir; i++) {
+    // Cheap FIRST-frame probe: find where frame 0 lands under this directory.
     const probe = await resolveImageFramesInFolder([frames[0]], dir, exists);
     if (probe.missing.length === 0) {
-      const { located } = await resolveImageFramesInFolder(frames, dir, exists);
+      // Derive the head-swap (stored → located for frame 0) and apply it to the
+      // whole list — no per-frame probing. A null swap means frame 0 already
+      // resolved at its stored path (e.g. a still-valid absolute path); keep the
+      // stored paths verbatim. Frames that don't match the swap fall back to
+      // their stored path (located lazily at view time, else blank).
+      const located0 = probe.located[0] ?? frames[0];
+      const swap = computePrefixSwap(frames[0], located0);
+      const located = swap
+        ? frames.map((f) => applyPrefixSwap(f, swap.oldPrefix, swap.newPrefix) ?? f)
+        : frames.slice();
       try {
         await applyImageSequenceLocation(video, located);
         return true;

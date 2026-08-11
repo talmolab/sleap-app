@@ -3,8 +3,10 @@
  *
  * A compact New/Open panel anchored bottom-center over the background imagery.
  * The whole screen is a drag-drop target for .slp files. When recoverable labels
- * drafts exist (browser large-pkg fast-save, resume-after-close), a "Restore
- * unsaved work?" card lists them above the New/Open panel.
+ * drafts exist, a "Restore unsaved work?" card lists them above the New/Open
+ * panel — a single in-app recovery surface for BOTH runtimes (browser OPFS fast-
+ * save + desktop on-disk crash draft). Recovery is always a USER click here, never
+ * an automatic pop-up, so it can't double-fire and is trivially escapable.
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -13,10 +15,9 @@ import { useAppStore } from "../../stores/appStore";
 import { Button } from "@/components/ui/button";
 import { Plus, FolderOpen } from "lucide-react";
 import {
-  listDraftEntries,
-  type DraftManifestEntry,
-} from "@/lib/draftManifest";
-import { restoreDraft, discardDraft } from "@/lib/draftRestore";
+  loadRecoverableDrafts,
+  type RecoverableDraft,
+} from "@/lib/recoverableDrafts";
 
 /** Compact "saved N ago" for the restore list. */
 function timeAgo(ms: number): string {
@@ -32,17 +33,21 @@ function timeAgo(ms: number): string {
 
 export function WelcomeScreen() {
   const { openProject, openFromDrop, loading, error } = useFileIO();
-  const [drafts, setDrafts] = useState<DraftManifestEntry[]>([]);
+  const [drafts, setDrafts] = useState<RecoverableDraft[]>([]);
+  // Which draft (if any) is mid "discard — are you sure?". An in-app inline
+  // confirm (keyed by draft path) that replaces the old window.confirm.
+  const [confirmingKey, setConfirmingKey] = useState<string | null>(null);
 
-  // Discover recoverable drafts on mount (origin-shared across tabs).
+  // Discover recoverable drafts on mount — both runtimes (browser OPFS + desktop
+  // disk), normalized. Idempotent (a StrictMode double-invoke just re-lists).
   useEffect(() => {
     let alive = true;
-    listDraftEntries()
+    loadRecoverableDrafts()
       .then((entries) => {
         if (alive) setDrafts(entries);
       })
       .catch(() => {
-        /* IndexedDB unavailable (e.g. private mode) — no drafts to offer */
+        /* discovery unavailable (e.g. private mode) — nothing to offer */
       });
     return () => {
       alive = false;
@@ -65,16 +70,10 @@ export function WelcomeScreen() {
     e.dataTransfer.dropEffect = "copy";
   }, []);
 
-  const onDiscard = useCallback(async (entry: DraftManifestEntry) => {
-    if (
-      !window.confirm(
-        `Discard the unsaved work for "${entry.displayName}"? This can't be undone.`
-      )
-    ) {
-      return;
-    }
-    await discardDraft(entry);
-    setDrafts((ds) => ds.filter((d) => d.draftPath !== entry.draftPath));
+  const onConfirmDiscard = useCallback(async (entry: RecoverableDraft) => {
+    await entry.discard();
+    setDrafts((ds) => ds.filter((d) => d.key !== entry.key));
+    setConfirmingKey(null);
   }, []);
 
   return (
@@ -97,14 +96,14 @@ export function WelcomeScreen() {
           </div>
         )}
 
-        {/* Resume-after-close: recoverable browser labels drafts. */}
+        {/* Resume-after-close: recoverable labels drafts (browser OPFS + desktop). */}
         {drafts.length > 0 && (
           <div className="w-full max-w-md rounded-xl border border-border bg-card/95 backdrop-blur-sm px-4 py-3 shadow-lg">
             <div className="text-sm font-medium mb-2">Restore unsaved work?</div>
             <ul className="flex flex-col gap-2">
               {drafts.map((d) => (
                 <li
-                  key={d.draftPath}
+                  key={d.key}
                   className="flex items-center justify-between gap-3"
                 >
                   <div className="min-w-0">
@@ -116,20 +115,44 @@ export function WelcomeScreen() {
                     </div>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
-                    <Button
-                      size="sm"
-                      disabled={loading}
-                      onClick={() => void restoreDraft(d)}
-                    >
-                      Restore
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => void onDiscard(d)}
-                    >
-                      Discard
-                    </Button>
+                    {confirmingKey === d.key ? (
+                      <>
+                        <span className="text-xs text-muted-foreground">
+                          Discard permanently?
+                        </span>
+                        <Button
+                          size="sm"
+                          variant="destructive"
+                          onClick={() => void onConfirmDiscard(d)}
+                        >
+                          Discard
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => setConfirmingKey(null)}
+                        >
+                          Cancel
+                        </Button>
+                      </>
+                    ) : (
+                      <>
+                        <Button
+                          size="sm"
+                          disabled={loading}
+                          onClick={() => void d.restore()}
+                        >
+                          Restore
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => setConfirmingKey(d.key)}
+                        >
+                          Discard
+                        </Button>
+                      </>
+                    )}
                   </div>
                 </li>
               ))}

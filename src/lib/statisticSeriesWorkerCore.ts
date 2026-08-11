@@ -123,6 +123,8 @@ function primaryPointDisplacement(
   primaryNodeIdx: number,
 ): [number, number][] {
   const entries: [number, number][] = [];
+  // Untracked data → all-zero displacement; return empty so nothing is drawn
+  // (the renderer also skips all-zero). See statisticSeries.ts.
   if (trackCount === 0) return entries;
 
   let lastFrameIdx = 0;

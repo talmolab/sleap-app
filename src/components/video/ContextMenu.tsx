@@ -27,6 +27,8 @@ import type { InstancePlacementMethod } from "../../types";
 interface ContextMenuProps {
   x: number;
   y: number;
+  /** Scene/frame coordinates of the click that opened this menu. */
+  sceneLocation: [number, number];
   instanceIdx: number | null;
   nodeIdx: number | null;
   selectedNodes?: Set<string>;
@@ -37,6 +39,7 @@ interface ContextMenuProps {
 export function ContextMenu({
   x,
   y,
+  sceneLocation,
   nodeIdx,
   selectedNodes,
   onToggleSelectedNodesVisibility,
@@ -98,7 +101,7 @@ export function ContextMenu({
     const store = useAppStore.getState();
     const saved = store.instanceInitMethod;
     store.set("instanceInitMethod", method);
-    exec(AddInstance);
+    exec(AddInstance, { location: sceneLocation });
     store.set("instanceInitMethod", saved);
   };
 

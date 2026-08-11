@@ -44,15 +44,16 @@ export const DEFAULT_SHORTCUTS: Record<string, string> = {
   // Labels
   "add instance": "$mod+KeyI",
   "delete instance": "$mod+Backspace",
+  "accept all predictions": "$mod+Shift+KeyA",
 
   // View
   fit: "$mod+Equal",
   "reset view": "KeyR",
   "show instances": "KeyH",
-  "show labels": "$mod+Tab",
+  "show labels": "KeyT",
   "show edges": "$mod+Shift+Tab",
   "toggle node visibility": "KeyV",
-  "toggle pan mode": "KeyM",
+  "toggle pan mode": "KeyP",
   "toggle place mode": "KeyN",
 
   // Tracks
@@ -85,6 +86,9 @@ export const DEFAULT_SHORTCUTS: Record<string, string> = {
   // Color
   "color predicted": "",
   "show trails": "",
+
+  // Notifications
+  "dismiss all toasts": "$mod+Shift+KeyD",
 };
 
 /** Frame step sizes for keyboard navigation. */

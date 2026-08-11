@@ -10,8 +10,10 @@
  * these helpers cover in-app New/Open/Import.)
  */
 import { useAppStore, type AppState } from "@/stores/appStore";
+import { isTauri } from "@/lib/platform";
 import { removeLabelsDraft } from "@/lib/labelsDraft";
 import { deleteDraftEntry } from "@/lib/draftManifest";
+import { removeTauriDraft } from "@/lib/tauriDraft";
 
 /** True when replacing the project would lose work: in-memory edits, or a labels
  *  draft saved locally but not yet exported/compiled to disk. Pure. */
@@ -51,8 +53,14 @@ export function confirmDiscardUnsavedWork(verb: string): boolean {
   if (!proceed) return false;
   const draft = store.labelsDraftPath;
   if (draft) {
-    void removeLabelsDraft(draft);
-    void deleteDraftEntry(draft);
+    if (isTauri) {
+      // Desktop: the draft is a disk file + a JSON-manifest entry.
+      void removeTauriDraft(draft);
+    } else {
+      // Browser: the draft is an OPFS file + an IndexedDB manifest entry.
+      void removeLabelsDraft(draft);
+      void deleteDraftEntry(draft);
+    }
   }
   return true;
 }

@@ -90,7 +90,7 @@ Use this to track which PyQt features have been ported to sleap-app.
 - [x] Run Training...
 - [x] Run Inference...
 - [ ] Evaluation Metrics for Trained Models...
-- [ ] Export Labels Package (3 levels: labeled, labeled+suggested, all)
+- [x] Export Labels Package (3 levels: labeled, labeled+suggested, all) — embedded-image `.pkg.slp` via `saveSlpToBytes({ embed })`. NOTE: io only embeds frames from already-embedded sources; continuous/mp4 sources are not yet embedded (io returns `ImageBitmap`; needs rasterize+encode in sleap-io.js).
 - [ ] Train on Google Colab...
 
 ### Analyze Menu
@@ -292,4 +292,4 @@ These exist in sleap-app but NOT in PyQt:
 - [x] Toast notifications
 - [x] Welcome screen
 - [x] Export JSON
-- [x] Export Labels Package dialog
+- [x] Export JSON Package dialog (self-contained JSON + video manifest; NOT the embedded-image `.pkg.slp` — that is the PyQt "Export Labels Package" above)

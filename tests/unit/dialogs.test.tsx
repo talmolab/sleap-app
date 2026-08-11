@@ -109,6 +109,50 @@ describe("Dialog components", () => {
 
       expect(screen.getByText("Valid range: 0 to 99")).toBeInTheDocument();
     });
+
+    it("warns and stays open when the frame is above the max", async () => {
+      const video = { filename: "test.mp4", shape: [100, 480, 640, 3], backend: null, source_video: null };
+      useAppStore.setState({
+        video: video as unknown as import("@/types").Video,
+        goToFrameDialogOpen: true,
+      });
+      const { GoToFrameDialog } = await import("@/components/dialogs/GoToFrameDialog");
+      render(<GoToFrameDialog />);
+      fireEvent.change(screen.getByRole("spinbutton"), { target: { value: "150" } });
+      fireEvent.click(screen.getByText("Go"));
+      // Warns, does NOT navigate, and keeps the dialog open to correct the value.
+      expect(screen.getByText(/between 0 and 99/i)).toBeInTheDocument();
+      expect(useAppStore.getState().goToFrameDialogOpen).toBe(true);
+      expect(useAppStore.getState().frameIdx).toBe(0);
+    });
+
+    it("warns on a negative frame", async () => {
+      const video = { filename: "test.mp4", shape: [100, 480, 640, 3], backend: null, source_video: null };
+      useAppStore.setState({
+        video: video as unknown as import("@/types").Video,
+        goToFrameDialogOpen: true,
+      });
+      const { GoToFrameDialog } = await import("@/components/dialogs/GoToFrameDialog");
+      render(<GoToFrameDialog />);
+      fireEvent.change(screen.getByRole("spinbutton"), { target: { value: "-5" } });
+      fireEvent.click(screen.getByText("Go"));
+      expect(screen.getByText(/between 0 and 99/i)).toBeInTheDocument();
+      expect(useAppStore.getState().goToFrameDialogOpen).toBe(true);
+    });
+
+    it("navigates and closes for an in-range frame", async () => {
+      const video = { filename: "test.mp4", shape: [100, 480, 640, 3], backend: null, source_video: null };
+      useAppStore.setState({
+        video: video as unknown as import("@/types").Video,
+        goToFrameDialogOpen: true,
+      });
+      const { GoToFrameDialog } = await import("@/components/dialogs/GoToFrameDialog");
+      render(<GoToFrameDialog />);
+      fireEvent.change(screen.getByRole("spinbutton"), { target: { value: "50" } });
+      fireEvent.click(screen.getByText("Go"));
+      expect(useAppStore.getState().goToFrameDialogOpen).toBe(false);
+      expect(useAppStore.getState().frameIdx).toBe(50);
+    });
   });
 
   describe("InferencePanel", () => {
@@ -308,7 +352,7 @@ describe("Dialog components", () => {
 
       expect(screen.getByText("Analysis CSV")).toBeInTheDocument();
       expect(screen.getByText("Save As JSON")).toBeInTheDocument();
-      expect(screen.getByText("Labels Package")).toBeInTheDocument();
+      expect(screen.getByText("JSON Package")).toBeInTheDocument();
     });
 
     it("returns null when no labels", async () => {

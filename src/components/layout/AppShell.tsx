@@ -39,9 +39,13 @@ import { NewProjectDialog } from "../dialogs/NewProjectDialog";
 import { SelectToFrameDialog } from "../dialogs/SelectToFrameDialog";
 import { DeletePredictionsDialog } from "../dialogs/DeletePredictionsDialog";
 import { ExportDialog } from "../dialogs/ExportDialog";
+import { ExportClipDialog } from "../dialogs/ExportClipDialog";
+import { ModelMetricsDialog } from "../dialogs/ModelMetricsDialog";
+import { ExportPackageDialog } from "../dialogs/ExportPackageDialog";
 import { ShortcutsDialog } from "../dialogs/ShortcutsDialog";
 import { HelpDialog } from "../dialogs/HelpDialog";
 import { useAppStore } from "../../stores/appStore";
+import { useTrainingStore } from "../../stores/trainingStore";
 import {
   PanelRightClose,
   PanelRightOpen,
@@ -131,6 +135,15 @@ export function AppShell() {
   );
   const exportDialogOpen = useAppStore((s) => s.exportDialogOpen);
   const setExportDialogOpen = useAppStore((s) => s.setExportDialogOpen);
+  const modelMetricsDialogOpen = useAppStore((s) => s.modelMetricsDialogOpen);
+  const setModelMetricsDialogOpen = useAppStore(
+    (s) => s.setModelMetricsDialogOpen
+  );
+  const modelOutputDirs = useTrainingStore((s) => s.modelOutputDirs);
+  const exportPackageDialogOpen = useAppStore((s) => s.exportPackageDialogOpen);
+  const setExportPackageDialogOpen = useAppStore(
+    (s) => s.setExportPackageDialogOpen
+  );
   const shortcutsDialogOpen = useAppStore((s) => s.shortcutsDialogOpen);
   const setShortcutsDialogOpen = useAppStore((s) => s.setShortcutsDialogOpen);
   const helpDialogOpen = useAppStore((s) => s.helpDialogOpen);
@@ -151,9 +164,10 @@ export function AppShell() {
     return () => window.removeEventListener("beforeunload", handler);
   }, []);
 
-  // EDL-style auto-save: for a browser large embedded pkg, persist the labels
-  // draft to OPFS a beat after edits settle (instant, silent). Small files /
-  // desktop are untouched (setupLabelsAutosave gates on eligibility).
+  // Auto-save the labels draft a beat after edits settle (instant, silent) —
+  // a crash-recovery net in BOTH runtimes: browser → OPFS, desktop → an
+  // app-local disk draft (see labelsAutosave.ts). setupLabelsAutosave gates on
+  // eligibility per runtime.
   useEffect(() => setupLabelsAutosave(), []);
 
   // Drag-and-drop to open a project is intentionally limited to the WelcomeScreen
@@ -231,6 +245,16 @@ export function AppShell() {
       <ExportDialog
         open={exportDialogOpen}
         onOpenChange={setExportDialogOpen}
+      />
+      <ExportClipDialog />
+      <ModelMetricsDialog
+        open={modelMetricsDialogOpen}
+        onOpenChange={setModelMetricsDialogOpen}
+        runDirs={modelOutputDirs}
+      />
+      <ExportPackageDialog
+        open={exportPackageDialogOpen}
+        onOpenChange={setExportPackageDialogOpen}
       />
       <ShortcutsDialog
         open={shortcutsDialogOpen}

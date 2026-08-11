@@ -35,15 +35,46 @@ async function forceQuit(): Promise<void> {
   }
 }
 
-/** Quit the app, prompting if there are unsaved changes. */
+/**
+ * Close ONLY this window — unless it's the last one, in which case quit the app.
+ * Uses `destroy()` (not `close()`) so it doesn't re-fire onCloseRequested and
+ * re-prompt after the user already confirmed. With multiple windows open,
+ * closing one must not tear down the whole process (each window is its own
+ * isolated project).
+ */
+async function closeThisWindow(): Promise<void> {
+  if (!isTauri) {
+    window.close();
+    return;
+  }
+  const { getCurrentWindow } = await import("@tauri-apps/api/window");
+  try {
+    const { getAllWebviewWindows } = await import("@tauri-apps/api/webviewWindow");
+    const all = await getAllWebviewWindows();
+    if (all.length <= 1) {
+      await forceQuit(); // last window → quit the process
+      return;
+    }
+  } catch (err) {
+    // Enumeration unavailable → fall through to destroying just this window; if
+    // it was the last one, Tauri exits the app by default anyway.
+    console.warn("[quit] window enumeration failed; closing this window:", err);
+  }
+  await getCurrentWindow().destroy();
+}
+
+/** Quit the WHOLE app, prompting if there are unsaved changes. */
 export async function quitApp(): Promise<void> {
   if (!(await confirmUnsaved())) return;
   await forceQuit();
 }
 
 /**
- * Listen for the native window close event (title bar X) and intercept
- * it to prompt for unsaved changes. Call once at app startup.
+ * Listen for the native window close event (title bar X) and intercept it to
+ * prompt for unsaved changes. Call once at app startup. Closing a window only
+ * closes THAT window (the app keeps running while other windows are open); the
+ * last window's close quits the app. The Rust `Destroyed` handler drops the
+ * window's entry from the open-file registry either way.
  */
 export async function setupCloseHandler(): Promise<void> {
   if (!isTauri) return;
@@ -52,11 +83,12 @@ export async function setupCloseHandler(): Promise<void> {
   const appWindow = getCurrentWindow();
 
   await appWindow.onCloseRequested(async (event) => {
-    if (hasUnsavedWork(useAppStore.getState())) {
-      event.preventDefault();
-      if (await confirmUnsaved()) {
-        await forceQuit();
-      }
+    // No unsaved work: let the default close proceed (Tauri closes just this
+    // window, or exits if it's the last one).
+    if (!hasUnsavedWork(useAppStore.getState())) return;
+    event.preventDefault();
+    if (await confirmUnsaved()) {
+      await closeThisWindow();
     }
   });
 }

@@ -41,6 +41,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { PredictedInstance } from "@talmolab/sleap-io.js";
+import { instanceNamedPoints } from "@/lib/instancePoints";
 import type { Instance, Labels } from "../../types";
 
 function isPredicted(instance: Instance): instance is PredictedInstance {
@@ -229,7 +230,10 @@ function InstanceDetailPanel({
   const visibleNodes = instance.nVisible;
   const totalNodes = instance.points.length;
   const score = predicted ? (instance as PredictedInstance).score : null;
+  // Copy payload stays the plain np.array([...]); the on-screen list below is a
+  // human-readable node-name view only (names never enter the clipboard).
   const pointsStr = formatPointsAsPython(instance);
+  const namedPoints = instanceNamedPoints(instance);
 
   const handleCopy = async () => {
     await navigator.clipboard.writeText(pointsStr);
@@ -255,8 +259,9 @@ function InstanceDetailPanel({
         <Button
           variant="ghost"
           size="icon"
-          className="absolute top-1 right-1 h-6 w-6"
+          className="absolute top-1 right-1 h-6 w-6 z-10"
           onClick={handleCopy}
+          title="Copy points as np.array"
         >
           {copied ? (
             <Check className="h-3 w-3" />
@@ -264,11 +269,31 @@ function InstanceDetailPanel({
             <Clipboard className="h-3 w-3" />
           )}
         </Button>
-        <ScrollArea className="max-h-32">
-          <pre className="text-[10px] leading-tight font-mono bg-muted/50 rounded p-2 pr-8">
-            {pointsStr}
-          </pre>
-        </ScrollArea>
+        {/* Readable named list (node name + coords). Must stay inside a
+            max-h + overflow-auto box so many-node skeletons scroll here rather
+            than pushing the Add/Delete/Accept buttons off-screen. */}
+        <div className="text-[10px] leading-tight font-mono bg-muted/50 rounded p-2 pr-8 max-h-32 overflow-auto">
+          {namedPoints.map((pt, i) => (
+            <div
+              key={i}
+              className="grid grid-cols-[1fr_auto] gap-x-3 whitespace-nowrap"
+            >
+              {/* Node name white; coords green when visible, "not visible" red
+                  — same red/green as the Frames tab (text-red-500/green-500). */}
+              <span className="text-foreground truncate">{pt.name}</span>
+              <span
+                className={cn(
+                  "tabular-nums text-right",
+                  pt.visible ? "text-green-500" : "text-red-500",
+                )}
+              >
+                {pt.visible
+                  ? `${pt.x.toFixed(1)}, ${pt.y.toFixed(1)}`
+                  : "not visible"}
+              </span>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -389,7 +414,7 @@ export function InstancesPanel() {
 
   return (
     <div className="flex flex-col h-full">
-      <ScrollArea className="flex-1">
+      <ScrollArea className="flex-1 min-h-0">
         {instances.length === 0 ? (
           <p className="text-xs text-muted-foreground p-2">
             No instances on this frame.

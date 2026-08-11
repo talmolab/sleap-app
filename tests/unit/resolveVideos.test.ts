@@ -25,6 +25,7 @@ import {
   collectHandlesByBasename,
   resolveAllVideosFromFolder,
   isImageSequenceVideo,
+  relocateMissingImageFrames,
 } from "@/lib/resolveVideos";
 import { useAppStore } from "@/stores/appStore";
 
@@ -398,6 +399,136 @@ describe("resolveExternalVideos (image sequences)", () => {
 
     expect(video.backend).not.toBeNull();
     expect(isVideoMissing(video)).toBe(false);
+  });
+
+  it("resolves a large ABSOLUTE-path sequence from ONE probe (no per-frame sweep)", async () => {
+    // Regression: a 1000-frame sequence whose stored absolute paths are still
+    // valid (mounted volume) must resolve WITHOUT one exists() per frame — that
+    // per-frame sweep was ~one network round-trip per frame (the dominant cost
+    // of opening such a project). The first-frame probe + prefix-swap does it.
+    setImageBytesReader(async () => new Uint8Array([0]));
+    const N = 1000;
+    const paths = Array.from({ length: N }, (_, i) => `/vol/seq/img_${i}.jpg`);
+    const video = missingImageSeq(paths);
+    const labels = new Labels();
+    labels.addVideo(video);
+
+    const present = new Set(paths); // only the verbatim absolute paths exist
+    let existsCalls = 0;
+    await resolveExternalVideos(labels, {
+      projectPath: "/proj/dir/labels.slp",
+      exists: async (p) => {
+        existsCalls++;
+        return present.has(p);
+      },
+      readFile: async () => new Uint8Array(),
+    });
+
+    expect(isVideoMissing(video)).toBe(false);
+    // Frame paths kept verbatim (already valid); all N present.
+    expect(video.filename).toEqual(paths);
+    // Bounded probe count — a small constant, NOT one per frame (would be ~1000).
+    expect(existsCalls).toBeLessThan(30);
+  });
+
+  it("grafts a large RELATIVE sequence beside the .slp from ONE probe (#216 intent, bounded)", async () => {
+    // #216's target: frames stored RELATIVE, images sitting beside the .slp. The
+    // located folder is found from the first frame, then the same prefix-swap is
+    // applied to every frame — no per-frame probing.
+    setImageBytesReader(async () => new Uint8Array([0]));
+    const N = 800;
+    const rel = Array.from(
+      { length: N },
+      (_, i) => `frames/${String(i).padStart(4, "0")}.png`,
+    );
+    const video = missingImageSeq(rel);
+    const labels = new Labels();
+    labels.addVideo(video);
+
+    let existsCalls = 0;
+    await resolveExternalVideos(labels, {
+      projectPath: "/proj/dir/labels.slp",
+      exists: async (p) => {
+        existsCalls++;
+        return p.startsWith("/proj/dir/frames/");
+      },
+      readFile: async () => new Uint8Array(),
+    });
+
+    expect(isVideoMissing(video)).toBe(false);
+    expect(video.filename).toEqual(rel.map((f) => `/proj/dir/${f}`));
+    expect(existsCalls).toBeLessThan(30);
+  });
+});
+
+describe("relocateMissingImageFrames (surgical per-frame locate)", () => {
+  function resolvedSeq(paths: string[]): Video {
+    const v = new Video({ filename: paths, openBackend: false });
+    v.backend = { getFrame: async () => null } as never; // resolved (loader-built)
+    v.shape = [paths.length, 8, 8, 1];
+    return v;
+  }
+
+  it("relocates ONLY the known-missing frames, leaving found frames untouched", async () => {
+    setImageBytesReader(async () => new Uint8Array([0]));
+    const N = 10;
+    const paths = Array.from({ length: N }, (_, i) => `/vol/seq/img_${i}.jpg`);
+    const video = resolvedSeq(paths);
+
+    // Frames 3 and 7 were found missing at view time; the rest are fine.
+    const missingIdx = [3, 7];
+    // The picked backup folder holds only those two images.
+    const present = new Set(["/backup/seq/img_3.jpg", "/backup/seq/img_7.jpg"]);
+    const probed: string[] = [];
+    const exists = async (p: string) => {
+      probed.push(p);
+      return present.has(p);
+    };
+
+    const { located, swap } = await relocateMissingImageFrames(
+      video,
+      missingIdx,
+      "/backup/seq",
+      exists,
+    );
+
+    expect(located.slice().sort((a, b) => a - b)).toEqual([3, 7]);
+    // Missing frames repointed into the backup folder...
+    expect((video.filename as string[])[3]).toBe("/backup/seq/img_3.jpg");
+    expect((video.filename as string[])[7]).toBe("/backup/seq/img_7.jpg");
+    // ...found frames left exactly as they were.
+    expect((video.filename as string[])[0]).toBe("/vol/seq/img_0.jpg");
+    expect((video.filename as string[])[5]).toBe("/vol/seq/img_5.jpg");
+    // Derived head-swap returned for optional persistence (common suffix
+    // "seq/img_N.jpg" is preserved, so the swap is /vol -> /backup).
+    expect(swap).toEqual({ oldPrefix: "/vol", newPrefix: "/backup" });
+    // The found frames were NEVER probed — only the two known-missing ones.
+    const foundBasenames = [0, 1, 2, 4, 5, 6, 8, 9].map((i) => `img_${i}.jpg`);
+    expect(probed.some((p) => foundBasenames.some((b) => p.includes(b)))).toBe(
+      false,
+    );
+    // Backend rebuilt (I/O-free); video still resolved.
+    expect(video.backend).not.toBeNull();
+    expect(isVideoMissing(video)).toBe(false);
+  });
+
+  it("leaves the video unchanged when the picked folder lacks the images", async () => {
+    setImageBytesReader(async () => new Uint8Array([0]));
+    const paths = ["/vol/seq/a.jpg", "/vol/seq/b.jpg", "/vol/seq/c.jpg"];
+    const video = resolvedSeq(paths);
+    const before = video.backend;
+
+    const { located, swap } = await relocateMissingImageFrames(
+      video,
+      [1],
+      "/nope",
+      async () => false,
+    );
+
+    expect(located).toEqual([]);
+    expect(swap).toBeNull();
+    expect(video.filename).toEqual(paths);
+    expect(video.backend).toBe(before); // not rebuilt
   });
 });
 

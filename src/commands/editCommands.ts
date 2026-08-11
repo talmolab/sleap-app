@@ -13,18 +13,32 @@ import type { Command } from "./types";
 import type { CommandContext } from "./CommandContext";
 import { useAppStore } from "../stores/appStore";
 import { toast } from "@/lib/notify";
-import { placeInstance, findNearestPriorFrame } from "@/lib/instancePlacement";
+import {
+  placeInstance,
+  findNearestPriorFrame,
+  fillMissingPredictedNodes,
+  centerInstanceAt,
+} from "@/lib/instancePlacement";
 import {
   ensurePairedPoseInstances,
   poseSkeletonOf,
   relinkCentroids,
 } from "@/lib/activeLearning/centroidPairing";
 
-/** Create a new Instance on the current frame using the selected placement method. */
+/**
+ * Create a new Instance on the current frame using the selected placement
+ * method.
+ *
+ * Params:
+ *   location?: [number, number] - scene/frame coordinates to center the new
+ *     instance on (e.g. the right-click point that opened "Add Instance" in
+ *     the context menu). When omitted (menu bar / hotkey invocation), the
+ *     configured placement method's own default anchor is used unchanged.
+ */
 export const AddInstance: Command = {
   name: "AddInstance",
   topics: [UpdateTopic.Frame, UpdateTopic.Instance],
-  execute(ctx: CommandContext) {
+  execute(ctx: CommandContext, params?: Record<string, unknown>) {
     const { labels, video, frameIdx, skeleton } = ctx.state;
     if (!labels || !video || !skeleton) return;
 
@@ -51,8 +65,14 @@ export const AddInstance: Command = {
       skeleton,
       video,
       existingInstances,
-      priorFrame
+      priorFrame,
+      useAppStore.getState().visibleSceneRect
     );
+
+    const location = params?.location as [number, number] | undefined;
+    if (location) {
+      centerInstanceAt(instance, location);
+    }
 
     // Find or create the LabeledFrame for this video + frame
     let lf: LabeledFrame;
@@ -282,6 +302,25 @@ function clonePoints(points: Instance["points"]): Instance["points"] {
   }));
 }
 
+/**
+ * Clone a predicted instance's points for conversion to a user Instance,
+ * forcing `visible` to match sleap_io's canonical rule (`visible = !isNaN(x)`)
+ * rather than trusting the model's `visible` flag as-is. A model can emit
+ * `visible: true` for a keypoint it failed to place (`xy: [NaN, NaN]`); left
+ * uncorrected, the renderer tries to draw a filled marker at NaN and nothing
+ * appears at all, instead of the hollow "invisible node" marker it draws for
+ * genuinely non-visible points.
+ */
+function clonePredictedPoints(points: Instance["points"]): Instance["points"] {
+  return points.map((p) => ({
+    xy: [p.xy[0], p.xy[1]] as [number, number],
+    visible: !Number.isNaN(p.xy[0]),
+    complete: p.complete,
+    name: p.name,
+    score: p.score,
+  }));
+}
+
 /** Copy the selected instance's point data to the clipboard. */
 export const CopyInstance: Command = {
   name: "CopyInstance",
@@ -391,10 +430,11 @@ export const ConvertPredictionToInstance: Command = {
     // parity — sleap-io.js persists Instance.fromPredicted).
     const userInstance = new Instance({
       skeleton: predicted.skeleton,
-      points: clonePoints(predicted.points),
+      points: clonePredictedPoints(predicted.points),
       track: predicted.track,
       fromPredicted: predicted,
     });
+    fillMissingPredictedNodes(userInstance);
 
     // Replace the predicted instance with the user instance, carrying any
     // centroid back-link across the swap (it is by object identity).
@@ -450,10 +490,11 @@ export const AddInstancesFromAllPredictions: Command = {
       if (!(inst instanceof PredictedInstance)) return inst;
       const userInstance = new Instance({
         skeleton: inst.skeleton,
-        points: clonePoints(inst.points),
+        points: clonePredictedPoints(inst.points),
         track: inst.track,
         fromPredicted: inst,
       });
+      fillMissingPredictedNodes(userInstance);
       relinkCentroids(lf, inst, userInstance);
       if (!firstConverted) firstConverted = userInstance;
       return userInstance;
@@ -466,6 +507,64 @@ export const AddInstancesFromAllPredictions: Command = {
     toast.success(
       `Accepted ${predictedCount} prediction${predictedCount > 1 ? "s" : ""} as ` +
         `user instance${predictedCount > 1 ? "s" : ""}`
+    );
+  },
+};
+
+/**
+ * Accept ALL predicted instances across every labeled frame in the project
+ * (all videos, not just the current one) as user instances, in one action
+ * (PyQt "Accept All Predictions" — {@link AddInstancesFromAllPredictions}
+ * above is this app's per-current-frame analogue of PyQt's
+ * `AddUserInstancesFromPredictions`; this is the per-project analogue of
+ * `AddUserInstancesFromAllPredictions` in ../sleap/sleap/gui/commands.py).
+ *
+ * REPLACE-in-place per frame, same as the current-frame version above, for
+ * internal consistency — PyQt appends the new user instance alongside the
+ * prediction instead of replacing it; see that command's docstring for why
+ * this app doesn't.
+ */
+export const AddInstancesFromAllPredictionsInProject: Command = {
+  name: "AddInstancesFromAllPredictionsInProject",
+  topics: [UpdateTopic.Labels, UpdateTopic.Frame, UpdateTopic.Instance],
+  skipAutoSnapshot: true,
+  execute(ctx: CommandContext) {
+    const { labels } = ctx.state;
+    if (!labels) return;
+
+    const framesWithPredictions = labels.labeledFrames.filter((lf) =>
+      lf.instances.some((inst) => inst instanceof PredictedInstance)
+    );
+    if (framesWithPredictions.length === 0) {
+      toast.info("No predictions in this project to accept.");
+      return;
+    }
+
+    const snapshot = ctx.takeAllFramesSnapshot("AddInstancesFromAllPredictionsInProject");
+
+    let totalAccepted = 0;
+    for (const lf of framesWithPredictions) {
+      lf.instances = lf.instances.map((inst) => {
+        if (!(inst instanceof PredictedInstance)) return inst;
+        const userInstance = new Instance({
+          skeleton: inst.skeleton,
+          points: clonePredictedPoints(inst.points),
+          track: inst.track,
+          fromPredicted: inst,
+        });
+        fillMissingPredictedNodes(userInstance);
+        relinkCentroids(lf, inst, userInstance);
+        totalAccepted++;
+        return userInstance;
+      });
+    }
+
+    ctx.pushUndoSnapshot(snapshot);
+    ctx.state.markChanged();
+
+    toast.success(
+      `Accepted ${totalAccepted} prediction${totalAccepted > 1 ? "s" : ""} across ` +
+        `${framesWithPredictions.length} frame${framesWithPredictions.length > 1 ? "s" : ""}`
     );
   },
 };

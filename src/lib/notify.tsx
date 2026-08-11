@@ -83,3 +83,12 @@ export const toast: typeof sonnerToast = Object.assign(
     getToasts: sonnerToast.getToasts,
   },
 ) as typeof sonnerToast;
+
+/**
+ * Dismiss toasts. Called with a toast id it dismisses that toast; called with
+ * NO argument it dismisses ALL currently-stacked live on-screen toasts (this is
+ * sonner v2's built-in dismiss-all behaviour). This is the live-stack analogue
+ * of the NotificationsPanel "Clear" button, which only empties the persistent
+ * history buffer.
+ */
+export const dismiss = sonnerToast.dismiss;

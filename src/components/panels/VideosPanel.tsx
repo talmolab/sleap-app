@@ -29,9 +29,10 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { AlertTriangle, Clipboard, Check } from "lucide-react";
+import { AlertTriangle, Clipboard, Check, Search, X } from "lucide-react";
 import { useState } from "react";
 import type { Video } from "../../types";
+import { videoBasename, videoFilenameMatches } from "@/lib/videoFilter";
 import {
   isVideoMissing,
   isImageSequenceVideo,
@@ -55,13 +56,6 @@ import { nextSelectedVideo } from "../../lib/removeVideo";
 function truncateLeft(path: string, maxLen: number): string {
   if (path.length <= maxLen) return path;
   return "\u2026" + path.slice(path.length - maxLen + 1);
-}
-
-/** Extract just the basename from a file path. */
-function basename(path: string | string[]): string {
-  const p = Array.isArray(path) ? path[0] ?? "" : path;
-  const parts = p.split(/[\\/]/);
-  return parts[parts.length - 1] ?? p;
 }
 
 function VideoRow({
@@ -117,7 +111,7 @@ function VideoRow({
       >
         <span className="flex items-center gap-1">
           <span className={cn(isMissing && "text-muted-foreground")}>
-            {truncateLeft(basename(video.filename), 30)}
+            {truncateLeft(videoBasename(video.filename), 30)}
           </span>
           {isMissing &&
             (isImageSequence ? (
@@ -319,7 +313,15 @@ export function VideosPanel() {
   const bumpOverlayVersion = useAppStore((s) => s.bumpOverlayVersion);
   const markChanged = useAppStore((s) => s.markChanged);
 
+  // Filename search: case-insensitive substring match on each video's basename.
+  // Preserves each video's original index (for the # column + stable keys) so
+  // filtering never renumbers the list or breaks identity-based selection.
+  const [search, setSearch] = useState("");
+
   const videos = labels?.videos ?? [];
+  const filteredVideos = videos
+    .map((video, index) => ({ video, index }))
+    .filter(({ video }) => videoFilenameMatches(video.filename, search));
   const missingVideos = videos.filter(isVideoMissing);
   // "Locate All Missing" only handles regular videos: its multi-file video
   // picker can't select images, so image sequences are located per-row via
@@ -528,10 +530,38 @@ export function VideosPanel() {
 
   return (
     <div className="flex flex-col h-full">
+      {videos.length > 0 && (
+        <div className="p-2 pb-1">
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+            <Input
+              className="h-7 text-xs pl-7 pr-7"
+              placeholder="Search videos…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+            {search && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="absolute right-0.5 top-1/2 -translate-y-1/2 h-6 w-6"
+                onClick={() => setSearch("")}
+                title="Clear search"
+              >
+                <X className="h-3 w-3" />
+              </Button>
+            )}
+          </div>
+        </div>
+      )}
       <ScrollArea className="flex-1">
         {videos.length === 0 ? (
           <p className="text-xs text-muted-foreground p-2">
             No videos in project.
+          </p>
+        ) : filteredVideos.length === 0 ? (
+          <p className="text-xs text-muted-foreground p-2">
+            No videos match “{search}”.
           </p>
         ) : (
           <Table>
@@ -552,11 +582,11 @@ export function VideosPanel() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {videos.map((video, i) => (
+              {filteredVideos.map(({ video, index }) => (
                 <VideoRow
-                  key={i}
+                  key={index}
                   video={video}
-                  index={i}
+                  index={index}
                   isSelected={video === currentVideo}
                   isMissing={isVideoMissing(video)}
                   isImageSequence={isImageSequenceVideo(video)}

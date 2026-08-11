@@ -9,6 +9,7 @@ import { isTauri } from "./index";
 import { sleapCmd } from "@/lib/sleapPlugin";
 import { saveSlpToBytes } from "@talmolab/sleap-io.js";
 import type { InferenceConfig } from "@/stores/inferenceStore";
+import { buildInferenceArgs, pickInferenceSubcommand } from "./inferenceArgs";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 
 function sampleRandomFrames(totalFrames: number, count: number): number[] {
@@ -348,135 +349,37 @@ export async function runInference(
     console.log("[inference] Wrote %d bytes to %s", bytes.byteLength, dataPath);
   }
 
-  // Build CLI args. A standalone centroid model can't run through `track`
-  // (that needs a paired centered-instance model); run it with `sleap-nn
-  // predict --centroid_output instance`, which emits single-node
-  // PredictedInstances. Track-only flags (--gui, --tracking, bottom-up,
-  // --filter_overlapping, --max_instances, --anchor_part) are guarded out below.
+  // Pick the sleap-nn subcommand by installed version: the new `predict`
+  // (Predictor) pipeline when available (>= 0.2.0), else fall back to the legacy
+  // `track` command — present in every sleap-nn version and exactly what the app
+  // invoked before the `predict` migration. Older installs are never blocked and
+  // see no regression; only newer installs get the new pipeline.
+  // (The centroid pipeline overrides this inside buildInferenceArgs — a
+  // standalone centroid model can only run through `predict`.)
   const program = "sleap-nn";
-  const isCentroid = config.pipeline === "centroid";
-  const args = isCentroid ? ["predict"] : ["track", "--gui"];
-
-  // Core I/O (identical for predict + track; predict accepts a .slp data_path,
-  // so frame filters like --only_suggested_frames still apply)
-  args.push("--data_path", dataPath);
-  for (const mp of config.modelPaths) {
-    args.push("--model_paths", mp);
-  }
-  args.push("--output_path", outputPath);
-  if (isCentroid) {
-    args.push("--centroid_output", config.centroidOutput ?? "instance");
+  const { useEnvironmentStore } = await import("@/stores/environmentStore");
+  const sleapNnVersion =
+    useEnvironmentStore.getState().pythonCheck?.sleapNnVersion ?? null;
+  const subcommand = pickInferenceSubcommand(sleapNnVersion);
+  if (subcommand === "track") {
+    console.log(
+      "[inference] sleap-nn v%s predates the 'predict' command; using legacy 'track'.",
+      sleapNnVersion
+    );
   }
 
-  // Data selection
-  if (config.videoIndex !== "all") {
-    args.push("--video_index", String(config.videoIndex));
-  }
-
-  // Frame range → CLI args (fail fast on unhandled types)
-  if (typeof config.frameRange === "object") {
-    args.push("--frames", `${config.frameRange.start}-${config.frameRange.end}`);
-  } else {
+  // Resolve random-video frame sampling here (needs the app store + RNG); the
+  // rest of the argv is built by the pure buildInferenceArgs helper.
+  let sampledFrames: number[] | undefined;
+  if (config.frameRange === "random_video") {
     const { useAppStore } = await import("@/stores/appStore");
-
-    switch (config.frameRange) {
-      case "user_labeled":
-        args.push("--only_labeled_frames");
-        break;
-      case "suggestions":
-        args.push("--only_suggested_frames");
-        break;
-      case "predicted":
-        args.push("--only_predicted_frames");
-        break;
-      case "video":
-      case "all_videos":
-        break;
-      case "random_video": {
-        const activeVideo = useAppStore.getState().video;
-        const nFrames = activeVideo?.shape?.[0] ?? 0;
-        if (nFrames === 0) throw new Error("Cannot sample: current video has no frames");
-        const sampled = sampleRandomFrames(nFrames, config.sampleCount);
-        args.push("--frames", sampled.join(","));
-        break;
-      }
-      case "random":
-        // "random (all videos)" requires per-video invocation — handled by caller.
-        // If we reach here, fall back to current video only.
-        throw new Error(
-          "Random sampling across all videos requires per-video invocation. " +
-          "Use 'random_video' for single-video random, or call runInference per video."
-        );
-      default:
-        throw new Error(`Unhandled frame range type: ${config.frameRange}`);
-    }
+    const activeVideo = useAppStore.getState().video;
+    const nFrames = activeVideo?.shape?.[0] ?? 0;
+    if (nFrames === 0) throw new Error("Cannot sample: current video has no frames");
+    sampledFrames = sampleRandomFrames(nFrames, config.sampleCount);
   }
 
-  if (config.excludeUserLabeled) {
-    args.push("--exclude_user_labeled");
-  }
-
-  // Inference settings (batch/device/peak_threshold apply to predict too)
-  args.push("--batch_size", String(config.batchSize));
-  args.push("--device", config.device);
-  if (!isCentroid && config.maxInstances != null) {
-    args.push("--max_instances", String(config.maxInstances));
-  }
-  args.push("--peak_threshold", String(config.peakThreshold));
-  if (!isCentroid && config.anchorPart) {
-    args.push("--anchor_part", config.anchorPart);
-  }
-
-  // Bottom-up advanced (track-only; the centroid model outputs single points)
-  if (!isCentroid) {
-    if (config.integralRefinement) {
-      args.push("--integral_refinement", "integral");
-      args.push("--integral_patch_size", String(config.integralPatchSize));
-    }
-    if (config.pipeline === "bottom-up" || config.pipeline === "bottom-up-id") {
-      args.push("--n_points", String(config.nPoints));
-      args.push("--max_edge_length_ratio", String(config.maxEdgeLengthRatio));
-      args.push("--dist_penalty_weight", String(config.distPenaltyWeight));
-      args.push("--min_line_scores", String(config.minLineScores));
-    }
-  }
-
-  // Preprocessing
-  if (config.ensureChannels === "rgb") {
-    args.push("--ensure_rgb");
-  } else if (config.ensureChannels === "grayscale") {
-    args.push("--ensure_grayscale");
-  }
-
-  // Tracking (track-only)
-  if (!isCentroid && config.tracking) {
-    args.push("--tracking");
-    if (config.trackerMethod === "flow") {
-      args.push("--use_flow");
-    }
-    if (config.similarityMethod === "centroids") {
-      args.push("--features", "centroids");
-      args.push("--scoring_method", "euclidean_dist");
-    } else {
-      args.push("--scoring_method", config.similarityMethod);
-    }
-    args.push("--track_matching_method", config.matchingMethod);
-    args.push("--tracking_window_size", String(config.trackingWindowSize));
-    if (config.maxTracks != null) {
-      args.push("--max_tracks", String(config.maxTracks));
-    }
-    args.push("--robust_best_instance", String(config.robust));
-    if (config.connectSingleBreaks) {
-      args.push("--post_connect_single_breaks");
-    }
-  }
-
-  // Post-processing (track-only)
-  if (!isCentroid && config.filterOverlapping) {
-    args.push("--filter_overlapping");
-    args.push("--filter_overlapping_method", config.filterMethod);
-    args.push("--filter_overlapping_threshold", String(config.filterThreshold));
-  }
+  const args = buildInferenceArgs(config, { dataPath, outputPath, sampledFrames, subcommand });
 
   const command = `${program} ${args.join(" ")}`;
   console.log("[inference] Running:", command);

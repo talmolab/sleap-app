@@ -14,6 +14,7 @@ import { Track } from "@talmolab/sleap-io.js";
 import { quitApp } from "../lib/quit";
 import { rejectCurrentPassItem, skipCurrentPassItem } from "../lib/activeLearning/passActions";
 import { openNewInstance } from "../lib/newInstance";
+import { dismiss } from "../lib/notify";
 import {
   commandContext,
   OpenProjectCommand,
@@ -29,6 +30,7 @@ import {
   GoToStartFrame,
   GoToEndFrame,
   AddInstance,
+  AddInstancesFromAllPredictions,
   DeleteSelectedInstance,
   CopyInstance,
   PasteInstance,
@@ -217,6 +219,10 @@ export function useKeyboardShortcuts() {
         if (m === "keypointPass" || m === "correct") return;
         commandContext.execute(DeleteSelectedInstance);
       },
+      [DEFAULT_SHORTCUTS["accept all predictions"]]: (e) => {
+        e.preventDefault();
+        commandContext.execute(AddInstancesFromAllPredictions);
+      },
 
       // Track commands
       [DEFAULT_SHORTCUTS.transpose]: (e) => {
@@ -267,6 +273,14 @@ export function useKeyboardShortcuts() {
       [DEFAULT_SHORTCUTS["goto next track spawn"]]: (e) => {
         e.preventDefault();
         commandContext.execute(GoNextTrackSpawnFrame);
+      },
+
+      // Dismiss ALL currently-stacked on-screen toasts at once. The no-id form
+      // of sonner's dismiss clears the whole live stack. (This is distinct from
+      // the NotificationsPanel "Clear" button, which empties history.)
+      [DEFAULT_SHORTCUTS["dismiss all toasts"]]: (e) => {
+        e.preventDefault();
+        dismiss();
       },
 
       // Undo/Redo

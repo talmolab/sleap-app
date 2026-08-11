@@ -22,6 +22,7 @@ import type {
   InstancePlacementMethod,
 } from "../types";
 import type { StatisticGraphType, Reduction } from "@/lib/statisticSeries";
+import { SEEKBAR_HEADER_DEFAULT_HEIGHT } from "@/lib/seekbarHeaderHeight";
 import type { QcMode } from "@/lib/instanceVisibility";
 import type { CropRect } from "@/lib/imageFeaturesCore";
 import {
@@ -162,6 +163,15 @@ export interface AppState {
   showLabels: boolean;
   showEdges: boolean;
   showNonVisibleNodes: boolean;
+  /**
+   * Currently-visible portion of the video frame, in frame/scene pixel
+   * coordinates: `[x1, y1, x2, y2]`. Kept in sync by VideoPlayer on every
+   * zoom/pan/resize/rotate. Null before the canvas has real dimensions.
+   * Read by `AddInstance`'s "random" placement so a new instance lands within
+   * view (PyQt parity: `QtVideoPlayer.getVisibleRect()`), not just somewhere
+   * in the full underlying frame that may be off-screen when zoomed in.
+   */
+  visibleSceneRect: [number, number, number, number] | null;
   /** Show a full-canvas crosshair at the cursor while zoomed in (#UX-wins). Persisted. */
   showCrosshair: boolean;
   edgeStyle: EdgeStyle;
@@ -209,6 +219,11 @@ export interface AppState {
   rotation: 0 | 90 | 180 | 270;
   seekbarHeaderGraph: StatisticGraphType;
   seekbarHeaderReduction: Reduction;
+  /**
+   * Height (px) of the seekbar header graph, user-resizable via the drag handle
+   * on its top edge. Persisted; clamped to [MIN, MAX] (see seekbarHeaderHeight).
+   */
+  seekbarHeaderHeight: number;
   /** Which frames stepping/playback/seekbar are confined to (#137). */
   navigationDomain: NavigationDomain;
 
@@ -225,6 +240,12 @@ export interface AppState {
   setImageFeatureRoi: (video: Video, rect: CropRect | null) => void;
   /** Toggle canvas ROI-draw mode. */
   setImageFeatureRoiDrawActive: (active: boolean) => void;
+  /**
+   * Reset the image-features ROI tool: exit draw-mode and drop ALL drawn
+   * regions. The region is transient (used only while generating), so it is
+   * cleared whenever the Image Features method/view is left.
+   */
+  resetImageFeatureRoi: () => void;
 
   // Per-instance visibility (transient; reset on frame change; NOT persisted)
   hiddenInstances: Set<Instance>;
@@ -324,6 +345,9 @@ export interface AppState {
   selectToFrameDialogOpen: boolean;
   deletePredictionsDialogOpen: boolean;
   exportDialogOpen: boolean;
+  exportClipDialogOpen: boolean;
+  modelMetricsDialogOpen: boolean;
+  exportPackageDialogOpen: boolean;
   shortcutsDialogOpen: boolean;
   helpDialogOpen: boolean;
   quitConfirmOpen: boolean;
@@ -376,6 +400,9 @@ export interface AppState {
   setSelectToFrameDialogOpen: (open: boolean) => void;
   setDeletePredictionsDialogOpen: (open: boolean) => void;
   setExportDialogOpen: (open: boolean) => void;
+  setExportClipDialogOpen: (open: boolean) => void;
+  setModelMetricsDialogOpen: (open: boolean) => void;
+  setExportPackageDialogOpen: (open: boolean) => void;
   setShortcutsDialogOpen: (open: boolean) => void;
   setHelpDialogOpen: (open: boolean) => void;
   enterPlacementMode: () => void;
@@ -472,6 +499,7 @@ export const PERSISTED_KEYS: (keyof AppState)[] = [
   "defaultToPan",
   "seekbarHeaderGraph",
   "seekbarHeaderReduction",
+  "seekbarHeaderHeight",
   "navigationDomain",
   "qcDisplayMode",
   "videoPrefixSwaps",
@@ -543,6 +571,7 @@ export const useAppStore = create<AppState>()(
       showLabels: true,
       showEdges: true,
       showNonVisibleNodes: true,
+      visibleSceneRect: null,
       showCrosshair: false,
       edgeStyle: "Line" as EdgeStyle,
       fit: false,
@@ -568,6 +597,7 @@ export const useAppStore = create<AppState>()(
       rotation: 0 as 0 | 90 | 180 | 270,
       seekbarHeaderGraph: "instance-count" as StatisticGraphType,
       seekbarHeaderReduction: "sum" as Reduction,
+      seekbarHeaderHeight: SEEKBAR_HEADER_DEFAULT_HEIGHT,
       navigationDomain: "all" as NavigationDomain,
 
       // Per-instance visibility (transient) + QC display mode (persisted)
@@ -620,6 +650,9 @@ export const useAppStore = create<AppState>()(
       selectToFrameDialogOpen: false,
       deletePredictionsDialogOpen: false,
       exportDialogOpen: false,
+      exportClipDialogOpen: false,
+      modelMetricsDialogOpen: false,
+      exportPackageDialogOpen: false,
       shortcutsDialogOpen: false,
       helpDialogOpen: false,
       quitConfirmOpen: false,
@@ -722,6 +755,11 @@ export const useAppStore = create<AppState>()(
       setImageFeatureRoiDrawActive: (active) =>
         set((state) => {
           state.imageFeatureRoiDrawActive = active;
+        }),
+      resetImageFeatureRoi: () =>
+        set((state) => {
+          state.imageFeatureRoiDrawActive = false;
+          state.imageFeatureRois = new Map();
         }),
 
       markVideoUpdated: () =>
@@ -914,6 +952,21 @@ export const useAppStore = create<AppState>()(
       setExportDialogOpen: (open) =>
         set((state) => {
           state.exportDialogOpen = open;
+        }),
+
+      setExportClipDialogOpen: (open) =>
+        set((state) => {
+          state.exportClipDialogOpen = open;
+        }),
+
+      setModelMetricsDialogOpen: (open) =>
+        set((state) => {
+          state.modelMetricsDialogOpen = open;
+        }),
+
+      setExportPackageDialogOpen: (open) =>
+        set((state) => {
+          state.exportPackageDialogOpen = open;
         }),
 
       setShortcutsDialogOpen: (open) =>

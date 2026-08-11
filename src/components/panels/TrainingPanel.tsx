@@ -42,6 +42,7 @@ import {
   Square,
   Settings2,
   LineChart,
+  BarChart3,
 } from "lucide-react";
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -507,6 +508,9 @@ export function TrainingPanel() {
   const projectPath = useAppStore((s) => s.projectPath);
   const skeleton = useAppStore((s) => s.skeleton);
   const labels = useAppStore((s) => s.labels);
+  const setModelMetricsDialogOpen = useAppStore(
+    (s) => s.setModelMetricsDialogOpen
+  );
   const skeletonCompat = useMemo(() => getSkeletonCompatibility(skeleton), [skeleton]);
   const pipelineRec = useMemo(() => recommendPipeline(labels as LabelsLike | null), [labels]);
 
@@ -1059,6 +1063,16 @@ export function TrainingPanel() {
               <div key={i} className="font-mono text-[10px] text-green-300 break-all">{dir}</div>
             ))}
           </div>
+        )}
+        {status === "completed" && (
+          <Button
+            variant="outline"
+            className="w-full h-8 text-xs"
+            onClick={() => setModelMetricsDialogOpen(true)}
+          >
+            <BarChart3 className="h-3.5 w-3.5 mr-1" />
+            View Metrics
+          </Button>
         )}
         {status === "completed" && (
           <Button className="w-full h-8 text-xs" onClick={() => reset()}>

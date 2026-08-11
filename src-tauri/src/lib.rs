@@ -1,6 +1,7 @@
 mod environment;
 mod rtc;
 
+use std::collections::HashMap;
 use std::path::{Component, PathBuf};
 use std::sync::Mutex;
 use tauri_plugin_shell::process::CommandChild;
@@ -333,6 +334,101 @@ fn normalize_path(path: PathBuf) -> PathBuf {
     parts.iter().collect()
 }
 
+/// Cross-window "open file" registry: window label -> the canonical `.slp` path
+/// that window currently has open (`None` = empty / Welcome screen). Each
+/// WebviewWindow is an isolated JS heap, so this shared Rust map is the ONLY
+/// place that can answer "is this file already open, and in which window?". Kept
+/// in sync by the frontend (`window_set_file`) and self-healed on window close
+/// (`on_window_event` -> `Destroyed`).
+struct WindowFiles(Mutex<HashMap<String, Option<String>>>);
+
+/// Canonical dedup key for a path: resolve symlinks + `.`/`..` and make it
+/// absolute so `./a.slp`, an absolute path, and a symlink to it all collapse to
+/// one key. Falls back to logical `normalize_path` when the file can't be
+/// canonicalized (e.g. it no longer exists), so a key is always produced.
+fn canonical_key(path: &str) -> String {
+    let p = PathBuf::from(path);
+    match std::fs::canonicalize(&p) {
+        Ok(c) => c.to_string_lossy().into_owned(),
+        Err(_) => {
+            let abs = if p.is_relative() {
+                std::env::current_dir().map(|cwd| cwd.join(&p)).unwrap_or(p)
+            } else {
+                p
+            };
+            normalize_path(abs).to_string_lossy().into_owned()
+        }
+    }
+}
+
+/// What the frontend should do with an "open this path" request (see
+/// `resolve_open`). `action` is `"focus"` (already open — jump to `label`),
+/// `"reuse"` (load into the empty window `label`), or `"new"` (spawn a window).
+#[derive(serde::Serialize)]
+struct Resolution {
+    action: String,
+    label: Option<String>,
+}
+
+/// Pure routing decision over the label->file map. Split out from the command so
+/// it can be unit-tested without Tauri state or the filesystem. `key` is already
+/// canonicalized; map values are canonical paths (or `None` for empty windows).
+fn resolve_open_impl(
+    map: &HashMap<String, Option<String>>,
+    key: &str,
+    prefer_label: Option<&str>,
+) -> Resolution {
+    // 1. Already open in some window -> focus it (dedup). Pick deterministically
+    //    (smallest label) if two windows somehow hold the same path.
+    let mut open_here: Vec<&String> = map
+        .iter()
+        .filter(|(_, p)| p.as_deref() == Some(key))
+        .map(|(l, _)| l)
+        .collect();
+    open_here.sort();
+    if let Some(label) = open_here.first() {
+        return Resolution { action: "focus".into(), label: Some((*label).clone()) };
+    }
+    // 2. The calling window is empty -> load in place there.
+    if let Some(pl) = prefer_label {
+        if matches!(map.get(pl), Some(None)) {
+            return Resolution { action: "reuse".into(), label: Some(pl.to_string()) };
+        }
+    }
+    // 3. Some other window is empty -> reuse it (deterministic: smallest label).
+    let mut empties: Vec<&String> =
+        map.iter().filter(|(_, p)| p.is_none()).map(|(l, _)| l).collect();
+    empties.sort();
+    if let Some(label) = empties.first() {
+        return Resolution { action: "reuse".into(), label: Some((*label).clone()) };
+    }
+    // 4. Nothing open, nothing empty -> spawn a new window.
+    Resolution { action: "new".into(), label: None }
+}
+
+/// Decide where an "open this path" request should go, given the current
+/// window->file registry. `prefer_label` is the calling window's label (so an
+/// empty caller loads in place rather than spawning a window).
+#[tauri::command]
+fn resolve_open(
+    state: tauri::State<WindowFiles>,
+    path: String,
+    prefer_label: Option<String>,
+) -> Resolution {
+    let key = canonical_key(&path);
+    let map = state.0.lock().unwrap();
+    resolve_open_impl(&map, &key, prefer_label.as_deref())
+}
+
+/// Record the file a window currently has open (`None` = empty / Welcome). One
+/// call covers initial load, Save-As (path change) and close-to-Welcome (clear).
+/// Paths are canonicalized so the key matches `resolve_open`'s lookups.
+#[tauri::command]
+fn window_set_file(state: tauri::State<WindowFiles>, label: String, path: Option<String>) {
+    let key = path.map(|p| canonical_key(&p));
+    state.0.lock().unwrap().insert(label, key);
+}
+
 /// SPIKE (spike/tauri-localhost-origin): the inlined "sleap" plugin bundling the range
 /// reader's byte-pipe commands (`read_range`, `file_size`) so they resolve as
 /// `plugin:sleap|...` and stay reachable from the http://localhost (remote) origin. The
@@ -352,6 +448,8 @@ fn sleap_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
             copy_file,
             remove_file,
             get_initial_file,
+            resolve_open,
+            window_set_file,
             read_image_file,
             reveal_in_file_manager,
             open_preferences_directory,
@@ -452,7 +550,7 @@ fn localhost_capability(port: u16) -> String {
   "description": "Runtime grant for the http://localhost origin with an auto-picked port (tauri-plugin-localhost).",
   "local": false,
   "remote": {{ "urls": ["http://localhost:{port}"] }},
-  "windows": ["main"],
+  "windows": ["main*"],
   "permissions": [
     "core:default",
     "pilot:default",
@@ -460,6 +558,9 @@ fn localhost_capability(port: u16) -> String {
     "fs:allow-read-file",
     "fs:allow-read-text-file",
     "fs:allow-write-file",
+    "fs:allow-write-text-file",
+    "fs:allow-mkdir",
+    "fs:allow-remove",
     "fs:allow-exists",
     "fs:allow-stat",
     {{ "identifier": "fs:scope", "allow": [{{ "path": "**" }}, {{ "path": "$HOME/.sleap-rtc/**" }}] }},
@@ -472,6 +573,10 @@ fn localhost_capability(port: u16) -> String {
     "core:window:allow-close",
     "core:window:allow-destroy",
     "core:window:allow-set-title",
+    "core:window:allow-set-focus",
+    "core:window:allow-show",
+    "core:window:allow-unminimize",
+    "core:webview:allow-create-webview-window",
     "sleap:default"
   ]
 }}"#
@@ -531,7 +636,17 @@ pub fn run() {
     .manage(ZmqRelay(Mutex::new(None)))
     .manage(ProgressRelay(Mutex::new(None)))
     .manage(WriteHandle(Mutex::new(None)))
+    .manage(WindowFiles(Mutex::new(HashMap::new())))
     .manage(tokio::sync::Mutex::new(rtc::RtcState::new()))
+    // Self-heal the open-file registry: when a window is destroyed (closed or
+    // crashed) drop its claim so a later open can't be mis-routed to a dead
+    // window. The frontend keeps the map otherwise (window_set_file).
+    .on_window_event(|window, event| {
+      if let tauri::WindowEvent::Destroyed = event {
+        use tauri::Manager;
+        window.state::<WindowFiles>().0.lock().unwrap().remove(window.label());
+      }
+    })
     // All native commands live in the inlined `sleap` plugin (see sleap_plugin()) so they
     // resolve as `plugin:sleap|…` and stay reachable when the app is served from the
     // http://localhost origin (bare custom commands are blocked there — see build.rs).
@@ -657,9 +772,16 @@ pub fn run() {
     // double-click) as an Apple Event, surfaced here as RunEvent::Opened — NOT as
     // a CLI argument. Stash the first path into the same InitialFile slot the CLI
     // path uses (so a cold-start webview picks it up via get_initial_file) and
-    // emit `open-file` (so an already-running window loads it immediately). Both
-    // the launch poll and the event handler funnel through get_initial_file,
-    // which take()s the slot, so the two can't double-load the same file.
+    // emit `open-file` (so an already-running window handles it immediately). The
+    // frontend `open-file` listener drains the slot and routes the path through
+    // `resolve_open` (openOrFocusPath): if the file is already open it focuses
+    // that window; if a window is empty it loads there; otherwise it spawns a new
+    // window — so a running project is never clobbered. Focus/foreground is now
+    // handled by that routing (it set_focus()es the target window), so we no
+    // longer force-focus the hardcoded `main` window here (#199 is preserved by
+    // the target-window focus in openOrFocusPath). The launch poll and the
+    // listener both funnel through get_initial_file, which take()s the slot, so
+    // they can't double-load the same file.
     #[cfg(target_os = "macos")]
     {
       use tauri::{Emitter, Manager};
@@ -673,21 +795,100 @@ pub fn run() {
           println!("[sleap-label] opened file: {path}");
           *_app_handle.state::<InitialFile>().0.lock().unwrap() = Some(path);
           let _ = _app_handle.emit("open-file", ());
-
-          // #199: bring the already-running app to the foreground so the newly
-          // opened project is actually visible. Without this the file loads into
-          // a window that may be minimized, hidden, or on another Space — from
-          // the user's view nothing happens. On macOS `set_focus()` activates the
-          // app (NSApp activate) and does makeKeyAndOrderFront, which also
-          // switches to the window's Space; `unminimize()`/`show()` cover the
-          // minimized/hidden cases first.
-          if let Some(window) = _app_handle.get_webview_window("main") {
-            let _ = window.unminimize();
-            let _ = window.show();
-            let _ = window.set_focus();
-          }
         }
       }
     }
   });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn map(entries: &[(&str, Option<&str>)]) -> HashMap<String, Option<String>> {
+        entries
+            .iter()
+            .map(|(l, p)| (l.to_string(), p.map(|s| s.to_string())))
+            .collect()
+    }
+
+    #[test]
+    fn focus_when_file_already_open() {
+        let m = map(&[("w1", Some("/a.slp")), ("w2", None)]);
+        // Even though the caller (w2) is empty, an existing open window wins.
+        let r = resolve_open_impl(&m, "/a.slp", Some("w2"));
+        assert_eq!(r.action, "focus");
+        assert_eq!(r.label.as_deref(), Some("w1"));
+    }
+
+    #[test]
+    fn reuse_caller_when_caller_is_empty() {
+        let m = map(&[("w1", Some("/a.slp")), ("w2", None)]);
+        let r = resolve_open_impl(&m, "/b.slp", Some("w2"));
+        assert_eq!(r.action, "reuse");
+        assert_eq!(r.label.as_deref(), Some("w2"));
+    }
+
+    #[test]
+    fn reuse_other_empty_when_caller_busy() {
+        // Caller w1 has a project; a different empty window (w2) should be reused
+        // so the caller's project is never clobbered.
+        let m = map(&[("w1", Some("/a.slp")), ("w2", None)]);
+        let r = resolve_open_impl(&m, "/b.slp", Some("w1"));
+        assert_eq!(r.action, "reuse");
+        assert_eq!(r.label.as_deref(), Some("w2"));
+    }
+
+    #[test]
+    fn new_window_when_none_open_and_none_empty() {
+        let m = map(&[("w1", Some("/a.slp"))]);
+        let r = resolve_open_impl(&m, "/b.slp", Some("w1"));
+        assert_eq!(r.action, "new");
+        assert_eq!(r.label, None);
+    }
+
+    #[test]
+    fn empty_window_pick_is_deterministic() {
+        // Two empty windows, caller not in the map → smallest label wins.
+        let m = map(&[("w3", None), ("w2", None)]);
+        let r = resolve_open_impl(&m, "/b.slp", Some("nope"));
+        assert_eq!(r.action, "reuse");
+        assert_eq!(r.label.as_deref(), Some("w2"));
+    }
+
+    #[test]
+    fn empty_registry_opens_new() {
+        let m: HashMap<String, Option<String>> = HashMap::new();
+        let r = resolve_open_impl(&m, "/a.slp", Some("w1"));
+        assert_eq!(r.action, "new");
+    }
+
+    #[test]
+    fn canonical_key_normalizes_dot_dot_for_missing_path() {
+        // A non-existent path can't be canonicalized, so the logical-normalize
+        // fallback collapses `..` (and keeps it absolute).
+        let k = canonical_key("/tmp/sub/../does-not-exist-xyz.slp");
+        assert_eq!(k, "/tmp/does-not-exist-xyz.slp");
+    }
+
+    #[test]
+    fn canonical_key_dedups_two_spellings_of_same_file() {
+        // Two spellings of the SAME existing file must produce one key so dedup
+        // works. Use a real temp file so canonicalize() runs (not the fallback):
+        // both the direct path and a `.`-laden spelling fully exist, so both
+        // resolve to the same absolute, symlink-free path (e.g. macOS
+        // /var/folders/... -> /private/var/folders/...). canonicalize() requires
+        // EVERY component to exist, which is why we don't inject a fake `nested/`.
+        let dir = std::env::temp_dir();
+        let file = dir.join("sleap_canon_test.slp");
+        std::fs::write(&file, b"x").unwrap();
+        let direct = file.to_string_lossy().into_owned();
+        let dotted = dir
+            .join(".")
+            .join("sleap_canon_test.slp")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(canonical_key(&direct), canonical_key(&dotted));
+        let _ = std::fs::remove_file(&file);
+    }
 }

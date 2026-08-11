@@ -453,6 +453,13 @@ describe("appStore", () => {
     expect(useAppStore.getState().seekbarHeaderGraph).toBe("tracking-score");
   });
 
+  it("defaults seekbarHeaderHeight to 16 and set() updates it", () => {
+    resetStore();
+    expect(useAppStore.getState().seekbarHeaderHeight).toBe(16);
+    useAppStore.getState().set("seekbarHeaderHeight", 96);
+    expect(useAppStore.getState().seekbarHeaderHeight).toBe(96);
+  });
+
   describe("resetView", () => {
     it("initializes resetViewNonce to 0", () => {
       resetStore();
@@ -488,6 +495,7 @@ describe("PERSISTED_KEYS (layout + scale persistence)", () => {
     // Regression guard: appending layout keys must not drop existing ones.
     expect(PERSISTED_KEYS).toContain("seekbarHeaderGraph");
     expect(PERSISTED_KEYS).toContain("seekbarHeaderReduction");
+    expect(PERSISTED_KEYS).toContain("seekbarHeaderHeight");
     expect(PERSISTED_KEYS).toContain("palette");
   });
 });

@@ -52,13 +52,17 @@ import { toImageCoords, toSourceCoords } from "@/lib/cropTransform";
 import { suggestionPrefetchTargets } from "@/lib/navigableFrames";
 import { acceptAndAdvanceCorrection } from "@/lib/activeLearning/correctionActions";
 import { relinkCentroids } from "@/lib/activeLearning/centroidPairing";
+import { shouldPrefetch } from "@/lib/videoPrefetch";
 import {
   isVideoMissing,
   resolveVideoFile,
   videoIssue,
   ensureVideoBackend,
+  relocateMissingImageFrames,
 } from "../../lib/resolveVideos";
-import { Film, Frame } from "lucide-react";
+import { toast } from "@/lib/notify";
+import { getPlatform, isTauri } from "@/platform/index";
+import { Film, Frame, Hand, ImageOff, MousePointer2, Tag } from "lucide-react";
 
 /**
  * Clone an instance's points into plain objects — used to adopt a predicted
@@ -229,11 +233,26 @@ export function VideoPlayer() {
   const [frameDims, setFrameDims] = useState<[number, number]>([0, 0]);
   // Counter to trigger frame canvas re-render when a new bitmap is loaded (even same dims)
   const [bitmapVersion, setBitmapVersion] = useState(0);
+  // The current frame's image couldn't be read (resolved backend, but this one
+  // frame's file is missing/unreadable). Drives a non-blocking per-frame
+  // placeholder; distinct from a wholly-missing video (see isVideoMissing).
+  const [frameImageMissing, setFrameImageMissing] = useState(false);
+  // Frame indices whose image failed to read for the CURRENT video, accumulated
+  // as the user navigates. "Locate Image…" relocates exactly these against a
+  // picked folder — never re-probing the frames that already resolved. Reset
+  // whenever the video changes.
+  const missingFramesRef = useRef<Set<number>>(new Set());
+  const [relocating, setRelocating] = useState(false);
+  // Bumped to force the current frame to re-read after a relocation (frameIdx is
+  // unchanged, so the read effect wouldn't otherwise re-run).
+  const [readNonce, setReadNonce] = useState(0);
 
   // Context menu state
   const [contextMenu, setContextMenu] = useState<{
     x: number;
     y: number;
+    /** Scene/frame coordinates of the click, for "Add Instance" placement. */
+    sceneLocation: [number, number];
     instanceIdx: number | null;
     nodeIdx: number | null;
   } | null>(null);
@@ -243,6 +262,14 @@ export function VideoPlayer() {
 
   // Store frame as ImageBitmap so we can re-draw with transforms
   const frameBitmapRef = useRef<OffscreenCanvas | null>(null);
+
+  // Previous requested frame index, so the load effect can measure the jump
+  // distance and disable read-ahead prefetch on large discrete jumps (which
+  // otherwise fire wasted 8-ahead/2-behind reads on a slow mount). null until
+  // the first frame is requested. `lastVideoRef` lets us reset it on a video
+  // switch so the new video's first frame counts as a fresh first-load.
+  const prevFrameIdxRef = useRef<number | null>(null);
+  const lastVideoRef = useRef<typeof video>(null);
 
   // Track container dimensions for fit-to-window rendering
   const [containerSize, setContainerSize] = useState<[number, number]>([0, 0]);
@@ -522,6 +549,39 @@ export function VideoPlayer() {
   const offsetX = displayW > 0 && displayH > 0 ? (cw - displayW * baseScale) / 2 : 0;
   const offsetY = displayW > 0 && displayH > 0 ? (ch - displayH * baseScale) / 2 : 0;
 
+  // Keep the store's `visibleSceneRect` in sync with the current viewport, in
+  // frame/scene pixel coordinates -- the JS port of PyQt's
+  // `QtVideoPlayer.getVisibleRect()`. Transforms the canvas's four corners
+  // with the same inverse pan/zoom/rotation math as `canvasToScene` (defined
+  // below) and takes their axis-aligned bounding box. `AddInstance`'s random
+  // placement reads this so a new instance lands within view.
+  useEffect(() => {
+    if (cw <= 0 || ch <= 0 || fw <= 0 || fh <= 0) {
+      useAppStore.getState().set("visibleSceneRect", null);
+      return;
+    }
+    const toScene = (cx: number, cy: number): [number, number] => {
+      let sx = (cx - offsetX - panX) / (baseScale * zoom);
+      let sy = (cy - offsetY - panY) / (baseScale * zoom);
+      if (rotation === 90) {
+        const fx = sy, fy = fh - sx;
+        sx = fx; sy = fy;
+      } else if (rotation === 180) {
+        sx = fw - sx; sy = fh - sy;
+      } else if (rotation === 270) {
+        const fx = fw - sy, fy = sx;
+        sx = fx; sy = fy;
+      }
+      return [sx, sy];
+    };
+    const corners = [toScene(0, 0), toScene(cw, 0), toScene(0, ch), toScene(cw, ch)];
+    const xs = corners.map((c) => c[0]);
+    const ys = corners.map((c) => c[1]);
+    useAppStore.getState().set("visibleSceneRect", [
+      Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys),
+    ]);
+  }, [cw, ch, fw, fh, baseScale, offsetX, offsetY, panX, panY, zoom, rotation]);
+
   // Load the current frame (convert to ImageBitmap, trigger dimension update)
   useEffect(() => {
     if (!video) {
@@ -535,8 +595,34 @@ export function VideoPlayer() {
     const t0 = performance.now();
     if (debugFlags.logSeeking) console.debug(`[seek] requesting frame ${frameIdx}`);
 
+    // A video switch starts a fresh sequential-viewing session: drop the stale
+    // previous index so this first frame is a first-load (prefetch ON), not a
+    // giant jump measured against the old video's frame index.
+    if (lastVideoRef.current !== video) {
+      lastVideoRef.current = video;
+      prevFrameIdxRef.current = null;
+      // New video: forget the previous one's per-frame "missing" indices.
+      missingFramesRef.current = new Set();
+    }
+
+    // Read-ahead prefetch decision (see shouldPrefetch): ON for sequential
+    // stepping/playback (jump within a couple of frames), OFF for a scrub or a
+    // large discrete jump (Next/Prev Suggestion, Next/Prev Labeled Frame,
+    // Go-to-frame) whose read-ahead frames are never viewed. Record this
+    // request as the baseline for the next one's jump-distance measurement.
+    const prevFrameIdx = prevFrameIdxRef.current;
+    prevFrameIdxRef.current = frameIdx;
+    const prefetch = shouldPrefetch({
+      prev: prevFrameIdx,
+      next: frameIdx,
+      isScrubbing: useAppStore.getState().isScrubbing,
+    });
+
     (async () => {
       try {
+        // Fresh read: clear any prior per-frame "image missing" flag; the catch
+        // below re-raises it if this frame's image can't be read.
+        setFrameImageMissing(false);
         // Lazy video backends: the decoder is deferred at load (open one video,
         // not all N). Open it on first view, then read. ensureVideoBackend clears
         // lazyPath after opening, so this whole block is skipped from then on.
@@ -561,14 +647,8 @@ export function VideoPlayer() {
             return;
           }
         }
-        // While scrubbing, skip the backend's read-ahead prefetch: those frames
-        // are scrubbed past (wasted) and their reads saturate a slow mount,
-        // slowing the frame we actually want (~3.6x on the VAST mount). Mirrors
-        // PyQt's worker, which does no read-ahead while scrubbing.
         const framesBefore = video.shape?.[0] ?? null;
-        const frame = await video.getFrame(frameIdx, {
-          prefetch: !useAppStore.getState().isScrubbing,
-        });
+        const frame = await video.getFrame(frameIdx, { prefetch });
         // A deferred embedded backend (lazyVideoMetadata) reads its per-video
         // metadata on this first getFrame and corrects video.shape[0] to the true
         // source frame count — nudge the store so the seekbar/status bar re-read
@@ -641,6 +721,21 @@ export function VideoPlayer() {
         if (debugFlags.logSeeking) console.debug(`[seek] frame ${frameIdx} rendered (${bmp.width}x${bmp.height}) total ${(performance.now() - t0).toFixed(1)}ms`);
       } catch (err) {
         console.error("Failed to render frame:", err);
+        // A resolved backend whose individual frame file can't be read (e.g. one
+        // missing image in an otherwise-located sequence). Blank the canvas —
+        // don't leave the previously-viewed frame up, which reads as "nothing
+        // happened" — and flag the per-frame placeholder. This is the lazy,
+        // at-view-time discovery that replaces the old eager load-time per-frame
+        // existence sweep.
+        if (!cancelled) {
+          frameBitmapRef.current = null;
+          setFrameDims((prev) => (prev[0] === 0 && prev[1] === 0 ? prev : [0, 0]));
+          setBitmapVersion((v) => v + 1);
+          setFrameImageMissing(true);
+          // Remember this frame so a later "Locate Image…" can relocate it (and
+          // any other frames found missing) without re-probing the whole list.
+          missingFramesRef.current.add(frameIdx);
+        }
       } finally {
         // Release the scrub serialization gate so the seekbar drag loop can
         // issue the next frame. Set unconditionally: during a scrub only one
@@ -653,7 +748,7 @@ export function VideoPlayer() {
     return () => {
       cancelled = true;
     };
-  }, [video, frameIdx]);
+  }, [video, frameIdx, readNonce]);
 
   // Frame histogram, computed OFF the seek path. A full-frame getImageData is a
   // GPU->CPU readback (~200-340ms in WKWebView) — doing it inline blocked every
@@ -828,7 +923,10 @@ export function VideoPlayer() {
     // render on unlabeled frames / when instances are hidden too. Assumes the
     // image transform is already applied.
     const paintRoi = () => {
-      if (!imageFeatureRoiDrawActive) return;
+      // The persisted region stays visible whenever it exists — even after
+      // draw-mode auto-exits once a rectangle is set — so the user can keep it
+      // on screen while working on the canvas. It is cleared only when the Image
+      // Features view is left (SuggestionsPanel resetImageFeatureRoi).
       const persisted = video ? imageFeatureRois.get(video) : undefined;
       if (persisted) {
         renderRoiRect(
@@ -840,15 +938,18 @@ export function VideoPlayer() {
           baseScale * zoom
         );
       }
-      if (roiStart && roiEnd) {
+      // The live rubber-band only shows during an active draw.
+      if (imageFeatureRoiDrawActive && roiStart && roiEnd) {
         renderRoiRect(ctx, roiStart.x, roiStart.y, roiEnd.x, roiEnd.y, baseScale * zoom);
       }
     };
 
     if (!labeledFrame || !showInstances) {
       renderedInstancesRef.current = [];
-      // The ROI overlay is independent of instance rendering — still draw it.
-      if (imageFeatureRoiDrawActive) {
+      // The ROI overlay is independent of instance rendering — still draw it
+      // (the persisted region and/or the live rubber-band).
+      const hasRoi = video ? imageFeatureRois.has(video) : false;
+      if (imageFeatureRoiDrawActive || hasRoi) {
         ctx.save();
         applyImageTransform();
         paintRoi();
@@ -1163,9 +1264,10 @@ export function VideoPlayer() {
     } else {
       centerX = cursorScene.current!.x;
       centerY = cursorScene.current!.y;
-      // Find the selected instance in rendered instances
-      const selIdx = instances.findIndex((i) => i.isSelected);
-      if (selIdx !== -1) overlayInst = instances[selIdx];
+      // Hold-Shift / placement: overlay ALL instances (see the draw loop below)
+      // so hovering shows the keypoints of whatever is under the cursor — not
+      // only the selected instance (which previously left the loupe empty when
+      // nothing was selected or the cursor was over another instance).
     }
 
     inset.style.display = "block";
@@ -1235,18 +1337,24 @@ export function VideoPlayer() {
       iy: (py - sy) * effectiveZoom,
     });
 
-    if (overlayInst) {
+    // For a node drag, overlay just the dragged instance (and skip the node
+    // being dragged — the crosshair marks it). Otherwise (hold-Shift / node
+    // placement) overlay ALL instances, so hovering shows the keypoints of
+    // whatever is under the cursor. Nodes outside the magnified region are
+    // clipped out below, so only nearby keypoints actually draw.
+    const insetInstances = isDragInset && overlayInst ? [overlayInst] : instances;
+    for (const inst of insetInstances) {
       ctx.lineWidth = 1.5;
       ctx.globalAlpha = 0.7;
-      for (const edge of overlayInst.edges) {
-        const src = overlayInst.nodes[edge.srcIdx];
-        const dst = overlayInst.nodes[edge.dstIdx];
+      for (const edge of inst.edges) {
+        const src = inst.nodes[edge.srcIdx];
+        const dst = inst.nodes[edge.dstIdx];
         if (!src?.visible || !dst?.visible) continue;
         const s = toInset(src.x, src.y);
         const d = toInset(dst.x, dst.y);
-        const edgeColor = overlayInst.edgeColors
-          ? overlayInst.edgeColors[overlayInst.edges.indexOf(edge)]
-          : overlayInst.color;
+        const edgeColor = inst.edgeColors
+          ? inst.edgeColors[inst.edges.indexOf(edge)]
+          : inst.color;
         ctx.strokeStyle = rgbToCSS(edgeColor);
         ctx.beginPath();
         ctx.moveTo(s.ix, s.iy);
@@ -1254,15 +1362,15 @@ export function VideoPlayer() {
         ctx.stroke();
       }
 
-      // Draw other visible nodes as small dots
+      // Draw visible nodes as small dots (skip only the dragged node).
       ctx.globalAlpha = 0.6;
-      for (let nIdx = 0; nIdx < overlayInst.nodes.length; nIdx++) {
-        if (nIdx === skipNodeIdx) continue;
-        const n = overlayInst.nodes[nIdx];
+      for (let nIdx = 0; nIdx < inst.nodes.length; nIdx++) {
+        if (inst === overlayInst && nIdx === skipNodeIdx) continue;
+        const n = inst.nodes[nIdx];
         if (!n.visible) continue;
         const { ix, iy } = toInset(n.x, n.y);
         if (ix < -10 || ix > INSET_SIZE + 10 || iy < -10 || iy > INSET_SIZE + 10) continue;
-        const nodeColor = overlayInst.nodeColors ? overlayInst.nodeColors[nIdx] : overlayInst.color;
+        const nodeColor = inst.nodeColors ? inst.nodeColors[nIdx] : inst.color;
         ctx.fillStyle = rgbToCSS(nodeColor);
         ctx.beginPath();
         ctx.arc(ix, iy, 3, 0, Math.PI * 2);
@@ -1569,7 +1677,10 @@ export function VideoPlayer() {
       if (shouldPan && !areaDeleteMode) {
         const instances = renderedInstancesRef.current;
         const nt = (markerSize * 2) / (baseScale * zoom);
-        const hit = hitTestNode(instances, x, y, nt);
+        const hit = hitTestNode(
+          instances, x, y, nt,
+          showLabels ? { zoom, markerSize, nodeLabelSize } : undefined
+        );
         // Predicted nodes aren't normally draggable, so a hit on one pans — but
         // in Phase-3 correction dragging a predicted node adopts+corrects it, so
         // fall through to the node handler there instead of panning.
@@ -1721,8 +1832,11 @@ export function VideoPlayer() {
       const nodeThreshold = (markerSize * 2) / (baseScale * zoom);
       const instanceThreshold = 30 / (baseScale * zoom);
 
-      // Try to hit a node first
-      const nodeHit = hitTestNode(instances, x, y, nodeThreshold);
+      // Try to hit a node first (marker or, if shown, its name label)
+      const nodeHit = hitTestNode(
+        instances, x, y, nodeThreshold,
+        showLabels ? { zoom, markerSize, nodeLabelSize } : undefined
+      );
       if (nodeHit) {
         const key = makeNodeKey(nodeHit.instanceIdx, nodeHit.nodeIdx);
         const lf = useAppStore.getState().labeledFrame;
@@ -1788,11 +1902,18 @@ export function VideoPlayer() {
           }
         } else if (!inst.isPredicted) {
           commandContext.execute(BeginEdit);
+          // Clicking a node marks it "complete" (confirmed by the user), same
+          // as PyQt SLEAP's QtNode.mousePressEvent -- turns its label green.
+          const targetPoint = lf?.instances[nodeHit.instanceIdx]?.points[nodeHit.nodeIdx];
+          if (targetPoint) targetPoint.complete = true;
           setDragNodeInfo(nodeHit);
           setIsDragging(true);
           setInteractionMode("dragging");
           lastDragPos.current = { x, y };
           dragStartClient.current = { clientX: e.clientX, clientY: e.clientY };
+          useAppStore.getState().markChanged();
+          useAppStore.getState().touchFrame();
+          useAppStore.getState().bumpOverlayVersion();
         }
         return;
       }
@@ -1827,7 +1948,7 @@ export function VideoPlayer() {
       setMarqueeStart({ x, y });
       setMarqueeEnd({ x, y });
     },
-    [canvasToScene, markerSize, panX, panY, zoom, baseScale, shouldPan, isCmdHeld, offsetX, offsetY, selectedNodes, areaDeleteMode, imageFeatureRoiDrawActive]
+    [canvasToScene, markerSize, nodeLabelSize, showLabels, panX, panY, zoom, baseScale, shouldPan, isCmdHeld, offsetX, offsetY, selectedNodes, areaDeleteMode, imageFeatureRoiDrawActive]
   );
 
   const handleMouseMove = useCallback(
@@ -1926,13 +2047,14 @@ export function VideoPlayer() {
             }
           }
         } else {
-          // Single node drag
+          // Single node drag. Visibility is untouched -- matches PyQt SLEAP's
+          // QtNode.updatePoint(), which only updates x/y on drag; visibility
+          // only changes via the explicit toggle action.
           const instance = lf.instances[dragNodeInfo.instanceIdx];
           const point = instance?.points[dragNodeInfo.nodeIdx];
           if (point) {
             // Drag position is crop-local; store back in source coords.
             point.xy = toSourceCoords(useAppStore.getState().video, x, y);
-            point.visible = true;
           }
         }
 
@@ -1962,7 +2084,10 @@ export function VideoPlayer() {
 
       const instances = renderedInstancesRef.current;
       const nodeThreshold = (markerSize * 2) / (baseScale * zoom);
-      const hit = hitTestNode(instances, x, y, nodeThreshold);
+      const hit = hitTestNode(
+        instances, x, y, nodeThreshold,
+        showLabels ? { zoom, markerSize, nodeLabelSize } : undefined
+      );
 
       if (hit) {
         const prevIdx = hoveredNode?.instanceIdx;
@@ -1981,7 +2106,7 @@ export function VideoPlayer() {
         useAppStore.getState().bumpOverlayVersion();
       }
     },
-    [isDragging, isPanning, isZoomDragging, dragNodeInfo, canvasToScene, panStart, constrainPan, zoom, baseScale, interactionMode, selectedNodes, markerSize, hoveredNode, offsetX, offsetY, isPlacingNodes, isShiftHeld, isAreaDeleting, areaDeleteStart]
+    [isDragging, isPanning, isZoomDragging, dragNodeInfo, canvasToScene, panStart, constrainPan, zoom, baseScale, interactionMode, selectedNodes, markerSize, nodeLabelSize, showLabels, hoveredNode, offsetX, offsetY, isPlacingNodes, isShiftHeld, isAreaDeleting, areaDeleteStart]
   );
 
   const handleMouseUp = useCallback(() => {
@@ -2025,6 +2150,11 @@ export function VideoPlayer() {
       // Ignore an accidental click / tiny drag (preserve any existing region).
       if (currentVideo && width > 2 && height > 2) {
         setImageFeatureRoi(currentVideo, { x, y, width, height });
+        // One-shot: exit draw-mode once a region is committed so the canvas is
+        // immediately usable again (labeling/panning). The rectangle stays
+        // visible (painted from the persisted region) and is cleared only when
+        // the Image Features view is left.
+        useAppStore.getState().setImageFeatureRoiDrawActive(false);
       }
       setRoiStart(null);
       setRoiEnd(null);
@@ -2150,8 +2280,11 @@ export function VideoPlayer() {
       const nodeThreshold = (markerSize * 2) / (baseScale * zoom);
       const instanceThreshold = 30 / (baseScale * zoom);
 
-      // Check if double-clicking on a node
-      const nodeHit = hitTestNode(instances, x, y, nodeThreshold);
+      // Check if double-clicking on a node (marker or, if shown, its name label)
+      const nodeHit = hitTestNode(
+        instances, x, y, nodeThreshold,
+        showLabels ? { zoom, markerSize, nodeLabelSize } : undefined
+      );
       if (nodeHit) {
         const inst = instances[nodeHit.instanceIdx];
         // Predicted: convert to user instance
@@ -2198,7 +2331,7 @@ export function VideoPlayer() {
         setPanY(0);
       }
     },
-    [canvasToScene, markerSize, zoom, baseScale, shouldPan]
+    [canvasToScene, markerSize, nodeLabelSize, showLabels, zoom, baseScale, shouldPan]
   );
 
   // Right-click context menu
@@ -2206,6 +2339,7 @@ export function VideoPlayer() {
     (e: React.MouseEvent) => {
       e.preventDefault();
       const { x, y } = canvasToScene(e.clientX, e.clientY);
+      const sceneLocation = toSourceCoords(useAppStore.getState().video, x, y);
       const instances = renderedInstancesRef.current;
 
       // Phase-2 keypoint pass: right-click marks the current target node as not
@@ -2315,7 +2449,10 @@ export function VideoPlayer() {
       }
 
       // Check if right-clicking on a node
-      const nodeHit = hitTestNode(instances, x, y, (markerSize * 2) / (baseScale * zoom));
+      const nodeHit = hitTestNode(
+        instances, x, y, (markerSize * 2) / (baseScale * zoom),
+        showLabels ? { zoom, markerSize, nodeLabelSize } : undefined
+      );
       if (nodeHit) {
         const lf = useAppStore.getState().labeledFrame;
         const inst = lf?.instances[nodeHit.instanceIdx];
@@ -2345,6 +2482,7 @@ export function VideoPlayer() {
         setContextMenu({
           x: e.clientX,
           y: e.clientY,
+          sceneLocation,
           instanceIdx: nodeHit.instanceIdx,
           nodeIdx: nodeHit.nodeIdx,
         });
@@ -2361,6 +2499,7 @@ export function VideoPlayer() {
         setContextMenu({
           x: e.clientX,
           y: e.clientY,
+          sceneLocation,
           instanceIdx: instHit,
           nodeIdx: null,
         });
@@ -2371,11 +2510,12 @@ export function VideoPlayer() {
       setContextMenu({
         x: e.clientX,
         y: e.clientY,
+        sceneLocation,
         instanceIdx: null,
         nodeIdx: null,
       });
     },
-    [canvasToScene, markerSize, zoom, baseScale, selectedNodes]
+    [canvasToScene, markerSize, nodeLabelSize, showLabels, zoom, baseScale, selectedNodes]
   );
 
   // Full-canvas crosshair while zoomed (View ▸ "Crosshair When Zoomed"). Only
@@ -2505,6 +2645,45 @@ export function VideoPlayer() {
             frame counter lives in the status bar only (was previously
             duplicated here and beside the seekbar). */}
         <div className="absolute bottom-2 left-2 z-20 flex items-center gap-1.5">
+          {/* Node-name label toggle (leftmost). Flips `showLabels` (the same
+              View → Show Labels state), so node names show/hide next to the
+              keypoints. Dimmed when off. Press T to toggle (see shortcuts). */}
+          <Button
+            variant="secondary"
+            size="icon-xs"
+            className={cn(
+              "pointer-events-auto rounded-md bg-black/60 border-none hover:bg-black/70 hover:text-white",
+              showLabels ? "text-white" : "text-white/40",
+            )}
+            title={showLabels ? "Hide node names (T)" : "Show node names (T)"}
+            aria-label="Toggle node name labels"
+            aria-pressed={showLabels}
+            onClick={() => useAppStore.getState().toggle("showLabels")}
+          >
+            <Tag />
+          </Button>
+          {/* Pan vs. Select interaction-mode toggle. Sits immediately left of
+              Reset view so this commonly-used control is visible on the canvas.
+              Press P to toggle (see shortcuts). */}
+          <Button
+            variant="secondary"
+            size="icon-xs"
+            className="pointer-events-auto rounded-md bg-black/60 text-white/80 border-none hover:bg-black/70 hover:text-white"
+            title={
+              defaultToPan
+                ? "Pan mode (P to switch to Select)"
+                : "Select mode (P to switch to Pan)"
+            }
+            aria-label={
+              defaultToPan
+                ? "Pan mode (P to switch to Select)"
+                : "Select mode (P to switch to Pan)"
+            }
+            aria-pressed={defaultToPan}
+            onClick={() => useAppStore.getState().toggle("defaultToPan")}
+          >
+            {defaultToPan ? <Hand /> : <MousePointer2 />}
+          </Button>
           <Button
             variant="secondary"
             size="icon-xs"
@@ -2608,6 +2787,72 @@ export function VideoPlayer() {
             </div>
           </div>
         )}
+
+        {/* Per-frame image-missing placeholder: the video itself resolved, but
+            THIS frame's image file couldn't be read (e.g. a single deleted image
+            in an otherwise-located sequence). Non-blocking + informational; a
+            surgical per-frame "Locate…" action is a follow-up. */}
+        {video && !isVideoMissing(video) && frameImageMissing && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none z-10">
+            <div className="flex flex-col items-center gap-2 max-w-md px-4 text-center pointer-events-auto">
+              <ImageOff className="h-10 w-10 text-muted-foreground/40" />
+              <p className="text-sm text-muted-foreground">
+                Frame image not found
+              </p>
+              <p className="text-xs text-muted-foreground/70">
+                This frame&apos;s image file couldn&apos;t be read. Other frames
+                are unaffected.
+              </p>
+              {isTauri && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={relocating}
+                  onClick={async () => {
+                    if (!video) return;
+                    setRelocating(true);
+                    try {
+                      const platform = await getPlatform();
+                      const folder = await platform.showOpenDialog({
+                        directory: true,
+                        multiple: false,
+                      });
+                      if (typeof folder !== "string") return;
+                      // The current frame + any others already found missing;
+                      // relocate ONLY these against the picked folder (never the
+                      // frames that already resolved).
+                      missingFramesRef.current.add(frameIdx);
+                      const { located } = await relocateMissingImageFrames(
+                        video,
+                        [...missingFramesRef.current],
+                        folder,
+                        platform.exists,
+                      );
+                      if (located.length === 0) {
+                        toast.error("No matching images found in that folder");
+                        return;
+                      }
+                      for (const i of located)
+                        missingFramesRef.current.delete(i);
+                      useAppStore.getState().markVideoUpdated();
+                      setFrameImageMissing(false);
+                      setReadNonce((n) => n + 1); // re-read the current frame
+                      toast.success(
+                        `Located ${located.length} image${located.length > 1 ? "s" : ""}`,
+                      );
+                    } catch (err) {
+                      console.error("[video] Locate frame image failed:", err);
+                    } finally {
+                      setRelocating(false);
+                    }
+                  }}
+                >
+                  {relocating ? "Locating…" : "Locate Image…"}
+                </Button>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Seekbar */}
@@ -2618,6 +2863,7 @@ export function VideoPlayer() {
         <ContextMenu
           x={contextMenu.x}
           y={contextMenu.y}
+          sceneLocation={contextMenu.sceneLocation}
           instanceIdx={contextMenu.instanceIdx}
           nodeIdx={contextMenu.nodeIdx}
           selectedNodes={selectedNodes}

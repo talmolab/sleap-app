@@ -16,7 +16,7 @@ export function QuitConfirmDialog() {
       <div className="bg-card border border-border rounded-lg p-6 shadow-lg max-w-sm mx-4">
         <h3 className="text-sm font-semibold mb-2">Unsaved Changes</h3>
         <p className="text-sm text-muted-foreground mb-4">
-          You have unsaved changes. Are you sure you want to quit?
+          You have unsaved changes that will be lost. Discard them and continue?
         </p>
         <div className="flex justify-end gap-2">
           <button
@@ -29,7 +29,7 @@ export function QuitConfirmDialog() {
             className="px-3 py-1.5 text-xs rounded bg-destructive text-destructive-foreground hover:bg-destructive/80"
             onClick={() => handleResponse(true)}
           >
-            Quit Without Saving
+            Discard Changes
           </button>
         </div>
       </div>
