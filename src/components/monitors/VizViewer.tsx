@@ -59,6 +59,7 @@ export function VizViewer({
   const [url, setUrl] = useState<string | null>(null);
 
   const objUrlRef = useRef<string | null>(null);
+  const maxEpochRef = useRef(-1);
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const dragRef = useRef<{ x: number; y: number; px: number; py: number } | null>(null);
@@ -68,29 +69,42 @@ export function VizViewer({
     setPan({ x: 0, y: 0 });
   }, []);
 
-  // Discover available epochs (initial + poll while live). Extends from the
-  // current max so a finished run isn't re-probed from 0 each tick.
+  // Reset the probe cursor for a new run (probe from epoch 0 again).
+  useEffect(() => {
+    maxEpochRef.current = -1;
+    setMaxEpoch(-1);
+  }, [runDir]);
+
+  // Discover available epochs (initial + poll while live). The probe cursor is a
+  // REF, so the polling interval is created ONCE per run/kind/live rather than
+  // being torn down + recreated (and immediately re-scanned) on every epoch bump
+  // — that churn spun the UI. Monotonic: a settled run stops re-rendering.
   useEffect(() => {
     if (!runDir) return;
     let cancelled = false;
-    let timer: ReturnType<typeof setInterval> | null = null;
     const scan = async () => {
       try {
         const { exists } = await getPlatform();
-        const found = await probeMaxEpoch(runDir, kind, exists, Math.max(0, maxEpoch + 1));
-        if (cancelled || found < 0) return;
-        if (found !== maxEpoch) setMaxEpoch(found);
+        const found = await probeMaxEpoch(
+          runDir,
+          kind,
+          exists,
+          Math.max(0, maxEpochRef.current + 1),
+        );
+        if (cancelled || found <= maxEpochRef.current) return;
+        maxEpochRef.current = found;
+        setMaxEpoch(found);
       } catch {
         /* desktop-only / not ready yet */
       }
     };
     void scan();
-    if (live) timer = setInterval(scan, 2000);
+    const timer = live ? setInterval(scan, 2000) : null;
     return () => {
       cancelled = true;
       if (timer) clearInterval(timer);
     };
-  }, [runDir, kind, live, maxEpoch]);
+  }, [runDir, kind, live]);
 
   // Follow the newest epoch while live.
   useEffect(() => {

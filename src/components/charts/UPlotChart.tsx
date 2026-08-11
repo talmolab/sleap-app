@@ -117,10 +117,23 @@ export const UPlotChart = forwardRef<UPlotChartHandle, UPlotChartProps>(function
       axes,
       legend: { show: showLegend },
       cursor: { drag: { x: true, y: false } },
-      hooks: tooltip ? { setCursor: [updateTooltip] } : {},
     };
     const u = new uPlot(opts, data, el);
     plotRef.current = u;
+
+    // Update the tooltip on REAL pointer moves only. Do NOT use uPlot's setCursor
+    // hook: it also fires on every redraw (i.e. on every streamed training data
+    // update), and forcing a layout (getBoundingClientRect) there thrashed the
+    // main thread into a freeze during training. A plain mousemove listener does
+    // zero work when the mouse isn't over the plot.
+    const onMove = tooltip ? () => updateTooltip(u) : null;
+    const onLeave = tooltip
+      ? () => {
+          if (tooltipRef.current) tooltipRef.current.style.display = "none";
+        }
+      : null;
+    if (onMove) u.over.addEventListener("mousemove", onMove);
+    if (onLeave) u.over.addEventListener("mouseleave", onLeave);
 
     const ro = new ResizeObserver(() => {
       if (plotRef.current) plotRef.current.setSize({ width: el.clientWidth || 320, height });
@@ -129,6 +142,8 @@ export const UPlotChart = forwardRef<UPlotChartHandle, UPlotChartProps>(function
 
     return () => {
       ro.disconnect();
+      if (onMove) u.over.removeEventListener("mousemove", onMove);
+      if (onLeave) u.over.removeEventListener("mouseleave", onLeave);
       if (throttleTimer.current) clearTimeout(throttleTimer.current);
       u.destroy();
       plotRef.current = null;
