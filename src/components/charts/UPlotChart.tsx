@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, forwardRef, useImperativeHandle } from "react";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
 
@@ -12,6 +12,14 @@ export interface UPlotChartProps {
   className?: string;
 }
 
+/** Imperative controls exposed to the parent (zoom reset + PNG capture). */
+export interface UPlotChartHandle {
+  /** Restore the x-axis to the full data range (undo a drag-zoom). */
+  resetZoom(): void;
+  /** Snapshot the chart as a white-background PNG data URL (null if not ready). */
+  toPngDataUrl(): string | null;
+}
+
 /**
  * Thin, chart-domain-agnostic React wrapper around a uPlot instance.
  * - Instance created once on mount, held in a ref.
@@ -20,9 +28,38 @@ export interface UPlotChartProps {
  *   high-frequency (e.g. per-batch) updates do not thrash the canvas.
  * - Series/scales changes recreate the instance (they change rarely).
  */
-export function UPlotChart({ data, series, scales, axes, height = 240, showLegend = true, className }: UPlotChartProps) {
+export const UPlotChart = forwardRef<UPlotChartHandle, UPlotChartProps>(function UPlotChart(
+  { data, series, scales, axes, height = 240, showLegend = true, className },
+  ref,
+) {
   const containerRef = useRef<HTMLDivElement>(null);
   const plotRef = useRef<uPlot | null>(null);
+
+  useImperativeHandle(ref, () => ({
+    resetZoom() {
+      const u = plotRef.current;
+      if (!u) return;
+      const xs = u.data[0];
+      if (xs && xs.length) {
+        u.setScale("x", { min: xs[0] as number, max: xs[xs.length - 1] as number });
+      }
+    },
+    toPngDataUrl() {
+      const u = plotRef.current;
+      if (!u) return null;
+      const src = u.ctx.canvas;
+      const out = document.createElement("canvas");
+      out.width = src.width;
+      out.height = src.height;
+      const ctx = out.getContext("2d");
+      if (!ctx) return null;
+      // Composite onto white so the exported PNG isn't transparent.
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, out.width, out.height);
+      ctx.drawImage(src, 0, 0);
+      return out.toDataURL("image/png");
+    },
+  }), []);
   const pendingData = useRef<uPlot.AlignedData | null>(null);
   const throttleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastDraw = useRef(0);
@@ -77,4 +114,4 @@ export function UPlotChart({ data, series, scales, axes, height = 240, showLegen
   }, [data]);
 
   return <div ref={containerRef} className={className} />;
-}
+});

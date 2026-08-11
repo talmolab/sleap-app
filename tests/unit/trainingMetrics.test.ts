@@ -6,11 +6,22 @@ import {
   formatRuntimeTitle,
   buildLossPlotData,
   buildLossPlotDataBatched,
+  lossCsv,
 } from "@/lib/trainingMetrics";
 import type { EpochSample } from "@/stores/trainingStore";
 
 const ep = (epoch: number, trainLoss: number, valLoss: number): EpochSample => ({
   epoch, trainLoss, valLoss,
+});
+
+describe("lossCsv", () => {
+  it("emits a header + one 1-based-epoch row per sample, blank for null", () => {
+    const csv = lossCsv([ep(0, 1.2, 1.3), { epoch: 1, trainLoss: 0.5, valLoss: null }]);
+    expect(csv).toBe("epoch,train_loss,val_loss\n1,1.2,1.3\n2,0.5,\n");
+  });
+  it("returns just the header for no samples", () => {
+    expect(lossCsv([])).toBe("epoch,train_loss,val_loss\n");
+  });
 });
 
 describe("quantile", () => {

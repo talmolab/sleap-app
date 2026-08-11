@@ -2,8 +2,10 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import type { ReactNode } from "react";
 import type uPlot from "uplot";
 import type { ModelProgress, TrainingStatus } from "@/stores/trainingStore";
-import { UPlotChart } from "@/components/charts/UPlotChart";
-import { buildLossPlotDataBatched, computeYRange, formatRuntimeTitle } from "@/lib/trainingMetrics";
+import { UPlotChart, type UPlotChartHandle } from "@/components/charts/UPlotChart";
+import { buildLossPlotDataBatched, computeYRange, formatRuntimeTitle, lossCsv } from "@/lib/trainingMetrics";
+import { Button } from "@/components/ui/button";
+import { saveBytesFile } from "@/commands/fileCommands";
 
 // Bold numeric tokens (integers, decimals, mm:ss times, scientific notation)
 // in the runtime title — PyQt parity.
@@ -20,6 +22,22 @@ export function LossPlot({
   const [logScale, setLogScale] = useState(true);       // PyQt opens in log
   const [ignoreOutliers, setIgnoreOutliers] = useState(false);
   const [batchesToShow, setBatchesToShow] = useState(-1); // PyQt default = All
+  const chartRef = useRef<UPlotChartHandle>(null);
+
+  // Export the loss curve so people can show it without W&B.
+  const exportPng = async () => {
+    const url = chartRef.current?.toPngDataUrl();
+    if (!url) return;
+    const b64 = url.split(",")[1] ?? "";
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    await saveBytesFile(bytes, `${model.label}-loss.png`, { name: "PNG image", ext: "png" });
+  };
+  const exportCsv = async () => {
+    const bytes = new TextEncoder().encode(lossCsv(model.epochSamples));
+    await saveBytesFile(bytes, `${model.label}-loss.csv`, { name: "CSV", ext: "csv" });
+  };
 
   // ~1s ticker so the runtime title updates live while running.
   const [now, setNow] = useState(Date.now());
@@ -143,7 +161,7 @@ export function LossPlot({
           </span>
         ))}
       </div>
-      <UPlotChart data={data} series={series} scales={scales} axes={axes} height={height} showLegend={false} className="w-full bg-white rounded" />
+      <UPlotChart ref={chartRef} data={data} series={series} scales={scales} axes={axes} height={height} showLegend={false} className="w-full bg-white rounded" />
       <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
         <label className="flex items-center gap-1 cursor-pointer">
           <input type="checkbox" checked={logScale} onChange={(e) => setLogScale(e.target.checked)} />
@@ -166,6 +184,23 @@ export function LossPlot({
             <option value={-1}>All</option>
           </select>
         </label>
+        <span className="ml-auto flex items-center gap-1">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 px-1.5 text-[10px]"
+            title="Reset zoom (drag on the plot to zoom in; double-click also resets)"
+            onClick={() => chartRef.current?.resetZoom()}
+          >
+            Reset zoom
+          </Button>
+          <Button variant="ghost" size="sm" className="h-6 px-1.5 text-[10px]" title="Export the plot as a PNG image" onClick={exportPng}>
+            PNG
+          </Button>
+          <Button variant="ghost" size="sm" className="h-6 px-1.5 text-[10px]" title="Export the loss values as CSV" onClick={exportCsv}>
+            CSV
+          </Button>
+        </span>
       </div>
     </div>
   );
