@@ -348,6 +348,9 @@ export function applyHyperparamsToYaml(yamlText: string, hp: ConfigHyperparams):
 
   // Basic training params
   trainer.max_epochs = hp.maxEpochs;
+  // Keep per-epoch visualization PNGs so the viz viewer's epoch scrubber can
+  // review any epoch during AND after training (sleap-nn deletes them otherwise).
+  trainer.keep_viz = true;
   if (!trainer.train_data_loader) trainer.train_data_loader = {};
   (trainer.train_data_loader as Record<string, unknown>).batch_size = hp.batchSize;
 

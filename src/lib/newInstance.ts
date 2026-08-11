@@ -66,3 +66,37 @@ export async function openNewInstance(
     });
   }
 }
+
+/**
+ * Open a standalone visualization window for a training run, pointed at its viz
+ * dir on disk (`?viz=<runDir>`). The window renders just the viz viewer (see
+ * main.tsx + VizWindow), so it's independent of the main editor and can be sized
+ * / moved freely. Desktop: a native window; browser: a new tab.
+ */
+export async function openVizWindow(runDir: string, title: string): Promise<void> {
+  const platform = await getPlatform();
+  const base = `${location.origin}${import.meta.env.BASE_URL}`;
+  const sep = base.includes("?") ? "&" : "?";
+  const url =
+    `${base}${sep}viz=${encodeURIComponent(runDir)}` +
+    `&vizTitle=${encodeURIComponent(title)}`;
+
+  if (platform.isTauri) {
+    const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+    // Label MUST start with "main" — the fs/dialog capabilities are scoped to
+    // windows matching `main*` (capabilities/default.json + localhost_capability),
+    // and the viz viewer reads PNG bytes via the fs plugin. A bare `viz-*` label
+    // would get no fs access and the images would never load.
+    new WebviewWindow(`main-viz-${Date.now()}`, {
+      url,
+      title: `Visualization — ${title}`,
+      width: 720,
+      height: 780,
+      minWidth: 380,
+      minHeight: 380,
+    });
+    return;
+  }
+
+  window.open(url, "_blank");
+}
