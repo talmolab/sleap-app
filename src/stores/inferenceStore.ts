@@ -6,6 +6,7 @@ import { getPlatform } from "@/platform";
 import { commandContext } from "@/commands";
 import { MergePredictions } from "@/commands/editCommands";
 import { useAppStore } from "@/stores/appStore";
+import { appendLogLine, subprocessFailureMessage } from "@/lib/processLog";
 
 export interface InferenceProgress {
   nProcessed: number;
@@ -89,6 +90,8 @@ interface InferenceState {
   error: string | null;
   progress: InferenceProgress | null;
   log: string[];
+  /** Recent stderr lines, used to surface the real cause in the error banner. */
+  stderrTail: string[];
   minimized: boolean;
   outputPath: string | null;
   startedAt: number | null;
@@ -106,6 +109,7 @@ const initialState = {
   error: null as string | null,
   progress: null as InferenceProgress | null,
   log: [] as string[],
+  stderrTail: [] as string[],
   minimized: false,
   outputPath: null as string | null,
   startedAt: null as number | null,
@@ -135,13 +139,16 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
         } catch {
           // Not JSON — fall through to log
         }
-        set((state) => ({ log: [...state.log, line] }));
+        set((state) => ({ log: appendLogLine(state.log, line) }));
         break;
       }
       case "stderr": {
         const line = event.data.line;
         console.warn("[inference:stderr]", line);
-        set((state) => ({ log: [...state.log, line] }));
+        set((state) => ({
+          log: appendLogLine(state.log, line),
+          stderrTail: appendLogLine(state.stderrTail, line, 25),
+        }));
         break;
       }
       case "finished": {
@@ -153,10 +160,14 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
         if (event.data.success) {
           set({ status: "completed" });
         } else {
-          set({
+          set((state) => ({
             status: "error",
-            error: `Process failed with exit code ${event.data.code}`,
-          });
+            error: subprocessFailureMessage(
+              "Inference",
+              event.data.code,
+              state.stderrTail,
+            ),
+          }));
         }
         break;
       }
@@ -178,6 +189,7 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
       error: null,
       progress: null,
       log: [],
+      stderrTail: [],
       minimized: false,
       outputPath: null,
       startedAt: Date.now(),

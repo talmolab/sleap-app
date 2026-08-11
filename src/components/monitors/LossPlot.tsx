@@ -86,10 +86,11 @@ export function LossPlot({
     },
   }), [logScale, ignoreOutliers]);
 
-  // Stable axes: X "Batches", Y "Loss" (PyQt parity), dark-theme friendly.
+  // Stable axes: X "Batches", Y "Loss" (PyQt parity). Dark strokes for contrast
+  // on the white plot background (PyQt's LossViewer is white-always).
   const axes = useMemo<uPlot.Axis[]>(() => [
-    { label: "Batches", stroke: "#9ca3af", grid: { stroke: "rgba(148,163,184,0.15)", width: 1 }, ticks: { stroke: "rgba(148,163,184,0.15)" } },
-    { label: "Loss",    stroke: "#9ca3af", grid: { stroke: "rgba(148,163,184,0.15)", width: 1 }, ticks: { stroke: "rgba(148,163,184,0.15)" } },
+    { label: "Batches", stroke: "#334155", grid: { stroke: "rgba(15,23,42,0.10)", width: 1 }, ticks: { stroke: "rgba(15,23,42,0.10)" } },
+    { label: "Loss",    stroke: "#334155", grid: { stroke: "rgba(15,23,42,0.10)", width: 1 }, ticks: { stroke: "rgba(15,23,42,0.10)" } },
   ], []);
 
   if (model.batchSamples.length === 0 && model.epochSamples.length === 0) {
@@ -99,7 +100,7 @@ export function LossPlot({
           {status === "running" ? "Waiting for first epoch…" : "No loss data"}
         </div>
         <div
-          className="flex items-center justify-center rounded border border-dashed border-muted-foreground/30 text-[10px] text-muted-foreground"
+          className="flex items-center justify-center rounded border border-dashed border-slate-300 bg-white text-[10px] text-slate-500"
           style={{ height }}
         >
           {status === "running"
@@ -142,7 +143,7 @@ export function LossPlot({
           </span>
         ))}
       </div>
-      <UPlotChart data={data} series={series} scales={scales} axes={axes} height={height} showLegend={false} className="w-full" />
+      <UPlotChart data={data} series={series} scales={scales} axes={axes} height={height} showLegend={false} className="w-full bg-white rounded" />
       <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
         <label className="flex items-center gap-1 cursor-pointer">
           <input type="checkbox" checked={logScale} onChange={(e) => setLogScale(e.target.checked)} />

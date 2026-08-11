@@ -3,6 +3,7 @@ import yaml from "js-yaml";
 import { cancelCommand } from "@/platform/backend";
 import { isTauri } from "@/platform";
 import { computeRuntimeMetrics } from "@/lib/trainingMetrics";
+import { lastErrorLine } from "@/lib/processLog";
 
 const MAX_BATCH_SAMPLES = 20000; // bound batchSamples; drop oldest beyond this
 const MAX_LOG_LINES = 1000; // bound the training log so it doesn't grow unbounded during long runs
@@ -1117,6 +1118,8 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       // froze the UI (#128 follow-up). Buffer raw lines and flush ~4x/sec, coalescing
       // consecutive tqdm progress lines into a single in-place-updating log line.
       const stdoutBuffer: string[] = [];
+      // Recent stderr lines only, to surface the real cause in the error banner.
+      const stderrTail: string[] = [];
       let stdoutFlushTimer: ReturnType<typeof setInterval> | null = null;
       const flushStdout = () => {
         if (stdoutBuffer.length === 0) return;
@@ -1236,6 +1239,10 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
 
             if (event.event === "stdout" || event.event === "stderr") {
               const line = event.data.line;
+              if (event.event === "stderr" && line.trim()) {
+                stderrTail.push(line);
+                if (stderrTail.length > 25) stderrTail.shift();
+              }
 
               // Structured epoch progress (rare — ~once/epoch): record immediately.
               // epoch SAMPLES come from these JSON lines, not from tqdm.
@@ -1293,9 +1300,12 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
             console.log("[training] Continuing to next model (i=%d, total=%d)", i, slots.length);
           } else {
             console.log("[training] Model failed, aborting training loop");
+            const cause = lastErrorLine(stderrTail);
             set((s) => ({
               status: "error",
-              error: `Training failed for ${cf.modelType}`,
+              error: cause
+                ? `Training failed for ${cf.modelType}: ${cause}`
+                : `Training failed for ${cf.modelType}`,
               models: s.models.map((m, j) =>
                 j === i ? { ...m, status: "failed" as const } : m,
               ),

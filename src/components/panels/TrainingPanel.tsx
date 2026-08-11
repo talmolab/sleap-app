@@ -43,6 +43,7 @@ import {
   Settings2,
   LineChart,
   BarChart3,
+  Copy,
 } from "lucide-react";
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -1216,12 +1217,25 @@ export function TrainingPanel() {
 
             {/* Single shared log terminal */}
             {log.length > 0 && (
-              <pre
-                ref={logRef}
-                className="max-h-48 overflow-auto rounded border bg-muted p-1.5 text-[10px] font-mono whitespace-pre-wrap break-all"
-              >
-                {logLines}
-              </pre>
+              <div className="space-y-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] text-muted-foreground">Log</span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 px-1.5 text-[10px]"
+                    onClick={() => navigator.clipboard.writeText(log.join("\n"))}
+                  >
+                    <Copy className="h-3 w-3 mr-1" /> Copy
+                  </Button>
+                </div>
+                <pre
+                  ref={logRef}
+                  className="max-h-48 overflow-auto rounded border bg-muted p-1.5 text-[10px] font-mono whitespace-pre-wrap break-all"
+                >
+                  {logLines}
+                </pre>
+              </div>
             )}
 
             {/* Error banner */}
