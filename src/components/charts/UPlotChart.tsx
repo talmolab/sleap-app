@@ -1,6 +1,7 @@
 import { useEffect, useRef, forwardRef, useImperativeHandle } from "react";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
+import { formatCompactNumber } from "@/lib/formatNumber";
 
 export interface UPlotChartProps {
   data: uPlot.AlignedData;
@@ -10,6 +11,8 @@ export interface UPlotChartProps {
   height?: number;
   showLegend?: boolean;
   className?: string;
+  /** Show a value-readout tooltip at the cursor (x + each series' value). */
+  tooltip?: boolean;
 }
 
 /** Imperative controls exposed to the parent (zoom reset + PNG capture). */
@@ -29,10 +32,11 @@ export interface UPlotChartHandle {
  * - Series/scales changes recreate the instance (they change rarely).
  */
 export const UPlotChart = forwardRef<UPlotChartHandle, UPlotChartProps>(function UPlotChart(
-  { data, series, scales, axes, height = 240, showLegend = true, className },
+  { data, series, scales, axes, height = 240, showLegend = true, className, tooltip = false },
   ref,
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const tooltipRef = useRef<HTMLDivElement>(null);
   const plotRef = useRef<uPlot | null>(null);
 
   useImperativeHandle(ref, () => ({
@@ -68,6 +72,43 @@ export const UPlotChart = forwardRef<UPlotChartHandle, UPlotChartProps>(function
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
+
+    // Imperative cursor tooltip: read the nearest data index + each series'
+    // value and paint a small readout at the cursor. Done in the hook (not React
+    // state) so mouse-move doesn't re-render.
+    const updateTooltip = (u: uPlot) => {
+      const tt = tooltipRef.current;
+      if (!tt) return;
+      const { idx, left, top } = u.cursor;
+      if (idx == null || left == null || left < 0) {
+        tt.style.display = "none";
+        return;
+      }
+      let html = `<div style="opacity:.6;margin-bottom:2px">batch ${u.data[0][idx]}</div>`;
+      let any = false;
+      for (let si = 1; si < u.series.length; si++) {
+        const s = u.series[si];
+        const val = u.data[si]?.[idx];
+        if (val == null || !Number.isFinite(val as number)) continue;
+        any = true;
+        const color = typeof s.stroke === "string" ? s.stroke : "currentColor";
+        html +=
+          `<div style="display:flex;gap:8px;justify-content:space-between">` +
+          `<span style="color:${color}">${s.label ?? ""}</span>` +
+          `<span>${formatCompactNumber(val as number)}</span></div>`;
+      }
+      if (!any) {
+        tt.style.display = "none";
+        return;
+      }
+      tt.innerHTML = html;
+      tt.style.display = "block";
+      const overRect = u.over.getBoundingClientRect();
+      const pRect = (tt.offsetParent as HTMLElement | null)?.getBoundingClientRect();
+      tt.style.left = `${overRect.left - (pRect?.left ?? 0) + left + 12}px`;
+      tt.style.top = `${overRect.top - (pRect?.top ?? 0) + (top ?? 0) + 12}px`;
+    };
+
     const opts: uPlot.Options = {
       width: el.clientWidth || 320,
       height,
@@ -76,6 +117,7 @@ export const UPlotChart = forwardRef<UPlotChartHandle, UPlotChartProps>(function
       axes,
       legend: { show: showLegend },
       cursor: { drag: { x: true, y: false } },
+      hooks: tooltip ? { setCursor: [updateTooltip] } : {},
     };
     const u = new uPlot(opts, data, el);
     plotRef.current = u;
@@ -93,7 +135,7 @@ export const UPlotChart = forwardRef<UPlotChartHandle, UPlotChartProps>(function
     };
     // Recreate only when the chart shape changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [series, scales, axes, height, showLegend]);
+  }, [series, scales, axes, height, showLegend, tooltip]);
 
   // Throttled data updates (≈500ms trailing edge).
   useEffect(() => {
@@ -113,5 +155,29 @@ export const UPlotChart = forwardRef<UPlotChartHandle, UPlotChartProps>(function
     }
   }, [data]);
 
-  return <div ref={containerRef} className={className} />;
+  return (
+    <div className={className} style={{ position: "relative" }}>
+      <div ref={containerRef} />
+      {tooltip && (
+        <div
+          ref={tooltipRef}
+          style={{
+            display: "none",
+            position: "absolute",
+            pointerEvents: "none",
+            zIndex: 20,
+            background: "#0f172a",
+            color: "#e5e7eb",
+            border: "1px solid #334155",
+            borderRadius: 4,
+            padding: "3px 6px",
+            fontSize: 10,
+            lineHeight: 1.4,
+            whiteSpace: "nowrap",
+            boxShadow: "0 2px 8px rgba(0,0,0,.4)",
+          }}
+        />
+      )}
+    </div>
+  );
 });

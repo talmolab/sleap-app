@@ -161,7 +161,7 @@ export function LossPlot({
           </span>
         ))}
       </div>
-      <UPlotChart ref={chartRef} data={data} series={series} scales={scales} axes={axes} height={height} showLegend={false} className="w-full bg-white rounded" />
+      <UPlotChart ref={chartRef} data={data} series={series} scales={scales} axes={axes} height={height} showLegend={false} tooltip className="w-full bg-white rounded" />
       <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
         <label className="flex items-center gap-1 cursor-pointer">
           <input type="checkbox" checked={logScale} onChange={(e) => setLogScale(e.target.checked)} />
