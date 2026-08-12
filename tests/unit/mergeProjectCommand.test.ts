@@ -135,4 +135,56 @@ describe("MergeIntoProjectCommand", () => {
     const labels = currentLabels();
     expect(labels.find({ video: labels.videos[0], frameIdx: 5 }).length).toBe(0);
   });
+
+  it("undo after a same-frame-count merge reverts the shared frame (stale-index regression)", async () => {
+    // Donor conflicts ONLY on the existing frame 0 (no donor-only frame), so the
+    // merge leaves the labeled-frame COUNT unchanged (1 → 1). io guards its frame
+    // index by frame COUNT, so undo's wipe+rebuild of `labeledFrames` left the
+    // index pointing at the stale, post-merge frame — `find()` handed back the
+    // 2-instance frame after undo and the canvas kept the merged instances.
+    // Regression guard for the `reindex()` call in restoreSnapshot.
+    const skeleton = makeSkeleton();
+    const baseVideo = makeVideo("/base/test.mp4");
+    const base = new Labels({
+      labeledFrames: [
+        new LabeledFrame({
+          video: baseVideo,
+          frameIdx: 0,
+          instances: [userInst(skeleton, 10, 10)],
+        }),
+      ],
+      skeletons: [skeleton],
+      videos: [baseVideo],
+    });
+    useAppStore.getState().setLabels(base, "base.slp");
+    // Mirror the user having navigated to frame 0 — the status bar reads the
+    // store's `labeledFrame` pointer directly.
+    const f0 = base.find({ video: baseVideo, frameIdx: 0 })[0];
+    useAppStore.setState({ labeledFrame: f0, instance: f0.instances[0] });
+
+    const donorVideo = makeVideo("/compute/test.mp4");
+    const donor = new Labels({
+      labeledFrames: [
+        new LabeledFrame({
+          video: donorVideo,
+          frameIdx: 0,
+          instances: [userInst(makeSkeleton(), 12, 12)],
+        }),
+      ],
+      skeletons: [makeSkeleton("donor")],
+      videos: [donorVideo],
+    });
+
+    await ctx.execute(MergeIntoProjectCommand, { other: donor, strategy: "keep_both" });
+    // Sanity: the conflict landed on the shared frame; frame count is unchanged.
+    expect(currentLabels().labeledFrames.length).toBe(1);
+    expect(frame0(currentLabels(), baseVideo).instances.length).toBe(2);
+
+    expect(ctx.undo()).toBe(true);
+
+    // io-level truth the canvas/status bar derive from.
+    expect(frame0(currentLabels(), baseVideo).instances.length).toBe(1);
+    // Store pointer the status bar / VideoPlayer overlay read directly.
+    expect(useAppStore.getState().labeledFrame?.instances.length).toBe(1);
+  });
 });

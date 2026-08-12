@@ -216,6 +216,14 @@ export class CommandContext {
         lf.isNegative = frameData.isNegative;
         labels.labeledFrames.push(lf);
       }
+      // We rebuilt `labeledFrames` in place (not via io's mutators), so io's
+      // internal frame/track indices are stale. They're guarded only by frame
+      // COUNT, so when a merge left the count unchanged (e.g. keep_both on an
+      // overlapping frame: donor frames all matched existing ones) the guard
+      // never fires and `find()` below hands back the pre-undo (merged) frames.
+      // Force a rebuild so the view-restore find — and every later find — sees
+      // the restored frames.
+      labels.reindex();
 
       // Restore view to the active frame
       if (snapshot.activeVideo) {
@@ -280,6 +288,13 @@ export class CommandContext {
       this.state.setLabeledFrame(null);
       this.state.setInstance(null);
     }
+
+    // The single-frame branches above also mutate `labeledFrames` directly
+    // (re-creating a deleted frame, or splicing one out) or swap a frame's
+    // `instances`, any of which can desync io's count-guarded indices. Rebuild
+    // once more so subsequent finds/track lookups are correct. (Idempotent with
+    // the multi-frame branch's reindex — it just nulls the caches.)
+    labels.reindex();
 
     this.state.markChanged();
     return before;
