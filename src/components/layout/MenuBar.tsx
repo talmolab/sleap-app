@@ -163,6 +163,12 @@ function FileMenu() {
             </MenubarItem>
           </MenubarSubContent>
         </MenubarSub>
+        <MenubarItem
+          disabled={!projectLoaded}
+          onClick={() => useAppStore.getState().setMergeProjectDialogOpen(true)}
+        >
+          Merge into Project...
+        </MenubarItem>
         <MenubarSub>
           <MenubarSubTrigger disabled={!projectLoaded}>Replace Videos...</MenubarSubTrigger>
           <MenubarSubContent>

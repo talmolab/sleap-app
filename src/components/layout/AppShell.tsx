@@ -32,6 +32,7 @@ import { GoToFrameDialog } from "../dialogs/GoToFrameDialog";
 import { NewProjectDialog } from "../dialogs/NewProjectDialog";
 import { SelectToFrameDialog } from "../dialogs/SelectToFrameDialog";
 import { DeletePredictionsDialog } from "../dialogs/DeletePredictionsDialog";
+import { MergeProjectDialog } from "../dialogs/MergeProjectDialog";
 import { ExportDialog } from "../dialogs/ExportDialog";
 import { ExportClipDialog } from "../dialogs/ExportClipDialog";
 import { ModelMetricsDialog } from "../dialogs/ModelMetricsDialog";
@@ -225,6 +226,7 @@ export function AppShell() {
       <NewProjectDialog />
       <GoToFrameDialog />
       <SelectToFrameDialog />
+      <MergeProjectDialog />
       <DeletePredictionsDialog
         open={deletePredictionsDialogOpen}
         onOpenChange={setDeletePredictionsDialogOpen}

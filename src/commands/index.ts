@@ -95,6 +95,9 @@ export {
   RotateInstance,
 } from "./editCommands";
 
+// Merge into Project (File ▸ Merge into Project…)
+export { MergeIntoProjectCommand } from "./mergeProjectCommands";
+
 // Track commands
 export {
   AddTrack,
