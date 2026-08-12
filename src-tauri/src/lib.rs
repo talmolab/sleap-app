@@ -687,6 +687,44 @@ pub fn run() {
       )?;
     }
 
+    // macOS: the default app menu ships an Edit ▸ Undo/Redo bound to ⌘Z / ⌘⇧Z.
+    // Those NATIVE accelerators intercept the keystroke before it reaches the
+    // WebView, so the web app's own undo/redo handler never fired (⌘Z did nothing
+    // in the bundled app). Install a custom menu WITHOUT Undo/Redo — keeping the
+    // standard app/window items and cut/copy/paste/select-all for text fields — so
+    // ⌘Z / ⌘⇧Z fall through to the app's own keyboard handler.
+    #[cfg(target_os = "macos")]
+    {
+      use tauri::menu::{MenuBuilder, SubmenuBuilder};
+      let app_menu = SubmenuBuilder::new(app, "SLEAP")
+        .about(None)
+        .separator()
+        .hide()
+        .hide_others()
+        .show_all()
+        .separator()
+        .quit()
+        .build()?;
+      let edit_menu = SubmenuBuilder::new(app, "Edit")
+        // Intentionally NO .undo()/.redo() — see the comment above.
+        .cut()
+        .copy()
+        .paste()
+        .select_all()
+        .build()?;
+      let window_menu = SubmenuBuilder::new(app, "Window")
+        .minimize()
+        .separator()
+        .close_window()
+        .build()?;
+      let menu = MenuBuilder::new(app)
+        .item(&app_menu)
+        .item(&edit_menu)
+        .item(&window_menu)
+        .build()?;
+      app.set_menu(menu)?;
+    }
+
     // Build the main window here (removed from tauri.conf.json) so its URL can be
     // http://localhost:PORT in release. Dev / flag-off use WebviewUrl::App, which
     // resolves to the Vite devUrl (debug) or the tauri:// scheme (release).
