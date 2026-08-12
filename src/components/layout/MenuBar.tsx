@@ -65,6 +65,7 @@ import {
 import { PALETTES } from "../../lib/colorPalettes";
 import { QC_MODE_CHOICES } from "../../lib/instanceVisibility";
 import { toast } from "@/lib/notify";
+import { humanizeCommandName } from "@/lib/humanizeCommand";
 import { sleapCmd } from "@/lib/sleapPlugin";
 import { openNewInstance } from "@/lib/newInstance";
 import {
@@ -310,10 +311,10 @@ function EditMenu() {
   const canUndo = commandContext.canUndo;
   const canRedo = commandContext.canRedo;
   const undoLabel = canUndo
-    ? `Undo ${commandContext.undoCommandName}`
+    ? `Undo ${humanizeCommandName(commandContext.undoCommandName ?? "")}`
     : "Undo";
   const redoLabel = canRedo
-    ? `Redo ${commandContext.redoCommandName}`
+    ? `Redo ${humanizeCommandName(commandContext.redoCommandName ?? "")}`
     : "Redo";
 
   return (

@@ -10,6 +10,8 @@ import { Instance, LabeledFrame, PredictedInstance } from "@talmolab/sleap-io.js
 import { useAppStore, type AppState } from "../stores/appStore";
 import type { UpdateTopic, Track, Video } from "../types";
 import type { Command } from "./types";
+import { toast } from "@/lib/notify";
+import { humanizeCommandName } from "@/lib/humanizeCommand";
 
 /** Record of an executed command for change tracking. */
 export interface ChangeRecord {
@@ -326,6 +328,12 @@ export class CommandContext {
 
     const redoSnapshot = this.restoreSnapshot(snapshot);
     this.redoStack.push(redoSnapshot);
+    // Undo/redo are otherwise silent (only the status bar changes) — surface a
+    // short, self-replacing toast naming the action so ⌘Z has visible feedback.
+    toast.info(`Undid ${humanizeCommandName(snapshot.commandName)}`, {
+      id: "undo-redo",
+      duration: 1400,
+    });
     return true;
   }
 
@@ -336,6 +344,10 @@ export class CommandContext {
 
     const undoSnapshot = this.restoreSnapshot(snapshot);
     this.undoStack.push(undoSnapshot);
+    toast.info(`Redid ${humanizeCommandName(snapshot.commandName)}`, {
+      id: "undo-redo",
+      duration: 1400,
+    });
     return true;
   }
 
