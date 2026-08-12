@@ -8,7 +8,8 @@
 
 import { Instance, LabeledFrame, PredictedInstance } from "@talmolab/sleap-io.js";
 import { useAppStore, type AppState } from "../stores/appStore";
-import type { UpdateTopic, Track, Video } from "../types";
+import { UpdateTopic } from "../types";
+import type { Track, Video } from "../types";
 import type { Command } from "./types";
 import { toast } from "@/lib/notify";
 import { humanizeCommandName } from "@/lib/humanizeCommand";
@@ -328,6 +329,17 @@ export class CommandContext {
 
     const redoSnapshot = this.restoreSnapshot(snapshot);
     this.redoStack.push(redoSnapshot);
+    // restoreSnapshot reverts the data, but the canvas instance overlay repaints
+    // only when `overlayVersion` changes (VideoPlayer's draw effect depends on it)
+    // — nothing in the undo path bumped it, so instances a merge added to the
+    // current frame stayed drawn after undo. Force the overlay to redraw.
+    this.state.bumpOverlayVersion();
+    this.signalUpdate([
+      UpdateTopic.Labels,
+      UpdateTopic.Frame,
+      UpdateTopic.Instance,
+      UpdateTopic.Tracks,
+    ]);
     // Undo/redo are otherwise silent (only the status bar changes) — surface a
     // short, self-replacing toast naming the action so ⌘Z has visible feedback.
     toast.info(`Undid ${humanizeCommandName(snapshot.commandName)}`, {
@@ -344,6 +356,13 @@ export class CommandContext {
 
     const undoSnapshot = this.restoreSnapshot(snapshot);
     this.undoStack.push(undoSnapshot);
+    this.state.bumpOverlayVersion();
+    this.signalUpdate([
+      UpdateTopic.Labels,
+      UpdateTopic.Frame,
+      UpdateTopic.Instance,
+      UpdateTopic.Tracks,
+    ]);
     toast.info(`Redid ${humanizeCommandName(snapshot.commandName)}`, {
       id: "undo-redo",
       duration: 1400,
