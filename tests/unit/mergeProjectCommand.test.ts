@@ -187,4 +187,46 @@ describe("MergeIntoProjectCommand", () => {
     // Store pointer the status bar / VideoPlayer overlay read directly.
     expect(useAppStore.getState().labeledFrame?.instances.length).toBe(1);
   });
+
+  it("undo removes a video the merge added (snapshot must cover labels.videos)", async () => {
+    // Donor references a DIFFERENT-basename video, so the merge appends it as a
+    // second project video. The undo snapshot captured only frames + tracks, so
+    // the added video survived undo (status bar stuck on "Video 1 / 2"). Guard
+    // that restoreSnapshot reverts labels.videos too.
+    const skeleton = makeSkeleton();
+    const baseVideo = makeVideo("/base/test.mp4");
+    const base = new Labels({
+      labeledFrames: [
+        new LabeledFrame({
+          video: baseVideo,
+          frameIdx: 0,
+          instances: [userInst(skeleton, 10, 10)],
+        }),
+      ],
+      skeletons: [skeleton],
+      videos: [baseVideo],
+    });
+    useAppStore.getState().setLabels(base, "base.slp");
+
+    // Different basename → no video match → merge appends it as a new video.
+    const donorVideo = makeVideo("/other/camera_B.mp4");
+    const donor = new Labels({
+      labeledFrames: [
+        new LabeledFrame({
+          video: donorVideo,
+          frameIdx: 0,
+          instances: [userInst(makeSkeleton(), 50, 50)],
+        }),
+      ],
+      skeletons: [makeSkeleton("donor")],
+      videos: [donorVideo],
+    });
+
+    await ctx.execute(MergeIntoProjectCommand, { other: donor, strategy: "smart" });
+    expect(currentLabels().videos.length).toBe(2); // sanity: donor video added
+
+    expect(ctx.undo()).toBe(true);
+    expect(currentLabels().videos.length).toBe(1);
+    expect(currentLabels().videos[0]).toBe(baseVideo);
+  });
 });

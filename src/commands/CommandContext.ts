@@ -9,7 +9,7 @@
 import { Instance, LabeledFrame, PredictedInstance } from "@talmolab/sleap-io.js";
 import { useAppStore, type AppState } from "../stores/appStore";
 import { UpdateTopic } from "../types";
-import type { Track, Video } from "../types";
+import type { Skeleton, SuggestionFrame, Track, Video } from "../types";
 import type { Command } from "./types";
 import { toast } from "@/lib/notify";
 import { humanizeCommandName } from "@/lib/humanizeCommand";
@@ -41,6 +41,14 @@ interface UndoSnapshot {
   tracks: Track[];
   /** Track names captured by value, so a rename (SetTrackName) is undoable. */
   trackNames: string[];
+  /**
+   * Project-level collections a bulk op (e.g. `Labels.merge`) can grow but that
+   * live outside individual frames. Snapshotted by reference so undo reverts a
+   * merge that added a video/skeleton/suggestion — not just its frames+tracks.
+   */
+  videos: Video[];
+  skeletons: Skeleton[];
+  suggestions: SuggestionFrame[];
   /** Index of selected instance in the current frame's instances array. */
   selectedIdx: number;
   /** The video that was active when the snapshot was taken. */
@@ -135,6 +143,9 @@ export class CommandContext {
       allFrames: null,
       tracks: labels ? [...labels.tracks] : [],
       trackNames: labels ? labels.tracks.map((t) => t.name) : [],
+      videos: labels ? [...labels.videos] : [],
+      skeletons: labels ? [...labels.skeletons] : [],
+      suggestions: labels ? [...labels.suggestions] : [],
       selectedIdx,
       activeVideo: video,
       activeFrameIdx: frameIdx,
@@ -170,6 +181,9 @@ export class CommandContext {
       allFrames,
       tracks: labels ? [...labels.tracks] : [],
       trackNames: labels ? labels.tracks.map((t) => t.name) : [],
+      videos: labels ? [...labels.videos] : [],
+      skeletons: labels ? [...labels.skeletons] : [],
+      suggestions: labels ? [...labels.suggestions] : [],
       selectedIdx,
       activeVideo: video,
       activeFrameIdx: frameIdx,
@@ -195,11 +209,17 @@ export class CommandContext {
       ? this.takeAllFramesSnapshot(snapshot.commandName)
       : this.takeSnapshot(snapshot.commandName);
 
-    // Restore tracks
+    // Restore tracks + the project-level collections a merge can grow (videos,
+    // skeletons, suggestions), so undoing a merge that added a video/skeleton
+    // reverts them instead of leaving an orphan (e.g. status bar stuck on
+    // "Video 1 / 2" after undo).
     labels.tracks = [...snapshot.tracks];
     snapshot.tracks.forEach((t, i) => {
       if (i < snapshot.trackNames.length) t.name = snapshot.trackNames[i];
     });
+    labels.videos = [...snapshot.videos];
+    labels.skeletons = [...snapshot.skeletons];
+    labels.suggestions = [...snapshot.suggestions];
 
     if (snapshot.allFrames) {
       // Multi-frame restore: rebuild all labeled frames
