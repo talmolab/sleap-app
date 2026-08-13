@@ -351,6 +351,12 @@ export function InstancesPanel() {
   const frameIdx = useAppStore((s) => s.frameIdx);
   const currentInstance = useAppStore((s) => s.instance);
   const setInstance = useAppStore((s) => s.setInstance);
+  // Re-render on every label edit. Track-mutating commands (AddTrack,
+  // SetInstanceTrack, SetTrackName, TransposeInstances) change instance/track
+  // data IN PLACE without swapping a subscribed reference, so without this the
+  // panel only updates by luck via some other re-render (and not at all on a
+  // frame with no incidental repaint — e.g. a negative frame).
+  useAppStore((s) => s.editSeq);
   // Instances require a skeleton with at least one node; a node-less skeleton
   // would yield a null instance. Re-evaluates when the node count changes
   // (skeleton commands bump overlayVersion, which notifies this selector).
