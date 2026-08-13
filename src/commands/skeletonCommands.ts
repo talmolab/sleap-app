@@ -145,6 +145,7 @@ export const AddNodeCommand: Command = {
       frame: null,
       allFrames: null,
       tracks: labels ? [...labels.tracks] : [],
+      trackNames: labels ? labels.tracks.map((t) => t.name) : [],
       selectedIdx: -1,
       activeVideo: ctx.state.video,
       activeFrameIdx: ctx.state.frameIdx,

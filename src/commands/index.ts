@@ -104,6 +104,7 @@ export {
   DeleteTrack,
   DeleteUnusedTracks,
   DeleteAllTracks,
+  SetTrackName,
 } from "./trackCommands";
 
 // Skeleton commands

@@ -36,6 +36,8 @@ interface UndoSnapshot {
   allFrames: SingleFrameData[] | null;
   /** Tracks array snapshot (by reference, order matters). */
   tracks: Track[];
+  /** Track names captured by value, so a rename (SetTrackName) is undoable. */
+  trackNames: string[];
   /** Index of selected instance in the current frame's instances array. */
   selectedIdx: number;
   /** The video that was active when the snapshot was taken. */
@@ -129,6 +131,7 @@ export class CommandContext {
       frame,
       allFrames: null,
       tracks: labels ? [...labels.tracks] : [],
+      trackNames: labels ? labels.tracks.map((t) => t.name) : [],
       selectedIdx,
       activeVideo: video,
       activeFrameIdx: frameIdx,
@@ -163,6 +166,7 @@ export class CommandContext {
       frame: null,
       allFrames,
       tracks: labels ? [...labels.tracks] : [],
+      trackNames: labels ? labels.tracks.map((t) => t.name) : [],
       selectedIdx,
       activeVideo: video,
       activeFrameIdx: frameIdx,
@@ -190,6 +194,9 @@ export class CommandContext {
 
     // Restore tracks
     labels.tracks = [...snapshot.tracks];
+    snapshot.tracks.forEach((t, i) => {
+      if (i < snapshot.trackNames.length) t.name = snapshot.trackNames[i];
+    });
 
     if (snapshot.allFrames) {
       // Multi-frame restore: rebuild all labeled frames
