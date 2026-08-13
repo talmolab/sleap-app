@@ -77,6 +77,7 @@ export {
 // Edit commands
 export {
   AddInstance,
+  ToggleNegativeFrame,
   DeleteSelectedInstance,
   SetPointLocation,
   CopyInstance,

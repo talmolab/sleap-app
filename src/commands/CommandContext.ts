@@ -23,6 +23,8 @@ interface SingleFrameData {
   videoRef: Video;
   frameIdx: number;
   instances: Instance[];
+  /** Negative (background) flag, so Mark-Frame-as-Negative is undoable. */
+  isNegative: boolean;
 }
 
 /** Snapshot of frame state for undo/redo. */
@@ -114,6 +116,7 @@ export class CommandContext {
           videoRef: video,
           frameIdx,
           instances: cloneInstances(lf.instances),
+          isNegative: lf.isNegative,
         };
         if (instance) {
           selectedIdx = lf.instances.indexOf(instance);
@@ -144,6 +147,7 @@ export class CommandContext {
           videoRef: lf.video,
           frameIdx: lf.frameIdx,
           instances: cloneInstances(lf.instances),
+          isNegative: lf.isNegative,
         });
       }
       if (video && instance) {
@@ -199,6 +203,7 @@ export class CommandContext {
           frameIdx: frameData.frameIdx,
         });
         lf.instances = cloneInstances(frameData.instances);
+        lf.isNegative = frameData.isNegative;
         labels.labeledFrames.push(lf);
       }
 
@@ -228,6 +233,7 @@ export class CommandContext {
         // Restore instances on existing frame
         const lf = frames[0];
         lf.instances = cloneInstances(snapshot.frame.instances);
+        lf.isNegative = snapshot.frame.isNegative;
         this.state.setLabeledFrame(lf);
 
         // Restore selection
@@ -246,6 +252,7 @@ export class CommandContext {
           frameIdx: snapshot.frame.frameIdx,
         });
         lf.instances = cloneInstances(snapshot.frame.instances);
+        lf.isNegative = snapshot.frame.isNegative;
         labels.labeledFrames.push(lf);
         this.state.setLabeledFrame(lf);
         this.state.setInstance(null);

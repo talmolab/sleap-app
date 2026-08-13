@@ -95,6 +95,43 @@ export const AddInstance: Command = {
   },
 };
 
+/**
+ * Toggle the current frame's "negative" (background) flag — a frame explicitly
+ * marked as having no animal, used as a negative training example. Creates an
+ * empty flagged frame if none exists; turning the flag off prunes a frame that
+ * only existed to hold it. Undoable (the snapshot captures `isNegative`).
+ */
+export const ToggleNegativeFrame: Command = {
+  name: "ToggleNegativeFrame",
+  topics: [UpdateTopic.Frame, UpdateTopic.Labels],
+  execute(ctx: CommandContext) {
+    const { labels, video, frameIdx } = ctx.state;
+    if (!labels || !video) return;
+
+    const lf = labels.find({ video, frameIdx })[0];
+
+    if (!lf) {
+      const created = new LabeledFrame({ video, frameIdx, isNegative: true });
+      labels.append(created);
+      ctx.state.setLabeledFrame(created);
+      ctx.state.markChanged();
+      return;
+    }
+
+    lf.isNegative = !lf.isNegative;
+
+    // Turning OFF an otherwise-empty frame prunes it (it only held the flag).
+    if (!lf.isNegative && lf.instances.length === 0) {
+      const idx = labels.labeledFrames.indexOf(lf);
+      if (idx !== -1) labels.labeledFrames.splice(idx, 1);
+      ctx.state.setLabeledFrame(null);
+    } else {
+      ctx.state.setLabeledFrame(lf);
+    }
+    ctx.state.markChanged();
+  },
+};
+
 /** Remove the currently selected instance from its frame. */
 export const DeleteSelectedInstance: Command = {
   name: "DeleteSelectedInstance",

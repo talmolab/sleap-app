@@ -41,6 +41,7 @@ import {
   GoNextUserFrame,
   GoNextTrackSpawnFrame,
   AddInstance,
+  ToggleNegativeFrame,
   DeleteSelectedInstance,
   CopyInstance,
   PasteInstance,
@@ -788,6 +789,7 @@ function LabelsMenu() {
   const labels = useAppStore((s) => s.labels);
   const projectLoaded = useAppStore((s) => s.projectLoaded);
   const instance = useAppStore((s) => s.instance);
+  const labeledFrame = useAppStore((s) => s.labeledFrame);
   const instanceInitMethod = useAppStore((s) => s.instanceInitMethod);
   // Instances require a skeleton with at least one node (see EditMenu).
   useAppStore((s) => s.overlayVersion);
@@ -832,6 +834,13 @@ function LabelsMenu() {
         >
           Delete Instance <MenubarShortcut>{modKey}+Backspace</MenubarShortcut>
         </MenubarItem>
+        <MenubarCheckboxItem
+          disabled={!projectLoaded}
+          checked={labeledFrame?.isNegative ?? false}
+          onClick={() => exec(ToggleNegativeFrame)}
+        >
+          Mark Frame as Negative
+        </MenubarCheckboxItem>
         <MenubarSeparator />
         <MenubarItem
           disabled={!projectLoaded}
