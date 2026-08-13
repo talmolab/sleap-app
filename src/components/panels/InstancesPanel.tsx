@@ -8,8 +8,8 @@
  * Supports multi-select via Shift+click (range) and Cmd/Ctrl+click (toggle).
  */
 
-import { useState, useRef, useCallback, useEffect } from "react";
-import { Clipboard, Check } from "lucide-react";
+import { useState, useRef, useCallback, useEffect, useMemo } from "react";
+import { Clipboard, Check, Search } from "lucide-react";
 import { useAppStore } from "../../stores/appStore";
 import { rgbToCSS, getInstanceColor } from "../../lib/colorPalettes";
 import { instanceShowsNonVisible } from "@/lib/instanceVisibility";
@@ -29,6 +29,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
@@ -335,12 +336,27 @@ export function InstancesPanel() {
   );
   const lastClickedRef = useRef<number | null>(null);
 
+  // Track-name filter (#278). Most useful on many-track / multi-animal frames;
+  // the input is hidden for frames with 0-1 instances where it adds nothing.
+  const [filter, setFilter] = useState("");
+
   // Find the labeled frame for current video + frame
   const labeledFrames =
     labels && video ? labels.find({ video, frameIdx }) : [];
   const labeledFrame = labeledFrames.length > 0 ? labeledFrames[0] : null;
   const instances = labeledFrame?.instances ?? [];
   const hasPredictions = instances.some(isPredicted);
+
+  // Only surface the filter when there's enough to filter. When hidden its
+  // value is ignored so a stale query can't hide a lone instance.
+  const showFilter = instances.length > 1;
+  const query = showFilter ? filter.trim().toLowerCase() : "";
+  const matchesFilter = useMemo(() => {
+    return (inst: Instance | PredictedInstance) =>
+      query === "" ||
+      (inst.track?.name ?? "[no track]").toLowerCase().includes(query);
+  }, [query]);
+  const anyMatch = query === "" || instances.some(matchesFilter);
 
   // Derive the selected index from the store's currentInstance
   const currentIndex = currentInstance
@@ -414,10 +430,27 @@ export function InstancesPanel() {
 
   return (
     <div className="flex flex-col h-full">
+      {showFilter && (
+        <div className="relative p-1.5 shrink-0">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            type="text"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="Filter by track..."
+            aria-label="Filter instances by track name"
+            className="h-7 pl-7 text-xs"
+          />
+        </div>
+      )}
       <ScrollArea className="flex-1 min-h-0">
         {instances.length === 0 ? (
           <p className="text-xs text-muted-foreground p-2">
             No instances on this frame.
+          </p>
+        ) : !anyMatch ? (
+          <p className="text-xs text-muted-foreground p-2">
+            No instances match "{filter.trim()}".
           </p>
         ) : (
           <Table>
@@ -443,6 +476,10 @@ export function InstancesPanel() {
             </TableHeader>
             <TableBody>
               {instances.map((inst, i) => {
+                // Filter by track name (#278). Skip non-matching rows but keep
+                // the original index `i` so selection/visibility state (both
+                // index- and identity-keyed) stays correct.
+                if (!matchesFilter(inst)) return null;
                 const visibilityChecked =
                   !hiddenInstances.has(inst) &&
                   (!viewOnlyInstance || viewOnlyInstance === inst);
