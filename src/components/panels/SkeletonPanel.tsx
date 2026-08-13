@@ -15,6 +15,8 @@ import {
   DeleteNodeCommand,
   AddEdgeCommand,
   DeleteEdgeCommand,
+  AddSymmetryCommand,
+  RemoveSymmetryCommand,
   RenameNodeCommand,
   LoadSkeletonTemplateCommand,
   OpenSkeletonCommand,
@@ -96,6 +98,10 @@ export function SkeletonPanel() {
   const [addEdgeOpen, setAddEdgeOpen] = useState(false);
   const [edgeSrcName, setEdgeSrcName] = useState("");
   const [edgeDstName, setEdgeDstName] = useState("");
+  const [selectedSymIdx, setSelectedSymIdx] = useState<number | null>(null);
+  const [addSymOpen, setAddSymOpen] = useState(false);
+  const [sym1Name, setSym1Name] = useState("");
+  const [sym2Name, setSym2Name] = useState("");
   // Sticky seed: remember the last destination we connected to, so reopening
   // the dialog can prefer it as the next source (PyQt-like rapid chaining).
   const lastEdgeDst = useRef<string>("");
@@ -129,6 +135,12 @@ export function SkeletonPanel() {
 
   const nodes = skeleton.nodes ?? [];
   const edges = skeleton.edges ?? [];
+  const symmetries = skeleton.symmetries ?? [];
+  // Nodes not already part of a symmetry (each node can be in at most one).
+  const symmetricNames = new Set(
+    symmetries.flatMap((s) => [s.at(0).name, s.at(1).name])
+  );
+  const freeNodes = nodes.filter((n) => !symmetricNames.has(n.name));
 
   const addNode = () => {
     if (!newNodeName.trim()) return;
@@ -169,6 +181,24 @@ export function SkeletonPanel() {
     setEdgeDstName(sel.dst);
     setSelectedEdgeIdx(newEdgeIdx);
     // NOTE: intentionally do NOT close the dialog — allows rapid edge chaining.
+  };
+
+  const addSymmetry = () => {
+    if (!sym1Name || !sym2Name || sym1Name === sym2Name) return;
+    commandContext.execute(AddSymmetryCommand, {
+      node1: sym1Name,
+      node2: sym2Name,
+    });
+    setAddSymOpen(false);
+    setSelectedSymIdx(symmetries.length);
+  };
+
+  const deleteSymmetry = () => {
+    if (selectedSymIdx === null || selectedSymIdx >= symmetries.length) return;
+    commandContext.execute(RemoveSymmetryCommand, {
+      symmetryIdx: selectedSymIdx,
+    });
+    setSelectedSymIdx(null);
   };
 
   const deleteEdge = () => {
@@ -407,6 +437,9 @@ export function SkeletonPanel() {
           <TabsTrigger value="edges" className="text-xs h-7">
             Edges ({edges.length})
           </TabsTrigger>
+          <TabsTrigger value="symmetries" className="text-xs h-7">
+            Symmetries ({symmetries.length})
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="nodes" className="flex flex-col flex-1 min-h-0 mt-0">
@@ -475,6 +508,57 @@ export function SkeletonPanel() {
               disabled={selectedEdgeIdx === null}
             >
               Delete Edge
+            </Button>
+          </div>
+        </TabsContent>
+
+        <TabsContent
+          value="symmetries"
+          className="flex flex-col flex-1 min-h-0 mt-0"
+        >
+          <ScrollArea className="flex-1">
+            {symmetries.length === 0 ? (
+              <p className="p-2 text-xs text-muted-foreground">
+                No symmetries. Pair left/right mirror nodes (e.g. left_ear ↔
+                right_ear) so flip augmentation swaps them during training.
+              </p>
+            ) : (
+              <ul className="p-1 text-xs">
+                {symmetries.map((s, i) => (
+                  <li
+                    key={i}
+                    onClick={() => setSelectedSymIdx(i)}
+                    className={`cursor-pointer rounded px-2 py-1 ${
+                      selectedSymIdx === i ? "bg-accent" : "hover:bg-accent/50"
+                    }`}
+                  >
+                    {s.at(0).name} ↔ {s.at(1).name}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </ScrollArea>
+          <Separator />
+          <div className="flex gap-1 p-2">
+            <Button
+              variant="subtle"
+              size="xs"
+              onClick={() => {
+                setSym1Name(freeNodes[0]?.name ?? "");
+                setSym2Name(freeNodes[1]?.name ?? "");
+                setAddSymOpen(true);
+              }}
+              disabled={freeNodes.length < 2}
+            >
+              New Symmetry
+            </Button>
+            <Button
+              variant="subtle"
+              size="xs"
+              onClick={deleteSymmetry}
+              disabled={selectedSymIdx === null}
+            >
+              Delete Symmetry
             </Button>
           </div>
         </TabsContent>
@@ -624,6 +708,78 @@ export function SkeletonPanel() {
               disabled={
                 !isValidEdgeSelection(nodes, edges, edgeSrcName, edgeDstName)
               }
+            >
+              Add
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Add Symmetry Dialog */}
+      <Dialog open={addSymOpen} onOpenChange={setAddSymOpen}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Add Symmetry</DialogTitle>
+            <DialogDescription>
+              Pair two nodes as left/right mirror partners.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-2">
+            <div>
+              <label className="text-xs text-muted-foreground block mb-1">
+                Node A
+              </label>
+              <Select
+                value={sym1Name}
+                onValueChange={(v) => {
+                  setSym1Name(v);
+                  setSym2Name((prev) => (prev === v ? "" : prev));
+                }}
+              >
+                <SelectTrigger className="w-full" size="sm">
+                  <SelectValue placeholder="Select node..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {freeNodes.map((n, i) => (
+                    <SelectItem key={i} value={n.name}>
+                      {n.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <label className="text-xs text-muted-foreground block mb-1">
+                Node B
+              </label>
+              <Select value={sym2Name} onValueChange={setSym2Name}>
+                <SelectTrigger className="w-full" size="sm">
+                  <SelectValue placeholder="Select node..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {freeNodes
+                    .filter((n) => n.name !== sym1Name)
+                    .map((n, i) => (
+                      <SelectItem key={i} value={n.name}>
+                        {n.name}
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setAddSymOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              onClick={addSymmetry}
+              disabled={!sym1Name || !sym2Name || sym1Name === sym2Name}
             >
               Add
             </Button>

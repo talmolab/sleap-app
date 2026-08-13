@@ -113,6 +113,8 @@ export {
   DeleteNodeCommand,
   AddEdgeCommand,
   DeleteEdgeCommand,
+  AddSymmetryCommand,
+  RemoveSymmetryCommand,
   RenameNodeCommand,
   LoadSkeletonTemplateCommand,
   OpenSkeletonCommand,
