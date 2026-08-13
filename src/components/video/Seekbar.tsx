@@ -161,6 +161,7 @@ export function Seekbar() {
   const palette = useAppStore((s) => s.palette);
   const setFrameIdx = useAppStore((s) => s.setFrameIdx);
   const frameRange = useAppStore((s) => s.frameRange);
+  const markedFrame = useAppStore((s) => s.markedFrame);
   const seekbarHeaderGraph = useAppStore((s) => s.seekbarHeaderGraph);
   const seekbarHeaderReduction = useAppStore((s) => s.seekbarHeaderReduction);
   const seekbarHeaderHeight = useAppStore((s) => s.seekbarHeaderHeight);
@@ -846,6 +847,19 @@ export function Seekbar() {
       }
     }
 
+    // Draw the marked-frame bookmark: an amber down-triangle "flag" at the top,
+    // distinct from the yellow suggestion ticks and the blue labeled marks.
+    if (markedFrame && markedFrame.video === video) {
+      const mx = frameToX(markedFrame.frameIdx);
+      ctx.fillStyle = "#f59e0b"; // amber
+      ctx.beginPath();
+      ctx.moveTo(mx - 4, 0);
+      ctx.lineTo(mx + 4, 0);
+      ctx.lineTo(mx, 7);
+      ctx.closePath();
+      ctx.fill();
+    }
+
     // Draw current frame indicator. While scrubbing, follow the cursor
     // (scrubFrame) so the bar glides smoothly even if the image load lags;
     // otherwise track the actually-loaded frame.
@@ -860,7 +874,7 @@ export function Seekbar() {
       ctx.fillStyle = "rgba(255,255,255,0.3)";
       ctx.fillRect(hx - 0.5, 0, 1, h);
     }
-  }, [frameIdx, scrubFrame, totalFrames, headerData, labels, palette, hoverFrame, video, frameRange]);
+  }, [frameIdx, scrubFrame, totalFrames, headerData, labels, palette, hoverFrame, video, frameRange, markedFrame]);
 
   // Playback animation loop
   useEffect(() => {

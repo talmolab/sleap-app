@@ -13,7 +13,7 @@ import { useAppStore } from "../stores/appStore";
 import { Track } from "@talmolab/sleap-io.js";
 import { quitApp } from "../lib/quit";
 import { openNewInstance } from "../lib/newInstance";
-import { dismiss } from "../lib/notify";
+import { dismiss, toast } from "../lib/notify";
 import { spacePanState } from "../lib/spacePanTracking";
 import {
   commandContext,
@@ -26,6 +26,8 @@ import {
   GoPrevSuggestion,
   GoToLastInteracted,
   GoNextUserFrame,
+  GoPrevUserFrame,
+  GoToMarkedFrame,
   GoNextTrackSpawnFrame,
   GoToStartFrame,
   GoToEndFrame,
@@ -119,6 +121,34 @@ export function useKeyboardShortcuts() {
       [DEFAULT_SHORTCUTS["goto next user"]]: (e) => {
         e.preventDefault();
         commandContext.execute(GoNextUserFrame);
+      },
+      [DEFAULT_SHORTCUTS["goto prev user"]]: (e) => {
+        e.preventDefault();
+        commandContext.execute(GoPrevUserFrame);
+      },
+
+      // Mark the current frame / jump back to it (PyQt Ctrl+M / Ctrl+Shift+M).
+      [DEFAULT_SHORTCUTS["mark frame"]]: (e) => {
+        if (isTextInput(e)) return;
+        e.preventDefault();
+        const s = store();
+        if (!s.video) return;
+        s.setMarkedFrame({ video: s.video, frameIdx: s.frameIdx });
+        toast.info(`Marked frame ${s.frameIdx.toLocaleString()}`, {
+          id: "mark-frame",
+          duration: 1400,
+        });
+      },
+      [DEFAULT_SHORTCUTS["goto marked frame"]]: (e) => {
+        e.preventDefault();
+        commandContext.execute(GoToMarkedFrame);
+      },
+
+      // Open the Training panel (PyQt "learning" dialog, Ctrl+L).
+      [DEFAULT_SHORTCUTS.learning]: (e) => {
+        if (isTextInput(e)) return;
+        e.preventDefault();
+        store().openPanel("training");
       },
 
       // View toggles (direct store)

@@ -112,6 +112,8 @@ export interface AppState {
   labeledFrame: LabeledFrame | null;
   skeleton: Skeleton | null;
   lastInteractedFrame: number | null;
+  /** User-bookmarked frame (Mark Frame ⌘M / go-to ⌘⇧M). One per project. */
+  markedFrame: { video: Video; frameIdx: number } | null;
   frameInteractionStack: string[];
 
   // === UI layout state ===
@@ -321,6 +323,7 @@ export interface AppState {
   resetInstanceVisibility: () => void;
   setInstance: (instance: Instance | null) => void;
   setLabeledFrame: (frame: LabeledFrame | null) => void;
+  setMarkedFrame: (marked: { video: Video; frameIdx: number } | null) => void;
   resetView: () => void;
   markChanged: () => void;
   touchFrame: () => void;
@@ -431,6 +434,7 @@ export const useAppStore = create<AppState>()(
       labeledFrame: null,
       skeleton: null,
       lastInteractedFrame: null,
+      markedFrame: null,
       frameInteractionStack: [],
 
       // UI layout state
@@ -726,6 +730,11 @@ export const useAppStore = create<AppState>()(
       setLabeledFrame: (frame) =>
         set((state) => {
           state.labeledFrame = frame;
+        }),
+
+      setMarkedFrame: (marked) =>
+        set((state) => {
+          state.markedFrame = marked;
         }),
 
       // Reset the main video canvas view to its default (zoom = 1, no pan,

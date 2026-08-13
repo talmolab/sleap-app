@@ -70,6 +70,8 @@ export {
   GoToFrame,
   GoToLastInteracted,
   GoNextUserFrame,
+  GoPrevUserFrame,
+  GoToMarkedFrame,
   GoNextTrackSpawnFrame,
   SelectToFrame,
 } from "./navCommands";

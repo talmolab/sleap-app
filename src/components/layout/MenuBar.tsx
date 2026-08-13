@@ -39,6 +39,8 @@ import {
   GoPrevSuggestion,
   GoToLastInteracted,
   GoNextUserFrame,
+  GoPrevUserFrame,
+  GoToMarkedFrame,
   GoNextTrackSpawnFrame,
   AddInstance,
   ToggleNegativeFrame,
@@ -431,8 +433,24 @@ function GoMenu() {
         <MenubarItem disabled={!projectLoaded} onClick={() => exec(GoNextUserFrame)}>
           Next User Labeled Frame <MenubarShortcut>{modKey}+U</MenubarShortcut>
         </MenubarItem>
+        <MenubarItem disabled={!projectLoaded} onClick={() => exec(GoPrevUserFrame)}>
+          Previous User Labeled Frame <MenubarShortcut>{modKey}+Shift+U</MenubarShortcut>
+        </MenubarItem>
         <MenubarItem disabled={!projectLoaded} onClick={() => exec(GoNextTrackSpawnFrame)}>
           Next Track Spawn Frame <MenubarShortcut>{modKey}+E</MenubarShortcut>
+        </MenubarItem>
+        <MenubarSeparator />
+        <MenubarItem
+          disabled={!projectLoaded}
+          onClick={() => {
+            const s = useAppStore.getState();
+            if (s.video) s.setMarkedFrame({ video: s.video, frameIdx: s.frameIdx });
+          }}
+        >
+          Mark Frame <MenubarShortcut>{modKey}+M</MenubarShortcut>
+        </MenubarItem>
+        <MenubarItem disabled={!projectLoaded} onClick={() => exec(GoToMarkedFrame)}>
+          Go to Marked Frame <MenubarShortcut>{modKey}+Shift+M</MenubarShortcut>
         </MenubarItem>
         <MenubarSeparator />
         <MenubarItem
