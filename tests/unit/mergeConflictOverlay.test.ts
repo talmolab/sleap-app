@@ -15,7 +15,6 @@ import {
   buildConflictOverlay,
   computeFitTransform,
   conflictCropRect,
-  CONFLICT_BASE_COLOR,
   CONFLICT_DONOR_COLOR,
 } from "@/lib/mergeConflictOverlay";
 import { Instance, Skeleton, Video } from "@talmolab/sleap-io.js";
@@ -45,7 +44,7 @@ function inst(sk: Skeleton, x: number, y: number): Instance {
 }
 
 describe("buildConflictOverlay", () => {
-  it("colors base blue and donor orange, uniformly, preserving geometry", () => {
+  it("keeps base's computed color, forces the donor color, preserves geometry", () => {
     const sk = makeSkeleton();
     const video = makeVideo();
     const base = [inst(sk, 10, 10)];
@@ -58,12 +57,15 @@ describe("buildConflictOverlay", () => {
 
     expect(b).toHaveLength(1);
     expect(d).toHaveLength(2);
-    // Fixed base/donor colors, not palette/track colors.
-    expect(b.every((ri) => ri.color === CONFLICT_BASE_COLOR)).toBe(true);
+    // Donor is recolored to the fixed donor color; base keeps its computed
+    // (track/palette) color so it matches the on-canvas instance.
     expect(d.every((ri) => ri.color === CONFLICT_DONOR_COLOR)).toBe(true);
-    // No per-node/edge color overrides that would fight the base/donor color.
-    expect(b[0].nodeColors).toBeUndefined();
-    expect(b[0].edgeColors).toBeUndefined();
+    expect(b.every((ri) => ri.color !== CONFLICT_DONOR_COLOR)).toBe(true);
+    expect(Array.isArray(b[0].color)).toBe(true);
+    expect(b[0].color).toHaveLength(3); // an RGB tuple
+    // Donor color is uniform (no per-node/edge overrides).
+    expect(d[0].nodeColors).toBeUndefined();
+    expect(d[0].edgeColors).toBeUndefined();
     // Geometry passthrough: 2 nodes, 1 edge.
     expect(b[0].nodes).toHaveLength(2);
     expect(b[0].edges).toHaveLength(1);

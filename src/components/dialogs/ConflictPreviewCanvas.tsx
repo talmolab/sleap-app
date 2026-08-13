@@ -12,6 +12,7 @@
 
 import { useEffect, useRef } from "react";
 import type { Instance, Track, Video } from "@/types";
+import { useAppStore } from "@/stores/appStore";
 import { renderInstances } from "@/canvas/SkeletonRenderer";
 import {
   buildConflictOverlay,
@@ -87,6 +88,10 @@ export function ConflictPreviewCanvas({
   className,
 }: ConflictPreviewCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  // Base pose uses the project's real color settings so it matches the canvas.
+  const palette = useAppStore((s) => s.palette);
+  const distinctlyColor = useAppStore((s) => s.distinctlyColor);
+  const colorPredicted = useAppStore((s) => s.colorPredicted);
 
   useEffect(() => {
     let cancelled = false;
@@ -126,7 +131,7 @@ export function ConflictPreviewCanvas({
       const { base, donor } = buildConflictOverlay(
         baseInstances,
         donorInstances,
-        { video, tracks }
+        { video, tracks, palette, distinctlyColor, colorPredicted }
       );
 
       // Crop to the conflict region so the two poses (and their small offset)
@@ -183,7 +188,16 @@ export function ConflictPreviewCanvas({
     return () => {
       cancelled = true;
     };
-  }, [video, frameIdx, baseInstances, donorInstances, tracks]);
+  }, [
+    video,
+    frameIdx,
+    baseInstances,
+    donorInstances,
+    tracks,
+    palette,
+    distinctlyColor,
+    colorPredicted,
+  ]);
 
   return (
     <canvas

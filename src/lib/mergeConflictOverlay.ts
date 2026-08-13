@@ -16,25 +16,31 @@ import type { RenderedInstance } from "@/canvas/SkeletonRenderer";
 import type { RGB } from "@/lib/colorPalettes";
 import { buildExportRenderedInstances } from "@/lib/videoExport";
 
-/** Base pose color (blue-500) in the conflict preview. `RenderedInstance.color`
- *  is an RGB tuple (fed to `rgbToCSS`), NOT a CSS string. */
-export const CONFLICT_BASE_COLOR: RGB = [59, 130, 246];
-/** Donor pose color (orange-500) in the conflict preview. */
-export const CONFLICT_DONOR_COLOR: RGB = [249, 115, 22];
+/**
+ * Donor pose color (magenta) in the conflict preview — a fixed, distinct
+ * "incoming" color that won't collide with the base's blue/orange track colors.
+ * `RenderedInstance.color` is an RGB tuple (fed to `rgbToCSS`), NOT a CSS string.
+ */
+export const CONFLICT_DONOR_COLOR: RGB = [236, 72, 153];
 
 export interface ConflictOverlayContext {
   /** The base video the conflict frame belongs to (for crop-aware coords). */
   video: Video | null;
-  /** Project tracks (passed through to the shared builder; color is overridden). */
+  /** Project tracks (so the base pose gets its real track color). */
   tracks: Track[];
+  /** Color settings from the app store, so BASE matches the on-canvas instance. */
+  palette?: string;
+  distinctlyColor?: string;
+  colorPredicted?: boolean;
 }
 
 /**
- * Build blue base + orange donor {@link RenderedInstance}s for one conflict
- * frame. Geometry (nodes, edges, crop-aware coords, visibility) comes from the
- * shared exporter builder; only the color is forced so base vs donor read
- * clearly. `nodeColors`/`edgeColors` are cleared so the uniform base/donor color
- * wins over any per-node/edge palette coloring.
+ * Build overlay {@link RenderedInstance}s for one conflict frame. The BASE pose
+ * keeps its real track/palette color (so it matches the instance drawn on the
+ * main canvas); only the DONOR pose is recolored to the fixed
+ * {@link CONFLICT_DONOR_COLOR} so "incoming" reads distinctly regardless of the
+ * base's colors. Geometry (nodes, edges, crop-aware coords) comes from the
+ * shared exporter builder.
  */
 export function buildConflictOverlay(
   baseInstances: readonly Instance[],
@@ -42,31 +48,23 @@ export function buildConflictOverlay(
   ctx: ConflictOverlayContext
 ): { base: RenderedInstance[]; donor: RenderedInstance[] } {
   const opts = {
-    palette: "standard",
-    // Not "node"/"edge" → the builder leaves nodeColors/edgeColors undefined, so
-    // the single forced color applies uniformly.
-    distinctlyColor: "track",
-    colorPredicted: true,
+    palette: ctx.palette ?? "standard",
+    distinctlyColor: ctx.distinctlyColor ?? "track",
+    colorPredicted: ctx.colorPredicted ?? false,
     showNonVisibleNodes: true,
     tracks: ctx.tracks,
     video: ctx.video,
   };
 
-  const force = (
-    instances: readonly Instance[],
-    color: RGB
-  ): RenderedInstance[] =>
-    buildExportRenderedInstances(instances, opts).map((ri) => ({
-      ...ri,
-      color,
-      nodeColors: undefined,
-      edgeColors: undefined,
-    }));
+  const base = buildExportRenderedInstances(baseInstances, opts);
+  const donor = buildExportRenderedInstances(donorInstances, opts).map((ri) => ({
+    ...ri,
+    color: CONFLICT_DONOR_COLOR,
+    nodeColors: undefined,
+    edgeColors: undefined,
+  }));
 
-  return {
-    base: force(baseInstances, CONFLICT_BASE_COLOR),
-    donor: force(donorInstances, CONFLICT_DONOR_COLOR),
-  };
+  return { base, donor };
 }
 
 /** A rectangle in source-pixel space. */
