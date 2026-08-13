@@ -38,6 +38,7 @@ import { ModelMetricsDialog } from "../dialogs/ModelMetricsDialog";
 import { ExportPackageDialog } from "../dialogs/ExportPackageDialog";
 import { ShortcutsDialog } from "../dialogs/ShortcutsDialog";
 import { HelpDialog } from "../dialogs/HelpDialog";
+import { MenuSearchDialog } from "../dialogs/MenuSearchDialog";
 import { useAppStore } from "../../stores/appStore";
 import { useTrainingStore } from "../../stores/trainingStore";
 import {
@@ -250,6 +251,7 @@ export function AppShell() {
         open={helpDialogOpen}
         onOpenChange={setHelpDialogOpen}
       />
+      <MenuSearchDialog />
       <PathResolutionHost />
 
       {/* Toast notifications. closeButton renders an always-visible X (see the

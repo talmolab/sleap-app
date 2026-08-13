@@ -1109,6 +1109,14 @@ function HelpMenu() {
       <MenubarContent>
         <MenubarItem
           onClick={() =>
+            useAppStore.getState().setMenuSearchDialogOpen(true)
+          }
+        >
+          Search Menus...
+        </MenubarItem>
+        <MenubarSeparator />
+        <MenubarItem
+          onClick={() =>
             useAppStore.getState().setShortcutsDialogOpen(true)
           }
         >
