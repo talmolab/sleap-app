@@ -459,7 +459,7 @@ export const useAppStore = create<AppState>()(
       markerSize: 4,
       nodeLabelSize: 12,
       insetSize: 400,
-      insetZoom: 4,
+      insetZoom: 2,
       trailLength: 0,
       trailShade: "Normal",
       lutMin: 0,
