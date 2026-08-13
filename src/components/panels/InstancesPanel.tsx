@@ -9,8 +9,7 @@
  */
 
 import { useState, useRef, useCallback, useEffect } from "react";
-import { Clipboard, Check, Eye, Focus, Ghost } from "lucide-react";
-import type { LucideIcon } from "lucide-react";
+import { Clipboard, Check } from "lucide-react";
 import { useAppStore } from "../../stores/appStore";
 import { rgbToCSS, getInstanceColor } from "../../lib/colorPalettes";
 import { instanceShowsNonVisible } from "@/lib/instanceVisibility";
@@ -55,62 +54,57 @@ function formatPointsAsPython(instance: Instance | PredictedInstance): string {
   return `np.array([\n${rows.join(",\n")}\n])`;
 }
 
-/** Compact icon column header with a hover tooltip (the panel is narrow). */
-function IconHeader({ icon: Icon, label }: { icon: LucideIcon; label: string }) {
-  return (
-    <TableHead className="py-1 px-1 text-center w-8 h-auto">
-      <TooltipProvider delayDuration={300}>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <span className="inline-flex justify-center">
-              <Icon className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />
-              <span className="sr-only">{label}</span>
-            </span>
-          </TooltipTrigger>
-          <TooltipContent side="top">
-            <p>{label}</p>
-          </TooltipContent>
-        </Tooltip>
-      </TooltipProvider>
-    </TableHead>
-  );
-}
-
 /**
- * One per-instance visibility checkbox cell. Stops click propagation so
- * toggling a box never also selects the row. Muted (but still clickable) when
- * `muted` is set (view-only greying); disabled in non-manual QC modes.
+ * One per-instance visibility toggle, rendered as a clearly-labeled button
+ * (#278) instead of a bare checkbox. The visible `text` says what it does
+ * (show / solo / show inv); the underlying control is still a native checkbox
+ * (kept sr-only) so it stays accessible (role + aria-label) and the wiring
+ * tests keep exercising it. Stops click propagation so toggling never also
+ * selects the row. Muted (but still clickable) when `muted` is set (view-only
+ * greying); disabled in non-manual QC modes.
  */
-function VisibilityCheckbox({
+function VisibilityToggle({
   label,
+  text,
   checked,
   disabled,
   muted,
   onChange,
 }: {
   label: string;
+  text: string;
   checked: boolean;
   disabled: boolean;
   muted?: boolean;
   onChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
 }) {
   return (
-    <TableCell
-      className={cn("py-0.5 px-1 text-center", muted && "opacity-40")}
+    <label
       // A native title= on a disabled <input> isn't reliably shown on hover, so
-      // the read-only hint lives on the enclosing cell instead.
-      title={disabled ? "Set Display: Manual to edit" : undefined}
+      // the read-only hint lives on the enclosing label instead.
+      title={disabled ? "Set Display: Manual to edit" : label}
+      onClick={(e) => e.stopPropagation()}
+      className={cn(
+        "inline-flex items-center justify-center whitespace-nowrap rounded border px-1.5 py-0.5 text-[10px] font-medium leading-none select-none transition-colors",
+        disabled
+          ? "cursor-not-allowed border-border text-muted-foreground opacity-40"
+          : checked
+            ? "cursor-pointer border-primary/50 bg-primary/15 text-foreground"
+            : "cursor-pointer border-border text-muted-foreground hover:bg-muted/50",
+        muted && "opacity-40",
+      )}
     >
       <input
         type="checkbox"
         aria-label={label}
-        className="h-3.5 w-3.5 cursor-pointer accent-primary align-middle"
+        className="sr-only"
         checked={checked}
         disabled={disabled}
         onClick={(e) => e.stopPropagation()}
         onChange={onChange}
       />
-    </TableCell>
+      {text}
+    </label>
   );
 }
 
@@ -195,25 +189,32 @@ function InstanceRow({
       <TableCell className="py-0.5 px-2 text-xs text-right tabular-nums text-muted-foreground">
         {score !== null ? score.toFixed(2) : "--"}
       </TableCell>
-      <VisibilityCheckbox
-        label="Visibility"
-        checked={visibilityChecked}
-        disabled={readOnly}
-        muted={viewOnlyActive}
-        onChange={onToggleVisibility}
-      />
-      <VisibilityCheckbox
-        label="View Only"
-        checked={viewOnlyChecked}
-        disabled={readOnly}
-        onChange={onToggleViewOnly}
-      />
-      <VisibilityCheckbox
-        label="Invisible Nodes"
-        checked={invisibleNodesChecked}
-        disabled={readOnly}
-        onChange={onToggleInvisibleNodes}
-      />
+      <TableCell className="py-0.5 px-2">
+        <div className="flex flex-wrap justify-end gap-1">
+          <VisibilityToggle
+            label="Visibility"
+            text="show"
+            checked={visibilityChecked}
+            disabled={readOnly}
+            muted={viewOnlyActive}
+            onChange={onToggleVisibility}
+          />
+          <VisibilityToggle
+            label="View Only"
+            text="solo"
+            checked={viewOnlyChecked}
+            disabled={readOnly}
+            onChange={onToggleViewOnly}
+          />
+          <VisibilityToggle
+            label="Invisible Nodes"
+            text="show inv"
+            checked={invisibleNodesChecked}
+            disabled={readOnly}
+            onChange={onToggleInvisibleNodes}
+          />
+        </div>
+      </TableCell>
     </TableRow>
   );
 }
@@ -435,9 +436,9 @@ export function InstancesPanel() {
                 <TableHead className="py-1 px-2 text-xs font-normal text-right h-auto">
                   Score
                 </TableHead>
-                <IconHeader icon={Eye} label="Visibility" />
-                <IconHeader icon={Focus} label="View Only" />
-                <IconHeader icon={Ghost} label="Invisible Nodes" />
+                <TableHead className="py-1 px-2 text-xs font-normal text-right h-auto">
+                  Display
+                </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
