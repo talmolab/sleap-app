@@ -14,6 +14,7 @@ import { describe, it, expect } from "../bun-test";
 import {
   buildConflictOverlay,
   computeFitTransform,
+  conflictCropRect,
   CONFLICT_BASE_COLOR,
   CONFLICT_DONOR_COLOR,
 } from "@/lib/mergeConflictOverlay";
@@ -105,5 +106,40 @@ describe("computeFitTransform", () => {
     const t = computeFitTransform(0, 0, 300, 300);
     expect(t.displayWidth).toBe(0);
     expect(t.displayHeight).toBe(0);
+  });
+});
+
+describe("conflictCropRect", () => {
+  it("returns the tight bbox of visible nodes with no pad/min", () => {
+    const rect = conflictCropRect(
+      [{ nodes: [{ x: 10, y: 10, visible: true }, { x: 20, y: 20, visible: true }] }],
+      { padFrac: 0, minSize: 0 }
+    );
+    expect(rect).toEqual({ x: 10, y: 10, w: 10, h: 10 });
+  });
+
+  it("enforces a minimum size around a single point (centered)", () => {
+    const rect = conflictCropRect([{ nodes: [{ x: 100, y: 100, visible: true }] }], {
+      padFrac: 0,
+      minSize: 40,
+    });
+    expect(rect).toEqual({ x: 80, y: 80, w: 40, h: 40 });
+  });
+
+  it("pads the bbox by padFrac", () => {
+    const rect = conflictCropRect(
+      [{ nodes: [{ x: 0, y: 0, visible: true }, { x: 10, y: 0, visible: true }] }],
+      { padFrac: 1, minSize: 0 }
+    );
+    // width 10 → padded to 20, centered at x=5 → x=-5..15; height 0 → 0.
+    expect(rect?.w).toBe(20);
+    expect(rect?.x).toBe(-5);
+  });
+
+  it("returns null when there are no visible, finite nodes", () => {
+    expect(conflictCropRect([{ nodes: [{ x: 1, y: 1, visible: false }] }])).toBeNull();
+    expect(
+      conflictCropRect([{ nodes: [{ x: NaN, y: NaN, visible: true }] }])
+    ).toBeNull();
   });
 });

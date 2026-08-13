@@ -16,6 +16,8 @@ import { renderInstances } from "@/canvas/SkeletonRenderer";
 import {
   buildConflictOverlay,
   computeFitTransform,
+  conflictCropRect,
+  type Rect,
 } from "@/lib/mergeConflictOverlay";
 
 interface ConflictPreviewCanvasProps {
@@ -62,6 +64,18 @@ function frameToDrawable(frame: unknown, video: Video): OffscreenCanvas | null {
   return null;
 }
 
+/** Clamp a source-space rect to the frame bounds (keeps drawImage source valid). */
+function clampRect(r: Rect, srcW: number, srcH: number): Rect {
+  const w = Math.min(r.w, srcW);
+  const h = Math.min(r.h, srcH);
+  return {
+    w,
+    h,
+    x: Math.max(0, Math.min(r.x, srcW - w)),
+    y: Math.max(0, Math.min(r.y, srcH - h)),
+  };
+}
+
 export function ConflictPreviewCanvas({
   video,
   frameIdx,
@@ -91,41 +105,69 @@ export function ConflictPreviewCanvas({
       clear();
       if (!video) return;
 
+      // Decode the frame if we can; a missing/undecodable frame is non-fatal —
+      // we still draw the poses (on black), which are the point of the preview.
       let drawable: OffscreenCanvas | null = null;
       try {
         const frame = await video.getFrame(frameIdx);
-        if (cancelled || !frame) return;
-        drawable = frameToDrawable(frame, video);
+        if (cancelled) return;
+        if (frame) drawable = frameToDrawable(frame, video);
       } catch {
-        return; // frame unreadable — leave the cleared canvas
+        /* leave drawable null */
       }
-      if (cancelled || !drawable) return;
+      if (cancelled) return;
 
-      const srcW = drawable.width;
-      const srcH = drawable.height;
-      const fit = computeFitTransform(srcW, srcH, canvas.width, canvas.height);
+      // Source dimensions from the decoded frame, else the video's known shape.
+      const shape = video.shape;
+      const srcW = drawable?.width ?? shape?.[2] ?? 0;
+      const srcH = drawable?.height ?? shape?.[1] ?? 0;
+      if (!srcW || !srcH) return; // no way to place the poses
 
-      // Frame image, letterboxed to fit.
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-      ctx.drawImage(
-        drawable,
-        0,
-        0,
-        srcW,
-        srcH,
-        fit.offsetX,
-        fit.offsetY,
-        fit.displayWidth,
-        fit.displayHeight
-      );
-
-      // Poses in source-pixel space, scaled+offset onto the fitted frame.
       const { base, donor } = buildConflictOverlay(
         baseInstances,
         donorInstances,
         { video, tracks }
       );
-      ctx.setTransform(fit.scale, 0, 0, fit.scale, fit.offsetX, fit.offsetY);
+
+      // Crop to the conflict region so the two poses (and their small offset)
+      // fill the preview instead of being lost in the full frame.
+      const crop = clampRect(
+        conflictCropRect([...base, ...donor], { padFrac: 0.8, minSize: 60 }) ?? {
+          x: 0,
+          y: 0,
+          w: srcW,
+          h: srcH,
+        },
+        srcW,
+        srcH
+      );
+      const fit = computeFitTransform(crop.w, crop.h, canvas.width, canvas.height);
+
+      // Frame image (cropped), letterboxed; skipped when undecodable → poses on black.
+      if (drawable) {
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.drawImage(
+          drawable,
+          crop.x,
+          crop.y,
+          crop.w,
+          crop.h,
+          fit.offsetX,
+          fit.offsetY,
+          fit.displayWidth,
+          fit.displayHeight
+        );
+      }
+
+      // Poses in source-pixel space, mapped through the crop → canvas.
+      ctx.setTransform(
+        fit.scale,
+        0,
+        0,
+        fit.scale,
+        fit.offsetX - crop.x * fit.scale,
+        fit.offsetY - crop.y * fit.scale
+      );
       const renderOpts = {
         zoom: fit.scale, // keep marker/edge sizes visually constant
         showLabels: false, // keep the small preview uncluttered

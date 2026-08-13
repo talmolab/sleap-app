@@ -69,6 +69,53 @@ export function buildConflictOverlay(
   };
 }
 
+/** A rectangle in source-pixel space. */
+export interface Rect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/**
+ * Bounding box (source pixels) around the visible nodes of the given rendered
+ * instances, padded by `padFrac` of each dimension and expanded to at least
+ * `minSize`. Returns null if no node is visible/finite. Used to crop the preview
+ * canvas to the conflict region so the poses (and their small offset) are big
+ * enough to compare instead of lost in the full frame.
+ */
+export function conflictCropRect(
+  instances: ReadonlyArray<{
+    nodes: ReadonlyArray<{ x: number; y: number; visible: boolean }>;
+  }>,
+  opts: { padFrac?: number; minSize?: number } = {}
+): Rect | null {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  let any = false;
+  for (const inst of instances) {
+    for (const n of inst.nodes) {
+      if (!n.visible || Number.isNaN(n.x) || Number.isNaN(n.y)) continue;
+      any = true;
+      if (n.x < minX) minX = n.x;
+      if (n.y < minY) minY = n.y;
+      if (n.x > maxX) maxX = n.x;
+      if (n.y > maxY) maxY = n.y;
+    }
+  }
+  if (!any) return null;
+
+  const padFrac = opts.padFrac ?? 0.6;
+  const minSize = opts.minSize ?? 40;
+  const cx = (minX + maxX) / 2;
+  const cy = (minY + maxY) / 2;
+  const w = Math.max((maxX - minX) * (1 + padFrac), minSize);
+  const h = Math.max((maxY - minY) * (1 + padFrac), minSize);
+  return { x: cx - w / 2, y: cy - h / 2, w, h };
+}
+
 /** How a source frame maps into the preview canvas (fit-and-center / letterbox). */
 export interface FitTransform {
   /** Uniform scale from source pixels to canvas pixels. */

@@ -1,27 +1,31 @@
 /**
  * Merge into Project dialog (File ▸ Merge into Project…).
  *
- * A2 scope: pick a donor `.slp`, load it WITHOUT activating, show a non-mutating
- * structural preview (videos/skeleton/tracks matched vs. new — via
- * `Labels.match`), let the user choose a conflict strategy, then merge in place
- * via {@link MergeIntoProjectCommand} (undoable). A skeleton mismatch BLOCKS the
- * merge (no silent two-skeleton project). See memory
- * `project_merge_into_project_design`.
+ * Pick a donor `.slp`, load it WITHOUT activating, show a non-mutating
+ * structural preview (videos/skeleton/tracks — via `Labels.match`). A skeleton
+ * mismatch BLOCKS the merge. Otherwise we enumerate real per-instance conflicts
+ * (5px spatial, user-vs-user); if any, the user resolves them per-row (A3,
+ * {@link ConflictReview}) seeded by a global default, then merges via
+ * {@link MergeConflictsCommand} (undoable). A clean merge (no conflicts) just
+ * combines the two. See memory `project_merge_into_project_design`.
  */
 
 import { useState, useCallback } from "react";
 import type { Labels } from "@talmolab/sleap-io.js";
 import { useAppStore } from "../../stores/appStore";
 import { commandContext } from "../../commands/CommandContext";
-import { MergeIntoProjectCommand, MERGE_INTO_PROJECT_MATCHERS } from "../../commands/mergeProjectCommands";
-import { loadLabelsFromSlpFile, loadLabelsFromSlpPath } from "../../lib/loadProject";
+import { MERGE_INTO_PROJECT_MATCHERS } from "../../commands/mergeProjectCommands";
+import { MergeConflictsCommand } from "../../commands/mergeConflictCommands";
 import {
-  summarizeMatch,
-  MERGE_STRATEGY_OPTIONS,
-  type MatchPreview,
-  type MergeStrategyChoice,
-} from "../../lib/mergeProject";
+  enumerateConflicts,
+  type Conflict,
+  type ConflictChoice,
+  type ResolvedConflict,
+} from "../../lib/mergeConflicts";
+import { loadLabelsFromSlpFile, loadLabelsFromSlpPath } from "../../lib/loadProject";
+import { summarizeMatch, type MatchPreview } from "../../lib/mergeProject";
 import { getPlatform } from "../../platform/index";
+import { ConflictReview } from "./ConflictReview";
 import {
   Dialog,
   DialogContent,
@@ -31,8 +35,6 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Label } from "@/components/ui/label";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Separator } from "@/components/ui/separator";
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -45,7 +47,9 @@ export function MergeProjectDialog() {
   const [donor, setDonor] = useState<Labels | null>(null);
   const [donorName, setDonorName] = useState("");
   const [preview, setPreview] = useState<MatchPreview | null>(null);
-  const [strategy, setStrategy] = useState<MergeStrategyChoice>("smart");
+  const [conflicts, setConflicts] = useState<Conflict[]>([]);
+  const [defaultChoice, setDefaultChoice] = useState<ConflictChoice>("both");
+  const [choices, setChoices] = useState<Record<string, ConflictChoice>>({});
   const [busy, setBusy] = useState<null | "loading" | "merging">(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -53,7 +57,9 @@ export function MergeProjectDialog() {
     setDonor(null);
     setDonorName("");
     setPreview(null);
-    setStrategy("smart");
+    setConflicts([]);
+    setDefaultChoice("both");
+    setChoices({});
     setBusy(null);
     setError(null);
   }, []);
@@ -84,6 +90,8 @@ export function MergeProjectDialog() {
     setBusy("loading");
     setDonor(null);
     setPreview(null);
+    setConflicts([]);
+    setChoices({});
     try {
       const donorLabels =
         typeof result === "string"
@@ -93,9 +101,14 @@ export function MergeProjectDialog() {
         typeof result === "string" ? result.split(/[\\/]/).pop() ?? result : result.name;
       // Same matchers as the merge, so the preview reflects what will happen.
       const match = await labels.match(donorLabels, MERGE_INTO_PROJECT_MATCHERS);
+      const previewSummary = summarizeMatch(match);
       setDonor(donorLabels);
       setDonorName(name);
-      setPreview(summarizeMatch(match));
+      setPreview(previewSummary);
+      // Enumerate real per-instance conflicts (only meaningful if not blocked).
+      if (!previewSummary.skeletonBlocked) {
+        setConflicts(await enumerateConflicts(labels, donorLabels));
+      }
     } catch (e) {
       setError(errMsg(e));
     } finally {
@@ -107,20 +120,28 @@ export function MergeProjectDialog() {
     if (!donor) return;
     setBusy("merging");
     try {
-      await commandContext.execute(MergeIntoProjectCommand, { other: donor, strategy });
+      const resolutions: ResolvedConflict[] = conflicts.map((c) => ({
+        conflict: c,
+        choice: choices[c.id] ?? defaultChoice,
+      }));
+      await commandContext.execute(MergeConflictsCommand, {
+        other: donor,
+        resolutions,
+      });
       handleOpenChange(false);
     } catch (e) {
       setError(errMsg(e));
       setBusy(null);
     }
-  }, [donor, strategy, handleOpenChange]);
+  }, [donor, conflicts, choices, defaultChoice, handleOpenChange]);
 
   const blocked = preview?.skeletonBlocked ?? false;
   const canMerge = !!donor && !blocked && busy === null;
+  const hasConflicts = conflicts.length > 0;
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="sm:max-w-[440px]">
+      <DialogContent className={hasConflicts ? "sm:max-w-[640px]" : "sm:max-w-[440px]"}>
         <DialogHeader>
           <DialogTitle>Merge into Project</DialogTitle>
           <DialogDescription>
@@ -141,12 +162,10 @@ export function MergeProjectDialog() {
         </div>
 
         {busy === "loading" && (
-          <p className="text-sm text-muted-foreground">Reading & matching…</p>
+          <p className="text-sm text-muted-foreground">Reading, matching & finding conflicts…</p>
         )}
 
-        {error && (
-          <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
-        )}
+        {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
 
         {preview && (
           <>
@@ -158,11 +177,7 @@ export function MergeProjectDialog() {
               <PreviewRow
                 label="Videos"
                 text={`${preview.videosMatched} matched · ${preview.videosNew} new`}
-                detail={
-                  preview.newVideoNames.length
-                    ? preview.newVideoNames.join(", ")
-                    : undefined
-                }
+                detail={preview.newVideoNames.length ? preview.newVideoNames.join(", ") : undefined}
               />
               <PreviewRow
                 label="Skeleton"
@@ -187,24 +202,23 @@ export function MergeProjectDialog() {
         {preview && !blocked && (
           <>
             <Separator />
-            <div className="space-y-2">
-              <div className="text-sm font-medium">On conflicting frames</div>
-              <RadioGroup
-                value={strategy}
-                onValueChange={(v) => setStrategy(v as MergeStrategyChoice)}
-                className="gap-2"
-              >
-                {MERGE_STRATEGY_OPTIONS.map((opt) => (
-                  <div key={opt.value} className="flex items-start gap-2">
-                    <RadioGroupItem value={opt.value} id={`merge-strat-${opt.value}`} className="mt-1" />
-                    <Label htmlFor={`merge-strat-${opt.value}`} className="font-normal">
-                      <span>{opt.label}</span>
-                      <span className="block text-xs text-muted-foreground">{opt.hint}</span>
-                    </Label>
-                  </div>
-                ))}
-              </RadioGroup>
-            </div>
+            {hasConflicts ? (
+              <ConflictReview
+                conflicts={conflicts}
+                tracks={labels?.tracks ?? []}
+                defaultChoice={defaultChoice}
+                onDefaultChange={setDefaultChoice}
+                choices={choices}
+                onChoiceChange={(id, c) =>
+                  setChoices((prev) => ({ ...prev, [id]: c }))
+                }
+                onReset={() => setChoices({})}
+              />
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                No overlapping instances — this is a clean merge.
+              </p>
+            )}
           </>
         )}
 
@@ -213,7 +227,11 @@ export function MergeProjectDialog() {
             Cancel
           </Button>
           <Button onClick={handleMerge} disabled={!canMerge}>
-            {busy === "merging" ? "Merging…" : "Merge"}
+            {busy === "merging"
+              ? "Merging…"
+              : hasConflicts
+                ? `Merge (${conflicts.length} conflict${conflicts.length !== 1 ? "s" : ""})`
+                : "Merge"}
           </Button>
         </DialogFooter>
       </DialogContent>
