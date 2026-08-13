@@ -13,7 +13,7 @@
 
 import type { Instance, Track, Video } from "@/types";
 import type { RenderedInstance } from "@/canvas/SkeletonRenderer";
-import type { RGB } from "@/lib/colorPalettes";
+import { getInstanceColor, type RGB } from "@/lib/colorPalettes";
 import { buildExportRenderedInstances } from "@/lib/videoExport";
 
 /**
@@ -32,6 +32,12 @@ export interface ConflictOverlayContext {
   palette?: string;
   distinctlyColor?: string;
   colorPredicted?: boolean;
+  /**
+   * Frame index of each base instance (from {@link Conflict.baseColorIndices}),
+   * used to color the base pose exactly as the main canvas does. Falls back to
+   * array order when absent.
+   */
+  baseColorIndices?: number[];
 }
 
 /**
@@ -56,7 +62,22 @@ export function buildConflictOverlay(
     video: ctx.video,
   };
 
-  const base = buildExportRenderedInstances(baseInstances, opts);
+  // Re-color the base pose using each instance's FRAME index (not its position
+  // in this conflict's small array) so instance 0 = palette[0], instance 1 =
+  // palette[1]… exactly as on the main canvas. Tracked instances color by track
+  // (index ignored) inside getInstanceColor.
+  const base = buildExportRenderedInstances(baseInstances, opts).map((ri, k) => ({
+    ...ri,
+    color: getInstanceColor(
+      opts.palette,
+      opts.distinctlyColor,
+      ctx.baseColorIndices?.[k] ?? k,
+      baseInstances[k].track,
+      opts.tracks,
+      false,
+      opts.colorPredicted
+    ),
+  }));
   const donor = buildExportRenderedInstances(donorInstances, opts).map((ri) => ({
     ...ri,
     color: CONFLICT_DONOR_COLOR,

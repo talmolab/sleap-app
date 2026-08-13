@@ -21,10 +21,10 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 
-const CHOICES: { value: ConflictChoice; label: string }[] = [
-  { value: "both", label: "Both" },
-  { value: "base", label: "Base" },
-  { value: "donor", label: "Donor" },
+const CHOICES: { value: ConflictChoice; label: string; long: string }[] = [
+  { value: "both", label: "Both", long: "Keep both" },
+  { value: "base", label: "Base", long: "Base wins" },
+  { value: "donor", label: "Donor", long: "Donor wins" },
 ];
 
 function trackSummary(c: Conflict): string {
@@ -74,7 +74,7 @@ export function ConflictReview({
         </div>
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2 text-sm">
-            <span className="text-muted-foreground">Default:</span>
+            <span className="text-muted-foreground">Global rule:</span>
             <RadioGroup
               value={defaultChoice}
               onValueChange={(v) => onDefaultChange(v as ConflictChoice)}
@@ -90,7 +90,7 @@ export function ConflictReview({
                     htmlFor={`conflict-default-${c.value}`}
                     className="font-normal"
                   >
-                    {c.label}
+                    {c.long}
                   </Label>
                 </div>
               ))}
@@ -101,8 +101,9 @@ export function ConflictReview({
             size="sm"
             onClick={onReset}
             disabled={!hasOverrides}
+            title="Clear per-row overrides and follow the global rule"
           >
-            Reset
+            Reset choices
           </Button>
         </div>
       </div>
@@ -154,6 +155,7 @@ export function ConflictReview({
               video={selected.video}
               frameIdx={selected.frameIdx}
               baseInstances={selected.baseInstances}
+              baseColorIndices={selected.baseColorIndices}
               donorInstances={selected.donorInstances}
               tracks={tracks}
               width={300}

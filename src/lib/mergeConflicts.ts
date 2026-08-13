@@ -31,6 +31,12 @@ export interface Conflict {
   frameIdx: number;
   /** Cluster's base-side user instances (live refs into the base frame). */
   baseInstances: Instance[];
+  /**
+   * Index of each base instance within its frame's full instance list — the
+   * same index the main canvas colors by, so the preview base pose gets the
+   * instance's real color (instance 0 = palette[0], instance 1 = palette[1]…).
+   */
+  baseColorIndices: number[];
   /** Cluster's donor-side user instances (live refs into the donor frame). */
   donorInstances: Instance[];
   /** Min mean-node distance (px) among the cluster's matched pairs — Δpx triage. */
@@ -132,7 +138,8 @@ export async function enumerateConflicts(
     });
     if (!baseFrames.length) continue; // donor-only frame → no clash
 
-    const baseUser = baseFrames[0].instances.filter(isUser);
+    const baseFrame = baseFrames[0];
+    const baseUser = baseFrame.instances.filter(isUser);
     const donorUser = dFrame.instances.filter(isUser);
     if (!baseUser.length || !donorUser.length) continue;
 
@@ -155,6 +162,9 @@ export async function enumerateConflicts(
         video: mappedVideo,
         frameIdx: dFrame.frameIdx,
         baseInstances: cluster.baseIdxs.map((i) => baseUser[i]),
+        baseColorIndices: cluster.baseIdxs.map((i) =>
+          baseFrame.instances.indexOf(baseUser[i])
+        ),
         donorInstances: cluster.donorIdxs.map((j) => donorUser[j]),
         distance: best === Infinity ? 0 : best,
       });

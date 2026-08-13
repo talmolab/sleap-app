@@ -128,6 +128,29 @@ describe("enumerateConflicts", () => {
     expect(conflicts[0].distance).toBeLessThan(5);
   });
 
+  it("records each base instance's frame index for coloring", async () => {
+    // Base frame 0 has two animals: A at (10,10) [frame idx 0], B at (300,300)
+    // [frame idx 1]. The donor clashes with each → two conflicts carrying the
+    // distinct frame indices, so the preview colors them differently.
+    const baseVideo = makeVideo("/base/clip.mp4");
+    const base = new Labels({
+      labeledFrames: [
+        new LabeledFrame({
+          video: baseVideo,
+          frameIdx: 0,
+          instances: [userInst(sk, 10, 10), userInst(sk, 300, 300)],
+        }),
+      ],
+      skeletons: [sk],
+      videos: [baseVideo],
+    });
+    const donor = donorFrame(0, [userInst(sk, 12, 12), userInst(sk, 302, 302)]);
+    const conflicts = await enumerateConflicts(base, donor);
+    expect(conflicts).toHaveLength(2);
+    const indices = conflicts.flatMap((c) => c.baseColorIndices).sort();
+    expect(indices).toEqual([0, 1]);
+  });
+
   it("does not flag a donor instance farther than the threshold", async () => {
     const { base } = baseWith([userInst(sk, 10, 10)]);
     const donor = donorFrame(0, [userInst(sk, 50, 50)]); // ~56px away

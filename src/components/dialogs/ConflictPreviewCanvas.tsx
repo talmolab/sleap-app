@@ -26,6 +26,8 @@ interface ConflictPreviewCanvasProps {
   video: Video | null;
   frameIdx: number;
   baseInstances: Instance[];
+  /** Frame color-index of each base instance (Conflict.baseColorIndices). */
+  baseColorIndices?: number[];
   donorInstances: Instance[];
   tracks: Track[];
   width?: number;
@@ -81,6 +83,7 @@ export function ConflictPreviewCanvas({
   video,
   frameIdx,
   baseInstances,
+  baseColorIndices,
   donorInstances,
   tracks,
   width = 360,
@@ -131,7 +134,7 @@ export function ConflictPreviewCanvas({
       const { base, donor } = buildConflictOverlay(
         baseInstances,
         donorInstances,
-        { video, tracks, palette, distinctlyColor, colorPredicted }
+        { video, tracks, palette, distinctlyColor, colorPredicted, baseColorIndices }
       );
 
       // Crop to the conflict region so the two poses (and their small offset)
@@ -192,6 +195,7 @@ export function ConflictPreviewCanvas({
     video,
     frameIdx,
     baseInstances,
+    baseColorIndices,
     donorInstances,
     tracks,
     palette,

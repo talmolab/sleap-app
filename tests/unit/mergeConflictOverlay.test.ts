@@ -75,6 +75,23 @@ describe("buildConflictOverlay", () => {
     expect(b[0].nodes[0].y).toBe(10);
   });
 
+  it("colors the base pose by its frame index (so instances differ)", () => {
+    const sk = makeSkeleton();
+    const video = makeVideo();
+    const at0 = buildConflictOverlay([inst(sk, 10, 10)], [], {
+      video,
+      tracks: [],
+      baseColorIndices: [0],
+    });
+    const at1 = buildConflictOverlay([inst(sk, 10, 10)], [], {
+      video,
+      tracks: [],
+      baseColorIndices: [1],
+    });
+    // Same instance, different FRAME index → different palette color.
+    expect(at0.base[0].color).not.toEqual(at1.base[0].color);
+  });
+
   it("returns empty arrays for empty inputs", () => {
     const { base, donor } = buildConflictOverlay([], [], {
       video: makeVideo(),
