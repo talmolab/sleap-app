@@ -1,21 +1,24 @@
 /**
  * Conflict-review step for Merge into Project (A3).
  *
- * Shown when the donor clashes with the project on one or more frames. Left = a
- * compact list of conflict clusters (Frame / Track / Δpx + a Base|Donor|Both
- * segmented control); right = the {@link ConflictPreviewCanvas} for the selected
- * row (base pose blue vs donor pose orange over the frame). A "Default for
- * conflicts" radio seeds every row; per-row controls override it. The parent
- * owns the resolution state and turns it into `ResolvedConflict[]` on merge.
+ * Left = a compact, sortable + filterable list of conflict clusters (Frame /
+ * Track / Δpx + a Base|Donor|Both segmented control); right = the
+ * {@link ConflictPreviewCanvas} for the selected row (base pose in its real
+ * color vs donor pose in magenta). A "Global rule" radio seeds every row;
+ * per-row controls override it. A stats line reports how much merges cleanly.
+ * The parent owns the resolution state and turns it into `ResolvedConflict[]`.
  *
  * MVP: a multi-instance pile-up cluster is resolved at cluster granularity
- * (Base = keep all base, Donor = keep all donors, Both = keep everything). A
- * per-instance keep/drop expansion is a future refinement.
+ * (Base = keep all base, Donor = keep all donors, Both = keep everything).
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { Track } from "@/types";
-import type { Conflict, ConflictChoice } from "@/lib/mergeConflicts";
+import type {
+  Conflict,
+  ConflictChoice,
+  MergeStats,
+} from "@/lib/mergeConflicts";
 import { ConflictPreviewCanvas } from "./ConflictPreviewCanvas";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -27,6 +30,8 @@ const CHOICES: { value: ConflictChoice; label: string; long: string }[] = [
   { value: "donor", label: "Donor", long: "Donor wins" },
 ];
 
+type SortKey = "frame" | "track" | "distance";
+
 function trackSummary(c: Conflict): string {
   const names = [...c.baseInstances, ...c.donorInstances]
     .map((i) => i.track?.name)
@@ -34,8 +39,19 @@ function trackSummary(c: Conflict): string {
   return [...new Set(names)].join(", ") || "—";
 }
 
+function sortConflicts(list: Conflict[], key: SortKey, dir: 1 | -1): Conflict[] {
+  return [...list].sort((a, b) => {
+    let d = 0;
+    if (key === "frame") d = a.frameIdx - b.frameIdx || a.distance - b.distance;
+    else if (key === "distance") d = a.distance - b.distance;
+    else d = trackSummary(a).localeCompare(trackSummary(b));
+    return d * dir;
+  });
+}
+
 export function ConflictReview({
   conflicts,
+  stats,
   tracks,
   defaultChoice,
   onDefaultChange,
@@ -44,6 +60,7 @@ export function ConflictReview({
   onReset,
 }: {
   conflicts: Conflict[];
+  stats: MergeStats;
   tracks: Track[];
   defaultChoice: ConflictChoice;
   onDefaultChange: (c: ConflictChoice) => void;
@@ -52,25 +69,60 @@ export function ConflictReview({
   onChoiceChange: (id: string, c: ConflictChoice) => void;
   onReset: () => void;
 }) {
+  const [sortKey, setSortKey] = useState<SortKey>("frame");
+  const [sortDir, setSortDir] = useState<1 | -1>(1);
+  const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(
     conflicts[0]?.id ?? null
   );
-  // Keep a valid selection when the conflict set changes (new donor).
+
+  const visible = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const filtered = q
+      ? conflicts.filter(
+          (c) =>
+            String(c.frameIdx).includes(q) ||
+            trackSummary(c).toLowerCase().includes(q)
+        )
+      : conflicts;
+    return sortConflicts(filtered, sortKey, sortDir);
+  }, [conflicts, query, sortKey, sortDir]);
+
+  // Keep the selection valid (and visible) as filter/sort/donor change.
   useEffect(() => {
-    if (!conflicts.some((c) => c.id === selectedId)) {
-      setSelectedId(conflicts[0]?.id ?? null);
+    if (!visible.some((c) => c.id === selectedId)) {
+      setSelectedId(visible[0]?.id ?? null);
     }
-  }, [conflicts, selectedId]);
+  }, [visible, selectedId]);
 
   const selected = conflicts.find((c) => c.id === selectedId) ?? null;
   const effective = (c: Conflict): ConflictChoice => choices[c.id] ?? defaultChoice;
   const hasOverrides = Object.keys(choices).length > 0;
 
+  const toggleSort = (key: SortKey) => {
+    if (key === sortKey) setSortDir((d) => (d === 1 ? -1 : 1));
+    else {
+      setSortKey(key);
+      setSortDir(1);
+    }
+  };
+  const caret = (key: SortKey) =>
+    key === sortKey ? (sortDir === 1 ? " ▲" : " ▼") : "";
+
   return (
     <div className="space-y-2">
-      <div className="flex items-center justify-between">
-        <div className="text-sm font-medium text-amber-600 dark:text-amber-400">
-          ⚠ {conflicts.length} conflict{conflicts.length !== 1 ? "s" : ""}
+      {/* Header: stats + global rule + reset */}
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-sm font-medium text-amber-600 dark:text-amber-400">
+            ⚠ {stats.conflicts} conflict{stats.conflicts !== 1 ? "s" : ""} ·{" "}
+            {stats.conflictFrames} frame{stats.conflictFrames !== 1 ? "s" : ""}
+          </div>
+          <div className="text-xs text-muted-foreground">
+            {stats.cleanInstances} of {stats.donorInstances} incoming instances
+            merge cleanly · {stats.donorFrames} incoming frame
+            {stats.donorFrames !== 1 ? "s" : ""}
+          </div>
         </div>
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2 text-sm">
@@ -109,46 +161,78 @@ export function ConflictReview({
       </div>
 
       <div className="flex gap-3">
-        {/* Conflict list */}
-        <div className="w-1/2 max-h-60 overflow-y-auto rounded border border-border">
-          <table className="w-full text-xs">
-            <thead className="sticky top-0 bg-card text-muted-foreground">
-              <tr>
-                <th className="px-2 py-1 text-left font-medium">Frame</th>
-                <th className="px-1 py-1 text-left font-medium">Track</th>
-                <th className="px-1 py-1 text-right font-medium">Δpx</th>
-                <th className="px-2 py-1 text-center font-medium">Keep</th>
-              </tr>
-            </thead>
-            <tbody>
-              {conflicts.map((c) => (
-                <tr
-                  key={c.id}
-                  className={`cursor-pointer border-t border-border/50 ${
-                    selectedId === c.id ? "bg-accent" : "hover:bg-accent/50"
-                  }`}
-                  onClick={() => setSelectedId(c.id)}
-                >
-                  <td className="px-2 py-1 tabular-nums">{c.frameIdx}</td>
-                  <td className="px-1 py-1 truncate max-w-[80px]" title={trackSummary(c)}>
-                    {trackSummary(c)}
-                  </td>
-                  <td className="px-1 py-1 text-right tabular-nums">
-                    {c.distance.toFixed(1)}
-                  </td>
-                  <td className="px-2 py-1 text-center">
-                    <Segmented
-                      value={effective(c)}
-                      onChange={(v) => onChoiceChange(c.id, v)}
-                    />
-                  </td>
+        {/* Left: filter + conflict list */}
+        <div className="w-1/2 space-y-1">
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Filter by frame or track…"
+            className="w-full rounded border border-border bg-background px-2 py-1 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          />
+          <div className="max-h-56 overflow-y-auto rounded border border-border">
+            <table className="w-full text-xs">
+              <thead className="sticky top-0 bg-card text-muted-foreground">
+                <tr>
+                  {(
+                    [
+                      ["frame", "Frame", "text-left"],
+                      ["track", "Track", "text-left"],
+                      ["distance", "Δpx", "text-right"],
+                    ] as [SortKey, string, string][]
+                  ).map(([key, label, align]) => (
+                    <th key={key} className={`px-1 py-1 font-medium ${align}`}>
+                      <button
+                        type="button"
+                        onClick={() => toggleSort(key)}
+                        className="hover:text-foreground"
+                      >
+                        {label}
+                        {caret(key)}
+                      </button>
+                    </th>
+                  ))}
+                  <th className="px-2 py-1 text-center font-medium">Keep</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {visible.map((c) => (
+                  <tr
+                    key={c.id}
+                    className={`cursor-pointer border-t border-border/50 ${
+                      selectedId === c.id ? "bg-accent" : "hover:bg-accent/50"
+                    }`}
+                    onClick={() => setSelectedId(c.id)}
+                  >
+                    <td className="px-1 py-1 tabular-nums">{c.frameIdx}</td>
+                    <td
+                      className="px-1 py-1 truncate max-w-[70px]"
+                      title={trackSummary(c)}
+                    >
+                      {trackSummary(c)}
+                    </td>
+                    <td className="px-1 py-1 text-right tabular-nums">
+                      {c.distance.toFixed(1)}
+                    </td>
+                    <td className="px-2 py-1 text-center">
+                      <Segmented
+                        value={effective(c)}
+                        onChange={(v) => onChoiceChange(c.id, v)}
+                      />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {visible.length === 0 && (
+              <div className="px-2 py-2 text-xs text-muted-foreground">
+                No conflicts match “{query}”.
+              </div>
+            )}
+          </div>
         </div>
 
-        {/* Selected-row preview */}
+        {/* Right: selected-row preview */}
         <div className="w-1/2">
           {selected && (
             <ConflictPreviewCanvas

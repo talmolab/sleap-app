@@ -14,6 +14,7 @@ import {
   enumerateConflicts,
   compileDeletions,
   applyConflictResolutions,
+  mergeStats,
 } from "@/lib/mergeConflicts";
 import { Labels, LabeledFrame, Instance, Video, Skeleton } from "@talmolab/sleap-io.js";
 
@@ -253,6 +254,38 @@ describe("applyConflictResolutions", () => {
       conflicts.map((c) => ({ conflict: c, choice: "base" as const }))
     );
     expect(instancesAt(base, baseVideo)).toHaveLength(1);
+  });
+
+  it("(stats) counts conflicting vs clean donor instances/frames", async () => {
+    const { base } = baseWith([userInst(sk, 10, 10)]);
+    // Donor: frame 0 = A'(12,12) conflicts + B(500,500) clean; frame 5 = C(50,50) new.
+    const donorVideo = makeVideo("/other/clip.mp4");
+    const donorSk = makeSkeleton("d");
+    const donor = new Labels({
+      labeledFrames: [
+        new LabeledFrame({
+          video: donorVideo,
+          frameIdx: 0,
+          instances: [userInst(donorSk, 12, 12), userInst(donorSk, 500, 500)],
+        }),
+        new LabeledFrame({
+          video: donorVideo,
+          frameIdx: 5,
+          instances: [userInst(donorSk, 50, 50)],
+        }),
+      ],
+      skeletons: [donorSk],
+      videos: [donorVideo],
+    });
+
+    const conflicts = await enumerateConflicts(base, donor);
+    const stats = mergeStats(donor, conflicts);
+    expect(stats.conflicts).toBe(1);
+    expect(stats.conflictFrames).toBe(1);
+    expect(stats.conflictInstances).toBe(1);
+    expect(stats.donorInstances).toBe(3); // A' + B + C
+    expect(stats.cleanInstances).toBe(2); // B + C
+    expect(stats.donorFrames).toBe(2);
   });
 
   it("passes non-conflicting donor instances through even on a conflict frame", async () => {

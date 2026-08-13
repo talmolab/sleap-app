@@ -10,7 +10,7 @@
  * combines the two. See memory `project_merge_into_project_design`.
  */
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 import type { Labels } from "@talmolab/sleap-io.js";
 import { useAppStore } from "../../stores/appStore";
 import { commandContext } from "../../commands/CommandContext";
@@ -18,6 +18,7 @@ import { MERGE_INTO_PROJECT_MATCHERS } from "../../commands/mergeProjectCommands
 import { MergeConflictsCommand } from "../../commands/mergeConflictCommands";
 import {
   enumerateConflicts,
+  mergeStats,
   type Conflict,
   type ConflictChoice,
   type ResolvedConflict,
@@ -138,6 +139,10 @@ export function MergeProjectDialog() {
   const blocked = preview?.skeletonBlocked ?? false;
   const canMerge = !!donor && !blocked && busy === null;
   const hasConflicts = conflicts.length > 0;
+  const stats = useMemo(
+    () => (donor ? mergeStats(donor, conflicts) : null),
+    [donor, conflicts]
+  );
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -202,9 +207,10 @@ export function MergeProjectDialog() {
         {preview && !blocked && (
           <>
             <Separator />
-            {hasConflicts ? (
+            {hasConflicts && stats ? (
               <ConflictReview
                 conflicts={conflicts}
+                stats={stats}
                 tracks={labels?.tracks ?? []}
                 defaultChoice={defaultChoice}
                 onDefaultChange={setDefaultChoice}

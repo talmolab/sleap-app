@@ -173,6 +173,55 @@ export async function enumerateConflicts(
   return conflicts;
 }
 
+/** Conflicting vs clean tallies for the incoming (donor) labels. */
+export interface MergeStats {
+  /** Number of conflict clusters. */
+  conflicts: number;
+  /** Distinct (video, frame) with at least one conflict. */
+  conflictFrames: number;
+  /** Donor instances involved in a conflict. */
+  conflictInstances: number;
+  /** Donor user instances NOT in any conflict (added cleanly). */
+  cleanInstances: number;
+  /** Total donor frames that carry user instances. */
+  donorFrames: number;
+  /** Total donor user instances. */
+  donorInstances: number;
+}
+
+/**
+ * Tally conflicting vs clean incoming labels, so the dialog can tell the user
+ * how much merges without a decision. Pure; derived from the donor + the
+ * already-computed conflicts (clusters are disjoint, so a donor instance is in
+ * at most one conflict).
+ */
+export function mergeStats(donor: Labels, conflicts: Conflict[]): MergeStats {
+  const donorFramesWithUsers = donor.labeledFrames.filter((f) =>
+    f.instances.some(isUser)
+  );
+  const donorInstances = donorFramesWithUsers.reduce(
+    (sum, f) => sum + f.instances.filter(isUser).length,
+    0
+  );
+  const conflictInstances = conflicts.reduce(
+    (sum, c) => sum + c.donorInstances.length,
+    0
+  );
+  // conflict.id is `${videoIdx}:${frameIdx}:${clusterIdx}` — the first two
+  // segments identify the frame exactly (across videos too).
+  const conflictFrames = new Set(
+    conflicts.map((c) => c.id.split(":").slice(0, 2).join(":"))
+  ).size;
+  return {
+    conflicts: conflicts.length,
+    conflictFrames,
+    conflictInstances,
+    cleanInstances: Math.max(0, donorInstances - conflictInstances),
+    donorFrames: donorFramesWithUsers.length,
+    donorInstances,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Resolution + apply
 // ---------------------------------------------------------------------------
