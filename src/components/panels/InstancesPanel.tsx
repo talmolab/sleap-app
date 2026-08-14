@@ -28,7 +28,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -86,7 +85,10 @@ function VisibilityToggle({
       title={disabled ? "Set Display: Manual to edit" : label}
       onClick={(e) => e.stopPropagation()}
       className={cn(
-        "inline-flex items-center justify-center whitespace-nowrap rounded border px-1.5 py-0.5 text-[10px] font-medium leading-none select-none transition-colors",
+        // shrink-0 so the toggles keep their width instead of squishing to fit a
+        // narrow cell (which clipped the labels); the table then overflows and
+        // the panel's overflow-auto container scrolls horizontally (#278).
+        "inline-flex shrink-0 items-center justify-center whitespace-nowrap rounded border px-1.5 py-0.5 text-[10px] font-medium leading-none select-none transition-colors",
         disabled
           ? "cursor-not-allowed border-border text-muted-foreground opacity-40"
           : checked
@@ -191,9 +193,10 @@ function InstanceRow({
         {score !== null ? score.toFixed(2) : "--"}
       </TableCell>
       <TableCell className="py-0.5 px-2">
-        {/* One row, never stacked; scroll horizontally when the sidebar is too
-            narrow to show all three toggles (#278 feedback). */}
-        <div className="flex flex-nowrap justify-end gap-1 overflow-x-auto">
+        {/* One row, never stacked; the table (in the panel's overflow-auto
+            container) scrolls horizontally when the sidebar is too narrow to
+            show all three toggles (#278 feedback). */}
+        <div className="flex flex-nowrap justify-end gap-1">
           <VisibilityToggle
             label="Visibility"
             text="show"
@@ -453,7 +456,11 @@ export function InstancesPanel() {
           />
         </div>
       )}
-      <ScrollArea className="flex-1 min-h-0">
+      {/* Plain overflow container (not Radix ScrollArea): its `display:table`
+          viewport made the table's `w-full` size to content, so horizontal
+          scroll never engaged and the wide Display column clipped (#278). A
+          bounded overflow-auto div scrolls both axes reliably in WKWebView. */}
+      <div className="flex-1 min-h-0 overflow-auto">
         {instances.length === 0 ? (
           <p className="text-xs text-muted-foreground p-2">
             No instances on this frame.
@@ -463,7 +470,10 @@ export function InstancesPanel() {
             No instances match "{filter.trim()}".
           </p>
         ) : (
-          <Table>
+          // min-w-max: grow the table to content width so a narrow sidebar
+          // overflows and the panel's overflow-auto container scrolls, instead
+          // of clipping the Display toggles (#278).
+          <Table className="min-w-max">
             <TableHeader>
               <TableRow className="border-b hover:bg-transparent">
                 <TableHead className="py-1 px-2 text-xs font-normal w-6 h-auto" />
@@ -530,7 +540,7 @@ export function InstancesPanel() {
             </TableBody>
           </Table>
         )}
-      </ScrollArea>
+      </div>
 
       {currentInstance && (
         <>
