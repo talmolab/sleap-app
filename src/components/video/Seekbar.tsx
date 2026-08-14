@@ -550,6 +550,21 @@ export function Seekbar() {
     setRangeAnchor(null);
   }, []);
 
+  // Hovering the header graph shows the same frame-info tooltip as the scrubbar
+  // (PyQt parity — the occupancy graph reports the frame under the cursor). The
+  // header canvas shares the seekbar's subgrid column, so pixelToFrame (keyed to
+  // the scrubbar canvas) maps correctly; hoverX is measured against containerRef
+  // so the shared tooltip's clamp/position math is unchanged. Hover-only — no
+  // drag/range-select (that stays owned by the scrubbar's handleMouseMove).
+  const handleHeaderMouseMove = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      setHoverFrame(pixelToFrame(e.clientX));
+      const container = containerRef.current;
+      if (container) setHoverX(e.clientX - container.getBoundingClientRect().left);
+    },
+    [pixelToFrame]
+  );
+
   // Tooltip lines for the frame under the cursor, computed by the pure
   // formatter (mirrors PyQt get_val_tooltip). overlayVersion is a dep so counts
   // refresh after labeling edits (labels is mutated in place).
@@ -905,6 +920,8 @@ export function Seekbar() {
           ref={headerContainerRef}
           className="overflow-hidden min-w-0 h-full"
           style={{ height: seekbarHeaderHeight }}
+          onMouseMove={handleHeaderMouseMove}
+          onMouseLeave={handleMouseLeave}
         >
           <canvas
             ref={headerCanvasRef}
