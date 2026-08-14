@@ -191,7 +191,9 @@ function InstanceRow({
         {score !== null ? score.toFixed(2) : "--"}
       </TableCell>
       <TableCell className="py-0.5 px-2">
-        <div className="flex flex-wrap justify-end gap-1">
+        {/* One row, never stacked; scroll horizontally when the sidebar is too
+            narrow to show all three toggles (#278 feedback). */}
+        <div className="flex flex-nowrap justify-end gap-1 overflow-x-auto">
           <VisibilityToggle
             label="Visibility"
             text="show"
@@ -274,26 +276,34 @@ function InstanceDetailPanel({
             max-h + overflow-auto box so many-node skeletons scroll here rather
             than pushing the Add/Delete/Accept buttons off-screen. */}
         <div className="text-[10px] leading-tight font-mono bg-muted/50 rounded p-2 pr-8 max-h-32 overflow-auto">
-          {namedPoints.map((pt, i) => (
-            <div
-              key={i}
-              className="grid grid-cols-[1fr_auto] gap-x-3 whitespace-nowrap"
-            >
-              {/* Node name white; coords green when visible, "not visible" red
-                  — same red/green as the Frames tab (text-red-500/green-500). */}
-              <span className="text-foreground truncate">{pt.name}</span>
-              <span
-                className={cn(
-                  "tabular-nums text-right",
-                  pt.visible ? "text-green-500" : "text-red-500",
-                )}
+          {namedPoints.map((pt, i) => {
+            // Green only when actually placed AND visible; a NaN/unset coord
+            // (not placed) is red, not green (#278 feedback).
+            const placed = Number.isFinite(pt.x) && Number.isFinite(pt.y);
+            const shown = pt.visible && placed;
+            return (
+              <div
+                key={i}
+                className="grid grid-cols-[1fr_auto] gap-x-3 whitespace-nowrap"
               >
-                {pt.visible
-                  ? `${pt.x.toFixed(1)}, ${pt.y.toFixed(1)}`
-                  : "not visible"}
-              </span>
-            </div>
-          ))}
+                {/* Node name white; coords green when placed+visible, else red
+                    ("not visible"/"not placed") — same red/green as Frames tab. */}
+                <span className="text-foreground truncate">{pt.name}</span>
+                <span
+                  className={cn(
+                    "tabular-nums text-right",
+                    shown ? "text-green-500" : "text-red-500",
+                  )}
+                >
+                  {shown
+                    ? `${pt.x.toFixed(1)}, ${pt.y.toFixed(1)}`
+                    : placed
+                      ? "not visible"
+                      : "not placed"}
+                </span>
+              </div>
+            );
+          })}
         </div>
       </div>
     </div>

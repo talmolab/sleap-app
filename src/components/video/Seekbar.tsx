@@ -164,6 +164,12 @@ export function Seekbar() {
   const seekbarHeaderGraph = useAppStore((s) => s.seekbarHeaderGraph);
   const seekbarHeaderReduction = useAppStore((s) => s.seekbarHeaderReduction);
   const seekbarHeaderHeight = useAppStore((s) => s.seekbarHeaderHeight);
+  // When the sidebar is on the left, the transport controls + header graph
+  // picker move to the left too (canvas stays in the wide 1fr column, so the
+  // header canvas and seekbar canvas remain column-aligned). #278 feedback.
+  const sidebarOnLeft = useAppStore((s) => s.sidebarSide) === "left";
+  const wideCol = sidebarOnLeft ? "col-start-2" : "col-start-1";
+  const controlsCol = sidebarOnLeft ? "col-start-1" : "col-start-2";
   const overlayVersion = useAppStore((s) => s.overlayVersion);
   const videoRevision = useAppStore((s) => s.videoRevision);
   const setKey = useAppStore((s) => s.set);
@@ -866,7 +872,11 @@ export function Seekbar() {
   }, []);
 
   return (
-    <div className="grid grid-cols-[1fr_auto] shrink-0">
+    <div
+      className={`grid shrink-0 ${
+        sidebarOnLeft ? "grid-cols-[auto_1fr]" : "grid-cols-[1fr_auto]"
+      }`}
+    >
       {/* Instance count header graph - subgrid aligns canvas with seekbar below.
           Height is user-resizable via the drag handle on its top edge. */}
       <div
@@ -891,7 +901,7 @@ export function Seekbar() {
         </div>
         <div
           ref={headerContainerRef}
-          className="overflow-hidden min-w-0 h-full"
+          className={`overflow-hidden min-w-0 h-full ${wideCol}`}
           style={{ height: seekbarHeaderHeight }}
         >
           <canvas
@@ -900,7 +910,11 @@ export function Seekbar() {
             style={{ display: "block" }}
           />
         </div>
-        <div className="flex gap-1 shrink-0 items-center justify-self-end self-start">
+        <div
+          className={`flex gap-1 shrink-0 items-center self-start ${controlsCol} ${
+            sidebarOnLeft ? "justify-self-start" : "justify-self-end"
+          }`}
+        >
           {/* Graph-type picker */}
           <Popover>
             <PopoverTrigger asChild>
@@ -968,7 +982,7 @@ export function Seekbar() {
 
       <div className="grid grid-cols-subgrid col-span-full items-center h-10 bg-card border-t border-border px-2 gap-2">
         {/* Seekbar canvas (relative wrapper hosts the floating hover tooltip) */}
-        <div className="relative min-w-0">
+        <div className={`relative min-w-0 ${wideCol}`}>
           <div
             ref={containerRef}
             className="h-6 rounded cursor-pointer overflow-hidden min-w-0"
@@ -1002,7 +1016,7 @@ export function Seekbar() {
 
         {/* Transport controls */}
         <TooltipProvider delayDuration={300}>
-          <div className="flex gap-0.5 shrink-0 items-center">
+          <div className={`flex gap-0.5 shrink-0 items-center ${controlsCol}`}>
           {/* Tri-state navigation domain: All -> Labeled -> Imaged (#137) */}
           <Tooltip>
             <TooltipTrigger asChild>

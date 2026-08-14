@@ -124,9 +124,16 @@ function buildActions(): MenuAction[] {
     { group: "Go", label: "Next User Labeled Frame", shortcut: `${modKey}+U`, run: exec(GoNextUserFrame) },
     { group: "Go", label: "Next Track Spawn Frame", shortcut: `${modKey}+E`, run: exec(GoNextTrackSpawnFrame) },
     { group: "Go", label: "Clear Selection", shortcut: "Esc", run: () => store().setInstance(null) },
+    { group: "Go", label: "Navigate All Frames", run: () => store().setNavigationDomain("all") },
+    { group: "Go", label: "Navigate Labeled Frames Only", run: () => store().setNavigationDomain("labeled") },
+    { group: "Go", label: "Navigate Imaged Frames Only", run: () => store().setNavigationDomain("imaged") },
 
     // View
     { group: "View", label: "Toggle Side Panel", run: () => store().toggle("sidebarCollapsed") },
+    { group: "View", label: "Sidebar on Left", run: () => store().set("sidebarSide", store().sidebarSide === "left" ? "right" : "left") },
+    { group: "View", label: "Multi-Panel Sidebar", run: () => store().setSidebarMultiPanel(!store().sidebarMultiPanel) },
+    { group: "View", label: "Node Placement Mode", shortcut: "N", run: () => store().set("labelingMode", store().labelingMode === "place" ? "select" : "place") },
+    { group: "View", label: "Reset Text Size", run: () => store().set("uiScale", 1) },
     { group: "View", label: "Fit View to Instances", run: () => store().toggle("fit") },
     { group: "View", label: "Fit View to Selection", run: () => store().set("fitSelection", true) },
     { group: "View", label: "Default to Pan Mode", shortcut: "P", run: () => store().toggle("defaultToPan") },
