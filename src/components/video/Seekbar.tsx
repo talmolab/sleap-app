@@ -165,11 +165,13 @@ export function Seekbar() {
   const seekbarHeaderReduction = useAppStore((s) => s.seekbarHeaderReduction);
   const seekbarHeaderHeight = useAppStore((s) => s.seekbarHeaderHeight);
   // When the sidebar is on the left, the transport controls + header graph
-  // picker move to the left too (canvas stays in the wide 1fr column, so the
-  // header canvas and seekbar canvas remain column-aligned). #278 feedback.
+  // picker move left too. We reorder via `order` (grid auto-flow) rather than an
+  // explicit `col-start`: WebKit (the desktop WKWebView) mis-sizes an `auto`
+  // subgrid track fed by a col-start child, which made the controls vanish on
+  // the left (#278). Auto-flow + order matches the original working mechanism,
+  // and the canvas stays in the wide 1fr column so header/seekbar stay aligned.
   const sidebarOnLeft = useAppStore((s) => s.sidebarSide) === "left";
-  const wideCol = sidebarOnLeft ? "col-start-2" : "col-start-1";
-  const controlsCol = sidebarOnLeft ? "col-start-1" : "col-start-2";
+  const controlsOrder = sidebarOnLeft ? "order-first" : "";
   const overlayVersion = useAppStore((s) => s.overlayVersion);
   const videoRevision = useAppStore((s) => s.videoRevision);
   const setKey = useAppStore((s) => s.set);
@@ -901,7 +903,7 @@ export function Seekbar() {
         </div>
         <div
           ref={headerContainerRef}
-          className={`overflow-hidden min-w-0 h-full ${wideCol}`}
+          className="overflow-hidden min-w-0 h-full"
           style={{ height: seekbarHeaderHeight }}
         >
           <canvas
@@ -911,7 +913,7 @@ export function Seekbar() {
           />
         </div>
         <div
-          className={`flex gap-1 shrink-0 items-center self-start ${controlsCol} ${
+          className={`flex gap-1 shrink-0 items-center self-start ${controlsOrder} ${
             sidebarOnLeft ? "justify-self-start" : "justify-self-end"
           }`}
         >
@@ -982,7 +984,7 @@ export function Seekbar() {
 
       <div className="grid grid-cols-subgrid col-span-full items-center h-10 bg-card border-t border-border px-2 gap-2">
         {/* Seekbar canvas (relative wrapper hosts the floating hover tooltip) */}
-        <div className={`relative min-w-0 ${wideCol}`}>
+        <div className="relative min-w-0">
           <div
             ref={containerRef}
             className="h-6 rounded cursor-pointer overflow-hidden min-w-0"
@@ -1016,7 +1018,7 @@ export function Seekbar() {
 
         {/* Transport controls */}
         <TooltipProvider delayDuration={300}>
-          <div className={`flex gap-0.5 shrink-0 items-center ${controlsCol}`}>
+          <div className={`flex gap-0.5 shrink-0 items-center ${controlsOrder}`}>
           {/* Tri-state navigation domain: All -> Labeled -> Imaged (#137) */}
           <Tooltip>
             <TooltipTrigger asChild>
