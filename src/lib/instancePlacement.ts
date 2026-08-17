@@ -7,6 +7,10 @@
 
 import { Instance, PredictedInstance } from "@talmolab/sleap-io.js";
 import type { Labels, Skeleton, Video, LabeledFrame, InstancePlacementMethod } from "../types";
+import { toSourceCoords } from "@/lib/cropTransform";
+
+/** A captured drawn node layout in IMAGE space, index-aligned to skeleton.nodes. */
+export type TemplateLayout = ({ x: number; y: number } | null)[];
 
 /** Default frame dimensions when video shape is unknown. */
 const DEFAULT_WIDTH = 800;
@@ -89,6 +93,43 @@ function placeAtCenter(
 }
 
 /**
+ * Seed an instance's node geometry from a captured "template layout" -- the
+ * node positions the user DREW in the visual skeleton builder, index-aligned
+ * to `skeleton.nodes`. The layout is stored in IMAGE (scene) space; each drawn
+ * position is converted to SOURCE coordinates via `toSourceCoords` (identity on
+ * an uncropped video) before it's written onto the matching point. Placed nodes
+ * are marked visible + not-yet-complete, exactly like {@link placeAtCenter}, so
+ * they start red (auto-placed, pending user confirmation). Nodes whose layout
+ * entry is `null`/missing are left at their existing (NaN) position -- unplaced,
+ * just like an un-clicked builder node -- rather than forced into the circle.
+ *
+ * Writes points the same way `placeAtCenter` does (in-place mutation of
+ * `instance.points[i].xy` / `.visible` / `.complete`), which is the pattern the
+ * sleap-io 0.5.x columnar point model expects here.
+ */
+function applyTemplateLayout(
+  instance: Instance,
+  layout: TemplateLayout,
+  video: Video | null
+): Instance {
+  const nodeCount = instance.points.length;
+  for (let i = 0; i < nodeCount; i++) {
+    const entry = layout[i];
+    if (!entry) continue;
+    instance.points[i].xy = toSourceCoords(video, entry.x, entry.y);
+    instance.points[i].visible = true;
+    // Auto-placed, not yet user-confirmed -- starts red (mark_complete=False).
+    instance.points[i].complete = false;
+  }
+  return instance;
+}
+
+/** True when a template layout has at least one entry to seed from. */
+function hasTemplateLayout(layout?: TemplateLayout | null): layout is TemplateLayout {
+  return !!layout && layout.length > 0;
+}
+
+/**
  * Offset an instance so its centroid moves away from existing instance centroids.
  * Finds the direction that maximizes distance from existing centroids and
  * shifts the instance by 50px in that direction.
@@ -141,24 +182,45 @@ function offsetFromExisting(
   return instance;
 }
 
+/**
+ * Seed a fresh instance's geometry: from the captured drawn template layout
+ * when one exists, otherwise the scrambled-circle default. Shared by the three
+ * center-based placement methods so each keeps identical no-template behavior.
+ */
+function seedGeometry(
+  instance: Instance,
+  video: Video | null,
+  templateLayout?: TemplateLayout | null
+): void {
+  if (hasTemplateLayout(templateLayout)) {
+    applyTemplateLayout(instance, templateLayout, video);
+  } else {
+    const [width, height] = getFrameDims(video);
+    placeAtCenter(instance, width, height);
+  }
+}
+
 /** "best" — centered template offset to avoid overlapping existing instances. */
 function placeBest(
   skeleton: Skeleton,
   video: Video | null,
-  existingInstances: Instance[]
+  existingInstances: Instance[],
+  templateLayout?: TemplateLayout | null
 ): Instance {
-  const [width, height] = getFrameDims(video);
   const instance = Instance.empty({ skeleton });
-  placeAtCenter(instance, width, height);
+  seedGeometry(instance, video, templateLayout);
   offsetFromExisting(instance, existingInstances);
   return instance;
 }
 
 /** "template" — center all points at frame center with small index-based spread. */
-function placeTemplate(skeleton: Skeleton, video: Video | null): Instance {
-  const [width, height] = getFrameDims(video);
+function placeTemplate(
+  skeleton: Skeleton,
+  video: Video | null,
+  templateLayout?: TemplateLayout | null
+): Instance {
   const instance = Instance.empty({ skeleton });
-  placeAtCenter(instance, width, height);
+  seedGeometry(instance, video, templateLayout);
   return instance;
 }
 
@@ -166,11 +228,11 @@ function placeTemplate(skeleton: Skeleton, video: Video | null): Instance {
 function placeForceDirected(
   skeleton: Skeleton,
   video: Video | null,
-  existingInstances: Instance[]
+  existingInstances: Instance[],
+  templateLayout?: TemplateLayout | null
 ): Instance {
-  const [width, height] = getFrameDims(video);
   const instance = Instance.empty({ skeleton });
-  placeAtCenter(instance, width, height);
+  seedGeometry(instance, video, templateLayout);
 
   const centroids = existingInstances
     .map(computeCentroid)
@@ -355,6 +417,12 @@ function placePrediction(
  * @param video - Current video (used for frame dimensions)
  * @param existingInstances - Instances already on the current frame
  * @param priorFrame - The labeled frame from frameIdx-1 (for prior_frame method)
+ * @param visibleRect - Current visible scene rect (for the random method)
+ * @param templateLayout - Optional drawn skeleton-builder layout (IMAGE space).
+ *   When provided, the center-based methods (best / template / force_directed)
+ *   seed their geometry from this drawn layout instead of the scrambled circle,
+ *   then apply their own extra behavior. `random` / `prior_frame` / `prediction`
+ *   ignore it.
  * @returns A new Instance with points positioned according to the method
  */
 /**
@@ -428,15 +496,16 @@ export function placeInstance(
   video: Video | null,
   existingInstances: Instance[],
   priorFrame: LabeledFrame | null,
-  visibleRect: [number, number, number, number] | null = null
+  visibleRect: [number, number, number, number] | null = null,
+  templateLayout: TemplateLayout | null = null
 ): Instance {
   switch (method) {
     case "best":
-      return placeBest(skeleton, video, existingInstances);
+      return placeBest(skeleton, video, existingInstances, templateLayout);
     case "template":
-      return placeTemplate(skeleton, video);
+      return placeTemplate(skeleton, video, templateLayout);
     case "force_directed":
-      return placeForceDirected(skeleton, video, existingInstances);
+      return placeForceDirected(skeleton, video, existingInstances, templateLayout);
     case "random":
       return placeRandom(skeleton, video, visibleRect);
     case "prior_frame":
@@ -444,6 +513,6 @@ export function placeInstance(
     case "prediction":
       return placePrediction(skeleton, video, existingInstances);
     default:
-      return placeBest(skeleton, video, existingInstances);
+      return placeBest(skeleton, video, existingInstances, templateLayout);
   }
 }

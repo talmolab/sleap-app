@@ -54,14 +54,18 @@ export const AddInstance: Command = {
 
     const priorFrame = findNearestPriorFrame(labels, video, frameIdx);
 
-    // Create instance using the selected placement method
+    // Create instance using the selected placement method. When the visual
+    // skeleton builder has captured a drawn layout this session, the
+    // center-based methods seed geometry from that drawn orientation instead of
+    // the scrambled circle (session-only; null on a fresh session).
     const instance = placeInstance(
       method,
       skeleton,
       video,
       existingInstances,
       priorFrame,
-      useAppStore.getState().visibleSceneRect
+      useAppStore.getState().visibleSceneRect,
+      useAppStore.getState().skeletonTemplateLayout
     );
 
     const location = params?.location as [number, number] | undefined;

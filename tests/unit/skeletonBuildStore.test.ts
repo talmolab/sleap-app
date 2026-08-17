@@ -7,7 +7,7 @@
 
 import { describe, it, expect, beforeEach } from "../bun-test";
 import { Skeleton } from "@talmolab/sleap-io.js";
-import { useAppStore } from "@/stores/appStore";
+import { useAppStore, PERSISTED_KEYS } from "@/stores/appStore";
 
 /** Reset the store between tests (mirrors appStore.test.ts). */
 function resetStore() {
@@ -186,5 +186,71 @@ describe("skeletonBuildStore", () => {
     // Net-neutral invariant at the store level: no phantom writes.
     expect(state.skeleton).toBe(skeleton);
     expect(state.labels).toBe(labels);
+  });
+});
+
+describe("skeletonTemplateLayout (session template for Add Instance)", () => {
+  beforeEach(() => {
+    resetStore();
+  });
+
+  it("defaults to null", () => {
+    expect(useAppStore.getState().skeletonTemplateLayout).toBeNull();
+  });
+
+  it("captureSkeletonTemplateLayout snapshots builderPositions into a distinct array copy", () => {
+    const skeleton = makeSkeleton(["a", "b", "c"]);
+    useAppStore.setState({ skeleton });
+    useAppStore.getState().enterSkeletonBuild();
+    useAppStore.getState().setBuilderPosition(0, { x: 1, y: 2 });
+    useAppStore.getState().setBuilderPosition(2, { x: 5, y: 6 });
+
+    useAppStore.getState().captureSkeletonTemplateLayout();
+
+    const layout = useAppStore.getState().skeletonTemplateLayout;
+    expect(layout).toEqual([{ x: 1, y: 2 }, null, { x: 5, y: 6 }]);
+    // Distinct array (a copy), not the live builderPositions reference.
+    expect(layout).not.toBe(useAppStore.getState().builderPositions);
+  });
+
+  it("captured layout is a snapshot: later builder edits don't mutate it", () => {
+    const skeleton = makeSkeleton(["a", "b"]);
+    useAppStore.setState({ skeleton });
+    useAppStore.getState().enterSkeletonBuild();
+    useAppStore.getState().setBuilderPosition(0, { x: 1, y: 1 });
+
+    useAppStore.getState().captureSkeletonTemplateLayout();
+
+    // Move a builder node AFTER capturing — the snapshot must not follow.
+    useAppStore.getState().setBuilderPosition(0, { x: 99, y: 99 });
+
+    expect(useAppStore.getState().skeletonTemplateLayout?.[0]).toEqual({ x: 1, y: 1 });
+  });
+
+  it("captureSkeletonTemplateLayout with empty positions yields null", () => {
+    // No skeleton -> builderPositions is [].
+    useAppStore.getState().enterSkeletonBuild();
+    expect(useAppStore.getState().builderPositions).toEqual([]);
+
+    useAppStore.getState().captureSkeletonTemplateLayout();
+
+    expect(useAppStore.getState().skeletonTemplateLayout).toBeNull();
+  });
+
+  it("clearSkeletonTemplateLayout resets to null", () => {
+    const skeleton = makeSkeleton(["a"]);
+    useAppStore.setState({ skeleton });
+    useAppStore.getState().enterSkeletonBuild();
+    useAppStore.getState().setBuilderPosition(0, { x: 7, y: 8 });
+    useAppStore.getState().captureSkeletonTemplateLayout();
+    expect(useAppStore.getState().skeletonTemplateLayout).not.toBeNull();
+
+    useAppStore.getState().clearSkeletonTemplateLayout();
+
+    expect(useAppStore.getState().skeletonTemplateLayout).toBeNull();
+  });
+
+  it("is transient (not persisted)", () => {
+    expect(PERSISTED_KEYS).not.toContain("skeletonTemplateLayout");
   });
 });

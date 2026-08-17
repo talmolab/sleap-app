@@ -266,6 +266,16 @@ export interface AppState {
   skeletonBuildMode: boolean;
   skeletonBuildStage: "place" | "connect";
   builderPositions: ({ x: number; y: number } | null)[];
+  /**
+   * Session-only "template layout": a snapshot of the node positions the user
+   * DREW in the visual skeleton builder (IMAGE space, index-aligned to
+   * `skeleton.nodes`), captured on the builder's Done. When set, the
+   * center-based Add Instance placement methods (best / template /
+   * force_directed) seed their geometry from this drawn layout instead of the
+   * scrambled circle. Transient like the other build-mode fields (NOT in
+   * PERSISTED_KEYS) — a fresh session starts back on the circle default.
+   */
+  skeletonTemplateLayout: ({ x: number; y: number } | null)[] | null;
 
   // === Frame range ===
   frameRange: [number, number] | null;
@@ -364,6 +374,14 @@ export interface AppState {
     p: { x: number; y: number } | null
   ) => void;
   syncBuilderPositions: () => void;
+  /**
+   * Snapshot the current `builderPositions` into `skeletonTemplateLayout` (a
+   * distinct array copy). Empty positions → `null`. Called on the builder's
+   * Done so the drawn layout becomes the session seed for Add Instance.
+   */
+  captureSkeletonTemplateLayout: () => void;
+  /** Discard the captured template layout (back to the circle default). */
+  clearSkeletonTemplateLayout: () => void;
   togglePanelVisibility: (panelId: string) => void;
   resetPanels: () => void;
   /** Rail click: uncollapse the column and open `panelId` if it's collapsed;
@@ -523,6 +541,7 @@ export const useAppStore = create<AppState>()(
       skeletonBuildMode: false,
       skeletonBuildStage: "place" as "place" | "connect",
       builderPositions: [] as ({ x: number; y: number } | null)[],
+      skeletonTemplateLayout: null as ({ x: number; y: number } | null)[] | null,
 
       // Frame range
       frameRange: null,
@@ -928,6 +947,23 @@ export const useAppStore = create<AppState>()(
           const next = state.builderPositions.slice(0, n);
           for (let i = next.length; i < n; i++) next[i] = null;
           state.builderPositions = next;
+        }),
+
+      // Capture the drawn builder layout as a session-only template (a distinct
+      // deep copy, so later builder edits don't mutate the snapshot). Empty
+      // positions → null. The center-based Add Instance methods seed from this
+      // in place of the scrambled circle (see @/lib/instancePlacement).
+      captureSkeletonTemplateLayout: () =>
+        set((state) => {
+          state.skeletonTemplateLayout =
+            state.builderPositions.length > 0
+              ? state.builderPositions.map((p) => (p ? { x: p.x, y: p.y } : null))
+              : null;
+        }),
+
+      clearSkeletonTemplateLayout: () =>
+        set((state) => {
+          state.skeletonTemplateLayout = null;
         }),
 
       // Toggle a sidebar panel's visibility (#135). Hiding the currently-active
