@@ -5,7 +5,8 @@ import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useWindowTitle } from "./hooks/useWindowTitle";
 import { useAppStore } from "./stores/appStore";
 import { applyHashState, initUrlStateSync } from "./lib/urlState";
-import { loadProjectFromPath } from "./lib/loadProject";
+import { loadProjectFromPath, loadProjectFromUrl } from "./lib/loadProject";
+import { readOpenParam } from "./lib/urlOpen";
 import { readOpenFileParam } from "./lib/windowRouting";
 import { isTauri } from "./platform";
 import { setupCloseHandler } from "./lib/quit";
@@ -126,6 +127,23 @@ export default function App() {
         );
       }
     })();
+  }, []);
+
+  // Browser "Open in SLEAP" deep link (issue #217): sleap-share navigates the
+  // browser to `…/?open=<encoded slp download url>`. Stream that remote .slp
+  // straight into the viewer. Desktop (sleap:// custom scheme) is a separate
+  // follow-up. Browser-only here.
+  useEffect(() => {
+    if (isTauri) return;
+    const url = readOpenParam(window.location.search);
+    if (!url) return;
+    // Strip ?open= (it carries the access token) from the address bar so it isn't
+    // copied/bookmarked or reopened on reload. Preserves the path (incl. /dev/) and
+    // the #v=&f= view-state hash — mirrors the ?openFile= strip above.
+    const stripped = new URL(window.location.href);
+    stripped.searchParams.delete("open");
+    window.history.replaceState(null, "", stripped.toString());
+    void loadProjectFromUrl(url);
   }, []);
 
   // macOS "Open With" / file-association while the app is ALREADY running (or
