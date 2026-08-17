@@ -218,6 +218,7 @@ const DEFAULTS: Omit<InferenceConfig, "modelPaths" | "videoIndex" | "frameRange"
 export function InferencePanel() {
   const video = useAppStore((s) => s.video);
   const skeleton = useAppStore((s) => s.skeleton);
+  const projectPath = useAppStore((s) => s.projectPath);
   const tools = useEnvironmentStore((s) => s.tools);
   const detectionStatus = useEnvironmentStore((s) => s.detectionStatus);
   const refresh = useEnvironmentStore((s) => s.refresh);
@@ -308,6 +309,32 @@ export function InferencePanel() {
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [log]);
+
+  // Auto-detect trained models: if the project has a `models/` folder with a
+  // trained run for every head the selected pipeline needs, default to the
+  // most recently trained one per head — mirrors legacy SLEAP's
+  // TrainingConfigsGetter auto-selecting the most recent trained config.
+  // Never overwrites an existing selection (manual pick or a prior
+  // auto-detect), and never runs for remote inference (no local project dir).
+  useEffect(() => {
+    if (!isTauri || remoteEnabled || !projectPath) return;
+    let cancelled = false;
+    (async () => {
+      const [{ findTrainedModels, pickModelsForPipeline }, { dirname }] = await Promise.all([
+        import("@/lib/modelDiscovery"),
+        import("@tauri-apps/api/path"),
+      ]);
+      const projectDir = await dirname(projectPath);
+      const models = await findTrainedModels(projectDir);
+      if (cancelled) return;
+      const picked = pickModelsForPipeline(models, pipeline);
+      if (picked.length === 0) return;
+      setModelPaths((prev) => (prev.length === 0 ? picked : prev));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [remoteEnabled, projectPath, pipeline]);
 
   const nodes = skeleton?.nodes ?? [];
   const sleapNnAvailable = tools.some(

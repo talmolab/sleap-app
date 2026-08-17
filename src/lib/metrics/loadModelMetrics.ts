@@ -250,7 +250,7 @@ export function parseTrainingConfig(yamlText: string): TrainingConfigInfo {
     const parsed = yaml.load(yamlText);
     if (parsed && typeof parsed === "object") doc = parsed as Record<string, unknown>;
   } catch {
-    return { runName: null, modelType: null, architecture: null, nodeNames: null, timestamp: null };
+    return { runName: null, headKey: null, modelType: null, architecture: null, nodeNames: null, timestamp: null };
   }
 
   const modelConfig = (doc.model_config ?? {}) as Record<string, unknown>;
@@ -293,6 +293,7 @@ export function parseTrainingConfig(yamlText: string): TrainingConfigInfo {
 
   return {
     runName,
+    headKey,
     modelType,
     architecture,
     nodeNames,

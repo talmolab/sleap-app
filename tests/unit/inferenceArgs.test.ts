@@ -140,8 +140,24 @@ describe("buildInferenceArgs — frame ranges", () => {
     expect(() => buildInferenceArgs(baseConfig({ frameRange: "random" }), io())).toThrow(/per-video/);
   });
 
-  it("throws for the non-runnable 'frame' range", () => {
-    expect(() => buildInferenceArgs(baseConfig({ frameRange: "frame" }), io())).toThrow(/Unhandled frame range/);
+  it("uses caller-supplied currentFrameIdx for 'frame'", () => {
+    const args = buildInferenceArgs(baseConfig({ frameRange: "frame" }), {
+      ...io(),
+      currentFrameIdx: 42,
+    });
+    expect(valAfter(args, "--frames")).toBe("42");
+  });
+
+  it("throws for 'frame' without currentFrameIdx", () => {
+    expect(() => buildInferenceArgs(baseConfig({ frameRange: "frame" }), io())).toThrow(/currentFrameIdx/);
+  });
+
+  it("omits --video_index when suppressVideoIndex is set, even with a specific videoIndex", () => {
+    const args = buildInferenceArgs(baseConfig({ frameRange: "video", videoIndex: 2 }), {
+      ...io(),
+      suppressVideoIndex: true,
+    });
+    expect(args).not.toContain("--video_index");
   });
 });
 
