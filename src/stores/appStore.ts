@@ -256,6 +256,17 @@ export interface AppState {
   labelingMode: "select" | "place";
   placementNodeIdx: number | null;
 
+  // === Skeleton-builder state (transient, not persisted) ===
+  // Visual skeleton builder: place nodes on the canvas, then connect them into
+  // edges. This is a pure scratch buffer -- the clicked node POSITIONS live
+  // only here (never inserted into labels.labeledFrames), so no phantom labeled
+  // instance is ever saved. The skeleton graph itself is persisted separately
+  // via the existing skeleton commands. `builderPositions` is index-aligned to
+  // `skeleton.nodes` and holds scene/source-coord positions (null = unplaced).
+  skeletonBuildMode: boolean;
+  skeletonBuildStage: "place" | "connect";
+  builderPositions: ({ x: number; y: number } | null)[];
+
   // === Frame range ===
   frameRange: [number, number] | null;
   hasFrameRange: boolean;
@@ -343,6 +354,16 @@ export interface AppState {
   setMenuSearchDialogOpen: (open: boolean) => void;
   enterPlacementMode: () => void;
   exitPlacementMode: () => void;
+
+  // Skeleton-builder actions (scratch buffer; see field docs above).
+  enterSkeletonBuild: () => void;
+  exitSkeletonBuild: () => void;
+  setSkeletonBuildStage: (stage: "place" | "connect") => void;
+  setBuilderPosition: (
+    nodeIdx: number,
+    p: { x: number; y: number } | null
+  ) => void;
+  syncBuilderPositions: () => void;
   togglePanelVisibility: (panelId: string) => void;
   resetPanels: () => void;
   /** Rail click: uncollapse the column and open `panelId` if it's collapsed;
@@ -497,6 +518,11 @@ export const useAppStore = create<AppState>()(
       // Labeling mode state (transient)
       labelingMode: "select" as "select" | "place",
       placementNodeIdx: null as number | null,
+
+      // Skeleton-builder state (transient scratch buffer)
+      skeletonBuildMode: false,
+      skeletonBuildStage: "place" as "place" | "connect",
+      builderPositions: [] as ({ x: number; y: number } | null)[],
 
       // Frame range
       frameRange: null,
@@ -853,6 +879,55 @@ export const useAppStore = create<AppState>()(
         set((state) => {
           state.labelingMode = "select";
           state.placementNodeIdx = null;
+        }),
+
+      // Enter the visual skeleton builder. Seeds one null slot per skeleton
+      // node (scratch positions, index-aligned). Also clears place-labeling so
+      // the two modes never fight over canvas clicks.
+      enterSkeletonBuild: () =>
+        set((state) => {
+          state.skeletonBuildMode = true;
+          state.skeletonBuildStage = "place";
+          state.builderPositions = state.skeleton
+            ? state.skeleton.nodes.map(() => null)
+            : [];
+          state.labelingMode = "select";
+          state.placementNodeIdx = null;
+        }),
+
+      // Exit the builder and discard the scratch buffer. MUST NOT touch labels
+      // or skeleton -- the net-neutral invariant (no phantom labeled instance).
+      exitSkeletonBuild: () =>
+        set((state) => {
+          state.skeletonBuildMode = false;
+          state.skeletonBuildStage = "place";
+          state.builderPositions = [];
+        }),
+
+      setSkeletonBuildStage: (stage) =>
+        set((state) => {
+          state.skeletonBuildStage = stage;
+        }),
+
+      // Replace one scratch position immutably (new array so React/Zustand sees
+      // the change). Growing past the current length back-fills with nulls.
+      setBuilderPosition: (nodeIdx, p) =>
+        set((state) => {
+          const next = state.builderPositions.slice();
+          for (let i = next.length; i < nodeIdx; i++) next[i] = null;
+          next[nodeIdx] = p;
+          state.builderPositions = next;
+        }),
+
+      // Reconcile the scratch buffer length with the current skeleton: append
+      // null for newly added nodes, drop extras for removed ones, preserving
+      // surviving entries by index.
+      syncBuilderPositions: () =>
+        set((state) => {
+          const n = state.skeleton ? state.skeleton.nodes.length : 0;
+          const next = state.builderPositions.slice(0, n);
+          for (let i = next.length; i < n; i++) next[i] = null;
+          state.builderPositions = next;
         }),
 
       // Toggle a sidebar panel's visibility (#135). Hiding the currently-active
