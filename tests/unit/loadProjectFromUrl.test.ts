@@ -24,7 +24,7 @@ vi.mock("@/lib/resolveVideos", () => ({
 }));
 
 class RemoteIOError extends Error {}
-const readSlpStreamingMock = vi.fn(async (_source: unknown, _options: any) => ({
+const readSlpStreamingMock = vi.fn(async (_source: unknown, _options: unknown) => ({
   videos: [],
   skeletons: [],
   labeledFrames: [],
@@ -54,8 +54,8 @@ describe("loadProjectFromUrl", () => {
       skeletons: [],
       labeledFrames: [],
     }));
-    (toast.success as any).mockClear();
-    (toast.error as any).mockClear();
+    (toast.success as unknown as { mockClear: () => void }).mockClear();
+    (toast.error as unknown as { mockClear: () => void }).mockClear();
   });
 
   it("streams the URL and installs the project under a name derived from the URL", async () => {
