@@ -40,6 +40,28 @@ function inst(over: Partial<RenderedInstance>): RenderedInstance {
   };
 }
 
+/** CanvasRenderingContext2D spy that records every strokeStyle/fillStyle set. */
+function mockCtxRecordingStyles() {
+  const styles: { strokeStyle: unknown[]; fillStyle: unknown[] } = {
+    strokeStyle: [],
+    fillStyle: [],
+  };
+  return new Proxy(
+    {},
+    {
+      get(_target, prop) {
+        if (prop === "__styles") return styles;
+        return () => {}; // no-op for every ctx method (arc, fill, stroke, ...)
+      },
+      set(_target, prop, value) {
+        if (prop === "strokeStyle") styles.strokeStyle.push(value);
+        if (prop === "fillStyle") styles.fillStyle.push(value);
+        return true;
+      },
+    },
+  ) as unknown as CanvasRenderingContext2D & { __styles: typeof styles };
+}
+
 describe("renderInstances per-instance flags", () => {
   it("skips instances with visible=false", () => {
     const ctx = mockCtx();
@@ -111,5 +133,55 @@ describe("hit-testing honors per-instance visibility", () => {
   it("nodesInRect skips hidden instances", () => {
     expect(nodesInRect([inst({ visible: false })], 0, 0, 2, 2).size).toBe(0);
     expect(nodesInRect([inst({ visible: true })], 0, 0, 2, 2).size).toBe(1);
+  });
+});
+
+describe("predicted instances use their track/instance color, not a fixed hue (#267)", () => {
+  it("renders a predicted node's stroke in its computed instance color when colorPredicted is on", () => {
+    const ctx = mockCtxRecordingStyles();
+    const predicted = inst({
+      isPredicted: true,
+      color: [10, 20, 30],
+      nodes: [{ x: 1, y: 1, visible: true, complete: true, name: "n" }],
+    });
+    renderInstances(ctx, [predicted], { showInstances: true, colorPredicted: true });
+    const strokes = ctx.__styles.strokeStyle;
+    // The node marker's stroke must be the instance's own color -- never a
+    // hardcoded color unrelated to the instance/track.
+    expect(strokes).toContain("rgb(10, 20, 30)");
+    expect(strokes.some((s) => String(s).includes("250, 204, 21"))).toBe(false);
+  });
+
+  it("falls back to PyQt's uncolored_prediction_color (yellow) for node strokes when colorPredicted is off", () => {
+    const ctx = mockCtxRecordingStyles();
+    const predicted = inst({
+      isPredicted: true,
+      color: [10, 20, 30],
+      nodes: [{ x: 1, y: 1, visible: true, complete: true, name: "n" }],
+    });
+    // colorPredicted defaults to false -- matches PyQt's ColorManager:
+    // `if is_predicted and not color_predicted: return uncolored_prediction_color
+    // if isinstance(item, Node) else (128, 128, 128)`.
+    renderInstances(ctx, [predicted], { showInstances: true });
+    const strokes = ctx.__styles.strokeStyle;
+    expect(strokes).toContain("rgb(250, 250, 10)");
+    expect(strokes).not.toContain("rgb(10, 20, 30)");
+  });
+
+  it("renders a predicted edge in its computed instance color", () => {
+    const ctx = mockCtxRecordingStyles();
+    const predicted = inst({
+      isPredicted: true,
+      color: [40, 50, 60],
+      nodes: [
+        { x: 1, y: 1, visible: true, complete: true, name: "a" },
+        { x: 2, y: 2, visible: true, complete: true, name: "b" },
+      ],
+      edges: [{ srcIdx: 0, dstIdx: 1 }],
+    });
+    renderInstances(ctx, [predicted], { showInstances: true, showEdges: true });
+    const strokes = ctx.__styles.strokeStyle.map(String);
+    expect(strokes.some((s) => s.startsWith("rgba(40, 50, 60,"))).toBe(true);
+    expect(strokes.some((s) => s.includes("250, 204, 21"))).toBe(false);
   });
 });

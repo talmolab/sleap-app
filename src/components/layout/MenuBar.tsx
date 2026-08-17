@@ -598,13 +598,6 @@ function ViewMenu() {
         </MenubarSub>
         <MenubarSeparator />
         <MenubarCheckboxItem
-          checked={colorPredicted}
-          onCheckedChange={() => toggle("colorPredicted")}
-        >
-          Color Predicted Instances
-        </MenubarCheckboxItem>
-        <MenubarSeparator />
-        <MenubarCheckboxItem
           checked={showInstances}
           onCheckedChange={() => toggle("showInstances")}
         >
@@ -740,6 +733,12 @@ function ViewMenu() {
             </MenubarRadioGroup>
           </MenubarSubContent>
         </MenubarSub>
+        <MenubarCheckboxItem
+          checked={colorPredicted}
+          onCheckedChange={() => toggle("colorPredicted")}
+        >
+          Color Predicted Instances
+        </MenubarCheckboxItem>
       </MenubarContent>
     </MenubarMenu>
   );

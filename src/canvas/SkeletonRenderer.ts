@@ -9,17 +9,25 @@
 import { rgbToCSS, type RGB } from "../lib/colorPalettes";
 import type { EdgeStyle } from "../types";
 
-// Predicted instances render in a fixed color (rather than their track's
-// palette color) so they read as "unconfirmed" at a glance, regardless of
-// which track they belong to.
-const PREDICTED_COLOR: RGB = [250, 204, 21]; // Tailwind yellow-400
-
 // Node-name label colors, matching PyQt SLEAP's QtNodeLabel.adjustStyle():
 // a label starts red ("incomplete" -- placed at a default/unconfirmed
 // position) and turns green once the user explicitly confirms it ("complete").
 const COMPLETE_COLOR: RGB = [80, 194, 159]; // greenish
 const INCOMPLETE_COLOR: RGB = [232, 45, 32]; // redish
 const MISSING_LABEL_COLOR: RGB = [128, 128, 128];
+
+// A predicted node's FILL is always flat gray, matching PyQt SLEAP's QtNode
+// (`self.brush = QBrush(QColor(128, 128, 128, 128))` for predicted points) --
+// its STROKE and every predicted edge instead use the same track/instance/
+// palette `color` a user instance would (computed upstream via
+// getInstanceColor), UNLESS colorPredicted is off, per PyQt's
+// ColorManager.get_item_color: `if is_predicted and not self.color_predicted:
+// return uncolored_prediction_color if isinstance(item, Node) else (128,128,128)`
+// -- i.e. NODE markers fall back to this yellow, while edges/labels fall back
+// to plain gray. Matches PyQt's literal `uncolored_prediction_color = (250, 250, 10)`.
+const UNCOLORED_PREDICTED_NODE_COLOR: RGB = [250, 250, 10];
+const PREDICTED_FILL_COLOR: RGB = [128, 128, 128];
+const PREDICTED_LABEL_COLOR: RGB = [128, 128, 128];
 
 export interface RenderedNode {
   x: number;
@@ -173,9 +181,13 @@ function renderNode(
   ctx.arc(node.x, node.y, radius / opts.zoom, 0, Math.PI * 2);
 
   if (isPredicted) {
-    ctx.strokeStyle = rgbToCSS(PREDICTED_COLOR);
+    // Node marker stroke: track/instance color when colorPredicted is on,
+    // else PyQt's uncolored_prediction_color (yellow) -- edges/labels fall
+    // back to plain gray instead (see renderLineEdge/renderNodeLabel).
+    const strokeColor = opts.colorPredicted ? color : UNCOLORED_PREDICTED_NODE_COLOR;
+    ctx.strokeStyle = rgbToCSS(strokeColor);
     ctx.lineWidth = 1 / opts.zoom;
-    ctx.fillStyle = rgbToCSS(PREDICTED_COLOR, 0.5);
+    ctx.fillStyle = rgbToCSS(PREDICTED_FILL_COLOR, 0.5);
     ctx.fill();
     ctx.stroke();
   } else if (node.visible) {
@@ -215,7 +227,7 @@ function renderLineEdge(
   ctx.beginPath();
   ctx.moveTo(src.x, src.y);
   ctx.lineTo(dst.x, dst.y);
-  ctx.strokeStyle = isPredicted ? rgbToCSS(PREDICTED_COLOR, alpha) : rgbToCSS(color, alpha);
+  ctx.strokeStyle = rgbToCSS(color, alpha);
   ctx.lineWidth = (isPredicted ? 1 : 2) / opts.zoom;
   ctx.stroke();
   ctx.restore();
@@ -253,7 +265,7 @@ function renderWedgeEdge(
   ctx.lineTo(dst.x - nx * dstWidth, dst.y - ny * dstWidth);
   ctx.lineTo(src.x - nx * srcWidth, src.y - ny * srcWidth);
   ctx.closePath();
-  ctx.fillStyle = isPredicted ? rgbToCSS(PREDICTED_COLOR, alpha) : rgbToCSS(color, alpha);
+  ctx.fillStyle = rgbToCSS(color, alpha);
   ctx.fill();
 }
 
@@ -271,7 +283,7 @@ function renderNodeLabel(
   let bold: boolean;
   let italic = false;
   if (isPredicted) {
-    labelColor = PREDICTED_COLOR;
+    labelColor = PREDICTED_LABEL_COLOR;
     bold = false;
   } else if (!node.visible) {
     labelColor = MISSING_LABEL_COLOR;
