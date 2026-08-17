@@ -41,7 +41,9 @@ export function basenameFromUrl(url: string): string {
   try {
     const u = new URL(url);
     const seg = u.pathname.split("/").filter(Boolean).pop();
-    return seg ? decodeURIComponent(seg) : u.hostname;
+    // Decode, then neutralize any decoded path separator (an encoded %2F would
+    // otherwise re-introduce a "/" and re-break the streaming filenameHint FS path).
+    return seg ? decodeURIComponent(seg).replace(/[/\\]/g, "_") : u.hostname;
   } catch {
     return url;
   }

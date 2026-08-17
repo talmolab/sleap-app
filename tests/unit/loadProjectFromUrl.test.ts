@@ -35,6 +35,7 @@ vi.mock("@talmolab/sleap-io.js", () => ({
   setImageBytesReader: vi.fn(),
   RemoteIOError,
   redactUrl: (u: string) => u,
+  redactedCauseSummary: (e: unknown) => String(e),
 }));
 
 import { loadProjectFromUrl } from "@/lib/loadProject";
@@ -88,5 +89,22 @@ describe("loadProjectFromUrl", () => {
     expect(useAppStore.getState().labels).toBeFalsy();
     expect(useAppStore.getState().isLoading).toBe(false);
     expect(toast.error).toHaveBeenCalled();
+  });
+
+  it("surfaces a non-RemoteIOError via redactedCauseSummary (not a hardcoded network message)", async () => {
+    readSlpStreamingMock.mockImplementation(async () => {
+      throw new Error("corrupt or non-SLP file");
+    });
+    const ok = await loadProjectFromUrl("https://share.sleap.ai/set.slp?token=bad");
+    expect(ok).toBe(false);
+    expect(useAppStore.getState().labels).toBeFalsy();
+    expect(useAppStore.getState().isLoading).toBe(false);
+    // The mocked redactedCauseSummary is String(e); the description should carry the
+    // real cause, not the RemoteIOError-only "network/CORS" fallback.
+    const call = (toast.error as unknown as { mock: { calls: unknown[][] } }).mock
+      .calls[0];
+    expect(String((call?.[1] as { description?: string })?.description)).toContain(
+      "corrupt or non-SLP file"
+    );
   });
 });

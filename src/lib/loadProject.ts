@@ -19,6 +19,7 @@ import {
   isCocoData,
   RemoteIOError,
   redactUrl,
+  redactedCauseSummary,
   type CocoJson,
   type ReadCocoOptions,
   type Labels,
@@ -237,15 +238,20 @@ export async function loadProjectFromUrl(url: string): Promise<boolean> {
     });
     return true;
   } catch (err) {
-    // io throws a RemoteIOError whose message is already human-readable AND
-    // URL/token-redacted (expired/invalid token, 404, network/CORS). Never log the
-    // raw URL — it carries the access token; redactUrl() strips it.
+    // A RemoteIOError's message is already human-readable AND URL/token-redacted
+    // (expired/invalid token, 404, network/CORS). For any other failure (e.g. a
+    // corrupt/non-SLP file, an h5wasm parse error) fall back to io's
+    // redactedCauseSummary — an accurate, credential-scrubbed one-liner — rather
+    // than mislabelling everything "network/CORS". Never log the raw URL or raw
+    // error: both can carry the access token, so redact on the way out.
     const msg =
-      err instanceof RemoteIOError
-        ? err.message
-        : "Couldn't reach the dataset (network or CORS issue).";
+      err instanceof RemoteIOError ? err.message : redactedCauseSummary(err);
     toast.error("Failed to open dataset", { description: msg });
-    console.error("Failed to open dataset from URL:", redactUrl(url), err);
+    console.error(
+      "Failed to open dataset from URL:",
+      redactUrl(url),
+      redactedCauseSummary(err)
+    );
     return false;
   } finally {
     store.setLoading(false);
