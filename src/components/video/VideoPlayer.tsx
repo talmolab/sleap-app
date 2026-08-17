@@ -9,7 +9,7 @@
  * Mirrors SLEAP's QtVideoPlayer.
  */
 
-import { useRef, useEffect, useCallback, useState } from "react";
+import { useRef, useEffect, useCallback, useState, useMemo } from "react";
 import { PredictedInstance } from "@talmolab/sleap-io.js";
 import { useAppStore } from "../../stores/appStore";
 import { debugFlags } from "../panels/DebugPanel";
@@ -41,7 +41,16 @@ import {
   BeginEdit,
   DeletePredictionsByArea,
   DuplicateInstance,
+  AddNodeCommand,
+  AddEdgeCommand,
+  RenameNodeCommand,
 } from "../../commands";
+import {
+  buildBuilderRenderedInstance,
+  renderPenStroke,
+} from "@/canvas/skeletonBuilderRender";
+import { nodesCrossedBySegment } from "@/lib/skeletonPenChain";
+import { isValidEdgeSelection } from "@/lib/skeletonEdgeEditing";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -58,6 +67,17 @@ import { toast } from "@/lib/notify";
 import { spacePanState } from "@/lib/spacePanTracking";
 import { getPlatform, isTauri } from "@/platform/index";
 import { Film, Frame, Hand, ImageOff, MousePointer2, Tag } from "lucide-react";
+
+/**
+ * First unused `node_${k}` name (k = 0, 1, 2, …) for a fresh builder node, so
+ * placing nodes on a blank skeleton yields node_0, node_1, … without collisions.
+ */
+function nextBuilderNodeName(nodes: { name: string }[]): string {
+  const names = new Set(nodes.map((n) => n.name));
+  let k = 0;
+  while (names.has(`node_${k}`)) k++;
+  return `node_${k}`;
+}
 
 export function VideoPlayer() {
   const frameCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -100,6 +120,13 @@ export function VideoPlayer() {
   const imageFeatureRoiDrawActive = useAppStore((s) => s.imageFeatureRoiDrawActive);
   const setImageFeatureRoi = useAppStore((s) => s.setImageFeatureRoi);
   const imageFeatureRois = useAppStore((s) => s.imageFeatureRois);
+  // Visual skeleton builder (2-stage place/connect). Every branch that reads
+  // these is guarded by `skeletonBuildMode`, so normal interactions are
+  // byte-identical when the builder is off.
+  const skeleton = useAppStore((s) => s.skeleton);
+  const skeletonBuildMode = useAppStore((s) => s.skeletonBuildMode);
+  const skeletonBuildStage = useAppStore((s) => s.skeletonBuildStage);
+  const builderPositions = useAppStore((s) => s.builderPositions);
 
   // Local zoom/pan state
   const [zoom, setZoom] = useState(1);
@@ -151,6 +178,14 @@ export function VideoPlayer() {
 
   // Track the last scene position during drag for delta calculations (alt-drag)
   const lastDragPos = useRef<{ x: number; y: number } | null>(null);
+
+  // Skeleton-builder transient gesture state (refs so mid-gesture updates don't
+  // churn React; redraws are triggered via bumpOverlayVersion).
+  const builderDragIdxRef = useRef<number | null>(null); // node being repositioned (place)
+  const penStrokeRef = useRef<{ x: number; y: number }[]>([]); // live connect pen path
+  const penLastRef = useRef<number | null>(null); // last node the pen touched
+  const penActiveRef = useRef<boolean>(false); // a pen stroke is in progress
+  const builderHoverIdxRef = useRef<number | null>(null); // builder node under cursor
 
   // Track drag-start screen position for anchoring tooltip + inset
   const dragStartClient = useRef<{ clientX: number; clientY: number } | null>(null);
@@ -460,6 +495,19 @@ export function VideoPlayer() {
   const baseScale = displayW > 0 && displayH > 0 ? Math.min(cw / displayW, ch / displayH) : 1;
   const offsetX = displayW > 0 && displayH > 0 ? (cw - displayW * baseScale) / 2 : 0;
   const offsetY = displayW > 0 && displayH > 0 ? (ch - displayH * baseScale) / 2 : 0;
+
+  // The in-progress builder skeleton as a RenderedInstance, reusing the same
+  // machinery as real instances for draw + hit-test. `overlayVersion` is a dep
+  // because AddNode/AddEdge mutate skeleton.nodes/edges in place (same object
+  // identity) and bump it — so the memo recomputes after those edits.
+  const builderRI = useMemo(
+    () =>
+      skeletonBuildMode && skeleton
+        ? buildBuilderRenderedInstance(skeleton, builderPositions)
+        : null,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [skeletonBuildMode, skeleton, builderPositions, overlayVersion]
+  );
 
   // Keep the store's `visibleSceneRect` in sync with the current viewport, in
   // frame/scene pixel coordinates -- the JS port of PyQt's
@@ -775,6 +823,19 @@ export function VideoPlayer() {
     setMarqueeEnd(null);
   }, [frameIdx, labeledFrame]);
 
+  // Keep the scratch `builderPositions` index-aligned with the skeleton node
+  // list while building. AddNode also syncs inline, but this catches node-count
+  // changes from undo/redo (which mutate skeleton.nodes without going through
+  // the place path). Guarded by build mode; only writes when lengths diverge, so
+  // it can't loop (builderPositions is not a dep).
+  useEffect(() => {
+    if (!skeletonBuildMode) return;
+    const n = skeleton?.nodes.length ?? 0;
+    if (useAppStore.getState().builderPositions.length !== n) {
+      useAppStore.getState().syncBuilderPositions();
+    }
+  }, [skeletonBuildMode, skeleton, overlayVersion]);
+
   useEffect(() => {
     const canvas = overlayCanvasRef.current;
     if (!canvas) return;
@@ -837,15 +898,44 @@ export function VideoPlayer() {
       }
     };
 
+    // Visual skeleton builder overlay: draw the scratch skeleton (never inserted
+    // into labels), the hovered-node highlight, and the live connect pen stroke.
+    // Independent of labeled instances, so it must render on the early-return
+    // path too. Assumes the image transform is already applied.
+    const paintBuilder = () => {
+      if (!skeletonBuildMode || !skeleton) return;
+      const ri = buildBuilderRenderedInstance(skeleton, builderPositions);
+      const bOpts = {
+        markerSize,
+        nodeLabelSize,
+        edgeStyle,
+        showInstances: true,
+        showLabels: true,
+        showEdges: true,
+        showNonVisibleNodes: true,
+        colorPredicted: false,
+        zoom: baseScale * zoom,
+      };
+      renderInstances(ctx, [ri], bOpts);
+      const hoverIdx = builderHoverIdxRef.current;
+      if (hoverIdx !== null && hoverIdx >= 0) {
+        renderHoveredNodeHighlight(ctx, [ri], 0, hoverIdx, bOpts);
+      }
+      if (skeletonBuildStage === "connect") {
+        renderPenStroke(ctx, penStrokeRef.current);
+      }
+    };
+
     if (!labeledFrame || !showInstances) {
       renderedInstancesRef.current = [];
-      // The ROI overlay is independent of instance rendering — still draw it
-      // (the persisted region and/or the live rubber-band).
+      // The ROI + builder overlays are independent of instance rendering — still
+      // draw them (persisted region / live rubber-band / scratch skeleton).
       const hasRoi = video ? imageFeatureRois.has(video) : false;
-      if (imageFeatureRoiDrawActive || hasRoi) {
+      if (imageFeatureRoiDrawActive || hasRoi || skeletonBuildMode) {
         ctx.save();
         applyImageTransform();
         paintRoi();
+        paintBuilder();
         ctx.restore();
       }
       return;
@@ -1005,6 +1095,10 @@ export function VideoPlayer() {
       ctx.restore();
     }
 
+    // Skeleton builder overlay (scratch skeleton + hover + pen), on top of the
+    // real instances but within the same image transform.
+    paintBuilder();
+
     ctx.restore();
   }, [
     labeledFrame,
@@ -1047,6 +1141,10 @@ export function VideoPlayer() {
     video,
     frameIdx,
     rotation,
+    skeletonBuildMode,
+    skeletonBuildStage,
+    builderPositions,
+    skeleton,
   ]);
 
   // Check if we're in explicit placement mode
@@ -1416,6 +1514,41 @@ export function VideoPlayer() {
 
       if (e.button !== 0) return; // Only left-click for interaction
 
+      // Visual skeleton builder owns left-clicks first, before all normal
+      // (pan / place / marquee) logic. Positions live only in `builderPositions`
+      // — the scratch skeleton is never inserted into `labels`.
+      if (skeletonBuildMode && skeleton) {
+        e.preventDefault();
+        const p = canvasToScene(e.clientX, e.clientY);
+        // Match the existing node hit-test: scene-space threshold + [instances].
+        const threshold = (markerSize * 2) / (baseScale * zoom);
+        const store = useAppStore.getState();
+        const ri =
+          builderRI ?? buildBuilderRenderedInstance(skeleton, store.builderPositions);
+        if (store.skeletonBuildStage === "place") {
+          const hit = hitTestNode([ri], p.x, p.y, threshold);
+          if (hit) {
+            // Grab an existing node to reposition it.
+            builderDragIdxRef.current = hit.nodeIdx;
+          } else {
+            // Empty space: append a new node and drop it here (source coords).
+            commandContext.execute(AddNodeCommand, {
+              name: nextBuilderNodeName(skeleton.nodes),
+            });
+            store.syncBuilderPositions();
+            const newIdx = skeleton.nodes.length - 1;
+            const [sx, sy] = toSourceCoords(store.video, p.x, p.y);
+            store.setBuilderPosition(newIdx, { x: sx, y: sy });
+          }
+        } else {
+          // connect stage: begin a pen stroke from the node under the cursor.
+          penActiveRef.current = true;
+          penStrokeRef.current = [p];
+          penLastRef.current = hitTestNode([ri], p.x, p.y, threshold)?.nodeIdx ?? null;
+        }
+        return;
+      }
+
       // A left-click while Space is held means the user is using this Space
       // press to drag/pan, not to tap for the next-suggestion shortcut --
       // suppress that shortcut's jump when Space is released (see
@@ -1635,11 +1768,70 @@ export function VideoPlayer() {
       setMarqueeStart({ x, y });
       setMarqueeEnd({ x, y });
     },
-    [canvasToScene, markerSize, nodeLabelSize, showLabels, panX, panY, zoom, baseScale, shouldPan, isCmdHeld, isSpaceHeld, offsetX, offsetY, selectedNodes, areaDeleteMode, imageFeatureRoiDrawActive]
+    [canvasToScene, markerSize, nodeLabelSize, showLabels, panX, panY, zoom, baseScale, shouldPan, isCmdHeld, isSpaceHeld, offsetX, offsetY, selectedNodes, areaDeleteMode, imageFeatureRoiDrawActive, skeletonBuildMode, skeleton, builderRI]
   );
 
   const handleMouseMove = useCallback(
     (e: React.MouseEvent) => {
+      // Skeleton builder owns the move gesture in build mode (no fall-through to
+      // pan/marquee/hover). Refs hold transient state; redraws via overlayVersion.
+      if (skeletonBuildMode && skeleton) {
+        const store = useAppStore.getState();
+        const p = canvasToScene(e.clientX, e.clientY);
+        const threshold = (markerSize * 2) / (baseScale * zoom);
+        // place: drag a grabbed node to reposition it (source coords).
+        if (store.skeletonBuildStage === "place" && builderDragIdxRef.current !== null) {
+          const [sx, sy] = toSourceCoords(store.video, p.x, p.y);
+          store.setBuilderPosition(builderDragIdxRef.current, { x: sx, y: sy });
+          return;
+        }
+        // connect: extend the pen and emit an edge for each freshly-crossed node.
+        if (store.skeletonBuildStage === "connect" && penActiveRef.current) {
+          const stroke = penStrokeRef.current;
+          const prev = stroke[stroke.length - 1] ?? p;
+          stroke.push(p);
+          // Same scene-space threshold as hit-testing so a fast stroke can't skip
+          // a small node between move samples (segment test, not point sampling).
+          const crossed = nodesCrossedBySegment(
+            store.builderPositions,
+            threshold,
+            prev,
+            p
+          );
+          for (const n of crossed) {
+            const last = penLastRef.current;
+            if (n === last) continue;
+            if (
+              last !== null &&
+              isValidEdgeSelection(
+                skeleton.nodes,
+                skeleton.edges,
+                skeleton.nodes[last].name,
+                skeleton.nodes[n].name
+              )
+            ) {
+              commandContext.execute(AddEdgeCommand, {
+                srcName: skeleton.nodes[last].name,
+                dstName: skeleton.nodes[n].name,
+              });
+            }
+            penLastRef.current = n;
+          }
+          store.bumpOverlayVersion();
+          return;
+        }
+        // idle: highlight the builder node under the cursor.
+        const ri =
+          builderRI ?? buildBuilderRenderedInstance(skeleton, store.builderPositions);
+        const hit = hitTestNode([ri], p.x, p.y, threshold);
+        const nextHover = hit ? hit.nodeIdx : null;
+        if (nextHover !== builderHoverIdxRef.current) {
+          builderHoverIdxRef.current = nextHover;
+          store.bumpOverlayVersion();
+        }
+        return;
+      }
+
       // Handle zoom-drag (Cmd+Space+drag)
       if (isZoomDragging && zoomDragStart.current) {
         const start = zoomDragStart.current;
@@ -1793,10 +1985,20 @@ export function VideoPlayer() {
         useAppStore.getState().bumpOverlayVersion();
       }
     },
-    [isDragging, isPanning, isZoomDragging, dragNodeInfo, canvasToScene, panStart, constrainPan, zoom, baseScale, interactionMode, selectedNodes, markerSize, nodeLabelSize, showLabels, hoveredNode, offsetX, offsetY, isPlacingNodes, isShiftHeld, isAreaDeleting, areaDeleteStart]
+    [isDragging, isPanning, isZoomDragging, dragNodeInfo, canvasToScene, panStart, constrainPan, zoom, baseScale, interactionMode, selectedNodes, markerSize, nodeLabelSize, showLabels, hoveredNode, offsetX, offsetY, isPlacingNodes, isShiftHeld, isAreaDeleting, areaDeleteStart, skeletonBuildMode, skeleton, builderRI]
   );
 
   const handleMouseUp = useCallback(() => {
+    // Skeleton builder: end any place-drag or connect-pen gesture.
+    if (useAppStore.getState().skeletonBuildMode) {
+      builderDragIdxRef.current = null;
+      penActiveRef.current = false;
+      penStrokeRef.current = [];
+      penLastRef.current = null;
+      useAppStore.getState().bumpOverlayVersion();
+      return;
+    }
+
     // Area-delete mode: execute the delete command
     if (isAreaDeleting && areaDeleteStart && areaDeleteEnd) {
       // Require minimum drag distance (5px in scene coords) to avoid accidental deletes
@@ -1986,6 +2188,31 @@ export function VideoPlayer() {
   // Double-click: convert predicted instance, or reset zoom/pan
   const handleDoubleClick = useCallback(
     (e: React.MouseEvent) => {
+      // Skeleton builder (place stage): double-click a placed node to rename it.
+      // window.prompt keeps this robust without a positioned overlay input; the
+      // rename goes through the undoable RenameNodeCommand.
+      if (skeletonBuildMode && skeleton) {
+        const store = useAppStore.getState();
+        if (store.skeletonBuildStage === "place") {
+          const p = canvasToScene(e.clientX, e.clientY);
+          const threshold = (markerSize * 2) / (baseScale * zoom);
+          const ri =
+            builderRI ?? buildBuilderRenderedInstance(skeleton, store.builderPositions);
+          const hit = hitTestNode([ri], p.x, p.y, threshold);
+          if (hit) {
+            const current = skeleton.nodes[hit.nodeIdx]?.name ?? "";
+            const next = window.prompt("Rename node", current);
+            if (next && next.trim() && next.trim() !== current) {
+              commandContext.execute(RenameNodeCommand, {
+                nodeIdx: hit.nodeIdx,
+                newName: next.trim(),
+              });
+            }
+          }
+        }
+        return;
+      }
+
       const { x, y } = canvasToScene(e.clientX, e.clientY);
       const instances = renderedInstancesRef.current;
 
@@ -2044,7 +2271,7 @@ export function VideoPlayer() {
         setPanY(0);
       }
     },
-    [canvasToScene, markerSize, nodeLabelSize, showLabels, zoom, baseScale, shouldPan]
+    [canvasToScene, markerSize, nodeLabelSize, showLabels, zoom, baseScale, shouldPan, skeletonBuildMode, skeleton, builderRI]
   );
 
   // Right-click context menu
@@ -2155,7 +2382,7 @@ export function VideoPlayer() {
         ref={containerRef}
         className={cn(
           "flex-1 relative overflow-hidden bg-background min-h-0",
-          imageFeatureRoiDrawActive ? "cursor-crosshair" : isPanning ? "cursor-grabbing" : isZoomDragging ? "cursor-zoom-in" : (shouldPan && isCmdHeld) ? "cursor-zoom-in" : shouldPan ? "cursor-grab" : isDragging ? "cursor-grabbing" : areaDeleteMode ? "cursor-crosshair" : interactionMode === "marquee" ? "cursor-crosshair" : isPlacingNodes ? "cursor-cell" : hoveredNode ? "cursor-pointer" : "cursor-default"
+          skeletonBuildMode ? (skeletonBuildStage === "connect" ? "cursor-crosshair" : "cursor-cell") : imageFeatureRoiDrawActive ? "cursor-crosshair" : isPanning ? "cursor-grabbing" : isZoomDragging ? "cursor-zoom-in" : (shouldPan && isCmdHeld) ? "cursor-zoom-in" : shouldPan ? "cursor-grab" : isDragging ? "cursor-grabbing" : areaDeleteMode ? "cursor-crosshair" : interactionMode === "marquee" ? "cursor-crosshair" : isPlacingNodes ? "cursor-cell" : hoveredNode ? "cursor-pointer" : "cursor-default"
         )}
         onMouseMove={crosshairActive ? handleCrosshairMove : undefined}
         onMouseLeave={
