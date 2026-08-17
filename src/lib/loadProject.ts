@@ -17,6 +17,8 @@ import {
   loadNwb,
   readCoco,
   isCocoData,
+  RemoteIOError,
+  redactUrl,
   type CocoJson,
   type ReadCocoOptions,
   type Labels,
@@ -37,6 +39,7 @@ import { resolveExternalVideos } from "./resolveVideos";
 import { installTauriFsResolver } from "./fsResolver";
 import { fileSize, readRange } from "./nativeRange";
 import { sleapCmd } from "./sleapPlugin";
+import { basenameFromUrl } from "./urlOpen";
 
 // Files larger than this open via the B-seam native range reader (lazy, on-disk)
 // instead of reading the whole file into WASM memory. Below it, eager is simpler
@@ -190,6 +193,56 @@ export async function loadProjectFromFile(file: File): Promise<boolean> {
     const msg = err instanceof Error ? err.message : String(err);
     toast.error("Failed to load project", { description: msg });
     console.error("Failed to load project:", err);
+    return false;
+  } finally {
+    store.setLoading(false);
+  }
+}
+
+/**
+ * Load an SLP project from a remote http(s) URL (browser "Open in SLEAP" deep
+ * link, issue #217). Streams the `.slp` over HTTP range requests via
+ * sleap-io.js — only the needed bytes are fetched, and the URL path needs no
+ * SharedArrayBuffer / cross-origin isolation. A token in the URL query suffix
+ * keeps the efficient header-free range stream (a token in a *header* would force
+ * a full buffered download). The remotely-opened project has no local path/handle,
+ * so it is Save-As only.
+ */
+export async function loadProjectFromUrl(url: string): Promise<boolean> {
+  const store = useAppStore.getState();
+
+  if (!confirmDiscardUnsavedWork("Opening a new project")) return false;
+
+  const name = basenameFromUrl(url);
+  store.setLoading(true, `Streaming ${name}...`);
+
+  try {
+    const labels = await readSlpStreaming(url, {
+      openVideos: !LAZY_VIDEO_METADATA,
+      lazyVideoMetadata: LAZY_VIDEO_METADATA,
+      filenameHint: url,
+      h5wasmUrl: H5WASM_URL,
+      onProgress: reportParseProgress,
+    });
+    store.setLoading(true, "Locating videos...");
+    await resolveExternalVideos(labels);
+    // No projectPath/handle → plain Save is disabled; user must Save As.
+    store.setLabels(labels, name);
+    await openFirstLabeledFrame(labels);
+    toast.success(`Loaded ${name}`, {
+      description: `${labels.videos.length} video(s), ${labels.labeledFrames.length} labeled frames`,
+    });
+    return true;
+  } catch (err) {
+    // io throws a RemoteIOError whose message is already human-readable AND
+    // URL/token-redacted (expired/invalid token, 404, network/CORS). Never log the
+    // raw URL — it carries the access token; redactUrl() strips it.
+    const msg =
+      err instanceof RemoteIOError
+        ? err.message
+        : "Couldn't reach the dataset (network or CORS issue).";
+    toast.error("Failed to open dataset", { description: msg });
+    console.error("Failed to open dataset from URL:", redactUrl(url), err);
     return false;
   } finally {
     store.setLoading(false);
