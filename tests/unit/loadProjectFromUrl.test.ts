@@ -64,7 +64,10 @@ describe("loadProjectFromUrl", () => {
     expect(ok).toBe(true);
 
     expect(readSlpStreamingMock).toHaveBeenCalledTimes(1);
-    const [source, options] = readSlpStreamingMock.mock.calls[0];
+    const [source, options] = readSlpStreamingMock.mock.calls[0] as unknown as [
+      string,
+      { filenameHint?: string; onProgress?: unknown },
+    ];
     expect(source).toBe(url); // URL string handed straight to the streaming reader
     expect(options.filenameHint).toBe(url);
     expect(typeof options.onProgress).toBe("function");
