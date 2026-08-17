@@ -100,6 +100,10 @@ export function SkeletonPanel() {
   // Dialog state for delete skeleton confirmation
   const [deleteSkeletonOpen, setDeleteSkeletonOpen] = useState(false);
 
+  // Dialog state for the "Draw skeleton on frame" launch guard: when a skeleton
+  // already exists, warn before entering the builder (Edit / Delete & start new).
+  const [buildGuardOpen, setBuildGuardOpen] = useState(false);
+
   // Dialog state for add edge
   const [addEdgeOpen, setAddEdgeOpen] = useState(false);
   const [edgeSrcName, setEdgeSrcName] = useState("");
@@ -167,9 +171,41 @@ export function SkeletonPanel() {
 
   const deleteSkeleton = () => {
     commandContext.execute(DeleteSkeletonCommand);
+    // Drop any session template layout so a deleted skeleton doesn't leave a
+    // stale center-based Add Instance seed behind.
+    useAppStore.getState().clearSkeletonTemplateLayout();
     setSelectedNodeIdx(null);
     setSelectedEdgeIdx(null);
     setDeleteSkeletonOpen(false);
+  };
+
+  /**
+   * "Draw skeleton on frame" launch. If a non-empty skeleton already exists,
+   * warn first (Edit / Delete & start new / Cancel); otherwise enter the builder
+   * directly on the empty/absent skeleton.
+   */
+  const launchBuilder = () => {
+    if (nodes.length > 0) {
+      setBuildGuardOpen(true);
+    } else {
+      useAppStore.getState().enterSkeletonBuild();
+    }
+  };
+
+  /** Guard → "Edit existing": enter the builder on the current skeleton. */
+  const guardEditExisting = () => {
+    setBuildGuardOpen(false);
+    useAppStore.getState().enterSkeletonBuild();
+  };
+
+  /** Guard → "Delete & start new": clear the skeleton, then enter the builder. */
+  const guardDeleteAndStartNew = () => {
+    commandContext.execute(DeleteSkeletonCommand);
+    useAppStore.getState().clearSkeletonTemplateLayout();
+    setSelectedNodeIdx(null);
+    setSelectedEdgeIdx(null);
+    setBuildGuardOpen(false);
+    useAppStore.getState().enterSkeletonBuild();
   };
 
   const addEdge = () => {
@@ -403,7 +439,7 @@ export function SkeletonPanel() {
           variant="subtle"
           size="xs"
           className="w-full"
-          onClick={() => useAppStore.getState().enterSkeletonBuild()}
+          onClick={launchBuilder}
           disabled={!video}
           title={
             video
@@ -698,6 +734,40 @@ export function SkeletonPanel() {
             </Button>
             <Button variant="destructive" size="sm" onClick={deleteSkeleton}>
               Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Draw-skeleton Launch Guard Dialog (existing skeleton) */}
+      <Dialog open={buildGuardOpen} onOpenChange={setBuildGuardOpen}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Skeleton already defined</DialogTitle>
+            <DialogDescription>
+              This project already has a skeleton ({nodes.length} node
+              {nodes.length !== 1 ? "s" : ""}, {edges.length} edge
+              {edges.length !== 1 ? "s" : ""}). Editing adds to it; you can also
+              delete it and start fresh.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setBuildGuardOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button variant="subtle" size="sm" onClick={guardEditExisting}>
+              Edit existing
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={guardDeleteAndStartNew}
+            >
+              Delete &amp; start new
             </Button>
           </DialogFooter>
         </DialogContent>
