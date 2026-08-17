@@ -40,6 +40,7 @@ import {
   ConvertPredictionToInstance,
   BeginEdit,
   DeletePredictionsByArea,
+  DuplicateInstance,
 } from "../../commands";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -54,6 +55,7 @@ import {
   relocateMissingImageFrames,
 } from "../../lib/resolveVideos";
 import { toast } from "@/lib/notify";
+import { spacePanState } from "@/lib/spacePanTracking";
 import { getPlatform, isTauri } from "@/platform/index";
 import { Film, Frame, Hand, ImageOff, MousePointer2, Tag } from "lucide-react";
 
@@ -306,6 +308,10 @@ export function VideoPlayer() {
           return;
         }
 
+        // Fresh press (not the double-tap case above): reset the drag flag so
+        // the pending Space-release suggestion-jump (useKeyboardShortcuts.ts)
+        // starts this hold with a clean slate.
+        spacePanState.draggedWhileHeld = false;
         setIsSpaceHeld(true);
       }
       if (e.key === "Meta" || e.key === "Control") {
@@ -1410,6 +1416,12 @@ export function VideoPlayer() {
 
       if (e.button !== 0) return; // Only left-click for interaction
 
+      // A left-click while Space is held means the user is using this Space
+      // press to drag/pan, not to tap for the next-suggestion shortcut --
+      // suppress that shortcut's jump when Space is released (see
+      // spacePanTracking.ts).
+      if (isSpaceHeld) spacePanState.draggedWhileHeld = true;
+
       // Image-features ROI draw mode takes priority: drag to set the crop region.
       if (imageFeatureRoiDrawActive) {
         e.preventDefault();
@@ -1510,12 +1522,45 @@ export function VideoPlayer() {
       const nodeThreshold = (markerSize * 2) / (baseScale * zoom);
       const instanceThreshold = 30 / (baseScale * zoom);
 
+      // Ctrl+click-and-drag on a user instance clones it and immediately
+      // starts dragging the copy, mirroring PyQt SLEAP's
+      // QtInstance.mousePressEvent (Ctrl+click -> duplicate_instance()).
+      // Returns true (and starts the drag) if `hitInstanceIdx` was a
+      // ctrl-clicked, non-predicted instance; false otherwise, so callers can
+      // fall through to their normal hit-handling.
+      const tryBeginDuplicateDrag = (hitInstanceIdx: number): boolean => {
+        if (!e.ctrlKey || instances[hitInstanceIdx]?.isPredicted) return false;
+        const lf = useAppStore.getState().labeledFrame;
+        const sourceInstance = lf?.instances[hitInstanceIdx];
+        if (!lf || !sourceInstance) return false;
+
+        commandContext.execute(DuplicateInstance, { instance: sourceInstance });
+        const newInstance = useAppStore.getState().instance;
+        const newLf = useAppStore.getState().labeledFrame;
+        if (!newInstance || !newLf) return false;
+        const newIdx = newLf.instances.indexOf(newInstance);
+
+        const keys = new Set<string>();
+        newInstance.points.forEach((p, pIdx) => {
+          if (!isNaN(p.xy[0]) && !isNaN(p.xy[1])) keys.add(makeNodeKey(newIdx, pIdx));
+        });
+        setSelectedNodes(keys);
+        setDragNodeInfo({ instanceIdx: newIdx, nodeIdx: 0 });
+        setIsDragging(true);
+        setInteractionMode("dragging");
+        lastDragPos.current = { x, y };
+        dragStartClient.current = { clientX: e.clientX, clientY: e.clientY };
+        useAppStore.getState().bumpOverlayVersion();
+        return true;
+      };
+
       // Try to hit a node first (marker or, if shown, its name label)
       const nodeHit = hitTestNode(
         instances, x, y, nodeThreshold,
         showLabels ? { zoom, markerSize, nodeLabelSize } : undefined
       );
       if (nodeHit) {
+        if (tryBeginDuplicateDrag(nodeHit.instanceIdx)) return;
         const key = makeNodeKey(nodeHit.instanceIdx, nodeHit.nodeIdx);
         const lf = useAppStore.getState().labeledFrame;
 
@@ -1562,6 +1607,7 @@ export function VideoPlayer() {
       // Try to hit an instance (by centroid)
       const instHit = hitTestInstance(instances, x, y, instanceThreshold);
       if (instHit !== null) {
+        if (tryBeginDuplicateDrag(instHit)) return;
         const lf = useAppStore.getState().labeledFrame;
         if (lf) {
           useAppStore.getState().setInstance(lf.instances[instHit]);
@@ -1589,7 +1635,7 @@ export function VideoPlayer() {
       setMarqueeStart({ x, y });
       setMarqueeEnd({ x, y });
     },
-    [canvasToScene, markerSize, nodeLabelSize, showLabels, panX, panY, zoom, baseScale, shouldPan, isCmdHeld, offsetX, offsetY, selectedNodes, areaDeleteMode, imageFeatureRoiDrawActive]
+    [canvasToScene, markerSize, nodeLabelSize, showLabels, panX, panY, zoom, baseScale, shouldPan, isCmdHeld, isSpaceHeld, offsetX, offsetY, selectedNodes, areaDeleteMode, imageFeatureRoiDrawActive]
   );
 
   const handleMouseMove = useCallback(
@@ -1979,6 +2025,15 @@ export function VideoPlayer() {
   const handleContextMenu = useCallback(
     (e: React.MouseEvent) => {
       e.preventDefault();
+
+      // On macOS, Ctrl+left-click is indistinguishable from a real right-click
+      // at the DOM level -- both fire "contextmenu". But Ctrl+click-and-drag is
+      // reserved for the clone-and-drag gesture (handled on mousedown, above),
+      // so treat a Ctrl-modified contextmenu as a no-op here: a genuine
+      // right-click (mouse button / trackpad two-finger tap) never has
+      // e.ctrlKey set, since no keyboard modifier was held.
+      if (e.ctrlKey) return;
+
       const { x, y } = canvasToScene(e.clientX, e.clientY);
       const sceneLocation = toSourceCoords(useAppStore.getState().video, x, y);
       const instances = renderedInstancesRef.current;

@@ -14,6 +14,7 @@ import { Track } from "@talmolab/sleap-io.js";
 import { quitApp } from "../lib/quit";
 import { openNewInstance } from "../lib/newInstance";
 import { dismiss } from "../lib/notify";
+import { spacePanState } from "../lib/spacePanTracking";
 import {
   commandContext,
   OpenProjectCommand,
@@ -97,16 +98,17 @@ export function useKeyboardShortcuts() {
         commandContext.execute(GoPrevLabeledFrame);
       },
 
-      // Suggestion navigation
+      // Suggestion navigation (Space / Shift+Space). Only preventDefault here
+      // -- the actual jump is deferred to key-release below, so a hold-Space-
+      // then-drag pan gesture (VideoPlayer.tsx) doesn't also jump frames out
+      // from under the drag the instant Space goes down.
       [DEFAULT_SHORTCUTS["goto next suggestion"]]: (e) => {
         if (isTextInput(e)) return;
         e.preventDefault();
-        commandContext.execute(GoNextSuggestion);
       },
       [DEFAULT_SHORTCUTS["goto prev suggestion"]]: (e) => {
         if (isTextInput(e)) return;
         e.preventDefault();
-        commandContext.execute(GoPrevSuggestion);
       },
 
       // Go to last interacted frame
@@ -424,6 +426,29 @@ export function useKeyboardShortcuts() {
       },
     });
 
-    return unsubscribe;
+    // Suggestion navigation fires on Space/Shift+Space *release*, not press,
+    // and only if no pan-drag happened while Space was held (see
+    // spacePanTracking.ts) -- see the preventDefault-only stubs above.
+    const unsubscribeSuggestionNav = tinykeys(
+      window,
+      {
+        [DEFAULT_SHORTCUTS["goto next suggestion"]]: (e) => {
+          if (isTextInput(e)) return;
+          if (spacePanState.draggedWhileHeld) return;
+          commandContext.execute(GoNextSuggestion);
+        },
+        [DEFAULT_SHORTCUTS["goto prev suggestion"]]: (e) => {
+          if (isTextInput(e)) return;
+          if (spacePanState.draggedWhileHeld) return;
+          commandContext.execute(GoPrevSuggestion);
+        },
+      },
+      { event: "keyup" }
+    );
+
+    return () => {
+      unsubscribe();
+      unsubscribeSuggestionNav();
+    };
   }, []);
 }
