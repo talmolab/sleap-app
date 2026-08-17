@@ -332,6 +332,27 @@ export const DeleteEdgeCommand: Command = {
 };
 
 /**
+ * Remove all edges from the skeleton, keeping the nodes. Used by the visual
+ * builder's "Clear edges" reset. Undoable.
+ */
+export const ClearEdgesCommand: Command = {
+  name: "ClearEdges",
+  topics: [UpdateTopic.Skeleton],
+  skipAutoSnapshot: true,
+  execute(ctx: CommandContext) {
+    const { skeleton } = ctx.state;
+    if (!skeleton || skeleton.edges.length === 0) return;
+
+    const before = takeSkeletonSnapshot(ctx);
+    skeleton.edges = [];
+    const afterSnapshot = takeSkeletonSnapshot(ctx);
+    storeSkeletonUndo(ctx, "ClearEdges", before, afterSnapshot);
+
+    ctx.state.markChanged();
+  },
+};
+
+/**
  * Rename a node in the skeleton.
  *
  * Also updates the name in all instance point arrays.

@@ -10,6 +10,7 @@ import {
   DeleteNodeCommand,
   AddEdgeCommand,
   DeleteEdgeCommand,
+  ClearEdgesCommand,
   RenameNodeCommand,
   LoadSkeletonTemplateCommand,
   installSkeletonUndoInterceptor,
@@ -257,6 +258,67 @@ describe("Skeleton commands", () => {
 
       await ctx.execute(DeleteEdgeCommand, {});
       expect(project.skeleton.edges.length).toBe(1);
+    });
+  });
+
+  describe("ClearEdgesCommand", () => {
+    it("removes all edges but keeps the nodes", async () => {
+      const project = setupProject({ numNodes: 3 });
+      // Default has 1 edge (node_0 -> node_1); add a second so we clear ≥2.
+      project.skeleton.addEdge(
+        project.skeleton.nodes[1],
+        project.skeleton.nodes[2]
+      );
+      expect(project.skeleton.edges.length).toBe(2);
+
+      const nodeCountBefore = project.skeleton.nodes.length;
+      const nodeNamesBefore = project.skeleton.nodes.map((n) => n.name);
+
+      await ctx.execute(ClearEdgesCommand);
+
+      expect(project.skeleton.edges.length).toBe(0);
+      // Nodes untouched.
+      expect(project.skeleton.nodes.length).toBe(nodeCountBefore);
+      expect(project.skeleton.nodes.map((n) => n.name)).toEqual(nodeNamesBefore);
+    });
+
+    it("undo restores the cleared edges", async () => {
+      const project = setupProject({ numNodes: 3 });
+      project.skeleton.addEdge(
+        project.skeleton.nodes[1],
+        project.skeleton.nodes[2]
+      );
+      installSkeletonUndoInterceptor(ctx);
+
+      const beforeEdgeCount = project.skeleton.edges.length;
+      const beforeEndpoints = project.skeleton.edges.map(
+        (e) => [e.source.name, e.destination.name] as [string, string]
+      );
+      expect(beforeEdgeCount).toBe(2);
+
+      await ctx.execute(ClearEdgesCommand);
+      expect(project.skeleton.edges.length).toBe(0);
+
+      ctx.undo();
+
+      expect(project.skeleton.edges.length).toBe(beforeEdgeCount);
+      expect(
+        project.skeleton.edges.map(
+          (e) => [e.source.name, e.destination.name] as [string, string]
+        )
+      ).toEqual(beforeEndpoints);
+    });
+
+    it("is a no-op when there are no edges (pushes no undo entry)", async () => {
+      const project = setupProject({ numNodes: 3 });
+      // Remove the default edge so the skeleton starts with none.
+      project.skeleton.edges = [];
+      expect(project.skeleton.edges.length).toBe(0);
+
+      expect(() => ctx.execute(ClearEdgesCommand)).not.toThrow();
+      expect(project.skeleton.edges.length).toBe(0);
+      // Early-return means no undo entry was pushed.
+      expect(ctx.canUndo).toBe(false);
     });
   });
 
