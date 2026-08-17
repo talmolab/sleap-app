@@ -13,6 +13,7 @@ import { commandContext } from "../../commands/CommandContext";
 import {
   AddNodeCommand,
   DeleteNodeCommand,
+  DeleteSkeletonCommand,
   AddEdgeCommand,
   DeleteEdgeCommand,
   AddSymmetryCommand,
@@ -96,6 +97,9 @@ export function SkeletonPanel() {
   // Dialog state for delete node confirmation
   const [deleteNodeOpen, setDeleteNodeOpen] = useState(false);
 
+  // Dialog state for delete skeleton confirmation
+  const [deleteSkeletonOpen, setDeleteSkeletonOpen] = useState(false);
+
   // Dialog state for add edge
   const [addEdgeOpen, setAddEdgeOpen] = useState(false);
   const [edgeSrcName, setEdgeSrcName] = useState("");
@@ -159,6 +163,13 @@ export function SkeletonPanel() {
     commandContext.execute(DeleteNodeCommand, { nodeIdx: selectedNodeIdx });
     setSelectedNodeIdx(null);
     setDeleteNodeOpen(false);
+  };
+
+  const deleteSkeleton = () => {
+    commandContext.execute(DeleteSkeletonCommand);
+    setSelectedNodeIdx(null);
+    setSelectedEdgeIdx(null);
+    setDeleteSkeletonOpen(false);
   };
 
   const addEdge = () => {
@@ -491,6 +502,14 @@ export function SkeletonPanel() {
             >
               Delete Node
             </Button>
+            <Button
+              variant="subtle"
+              size="xs"
+              onClick={() => setDeleteSkeletonOpen(true)}
+              disabled={!skeleton || nodes.length === 0}
+            >
+              Delete Skeleton
+            </Button>
           </div>
         </TabsContent>
 
@@ -652,6 +671,32 @@ export function SkeletonPanel() {
               Cancel
             </Button>
             <Button variant="destructive" size="sm" onClick={deleteNode}>
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Skeleton Confirmation Dialog */}
+      <Dialog open={deleteSkeletonOpen} onOpenChange={setDeleteSkeletonOpen}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Delete Skeleton</DialogTitle>
+            <DialogDescription>
+              Delete the entire skeleton? This removes all {nodes.length} node
+              {nodes.length !== 1 ? "s" : ""} and {edges.length} edge
+              {edges.length !== 1 ? "s" : ""}. This can be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setDeleteSkeletonOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button variant="destructive" size="sm" onClick={deleteSkeleton}>
               Delete
             </Button>
           </DialogFooter>

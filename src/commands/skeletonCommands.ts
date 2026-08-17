@@ -353,6 +353,53 @@ export const ClearEdgesCommand: Command = {
 };
 
 /**
+ * Delete the entire skeleton: remove all nodes and edges, and clear every
+ * instance's points. An empty skeleton implies zero points per instance, so
+ * this cascades to instance points the same way {@link DeleteNodeCommand} does
+ * for a single node — but for ALL nodes at once (each instance's `points`
+ * becomes `[]`).
+ *
+ * No-op when there is no skeleton or it is already empty (0 nodes AND 0 edges).
+ * Undoable via the snapshot pattern (nodes, edges, and instance points all
+ * restore).
+ */
+export const DeleteSkeletonCommand: Command = {
+  name: "DeleteSkeleton",
+  topics: [UpdateTopic.Skeleton, UpdateTopic.Frame],
+  skipAutoSnapshot: true,
+  execute(ctx: CommandContext) {
+    const { labels, skeleton } = ctx.state;
+    if (!skeleton) return;
+    // Already empty → nothing to do (no undo entry pushed).
+    if (skeleton.nodes.length === 0 && skeleton.edges.length === 0) return;
+
+    const before = takeSkeletonSnapshot(ctx);
+
+    skeleton.nodes = [];
+    skeleton.edges = [];
+    skeleton.rebuildCache([]);
+
+    // Clear every instance's points. Reassign, don't splice in place:
+    // `inst.points` is a columnar snapshot array since sleap-io.js 0.5.x (see
+    // AddNode/DeleteNode).
+    if (labels) {
+      for (const lf of labels.labeledFrames) {
+        for (const inst of lf.instances) {
+          inst.points = [];
+        }
+      }
+    }
+
+    const afterSnapshot = takeSkeletonSnapshot(ctx);
+    storeSkeletonUndo(ctx, "DeleteSkeleton", before, afterSnapshot);
+
+    ctx.state.markChanged();
+    // Node count changed: refresh skeleton-dependent UI (see AddNode).
+    ctx.state.bumpOverlayVersion();
+  },
+};
+
+/**
  * Rename a node in the skeleton.
  *
  * Also updates the name in all instance point arrays.

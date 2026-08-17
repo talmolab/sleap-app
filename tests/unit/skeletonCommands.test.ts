@@ -8,6 +8,7 @@ import { useAppStore } from "@/stores/appStore";
 import {
   AddNodeCommand,
   DeleteNodeCommand,
+  DeleteSkeletonCommand,
   AddEdgeCommand,
   DeleteEdgeCommand,
   ClearEdgesCommand,
@@ -319,6 +320,79 @@ describe("Skeleton commands", () => {
       expect(project.skeleton.edges.length).toBe(0);
       // Early-return means no undo entry was pushed.
       expect(ctx.canUndo).toBe(false);
+    });
+  });
+
+  describe("DeleteSkeletonCommand", () => {
+    it("empties nodes, edges, and all instance points", async () => {
+      const project = setupProject({
+        numNodes: 3,
+        numFrames: 2,
+        numInstancesPerFrame: 2,
+      });
+      // Sanity: skeleton starts non-empty and instances carry points.
+      expect(project.skeleton.nodes.length).toBe(3);
+      expect(project.skeleton.edges.length).toBe(1);
+
+      await ctx.execute(DeleteSkeletonCommand);
+
+      expect(project.skeleton.nodes.length).toBe(0);
+      expect(project.skeleton.edges.length).toBe(0);
+      for (const lf of project.labels.labeledFrames) {
+        for (const inst of lf.instances) {
+          expect(inst.points.length).toBe(0);
+        }
+      }
+    });
+
+    it("undo restores nodes, edges, and instance points", async () => {
+      const project = setupProject({
+        numNodes: 3,
+        numFrames: 2,
+        numInstancesPerFrame: 1,
+      });
+      installSkeletonUndoInterceptor(ctx);
+
+      const beforeNodeCount = project.skeleton.nodes.length;
+      const beforeNodeNames = project.skeleton.nodes.map((n) => n.name);
+      const beforeEdgeCount = project.skeleton.edges.length;
+
+      await ctx.execute(DeleteSkeletonCommand);
+      expect(project.skeleton.nodes.length).toBe(0);
+
+      ctx.undo();
+
+      expect(project.skeleton.nodes.length).toBe(beforeNodeCount);
+      expect(project.skeleton.nodes.map((n) => n.name)).toEqual(
+        beforeNodeNames
+      );
+      expect(project.skeleton.edges.length).toBe(beforeEdgeCount);
+      // Instance points restored (re-fetch live instances — frame-undo swaps
+      // in fresh clones).
+      for (const lf of useAppStore.getState().labels!.labeledFrames) {
+        for (const inst of lf.instances) {
+          expect(inst.points.length).toBe(beforeNodeCount);
+        }
+      }
+    });
+
+    it("is a no-op on an already-empty skeleton (pushes no undo entry)", async () => {
+      const project = setupProject({ numNodes: 3 });
+      // Empty the skeleton directly so it starts with 0 nodes AND 0 edges.
+      project.skeleton.nodes = [];
+      project.skeleton.edges = [];
+      expect(project.skeleton.nodes.length).toBe(0);
+
+      expect(() => ctx.execute(DeleteSkeletonCommand)).not.toThrow();
+      expect(project.skeleton.nodes.length).toBe(0);
+      expect(project.skeleton.edges.length).toBe(0);
+      // Early-return means no undo entry was pushed.
+      expect(ctx.canUndo).toBe(false);
+    });
+
+    it("does nothing without a skeleton", () => {
+      // No project loaded.
+      expect(() => ctx.execute(DeleteSkeletonCommand)).not.toThrow();
     });
   });
 
