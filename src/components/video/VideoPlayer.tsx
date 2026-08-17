@@ -15,6 +15,7 @@ import { useAppStore } from "../../stores/appStore";
 import { debugFlags } from "../panels/DebugPanel";
 import { Seekbar } from "./Seekbar";
 import { ContextMenu } from "./ContextMenu";
+import { SkeletonBuildBar } from "./SkeletonBuildBar";
 import {
   renderInstances,
   hitTestNode,
@@ -2706,6 +2707,9 @@ export function VideoPlayer() {
             </div>
           </div>
         )}
+
+        {/* Visual skeleton builder control bar (self-guards to build mode). */}
+        <SkeletonBuildBar />
       </div>
 
       {/* Seekbar */}

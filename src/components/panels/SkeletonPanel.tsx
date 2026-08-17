@@ -84,6 +84,8 @@ function ensureInterceptor() {
 
 export function SkeletonPanel() {
   const skeleton = useAppStore((s) => s.skeleton);
+  // A video (i.e. a frame to draw on) is required to launch the visual builder.
+  const video = useAppStore((s) => s.video);
   const [selectedNodeIdx, setSelectedNodeIdx] = useState<number | null>(null);
   const [selectedEdgeIdx, setSelectedEdgeIdx] = useState<number | null>(null);
 
@@ -382,6 +384,24 @@ export function SkeletonPanel() {
           {nodes.length} node{nodes.length !== 1 ? "s" : ""},{" "}
           {edges.length} edge{edges.length !== 1 ? "s" : ""}
         </div>
+      </div>
+
+      {/* Visual skeleton builder launch */}
+      <div className="px-2 py-1.5 border-b border-border">
+        <Button
+          variant="subtle"
+          size="xs"
+          className="w-full"
+          onClick={() => useAppStore.getState().enterSkeletonBuild()}
+          disabled={!video}
+          title={
+            video
+              ? "Draw the skeleton directly on the current frame"
+              : "Load a video to draw a skeleton"
+          }
+        >
+          Draw skeleton on frame
+        </Button>
       </div>
 
       {/* Template selector + Load/Save buttons */}
