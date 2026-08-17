@@ -247,16 +247,57 @@ describe("template layout seeding (skeleton-builder drawn layout)", () => {
     expect(result.points[2].xy).toEqual([55, 65]);
   });
 
-  it("leaves nodes with a null layout entry unplaced (NaN)", () => {
+  it("fills a null layout entry with the center-circle default (no NaN)", () => {
+    // Regression (Add Instance dropped into keypoint-placement mode): a template
+    // layout with an unplaced (null) entry must NOT leave that point at NaN, or
+    // AddInstance would see a NaN point and call enterPlacementMode(). The null
+    // slot is filled with the SAME center-circle default placeAtCenter uses.
     const skeleton = makeSkeleton3();
     const layout = [{ x: 10, y: 20 }, null, { x: 50, y: 60 }];
 
     const result = placeInstance("template", skeleton, video, [], null, null, layout);
 
+    // Drawn entries keep their positions…
     expect(result.points[0].xy).toEqual([10, 20]);
-    expect(Number.isNaN(result.points[1].xy[0])).toBe(true);
-    expect(Number.isNaN(result.points[1].xy[1])).toBe(true);
     expect(result.points[2].xy).toEqual([50, 60]);
+    // …and the null entry is the center-circle default for index 1
+    // (cx=400, cy=300, radius=30; angle = 2π·1/3).
+    expect(result.points[1].xy[0]).toBeCloseTo(385, 6);
+    expect(result.points[1].xy[1]).toBeCloseTo(325.980762, 5);
+    // The whole instance is fully placed (visible, no NaN) — exactly the
+    // predicate AddInstance checks before entering placement mode.
+    result.points.forEach((p) => {
+      expect(p.visible).toBe(true);
+      expect(Number.isNaN(p.xy[0])).toBe(false);
+      expect(Number.isNaN(p.xy[1])).toBe(false);
+    });
+    const hasNaN = result.points.some(
+      (p) => Number.isNaN(p.xy[0]) || Number.isNaN(p.xy[1])
+    );
+    expect(hasNaN).toBe(false);
+  });
+
+  it("'best' with a null layout entry also yields no NaN points", () => {
+    // Copy-Prior-Frame clones the current-frame instance, so a NaN-bearing
+    // template-seeded instance would propagate NaN and re-trigger placement mode.
+    // Guard the "best" seed path (used by Add Instance ▸ Best) the same way.
+    const skeleton = makeSkeleton3();
+    const layout = [{ x: 100, y: 100 }, null, { x: 110, y: 120 }];
+
+    const result = placeInstance("best", skeleton, video, [], null, null, layout);
+
+    const hasNaN = result.points.some(
+      (p) => Number.isNaN(p.xy[0]) || Number.isNaN(p.xy[1])
+    );
+    expect(hasNaN).toBe(false);
+  });
+
+  it("with a null template layout keeps the plain centered-circle default (no regression)", () => {
+    // When there is NO captured layout, behavior is unchanged: placeAtCenter.
+    const skeleton = makeSkeleton3();
+    const result = placeInstance("template", skeleton, video, [], null, null, null);
+    expect(result.points[0].xy[0]).toBeCloseTo(430, 6);
+    expect(result.points[0].xy[1]).toBeCloseTo(300, 6);
   });
 
   it("does not seed 'random' from the layout", () => {

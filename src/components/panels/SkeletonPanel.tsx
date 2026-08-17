@@ -87,6 +87,21 @@ export function SkeletonPanel() {
   const skeleton = useAppStore((s) => s.skeleton);
   // A video (i.e. a frame to draw on) is required to launch the visual builder.
   const video = useAppStore((s) => s.video);
+  // Re-render when the skeleton's structure changes. The skeleton commands AND
+  // the on-canvas visual builder mutate the SAME `Skeleton` object IN PLACE
+  // (nodes/edges are reassigned on a stable object; the `s.skeleton` reference
+  // never changes), then signal via a store bump. A plain `s.skeleton` selector
+  // therefore never re-fires for builder-added nodes, so subscribe to the live
+  // node/edge COUNTS (primitives) instead — they re-render this panel exactly
+  // when the structure changes. Without this the panel's `nodes`/`edges` snapshot
+  // (below) goes stale after the builder adds nodes, which makes the "Draw
+  // skeleton on frame" launch guard read a stale count, skip the
+  // Edit/Delete-&-start-new prompt, re-enter the builder on the still-populated
+  // skeleton, and keep numbering new nodes as node_6, node_7, … instead of
+  // restarting at node_0. It also left the Delete Skeleton button wrongly
+  // disabled and the node/edge counts wrong.
+  useAppStore((s) => s.skeleton?.nodes.length ?? 0);
+  useAppStore((s) => s.skeleton?.edges.length ?? 0);
   const [selectedNodeIdx, setSelectedNodeIdx] = useState<number | null>(null);
   const [selectedEdgeIdx, setSelectedEdgeIdx] = useState<number | null>(null);
 

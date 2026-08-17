@@ -99,9 +99,15 @@ function placeAtCenter(
  * position is converted to SOURCE coordinates via `toSourceCoords` (identity on
  * an uncropped video) before it's written onto the matching point. Placed nodes
  * are marked visible + not-yet-complete, exactly like {@link placeAtCenter}, so
- * they start red (auto-placed, pending user confirmation). Nodes whose layout
- * entry is `null`/missing are left at their existing (NaN) position -- unplaced,
- * just like an un-clicked builder node -- rather than forced into the circle.
+ * they start red (auto-placed, pending user confirmation).
+ *
+ * Nodes whose layout entry is `null`/missing (e.g. builder nodes the user never
+ * clicked, or an "Edit existing" session whose `builderPositions` were seeded
+ * all-null) are filled with the SAME center-circle default {@link placeAtCenter}
+ * would use, rather than left at their initial NaN coordinate. This keeps a
+ * template-seeded instance FULLY placed -- matching the pre-builder Best/Template
+ * behavior -- so `AddInstance` never sees a NaN point and never drops into
+ * keypoint-placement mode after the builder has captured a layout.
  *
  * Writes points the same way `placeAtCenter` does (in-place mutation of
  * `instance.points[i].xy` / `.visible` / `.complete`), which is the pattern the
@@ -113,10 +119,23 @@ function applyTemplateLayout(
   video: Video | null
 ): Instance {
   const nodeCount = instance.points.length;
+  // Center-circle fallback geometry, identical to `placeAtCenter`, for any
+  // unplaced (null/missing) layout entry.
+  const [width, height] = getFrameDims(video);
+  const cx = width / 2;
+  const cy = height / 2;
+  const radius = Math.min(width, height) * 0.05;
   for (let i = 0; i < nodeCount; i++) {
     const entry = layout[i];
-    if (!entry) continue;
-    instance.points[i].xy = toSourceCoords(video, entry.x, entry.y);
+    if (entry) {
+      instance.points[i].xy = toSourceCoords(video, entry.x, entry.y);
+    } else {
+      const angle = (2 * Math.PI * i) / Math.max(nodeCount, 1);
+      instance.points[i].xy = [
+        cx + radius * Math.cos(angle),
+        cy + radius * Math.sin(angle),
+      ];
+    }
     instance.points[i].visible = true;
     // Auto-placed, not yet user-confirmed -- starts red (mark_complete=False).
     instance.points[i].complete = false;

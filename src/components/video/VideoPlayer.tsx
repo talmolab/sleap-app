@@ -72,8 +72,12 @@ import { Film, Frame, Hand, ImageOff, MousePointer2, Tag } from "lucide-react";
 /**
  * First unused `node_${k}` name (k = 0, 1, 2, …) for a fresh builder node, so
  * placing nodes on a blank skeleton yields node_0, node_1, … without collisions.
+ *
+ * Exported for testing: the number restarts at `node_0` iff the passed node list
+ * is empty, so it doubles as a regression check that a delete-and-restart truly
+ * hands the builder an emptied `skeleton.nodes`.
  */
-function nextBuilderNodeName(nodes: { name: string }[]): string {
+export function nextBuilderNodeName(nodes: { name: string }[]): string {
   const names = new Set(nodes.map((n) => n.name));
   let k = 0;
   while (names.has(`node_${k}`)) k++;
