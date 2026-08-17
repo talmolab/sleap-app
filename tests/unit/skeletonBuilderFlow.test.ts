@@ -7,16 +7,18 @@
  * `labels`. Scratch positions live only in `builderPositions`; the skeleton graph
  * is mutated exclusively via the undoable AddNode/AddEdge commands.
  *
- * This mirrors the exact call sequence the VideoPlayer handlers perform:
- *   place:   AddNodeCommand → syncBuilderPositions → setBuilderPosition
- *   connect: penStrokeToEdges → (isValidEdgeSelection ?) AddEdgeCommand
+ * The connect step mirrors the production handler's algorithm exactly: walk the
+ * stroke's segments, call `nodesCrossedBySegment` per segment, and chain edges
+ * with a manual `penLast` cursor gated by `isValidEdgeSelection` — the same
+ * composition `handleMouseMove` performs (NOT the `penStrokeToEdges` convenience
+ * wrapper, which is exported + unit-tested separately in Task 1).
  */
 
 import { describe, it, expect, beforeEach } from "../bun-test";
 import { CommandContext } from "@/commands/CommandContext";
 import { useAppStore } from "@/stores/appStore";
 import { AddNodeCommand, AddEdgeCommand } from "@/commands/skeletonCommands";
-import { penStrokeToEdges } from "@/lib/skeletonPenChain";
+import { nodesCrossedBySegment } from "@/lib/skeletonPenChain";
 import { isValidEdgeSelection } from "@/lib/skeletonEdgeEditing";
 import { Labels, LabeledFrame, Skeleton, Video } from "@talmolab/sleap-io.js";
 
@@ -43,6 +45,40 @@ function setupEmptyProject() {
 
   useAppStore.getState().setLabels(labels, "test.slp");
   return { labels, skeleton, video };
+}
+
+/**
+ * Replay a connect-stage pen stroke exactly like `handleMouseMove` does: iterate
+ * the stroke's segments, find nodes crossed by each, and chain `penLast → n`
+ * edges through the `isValidEdgeSelection` gate + `AddEdgeCommand`. Returns the
+ * ordered [src, dst] name pairs actually created.
+ */
+async function connectWithPen(
+  ctx: CommandContext,
+  skeleton: Skeleton,
+  positions: ({ x: number; y: number } | null)[],
+  threshold: number,
+  stroke: { x: number; y: number }[]
+): Promise<Array<[string, string]>> {
+  const created: Array<[string, string]> = [];
+  let penLast: number | null = null; // starts on empty space, like a fresh stroke
+  for (let i = 0; i + 1 < stroke.length; i++) {
+    const crossed = nodesCrossedBySegment(positions, threshold, stroke[i], stroke[i + 1]);
+    for (const n of crossed) {
+      const last: number | null = penLast;
+      if (n === last) continue;
+      if (last !== null) {
+        const srcName = skeleton.nodes[last].name;
+        const dstName = skeleton.nodes[n].name;
+        if (isValidEdgeSelection(skeleton.nodes, skeleton.edges, srcName, dstName)) {
+          await ctx.execute(AddEdgeCommand, { srcName, dstName });
+          created.push([srcName, dstName]);
+        }
+      }
+      penLast = n;
+    }
+  }
+  return created;
 }
 
 describe("Skeleton builder net-neutral flow", () => {
@@ -83,7 +119,8 @@ describe("Skeleton builder net-neutral flow", () => {
     // builderPositions stays index-aligned to the node list.
     expect(useAppStore.getState().builderPositions).toEqual(placed);
 
-    // --- Stage 2: a single pen stroke through all 3 node hit-circles.
+    // --- Stage 2: a single pen stroke through all 3 node hit-circles, replayed
+    // with the handler's own segment-crossing + penLast chaining.
     useAppStore.getState().setSkeletonBuildStage("connect");
     const R = 8; // hit radius (scene space)
     const stroke = [
@@ -91,20 +128,12 @@ describe("Skeleton builder net-neutral flow", () => {
       { x: 100, y: 10 },
     ];
     const bp = useAppStore.getState().builderPositions;
-    const pairs = penStrokeToEdges(bp, R, stroke);
-    // Entry order along the segment → chained edges 0→1, 1→2.
-    expect(pairs).toEqual([
-      [0, 1],
-      [1, 2],
+    const created = await connectWithPen(ctx, skeleton, bp, R, stroke);
+    // Entry order along the segment → chained edges node_0→node_1, node_1→node_2.
+    expect(created).toEqual([
+      ["node_0", "node_1"],
+      ["node_1", "node_2"],
     ]);
-
-    for (const [s, d] of pairs) {
-      const srcName = skeleton.nodes[s].name;
-      const dstName = skeleton.nodes[d].name;
-      if (isValidEdgeSelection(skeleton.nodes, skeleton.edges, srcName, dstName)) {
-        await ctx.execute(AddEdgeCommand, { srcName, dstName });
-      }
-    }
 
     // --- Assertions: skeleton got the 3 nodes + 2 ordered edges …
     expect(skeleton.nodes.length).toBe(3);
@@ -151,31 +180,19 @@ describe("Skeleton builder net-neutral flow", () => {
     useAppStore.getState().setSkeletonBuildStage("connect");
     const R = 8;
     const bp = useAppStore.getState().builderPositions;
-
-    // First stroke: 0 → 1.
-    for (const [s, d] of penStrokeToEdges(bp, R, [
+    const stroke = [
       { x: 0, y: 10 },
       { x: 60, y: 10 },
-    ])) {
-      const srcName = skeleton.nodes[s].name;
-      const dstName = skeleton.nodes[d].name;
-      if (isValidEdgeSelection(skeleton.nodes, skeleton.edges, srcName, dstName)) {
-        await ctx.execute(AddEdgeCommand, { srcName, dstName });
-      }
-    }
+    ];
+
+    // First stroke: creates 0 → 1.
+    const first = await connectWithPen(ctx, skeleton, bp, R, stroke);
+    expect(first).toEqual([["node_0", "node_1"]]);
     expect(skeleton.edges.length).toBe(1);
 
-    // Second stroke re-crosses the same 0 → 1 pair: validation drops the dup.
-    for (const [s, d] of penStrokeToEdges(bp, R, [
-      { x: 0, y: 10 },
-      { x: 60, y: 10 },
-    ])) {
-      const srcName = skeleton.nodes[s].name;
-      const dstName = skeleton.nodes[d].name;
-      if (isValidEdgeSelection(skeleton.nodes, skeleton.edges, srcName, dstName)) {
-        await ctx.execute(AddEdgeCommand, { srcName, dstName });
-      }
-    }
+    // Second stroke re-crosses the same 0 → 1 pair: the gate drops the dup.
+    const second = await connectWithPen(ctx, skeleton, bp, R, stroke);
+    expect(second).toEqual([]);
     expect(skeleton.edges.length).toBe(1);
   });
 });

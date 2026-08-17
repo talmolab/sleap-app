@@ -1537,8 +1537,10 @@ export function VideoPlayer() {
             });
             store.syncBuilderPositions();
             const newIdx = skeleton.nodes.length - 1;
-            const [sx, sy] = toSourceCoords(store.video, p.x, p.y);
-            store.setBuilderPosition(newIdx, { x: sx, y: sy });
+            // Builder positions are scratch image-space coords (never saved), so
+            // store `p` directly — no source/crop round-trip (correct on cropped
+            // pkg.slp videos too, since builderRI renders in this same space).
+            store.setBuilderPosition(newIdx, { x: p.x, y: p.y });
           }
         } else {
           // connect stage: begin a pen stroke from the node under the cursor.
@@ -1781,8 +1783,10 @@ export function VideoPlayer() {
         const threshold = (markerSize * 2) / (baseScale * zoom);
         // place: drag a grabbed node to reposition it (source coords).
         if (store.skeletonBuildStage === "place" && builderDragIdxRef.current !== null) {
-          const [sx, sy] = toSourceCoords(store.video, p.x, p.y);
-          store.setBuilderPosition(builderDragIdxRef.current, { x: sx, y: sy });
+          // Scratch image-space coords (never saved) — store `p` directly, no
+          // source/crop round-trip (keeps the node under the cursor on cropped
+          // videos too).
+          store.setBuilderPosition(builderDragIdxRef.current, { x: p.x, y: p.y });
           return;
         }
         // connect: extend the pen and emit an edge for each freshly-crossed node.
@@ -2207,6 +2211,9 @@ export function VideoPlayer() {
                 nodeIdx: hit.nodeIdx,
                 newName: next.trim(),
               });
+              // Repaint so the renamed label shows immediately (RenameNode does
+              // not bump overlayVersion itself, unlike AddNode/AddEdge).
+              useAppStore.getState().bumpOverlayVersion();
             }
           }
         }
