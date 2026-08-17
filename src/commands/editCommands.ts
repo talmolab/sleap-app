@@ -236,6 +236,45 @@ export const PasteInstance: Command = {
   },
 };
 
+/**
+ * Duplicate an instance onto the current frame, selecting the copy. Backs the
+ * canvas's Ctrl+drag "clone and drag" gesture, mirroring PyQt SLEAP's
+ * `QtInstance.mousePressEvent` (Ctrl+click -> `duplicate_instance()` ->
+ * `context.newInstance(copy_instance=self.instance)`).
+ *
+ * Params:
+ *   instance: Instance - the source instance to clone.
+ */
+export const DuplicateInstance: Command = {
+  name: "DuplicateInstance",
+  topics: [UpdateTopic.Frame, UpdateTopic.Instance],
+  execute(ctx: CommandContext, params?: Record<string, unknown>) {
+    const { labels, video, frameIdx, skeleton } = ctx.state;
+    const source = params?.instance as Instance | undefined;
+    if (!labels || !video || !skeleton || !source) return;
+
+    const newInstance = new Instance({
+      skeleton,
+      points: clonePoints(source.points),
+      track: source.track,
+    });
+
+    const frames = labels.find({ video, frameIdx });
+    let lf: LabeledFrame;
+    if (frames.length > 0) {
+      lf = frames[0];
+    } else {
+      lf = new LabeledFrame({ video, frameIdx });
+      labels.append(lf);
+    }
+
+    lf.instances.push(newInstance);
+    ctx.state.setLabeledFrame(lf);
+    ctx.state.setInstance(newInstance);
+    ctx.state.markChanged();
+  },
+};
+
 /** Delete all predicted instances on the current frame. */
 export const DeleteFramePredictions: Command = {
   name: "DeleteFramePredictions",

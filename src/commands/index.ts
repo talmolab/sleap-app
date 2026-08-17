@@ -81,6 +81,7 @@ export {
   SetPointLocation,
   CopyInstance,
   PasteInstance,
+  DuplicateInstance,
   DeleteFramePredictions,
   DeleteAllPredictions,
   ConvertPredictionToInstance,

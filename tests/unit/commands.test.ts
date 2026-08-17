@@ -12,6 +12,7 @@ import {
   DeleteSelectedInstance,
   CopyInstance,
   PasteInstance,
+  DuplicateInstance,
   DeleteFramePredictions,
   DeleteAllPredictions,
   SetPointLocation,
@@ -508,6 +509,37 @@ describe("Edit commands", () => {
 
       const beforeCount = lf.instances.length;
       await ctx.execute(PasteInstance);
+
+      expect(lf.instances.length).toBe(beforeCount);
+    });
+  });
+
+  describe("DuplicateInstance", () => {
+    it("adds a clone of the given instance to the current frame and selects it", async () => {
+      const project = setupProjectInStore({ numFrames: 1, numInstancesPerFrame: 1 });
+      const lf = project.labeledFrames[0];
+      useAppStore.getState().setFrameIdx(lf.frameIdx);
+      useAppStore.getState().setLabeledFrame(lf);
+      const source = lf.instances[0];
+
+      const beforeCount = lf.instances.length;
+      await ctx.execute(DuplicateInstance, { instance: source });
+
+      expect(lf.instances.length).toBe(beforeCount + 1);
+      const clone = lf.instances[lf.instances.length - 1];
+      expect(clone).not.toBe(source);
+      expect(clone.points.map((p) => p.xy)).toEqual(source.points.map((p) => p.xy));
+      expect(useAppStore.getState().instance).toBe(clone);
+    });
+
+    it("does nothing without a source instance param", async () => {
+      const project = setupProjectInStore({ numFrames: 1, numInstancesPerFrame: 1 });
+      const lf = project.labeledFrames[0];
+      useAppStore.getState().setFrameIdx(lf.frameIdx);
+      useAppStore.getState().setLabeledFrame(lf);
+
+      const beforeCount = lf.instances.length;
+      await ctx.execute(DuplicateInstance);
 
       expect(lf.instances.length).toBe(beforeCount);
     });
