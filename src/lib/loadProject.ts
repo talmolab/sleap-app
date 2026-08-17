@@ -220,7 +220,10 @@ export async function loadProjectFromUrl(url: string): Promise<boolean> {
     const labels = await readSlpStreaming(url, {
       openVideos: !LAZY_VIDEO_METADATA,
       lazyVideoMetadata: LAZY_VIDEO_METADATA,
-      filenameHint: url,
+      // Must be a bare basename, NOT the URL: io's streaming worker uses
+      // filenameHint as the in-FS (Emscripten) filename, and a value with
+      // "://" and "/" builds an invalid FS path → ENOENT before any range read.
+      filenameHint: name,
       h5wasmUrl: H5WASM_URL,
       onProgress: reportParseProgress,
     });

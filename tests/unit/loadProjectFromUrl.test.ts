@@ -69,7 +69,9 @@ describe("loadProjectFromUrl", () => {
       { filenameHint?: string; onProgress?: unknown },
     ];
     expect(source).toBe(url); // URL string handed straight to the streaming reader
-    expect(options.filenameHint).toBe(url);
+    // filenameHint is the basename, not the URL: io's streaming worker uses it
+    // as the in-FS (Emscripten) filename, which must not contain "://" or "/".
+    expect(options.filenameHint).toBe("set.pkg.slp");
     expect(typeof options.onProgress).toBe("function");
 
     expect(useAppStore.getState().labels).toBeTruthy();
