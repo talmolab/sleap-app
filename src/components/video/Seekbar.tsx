@@ -736,7 +736,7 @@ export function Seekbar() {
     const tracks = labels.tracks as unknown[];
     const trackIdxOf = new Map<unknown, number>(tracks.map((t, i) => [t, i]));
     const byTrack: number[][] = tracks.map(() => []);
-    const marks: Array<[number, boolean]> = [];
+    const marks: Array<[number, boolean, boolean]> = [];
     for (const lf of labels.find({ video })) {
       // A frame is "user-labeled" if it has any manual annotation — incl. a
       // user-placed centroid with no skeleton instance (io.js isUserLabeled).
@@ -748,7 +748,8 @@ export function Seekbar() {
         const ti = track === null ? -1 : trackIdxOf.get(track) ?? -1;
         if (ti >= 0) byTrack[ti].push(lf.frameIdx);
       }
-      marks.push([lf.frameIdx, userLabeled]);
+      const isNeg = (lf as { isNegative?: boolean }).isNegative ?? false;
+      marks.push([lf.frameIdx, userLabeled, isNeg]);
     }
     return { byTrack, marks };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -813,8 +814,9 @@ export function Seekbar() {
 
     // Draw labeled frame marks (frame + user/predicted flag precomputed).
     if (headerData) {
-      for (const [f, hasUser] of headerData.marks) {
-        ctx.fillStyle = hasUser ? "#3b82f6" : "#67e8f9"; // blue user / light-blue predicted
+      for (const [f, hasUser, isNeg] of headerData.marks) {
+        // red negative/background / blue user-labeled / light-blue predicted
+        ctx.fillStyle = isNeg ? "#ef4444" : hasUser ? "#3b82f6" : "#67e8f9";
         ctx.fillRect(frameToX(f) - 1, h - 14, 2, 10);
       }
     }

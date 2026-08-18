@@ -83,4 +83,24 @@ describe("ToggleNegativeFrame", () => {
     expect(ctx.undo()).toBe(true);
     expect(at(labels, video, 0)[0].isNegative).toBe(false);
   });
+
+  // Regression: the seekbar marks memo + canvas overlays recompute only when
+  // overlayVersion changes (labels is mutated in place). A menu/shortcut toggle
+  // has no canvas path to bump it, so without an explicit bump the negative
+  // tick's color went stale until an unrelated bump (e.g. holding Shift).
+  it("bumps overlayVersion so the seekbar marks repaint", async () => {
+    setup();
+
+    // Toggling an existing labeled frame must notify overlay/seekbar consumers.
+    useAppStore.getState().setFrameIdx(0);
+    let before = useAppStore.getState().overlayVersion;
+    await ctx.execute(ToggleNegativeFrame);
+    expect(useAppStore.getState().overlayVersion).toBeGreaterThan(before);
+
+    // Creating a negative frame where none existed must also notify them.
+    useAppStore.getState().setFrameIdx(5);
+    before = useAppStore.getState().overlayVersion;
+    await ctx.execute(ToggleNegativeFrame);
+    expect(useAppStore.getState().overlayVersion).toBeGreaterThan(before);
+  });
 });

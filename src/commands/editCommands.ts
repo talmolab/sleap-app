@@ -114,6 +114,10 @@ export const ToggleNegativeFrame: Command = {
       const created = new LabeledFrame({ video, frameIdx, isNegative: true });
       labels.append(created);
       ctx.state.setLabeledFrame(created);
+      // Seekbar marks + canvas overlays recompute only when overlayVersion
+      // changes (labels is mutated in place). A menu/shortcut toggle has no
+      // canvas path to bump it, so bump explicitly or the tick goes stale.
+      ctx.state.bumpOverlayVersion();
       ctx.state.markChanged();
       return;
     }
@@ -128,6 +132,8 @@ export const ToggleNegativeFrame: Command = {
     } else {
       ctx.state.setLabeledFrame(lf);
     }
+    // See note above: notify overlay/seekbar consumers so the tick repaints.
+    ctx.state.bumpOverlayVersion();
     ctx.state.markChanged();
   },
 };
