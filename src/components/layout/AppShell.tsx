@@ -39,6 +39,7 @@ import { ModelMetricsDialog } from "../dialogs/ModelMetricsDialog";
 import { ExportPackageDialog } from "../dialogs/ExportPackageDialog";
 import { ShortcutsDialog } from "../dialogs/ShortcutsDialog";
 import { HelpDialog } from "../dialogs/HelpDialog";
+import { DiagnosticsDialog } from "../dialogs/DiagnosticsDialog";
 import { MenuSearchDialog } from "../dialogs/MenuSearchDialog";
 import { useAppStore } from "../../stores/appStore";
 import { useTrainingStore } from "../../stores/trainingStore";
@@ -144,6 +145,10 @@ export function AppShell() {
   const setShortcutsDialogOpen = useAppStore((s) => s.setShortcutsDialogOpen);
   const helpDialogOpen = useAppStore((s) => s.helpDialogOpen);
   const setHelpDialogOpen = useAppStore((s) => s.setHelpDialogOpen);
+  const diagnosticsDialogOpen = useAppStore((s) => s.diagnosticsDialogOpen);
+  const setDiagnosticsDialogOpen = useAppStore(
+    (s) => s.setDiagnosticsDialogOpen,
+  );
 
   // Unsaved changes protection: warn before closing/refreshing when there are
   // in-memory edits (hasChanges) OR a large-pkg labels draft saved locally but
@@ -252,6 +257,10 @@ export function AppShell() {
       <HelpDialog
         open={helpDialogOpen}
         onOpenChange={setHelpDialogOpen}
+      />
+      <DiagnosticsDialog
+        open={diagnosticsDialogOpen}
+        onOpenChange={setDiagnosticsDialogOpen}
       />
       <MenuSearchDialog />
       <PathResolutionHost />

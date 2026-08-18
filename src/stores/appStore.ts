@@ -341,6 +341,7 @@ export interface AppState {
   shortcutsDialogOpen: boolean;
   helpDialogOpen: boolean;
   menuSearchDialogOpen: boolean;
+  diagnosticsDialogOpen: boolean;
   quitConfirmOpen: boolean;
 
   // === Area delete mode ===
@@ -398,6 +399,7 @@ export interface AppState {
   setExportPackageDialogOpen: (open: boolean) => void;
   setShortcutsDialogOpen: (open: boolean) => void;
   setHelpDialogOpen: (open: boolean) => void;
+  setDiagnosticsDialogOpen: (open: boolean) => void;
   setMenuSearchDialogOpen: (open: boolean) => void;
   enterPlacementMode: () => void;
   exitPlacementMode: () => void;
@@ -634,6 +636,7 @@ export const useAppStore = create<AppState>()(
       shortcutsDialogOpen: false,
       helpDialogOpen: false,
       menuSearchDialogOpen: false,
+      diagnosticsDialogOpen: false,
       quitConfirmOpen: false,
 
       // Area delete mode
@@ -953,6 +956,11 @@ export const useAppStore = create<AppState>()(
       setHelpDialogOpen: (open) =>
         set((state) => {
           state.helpDialogOpen = open;
+        }),
+
+      setDiagnosticsDialogOpen: (open) =>
+        set((state) => {
+          state.diagnosticsDialogOpen = open;
         }),
 
       enterPlacementMode: () =>

@@ -7,6 +7,7 @@ import { loadSlp, Mp4BoxVideoBackend } from "@talmolab/sleap-io.js";
 import { useAppStore } from "./stores/appStore";
 import { commandContext } from "./commands";
 import { loadProjectFromFile } from "./lib/loadProject";
+import { initDiagnostics } from "./lib/diagnostics";
 
 // Expose key APIs on window for testing/debugging
 declare global {
@@ -26,6 +27,12 @@ window.sleap = { loadSlp, Mp4BoxVideoBackend, store: useAppStore, commandContext
 // (its own isolated heap) — render just the viz viewer, not the full editor.
 const vizParams = new URLSearchParams(window.location.search);
 const vizRunDir = vizParams.get("viz");
+
+// Diagnostics (session log + global error capture) for the main app window only —
+// the viz window is a short-lived isolated heap. Best-effort; never blocks boot.
+if (!vizRunDir) {
+  void initDiagnostics();
+}
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

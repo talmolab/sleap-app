@@ -7,6 +7,7 @@
 
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
+import { saveDiagnosticsBundle } from "@/lib/diagnostics";
 
 interface ErrorBoundaryProps {
   children: ReactNode;
@@ -16,6 +17,8 @@ interface ErrorBoundaryState {
   hasError: boolean;
   error: Error | null;
   errorInfo: ErrorInfo | null;
+  collecting: boolean;
+  saved: boolean;
 }
 
 export class ErrorBoundary extends Component<
@@ -24,7 +27,13 @@ export class ErrorBoundary extends Component<
 > {
   constructor(props: ErrorBoundaryProps) {
     super(props);
-    this.state = { hasError: false, error: null, errorInfo: null };
+    this.state = {
+      hasError: false,
+      error: null,
+      errorInfo: null,
+      collecting: false,
+      saved: false,
+    };
   }
 
   static getDerivedStateFromError(error: Error): Partial<ErrorBoundaryState> {
@@ -33,8 +42,20 @@ export class ErrorBoundary extends Component<
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     this.setState({ errorInfo });
+    // Always record the stack (console.error is intercepted into the diagnostics
+    // buffer + disk log), so a "Collect Diagnostics" from this screen carries it.
     console.error("[ErrorBoundary] Caught error:", error, errorInfo);
   }
+
+  handleCollect = async () => {
+    this.setState({ collecting: true });
+    try {
+      const path = await saveDiagnosticsBundle({ includeProject: false });
+      this.setState({ saved: Boolean(path) });
+    } finally {
+      this.setState({ collecting: false });
+    }
+  };
 
   render() {
     if (this.state.hasError) {
@@ -54,9 +75,23 @@ export class ErrorBoundary extends Component<
                 `\n\nComponent Stack:${this.state.errorInfo.componentStack}`}
             </pre>
           )}
-          <Button onClick={() => window.location.reload()}>
-            Reload
-          </Button>
+          <div className="flex gap-2 items-center">
+            <Button
+              variant="outline"
+              onClick={this.handleCollect}
+              disabled={this.state.collecting}
+            >
+              {this.state.collecting ? "Collecting…" : "Collect Diagnostics"}
+            </Button>
+            <Button onClick={() => window.location.reload()}>
+              Reload
+            </Button>
+          </div>
+          {this.state.saved && (
+            <p className="text-xs text-muted-foreground">
+              Diagnostics saved — please send the file to the SLEAP team.
+            </p>
+          )}
         </div>
       );
     }

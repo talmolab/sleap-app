@@ -1165,6 +1165,13 @@ function HelpMenu() {
         >
           Report Issue
         </MenubarItem>
+        <MenubarItem
+          onClick={() =>
+            useAppStore.getState().setDiagnosticsDialogOpen(true)
+          }
+        >
+          Collect Diagnostics...
+        </MenubarItem>
         <MenubarItem onClick={() => openExternal("https://github.com/talmolab/sleap-app/releases")}>
           Releases
         </MenubarItem>
