@@ -136,7 +136,12 @@ function FileMenu() {
 
   return (
     <MenubarMenu>
-      <MenubarTrigger className="px-3 h-8 text-xs rounded-none">File</MenubarTrigger>
+      <MenubarTrigger
+        className="px-3 h-8 text-xs rounded-none"
+        data-tutorial="file-menu-trigger"
+      >
+        File
+      </MenubarTrigger>
       <MenubarContent>
         <MenubarItem onClick={() => void openNewInstance()}>
           New Project... <MenubarShortcut>{modKey}+N</MenubarShortcut>
@@ -1161,6 +1166,9 @@ function HelpMenu() {
           }
         >
           Keyboard Shortcuts...
+        </MenubarItem>
+        <MenubarItem onClick={() => useAppStore.getState().startTutorial()}>
+          Start Tutorial...
         </MenubarItem>
         <MenubarItem
           onClick={() => openExternal("https://docs.sleap.ai/")}

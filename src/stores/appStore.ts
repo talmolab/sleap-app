@@ -46,6 +46,7 @@ import {
   migrateOpenPanels,
   toggleId,
 } from "@/lib/panelLayout";
+import { buildTutorialSteps, type TutorialStep } from "@/lib/tutorial/steps";
 
 // Required before immer can draft Set/Map fields (hiddenInstances /
 // showNonVisibleOverride). Idempotent global; must run before store creation.
@@ -346,6 +347,16 @@ export interface AppState {
   diagnosticsDialogOpen: boolean;
   quitConfirmOpen: boolean;
 
+  // === Getting-started tutorial (transient, not persisted) ===
+  tutorialActive: boolean;
+  tutorialStepIndex: number;
+  /**
+   * Resolved once in `startTutorial` (see `buildTutorialSteps`) — whether a
+   * project was already loaded at that moment decides the whole sequence, so
+   * this isn't re-derived mid-run.
+   */
+  tutorialSteps: TutorialStep[];
+
   // === Area delete mode ===
   areaDeleteMode: boolean;
 
@@ -403,6 +414,12 @@ export interface AppState {
   setHelpDialogOpen: (open: boolean) => void;
   setDiagnosticsDialogOpen: (open: boolean) => void;
   setMenuSearchDialogOpen: (open: boolean) => void;
+  /** Start the getting-started tutorial from its first step. */
+  startTutorial: () => void;
+  /** Stop the tutorial at any point (Exit button). */
+  exitTutorial: () => void;
+  /** Advance to the next tutorial step, or exit once past the last one. */
+  advanceTutorialStep: () => void;
   enterPlacementMode: () => void;
   exitPlacementMode: () => void;
 
@@ -642,6 +659,10 @@ export const useAppStore = create<AppState>()(
       menuSearchDialogOpen: false,
       diagnosticsDialogOpen: false,
       quitConfirmOpen: false,
+
+      tutorialActive: false,
+      tutorialStepIndex: 0,
+      tutorialSteps: [],
 
       // Area delete mode
       areaDeleteMode: false,
@@ -966,6 +987,41 @@ export const useAppStore = create<AppState>()(
         set((state) => {
           state.diagnosticsDialogOpen = open;
         }),
+
+      startTutorial: () => {
+        // Whether a project already exists decides the whole sequence (a
+        // fresh app has no Sidebar/panels mounted yet — see AppShell — so it
+        // must go through New Project first); resolved once here, not
+        // re-derived mid-run.
+        const steps = buildTutorialSteps(get().projectLoaded);
+        set((state) => {
+          state.tutorialActive = true;
+          state.tutorialStepIndex = 0;
+          state.tutorialSteps = steps;
+        });
+        if (steps[0]?.panelId) get().openPanel(steps[0].panelId);
+      },
+
+      exitTutorial: () =>
+        set((state) => {
+          state.tutorialActive = false;
+        }),
+
+      advanceTutorialStep: () => {
+        const steps = get().tutorialSteps;
+        const nextIndex = get().tutorialStepIndex + 1;
+        if (nextIndex >= steps.length) {
+          set((state) => {
+            state.tutorialActive = false;
+          });
+          return;
+        }
+        set((state) => {
+          state.tutorialStepIndex = nextIndex;
+        });
+        const nextStep = steps[nextIndex];
+        if (nextStep?.panelId) get().openPanel(nextStep.panelId);
+      },
 
       enterPlacementMode: () =>
         set((state) => {

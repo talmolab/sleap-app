@@ -165,6 +165,7 @@ function buildActions(): MenuAction[] {
     { group: "Predict", label: "Export Labels Package...", run: () => store().setExportPackageDialogOpen(true) },
 
     // Help
+    { group: "Help", label: "Start Tutorial", run: () => store().startTutorial() },
     { group: "Help", label: "Keyboard Shortcuts", run: () => store().setShortcutsDialogOpen(true) },
     { group: "Help", label: "Documentation", run: () => void openExternal("https://docs.sleap.ai/") },
     { group: "Help", label: "Report Issue", run: () => void openExternal("https://github.com/talmolab/sleap-app/issues") },

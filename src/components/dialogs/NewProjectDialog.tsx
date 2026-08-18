@@ -167,6 +167,7 @@ export function NewProjectDialog() {
               className="self-start"
               onClick={handleAddVideos}
               disabled={creating}
+              data-tutorial="new-project-add-video-button"
             >
               + Add video(s)…
             </Button>

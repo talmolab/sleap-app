@@ -459,6 +459,7 @@ export function SuggestionsPanel({
               className="h-7 text-xs flex-1"
               size="sm"
               aria-label="Generation method"
+              data-tutorial="suggestions-method-select"
             >
               <SelectValue />
             </SelectTrigger>
@@ -498,6 +499,7 @@ export function SuggestionsPanel({
               }
               className="h-7 w-16 text-xs"
               aria-label="Per video"
+              data-tutorial="suggestions-per-video-input"
             />
           </div>
         )}
@@ -1065,7 +1067,12 @@ export function SuggestionsPanel({
               Cancel
             </Button>
           ) : (
-            <Button variant="subtle" size="xs" onClick={handleGenerate}>
+            <Button
+              variant="subtle"
+              size="xs"
+              onClick={handleGenerate}
+              data-tutorial="generate-suggestions-button"
+            >
               Generate
             </Button>
           )}
