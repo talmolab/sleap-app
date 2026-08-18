@@ -266,6 +266,24 @@ export interface AppState {
   skeletonBuildMode: boolean;
   skeletonBuildStage: "place" | "connect";
   builderPositions: ({ x: number; y: number } | null)[];
+
+  // Top-down anchor-part picker (Training panel): click a node on the canvas
+  // instead of typing its name. `pickRequestId` disambiguates which requester
+  // a result belongs to when more than one head-config field could ask for a
+  // pick (e.g. switching tabs mid-pick) — a requester only applies a result
+  // whose id matches the one `startAnchorPick` returned it.
+  pickingAnchor: boolean;
+  pickRequestId: number;
+  pickedAnchorNode: { nodeName: string; requestId: number } | null;
+  /**
+   * Persistent (not just hover-during-pick) crop preview for the currently
+   * configured anchor — toggled from the Training panel to check "what would
+   * this crop look like" without re-entering pick mode. `anchorPreviewNode`
+   * is `null` while inactive; once active, `null` means "Auto" (bbox center)
+   * and a string names the anchor node to preview.
+   */
+  anchorPreviewActive: boolean;
+  anchorPreviewNode: string | null;
   /**
    * Session-only "template layout": a snapshot of the node positions the user
    * DREW in the visual skeleton builder (IMAGE space, index-aligned to
@@ -382,6 +400,18 @@ export interface AppState {
   captureSkeletonTemplateLayout: () => void;
   /** Discard the captured template layout (back to the circle default). */
   clearSkeletonTemplateLayout: () => void;
+
+  // Anchor-part picker actions (see field docs above). `startAnchorPick`
+  // returns the new request id so the requester can match it against
+  // `pickedAnchorNode` later without racing a different requester's pick.
+  startAnchorPick: () => number;
+  cancelAnchorPick: () => void;
+  resolveAnchorPick: (nodeName: string) => void;
+  clearPickedAnchorNode: () => void;
+  /** Show/update the persistent anchor crop preview (see field docs above). */
+  setAnchorPreview: (nodeName: string | null) => void;
+  /** Hide the persistent anchor crop preview. */
+  clearAnchorPreview: () => void;
   togglePanelVisibility: (panelId: string) => void;
   resetPanels: () => void;
   /** Rail click: uncollapse the column and open `panelId` if it's collapsed;
@@ -542,6 +572,13 @@ export const useAppStore = create<AppState>()(
       skeletonBuildStage: "place" as "place" | "connect",
       builderPositions: [] as ({ x: number; y: number } | null)[],
       skeletonTemplateLayout: null as ({ x: number; y: number } | null)[] | null,
+
+      // Anchor-part picker (transient)
+      pickingAnchor: false,
+      pickRequestId: 0,
+      pickedAnchorNode: null as { nodeName: string; requestId: number } | null,
+      anchorPreviewActive: false,
+      anchorPreviewNode: null as string | null,
 
       // Frame range
       frameRange: null,
@@ -964,6 +1001,46 @@ export const useAppStore = create<AppState>()(
       clearSkeletonTemplateLayout: () =>
         set((state) => {
           state.skeletonTemplateLayout = null;
+        }),
+
+      // Anchor-part picker (Training panel). See field docs above for the
+      // request-id race-avoidance rationale.
+      startAnchorPick: () => {
+        const id = get().pickRequestId + 1;
+        set((state) => {
+          state.pickingAnchor = true;
+          state.pickRequestId = id;
+          state.pickedAnchorNode = null;
+        });
+        return id;
+      },
+
+      cancelAnchorPick: () =>
+        set((state) => {
+          state.pickingAnchor = false;
+        }),
+
+      resolveAnchorPick: (nodeName) =>
+        set((state) => {
+          state.pickingAnchor = false;
+          state.pickedAnchorNode = { nodeName, requestId: state.pickRequestId };
+        }),
+
+      clearPickedAnchorNode: () =>
+        set((state) => {
+          state.pickedAnchorNode = null;
+        }),
+
+      setAnchorPreview: (nodeName) =>
+        set((state) => {
+          state.anchorPreviewActive = true;
+          state.anchorPreviewNode = nodeName;
+        }),
+
+      clearAnchorPreview: () =>
+        set((state) => {
+          state.anchorPreviewActive = false;
+          state.anchorPreviewNode = null;
         }),
 
       // Toggle a sidebar panel's visibility (#135). Hiding the currently-active

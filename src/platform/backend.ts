@@ -11,16 +11,7 @@ import { saveSlpToBytes } from "@talmolab/sleap-io.js";
 import type { InferenceConfig } from "@/stores/inferenceStore";
 import { buildInferenceArgs, pickInferenceSubcommand } from "./inferenceArgs";
 import type { UnlistenFn } from "@tauri-apps/api/event";
-
-/** `YYMMDD_HHMMSS`, matching legacy SLEAP's predictions filename timestamp. */
-function formatPredictionsTimestamp(): string {
-  const now = new Date();
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return (
-    `${pad(now.getFullYear() % 100)}${pad(now.getMonth() + 1)}${pad(now.getDate())}` +
-    `_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
-  );
-}
+import { formatRunTimestamp as formatPredictionsTimestamp } from "@/lib/timestamp";
 
 function sampleRandomFrames(totalFrames: number, count: number): number[] {
   const n = Math.min(count, totalFrames);

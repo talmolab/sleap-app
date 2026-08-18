@@ -4,6 +4,8 @@ import { cancelCommand } from "@/platform/backend";
 import { isTauri } from "@/platform";
 import { computeRuntimeMetrics } from "@/lib/trainingMetrics";
 import { lastErrorLine } from "@/lib/processLog";
+import { formatRunTimestamp } from "@/lib/timestamp";
+import type { Labels } from "@/types";
 
 const MAX_BATCH_SAMPLES = 20000; // bound batchSamples; drop oldest beyond this
 const MAX_LOG_LINES = 1000; // bound the training log so it doesn't grow unbounded during long runs
@@ -329,6 +331,18 @@ export function getSlotLabel(slot: string): string {
     case "centered_instance": return "Centered Instance Config";
     default: return "Config";
   }
+}
+
+/**
+ * Count of frames with a user instance or marked negative — the JS
+ * equivalent of sleap-io's `Labels.user_labeled_frames` (which includes
+ * negative/background frames as trainable data, not just positively-labeled
+ * ones). Used for the `n=` suffix in a default run name; `null` with no
+ * project loaded.
+ */
+export function countUserLabeledFrames(labels: Labels | null): number | null {
+  if (!labels) return null;
+  return labels.labeledFrames.filter((lf) => lf.userInstances.length > 0 || lf.isNegative).length;
 }
 
 // ── YAML override helper ─────────────────────────────────────────
@@ -1227,8 +1241,19 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
           }));
 
           const configYaml = applyHyperparamsToYaml(cf.content, cf.hyperparams);
-          const ts = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 15);
-          const runName = cf.hyperparams.runName || `${cf.modelType}_${ts}`;
+          // Default run name matches legacy SLEAP's format exactly:
+          // `{timestamp}.{head_name}.n={num_user_labeled_frames}`
+          // (sleap/gui/learning/runners.py get_timestamp() + base_run_name) —
+          // the `n=` count is the project's training-data size at the moment
+          // training starts, which is what made the old scheme's "which run
+          // used how much data" comparisons useful across a project's history.
+          let runName = cf.hyperparams.runName;
+          if (!runName) {
+            const { useAppStore } = await import("@/stores/appStore");
+            const n = countUserLabeledFrames(useAppStore.getState().labels);
+            const ts = formatRunTimestamp();
+            runName = n !== null ? `${ts}.${cf.modelType}.n=${n}` : `${ts}.${cf.modelType}`;
+          }
 
           set((s) => ({
             models: s.models.map((m, j) =>
@@ -1356,7 +1381,6 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
             device: "auto",
             maxInstances: null,
             peakThreshold: 0.2,
-            anchorPart: null,
             integralRefinement: true,
             integralPatchSize: 5,
             nPoints: 10,

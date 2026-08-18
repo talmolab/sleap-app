@@ -594,6 +594,66 @@ export function renderHoverInstanceBBox(
   ctx.restore();
 }
 
+/** A square the size of `instance`'s visible-node bbox, expanded 1.5x — a
+ * reasonable top-down crop-size guess when the user hasn't set one explicitly,
+ * matching sleap-nn's config-picker default crop margin. */
+export function instanceBBoxCropSize(instance: RenderedInstance): number {
+  const visibleNodes = instance.nodes.filter((n) => n.visible && !isNaN(n.x));
+  if (visibleNodes.length === 0) return 100;
+  const xs = visibleNodes.map((n) => n.x);
+  const ys = visibleNodes.map((n) => n.y);
+  return Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) * 1.5;
+}
+
+/** Index of the node named `name` on `instance`, or `null` if it has none (a
+ * differently-shaped/mismatched skeleton). */
+export function findNodeIdxByName(instance: RenderedInstance, name: string): number | null {
+  const idx = instance.nodes.findIndex((n) => n.name === name);
+  return idx === -1 ? null : idx;
+}
+
+/**
+ * Render a dashed crop-box preview for a top-down anchor, sized `cropSize`
+ * (source/video pixels). `nodeIdx === null` previews the "Auto" anchor — the
+ * bbox center of the instance's visible nodes — matching sleap-nn's
+ * config-picker orange dashed box (and its bbox-center crosshair for "None").
+ */
+export function renderAnchorCropPreview(
+  ctx: CanvasRenderingContext2D,
+  instances: RenderedInstance[],
+  instanceIdx: number,
+  nodeIdx: number | null,
+  cropSize: number,
+  opts: RenderOptions
+): void {
+  const instance = instances[instanceIdx];
+  if (!instance) return;
+
+  let cx: number, cy: number;
+  if (nodeIdx !== null) {
+    const node = instance.nodes[nodeIdx];
+    if (!node || isNaN(node.x)) return;
+    cx = node.x;
+    cy = node.y;
+  } else {
+    const visibleNodes = instance.nodes.filter((n) => n.visible && !isNaN(n.x));
+    if (visibleNodes.length === 0) return;
+    const xs = visibleNodes.map((n) => n.x);
+    const ys = visibleNodes.map((n) => n.y);
+    cx = (Math.min(...xs) + Math.max(...xs)) / 2;
+    cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+  }
+
+  const half = cropSize / 2;
+  ctx.save();
+  ctx.setLineDash([6 / opts.zoom, 4 / opts.zoom]);
+  ctx.strokeStyle = "#f97316";
+  ctx.lineWidth = 2 / opts.zoom;
+  ctx.strokeRect(cx - half, cy - half, cropSize, cropSize);
+  ctx.setLineDash([]);
+  ctx.restore();
+}
+
 /**
  * Render a marquee selection rectangle in scene space.
  */

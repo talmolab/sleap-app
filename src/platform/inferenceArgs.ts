@@ -158,9 +158,6 @@ export function buildInferenceArgs(
     args.push("--max_instances", String(config.maxInstances));
   }
   args.push("--peak_threshold", String(config.peakThreshold));
-  if (config.anchorPart) {
-    args.push("--anchor_part", config.anchorPart);
-  }
 
   // Bottom-up advanced
   if (config.integralRefinement) {

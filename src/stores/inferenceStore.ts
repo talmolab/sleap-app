@@ -38,7 +38,6 @@ export interface InferenceConfig {
   device: "auto" | "cuda" | "cpu" | "mps";
   maxInstances: number | null;
   peakThreshold: number;
-  anchorPart: string | null;
 
   // Bottom-up advanced
   integralRefinement: boolean;

@@ -8,6 +8,7 @@
  */
 
 import { useState, useRef, useEffect, useMemo } from "react";
+import { createPortal } from "react-dom";
 import { useTrainingStore, getConfigSlots, getSlotLabel } from "@/stores/trainingStore";
 import type { ModelType, ConfigFile, ConfigHyperparams } from "@/stores/trainingStore";
 import { useConnectStore } from "@/stores/connectStore";
@@ -46,7 +47,12 @@ import {
   BarChart3,
   Copy,
   Maximize2,
+  Crosshair,
+  HelpCircle,
+  Eye,
+  EyeOff,
 } from "lucide-react";
+import { computeNodeVisibility, visibilityTier } from "@/lib/anchorVisibility";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -339,6 +345,163 @@ function ConfigSlot({
 
 // ── Per-config field groups ──────────────────────────────────────────────────
 
+/** Tailwind text color per visibility tier, matching this panel's log coloring. */
+const VISIBILITY_COLOR: Record<ReturnType<typeof visibilityTier>, string> = {
+  high: "text-green-400",
+  medium: "text-yellow-400",
+  low: "text-destructive",
+};
+
+/**
+ * Hover-help icon with a floating tooltip, portaled to `document.body`.
+ * A plain `title` attribute doesn't reliably render in the Tauri desktop
+ * WebView, so this mirrors TrainingConfigDialog's working `HintBubble`
+ * instead of relying on the native tooltip.
+ */
+function HelpTooltip({ text }: { text: string }) {
+  const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
+  return (
+    <span
+      className="cursor-help"
+      onMouseEnter={(e) => {
+        const rect = e.currentTarget.getBoundingClientRect();
+        setPos({ x: rect.left + rect.width / 2, y: rect.top });
+      }}
+      onMouseLeave={() => setPos(null)}
+    >
+      <HelpCircle className="h-3 w-3 text-muted-foreground/50 hover:text-muted-foreground" />
+      {pos && createPortal(
+        <span
+          className="fixed z-[9999] px-2.5 py-1.5 text-[10px] bg-popover border rounded-md shadow-lg w-56 text-foreground leading-relaxed"
+          style={{ left: pos.x, top: pos.y - 6, transform: "translate(-50%, -100%)" }}
+        >
+          {text}
+        </span>,
+        document.body,
+      )}
+    </span>
+  );
+}
+
+/**
+ * Anchor-part picker, shared across the top-down pipeline's centroid /
+ * centered-instance split — it's one concept (where to crop around each
+ * animal), not a per-head setting, so it lives above that tab division
+ * instead of duplicated inside one head's tab.
+ */
+function AnchorPartField({
+  hp,
+  onUpdate,
+  disabled,
+}: {
+  hp: ConfigHyperparams;
+  onUpdate: (updates: Partial<ConfigHyperparams>) => void;
+  disabled: boolean;
+}) {
+  const labels = useAppStore((s) => s.labels);
+  const skeleton = useAppStore((s) => s.skeleton);
+  const overlayVersion = useAppStore((s) => s.overlayVersion);
+  const pickedAnchorNode = useAppStore((s) => s.pickedAnchorNode);
+  const [myPickRequestId, setMyPickRequestId] = useState<number | null>(null);
+  const [previewOn, setPreviewOn] = useState(false);
+
+  const nodeVisibility = useMemo(
+    () => computeNodeVisibility(labels, skeleton),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [labels, skeleton, overlayVersion]
+  );
+  const hasLabeledData = [...nodeVisibility.values()].some((v) => v.total > 0);
+
+  // Apply a canvas pick once it resolves — but only the one THIS field asked
+  // for (myPickRequestId), so a stale/superseded request can't misapply.
+  useEffect(() => {
+    if (myPickRequestId == null || !pickedAnchorNode) return;
+    if (pickedAnchorNode.requestId !== myPickRequestId) return;
+    onUpdate({ anchorPart: pickedAnchorNode.nodeName });
+    setMyPickRequestId(null);
+    useAppStore.getState().clearPickedAnchorNode();
+  }, [pickedAnchorNode, myPickRequestId, onUpdate]);
+
+  // Keep the on-canvas crop preview in sync with the current selection while
+  // the toggle is on; drop it the moment it's toggled off.
+  useEffect(() => {
+    if (previewOn) {
+      useAppStore.getState().setAnchorPreview(hp.anchorPart);
+    } else {
+      useAppStore.getState().clearAnchorPreview();
+    }
+  }, [previewOn, hp.anchorPart]);
+
+  // Safety net: never leave the preview dangling with no way to turn it off
+  // if this field disappears entirely (e.g. pipeline switched away from
+  // top-down) while the toggle was on.
+  useEffect(() => {
+    return () => {
+      useAppStore.getState().clearAnchorPreview();
+    };
+  }, []);
+
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center gap-1">
+        <span className="text-[10px] text-muted-foreground">Anchor Part</span>
+        <HelpTooltip text="The % next to each node is how often it's visible across labeled instances in this project — pick one that's reliably visible and central on the animal for the best crop." />
+      </div>
+      <div className="flex items-center gap-1">
+        <Select
+          value={hp.anchorPart ?? "__auto__"}
+          onValueChange={(v) => onUpdate({ anchorPart: v === "__auto__" ? null : v })}
+          disabled={disabled}
+        >
+          <SelectTrigger className="h-7 text-xs flex-1"><SelectValue placeholder="Auto" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__auto__">Auto (bbox center)</SelectItem>
+            {skeleton?.nodes.map((n) => {
+              const vis = nodeVisibility.get(n.name);
+              return (
+                <SelectItem key={n.name} value={n.name}>
+                  <span className="flex items-center gap-1.5">
+                    {n.name}
+                    {vis && vis.total > 0 && (
+                      <span className={`text-[10px] ${VISIBILITY_COLOR[visibilityTier(vis.pct)]}`}>
+                        {vis.pct}%
+                      </span>
+                    )}
+                  </span>
+                </SelectItem>
+              );
+            })}
+          </SelectContent>
+        </Select>
+        <button
+          className="shrink-0 h-7 w-7 flex items-center justify-center rounded border border-border text-muted-foreground hover:text-foreground hover:border-primary/50 disabled:opacity-40 disabled:hover:text-muted-foreground disabled:hover:border-border"
+          disabled={disabled || !hasLabeledData}
+          title={
+            hasLabeledData
+              ? "Pick anchor from canvas"
+              : "No labeled frames in this project yet"
+          }
+          onClick={() => setMyPickRequestId(useAppStore.getState().startAnchorPick())}
+        >
+          <Crosshair className="h-3.5 w-3.5" />
+        </button>
+        <button
+          className={`shrink-0 h-7 w-7 flex items-center justify-center rounded border disabled:opacity-40 ${
+            previewOn
+              ? "border-primary/50 text-primary bg-primary/10"
+              : "border-border text-muted-foreground hover:text-foreground hover:border-primary/50"
+          }`}
+          disabled={disabled}
+          title={previewOn ? "Hide crop preview" : "Preview crop on canvas"}
+          onClick={() => setPreviewOn((v) => !v)}
+        >
+          {previewOn ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function HyperparamsFields({
   slot,
   hp,
@@ -377,33 +540,36 @@ function HyperparamsFields({
         />
       </div>
 
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-[10px] text-muted-foreground shrink-0">Learning Rate</span>
-        <Input
-          type="number"
-          value={hp.learningRate}
-          onChange={(e) => onUpdate(slot, { learningRate: Number(e.target.value) })}
-          step={0.0001}
-          className="h-6 text-[10px] w-20"
-          disabled={disabled}
-        />
-      </div>
-
-      <div className="space-y-1">
-        <span className="text-[10px] text-muted-foreground">Rotation</span>
-        <Select
-          value={hp.rotationPreset}
-          onValueChange={(v) => onUpdate(slot, { rotationPreset: v as "off" | "15" | "180" | "custom" })}
-          disabled={disabled}
-        >
-          <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="off">Off</SelectItem>
-            <SelectItem value="15">&plusmn;15&deg;</SelectItem>
-            <SelectItem value="180">&plusmn;180&deg;</SelectItem>
-            <SelectItem value="custom">Custom</SelectItem>
-          </SelectContent>
-        </Select>
+      <div className="grid grid-cols-2 gap-2">
+        <div className="space-y-1">
+          <span className="text-[10px] text-muted-foreground">Rotation Augmentation</span>
+          <Select
+            value={hp.rotationPreset}
+            onValueChange={(v) => onUpdate(slot, { rotationPreset: v as "off" | "15" | "180" | "custom" })}
+            disabled={disabled}
+          >
+            <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="off">Off</SelectItem>
+              <SelectItem value="15">&plusmn;15&deg;</SelectItem>
+              <SelectItem value="180">&plusmn;180&deg;</SelectItem>
+              <SelectItem value="custom">Custom</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1">
+          <span className="text-[10px] text-muted-foreground">Scale Augmentation</span>
+          <label className="flex items-center gap-1.5 h-7 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={hp.scaleEnabled}
+              onChange={(e) => onUpdate(slot, { scaleEnabled: e.target.checked })}
+              disabled={disabled}
+              className="accent-primary"
+            />
+            <span className="text-[10px] text-muted-foreground">{hp.scaleEnabled ? "On" : "Off"}</span>
+          </label>
+        </div>
       </div>
 
     </div>
@@ -826,35 +992,53 @@ export function TrainingPanel() {
             <p className="text-[10px] text-muted-foreground">
               Upload config file(s) above to see hyperparameters.
             </p>
-          ) : config.configs.length === 1 ? (
-            <HyperparamsFields
-              slot={config.configs[0].slot}
-              hp={config.configs[0].hyperparams}
-              onUpdate={updateConfigHyperparams}
-              disabled={isRunning}
-
-            />
           ) : (
-            <Tabs defaultValue={config.configs[0]?.slot}>
-              <TabsList className="w-full h-7">
-                {config.configs.map((cf) => (
-                  <TabsTrigger key={cf.slot} value={cf.slot} className="flex-1 text-[10px] h-6">
-                    {getSlotLabel(cf.slot).replace(" Config", "")}
-                  </TabsTrigger>
-                ))}
-              </TabsList>
-              {config.configs.map((cf) => (
-                <TabsContent key={cf.slot} value={cf.slot} className="mt-2">
-                  <HyperparamsFields
-                    slot={cf.slot}
-                    hp={cf.hyperparams}
-                    onUpdate={updateConfigHyperparams}
-                    disabled={isRunning}
-      
-                  />
-                </TabsContent>
-              ))}
-            </Tabs>
+            <>
+              {/* Shared across the centroid/centered-instance split — it's one
+                  concept (where to crop), so it lives above that division. */}
+              {(() => {
+                const ciConfig = config.configs.find((cf) => cf.slot === "centered_instance");
+                if (!ciConfig) return null;
+                return (
+                  <>
+                    <AnchorPartField
+                      hp={ciConfig.hyperparams}
+                      onUpdate={(updates) => updateConfigHyperparams("centered_instance", updates)}
+                      disabled={isRunning}
+                    />
+                    <Separator className="my-2" />
+                  </>
+                );
+              })()}
+              {config.configs.length === 1 ? (
+                <HyperparamsFields
+                  slot={config.configs[0].slot}
+                  hp={config.configs[0].hyperparams}
+                  onUpdate={updateConfigHyperparams}
+                  disabled={isRunning}
+                />
+              ) : (
+                <Tabs defaultValue={config.configs[0]?.slot}>
+                  <TabsList className="w-full h-7">
+                    {config.configs.map((cf) => (
+                      <TabsTrigger key={cf.slot} value={cf.slot} className="flex-1 text-[10px] h-6">
+                        {getSlotLabel(cf.slot).replace(" Config", "")}
+                      </TabsTrigger>
+                    ))}
+                  </TabsList>
+                  {config.configs.map((cf) => (
+                    <TabsContent key={cf.slot} value={cf.slot} className="mt-2">
+                      <HyperparamsFields
+                        slot={cf.slot}
+                        hp={cf.hyperparams}
+                        onUpdate={updateConfigHyperparams}
+                        disabled={isRunning}
+                      />
+                    </TabsContent>
+                  ))}
+                </Tabs>
+              )}
+            </>
           )}
         </Section>
 

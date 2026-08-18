@@ -1,4 +1,4 @@
-import { useRef, useCallback, useState, useEffect } from "react";
+import { useRef, useCallback, useState, useEffect, useMemo } from "react";
 import { createPortal } from "react-dom";
 import {
   Dialog,
@@ -17,13 +17,21 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, HelpCircle } from "lucide-react";
+import { Search, HelpCircle, Crosshair } from "lucide-react";
 import type { ConfigFile, ConfigHyperparams, Backbone, ModelType, DataPipeline } from "@/stores/trainingStore";
 import { getSlotLabel, getConfigSlots, useTrainingStore } from "@/stores/trainingStore";
 import { useConnectStore } from "@/stores/connectStore";
 import { useAppStore } from "@/stores/appStore";
 import { ModelStatsPreview } from "@/components/dialogs/ModelStatsPreview";
 import { getBaselineProfilesForHead, getDefaultProfileForHead, slotToHeadType } from "@/lib/trainingProfiles";
+import { computeNodeVisibility, visibilityTier, type NodeVisibility } from "@/lib/anchorVisibility";
+
+/** Tailwind text color per visibility tier, matching the Training panel's log coloring. */
+const VISIBILITY_COLOR: Record<ReturnType<typeof visibilityTier>, string> = {
+  high: "text-green-600 dark:text-green-400",
+  medium: "text-yellow-600 dark:text-yellow-400",
+  low: "text-destructive",
+};
 
 // ── Props ──────────────────────────────────────────────────────────
 
@@ -176,7 +184,6 @@ const HEAD_FIELD_DEFS = {
   filtersRate: { id: "field-filtersrate", label: "Filters Rate", keywords: "channels scale" },
   middleBlock: { id: "field-middleblock", label: "Middle Block" },
   upInterpolate: { id: "field-upinterpolate", label: "Up Interpolate", keywords: "bilinear upsampling" },
-  headAnchorPart: { id: "field-head-anchorpart", label: "Anchor Part", hint: "Text name of a body part (node) to use as the anchor point. If None, the midpoint of the bounding box of all visible points will be used. Setting a reliable anchor point can significantly improve top-down model accuracy.", conditional: true },
   sigma: { id: "field-sigma", label: "Sigma", hint: "Spread of the Gaussian distribution of the confidence maps. Smaller values are more precise but harder to learn. Larger values are easier to learn but less precise. This spread is in units of pixels of the model input image (after any input scaling)." },
   outputStride: { id: "field-outputstride", label: "Output Stride", keywords: "resolution downsample stride" },
   confmapsLossWeight: { id: "field-confmapsweight", label: "Confmaps Loss Weight", keywords: "loss weight", conditional: true },
@@ -261,6 +268,75 @@ function Toggle({ label, id, hint, checked, onChange }: { label: string; id?: st
   );
 }
 
+/**
+ * The top-down anchor-part picker, shown once above the centroid /
+ * centered-instance tab split (it's one concept — where to crop around each
+ * animal — not a per-head setting). Writes into the `centered_instance`
+ * slot's hyperparams, which is what actually gets serialized to
+ * `centered_instance.confmaps.anchor_part`.
+ */
+function PipelineAnchorPartField({
+  hp,
+  onUpdate,
+  skeletonNodes,
+  nodeVisibility,
+}: {
+  hp: ConfigHyperparams;
+  onUpdate: (updates: Partial<ConfigHyperparams>) => void;
+  skeletonNodes: string[];
+  nodeVisibility: Map<string, NodeVisibility>;
+}) {
+  const pickedAnchorNode = useAppStore((s) => s.pickedAnchorNode);
+  const [myPickRequestId, setMyPickRequestId] = useState<number | null>(null);
+  const hasLabeledData = [...nodeVisibility.values()].some((v) => v.total > 0);
+
+  useEffect(() => {
+    if (myPickRequestId == null || !pickedAnchorNode) return;
+    if (pickedAnchorNode.requestId !== myPickRequestId) return;
+    onUpdate({ anchorPart: pickedAnchorNode.nodeName });
+    setMyPickRequestId(null);
+    useAppStore.getState().clearPickedAnchorNode();
+  }, [pickedAnchorNode, myPickRequestId, onUpdate]);
+
+  return (
+    <div id={PIPELINE_FIELD_DEFS.anchorPart.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+      <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+        {PIPELINE_FIELD_DEFS.anchorPart.label}
+        <HintBubble text="The body part used to center the crop around each animal. Choose one that is consistently visible and near the center of the animal." />
+      </span>
+      <Select value={hp.anchorPart ?? "__auto__"} onValueChange={(v) => onUpdate({ anchorPart: v === "__auto__" ? null : v })}>
+        <SelectTrigger className="h-8 text-sm w-40"><SelectValue placeholder="Auto" /></SelectTrigger>
+        <SelectContent>
+          <SelectItem value="__auto__">Auto (bbox center)</SelectItem>
+          {skeletonNodes.map((n) => {
+            const vis = nodeVisibility.get(n);
+            return (
+              <SelectItem key={n} value={n}>
+                <span className="flex items-center gap-1.5">
+                  {n}
+                  {vis && vis.total > 0 && (
+                    <span className={`text-xs ${VISIBILITY_COLOR[visibilityTier(vis.pct)]}`}>
+                      {vis.pct}%
+                    </span>
+                  )}
+                </span>
+              </SelectItem>
+            );
+          })}
+        </SelectContent>
+      </Select>
+      <button
+        className="shrink-0 h-8 w-8 flex items-center justify-center rounded-md border border-input text-muted-foreground hover:text-foreground hover:border-primary/50 disabled:opacity-40 disabled:hover:text-muted-foreground disabled:hover:border-input"
+        disabled={!hasLabeledData}
+        title={hasLabeledData ? "Pick anchor from canvas" : "No labeled frames in this project yet"}
+        onClick={() => setMyPickRequestId(useAppStore.getState().startAnchorPick())}
+      >
+        <Crosshair className="h-3.5 w-3.5" />
+      </button>
+    </div>
+  );
+}
+
 function SectionHeading({ id, label }: { id: string; label: string }) {
   return (
     <h3 id={id} data-search-field="" className="text-base font-medium pt-6 pb-3 first:pt-0 scroll-mt-4">
@@ -278,7 +354,6 @@ function HeadTabContent({
   hp,
   onUpdate,
   scrollRefCallback,
-  skeletonNodes,
 }: {
   slot: string;
   modelType: ModelType;
@@ -286,11 +361,9 @@ function HeadTabContent({
   hp: ConfigHyperparams;
   onUpdate: (updates: Partial<ConfigHyperparams>) => void;
   scrollRefCallback: (el: HTMLDivElement | null) => void;
-  skeletonNodes: string[];
 }) {
   const headType = slotToHeadType(modelType, slot);
   const baselineProfiles = getBaselineProfilesForHead(headType);
-  const showAnchorPart = slot === "centroid" || slot === "centered_instance";
   const showCropSize = slot !== "centroid";
   const trainingMode = (!configFile?.hasTrainedModel && hp.trainingMode !== "reuse_config")
     ? "reuse_config"
@@ -675,21 +748,6 @@ function HeadTabContent({
         </div>
         <Separator className="my-3" />
         <h4 className="text-sm font-medium text-muted-foreground mb-2">Head</h4>
-        {showAnchorPart && (
-          <div id={HEAD_FIELD_DEFS.headAnchorPart.id} data-search-field="" className="flex items-center gap-2 mb-2 scroll-mt-4">
-            <span className="text-sm text-muted-foreground flex items-center gap-1.5">
-              {HEAD_FIELD_DEFS.headAnchorPart.label}
-              <HintBubble text="Text name of a body part (node) to use as the anchor point. If None, the midpoint of the bounding box of all visible points will be used. Setting a reliable anchor point can significantly improve top-down model accuracy." />
-            </span>
-            <Select value={hp.anchorPart ?? "__auto__"} onValueChange={(v) => onUpdate({ anchorPart: v === "__auto__" ? null : v })}>
-              <SelectTrigger className="h-8 text-sm w-32"><SelectValue placeholder="Auto" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="__auto__">Auto</SelectItem>
-                {skeletonNodes.map((n) => <SelectItem key={n} value={n}>{n}</SelectItem>)}
-              </SelectContent>
-            </Select>
-          </div>
-        )}
         <Field {...HEAD_FIELD_DEFS.sigma}>
           <Input type="number" value={hp.sigma} onChange={(e) => onUpdate({ sigma: Number(e.target.value) })} min={0.5} max={30} step={0.5} className="h-9 text-sm" />
         </Field>
@@ -769,6 +827,13 @@ export function TrainingConfigDialog({
   // App store for suggestions count
   const labels = useAppStore((s) => s.labels);
   const suggestionsCount = labels?.suggestions?.length ?? 0;
+  const skeleton = useAppStore((s) => s.skeleton);
+  const overlayVersion = useAppStore((s) => s.overlayVersion);
+  const nodeVisibility = useMemo(
+    () => computeNodeVisibility(labels, skeleton),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [labels, skeleton, overlayVersion]
+  );
 
   // Auto-load baseline configs for empty slots when dialog opens
   const { parseYamlConfig, addConfigFile } = useTrainingStore();
@@ -914,22 +979,17 @@ export function TrainingConfigDialog({
                   </p>
                   {(modelType === "top_down" || modelType === "top_down_id") && (
                     <div className="flex items-center gap-4 flex-wrap pt-1">
-                      <div id={PIPELINE_FIELD_DEFS.anchorPart.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
-                        <span className="text-sm text-muted-foreground flex items-center gap-1.5">
-                          {PIPELINE_FIELD_DEFS.anchorPart.label}
-                          <HintBubble text="The body part used to center the crop around each animal. Choose one that is consistently visible and near the center of the animal." />
-                        </span>
-                        <Select
-                          value={configs.find((c) => c.slot === "centroid")?.hyperparams.runName ? "auto" : "auto"}
-                          disabled
-                        >
-                          <SelectTrigger className="h-8 text-sm w-32"><SelectValue placeholder="Auto" /></SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="auto">Auto</SelectItem>
-                            {skeletonNodes.map((n) => <SelectItem key={n} value={n}>{n}</SelectItem>)}
-                          </SelectContent>
-                        </Select>
-                      </div>
+                      {(() => {
+                        const ciConfig = configs.find((c) => c.slot === "centered_instance");
+                        return ciConfig ? (
+                          <PipelineAnchorPartField
+                            hp={ciConfig.hyperparams}
+                            onUpdate={(updates) => onUpdateSlot("centered_instance", updates)}
+                            skeletonNodes={skeletonNodes}
+                            nodeVisibility={nodeVisibility}
+                          />
+                        ) : null;
+                      })()}
                       <div id={PIPELINE_FIELD_DEFS.sigmaCentroids.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
                         <span className="text-sm text-muted-foreground flex items-center gap-1.5">
                           {PIPELINE_FIELD_DEFS.sigmaCentroids.label}
@@ -1337,7 +1397,6 @@ export function TrainingConfigDialog({
                   hp={cf.hyperparams}
                   onUpdate={(updates) => onUpdateSlot(cf.slot, updates)}
                   scrollRefCallback={(el) => { headScrollRefs.current[cf.slot] = el; }}
-                  skeletonNodes={skeletonNodes}
                 />
               </TabsContent>
             ))}

@@ -16,6 +16,7 @@ import { debugFlags } from "../panels/DebugPanel";
 import { Seekbar } from "./Seekbar";
 import { ContextMenu } from "./ContextMenu";
 import { SkeletonBuildBar } from "./SkeletonBuildBar";
+import { AnchorPickBar } from "./AnchorPickBar";
 import {
   renderInstances,
   hitTestNode,
@@ -23,6 +24,9 @@ import {
   renderSelectedNodeHighlights,
   renderHoveredNodeHighlight,
   renderHoverInstanceBBox,
+  renderAnchorCropPreview,
+  instanceBBoxCropSize,
+  findNodeIdxByName,
   renderMarqueeRect,
   renderRoiRect,
   nodesInRect,
@@ -132,6 +136,12 @@ export function VideoPlayer() {
   const skeletonBuildMode = useAppStore((s) => s.skeletonBuildMode);
   const skeletonBuildStage = useAppStore((s) => s.skeletonBuildStage);
   const builderPositions = useAppStore((s) => s.builderPositions);
+  // Top-down anchor-part picker (Training panel): click a node to select it.
+  const pickingAnchor = useAppStore((s) => s.pickingAnchor);
+  // Persistent anchor crop preview (Training panel "Preview" toggle) — shown
+  // independently of pick mode/hover, for every instance on the current frame.
+  const anchorPreviewActive = useAppStore((s) => s.anchorPreviewActive);
+  const anchorPreviewNode = useAppStore((s) => s.anchorPreviewNode);
 
   // Local zoom/pan state
   const [zoom, setZoom] = useState(1);
@@ -1067,6 +1077,34 @@ export function VideoPlayer() {
     if (hoveredNode && instances[hoveredNode.instanceIdx]) {
       renderHoverInstanceBBox(ctx, instances[hoveredNode.instanceIdx], renderOpts);
       renderHoveredNodeHighlight(ctx, instances, hoveredNode.instanceIdx, hoveredNode.nodeIdx, renderOpts);
+
+      // Anchor-part picker: preview the top-down crop centered on the
+      // hovered node, sized off that instance's own bbox (no configured crop
+      // size is available here — this is a rough visual guide, not the exact
+      // final crop).
+      if (pickingAnchor) {
+        const hoveredInstance = instances[hoveredNode.instanceIdx];
+        renderAnchorCropPreview(
+          ctx, instances, hoveredNode.instanceIdx, hoveredNode.nodeIdx,
+          instanceBBoxCropSize(hoveredInstance), renderOpts
+        );
+      }
+    }
+
+    // Persistent anchor crop preview (Training panel "Preview" toggle,
+    // independent of pick mode/hover): every instance on this frame that has
+    // the configured anchor node. `anchorPreviewNode === null` previews
+    // "Auto" (bbox center) instead of a specific node.
+    if (anchorPreviewActive) {
+      for (let i = 0; i < instances.length; i++) {
+        const inst = instances[i];
+        let nodeIdx: number | null = null;
+        if (anchorPreviewNode !== null) {
+          nodeIdx = findNodeIdxByName(inst, anchorPreviewNode);
+          if (nodeIdx === null) continue; // this instance's skeleton lacks the node
+        }
+        renderAnchorCropPreview(ctx, instances, i, nodeIdx, instanceBBoxCropSize(inst), renderOpts);
+      }
     }
 
     // Render marquee selection rectangle
@@ -1133,6 +1171,9 @@ export function VideoPlayer() {
     overlayVersion,
     selectedNodes,
     hoveredNode,
+    pickingAnchor,
+    anchorPreviewActive,
+    anchorPreviewNode,
     marqueeStart,
     marqueeEnd,
     roiStart,
@@ -1556,6 +1597,20 @@ export function VideoPlayer() {
         return;
       }
 
+      // Anchor-part picker (Training panel): clicking any instance's node
+      // resolves the pick with that node's name. A miss is a no-op — stay in
+      // pick mode so the user can navigate to a better frame and try again.
+      if (pickingAnchor) {
+        e.preventDefault();
+        const p = canvasToScene(e.clientX, e.clientY);
+        const instances = renderedInstancesRef.current;
+        const threshold = (markerSize * 2) / (baseScale * zoom);
+        const hit = hitTestNode(instances, p.x, p.y, threshold);
+        const nodeName = hit ? instances[hit.instanceIdx]?.nodes[hit.nodeIdx]?.name : null;
+        if (nodeName) useAppStore.getState().resolveAnchorPick(nodeName);
+        return;
+      }
+
       // A left-click while Space is held means the user is using this Space
       // press to drag/pan, not to tap for the next-suggestion shortcut --
       // suppress that shortcut's jump when Space is released (see
@@ -1775,7 +1830,7 @@ export function VideoPlayer() {
       setMarqueeStart({ x, y });
       setMarqueeEnd({ x, y });
     },
-    [canvasToScene, markerSize, nodeLabelSize, showLabels, panX, panY, zoom, baseScale, shouldPan, isCmdHeld, isSpaceHeld, offsetX, offsetY, selectedNodes, areaDeleteMode, imageFeatureRoiDrawActive, skeletonBuildMode, skeleton, builderRI]
+    [canvasToScene, markerSize, nodeLabelSize, showLabels, panX, panY, zoom, baseScale, shouldPan, isCmdHeld, isSpaceHeld, offsetX, offsetY, selectedNodes, areaDeleteMode, imageFeatureRoiDrawActive, skeletonBuildMode, skeleton, builderRI, pickingAnchor]
   );
 
   const handleMouseMove = useCallback(
@@ -2394,7 +2449,7 @@ export function VideoPlayer() {
         ref={containerRef}
         className={cn(
           "flex-1 relative overflow-hidden bg-background min-h-0",
-          skeletonBuildMode ? (skeletonBuildStage === "connect" ? "cursor-crosshair" : "cursor-cell") : imageFeatureRoiDrawActive ? "cursor-crosshair" : isPanning ? "cursor-grabbing" : isZoomDragging ? "cursor-zoom-in" : (shouldPan && isCmdHeld) ? "cursor-zoom-in" : shouldPan ? "cursor-grab" : isDragging ? "cursor-grabbing" : areaDeleteMode ? "cursor-crosshair" : interactionMode === "marquee" ? "cursor-crosshair" : isPlacingNodes ? "cursor-cell" : hoveredNode ? "cursor-pointer" : "cursor-default"
+          pickingAnchor ? "cursor-crosshair" : skeletonBuildMode ? (skeletonBuildStage === "connect" ? "cursor-crosshair" : "cursor-cell") : imageFeatureRoiDrawActive ? "cursor-crosshair" : isPanning ? "cursor-grabbing" : isZoomDragging ? "cursor-zoom-in" : (shouldPan && isCmdHeld) ? "cursor-zoom-in" : shouldPan ? "cursor-grab" : isDragging ? "cursor-grabbing" : areaDeleteMode ? "cursor-crosshair" : interactionMode === "marquee" ? "cursor-crosshair" : isPlacingNodes ? "cursor-cell" : hoveredNode ? "cursor-pointer" : "cursor-default"
         )}
         onMouseMove={crosshairActive ? handleCrosshairMove : undefined}
         onMouseLeave={
@@ -2714,6 +2769,8 @@ export function VideoPlayer() {
 
         {/* Visual skeleton builder control bar (self-guards to build mode). */}
         <SkeletonBuildBar />
+        {/* Anchor-part picker prompt (self-guards to pick mode). */}
+        <AnchorPickBar />
       </div>
 
       {/* Seekbar */}

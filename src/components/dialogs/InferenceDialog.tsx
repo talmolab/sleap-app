@@ -93,7 +93,6 @@ export function InferenceDialog() {
       device: "auto",
       maxInstances: Number(maxInstances),
       peakThreshold: 0.2,
-      anchorPart: null,
       integralRefinement: true,
       integralPatchSize: 5,
       nPoints: 10,

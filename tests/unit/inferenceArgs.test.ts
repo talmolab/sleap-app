@@ -21,7 +21,6 @@ function baseConfig(overrides: Partial<InferenceConfig> = {}): InferenceConfig {
     device: "auto",
     maxInstances: null,
     peakThreshold: 0.2,
-    anchorPart: null,
     integralRefinement: false,
     integralPatchSize: 5,
     nPoints: 10,
@@ -94,13 +93,16 @@ describe("buildInferenceArgs — core I/O", () => {
     expect(valAfter(buildInferenceArgs(baseConfig({ videoIndex: 2 }), io()), "--video_index")).toBe("2");
   });
 
-  it("includes optional max_instances/anchor_part when set, omits when null", () => {
-    const set = buildInferenceArgs(baseConfig({ maxInstances: 3, anchorPart: "thorax" }), io());
+  it("includes optional max_instances when set, omits when null", () => {
+    const set = buildInferenceArgs(baseConfig({ maxInstances: 3 }), io());
     expect(valAfter(set, "--max_instances")).toBe("3");
-    expect(valAfter(set, "--anchor_part")).toBe("thorax");
-    const unset = buildInferenceArgs(baseConfig({ maxInstances: null, anchorPart: null }), io());
+    const unset = buildInferenceArgs(baseConfig({ maxInstances: null }), io());
     expect(unset).not.toContain("--max_instances");
-    expect(unset).not.toContain("--anchor_part");
+  });
+
+  it("never emits --anchor_part (not a predict/track flag — sleap-nn eval only)", () => {
+    const args = buildInferenceArgs(baseConfig(), io());
+    expect(args).not.toContain("--anchor_part");
   });
 });
 
@@ -285,7 +287,6 @@ describe("buildInferenceArgs — full-config parity lock", () => {
     device: "cuda",
     maxInstances: 2,
     peakThreshold: 0.15,
-    anchorPart: "head",
     integralRefinement: true,
     integralPatchSize: 7,
     nPoints: 12,
@@ -318,7 +319,6 @@ describe("buildInferenceArgs — full-config parity lock", () => {
     "--device", "cuda",
     "--max_instances", "2",
     "--peak_threshold", "0.15",
-    "--anchor_part", "head",
     "--integral_refinement", "integral",
     "--integral_patch_size", "7",
     "--n_points", "12",

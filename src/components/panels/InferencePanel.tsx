@@ -189,7 +189,6 @@ const DEFAULTS: Omit<InferenceConfig, "modelPaths" | "videoIndex" | "frameRange"
   device: "auto",
   maxInstances: null,
   peakThreshold: 0.2,
-  anchorPart: null,
   integralRefinement: true,
   integralPatchSize: 5,
   nPoints: 10,
@@ -217,7 +216,6 @@ const DEFAULTS: Omit<InferenceConfig, "modelPaths" | "videoIndex" | "frameRange"
 
 export function InferencePanel() {
   const video = useAppStore((s) => s.video);
-  const skeleton = useAppStore((s) => s.skeleton);
   const projectPath = useAppStore((s) => s.projectPath);
   const tools = useEnvironmentStore((s) => s.tools);
   const detectionStatus = useEnvironmentStore((s) => s.detectionStatus);
@@ -252,7 +250,6 @@ export function InferencePanel() {
   const [maxInstances, setMaxInstances] = useState<number | null>(DEFAULTS.maxInstances);
   const [noMaxInstances, setNoMaxInstances] = useState(true);
   const [peakThreshold, setPeakThreshold] = useState(DEFAULTS.peakThreshold);
-  const [anchorPart, setAnchorPart] = useState<string | null>(DEFAULTS.anchorPart);
   const [integralRefinement, setIntegralRefinement] = useState(DEFAULTS.integralRefinement);
   const [integralPatchSize, setIntegralPatchSize] = useState(DEFAULTS.integralPatchSize);
   const [nPoints, setNPoints] = useState(DEFAULTS.nPoints);
@@ -336,7 +333,6 @@ export function InferencePanel() {
     };
   }, [remoteEnabled, projectPath, pipeline]);
 
-  const nodes = skeleton?.nodes ?? [];
   const sleapNnAvailable = tools.some(
     (t) => t.name === "sleap-nn" || t.commands?.includes("sleap-nn")
   );
@@ -400,7 +396,6 @@ export function InferencePanel() {
       sampleCount, excludeUserLabeled, batchSize, device,
       maxInstances: noMaxInstances ? null : maxInstances,
       peakThreshold,
-      anchorPart: isTopDown ? anchorPart : null,
       integralRefinement, integralPatchSize,
       nPoints, maxEdgeLengthRatio, distPenaltyWeight, minLineScores,
       tracking, trackerMethod, similarityMethod, matchingMethod,
@@ -612,18 +607,6 @@ export function InferencePanel() {
               disabled={isRunning} />
           </div>
 
-          {isTopDown && nodes.length > 0 && (
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-[10px] text-muted-foreground">Anchor part</span>
-              <Select value={anchorPart ?? "none"} onValueChange={(v) => setAnchorPart(v === "none" ? null : v)} disabled={isRunning}>
-                <SelectTrigger className="h-6 text-[10px] w-32"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">Auto</SelectItem>
-                  {nodes.map((n) => <SelectItem key={n.name} value={n.name}>{n.name}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-          )}
         </Section>
 
         <Separator />
@@ -899,9 +882,8 @@ export function InferencePanel() {
         pipeline={pipeline}
         tracking={tracking}
         onTrackingChange={setTracking}
-        skeletonNodes={nodes.map((n) => n.name)}
         values={{
-          peakThreshold, maxInstances, anchorPart,
+          peakThreshold, maxInstances,
           integralRefinement, integralPatchSize,
           nPoints, maxEdgeLengthRatio, distPenaltyWeight, minLineScores,
           trackerMethod, similarityMethod, matchingMethod,
@@ -912,7 +894,6 @@ export function InferencePanel() {
         onUpdate={(updates) => {
           if ("peakThreshold" in updates) setPeakThreshold(updates.peakThreshold!);
           if ("maxInstances" in updates) setMaxInstances(updates.maxInstances!);
-          if ("anchorPart" in updates) setAnchorPart(updates.anchorPart!);
           if ("integralRefinement" in updates) setIntegralRefinement(updates.integralRefinement!);
           if ("integralPatchSize" in updates) setIntegralPatchSize(updates.integralPatchSize!);
           if ("nPoints" in updates) setNPoints(updates.nPoints!);
