@@ -10,7 +10,6 @@ import { sleapCmd } from "@/lib/sleapPlugin";
 import { saveSlpToBytes } from "@talmolab/sleap-io.js";
 import type { InferenceConfig } from "@/stores/inferenceStore";
 import { buildInferenceArgs, pickInferenceSubcommand } from "./inferenceArgs";
-import { buildTrainingArgs } from "./trainingArgs";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { formatRunTimestamp as formatPredictionsTimestamp } from "@/lib/timestamp";
 
@@ -302,16 +301,16 @@ export async function runTraining(
   const ckptDir = modelDir || (await join(tmp, "sleap_models"));
   const modelPath = `${ckptDir}/${runName}`;
 
-  // Hydra reads these as `key=value` overrides; interpolated values are quoted
-  // so a run name's legacy `.n=<count>` suffix (or a project path containing
-  // `=`) can't crash the parser. See ./trainingArgs.ts.
-  const args = buildTrainingArgs({
-    configFileName,
-    configDir: tmp,
-    labelsPath,
-    runName,
-    ckptDir,
-  });
+  const args = [
+    "train",
+    "--config-name", configFileName,
+    "--config-dir", tmp,
+    `data_config.train_labels_path=[${labelsPath}]`,
+    `trainer_config.run_name=${runName}`,
+    `trainer_config.ckpt_dir=${ckptDir}`,
+    `trainer_config.zmq.controller_port=9000`,
+    `trainer_config.zmq.publish_port=9001`,
+  ];
 
   const command = `sleap-nn ${args.join(" ")}`;
   console.log("[training] Running:", command);
