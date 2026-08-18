@@ -1,4 +1,5 @@
 import { describe, it, expect } from "../bun-test";
+import yaml from "js-yaml";
 import {
   BASELINE_PROFILES,
   getBaselineProfilesForHead,
@@ -57,6 +58,29 @@ describe("trainingProfiles", () => {
   it("all profiles have non-empty content", () => {
     for (const p of BASELINE_PROFILES) {
       expect(p.content.length).toBeGreaterThan(100);
+    }
+  });
+
+  it("every profile defaults to the Cache in Memory pipeline with 2 dataloader workers", () => {
+    // Matches legacy SLEAP's own default (talmolab/sleap commit a03bacc53,
+    // "Change default data pipeline to 'Cache in Memory' for better
+    // performance") — `data_pipeline_fw: torch_dataset` ("Stream", no
+    // caching) silently overrode the app-level `defaultHyperparams.dataPipeline
+    // = "memory"` for every freshly-loaded pipeline, since baseline profiles
+    // are what actually get parsed. num_workers only helps with a caching
+    // pipeline (sleap-nn: "0 means loaded in main process"), so it's bumped
+    // from 0 to 2 alongside it.
+    for (const p of BASELINE_PROFILES) {
+      const doc = yaml.load(p.content) as {
+        data_config: { data_pipeline_fw: string };
+        trainer_config: {
+          train_data_loader: { num_workers: number };
+          val_data_loader: { num_workers: number };
+        };
+      };
+      expect(doc.data_config.data_pipeline_fw, p.filename).toBe("torch_dataset_cache_img_memory");
+      expect(doc.trainer_config.train_data_loader.num_workers, p.filename).toBe(2);
+      expect(doc.trainer_config.val_data_loader.num_workers, p.filename).toBe(2);
     }
   });
 

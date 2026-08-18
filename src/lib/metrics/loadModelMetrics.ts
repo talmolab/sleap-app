@@ -228,15 +228,37 @@ function titleCase(key: string): string {
     .join(" ");
 }
 
-/** Parse a `YYYYMMDD[_-]?HHMMSS?` timestamp out of a run name, if present. */
+// `YYMMDD_HHMMSS` — legacy SLEAP's own run-name timestamp format
+// (sleap/gui/learning/configs.py `timestamp` property / `get_timestamp()`),
+// and sleap-app's current default (`formatRunTimestamp`) since the Hydra
+// override-quoting fix. The negative lookbehind keeps this from matching a
+// 6-digit substring inside an unrelated longer digit run (e.g. a 4-digit-year
+// run name below); the trailing `\b` requires exactly 6 digits, not more.
+const TWO_DIGIT_YEAR_TIMESTAMP_RE = /(?<!\d)(\d{2})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})\b/;
+
+// `YYYYMMDD[_-]?HHMMSS?` — sleap-app's run-name format before the above fix.
+// Kept so models trained before the fix still show a timestamp.
+const FOUR_DIGIT_YEAR_TIMESTAMP_RE = /(\d{4})(\d{2})(\d{2})[_-]?(\d{2})?(\d{2})?(\d{2})?/;
+
+/** Parse a timestamp out of a run name, if present (see the regexes above). */
 export function parseTimestampFromRunName(runName: string | null | undefined): string | null {
   if (!runName) return null;
-  const m = runName.match(/(\d{4})(\d{2})(\d{2})[_-]?(\d{2})?(\d{2})?(\d{2})?/);
-  if (!m) return null;
-  const [, y, mo, d, hh, mm, ss] = m;
-  const day = `${y}-${mo}-${d}`;
-  if (hh && mm) return `${day} ${hh}:${mm}${ss ? `:${ss}` : ""}`;
-  return day;
+
+  const m2 = runName.match(TWO_DIGIT_YEAR_TIMESTAMP_RE);
+  if (m2) {
+    const [, y, mo, d, hh, mm, ss] = m2;
+    return `20${y}-${mo}-${d} ${hh}:${mm}:${ss}`;
+  }
+
+  const m4 = runName.match(FOUR_DIGIT_YEAR_TIMESTAMP_RE);
+  if (m4) {
+    const [, y, mo, d, hh, mm, ss] = m4;
+    const day = `${y}-${mo}-${d}`;
+    if (hh && mm) return `${day} ${hh}:${mm}${ss ? `:${ss}` : ""}`;
+    return day;
+  }
+
+  return null;
 }
 
 /**

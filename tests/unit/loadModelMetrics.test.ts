@@ -241,12 +241,19 @@ describe("real sleap-nn JSON edge cases (reconciliation)", () => {
 });
 
 describe("parseTimestampFromRunName", () => {
-  it("parses separated and contiguous timestamps", () => {
+  it("parses separated and contiguous 4-digit-year timestamps (pre-Hydra-fix run names)", () => {
     expect(parseTimestampFromRunName("centered_instance_20260731_120000")).toBe("2026-07-31 12:00:00");
     expect(parseTimestampFromRunName("centered_instance_20260731120000")).toBe("2026-07-31 12:00:00");
     expect(parseTimestampFromRunName("run_20260731")).toBe("2026-07-31");
     expect(parseTimestampFromRunName("no_date_here")).toBeNull();
     expect(parseTimestampFromRunName(null)).toBeNull();
+  });
+
+  it("parses the current 2-digit-year run-name format (matches legacy SLEAP's own timestamp)", () => {
+    // Default sleap-app run name: {YYMMDD_HHMMSS}.{head}.n={count}
+    expect(parseTimestampFromRunName("260818_143012.centroid.n=342")).toBe("2026-08-18 14:30:12");
+    // Doesn't misfire on an unrelated 6-digit run inside a longer digit block.
+    expect(parseTimestampFromRunName("centered_instance_20260731_120000")).toBe("2026-07-31 12:00:00");
   });
 });
 

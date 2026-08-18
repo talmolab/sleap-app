@@ -282,6 +282,7 @@ function renderNodeLabel(
   let labelColor: RGB;
   let bold: boolean;
   let italic = false;
+  let showMissingBg = false;
   if (isPredicted) {
     labelColor = PREDICTED_LABEL_COLOR;
     bold = false;
@@ -289,6 +290,7 @@ function renderNodeLabel(
     labelColor = MISSING_LABEL_COLOR;
     bold = true;
     italic = true;
+    showMissingBg = true;
   } else if (node.complete) {
     labelColor = COMPLETE_COLOR;
     bold = true;
@@ -299,14 +301,26 @@ function renderNodeLabel(
 
   const fontSize = opts.nodeLabelSize / opts.zoom;
   ctx.font = `${italic ? "italic " : ""}${bold ? "bold " : ""}${fontSize}px sans-serif`;
+
+  const labelX = node.x + opts.markerSize / opts.zoom + 2 / opts.zoom;
+  const labelY = node.y - 2 / opts.zoom;
+
+  // A shaded background behind non-visible node labels, matching legacy
+  // SLEAP's QtNodeLabel (sleap/gui/widgets/video.py) -- the dim gray text is
+  // otherwise nearly invisible against grayscale/B&W footage. Solid black at
+  // ~0.4 alpha, sized to the actual text (no rounded corners, matching the
+  // plain fillRect legacy uses), drawn before the text so it sits behind it.
+  if (showMissingBg) {
+    const pad = 2 / opts.zoom;
+    const textWidth = ctx.measureText(node.name).width;
+    ctx.fillStyle = "rgba(0, 0, 0, 0.39)";
+    ctx.fillRect(labelX - pad, labelY - fontSize - pad, textWidth + pad * 2, fontSize + pad * 2);
+  }
+
   ctx.fillStyle = rgbToCSS(labelColor, 0.9);
   ctx.textAlign = "left";
   ctx.textBaseline = "bottom";
-  ctx.fillText(
-    node.name,
-    node.x + opts.markerSize / opts.zoom + 2 / opts.zoom,
-    node.y - 2 / opts.zoom
-  );
+  ctx.fillText(node.name, labelX, labelY);
 }
 
 function renderSelectionBox(

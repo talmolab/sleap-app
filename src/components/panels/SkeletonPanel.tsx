@@ -152,6 +152,22 @@ export function SkeletonPanel() {
     ensureInterceptor();
   }, []);
 
+  // Auto-exit the visual skeleton builder if this panel is closed, collapsed,
+  // or switched away from while build mode is still active — otherwise the
+  // only way out is the Escape key, which has no visible affordance (and
+  // isn't reachable at all from the Place stage's on-canvas bar).
+  // `promptIfUnfinished` surfaces a "keep or discard?" dialog (rendered
+  // globally in AppShell, since this panel is unmounting) when nodes/edges
+  // were added since the builder was entered — an unplanned exit like this
+  // one shouldn't silently keep a half-finished draft.
+  useEffect(() => {
+    return () => {
+      if (useAppStore.getState().skeletonBuildMode) {
+        useAppStore.getState().exitSkeletonBuild({ promptIfUnfinished: true });
+      }
+    };
+  }, []);
+
   if (!skeleton) {
     return (
       <p className="text-xs text-muted-foreground p-2">No skeleton loaded.</p>

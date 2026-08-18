@@ -198,7 +198,7 @@ export const defaultHyperparams: ConfigHyperparams = {
   trainingMode: "reuse_config",
   accelerator: "auto",
   dataPipeline: "memory",
-  dataloaderWorkers: 0,
+  dataloaderWorkers: 2,
   numDevices: "auto",
 };
 

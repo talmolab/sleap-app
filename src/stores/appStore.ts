@@ -15,6 +15,8 @@ import type {
   LabeledFrame,
   Instance,
   Skeleton,
+  Node,
+  Edge,
   Track,
   Video,
   EdgeStyle,
@@ -266,6 +268,21 @@ export interface AppState {
   skeletonBuildMode: boolean;
   skeletonBuildStage: "place" | "connect";
   builderPositions: ({ x: number; y: number } | null)[];
+  /**
+   * The skeleton's nodes/edges as they were when `enterSkeletonBuild` was
+   * called — lets an unplanned exit (e.g. switching away from the Skeleton
+   * panel mid-draw) offer to revert, without relying on the undo stack
+   * (which may have other, unrelated commands interleaved). `null` outside
+   * an active build session with unresolved unfinished-work state.
+   */
+  skeletonBuildEntrySnapshot: { nodes: Node[]; edges: Edge[] } | null;
+  /**
+   * Non-null → show the "keep or discard?" dialog for an unplanned exit that
+   * left unfinished work (nodes/edges added since `skeletonBuildEntrySnapshot`
+   * was taken). The value is what "Discard" reverts the skeleton to. Escape
+   * and "Done" exits never set this — they're deliberate, so they stay quiet.
+   */
+  skeletonExitPrompt: { nodes: Node[]; edges: Edge[] } | null;
 
   // Top-down anchor-part picker (Training panel): click a node on the canvas
   // instead of typing its name. `pickRequestId` disambiguates which requester
@@ -387,7 +404,17 @@ export interface AppState {
 
   // Skeleton-builder actions (scratch buffer; see field docs above).
   enterSkeletonBuild: () => void;
-  exitSkeletonBuild: () => void;
+  /**
+   * `promptIfUnfinished`: when true and the skeleton's nodes/edges changed
+   * since `enterSkeletonBuild`, sets `skeletonExitPrompt` instead of quietly
+   * discarding that info — for an unplanned exit (e.g. leaving the Skeleton
+   * panel) where the user hasn't explicitly said "I'm done" or "cancel"
+   * (Escape/Done omit this so they stay quiet, as before).
+   */
+  exitSkeletonBuild: (opts?: { promptIfUnfinished?: boolean }) => void;
+  /** Resolve the "keep or discard?" prompt: `keep === false` reverts the
+   * skeleton to `skeletonExitPrompt`'s snapshot. Always clears the prompt. */
+  resolveSkeletonExitPrompt: (keep: boolean) => void;
   setSkeletonBuildStage: (stage: "place" | "connect") => void;
   setBuilderPosition: (
     nodeIdx: number,
@@ -573,6 +600,8 @@ export const useAppStore = create<AppState>()(
       skeletonBuildMode: false,
       skeletonBuildStage: "place" as "place" | "connect",
       builderPositions: [] as ({ x: number; y: number } | null)[],
+      skeletonBuildEntrySnapshot: null as { nodes: Node[]; edges: Edge[] } | null,
+      skeletonExitPrompt: null as { nodes: Node[]; edges: Edge[] } | null,
       skeletonTemplateLayout: null as ({ x: number; y: number } | null)[] | null,
 
       // Anchor-part picker (transient)
@@ -946,7 +975,8 @@ export const useAppStore = create<AppState>()(
 
       // Enter the visual skeleton builder. Seeds one null slot per skeleton
       // node (scratch positions, index-aligned). Also clears place-labeling so
-      // the two modes never fight over canvas clicks.
+      // the two modes never fight over canvas clicks. Snapshots the current
+      // nodes/edges so an unplanned exit can offer to revert to them.
       enterSkeletonBuild: () =>
         set((state) => {
           state.skeletonBuildMode = true;
@@ -956,16 +986,64 @@ export const useAppStore = create<AppState>()(
             : [];
           state.labelingMode = "select";
           state.placementNodeIdx = null;
+          state.skeletonBuildEntrySnapshot = state.skeleton
+            ? { nodes: [...state.skeleton.nodes], edges: [...state.skeleton.edges] }
+            : { nodes: [], edges: [] };
         }),
 
       // Exit the builder and discard the scratch buffer. MUST NOT touch labels
       // or skeleton -- the net-neutral invariant (no phantom labeled instance).
-      exitSkeletonBuild: () =>
+      // `promptIfUnfinished`: for an unplanned exit, ask "keep or discard?"
+      // instead of silently leaving whatever was added since entry in place.
+      exitSkeletonBuild: (opts) =>
         set((state) => {
           state.skeletonBuildMode = false;
           state.skeletonBuildStage = "place";
           state.builderPositions = [];
+
+          const entry = state.skeletonBuildEntrySnapshot;
+          const changedSinceEntry =
+            !!entry &&
+            !!state.skeleton &&
+            (state.skeleton.nodes.length !== entry.nodes.length ||
+              state.skeleton.edges.length !== entry.edges.length);
+
+          if (opts?.promptIfUnfinished && changedSinceEntry && entry) {
+            state.skeletonExitPrompt = entry;
+          }
+          state.skeletonBuildEntrySnapshot = null;
         }),
+
+      // Resolve the "keep or discard?" prompt. Discard reverts the skeleton
+      // to the pre-build snapshot and marks the project changed (same as any
+      // other skeleton edit); keep leaves it exactly as drawn.
+      //
+      // The skeleton mutation itself happens on the REAL object via `get()`,
+      // not inside the `set()` draft below — matching how every other
+      // skeleton edit in this app works (CommandContext's `ctx.state` is
+      // also plain `useAppStore.getState()`, mutated directly). `Skeleton` is
+      // a sleap-io.js class instance, not a plain object/array/Map/Set, so
+      // Immer doesn't draft it; mutating it "through" a draft would silently
+      // mutate the same live object anyway, so do it explicitly and use
+      // `set()` only for the plain fields that Immer actually tracks.
+      resolveSkeletonExitPrompt: (keep) => {
+        const { skeleton, skeletonExitPrompt: prompt } = get();
+        const discarding = !keep && !!prompt && !!skeleton;
+        if (discarding) {
+          skeleton.nodes = [...prompt.nodes];
+          skeleton.edges = [...prompt.edges];
+          skeleton.rebuildCache(skeleton.nodes);
+        }
+        set((state) => {
+          if (discarding) {
+            state.hasChanges = true;
+            state.editSeq += 1;
+            state.lastInteractedFrame = state.frameIdx;
+            state.overlayVersion += 1;
+          }
+          state.skeletonExitPrompt = null;
+        });
+      },
 
       setSkeletonBuildStage: (stage) =>
         set((state) => {
