@@ -284,6 +284,10 @@ interface TrainingState {
   // Status
   status: TrainingStatus;
   error: string | null;
+  /** Recent stderr lines from a failed sleap-nn run, forwarded so the training
+   *  window can show the actual error output (mirrors inferenceStore.stderrTail).
+   *  Empty while healthy / running. */
+  stderrTail: string[];
   startedAt: number | null;
   _stopRequested: boolean;
   _isRemote: boolean;
@@ -562,6 +566,7 @@ const initialState = {
   config: { ...initialConfig },
   status: "idle" as TrainingStatus,
   error: null as string | null,
+  stderrTail: [] as string[],
   startedAt: null as number | null,
   _stopRequested: false,
   _isRemote: false,
@@ -854,6 +859,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
     set({
       status: "running",
       error: null,
+      stderrTail: [],
       startedAt: Date.now(),
       _stopRequested: false,
       _isRemote: !!remoteOpts?.remote,
@@ -1345,6 +1351,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
               error: cause
                 ? `Training failed for ${cf.modelType}: ${cause}`
                 : `Training failed for ${cf.modelType}`,
+              stderrTail: [...stderrTail],
               models: s.models.map((m, j) =>
                 j === i ? { ...m, status: "failed" as const } : m,
               ),
@@ -1476,6 +1483,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         set({
           status: "error",
           error: `Local training error: ${e instanceof Error ? e.message : String(e)}`,
+          stderrTail: [...stderrTail],
         });
       } finally {
         if (batchFlushTimer) { clearInterval(batchFlushTimer); batchFlushTimer = null; }

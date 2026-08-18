@@ -16,6 +16,7 @@ import { RemoteFileBrowser } from "@/components/dialogs/RemoteFileBrowser";
 import { TrainingConfigDialog } from "@/components/dialogs/TrainingConfigDialog";
 import { LossViewerDialog } from "@/components/monitors/LossViewerDialog";
 import { LogTerminalDialog } from "@/components/monitors/LogTerminalDialog";
+import { ErrorOutput } from "@/components/monitors/ErrorOutput";
 import { slotToHeadType, getDefaultProfileForHead } from "@/lib/trainingProfiles";
 import { useAppStore } from "@/stores/appStore";
 import { isTauri } from "@/platform/index";
@@ -583,6 +584,7 @@ export function TrainingPanel() {
   const config = useTrainingStore((s) => s.config);
   const status = useTrainingStore((s) => s.status);
   const error = useTrainingStore((s) => s.error);
+  const stderrTail = useTrainingStore((s) => s.stderrTail);
   const startedAt = useTrainingStore((s) => s.startedAt);
   const models = useTrainingStore((s) => s.models);
   const currentModelIndex = useTrainingStore((s) => s.currentModelIndex);
@@ -1437,11 +1439,14 @@ export function TrainingPanel() {
               </div>
             )}
 
-            {/* Error banner */}
+            {/* Error banner + forwarded sleap-nn error output */}
             {error && status === "error" && (
               <div className="rounded-md bg-destructive/15 border border-destructive/30 px-2 py-1.5 text-[10px] text-destructive">
                 {error}
               </div>
+            )}
+            {status === "error" && stderrTail.length > 0 && (
+              <ErrorOutput lines={stderrTail} title="Error output (sleap-nn)" />
             )}
 
             {/* Next step hint */}
@@ -1470,6 +1475,7 @@ export function TrainingPanel() {
         model={viewerIndex !== null ? (models[viewerIndex] ?? null) : null}
         startedAt={startedAt}
         status={status}
+        errorLines={stderrTail}
         isActive={
           viewerIndex !== null &&
           viewerIndex === currentModelIndex &&

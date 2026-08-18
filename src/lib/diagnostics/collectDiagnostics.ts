@@ -176,6 +176,36 @@ export async function collectDiagnostics(opts: {
     /* ignore */
   }
 
+  // Environment versions (uv + sleap-nn). The tester may never have opened the
+  // Environment panel this session, leaving the store fields empty — so detect
+  // fresh at collect-time (best-effort). Training/env bugs are the highest-risk
+  // area, so these versions are worth the extra couple of seconds.
+  let uv: unknown = env.uv ?? null;
+  const python: unknown = env.pythonCheck ?? null;
+  let sleapNnVersion: string | null = env.pythonCheck?.sleapNnVersion ?? null;
+  if (isTauri && (!uv || sleapNnVersion == null)) {
+    try {
+      const { detectUv, listUvTools } = await import("@/platform/backend");
+      if (!uv) {
+        try {
+          uv = await detectUv();
+        } catch {
+          /* ignore */
+        }
+      }
+      if (sleapNnVersion == null) {
+        try {
+          const nn = (await listUvTools()).find((t) => t.name === "sleap-nn");
+          if (nn?.version) sleapNnVersion = nn.version;
+        } catch {
+          /* ignore */
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
   const meta: DiagnosticsMeta = {
     installId: getInstallId(),
     sessionId: getSessionId(),
@@ -186,9 +216,9 @@ export async function collectDiagnostics(opts: {
     userAgent: typeof navigator !== "undefined" ? navigator.userAgent : "unknown",
     runtime: isTauri ? "tauri" : "browser",
     gpu,
-    uv: env.uv ?? null,
-    python: env.pythonCheck ?? null,
-    sleapNnVersion: env.pythonCheck?.sleapNnVersion ?? null,
+    uv,
+    python,
+    sleapNnVersion,
     project: stats,
   };
 
