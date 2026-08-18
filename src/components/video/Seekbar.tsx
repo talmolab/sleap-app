@@ -554,8 +554,10 @@ export function Seekbar() {
   // (PyQt parity — the occupancy graph reports the frame under the cursor). The
   // header canvas shares the seekbar's subgrid column, so pixelToFrame (keyed to
   // the scrubbar canvas) maps correctly; hoverX is measured against containerRef
-  // so the shared tooltip's clamp/position math is unchanged. Hover-only — no
-  // drag/range-select (that stays owned by the scrubbar's handleMouseMove).
+  // so the shared tooltip's clamp/position math is unchanged. This move handler
+  // stays hover-only; click/drag-to-seek on the header is wired via the
+  // scrubbar's handleMouseDown/handleMouseUp (the drag loop is window-bound, so a
+  // drag started on the header scrubs just like one started on the bar).
   const handleHeaderMouseMove = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
       setHoverFrame(pixelToFrame(e.clientX));
@@ -918,9 +920,11 @@ export function Seekbar() {
         </div>
         <div
           ref={headerContainerRef}
-          className="overflow-hidden min-w-0 h-full"
+          className="overflow-hidden min-w-0 h-full cursor-pointer"
           style={{ height: seekbarHeaderHeight }}
+          onMouseDown={handleMouseDown}
           onMouseMove={handleHeaderMouseMove}
+          onMouseUp={handleMouseUp}
           onMouseLeave={handleMouseLeave}
         >
           <canvas

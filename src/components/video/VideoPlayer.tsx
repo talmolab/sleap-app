@@ -1877,25 +1877,15 @@ export function VideoPlayer() {
       // Reset rotation snapshot tracking when not using alt
       rotationSnapshotTaken.current = false;
 
-      // Decide the gesture — ZOOM or PAN (#278):
-      //  - e.ctrlKey  -> ZOOM. Browsers set ctrlKey on a trackpad *pinch*
-      //    (even with no physical Ctrl held) and it's also the Ctrl+wheel
-      //    convention. Zoom is anchored at the cursor.
-      //  - classic MOUSE WHEEL -> ZOOM. Detected by a non-pixel deltaMode
-      //    (line/page scrolling) or a large, discrete vertical delta with no
-      //    horizontal component (physical wheels emit big integer deltaY and
-      //    deltaX === 0).
-      //  - otherwise (plain trackpad two-finger scroll: small/continuous
-      //    deltas, frequently with a deltaX) -> PAN by the raw delta.
-      const isMouseWheel =
-        e.deltaMode !== 0 ||
-        (e.deltaX === 0 &&
-          Number.isInteger(e.deltaY) &&
-          Math.abs(e.deltaY) >= 50);
-      if (!e.ctrlKey && !isMouseWheel) {
-        // Two-finger pan: translate the view opposite the scroll delta (natural
-        // direction, like dragging a document). Reuse constrainPan so the image
-        // can't be flung off-canvas, matching click-drag panning.
+      // Decide the gesture — ZOOM or PAN (#278/#282). Plain scroll PANS (mouse
+      // wheel and trackpad two-finger alike); only Ctrl+scroll ZOOMS. Fully
+      // deterministic and device-agnostic — no trying to tell a mouse wheel from
+      // a trackpad pan. A trackpad *pinch* also zooms because the browser
+      // synthesizes ctrlKey for it.
+      if (!e.ctrlKey) {
+        // Pan by the raw scroll delta (mouse wheel / side wheel / trackpad
+        // two-finger). Reuse constrainPan so the image can't be flung
+        // off-canvas, matching click-drag panning.
         const prev = viewRef.current;
         const constrained = constrainPan(
           prev.panX - e.deltaX,
@@ -1912,7 +1902,7 @@ export function VideoPlayer() {
         return;
       }
 
-      // ZOOM (pinch, Ctrl+wheel, or mouse wheel), anchored at the cursor.
+      // ZOOM (Ctrl+scroll or trackpad pinch), anchored at the cursor.
       // Normalize deltaY for different input devices
       let delta = e.deltaY;
       if (e.deltaMode === 1) delta *= 40; // line mode
