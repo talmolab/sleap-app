@@ -161,9 +161,18 @@ export function Seekbar() {
   const palette = useAppStore((s) => s.palette);
   const setFrameIdx = useAppStore((s) => s.setFrameIdx);
   const frameRange = useAppStore((s) => s.frameRange);
+  const markedFrame = useAppStore((s) => s.markedFrame);
   const seekbarHeaderGraph = useAppStore((s) => s.seekbarHeaderGraph);
   const seekbarHeaderReduction = useAppStore((s) => s.seekbarHeaderReduction);
   const seekbarHeaderHeight = useAppStore((s) => s.seekbarHeaderHeight);
+  // When the sidebar is on the left, the transport controls + header graph
+  // picker move left too. We reorder via `order` (grid auto-flow) rather than an
+  // explicit `col-start`: WebKit (the desktop WKWebView) mis-sizes an `auto`
+  // subgrid track fed by a col-start child, which made the controls vanish on
+  // the left (#278). Auto-flow + order matches the original working mechanism,
+  // and the canvas stays in the wide 1fr column so header/seekbar stay aligned.
+  const sidebarOnLeft = useAppStore((s) => s.sidebarSide) === "left";
+  const controlsOrder = sidebarOnLeft ? "order-first" : "";
   const overlayVersion = useAppStore((s) => s.overlayVersion);
   const videoRevision = useAppStore((s) => s.videoRevision);
   const setKey = useAppStore((s) => s.set);
@@ -542,6 +551,23 @@ export function Seekbar() {
     setRangeAnchor(null);
   }, []);
 
+  // Hovering the header graph shows the same frame-info tooltip as the scrubbar
+  // (PyQt parity — the occupancy graph reports the frame under the cursor). The
+  // header canvas shares the seekbar's subgrid column, so pixelToFrame (keyed to
+  // the scrubbar canvas) maps correctly; hoverX is measured against containerRef
+  // so the shared tooltip's clamp/position math is unchanged. This move handler
+  // stays hover-only; click/drag-to-seek on the header is wired via the
+  // scrubbar's handleMouseDown/handleMouseUp (the drag loop is window-bound, so a
+  // drag started on the header scrubs just like one started on the bar).
+  const handleHeaderMouseMove = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      setHoverFrame(pixelToFrame(e.clientX));
+      const container = containerRef.current;
+      if (container) setHoverX(e.clientX - container.getBoundingClientRect().left);
+    },
+    [pixelToFrame]
+  );
+
   // Tooltip lines for the frame under the cursor, computed by the pure
   // formatter (mirrors PyQt get_val_tooltip). overlayVersion is a dep so counts
   // refresh after labeling edits (labels is mutated in place).
@@ -736,7 +762,7 @@ export function Seekbar() {
     const tracks = labels.tracks as unknown[];
     const trackIdxOf = new Map<unknown, number>(tracks.map((t, i) => [t, i]));
     const byTrack: number[][] = tracks.map(() => []);
-    const marks: Array<[number, boolean]> = [];
+    const marks: Array<[number, boolean, boolean]> = [];
     for (const lf of labels.find({ video })) {
       // A frame is "user-labeled" if it has any manual annotation — incl. a
       // user-placed centroid with no skeleton instance (io.js isUserLabeled).
@@ -748,7 +774,8 @@ export function Seekbar() {
         const ti = track === null ? -1 : trackIdxOf.get(track) ?? -1;
         if (ti >= 0) byTrack[ti].push(lf.frameIdx);
       }
-      marks.push([lf.frameIdx, userLabeled]);
+      const isNeg = (lf as { isNegative?: boolean }).isNegative ?? false;
+      marks.push([lf.frameIdx, userLabeled, isNeg]);
     }
     return { byTrack, marks };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -813,10 +840,24 @@ export function Seekbar() {
 
     // Draw labeled frame marks (frame + user/predicted flag precomputed).
     if (headerData) {
-      for (const [f, hasUser] of headerData.marks) {
-        ctx.fillStyle = hasUser ? "#3b82f6" : "#67e8f9"; // blue user / light-blue predicted
+      for (const [f, hasUser, isNeg] of headerData.marks) {
+        // red negative/background / blue user-labeled / light-blue predicted
+        ctx.fillStyle = isNeg ? "#ef4444" : hasUser ? "#3b82f6" : "#67e8f9";
         ctx.fillRect(frameToX(f) - 1, h - 14, 2, 10);
       }
+    }
+
+    // Draw the marked-frame bookmark: an amber down-triangle "flag" at the top,
+    // distinct from the yellow suggestion ticks and the blue labeled marks.
+    if (markedFrame && markedFrame.video === video) {
+      const mx = frameToX(markedFrame.frameIdx);
+      ctx.fillStyle = "#f59e0b"; // amber
+      ctx.beginPath();
+      ctx.moveTo(mx - 4, 0);
+      ctx.lineTo(mx + 4, 0);
+      ctx.lineTo(mx, 7);
+      ctx.closePath();
+      ctx.fill();
     }
 
     // Draw current frame indicator. While scrubbing, follow the cursor
@@ -833,7 +874,7 @@ export function Seekbar() {
       ctx.fillStyle = "rgba(255,255,255,0.3)";
       ctx.fillRect(hx - 0.5, 0, 1, h);
     }
-  }, [frameIdx, scrubFrame, totalFrames, headerData, labels, palette, hoverFrame, video, frameRange]);
+  }, [frameIdx, scrubFrame, totalFrames, headerData, labels, palette, hoverFrame, video, frameRange, markedFrame]);
 
   // Playback animation loop
   useEffect(() => {
@@ -866,7 +907,11 @@ export function Seekbar() {
   }, []);
 
   return (
-    <div className="grid grid-cols-[1fr_auto] shrink-0">
+    <div
+      className={`grid shrink-0 ${
+        sidebarOnLeft ? "grid-cols-[auto_1fr]" : "grid-cols-[1fr_auto]"
+      }`}
+    >
       {/* Instance count header graph - subgrid aligns canvas with seekbar below.
           Height is user-resizable via the drag handle on its top edge. */}
       <div
@@ -891,8 +936,12 @@ export function Seekbar() {
         </div>
         <div
           ref={headerContainerRef}
-          className="overflow-hidden min-w-0 h-full"
+          className="overflow-hidden min-w-0 h-full cursor-pointer"
           style={{ height: seekbarHeaderHeight }}
+          onMouseDown={handleMouseDown}
+          onMouseMove={handleHeaderMouseMove}
+          onMouseUp={handleMouseUp}
+          onMouseLeave={handleMouseLeave}
         >
           <canvas
             ref={headerCanvasRef}
@@ -900,7 +949,11 @@ export function Seekbar() {
             style={{ display: "block" }}
           />
         </div>
-        <div className="flex gap-1 shrink-0 items-center justify-self-end self-start">
+        <div
+          className={`flex gap-1 shrink-0 items-center self-start ${controlsOrder} ${
+            sidebarOnLeft ? "justify-self-start" : "justify-self-end"
+          }`}
+        >
           {/* Graph-type picker */}
           <Popover>
             <PopoverTrigger asChild>
@@ -1002,7 +1055,7 @@ export function Seekbar() {
 
         {/* Transport controls */}
         <TooltipProvider delayDuration={300}>
-          <div className="flex gap-0.5 shrink-0 items-center">
+          <div className={`flex gap-0.5 shrink-0 items-center ${controlsOrder}`}>
           {/* Tri-state navigation domain: All -> Labeled -> Imaged (#137) */}
           <Tooltip>
             <TooltipTrigger asChild>

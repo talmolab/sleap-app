@@ -6,6 +6,7 @@ import { getPlatform } from "@/platform";
 import { commandContext } from "@/commands";
 import { MergePredictions } from "@/commands/editCommands";
 import { useAppStore } from "@/stores/appStore";
+import { appendLogLine, subprocessFailureMessage } from "@/lib/processLog";
 
 export interface InferenceProgress {
   nProcessed: number;
@@ -38,7 +39,6 @@ export interface InferenceConfig {
   device: "auto" | "cuda" | "cpu" | "mps";
   maxInstances: number | null;
   peakThreshold: number;
-  anchorPart: string | null;
   /**
    * For the centroid pipeline, what sleap-nn emits: `"instance"` → single-node
    * PredictedInstances (legacy), `"centroid"` → first-class PredictedCentroids
@@ -105,13 +105,12 @@ export function centroidInferenceConfig(
     device: "auto",
     maxInstances: null,
     peakThreshold: 0.2,
-    anchorPart: null,
     // Defaults suit the separate-annotation mode: first-class PredictedCentroids
     // on `frame.centroids`, feeding the Phase-2 work list via
     // `buildWorkListSeparate`. In anchor-node mode the caller MUST override this
-    // to "instance" (and pass `anchorPart`), because that mode's `buildWorkList`
-    // walks `frame.instances` and never reads `frame.centroids` — otherwise the
-    // detections render on the canvas but the sweep never visits them.
+    // to "instance", because that mode's `buildWorkList` walks `frame.instances`
+    // and never reads `frame.centroids` — otherwise the detections render on the
+    // canvas but the sweep never visits them.
     centroidOutput: "centroid",
     integralRefinement: false,
     integralPatchSize: 5,
@@ -168,6 +167,8 @@ interface InferenceState {
   error: string | null;
   progress: InferenceProgress | null;
   log: string[];
+  /** Recent stderr lines, used to surface the real cause in the error banner. */
+  stderrTail: string[];
   minimized: boolean;
   outputPath: string | null;
   startedAt: number | null;
@@ -185,6 +186,7 @@ const initialState = {
   error: null as string | null,
   progress: null as InferenceProgress | null,
   log: [] as string[],
+  stderrTail: [] as string[],
   minimized: false,
   outputPath: null as string | null,
   startedAt: null as number | null,
@@ -214,13 +216,16 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
         } catch {
           // Not JSON — fall through to log
         }
-        set((state) => ({ log: [...state.log, line] }));
+        set((state) => ({ log: appendLogLine(state.log, line) }));
         break;
       }
       case "stderr": {
         const line = event.data.line;
         console.warn("[inference:stderr]", line);
-        set((state) => ({ log: [...state.log, line] }));
+        set((state) => ({
+          log: appendLogLine(state.log, line),
+          stderrTail: appendLogLine(state.stderrTail, line, 25),
+        }));
         break;
       }
       case "finished": {
@@ -232,10 +237,14 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
         if (event.data.success) {
           set({ status: "completed" });
         } else {
-          set({
+          set((state) => ({
             status: "error",
-            error: `Process failed with exit code ${event.data.code}`,
-          });
+            error: subprocessFailureMessage(
+              "Inference",
+              event.data.code,
+              state.stderrTail,
+            ),
+          }));
         }
         break;
       }
@@ -264,6 +273,7 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
       error: null,
       progress: null,
       log: [],
+      stderrTail: [],
       minimized: false,
       outputPath: null,
       startedAt: Date.now(),

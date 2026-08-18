@@ -3,10 +3,12 @@
  * `MetricsTableDialog`, sleap/gui/dialogs/metrics.py:21-155).
  *
  * Seeds rows from the given run directories (typically
- * `useTrainingStore.modelOutputDirs`), loads each model's metrics + config,
- * and shows a sortable-ish table. "Add Trained Model(s)…" appends more run
- * dirs via the Tauri directory picker. Clicking a row opens the detailed
- * metrics dialog.
+ * `useTrainingStore.modelOutputDirs`, i.e. models trained this session), plus
+ * an auto-scan of the current project's `models/` folder on open (see
+ * `findTrainedModels` — same scan `InferencePanel` uses to auto-select a
+ * model), loads each model's metrics + config, and shows a sortable-ish
+ * table. "Add Trained Model(s)…" appends more run dirs via the Tauri
+ * directory picker. Clicking a row opens the detailed metrics dialog.
  *
  * Training/metrics are desktop-only: in the browser the loader can't read the
  * filesystem, so rows load with empty (—) metrics cells and the Add button is
@@ -35,6 +37,8 @@ import { Button } from "@/components/ui/button";
 import { buildModelMetricsRow, runDirName } from "@/lib/metrics/loadModelMetrics";
 import type { ModelMetricsRow } from "@/lib/metrics/types";
 import { DetailedModelMetricsDialog } from "@/components/dialogs/DetailedModelMetricsDialog";
+import { findTrainedModels } from "@/lib/modelDiscovery";
+import { useAppStore } from "@/stores/appStore";
 
 function fmt(v: number | null | undefined, digits = 4): string {
   return typeof v === "number" && Number.isFinite(v) ? v.toFixed(digits) : "—";
@@ -69,6 +73,7 @@ export function ModelMetricsDialog({
   buildRow,
 }: ModelMetricsDialogProps) {
   const builder = useMemo(() => buildRow ?? buildModelMetricsRow, [buildRow]);
+  const projectPath = useAppStore((s) => s.projectPath);
   const [dirs, setDirs] = useState<string[]>(runDirs);
   const [rows, setRows] = useState<ModelMetricsRow[]>([]);
   const [loading, setLoading] = useState(false);
@@ -79,6 +84,27 @@ export function ModelMetricsDialog({
   useEffect(() => {
     setDirs(runDirs);
   }, [runDirs]);
+
+  // Auto-detect trained models in the project's `models/` folder on open —
+  // mirrors legacy SLEAP's MetricsTableDialog, which reuses the same
+  // TrainingConfigsGetter scan as the training-config picker instead of
+  // requiring every model to be added by hand. Merges into the existing dir
+  // set (deduped by path); models without metrics yet still show up with —
+  // dashes, same as a manually-added one.
+  useEffect(() => {
+    if (!open || !projectPath) return;
+    let cancelled = false;
+    (async () => {
+      const { dirname } = await import("@tauri-apps/api/path");
+      const projectDir = await dirname(projectPath);
+      const models = await findTrainedModels(projectDir);
+      if (cancelled || models.length === 0) return;
+      setDirs((prev) => Array.from(new Set([...prev, ...models.map((m) => m.path)])));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, projectPath]);
 
   // (Re)load rows whenever the dialog is open and the dir set changes.
   useEffect(() => {

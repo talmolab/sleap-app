@@ -22,7 +22,6 @@ function baseConfig(overrides: Partial<InferenceConfig> = {}): InferenceConfig {
     device: "auto",
     maxInstances: null,
     peakThreshold: 0.2,
-    anchorPart: null,
     integralRefinement: false,
     integralPatchSize: 5,
     nPoints: 10,
@@ -95,13 +94,16 @@ describe("buildInferenceArgs — core I/O", () => {
     expect(valAfter(buildInferenceArgs(baseConfig({ videoIndex: 2 }), io()), "--video_index")).toBe("2");
   });
 
-  it("includes optional max_instances/anchor_part when set, omits when null", () => {
-    const set = buildInferenceArgs(baseConfig({ maxInstances: 3, anchorPart: "thorax" }), io());
+  it("includes optional max_instances when set, omits when null", () => {
+    const set = buildInferenceArgs(baseConfig({ maxInstances: 3 }), io());
     expect(valAfter(set, "--max_instances")).toBe("3");
-    expect(valAfter(set, "--anchor_part")).toBe("thorax");
-    const unset = buildInferenceArgs(baseConfig({ maxInstances: null, anchorPart: null }), io());
+    const unset = buildInferenceArgs(baseConfig({ maxInstances: null }), io());
     expect(unset).not.toContain("--max_instances");
-    expect(unset).not.toContain("--anchor_part");
+  });
+
+  it("never emits --anchor_part (not a predict/track flag — sleap-nn eval only)", () => {
+    const args = buildInferenceArgs(baseConfig(), io());
+    expect(args).not.toContain("--anchor_part");
   });
 });
 
@@ -141,8 +143,24 @@ describe("buildInferenceArgs — frame ranges", () => {
     expect(() => buildInferenceArgs(baseConfig({ frameRange: "random" }), io())).toThrow(/per-video/);
   });
 
-  it("throws for the non-runnable 'frame' range", () => {
-    expect(() => buildInferenceArgs(baseConfig({ frameRange: "frame" }), io())).toThrow(/Unhandled frame range/);
+  it("uses caller-supplied currentFrameIdx for 'frame'", () => {
+    const args = buildInferenceArgs(baseConfig({ frameRange: "frame" }), {
+      ...io(),
+      currentFrameIdx: 42,
+    });
+    expect(valAfter(args, "--frames")).toBe("42");
+  });
+
+  it("throws for 'frame' without currentFrameIdx", () => {
+    expect(() => buildInferenceArgs(baseConfig({ frameRange: "frame" }), io())).toThrow(/currentFrameIdx/);
+  });
+
+  it("omits --video_index when suppressVideoIndex is set, even with a specific videoIndex", () => {
+    const args = buildInferenceArgs(baseConfig({ frameRange: "video", videoIndex: 2 }), {
+      ...io(),
+      suppressVideoIndex: true,
+    });
+    expect(args).not.toContain("--video_index");
   });
 });
 
@@ -217,7 +235,6 @@ describe("buildInferenceArgs — centroid pipeline (standalone locator)", () => 
     const args = buildInferenceArgs(
       centroid({
         maxInstances: 3,
-        anchorPart: "thorax",
         integralRefinement: true,
         tracking: true,
         filterOverlapping: true,
@@ -226,7 +243,6 @@ describe("buildInferenceArgs — centroid pipeline (standalone locator)", () => 
     );
     for (const flag of [
       "--max_instances",
-      "--anchor_part",
       "--integral_refinement",
       "--tracking",
       "--filter_overlapping",
@@ -250,8 +266,8 @@ describe("buildInferenceArgs — centroid pipeline (standalone locator)", () => 
 });
 
 describe("isPredictSupported / version floor", () => {
-  it("MIN_SLEAP_NN_PREDICT_VERSION is 0.3.1 (where predict save works, not where the command appeared)", () => {
-    expect(MIN_SLEAP_NN_PREDICT_VERSION).toBe("0.3.1");
+  it("MIN_SLEAP_NN_PREDICT_VERSION is 0.3.2 (reliable predict --gui + metrics JSON sibling)", () => {
+    expect(MIN_SLEAP_NN_PREDICT_VERSION).toBe("0.3.2");
   });
 
   it("allows unknown/empty/unparseable versions (don't block on uncertainty)", () => {
@@ -262,32 +278,36 @@ describe("isPredictSupported / version floor", () => {
     expect(isPredictSupported("0.3.0a1")).toBe(true); // no separator → unparseable → allowed
   });
 
-  it("blocks parseable versions below the floor (incl. 0.2.0–0.3.0, where predict save is broken)", () => {
+  it("blocks parseable versions below the floor (0.2.0–0.3.1: broken save or corrupt predict --gui)", () => {
     expect(isPredictSupported("0.1.0")).toBe(false);
     expect(isPredictSupported("0.1.3")).toBe(false);
     expect(isPredictSupported("0.2.0")).toBe(false);
     expect(isPredictSupported("0.3.0")).toBe(false);
+    expect(isPredictSupported("0.3.1")).toBe(false); // save works but predict --gui JSON is corrupt
   });
 
   it("allows the floor and above", () => {
-    expect(isPredictSupported("0.3.1")).toBe(true);
+    expect(isPredictSupported("0.3.2")).toBe(true);
+    expect(isPredictSupported("0.3.3")).toBe(true);
     expect(isPredictSupported("0.4.0")).toBe(true);
     expect(isPredictSupported("1.0.0")).toBe(true);
-    expect(isPredictSupported("0.3.1-rc1")).toBe(true); // separator → core 0.3.1 ≥ floor
+    expect(isPredictSupported("0.3.2-rc1")).toBe(true); // separator → core 0.3.2 ≥ floor
   });
 });
 
 describe("pickInferenceSubcommand — back-compat fallback (never blocks old users)", () => {
   it("uses `predict` on the floor and newer installs", () => {
-    expect(pickInferenceSubcommand("0.3.1")).toBe("predict");
+    expect(pickInferenceSubcommand("0.3.2")).toBe("predict");
+    expect(pickInferenceSubcommand("0.3.3")).toBe("predict");
     expect(pickInferenceSubcommand("0.4.0")).toBe("predict");
     expect(pickInferenceSubcommand("1.0.0")).toBe("predict");
   });
 
-  it("falls back to legacy `track` below the floor (< 0.3.1: no predict, or its save is broken)", () => {
+  it("falls back to legacy `track` below the floor (< 0.3.2)", () => {
     expect(pickInferenceSubcommand("0.1.3")).toBe("track"); // predict didn't exist yet
     expect(pickInferenceSubcommand("0.2.0")).toBe("track"); // predict exists but save is broken
     expect(pickInferenceSubcommand("0.3.0")).toBe("track"); // ditto
+    expect(pickInferenceSubcommand("0.3.1")).toBe("track"); // save works but predict --gui JSON is corrupt
   });
 
   it("uses `predict` when the version is unknown/unparseable (new installs report a version)", () => {
@@ -324,7 +344,6 @@ describe("buildInferenceArgs — full-config parity lock", () => {
     device: "cuda",
     maxInstances: 2,
     peakThreshold: 0.15,
-    anchorPart: "head",
     integralRefinement: true,
     integralPatchSize: 7,
     nPoints: 12,
@@ -357,7 +376,6 @@ describe("buildInferenceArgs — full-config parity lock", () => {
     "--device", "cuda",
     "--max_instances", "2",
     "--peak_threshold", "0.15",
-    "--anchor_part", "head",
     "--integral_refinement", "integral",
     "--integral_patch_size", "7",
     "--n_points", "12",

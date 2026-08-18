@@ -22,6 +22,7 @@ import {
   commandContext,
   OpenProjectCommand,
   ImportAnalysisH5Command,
+  ImportNwbCommand,
   ImportCocoCommand,
   ImportDlcCommand,
   ImportDlcFolderCommand,
@@ -30,6 +31,7 @@ import {
   ExportJsonCommand,
   ExportCSVCommand,
   ExportAnalysisH5Command,
+  ExportNwbCommand,
 
   ExportPackageCommand,
   GoNextLabeledFrame,
@@ -38,8 +40,11 @@ import {
   GoPrevSuggestion,
   GoToLastInteracted,
   GoNextUserFrame,
+  GoPrevUserFrame,
+  GoToMarkedFrame,
   GoNextTrackSpawnFrame,
   AddInstance,
+  ToggleNegativeFrame,
   DeleteSelectedInstance,
   CopyInstance,
   PasteInstance,
@@ -61,6 +66,7 @@ import {
 import { PALETTES } from "../../lib/colorPalettes";
 import { QC_MODE_CHOICES } from "../../lib/instanceVisibility";
 import { toast } from "@/lib/notify";
+import { humanizeCommandName } from "@/lib/humanizeCommand";
 import { sleapCmd } from "@/lib/sleapPlugin";
 import { openNewInstance } from "@/lib/newInstance";
 import {
@@ -145,6 +151,9 @@ function FileMenu() {
             <MenubarItem onClick={() => exec(ImportAnalysisH5Command)}>
               Analysis HDF5...
             </MenubarItem>
+            <MenubarItem onClick={() => exec(ImportNwbCommand)}>
+              NWB dataset...
+            </MenubarItem>
             <MenubarItem onClick={() => exec(ImportCocoCommand)}>
               COCO dataset...
             </MenubarItem>
@@ -156,6 +165,12 @@ function FileMenu() {
             </MenubarItem>
           </MenubarSubContent>
         </MenubarSub>
+        <MenubarItem
+          disabled={!projectLoaded}
+          onClick={() => useAppStore.getState().setMergeProjectDialogOpen(true)}
+        >
+          Merge into Project...
+        </MenubarItem>
         <MenubarSub>
           <MenubarSubTrigger disabled={!projectLoaded}>Replace Videos...</MenubarSubTrigger>
           <MenubarSubContent>
@@ -167,8 +182,12 @@ function FileMenu() {
                   key={idx}
                   onClick={async () => {
                     const { resolveVideoFile } = await import("../../lib/resolveVideos");
-                    await resolveVideoFile(v, labels ?? undefined);
+                    const ok = await resolveVideoFile(v, labels ?? undefined);
                     useAppStore.getState().bumpOverlayVersion();
+                    // Re-read the now-known shape so the seekbar/status bar
+                    // re-extend the timeline to the full video (videoRevision
+                    // is the memo dep; a bare in-place shape set won't trigger).
+                    if (ok) useAppStore.getState().markVideoUpdated();
                   }}
                 >
                   {(Array.isArray(v.filename) ? v.filename[0] : v.filename)?.split("/").pop() || `Video ${idx + 1}`}
@@ -204,6 +223,9 @@ function FileMenu() {
             </MenubarItem>
             <MenubarItem onClick={() => exec(ExportAnalysisH5Command)}>
               Analysis HDF5...
+            </MenubarItem>
+            <MenubarItem onClick={() => exec(ExportNwbCommand)}>
+              NWB (ndx-pose)...
             </MenubarItem>
             <MenubarItem onClick={() => exec(ExportPackageCommand)}>
               Labels Package...
@@ -302,10 +324,10 @@ function EditMenu() {
   const canUndo = commandContext.canUndo;
   const canRedo = commandContext.canRedo;
   const undoLabel = canUndo
-    ? `Undo ${commandContext.undoCommandName}`
+    ? `Undo ${humanizeCommandName(commandContext.undoCommandName ?? "")}`
     : "Undo";
   const redoLabel = canRedo
-    ? `Redo ${commandContext.redoCommandName}`
+    ? `Redo ${humanizeCommandName(commandContext.redoCommandName ?? "")}`
     : "Redo";
 
   return (
@@ -431,8 +453,24 @@ function GoMenu() {
         <MenubarItem disabled={!projectLoaded} onClick={() => exec(GoNextUserFrame)}>
           Next User Labeled Frame <MenubarShortcut>{modKey}+U</MenubarShortcut>
         </MenubarItem>
+        <MenubarItem disabled={!projectLoaded} onClick={() => exec(GoPrevUserFrame)}>
+          Previous User Labeled Frame <MenubarShortcut>{modKey}+Shift+U</MenubarShortcut>
+        </MenubarItem>
         <MenubarItem disabled={!projectLoaded} onClick={() => exec(GoNextTrackSpawnFrame)}>
           Next Track Spawn Frame <MenubarShortcut>{modKey}+E</MenubarShortcut>
+        </MenubarItem>
+        <MenubarSeparator />
+        <MenubarItem
+          disabled={!projectLoaded}
+          onClick={() => {
+            const s = useAppStore.getState();
+            if (s.video) s.setMarkedFrame({ video: s.video, frameIdx: s.frameIdx });
+          }}
+        >
+          Mark Frame <MenubarShortcut>{modKey}+M</MenubarShortcut>
+        </MenubarItem>
+        <MenubarItem disabled={!projectLoaded} onClick={() => exec(GoToMarkedFrame)}>
+          Go to Marked Frame <MenubarShortcut>{modKey}+Shift+M</MenubarShortcut>
         </MenubarItem>
         <MenubarSeparator />
         <MenubarItem
@@ -599,13 +637,6 @@ function ViewMenu() {
         </MenubarSub>
         <MenubarSeparator />
         <MenubarCheckboxItem
-          checked={colorPredicted}
-          onCheckedChange={() => toggle("colorPredicted")}
-        >
-          Color Predicted Instances
-        </MenubarCheckboxItem>
-        <MenubarSeparator />
-        <MenubarCheckboxItem
           checked={showInstances}
           onCheckedChange={() => toggle("showInstances")}
         >
@@ -741,6 +772,12 @@ function ViewMenu() {
             </MenubarRadioGroup>
           </MenubarSubContent>
         </MenubarSub>
+        <MenubarCheckboxItem
+          checked={colorPredicted}
+          onCheckedChange={() => toggle("colorPredicted")}
+        >
+          Color Predicted Instances
+        </MenubarCheckboxItem>
       </MenubarContent>
     </MenubarMenu>
   );
@@ -789,6 +826,7 @@ function LabelsMenu() {
   const labels = useAppStore((s) => s.labels);
   const projectLoaded = useAppStore((s) => s.projectLoaded);
   const instance = useAppStore((s) => s.instance);
+  const labeledFrame = useAppStore((s) => s.labeledFrame);
   const instanceInitMethod = useAppStore((s) => s.instanceInitMethod);
   // Instances require a skeleton with at least one node (see EditMenu).
   useAppStore((s) => s.overlayVersion);
@@ -838,6 +876,13 @@ function LabelsMenu() {
         >
           Delete Instance <MenubarShortcut>{modKey}+Backspace</MenubarShortcut>
         </MenubarItem>
+        <MenubarCheckboxItem
+          disabled={!projectLoaded}
+          checked={labeledFrame?.isNegative ?? false}
+          onClick={() => exec(ToggleNegativeFrame)}
+        >
+          Mark Frame as Negative
+        </MenubarCheckboxItem>
         <MenubarSeparator />
         <MenubarItem
           disabled={!projectLoaded || sweepActive}
@@ -1113,6 +1158,14 @@ function HelpMenu() {
     <MenubarMenu>
       <MenubarTrigger className="px-3 h-8 text-xs rounded-none">Help</MenubarTrigger>
       <MenubarContent>
+        <MenubarItem
+          onClick={() =>
+            useAppStore.getState().setMenuSearchDialogOpen(true)
+          }
+        >
+          Search Menus...
+        </MenubarItem>
+        <MenubarSeparator />
         <MenubarItem
           onClick={() =>
             useAppStore.getState().setShortcutsDialogOpen(true)

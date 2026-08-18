@@ -466,6 +466,7 @@ fn sleap_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
             environment::install_uv,
             environment::run_python_command,
             environment::cancel_command,
+            environment::export_nwb,
             environment::start_zmq_relay,
             environment::send_training_stop,
             environment::stop_zmq_relay,
@@ -686,18 +687,17 @@ pub fn run() {
       )?;
     }
 
-    // macOS: replace the default app menu so the standard Edit ▸ Undo/Redo
-    // (⌘Z / ⇧⌘Z) accelerators don't swallow those keys before the WebView. The
-    // app owns undo/redo via its own command system (tinykeys → CommandContext),
-    // so we omit the predefined Undo/Redo items but keep Cut/Copy/Paste/Select
-    // All for native text fields. Without this, ⌘Z silently does nothing.
+    // macOS: the default app menu ships an Edit ▸ Undo/Redo bound to ⌘Z / ⌘⇧Z.
+    // Those NATIVE accelerators intercept the keystroke before it reaches the
+    // WebView, so the web app's own undo/redo handler never fired (⌘Z did nothing
+    // in the bundled app). Install a custom menu WITHOUT Undo/Redo — keeping the
+    // standard app/window items and cut/copy/paste/select-all for text fields — so
+    // ⌘Z / ⌘⇧Z fall through to the app's own keyboard handler.
     #[cfg(target_os = "macos")]
     {
-      use tauri::menu::{AboutMetadata, MenuBuilder, SubmenuBuilder};
+      use tauri::menu::{MenuBuilder, SubmenuBuilder};
       let app_menu = SubmenuBuilder::new(app, "SLEAP")
-        .about(Some(AboutMetadata::default()))
-        .separator()
-        .services()
+        .about(None)
         .separator()
         .hide()
         .hide_others()
@@ -706,6 +706,7 @@ pub fn run() {
         .quit()
         .build()?;
       let edit_menu = SubmenuBuilder::new(app, "Edit")
+        // Intentionally NO .undo()/.redo() — see the comment above.
         .cut()
         .copy()
         .paste()
@@ -717,7 +718,9 @@ pub fn run() {
         .close_window()
         .build()?;
       let menu = MenuBuilder::new(app)
-        .items(&[&app_menu, &edit_menu, &window_menu])
+        .item(&app_menu)
+        .item(&edit_menu)
+        .item(&window_menu)
         .build()?;
       app.set_menu(menu)?;
     }

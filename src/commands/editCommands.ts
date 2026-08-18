@@ -59,14 +59,18 @@ export const AddInstance: Command = {
 
     const priorFrame = findNearestPriorFrame(labels, video, frameIdx);
 
-    // Create instance using the selected placement method
+    // Create instance using the selected placement method. When the visual
+    // skeleton builder has captured a drawn layout this session, the
+    // center-based methods seed geometry from that drawn orientation instead of
+    // the scrambled circle (session-only; null on a fresh session).
     const instance = placeInstance(
       method,
       skeleton,
       video,
       existingInstances,
       priorFrame,
-      useAppStore.getState().visibleSceneRect
+      useAppStore.getState().visibleSceneRect,
+      useAppStore.getState().skeletonTemplateLayout
     );
 
     const location = params?.location as [number, number] | undefined;
@@ -200,6 +204,49 @@ export const PairPoseInstances: Command = {
     ctx.pushUndoSnapshot(snapshot);
     ctx.state.markChanged();
     ctx.state.bumpOverlayVersion();
+  },
+};
+
+/**
+ * Toggle the current frame's "negative" (background) flag — a frame explicitly
+ * marked as having no animal, used as a negative training example. Creates an
+ * empty flagged frame if none exists; turning the flag off prunes a frame that
+ * only existed to hold it. Undoable (the snapshot captures `isNegative`).
+ */
+export const ToggleNegativeFrame: Command = {
+  name: "ToggleNegativeFrame",
+  topics: [UpdateTopic.Frame, UpdateTopic.Labels],
+  execute(ctx: CommandContext) {
+    const { labels, video, frameIdx } = ctx.state;
+    if (!labels || !video) return;
+
+    const lf = labels.find({ video, frameIdx })[0];
+
+    if (!lf) {
+      const created = new LabeledFrame({ video, frameIdx, isNegative: true });
+      labels.append(created);
+      ctx.state.setLabeledFrame(created);
+      // Seekbar marks + canvas overlays recompute only when overlayVersion
+      // changes (labels is mutated in place). A menu/shortcut toggle has no
+      // canvas path to bump it, so bump explicitly or the tick goes stale.
+      ctx.state.bumpOverlayVersion();
+      ctx.state.markChanged();
+      return;
+    }
+
+    lf.isNegative = !lf.isNegative;
+
+    // Turning OFF an otherwise-empty frame prunes it (it only held the flag).
+    if (!lf.isNegative && lf.instances.length === 0) {
+      const idx = labels.labeledFrames.indexOf(lf);
+      if (idx !== -1) labels.labeledFrames.splice(idx, 1);
+      ctx.state.setLabeledFrame(null);
+    } else {
+      ctx.state.setLabeledFrame(lf);
+    }
+    // See note above: notify overlay/seekbar consumers so the tick repaints.
+    ctx.state.bumpOverlayVersion();
+    ctx.state.markChanged();
   },
 };
 
@@ -359,6 +406,45 @@ export const PasteInstance: Command = {
     });
 
     // Find or create the LabeledFrame
+    const frames = labels.find({ video, frameIdx });
+    let lf: LabeledFrame;
+    if (frames.length > 0) {
+      lf = frames[0];
+    } else {
+      lf = new LabeledFrame({ video, frameIdx });
+      labels.append(lf);
+    }
+
+    lf.instances.push(newInstance);
+    ctx.state.setLabeledFrame(lf);
+    ctx.state.setInstance(newInstance);
+    ctx.state.markChanged();
+  },
+};
+
+/**
+ * Duplicate an instance onto the current frame, selecting the copy. Backs the
+ * canvas's Ctrl+drag "clone and drag" gesture, mirroring PyQt SLEAP's
+ * `QtInstance.mousePressEvent` (Ctrl+click -> `duplicate_instance()` ->
+ * `context.newInstance(copy_instance=self.instance)`).
+ *
+ * Params:
+ *   instance: Instance - the source instance to clone.
+ */
+export const DuplicateInstance: Command = {
+  name: "DuplicateInstance",
+  topics: [UpdateTopic.Frame, UpdateTopic.Instance],
+  execute(ctx: CommandContext, params?: Record<string, unknown>) {
+    const { labels, video, frameIdx, skeleton } = ctx.state;
+    const source = params?.instance as Instance | undefined;
+    if (!labels || !video || !skeleton || !source) return;
+
+    const newInstance = new Instance({
+      skeleton,
+      points: clonePoints(source.points),
+      track: source.track,
+    });
+
     const frames = labels.find({ video, frameIdx });
     let lf: LabeledFrame;
     if (frames.length > 0) {

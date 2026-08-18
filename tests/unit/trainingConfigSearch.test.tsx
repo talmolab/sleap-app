@@ -191,7 +191,6 @@ describe("TrainingConfigDialog search index ↔ DOM consistency", () => {
     }
     // Conditional rows that DO render for centered_instance.
     expect(document.getElementById("field-cropsize")).toBeTruthy();
-    expect(document.getElementById("field-head-anchorpart")).toBeTruthy();
   });
 
   it("head: every searchable DOM row is present in the index (no orphans)", async () => {

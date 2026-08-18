@@ -15,6 +15,7 @@ export {
   NewProjectCommand,
   OpenProjectCommand,
   ImportAnalysisH5Command,
+  ImportNwbCommand,
   ImportCocoCommand,
   ImportDlcCommand,
   ImportDlcFolderCommand,
@@ -49,6 +50,15 @@ export {
 } from "./exportPackageCommands";
 export type { ExportPackageLevel, EmbedMode } from "./exportPackageCommands";
 
+// Export NWB (ndx-pose) — Labels -> .nwb via the sleap-nn env's sleap-io (desktop)
+export {
+  ExportNwbCommand,
+  deriveNwbFilename,
+  tempSlpPathFor,
+  hasImageSequenceVideo,
+  isSleapNnMissingError,
+} from "./exportNwbCommands";
+
 // Navigation commands
 export {
   GoNextLabeledFrame,
@@ -60,6 +70,8 @@ export {
   GoToFrame,
   GoToLastInteracted,
   GoNextUserFrame,
+  GoPrevUserFrame,
+  GoToMarkedFrame,
   GoNextTrackSpawnFrame,
   SelectToFrame,
 } from "./navCommands";
@@ -69,11 +81,13 @@ export {
   AddInstance,
   SeedCentroid,
   PairPoseInstances,
+  ToggleNegativeFrame,
   DeleteSelectedInstance,
   DeleteCentroid,
   SetPointLocation,
   CopyInstance,
   PasteInstance,
+  DuplicateInstance,
   DeleteFramePredictions,
   DeleteAllPredictions,
   ConvertPredictionToInstance,
@@ -83,6 +97,9 @@ export {
   MoveInstance,
   RotateInstance,
 } from "./editCommands";
+
+// Merge into Project (File ▸ Merge into Project…)
+export { MergeIntoProjectCommand } from "./mergeProjectCommands";
 
 // Track commands
 export {
@@ -96,6 +113,7 @@ export {
   DeleteTrack,
   DeleteUnusedTracks,
   DeleteAllTracks,
+  SetTrackName,
 } from "./trackCommands";
 
 // Skeleton commands
@@ -104,6 +122,8 @@ export {
   DeleteNodeCommand,
   AddEdgeCommand,
   DeleteEdgeCommand,
+  AddSymmetryCommand,
+  RemoveSymmetryCommand,
   RenameNodeCommand,
   LoadSkeletonTemplateCommand,
   OpenSkeletonCommand,

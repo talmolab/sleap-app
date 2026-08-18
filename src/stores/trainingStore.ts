@@ -3,6 +3,9 @@ import yaml from "js-yaml";
 import { cancelCommand } from "@/platform/backend";
 import { isTauri } from "@/platform";
 import { computeRuntimeMetrics } from "@/lib/trainingMetrics";
+import { lastErrorLine } from "@/lib/processLog";
+import { formatRunTimestamp } from "@/lib/timestamp";
+import type { Labels } from "@/types";
 
 const MAX_BATCH_SAMPLES = 20000; // bound batchSamples; drop oldest beyond this
 const MAX_LOG_LINES = 1000; // bound the training log so it doesn't grow unbounded during long runs
@@ -387,6 +390,18 @@ export function getSlotLabel(slot: string): string {
   }
 }
 
+/**
+ * Count of frames with a user instance or marked negative — the JS
+ * equivalent of sleap-io's `Labels.user_labeled_frames` (which includes
+ * negative/background frames as trainable data, not just positively-labeled
+ * ones). Used for the `n=` suffix in a default run name; `null` with no
+ * project loaded.
+ */
+export function countUserLabeledFrames(labels: Labels | null): number | null {
+  if (!labels) return null;
+  return labels.labeledFrames.filter((lf) => lf.userInstances.length > 0 || lf.isNegative).length;
+}
+
 // ── YAML override helper ─────────────────────────────────────────
 
 /** Apply ConfigHyperparams overrides to raw YAML config content. */
@@ -404,6 +419,9 @@ export function applyHyperparamsToYaml(yamlText: string, hp: ConfigHyperparams):
 
   // Basic training params
   trainer.max_epochs = hp.maxEpochs;
+  // Keep per-epoch visualization PNGs so the viz viewer's epoch scrubber can
+  // review any epoch during AND after training (sleap-nn deletes them otherwise).
+  trainer.keep_viz = true;
   if (!trainer.train_data_loader) trainer.train_data_loader = {};
   (trainer.train_data_loader as Record<string, unknown>).batch_size = hp.batchSize;
 
@@ -1216,6 +1234,8 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       // froze the UI (#128 follow-up). Buffer raw lines and flush ~4x/sec, coalescing
       // consecutive tqdm progress lines into a single in-place-updating log line.
       const stdoutBuffer: string[] = [];
+      // Recent stderr lines only, to surface the real cause in the error banner.
+      const stderrTail: string[] = [];
       let stdoutFlushTimer: ReturnType<typeof setInterval> | null = null;
       const flushStdout = () => {
         if (stdoutBuffer.length === 0) return;
@@ -1320,12 +1340,19 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
           }));
 
           const configYaml = applyHyperparamsToYaml(cf.content, cf.hyperparams);
-          // YYYYMMDDHHMMSS = 14 chars. Taking 15 also grabbed the fractional
-          // seconds' ".", so every run directory ended in a dot — which Win32
-          // silently strips from path components, leaving the recorded model path
-          // unable to match what's actually on disk.
-          const ts = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14);
-          const runName = cf.hyperparams.runName || `${cf.modelType}_${ts}`;
+          // Default run name matches legacy SLEAP's format exactly:
+          // `{timestamp}.{head_name}.n={num_user_labeled_frames}`
+          // (sleap/gui/learning/runners.py get_timestamp() + base_run_name) —
+          // the `n=` count is the project's training-data size at the moment
+          // training starts, which is what made the old scheme's "which run
+          // used how much data" comparisons useful across a project's history.
+          let runName = cf.hyperparams.runName;
+          if (!runName) {
+            const { useAppStore } = await import("@/stores/appStore");
+            const n = countUserLabeledFrames(useAppStore.getState().labels);
+            const ts = formatRunTimestamp();
+            runName = n !== null ? `${ts}.${cf.modelType}.n=${n}` : `${ts}.${cf.modelType}`;
+          }
 
           set((s) => ({
             models: s.models.map((m, j) =>
@@ -1339,6 +1366,10 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
 
             if (event.event === "stdout" || event.event === "stderr") {
               const line = event.data.line;
+              if (event.event === "stderr" && line.trim()) {
+                stderrTail.push(line);
+                if (stderrTail.length > 25) stderrTail.shift();
+              }
 
               // Structured epoch progress (rare — ~once/epoch): record immediately.
               // epoch SAMPLES come from these JSON lines, not from tqdm.
@@ -1396,9 +1427,12 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
             console.log("[training] Continuing to next model (i=%d, total=%d)", i, slots.length);
           } else {
             console.log("[training] Model failed, aborting training loop");
+            const cause = lastErrorLine(stderrTail);
             set((s) => ({
               status: "error",
-              error: `Training failed for ${cf.modelType}`,
+              error: cause
+                ? `Training failed for ${cf.modelType}: ${cause}`
+                : `Training failed for ${cf.modelType}`,
               models: s.models.map((m, j) =>
                 j === i ? { ...m, status: "failed" as const } : m,
               ),
@@ -1455,7 +1489,6 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
             device: "auto",
             maxInstances: null,
             peakThreshold: 0.2,
-            anchorPart: null,
             // Centroid-only runs emit first-class PredictedCentroids on
             // `frame.centroids`. The "instance" alternative writes them as
             // single-node instances on a DEDICATED 1-node "centroid" skeleton,

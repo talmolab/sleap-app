@@ -174,6 +174,21 @@ export function buildLossPlotData(samples: EpochSample[]): {
   };
 }
 
+/**
+ * CSV of the per-epoch loss curve for export: header `epoch,train_loss,val_loss`
+ * then one row per epoch (null losses render as an empty field). Epoch is 1-based
+ * to match the plot/PyQt. Trailing newline.
+ */
+export function lossCsv(epochSamples: EpochSample[]): string {
+  const rows = ["epoch,train_loss,val_loss"];
+  for (const s of epochSamples) {
+    const t = s.trainLoss == null ? "" : String(s.trainLoss);
+    const v = s.valLoss == null ? "" : String(s.valLoss);
+    rows.push(`${s.epoch + 1},${t},${v}`);
+  }
+  return `${rows.join("\n")}\n`;
+}
+
 /** Max batch scatter points actually DRAWN by uPlot (see buildLossPlotDataBatched). */
 const MAX_DRAWN_BATCH_POINTS = 2000;
 

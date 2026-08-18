@@ -18,19 +18,28 @@ import type { InferenceConfig } from "@/stores/inferenceStore";
 /**
  * Minimum `sleap-nn` version the app targets with the `predict` subcommand.
  *
- * The `predict` command first appeared in 0.2.0 (renamed from `infer` in
- * talmolab/sleap-nn#607), BUT its save path was broken through 0.3.0:
- * `save_predictions` → sleap_io `Labels.save` crashed on `video.backend is None`
- * (`AttributeError`), so inference ran but never wrote an output file. That was
- * fixed in **0.3.1**. We therefore gate on the version where `predict` actually
- * works end-to-end — not where the command first existed. Installs below this
- * fall back to the legacy `track` command (present in every version), which
- * saves correctly, so no user is blocked.
+ * `predict` first appeared in 0.2.0 (renamed from `infer`, talmolab/sleap-nn#607),
+ * but wasn't reliable end-to-end for the app until **0.3.2**:
+ *  - through 0.3.0 its save path crashed (`save_predictions` → sleap_io
+ *    `Labels.save` on `video.backend is None`), so it never wrote an output —
+ *    fixed in 0.3.1;
+ *  - the app runs `predict --gui` for progress, and predict's `--gui` JSON was
+ *    corrupted by interleaved log output until 0.3.2 (talmolab/sleap-nn#715),
+ *    which routes logs to stderr and emits a structured JSON error line on
+ *    failure.
+ * 0.3.2 additionally writes the `metrics.{split}.{idx}.json` sibling the metrics
+ * UI reads (#721). We therefore gate on 0.3.2; installs below it fall back to the
+ * legacy `track` command (present in every version, with reliable `--gui`), so no
+ * user is blocked.
  */
-export const MIN_SLEAP_NN_PREDICT_VERSION = "0.3.1";
+export const MIN_SLEAP_NN_PREDICT_VERSION = "0.3.2";
 
 export interface BuildInferenceArgsOptions {
-  /** Path to the input .slp (the project file or a serialized temp copy). */
+  /**
+   * Path to the input .slp (the project file or a serialized temp copy), OR
+   * the target video's own file when the caller resolved a video-scoped run
+   * onto it directly (see `suppressVideoIndex`).
+   */
   dataPath: string;
   /** Path the inference output .slp should be written to. */
   outputPath: string;
@@ -39,6 +48,18 @@ export interface BuildInferenceArgsOptions {
    * resolves these (needs the app store + RNG); required for that range only.
    */
   sampledFrames?: number[];
+  /**
+   * Frame index for `frameRange === "frame"` (current frame). The caller
+   * resolves this from the app store; required for that range only.
+   */
+  currentFrameIdx?: number;
+  /**
+   * Omit `--video_index` even though `config.videoIndex !== "all"`. Set this
+   * when `dataPath` is already the target video's own file — `--video_index`
+   * only means something when `--data_path` is a project .slp (see
+   * talmolab/sleap#2848).
+   */
+  suppressVideoIndex?: boolean;
   /** sleap-nn subcommand. Defaults to `predict` (the current pipeline). */
   subcommand?: string;
 }
@@ -49,13 +70,22 @@ export interface BuildInferenceArgsOptions {
  * mirrors the historical `track` invocation exactly.
  *
  * Throws on frame-range values that cannot be expressed as a single CLI call
- * (`"random"` needs per-video invocation; `"frame"` is not a runnable range).
+ * (`"random"` needs per-video invocation) or that are missing a
+ * caller-resolved value they depend on (`"frame"` needs `currentFrameIdx`,
+ * `"random_video"` needs `sampledFrames`).
  */
 export function buildInferenceArgs(
   config: InferenceConfig,
   opts: BuildInferenceArgsOptions
 ): string[] {
-  const { dataPath, outputPath, sampledFrames, subcommand = "predict" } = opts;
+  const {
+    dataPath,
+    outputPath,
+    sampledFrames,
+    currentFrameIdx,
+    suppressVideoIndex = false,
+    subcommand = "predict",
+  } = opts;
 
   // A standalone centroid model can't run through `track` (that needs a paired
   // centered-instance model); it always runs via `sleap-nn predict
@@ -77,7 +107,7 @@ export function buildInferenceArgs(
   }
 
   // Data selection
-  if (config.videoIndex !== "all") {
+  if (config.videoIndex !== "all" && !suppressVideoIndex) {
     args.push("--video_index", String(config.videoIndex));
   }
 
@@ -98,6 +128,15 @@ export function buildInferenceArgs(
       case "video":
       case "all_videos":
         break;
+      case "frame": {
+        if (currentFrameIdx == null) {
+          throw new Error(
+            "'frame' frame range requires the current frame index (opts.currentFrameIdx)."
+          );
+        }
+        args.push("--frames", String(currentFrameIdx));
+        break;
+      }
       case "random_video": {
         if (!sampledFrames || sampledFrames.length === 0) {
           throw new Error(
@@ -129,9 +168,6 @@ export function buildInferenceArgs(
     args.push("--max_instances", String(config.maxInstances));
   }
   args.push("--peak_threshold", String(config.peakThreshold));
-  if (!isCentroid && config.anchorPart) {
-    args.push("--anchor_part", config.anchorPart);
-  }
 
   // Bottom-up advanced (track-only; the centroid model outputs single points)
   if (!isCentroid && config.integralRefinement) {

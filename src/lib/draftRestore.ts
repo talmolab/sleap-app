@@ -141,7 +141,12 @@ function graftBackends(
   draftSigs: string[],
 ): { matched: number; total: number } {
   const originalSigs = original.videos.map((v) =>
-    videoSignature({ filename: v.filename, shape: v.shape }),
+    videoSignature({
+      filename: v.filename,
+      shape: v.shape,
+      embeddedFrameIndices: v.embeddedFrameIndices,
+      sourceName: v.originalVideo?.filename,
+    }),
   );
   const plan = buildBackendGraftPlan(draftSigs, originalSigs);
   let matched = 0;
@@ -190,7 +195,12 @@ export async function restoreDraft(entry: DraftManifestEntry): Promise<boolean> 
         entry.videoSignatures?.length === draftLabels.videos.length
           ? entry.videoSignatures
           : draftLabels.videos.map((v) =>
-              videoSignature({ filename: v.filename, shape: v.shape }),
+              videoSignature({
+                filename: v.filename,
+                shape: v.shape,
+                embeddedFrameIndices: v.embeddedFrameIndices,
+                sourceName: v.originalVideo?.filename,
+              }),
             );
       const { matched, total } = graftBackends(
         draftLabels,

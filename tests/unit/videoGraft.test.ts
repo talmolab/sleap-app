@@ -5,7 +5,11 @@
  * rather than silently grafting wrong footage.
  */
 import { describe, it, expect } from "../bun-test";
-import { videoSignature, buildBackendGraftPlan } from "@/lib/videoGraft";
+import {
+  videoSignature,
+  buildBackendGraftPlan,
+  frameIndexDigest,
+} from "@/lib/videoGraft";
 
 describe("videoSignature", () => {
   it("uses the filename basename + shape (path-independent)", () => {
@@ -65,6 +69,196 @@ describe("videoSignature", () => {
     expect(
       videoSignature({ filename: ["/imgs/frame0.png"], shape: [10, 8, 8, 3], embedded: false }),
     ).toBe("frame0.png|10x8x8x3");
+  });
+});
+
+describe("videoSignature frame-index hardening (#245)", () => {
+  const SHAPE = [100, 8, 8, 1];
+
+  it("distinguishes same-shape EMBEDDED videos with DIFFERENT embedded frames", () => {
+    // The real risk: a wrong file with identical dimensions used to sign the same
+    // (shape-only) and graft silently. Keying on the embedded frame-index SET makes
+    // the two videos sign differently.
+    const a = videoSignature({
+      filename: "pkg.slp",
+      shape: SHAPE,
+      embedded: true,
+      embeddedFrameIndices: [0, 5, 10],
+    });
+    const b = videoSignature({
+      filename: "pkg.slp",
+      shape: SHAPE,
+      embedded: true,
+      embeddedFrameIndices: [1, 6, 11],
+    });
+    expect(a).not.toBe(b);
+  });
+
+  it("distinguishes same-shape embedded videos with a DIFFERENT frame COUNT", () => {
+    expect(
+      videoSignature({
+        filename: "pkg.slp",
+        shape: SHAPE,
+        embedded: true,
+        embeddedFrameIndices: [0, 1, 2],
+      }),
+    ).not.toBe(
+      videoSignature({
+        filename: "pkg.slp",
+        shape: SHAPE,
+        embedded: true,
+        embeddedFrameIndices: [0, 1, 2, 3],
+      }),
+    );
+  });
+
+  it("gives IDENTICAL frame sets the SAME signature (container-independent)", () => {
+    // Same embedded frames signed from the pkg vs. the OPFS draft container must
+    // still round-trip identically (the property that makes restore work).
+    const fromPkg = videoSignature({
+      filename: "train copy.pkg.slp",
+      shape: SHAPE,
+      embeddedFrameIndices: [0, 5, 10],
+    });
+    const fromDraft = videoSignature({
+      filename: "sleap-draft-x.slp",
+      shape: SHAPE,
+      embeddedFrameIndices: [0, 5, 10],
+    });
+    expect(fromPkg).toBe(fromDraft);
+  });
+
+  it("falls back to shape-only for an embedded video with NO frame indices (back-compat)", () => {
+    // Lazy/deferred backends (large pkg not yet viewed) expose no frame numbers →
+    // null indices → the signature MUST equal the old shape-only form so a new
+    // signer still matches an old-manifest / lazily-loaded counterpart.
+    const withNone = videoSignature({
+      filename: "pkg.slp",
+      shape: SHAPE,
+      embedded: true,
+    });
+    const withNull = videoSignature({
+      filename: "other.slp",
+      shape: SHAPE,
+      embedded: true,
+      embeddedFrameIndices: null,
+    });
+    expect(withNone).toBe("|100x8x8x1");
+    expect(withNull).toBe("|100x8x8x1");
+  });
+
+  it("ignores embeddedFrameIndices for EXTERNAL videos (unchanged name+shape)", () => {
+    expect(
+      videoSignature({
+        filename: "/data/a.mp4",
+        shape: SHAPE,
+        embedded: false,
+        embeddedFrameIndices: [0, 1, 2],
+      }),
+    ).toBe("a.mp4|100x8x8x1");
+  });
+
+  it("adds a REAL source-name hint but ignores '.' / .slp container provenance", () => {
+    const base = videoSignature({
+      filename: "pkg.slp",
+      shape: [10, 8, 8, 1],
+      embedded: true,
+      embeddedFrameIndices: [0, 1],
+    });
+    // A real source filename is a (secondary) discriminator → changes the sig.
+    expect(
+      videoSignature({
+        filename: "pkg.slp",
+        shape: [10, 8, 8, 1],
+        embedded: true,
+        embeddedFrameIndices: [0, 1],
+        sourceName: "/rig/real.mp4",
+      }),
+    ).not.toBe(base);
+    // "." resolves to the container path (unreliable) → treated as absent.
+    expect(
+      videoSignature({
+        filename: "pkg.slp",
+        shape: [10, 8, 8, 1],
+        embedded: true,
+        embeddedFrameIndices: [0, 1],
+        sourceName: ".",
+      }),
+    ).toBe(base);
+    // A `.slp` container is never a real per-video source name → treated as absent.
+    expect(
+      videoSignature({
+        filename: "pkg.slp",
+        shape: [10, 8, 8, 1],
+        embedded: true,
+        embeddedFrameIndices: [0, 1],
+        sourceName: "train.pkg.slp",
+      }),
+    ).toBe(base);
+  });
+
+  it("frameIndexDigest: stable for equal sets, differs on any change, null when empty", () => {
+    expect(frameIndexDigest([0, 5, 10])).toBe(frameIndexDigest([0, 5, 10]));
+    expect(frameIndexDigest([0, 5, 10])).not.toBe(frameIndexDigest([0, 5, 11]));
+    expect(frameIndexDigest([0, 5, 10])).not.toBe(frameIndexDigest([0, 5]));
+    expect(frameIndexDigest([])).toBeNull();
+    expect(frameIndexDigest(null)).toBeNull();
+  });
+});
+
+describe("buildBackendGraftPlan digest veto (#245)", () => {
+  const SHAPE = [100, 8, 8, 1];
+  const emb = (indices: number[] | null, sourceName?: string) =>
+    videoSignature({
+      filename: "pkg.slp",
+      shape: SHAPE,
+      embedded: true,
+      embeddedFrameIndices: indices,
+      sourceName,
+    });
+
+  it("REFUSES a wrong-but-same-shape re-pick that shape alone would graft", () => {
+    // Same shapes, same order → the shape-only base grafts positionally. But the
+    // embedded frame sets differ (different footage), so the digest veto blocks it.
+    const draft = [emb([0, 5, 10]), emb([2, 7, 12])];
+    const wrong = [emb([1, 3, 4]), emb([6, 7, 8])];
+    expect(buildBackendGraftPlan(draft, wrong)).toEqual([null, null]);
+  });
+
+  it("still grafts the CORRECT file positionally (same shapes, same frames)", () => {
+    const draft = [emb([0, 5, 10]), emb([2, 7, 12])];
+    expect(buildBackendGraftPlan(draft, draft.slice())).toEqual([0, 1]);
+  });
+
+  it("does NOT regress when the original lacks a digest (lazy/deferred backend)", () => {
+    // Asymmetry: the draft was signed with frame indices, but the re-opened
+    // original is lazy (no frame numbers yet). A missing digest is a wildcard, so
+    // the correct file still grafts.
+    const draft = [emb([0, 5, 10]), emb([2, 7, 12])];
+    const lazyOriginal = [emb(null), emb(null)];
+    expect(buildBackendGraftPlan(draft, lazyOriginal)).toEqual([0, 1]);
+  });
+
+  it("vetoes on a conflicting source name even without frame digests", () => {
+    const draft = [emb(null, "/a/cam0.mp4"), emb(null, "/a/cam1.mp4")];
+    const wrong = [emb(null, "/x/cam9.mp4"), emb(null, "/x/cam8.mp4")];
+    expect(buildBackendGraftPlan(draft, wrong)).toEqual([null, null]);
+  });
+
+  it("a matching source name cannot RESCUE a shape (base) mismatch", () => {
+    const d = videoSignature({
+      filename: "pkg.slp",
+      shape: [10, 8, 8, 1],
+      embedded: true,
+      sourceName: "/a/x.mp4",
+    });
+    const o = videoSignature({
+      filename: "pkg.slp",
+      shape: [20, 8, 8, 1],
+      embedded: true,
+      sourceName: "/a/x.mp4",
+    });
+    expect(buildBackendGraftPlan([d], [o])).toEqual([null]);
   });
 });
 

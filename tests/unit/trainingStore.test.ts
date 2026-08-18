@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach } from "../bun-test";
 import yaml from "js-yaml";
+import { Skeleton, Video, Labels, LabeledFrame, Instance, PredictedInstance } from "@talmolab/sleap-io.js";
 import { useTrainingStore } from "@/stores/trainingStore";
-import { getConfigSlots, getSlotLabel, defaultHyperparams, applyHyperparamsToYaml, mergeStdoutIntoLog } from "@/stores/trainingStore";
+import { getConfigSlots, getSlotLabel, defaultHyperparams, applyHyperparamsToYaml, mergeStdoutIntoLog, countUserLabeledFrames } from "@/stores/trainingStore";
 import type { ConfigFile } from "@/stores/trainingStore";
 
 /** Helper to create a ConfigFile with default hyperparams */
@@ -1057,6 +1058,47 @@ describe("markEpochBegin / epochStartedAt", () => {
     it("strips ANSI escape codes and drops blank lines", () => {
       const out = mergeStdoutIntoLog([], ["\x1b[32mgreen\x1b[0m", "   ", ""]);
       expect(out).toEqual(["green"]);
+    });
+  });
+
+  describe("countUserLabeledFrames", () => {
+    const skeleton = new Skeleton({ nodes: ["a"], name: "s" });
+    const video = new Video({
+      filename: "v.mp4",
+      backendMetadata: { shape: [10, 100, 100, 3] },
+      openBackend: false,
+    });
+
+    it("returns null with no project loaded", () => {
+      expect(countUserLabeledFrames(null)).toBeNull();
+    });
+
+    it("counts frames with a user instance, ignores predicted-only frames, includes negative frames", () => {
+      const userFrame = new LabeledFrame({ video, frameIdx: 0 });
+      userFrame.instances.push(Instance.empty({ skeleton }));
+
+      const predictedOnlyFrame = new LabeledFrame({ video, frameIdx: 1 });
+      predictedOnlyFrame.instances.push(
+        new PredictedInstance({
+          skeleton,
+          points: [{ xy: [0, 0], visible: true, complete: true, name: "a", score: 0.9 }],
+          score: 0.9,
+        }),
+      );
+
+      const negativeFrame = new LabeledFrame({ video, frameIdx: 2 });
+      negativeFrame.isNegative = true;
+
+      const emptyFrame = new LabeledFrame({ video, frameIdx: 3 });
+
+      const labels = new Labels({
+        videos: [video],
+        skeletons: [skeleton],
+        labeledFrames: [userFrame, predictedOnlyFrame, negativeFrame, emptyFrame],
+      });
+
+      // user-labeled + negative count, NOT predicted-only or empty
+      expect(countUserLabeledFrames(labels)).toBe(2);
     });
   });
 });

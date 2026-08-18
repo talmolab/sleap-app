@@ -11,6 +11,7 @@ import { saveSlpToBytes } from "@talmolab/sleap-io.js";
 import type { InferenceConfig } from "@/stores/inferenceStore";
 import { buildInferenceArgs, pickInferenceSubcommand } from "./inferenceArgs";
 import type { UnlistenFn } from "@tauri-apps/api/event";
+import { formatRunTimestamp as formatPredictionsTimestamp } from "@/lib/timestamp";
 
 function sampleRandomFrames(totalFrames: number, count: number): number[] {
   const n = Math.min(count, totalFrames);
@@ -198,6 +199,18 @@ export async function cancelCommand(): Promise<void> {
 }
 
 /**
+ * Convert a SLEAP `.slp` file (on disk) to NWB (ndx-pose) by running sleap-io in
+ * the sleap-nn uv-tool venv — the same interpreter as training/inference, which
+ * already carries `pynwb` + `ndx-pose`. Rust removes `slpPath` (a temp handoff
+ * file) after. Rejects with `SLEAP_NN_NOT_INSTALLED` when the sleap-nn env is
+ * missing, or the trailing line of the Python error otherwise. Desktop only.
+ */
+export async function exportNwb(slpPath: string, nwbPath: string): Promise<void> {
+  if (!isTauri) throw new Error("NWB export requires the desktop app");
+  return invokeCmd<void>("export_nwb", { slpPath, nwbPath });
+}
+
+/**
  * Start ZMQ PUB relay on port 9000 for sending stop commands to sleap-nn.
  * Cleans up any stale processes on the port before binding.
  */
@@ -325,11 +338,10 @@ export async function runInference(
     return { success: false, outputPath: null, command: "" };
   }
 
-  const { tempDir, join } = await import("@tauri-apps/api/path");
+  const { tempDir, join, dirname, basename } = await import("@tauri-apps/api/path");
 
   const tmp = await tempDir();
   const ts = Date.now();
-  const outputPath = await join(tmp, `sleap_inference_output_${ts}.slp`);
 
   // Use original project file if available, otherwise serialize
   let dataPath: string;
@@ -348,6 +360,81 @@ export async function runInference(
     await writeFile(dataPath, bytes);
     console.log("[inference] Wrote %d bytes to %s", bytes.byteLength, dataPath);
   }
+
+  // "frame"/"video"/"random_video"/a custom range all scope to a single video
+  // (config.videoIndex is a real index, not "all"). If that video has its own
+  // file — i.e. it's not embedded in a .pkg.slp and not an image sequence —
+  // point --data_path directly at it and drop --video_index, so sleap-nn reads
+  // it via VideoProvider instead of silently subsetting only already-labeled
+  // frames via LabelsProvider when --data_path is a .slp (talmolab/sleap#2848).
+  // Embedded/image-sequence videos have no file of their own, so they keep the
+  // project-file route below.
+  let videoDataPath: string | null = null;
+  if (config.videoIndex !== "all") {
+    const { useAppStore } = await import("@/stores/appStore");
+    const video = useAppStore.getState().labels?.videos[config.videoIndex] ?? null;
+    const filename = video?.filename;
+    if (video && !video.hasEmbeddedImages && typeof filename === "string") {
+      videoDataPath = filename;
+    }
+  }
+  if (videoDataPath) {
+    dataPath = videoDataPath;
+    console.log("[inference] Video-scoped run targeting the video file directly:", dataPath);
+  }
+
+  // The current-frame index for frameRange === "frame" (needs the app store).
+  let currentFrameIdx: number | undefined;
+  if (config.frameRange === "frame") {
+    const { useAppStore } = await import("@/stores/appStore");
+    currentFrameIdx = useAppStore.getState().frameIdx;
+  }
+
+  // Resolve where to write the predictions file, matching legacy SLEAP GUI
+  // (sleap/gui/learning/runners.py): a `predictions/` folder next to the saved
+  // project file, or next to the source video when the project has never been
+  // saved. Falls back to the OS temp dir only when neither is resolvable.
+  const ensurePredictionsDirNextToProject = async (pPath: string): Promise<string> => {
+    const dir = await join(await dirname(pPath), "predictions");
+    const { mkdir } = await import("@tauri-apps/plugin-fs");
+    await mkdir(dir, { recursive: true });
+    return dir;
+  };
+
+  let predictionsDir: string;
+  let sourceName: string;
+  let videoPrefix = "";
+  if (videoDataPath) {
+    // Named after the video, matching legacy's basename(item.path) post-#2848.
+    sourceName = await basename(videoDataPath);
+    predictionsDir = projectPath
+      ? await ensurePredictionsDirNextToProject(projectPath)
+      : await dirname(videoDataPath);
+  } else if (projectPath) {
+    predictionsDir = await ensurePredictionsDirNextToProject(projectPath);
+    sourceName = await basename(projectPath);
+    // Embedded/image-sequence videos in a project all share one filename, so
+    // the index is the only thing that disambiguates per-video runs.
+    if (typeof config.videoIndex === "number") {
+      videoPrefix = `video${config.videoIndex}_`;
+    }
+  } else {
+    const { useAppStore } = await import("@/stores/appStore");
+    const activeVideo = useAppStore.getState().video;
+    const videoFilename = activeVideo?.filename;
+    const videoPath = Array.isArray(videoFilename) ? videoFilename[0] : videoFilename;
+    if (videoPath) {
+      predictionsDir = await dirname(videoPath);
+      sourceName = await basename(videoPath);
+    } else {
+      predictionsDir = tmp;
+      sourceName = "sleap_inference_output";
+    }
+  }
+  const outputPath = await join(
+    predictionsDir,
+    `${videoPrefix}${sourceName}.${formatPredictionsTimestamp()}.predictions.slp`
+  );
 
   // Pick the sleap-nn subcommand by installed version: the new `predict`
   // (Predictor) pipeline when available (>= 0.2.0), else fall back to the legacy
@@ -379,7 +466,14 @@ export async function runInference(
     sampledFrames = sampleRandomFrames(nFrames, config.sampleCount);
   }
 
-  const args = buildInferenceArgs(config, { dataPath, outputPath, sampledFrames, subcommand });
+  const args = buildInferenceArgs(config, {
+    dataPath,
+    outputPath,
+    sampledFrames,
+    currentFrameIdx,
+    suppressVideoIndex: videoDataPath !== null,
+    subcommand,
+  });
 
   const command = `${program} ${args.join(" ")}`;
   console.log("[inference] Running:", command);

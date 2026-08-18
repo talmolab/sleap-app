@@ -25,6 +25,7 @@ export const DEFAULT_SHORTCUTS: Record<string, string> = {
   "goto prev labeled": "Alt+ArrowLeft",
   "goto last interacted": "$mod+KeyA",
   "goto next user": "$mod+KeyU",
+  "goto prev user": "$mod+Shift+KeyU",
   "goto next suggestion": "Space",
   "goto prev suggestion": "Shift+Space",
   "goto next track spawn": "$mod+KeyE",
@@ -35,6 +36,8 @@ export const DEFAULT_SHORTCUTS: Record<string, string> = {
 
   // Navigation - other
   "goto frame": "$mod+KeyJ",
+  "mark frame": "$mod+KeyM",
+  "goto marked frame": "$mod+Shift+KeyM",
   "select to frame": "$mod+Shift+KeyJ",
   "select next": "Backquote",
   "select next instance zoom": "Shift+ArrowDown",

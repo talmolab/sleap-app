@@ -8,8 +8,10 @@ import { useAppStore } from "@/stores/appStore";
 import {
   AddNodeCommand,
   DeleteNodeCommand,
+  DeleteSkeletonCommand,
   AddEdgeCommand,
   DeleteEdgeCommand,
+  ClearEdgesCommand,
   RenameNodeCommand,
   LoadSkeletonTemplateCommand,
   installSkeletonUndoInterceptor,
@@ -257,6 +259,140 @@ describe("Skeleton commands", () => {
 
       await ctx.execute(DeleteEdgeCommand, {});
       expect(project.skeleton.edges.length).toBe(1);
+    });
+  });
+
+  describe("ClearEdgesCommand", () => {
+    it("removes all edges but keeps the nodes", async () => {
+      const project = setupProject({ numNodes: 3 });
+      // Default has 1 edge (node_0 -> node_1); add a second so we clear ≥2.
+      project.skeleton.addEdge(
+        project.skeleton.nodes[1],
+        project.skeleton.nodes[2]
+      );
+      expect(project.skeleton.edges.length).toBe(2);
+
+      const nodeCountBefore = project.skeleton.nodes.length;
+      const nodeNamesBefore = project.skeleton.nodes.map((n) => n.name);
+
+      await ctx.execute(ClearEdgesCommand);
+
+      expect(project.skeleton.edges.length).toBe(0);
+      // Nodes untouched.
+      expect(project.skeleton.nodes.length).toBe(nodeCountBefore);
+      expect(project.skeleton.nodes.map((n) => n.name)).toEqual(nodeNamesBefore);
+    });
+
+    it("undo restores the cleared edges", async () => {
+      const project = setupProject({ numNodes: 3 });
+      project.skeleton.addEdge(
+        project.skeleton.nodes[1],
+        project.skeleton.nodes[2]
+      );
+      installSkeletonUndoInterceptor(ctx);
+
+      const beforeEdgeCount = project.skeleton.edges.length;
+      const beforeEndpoints = project.skeleton.edges.map(
+        (e) => [e.source.name, e.destination.name] as [string, string]
+      );
+      expect(beforeEdgeCount).toBe(2);
+
+      await ctx.execute(ClearEdgesCommand);
+      expect(project.skeleton.edges.length).toBe(0);
+
+      ctx.undo();
+
+      expect(project.skeleton.edges.length).toBe(beforeEdgeCount);
+      expect(
+        project.skeleton.edges.map(
+          (e) => [e.source.name, e.destination.name] as [string, string]
+        )
+      ).toEqual(beforeEndpoints);
+    });
+
+    it("is a no-op when there are no edges (pushes no undo entry)", async () => {
+      const project = setupProject({ numNodes: 3 });
+      // Remove the default edge so the skeleton starts with none.
+      project.skeleton.edges = [];
+      expect(project.skeleton.edges.length).toBe(0);
+
+      expect(() => ctx.execute(ClearEdgesCommand)).not.toThrow();
+      expect(project.skeleton.edges.length).toBe(0);
+      // Early-return means no undo entry was pushed.
+      expect(ctx.canUndo).toBe(false);
+    });
+  });
+
+  describe("DeleteSkeletonCommand", () => {
+    it("empties nodes, edges, and all instance points", async () => {
+      const project = setupProject({
+        numNodes: 3,
+        numFrames: 2,
+        numInstancesPerFrame: 2,
+      });
+      // Sanity: skeleton starts non-empty and instances carry points.
+      expect(project.skeleton.nodes.length).toBe(3);
+      expect(project.skeleton.edges.length).toBe(1);
+
+      await ctx.execute(DeleteSkeletonCommand);
+
+      expect(project.skeleton.nodes.length).toBe(0);
+      expect(project.skeleton.edges.length).toBe(0);
+      for (const lf of project.labels.labeledFrames) {
+        for (const inst of lf.instances) {
+          expect(inst.points.length).toBe(0);
+        }
+      }
+    });
+
+    it("undo restores nodes, edges, and instance points", async () => {
+      const project = setupProject({
+        numNodes: 3,
+        numFrames: 2,
+        numInstancesPerFrame: 1,
+      });
+      installSkeletonUndoInterceptor(ctx);
+
+      const beforeNodeCount = project.skeleton.nodes.length;
+      const beforeNodeNames = project.skeleton.nodes.map((n) => n.name);
+      const beforeEdgeCount = project.skeleton.edges.length;
+
+      await ctx.execute(DeleteSkeletonCommand);
+      expect(project.skeleton.nodes.length).toBe(0);
+
+      ctx.undo();
+
+      expect(project.skeleton.nodes.length).toBe(beforeNodeCount);
+      expect(project.skeleton.nodes.map((n) => n.name)).toEqual(
+        beforeNodeNames
+      );
+      expect(project.skeleton.edges.length).toBe(beforeEdgeCount);
+      // Instance points restored (re-fetch live instances — frame-undo swaps
+      // in fresh clones).
+      for (const lf of useAppStore.getState().labels!.labeledFrames) {
+        for (const inst of lf.instances) {
+          expect(inst.points.length).toBe(beforeNodeCount);
+        }
+      }
+    });
+
+    it("is a no-op on an already-empty skeleton (pushes no undo entry)", async () => {
+      const project = setupProject({ numNodes: 3 });
+      // Empty the skeleton directly so it starts with 0 nodes AND 0 edges.
+      project.skeleton.nodes = [];
+      project.skeleton.edges = [];
+      expect(project.skeleton.nodes.length).toBe(0);
+
+      expect(() => ctx.execute(DeleteSkeletonCommand)).not.toThrow();
+      expect(project.skeleton.nodes.length).toBe(0);
+      expect(project.skeleton.edges.length).toBe(0);
+      // Early-return means no undo entry was pushed.
+      expect(ctx.canUndo).toBe(false);
+    });
+
+    it("does nothing without a skeleton", () => {
+      // No project loaded.
+      expect(() => ctx.execute(DeleteSkeletonCommand)).not.toThrow();
     });
   });
 

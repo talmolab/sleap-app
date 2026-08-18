@@ -19,6 +19,8 @@ import {
   loadProjectFromFile,
   loadAnalysisProjectFromFile,
   loadAnalysisProjectFromPath,
+  loadNwbProjectFromFile,
+  loadNwbProjectFromPath,
   loadCocoProjectFromFile,
   loadCocoProjectFromPath,
   loadDlcFromTauriDir,
@@ -242,6 +244,36 @@ export const ImportAnalysisH5Command: Command = {
       await loadAnalysisProjectFromPath(result, platform.readFile, platform.exists);
     } else if (result instanceof File) {
       await loadAnalysisProjectFromFile(result);
+    }
+
+    void ctx;
+  },
+};
+
+/**
+ * Import an NWB (ndx-pose) predictions file (`.nwb`) as a new project.
+ *
+ * NWB predictions carry pose points + tracks and reference the source video by
+ * path (no embedded pixels), so the reader builds the video (resolved like any
+ * external video). Filtered to `.nwb` in the picker; the reader validates the
+ * contents. Opens as a new project (parity with the other importers).
+ */
+export const ImportNwbCommand: Command = {
+  name: "ImportNwb",
+  topics: [],
+  skipAutoSnapshot: true,
+  async execute(ctx: CommandContext) {
+    const platform = await getPlatform();
+    const result = await platform.showOpenDialog({
+      filters: [{ name: "NWB (ndx-pose)", extensions: ["nwb"] }],
+    });
+
+    if (!result) return;
+
+    if (typeof result === "string") {
+      await loadNwbProjectFromPath(result, platform.readFile, platform.exists);
+    } else if (result instanceof File) {
+      await loadNwbProjectFromFile(result);
     }
 
     void ctx;

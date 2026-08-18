@@ -38,12 +38,14 @@ import { GoToFrameDialog } from "../dialogs/GoToFrameDialog";
 import { NewProjectDialog } from "../dialogs/NewProjectDialog";
 import { SelectToFrameDialog } from "../dialogs/SelectToFrameDialog";
 import { DeletePredictionsDialog } from "../dialogs/DeletePredictionsDialog";
+import { MergeProjectDialog } from "../dialogs/MergeProjectDialog";
 import { ExportDialog } from "../dialogs/ExportDialog";
 import { ExportClipDialog } from "../dialogs/ExportClipDialog";
 import { ModelMetricsDialog } from "../dialogs/ModelMetricsDialog";
 import { ExportPackageDialog } from "../dialogs/ExportPackageDialog";
 import { ShortcutsDialog } from "../dialogs/ShortcutsDialog";
 import { HelpDialog } from "../dialogs/HelpDialog";
+import { MenuSearchDialog } from "../dialogs/MenuSearchDialog";
 import { useAppStore } from "../../stores/appStore";
 import { useTrainingStore } from "../../stores/trainingStore";
 import {
@@ -238,6 +240,7 @@ export function AppShell() {
       <NewProjectDialog />
       <GoToFrameDialog />
       <SelectToFrameDialog />
+      <MergeProjectDialog />
       <DeletePredictionsDialog
         open={deletePredictionsDialogOpen}
         onOpenChange={setDeletePredictionsDialogOpen}
@@ -264,6 +267,7 @@ export function AppShell() {
         open={helpDialogOpen}
         onOpenChange={setHelpDialogOpen}
       />
+      <MenuSearchDialog />
       <PathResolutionHost />
 
       {/* Toast notifications. closeButton renders an always-visible X (see the

@@ -20,7 +20,6 @@ import { Search, HelpCircle } from "lucide-react";
 export interface InferenceConfigValues {
   peakThreshold: number;
   maxInstances: number | null;
-  anchorPart: string | null;
   integralRefinement: boolean;
   integralPatchSize: number;
   nPoints: number;
@@ -51,7 +50,6 @@ interface InferenceConfigDialogProps {
   pipeline: string;
   tracking: boolean;
   onTrackingChange: (enabled: boolean) => void;
-  skeletonNodes?: string[];
 }
 
 const CATEGORIES = [
@@ -65,7 +63,6 @@ const CATEGORIES = [
 const SEARCHABLE_FIELDS = [
   { label: "Peak Threshold", section: "inference", fieldId: "field-peakthreshold" },
   { label: "Max Instances", section: "inference", fieldId: "field-maxinstances" },
-  { label: "Anchor Part", section: "inference", fieldId: "field-anchorpart" },
   { label: "Ensure Channels", section: "inference", fieldId: "field-ensurechannels" },
   { label: "Tracker Method", section: "tracking", fieldId: "field-trackermethod" },
   { label: "Similarity", section: "tracking", fieldId: "field-similarity" },
@@ -164,12 +161,10 @@ export function InferenceConfigDialog({
   pipeline,
   tracking,
   onTrackingChange,
-  skeletonNodes = [],
 }: InferenceConfigDialogProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [searchQuery, setSearchQuery] = useState("");
 
-  const isTopDown = pipeline === "top-down" || pipeline === "top-down-id";
   const isBottomUp = pipeline === "bottom-up" || pipeline === "bottom-up-id";
 
   const scrollTo = useCallback((id: string) => {
@@ -266,24 +261,6 @@ export function InferenceConfigDialog({
                   placeholder="No limit"
                 />
               </Field>
-              {isTopDown && (
-                <Field label="Anchor Part" id="field-anchorpart" hint="Body part used to center the crop around each instance. Choose one that is consistently visible and near the animal's center.">
-                  <Select
-                    value={v.anchorPart ?? "none"}
-                    onValueChange={(val) => onUpdate({ anchorPart: val === "none" ? null : val })}
-                  >
-                    <SelectTrigger className="h-9 text-sm">
-                      <SelectValue placeholder="Auto" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">Auto (centroid)</SelectItem>
-                      {skeletonNodes.map((node) => (
-                        <SelectItem key={node} value={node}>{node}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </Field>
-              )}
               <Field label="Ensure Channels" id="field-ensurechannels" hint="Convert input images to a specific channel format. Use RGB for pretrained backbones or Grayscale for single-channel videos.">
                 <Select
                   value={v.ensureChannels}

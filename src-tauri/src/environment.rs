@@ -629,6 +629,99 @@ async fn resolve_sleap_nn_python<R: Runtime>(app: &AppHandle<R>) -> Result<PathB
     }
 }
 
+// ---------------------------------------------------------------------------
+// NWB export (Labels/.slp -> .nwb via sleap-io in the sleap-nn venv)
+// ---------------------------------------------------------------------------
+
+/// One-liner that converts a `.slp` to NWB using sleap-io: reads `argv[1]` (the
+/// slp), writes `argv[2]` (the nwb). `save_file` infers NWB from the `.nwb`
+/// extension. Run by the sleap-nn venv Python (which carries sleap-io + pynwb +
+/// ndx-pose).
+const NWB_EXPORT_SCRIPT: &str =
+    "import sys, sleap_io as sio; sio.save_file(sio.load_file(sys.argv[1]), sys.argv[2])";
+
+/// Build the error message for a failed export from the child's exit code and
+/// captured stderr. Empty stderr → a generic exit-code message; otherwise the
+/// LAST non-empty stderr line (pynwb/hdmf tracebacks are long — the final line
+/// holds the actual error, e.g. the image-sequence `starting_frame` RuntimeError).
+/// Pure + testable.
+fn nwb_export_error(code: Option<i32>, stderr: &str) -> String {
+    let trimmed = stderr.trim();
+    if trimmed.is_empty() {
+        return format!("NWB export failed (exit code {code:?})");
+    }
+    trimmed
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or(trimmed)
+        .to_string()
+}
+
+/// Run the sleap-io conversion with the given venv Python, capturing stderr.
+async fn run_nwb_export<R: Runtime>(
+    app: &AppHandle<R>,
+    python: &Path,
+    slp_path: &str,
+    nwb_path: &str,
+) -> Result<(), String> {
+    let (mut rx, _child) = app
+        .shell()
+        .command(python.to_string_lossy().to_string())
+        .args(["-c", NWB_EXPORT_SCRIPT, slp_path, nwb_path])
+        .env_clear()
+        .envs(child_env())
+        .spawn()
+        .map_err(|e| format!("Failed to spawn Python: {e}"))?;
+
+    let mut stderr = String::new();
+    let mut code: Option<i32> = None;
+    while let Some(event) = rx.recv().await {
+        match event {
+            CommandEvent::Stderr(line) => {
+                stderr.push_str(&String::from_utf8_lossy(&line));
+            }
+            CommandEvent::Terminated(payload) => {
+                code = payload.code;
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    if code == Some(0) {
+        Ok(())
+    } else {
+        Err(nwb_export_error(code, &stderr))
+    }
+}
+
+/// Export a SLEAP `.slp` file (on disk) to NWB (ndx-pose) by running sleap-io in
+/// the sleap-nn uv-tool venv — the same interpreter that runs training/inference,
+/// which already carries pynwb + ndx-pose. `slp_path` is a caller-created temp
+/// handoff file and is removed afterward (on every path). Desktop only. Returns
+/// `Err("SLEAP_NN_NOT_INSTALLED")` when the sleap-nn env is missing so the UI can
+/// prompt to install it; other failures return the trailing Python error line.
+#[tauri::command]
+pub async fn export_nwb<R: Runtime>(
+    app: AppHandle<R>,
+    slp_path: String,
+    nwb_path: String,
+) -> Result<(), String> {
+    let python = match resolve_sleap_nn_python(&app).await {
+        Ok(p) => p,
+        Err(_) => {
+            let _ = std::fs::remove_file(&slp_path);
+            return Err("SLEAP_NN_NOT_INSTALLED".to_string());
+        }
+    };
+    let result = run_nwb_export(&app, &python, &slp_path, &nwb_path).await;
+    // Best-effort cleanup of the temp handoff .slp (created by the caller).
+    let _ = std::fs::remove_file(&slp_path);
+    result
+}
+
 /// Start a ZMQ PUB relay using std::process::Command for reliable pipe control.
 /// Binds on port 9000 (matching PyQt SLEAP GUI default).
 /// Kills any stale process on the port before binding.
@@ -1291,6 +1384,31 @@ jupyter v1.1.1
             tools[0].commands,
             vec!["jupyter", "jupyter-lab", "jupyter-notebook"]
         );
+    }
+
+    // -- nwb export error formatting tests --
+
+    #[test]
+    fn test_nwb_export_error_empty_stderr() {
+        assert_eq!(
+            nwb_export_error(Some(1), "   \n  "),
+            "NWB export failed (exit code Some(1))"
+        );
+    }
+
+    #[test]
+    fn test_nwb_export_error_uses_last_nonempty_line() {
+        // pynwb/hdmf tracebacks are long; the actual error is the final line.
+        let stderr = "Traceback (most recent call last):\n  File \"x\", line 1\nRuntimeError: unable to write attribute 'starting_frame'\n\n";
+        assert_eq!(
+            nwb_export_error(Some(1), stderr),
+            "RuntimeError: unable to write attribute 'starting_frame'"
+        );
+    }
+
+    #[test]
+    fn test_nwb_export_error_single_line() {
+        assert_eq!(nwb_export_error(None, "boom"), "boom");
     }
 
     // -- uv python list parser tests --

@@ -11,6 +11,7 @@ import {
   parseManifest,
   upsertManifestEntry,
   removeManifestEntry,
+  mergeDraftEntry,
   sortEntriesNewestFirst,
   pickRestorableDraft,
   readManifestWithFs,
@@ -60,6 +61,55 @@ function fakeFs(): TauriDraftFs & { files: Map<string, string>; dirs: Set<string
     },
   };
 }
+
+describe("mergeDraftEntry (preserve durable fields across re-saves)", () => {
+  it("preserves the prior projectPath when a re-save's path is null", () => {
+    // The poison case: a resume while the source volume was unmounted nulls
+    // store.projectPath, so the next autosave passes projectPath: null. Losing
+    // the original's path would permanently orphan an embedded draft from its
+    // images — so a transient null must NOT overwrite a known path.
+    const prior = entry({ draftPath: "/d/a.slp", projectPath: "/vol/orig.pkg.slp" });
+    const next = entry({ draftPath: "/d/a.slp", projectPath: null, savedAt: 2000 });
+    expect(mergeDraftEntry(prior, next).projectPath).toBe("/vol/orig.pkg.slp");
+  });
+
+  it("uses the new projectPath when it is a real path (Save-As to a new location)", () => {
+    const prior = entry({ draftPath: "/d/a.slp", projectPath: "/vol/orig.pkg.slp" });
+    const next = entry({ draftPath: "/d/a.slp", projectPath: "/new/place.pkg.slp" });
+    expect(mergeDraftEntry(prior, next).projectPath).toBe("/new/place.pkg.slp");
+  });
+
+  it("stays null when neither prior nor new has a path (never-saved project)", () => {
+    const next = entry({ draftPath: "/d/a.slp", projectPath: null });
+    expect(mergeDraftEntry(undefined, next).projectPath).toBeNull();
+  });
+
+  it("preserves prior source size/mtime snapshot when the re-save omits them", () => {
+    const prior = entry({
+      draftPath: "/d/a.slp",
+      sourceSize: 123,
+      sourceLastModified: 456,
+    });
+    const next = entry({ draftPath: "/d/a.slp", savedAt: 2000 }); // no snapshot on re-save
+    const merged = mergeDraftEntry(prior, next);
+    expect(merged.sourceSize).toBe(123);
+    expect(merged.sourceLastModified).toBe(456);
+  });
+
+  it("carries the re-save's fresh fields (savedAt, signatures) through", () => {
+    const prior = entry({ draftPath: "/d/a.slp", savedAt: 1000, videoSignatures: ["old"] });
+    const next = entry({
+      draftPath: "/d/a.slp",
+      projectPath: null,
+      savedAt: 2000,
+      videoSignatures: ["new1", "new2"],
+    });
+    const merged = mergeDraftEntry(prior, next);
+    expect(merged.savedAt).toBe(2000);
+    expect(merged.videoSignatures).toEqual(["new1", "new2"]);
+    expect(merged.projectPath).toBe("/home/u/proj.slp"); // prior's default path retained
+  });
+});
 
 describe("serializeManifest / parseManifest", () => {
   it("round-trips entries through the on-disk JSON", () => {

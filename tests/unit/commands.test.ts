@@ -12,6 +12,7 @@ import {
   DeleteSelectedInstance,
   CopyInstance,
   PasteInstance,
+  DuplicateInstance,
   DeleteFramePredictions,
   DeleteAllPredictions,
   SetPointLocation,
@@ -435,6 +436,34 @@ describe("Edit commands", () => {
       expect(found.length).toBe(1);
       expect(found[0].instances.length).toBe(1);
     });
+
+    it("seeds a new instance from the captured skeleton template layout", async () => {
+      const project = setupProjectInStore({
+        numFrames: 1,
+        numNodes: 3,
+        numInstancesPerFrame: 0,
+      });
+      useAppStore.getState().setFrameIdx(0);
+      // Simulate the builder having captured a drawn layout (IMAGE space).
+      // Default init method is "best"; with no existing instances the offset is
+      // a no-op, so on this uncropped video (image==source) the new instance
+      // lands exactly on the drawn layout instead of the scrambled circle.
+      useAppStore.setState({
+        skeletonTemplateLayout: [
+          { x: 11, y: 22 },
+          { x: 33, y: 44 },
+          { x: 55, y: 66 },
+        ],
+      });
+
+      await ctx.execute(AddInstance);
+
+      const found = project.labels.find({ video: project.video, frameIdx: 0 });
+      const inst = found[0].instances[0];
+      expect(inst.points[0].xy).toEqual([11, 22]);
+      expect(inst.points[1].xy).toEqual([33, 44]);
+      expect(inst.points[2].xy).toEqual([55, 66]);
+    });
   });
 
   describe("DeleteSelectedInstance", () => {
@@ -508,6 +537,37 @@ describe("Edit commands", () => {
 
       const beforeCount = lf.instances.length;
       await ctx.execute(PasteInstance);
+
+      expect(lf.instances.length).toBe(beforeCount);
+    });
+  });
+
+  describe("DuplicateInstance", () => {
+    it("adds a clone of the given instance to the current frame and selects it", async () => {
+      const project = setupProjectInStore({ numFrames: 1, numInstancesPerFrame: 1 });
+      const lf = project.labeledFrames[0];
+      useAppStore.getState().setFrameIdx(lf.frameIdx);
+      useAppStore.getState().setLabeledFrame(lf);
+      const source = lf.instances[0];
+
+      const beforeCount = lf.instances.length;
+      await ctx.execute(DuplicateInstance, { instance: source });
+
+      expect(lf.instances.length).toBe(beforeCount + 1);
+      const clone = lf.instances[lf.instances.length - 1];
+      expect(clone).not.toBe(source);
+      expect(clone.points.map((p) => p.xy)).toEqual(source.points.map((p) => p.xy));
+      expect(useAppStore.getState().instance).toBe(clone);
+    });
+
+    it("does nothing without a source instance param", async () => {
+      const project = setupProjectInStore({ numFrames: 1, numInstancesPerFrame: 1 });
+      const lf = project.labeledFrames[0];
+      useAppStore.getState().setFrameIdx(lf.frameIdx);
+      useAppStore.getState().setLabeledFrame(lf);
+
+      const beforeCount = lf.instances.length;
+      await ctx.execute(DuplicateInstance);
 
       expect(lf.instances.length).toBe(beforeCount);
     });

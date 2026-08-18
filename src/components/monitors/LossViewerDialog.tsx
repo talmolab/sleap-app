@@ -6,8 +6,10 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { ExternalLink } from "lucide-react";
 import { LossPlot } from "@/components/monitors/LossPlot";
 import { VizImageViewer } from "@/components/monitors/VizImageViewer";
+import { openVizWindow } from "@/lib/newInstance";
 
 /**
  * Centered modal wrapping the training loss chart (PyQt LossViewer parity).
@@ -48,6 +50,19 @@ export function LossViewerDialog({
           <LossPlot model={model} startedAt={startedAt} status={status} height={360} />
         )}
 
+        {model?.runDir && (
+          <div className="flex justify-end -mb-1">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 px-1.5 text-[10px]"
+              title="Open the visualization in a separate, resizable window (zoom + epoch scrubber)"
+              onClick={() => openVizWindow(model.runDir!, model.label)}
+            >
+              <ExternalLink className="h-3 w-3 mr-1" /> Pop out
+            </Button>
+          </div>
+        )}
         {model && <VizImageViewer model={model} />}
 
         {isActive && (

@@ -218,6 +218,46 @@ export const GoNextUserFrame: Command = {
   },
 };
 
+/** Navigate to the previous frame with user-labeled (non-predicted) instances. */
+export const GoPrevUserFrame: Command = {
+  name: "GoPrevUserFrame",
+  topics: [UpdateTopic.Frame],
+  execute(ctx: CommandContext) {
+    const { labels, video, frameIdx } = ctx.state;
+    if (!labels || !video) return;
+
+    const userFrames = labels
+      .find({ video })
+      .filter((lf) => isUserLabeledFrame(lf))
+      .map((lf) => lf.frameIdx)
+      .sort((a, b) => a - b);
+
+    if (userFrames.length === 0) return;
+
+    // Last user frame strictly before the current one; wrap to the last.
+    let prev: number | undefined;
+    for (let i = userFrames.length - 1; i >= 0; i--) {
+      if (userFrames[i] < frameIdx) {
+        prev = userFrames[i];
+        break;
+      }
+    }
+    ctx.state.setFrameIdx(prev !== undefined ? prev : userFrames[userFrames.length - 1]);
+  },
+};
+
+/** Jump to the user-bookmarked frame (set via Mark Frame / ⌘M). */
+export const GoToMarkedFrame: Command = {
+  name: "GoToMarkedFrame",
+  topics: [UpdateTopic.Frame],
+  execute(ctx: CommandContext) {
+    const marked = ctx.state.markedFrame;
+    if (!marked) return;
+    if (marked.video !== ctx.state.video) ctx.state.setVideo(marked.video);
+    ctx.state.setFrameIdx(marked.frameIdx);
+  },
+};
+
 /**
  * Navigate to the next frame where a track first appears ("spawns").
  *

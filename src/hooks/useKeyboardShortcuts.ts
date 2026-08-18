@@ -14,7 +14,8 @@ import { Track } from "@talmolab/sleap-io.js";
 import { quitApp } from "../lib/quit";
 import { rejectCurrentPassItem, skipCurrentPassItem } from "../lib/activeLearning/passActions";
 import { openNewInstance } from "../lib/newInstance";
-import { dismiss } from "../lib/notify";
+import { dismiss, toast } from "../lib/notify";
+import { spacePanState } from "../lib/spacePanTracking";
 import {
   commandContext,
   OpenProjectCommand,
@@ -26,6 +27,8 @@ import {
   GoPrevSuggestion,
   GoToLastInteracted,
   GoNextUserFrame,
+  GoPrevUserFrame,
+  GoToMarkedFrame,
   GoNextTrackSpawnFrame,
   GoToStartFrame,
   GoToEndFrame,
@@ -98,24 +101,25 @@ export function useKeyboardShortcuts() {
         commandContext.execute(GoPrevLabeledFrame);
       },
 
-      // Suggestion navigation. In seed mode VideoPlayer's own Space handler
-      // owns advancing (Space is otherwise pan/zoom there), so skip here to
-      // avoid a double-advance. In keypointPass mode the pass cursor owns the
-      // frame, so free Space-navigation would desync it — skip there too.
+      // Suggestion navigation (Space / Shift+Space). Only preventDefault here
+      // -- the actual jump is deferred to key-release below, so a hold-Space-
+      // then-drag pan gesture (VideoPlayer.tsx) doesn't also jump frames out
+      // from under the drag the instant Space goes down. In seed mode
+      // VideoPlayer's own Space handler owns advancing, in keypointPass mode
+      // the pass cursor owns the frame, and correct mode owns Space (accept +
+      // advance) — skip in all three to avoid a double-advance/desync.
       [DEFAULT_SHORTCUTS["goto next suggestion"]]: (e) => {
         if (isTextInput(e)) return;
         const m = store().labelingMode;
         // Correct mode owns Space (accept + advance), handled in VideoPlayer.
         if (m === "seed" || m === "keypointPass" || m === "correct") return;
         e.preventDefault();
-        commandContext.execute(GoNextSuggestion);
       },
       [DEFAULT_SHORTCUTS["goto prev suggestion"]]: (e) => {
         if (isTextInput(e)) return;
         const m = store().labelingMode;
         if (m === "seed" || m === "keypointPass" || m === "correct") return;
         e.preventDefault();
-        commandContext.execute(GoPrevSuggestion);
       },
 
       // Go to last interacted frame
@@ -126,6 +130,34 @@ export function useKeyboardShortcuts() {
       [DEFAULT_SHORTCUTS["goto next user"]]: (e) => {
         e.preventDefault();
         commandContext.execute(GoNextUserFrame);
+      },
+      [DEFAULT_SHORTCUTS["goto prev user"]]: (e) => {
+        e.preventDefault();
+        commandContext.execute(GoPrevUserFrame);
+      },
+
+      // Mark the current frame / jump back to it (PyQt Ctrl+M / Ctrl+Shift+M).
+      [DEFAULT_SHORTCUTS["mark frame"]]: (e) => {
+        if (isTextInput(e)) return;
+        e.preventDefault();
+        const s = store();
+        if (!s.video) return;
+        s.setMarkedFrame({ video: s.video, frameIdx: s.frameIdx });
+        toast.info(`Marked frame ${s.frameIdx.toLocaleString()}`, {
+          id: "mark-frame",
+          duration: 1400,
+        });
+      },
+      [DEFAULT_SHORTCUTS["goto marked frame"]]: (e) => {
+        e.preventDefault();
+        commandContext.execute(GoToMarkedFrame);
+      },
+
+      // Open the Training panel (PyQt "learning" dialog, Ctrl+L).
+      [DEFAULT_SHORTCUTS.learning]: (e) => {
+        if (isTextInput(e)) return;
+        e.preventDefault();
+        store().openPanel("training");
       },
 
       // View toggles (direct store)
@@ -526,6 +558,34 @@ export function useKeyboardShortcuts() {
       },
     });
 
-    return unsubscribe;
+    // Suggestion navigation fires on Space/Shift+Space *release*, not press,
+    // and only if no pan-drag happened while Space was held (see
+    // spacePanTracking.ts) -- see the preventDefault-only stubs above.
+    const unsubscribeSuggestionNav = tinykeys(
+      window,
+      {
+        [DEFAULT_SHORTCUTS["goto next suggestion"]]: (e) => {
+          if (isTextInput(e)) return;
+          if (spacePanState.draggedWhileHeld) return;
+          // Mirror the keydown stubs: these modes own Space themselves.
+          const m = store().labelingMode;
+          if (m === "seed" || m === "keypointPass" || m === "correct") return;
+          commandContext.execute(GoNextSuggestion);
+        },
+        [DEFAULT_SHORTCUTS["goto prev suggestion"]]: (e) => {
+          if (isTextInput(e)) return;
+          if (spacePanState.draggedWhileHeld) return;
+          const m = store().labelingMode;
+          if (m === "seed" || m === "keypointPass" || m === "correct") return;
+          commandContext.execute(GoPrevSuggestion);
+        },
+      },
+      { event: "keyup" }
+    );
+
+    return () => {
+      unsubscribe();
+      unsubscribeSuggestionNav();
+    };
   }, []);
 }

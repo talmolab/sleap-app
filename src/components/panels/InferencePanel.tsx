@@ -39,6 +39,7 @@ import {
   ChevronRight,
   Copy,
   Settings2,
+  Maximize2,
 } from "lucide-react";
 import { InferenceConfigDialog } from "@/components/dialogs/InferenceConfigDialog";
 import {
@@ -48,6 +49,7 @@ import {
   headTypeLabel,
   type ModelDirInfo,
 } from "@/lib/modelDirInfo";
+import { LogTerminalDialog } from "@/components/monitors/LogTerminalDialog";
 
 // ── Types & Constants ─────────────────────────────────────────────────────────
 
@@ -194,7 +196,6 @@ const DEFAULTS: Omit<InferenceConfig, "modelPaths" | "videoIndex" | "frameRange"
   device: "auto",
   maxInstances: null,
   peakThreshold: 0.2,
-  anchorPart: null,
   centroidOutput: "instance",
   integralRefinement: true,
   integralPatchSize: 5,
@@ -223,7 +224,7 @@ const DEFAULTS: Omit<InferenceConfig, "modelPaths" | "videoIndex" | "frameRange"
 
 export function InferencePanel() {
   const video = useAppStore((s) => s.video);
-  const skeleton = useAppStore((s) => s.skeleton);
+  const projectPath = useAppStore((s) => s.projectPath);
   const tools = useEnvironmentStore((s) => s.tools);
   const detectionStatus = useEnvironmentStore((s) => s.detectionStatus);
   const refresh = useEnvironmentStore((s) => s.refresh);
@@ -245,6 +246,7 @@ export function InferencePanel() {
 
   // Config state
   const [pipeline, setPipeline] = useState<PipelineType>(DEFAULTS.pipeline);
+  const [logDialogOpen, setLogDialogOpen] = useState(false);
   const [modelPaths, setModelPaths] = useState<string[]>([]);
   /**
    * What each local model directory actually contains, keyed by path. Populated
@@ -262,7 +264,6 @@ export function InferencePanel() {
   const [maxInstances, setMaxInstances] = useState<number | null>(DEFAULTS.maxInstances);
   const [noMaxInstances, setNoMaxInstances] = useState(true);
   const [peakThreshold, setPeakThreshold] = useState(DEFAULTS.peakThreshold);
-  const [anchorPart, setAnchorPart] = useState<string | null>(DEFAULTS.anchorPart);
   const [integralRefinement, setIntegralRefinement] = useState(DEFAULTS.integralRefinement);
   const [integralPatchSize, setIntegralPatchSize] = useState(DEFAULTS.integralPatchSize);
   const [nPoints, setNPoints] = useState(DEFAULTS.nPoints);
@@ -320,7 +321,32 @@ export function InferencePanel() {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [log]);
 
-  const nodes = skeleton?.nodes ?? [];
+  // Auto-detect trained models: if the project has a `models/` folder with a
+  // trained run for every head the selected pipeline needs, default to the
+  // most recently trained one per head — mirrors legacy SLEAP's
+  // TrainingConfigsGetter auto-selecting the most recent trained config.
+  // Never overwrites an existing selection (manual pick or a prior
+  // auto-detect), and never runs for remote inference (no local project dir).
+  useEffect(() => {
+    if (!isTauri || remoteEnabled || !projectPath) return;
+    let cancelled = false;
+    (async () => {
+      const [{ findTrainedModels, pickModelsForPipeline }, { dirname }] = await Promise.all([
+        import("@/lib/modelDiscovery"),
+        import("@tauri-apps/api/path"),
+      ]);
+      const projectDir = await dirname(projectPath);
+      const models = await findTrainedModels(projectDir);
+      if (cancelled) return;
+      const picked = pickModelsForPipeline(models, pipeline);
+      if (picked.length === 0) return;
+      setModelPaths((prev) => (prev.length === 0 ? picked : prev));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [remoteEnabled, projectPath, pipeline]);
+
   const sleapNnAvailable = tools.some(
     (t) => t.name === "sleap-nn" || t.commands?.includes("sleap-nn")
   );
@@ -410,7 +436,6 @@ export function InferencePanel() {
       sampleCount, excludeUserLabeled, batchSize, device,
       maxInstances: noMaxInstances ? null : maxInstances,
       peakThreshold,
-      anchorPart: isTopDown ? anchorPart : null,
       centroidOutput: "instance",
       integralRefinement, integralPatchSize,
       nPoints, maxEdgeLengthRatio, distPenaltyWeight, minLineScores,
@@ -649,18 +674,6 @@ export function InferencePanel() {
               disabled={isRunning} />
           </div>
 
-          {isTopDown && nodes.length > 0 && (
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-[10px] text-muted-foreground">Anchor part</span>
-              <Select value={anchorPart ?? "none"} onValueChange={(v) => setAnchorPart(v === "none" ? null : v)} disabled={isRunning}>
-                <SelectTrigger className="h-6 text-[10px] w-32"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">Auto</SelectItem>
-                  {nodes.map((n) => <SelectItem key={n.name} value={n.name}>{n.name}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-          )}
         </Section>
 
         <Separator />
@@ -871,11 +884,34 @@ export function InferencePanel() {
 
             {/* Log */}
             {log.length > 0 && (
-              <pre ref={logRef}
-                className="max-h-48 overflow-auto rounded border bg-muted p-1.5 text-[10px] font-mono whitespace-pre-wrap break-all">
-                {log.join("\n")}
-              </pre>
+              <div className="space-y-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] text-muted-foreground">Log</span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 px-1.5 text-[10px]"
+                    onClick={() => setLogDialogOpen(true)}
+                  >
+                    <Maximize2 className="h-3 w-3 mr-1" /> Expand
+                  </Button>
+                </div>
+                <pre
+                  ref={logRef}
+                  onClick={() => setLogDialogOpen(true)}
+                  title="Click to open the full log"
+                  className="max-h-48 overflow-auto rounded border bg-muted p-1.5 text-[10px] font-mono whitespace-pre-wrap break-all cursor-pointer hover:border-muted-foreground/50"
+                >
+                  {log.join("\n")}
+                </pre>
+              </div>
             )}
+            <LogTerminalDialog
+              open={logDialogOpen}
+              onOpenChange={setLogDialogOpen}
+              log={log}
+              title="Inference log"
+            />
 
             {/* Bottom actions: copy + dismiss */}
             {isDone && (
@@ -913,9 +949,8 @@ export function InferencePanel() {
         pipeline={pipeline}
         tracking={tracking}
         onTrackingChange={setTracking}
-        skeletonNodes={nodes.map((n) => n.name)}
         values={{
-          peakThreshold, maxInstances, anchorPart,
+          peakThreshold, maxInstances,
           integralRefinement, integralPatchSize,
           nPoints, maxEdgeLengthRatio, distPenaltyWeight, minLineScores,
           trackerMethod, similarityMethod, matchingMethod,
@@ -926,7 +961,6 @@ export function InferencePanel() {
         onUpdate={(updates) => {
           if ("peakThreshold" in updates) setPeakThreshold(updates.peakThreshold!);
           if ("maxInstances" in updates) setMaxInstances(updates.maxInstances!);
-          if ("anchorPart" in updates) setAnchorPart(updates.anchorPart!);
           if ("integralRefinement" in updates) setIntegralRefinement(updates.integralRefinement!);
           if ("integralPatchSize" in updates) setIntegralPatchSize(updates.integralPatchSize!);
           if ("nPoints" in updates) setNPoints(updates.nPoints!);
