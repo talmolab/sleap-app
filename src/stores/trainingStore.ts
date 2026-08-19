@@ -1524,6 +1524,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
             frameRange: inferenceTarget as import("@/stores/inferenceStore").InferenceConfig["frameRange"],
             sampleCount: localOpts?.sampleCount ?? 20,
             excludeUserLabeled: localOpts?.skipUserLabeled ?? false,
+            existingPredictions: localOpts?.existingPredictions ?? "replace",
             batchSize: 4,
             device: "auto",
             maxInstances: null,
@@ -1574,7 +1575,10 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
                 predictions.labeledFrames?.length ?? 0,
                 predictions.tracks?.length ?? 0,
               );
-              await commandContext.execute(MergePredictions, { predictions });
+              await commandContext.execute(MergePredictions, {
+                predictions,
+                mode: localOpts?.existingPredictions ?? "replace",
+              });
             };
 
             if (inferenceTarget === "random") {
