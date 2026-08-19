@@ -68,6 +68,8 @@ function renderDialog(modelType: ModelType) {
       onSkipUserLabeledChange={noop}
       existingPredictions="clear_all"
       onExistingPredictionsChange={noop}
+      autoOpenWandb={false}
+      onAutoOpenWandbChange={noop}
     />
   );
 }
