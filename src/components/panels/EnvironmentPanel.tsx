@@ -36,6 +36,7 @@ import {
 } from "../../stores/environmentStore";
 import type { UvTool } from "../../platform/backend";
 import { openExternal } from "@/lib/openExternal";
+import { cn } from "@/lib/utils";
 
 const SLEAP_NN_RELEASES_URL = "https://github.com/talmolab/sleap-nn/releases/tag";
 
@@ -526,10 +527,19 @@ export function EnvironmentPanel() {
                   v{sleapNnTool.version}
                 </span>
               )}
-              {sleapNnTool?.updateAvailable && sleapNnTool.latestVersion && (
+              {sleapNnTool?.latestVersion && (
                 <>
-                  <span className="text-xs text-orange-500">
-                    → v{sleapNnTool.latestVersion}
+                  <span
+                    className={cn(
+                      "text-xs",
+                      sleapNnTool.updateAvailable
+                        ? "text-orange-500"
+                        : "text-muted-foreground"
+                    )}
+                  >
+                    {sleapNnTool.updateAvailable
+                      ? `→ v${sleapNnTool.latestVersion}`
+                      : "latest"}
                   </span>
                   <button
                     onClick={() =>

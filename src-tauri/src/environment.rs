@@ -449,7 +449,12 @@ pub async fn list_uv_tools<R: Runtime>(app: AppHandle<R>) -> Vec<UvTool> {
                     tool.update_available = Some(true);
                     tool.latest_version = Some(latest.clone());
                 }
-                None => tool.update_available = Some(false),
+                None => {
+                    tool.update_available = Some(false);
+                    // Confirmed up to date (absent from `--outdated` output) means
+                    // the installed version IS the latest — no extra query needed.
+                    tool.latest_version = tool.version.clone();
+                }
             }
         }
     }
