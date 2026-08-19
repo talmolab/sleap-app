@@ -8,7 +8,9 @@
 
 use crate::RunningProcess;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use tauri::{ipc::Channel, AppHandle, Runtime};
 use tauri_plugin_shell::{process::CommandEvent, ShellExt};
 
@@ -33,6 +35,11 @@ pub struct UvTool {
     pub name: String,
     pub version: Option<String>,
     pub commands: Vec<String>,
+    /// `None` = the outdated-check couldn't run (offline, timed out, etc.);
+    /// `Some(false)` = confirmed already the latest version;
+    /// `Some(true)` = a newer version is available (see `latest_version`).
+    pub update_available: Option<bool>,
+    pub latest_version: Option<String>,
 }
 
 /// A Python interpreter discovered by `uv python list`.
@@ -219,6 +226,27 @@ async fn shell_output<R: Runtime>(
     }
 }
 
+/// Like `shell_output`, but distinguishes "ran successfully with empty output"
+/// from "failed to run at all" — needed for `uv tool list --outdated`, where
+/// empty-but-success means nothing is outdated (not "unknown").
+async fn shell_status_output<R: Runtime>(
+    app: &AppHandle<R>,
+    program: &str,
+    args: &[&str],
+) -> Option<(bool, String)> {
+    let output = app
+        .shell()
+        .command(program)
+        .args(args)
+        .env_clear()
+        .envs(child_env())
+        .output()
+        .await
+        .ok()?;
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Some((output.status.success(), stdout))
+}
+
 /// Spawn a command and stream its stdout/stderr through a Channel.
 async fn stream_command<R: Runtime>(
     app: &AppHandle<R>,
@@ -393,10 +421,40 @@ pub async fn gpu_stats<R: Runtime>(app: AppHandle<R>) -> GpuStats {
 #[tauri::command]
 pub async fn list_uv_tools<R: Runtime>(app: AppHandle<R>) -> Vec<UvTool> {
     let uv = resolve_uv(&app).await;
-    match shell_output(&app, &uv, &["tool", "list"]).await {
+    let mut tools = match shell_output(&app, &uv, &["tool", "list"]).await {
         Some(output) => parse_uv_tool_list(&output),
         None => vec![],
+    };
+
+    // Best-effort "is a newer version available?" check via `uv tool list
+    // --outdated`, which resolves against the index (network). Bounded by a
+    // timeout so a slow/offline resolution can't stall the whole panel —
+    // `uv tool list` above is local and instant, this is the first
+    // network-dependent step in this command. On any failure/timeout, leave
+    // `update_available` as `None` (unknown) on every tool rather than
+    // disabling their Update buttons.
+    let outdated = tokio::time::timeout(
+        Duration::from_secs(5),
+        shell_status_output(&app, &uv, &["tool", "list", "--outdated"]),
+    )
+    .await
+    .ok()
+    .flatten();
+
+    if let Some((true, output)) = outdated {
+        let latest_by_name = parse_uv_tool_outdated(&output);
+        for tool in &mut tools {
+            match latest_by_name.get(&tool.name) {
+                Some(latest) => {
+                    tool.update_available = Some(true);
+                    tool.latest_version = Some(latest.clone());
+                }
+                None => tool.update_available = Some(false),
+            }
+        }
     }
+
+    tools
 }
 
 /// List installed Python interpreters via `uv python list --only-installed`.
@@ -1123,6 +1181,8 @@ fn parse_uv_tool_list(output: &str) -> Vec<UvTool> {
                 name,
                 version,
                 commands: Vec::new(),
+                update_available: None,
+                latest_version: None,
             });
         }
     }
@@ -1132,6 +1192,49 @@ fn parse_uv_tool_list(output: &str) -> Vec<UvTool> {
     }
 
     tools
+}
+
+/// Parse the output of `uv tool list --outdated`.
+///
+/// Only tools with a newer version available are listed, one entry per
+/// outdated tool. Format:
+/// ```text
+/// package-name v0.1.0 [latest: 0.2.0]
+///     - command1
+/// ```
+/// Returns a map of tool name -> latest version string (no `v` prefix).
+fn parse_uv_tool_outdated(output: &str) -> HashMap<String, String> {
+    let mut latest_by_name = HashMap::new();
+
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with("- ") {
+            continue;
+        }
+
+        let Some(bracket_start) = trimmed.find("[latest:") else {
+            continue;
+        };
+        let name = trimmed[..bracket_start]
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .to_string();
+        if name.is_empty() {
+            continue;
+        }
+
+        let latest = trimmed[bracket_start + "[latest:".len()..]
+            .trim_end_matches(']')
+            .trim()
+            .trim_start_matches('v')
+            .to_string();
+        if !latest.is_empty() {
+            latest_by_name.insert(name, latest);
+        }
+    }
+
+    latest_by_name
 }
 
 /// Parse the output of `uv python list [--only-installed]`.
@@ -1449,6 +1552,43 @@ jupyter v1.1.1
             tools[0].commands,
             vec!["jupyter", "jupyter-lab", "jupyter-notebook"]
         );
+    }
+
+    // -- parse_uv_tool_outdated tests --
+
+    #[test]
+    fn test_parse_uv_tool_outdated_empty() {
+        assert!(parse_uv_tool_outdated("").is_empty());
+    }
+
+    #[test]
+    fn test_parse_uv_tool_outdated_single() {
+        let output = "sleap-nn v0.3.3 [latest: 0.4.0]\n    - sleap-nn\n";
+        let map = parse_uv_tool_outdated(output);
+        assert_eq!(map.get("sleap-nn"), Some(&"0.4.0".to_string()));
+        assert_eq!(map.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_uv_tool_outdated_multiple() {
+        let output = "\
+poethepoet v0.44.0 [latest: 0.45.0]
+    - poe
+sleap-nn v0.3.3 [latest: 0.4.0]
+    - sleap-nn
+";
+        let map = parse_uv_tool_outdated(output);
+        assert_eq!(map.len(), 2);
+        assert_eq!(map.get("poethepoet"), Some(&"0.45.0".to_string()));
+        assert_eq!(map.get("sleap-nn"), Some(&"0.4.0".to_string()));
+    }
+
+    #[test]
+    fn test_parse_uv_tool_outdated_ignores_non_outdated_tools() {
+        // A tool with no `[latest: ...]` marker (shouldn't appear in
+        // `--outdated` output at all, but guard against malformed lines).
+        let output = "sleap-nn v0.3.3\n    - sleap-nn\n";
+        assert!(parse_uv_tool_outdated(output).is_empty());
     }
 
     // -- nwb export error formatting tests --

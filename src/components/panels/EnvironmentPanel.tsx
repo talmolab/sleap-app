@@ -182,6 +182,13 @@ function ToolActions({
     );
   }
 
+  const isUpToDate = tool.updateAvailable === false;
+  const updateTitle = isUpToDate
+    ? "Already up to date"
+    : tool.updateAvailable && tool.latestVersion
+      ? `Upgrade to v${tool.latestVersion}`
+      : "Upgrade to latest version";
+
   return (
     <div className="flex gap-1">
       <Button
@@ -189,7 +196,8 @@ function ToolActions({
         size="sm"
         className="h-5 text-[10px]"
         onClick={onUpgrade}
-        title="Upgrade to latest version"
+        disabled={isUpToDate}
+        title={updateTitle}
       >
         <ArrowUpCircle className="h-3 w-3 mr-1" />
         Update
