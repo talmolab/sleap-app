@@ -1252,38 +1252,12 @@ export function VideoPlayer() {
 
     inset.style.display = "block";
 
-    // Position: anchor near tooltip for drag, top-right for placement
-    const container = containerRef.current;
-    if (isDragInset && container && dragStartClient.current) {
-      const containerRect = container.getBoundingClientRect();
-      const TOOLTIP_OFFSET_X = 16;
-      const TOOLTIP_OFFSET_Y = -8;
-      const TOOLTIP_HEIGHT_ESTIMATE = 80;
-      const GAP = 6;
-
-      const tipLeft =
-        dragStartClient.current.clientX - containerRect.left + TOOLTIP_OFFSET_X;
-      const tipTop =
-        dragStartClient.current.clientY - containerRect.top + TOOLTIP_OFFSET_Y;
-
-      let insetLeft = tipLeft;
-      let insetTop = tipTop + TOOLTIP_HEIGHT_ESTIMATE + GAP;
-
-      if (insetTop + INSET_SIZE > containerRect.height) {
-        insetTop = tipTop - INSET_SIZE - GAP;
-      }
-
-      insetLeft = Math.max(8, Math.min(insetLeft, containerRect.width - INSET_SIZE - 8));
-      insetTop = Math.max(8, insetTop);
-
-      inset.style.left = `${insetLeft}px`;
-      inset.style.top = `${insetTop}px`;
-      inset.style.right = "auto";
-    } else {
-      inset.style.top = "12px";
-      inset.style.right = "12px";
-      inset.style.left = "auto";
-    }
+    // Pin the loupe to the top-right corner in every mode (drag, placement,
+    // hold-Shift) so it never occludes the point being placed — matches the
+    // hold-Shift magnifier the drag case used to diverge from.
+    inset.style.top = "12px";
+    inset.style.right = "12px";
+    inset.style.left = "auto";
 
     const dpr = window.devicePixelRatio || 1;
     inset.width = INSET_SIZE * dpr;

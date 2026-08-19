@@ -901,7 +901,7 @@ export function SuggestionsPanel({
         </div>
       </div>
 
-      <ScrollArea className="flex-1">
+      <ScrollArea className="flex-1 min-h-0">
         {suggestions.length === 0 ? (
           <p className="text-xs text-muted-foreground p-2">
             No suggestions generated. Click "Generate" to create frame

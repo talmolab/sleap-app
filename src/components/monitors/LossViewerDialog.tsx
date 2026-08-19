@@ -46,7 +46,12 @@ export function LossViewerDialog({
           </DialogTitle>
         </DialogHeader>
 
-        {model && (
+        {/* Gate the heavy chart on `open` as well as `model`. Radix keeps
+            dialog content mounted for its ~200ms exit-fade, so clicking OUTSIDE
+            during training would otherwise collide a live loss-plot redraw (a
+            full-buffer y-range recompute) with the dismissal's page reflow and
+            freeze the GUI. Unmounting on close destroys uPlot immediately. */}
+        {open && model && (
           <LossPlot model={model} startedAt={startedAt} status={status} height={360} />
         )}
 
@@ -63,7 +68,7 @@ export function LossViewerDialog({
             </Button>
           </div>
         )}
-        {model && <VizImageViewer model={model} />}
+        {open && model && <VizImageViewer model={model} />}
 
         {isActive && (
           <div className="flex items-center gap-2 pt-2">

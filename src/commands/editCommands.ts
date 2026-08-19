@@ -665,6 +665,11 @@ export const MergePredictions: Command = {
     });
     ctx.pushUndoSnapshot(snapshot);
     ctx.state.markChanged();
+    // Merge mutates `labels` in place, so overlayVersion-gated consumers (the
+    // seekbar's predicted-frame marks, the canvas overlay) won't recompute
+    // until an unrelated interaction bumps it. Bump now so the light-blue
+    // predicted-frame ticks paint immediately (mirrors ToggleNegativeFrame).
+    ctx.state.bumpOverlayVersion();
 
     const conflicts = result.conflicts.length;
     toast.success(

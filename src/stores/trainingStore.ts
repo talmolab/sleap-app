@@ -990,7 +990,9 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
               const loss = parseFloat(tqdmMatch[3]);
               set((s) => ({
                 models: s.models.map((m, i) =>
-                  i === idx ? { ...m, epoch, loss } : m,
+                  // Math.max: never let the 0-based tqdm epoch regress the
+                  // 1-based completed count (see the flushStdout path).
+                  i === idx ? { ...m, epoch: Math.max(m.epoch, epoch), loss } : m,
                 ),
               }));
             }
@@ -1154,7 +1156,16 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
           models:
             tqdmEpoch !== null
               ? s.models.map((m, j) =>
-                  j === idx ? { ...m, epoch: tqdmEpoch as number, loss: tqdmLoss ?? m.loss } : m,
+                  j === idx
+                    ? {
+                        ...m,
+                        // tqdm's epoch is 0-based and its ~250ms flush can land
+                        // AFTER recordEpoch's 1-based completed count — Math.max
+                        // keeps it from dragging the final "5/5" back to "4/5".
+                        epoch: Math.max(m.epoch, tqdmEpoch as number),
+                        loss: tqdmLoss ?? m.loss,
+                      }
+                    : m,
                 )
               : s.models,
         }));

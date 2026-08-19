@@ -188,6 +188,10 @@ export function Seekbar() {
   // Range selection state
   const [isSelectingRange, setIsSelectingRange] = useState(false);
   const [rangeAnchor, setRangeAnchor] = useState<number | null>(null);
+  // Bumped on window resize so canvas effects that DON'T depend on frameIdx —
+  // notably the header frame-markers — recompute their DPR-scaled backing store
+  // at the new width; otherwise the header alone goes blurry after a resize.
+  const [resizeTick, setResizeTick] = useState(0);
 
   // Assumed FPS for playback (30 fps default)
   const fps = 30;
@@ -748,7 +752,7 @@ export function Seekbar() {
     // on top of the graph — PyQt parity + readability.
     drawHeaderFrameMarkers(ctx, totalFrames, w, h);
     if (scale) drawHeaderYScale(ctx, scale.min, scale.max, h, topPad);
-  }, [totalFrames, labels, video, seekbarHeaderGraph, headerSeries, seekbarHeaderHeight]);
+  }, [totalFrames, labels, video, seekbarHeaderGraph, headerSeries, seekbarHeaderHeight, resizeTick]);
 
   // Precompute the seekbar header's static content (per-track occupied frames +
   // labeled-frame marks) ONCE per data change — NOT per frame. The draw effect
@@ -899,7 +903,9 @@ export function Seekbar() {
   // Handle window resize
   useEffect(() => {
     const handleResize = () => {
-      // Trigger re-render
+      // Re-run the main bar (via frameIdx) AND the header effect (via resizeTick)
+      // so both recompute their DPR backing store — the header ignores frameIdx.
+      setResizeTick((t) => t + 1);
       useAppStore.getState().setFrameIdx(useAppStore.getState().frameIdx);
     };
     window.addEventListener("resize", handleResize);
