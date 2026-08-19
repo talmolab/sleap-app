@@ -368,6 +368,15 @@ export function applyHyperparamsToYaml(yamlText: string, hp: ConfigHyperparams):
   if (!trainer.train_data_loader) trainer.train_data_loader = {};
   (trainer.train_data_loader as Record<string, unknown>).batch_size = hp.batchSize;
 
+  // Erase any skeleton baked into an imported/baseline config — it may
+  // belong to an entirely different project. sleap-nn always re-derives the
+  // real skeleton from the actual training data (`labels[0].skeletons`) and
+  // overwrites this field before saving its own `training_config.yaml`
+  // (sleap_nn/training/model_trainer.py), so this never carries a stale
+  // definition through to training; it just keeps the intermediate config we
+  // generate from showing a foreign skeleton before that overwrite happens.
+  data.skeletons = [];
+
   // Performance — data pipeline + dataloader workers
   const dataPipelineFw = DATA_PIPELINE_FW[hp.dataPipeline] ?? DATA_PIPELINE_FW.stream;
   data.data_pipeline_fw = dataPipelineFw;
@@ -389,6 +398,13 @@ export function applyHyperparamsToYaml(yamlText: string, hp: ConfigHyperparams):
     const wandb = trainer.wandb as Record<string, unknown>;
     if (hp.wandbEntity) wandb.entity = hp.wandbEntity;
     if (hp.wandbProject) wandb.project = hp.wandbProject;
+  }
+  // wandb.name has no corresponding UI field, so a value baked into an
+  // uploaded/hand-edited config would otherwise ride through untouched and
+  // silently point W&B at a stale prior run. Always clear it — mirrors
+  // legacy SLEAP's belt-and-suspenders clear of trainer_config.wandb.name.
+  if (trainer.wandb && typeof trainer.wandb === "object") {
+    delete (trainer.wandb as Record<string, unknown>).name;
   }
 
   // Data config
@@ -740,7 +756,14 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
           : typeof trainer.batch_size === "number" ? trainer.batch_size : 4,
         learningRate: typeof optimizer.lr === "number" ? optimizer.lr
           : typeof trainer.learning_rate === "number" ? trainer.learning_rate : 0.0001,
-        runName: typeof trainer.run_name === "string" ? trainer.run_name : "",
+        // Always blank on import — a run name should be freshly auto-generated
+        // for a new run, never leak in from whatever profile was uploaded
+        // (mirrors legacy SLEAP's TrainingEditorWidget._load_config, which
+        // force-clears trainer_config.run_name for the same reason). Note
+        // `hasTrainedModel` below is still derived from the raw parsed value,
+        // since detecting "this file is from a completed run" is a distinct
+        // concern from "what should the run name FIELD show."
+        runName: "",
         useWandb: trainer.use_wandb === true,
         wandbEntity: typeof wandb.entity === "string" ? wandb.entity : "",
         wandbProject: typeof wandb.project === "string" ? wandb.project : "",
@@ -787,24 +810,26 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         minHardKeypoints: typeof ohkmCfg.min_hard_keypoints === "number" ? ohkmCfg.min_hard_keypoints : 2,
         maxHardKeypoints: typeof ohkmCfg.max_hard_keypoints === "number" ? ohkmCfg.max_hard_keypoints : null,
         trainingMode: "reuse_config" as const,
-        accelerator: (typeof trainer.trainer_accelerator === "string" ? trainer.trainer_accelerator : "auto") as ConfigHyperparams["accelerator"],
+        // Machine-specific settings — never taken from the uploaded file. A
+        // profile trained on someone else's machine (e.g. `trainer_accelerator:
+        // mps` from a Mac) shouldn't silently populate these on a different
+        // machine where that accelerator may not even exist (same rationale as
+        // legacy's `_load_config` stripping these as "system_specific_keys").
+        accelerator: defaultHyperparams.accelerator,
         dataPipeline: (typeof dataConfig.data_pipeline_fw === "string"
           ? DATA_PIPELINE_FROM_FW[dataConfig.data_pipeline_fw]
           : undefined) ?? defaultHyperparams.dataPipeline,
-        dataloaderWorkers: typeof trainLoader.num_workers === "number" ? trainLoader.num_workers : 0,
-        numDevices: typeof trainer.trainer_devices === "number" ? trainer.trainer_devices : "auto",
+        dataloaderWorkers: defaultHyperparams.dataloaderWorkers,
+        numDevices: defaultHyperparams.numDevices,
       };
 
-      // Also auto-fill data paths into the global config
-      const trainLabels = dataConfig.train_labels_path;
-      const valLabels = dataConfig.val_labels_path;
-      const configUpdates: Partial<TrainingConfig> = {};
-      if (typeof trainLabels === "string") configUpdates.trainingLabelsPath = trainLabels;
-      if (Array.isArray(trainLabels) && trainLabels.length > 0) configUpdates.trainingLabelsPath = trainLabels[0];
-      if (typeof valLabels === "string") configUpdates.validationLabelsPath = valLabels;
-      if (Object.keys(configUpdates).length > 0) {
-        set((state) => ({ config: { ...state.config, ...configUpdates } }));
-      }
+      // Deliberately NOT auto-filling trainingLabelsPath/validationLabelsPath
+      // from the uploaded config's data_config.*_labels_path here — those are
+      // specific to whatever machine/project the config came from (same
+      // "machine/session-specific, never taken from the file" rationale as
+      // runName/accelerator/numDevices above). Training data should always
+      // come from the currently loaded project, not a stale path baked into
+      // an imported profile.
 
       return {
         filename,
@@ -919,10 +944,30 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       // Use the resolved labels path (first entry is always the labels/data path)
       const resolvedLabelsPath = confirmedPaths[0]?.worker ?? remoteOpts.labelsPath;
 
-      // Build TrainJobSpec with path_mappings — apply hyperparam overrides to YAML
+      // Build TrainJobSpec with path_mappings — apply hyperparam overrides to YAML.
+      // Unlike local training, there's no Hydra CLI-override safety net here
+      // (the worker runs whatever's baked into config_contents verbatim), so
+      // run_name must be resolved to a fresh value BEFORE serializing — it's
+      // always blank on `hyperparams` post-import (see parseYamlConfig), and
+      // applyHyperparamsToYaml only writes run_name when it's non-empty, so
+      // without this an imported config's stale run_name would otherwise ride
+      // straight through into the remote job.
+      const userLabeledFrameCount = countUserLabeledFrames(labels);
+      const runTimestamp = formatRunTimestamp();
+      const resolveRunName = (hp: ConfigHyperparams, modelType: string) =>
+        hp.runName ||
+        (userLabeledFrameCount !== null
+          ? `${runTimestamp}.${modelType}.n=${userLabeledFrameCount}`
+          : `${runTimestamp}.${modelType}`);
+
       const spec = {
         type: "train" as const,
-        config_contents: config.configs.map((c) => applyHyperparamsToYaml(c.content, c.hyperparams)),
+        config_contents: config.configs.map((c) =>
+          applyHyperparamsToYaml(c.content, {
+            ...c.hyperparams,
+            runName: resolveRunName(c.hyperparams, c.modelType),
+          }),
+        ),
         model_types: config.configs.map((c) => c.modelType),
         labels_path: resolvedLabelsPath,
         val_labels_path: remoteOpts.valLabelsPath || undefined,

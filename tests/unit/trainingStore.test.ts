@@ -121,13 +121,19 @@ data_config:
       expect(result!.hyperparams.maxEpochs).toBe(200);
       expect(result!.hyperparams.batchSize).toBe(8);
       expect(result!.hyperparams.learningRate).toBe(0.001);
-      expect(result!.hyperparams.runName).toBe("my_run");
+      // run_name is always blanked on import (see "always resets machine/run
+      // fields on import" below) even though this file has one — the file's
+      // run_name still drives `hasTrainedModel` detection separately.
+      expect(result!.hyperparams.runName).toBe("");
       expect(result!.hyperparams.backbone).toBe("unet");
       expect(result!.hyperparams.useWandb).toBe(true);
       expect(result!.hyperparams.wandbEntity).toBe("my-lab");
       expect(result!.hyperparams.wandbProject).toBe("my-project");
-      // Data path auto-filled into global config
-      expect(useTrainingStore.getState().config.trainingLabelsPath).toBe("/path/to/labels.slp");
+      // Data path is NOT auto-filled from the uploaded config — it's specific
+      // to whatever machine/project the config came from and must always
+      // come from the currently loaded project instead (same rationale as
+      // the machine/run fields above).
+      expect(useTrainingStore.getState().config.trainingLabelsPath).toBe("");
     });
 
     it("returns null for invalid YAML", () => {
@@ -192,7 +198,7 @@ trainer_config: {}
       expect(result!.hasTrainedModel).toBe(false);
     });
 
-    it("handles train_labels_path as array", () => {
+    it("does not auto-fill the global data path from an array-valued train_labels_path either", () => {
       const yamlText = `
 model_config:
   head_configs:
@@ -204,7 +210,23 @@ data_config:
     - /path/second.slp
 `;
       useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
-      expect(useTrainingStore.getState().config.trainingLabelsPath).toBe("/path/first.slp");
+      expect(useTrainingStore.getState().config.trainingLabelsPath).toBe("");
+    });
+
+    it("does not clobber an already-set data path when importing another config", () => {
+      useTrainingStore.getState().setConfig("trainingLabelsPath", "/current/project.slp");
+      const yamlText = `
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+data_config:
+  train_labels_path: /some/other/machines/labels.slp
+  val_labels_path: /some/other/machines/val.slp
+`;
+      useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
+      expect(useTrainingStore.getState().config.trainingLabelsPath).toBe("/current/project.slp");
+      expect(useTrainingStore.getState().config.validationLabelsPath).toBe("");
     });
   });
 
@@ -572,7 +594,7 @@ trainer_config:
   });
 
   describe("parseYamlConfig - performance", () => {
-    it("parses dataPipeline, dataloaderWorkers, and numDevices", () => {
+    it("parses dataPipeline (a training-recipe choice) from the file", () => {
       const yamlText = `
 model_config:
   head_configs:
@@ -587,11 +609,11 @@ trainer_config:
 `;
       const result = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
       expect(result!.hyperparams.dataPipeline).toBe("memory");
-      expect(result!.hyperparams.dataloaderWorkers).toBe(4);
-      expect(result!.hyperparams.numDevices).toBe(2);
     });
 
-    it("defaults numDevices to 'auto' when trainer_devices is absent/null", () => {
+    it("always resets dataloaderWorkers and numDevices to defaults, regardless of the file", () => {
+      // Machine-specific settings — never taken from an uploaded config (see
+      // the "always resets machine/run fields on import" describe block).
       const yamlText = `
 model_config:
   head_configs:
@@ -600,14 +622,16 @@ model_config:
 data_config:
   data_pipeline_fw: torch_dataset
 trainer_config:
-  trainer_devices: null
+  train_data_loader:
+    num_workers: 4
+  trainer_devices: 2
 `;
       const result = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
-      expect(result!.hyperparams.numDevices).toBe("auto");
-      expect(result!.hyperparams.dataPipeline).toBe("stream");
+      expect(result!.hyperparams.dataloaderWorkers).toBe(defaultHyperparams.dataloaderWorkers);
+      expect(result!.hyperparams.numDevices).toBe(defaultHyperparams.numDevices);
     });
 
-    it("round-trips performance fields through parse → apply", () => {
+    it("round-trips dataPipeline (not device/worker fields) through parse → apply", () => {
       const yamlText = `
 model_config:
   head_configs:
@@ -625,9 +649,113 @@ trainer_config:
       const parsed = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
       const doc = yaml.load(applyHyperparamsToYaml(yamlText, parsed!.hyperparams)) as Record<string, any>;
       expect(doc.data_config.data_pipeline_fw).toBe("torch_dataset_cache_img_disk");
-      expect(doc.trainer_config.train_data_loader.num_workers).toBe(3);
-      expect(doc.trainer_config.val_data_loader.num_workers).toBe(3);
-      expect(doc.trainer_config.trainer_devices).toBe(4);
+      // Forced back to the default worker/device count, not the file's stale 3/4.
+      expect(doc.trainer_config.train_data_loader.num_workers).toBe(defaultHyperparams.dataloaderWorkers);
+      expect(doc.trainer_config.val_data_loader.num_workers).toBe(defaultHyperparams.dataloaderWorkers);
+      expect(doc.trainer_config.trainer_devices).toBe(defaultHyperparams.numDevices);
+    });
+  });
+
+  describe("parseYamlConfig - always resets machine/run fields on import", () => {
+    const yamlWithStaleFields = `
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config:
+  run_name: stale_run_from_another_machine
+  trainer_accelerator: mps
+  trainer_devices: 3
+  train_data_loader:
+    num_workers: 8
+`;
+
+    it("blanks runName even when the file has one", () => {
+      const result = useTrainingStore.getState().parseYamlConfig(yamlWithStaleFields, "c.yaml", "centroid");
+      expect(result!.hyperparams.runName).toBe("");
+    });
+
+    it("still detects hasTrainedModel from the file's run_name despite blanking the field", () => {
+      const result = useTrainingStore.getState().parseYamlConfig(yamlWithStaleFields, "c.yaml", "centroid");
+      expect(result!.hasTrainedModel).toBe(true);
+    });
+
+    it("resets accelerator to the default instead of the file's (possibly unavailable) value", () => {
+      const result = useTrainingStore.getState().parseYamlConfig(yamlWithStaleFields, "c.yaml", "centroid");
+      expect(result!.hyperparams.accelerator).toBe(defaultHyperparams.accelerator);
+    });
+
+    it("resets numDevices and dataloaderWorkers to defaults", () => {
+      const result = useTrainingStore.getState().parseYamlConfig(yamlWithStaleFields, "c.yaml", "centroid");
+      expect(result!.hyperparams.numDevices).toBe(defaultHyperparams.numDevices);
+      expect(result!.hyperparams.dataloaderWorkers).toBe(defaultHyperparams.dataloaderWorkers);
+    });
+  });
+
+  describe("applyHyperparamsToYaml - wandb.name staleness", () => {
+    it("clears a pre-existing wandb.name (no UI field for it) so a stale run id can't ride through", () => {
+      const yamlText = `
+data_config: {}
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config:
+  use_wandb: true
+  wandb:
+    entity: my-lab
+    project: my-project
+    name: some-old-run-id
+`;
+      const hp = { ...defaultHyperparams, useWandb: true, wandbEntity: "my-lab", wandbProject: "my-project" };
+      const doc = yaml.load(applyHyperparamsToYaml(yamlText, hp)) as Record<string, any>;
+      expect(doc.trainer_config.wandb.name).toBeUndefined();
+      expect(doc.trainer_config.wandb.entity).toBe("my-lab");
+      expect(doc.trainer_config.wandb.project).toBe("my-project");
+    });
+  });
+
+  describe("applyHyperparamsToYaml - skeleton erasure", () => {
+    it("erases a skeleton baked into an imported config — sleap-nn re-derives it from the real training data", () => {
+      const yamlText = `
+data_config:
+  skeletons:
+    - nodes:
+        - name: head
+        - name: tail
+      edges: []
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config: {}
+`;
+      const doc = yaml.load(applyHyperparamsToYaml(yamlText, defaultHyperparams)) as Record<string, any>;
+      expect(doc.data_config.skeletons).toEqual([]);
+    });
+  });
+
+  describe("applyHyperparamsToYaml - run_name overwrite", () => {
+    it("overwrites a stale baked-in run_name once a fresh one is resolved", () => {
+      // Simulates the remote-training call site: `hyperparams.runName` is
+      // always blank right after import (parseYamlConfig), but the caller
+      // resolves a fresh name and passes `{ ...hyperparams, runName: fresh }`
+      // into applyHyperparamsToYaml before serializing for the worker — there
+      // is no Hydra CLI-override safety net for remote jobs, so this is the
+      // only thing standing between an imported config's stale run_name and
+      // the actual remote job.
+      const yamlText = `
+data_config: {}
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config:
+  run_name: stale_run_from_another_machine
+`;
+      const hp = { ...defaultHyperparams, runName: "260818_143022.centroid.n=13" };
+      const doc = yaml.load(applyHyperparamsToYaml(yamlText, hp)) as Record<string, any>;
+      expect(doc.trainer_config.run_name).toBe("260818_143022.centroid.n=13");
     });
   });
 
