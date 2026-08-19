@@ -617,8 +617,8 @@ describe("single vs multi panel mode", () => {
     resetStore();
   });
 
-  it("defaults to single-panel mode (one at a time)", () => {
-    expect(useAppStore.getState().sidebarMultiPanel).toBe(false);
+  it("defaults to multi-panel mode (several panels open at once)", () => {
+    expect(useAppStore.getState().sidebarMultiPanel).toBe(true);
   });
 
   it("single mode: clicking a rail icon shows exactly that panel (replaces)", () => {

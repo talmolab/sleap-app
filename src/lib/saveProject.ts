@@ -339,6 +339,11 @@ export async function saveProjectAsSlp(
           }
         }
         store.set("projectPath", savePath);
+        // Track the newly-saved name (basename) so the window title updates and,
+        // for the .vNNN versioning, the NEXT Save As increments from the name we
+        // just wrote instead of the stale opened name. The browser Save-As path
+        // already does this via handle.name.
+        store.set("filename", savePath.split(/[/\\]/).pop() ?? savePath);
         displayName = savePath;
       }
 
