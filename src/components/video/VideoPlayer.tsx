@@ -1391,7 +1391,58 @@ export function VideoPlayer() {
     ctx.moveTo(cx, 0);
     ctx.lineTo(cx, INSET_SIZE);
     ctx.stroke();
-  }, [interactionMode, dragNodeInfo, overlayVersion, bitmapVersion, isPlacingNodes, isShiftHeld, INSET_SIZE, INSET_ZOOM, zoom]);
+
+    // Node-name label at the top of the loupe, if a specific node is in view.
+    let labelName: string | null = null;
+    if (isDragInset) {
+      labelName = overlayInst?.nodes[skipNodeIdx]?.name ?? `node_${skipNodeIdx}`;
+    } else if (isPlaceInset && placementNodeIdx !== null) {
+      labelName =
+        skeleton?.nodes[placementNodeIdx]?.name ?? `node_${placementNodeIdx}`;
+    } else if (isHoldInset && hoveredNode) {
+      labelName =
+        skeleton?.nodes[hoveredNode.nodeIdx]?.name ??
+        `node_${hoveredNode.nodeIdx}`;
+    }
+
+    if (labelName) {
+      ctx.font = "600 11px system-ui, -apple-system, sans-serif";
+      const paddingX = 6;
+      const boxHeight = 16;
+      const boxWidth = ctx.measureText(labelName).width + paddingX * 2;
+      const boxX = (INSET_SIZE - boxWidth) / 2;
+      const boxY = 6;
+      const radius = 4;
+
+      ctx.fillStyle = "rgba(0, 0, 0, 0.75)";
+      ctx.beginPath();
+      ctx.moveTo(boxX + radius, boxY);
+      ctx.arcTo(boxX + boxWidth, boxY, boxX + boxWidth, boxY + boxHeight, radius);
+      ctx.arcTo(boxX + boxWidth, boxY + boxHeight, boxX, boxY + boxHeight, radius);
+      ctx.arcTo(boxX, boxY + boxHeight, boxX, boxY, radius);
+      ctx.arcTo(boxX, boxY, boxX + boxWidth, boxY, radius);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.fillStyle = "white";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(labelName, INSET_SIZE / 2, boxY + boxHeight / 2);
+    }
+  }, [
+    interactionMode,
+    dragNodeInfo,
+    overlayVersion,
+    bitmapVersion,
+    isPlacingNodes,
+    isShiftHeld,
+    INSET_SIZE,
+    INSET_ZOOM,
+    zoom,
+    skeleton,
+    placementNodeIdx,
+    hoveredNode,
+  ]);
 
   // Fit view to instances when 'fit' is enabled and frame/labels change
   // Only re-fit when fit is toggled on or the labeled frame changes,
