@@ -54,18 +54,47 @@ organization account. There is a hard limit of 5 per account, each valid 5 years
 so export the `.p12` and keep it somewhere safe — losing it means burning one of
 the five.
 
-1. **Generate a signing request.** Open *Keychain Access* → menu *Keychain Access*
-   → *Certificate Assistant* → *Request a Certificate From a Certificate
-   Authority*. Enter your email and name, choose **Saved to disk**, and save
-   `CertificateSigningRequest.certSigningRequest`.
+1. **Generate a signing request.** Most guides tell you to use *Keychain Access →
+   Certificate Assistant*. **That app was removed in macOS 26** (`open -a "Keychain
+   Access"` now lands you in the unrelated *Passwords* app), so use `openssl`:
+
+   ```bash
+   mkdir -p ~/Developer/sleap-developer-id && chmod 700 ~/Developer/sleap-developer-id
+   cd ~/Developer/sleap-developer-id
+   openssl genrsa -out devid.key 2048 && chmod 600 devid.key
+   openssl req -new -key devid.key -out SLEAP.certSigningRequest \
+     -subj "/emailAddress=you@example.com/CN=Your Name/C=US"
+   ```
+
+   `devid.key` is the irreplaceable half — **back it up before continuing.** The
+   CSR's subject is cosmetic; Apple issues the certificate under the account's
+   registered name either way.
 
 2. **Issue the certificate.** Go to
    [developer.apple.com/account/resources/certificates](https://developer.apple.com/account/resources/certificates)
    → **+** → **Developer ID Application** → *Profile Type: G2 Sub-CA* → upload the
    CSR → **Download** the resulting `developerID_application.cer`.
 
-3. **Install it.** Double-click the `.cer`. It lands in your login keychain, paired
-   with the private key the CSR created.
+3. **Bundle it into a `.p12`.** The download is a bare certificate; signing needs
+   the certificate, its Apple intermediate, and your private key together. Fetch
+   the *Developer ID — G2* intermediate from
+   [apple.com/certificateauthority](https://www.apple.com/certificateauthority/),
+   then:
+
+   ```bash
+   openssl x509 -inform DER -in ~/Downloads/developerID_application.cer -out devid.crt
+   openssl x509 -inform DER -in DeveloperIDG2CA.cer -out DeveloperIDG2CA.pem
+
+   # -keypbe/-certpbe/-macalg pin the legacy PKCS#12 algorithms; OpenSSL 3
+   # defaults to AES+PBKDF2, which `security import` can refuse.
+   openssl pkcs12 -export -out devid.p12 \
+     -inkey devid.key -in devid.crt -certfile DeveloperIDG2CA.pem \
+     -name "Developer ID Application" \
+     -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1
+
+   security import devid.p12 -k ~/Library/Keychains/login.keychain-db \
+     -T /usr/bin/codesign
+   ```
 
 4. **Confirm macOS sees a usable identity:**
 
@@ -78,20 +107,20 @@ the five.
    The quoted string is exactly the `APPLE_SIGNING_IDENTITY` secret, and the
    parenthesized suffix is your `APPLE_TEAM_ID`.
 
-   > If this prints `0 valid identities found`, the intermediate is missing.
-   > Download **Developer ID — G2** from
-   > [apple.com/certificateauthority](https://www.apple.com/certificateauthority/)
-   > and double-click it.
+   > If this prints `0 valid identities found`, the chain is incomplete — the
+   > `-certfile` intermediate above is what usually fixes it. Verify the chain
+   > directly with
+   > `openssl verify -CAfile DeveloperIDG2CA.pem -untrusted DeveloperIDG2CA.pem devid.crt`.
 
-5. **Export for CI.** In *Keychain Access*, find the
-   `Developer ID Application: ...` entry, right-click → **Export**, choose
-   *Personal Information Exchange (.p12)*, and set a password. Then:
+5. **Encode for CI.**
 
    ```bash
-   base64 -i Certificates.p12 | pbcopy   # -> APPLE_CERTIFICATE
+   base64 -i devid.p12 | pbcopy   # -> APPLE_CERTIFICATE
    ```
 
-   macOS's `base64` emits a single line, which is what the workflow expects.
+   macOS's `base64` emits a single line, which is what the workflow expects (though
+   the workflow writes it to `$GITHUB_ENV` with a heredoc, so a wrapped value is
+   also safe).
 
 ## Step 2 — create an app-specific password for notarization
 
