@@ -238,6 +238,11 @@ interface PendingUpdate {
  * a release-notes link, and a manual Update button. Independent of the
  * uv/Python detection cycle above — checks once on mount.
  */
+// Self-update only makes sense for a packaged desktop install: `tauri:dev`
+// has no installer for downloadAndInstall() to swap, and the update
+// manifest generally isn't reachable/meaningful for a dev build anyway.
+const isDevBuild = import.meta.env.DEV;
+
 function AppUpdateSection() {
   const [version, setVersion] = useState<string | null>(null);
   const [pendingUpdate, setPendingUpdate] = useState<PendingUpdate | null>(null);
@@ -254,6 +259,7 @@ function AppUpdateSection() {
       } catch (err) {
         console.warn("[env] Failed to read app version:", err);
       }
+      if (isDevBuild) return; // no installer to update to/from in dev
       try {
         const { check } = await import("@tauri-apps/plugin-updater");
         const update = await check();
@@ -296,28 +302,38 @@ function AppUpdateSection() {
         {version && (
           <span className="text-xs text-muted-foreground">v{version}</span>
         )}
-        {latestVersion && (
-          <>
-            <span
-              className={cn(
-                "text-xs",
-                updateAvailable ? "text-orange-500" : "text-green-500"
-              )}
-            >
-              {updateAvailable ? `→ v${latestVersion}` : "latest"}
-            </span>
-            <button
-              onClick={() =>
-                openExternal(`${SLEAP_APP_RELEASES_URL}/v${latestVersion}`)
-              }
-              title="View release notes"
-              className="text-muted-foreground hover:text-foreground transition-colors"
-            >
-              <ExternalLink className="h-3 w-3" />
-            </button>
-          </>
+        {isDevBuild ? (
+          <Badge
+            variant="secondary"
+            className="text-[10px] px-1.5 py-0 h-4 rounded-sm"
+            title="Self-update is unavailable in tauri:dev — only packaged installs can check/apply updates"
+          >
+            dev build
+          </Badge>
+        ) : (
+          latestVersion && (
+            <>
+              <span
+                className={cn(
+                  "text-xs",
+                  updateAvailable ? "text-orange-500" : "text-green-500"
+                )}
+              >
+                {updateAvailable ? `→ v${latestVersion}` : "latest"}
+              </span>
+              <button
+                onClick={() =>
+                  openExternal(`${SLEAP_APP_RELEASES_URL}/v${latestVersion}`)
+                }
+                title="View release notes"
+                className="text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <ExternalLink className="h-3 w-3" />
+              </button>
+            </>
+          )
         )}
-        {updateAvailable && (
+        {!isDevBuild && updateAvailable && (
           <Button
             variant="ghost"
             size="sm"
