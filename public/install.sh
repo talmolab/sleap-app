@@ -5,27 +5,34 @@
 #   curl -fsSL https://app.sleap.ai/install.sh | sh
 #
 # Why this exists: the desktop app is ad-hoc signed but not notarized (that needs
-# a paid Apple Developer ID). A .dmg downloaded through a *browser* gets tagged
-# with com.apple.quarantine, and macOS then refuses to launch an un-notarized app
-# without a detour through System Settings. curl does not set that tag, so
-# installing this way just works. See also `--help` for installing a .dmg you
-# already downloaded (e.g. a CI artifact from a workflow run).
+# a paid Apple Developer ID). A .dmg downloaded through a *browser* -- or handed
+# over via Slack, email, or AirDrop -- gets tagged with com.apple.quarantine,
+# which propagates to the app you copy out of it, and macOS then refuses to
+# launch an un-notarized app that carries it. curl does not set that tag, so
+# installing this way just works, with no Gatekeeper prompt at all.
 #
-# POSIX sh on purpose -- this is run via `curl | sh`, so no bashisms and
+# See `--help` for installing a file you already have, e.g. a .dmg or an
+# artifact .zip downloaded from a GitHub Actions run.
+#
+# POSIX sh on purpose -- this is run via `curl | sh`, so no bashisms, and
 # everything lives inside main(), which is invoked on the last line. That way a
 # truncated download can never execute a half-read script.
 
 set -eu
 
 REPO="talmolab/sleap-app"
+API="https://api.github.com/repos/talmolab/sleap-app"
 APP="SLEAP" # macOS .app bundle name, and the dmg/deb/AppImage filename prefix
-
-# ---------------------------------------------------------------- helpers ----
 
 MOUNTPOINT=""
 WORKDIR=""
+RELEASE_JSON=""
+
+# ---------------------------------------------------------------- helpers ----
 
 cleanup() {
+    # Detach before removing the workdir -- the mountpoint lives inside it, and
+    # a failed copy would otherwise leave the volume mounted.
     if [ -n "$MOUNTPOINT" ] && [ -d "$MOUNTPOINT" ]; then
         hdiutil detach "$MOUNTPOINT" -quiet 2>/dev/null || true
     fi
@@ -56,12 +63,11 @@ Usage:
   install.sh --help              Show this message
 
 macOS installs to /Applications (falling back to ~/Applications if that is not
-writable). Linux installs the .deb via dpkg when possible, otherwise drops the
-AppImage in ~/.local/bin. No sudo is used on macOS.
+writable) and uses no sudo. Linux installs the .deb via dpkg when it can
+elevate, otherwise drops the AppImage in ~/.local/bin.
 EOF
 }
 
-# Fetch a URL to stdout.
 fetch_stdout() {
     if have curl; then
         curl -fsSL "$1"
@@ -72,30 +78,27 @@ fetch_stdout() {
     fi
 }
 
-# Fetch a URL to a file, showing progress.
 fetch_file() {
     echo "Downloading $(basename "$2")..."
     if have curl; then
         curl -fSL --retry 3 --retry-delay 2 -o "$2" "$1"
     elif have wget; then
-        wget -q --show-progress --tries=3 -O "$2" "$1"
+        wget --tries=3 -O "$2" "$1"
     else
         die "curl or wget is required"
     fi
 }
 
-# Pull one field out of a GitHub API JSON blob without needing jq.
+# First string value for a top-level key, without needing jq.
 json_field() {
-    # json_field <json> <key>  -> first string value for that key
     printf '%s' "$1" |
         tr ',' '\n' |
         grep -m1 "\"$2\"[[:space:]]*:" |
         sed -e 's/.*"'"$2"'"[[:space:]]*:[[:space:]]*"//' -e 's/".*//'
 }
 
-# Pick the first release asset download URL whose filename matches a pattern.
+# First release asset download URL whose filename matches a pattern.
 asset_url() {
-    # asset_url <json> <grep-pattern>
     printf '%s' "$1" |
         grep -o '"browser_download_url"[[:space:]]*:[[:space:]]*"[^"]*"' |
         sed -e 's/.*"\(https[^"]*\)"$/\1/' |
@@ -103,9 +106,67 @@ asset_url() {
         head -1
 }
 
+deb_arch() {
+    case "$(uname -m)" in
+    x86_64 | amd64) echo "amd64" ;;
+    aarch64 | arm64) echo "arm64" ;;
+    *) die "unsupported architecture: $(uname -m)" ;;
+    esac
+}
+
+# Does this release carry something installable on the current platform?
+release_has_asset() {
+    if [ "$(uname -s)" = "Darwin" ]; then
+        [ -n "$(asset_url "$1" '\.dmg$')" ]
+    else
+        [ -n "$(asset_url "$1" "_$(deb_arch)\.deb$")" ] ||
+            [ -n "$(asset_url "$1" "_$(deb_arch)\.AppImage$")" ]
+    fi
+}
+
+# Sets RELEASE_JSON. Honors an explicit tag; otherwise prefers the stable
+# latest release and falls back to the newest pre-release that has a build.
+resolve_release() {
+    want_tag="$1"
+
+    if [ -n "$want_tag" ]; then
+        RELEASE_JSON="$(fetch_stdout "$API/releases/tags/$want_tag")" ||
+            die "no release tagged $want_tag in $REPO"
+        return
+    fi
+
+    RELEASE_JSON="$(fetch_stdout "$API/releases/latest" 2>/dev/null || true)"
+    if [ -n "$RELEASE_JSON" ] && release_has_asset "$RELEASE_JSON"; then
+        return
+    fi
+
+    stable_tag="$(json_field "$RELEASE_JSON" tag_name)"
+    if [ -n "$stable_tag" ]; then
+        echo "Note: latest release $stable_tag has no build for this platform." >&2
+    fi
+    echo "Looking for the newest release that does..." >&2
+
+    # /releases/latest skips pre-releases and drafts, so walk the full list.
+    all="$(fetch_stdout "$API/releases?per_page=30")" ||
+        die "could not reach the GitHub API (rate limited?)"
+
+    for candidate in $(printf '%s' "$all" |
+        grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' |
+        sed -e 's/.*"\([^"]*\)"$/\1/'); do
+        json="$(fetch_stdout "$API/releases/tags/$candidate" 2>/dev/null || true)"
+        if [ -n "$json" ] && release_has_asset "$json"; then
+            RELEASE_JSON="$json"
+            return
+        fi
+    done
+
+    die "no release in $REPO has a build for $(uname -s) $(uname -m) yet.
+Browse https://github.com/$REPO/releases and pass one explicitly:
+  install.sh --tag <tag>"
+}
+
 # ------------------------------------------------------------------ macOS ----
 
-# Install from an already-downloaded .dmg.
 install_macos_dmg() {
     dmg_path="$1"
 
@@ -118,8 +179,7 @@ install_macos_dmg() {
     hdiutil attach "$dmg_path" -nobrowse -readonly -quiet -mountpoint "$MOUNTPOINT" ||
         die "could not mount $dmg_path"
 
-    [ -d "$MOUNTPOINT/$APP.app" ] ||
-        die "$dmg_path does not contain $APP.app"
+    [ -d "$MOUNTPOINT/$APP.app" ] || die "$dmg_path does not contain $APP.app"
 
     # /Applications is group-writable by admin users, so this normally needs no
     # sudo -- which matters, because `curl | sh` leaves stdin bound to the pipe
@@ -142,7 +202,7 @@ install_macos_dmg() {
     hdiutil detach "$MOUNTPOINT" -quiet
     MOUNTPOINT=""
 
-    # Belt and braces: if the .dmg itself arrived through a browser, the copy
+    # Belt and braces: if this .dmg itself arrived through a browser, the copy
     # inherits com.apple.quarantine and Gatekeeper would gate the first launch.
     xattr -dr com.apple.quarantine "$dest/$APP.app" 2>/dev/null || true
 
@@ -150,7 +210,7 @@ install_macos_dmg() {
         if codesign --verify --deep --strict "$dest/$APP.app" >/dev/null 2>&1; then
             echo "Signature check: OK (ad-hoc signed)"
         else
-            echo "Warning: code signature did not verify. The app may fail to launch." >&2
+            echo "Warning: code signature did not verify; the app may not launch." >&2
         fi
     fi
 
@@ -161,18 +221,16 @@ install_macos_dmg() {
     echo "  open -a \"$dest/$APP.app\""
 }
 
-install_macos_latest() {
-    release_json="$1"
-
-    url="$(asset_url "$release_json" '_universal\.dmg$')"
+install_macos_release() {
+    url="$(asset_url "$1" '_universal\.dmg$')"
     if [ -z "$url" ]; then
-        # Older releases were built per-architecture rather than universal.
+        # Releases before the universal build was introduced were per-arch.
         case "$(uname -m)" in
-        arm64 | aarch64) url="$(asset_url "$release_json" '_aarch64\.dmg$')" ;;
-        *) url="$(asset_url "$release_json" '_x64\.dmg$')" ;;
+        arm64 | aarch64) url="$(asset_url "$1" '_aarch64\.dmg$')" ;;
+        *) url="$(asset_url "$1" '_x64\.dmg$')" ;;
         esac
     fi
-    [ -n "$url" ] || die "no macOS .dmg found in that release"
+    [ -n "$url" ] || die "no macOS .dmg in that release"
 
     dmg="$WORKDIR/$(basename "$url")"
     fetch_file "$url" "$dmg"
@@ -181,19 +239,12 @@ install_macos_latest() {
 
 # ------------------------------------------------------------------ Linux ----
 
-deb_arch() {
-    case "$(uname -m)" in
-    x86_64 | amd64) echo "amd64" ;;
-    aarch64 | arm64) echo "arm64" ;;
-    *) die "unsupported architecture: $(uname -m)" ;;
-    esac
-}
-
-# True if we can run sudo without needing to prompt (or can prompt at all).
+# True if sudo will work without hanging on a password prompt we cannot answer.
 can_elevate() {
+    [ "$(id -u)" = "0" ] && return 0
     have sudo || return 1
     sudo -n true 2>/dev/null && return 0
-    [ -t 0 ] # only prompt when stdin is a real terminal, not a curl pipe
+    [ -t 0 ] # only prompt when stdin is a terminal, not a curl pipe
 }
 
 install_linux_deb() {
@@ -225,12 +276,11 @@ install_linux_appimage() {
     esac
 }
 
-install_linux_latest() {
-    release_json="$1"
+install_linux_release() {
     arch="$(deb_arch)"
 
     if have dpkg && can_elevate; then
-        url="$(asset_url "$release_json" "_${arch}\.deb$")"
+        url="$(asset_url "$1" "_${arch}\.deb$")"
         if [ -n "$url" ]; then
             deb="$WORKDIR/$(basename "$url")"
             fetch_file "$url" "$deb"
@@ -239,14 +289,14 @@ install_linux_latest() {
         fi
     fi
 
-    url="$(asset_url "$release_json" "_${arch}\.AppImage$")"
-    [ -n "$url" ] || die "no Linux .deb or .AppImage found for $arch in that release"
+    url="$(asset_url "$1" "_${arch}\.AppImage$")"
+    [ -n "$url" ] || die "no Linux .deb or .AppImage for $arch in that release"
     img="$WORKDIR/$(basename "$url")"
     fetch_file "$url" "$img"
     install_linux_appimage "$img"
 }
 
-# ------------------------------------------------------- local file install ---
+# ------------------------------------------------------ local file install ----
 
 install_local() {
     src="$1"
@@ -259,8 +309,7 @@ install_local() {
         echo "Extracting $(basename "$src")..."
         unzip -q -o "$src" -d "$WORKDIR/unzipped"
         inner="$(find "$WORKDIR/unzipped" -type f \
-            \( -name '*.dmg' -o -name '*.deb' -o -name '*.AppImage' \) |
-            head -1)"
+            \( -name '*.dmg' -o -name '*.deb' -o -name '*.AppImage' \) | head -1)"
         [ -n "$inner" ] ||
             die "no .dmg, .deb, or .AppImage inside $(basename "$src")"
         echo "Found $(basename "$inner")"
@@ -278,7 +327,8 @@ install_local() {
         install_linux_appimage "$src"
         ;;
     *)
-        die "don't know how to install $(basename "$src") (expected .dmg, .deb, .AppImage, or .zip)"
+        die "don't know how to install $(basename "$src")
+(expected .dmg, .deb, .AppImage, or a .zip containing one)"
         ;;
     esac
 }
@@ -318,34 +368,18 @@ main() {
     os="$(uname -s)"
     case "$os" in
     Darwin | Linux) ;;
-    *) die "unsupported OS: $os (Windows: use install.ps1)" ;;
+    *) die "unsupported OS: $os (on Windows, use install.ps1)" ;;
     esac
     echo "Detected: $os ($(uname -m))"
 
-    if [ -n "$tag" ]; then
-        api="https://api.github.com/repos/$REPO/releases/tags/$tag"
-    else
-        api="https://api.github.com/repos/$REPO/releases/latest"
-    fi
-
     echo "Fetching release info..."
-    release_json="$(fetch_stdout "$api")" ||
-        die "could not reach the GitHub API (rate limited, or no such release)"
-
-    version="$(json_field "$release_json" tag_name)"
-    [ -n "$version" ] || die "could not determine the release version"
-    echo "Release: $version"
-
-    if [ -z "$(asset_url "$release_json" '')" ]; then
-        die "release $version has no downloadable assets yet.
-Check https://github.com/$REPO/releases for one that does, then re-run with:
-  install.sh --tag <tag>"
-    fi
+    resolve_release "$tag"
+    echo "Release: $(json_field "$RELEASE_JSON" tag_name)"
 
     if [ "$os" = "Darwin" ]; then
-        install_macos_latest "$release_json"
+        install_macos_release "$RELEASE_JSON"
     else
-        install_linux_latest "$release_json"
+        install_linux_release "$RELEASE_JSON"
     fi
 }
 

@@ -4,6 +4,64 @@ Pose estimation and tracking app for [SLEAP](https://sleap.ai).
 
 A modern rewrite of SLEAP's Qt/Python desktop labeling interface as a web app, with an optional [Tauri v2](https://v2.tauri.app/) desktop shell for native file access. Runs entirely in the browser -- no server or Python required.
 
+## Install the desktop app
+
+**macOS / Linux:**
+
+```bash
+curl -fsSL https://app.sleap.ai/install.sh | sh
+```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://app.sleap.ai/install.ps1 | iex
+```
+
+Or use the app in any browser at [app.sleap.ai](https://app.sleap.ai) -- no install needed.
+
+<details>
+<summary>Installing a specific version, or a build you already downloaded</summary>
+
+```bash
+# A specific release
+curl -fsSL https://app.sleap.ai/install.sh | sh -s -- --tag v0.1.1
+
+# A .dmg / .deb / .AppImage you already have, or the artifact .zip
+# straight from a GitHub Actions run
+sh install.sh ~/Downloads/SLEAP_0.1.1_universal.dmg
+sh install.sh ~/Downloads/sleap-app-macos-universal.zip
+```
+
+</details>
+
+### Why the installer, and not just the `.dmg`?
+
+Use the one-liner above on macOS. The desktop app is **ad-hoc signed but not
+notarized** -- notarization requires a paid Apple Developer ID, which this
+project does not have.
+
+That matters because of how macOS decides to trust an app. A `.dmg` that arrives
+through a *browser* (or Slack, or email, or AirDrop) is tagged with
+`com.apple.quarantine`, and that tag propagates to the app you drag out of it.
+Gatekeeper blocks any un-notarized app carrying it, showing "SLEAP can't be
+verified" with only **Done** and **Move to Trash**. `curl` does not set the tag,
+so the installer sidesteps the whole thing and the app opens with no prompt.
+
+If you do download the `.dmg` from the [Releases
+page](https://github.com/talmolab/sleap-app/releases) in a browser, clear the tag
+once after installing:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/SLEAP.app
+```
+
+(Equivalently: try to open it, then go to **System Settings > Privacy & Security**
+and click **Open Anyway** — that button only appears after the first blocked
+attempt.)
+
+macOS builds are universal, so one `.dmg` covers both Apple Silicon and Intel.
+
 ## Tech Stack
 
 | Layer | Technology |

@@ -37,7 +37,13 @@ jobs:
       - name: Determine deploy target
         id: target
         run: |
-          if [[ "${{ github.event_name }}" == "release" ]]; then
+          # A pre-release is a tester build, not a production cut -- it must not
+          # replace app.sleap.ai. Send it to /dev/ like a main-branch push.
+          if [[ "${{ github.event_name }}" == "release" && "${{ github.event.release.prerelease }}" == "true" ]]; then
+            echo "path=dev" >> "$GITHUB_OUTPUT"
+            echo "base=/dev/" >> "$GITHUB_OUTPUT"
+            echo "label=pre-release ${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.event_name }}" == "release" ]]; then
             echo "path=" >> "$GITHUB_OUTPUT"
             echo "base=/" >> "$GITHUB_OUTPUT"
             echo "label=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
