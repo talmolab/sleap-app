@@ -19,6 +19,9 @@ function mockCtx() {
       get(target, prop) {
         if (prop === "__calls") return calls;
         if (prop in target) return (target as Record<string, unknown>)[prop as string];
+        // measureText needs a real-shaped return (renderNodeLabel reads
+        // .width for the non-visible-node background box).
+        if (prop === "measureText") return () => ({ width: 20 }) as TextMetrics;
         return () => {}; // no-op for every other ctx method/prop
       },
       set: () => true, // swallow fillStyle/strokeStyle/etc.
@@ -51,6 +54,9 @@ function mockCtxRecordingStyles() {
     {
       get(_target, prop) {
         if (prop === "__styles") return styles;
+        // measureText needs a real-shaped return (renderNodeLabel reads .width
+        // for the non-visible-node background box); everything else no-ops.
+        if (prop === "measureText") return () => ({ width: 20 }) as TextMetrics;
         return () => {}; // no-op for every ctx method (arc, fill, stroke, ...)
       },
       set(_target, prop, value) {
@@ -183,5 +189,41 @@ describe("predicted instances use their track/instance color, not a fixed hue (#
     const strokes = ctx.__styles.strokeStyle.map(String);
     expect(strokes.some((s) => s.startsWith("rgba(40, 50, 60,"))).toBe(true);
     expect(strokes.some((s) => s.includes("250, 204, 21"))).toBe(false);
+  });
+});
+
+describe("non-visible node labels get a shaded background (legacy QtNodeLabel parity)", () => {
+  it("draws the missing-label background behind a non-visible user node's label", () => {
+    const ctx = mockCtxRecordingStyles();
+    const withMissingNode = inst({
+      isPredicted: false,
+      nodes: [{ x: 1, y: 1, visible: false, complete: false, name: "n" }],
+      showNonVisible: true,
+    });
+    renderInstances(ctx, [withMissingNode], { showInstances: true, showLabels: true, showNonVisibleNodes: true });
+    expect(ctx.__styles.fillStyle).toContain("rgba(0, 0, 0, 0.39)");
+  });
+
+  it("does not draw the background behind a visible node's label", () => {
+    const ctx = mockCtxRecordingStyles();
+    const withVisibleNode = inst({
+      nodes: [{ x: 1, y: 1, visible: true, complete: true, name: "n" }],
+    });
+    renderInstances(ctx, [withVisibleNode], { showInstances: true, showLabels: true });
+    expect(ctx.__styles.fillStyle).not.toContain("rgba(0, 0, 0, 0.39)");
+  });
+
+  it("does not draw the background behind a non-visible PREDICTED node's label", () => {
+    // Predicted labels always use PREDICTED_LABEL_COLOR regardless of
+    // visibility (isPredicted is checked first) -- the missing-label
+    // treatment is specific to user instances.
+    const ctx = mockCtxRecordingStyles();
+    const predictedMissing = inst({
+      isPredicted: true,
+      nodes: [{ x: 1, y: 1, visible: false, complete: false, name: "n" }],
+      showNonVisible: true,
+    });
+    renderInstances(ctx, [predictedMissing], { showInstances: true, showLabels: true, showNonVisibleNodes: true });
+    expect(ctx.__styles.fillStyle).not.toContain("rgba(0, 0, 0, 0.39)");
   });
 });

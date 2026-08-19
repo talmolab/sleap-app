@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, beforeEach } from "../bun-test";
-import { Skeleton } from "@talmolab/sleap-io.js";
+import { Skeleton, Node } from "@talmolab/sleap-io.js";
 import { useAppStore, PERSISTED_KEYS } from "@/stores/appStore";
 
 /** Reset the store between tests (mirrors appStore.test.ts). */
@@ -186,6 +186,103 @@ describe("skeletonBuildStore", () => {
     // Net-neutral invariant at the store level: no phantom writes.
     expect(state.skeleton).toBe(skeleton);
     expect(state.labels).toBe(labels);
+  });
+});
+
+describe("skeleton-exit prompt (keep or discard on an unplanned exit)", () => {
+  beforeEach(() => {
+    resetStore();
+  });
+
+  it("enterSkeletonBuild captures a nodes/edges snapshot", () => {
+    const skeleton = makeSkeleton(["a", "b"]);
+    useAppStore.setState({ skeleton });
+
+    useAppStore.getState().enterSkeletonBuild();
+
+    const snap = useAppStore.getState().skeletonBuildEntrySnapshot;
+    expect(snap?.nodes).toHaveLength(2);
+    expect(snap?.edges).toHaveLength(0);
+  });
+
+  it("exitSkeletonBuild (no options — e.g. Escape/Done) never prompts, even with unfinished work", () => {
+    const skeleton = makeSkeleton(["a"]);
+    useAppStore.setState({ skeleton });
+    useAppStore.getState().enterSkeletonBuild();
+    skeleton.nodes.push(new Node("b")); // simulate a node placed mid-build
+
+    useAppStore.getState().exitSkeletonBuild();
+
+    expect(useAppStore.getState().skeletonExitPrompt).toBeNull();
+    expect(useAppStore.getState().skeletonBuildEntrySnapshot).toBeNull();
+    expect(useAppStore.getState().skeleton?.nodes).toHaveLength(2); // untouched
+  });
+
+  it("exitSkeletonBuild({ promptIfUnfinished: true }) prompts when nodes changed since entry", () => {
+    const skeleton = makeSkeleton(["a"]);
+    useAppStore.setState({ skeleton });
+    useAppStore.getState().enterSkeletonBuild();
+    skeleton.nodes.push(new Node("b"));
+
+    useAppStore.getState().exitSkeletonBuild({ promptIfUnfinished: true });
+
+    const prompt = useAppStore.getState().skeletonExitPrompt;
+    expect(prompt).not.toBeNull();
+    expect(prompt?.nodes).toHaveLength(1); // the pre-build snapshot
+    expect(useAppStore.getState().skeletonBuildMode).toBe(false);
+  });
+
+  it("exitSkeletonBuild({ promptIfUnfinished: true }) does not prompt when nothing changed", () => {
+    const skeleton = makeSkeleton(["a"]);
+    useAppStore.setState({ skeleton });
+    useAppStore.getState().enterSkeletonBuild();
+
+    useAppStore.getState().exitSkeletonBuild({ promptIfUnfinished: true });
+
+    expect(useAppStore.getState().skeletonExitPrompt).toBeNull();
+  });
+
+  it("resolveSkeletonExitPrompt(true) keeps the skeleton as drawn and clears the prompt", () => {
+    const skeleton = makeSkeleton(["a"]);
+    useAppStore.setState({ skeleton });
+    useAppStore.getState().enterSkeletonBuild();
+    skeleton.nodes.push(new Node("b"));
+    useAppStore.getState().exitSkeletonBuild({ promptIfUnfinished: true });
+
+    useAppStore.getState().resolveSkeletonExitPrompt(true);
+
+    expect(useAppStore.getState().skeletonExitPrompt).toBeNull();
+    expect(useAppStore.getState().skeleton?.nodes).toHaveLength(2);
+  });
+
+  it("resolveSkeletonExitPrompt(false) reverts the skeleton to the pre-build snapshot and marks changed", () => {
+    const skeleton = makeSkeleton(["a"]);
+    useAppStore.setState({ skeleton });
+    useAppStore.getState().enterSkeletonBuild();
+    skeleton.nodes.push(new Node("b"));
+    useAppStore.getState().exitSkeletonBuild({ promptIfUnfinished: true });
+    const editSeqBefore = useAppStore.getState().editSeq;
+    const overlayVersionBefore = useAppStore.getState().overlayVersion;
+
+    useAppStore.getState().resolveSkeletonExitPrompt(false);
+
+    const state = useAppStore.getState();
+    expect(state.skeletonExitPrompt).toBeNull();
+    expect(state.skeleton?.nodes).toHaveLength(1);
+    expect(state.skeleton?.nodes[0].name).toBe("a");
+    expect(state.hasChanges).toBe(true);
+    expect(state.editSeq).toBeGreaterThan(editSeqBefore);
+    expect(state.overlayVersion).toBeGreaterThan(overlayVersionBefore);
+  });
+
+  it("resolveSkeletonExitPrompt is a no-op when there's no pending prompt", () => {
+    const skeleton = makeSkeleton(["a"]);
+    useAppStore.setState({ skeleton });
+
+    useAppStore.getState().resolveSkeletonExitPrompt(false);
+
+    expect(useAppStore.getState().skeleton?.nodes).toHaveLength(1);
+    expect(useAppStore.getState().hasChanges).toBe(false);
   });
 });
 

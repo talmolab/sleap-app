@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { AppShell } from "./components/layout/AppShell";
 import { QuitConfirmDialog } from "./components/dialogs/QuitConfirmDialog";
+import { SkeletonExitPromptDialog } from "./components/dialogs/SkeletonExitPromptDialog";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useWindowTitle } from "./hooks/useWindowTitle";
 import { useAppStore } from "./stores/appStore";
@@ -292,6 +293,7 @@ export default function App() {
     <>
       <AppShell />
       <QuitConfirmDialog />
+      <SkeletonExitPromptDialog />
     </>
   );
 }

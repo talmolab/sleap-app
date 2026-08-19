@@ -98,6 +98,34 @@ describe("SkeletonPanel — Draw skeleton launch guard", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("exits build mode automatically when the panel unmounts (moving away from the Skeleton tab)", async () => {
+    setupProject([]);
+    const { SkeletonPanel } = await import("@/components/panels/SkeletonPanel");
+    const { unmount } = render(<SkeletonPanel />);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /draw skeleton on frame/i }),
+    );
+    expect(useAppStore.getState().skeletonBuildMode).toBe(true);
+
+    // Simulates closing/collapsing the panel or switching to another one —
+    // the panel body actually unmounts (AppShell only renders it while its
+    // section is open and not collapsed), unlike a CSS-hidden tab.
+    unmount();
+
+    expect(useAppStore.getState().skeletonBuildMode).toBe(false);
+  });
+
+  it("does not touch build-mode state on unmount when the builder was never entered", async () => {
+    setupProject([]);
+    const { SkeletonPanel } = await import("@/components/panels/SkeletonPanel");
+    const { unmount } = render(<SkeletonPanel />);
+
+    expect(useAppStore.getState().skeletonBuildMode).toBe(false);
+    unmount();
+    expect(useAppStore.getState().skeletonBuildMode).toBe(false);
+  });
+
   it("opens the guard dialog on a NON-empty skeleton without entering build", async () => {
     setupProject(["head", "tail"]);
     const { SkeletonPanel } = await import("@/components/panels/SkeletonPanel");
