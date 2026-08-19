@@ -23,6 +23,7 @@ import {
   type DlcFileSystem,
 } from "@talmolab/sleap-io.js";
 import { useAppStore } from "../stores/appStore";
+import { useEnvironmentStore } from "../stores/environmentStore";
 import {
   buildDlcLabels,
   dlcProjectPathHint,
@@ -185,6 +186,8 @@ export async function loadProjectFromFile(file: File): Promise<boolean> {
     toast.success(`Loaded ${file.name}`, {
       description: `${labels.videos.length} video(s), ${labels.labeledFrames.length} labeled frames`,
     });
+    // Fire-and-forget: best-effort, no-ops on browser, must not add latency.
+    useEnvironmentStore.getState().checkSleapNnUpdateAndNotify();
     return true;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -286,6 +289,8 @@ export async function loadProjectFromPath(
     toast.success(`Loaded ${filename}`, {
       description: `${labels.videos.length} video(s), ${labels.labeledFrames.length} labeled frames`,
     });
+    // Fire-and-forget: best-effort, no-ops on browser, must not add latency.
+    useEnvironmentStore.getState().checkSleapNnUpdateAndNotify();
 
     // Missing / unsupported-codec videos are summarized (codec-aware) by
     // resolveExternalVideos above — no separate toast here (avoids a duplicate).

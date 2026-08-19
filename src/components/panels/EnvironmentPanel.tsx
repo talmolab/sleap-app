@@ -15,6 +15,7 @@ import {
   Download,
   RotateCw,
   ArrowUpCircle,
+  ExternalLink,
   Info,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -34,6 +35,9 @@ import {
   type InstallStatus,
 } from "../../stores/environmentStore";
 import type { UvTool } from "../../platform/backend";
+import { openExternal } from "@/lib/openExternal";
+
+const SLEAP_NN_RELEASES_URL = "https://github.com/talmolab/sleap-nn/releases/tag";
 
 // ---------------------------------------------------------------------------
 // Shared components
@@ -521,6 +525,24 @@ export function EnvironmentPanel() {
                 <span className="text-xs text-muted-foreground">
                   v{sleapNnTool.version}
                 </span>
+              )}
+              {sleapNnTool?.updateAvailable && sleapNnTool.latestVersion && (
+                <>
+                  <span className="text-xs text-orange-500">
+                    → v{sleapNnTool.latestVersion}
+                  </span>
+                  <button
+                    onClick={() =>
+                      openExternal(
+                        `${SLEAP_NN_RELEASES_URL}/v${sleapNnTool.latestVersion}`
+                      )
+                    }
+                    title="View release notes"
+                    className="text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    <ExternalLink className="h-3 w-3" />
+                  </button>
+                </>
               )}
               <div className="ml-auto">
                 <ToolActions
