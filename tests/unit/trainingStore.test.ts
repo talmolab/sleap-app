@@ -759,6 +759,211 @@ trainer_config:
     });
   });
 
+  describe("applyHyperparamsToYaml - checkpoint saving", () => {
+    const baseYaml = `
+data_config: {}
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config: {}
+`;
+
+    it("writes save_top_k=1 and save_last=false by default (Best Model on, Latest Model off)", () => {
+      const doc = yaml.load(applyHyperparamsToYaml(baseYaml, defaultHyperparams)) as Record<string, any>;
+      expect(doc.trainer_config.model_ckpt.save_top_k).toBe(1);
+      expect(doc.trainer_config.model_ckpt.save_last).toBe(false);
+    });
+
+    it("writes save_top_k=0 when Best Model is unchecked", () => {
+      const hp = { ...defaultHyperparams, saveBestModel: false };
+      const doc = yaml.load(applyHyperparamsToYaml(baseYaml, hp)) as Record<string, any>;
+      expect(doc.trainer_config.model_ckpt.save_top_k).toBe(0);
+    });
+
+    it("writes save_last=true when Latest Model is checked — this is the last.ckpt fix", () => {
+      const hp = { ...defaultHyperparams, saveLastModel: true };
+      const doc = yaml.load(applyHyperparamsToYaml(baseYaml, hp)) as Record<string, any>;
+      expect(doc.trainer_config.model_ckpt.save_last).toBe(true);
+    });
+  });
+
+  describe("applyHyperparamsToYaml - visualization", () => {
+    const baseYaml = `
+data_config: {}
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config: {}
+`;
+
+    it("writes both fields true by default (fixes the previously-inert epoch-viz-scrubber)", () => {
+      const doc = yaml.load(applyHyperparamsToYaml(baseYaml, defaultHyperparams)) as Record<string, any>;
+      expect(doc.trainer_config.visualize_preds_during_training).toBe(true);
+      expect(doc.trainer_config.keep_viz).toBe(true);
+    });
+
+    it("keep_viz is false whenever visualizePredictions is off, regardless of keepVizImages", () => {
+      const hp = { ...defaultHyperparams, visualizePredictions: false, keepVizImages: true };
+      const doc = yaml.load(applyHyperparamsToYaml(baseYaml, hp)) as Record<string, any>;
+      expect(doc.trainer_config.visualize_preds_during_training).toBe(false);
+      expect(doc.trainer_config.keep_viz).toBe(false);
+    });
+
+    it("keep_viz is false when keepVizImages is off even if visualizePredictions is on", () => {
+      const hp = { ...defaultHyperparams, visualizePredictions: true, keepVizImages: false };
+      const doc = yaml.load(applyHyperparamsToYaml(baseYaml, hp)) as Record<string, any>;
+      expect(doc.trainer_config.keep_viz).toBe(false);
+    });
+  });
+
+  describe("applyHyperparamsToYaml - color conversion", () => {
+    const baseYaml = `
+data_config: {}
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config: {}
+`;
+
+    it("writes both ensure_rgb/ensure_grayscale false for 'auto'", () => {
+      const doc = yaml.load(applyHyperparamsToYaml(baseYaml, defaultHyperparams)) as Record<string, any>;
+      expect(doc.data_config.preprocessing.ensure_rgb).toBe(false);
+      expect(doc.data_config.preprocessing.ensure_grayscale).toBe(false);
+    });
+
+    it("writes ensure_rgb=true for 'rgb'", () => {
+      const hp = { ...defaultHyperparams, colorMode: "rgb" as const };
+      const doc = yaml.load(applyHyperparamsToYaml(baseYaml, hp)) as Record<string, any>;
+      expect(doc.data_config.preprocessing.ensure_rgb).toBe(true);
+      expect(doc.data_config.preprocessing.ensure_grayscale).toBe(false);
+    });
+
+    it("writes ensure_grayscale=true for 'grayscale'", () => {
+      const hp = { ...defaultHyperparams, colorMode: "grayscale" as const };
+      const doc = yaml.load(applyHyperparamsToYaml(baseYaml, hp)) as Record<string, any>;
+      expect(doc.data_config.preprocessing.ensure_rgb).toBe(false);
+      expect(doc.data_config.preprocessing.ensure_grayscale).toBe(true);
+    });
+  });
+
+  describe("applyHyperparamsToYaml - epoch-end evaluation", () => {
+    it("writes eval.enabled and eval.frequency", () => {
+      const baseYaml = `
+data_config: {}
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config: {}
+`;
+      const hp = { ...defaultHyperparams, evalEnabled: true, evalFrequency: 5 };
+      const doc = yaml.load(applyHyperparamsToYaml(baseYaml, hp)) as Record<string, any>;
+      expect(doc.trainer_config.eval.enabled).toBe(true);
+      expect(doc.trainer_config.eval.frequency).toBe(5);
+    });
+  });
+
+  describe("applyHyperparamsToYaml - W&B extras", () => {
+    it("writes save_viz_imgs_wandb, prv_runid, and group when set", () => {
+      const yamlText = `
+data_config: {}
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config:
+  use_wandb: true
+`;
+      const hp = {
+        ...defaultHyperparams,
+        useWandb: true,
+        wandbUploadViz: true,
+        wandbPrevRunId: "abc123",
+        wandbGroup: "experiment-1",
+      };
+      const doc = yaml.load(applyHyperparamsToYaml(yamlText, hp)) as Record<string, any>;
+      expect(doc.trainer_config.wandb.save_viz_imgs_wandb).toBe(true);
+      expect(doc.trainer_config.wandb.prv_runid).toBe("abc123");
+      expect(doc.trainer_config.wandb.group).toBe("experiment-1");
+    });
+  });
+
+  describe("parseYamlConfig - new Output/Evaluation/W&B fields", () => {
+    it("applies sensible defaults when the file omits these keys entirely", () => {
+      const yamlText = `
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config: {}
+`;
+      const result = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
+      expect(result!.hyperparams.saveBestModel).toBe(true);
+      expect(result!.hyperparams.saveLastModel).toBe(false);
+      expect(result!.hyperparams.visualizePredictions).toBe(true);
+      expect(result!.hyperparams.keepVizImages).toBe(true);
+      expect(result!.hyperparams.colorMode).toBe("auto");
+      expect(result!.hyperparams.evalEnabled).toBe(false);
+      expect(result!.hyperparams.evalFrequency).toBe(1);
+      expect(result!.hyperparams.wandbUploadViz).toBe(false);
+      expect(result!.hyperparams.wandbPrevRunId).toBe("");
+      expect(result!.hyperparams.wandbGroup).toBe("");
+    });
+
+    it("respects explicit values in the file, including explicit false overriding the app default", () => {
+      const yamlText = `
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config:
+  model_ckpt:
+    save_top_k: 0
+    save_last: true
+  visualize_preds_during_training: false
+  keep_viz: false
+  eval:
+    enabled: true
+    frequency: 3
+  wandb:
+    save_viz_imgs_wandb: true
+    prv_runid: xyz789
+    group: my-group
+data_config:
+  preprocessing:
+    ensure_rgb: true
+`;
+      const result = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
+      expect(result!.hyperparams.saveBestModel).toBe(false);
+      expect(result!.hyperparams.saveLastModel).toBe(true);
+      expect(result!.hyperparams.visualizePredictions).toBe(false);
+      expect(result!.hyperparams.keepVizImages).toBe(false);
+      expect(result!.hyperparams.colorMode).toBe("rgb");
+      expect(result!.hyperparams.evalEnabled).toBe(true);
+      expect(result!.hyperparams.evalFrequency).toBe(3);
+      expect(result!.hyperparams.wandbUploadViz).toBe(true);
+      expect(result!.hyperparams.wandbPrevRunId).toBe("xyz789");
+      expect(result!.hyperparams.wandbGroup).toBe("my-group");
+    });
+
+    it("colorMode reads grayscale correctly", () => {
+      const yamlText = `
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+data_config:
+  preprocessing:
+    ensure_grayscale: true
+`;
+      const result = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
+      expect(result!.hyperparams.colorMode).toBe("grayscale");
+    });
+  });
+
   describe("parseYamlConfig - data and optimization", () => {
     it("parses cropSize from preprocessing", () => {
       const yamlText = `

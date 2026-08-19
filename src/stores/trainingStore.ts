@@ -59,6 +59,9 @@ export type Backbone = "unet" | "convnext" | "swint";
 /** UI-level data-pipeline choice; maps to sleap-nn's `data_config.data_pipeline_fw`. */
 export type DataPipeline = "stream" | "memory" | "disk";
 
+/** UI-level color-conversion choice; maps to sleap-nn's `data_config.preprocessing.{ensure_rgb,ensure_grayscale}`. */
+export type ColorMode = "auto" | "rgb" | "grayscale";
+
 /** UI enum ↔ sleap-nn `data_pipeline_fw` value. */
 const DATA_PIPELINE_FW: Record<DataPipeline, string> = {
   stream: "torch_dataset",
@@ -144,6 +147,21 @@ export interface ConfigHyperparams {
   dataPipeline: DataPipeline;
   dataloaderWorkers: number;
   numDevices: number | "auto";
+  // Output — checkpoint saving
+  saveBestModel: boolean;
+  saveLastModel: boolean;
+  // Output — visualization
+  visualizePredictions: boolean;
+  keepVizImages: boolean;
+  // Data — color conversion
+  colorMode: ColorMode;
+  // Epoch-end evaluation (distinct from the regular per-epoch validation loop)
+  evalEnabled: boolean;
+  evalFrequency: number;
+  // W&B extras (entity/project are above, near useWandb)
+  wandbUploadViz: boolean;
+  wandbPrevRunId: string;
+  wandbGroup: string;
 }
 
 export const defaultHyperparams: ConfigHyperparams = {
@@ -200,6 +218,20 @@ export const defaultHyperparams: ConfigHyperparams = {
   dataPipeline: "memory",
   dataloaderWorkers: 2,
   numDevices: "auto",
+  saveBestModel: true,
+  saveLastModel: false,
+  // Deliberately true (sleap-nn's own defaults are both false): this is what
+  // actually makes the app's own epoch-viz-scrubber feature work out of the
+  // box — see the `keep_viz`/`visualize_preds_during_training` comment in
+  // applyHyperparamsToYaml below for why they must go together.
+  visualizePredictions: true,
+  keepVizImages: true,
+  colorMode: "auto",
+  evalEnabled: false,
+  evalFrequency: 1,
+  wandbUploadViz: false,
+  wandbPrevRunId: "",
+  wandbGroup: "",
 };
 
 export interface ConfigFile {
@@ -362,9 +394,24 @@ export function applyHyperparamsToYaml(yamlText: string, hp: ConfigHyperparams):
 
   // Basic training params
   trainer.max_epochs = hp.maxEpochs;
-  // Keep per-epoch visualization PNGs so the viz viewer's epoch scrubber can
-  // review any epoch during AND after training (sleap-nn deletes them otherwise).
-  trainer.keep_viz = true;
+
+  // Checkpoint saving. The UI only exposes a binary choice for "best model"
+  // (sleap-nn's save_top_k is a count; 1 = on, 0 = off — there's no control
+  // for saving more than the single best).
+  if (!trainer.model_ckpt) trainer.model_ckpt = {};
+  const modelCkpt = trainer.model_ckpt as Record<string, unknown>;
+  modelCkpt.save_top_k = hp.saveBestModel ? 1 : 0;
+  modelCkpt.save_last = hp.saveLastModel;
+
+  // Visualization — keep_viz only has any effect when
+  // visualize_preds_during_training is also true (per sleap-nn's docstring:
+  // "Only applies when visualize_preds_during_training is True"), so it's
+  // gated on it here rather than being independently forced true. This is
+  // what makes the app's own epoch-viz-scrubber feature (which needs the viz
+  // folder to survive training) actually work.
+  trainer.visualize_preds_during_training = hp.visualizePredictions;
+  trainer.keep_viz = hp.visualizePredictions && hp.keepVizImages;
+
   if (!trainer.train_data_loader) trainer.train_data_loader = {};
   (trainer.train_data_loader as Record<string, unknown>).batch_size = hp.batchSize;
 
@@ -398,6 +445,9 @@ export function applyHyperparamsToYaml(yamlText: string, hp: ConfigHyperparams):
     const wandb = trainer.wandb as Record<string, unknown>;
     if (hp.wandbEntity) wandb.entity = hp.wandbEntity;
     if (hp.wandbProject) wandb.project = hp.wandbProject;
+    wandb.save_viz_imgs_wandb = hp.wandbUploadViz;
+    if (hp.wandbPrevRunId) wandb.prv_runid = hp.wandbPrevRunId;
+    if (hp.wandbGroup) wandb.group = hp.wandbGroup;
   }
   // wandb.name has no corresponding UI field, so a value baked into an
   // uploaded/hand-edited config would otherwise ride through untouched and
@@ -416,6 +466,15 @@ export function applyHyperparamsToYaml(yamlText: string, hp: ConfigHyperparams):
   const preprocessing = data.preprocessing as Record<string, unknown>;
   preprocessing.scale = hp.scale;
   preprocessing.crop_size = hp.cropSize;
+  preprocessing.ensure_rgb = hp.colorMode === "rgb";
+  preprocessing.ensure_grayscale = hp.colorMode === "grayscale";
+
+  // Epoch-end evaluation — a distinct mechanism from the regular per-epoch
+  // validation loop (runs full pose metrics like mOKS/mAP/PCK on a cadence).
+  if (!trainer.eval) trainer.eval = {};
+  const evalConfig = trainer.eval as Record<string, unknown>;
+  evalConfig.enabled = hp.evalEnabled;
+  evalConfig.frequency = hp.evalFrequency;
 
   // Seed
   trainer.seed = hp.randomSeed;
@@ -662,6 +721,10 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       // Extract preprocessing config
       const preprocessing = (dataConfig.preprocessing ?? {}) as Record<string, unknown>;
 
+      // Extract checkpoint + epoch-end-evaluation config
+      const modelCkpt = (trainer.model_ckpt ?? {}) as Record<string, unknown>;
+      const evalConfig = (trainer.eval ?? {}) as Record<string, unknown>;
+
       // Extract online hard keypoint mining config
       const ohkmCfg = (trainer.online_hard_keypoint_mining ?? {}) as Record<string, unknown>;
 
@@ -821,6 +884,25 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
           : undefined) ?? defaultHyperparams.dataPipeline,
         dataloaderWorkers: defaultHyperparams.dataloaderWorkers,
         numDevices: defaultHyperparams.numDevices,
+        // Checkpoint saving — sleap-nn's own default is save_top_k=1 (best
+        // model on), save_last=None (off), so an absent key means "on"/"off"
+        // respectively, matching those real defaults.
+        saveBestModel: typeof modelCkpt.save_top_k === "number" ? modelCkpt.save_top_k > 0 : true,
+        saveLastModel: modelCkpt.save_last === true,
+        // Visualization — absent means "on" here (this app's own default,
+        // not sleap-nn's raw False default — see defaultHyperparams above).
+        visualizePredictions: trainer.visualize_preds_during_training !== false,
+        keepVizImages: trainer.keep_viz !== false,
+        colorMode: preprocessing.ensure_rgb === true
+          ? "rgb"
+          : preprocessing.ensure_grayscale === true
+            ? "grayscale"
+            : "auto",
+        evalEnabled: evalConfig.enabled === true,
+        evalFrequency: typeof evalConfig.frequency === "number" ? evalConfig.frequency : 1,
+        wandbUploadViz: wandb.save_viz_imgs_wandb === true,
+        wandbPrevRunId: typeof wandb.prv_runid === "string" ? wandb.prv_runid : "",
+        wandbGroup: typeof wandb.group === "string" ? wandb.group : "",
       };
 
       // Deliberately NOT auto-filling trainingLabelsPath/validationLabelsPath

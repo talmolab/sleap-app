@@ -79,6 +79,15 @@ interface PipelineRecommendation {
 
 const BOTTOM_UP_TYPES: ModelType[] = ["bottom_up", "bottom_up_id"];
 
+async function openExternal(url: string) {
+  if (isTauri) {
+    const { open } = await import("@tauri-apps/plugin-shell");
+    await open(url);
+  } else {
+    window.open(url, "_blank");
+  }
+}
+
 function isSkeletonConnected(
   nodes: { name: string }[],
   edges: { source: { name: string }; destination: { name: string } }[],
@@ -682,6 +691,16 @@ export function TrainingPanel() {
   const [sampleCount, setSampleCount] = useState(20);
   const [skipUserLabeled, setSkipUserLabeled] = useState(false);
   const [existingPredictions, setExistingPredictions] = useState<"clear_all" | "replace" | "keep">("replace");
+  // Client-side only — no sleap-nn schema field for this (see trainingStore.ts).
+  const [autoOpenWandb, setAutoOpenWandb] = useState(false);
+  // Auto-open the W&B run page once its URL becomes available, if requested.
+  const openedWandbUrlRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!wandbUrl || !autoOpenWandb) return;
+    if (openedWandbUrlRef.current === wandbUrl) return;
+    openedWandbUrlRef.current = wandbUrl;
+    void openExternal(wandbUrl);
+  }, [wandbUrl, autoOpenWandb]);
   const [fileBrowserOpen, setFileBrowserOpen] = useState(false);
   const [fileBrowserCallback, setFileBrowserCallback] = useState<
     ((path: string) => void) | null
@@ -1542,6 +1561,8 @@ export function TrainingPanel() {
         onSkipUserLabeledChange={setSkipUserLabeled}
         existingPredictions={existingPredictions}
         onExistingPredictionsChange={setExistingPredictions}
+        autoOpenWandb={autoOpenWandb}
+        onAutoOpenWandbChange={setAutoOpenWandb}
       />
     </div>
   );

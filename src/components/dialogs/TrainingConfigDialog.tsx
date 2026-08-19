@@ -18,7 +18,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Search, HelpCircle, Crosshair } from "lucide-react";
-import type { ConfigFile, ConfigHyperparams, Backbone, ModelType, DataPipeline } from "@/stores/trainingStore";
+import type { ConfigFile, ConfigHyperparams, Backbone, ModelType, DataPipeline, ColorMode } from "@/stores/trainingStore";
 import { getSlotLabel, getConfigSlots, useTrainingStore } from "@/stores/trainingStore";
 import { useConnectStore } from "@/stores/connectStore";
 import { useAppStore } from "@/stores/appStore";
@@ -52,6 +52,9 @@ interface TrainingConfigDialogProps {
   onSkipUserLabeledChange: (v: boolean) => void;
   existingPredictions: "clear_all" | "replace" | "keep";
   onExistingPredictionsChange: (v: "clear_all" | "replace" | "keep") => void;
+  /** Client-side only — no sleap-nn schema field for this, see trainingStore.ts. */
+  autoOpenWandb: boolean;
+  onAutoOpenWandbChange: (v: boolean) => void;
 }
 
 // ── Constants ──────────────────────────────────────────────────────
@@ -146,8 +149,8 @@ const PIPELINE_FIELD_DEFS = {
   secOutput: { id: "pipeline-output", label: "Output" },
   runName: { id: "field-runname", label: "Run Name", hint: "Name for this training run. Leave empty to auto-generate from timestamp and head type." },
   runsFolder: { id: "field-runsfolder", label: "Runs Folder", hint: "Directory where the run folder and checkpoints will be created." },
-  checkpoint: { id: "field-checkpoint", label: "Checkpoint", keywords: "best model latest model save" },
-  visualization: { id: "field-visualization", label: "Visualization", keywords: "visualize predictions keep viz images" },
+  checkpoint: { id: "field-checkpoint", label: "Checkpoint", hint: "Best Model saves the highest-scoring checkpoint (by validation loss). Latest Model also saves a last.ckpt after every checkpoint, useful for resuming training.", keywords: "best model latest model save" },
+  visualization: { id: "field-visualization", label: "Visualization", hint: "Visualize Predictions saves sample prediction images each epoch (used by this app's epoch scrubber to review training progress). Keep Viz Images keeps that folder after training instead of deleting it; only has an effect when Visualize Predictions is on.", keywords: "visualize predictions keep viz images" },
   secRemote: { id: "pipeline-remote", label: "Remote Training" },
   remoteEnable: { id: "field-remoteenable", label: "Enable Remote Training", hint: "Send training jobs to a remote worker via sleap-connect instead of running locally.", keywords: "remote worker sleap-connect" },
 } satisfies Record<string, SearchField>;
@@ -818,6 +821,8 @@ export function TrainingConfigDialog({
   onSkipUserLabeledChange,
   existingPredictions,
   onExistingPredictionsChange,
+  autoOpenWandb,
+  onAutoOpenWandbChange,
 }: TrainingConfigDialogProps) {
   const pipelineScrollRef = useRef<HTMLDivElement>(null);
   const headScrollRefs = useRef<Record<string, HTMLDivElement | null>>({});
@@ -1127,7 +1132,10 @@ export function TrainingConfigDialog({
                           {PIPELINE_FIELD_DEFS.convertColors.label}
                           <HintBubble text="Convert input images to a specific channel format. Use RGB for pretrained backbones or Grayscale for single-channel videos." />
                         </span>
-                        <Select value="grayscale">
+                        <Select
+                          value={firstHp.colorMode}
+                          onValueChange={(v) => configs.forEach((c) => onUpdateSlot(c.slot, { colorMode: v as ColorMode }))}
+                        >
                           <SelectTrigger className="h-8 text-sm w-32"><SelectValue /></SelectTrigger>
                           <SelectContent>
                             <SelectItem value="auto">Auto</SelectItem>
@@ -1248,8 +1256,8 @@ export function TrainingConfigDialog({
                     </div>
                     <div className="flex items-center gap-4 flex-wrap">
                       <Toggle {...PIPELINE_FIELD_DEFS.wandbEnable} checked={firstHp.useWandb} onChange={(v) => configs.forEach((c) => onUpdateSlot(c.slot, { useWandb: v }))} />
-                      <Toggle {...PIPELINE_FIELD_DEFS.wandbUploadViz} checked={false} onChange={() => {}} />
-                      <Toggle {...PIPELINE_FIELD_DEFS.wandbOpenBrowser} checked={false} onChange={() => {}} />
+                      <Toggle {...PIPELINE_FIELD_DEFS.wandbUploadViz} checked={firstHp.wandbUploadViz} onChange={(v) => configs.forEach((c) => onUpdateSlot(c.slot, { wandbUploadViz: v }))} />
+                      <Toggle {...PIPELINE_FIELD_DEFS.wandbOpenBrowser} checked={autoOpenWandb} onChange={onAutoOpenWandbChange} />
                     </div>
                     <div className="flex items-center gap-6 flex-wrap">
                       <div id={PIPELINE_FIELD_DEFS.wandbEntity.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
@@ -1264,11 +1272,11 @@ export function TrainingConfigDialog({
                     <div className="flex items-center gap-6 flex-wrap">
                       <div id={PIPELINE_FIELD_DEFS.wandbRunId.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
                         <span className="text-sm text-muted-foreground">{PIPELINE_FIELD_DEFS.wandbRunId.label}:</span>
-                        <Input type="text" placeholder="" className="h-8 text-sm w-40" disabled={!firstHp.useWandb} />
+                        <Input type="text" value={firstHp.wandbPrevRunId} onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { wandbPrevRunId: e.target.value }))} placeholder="" className="h-8 text-sm w-40" disabled={!firstHp.useWandb} />
                       </div>
                       <div id={PIPELINE_FIELD_DEFS.wandbGroup.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
                         <span className="text-sm text-muted-foreground">{PIPELINE_FIELD_DEFS.wandbGroup.label}:</span>
-                        <Input type="text" placeholder="" className="h-8 text-sm w-40" disabled={!firstHp.useWandb} />
+                        <Input type="text" value={firstHp.wandbGroup} onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { wandbGroup: e.target.value }))} placeholder="" className="h-8 text-sm w-40" disabled={!firstHp.useWandb} />
                       </div>
                     </div>
                   </div>
@@ -1282,13 +1290,24 @@ export function TrainingConfigDialog({
                 <SectionHeading {...PIPELINE_FIELD_DEFS.secEvaluation} />
                 <div className="space-y-3">
                   <div className="flex items-center gap-6">
-                    <Toggle {...PIPELINE_FIELD_DEFS.evalEnable} checked={false} onChange={() => {}} />
-                    <div id={PIPELINE_FIELD_DEFS.evalFrequency.id} data-search-field="" className="flex items-center gap-2 opacity-50 scroll-mt-4">
+                    <Toggle
+                      {...PIPELINE_FIELD_DEFS.evalEnable}
+                      checked={firstHp?.evalEnabled ?? false}
+                      onChange={(v) => configs.forEach((c) => onUpdateSlot(c.slot, { evalEnabled: v }))}
+                    />
+                    <div id={PIPELINE_FIELD_DEFS.evalFrequency.id} data-search-field="" className={`flex items-center gap-2 scroll-mt-4 ${!firstHp?.evalEnabled ? "opacity-50" : ""}`}>
                       <span className="text-sm text-muted-foreground flex items-center gap-1.5">
                         {PIPELINE_FIELD_DEFS.evalFrequency.label}:
                         <HintBubble text="How often to run full evaluation. Every 1 epoch is most informative but slower. Every 5–10 epochs is a good balance." />
                       </span>
-                      <Input type="number" value={1} min={1} disabled className="h-8 text-sm w-16" />
+                      <Input
+                        type="number"
+                        value={firstHp?.evalFrequency ?? 1}
+                        min={1}
+                        disabled={!firstHp?.evalEnabled}
+                        onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { evalFrequency: Math.max(1, Number(e.target.value)) }))}
+                        className="h-8 text-sm w-16"
+                      />
                     </div>
                   </div>
                 </div>
@@ -1306,24 +1325,51 @@ export function TrainingConfigDialog({
                       <Input type="text" value="models" disabled className="h-9 text-sm" />
                     </Field>
                     <div id={PIPELINE_FIELD_DEFS.checkpoint.id} data-search-field="" className="flex items-center gap-6 scroll-mt-4">
-                      <span className="text-sm text-muted-foreground">{PIPELINE_FIELD_DEFS.checkpoint.label}:</span>
+                      <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                        {PIPELINE_FIELD_DEFS.checkpoint.label}:
+                        <HintBubble text={PIPELINE_FIELD_DEFS.checkpoint.hint} />
+                      </span>
                       <label className="flex items-center gap-1.5 cursor-pointer">
-                        <input type="checkbox" defaultChecked className="accent-primary" />
+                        <input
+                          type="checkbox"
+                          checked={firstHp.saveBestModel}
+                          onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { saveBestModel: e.target.checked }))}
+                          className="accent-primary"
+                        />
                         <span className="text-sm">Best Model</span>
                       </label>
                       <label className="flex items-center gap-1.5 cursor-pointer">
-                        <input type="checkbox" className="accent-primary" />
+                        <input
+                          type="checkbox"
+                          checked={firstHp.saveLastModel}
+                          onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { saveLastModel: e.target.checked }))}
+                          className="accent-primary"
+                        />
                         <span className="text-sm">Latest Model</span>
                       </label>
                     </div>
                     <div id={PIPELINE_FIELD_DEFS.visualization.id} data-search-field="" className="flex items-center gap-6 scroll-mt-4">
-                      <span className="text-sm text-muted-foreground">{PIPELINE_FIELD_DEFS.visualization.label}:</span>
+                      <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                        {PIPELINE_FIELD_DEFS.visualization.label}:
+                        <HintBubble text={PIPELINE_FIELD_DEFS.visualization.hint} />
+                      </span>
                       <label className="flex items-center gap-1.5 cursor-pointer">
-                        <input type="checkbox" defaultChecked className="accent-primary" />
+                        <input
+                          type="checkbox"
+                          checked={firstHp.visualizePredictions}
+                          onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { visualizePredictions: e.target.checked }))}
+                          className="accent-primary"
+                        />
                         <span className="text-sm">Visualize Predictions</span>
                       </label>
-                      <label className="flex items-center gap-1.5 cursor-pointer">
-                        <input type="checkbox" className="accent-primary" />
+                      <label className={`flex items-center gap-1.5 ${firstHp.visualizePredictions ? "cursor-pointer" : "cursor-not-allowed opacity-50"}`}>
+                        <input
+                          type="checkbox"
+                          checked={firstHp.keepVizImages}
+                          disabled={!firstHp.visualizePredictions}
+                          onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { keepVizImages: e.target.checked }))}
+                          className="accent-primary"
+                        />
                         <span className="text-sm">Keep Viz Images</span>
                       </label>
                     </div>
