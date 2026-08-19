@@ -32,7 +32,7 @@ jobs:
 
     steps:
       - name: Checkout source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Determine deploy target
         id: target
@@ -63,7 +63,7 @@ jobs:
           bun-version-file: .bun-version
 
       - name: Cache bun dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
@@ -76,6 +76,13 @@ jobs:
         run: bun run build
         env:
           VITE_BASE_PATH: ${{ steps.target.outputs.base }}
+
+      # Must run AFTER Build: `vite build` empties dist/ on entry. These live in
+      # scripts/ rather than public/ on purpose -- public/ is copied into the
+      # frontend bundle that gets embedded in the desktop binary, so an installer
+      # in there ships a copy of itself inside the app.
+      - name: Stage the install scripts into the site
+        run: cp scripts/install.sh scripts/install.ps1 dist/
 
       - name: Deploy to gh-pages
         run: |

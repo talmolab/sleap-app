@@ -6,61 +6,125 @@ A modern rewrite of SLEAP's Qt/Python desktop labeling interface as a web app, w
 
 ## Install the desktop app
 
+Until the first release with attached builds exists, use the `/dev/` URLs below
+(they go live on the next merge to `main`). After that, drop the `/dev/`.
+
 **macOS / Linux:**
 
 ```bash
-curl -fsSL https://app.sleap.ai/install.sh | sh
+curl -fsSL https://app.sleap.ai/dev/install.sh | sh
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
-irm https://app.sleap.ai/install.ps1 | iex
+irm https://app.sleap.ai/dev/install.ps1 | iex
 ```
 
 Or use the app in any browser at [app.sleap.ai](https://app.sleap.ai) -- no install needed.
 
+macOS builds are universal, so one `.dmg` covers both Apple Silicon and Intel.
+Linux gets a `.deb`, an `.AppImage` and an `.rpm`; Windows gets an NSIS
+installer and an `.msi`.
+
 <details>
-<summary>Installing a specific version, or a build you already downloaded</summary>
+<summary>Installing a specific version, a pre-release, or a build you already downloaded</summary>
 
 ```bash
-# A specific release
-curl -fsSL https://app.sleap.ai/install.sh | sh -s -- --tag v0.1.1
+# A specific release tag (pre-releases included when named explicitly)
+curl -fsSL https://app.sleap.ai/dev/install.sh | sh -s -- --tag v0.1.2
 
-# A .dmg / .deb / .AppImage you already have, or the artifact .zip
-# straight from a GitHub Actions run
-sh install.sh ~/Downloads/SLEAP_0.1.1_universal.dmg
+# The newest build even if it is a pre-release
+curl -fsSL https://app.sleap.ai/dev/install.sh | sh -s -- --pre
+
+# Read it before you run it
+curl -fsSL https://app.sleap.ai/dev/install.sh | less
+```
+
+To install a file you already have -- a `.dmg`, `.deb`, `.AppImage`, `.rpm`, or
+the `.zip` straight off a GitHub Actions artifact page -- download the script
+first, then pass it the file. This path also strips the quarantine flag:
+
+```bash
+curl -fsSL https://app.sleap.ai/dev/install.sh -o install.sh
+sh install.sh ~/Downloads/SLEAP_0.1.2_universal.dmg
 sh install.sh ~/Downloads/sleap-app-macos-universal.zip
 ```
+
+```powershell
+irm https://app.sleap.ai/dev/install.ps1 -OutFile install.ps1
+.\install.ps1 -Path $HOME\Downloads\sleap-app-windows.zip
+
+# `| iex` cannot forward parameters, so build a script block for -Tag / -Pre:
+& ([scriptblock]::Create((irm https://app.sleap.ai/dev/install.ps1))) -Tag v0.1.2
+```
+
+`install.sh --help` and `Get-Help .\install.ps1` list the rest (`--prefix`,
+`--force`, `-Interactive`).
 
 </details>
 
 ### Why the installer, and not just the `.dmg`?
 
-Use the one-liner above on macOS. The desktop app is **ad-hoc signed but not
-notarized** -- notarization requires a paid Apple Developer ID, which this
-project does not have.
+**On macOS, use the one-liner.** The app is *ad-hoc signed but not notarized* --
+notarization needs a paid Apple Developer ID this project does not have.
 
 That matters because of how macOS decides to trust an app. A `.dmg` that arrives
-through a *browser* (or Slack, or email, or AirDrop) is tagged with
-`com.apple.quarantine`, and that tag propagates to the app you drag out of it.
-Gatekeeper blocks any un-notarized app carrying it, showing "SLEAP can't be
-verified" with only **Done** and **Move to Trash**. `curl` does not set the tag,
-so the installer sidesteps the whole thing and the app opens with no prompt.
+through a *browser* (or Slack, email, AirDrop) is tagged with
+`com.apple.quarantine`, the tag propagates to the app you drag out of it, and
+Gatekeeper blocks any un-notarized app carrying it. `curl` never sets that tag,
+so the installer sidesteps Gatekeeper entirely and the app opens with no prompt.
+
+The installer also replaces the app **atomically** (it stages alongside and
+renames), refuses to overwrite a running copy so you cannot lose unsaved labels,
+and repairs the code signature of older builds that were shipped unsigned.
 
 If you do download the `.dmg` from the [Releases
 page](https://github.com/talmolab/sleap-app/releases) in a browser, clear the tag
-once after installing:
+**on the `.dmg`, before you open it** -- that stops the tag propagating in the
+first place, and avoids the blocked-launch path entirely:
+
+```bash
+xattr -dr com.apple.quarantine ~/Downloads/SLEAP_*.dmg
+# then open it and drag SLEAP.app to /Applications as usual
+```
+
+If you already tried to open it and got blocked, do this instead:
 
 ```bash
 xattr -dr com.apple.quarantine /Applications/SLEAP.app
 ```
 
-(Equivalently: try to open it, then go to **System Settings > Privacy & Security**
-and click **Open Anyway** — that button only appears after the first blocked
-attempt.)
+The other route is **System Settings > Privacy & Security > Security > Open
+Anyway**, which needs your login password and only offers itself for about an
+hour after a blocked launch. Note that Control-click > Open no longer works --
+Apple removed that bypass in macOS 15. Also: macOS sometimes moves a
+blocked-and-launched bundle to the Trash, so if `SLEAP.app` vanishes from
+`/Applications`, restore it from there or just re-run the installer.
 
-macOS builds are universal, so one `.dmg` covers both Apple Silicon and Intel.
+**On Windows**, the installer is a convenience rather than a workaround.
+SmartScreen may still warn because the installer is not signed with an EV
+certificate; that warning has a **More info > Run anyway**.
+
+**On Linux**, nothing gates the install. The script prefers the `.AppImage`
+because that is the only Linux payload the in-app updater can replace without
+root; set `SLEAP_PREFER_DEB=1` if you would rather have the `.deb` in your
+package manager.
+
+<details>
+<summary>Removing the macOS prompt entirely (Developer ID + notarization)</summary>
+
+A Developer ID Application certificate plus `xcrun notarytool submit` and
+`xcrun stapler staple` is the only way to make a browser-downloaded `.dmg` open
+with no dialog at all. CI supports this — set six repository secrets and the
+macOS job switches from ad-hoc signing to signing, notarizing and stapling, and
+then *asserts* it happened rather than silently shipping an ad-hoc build.
+
+See **[docs/macos-code-signing.md](docs/macos-code-signing.md)** for how to
+produce each value. Until those secrets exist, everything above is free and
+sufficient as long as testers use `curl` or click through one prompt once.
+
+</details>
 
 ## Tech Stack
 
@@ -232,7 +296,9 @@ tests/                           # bun unit tests + Playwright E2E
 Deployment is automated via GitHub Actions:
 
 - **On merge to `main`** -- the browser app is built and deployed to the **dev** site at [https://app.sleap.ai/dev/](https://app.sleap.ai/dev/) (`.github/workflows/deploy.yml`, published to the `gh-pages` branch).
-- **On GitHub Release** (published) -- the browser app is deployed to **production** at [https://app.sleap.ai](https://app.sleap.ai), and the Tauri desktop installers are built for all three platforms and attached to the release (`.github/workflows/build.yml`): Linux `.deb` / `.AppImage`, macOS `.dmg`, and Windows `.msi` / `.exe`, along with a `latest.json` auto-update manifest.
+- **On GitHub Release** (published) -- the desktop installers are built for all three platforms and attached to the release (`.github/workflows/build.yml`): Linux `.deb` / `.AppImage` / `.rpm`, a universal macOS `.dmg`, and Windows `.msi` / `-setup.exe`, along with a `latest.json` auto-update manifest. A **non-pre-release** additionally deploys the browser app to **production** at [https://app.sleap.ai](https://app.sleap.ai); a **pre-release** deploys to `/dev/` instead, so tester builds never replace the production site.
+
+  Note that `latest.json` is served from `releases/latest/download/`, which skips pre-releases -- so the in-app updater only ever sees full releases.
 
 Both targets can also be run manually from the **Actions** tab (`deploy.yml` / `build.yml` `workflow_dispatch`).
 

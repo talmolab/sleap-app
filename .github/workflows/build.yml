@@ -5,8 +5,11 @@ on:
     types: [published]
   workflow_dispatch:
 
-# Scope to the ref so a test build on a branch can never cancel an in-flight
-# release build, and never cancel a release run at all.
+# Scoped to the ref, so a manual test build on a branch can never cancel an
+# in-flight release build. On a release event github.ref is refs/tags/<tag>, and
+# cancel-in-progress is false there, so two publishes of the same tag queue
+# rather than killing each other. Two release runs were silently cancelled this
+# way when the group was the constant "build-desktop".
 concurrency:
   group: build-desktop-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name != 'release' }}
@@ -16,7 +19,35 @@ env:
   RUST_BACKTRACE: short
 
 jobs:
+  # Fails in seconds rather than after three cold Rust builds. The MSI bundler
+  # parses the version as semver and requires any pre-release identifier to be
+  # NUMERIC (it maps x.y.z-N onto the Windows four-part version x.y.z.N), so
+  # "v0.1.2-rc1" would fail the Windows leg only, late, and quietly.
+  validate:
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check the release tag is a bundler-safe version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${RELEASE_TAG#v}"
+          echo "tag=$RELEASE_TAG -> version=$VERSION"
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9]+)?$'; then
+            echo "::error::tag '$RELEASE_TAG' yields version '$VERSION', which the MSI"\
+                 "bundler will reject. Use X.Y.Z, or X.Y.Z-N with a NUMERIC"\
+                 "pre-release identifier (v0.1.2-1, v0.1.2-2), not -rc1/-beta.1."
+            exit 1
+          fi
+
   build:
+    needs: validate
+    # `always()` so workflow_dispatch runs (where `validate` is skipped by its own
+    # `if`) still build. A real validate FAILURE still stops the matrix, because
+    # the result is then 'failure', not 'skipped'.
+    if: ${{ always() && needs.validate.result != 'failure' }}
     strategy:
       # One flaky platform must not stop the others -- see the `release` job,
       # which ships whatever did build.
@@ -28,8 +59,10 @@ jobs:
             rust-targets: x86_64-unknown-linux-gnu
             tauri-args: ""
             bundle-dir: src-tauri/target/release/bundle
-          # A universal binary, so one .dmg covers Apple Silicon and Intel.
-          # Note this moves the bundle output out of target/release/.
+          # One universal binary, so a single .dmg covers Apple Silicon and Intel.
+          # macos-latest is arm64-only, so without this Intel Macs get nothing
+          # they can execute at all (Rosetta does not translate arm64 -> x86_64).
+          # NOTE: passing --target moves the bundle output out of target/release/.
           - platform: macos-latest
             target: macos-universal
             rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
@@ -43,12 +76,15 @@ jobs:
 
     runs-on: ${{ matrix.platform }}
     # Backstop: a wedged apt mirror once burned the full 6h job limit before
-    # anyone noticed. Fail in minutes instead.
+    # anyone noticed. Fail in minutes instead. Historic macOS legs ran 2-12 min;
+    # universal roughly doubles the Rust compile, so 60 is generous.
     timeout-minutes: 60
 
     steps:
+      # All action pins below are the smallest major that runs on Node 24; Node
+      # 20 is being removed from the runners.
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -57,11 +93,10 @@ jobs:
 
       - name: Ensure cargo is in PATH
         shell: bash
-        run: |
-          echo "${CARGO_HOME:-$HOME/.cargo}/bin" >> $GITHUB_PATH
+        run: echo "${CARGO_HOME:-$HOME/.cargo}/bin" >> "$GITHUB_PATH"
 
       - name: Rust cache
-        uses: swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
 
@@ -78,9 +113,12 @@ jobs:
         #
         # Belt and braces: `timeout` caps each attempt so a stall retries instead
         # of consuming the whole step budget, and the step itself is capped.
-        timeout-minutes: 20
+        # Worst case here is 3x300s + 3x300s + 30s of sleeps = 30.5 min, so the
+        # step ceiling is set above that -- otherwise the later retries, which
+        # are the ones most likely to succeed, could never run.
+        timeout-minutes: 32
         run: |
-          set -eu
+          set -uo pipefail
           APT_OPTS="-o Acquire::ForceIPv4=true
                     -o Acquire::Retries=3
                     -o Acquire::http::Timeout=30
@@ -122,7 +160,7 @@ jobs:
           bun-version-file: .bun-version
 
       - name: Cache bun dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
@@ -134,17 +172,86 @@ jobs:
       - name: Set version from release tag
         if: github.event_name == 'release'
         shell: bash
+        # Passed through the environment, never interpolated into a script body:
+        # a `"` or a newline in a tag or release body must not be able to become
+        # code. (Interpolating the release body into `python3 -c` is exactly what
+        # made release v0.1.1 ship zero assets.)
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          VERSION="${{ github.event.release.tag_name }}"
-          VERSION="${VERSION#v}"
+          set -euo pipefail
+          VERSION="${RELEASE_TAG#v}"
           echo "Setting version to $VERSION"
-          # Update tauri.conf.json version
-          bun -e "
+          # tauri.conf.json drives every bundle filename and the version the
+          # running app reports to the updater. package.json drives the Vite
+          # `__APP_VERSION__` constant used in the window title, so patch both or
+          # the title bar disagrees with the release.
+          VERSION="$VERSION" bun -e "
             const fs = require('fs');
-            const conf = JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json', 'utf8'));
-            conf.version = '$VERSION';
-            fs.writeFileSync('src-tauri/tauri.conf.json', JSON.stringify(conf, null, 2) + '\n');
+            for (const p of ['src-tauri/tauri.conf.json', 'package.json']) {
+              const o = JSON.parse(fs.readFileSync(p, 'utf8'));
+              o.version = process.env.VERSION;
+              fs.writeFileSync(p, JSON.stringify(o, null, 2) + '\n');
+            }
           "
+
+      # Opt-in Developer ID signing. With these secrets set, the .app is signed
+      # with a real Apple-issued certificate, notarized, and stapled, so a .dmg
+      # downloaded in a browser opens with NO Gatekeeper prompt. Without them the
+      # build still works, falling back to tauri.conf.json's ad-hoc identity.
+      #
+      # These are exported here rather than interpolated into the build step's
+      # `env:` because GitHub renders an unset secret as an EMPTY STRING, and an
+      # empty APPLE_SIGNING_IDENTITY does NOT fall back to the config -- Tauri
+      # runs `codesign -s ""`, which fails the whole build (verified locally).
+      # Setting them only once they are known non-empty avoids that.
+      #
+      # See docs/macos-code-signing.md for how to produce each value.
+      - name: Configure macOS code signing
+        if: matrix.target == 'macos-universal'
+        shell: bash
+        env:
+          CERT: ${{ secrets.APPLE_CERTIFICATE }}
+          CERT_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          NOTARY_APPLE_ID: ${{ secrets.APPLE_ID }}
+          NOTARY_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          NOTARY_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$CERT" ] || [ -z "$IDENTITY" ]; then
+            echo "SLEAP_SIGNING_MODE=adhoc" >> "$GITHUB_ENV"
+            echo "::notice::No Apple Developer ID secrets set -- signing ad-hoc." \
+                 "The .dmg installs cleanly via scripts/install.sh, but a browser" \
+                 "download will be gated by Gatekeeper. See docs/macos-code-signing.md."
+            exit 0
+          fi
+
+          # Heredoc form: a base64 cert may wrap, and a multi-line value written as
+          # KEY=VALUE would corrupt the env file.
+          {
+            echo "APPLE_CERTIFICATE<<__SLEAP_EOF__"
+            printf '%s\n' "$CERT"
+            echo "__SLEAP_EOF__"
+            echo "APPLE_CERTIFICATE_PASSWORD=$CERT_PASSWORD"
+            echo "APPLE_SIGNING_IDENTITY=$IDENTITY"
+          } >> "$GITHUB_ENV"
+
+          if [ -n "$NOTARY_APPLE_ID" ] && [ -n "$NOTARY_PASSWORD" ] && [ -n "$NOTARY_TEAM_ID" ]; then
+            {
+              echo "APPLE_ID=$NOTARY_APPLE_ID"
+              echo "APPLE_PASSWORD=$NOTARY_PASSWORD"
+              echo "APPLE_TEAM_ID=$NOTARY_TEAM_ID"
+            } >> "$GITHUB_ENV"
+            echo "SLEAP_SIGNING_MODE=developer-id-notarized" >> "$GITHUB_ENV"
+            echo "Developer ID signing + notarization enabled."
+          else
+            echo "SLEAP_SIGNING_MODE=developer-id" >> "$GITHUB_ENV"
+            echo "::warning::Signing with a Developer ID but NOT notarizing --" \
+                 "APPLE_ID, APPLE_PASSWORD and APPLE_TEAM_ID must all three be set." \
+                 "An un-notarized Developer ID build is still gated in a browser."
+          fi
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
@@ -155,37 +262,231 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
-      # macOS only: prove the bundle really is validly signed before we ship it.
-      # An .app carrying only the linker's ad-hoc signature (no _CodeSignature,
-      # Info.plist not bound) makes macOS report "SLEAP is damaged and can't be
-      # opened" -- a dead end with no "Open Anyway". `signingIdentity: "-"` in
-      # tauri.conf.json is what prevents that, and this asserts it held.
+      # Tauri notarizes and staples the .app, then builds the .dmg around it. The
+      # disk image itself is left un-notarized, and Gatekeeper assesses the image
+      # too when a quarantined .dmg is opened -- so without this, a browser
+      # download still gets a prompt even though the app inside is notarized.
+      - name: Notarize and staple the .dmg
+        if: matrix.target == 'macos-universal' && env.SLEAP_SIGNING_MODE == 'developer-id-notarized'
+        shell: bash
+        run: |
+          set -euo pipefail
+          B="${{ matrix.bundle-dir }}"
+          DMG="$(find "$B/dmg" -maxdepth 1 -type f -name '*.dmg' ! -name 'rw.*' | head -1)"
+          [ -n "$DMG" ] || { echo "::error::no .dmg found under $B/dmg"; exit 1; }
+          echo "Notarizing $(basename "$DMG")"
+
+          # --wait blocks on Apple's service, which is usually ~1-5 min but has no
+          # SLA; the timeout keeps a bad day from eating the job budget.
+          xcrun notarytool submit "$DMG" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait --timeout 30m
+
+          xcrun stapler staple "$DMG"
+          xcrun stapler validate "$DMG"
+          echo "Stapled $(basename "$DMG")"
+
+      # macOS only, and the whole point of this workflow: prove all three shipped
+      # macOS artifacts really carry a valid bundle signature BEFORE anything is
+      # published. An .app carrying only the linker's ad-hoc signature (no
+      # Contents/_CodeSignature, "Sealed Resources=none") makes macOS report
+      # "SLEAP is damaged and can't be opened" -- a dead end with no "Open
+      # Anyway", because Gatekeeper records no policy verdict to override.
+      # `bundle.macOS.signingIdentity: "-"` in tauri.conf.json is what prevents
+      # that; this asserts it actually held.
       - name: Verify macOS code signature
         if: matrix.target == 'macos-universal'
+        shell: bash
         run: |
-          set -eu
-          APP="${{ matrix.bundle-dir }}/macos/SLEAP.app"
-          codesign -dv --verbose=2 "$APP"
-          codesign --verify --deep --strict --verbose=2 "$APP"
-          if ! codesign -dv "$APP" 2>&1 | grep -q "Sealed Resources"; then
-            echo "::error::SLEAP.app has no sealed resources -- the bundle was not signed"
-            exit 1
+          set -euo pipefail
+          B="${{ matrix.bundle-dir }}"
+          [ -d "$B" ] || { echo "::error::bundle dir $B does not exist"; exit 1; }
+          APP="$B/macos/SLEAP.app"
+          [ -d "$APP" ] || { echo "::error::$APP does not exist"; exit 1; }
+
+          assert_signed() {
+            _what="$1"; _app="$2"; _strict="$3"
+            # Capture once. `codesign -dv | grep -q` looks fine but grep exits on
+            # the first match, codesign then dies of SIGPIPE, and `pipefail` turns
+            # that into a failed pipeline -- a race that fails the build at random.
+            _desc="$(codesign -dv --verbose=2 "$_app" 2>&1 || true)"
+            echo "::group::codesign -dv ($_what)"
+            printf '%s\n' "$_desc"
+            echo "::endgroup::"
+            if [ "$_strict" = strict ]; then
+              codesign --verify --deep --strict --verbose=2 "$_app"
+              # Without --arch, codesign checks only the host (arm64) slice, so
+              # an Intel-slice regression would ship unnoticed.
+              codesign --verify --deep --strict --arch x86_64 --verbose=2 "$_app"
+              codesign --verify --deep --strict --arch arm64 --verbose=2 "$_app"
+            else
+              # The copy inside the .dmg is mutated after signing: tauri-action
+              # sets TAURI_BUNDLER_DMG_IGNORE_CI=true, which re-enables
+              # bundle_dmg.sh's Finder AppleScript (it sets the bundle's
+              # kIsExtensionHidden FinderInfo). That detritus can trip --strict
+              # while leaving the signature perfectly valid for launch, so verify
+              # this copy without --strict and assert the seal separately.
+              codesign --verify --deep --verbose=2 "$_app"
+            fi
+            # "Sealed Resources=none" CONTAINS the string "Sealed Resources", so
+            # a bare match on that passes on the exact broken state this guard
+            # exists to catch. Require the "version=" form.
+            case "$_desc" in
+              *"Sealed Resources version="*) ;;
+              *) echo "::error::$_what reports 'Sealed Resources=none' -- the bundle was not signed"; exit 1 ;;
+            esac
+            # Which identity we expect depends on whether the Developer ID secrets
+            # are configured. Asserting the mode both ways means a silently-dropped
+            # certificate cannot quietly downgrade a release to ad-hoc.
+            if [ "${SLEAP_SIGNING_MODE:-adhoc}" = adhoc ]; then
+              case "$_desc" in
+                *flags=*adhoc*) ;;
+                *) echo "::error::$_what is not ad-hoc signed as configured"; exit 1 ;;
+              esac
+            else
+              case "$_desc" in
+                *flags=*adhoc*)
+                  echo "::error::$_what is ad-hoc signed, but Developer ID secrets" \
+                       "are configured -- the certificate did not take effect"
+                  exit 1
+                  ;;
+              esac
+              case "$_desc" in
+                *"Authority=Developer ID Application:"*) ;;
+                *) echo "::error::$_what has no Developer ID Application authority"; exit 1 ;;
+              esac
+              # Hardened runtime is mandatory for notarization to be accepted.
+              case "$_desc" in
+                *flags=*runtime*) ;;
+                *) echo "::error::$_what was signed without the hardened runtime"; exit 1 ;;
+              esac
+            fi
+            echo "ok: $_what carries a valid, sealed bundle signature"
+          }
+
+          # 1. The bundle the dmg and the updater tarball are both built FROM.
+          test -d "$APP/Contents/_CodeSignature" \
+            || { echo "::error::SLEAP.app has no Contents/_CodeSignature"; exit 1; }
+          assert_signed "bundle-dir SLEAP.app" "$APP" strict
+
+          # Both slices must actually be present, not just verifiable.
+          ARCHS="$(lipo -archs "$APP/Contents/MacOS/sleap-app")"
+          echo "slices: $ARCHS"
+          case "$ARCHS" in
+            *x86_64*) ;;
+            *) echo "::error::no x86_64 slice -- Intel Macs cannot run this build"; exit 1 ;;
+          esac
+          case "$ARCHS" in
+            *arm64*) ;;
+            *) echo "::error::no arm64 slice"; exit 1 ;;
+          esac
+
+          # 2. The .app a tester actually drags out of the .dmg.
+          DMG="$(find "$B/dmg" -maxdepth 1 -type f -name '*.dmg' ! -name 'rw.*' | head -1)"
+          [ -n "$DMG" ] || { echo "::error::no .dmg found under $B/dmg"; exit 1; }
+          MNT="$(mktemp -d)"
+          cleanup_mnt() { hdiutil detach "$MNT" -quiet 2>/dev/null || true; }
+          trap cleanup_mnt EXIT
+          hdiutil attach -nobrowse -noautoopen -readonly -quiet -mountpoint "$MNT" "$DMG"
+          assert_signed "SLEAP.app inside $(basename "$DMG")" "$MNT/SLEAP.app" loose
+          cleanup_mnt
+          trap - EXIT
+
+          # 3. The .app the in-app updater swaps in.
+          TGZ="$B/macos/SLEAP.app.tar.gz"
+          [ -f "$TGZ" ] || { echo "::error::$TGZ is missing"; exit 1; }
+          TDIR="$(mktemp -d)"
+          tar -xzf "$TGZ" -C "$TDIR"
+          assert_signed "SLEAP.app extracted from SLEAP.app.tar.gz" "$TDIR/SLEAP.app" strict
+
+          # 4. The end-to-end question no codesign invocation answers: would
+          # Gatekeeper actually let a user open this? Only meaningful once the
+          # build is notarized -- an ad-hoc build is expected to be rejected, and
+          # that is exactly why scripts/install.sh exists.
+          if [ "${SLEAP_SIGNING_MODE:-adhoc}" = developer-id-notarized ]; then
+            echo "::group::spctl assessment"
+            spctl -a -vvv -t exec "$APP"
+            spctl -a -vvv -t open --context context:primary-signature "$DMG"
+            echo "::endgroup::"
+            # A notarized app must carry a stapled ticket, or a user who is offline
+            # (or behind a firewall blocking Apple's OCSP) still gets prompted.
+            xcrun stapler validate "$APP"
+            echo "Notarized, stapled, and accepted by Gatekeeper."
+          else
+            echo "All three macOS artifacts carry a valid ad-hoc bundle signature."
+            echo "::notice::This build is NOT notarized -- install it with" \
+                 "scripts/install.sh, or clear com.apple.quarantine by hand."
           fi
-          lipo -info "$APP/Contents/MacOS/sleap-app"
+
+      # A mismatched TAURI_SIGNING_PRIVATE_KEY is only a WARNING from the
+      # bundler: the build goes green, the release looks perfect, and every
+      # in-app update is rejected at runtime with an opaque signature error.
+      # minisign embeds the 8-byte key id in both the public key and each
+      # signature, so compare them directly.
+      - name: Verify updater signatures match the configured public key
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64, glob, json, os, sys
+
+          def keyid(blob: str) -> str:
+              line = next(l for l in blob.splitlines()
+                          if l and not l.startswith(("untrusted", "trusted")))
+              return base64.b64decode(line)[2:10][::-1].hex().upper()
+
+          conf = json.load(open("src-tauri/tauri.conf.json"))
+          want = keyid(base64.b64decode(conf["plugins"]["updater"]["pubkey"]).decode())
+          print("configured pubkey key id:", want)
+
+          sigs = sorted(glob.glob("src-tauri/target/**/release/bundle/**/*.sig",
+                                  recursive=True))
+          if not sigs:
+              print("::warning::no .sig files produced; the in-app updater will "
+                    "have nothing to verify")
+              sys.exit(0)
+
+          bad = []
+          for p in sigs:
+              got = keyid(base64.b64decode(open(p, "rb").read()).decode())
+              print(f"  {os.path.basename(p)}: {got}")
+              if got != want:
+                  bad.append((p, got))
+          if bad:
+              for p, got in bad:
+                  print(f"::error::{p} was signed with key id {got}, but "
+                        f"plugins.updater.pubkey expects {want}; every update "
+                        f"would be rejected at runtime")
+              sys.exit(1)
+          print("All updater signatures match the configured public key.")
+          PY
 
       - name: Collect artifacts
         shell: bash
         run: |
           set -euo pipefail
+          # rm, not just mkdir: a stale artifacts/ in the checkout (it has been
+          # committed by accident before) would be re-uploaded from every leg,
+          # defeat the zero-count guard below, and attach an old build's files to
+          # a new release -- including a valid-but-stale updater payload, which
+          # the updater would happily install as a silent downgrade.
+          rm -rf artifacts
           mkdir -p artifacts
           B="${{ matrix.bundle-dir }}"
+          [ -d "$B" ] || { echo "::error::bundle dir $B does not exist -- did the output path change?"; exit 1; }
 
           # Copy by extension rather than by hardcoded per-platform paths: the
           # bundle dir moves when --target is passed (as it is on macOS), and the
-          # previous `cp ... || true` form would silently collect nothing.
-          find "$B" -maxdepth 2 -type f \( \
+          # previous `cp ... || true` form silently collected nothing.
+          # `! -name 'rw.*'` skips create-dmg's read-write intermediate
+          # (rw.<pid>.SLEAP_<ver>_universal.dmg), which lives in the same
+          # directory and survives a failed dmg finalize.
+          find "$B" -maxdepth 2 -type f ! -name 'rw.*' \( \
             -name '*.dmg' \
             -o -name '*.deb' \
+            -o -name '*.rpm' \
             -o -name '*.AppImage' \
             -o -name '*.msi' \
             -o -name '*-setup.exe' \
@@ -194,7 +495,7 @@ jobs:
             \) -exec cp {} artifacts/ \;
 
           ls -lh artifacts/
-          count=$(find artifacts -type f | wc -l | tr -d '[:space:]')
+          count="$(find artifacts -type f | wc -l | tr -d '[:space:]')"
           if [ "$count" -eq 0 ]; then
             echo "::error::no bundles found under $B -- did the bundle output path change?"
             exit 1
@@ -202,7 +503,7 @@ jobs:
           echo "Collected $count file(s)"
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: sleap-app-${{ matrix.target }}
           path: artifacts/*
@@ -211,10 +512,12 @@ jobs:
 
   release:
     needs: build
-    # `always()` on purpose. With `needs: build` alone, one cancelled matrix leg
-    # skipped this job entirely -- which is how release v0.1.1 ended up with zero
-    # assets even though macOS and Windows had both built fine.
-    if: ${{ always() && github.event_name == 'release' }}
+    # `!cancelled()` on purpose, and NOT `always()`:
+    #  - with a bare `needs: build`, one failed or cancelled matrix leg skipped
+    #    this job entirely, which is how release v0.1.1 got zero assets;
+    #  - `always()` would also publish a half-built release from a run someone
+    #    cancelled by hand, which is worse than shipping nothing.
+    if: ${{ !cancelled() && github.event_name == 'release' && needs.build.result != 'skipped' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -222,7 +525,7 @@ jobs:
 
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         continue-on-error: true
         with:
           path: artifacts
@@ -230,21 +533,40 @@ jobs:
 
       - name: Summarize artifacts
         run: |
-          set -eu
+          set -euo pipefail
           mkdir -p artifacts
           ls -lhR artifacts/ || true
-          count=$(find artifacts -type f | wc -l | tr -d '[:space:]')
+          count="$(find artifacts -type f | wc -l | tr -d '[:space:]')"
           if [ "$count" -eq 0 ]; then
             echo "::error::every platform build failed; nothing to attach to this release"
             exit 1
           fi
-          for pattern in '*.dmg' '*-setup.exe' '*.msi' '*.deb' '*.AppImage'; do
+          {
+            echo "### Release assets"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          missing=0
+          for pattern in '*_universal.dmg' '*-setup.exe' '*.msi' '*.deb' '*.AppImage'; do
             if find artifacts -name "$pattern" -type f | grep -q .; then
-              echo "present: $pattern"
+              echo "- ok \`$pattern\`" >> "$GITHUB_STEP_SUMMARY"
             else
+              echo "- **MISSING** \`$pattern\`" >> "$GITHUB_STEP_SUMMARY"
               echo "::warning::this release has no $pattern (that platform's build did not succeed)"
+              missing=1
             fi
           done
+          if [ "$missing" -ne 0 ]; then
+            echo "MISSING_PLATFORM=1" >> "$GITHUB_ENV"
+          fi
+
+      # Binaries go up BEFORE the manifest is generated. Manifest generation used
+      # to run first, and when it threw the upload step never ran -- a release
+      # with zero assets caused by a bug in a file nothing installs.
+      - name: Upload binaries to the release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: artifacts/*
 
       - name: Generate update manifest (latest.json)
         env:
@@ -252,27 +574,45 @@ jobs:
           NOTES: ${{ github.event.release.body }}
           REPO: ${{ github.repository }}
         run: |
+          set -euo pipefail
           python3 <<'PY'
-          import datetime, glob, json, os
+          import datetime, glob, json, os, re
 
           tag = os.environ["TAG"]
           base = f'https://github.com/{os.environ["REPO"]}/releases/download/{tag}'
 
-          # Tauri v2 updater keys are "{os}-{arch}". macOS ships one universal
-          # bundle, so the same tarball serves both Apple Silicon and Intel.
-          # Ordered by preference -- an later rule only fills a key still unset,
-          # so NSIS wins over MSI deterministically.
+          # Keys are exactly what tauri-plugin-updater 2.10.1 looks up:
+          # updater_os() x updater_arch() gives "{os}-{arch}", and get_urls()
+          # tries "{os}-{arch}-{installer}" FIRST, then "{os}-{arch}"
+          # (src/updater.rs:578-586). Installer names are app/msi/nsis/appimage/
+          # deb/rpm (src/updater.rs:59-68). There is NO "darwin-universal" key --
+          # each slice of a universal binary reports its own arch at runtime, so
+          # the one universal tarball must be registered under BOTH darwin keys.
+          #
+          # Ordered by preference. A later rule only fills a key still unset, so
+          # NSIS deterministically beats MSI for the bare windows-x86_64 fallback
+          # (previously a glob-order coin flip). Both .tar.gz and bare forms are
+          # listed for Windows/Linux so this is correct whether
+          # createUpdaterArtifacts is `true` (current: the installer itself is
+          # the payload, verified against real CI output) or "v1Compatible"
+          # (which additionally emits .nsis.zip / .AppImage.tar.gz).
           RULES = [
-              (".app.tar.gz.sig", ["darwin-aarch64", "darwin-x86_64"]),
-              ("-setup.exe.sig", ["windows-x86_64"]),
-              (".msi.sig", ["windows-x86_64"]),
-              (".AppImage.sig", ["linux-x86_64"]),
+              (".app.tar.gz.sig",        ["darwin-aarch64-app", "darwin-x86_64-app",
+                                          "darwin-aarch64", "darwin-x86_64"]),
+              ("-setup.nsis.zip.sig",    ["windows-x86_64-nsis", "windows-x86_64"]),
+              ("-setup.exe.sig",         ["windows-x86_64-nsis", "windows-x86_64"]),
+              (".msi.zip.sig",           ["windows-x86_64-msi", "windows-x86_64"]),
+              (".msi.sig",               ["windows-x86_64-msi", "windows-x86_64"]),
+              (".AppImage.tar.gz.sig",   ["linux-x86_64-appimage", "linux-x86_64"]),
+              (".AppImage.sig",          ["linux-x86_64-appimage", "linux-x86_64"]),
+              (".deb.sig",               ["linux-x86_64-deb"]),
+              (".rpm.sig",               ["linux-x86_64-rpm"]),
           ]
 
           platforms = {}
           for suffix, keys in RULES:
               for sig_path in sorted(glob.glob(f"artifacts/*{suffix}")):
-                  artifact = os.path.basename(sig_path)[:-len(".sig")]
+                  artifact = os.path.basename(sig_path)[: -len(".sig")]
                   if not os.path.exists(os.path.join("artifacts", artifact)):
                       print(f"::warning::{artifact} is missing next to its .sig; skipping")
                       continue
@@ -292,12 +632,15 @@ jobs:
 
           for key in ("darwin-aarch64", "darwin-x86_64", "windows-x86_64", "linux-x86_64"):
               if key not in platforms:
-                  print(f"::warning::latest.json has no entry for {key}")
+                  print(f"::warning::latest.json has no entry for {key}; that "
+                        f"platform will not receive updates from this release")
 
           manifest = {
-              "version": tag.lstrip("v"),
-              # Passed through the environment rather than interpolated into this
-              # script, so quotes and newlines in the release body are harmless.
+              # Must equal the version the running app reports, i.e. the version
+              # written into tauri.conf.json above: strip ONE leading "v".
+              "version": re.sub(r"^v", "", tag),
+              # From the environment, never interpolated: quotes and newlines in
+              # a release body are ordinary data here.
               "notes": os.environ.get("NOTES", ""),
               "pub_date": datetime.datetime.now(datetime.timezone.utc)
                   .strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -309,10 +652,18 @@ jobs:
           print(json.dumps(manifest, indent=2))
           PY
 
-      - name: Upload artifacts and manifest to release
-        uses: softprops/action-gh-release@v2
+      - name: Upload the update manifest to the release
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.event.release.tag_name }}
-          files: |
-            artifacts/*
-            latest.json
+          files: latest.json
+
+      # The updater endpoint resolves to /releases/latest, so a release missing a
+      # platform silently disables updates for every existing install on it.
+      # Say so loudly at the end, once the assets are already safely attached.
+      - name: Fail loudly if this release is incomplete
+        if: ${{ env.MISSING_PLATFORM == '1' }}
+        run: |
+          echo "::error::this release is missing at least one platform's installer;"\
+               "see the warnings above. The assets that did build are attached."
+          exit 1
