@@ -57,7 +57,13 @@ function Toggle({
   storeKey,
 }: {
   label: string;
-  storeKey: "showInstances" | "showLabels" | "showEdges" | "showNonVisibleNodes" | "colorPredicted";
+  storeKey:
+    | "showInstances"
+    | "showLabels"
+    | "showEdges"
+    | "showNonVisibleNodes"
+    | "colorPredicted"
+    | "showInset";
 }) {
   const value = useAppStore((s) => s[storeKey]) as boolean;
   const toggle = useAppStore((s) => s.toggle);
@@ -415,6 +421,7 @@ export function ViewPanel() {
         </div>
         <SliderRow label="Marker size" storeKey="markerSize" min={1} max={20} />
         <SliderRow label="Label size" storeKey="nodeLabelSize" min={0} max={20} />
+        <Toggle label="Show magnifier" storeKey="showInset" />
         <SliderRow label="Inset size" storeKey="insetSize" min={100} max={800} step={10} />
         <SliderRow label="Inset zoom" storeKey="insetZoom" min={1} max={20} />
       </Section>

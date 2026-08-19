@@ -1247,6 +1247,7 @@ export function VideoPlayer() {
   // Render zoomed inset during node drag or placement mode
   const INSET_SIZE = useAppStore((s) => s.insetSize);
   const INSET_ZOOM = useAppStore((s) => s.insetZoom);
+  const showInset = useAppStore((s) => s.showInset);
   useEffect(() => {
     const inset = insetCanvasRef.current;
     if (!inset) return;
@@ -1257,6 +1258,11 @@ export function VideoPlayer() {
       inset.style.top = "";
       inset.style.right = "";
     };
+
+    if (!showInset) {
+      hideInset();
+      return;
+    }
 
     const isDragInset = interactionMode === "dragging" && !!dragNodeInfo;
     const isPlaceInset = isPlacingNodes && !!cursorScene.current;
@@ -1444,6 +1450,7 @@ export function VideoPlayer() {
     skeleton,
     placementNodeIdx,
     hoveredNode,
+    showInset,
   ]);
 
   // Fit view to instances when 'fit' is enabled and frame/labels change

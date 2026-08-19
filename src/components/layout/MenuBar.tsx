@@ -521,6 +521,7 @@ function ViewMenu() {
   const showLabels = useAppStore((s) => s.showLabels);
   const showEdges = useAppStore((s) => s.showEdges);
   const showNonVisibleNodes = useAppStore((s) => s.showNonVisibleNodes);
+  const showInset = useAppStore((s) => s.showInset);
   const colorPredicted = useAppStore((s) => s.colorPredicted);
   const fit = useAppStore((s) => s.fit);
   const edgeStyle = useAppStore((s) => s.edgeStyle);
@@ -667,6 +668,12 @@ function ViewMenu() {
           onCheckedChange={() => toggle("showCrosshair")}
         >
           Crosshair When Zoomed
+        </MenubarCheckboxItem>
+        <MenubarCheckboxItem
+          checked={showInset}
+          onCheckedChange={() => toggle("showInset")}
+        >
+          Magnifier When Moving Nodes
         </MenubarCheckboxItem>
         <MenubarSeparator />
         <MenubarSub>

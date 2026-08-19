@@ -180,6 +180,8 @@ export interface AppState {
   nodeLabelSize: number;
   insetSize: number;
   insetZoom: number;
+  /** Show the zoomed-in magnifier while dragging/placing a node or holding Shift. Persisted. */
+  showInset: boolean;
   trailLength: number;
   trailShade: string;
   lutMin: number;
@@ -476,6 +478,7 @@ export const PERSISTED_KEYS: (keyof AppState)[] = [
   "trailLength",
   "insetSize",
   "insetZoom",
+  "showInset",
   "defaultToPan",
   "seekbarHeaderGraph",
   "seekbarHeaderReduction",
@@ -566,6 +569,7 @@ export const useAppStore = create<AppState>()(
       nodeLabelSize: 12,
       insetSize: 400,
       insetZoom: 2,
+      showInset: true,
       trailLength: 0,
       trailShade: "Normal",
       lutMin: 0,
