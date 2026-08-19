@@ -6,6 +6,12 @@ import {
   SAVE_PROJECT_STEP,
   GENERATE_SUGGESTIONS_STEP,
   CREATE_SKELETON_STEP,
+  LABEL_MORE_SUGGESTIONS_STEP,
+  SELECT_ANCHOR_PART_STEP,
+  RUN_TRAINING_STEP,
+  CORRECT_PREDICTIONS_STEP,
+  RETRAIN_STEP,
+  RUN_INFERENCE_STEP,
   buildTutorialSteps,
   snapshotTutorialState,
   type TutorialWatchState,
@@ -19,14 +25,41 @@ function watchState(overrides: Partial<TutorialWatchState> = {}): TutorialWatchS
     skeletonBuildMode: false,
     newProjectDialogOpen: false,
     projectLoaded: false,
+    trainingStatus: "idle",
+    trainingAnchorPart: null,
+    inferenceStatus: "idle",
     ...overrides,
   };
 }
 
-function fakeLabels(opts: { videos?: number; suggestions?: number } = {}) {
+/**
+ * `suggestions` frames are numbered 0..count-1; `labeledFrameIdxs` and
+ * `predictedFrameIdxs` mark which of those already carry a user label or an
+ * unaccepted prediction, matching `frameHasUserLabels`/
+ * `frameHasPredictedInstances` (both keyed on `labels.find({video, frameIdx})`).
+ */
+function fakeLabels(
+  opts: {
+    videos?: number;
+    suggestions?: number;
+    labeledFrameIdxs?: number[];
+    predictedFrameIdxs?: number[];
+  } = {},
+) {
+  const labeledSet = new Set(opts.labeledFrameIdxs ?? []);
+  const predictedSet = new Set(opts.predictedFrameIdxs ?? []);
+  const suggestions = new Array(opts.suggestions ?? 0)
+    .fill(null)
+    .map((_, i) => ({ video: {}, frameIdx: i }));
   return {
     videos: new Array(opts.videos ?? 0).fill(null),
-    suggestions: new Array(opts.suggestions ?? 0).fill(null),
+    suggestions,
+    find: ({ frameIdx }: { frameIdx: number }) => [
+      {
+        isUserLabeled: labeledSet.has(frameIdx),
+        hasPredictedInstances: predictedSet.has(frameIdx),
+      },
+    ],
   } as unknown as TutorialWatchState["labels"];
 }
 
@@ -46,6 +79,12 @@ describe("buildTutorialSteps", () => {
       "save-project",
       "generate-suggestions",
       "create-skeleton",
+      "label-more-suggestions",
+      "select-anchor-part",
+      "run-training",
+      "correct-predictions",
+      "retrain",
+      "run-inference-video",
     ]);
   });
 
@@ -56,6 +95,12 @@ describe("buildTutorialSteps", () => {
       "save-project",
       "generate-suggestions",
       "create-skeleton",
+      "label-more-suggestions",
+      "select-anchor-part",
+      "run-training",
+      "correct-predictions",
+      "retrain",
+      "run-inference-video",
     ]);
   });
 });
@@ -167,5 +212,142 @@ describe("create-skeleton step", () => {
       skeletonBuildMode: false,
     });
     expect(CREATE_SKELETON_STEP.isComplete(entry, current)).toBe(true);
+  });
+});
+
+describe("label-more-suggestions step", () => {
+  it("is incomplete with no suggestions at all", () => {
+    const entry = snapshotTutorialState(watchState());
+    const current = watchState({ labels: fakeLabels({ suggestions: 0 }) });
+    expect(LABEL_MORE_SUGGESTIONS_STEP.isComplete(entry, current)).toBe(false);
+  });
+
+  it("is incomplete when fewer than half the suggestions are labeled", () => {
+    const entry = snapshotTutorialState(watchState());
+    const current = watchState({
+      labels: fakeLabels({ suggestions: 10, labeledFrameIdxs: [0, 1, 2, 3] }),
+    });
+    expect(LABEL_MORE_SUGGESTIONS_STEP.isComplete(entry, current)).toBe(false);
+  });
+
+  it("completes once at least half the suggestions are labeled", () => {
+    const entry = snapshotTutorialState(watchState());
+    const current = watchState({
+      labels: fakeLabels({
+        suggestions: 10,
+        labeledFrameIdxs: [0, 1, 2, 3, 4],
+      }),
+    });
+    expect(LABEL_MORE_SUGGESTIONS_STEP.isComplete(entry, current)).toBe(true);
+  });
+});
+
+describe("select-anchor-part step", () => {
+  it("is incomplete while the anchor part is unset (Auto)", () => {
+    const entry = snapshotTutorialState(watchState());
+    const current = watchState({ trainingAnchorPart: null });
+    expect(SELECT_ANCHOR_PART_STEP.isComplete(entry, current)).toBe(false);
+  });
+
+  it("completes once an explicit anchor part is picked", () => {
+    const entry = snapshotTutorialState(watchState());
+    const current = watchState({ trainingAnchorPart: "thorax" });
+    expect(SELECT_ANCHOR_PART_STEP.isComplete(entry, current)).toBe(true);
+  });
+});
+
+describe("run-training step", () => {
+  it("is incomplete if training never ran during this step", () => {
+    const entry = snapshotTutorialState(watchState({ trainingStatus: "idle" }));
+    const current = watchState({ trainingStatus: "completed" });
+    expect(RUN_TRAINING_STEP.isComplete(entry, current)).toBe(false);
+  });
+
+  it("is incomplete while training is still running", () => {
+    const entry = snapshotTutorialState(watchState({ trainingStatus: "running" }));
+    const current = watchState({ trainingStatus: "running" });
+    expect(RUN_TRAINING_STEP.isComplete(entry, current)).toBe(false);
+  });
+
+  it("completes once a run seen during this step reaches completed", () => {
+    // The engine ORs `everTraining` forward as it observes `trainingStatus`;
+    // simulate that here directly on the entry snapshot (same idiom as
+    // `everEnteredSkeletonBuild` above).
+    const entry = snapshotTutorialState(watchState());
+    entry.everTraining = true;
+    const current = watchState({ trainingStatus: "completed" });
+    expect(RUN_TRAINING_STEP.isComplete(entry, current)).toBe(true);
+  });
+});
+
+describe("correct-predictions step", () => {
+  it("is incomplete if no suggestion frame had a prediction at entry", () => {
+    const entry = snapshotTutorialState(
+      watchState({ labels: fakeLabels({ suggestions: 5 }) }),
+    );
+    const current = watchState({ labels: fakeLabels({ suggestions: 5 }) });
+    expect(CORRECT_PREDICTIONS_STEP.isComplete(entry, current)).toBe(false);
+  });
+
+  it("is incomplete while the predicted-frame count hasn't dropped", () => {
+    const entry = snapshotTutorialState(
+      watchState({
+        labels: fakeLabels({ suggestions: 5, predictedFrameIdxs: [0, 1] }),
+      }),
+    );
+    const current = watchState({
+      labels: fakeLabels({ suggestions: 5, predictedFrameIdxs: [0, 1] }),
+    });
+    expect(CORRECT_PREDICTIONS_STEP.isComplete(entry, current)).toBe(false);
+  });
+
+  it("completes once at least one predicted frame is accepted/corrected", () => {
+    const entry = snapshotTutorialState(
+      watchState({
+        labels: fakeLabels({ suggestions: 5, predictedFrameIdxs: [0, 1] }),
+      }),
+    );
+    const current = watchState({
+      labels: fakeLabels({ suggestions: 5, predictedFrameIdxs: [1] }),
+    });
+    expect(CORRECT_PREDICTIONS_STEP.isComplete(entry, current)).toBe(true);
+  });
+});
+
+describe("retrain step", () => {
+  it("is incomplete until a run seen during this step reaches completed", () => {
+    const entry = snapshotTutorialState(watchState({ trainingStatus: "idle" }));
+    const current = watchState({ trainingStatus: "completed" });
+    expect(RETRAIN_STEP.isComplete(entry, current)).toBe(false);
+  });
+
+  it("completes once a run seen during this step reaches completed", () => {
+    const entry = snapshotTutorialState(watchState());
+    entry.everTraining = true;
+    const current = watchState({ trainingStatus: "completed" });
+    expect(RETRAIN_STEP.isComplete(entry, current)).toBe(true);
+  });
+});
+
+describe("run-inference-video step", () => {
+  it("is incomplete if inference never ran during this step", () => {
+    const entry = snapshotTutorialState(watchState());
+    const current = watchState({ inferenceStatus: "completed" });
+    expect(RUN_INFERENCE_STEP.isComplete(entry, current)).toBe(false);
+  });
+
+  it("is incomplete while inference is still running", () => {
+    const entry = snapshotTutorialState(watchState({ inferenceStatus: "running" }));
+    const current = watchState({ inferenceStatus: "running" });
+    expect(RUN_INFERENCE_STEP.isComplete(entry, current)).toBe(false);
+  });
+
+  it("does not complete from status alone without a matching DOM target select", () => {
+    // No matching data-tutorial element exists in this DOM-less test env, so
+    // textContent reads back empty — same idiom as generate-suggestions above.
+    const entry = snapshotTutorialState(watchState());
+    entry.everInferenceRunning = true;
+    const current = watchState({ inferenceStatus: "completed" });
+    expect(RUN_INFERENCE_STEP.isComplete(entry, current)).toBe(false);
   });
 });

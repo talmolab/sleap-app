@@ -499,7 +499,7 @@ export function InferencePanel() {
           <div className="space-y-1">
             <span className="text-[10px] text-muted-foreground">Inference Target</span>
             <Select value={frameRange} onValueChange={(v) => setFrameRange(v as FrameRange)} disabled={isRunning}>
-              <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
+              <SelectTrigger className="h-7 text-xs" data-tutorial="inference-target-select"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="frame">Current frame</SelectItem>
                 <SelectItem value="custom">Custom range</SelectItem>
@@ -724,7 +724,12 @@ export function InferencePanel() {
           <Settings2 className="h-3 w-3 mr-1.5" />
           Full Configuration...
         </Button>
-        <Button className="w-full h-8 text-xs" onClick={handleRunInference} disabled={!canRun}>
+        <Button
+          className="w-full h-8 text-xs"
+          onClick={handleRunInference}
+          disabled={!canRun}
+          data-tutorial="run-inference-button"
+        >
           <Play className="h-3.5 w-3.5 mr-1.5" /> {remoteEnabled ? "Run Remote Inference" : "Run Inference"}
         </Button>
       </div>

@@ -485,7 +485,7 @@ function AnchorPartField({
           onValueChange={(v) => onUpdate({ anchorPart: v === "__auto__" ? null : v })}
           disabled={disabled}
         >
-          <SelectTrigger className="h-7 text-xs flex-1"><SelectValue placeholder="Auto" /></SelectTrigger>
+          <SelectTrigger className="h-7 text-xs flex-1" data-tutorial="anchor-part-select"><SelectValue placeholder="Auto" /></SelectTrigger>
           <SelectContent>
             <SelectItem value="__auto__">Auto (bbox center)</SelectItem>
             {skeleton?.nodes.map((n) => {
@@ -1211,6 +1211,7 @@ export function TrainingPanel() {
               className="w-full h-8 text-xs"
               onClick={handleStart}
               disabled={!canStart}
+              data-tutorial="start-training-button"
             >
               <Upload className="h-3.5 w-3.5 mr-1.5" />
               {remoteEnabled ? "Start Remote Training" : "Start Training"}

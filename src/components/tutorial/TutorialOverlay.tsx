@@ -12,12 +12,31 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
 import { useAppStore } from "@/stores/appStore";
+import { useTrainingStore } from "@/stores/trainingStore";
+import { useInferenceStore } from "@/stores/inferenceStore";
 import {
   snapshotTutorialState,
   type TutorialSnapshot,
   type TutorialWatchState,
 } from "@/lib/tutorial/steps";
 import { useTutorialTargetRect } from "./useTutorialTargetRect";
+
+/** How often to re-check the active step's `isComplete` against stores this
+ * overlay doesn't otherwise subscribe to (training/inference status live in
+ * their own stores, not appStore) — a small poll instead of hand-listing every
+ * cross-store field as a React dependency. */
+const RECHECK_INTERVAL_MS = 500;
+
+/**
+ * Step ids where the tutorial forces every loaded training config's epoch
+ * count down to a small number, so a first-time user's training run finishes
+ * in the tutorial rather than taking the real (much longer) default. Applied
+ * every recheck tick (not just once) because baseline configs for the
+ * selected model type load asynchronously in `TrainingPanel` after the panel
+ * mounts, so they may not exist yet the instant this step becomes active.
+ */
+const FAST_TRAINING_STEP_IDS = new Set(["select-anchor-part", "run-training"]);
+const TUTORIAL_MAX_EPOCHS = 5;
 
 const SPOTLIGHT_PADDING = 6;
 const CARD_GAP = 12;
@@ -58,6 +77,11 @@ function computeCardPosition(
 
 function currentWatchState(): TutorialWatchState {
   const s = useAppStore.getState();
+  const training = useTrainingStore.getState();
+  const inference = useInferenceStore.getState();
+  const anchorConfig = training.config.configs.find(
+    (c) => c.slot === "centered_instance",
+  );
   return {
     labels: s.labels,
     hasChanges: s.hasChanges,
@@ -65,6 +89,9 @@ function currentWatchState(): TutorialWatchState {
     skeletonBuildMode: s.skeletonBuildMode,
     newProjectDialogOpen: s.newProjectDialogOpen,
     projectLoaded: s.projectLoaded,
+    trainingStatus: training.status,
+    trainingAnchorPart: anchorConfig?.hyperparams.anchorPart ?? null,
+    inferenceStatus: inference.status,
   };
 }
 
@@ -92,15 +119,43 @@ export function TutorialOverlay() {
 
   // Re-check completion whenever anything a step might care about changes.
   useEffect(() => {
-    if (!step || !entrySnapshotRef.current) return;
-    const watch = currentWatchState();
-    // Sticky: once we've seen the skeleton builder open during this step,
-    // remember it even after it closes again (see steps.ts doc comment).
-    entrySnapshotRef.current.everEnteredSkeletonBuild =
-      entrySnapshotRef.current.everEnteredSkeletonBuild || watch.skeletonBuildMode;
-    if (step.isComplete(entrySnapshotRef.current, watch)) {
-      useAppStore.getState().advanceTutorialStep();
-    }
+    if (!step) return;
+    const recheck = () => {
+      if (!entrySnapshotRef.current) return;
+      const watch = currentWatchState();
+      // Sticky flags: once we've seen the skeleton builder open (or training /
+      // inference start running) during this step, remember it even after it
+      // flips back (see steps.ts doc comments) — otherwise a step that reads
+      // "completed" from an earlier run before the user acts again would
+      // instantly satisfy isComplete.
+      entrySnapshotRef.current.everEnteredSkeletonBuild =
+        entrySnapshotRef.current.everEnteredSkeletonBuild || watch.skeletonBuildMode;
+      entrySnapshotRef.current.everTraining =
+        entrySnapshotRef.current.everTraining || watch.trainingStatus === "running";
+      entrySnapshotRef.current.everInferenceRunning =
+        entrySnapshotRef.current.everInferenceRunning ||
+        watch.inferenceStatus === "running";
+      if (FAST_TRAINING_STEP_IDS.has(step.id)) {
+        const training = useTrainingStore.getState();
+        for (const cf of training.config.configs) {
+          if (cf.hyperparams.maxEpochs !== TUTORIAL_MAX_EPOCHS) {
+            training.updateConfigHyperparams(cf.slot, {
+              maxEpochs: TUTORIAL_MAX_EPOCHS,
+            });
+          }
+        }
+      }
+      if (step.isComplete(entrySnapshotRef.current, watch)) {
+        useAppStore.getState().advanceTutorialStep();
+      }
+    };
+    recheck();
+    // Training/inference status live in their own stores (trainingStore /
+    // inferenceStore), not appStore, so this effect's dependency list can't
+    // reactively cover them — poll as a fallback instead of hand-listing every
+    // cross-store field here.
+    const intervalId = setInterval(recheck, RECHECK_INTERVAL_MS);
+    return () => clearInterval(intervalId);
   }, [step, editSeq, hasChanges, skeletonBuildMode, newProjectDialogOpen, projectLoaded]);
 
   const targetRect = useTutorialTargetRect(step?.targetSelector ?? null);
