@@ -67,43 +67,54 @@ jobs:
 
       - name: Install system dependencies (Linux)
         if: matrix.target == 'linux'
-        # The runners' Azure apt mirror intermittently blackholes connections.
-        # Without explicit Acquire timeouts, apt waits forever; this step once
-        # hung for six hours. Cap each fetch, retry the batch, cap the step.
-        timeout-minutes: 15
+        # This step once ate the full 6h job limit. Two distinct causes:
+        #
+        #  - The runners' Azure apt mirror blackholes connections, so apt falls
+        #    back to archive.ubuntu.com...
+        #  - ...where it then stalls on the large Packages indices, because IPv6
+        #    egress from Azure runners dribbles rather than failing. Acquire's
+        #    Timeout is an *inactivity* timeout, so a slow blackhole never trips
+        #    it -- ForceIPv4 is what actually fixes this.
+        #
+        # Belt and braces: `timeout` caps each attempt so a stall retries instead
+        # of consuming the whole step budget, and the step itself is capped.
+        timeout-minutes: 20
         run: |
-          set -eux
-          APT_OPTS="-o Acquire::Retries=3
-                    -o Acquire::http::Timeout=20
-                    -o Acquire::https::Timeout=20
-                    -o Acquire::ftp::Timeout=20"
+          set -eu
+          APT_OPTS="-o Acquire::ForceIPv4=true
+                    -o Acquire::Retries=3
+                    -o Acquire::http::Timeout=30
+                    -o Acquire::https::Timeout=30
+                    -o DPkg::Lock::Timeout=60"
 
-          for attempt in 1 2 3; do
-            if sudo apt-get $APT_OPTS update; then
-              break
-            fi
-            echo "apt-get update failed (attempt $attempt of 3); retrying"
-            sleep 10
-          done
+          apt_retry() {
+            for attempt in 1 2 3; do
+              if sudo timeout 300 apt-get $APT_OPTS "$@"; then
+                return 0
+              fi
+              echo "apt-get $1 failed or stalled (attempt $attempt of 3); retrying"
+              sleep 10
+            done
+            return 1
+          }
 
-          for attempt in 1 2 3; do
-            if sudo apt-get $APT_OPTS install -y --no-install-recommends \
-              libwebkit2gtk-4.1-dev \
-              libgtk-3-dev \
-              libjavascriptcoregtk-4.1-dev \
-              librsvg2-dev \
-              patchelf \
-              libglib2.0-dev \
-              libayatana-appindicator3-dev; then
-              break
-            fi
-            if [ "$attempt" = "3" ]; then
+          # A partial `update` is often still enough to resolve what we need, so
+          # only the install is allowed to fail the build.
+          apt_retry update ||
+            echo "::warning::apt-get update did not fully succeed; continuing anyway"
+
+          apt_retry install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libjavascriptcoregtk-4.1-dev \
+            librsvg2-dev \
+            patchelf \
+            libglib2.0-dev \
+            libayatana-appindicator3-dev ||
+            {
               echo "::error::could not install Linux build dependencies"
               exit 1
-            fi
-            echo "apt-get install failed (attempt $attempt of 3); retrying"
-            sleep 10
-          done
+            }
 
       - name: Setup bun
         uses: oven-sh/setup-bun@v2
