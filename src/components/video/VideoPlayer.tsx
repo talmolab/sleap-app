@@ -191,6 +191,52 @@ export function VideoPlayer() {
   } | null>(null);
   const shiftHeldOnMouseDown = useRef(false);
 
+  // Skeleton builder (place stage): inline rename overlay for a double-clicked
+  // node. Scene coords (not client) so the input tracks the node across pan/zoom.
+  const [renamingNode, setRenamingNode] = useState<{
+    nodeIdx: number;
+    x: number;
+    y: number;
+  } | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const renameInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (renamingNode) {
+      renameInputRef.current?.focus();
+      renameInputRef.current?.select();
+    }
+    // Only refocus/reselect when the node being renamed changes, not on
+    // every keystroke (renameValue) or pan/zoom (renamingNode.x/y).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [renamingNode?.nodeIdx]);
+
+  const commitNodeRename = useCallback(() => {
+    if (!renamingNode || !skeleton) {
+      setRenamingNode(null);
+      return;
+    }
+    const trimmed = renameValue.trim();
+    const current = skeleton.nodes[renamingNode.nodeIdx]?.name ?? "";
+    const isDuplicate = skeleton.nodes.some(
+      (n, i) => n.name === trimmed && i !== renamingNode.nodeIdx
+    );
+    if (trimmed && !isDuplicate && trimmed !== current) {
+      commandContext.execute(RenameNodeCommand, {
+        nodeIdx: renamingNode.nodeIdx,
+        newName: trimmed,
+      });
+      // Repaint so the renamed label shows immediately (RenameNode does not
+      // bump overlayVersion itself, unlike AddNode/AddEdge).
+      useAppStore.getState().bumpOverlayVersion();
+    }
+    setRenamingNode(null);
+  }, [renamingNode, renameValue, skeleton]);
+
+  const cancelNodeRename = useCallback(() => {
+    setRenamingNode(null);
+  }, []);
+
   // Track the last scene position during drag for delta calculations (alt-drag)
   const lastDragPos = useRef<{ x: number; y: number } | null>(null);
 
@@ -1481,6 +1527,30 @@ export function VideoPlayer() {
     [zoom, panX, panY, baseScale, offsetX, offsetY, rotation, fw, fh]
   );
 
+  // Inverse of canvasToScene: scene (frame) coords -> client (viewport) pixels.
+  const sceneToClient = useCallback(
+    (x: number, y: number) => {
+      const canvas = overlayCanvasRef.current;
+      if (!canvas) return { x: 0, y: 0 };
+      const rect = canvas.getBoundingClientRect();
+      // Apply forward rotation to get rotated-scene coordinates
+      let sx = x, sy = y;
+      if (rotation === 90) {
+        const fx = fh - sy, fy = sx;
+        sx = fx; sy = fy;
+      } else if (rotation === 180) {
+        sx = fw - sx; sy = fh - sy;
+      } else if (rotation === 270) {
+        const fx = sy, fy = fw - sx;
+        sx = fx; sy = fy;
+      }
+      const cx = sx * baseScale * zoom + offsetX + panX;
+      const cy = sy * baseScale * zoom + offsetY + panY;
+      return { x: cx + rect.left, y: cy + rect.top };
+    },
+    [zoom, panX, panY, baseScale, offsetX, offsetY, rotation, fw, fh]
+  );
+
   // Constrain pan so at least 25% of the video remains visible
   const constrainPan = useCallback(
     (px: number, py: number, z: number) => {
@@ -2226,9 +2296,9 @@ export function VideoPlayer() {
   // Double-click: convert predicted instance, or reset zoom/pan
   const handleDoubleClick = useCallback(
     (e: React.MouseEvent) => {
-      // Skeleton builder (place stage): double-click a placed node to rename it.
-      // window.prompt keeps this robust without a positioned overlay input; the
-      // rename goes through the undoable RenameNodeCommand.
+      // Skeleton builder (place stage): double-click a placed node to rename
+      // it inline (floating input anchored over the node), via the undoable
+      // RenameNodeCommand.
       if (skeletonBuildMode && skeleton) {
         const store = useAppStore.getState();
         if (store.skeletonBuildStage === "place") {
@@ -2238,17 +2308,9 @@ export function VideoPlayer() {
             builderRI ?? buildBuilderRenderedInstance(skeleton, store.builderPositions);
           const hit = hitTestNode([ri], p.x, p.y, threshold);
           if (hit) {
-            const current = skeleton.nodes[hit.nodeIdx]?.name ?? "";
-            const next = window.prompt("Rename node", current);
-            if (next && next.trim() && next.trim() !== current) {
-              commandContext.execute(RenameNodeCommand, {
-                nodeIdx: hit.nodeIdx,
-                newName: next.trim(),
-              });
-              // Repaint so the renamed label shows immediately (RenameNode does
-              // not bump overlayVersion itself, unlike AddNode/AddEdge).
-              useAppStore.getState().bumpOverlayVersion();
-            }
+            const node = ri.nodes[hit.nodeIdx];
+            setRenameValue(skeleton.nodes[hit.nodeIdx]?.name ?? "");
+            setRenamingNode({ nodeIdx: hit.nodeIdx, x: node.x, y: node.y });
           }
         }
         return;
@@ -2482,6 +2544,60 @@ export function VideoPlayer() {
             />
           </div>
         )}
+        {/* Skeleton builder: inline node-rename input, anchored over the node
+            (tracks pan/zoom since position is recomputed from scene coords). */}
+        {renamingNode && skeleton && (() => {
+          const containerRect = containerRef.current?.getBoundingClientRect();
+          if (!containerRect) return null;
+          const { x: clientX, y: clientY } = sceneToClient(
+            renamingNode.x,
+            renamingNode.y
+          );
+          const isDuplicate =
+            renameValue.trim() !== "" &&
+            skeleton.nodes.some(
+              (n, i) => n.name === renameValue.trim() && i !== renamingNode.nodeIdx
+            );
+          return (
+            <div
+              className="absolute z-30"
+              style={{
+                left: clientX - containerRect.left + 12,
+                top: clientY - containerRect.top - 10,
+              }}
+            >
+              <input
+                ref={renameInputRef}
+                className={cn(
+                  "text-xs px-1 py-0.5 rounded border bg-background shadow-lg outline-none w-32",
+                  isDuplicate
+                    ? "border-destructive text-destructive"
+                    : "border-primary"
+                )}
+                value={renameValue}
+                onChange={(e) => setRenameValue(e.target.value)}
+                onBlur={commitNodeRename}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    commitNodeRename();
+                  } else if (e.key === "Escape") {
+                    e.preventDefault();
+                    cancelNodeRename();
+                  }
+                  e.stopPropagation();
+                }}
+                onClick={(e) => e.stopPropagation()}
+                onDoubleClick={(e) => e.stopPropagation()}
+              />
+              {isDuplicate && (
+                <div className="text-[10px] text-destructive bg-background/90 px-1 rounded-b">
+                  Duplicate name
+                </div>
+              )}
+            </div>
+          );
+        })()}
         {/* Node hover tooltip */}
         {hoveredNode && labeledFrame && (() => {
           const lfInst = labeledFrame.instances[hoveredNode.instanceIdx];
