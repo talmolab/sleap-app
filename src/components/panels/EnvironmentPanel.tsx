@@ -5,7 +5,7 @@
  * install Python versions, and manage uv tools (sleap-nn, sleap-rtc).
  */
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   CheckCircle2,
   XCircle,
@@ -39,6 +39,7 @@ import { openExternal } from "@/lib/openExternal";
 import { cn } from "@/lib/utils";
 
 const SLEAP_NN_RELEASES_URL = "https://github.com/talmolab/sleap-nn/releases/tag";
+const SLEAP_APP_RELEASES_URL = "https://github.com/talmolab/sleap-app/releases/tag";
 
 // ---------------------------------------------------------------------------
 // Shared components
@@ -222,6 +223,123 @@ function ToolActions({
 }
 
 // ---------------------------------------------------------------------------
+// sleap-app self-update section
+// ---------------------------------------------------------------------------
+
+/** Minimal shape we use from the `Update` object returned by plugin-updater's `check()`. */
+interface PendingUpdate {
+  version: string;
+  downloadAndInstall: () => Promise<void>;
+}
+
+/**
+ * Shows the desktop app's own version, whether a newer release is available
+ * (via the same tauri-plugin-updater manifest App.tsx's startup check uses),
+ * a release-notes link, and a manual Update button. Independent of the
+ * uv/Python detection cycle above — checks once on mount.
+ */
+function AppUpdateSection() {
+  const [version, setVersion] = useState<string | null>(null);
+  const [pendingUpdate, setPendingUpdate] = useState<PendingUpdate | null>(null);
+  const [updating, setUpdating] = useState(false);
+
+  useEffect(() => {
+    if (!isTauri) return;
+    let active = true;
+    (async () => {
+      try {
+        const { getVersion } = await import("@tauri-apps/api/app");
+        const v = await getVersion();
+        if (active) setVersion(v);
+      } catch (err) {
+        console.warn("[env] Failed to read app version:", err);
+      }
+      try {
+        const { check } = await import("@tauri-apps/plugin-updater");
+        const update = await check();
+        if (active && update) setPendingUpdate(update);
+      } catch (err) {
+        console.warn("[env] App update check failed:", err);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  if (!isTauri) return null;
+
+  const doUpdate = async () => {
+    if (!pendingUpdate) return;
+    setUpdating(true);
+    try {
+      await pendingUpdate.downloadAndInstall();
+      const { relaunch } = await import("@tauri-apps/plugin-process");
+      await relaunch();
+    } catch (err) {
+      console.error("[env] App update failed:", err);
+      setUpdating(false);
+    }
+  };
+
+  const latestVersion = pendingUpdate?.version ?? (version ? version : null);
+  const updateAvailable = !!pendingUpdate;
+
+  return (
+    <section>
+      <h4 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1">
+        SLEAP App
+      </h4>
+      <div className="flex items-center gap-2 py-0.5">
+        <StatusIcon ok={!!version} />
+        <span className="text-xs font-medium">sleap-app</span>
+        {version && (
+          <span className="text-xs text-muted-foreground">v{version}</span>
+        )}
+        {latestVersion && (
+          <>
+            <span
+              className={cn(
+                "text-xs",
+                updateAvailable ? "text-orange-500" : "text-green-500"
+              )}
+            >
+              {updateAvailable ? `→ v${latestVersion}` : "latest"}
+            </span>
+            <button
+              onClick={() =>
+                openExternal(`${SLEAP_APP_RELEASES_URL}/v${latestVersion}`)
+              }
+              title="View release notes"
+              className="text-muted-foreground hover:text-foreground transition-colors"
+            >
+              <ExternalLink className="h-3 w-3" />
+            </button>
+          </>
+        )}
+        {updateAvailable && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-5 text-[10px] ml-auto"
+            onClick={doUpdate}
+            disabled={updating}
+            title="Download and install the new version, then relaunch"
+          >
+            {updating ? (
+              <Loader2 className="h-3 w-3 animate-spin mr-1" />
+            ) : (
+              <ArrowUpCircle className="h-3 w-3 mr-1" />
+            )}
+            {updating ? "Updating..." : "Update"}
+          </Button>
+        )}
+      </div>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main panel
 // ---------------------------------------------------------------------------
 
@@ -298,6 +416,8 @@ export function EnvironmentPanel() {
       </div>
 
       <div className="px-2 flex flex-col gap-3">
+        <AppUpdateSection />
+
         {/* Loading */}
         {isDetecting && (
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -534,7 +654,7 @@ export function EnvironmentPanel() {
                       "text-xs",
                       sleapNnTool.updateAvailable
                         ? "text-orange-500"
-                        : "text-muted-foreground"
+                        : "text-green-500"
                     )}
                   >
                     {sleapNnTool.updateAvailable
