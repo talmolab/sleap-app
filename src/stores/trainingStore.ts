@@ -62,16 +62,16 @@ export type DataPipeline = "stream" | "memory" | "disk";
 /** UI-level color-conversion choice; maps to sleap-nn's `data_config.preprocessing.{ensure_rgb,ensure_grayscale}`. */
 export type ColorMode = "auto" | "rgb" | "grayscale";
 
-/** UI enum ↔ sleap-nn `data_pipeline_fw` value. */
+/**
+ * UI enum → sleap-nn `data_pipeline_fw` value. One-directional only — never
+ * read back out of an uploaded config; see the "machine-specific settings"
+ * comment in `parseYamlConfig` (dataPipeline is treated the same as
+ * accelerator/numDevices/dataloaderWorkers: always a fresh default).
+ */
 const DATA_PIPELINE_FW: Record<DataPipeline, string> = {
   stream: "torch_dataset",
   memory: "torch_dataset_cache_img_memory",
   disk: "torch_dataset_cache_img_disk",
-};
-const DATA_PIPELINE_FROM_FW: Record<string, DataPipeline> = {
-  torch_dataset: "stream",
-  torch_dataset_cache_img_memory: "memory",
-  torch_dataset_cache_img_disk: "disk",
 };
 
 export interface TrainingConfig {
@@ -873,15 +873,17 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         minHardKeypoints: typeof ohkmCfg.min_hard_keypoints === "number" ? ohkmCfg.min_hard_keypoints : 2,
         maxHardKeypoints: typeof ohkmCfg.max_hard_keypoints === "number" ? ohkmCfg.max_hard_keypoints : null,
         trainingMode: "reuse_config" as const,
-        // Machine-specific settings — never taken from the uploaded file. A
-        // profile trained on someone else's machine (e.g. `trainer_accelerator:
-        // mps` from a Mac) shouldn't silently populate these on a different
-        // machine where that accelerator may not even exist (same rationale as
-        // legacy's `_load_config` stripping these as "system_specific_keys").
+        // Performance/machine-specific settings — never taken from the
+        // uploaded file, always the app's own defaults. A profile trained on
+        // someone else's machine (e.g. `trainer_accelerator: mps` from a Mac,
+        // or a data_pipeline_fw/num_workers tuned for a different machine's
+        // RAM/disk/CPU) shouldn't silently populate these here (same
+        // rationale as legacy's `_load_config` stripping accelerator/devices/
+        // workers as "system_specific_keys" — dataPipeline gets the same
+        // treatment for the same reason, even though legacy doesn't call it
+        // out by that name).
         accelerator: defaultHyperparams.accelerator,
-        dataPipeline: (typeof dataConfig.data_pipeline_fw === "string"
-          ? DATA_PIPELINE_FROM_FW[dataConfig.data_pipeline_fw]
-          : undefined) ?? defaultHyperparams.dataPipeline,
+        dataPipeline: defaultHyperparams.dataPipeline,
         dataloaderWorkers: defaultHyperparams.dataloaderWorkers,
         numDevices: defaultHyperparams.numDevices,
         // Checkpoint saving — sleap-nn's own default is save_top_k=1 (best

@@ -594,7 +594,11 @@ trainer_config:
   });
 
   describe("parseYamlConfig - performance", () => {
-    it("parses dataPipeline (a training-recipe choice) from the file", () => {
+    it("always resets dataPipeline, dataloaderWorkers, and numDevices to defaults, regardless of the file", () => {
+      // Performance/machine-specific settings — never taken from an uploaded
+      // config (see the "always resets machine/run fields on import" describe
+      // block). dataPipeline joined this group after a user report that a
+      // config's stale data_pipeline_fw was still being read into the field.
       const yamlText = `
 model_config:
   head_configs:
@@ -608,30 +612,12 @@ trainer_config:
   trainer_devices: 2
 `;
       const result = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
-      expect(result!.hyperparams.dataPipeline).toBe("memory");
-    });
-
-    it("always resets dataloaderWorkers and numDevices to defaults, regardless of the file", () => {
-      // Machine-specific settings — never taken from an uploaded config (see
-      // the "always resets machine/run fields on import" describe block).
-      const yamlText = `
-model_config:
-  head_configs:
-    centroid:
-      sigma: 1.5
-data_config:
-  data_pipeline_fw: torch_dataset
-trainer_config:
-  train_data_loader:
-    num_workers: 4
-  trainer_devices: 2
-`;
-      const result = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
+      expect(result!.hyperparams.dataPipeline).toBe(defaultHyperparams.dataPipeline);
       expect(result!.hyperparams.dataloaderWorkers).toBe(defaultHyperparams.dataloaderWorkers);
       expect(result!.hyperparams.numDevices).toBe(defaultHyperparams.numDevices);
     });
 
-    it("round-trips dataPipeline (not device/worker fields) through parse → apply", () => {
+    it("round-trips through parse → apply using the app's defaults, not the file's stale values", () => {
       const yamlText = `
 model_config:
   head_configs:
@@ -648,8 +634,8 @@ trainer_config:
 `;
       const parsed = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
       const doc = yaml.load(applyHyperparamsToYaml(yamlText, parsed!.hyperparams)) as Record<string, any>;
-      expect(doc.data_config.data_pipeline_fw).toBe("torch_dataset_cache_img_disk");
-      // Forced back to the default worker/device count, not the file's stale 3/4.
+      const expectedFw = { stream: "torch_dataset", memory: "torch_dataset_cache_img_memory", disk: "torch_dataset_cache_img_disk" }[defaultHyperparams.dataPipeline];
+      expect(doc.data_config.data_pipeline_fw).toBe(expectedFw);
       expect(doc.trainer_config.train_data_loader.num_workers).toBe(defaultHyperparams.dataloaderWorkers);
       expect(doc.trainer_config.val_data_loader.num_workers).toBe(defaultHyperparams.dataloaderWorkers);
       expect(doc.trainer_config.trainer_devices).toBe(defaultHyperparams.numDevices);
@@ -662,6 +648,8 @@ model_config:
   head_configs:
     centroid:
       sigma: 1.5
+data_config:
+  data_pipeline_fw: torch_dataset_cache_img_disk
 trainer_config:
   run_name: stale_run_from_another_machine
   trainer_accelerator: mps
@@ -689,6 +677,11 @@ trainer_config:
       const result = useTrainingStore.getState().parseYamlConfig(yamlWithStaleFields, "c.yaml", "centroid");
       expect(result!.hyperparams.numDevices).toBe(defaultHyperparams.numDevices);
       expect(result!.hyperparams.dataloaderWorkers).toBe(defaultHyperparams.dataloaderWorkers);
+    });
+
+    it("resets dataPipeline to the default instead of the file's value", () => {
+      const result = useTrainingStore.getState().parseYamlConfig(yamlWithStaleFields, "c.yaml", "centroid");
+      expect(result!.hyperparams.dataPipeline).toBe(defaultHyperparams.dataPipeline);
     });
   });
 
