@@ -1414,7 +1414,6 @@ export function VideoPlayer() {
       const boxY = 6;
       const radius = 4;
 
-      ctx.fillStyle = "rgba(0, 0, 0, 0.75)";
       ctx.beginPath();
       ctx.moveTo(boxX + radius, boxY);
       ctx.arcTo(boxX + boxWidth, boxY, boxX + boxWidth, boxY + boxHeight, radius);
@@ -1422,9 +1421,12 @@ export function VideoPlayer() {
       ctx.arcTo(boxX, boxY + boxHeight, boxX, boxY, radius);
       ctx.arcTo(boxX, boxY, boxX + boxWidth, boxY, radius);
       ctx.closePath();
+      // Highlighted (accent-orange) pill, matching the app's primary accent
+      // color, so the label pops against the video frame behind it.
+      ctx.fillStyle = "#f97316";
       ctx.fill();
 
-      ctx.fillStyle = "white";
+      ctx.fillStyle = "#1c1006";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.fillText(labelName, INSET_SIZE / 2, boxY + boxHeight / 2);
