@@ -1,16 +1,20 @@
 /**
- * Getting-started tutorial overlay: a spotlight over the current step's
- * target element plus a small coachmark card with instructions and an Exit
- * button. Purely visual/non-blocking (`pointer-events-none` on the scrim) —
- * completion is state-driven (see each step's `isComplete` in
- * `lib/tutorial/steps.ts`), not click-position-driven, so the user can
- * interact with the real app normally underneath it. The active step
- * sequence itself (`tutorialSteps`) is resolved once in the store's
- * `startTutorial` — see `buildTutorialSteps`.
+ * Getting-started tutorial overlay: a glowing highlight ring around the
+ * current step's target element plus a small coachmark card with
+ * instructions and an Exit button. No dimming scrim over the rest of the
+ * app — same idiom as `SkeletonBuildBar`'s on-canvas bar — since the whole
+ * point of a hands-on tutorial is that the user keeps labeling/looking at
+ * real frames underneath it, not a greyed-out backdrop. Purely visual/
+ * non-blocking (`pointer-events-none` on the highlight ring) — completion is
+ * state-driven (see each step's `isComplete` in `lib/tutorial/steps.ts`), not
+ * click-position-driven, so the user can interact with the real app normally
+ * underneath it. The active step sequence itself (`tutorialSteps`) is
+ * resolved once in the store's `startTutorial` — see `buildTutorialSteps`.
  */
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { X } from "lucide-react";
+import type { PointerEvent as ReactPointerEvent } from "react";
+import { GripVertical, X } from "lucide-react";
 import { useAppStore } from "@/stores/appStore";
 import { useTrainingStore } from "@/stores/trainingStore";
 import { useInferenceStore } from "@/stores/inferenceStore";
@@ -37,6 +41,17 @@ const RECHECK_INTERVAL_MS = 500;
  */
 const FAST_TRAINING_STEP_IDS = new Set(["select-anchor-part", "run-training"]);
 const TUTORIAL_MAX_EPOCHS = 5;
+
+/**
+ * Frame the "Create a skeleton" step jumps to on entry. This tutorial is
+ * built around a fixed sample video (mice.mp4) generated with a deterministic
+ * Stride/20 suggestion — 1410 is one of the resulting suggestion frames, so
+ * drawing the skeleton here always lands on a real suggested frame (letting
+ * it double-count toward `LABEL_ONE_FRAME_STEP` if the user creates an
+ * instance from it). `setFrameIdx` clamps to the loaded video's last frame,
+ * so this is a harmless no-op/best-effort jump on a different or shorter video.
+ */
+const CREATE_SKELETON_FRAME_IDX = 1410;
 
 const SPOTLIGHT_PADDING = 6;
 const CARD_GAP = 12;
@@ -68,11 +83,21 @@ function computeCardPosition(
       left = rect.left - card.width - CARD_GAP;
       break;
   }
+  return clampToViewport(top, left, card);
+}
+
+/** Keep the card fully on-screen, whether auto-placed or user-dragged. */
+function clampToViewport(
+  top: number,
+  left: number,
+  card: { width: number; height: number },
+) {
   const vw = window.innerWidth;
   const vh = window.innerHeight;
-  left = Math.min(Math.max(left, 8), vw - card.width - 8);
-  top = Math.min(Math.max(top, 8), vh - card.height - 8);
-  return { top, left };
+  return {
+    top: Math.min(Math.max(top, 8), vh - card.height - 8),
+    left: Math.min(Math.max(left, 8), vw - card.width - 8),
+  };
 }
 
 function currentWatchState(): TutorialWatchState {
@@ -115,6 +140,9 @@ export function TutorialOverlay() {
       return;
     }
     entrySnapshotRef.current = snapshotTutorialState(currentWatchState());
+    if (step.id === "create-skeleton") {
+      useAppStore.getState().setFrameIdx(CREATE_SKELETON_FRAME_IDX);
+    }
   }, [step, tutorialActive]);
 
   // Re-check completion whenever anything a step might care about changes.
@@ -162,18 +190,59 @@ export function TutorialOverlay() {
   const cardRef = useRef<HTMLDivElement>(null);
   const [cardSize, setCardSize] = useState(DEFAULT_CARD_SIZE);
 
+  // Manual drag offset from the auto-computed position, so the card can be
+  // pulled off a target it happens to be covering (e.g. a canvas control).
+  // Reset on every step change — a drag on one step shouldn't carry over to
+  // the next step's (differently placed) target.
+  const [dragOffset, setDragOffset] = useState({ dx: 0, dy: 0 });
+  const dragStateRef = useRef<{
+    startX: number;
+    startY: number;
+    startOffset: { dx: number; dy: number };
+  } | null>(null);
+
+  useEffect(() => {
+    setDragOffset({ dx: 0, dy: 0 });
+  }, [step]);
+
   useLayoutEffect(() => {
     if (!cardRef.current) return;
     const r = cardRef.current.getBoundingClientRect();
     if (r.width && r.height) setCardSize({ width: r.width, height: r.height });
   }, [step, targetRect]);
 
+  const handleDragPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    dragStateRef.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      startOffset: dragOffset,
+    };
+  };
+  const handleDragPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const ds = dragStateRef.current;
+    if (!ds) return;
+    setDragOffset({
+      dx: ds.startOffset.dx + (e.clientX - ds.startX),
+      dy: ds.startOffset.dy + (e.clientY - ds.startY),
+    });
+  };
+  const handleDragPointerUp = () => {
+    dragStateRef.current = null;
+  };
+
   if (!step) return null;
 
   const stepNumber = tutorialStepIndex + 1;
-  const cardPos = targetRect
+  const autoCardPos = targetRect
     ? computeCardPosition(targetRect, step.placement, cardSize)
     : { top: window.innerHeight / 2 - cardSize.height / 2, left: window.innerWidth / 2 - cardSize.width / 2 };
+  const cardPos = clampToViewport(
+    autoCardPos.top + dragOffset.dy,
+    autoCardPos.left + dragOffset.dx,
+    cardSize,
+  );
 
   return (
     <>
@@ -185,7 +254,7 @@ export function TutorialOverlay() {
             left: targetRect.left - SPOTLIGHT_PADDING,
             width: targetRect.width + SPOTLIGHT_PADDING * 2,
             height: targetRect.height + SPOTLIGHT_PADDING * 2,
-            boxShadow: "0 0 0 9999px rgba(0,0,0,0.55)",
+            boxShadow: "0 0 0 2px var(--primary), 0 0 16px 3px var(--primary)",
             pointerEvents: "none",
           }}
         />
@@ -196,9 +265,18 @@ export function TutorialOverlay() {
         style={{ top: cardPos.top, left: cardPos.left }}
       >
         <div className="flex items-start justify-between gap-2">
-          <span className="text-xs font-medium text-muted-foreground">
-            Step {stepNumber} of {tutorialSteps.length}
-          </span>
+          <div
+            className="flex touch-none select-none items-center gap-1 cursor-grab active:cursor-grabbing"
+            onPointerDown={handleDragPointerDown}
+            onPointerMove={handleDragPointerMove}
+            onPointerUp={handleDragPointerUp}
+            onPointerCancel={handleDragPointerUp}
+          >
+            <GripVertical className="h-3.5 w-3.5 text-muted-foreground" />
+            <span className="text-xs font-medium text-muted-foreground">
+              Step {stepNumber} of {tutorialSteps.length}
+            </span>
+          </div>
           <button
             type="button"
             aria-label="Exit tutorial"

@@ -6,7 +6,7 @@ import {
   SAVE_PROJECT_STEP,
   GENERATE_SUGGESTIONS_STEP,
   CREATE_SKELETON_STEP,
-  LABEL_MORE_SUGGESTIONS_STEP,
+  LABEL_ONE_FRAME_STEP,
   SELECT_ANCHOR_PART_STEP,
   RUN_TRAINING_STEP,
   CORRECT_PREDICTIONS_STEP,
@@ -79,7 +79,7 @@ describe("buildTutorialSteps", () => {
       "save-project",
       "generate-suggestions",
       "create-skeleton",
-      "label-more-suggestions",
+      "label-one-frame",
       "select-anchor-part",
       "run-training",
       "correct-predictions",
@@ -95,7 +95,7 @@ describe("buildTutorialSteps", () => {
       "save-project",
       "generate-suggestions",
       "create-skeleton",
-      "label-more-suggestions",
+      "label-one-frame",
       "select-anchor-part",
       "run-training",
       "correct-predictions",
@@ -215,30 +215,47 @@ describe("create-skeleton step", () => {
   });
 });
 
-describe("label-more-suggestions step", () => {
-  it("is incomplete with no suggestions at all", () => {
-    const entry = snapshotTutorialState(watchState());
-    const current = watchState({ labels: fakeLabels({ suggestions: 0 }) });
-    expect(LABEL_MORE_SUGGESTIONS_STEP.isComplete(entry, current)).toBe(false);
+describe("label-one-frame step", () => {
+  it("is incomplete with no suggestions labeled at all", () => {
+    const entry = snapshotTutorialState(watchState({ labels: fakeLabels({ suggestions: 5 }) }));
+    const current = watchState({
+      labels: fakeLabels({ suggestions: 5 }),
+      hasChanges: false,
+    });
+    expect(LABEL_ONE_FRAME_STEP.isComplete(entry, current)).toBe(false);
   });
 
-  it("is incomplete when fewer than half the suggestions are labeled", () => {
-    const entry = snapshotTutorialState(watchState());
+  it("completes even if the labeled frame predates this step (e.g. an instance created while finishing create-skeleton)", () => {
+    // Unlike sibling steps, this one does NOT require growth from entry —
+    // labeling a suggestion frame during the prior step (via the "Create
+    // instance" prompt) already satisfies the goal; the user shouldn't have
+    // to label a second frame just because it happened one step early.
+    const entry = snapshotTutorialState(
+      watchState({ labels: fakeLabels({ suggestions: 5, labeledFrameIdxs: [0] }) }),
+    );
     const current = watchState({
-      labels: fakeLabels({ suggestions: 10, labeledFrameIdxs: [0, 1, 2, 3] }),
+      labels: fakeLabels({ suggestions: 5, labeledFrameIdxs: [0] }),
+      hasChanges: false,
     });
-    expect(LABEL_MORE_SUGGESTIONS_STEP.isComplete(entry, current)).toBe(false);
+    expect(LABEL_ONE_FRAME_STEP.isComplete(entry, current)).toBe(true);
   });
 
-  it("completes once at least half the suggestions are labeled", () => {
-    const entry = snapshotTutorialState(watchState());
+  it("is incomplete if a frame was labeled but not yet saved", () => {
+    const entry = snapshotTutorialState(watchState({ labels: fakeLabels({ suggestions: 5 }) }));
     const current = watchState({
-      labels: fakeLabels({
-        suggestions: 10,
-        labeledFrameIdxs: [0, 1, 2, 3, 4],
-      }),
+      labels: fakeLabels({ suggestions: 5, labeledFrameIdxs: [0] }),
+      hasChanges: true,
     });
-    expect(LABEL_MORE_SUGGESTIONS_STEP.isComplete(entry, current)).toBe(true);
+    expect(LABEL_ONE_FRAME_STEP.isComplete(entry, current)).toBe(false);
+  });
+
+  it("completes once one frame is labeled during this step and saved", () => {
+    const entry = snapshotTutorialState(watchState({ labels: fakeLabels({ suggestions: 5 }) }));
+    const current = watchState({
+      labels: fakeLabels({ suggestions: 5, labeledFrameIdxs: [0] }),
+      hasChanges: false,
+    });
+    expect(LABEL_ONE_FRAME_STEP.isComplete(entry, current)).toBe(true);
   });
 });
 

@@ -71,8 +71,6 @@ export interface TutorialSnapshot {
    * time, since the builder is opened well after the step starts.
    */
   everEnteredSkeletonBuild: boolean;
-  /** How many suggestion frames were already labeled when this step started. */
-  labeledSuggestionCount: number;
   /** How many suggestion frames already carried predictions when this step started. */
   suggestionFramesWithPredictionsAtEntry: number;
   /**
@@ -96,7 +94,6 @@ export function snapshotTutorialState(
     skeletonNodeCount: state.skeleton?.nodes.length ?? 0,
     skeletonEdgeCount: state.skeleton?.edges.length ?? 0,
     everEnteredSkeletonBuild: state.skeletonBuildMode,
-    labeledSuggestionCount: countLabeledSuggestions(state.labels),
     suggestionFramesWithPredictionsAtEntry: countSuggestionsWithPredictions(
       state.labels,
     ),
@@ -135,7 +132,7 @@ export const NEW_PROJECT_STEP: TutorialStep = {
 export const ADD_VIDEO_IN_DIALOG_STEP: TutorialStep = {
   id: "add-video-in-dialog",
   title: "Add a video",
-  body: 'Click "+ Add video(s)…", pick a video file, then click "Create Project".',
+  body: 'This tutorial is built around a short sample video (mice.mp4) — download it via the link below, then click "+ Add video(s)…" to pick it, and click "Create Project".',
   targetSelector: '[data-tutorial="new-project-add-video-button"]',
   placement: "bottom",
   isComplete: (_entry, current) =>
@@ -146,7 +143,7 @@ export const ADD_VIDEO_IN_DIALOG_STEP: TutorialStep = {
 export const ADD_VIDEO_STEP: TutorialStep = {
   id: "add-video",
   title: "Add a video",
-  body: 'Click "Add Videos" to import a video file to label.',
+  body: 'This tutorial is built around a short sample video (mice.mp4) — download it from github.com/talmolab/sleap-tutorial-data if you don\'t have it, then click "Add Videos" to import it.',
   panelId: "videos",
   targetSelector: '[data-tutorial="add-videos-button"]',
   placement: "left",
@@ -189,7 +186,7 @@ export const GENERATE_SUGGESTIONS_STEP: TutorialStep = {
 export const CREATE_SKELETON_STEP: TutorialStep = {
   id: "create-skeleton",
   title: "Create a skeleton",
-  body: 'Click "Draw skeleton on frame", place nodes on the frame, then drag a stroke through them to connect edges. Click Done when finished.',
+  body: 'Click "Draw skeleton on frame", place nodes on the frame, then drag a stroke through them to connect edges. Click Done when finished. Nodes start out named "node_0", "node_1", … — double-click a name in the Skeleton tab to rename it. For this tutorial\'s sample video, create 3 nodes — head, torso, and tailbase — with edges torso → head and torso → tailbase.',
   panelId: "skeleton",
   targetSelector: '[data-tutorial="draw-skeleton-button"]',
   placement: "left",
@@ -208,35 +205,40 @@ export const CREATE_SKELETON_STEP: TutorialStep = {
 };
 
 /**
- * Phase 2, step 1: label roughly half the generated suggestions before
- * training. "Half" is computed from the live suggestion count rather than a
- * fixed number so it tracks whatever `GENERATE_SUGGESTIONS_STEP` actually
- * produced (fewer than 20/video for a short video).
+ * Phase 2, step 1: label just ONE suggested frame — not a fraction of all of
+ * them — so a first-time user gets to training fast and sees the whole loop
+ * work end-to-end before investing in more labels. Completion only requires
+ * at least one suggestion frame to be labeled AND `hasChanges` to be false
+ * (saved) — NOT that the label happened after this step started. A user who
+ * labeled a suggestion frame while finishing `CREATE_SKELETON_STEP` (e.g. via
+ * the "Create instance" prompt in `SkeletonBuildBar`'s Done flow, if the
+ * current frame happened to be a suggestion) has already done the thing this
+ * step asks for — don't make them do it a second time just because it
+ * happened one step early.
  */
-export const LABEL_MORE_SUGGESTIONS_STEP: TutorialStep = {
-  id: "label-more-suggestions",
-  title: "Label a few more frames",
-  body: "Open a suggested frame, place the skeleton on it, and repeat until about half the suggestions are labeled.",
+export const LABEL_ONE_FRAME_STEP: TutorialStep = {
+  id: "label-one-frame",
+  title: "Label one frame, then save",
+  body: "For fast prototyping, just label ONE suggested frame completely — place every animal's skeleton on it — then save (⌘S / Ctrl+S) before moving to the Training tab. More than one animal in the frame? Ctrl+drag an existing instance to clone it, or right-click ▸ Add Instance ▸ Best.",
   panelId: "suggestions",
   targetSelector: '[data-tutorial="suggestions-panel"]',
   placement: "left",
-  isComplete: (_entry, current) => {
-    const total = current.labels?.suggestions.length ?? 0;
-    if (total === 0) return false;
-    return countLabeledSuggestions(current.labels) >= Math.ceil(total / 2);
-  },
+  isComplete: (_entry, current) =>
+    countLabeledSuggestions(current.labels) >= 1 && current.hasChanges === false,
 };
 
 /**
- * Phase 2, step 2: pick a crop anchor for the top-down pipeline. There's no
- * universally-correct node name (it depends on the project's own skeleton),
- * so completion only requires an explicit, non-"Auto" pick — not a specific
- * value.
+ * Phase 2, step 2: pick a crop anchor for the top-down pipeline. The body
+ * text recommends "torso" (this tutorial's fixed 3-node skeleton), but
+ * completion only requires an explicit, non-"Auto" pick — not that exact
+ * string — so a typo'd or differently-cased node name still counts, same
+ * lesson as `LABEL_ONE_FRAME_STEP`'s fix: don't gate on an exact match the
+ * user could reasonably satisfy in a way the check doesn't recognize.
  */
 export const SELECT_ANCHOR_PART_STEP: TutorialStep = {
   id: "select-anchor-part",
   title: "Choose an anchor part",
-  body: "Top-Down is selected with its default config already loaded. Pick an Anchor Part below — a node that's central and reliably visible on the animal, since Top-Down crops around it every frame.",
+  body: "Top-Down is selected with its default config already loaded. Pick torso as the Anchor Part below — it's the central, reliably-visible node in this tutorial's skeleton, and Top-Down crops around it every frame.",
   panelId: "training",
   targetSelector: '[data-tutorial="anchor-part-select"]',
   placement: "right",
@@ -246,7 +248,7 @@ export const SELECT_ANCHOR_PART_STEP: TutorialStep = {
 export const RUN_TRAINING_STEP: TutorialStep = {
   id: "run-training",
   title: "Run training",
-  body: "Click Start Training. This can take a while — the tutorial will pick back up once it finishes.",
+  body: "Epochs is set to 5 for this first pass — just enough to see the workflow work end-to-end; you can raise it for a better model on the next round. Click Start Training. This can take a while — the tutorial will pick back up once it finishes.",
   panelId: "training",
   targetSelector: '[data-tutorial="start-training-button"]',
   placement: "top",
@@ -278,7 +280,7 @@ export const CORRECT_PREDICTIONS_STEP: TutorialStep = {
 export const RETRAIN_STEP: TutorialStep = {
   id: "retrain",
   title: "Re-train with the corrected labels",
-  body: 'Back in the Training tab, click "Train Again", then Start Training to retrain with your corrections included.',
+  body: 'Back in the Training tab, click "Train Again", then Start Training to retrain with your corrections included. Epochs is no longer capped at 5 — feel free to raise it now for a better model.',
   panelId: "training",
   targetSelector: '[data-tutorial="start-training-button"]',
   placement: "top",
@@ -317,7 +319,7 @@ export function buildTutorialSteps(startedWithProjectLoaded: boolean): TutorialS
     SAVE_PROJECT_STEP,
     GENERATE_SUGGESTIONS_STEP,
     CREATE_SKELETON_STEP,
-    LABEL_MORE_SUGGESTIONS_STEP,
+    LABEL_ONE_FRAME_STEP,
     SELECT_ANCHOR_PART_STEP,
     RUN_TRAINING_STEP,
     CORRECT_PREDICTIONS_STEP,

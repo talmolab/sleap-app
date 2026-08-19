@@ -161,16 +161,26 @@ export function NewProjectDialog() {
                 (optional)
               </span>
             </label>
-            <Button
-              variant="subtle"
-              size="sm"
-              className="self-start"
-              onClick={handleAddVideos}
-              disabled={creating}
-              data-tutorial="new-project-add-video-button"
-            >
-              + Add video(s)…
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="subtle"
+                size="sm"
+                className="self-start"
+                onClick={handleAddVideos}
+                disabled={creating}
+                data-tutorial="new-project-add-video-button"
+              >
+                + Add video(s)…
+              </Button>
+              <a
+                href="https://github.com/talmolab/sleap-tutorial-data/blob/main/mice.mp4"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs text-muted-foreground underline hover:text-foreground"
+              >
+                No video handy? Download a sample
+              </a>
+            </div>
             {videos.length > 0 && (
               <ul className="mt-1 flex flex-col gap-1">
                 {videos.map((v, i) => (

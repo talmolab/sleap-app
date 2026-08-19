@@ -84,6 +84,7 @@ import {
   MenubarRadioGroup,
   MenubarRadioItem,
 } from "@/components/ui/menubar";
+import { Button } from "@/components/ui/button";
 import {
   GRAPH_SPECS,
   reconcileReduction,
@@ -120,6 +121,14 @@ export function MenuBar() {
       <LabelsMenu />
       <PredictMenu />
       <TracksMenu />
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-8 rounded-none px-3 text-xs font-normal"
+        onClick={() => useAppStore.getState().startTutorial()}
+      >
+        Start Tutorial
+      </Button>
       <HelpMenu />
     </Menubar>
   );
@@ -1166,9 +1175,6 @@ function HelpMenu() {
           }
         >
           Keyboard Shortcuts...
-        </MenubarItem>
-        <MenubarItem onClick={() => useAppStore.getState().startTutorial()}>
-          Start Tutorial...
         </MenubarItem>
         <MenubarItem
           onClick={() => openExternal("https://docs.sleap.ai/")}
