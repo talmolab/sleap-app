@@ -22,6 +22,7 @@ import {
 import {
   getBootTimestamp,
   getInstallId,
+  getPriorCrashInfo,
   getSessionId,
   readSessionLogs,
 } from "./sessionLog";
@@ -72,6 +73,9 @@ export interface DiagnosticsMeta {
   appVersion: string;
   userAgent: string;
   runtime: "tauri" | "browser";
+  /** True when the PREVIOUS session ended without a clean shutdown (this bundle
+   *  was likely triggered by the crash-recovery prompt). */
+  priorSessionCrashed: boolean;
   gpu: string | null;
   gpuStats: GpuStats | null;
   uv: unknown;
@@ -253,6 +257,7 @@ export async function collectDiagnostics(opts: {
     appVersion,
     userAgent: typeof navigator !== "undefined" ? navigator.userAgent : "unknown",
     runtime: isTauri ? "tauri" : "browser",
+    priorSessionCrashed: getPriorCrashInfo() != null,
     gpu,
     gpuStats,
     uv,

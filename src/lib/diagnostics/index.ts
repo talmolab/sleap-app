@@ -12,6 +12,14 @@
 
 import { initSessionLog } from "./sessionLog";
 
+/** Resolves once diagnostics init has run, so boot UI (the crash-recovery
+ *  prompt) can read {@link getPriorCrashInfo} after the sentinel check completes
+ *  rather than racing it. */
+let resolveReady!: () => void;
+export const diagnosticsReady = new Promise<void>((r) => {
+  resolveReady = r;
+});
+
 let errorHandlersInstalled = false;
 
 function installGlobalErrorHandlers() {
@@ -46,7 +54,9 @@ export async function initDiagnostics(): Promise<void> {
   } catch {
     /* ignore */
   }
+  resolveReady();
 }
 
 export { collectDiagnostics } from "./collectDiagnostics";
 export { saveDiagnosticsBundle } from "./saveDiagnostics";
+export { getPriorCrashInfo } from "./sessionLog";

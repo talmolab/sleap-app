@@ -108,6 +108,7 @@ describe("assembleDiagnosticsBundle", () => {
       appVersion: "0.1.0",
       userAgent: "test",
       runtime: "tauri",
+      priorSessionCrashed: false,
       gpu: "cpu",
       gpuStats: null,
       uv: null,
@@ -165,6 +166,7 @@ describe("assembleDiagnosticsBundle", () => {
     // structured training metrics (not parsed from log text)
     expect(b.training[0].finalLoss).toBe(4.3e-5);
     expect(b.training[0].epochs.length).toBe(2);
+    expect(b.meta.priorSessionCrashed).toBe(false);
   });
 
   test("projectDraft is null when not opted in, present when attached", () => {

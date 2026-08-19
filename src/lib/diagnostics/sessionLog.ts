@@ -22,12 +22,23 @@ const LOGS_DIR_NAME = "sleap-logs";
 /** Retain the current session's log + this many previous ones (crash-durable). */
 const KEEP_PREVIOUS_SESSIONS = 1;
 const FLUSH_INTERVAL_MS = 2000;
+/** Sentinel written at boot and removed on clean shutdown. If it's still here at
+ *  the next boot, the prior session ended improperly (crash/freeze/force-quit). */
+const SENTINEL_FILE = "session.running";
+
+/** A prior session that never marked clean — surfaced as a recovery prompt. */
+export interface PriorCrashInfo {
+  sessionId: string;
+  bootTimestamp: number;
+  logName: string;
+}
 
 let sessionId = "";
 let bootTimestamp = 0;
 let sessionLogPath: string | null = null;
 let pending: string[] = [];
 let flushTimer: ReturnType<typeof setInterval> | null = null;
+let priorCrashInfo: PriorCrashInfo | null = null;
 
 function safeUuid(): string {
   try {
@@ -131,26 +142,82 @@ export async function initSessionLog(): Promise<void> {
       /* readDir may fail on first run; non-fatal */
     }
 
+    // Improper-shutdown detection: a leftover "running" sentinel from a PRIOR
+    // session means it never marked clean (crash / freeze / force-quit). Capture
+    // it for the recovery prompt before we claim the sentinel for this run.
+    const sentinelPath = await join(dir, SENTINEL_FILE);
+    try {
+      const { readTextFile, exists } = await import("@tauri-apps/plugin-fs");
+      if (await exists(sentinelPath)) {
+        const prev = JSON.parse(await readTextFile(sentinelPath));
+        if (prev?.sessionId && prev.sessionId !== sessionId) {
+          priorCrashInfo = {
+            sessionId: String(prev.sessionId),
+            bootTimestamp: Number(prev.bootTimestamp) || 0,
+            logName: String(prev.logName || ""),
+          };
+        }
+      }
+    } catch {
+      /* no / corrupt sentinel — nothing to recover */
+    }
+
     const shortId = sessionId.slice(0, 8);
-    sessionLogPath = await join(dir, `session-${bootTimestamp}-${shortId}.log`);
+    const logName = `session-${bootTimestamp}-${shortId}.log`;
+    sessionLogPath = await join(dir, logName);
     await writeTextFile(
       sessionLogPath,
       `# SLEAP Label diagnostics session log\n# session=${sessionId} install=${getInstallId()} boot=${new Date(bootTimestamp).toISOString()}\n`,
       { append: false },
     );
 
+    // Claim the sentinel for THIS session (removed on clean shutdown).
+    try {
+      await writeTextFile(
+        sentinelPath,
+        JSON.stringify({ sessionId, bootTimestamp, logName }),
+        { append: false },
+      );
+    } catch {
+      /* non-fatal */
+    }
+
     registerLogSink((entry) => {
       pending.push(formatEntry(entry));
       scheduleFlush();
     });
 
-    window.addEventListener("beforeunload", () => void flush());
+    window.addEventListener("beforeunload", () => {
+      void flush();
+      void markCleanShutdown();
+    });
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "hidden") void flush();
     });
   } catch {
     // diagnostics is best-effort; never break boot
     sessionLogPath = null;
+  }
+}
+
+/** Info about a PRIOR session that ended without marking clean (crash / freeze /
+ *  force-quit), or null. Set once during {@link initSessionLog}. */
+export function getPriorCrashInfo(): PriorCrashInfo | null {
+  return priorCrashInfo;
+}
+
+/** Clear this session's crash flag by removing the running sentinel. Called from
+ *  graceful-exit paths (quit.ts `forceQuit` + `beforeunload`) and the Rust
+ *  `Destroyed` window handler. Best-effort. */
+export async function markCleanShutdown(): Promise<void> {
+  if (!isTauri) return;
+  try {
+    const { appLocalDataDir, join } = await import("@tauri-apps/api/path");
+    const { remove, exists } = await import("@tauri-apps/plugin-fs");
+    const p = await join(await appLocalDataDir(), LOGS_DIR_NAME, SENTINEL_FILE);
+    if (await exists(p)) await remove(p);
+  } catch {
+    /* best-effort */
   }
 }
 

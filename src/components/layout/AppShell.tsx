@@ -26,6 +26,8 @@ import { VideoPlayer } from "../video/VideoPlayer";
 import { PANELS } from "./panelRegistry";
 import { reorderById, visibleOpenPanels } from "@/lib/panelLayout";
 import { hasUnsavedWork } from "@/lib/unsavedGuard";
+import { toast } from "@/lib/notify";
+import { diagnosticsReady, getPriorCrashInfo } from "@/lib/diagnostics";
 import { setupLabelsAutosave } from "@/lib/labelsAutosave";
 import { WelcomeScreen } from "./WelcomeScreen";
 import { GoToFrameDialog } from "../dialogs/GoToFrameDialog";
@@ -163,6 +165,29 @@ export function AppShell() {
     };
     window.addEventListener("beforeunload", handler);
     return () => window.removeEventListener("beforeunload", handler);
+  }, []);
+
+  // Crash-recovery prompt: if the PREVIOUS session ended without a clean
+  // shutdown (crash / freeze / force-quit), offer to send diagnostics on this
+  // fresh, responsive launch — a frozen UI can't reach the Help menu. Waits for
+  // diagnosticsReady so the sentinel check has run before we read it.
+  useEffect(() => {
+    let cancelled = false;
+    void diagnosticsReady.then(() => {
+      if (cancelled || !getPriorCrashInfo()) return;
+      toast("SLEAP didn't close properly last time", {
+        description: "Send diagnostics so we can look into what happened.",
+        duration: Infinity,
+        action: {
+          label: "Send diagnostics",
+          onClick: () =>
+            useAppStore.getState().setDiagnosticsDialogOpen(true),
+        },
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Auto-save the labels draft a beat after edits settle (instant, silent) —
