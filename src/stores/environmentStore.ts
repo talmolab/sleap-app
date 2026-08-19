@@ -30,6 +30,7 @@ import { toast } from "@/lib/notify";
 import { openExternal } from "@/lib/openExternal";
 
 const SLEAP_NN_RELEASES_URL = "https://github.com/talmolab/sleap-nn/releases/tag";
+const SLEAP_APP_RELEASES_URL = "https://github.com/talmolab/sleap-app/releases/tag";
 
 export type DetectionStatus = "idle" | "checking" | "done" | "error";
 export type InstallStatus = "idle" | "installing" | "done" | "error";
@@ -45,9 +46,11 @@ export interface EnvironmentState {
   selectedPythonPath: string | null;
   pythonCheck: PythonInfo | null;
 
-  // Last sleap-nn version we already showed an "update available" toast for
-  // (persisted, so we don't nag on every project open — only on new versions).
+  // Last sleap-nn / sleap-app version we already showed an "update available"
+  // toast for (persisted, so we don't nag on every project open — only on
+  // new versions).
   lastNotifiedSleapNnVersion: string | null;
+  lastNotifiedAppVersion: string | null;
 
   // Status
   detectionStatus: DetectionStatus;
@@ -70,12 +73,14 @@ export interface EnvironmentState {
   doInstallUv: () => Promise<void>;
   clearInstallLog: () => void;
   checkSleapNnUpdateAndNotify: () => Promise<void>;
+  checkAppUpdateAndNotify: () => Promise<void>;
 }
 
 /** Keys persisted to localStorage. */
 const PERSISTED_KEYS: (keyof EnvironmentState)[] = [
   "selectedPythonPath",
   "lastNotifiedSleapNnVersion",
+  "lastNotifiedAppVersion",
 ];
 
 export const useEnvironmentStore = create<EnvironmentState>()(
@@ -91,6 +96,7 @@ export const useEnvironmentStore = create<EnvironmentState>()(
       selectedPythonPath: null,
       pythonCheck: null,
       lastNotifiedSleapNnVersion: null,
+      lastNotifiedAppVersion: null,
 
       // Status
       detectionStatus: "idle",
@@ -444,6 +450,33 @@ export const useEnvironmentStore = create<EnvironmentState>()(
           });
         } catch (err) {
           console.error("[env] sleap-nn update check failed:", err);
+        }
+      },
+
+      // Same pattern as checkSleapNnUpdateAndNotify, for the desktop app's own
+      // version. Coexists with (doesn't replace) the blocking window.confirm
+      // startup check in App.tsx — this fires on project open instead, as a
+      // non-blocking toast, deduped per version like the sleap-nn one above.
+      // No-ops in tauri:dev (no installer/manifest to check against there —
+      // see AppUpdateSection's isDevBuild gate in EnvironmentPanel.tsx).
+      checkAppUpdateAndNotify: async () => {
+        if (!isTauri || import.meta.env.DEV) return;
+        try {
+          const { check } = await import("@tauri-apps/plugin-updater");
+          const update = await check();
+          if (!update) return;
+          if (update.version === get().lastNotifiedAppVersion) return;
+
+          set({ lastNotifiedAppVersion: update.version });
+          toast.info(`SLEAP App v${update.version} is available`, {
+            action: {
+              label: "Release notes",
+              onClick: () =>
+                openExternal(`${SLEAP_APP_RELEASES_URL}/v${update.version}`),
+            },
+          });
+        } catch (err) {
+          console.error("[env] App update check failed:", err);
         }
       },
     }),

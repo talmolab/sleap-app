@@ -188,6 +188,7 @@ export async function loadProjectFromFile(file: File): Promise<boolean> {
     });
     // Fire-and-forget: best-effort, no-ops on browser, must not add latency.
     useEnvironmentStore.getState().checkSleapNnUpdateAndNotify();
+    useEnvironmentStore.getState().checkAppUpdateAndNotify();
     return true;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -291,6 +292,7 @@ export async function loadProjectFromPath(
     });
     // Fire-and-forget: best-effort, no-ops on browser, must not add latency.
     useEnvironmentStore.getState().checkSleapNnUpdateAndNotify();
+    useEnvironmentStore.getState().checkAppUpdateAndNotify();
 
     // Missing / unsupported-codec videos are summarized (codec-aware) by
     // resolveExternalVideos above — no separate toast here (avoids a duplicate).
