@@ -472,9 +472,9 @@ export function InferencePanel() {
           ) : (
             <div className="space-y-1">
               {activeModelPaths.map((p, i) => (
-                <div key={i} className="flex items-center gap-1 rounded border bg-muted/50 px-2 py-1">
-                  {remoteEnabled && <Folder className="h-3.5 w-3.5 text-primary flex-shrink-0" />}
-                  <span className="text-[10px] truncate flex-1" title={p}>{remoteEnabled ? p : p.split(/[\\/]/).pop()}</span>
+                <div key={i} className="flex items-center gap-1 rounded border border-green-500/50 bg-green-500/5 px-2 py-1">
+                  <Folder className="h-3.5 w-3.5 text-green-500 flex-shrink-0" />
+                  <span className="text-[10px] truncate flex-1 font-medium" title={p}>{remoteEnabled ? p : p.split(/[\\/]/).pop()}</span>
                   <button className="text-muted-foreground hover:text-destructive shrink-0"
                     onClick={() => {
                       if (remoteEnabled) {

@@ -1053,8 +1053,22 @@ export function SuggestionsPanel({
             </p>
           </div>
         )}
-        {/* Edit row: Add current · Remove · Generate/Cancel · Clear */}
+        {/* Edit row: Generate/Cancel · Add current · Remove · Clear
+            (Generate leads so the primary action is the most visible). */}
         <div className="flex gap-1">
+          {isGenerating ? (
+            <Button
+              variant="subtle"
+              size="xs"
+              onClick={() => abortRef.current?.abort()}
+            >
+              Cancel
+            </Button>
+          ) : (
+            <Button variant="subtle" size="xs" onClick={handleGenerate}>
+              Generate
+            </Button>
+          )}
           <Button
             variant="subtle"
             size="xs"
@@ -1071,19 +1085,6 @@ export function SuggestionsPanel({
           >
             Remove
           </Button>
-          {isGenerating ? (
-            <Button
-              variant="subtle"
-              size="xs"
-              onClick={() => abortRef.current?.abort()}
-            >
-              Cancel
-            </Button>
-          ) : (
-            <Button variant="subtle" size="xs" onClick={handleGenerate}>
-              Generate
-            </Button>
-          )}
           <Button
             variant="subtle"
             size="xs"
