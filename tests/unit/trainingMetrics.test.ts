@@ -6,12 +6,43 @@ import {
   formatRuntimeTitle,
   buildLossPlotData,
   buildLossPlotDataBatched,
+  boundedLossYValues,
   lossCsv,
 } from "@/lib/trainingMetrics";
-import type { EpochSample } from "@/stores/trainingStore";
+import type { EpochSample, BatchSample } from "@/stores/trainingStore";
 
 const ep = (epoch: number, trainLoss: number, valLoss: number): EpochSample => ({
   epoch, trainLoss, valLoss,
+});
+
+describe("boundedLossYValues", () => {
+  it("caps the batch contribution so per-redraw y-range work stays bounded", () => {
+    // 20k batches (the store cap) with the peak at index 0 and a late dip.
+    const batches: BatchSample[] = Array.from({ length: 20000 }, (_, i) => ({
+      globalBatch: i,
+      loss: i === 0 ? 5 : 1e-4,
+    }));
+    const epochs = [ep(0, 0.01, 0.02)];
+    const ys = boundedLossYValues(batches, epochs);
+    // batch portion ≤ MAX_DRAWN_BATCH_POINTS (2000, +1 for the always-kept last)
+    // plus the 2 epoch losses — NOT the full 20k.
+    expect(ys.length).toBeLessThanOrEqual(2000 + 1 + 2);
+    // The even downsample keeps index 0, so the peak (5) is NOT clipped from the
+    // range, and the sparse epoch losses are included in full.
+    expect(Math.max(...ys)).toBe(5);
+    expect(ys).toContain(0.01);
+    expect(ys).toContain(0.02);
+  });
+
+  it("returns everything unchanged when under the cap", () => {
+    const batches: BatchSample[] = [
+      { globalBatch: 0, loss: 0.3 },
+      { globalBatch: 1, loss: 0.1 },
+    ];
+    expect(boundedLossYValues(batches, [ep(0, 0.2, 0.25)])).toEqual([
+      0.3, 0.1, 0.2, 0.25,
+    ]);
+  });
 });
 
 describe("lossCsv", () => {
