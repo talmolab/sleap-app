@@ -37,6 +37,32 @@ export interface ProjectStats {
   trackCount: number;
 }
 
+/** Point-in-time GPU stats, captured at collect-time. NVIDIA-only for the
+ *  numeric fields (via nvidia-smi); on mps/cpu only `backend` is known.
+ *  Peak-during-training utilization would require sampling (a follow-up). */
+export interface GpuStats {
+  backend: string; // "cuda" | "mps" | "cpu" | "unknown"
+  name: string | null;
+  memoryTotalMb: number | null;
+  memoryUsedMb: number | null;
+  utilizationPct: number | null;
+}
+
+/** Structured per-model training metrics read from the in-memory training
+ *  store (ModelProgress) — NOT parsed from the log text. */
+export interface TrainingModelMetrics {
+  label: string;
+  status: string;
+  epoch: number; // last epoch reached
+  maxEpochs: number;
+  finalLoss: number | null;
+  finalValLoss: number | null;
+  bestValLoss: number | null;
+  meanEpochTimeSec: number | null;
+  epochs: { epoch: number; trainLoss: number | null; valLoss: number | null }[];
+  runDir: string | null;
+}
+
 export interface DiagnosticsMeta {
   installId: string;
   sessionId: string;
@@ -47,6 +73,7 @@ export interface DiagnosticsMeta {
   userAgent: string;
   runtime: "tauri" | "browser";
   gpu: string | null;
+  gpuStats: GpuStats | null;
   uv: unknown;
   python: unknown;
   sleapNnVersion: string | null;
@@ -56,6 +83,8 @@ export interface DiagnosticsMeta {
 export interface DiagnosticsBundle {
   _whatIsThis: string;
   meta: DiagnosticsMeta;
+  /** Structured training metrics per model (epochs, final/best loss, curve). */
+  training: TrainingModelMetrics[];
   sessionLogs: { name: string; content: string }[];
   consoleBuffer: LogEntry[];
   notifications: NotificationEntry[];
@@ -166,11 +195,20 @@ export async function collectDiagnostics(opts: {
 
   // --- GPU (best-effort; fresh detect) ---
   let gpu: string | null = null;
+  let gpuStats: GpuStats | null = null;
   try {
     if (isTauri) {
-      const { detectGpu } = await import("@/platform/backend");
+      const { detectGpu, gpuStats: queryGpuStats } = await import(
+        "@/platform/backend"
+      );
       const g = await detectGpu();
       gpu = typeof g === "string" ? g : JSON.stringify(g);
+      try {
+        // NVIDIA-only for the numeric fields; on mps/cpu returns backend only.
+        gpuStats = await queryGpuStats();
+      } catch {
+        /* nvidia-smi absent or unavailable */
+      }
     }
   } catch {
     /* ignore */
@@ -216,11 +254,35 @@ export async function collectDiagnostics(opts: {
     userAgent: typeof navigator !== "undefined" ? navigator.userAgent : "unknown",
     runtime: isTauri ? "tauri" : "browser",
     gpu,
+    gpuStats,
     uv,
     python,
     sleapNnVersion,
     project: stats,
   };
+
+  // --- structured training metrics (from the in-memory training store) ---
+  // Read straight from ModelProgress rather than parsing the log text, so
+  // epochs/loss are real numbers (mirrors lablink's trainingepochscompleted /
+  // trainingfinalloss columns, plus the full per-epoch curve).
+  const training: TrainingModelMetrics[] = (
+    useTrainingStore.getState().models ?? []
+  ).map((m) => ({
+    label: m.label,
+    status: m.status,
+    epoch: m.epoch,
+    maxEpochs: m.maxEpochs,
+    finalLoss: m.loss,
+    finalValLoss: m.valLoss,
+    bestValLoss: m.bestValLoss,
+    meanEpochTimeSec: m.metrics?.meanEpochTimeSec ?? null,
+    epochs: (m.epochSamples ?? []).map((e) => ({
+      epoch: e.epoch,
+      trainLoss: e.trainLoss,
+      valLoss: e.valLoss,
+    })),
+    runDir: m.runDir,
+  }));
 
   // --- durable session logs + draft manifest ---
   const sessionLogs = await readSessionLogs();
@@ -251,6 +313,7 @@ export async function collectDiagnostics(opts: {
 
   return assembleDiagnosticsBundle({
     meta,
+    training,
     sessionLogs,
     consoleBuffer: [...getLogEntries()],
     notifications: [...notificationBuffer],

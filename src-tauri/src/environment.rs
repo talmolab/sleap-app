@@ -324,6 +324,71 @@ pub async fn detect_gpu<R: Runtime>(app: AppHandle<R>) -> String {
     "cpu".to_string()
 }
 
+/// Point-in-time GPU stats for diagnostics. NVIDIA-only for the numeric fields
+/// (via `nvidia-smi`); on mps/cpu only `backend`/`name` are populated. This is a
+/// snapshot at call time, not a peak-during-training measurement.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GpuStats {
+    pub backend: String,
+    pub name: Option<String>,
+    pub memory_total_mb: Option<u64>,
+    pub memory_used_mb: Option<u64>,
+    pub utilization_pct: Option<u32>,
+}
+
+/// Query current GPU stats. Returns NVIDIA util/VRAM via `nvidia-smi` when
+/// present, else identifies the mps/cpu backend with no numeric fields.
+#[tauri::command]
+pub async fn gpu_stats<R: Runtime>(app: AppHandle<R>) -> GpuStats {
+    if let Some(output) = shell_output(
+        &app,
+        "nvidia-smi",
+        &[
+            "--query-gpu=name,memory.total,memory.used,utilization.gpu",
+            "--format=csv,noheader,nounits",
+        ],
+    )
+    .await
+    {
+        let line = output.lines().next().unwrap_or("").trim().to_string();
+        if !line.is_empty() {
+            let parts: Vec<&str> = line.split(',').map(|s| s.trim()).collect();
+            return GpuStats {
+                backend: "cuda".to_string(),
+                name: parts
+                    .first()
+                    .map(|s| s.to_string())
+                    .filter(|s| !s.is_empty()),
+                memory_total_mb: parts.get(1).and_then(|s| s.parse::<u64>().ok()),
+                memory_used_mb: parts.get(2).and_then(|s| s.parse::<u64>().ok()),
+                utilization_pct: parts.get(3).and_then(|s| s.parse::<u32>().ok()),
+            };
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if std::env::consts::ARCH == "aarch64" {
+            return GpuStats {
+                backend: "mps".to_string(),
+                name: Some("Apple Silicon (Metal)".to_string()),
+                memory_total_mb: None,
+                memory_used_mb: None,
+                utilization_pct: None,
+            };
+        }
+    }
+
+    GpuStats {
+        backend: "cpu".to_string(),
+        name: None,
+        memory_total_mb: None,
+        memory_used_mb: None,
+        utilization_pct: None,
+    }
+}
+
 /// List tools installed via `uv tool`.
 #[tauri::command]
 pub async fn list_uv_tools<R: Runtime>(app: AppHandle<R>) -> Vec<UvTool> {

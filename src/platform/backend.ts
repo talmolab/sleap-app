@@ -134,6 +134,19 @@ export async function detectGpu(): Promise<string> {
   return invokeCmd<string>("detect_gpu", {});
 }
 
+/** Point-in-time GPU stats (NVIDIA util/VRAM via nvidia-smi; backend-only on mps/cpu). */
+export interface GpuStats {
+  backend: string;
+  name: string | null;
+  memoryTotalMb: number | null;
+  memoryUsedMb: number | null;
+  utilizationPct: number | null;
+}
+
+export async function gpuStats(): Promise<GpuStats> {
+  return invokeCmd<GpuStats>("gpu_stats", {});
+}
+
 /** Install a uv tool (e.g., sleap-nn). */
 export async function installUvTool(
   pkg: string,

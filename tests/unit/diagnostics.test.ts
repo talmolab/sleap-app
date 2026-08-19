@@ -109,6 +109,7 @@ describe("assembleDiagnosticsBundle", () => {
       userAgent: "test",
       runtime: "tauri",
       gpu: "cpu",
+      gpuStats: null,
       uv: null,
       python: null,
       sleapNnVersion: "0.3.2",
@@ -122,6 +123,23 @@ describe("assembleDiagnosticsBundle", () => {
         trackCount: 0,
       },
     },
+    training: [
+      {
+        label: "centroid",
+        status: "completed",
+        epoch: 4,
+        maxEpochs: 5,
+        finalLoss: 4.3e-5,
+        finalValLoss: 6.01e-5,
+        bestValLoss: 6.01e-5,
+        meanEpochTimeSec: 14.2,
+        epochs: [
+          { epoch: 0, trainLoss: 0.0028, valLoss: null },
+          { epoch: 4, trainLoss: 4.3e-5, valLoss: 6.01e-5 },
+        ],
+        runDir: "/Users/a/models/centroid",
+      },
+    ],
     sessionLogs: [{ name: "session-1.log", content: "[log] hi\n" }],
     consoleBuffer: [{ timestamp: 1, level: "error", args: "boom" }],
     notifications: [],
@@ -144,6 +162,9 @@ describe("assembleDiagnosticsBundle", () => {
     expect(b.trainingLog).toEqual(["epoch 1"]);
     expect(b.sessionLogs).toEqual(inputs.sessionLogs);
     expect(b.draftManifest).toEqual(inputs.draftManifest);
+    // structured training metrics (not parsed from log text)
+    expect(b.training[0].finalLoss).toBe(4.3e-5);
+    expect(b.training[0].epochs.length).toBe(2);
   });
 
   test("projectDraft is null when not opted in, present when attached", () => {
