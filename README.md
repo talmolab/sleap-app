@@ -69,65 +69,58 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -Path $HOME\Downloads\sle
 
 </details>
 
-### Why the installer, and not just the `.dmg`?
+### Why use the installer?
 
-**On macOS, use the one-liner.** The app is *ad-hoc signed but not notarized* --
-notarization needs a paid Apple Developer ID this project does not have.
+macOS builds are **signed with a Developer ID and notarized by Apple**, so the
+`.dmg` from the [Releases page](https://github.com/talmolab/sleap-app/releases)
+works on its own -- double-click it, drag `SLEAP.app` to Applications, done. The
+first launch shows the standard "downloaded from the Internet, are you sure?"
+confirmation with an **Open** button. That appears once, for any downloaded app,
+and never again.
 
-That matters because of how macOS decides to trust an app. A `.dmg` that arrives
-through a *browser* (or Slack, email, AirDrop) is tagged with
-`com.apple.quarantine`, the tag propagates to the app you drag out of it, and
-Gatekeeper blocks any un-notarized app carrying it. `curl` never sets that tag,
-so the installer sidesteps Gatekeeper entirely and the app opens with no prompt.
+The installer is a convenience on top of that, not a workaround. It:
 
-The installer also replaces the app **atomically** (it stages alongside and
-renames), refuses to overwrite a running copy so you cannot lose unsaved labels,
-and repairs the code signature of older builds that were shipped unsigned.
+- skips even that one-time prompt, because `curl` never sets `com.apple.quarantine`
+- replaces the app **atomically** (stages alongside, then renames)
+- refuses to overwrite a running copy, so you cannot lose unsaved labels
+- picks the right artifact for your platform and architecture automatically
 
-If you do download the `.dmg` from the [Releases
-page](https://github.com/talmolab/sleap-app/releases) in a browser, clear the tag
-**on the `.dmg`, before you open it** -- that stops the tag propagating in the
-first place, and avoids the blocked-launch path entirely:
+**On Windows**, SmartScreen may still warn, because the installer is not signed
+with an EV certificate; that warning has a **More info > Run anyway**.
+
+**On Linux**, nothing gates the install. The script prefers the `.AppImage`,
+because that is the only Linux payload the in-app updater can replace without
+root; set `SLEAP_PREFER_DEB=1` if you would rather have the `.deb` in your package
+manager.
+
+<details>
+<summary>If macOS refuses to open the app</summary>
+
+You should not hit this on a release build. If you do -- most likely a build from
+a fork or a PR, which get no signing secrets and fall back to ad-hoc signing --
+clear the quarantine tag on the **`.dmg`, before opening it**, which stops the tag
+propagating to the app in the first place:
 
 ```bash
 xattr -dr com.apple.quarantine ~/Downloads/SLEAP_*.dmg
-# then open it and drag SLEAP.app to /Applications as usual
 ```
 
-If you already tried to open it and got blocked, do this instead:
+If you already tried and got blocked, clear it on the installed app instead:
 
 ```bash
 xattr -dr com.apple.quarantine /Applications/SLEAP.app
 ```
 
-The other route is **System Settings > Privacy & Security > Security > Open
-Anyway**, which needs your login password and only offers itself for about an
-hour after a blocked launch. Note that Control-click > Open no longer works --
-Apple removed that bypass in macOS 15. Also: macOS sometimes moves a
-blocked-and-launched bundle to the Trash, so if `SLEAP.app` vanishes from
-`/Applications`, restore it from there or just re-run the installer.
+The GUI route is **System Settings > Privacy & Security > Security > Open Anyway**,
+which needs your login password and only offers itself for about an hour after a
+blocked launch. Control-click > Open no longer works -- Apple removed that bypass
+in macOS 15.
 
-**On Windows**, the installer is a convenience rather than a workaround.
-SmartScreen may still warn because the installer is not signed with an EV
-certificate; that warning has a **More info > Run anyway**.
-
-**On Linux**, nothing gates the install. The script prefers the `.AppImage`
-because that is the only Linux payload the in-app updater can replace without
-root; set `SLEAP_PREFER_DEB=1` if you would rather have the `.deb` in your
-package manager.
-
-<details>
-<summary>Removing the macOS prompt entirely (Developer ID + notarization)</summary>
-
-A Developer ID Application certificate plus `xcrun notarytool submit` and
-`xcrun stapler staple` is the only way to make a browser-downloaded `.dmg` open
-with no dialog at all. CI supports this — set six repository secrets and the
-macOS job switches from ad-hoc signing to signing, notarizing and stapling, and
-then *asserts* it happened rather than silently shipping an ad-hoc build.
-
-See **[docs/macos-code-signing.md](docs/macos-code-signing.md)** for how to
-produce each value. Until those secrets exist, everything above is free and
-sufficient as long as testers use `curl` or click through one prompt once.
+Two dialogs are worth telling apart. "Apple could not verify..." means valid
+signature, not notarized. "**SLEAP is damaged and can't be opened**" means an
+*invalid* signature, and has no override at all -- if you ever see that on a
+release build, the signing step regressed; see
+[docs/macos-code-signing.md](docs/macos-code-signing.md).
 
 </details>
 

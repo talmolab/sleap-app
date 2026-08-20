@@ -175,7 +175,9 @@ Dragging the app to `/Applications` should then launch with no dialog at all.
   (submission `656c1f62-1efb-4f99-a5cd-c98c7b1f3480`) was `Accepted`, but took over
   47 minutes, long enough that a 60-minute job cap killed the runner mid-wait and
   the build looked like a hang. Subsequent submissions are normally 1–5 minutes.
-  The macOS leg's `job-timeout` is 120 minutes for this reason.
+  The macOS leg's `job-timeout` is 120 minutes for this reason. Steady state is
+  fast: the very next submission (`61980a3a`) came back `Accepted` in **26
+  seconds**, and stapling the `.dmg` took another 27.
 
   Tauri notarizes the `.app` *inside* its own build step, printing no progress and
   honouring no timeout of ours, so CI cannot tell you what Apple is doing. Ask
