@@ -43,6 +43,8 @@ describe("buildTranscodeArgs (frame-exact ffmpeg args)", () => {
     expect(args[args.length - 1]).toBe("/out.mp4");
     // NEVER a forced output rate (-r), which would resample and break alignment
     expect(args).not.toContain("-r");
+    // explicit muxer — the temp output uses a `.part` extension ffmpeg can't map
+    expect(args[args.indexOf("-f") + 1]).toBe("mp4");
   });
 
   it("defaults to the permissive libopenh264 encoder, overridable", () => {

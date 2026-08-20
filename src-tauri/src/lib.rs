@@ -565,11 +565,19 @@ fn localhost_capability(port: u16) -> String {
     "fs:allow-remove",
     "fs:allow-exists",
     "fs:allow-stat",
+    "fs:allow-rename",
     {{ "identifier": "fs:scope", "allow": [{{ "path": "**" }}, {{ "path": "$HOME/.sleap-rtc/**" }}] }},
     "dialog:default",
     "dialog:allow-open",
     "dialog:allow-save",
     "shell:allow-open",
+    {{
+      "identifier": "shell:allow-spawn",
+      "allow": [
+        {{ "name": "binaries/ffmpeg", "sidecar": true, "args": true }},
+        {{ "name": "binaries/ffprobe", "sidecar": true, "args": true }}
+      ]
+    }},
     {{
       "identifier": "shell:allow-execute",
       "allow": [

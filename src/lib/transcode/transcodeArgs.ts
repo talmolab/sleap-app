@@ -75,6 +75,12 @@ export function buildTranscodeArgs(options: TranscodeArgsOptions): string[] {
     "-g",
     String(gopSize),
     ...quality,
+    // Force the MP4 muxer explicitly: the caller writes to a `<name>.mp4.part`
+    // temp (atomic-rename pattern), and ffmpeg otherwise picks the muxer from
+    // the output EXTENSION — `.part` is unknown → "Unable to choose an output
+    // format". `-f mp4` makes it independent of the temp filename.
+    "-f",
+    "mp4",
     ...(progress ? ["-progress", "pipe:1", "-nostats"] : []),
     options.output,
   ];
