@@ -4,12 +4,19 @@ import type { DiscoveredModel } from "@/lib/modelDiscovery";
 import type { TrainedConfigFsAccess } from "@/lib/trainedConfigAutoload";
 import type { ModelType } from "@/stores/trainingStore";
 
-function fakeFs(overrides: Partial<TrainedConfigFsAccess> = {}): TrainedConfigFsAccess {
+// The bun-test `vi.fn` shim widens the impl to `(...args: never[]) => unknown`
+// (see bun-test.ts's `vi.mock` doc comment), which isn't structurally
+// assignable to `TrainedConfigFsAccess`'s `Promise<string>`-returning methods
+// — `overrides` is typed loosely and the whole result cast through `unknown`
+// rather than fighting the shim's type at every call site.
+function fakeFs(
+  overrides: { join?: unknown; readTextFile?: unknown } = {},
+): TrainedConfigFsAccess {
   return {
     join: vi.fn(async (dir: string, name: string) => `${dir}/${name}`),
     readTextFile: vi.fn(async () => "trained: yaml"),
     ...overrides,
-  };
+  } as unknown as TrainedConfigFsAccess;
 }
 
 function discoveredFor(headKey: string, path = "/proj/models/run1"): DiscoveredModel[] {
