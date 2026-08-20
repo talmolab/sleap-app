@@ -472,6 +472,32 @@ jobs:
           print("All updater signatures match the configured public key.")
           PY
 
+      # install.ps1 cannot be run or even parsed on a non-Windows dev machine, so
+      # without this it ships on trust. The Windows leg is the only place in this
+      # repo with a PowerShell host, and a syntax error here breaks the documented
+      # Windows install path while every other check stays green.
+      - name: Check the Windows installer script parses
+        if: matrix.target == 'windows'
+        shell: pwsh
+        run: |
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'scripts/install.ps1').Path, [ref] $null, [ref] $errors) | Out-Null
+          if ($errors) {
+            foreach ($e in $errors) {
+              Write-Host "::error file=scripts/install.ps1,line=$($e.Extent.StartLineNumber)::$($e.Message)"
+            }
+            exit 1
+          }
+          Write-Host 'scripts/install.ps1 parses cleanly'
+
+          # -WhatIf-style smoke test: -Path with a file that does not exist must
+          # fail cleanly rather than blowing up somewhere unexpected.
+          $out = & pwsh -NoProfile -File scripts/install.ps1 -Path 'Z:\nope\missing.msi' 2>&1
+          $rc = $LASTEXITCODE
+          Write-Host "missing-file exit=$rc output: $out"
+          if ($rc -eq 0) { Write-Host '::error::-Path with a missing file exited 0'; exit 1 }
+
       - name: Collect artifacts
         shell: bash
         run: |

@@ -291,39 +291,90 @@ Pick one:
 # Read where the app actually landed. NSIS records this, which beats assuming the
 # default: a previous per-machine install lives under Program Files, and NSIS
 # restores that location on upgrade.
+function Read-UninstallKey {
+    param(
+        [Parameter(Mandatory)] [string] $Key,
+        [switch] $MatchByDisplayName
+    )
+
+    $props = $null
+    try { $props = Get-ItemProperty -LiteralPath $Key -ErrorAction Stop } catch { return $null }
+    if (-not $props) { return $null }
+    $names = @($props.PSObject.Properties.Name)
+
+    # A GUID-named key has to prove it is ours; the exact-named key is ours by
+    # definition.
+    if ($MatchByDisplayName) {
+        if ($names -notcontains 'DisplayName') { return $null }
+        if ("$($props.DisplayName)".Trim('"') -ne $AppName) { return $null }
+    }
+
+    # NSIS writes InstallLocation WITH literal surrounding quote characters
+    # (WriteRegStr ... "InstallLocation" "$\"$INSTDIR$\""). An MSI often omits the
+    # value entirely, which is NOT a failure -- we simply cannot name the
+    # directory, so callers must tolerate a null Dir/Exe.
+    $dir = $null
+    if ($names -contains 'InstallLocation' -and $props.InstallLocation) {
+        $dir = "$($props.InstallLocation)".Trim('"').TrimEnd('\')
+    }
+
+    $exeName = "$BinName.exe"
+    if ($names -contains 'MainBinaryName' -and $props.MainBinaryName) {
+        $exeName = "$($props.MainBinaryName)".Trim('"')
+    }
+
+    $exe = $null
+    if ($dir) { $exe = Join-Path $dir $exeName }
+
+    $version = $null
+    if ($names -contains 'DisplayVersion') { $version = "$($props.DisplayVersion)".Trim('"') }
+
+    $scope = 'user'
+    if ($Key -like 'HKLM:*' -or $Key -like '*HKEY_LOCAL_MACHINE*') { $scope = 'machine' }
+
+    return [pscustomobject]@{
+        Dir     = $dir
+        Exe     = $exe
+        Version = $version
+        Scope   = $scope
+    }
+}
+
+# Read where the app actually landed. NSIS records this, which beats assuming the
+# default: a previous per-machine install lives under Program Files, and NSIS
+# restores that location on upgrade.
+#
+# NSIS registers under Uninstall\SLEAP, but an MSI registers under
+# Uninstall\{ProductCode-GUID} with DisplayName = SLEAP. Looking only for the
+# exact name meant every successful .msi install was reported as a failure
+# ("recorded nothing under Uninstall\SLEAP"). Check the exact key first, since
+# that is both the common case and cheap, then fall back to scanning by
+# DisplayName. Wow6432Node matters for a 32-bit installer on an x64 machine.
 function Get-InstalledInfo {
-    foreach ($root in @('HKCU:', 'HKLM:')) {
-        $key = "$root\Software\Microsoft\Windows\CurrentVersion\Uninstall\$AppName"
-        if (-not (Test-Path -LiteralPath $key)) { continue }
+    $roots = @(
+        'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall',
+        'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall',
+        'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'
+    )
 
-        $props = $null
-        try { $props = Get-ItemProperty -LiteralPath $key } catch { continue }
-        if (-not $props) { continue }
-        $names = @($props.PSObject.Properties.Name)
+    foreach ($root in $roots) {
+        if (-not (Test-Path -LiteralPath $root)) { continue }
 
-        $dir = $null
-        if ($names -contains 'InstallLocation' -and $props.InstallLocation) {
-            # NSIS writes this value WITH literal surrounding quote characters
-            # (WriteRegStr ... "InstallLocation" "$\"$INSTDIR$\"").
-            $dir = "$($props.InstallLocation)".Trim('"')
+        $exact = Join-Path $root $AppName
+        if (Test-Path -LiteralPath $exact) {
+            $info = Read-UninstallKey -Key $exact
+            if ($info) { return $info }
         }
-        if (-not $dir) { continue }
 
-        $exeName = "$BinName.exe"
-        if ($names -contains 'MainBinaryName' -and $props.MainBinaryName) {
-            $exeName = "$($props.MainBinaryName)".Trim('"')
-        }
-        $version = $null
-        if ($names -contains 'DisplayVersion') { $version = $props.DisplayVersion }
+        $subKeys = @()
+        try {
+            $subKeys = @(Get-ChildItem -LiteralPath $root -ErrorAction Stop)
+        } catch { continue }
 
-        $scope = 'user'
-        if ($root -eq 'HKLM:') { $scope = 'machine' }
-
-        return [pscustomobject]@{
-            Dir     = $dir
-            Exe     = (Join-Path $dir $exeName)
-            Version = $version
-            Scope   = $scope
+        foreach ($sub in $subKeys) {
+            if ($sub.PSChildName -eq $AppName) { continue }
+            $info = Read-UninstallKey -Key $sub.PSPath -MatchByDisplayName
+            if ($info) { return $info }
         }
     }
     return $null
@@ -341,7 +392,10 @@ function Invoke-Installer {
     $proc = $null
     if ($InstallerPath -like '*.msi') {
         $msiArgs = @('/i', "`"$InstallerPath`"")
-        if ($Interactive) { $msiArgs += '/qb' } else { $msiArgs += '/qn' }
+        # /qb is a bare progress bar with no prompts, so it cannot show the
+        # FilesInUse dialog that -Interactive advertises. Full UI is msiexec's
+        # default, so for -Interactive pass no /q flag at all.
+        if (-not $Interactive) { $msiArgs += '/qn' }
         Write-Step 'Running the MSI installer'
         $proc = Start-Process -FilePath 'msiexec.exe' -ArgumentList $msiArgs -Wait -PassThru
     } elseif ($Interactive) {
@@ -359,7 +413,19 @@ function Invoke-Installer {
     $code = 0
     try { $code = [int] $proc.ExitCode } catch { $code = 0 }
 
+    # 3010 = ERROR_SUCCESS_REBOOT_REQUIRED, 1641 = ERROR_SUCCESS_REBOOT_INITIATED.
+    # Both mean the install SUCCEEDED. Treating them as failures made any
+    # reboot-pending machine report a broken install.
+    if ($code -eq 3010 -or $code -eq 1641) {
+        Write-Note 'Windows needs a restart to finish the installation.'
+        return
+    }
+
     if ($code -ne 0) {
+        # The finally block in Invoke-Main deletes the work dir, which is where
+        # $InstallerPath lives -- so telling the user to run it by hand only works
+        # if we keep it. Flag it before failing.
+        $script:KeepWorkDir = $true
         if ($code -eq 1602 -or $code -eq 1) {
             Write-Fail "The installer was cancelled (exit code $code)."
         }
@@ -377,12 +443,16 @@ function Complete-Install {
     $info = Get-InstalledInfo
     if (-not $info) {
         Write-Fail @"
-The installer reported success but recorded nothing under
-Uninstall\$AppName. Look for "$AppName" in Settings > Apps, or run the
-installer by hand from $ReleasesUrl/latest
+The installer reported success but registered nothing under Uninstall -- neither a
+"$AppName" key nor a product whose DisplayName is "$AppName".
+
+Look for "$AppName" in Settings > Apps, or install by hand from
+$ReleasesUrl/latest
 "@
     }
-    if (-not (Test-Path -LiteralPath $info.Exe)) {
+    # An MSI commonly registers without InstallLocation, so a null Dir/Exe is
+    # normal rather than an error. Only complain about a path we actually know.
+    if ($info.Exe -and -not (Test-Path -LiteralPath $info.Exe)) {
         Write-Fail "The installer reported success but $($info.Exe) is missing."
     }
 
@@ -390,10 +460,18 @@ installer by hand from $ReleasesUrl/latest
     if ($info.Version) { $versionText = " v$($info.Version)" }
 
     Write-Host ''
-    Write-Host "Installed $AppName$versionText to $($info.Dir)"
+    if ($info.Dir) {
+        Write-Host "Installed $AppName$versionText to $($info.Dir)"
+    } else {
+        Write-Host "Installed $AppName$versionText"
+    }
     Write-Host ''
-    Write-Host "Open it from the Start Menu (search for $AppName), or run:"
-    Write-Host "  & '$($info.Exe)'"
+    if ($info.Exe) {
+        Write-Host "Open it from the Start Menu (search for $AppName), or run:"
+        Write-Host "  & '$($info.Exe)'"
+    } else {
+        Write-Host "Open it from the Start Menu (search for $AppName)."
+    }
     Write-Host ''
     Write-Host "Uninstall: Settings > Apps > $AppName"
 }
@@ -424,7 +502,14 @@ function Install-FromZip {
 function Invoke-Main {
     $workDir = Join-Path ([IO.Path]::GetTempPath()) ('sleap-install-' + [Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Force -Path $workDir | Out-Null
+    $script:KeepWorkDir = $false
     try {
+        # Checked BEFORE the download, not after: a running app aborts the install,
+        # and there is no reason to spend ~10 MB of someone's bandwidth first only
+        # to throw it away. Re-checked below, since the app can be launched during
+        # the download.
+        Assert-NotRunning
+
         $installer = $null
 
         if ($Path) {
@@ -455,7 +540,13 @@ function Invoke-Main {
         Invoke-Installer -InstallerPath $installer
         Complete-Install
     } finally {
-        if (Test-Path -LiteralPath $workDir) {
+        if ($script:KeepWorkDir) {
+            # Invoke-Installer told the user to run the installer by hand; deleting
+            # it here would make that advice impossible to follow.
+            Write-Host ''
+            Write-Host "The downloaded installer was kept at:"
+            Write-Host "  $workDir"
+        } elseif (Test-Path -LiteralPath $workDir) {
             Remove-Item -LiteralPath $workDir -Recurse -Force -ErrorAction SilentlyContinue
         }
     }

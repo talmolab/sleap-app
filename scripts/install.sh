@@ -554,35 +554,73 @@ install_from_tarball() {
     install_app_bundle "$_app"
 }
 
+# macOS's Archive Utility writes a parallel __MACOSX/._<name> AppleDouble stub for
+# every entry it zips. Those match exactly the same globs as the real payload, are a
+# few KB of resource fork, and are not installable -- picking one up produces a
+# bogus "most likely truncated" complaint about a perfectly good archive.
+zip_payload() {
+    # zip_payload <dir> <name-pattern>
+    find "$1" -type f -name "$2" \
+        ! -name '._*' \
+        ! -path '*/__MACOSX/*' \
+        ! -name 'rw.*' \
+        -print 2>/dev/null | head -1
+}
+
+zip_bundle() {
+    find "$1" -maxdepth 3 -name '*.app' \
+        ! -name '._*' \
+        ! -path '*/__MACOSX/*' \
+        -print 2>/dev/null | head -1
+}
+
 install_from_zip() {
+    _zip="$1"
     _d="$WORKDIR/unzip"
     mkdir -p "$_d"
-    step "Extracting $(basename "$1")"
+    step "Extracting $(basename "$_zip")"
     if have unzip; then
-        unzip -q -o "$1" -d "$_d" </dev/null || die "could not unzip $1"
+        unzip -q -o "$_zip" -d "$_d" </dev/null || die "could not unzip $_zip"
     elif have ditto; then
-        ditto -x -k "$1" "$_d" </dev/null || die "could not unzip $1"
+        ditto -x -k "$_zip" "$_d" </dev/null || die "could not unzip $_zip"
     else
-        die "no unzip available; extract $1 by hand and pass the file inside it"
+        die "no unzip available; extract $_zip by hand and pass the file inside it"
     fi
     # Expanding a quarantined zip tags every extracted file, so clear the whole
     # tree before anything is copied out of it.
     unquarantine "$_d"
 
-    for _pat in '*.dmg' '*.app.tar.gz' '*.deb' '*.AppImage' '*.rpm'; do
-        _hit="$(find "$_d" -type f -name "$_pat" ! -name 'rw.*' -print 2>/dev/null | head -1)"
+    # Only consider payloads this platform can actually install. A CI artifact zip
+    # often holds every platform's bundles at once: searching .dmg first meant Linux
+    # picked the .dmg and failed, and the .app fallback was not guarded at all, so a
+    # macOS bundle copied into ~/Applications on Linux reported success and left the
+    # user with something unrunnable.
+    if [ "$(uname -s)" = Darwin ]; then
+        set -- '*.dmg' '*.app.tar.gz'
+    else
+        set -- '*.deb' '*.rpm' '*.AppImage'
+    fi
+
+    for _pat in "$@"; do
+        _hit="$(zip_payload "$_d" "$_pat")"
         if [ -n "$_hit" ]; then
             install_local_path "$_hit"
             return 0
         fi
     done
-    _hit="$(find "$_d" -maxdepth 3 -name '*.app' -print 2>/dev/null | head -1)"
-    if [ -n "$_hit" ]; then
-        guard_not_running
-        install_app_bundle "$_hit"
-        return 0
+
+    if [ "$(uname -s)" = Darwin ]; then
+        _hit="$(zip_bundle "$_d")"
+        if [ -n "$_hit" ]; then
+            guard_not_running
+            install_app_bundle "$_hit"
+            return 0
+        fi
+        die "nothing this Mac can install inside $(basename "$_zip")
+(looked for a .dmg, .app.tar.gz or .app)"
     fi
-    die "nothing installable inside $1 (.dmg, .app.tar.gz, .app, .deb, .AppImage or .rpm)"
+    die "nothing this system can install inside $(basename "$_zip")
+(looked for a .deb, .rpm or .AppImage)"
 }
 
 install_macos() {

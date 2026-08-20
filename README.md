@@ -53,9 +53,14 @@ sh install.sh ~/Downloads/sleap-app-macos-universal.zip
 
 ```powershell
 irm https://app.sleap.ai/dev/install.ps1 -OutFile install.ps1
-.\install.ps1 -Path $HOME\Downloads\sleap-app-windows.zip
 
-# `| iex` cannot forward parameters, so build a script block for -Tag / -Pre:
+# Windows clients default to an ExecutionPolicy of Restricted, which refuses to
+# run ANY .ps1 -- so invoke it explicitly rather than as `.\install.ps1`. This
+# bypasses the policy for one process only; it changes nothing machine-wide.
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Path $HOME\Downloads\sleap-app-windows.zip
+
+# `| iex` cannot forward parameters, so build a script block for -Tag / -Pre.
+# (This route is unaffected by ExecutionPolicy -- nothing is ever written to disk.)
 & ([scriptblock]::Create((irm https://app.sleap.ai/dev/install.ps1))) -Tag v0.1.2
 ```
 
