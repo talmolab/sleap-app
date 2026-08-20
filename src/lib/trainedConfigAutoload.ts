@@ -18,6 +18,8 @@ import type { ModelType } from "@/stores/trainingStore";
 export interface SlotConfigSource {
   yamlText: string;
   filename: string;
+  /** Absolute path to the source run's checkpoint file, for Resume/Fine-tune. `null` for a baseline profile or a trained run with no resolvable checkpoint. */
+  checkpointPath: string | null;
 }
 
 /** Minimal filesystem surface this resolver needs (injectable for tests). */
@@ -58,12 +60,15 @@ export async function resolveSlotConfigSource(
       try {
         const cfgPath = await fs.join(trainedMatch.path, "training_config.yaml");
         const yamlText = await fs.readTextFile(cfgPath);
-        return { yamlText, filename: "training_config.yaml" };
+        const checkpointPath = trainedMatch.checkpointFile
+          ? await fs.join(trainedMatch.path, trainedMatch.checkpointFile)
+          : null;
+        return { yamlText, filename: "training_config.yaml", checkpointPath };
       } catch {
         // Unreadable/missing despite discovery — fall through to the baseline.
       }
     }
   }
   const baseline = getDefaultProfileForHead(headType);
-  return baseline ? { yamlText: baseline.content, filename: baseline.filename } : null;
+  return baseline ? { yamlText: baseline.content, filename: baseline.filename, checkpointPath: null } : null;
 }

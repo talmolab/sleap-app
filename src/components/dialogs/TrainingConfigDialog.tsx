@@ -368,11 +368,11 @@ function HeadTabContent({
   const headType = slotToHeadType(modelType, slot);
   const baselineProfiles = getBaselineProfilesForHead(headType);
   const showCropSize = slot !== "centroid";
-  const trainingMode = (!configFile?.hasTrainedModel && hp.trainingMode !== "reuse_config")
+  const trainingMode = (!configFile?.checkpointPath && hp.trainingMode !== "reuse_config")
     ? "reuse_config"
     : (hp.trainingMode ?? "reuse_config");
-  const modelLocked = trainingMode === "resume" || trainingMode === "reuse_model";
-  const allLocked = trainingMode === "reuse_model";
+  const modelLocked = trainingMode === "resume" || trainingMode === "finetune";
+  const allLocked = trainingMode === "resume";
   const { parseYamlConfig, addConfigFile } = useTrainingStore();
 
   const handleConfigBrowse = () => {
@@ -448,29 +448,30 @@ function HeadTabContent({
         </Select>
       </div>
 
-      {/* ── Training mode radios ── */}
-      <div className="flex items-center gap-5 mb-5 pb-4 border-b">
-        {([
-          { value: "reuse_config" as const, label: "Reuse config (train from scratch)", alwaysEnabled: true },
-          { value: "resume" as const, label: "Resume training (fine-tune)", alwaysEnabled: false },
-          { value: "reuse_model" as const, label: "Reuse model (don't retrain)", alwaysEnabled: false },
-        ]).map((opt) => {
-          const disabled = !opt.alwaysEnabled && !configFile?.hasTrainedModel;
-          return (
-            <label key={opt.value} className={`flex items-center gap-1.5 ${disabled ? "opacity-40 cursor-not-allowed" : "cursor-pointer"}`}>
+      {/* ── Training mode — opt-in, only meaningful once a checkpoint is
+          available for this slot; deselecting either one falls back to
+          training from scratch (the implicit default, so it isn't shown as
+          its own option). ── */}
+      {configFile?.checkpointPath && (
+        <div className="flex items-center gap-5 mb-5 pb-4 border-b">
+          {([
+            { value: "finetune" as const, label: "Fine-tune (start from prior weights)" },
+            { value: "resume" as const, label: "Resume training (continue from checkpoint)" },
+          ]).map((opt) => (
+            <label key={opt.value} className="flex items-center gap-1.5 cursor-pointer">
               <input
-                type="radio"
-                name={`training-mode-${slot}`}
+                type="checkbox"
                 checked={trainingMode === opt.value}
-                onChange={() => onUpdate({ trainingMode: opt.value })}
+                onChange={() =>
+                  onUpdate({ trainingMode: trainingMode === opt.value ? "reuse_config" : opt.value })
+                }
                 className="accent-primary"
-                disabled={disabled}
               />
               <span className="text-sm">{opt.label}</span>
             </label>
-          );
-        })}
-      </div>
+          ))}
+        </div>
+      )}
 
       {/* ── Model Stats Preview (thumbnail + RF + crop size + params) ── */}
       <ModelStatsPreview hp={hp} maxStride={hp.maxStride} filters={hp.filters} filtersRate={hp.filtersRate} outputStride={hp.outputStride} stemStride={hp.stemStride} backbone={hp.backbone || "unet"} slot={slot} />

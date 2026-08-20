@@ -19,8 +19,12 @@ function fakeFs(
   } as unknown as TrainedConfigFsAccess;
 }
 
-function discoveredFor(headKey: string, path = "/proj/models/run1"): DiscoveredModel[] {
-  return [{ path, headKey, runName: "run1", mtimeMs: 1000 }];
+function discoveredFor(
+  headKey: string,
+  path = "/proj/models/run1",
+  checkpointFile: string | null = "best.ckpt",
+): DiscoveredModel[] {
+  return [{ path, headKey, runName: "run1", mtimeMs: 1000, checkpointFile }];
 }
 
 describe("resolveSlotConfigSource", () => {
@@ -32,8 +36,24 @@ describe("resolveSlotConfigSource", () => {
       discoveredFor("centroid"),
       fs,
     );
-    expect(result).toEqual({ yamlText: "trained: yaml", filename: "training_config.yaml" });
+    expect(result).toEqual({
+      yamlText: "trained: yaml",
+      filename: "training_config.yaml",
+      checkpointPath: "/proj/models/run1/best.ckpt",
+    });
     expect(fs.join).toHaveBeenCalledWith("/proj/models/run1", "training_config.yaml");
+    expect(fs.join).toHaveBeenCalledWith("/proj/models/run1", "best.ckpt");
+  });
+
+  it("returns a null checkpointPath when the trained match has no checkpointFile", async () => {
+    const fs = fakeFs({ readTextFile: vi.fn(async () => "trained: yaml") });
+    const result = await resolveSlotConfigSource(
+      "centroid",
+      "top_down",
+      discoveredFor("centroid", "/proj/models/run1", null),
+      fs,
+    );
+    expect(result?.checkpointPath).toBeNull();
   });
 
   it("falls back to the baseline when no discovered model matches the slot's head", async () => {

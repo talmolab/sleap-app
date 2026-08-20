@@ -141,7 +141,7 @@ export interface ConfigHyperparams {
   onlineMining: boolean;
   minHardKeypoints: number;
   maxHardKeypoints: number | null;
-  trainingMode: "reuse_config" | "resume" | "reuse_model";
+  trainingMode: "reuse_config" | "resume" | "finetune";
   accelerator: "auto" | "cuda" | "mps" | "cpu";
   // Performance
   dataPipeline: DataPipeline;
@@ -241,6 +241,8 @@ export interface ConfigFile {
   slot: string; // which slot this fills (e.g., "centroid", "centered_instance", "config")
   hyperparams: ConfigHyperparams; // per-config hyperparameters
   hasTrainedModel: boolean; // true if config has a non-empty run_name (trained model exists)
+  /** Absolute path to this config's source run's checkpoint file, for Resume/Fine-tune. `null` for a baseline profile or a manually-browsed file (no known run directory). */
+  checkpointPath: string | null;
 }
 
 export interface RemoteTrainingOptions {
@@ -345,7 +347,7 @@ interface TrainingState {
   updateConfigHyperparams: (slot: string, updates: Partial<ConfigHyperparams>) => void;
   addConfigFile: (file: ConfigFile) => void;
   removeConfigFile: (slot: string) => void;
-  parseYamlConfig: (yamlText: string, filename: string, slot: string) => ConfigFile | null;
+  parseYamlConfig: (yamlText: string, filename: string, slot: string, checkpointPath?: string | null) => ConfigFile | null;
   reset: () => void;
   startTraining: (opts?: RemoteTrainingOptions | LocalTrainingOptions) => Promise<void>;
   stopTraining: () => Promise<void>;
@@ -393,7 +395,11 @@ export function countUserLabeledFrames(labels: Labels | null): number | null {
 // ── YAML override helper ─────────────────────────────────────────
 
 /** Apply ConfigHyperparams overrides to raw YAML config content. */
-export function applyHyperparamsToYaml(yamlText: string, hp: ConfigHyperparams): string {
+export function applyHyperparamsToYaml(
+  yamlText: string,
+  hp: ConfigHyperparams,
+  checkpointPath: string | null = null,
+): string {
   const doc = yaml.load(yamlText) as Record<string, unknown> | null;
   if (!doc || typeof doc !== "object") return yamlText;
 
@@ -450,6 +456,21 @@ export function applyHyperparamsToYaml(yamlText: string, hp: ConfigHyperparams):
   if (!trainer.optimizer) trainer.optimizer = {};
   (trainer.optimizer as Record<string, unknown>).lr = hp.learningRate;
   if (hp.runName) trainer.run_name = hp.runName;
+
+  // Resume / fine-tune — mutually exclusive; always write both branches so a
+  // stale value baked into an uploaded/auto-loaded trained config (itself the
+  // product of a prior resume/fine-tune run) doesn't silently ride through
+  // when the mode is switched back to scratch or to the other mode.
+  // - "resume": true Lightning resume (Trainer.fit(ckpt_path=...)) — restores
+  //   optimizer/scheduler/epoch state and continues the same trajectory.
+  // - "finetune": weight-seeded init only (new run, fresh optimizer/epoch
+  //   state) — mirrors legacy SLEAP's "Resume training (fine-tune)".
+  trainer.resume_ckpt_path =
+    hp.trainingMode === "resume" && checkpointPath ? checkpointPath : null;
+  model.pretrained_backbone_weights =
+    hp.trainingMode === "finetune" && checkpointPath ? checkpointPath : null;
+  model.pretrained_head_weights =
+    hp.trainingMode === "finetune" && checkpointPath ? checkpointPath : null;
 
   // W&B
   trainer.use_wandb = hp.useWandb;
@@ -703,7 +724,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       },
     })),
 
-  parseYamlConfig: (yamlText: string, filename: string, slot: string): ConfigFile | null => {
+  parseYamlConfig: (yamlText: string, filename: string, slot: string, checkpointPath: string | null = null): ConfigFile | null => {
     try {
       const doc = yaml.load(yamlText) as Record<string, unknown>;
       if (!doc || typeof doc !== "object") return null;
@@ -937,6 +958,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         slot,
         hyperparams,
         hasTrainedModel,
+        checkpointPath,
       };
     } catch (err) {
       console.warn("[training] Failed to parse YAML:", err);
@@ -1068,10 +1090,14 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       const spec = {
         type: "train" as const,
         config_contents: config.configs.map((c) =>
-          applyHyperparamsToYaml(c.content, {
-            ...c.hyperparams,
-            runName: resolveRunName(c.hyperparams, c.modelType),
-          }),
+          applyHyperparamsToYaml(
+            c.content,
+            {
+              ...c.hyperparams,
+              runName: resolveRunName(c.hyperparams, c.modelType),
+            },
+            c.checkpointPath,
+          ),
         ),
         model_types: config.configs.map((c) => c.modelType),
         labels_path: resolvedLabelsPath,
@@ -1401,7 +1427,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
             log: i > 0 ? appendLog(s.log, `— Starting ${s.models[i]?.label}...`) : s.log,
           }));
 
-          const configYaml = applyHyperparamsToYaml(cf.content, cf.hyperparams);
+          const configYaml = applyHyperparamsToYaml(cf.content, cf.hyperparams, cf.checkpointPath);
           // Default run name matches legacy SLEAP's format exactly:
           // `{timestamp}.{head_name}.n={num_user_labeled_frames}`
           // (sleap/gui/learning/runners.py get_timestamp() + base_run_name) —

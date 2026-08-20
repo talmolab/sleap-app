@@ -14,6 +14,7 @@ function makeConfigFile(overrides: Partial<ConfigFile> = {}): ConfigFile {
     slot: "centroid",
     hyperparams: { ...defaultHyperparams },
     hasTrainedModel: false,
+    checkpointPath: null,
     ...overrides,
   };
 }
@@ -299,6 +300,91 @@ trainer_config: {}
       const result = applyHyperparamsToYaml(input, hp);
       const doc = yaml.load(result) as Record<string, any>;
       expect(doc.data_config.use_same_data_for_val).toBe(true);
+    });
+  });
+
+  describe("applyHyperparamsToYaml - resume / fine-tune", () => {
+    const baseYaml = `
+data_config: {}
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config: {}
+`;
+    const ckptPath = "/proj/models/prev_run/last.ckpt";
+
+    it("sets trainer_config.resume_ckpt_path when trainingMode is 'resume' and a checkpoint is given", () => {
+      const hp = { ...defaultHyperparams, trainingMode: "resume" as const };
+      const doc = yaml.load(applyHyperparamsToYaml(baseYaml, hp, ckptPath)) as Record<string, any>;
+      expect(doc.trainer_config.resume_ckpt_path).toBe(ckptPath);
+      expect(doc.model_config.pretrained_backbone_weights).toBeNull();
+      expect(doc.model_config.pretrained_head_weights).toBeNull();
+    });
+
+    it("sets model_config.pretrained_*_weights when trainingMode is 'finetune' and a checkpoint is given", () => {
+      const hp = { ...defaultHyperparams, trainingMode: "finetune" as const };
+      const doc = yaml.load(applyHyperparamsToYaml(baseYaml, hp, ckptPath)) as Record<string, any>;
+      expect(doc.model_config.pretrained_backbone_weights).toBe(ckptPath);
+      expect(doc.model_config.pretrained_head_weights).toBe(ckptPath);
+      expect(doc.trainer_config.resume_ckpt_path).toBeNull();
+    });
+
+    it("clears both resume/fine-tune fields when trainingMode is 'reuse_config' (train from scratch)", () => {
+      const hp = { ...defaultHyperparams, trainingMode: "reuse_config" as const };
+      const doc = yaml.load(applyHyperparamsToYaml(baseYaml, hp, ckptPath)) as Record<string, any>;
+      expect(doc.trainer_config.resume_ckpt_path).toBeNull();
+      expect(doc.model_config.pretrained_backbone_weights).toBeNull();
+      expect(doc.model_config.pretrained_head_weights).toBeNull();
+    });
+
+    it("REGRESSION: clears a stale resume_ckpt_path baked into an auto-loaded config when mode is switched to fine-tune", () => {
+      const staleYaml = `
+data_config: {}
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config:
+  resume_ckpt_path: /proj/models/some_older_run/last.ckpt
+`;
+      const hp = { ...defaultHyperparams, trainingMode: "finetune" as const };
+      const doc = yaml.load(applyHyperparamsToYaml(staleYaml, hp, ckptPath)) as Record<string, any>;
+      expect(doc.trainer_config.resume_ckpt_path).toBeNull();
+      expect(doc.model_config.pretrained_backbone_weights).toBe(ckptPath);
+    });
+
+    it("does not set resume_ckpt_path for 'resume' mode when no checkpoint path is available", () => {
+      const hp = { ...defaultHyperparams, trainingMode: "resume" as const };
+      const doc = yaml.load(applyHyperparamsToYaml(baseYaml, hp, null)) as Record<string, any>;
+      expect(doc.trainer_config.resume_ckpt_path).toBeNull();
+    });
+  });
+
+  describe("parseYamlConfig - checkpointPath", () => {
+    it("threads a passed checkpointPath onto the returned ConfigFile", () => {
+      const yamlText = `
+model_config:
+  head_configs:
+    centroid: {}
+trainer_config:
+  run_name: "250101_120000.centroid.n=10"
+`;
+      const result = useTrainingStore
+        .getState()
+        .parseYamlConfig(yamlText, "training_config.yaml", "centroid", "/proj/models/run1/last.ckpt");
+      expect(result?.checkpointPath).toBe("/proj/models/run1/last.ckpt");
+    });
+
+    it("defaults checkpointPath to null when not passed", () => {
+      const yamlText = `
+model_config:
+  head_configs:
+    centroid: {}
+trainer_config: {}
+`;
+      const result = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
+      expect(result?.checkpointPath).toBeNull();
     });
   });
 

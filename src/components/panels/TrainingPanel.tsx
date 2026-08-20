@@ -742,7 +742,7 @@ export function TrainingPanel() {
         );
         if (cancelled) return;
         if (source) {
-          const parsed = parseConfig(source.yamlText, source.filename, slot);
+          const parsed = parseConfig(source.yamlText, source.filename, slot, source.checkpointPath);
           if (parsed) addConfig(parsed);
         }
       }
