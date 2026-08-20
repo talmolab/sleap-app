@@ -59,6 +59,7 @@ jobs:
             rust-targets: x86_64-unknown-linux-gnu
             tauri-args: ""
             bundle-dir: src-tauri/target/release/bundle
+            job-timeout: 60
           # One universal binary, so a single .dmg covers Apple Silicon and Intel.
           # macos-latest is arm64-only, so without this Intel Macs get nothing
           # they can execute at all (Rosetta does not translate arm64 -> x86_64).
@@ -68,17 +69,25 @@ jobs:
             rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
             tauri-args: "--target universal-apple-darwin"
             bundle-dir: src-tauri/target/universal-apple-darwin/release/bundle
+            # Tauri notarizes the .app INSIDE its build step, emitting no progress
+            # and honouring no timeout of ours. A team's first-ever submission gets
+            # extra vetting from Apple: ours was Accepted (id 656c1f62), but only
+            # after >47 min, so a 60 min job cap killed the runner mid-wait. Later
+            # submissions are normally minutes. Generous cap + the notarytool
+            # history check in docs/macos-code-signing.md beats guessing.
+            job-timeout: 120
           - platform: windows-latest
             target: windows
             rust-targets: x86_64-pc-windows-msvc
             tauri-args: ""
             bundle-dir: src-tauri/target/release/bundle
+            job-timeout: 60
 
     runs-on: ${{ matrix.platform }}
     # Backstop: a wedged apt mirror once burned the full 6h job limit before
-    # anyone noticed. Fail in minutes instead. Historic macOS legs ran 2-12 min;
-    # universal roughly doubles the Rust compile, so 60 is generous.
-    timeout-minutes: 60
+    # anyone noticed. Fail in minutes instead. Per-platform, because only macOS
+    # blocks on a third party -- see job-timeout in the matrix.
+    timeout-minutes: ${{ matrix.job-timeout }}
 
     steps:
       # All action pins below are the smallest major that runs on Node 24; Node

@@ -170,8 +170,31 @@ Dragging the app to `/Applications` should then launch with no dialog at all.
 
 ## Notes and failure modes
 
-- **Notarization is asynchronous.** `notarytool submit --wait` usually returns in
-  1–5 minutes but Apple publishes no SLA; the workflow caps it at 30 minutes.
+- **Notarization is asynchronous, and a team's FIRST submission is much slower.**
+  Apple appears to do extra vetting the first time a team notarizes anything. Ours
+  (submission `656c1f62-1efb-4f99-a5cd-c98c7b1f3480`) was `Accepted`, but took over
+  47 minutes, long enough that a 60-minute job cap killed the runner mid-wait and
+  the build looked like a hang. Subsequent submissions are normally 1–5 minutes.
+  The macOS leg's `job-timeout` is 120 minutes for this reason.
+
+  Tauri notarizes the `.app` *inside* its own build step, printing no progress and
+  honouring no timeout of ours, so CI cannot tell you what Apple is doing. Ask
+  Apple directly instead — this is the diagnostic to reach for whenever a macOS
+  build appears to stall after `Signing with identity`:
+
+  ```bash
+  # One-time, so the password is never needed again:
+  xcrun notarytool store-credentials sleap-notary \
+    --apple-id you@example.com --team-id TEAMID --password xxxx-xxxx-xxxx-xxxx
+
+  xcrun notarytool history --keychain-profile sleap-notary
+  xcrun notarytool log <submission-id> --keychain-profile sleap-notary
+  ```
+
+  `In Progress` means wait. `Accepted` means it finished and only the runner gave
+  up. `Invalid` means a real problem, and `log` names it. An empty history means
+  the submission never reached Apple — look at credentials or egress, not queue
+  time.
 - **Stapling matters.** Without a stapled ticket, a user who is offline or behind a
   firewall that blocks Apple's OCSP responder still gets prompted. CI runs
   `stapler validate` on both the `.app` and the `.dmg` to catch that.
