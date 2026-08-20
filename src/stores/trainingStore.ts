@@ -550,6 +550,19 @@ export function applyHyperparamsToYaml(
     }
   }
 
+  // part_names — same stale-node-name-list concern as data_config.skeletons
+  // above; parseYamlConfig already clears this at load time, cleared here
+  // too as the final gate. Only where the key is already present (see
+  // parseYamlConfig's comment: centroid's confmaps schema doesn't define it).
+  for (const headVal of Object.values(headConfigs)) {
+    if (headVal && typeof headVal === "object") {
+      const confmaps = (headVal as Record<string, unknown>).confmaps;
+      if (confmaps && typeof confmaps === "object" && "part_names" in confmaps) {
+        (confmaps as Record<string, unknown>).part_names = null;
+      }
+    }
+  }
+
   // Backbone model params
   const backboneConfig = (model.backbone_config ?? {}) as Record<string, unknown>;
   if (hp.backbone === "unet" || !hp.backbone) {
@@ -753,20 +766,36 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       // (sleap-nn re-derives it from the real training data regardless —
       // see applyHyperparamsToYaml's own belt-and-suspenders clear); a stale
       // cache_img_path could point at another run's (or a nonexistent)
-      // directory on this machine.
+      // directory on this machine. `sanitizedContent` is computed at the end,
+      // once head_configs.*.confmaps.part_names (below) has also been cleared.
       if (!doc.data_config || typeof doc.data_config !== "object") {
         doc.data_config = {};
       }
       const rawDataConfig = doc.data_config as Record<string, unknown>;
       rawDataConfig.skeletons = [];
       rawDataConfig.cache_img_path = null;
-      const sanitizedContent = yaml.dump(doc, { lineWidth: -1 });
 
       // Extract model type from head_configs (same logic as dashboard)
       const trainerConfig = (doc.trainer_config ?? doc.trainer ?? doc) as Record<string, unknown>;
       const modelConfig = (doc.model_config ?? {}) as Record<string, unknown>;
       const headConfigs = (modelConfig.head_configs ?? trainerConfig?.head_configs ?? {}) as Record<string, unknown>;
       const detectedModelType = Object.entries(headConfigs).find(([, v]) => v != null)?.[0] ?? "unknown";
+
+      // part_names (single_instance/centered_instance/bottomup confmaps only —
+      // sleap-nn's docstring: "None if nodes from sio.Labels file can be used
+      // directly") is an explicit node-name list belonging to whatever
+      // project the config came from; only clear it where the key is already
+      // present, so heads whose confmaps schema doesn't define it (centroid)
+      // don't get an unrecognized field injected.
+      for (const headVal of Object.values(headConfigs)) {
+        if (headVal && typeof headVal === "object") {
+          const confmaps = (headVal as Record<string, unknown>).confmaps;
+          if (confmaps && typeof confmaps === "object" && "part_names" in confmaps) {
+            (confmaps as Record<string, unknown>).part_names = null;
+          }
+        }
+      }
+      const sanitizedContent = yaml.dump(doc, { lineWidth: -1 });
 
       // Extract per-config hyperparameters
       const trainer = trainerConfig;

@@ -872,6 +872,35 @@ trainer_config: {}
       const doc = yaml.load(applyHyperparamsToYaml(yamlText, defaultHyperparams)) as Record<string, any>;
       expect(doc.data_config.cache_img_path).toBeNull();
     });
+
+    it("clears part_names baked into an imported config's confmaps head", () => {
+      const yamlText = `
+data_config: {}
+model_config:
+  head_configs:
+    centered_instance:
+      confmaps:
+        sigma: 1.5
+        part_names: ["head", "tail"]
+trainer_config: {}
+`;
+      const doc = yaml.load(applyHyperparamsToYaml(yamlText, defaultHyperparams)) as Record<string, any>;
+      expect(doc.model_config.head_configs.centered_instance.confmaps.part_names).toBeNull();
+    });
+
+    it("does not inject a part_names key into a confmaps head that never had one (centroid)", () => {
+      const yamlText = `
+data_config: {}
+model_config:
+  head_configs:
+    centroid:
+      confmaps:
+        sigma: 1.5
+trainer_config: {}
+`;
+      const doc = yaml.load(applyHyperparamsToYaml(yamlText, defaultHyperparams)) as Record<string, any>;
+      expect("part_names" in doc.model_config.head_configs.centroid.confmaps).toBe(false);
+    });
   });
 
   describe("parseYamlConfig - strips skeleton/cache_img_path from stored content at load time", () => {
@@ -914,6 +943,22 @@ trainer_config: {}
       const doc = yaml.load(result!.content) as Record<string, any>;
       expect(doc.data_config.skeletons).toEqual([]);
       expect(doc.data_config.cache_img_path).toBeNull();
+    });
+
+    it("clears part_names from the stored content's confmaps head", () => {
+      const yamlWithPartNames = `
+data_config: {}
+model_config:
+  head_configs:
+    centered_instance:
+      confmaps:
+        sigma: 1.5
+        part_names: ["head", "tail"]
+trainer_config: {}
+`;
+      const result = useTrainingStore.getState().parseYamlConfig(yamlWithPartNames, "c.yaml", "centered_instance");
+      const doc = yaml.load(result!.content) as Record<string, any>;
+      expect(doc.model_config.head_configs.centered_instance.confmaps.part_names).toBeNull();
     });
   });
 
