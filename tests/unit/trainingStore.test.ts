@@ -858,6 +858,63 @@ trainer_config: {}
       const doc = yaml.load(applyHyperparamsToYaml(yamlText, defaultHyperparams)) as Record<string, any>;
       expect(doc.data_config.skeletons).toEqual([]);
     });
+
+    it("clears a cache_img_path baked into an imported config — it may point at another run's directory", () => {
+      const yamlText = `
+data_config:
+  cache_img_path: /proj/models/old_run/train_imgs
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config: {}
+`;
+      const doc = yaml.load(applyHyperparamsToYaml(yamlText, defaultHyperparams)) as Record<string, any>;
+      expect(doc.data_config.cache_img_path).toBeNull();
+    });
+  });
+
+  describe("parseYamlConfig - strips skeleton/cache_img_path from stored content at load time", () => {
+    const yamlWithStaleFields = `
+data_config:
+  skeletons:
+    - nodes:
+        - name: head
+        - name: tail
+      edges: []
+  cache_img_path: /proj/models/old_run/train_imgs
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config: {}
+`;
+
+    it("clears skeletons from the stored content, not just at apply time", () => {
+      const result = useTrainingStore.getState().parseYamlConfig(yamlWithStaleFields, "c.yaml", "centroid");
+      const doc = yaml.load(result!.content) as Record<string, any>;
+      expect(doc.data_config.skeletons).toEqual([]);
+    });
+
+    it("clears cache_img_path from the stored content", () => {
+      const result = useTrainingStore.getState().parseYamlConfig(yamlWithStaleFields, "c.yaml", "centroid");
+      const doc = yaml.load(result!.content) as Record<string, any>;
+      expect(doc.data_config.cache_img_path).toBeNull();
+    });
+
+    it("handles a config with no data_config section at all", () => {
+      const noDataConfig = `
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config: {}
+`;
+      const result = useTrainingStore.getState().parseYamlConfig(noDataConfig, "c.yaml", "centroid");
+      const doc = yaml.load(result!.content) as Record<string, any>;
+      expect(doc.data_config.skeletons).toEqual([]);
+      expect(doc.data_config.cache_img_path).toBeNull();
+    });
   });
 
   describe("applyHyperparamsToYaml - run_name overwrite", () => {

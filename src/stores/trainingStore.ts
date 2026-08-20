@@ -442,7 +442,10 @@ export function applyHyperparamsToYaml(
   // (sleap_nn/training/model_trainer.py), so this never carries a stale
   // definition through to training; it just keeps the intermediate config we
   // generate from showing a foreign skeleton before that overwrite happens.
+  // (parseYamlConfig already clears both of these at load time too — kept
+  // here as well since this is the actual final gate before sleap-nn runs.)
   data.skeletons = [];
+  data.cache_img_path = null;
 
   // Performance — data pipeline + dataloader workers
   const dataPipelineFw = DATA_PIPELINE_FW[hp.dataPipeline] ?? DATA_PIPELINE_FW.stream;
@@ -740,6 +743,25 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       const doc = yaml.load(yamlText) as Record<string, unknown>;
       if (!doc || typeof doc !== "object") return null;
 
+      // Strip fields specific to whichever run/machine produced this config,
+      // right at load time — unlike accelerator/numDevices/dataPipeline/
+      // runName below (which get reset via the *hyperparams* defaults, so
+      // applyHyperparamsToYaml naturally overwrites them from hp), skeleton
+      // definitions and the disk-image-cache path have no corresponding UI
+      // control, so the stored `content` itself must not carry them forward.
+      // A stale skeleton belongs to whatever project the config came from
+      // (sleap-nn re-derives it from the real training data regardless —
+      // see applyHyperparamsToYaml's own belt-and-suspenders clear); a stale
+      // cache_img_path could point at another run's (or a nonexistent)
+      // directory on this machine.
+      if (!doc.data_config || typeof doc.data_config !== "object") {
+        doc.data_config = {};
+      }
+      const rawDataConfig = doc.data_config as Record<string, unknown>;
+      rawDataConfig.skeletons = [];
+      rawDataConfig.cache_img_path = null;
+      const sanitizedContent = yaml.dump(doc, { lineWidth: -1 });
+
       // Extract model type from head_configs (same logic as dashboard)
       const trainerConfig = (doc.trainer_config ?? doc.trainer ?? doc) as Record<string, unknown>;
       const modelConfig = (doc.model_config ?? {}) as Record<string, unknown>;
@@ -964,7 +986,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
 
       return {
         filename,
-        content: yamlText,
+        content: sanitizedContent,
         modelType: detectedModelType,
         slot,
         hyperparams,
