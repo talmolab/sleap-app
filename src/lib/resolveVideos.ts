@@ -1202,6 +1202,15 @@ function makeVideoRangeSource(path: string): Promise<RangeSource> {
 async function createBackendForPath(path: string): Promise<VideoBackend> {
   const name = getBasename(path);
   const kind = backendKindForFilename(name);
+  // PHASE-2 INTEGRATION POINT (desktop legacy-codec transcode fallback):
+  // Before the container routing below, probe the codec natively (ffprobe
+  // sidecar). If `codecNeedsTranscode(codec, pixFmt)` (Xvid/DivX, WMV3/VC-1,
+  // MPEG-1/2, 10-bit HEVC), call `transcodeToMp4(path, createTauriTranscodeDeps())`
+  // and route the returned cached MP4 through the Mp4Box path below — hardware
+  // decode + fast seeking, no software-decode lag. Keep the ORIGINAL path in the
+  // `.slp` (cache path lives only in backendMetadata). Gated on the bundled
+  // ffmpeg sidecar — see `src-tauri/binaries/README.md`. Modules ready + tested
+  // in `src/lib/transcode/`; wiring is intentionally off until the binary ships.
   if (kind === "mediabunny") {
     return MediaBunnyVideoBackend.fromRangeSource(
       await makeVideoRangeSource(path),
