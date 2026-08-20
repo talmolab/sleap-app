@@ -1401,13 +1401,21 @@ export function backendKindForFilename(
 
 /**
  * Build a new standalone Video from a user-picked file, dispatching by
- * extension via {@link assignVideoBackend} (which probes shape/fps). Supports
- * every {@link SUPPORTED_VIDEO_EXTS} format
- * (MP4/WebM/MKV/MOV/Ogg/MPEG-TS/AVI/WMV/.seq); unsupported formats (e.g.
- * `.mpeg`) are rejected with a toast and return null. Returns null on decode
- * failure too (assignVideoBackend already surfaces the error).
+ * extension (probing shape/fps). Supports every {@link SUPPORTED_VIDEO_EXTS}
+ * format; unsupported formats are rejected with a toast and return null.
+ *
+ * On desktop pass `absPath` (the file's absolute path): the backend is opened
+ * BY PATH via {@link assignVideoBackendFromPath} — a lazy byte-range read plus
+ * the native codec probe + transcode fallback for legacy codecs
+ * ({@link createBackendForPath}). So a large legacy `.avi`/`.wmv`/`.mpeg` is
+ * never read whole into memory, and Xvid/WMV/MPEG-1/2 convert-and-play instead
+ * of failing. In the browser (no `absPath`) the picked File is opened directly.
+ * Returns null on decode failure too (the assign helpers surface the error).
  */
-export async function buildStandaloneVideo(file: File): Promise<Video | null> {
+export async function buildStandaloneVideo(
+  file: File,
+  absPath?: string | null
+): Promise<Video | null> {
   if (!backendKindForFilename(file.name)) {
     const ext = fileExt(file.name);
     toast.error(`${ext ? `.${ext} files are` : "This file is"} not supported`, {
@@ -1416,10 +1424,16 @@ export async function buildStandaloneVideo(file: File): Promise<Video | null> {
     });
     return null;
   }
-  const video = new Video({ filename: file.name, openBackend: false });
-  await assignVideoBackend(video, file);
-  // assignVideoBackend sets shape only on a successful probe (and toasts on
-  // failure); a missing shape means the backend never initialized.
+  // Desktop opens by path (canonical filename = the path, so it resolves on
+  // reload); browser opens from the File (filename = the bare name).
+  const video = new Video({ filename: absPath ?? file.name, openBackend: false });
+  if (absPath) {
+    await assignVideoBackendFromPath(video, absPath);
+  } else {
+    await assignVideoBackend(video, file);
+  }
+  // The assign helpers set shape only on a successful frame-0 probe (and toast
+  // on failure); a missing shape means the backend never initialized.
   if (!video.shape) return null;
   return video;
 }
@@ -1451,19 +1465,14 @@ export async function pickVideoFiles(): Promise<PickedVideoFile[]> {
   const files: PickedVideoFile[] = [];
   for (const item of picked) {
     if (typeof item === "string") {
-      // Tauri: got a path — read bytes into a File (mirrors resolveVideoFile).
-      try {
-        const bytes = await platform.readFile(item);
-        files.push({
-          file: new File([bytes], getBasename(item), { type: "video/mp4" }),
-          absPath: item,
-        });
-      } catch (err) {
-        console.error(`[video] Failed to read "${item}":`, err);
-        toast.error(`Failed to read ${getBasename(item)}`, {
-          description: err instanceof Error ? err.message : String(err),
-        });
-      }
+      // Tauri: DON'T read the bytes here — the backend opens by PATH (lazy
+      // byte-range + transcode fallback via buildStandaloneVideo/absPath), so a
+      // multi-GB legacy video is never materialized into memory. Carry just the
+      // name (for the format gate) + the absolute path.
+      files.push({
+        file: new File([], getBasename(item), { type: "video/mp4" }),
+        absPath: item,
+      });
     } else {
       files.push({ file: item, absPath: null });
     }
@@ -1482,9 +1491,8 @@ export async function addVideoFileToLabels(
   labels: Labels,
   picked: PickedVideoFile
 ): Promise<Video | null> {
-  const video = await buildStandaloneVideo(picked.file);
+  const video = await buildStandaloneVideo(picked.file, picked.absPath);
   if (!video) return null;
-  if (picked.absPath) video.filename = picked.absPath;
   labels.addVideo(video);
   return video;
 }
