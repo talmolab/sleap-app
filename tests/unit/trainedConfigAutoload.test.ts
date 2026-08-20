@@ -1,0 +1,105 @@
+import { describe, it, expect, vi } from "../bun-test";
+import { resolveSlotConfigSource } from "@/lib/trainedConfigAutoload";
+import type { DiscoveredModel } from "@/lib/modelDiscovery";
+import type { TrainedConfigFsAccess } from "@/lib/trainedConfigAutoload";
+import type { ModelType } from "@/stores/trainingStore";
+
+function fakeFs(overrides: Partial<TrainedConfigFsAccess> = {}): TrainedConfigFsAccess {
+  return {
+    join: vi.fn(async (dir: string, name: string) => `${dir}/${name}`),
+    readTextFile: vi.fn(async () => "trained: yaml"),
+    ...overrides,
+  };
+}
+
+function discoveredFor(headKey: string, path = "/proj/models/run1"): DiscoveredModel[] {
+  return [{ path, headKey, runName: "run1", mtimeMs: 1000 }];
+}
+
+describe("resolveSlotConfigSource", () => {
+  it("prefers a matching trained run's training_config.yaml over the baseline", async () => {
+    const fs = fakeFs({ readTextFile: vi.fn(async () => "trained: yaml") });
+    const result = await resolveSlotConfigSource(
+      "centroid",
+      "top_down",
+      discoveredFor("centroid"),
+      fs,
+    );
+    expect(result).toEqual({ yamlText: "trained: yaml", filename: "training_config.yaml" });
+    expect(fs.join).toHaveBeenCalledWith("/proj/models/run1", "training_config.yaml");
+  });
+
+  it("falls back to the baseline when no discovered model matches the slot's head", async () => {
+    const fs = fakeFs();
+    const result = await resolveSlotConfigSource(
+      "centroid",
+      "top_down",
+      discoveredFor("bottomup"), // wrong head — doesn't match "centroid"
+      fs,
+    );
+    expect(result?.filename).not.toBe("training_config.yaml");
+    expect(result?.yamlText.length).toBeGreaterThan(0);
+    expect(fs.readTextFile).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the baseline when discovered is empty (fresh project, no models/ dir)", async () => {
+    const fs = fakeFs();
+    const result = await resolveSlotConfigSource("centered_instance", "top_down", [], fs);
+    expect(result?.filename).not.toBe("training_config.yaml");
+    expect(fs.readTextFile).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the baseline when the matched run's config file can't be read", async () => {
+    const fs = fakeFs({
+      readTextFile: vi.fn(async () => {
+        throw new Error("ENOENT");
+      }),
+    });
+    const result = await resolveSlotConfigSource(
+      "centroid",
+      "top_down",
+      discoveredFor("centroid"),
+      fs,
+    );
+    expect(result?.filename).not.toBe("training_config.yaml");
+    expect(result?.yamlText.length).toBeGreaterThan(0);
+  });
+
+  it("returns null when there's neither a trained match nor a baseline for the head", async () => {
+    const fs = fakeFs();
+    const result = await resolveSlotConfigSource(
+      "config",
+      "unknown_pipeline" as ModelType,
+      [],
+      fs,
+    );
+    expect(result).toBeNull();
+  });
+
+  describe("preferTrained: false (tutorial's first training pass)", () => {
+    it("uses the baseline even when a matching trained run exists", async () => {
+      const fs = fakeFs();
+      const result = await resolveSlotConfigSource(
+        "centroid",
+        "top_down",
+        discoveredFor("centroid"),
+        fs,
+        { preferTrained: false },
+      );
+      expect(result?.filename).not.toBe("training_config.yaml");
+      expect(fs.readTextFile).not.toHaveBeenCalled();
+      expect(fs.join).not.toHaveBeenCalled();
+    });
+
+    it("defaults to preferTrained: true when opts is omitted", async () => {
+      const fs = fakeFs();
+      const result = await resolveSlotConfigSource(
+        "centroid",
+        "top_down",
+        discoveredFor("centroid"),
+        fs,
+      );
+      expect(result?.filename).toBe("training_config.yaml");
+    });
+  });
+});

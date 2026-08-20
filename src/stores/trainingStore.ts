@@ -331,6 +331,15 @@ interface TrainingState {
   modelOutputDirs: string[];
   log: string[]; // single shared log for all models
 
+  /**
+   * Bumped on every `reset()`. `TrainingPanel`'s baseline-autoload effect keys
+   * off `config.modelType` alone, so a `reset()` that lands back on the SAME
+   * model type (e.g. "Train Again" after a Top-Down run) wouldn't otherwise
+   * re-fire and refill `config.configs` — this gives that effect a signal
+   * that's independent of whether `modelType` actually changed.
+   */
+  resetSeq: number;
+
   // Actions
   setConfig: <K extends keyof TrainingConfig>(key: K, value: TrainingConfig[K]) => void;
   updateConfigHyperparams: (slot: string, updates: Partial<ConfigHyperparams>) => void;
@@ -650,6 +659,7 @@ const initialState = {
   wandbUrl: null as string | null,
   modelOutputDirs: [] as string[],
   log: [] as string[],
+  resetSeq: 0,
 };
 
 // ── Store ─────────────────────────────────────────────────────────
@@ -934,7 +944,12 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
     }
   },
 
-  reset: () => set({ ...initialState, config: { ...initialConfig } }),
+  reset: () =>
+    set((state) => ({
+      ...initialState,
+      config: { ...initialConfig },
+      resetSeq: state.resetSeq + 1,
+    })),
 
   startTraining: async (opts?: RemoteTrainingOptions | LocalTrainingOptions) => {
     const remoteOpts = opts && "remote" in opts ? opts : undefined;

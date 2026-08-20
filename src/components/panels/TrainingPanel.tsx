@@ -17,7 +17,6 @@ import { TrainingConfigDialog } from "@/components/dialogs/TrainingConfigDialog"
 import { LossViewerDialog } from "@/components/monitors/LossViewerDialog";
 import { LogTerminalDialog } from "@/components/monitors/LogTerminalDialog";
 import { ErrorOutput } from "@/components/monitors/ErrorOutput";
-import { slotToHeadType, getDefaultProfileForHead } from "@/lib/trainingProfiles";
 import { useAppStore } from "@/stores/appStore";
 import { isTauri } from "@/platform/index";
 import { Button } from "@/components/ui/button";
@@ -54,6 +53,7 @@ import {
   EyeOff,
 } from "lucide-react";
 import { computeNodeVisibility, visibilityTier } from "@/lib/anchorVisibility";
+import { TUTORIAL_FIRST_TRAINING_STEP_IDS } from "@/lib/tutorial/steps";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -651,10 +651,31 @@ export function TrainingPanel() {
   const stopTraining = useTrainingStore((s) => s.stopTraining);
   const cancelTraining = useTrainingStore((s) => s.cancelTraining);
   const reset = useTrainingStore((s) => s.reset);
+  const resetSeq = useTrainingStore((s) => s.resetSeq);
   const { parseYamlConfig: parseConfig, addConfigFile: addConfig } = useTrainingStore();
+  const projectPath = useAppStore((s) => s.projectPath);
+  const tutorialActive = useAppStore((s) => s.tutorialActive);
+  const tutorialSteps = useAppStore((s) => s.tutorialSteps);
+  const tutorialStepIndex = useAppStore((s) => s.tutorialStepIndex);
 
-  // Auto-load baseline configs when model type changes: clear stale configs
-  // from the previous model type, then populate defaults for the new one.
+  // Auto-load a config when a slot has none: prefer the EXACT config from that
+  // head's most recently trained run under `{projectDir}/models/` (same
+  // discovery — findTrainedModels — InferencePanel uses to auto-pick a model),
+  // so "Train Again" resumes from what was actually run last time rather than
+  // a generic baseline; falls back to the baseline profile when there's no
+  // trained run for that head (fresh project, or browser/no local project dir).
+  // EXCEPT during the tutorial's first training pass
+  // (`TUTORIAL_FIRST_TRAINING_STEP_IDS`) — that pass is meant to demonstrate
+  // the baseline workflow, so it always loads the baseline even if a trained
+  // run already exists on disk for this head (e.g. a prior tutorial pass on
+  // the same project); the tutorial's later `retrain` step goes through this
+  // same effect again (via `resetSeq`) with trained-config preference back on,
+  // picking up the run that first pass just produced.
+  // Clears stale configs from the previous model type first. Also re-runs on
+  // `resetSeq` (bumped by every `reset()`, e.g. "Train Again"): a reset landing
+  // back on the SAME model type wouldn't otherwise re-trigger this effect (its
+  // other dependency, config.modelType, hasn't changed), so config.configs —
+  // wiped to [] by reset() — would stay empty forever.
   const prevModelType = useRef(config.modelType);
   useEffect(() => {
     const newSlots = getConfigSlots(config.modelType);
@@ -667,16 +688,69 @@ export function TrainingPanel() {
       }
       prevModelType.current = config.modelType;
     }
-    for (const slot of newSlots) {
-      if (config.configs.some((c) => c.slot === slot)) continue;
-      const headType = slotToHeadType(config.modelType, slot);
-      const baseline = getDefaultProfileForHead(headType);
-      if (baseline) {
-        const parsed = parseConfig(baseline.content, baseline.filename, slot);
-        if (parsed) addConfig(parsed);
+    const missingSlots = newSlots.filter(
+      (slot) => !config.configs.some((c) => c.slot === slot),
+    );
+    if (missingSlots.length === 0) return;
+
+    const currentTutorialStepId = tutorialActive
+      ? tutorialSteps[tutorialStepIndex]?.id
+      : undefined;
+    const preferTrained = !(
+      currentTutorialStepId && TUTORIAL_FIRST_TRAINING_STEP_IDS.has(currentTutorialStepId)
+    );
+
+    let cancelled = false;
+    (async () => {
+      const { resolveSlotConfigSource } = await import("@/lib/trainedConfigAutoload");
+      let discovered: import("@/lib/modelDiscovery").DiscoveredModel[] = [];
+      // No trained-model lookup possible without a local project dir (browser
+      // mode / no project yet) — `discovered` stays empty and every slot below
+      // just falls back to its baseline, same as before this feature existed.
+      let fsAccess: import("@/lib/trainedConfigAutoload").TrainedConfigFsAccess = {
+        readTextFile: async () => {
+          throw new Error("no local project — trained-config lookup unavailable");
+        },
+        join: async () => {
+          throw new Error("no local project — trained-config lookup unavailable");
+        },
+      };
+      if (preferTrained && isTauri && projectPath) {
+        try {
+          const [{ findTrainedModels }, { dirname, join }, { readTextFile }] =
+            await Promise.all([
+              import("@/lib/modelDiscovery"),
+              import("@tauri-apps/api/path"),
+              import("@tauri-apps/plugin-fs"),
+            ]);
+          const projectDir = await dirname(projectPath);
+          discovered = await findTrainedModels(projectDir);
+          fsAccess = { readTextFile, join };
+        } catch {
+          discovered = [];
+        }
       }
-    }
-  }, [config.modelType]); // eslint-disable-line react-hooks/exhaustive-deps
+      if (cancelled) return;
+
+      for (const slot of missingSlots) {
+        const source = await resolveSlotConfigSource(
+          slot,
+          config.modelType,
+          discovered,
+          fsAccess,
+          { preferTrained },
+        );
+        if (cancelled) return;
+        if (source) {
+          const parsed = parseConfig(source.yamlText, source.filename, slot);
+          if (parsed) addConfig(parsed);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [config.modelType, resetSeq]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Config dialog state
   const [configDialogOpen, setConfigDialogOpen] = useState(false);
@@ -717,7 +791,6 @@ export function TrainingPanel() {
   const workerMounts = selectedWorker?.mounts || ["/"];
 
   // App state
-  const projectPath = useAppStore((s) => s.projectPath);
   const skeleton = useAppStore((s) => s.skeleton);
   const labels = useAppStore((s) => s.labels);
   const setModelMetricsDialogOpen = useAppStore(
@@ -1009,7 +1082,10 @@ export function TrainingPanel() {
               onValueChange={(v) => setInferenceTarget(v)}
               disabled={isRunning}
             >
-              <SelectTrigger className="h-7 text-xs">
+              <SelectTrigger
+                className="h-7 text-xs"
+                data-tutorial="post-training-inference-target-select"
+              >
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>

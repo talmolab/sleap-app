@@ -32,6 +32,28 @@ describe("trainingStore", () => {
     });
   });
 
+  describe("reset", () => {
+    it("bumps resetSeq every call, even back-to-back with no other state change", () => {
+      const before = useTrainingStore.getState().resetSeq;
+      useTrainingStore.getState().reset();
+      expect(useTrainingStore.getState().resetSeq).toBe(before + 1);
+      useTrainingStore.getState().reset();
+      expect(useTrainingStore.getState().resetSeq).toBe(before + 2);
+    });
+
+    it("bumps resetSeq even when modelType is unchanged (e.g. Train Again on Top-Down)", () => {
+      // TrainingPanel's baseline-autoload effect keys off [config.modelType,
+      // resetSeq] specifically because modelType alone doesn't change here.
+      expect(useTrainingStore.getState().config.modelType).toBe("top_down");
+      const before = useTrainingStore.getState().resetSeq;
+      useTrainingStore.getState().addConfigFile(makeConfigFile({ slot: "centroid" }));
+      useTrainingStore.getState().reset();
+      expect(useTrainingStore.getState().config.modelType).toBe("top_down");
+      expect(useTrainingStore.getState().config.configs).toEqual([]);
+      expect(useTrainingStore.getState().resetSeq).toBe(before + 1);
+    });
+  });
+
   describe("setConfig", () => {
     it("updates model type", () => {
       useTrainingStore.getState().setConfig("modelType", "bottom_up");

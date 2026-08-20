@@ -19,6 +19,7 @@ import {
   type PickedVideoFile,
 } from "../../lib/resolveVideos";
 import { SKELETON_TEMPLATES, TEMPLATE_ORDER } from "../../lib/skeletonTemplates";
+import { SAMPLE_VIDEO_URL } from "../../lib/tutorial/steps";
 import {
   Dialog,
   DialogContent,
@@ -45,6 +46,7 @@ const EMPTY = "empty";
 export function NewProjectDialog() {
   const open = useAppStore((s) => s.newProjectDialogOpen);
   const setOpen = useAppStore((s) => s.setNewProjectDialogOpen);
+  const tutorialActive = useAppStore((s) => s.tutorialActive);
 
   const [templateId, setTemplateId] = useState<string>(EMPTY);
   const [videos, setVideos] = useState<PickedVideoFile[]>([]);
@@ -120,7 +122,18 @@ export function NewProjectDialog() {
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="sm:max-w-[420px]">
+      <DialogContent
+        className="sm:max-w-[420px]"
+        onInteractOutside={(e) => {
+          // The tutorial coachmark (TutorialOverlay) renders outside this
+          // dialog's Radix portal, so clicking its download link or dragging
+          // its title bar otherwise reads as an outside interaction and closes
+          // the dialog out from under the tutorial's add-video steps.
+          if ((e.target as HTMLElement | null)?.closest("[data-tutorial-overlay]")) {
+            e.preventDefault();
+          }
+        }}
+      >
         <DialogHeader>
           <DialogTitle>New Project</DialogTitle>
           <DialogDescription>
@@ -172,17 +185,22 @@ export function NewProjectDialog() {
               >
                 + Add video(s)…
               </Button>
-              <a
-                href="https://github.com/talmolab/sleap-tutorial-data/blob/main/mice.mp4"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-xs text-muted-foreground underline hover:text-foreground"
-              >
-                No video handy? Download a sample
-              </a>
+              {!tutorialActive && (
+                <a
+                  href={SAMPLE_VIDEO_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-xs text-muted-foreground underline hover:text-foreground"
+                >
+                  No video handy? Download a sample
+                </a>
+              )}
             </div>
             {videos.length > 0 && (
-              <ul className="mt-1 flex flex-col gap-1">
+              <ul
+                className="mt-1 flex flex-col gap-1"
+                data-tutorial="new-project-video-list"
+              >
                 {videos.map((v, i) => (
                   <li
                     key={i}
@@ -211,7 +229,11 @@ export function NewProjectDialog() {
           >
             Cancel
           </Button>
-          <Button onClick={handleCreate} disabled={creating}>
+          <Button
+            onClick={handleCreate}
+            disabled={creating}
+            data-tutorial="new-project-create-button"
+          >
             {creating ? "Creating…" : "Create Project"}
           </Button>
         </DialogFooter>

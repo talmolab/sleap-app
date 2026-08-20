@@ -356,6 +356,14 @@ export interface AppState {
    * this isn't re-derived mid-run.
    */
   tutorialSteps: TutorialStep[];
+  /**
+   * Furthest `tutorialStepIndex` reached so far this run (only advanced by
+   * `advanceTutorialStep`, never by `previousTutorialStep`). Lets
+   * `TutorialOverlay` tell "stepped back to re-read a step already cleared"
+   * apart from "still working on the current frontier step" — a step below
+   * this mark doesn't need its real-world action redone to move forward again.
+   */
+  tutorialHighestStepIndex: number;
 
   // === Area delete mode ===
   areaDeleteMode: boolean;
@@ -420,6 +428,8 @@ export interface AppState {
   exitTutorial: () => void;
   /** Advance to the next tutorial step, or exit once past the last one. */
   advanceTutorialStep: () => void;
+  /** Go back to the previous tutorial step; a no-op on the first step. */
+  previousTutorialStep: () => void;
   enterPlacementMode: () => void;
   exitPlacementMode: () => void;
 
@@ -663,6 +673,7 @@ export const useAppStore = create<AppState>()(
       tutorialActive: false,
       tutorialStepIndex: 0,
       tutorialSteps: [],
+      tutorialHighestStepIndex: 0,
 
       // Area delete mode
       areaDeleteMode: false,
@@ -998,6 +1009,7 @@ export const useAppStore = create<AppState>()(
           state.tutorialActive = true;
           state.tutorialStepIndex = 0;
           state.tutorialSteps = steps;
+          state.tutorialHighestStepIndex = 0;
         });
         if (steps[0]?.panelId) get().openPanel(steps[0].panelId);
       },
@@ -1018,9 +1030,20 @@ export const useAppStore = create<AppState>()(
         }
         set((state) => {
           state.tutorialStepIndex = nextIndex;
+          state.tutorialHighestStepIndex = Math.max(state.tutorialHighestStepIndex, nextIndex);
         });
         const nextStep = steps[nextIndex];
         if (nextStep?.panelId) get().openPanel(nextStep.panelId);
+      },
+
+      previousTutorialStep: () => {
+        const prevIndex = get().tutorialStepIndex - 1;
+        if (prevIndex < 0) return;
+        set((state) => {
+          state.tutorialStepIndex = prevIndex;
+        });
+        const prevStep = get().tutorialSteps[prevIndex];
+        if (prevStep?.panelId) get().openPanel(prevStep.panelId);
       },
 
       enterPlacementMode: () =>

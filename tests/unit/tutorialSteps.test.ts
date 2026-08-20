@@ -1,7 +1,8 @@
-import { describe, it, expect } from "../bun-test";
+import { describe, it, expect, afterEach } from "../bun-test";
 import {
   NEW_PROJECT_STEP,
   ADD_VIDEO_IN_DIALOG_STEP,
+  CONFIRM_VIDEO_AND_CREATE_STEP,
   ADD_VIDEO_STEP,
   SAVE_PROJECT_STEP,
   GENERATE_SUGGESTIONS_STEP,
@@ -27,6 +28,7 @@ function watchState(overrides: Partial<TutorialWatchState> = {}): TutorialWatchS
     projectLoaded: false,
     trainingStatus: "idle",
     trainingAnchorPart: null,
+    trainingMaxEpochs: null,
     inferenceStatus: "idle",
     ...overrides,
   };
@@ -76,6 +78,7 @@ describe("buildTutorialSteps", () => {
     expect(steps.map((s) => s.id)).toEqual([
       "new-project",
       "add-video-in-dialog",
+      "confirm-video-and-create",
       "save-project",
       "generate-suggestions",
       "create-skeleton",
@@ -120,22 +123,55 @@ describe("new-project step", () => {
 });
 
 describe("add-video-in-dialog step", () => {
+  afterEach(() => {
+    document
+      .querySelectorAll('[data-tutorial="new-project-video-list"]')
+      .forEach((el) => el.remove());
+  });
+
+  it("is incomplete before any video is staged in the dialog", () => {
+    const entry = snapshotTutorialState(watchState());
+    const current = watchState();
+    expect(ADD_VIDEO_IN_DIALOG_STEP.isComplete(entry, current)).toBe(false);
+  });
+
+  it("is incomplete if the staged-video list renders empty", () => {
+    const ul = document.createElement("ul");
+    ul.setAttribute("data-tutorial", "new-project-video-list");
+    document.body.appendChild(ul);
+    const entry = snapshotTutorialState(watchState());
+    const current = watchState();
+    expect(ADD_VIDEO_IN_DIALOG_STEP.isComplete(entry, current)).toBe(false);
+  });
+
+  it("completes once a video is staged in the dialog's video list", () => {
+    const ul = document.createElement("ul");
+    ul.setAttribute("data-tutorial", "new-project-video-list");
+    ul.appendChild(document.createElement("li"));
+    document.body.appendChild(ul);
+    const entry = snapshotTutorialState(watchState());
+    const current = watchState();
+    expect(ADD_VIDEO_IN_DIALOG_STEP.isComplete(entry, current)).toBe(true);
+  });
+});
+
+describe("confirm-video-and-create step", () => {
   it("is incomplete before the project is created", () => {
     const entry = snapshotTutorialState(watchState());
     const current = watchState({ projectLoaded: false, labels: fakeLabels({ videos: 1 }) });
-    expect(ADD_VIDEO_IN_DIALOG_STEP.isComplete(entry, current)).toBe(false);
+    expect(CONFIRM_VIDEO_AND_CREATE_STEP.isComplete(entry, current)).toBe(false);
   });
 
   it("is incomplete if the project was created with no videos", () => {
     const entry = snapshotTutorialState(watchState());
     const current = watchState({ projectLoaded: true, labels: fakeLabels({ videos: 0 }) });
-    expect(ADD_VIDEO_IN_DIALOG_STEP.isComplete(entry, current)).toBe(false);
+    expect(CONFIRM_VIDEO_AND_CREATE_STEP.isComplete(entry, current)).toBe(false);
   });
 
   it("completes once the project is created with at least one video", () => {
     const entry = snapshotTutorialState(watchState());
     const current = watchState({ projectLoaded: true, labels: fakeLabels({ videos: 1 }) });
-    expect(ADD_VIDEO_IN_DIALOG_STEP.isComplete(entry, current)).toBe(true);
+    expect(CONFIRM_VIDEO_AND_CREATE_STEP.isComplete(entry, current)).toBe(true);
   });
 });
 
@@ -334,15 +370,87 @@ describe("correct-predictions step", () => {
 describe("retrain step", () => {
   it("is incomplete until a run seen during this step reaches completed", () => {
     const entry = snapshotTutorialState(watchState({ trainingStatus: "idle" }));
-    const current = watchState({ trainingStatus: "completed" });
+    const current = watchState({
+      trainingStatus: "completed",
+      trainingAnchorPart: "torso",
+      trainingMaxEpochs: 200,
+    });
     expect(RETRAIN_STEP.isComplete(entry, current)).toBe(false);
   });
 
-  it("completes once a run seen during this step reaches completed", () => {
+  it("is incomplete if training finished but Anchor Part isn't torso", () => {
     const entry = snapshotTutorialState(watchState());
     entry.everTraining = true;
-    const current = watchState({ trainingStatus: "completed" });
-    expect(RETRAIN_STEP.isComplete(entry, current)).toBe(true);
+    const current = watchState({
+      trainingStatus: "completed",
+      trainingAnchorPart: "thorax",
+      trainingMaxEpochs: 200,
+    });
+    expect(RETRAIN_STEP.isComplete(entry, current)).toBe(false);
+  });
+
+  it("is incomplete if training finished but Epochs isn't 200", () => {
+    const entry = snapshotTutorialState(watchState());
+    entry.everTraining = true;
+    const current = watchState({
+      trainingStatus: "completed",
+      trainingAnchorPart: "torso",
+      trainingMaxEpochs: 5,
+    });
+    expect(RETRAIN_STEP.isComplete(entry, current)).toBe(false);
+  });
+
+  it("is incomplete without a matching Post-Training Inference Target DOM element", () => {
+    // No matching data-tutorial element exists in this DOM-less test env, so
+    // textContent reads back empty — same idiom as generate-suggestions above.
+    const entry = snapshotTutorialState(watchState());
+    entry.everTraining = true;
+    const current = watchState({
+      trainingStatus: "completed",
+      trainingAnchorPart: "torso",
+      trainingMaxEpochs: 200,
+    });
+    expect(RETRAIN_STEP.isComplete(entry, current)).toBe(false);
+  });
+
+  describe("with a Post-Training Inference Target DOM element", () => {
+    let select: HTMLElement;
+
+    afterEach(() => {
+      select.remove();
+    });
+
+    it("is incomplete if Post-Training Inference Target isn't Random sample (current video)", () => {
+      select = document.createElement("div");
+      select.setAttribute("data-tutorial", "post-training-inference-target-select");
+      select.textContent = "Suggested frames";
+      document.body.appendChild(select);
+
+      const entry = snapshotTutorialState(watchState());
+      entry.everTraining = true;
+      const current = watchState({
+        trainingStatus: "completed",
+        trainingAnchorPart: "torso",
+        trainingMaxEpochs: 200,
+      });
+      expect(RETRAIN_STEP.isComplete(entry, current)).toBe(false);
+    });
+
+    it("completes once a run seen during this step reaches completed with Anchor Part torso, Epochs 200, and target Random sample (current video)", () => {
+      select = document.createElement("div");
+      select.setAttribute("data-tutorial", "post-training-inference-target-select");
+      select.textContent = "Random sample (current video)";
+      document.body.appendChild(select);
+
+      const entry = snapshotTutorialState(watchState());
+      entry.everTraining = true;
+      const current = watchState({
+        trainingStatus: "completed",
+        trainingAnchorPart: "torso",
+        trainingMaxEpochs: 200,
+      });
+      expect(RETRAIN_STEP.isComplete(entry, current)).toBe(true);
+    });
   });
 });
 

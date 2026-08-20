@@ -3,23 +3,29 @@
  *
  * Each step highlights one real UI element (via a `data-tutorial="..."`
  * attribute already present on the target) and auto-advances once
- * `isComplete` observes the corresponding real action happened — no manual
- * "Next" click. `entry` starts as a snapshot taken when the step becomes
- * active (so `isComplete` can detect deltas — "one more video than when we
- * started" — rather than static truths that might already hold from prior
- * work), but the engine (`TutorialOverlay`) also keeps
- * `everEnteredSkeletonBuild` sticky across re-checks within the same step, so
- * a momentary `true` isn't lost by the time the builder closes again.
+ * `isComplete` observes the corresponding real action happened — the coachmark's
+ * manual Next button is a guarded alternative (disabled-looking + a warning
+ * toast) for the same condition, not a way to skip it. `entry` starts as a
+ * snapshot taken when the step becomes active (so `isComplete` can detect
+ * deltas — "one more video than when we started" — rather than static truths
+ * that might already hold from prior work), but the engine (`TutorialOverlay`)
+ * also keeps `everEnteredSkeletonBuild` sticky across re-checks within the
+ * same step, so a momentary `true` isn't lost by the time the builder closes
+ * again. Stepping back past an already-cleared step (`tutorialHighestStepIndex`
+ * in appStore.ts) suspends this entry/recheck machinery for that revisit — see
+ * `TutorialOverlay`'s `isRevisited` — so re-reading a finished step never
+ * demands redoing the real action just to move forward again.
  *
  * `buildTutorialSteps` picks the sequence based on whether a project is
  * already loaded when the tutorial starts: a fresh app (WelcomeScreen, no
  * `Sidebar`/panels mounted at all — see `AppShell`) must go through New
  * Project first, since the Videos panel doesn't exist yet to add a video to.
  * If a project is already loaded, that's skipped in favor of the Videos
- * panel's own "Add Videos" button. Adding a future step (labeling, training,
- * inference) to either sequence is just appending an entry and a matching
- * `data-tutorial` attribute at its target — the engine is generic over
- * whatever list `buildTutorialSteps` returns.
+ * panel's own "Add Videos" button. This file's steps already cover labeling,
+ * training, and inference (Phase 2); adding a further step to either sequence
+ * is just appending an entry and a matching `data-tutorial` attribute at its
+ * target — the engine is generic over whatever list `buildTutorialSteps`
+ * returns.
  */
 
 import type { Labels, Skeleton } from "@/types";
@@ -39,6 +45,8 @@ export interface TutorialWatchState {
   trainingStatus: TrainingStatus;
   /** The centered_instance config's `anchorPart` (top-down pipeline only), or null. */
   trainingAnchorPart: string | null;
+  /** The centered_instance config's `maxEpochs` (top-down pipeline only), or null. */
+  trainingMaxEpochs: number | null;
   /** `inferenceStore.status` — inference lives in its own store, not appState. */
   inferenceStatus: InferenceStatus;
 }
@@ -106,6 +114,20 @@ export interface TutorialStep {
   id: string;
   title: string;
   body: string;
+  /**
+   * Turns one occurrence of `text` inside `body` into a hyperlink to `href`,
+   * rendered by `TutorialOverlay` — lets a step's own instructions carry a
+   * download/reference link instead of pointing at a separate link elsewhere
+   * in the app.
+   */
+  bodyLink?: { text: string; href: string };
+  /**
+   * Optional supplementary reference (e.g. "Label tips"), rendered by
+   * `TutorialOverlay` behind a collapsed-by-default toggle so it doesn't
+   * lengthen the coachmark for users who don't need it, while staying one
+   * click away for anyone who does.
+   */
+  tips?: { label: string; text: string };
   /** Panel to force-open (via the store's `openPanel`) when this step starts. */
   panelId?: string;
   /** CSS selector for the element to spotlight, e.g. a `data-tutorial` hook. */
@@ -124,17 +146,38 @@ export const NEW_PROJECT_STEP: TutorialStep = {
   isComplete: (_entry, current) => current.newProjectDialogOpen === true,
 };
 
+/** GitHub location of the fixed sample video (mice.mp4) this tutorial is built around. */
+export const SAMPLE_VIDEO_URL =
+  "https://github.com/talmolab/sleap-tutorial-data/blob/main/mice.mp4";
+
 /**
  * Fresh-app step 2: videos picked in the New Project dialog are local
- * component state (no `labels` exists yet), so there's nothing to diff
- * against — completion is just "a project now exists with a video in it".
+ * component state (no `labels` exists yet, since the project isn't created
+ * until "Create Project" is clicked in the next step) — so completion reads
+ * the dialog's staged-video list directly from the DOM (`new-project-video-list`,
+ * populated by `NewProjectDialog`), same idiom as `GENERATE_SUGGESTIONS_STEP`
+ * reading a local `<Select>`'s value.
  */
 export const ADD_VIDEO_IN_DIALOG_STEP: TutorialStep = {
   id: "add-video-in-dialog",
   title: "Add a video",
-  body: 'This tutorial is built around a short sample video (mice.mp4) — download it via the link below, then click "+ Add video(s)…" to pick it, and click "Create Project".',
+  body: 'This tutorial is built around a short sample video (mice.mp4) — click it to download, then click "+ Add video(s)…" to pick it.',
+  bodyLink: { text: "mice.mp4", href: SAMPLE_VIDEO_URL },
   targetSelector: '[data-tutorial="new-project-add-video-button"]',
   placement: "bottom",
+  isComplete: (_entry, _current) => {
+    const list = document.querySelector('[data-tutorial="new-project-video-list"]');
+    return !!list && list.children.length > 0;
+  },
+};
+
+/** Fresh-app step 3: confirm the staged video, then commit the project. */
+export const CONFIRM_VIDEO_AND_CREATE_STEP: TutorialStep = {
+  id: "confirm-video-and-create",
+  title: "Create the project",
+  body: 'Confirm your video is listed above, then click "Create Project".',
+  targetSelector: '[data-tutorial="new-project-create-button"]',
+  placement: "top",
   isComplete: (_entry, current) =>
     current.projectLoaded === true && (current.labels?.videos.length ?? 0) > 0,
 };
@@ -143,7 +186,8 @@ export const ADD_VIDEO_IN_DIALOG_STEP: TutorialStep = {
 export const ADD_VIDEO_STEP: TutorialStep = {
   id: "add-video",
   title: "Add a video",
-  body: 'This tutorial is built around a short sample video (mice.mp4) — download it from github.com/talmolab/sleap-tutorial-data if you don\'t have it, then click "Add Videos" to import it.',
+  body: "This tutorial is built around a short sample video (mice.mp4) — click it to download if you don't have it, then click \"Add Videos\" to import it.",
+  bodyLink: { text: "mice.mp4", href: SAMPLE_VIDEO_URL },
   panelId: "videos",
   targetSelector: '[data-tutorial="add-videos-button"]',
   placement: "left",
@@ -245,10 +289,25 @@ export const SELECT_ANCHOR_PART_STEP: TutorialStep = {
   isComplete: (_entry, current) => current.trainingAnchorPart !== null,
 };
 
+/**
+ * Step ids covering the tutorial's FIRST training pass (choosing the anchor
+ * part through the first Start Training click) — shared by `TutorialOverlay`
+ * (forces epochs down to `TUTORIAL_MAX_EPOCHS` here) and `TrainingPanel`'s
+ * config-autoload effect (forces the generic baseline profile here, even if a
+ * trained run already exists on disk for this head, e.g. from a prior tutorial
+ * pass on the same project — the first pass is meant to demonstrate the
+ * baseline workflow). Past this set (e.g. `retrain`), a trained run's exact
+ * config is preferred again, same as normal "Train Again" behavior.
+ */
+export const TUTORIAL_FIRST_TRAINING_STEP_IDS = new Set([
+  "select-anchor-part",
+  "run-training",
+]);
+
 export const RUN_TRAINING_STEP: TutorialStep = {
   id: "run-training",
   title: "Run training",
-  body: "Epochs is set to 5 for this first pass — just enough to see the workflow work end-to-end; you can raise it for a better model on the next round. Click Start Training. This can take a while — the tutorial will pick back up once it finishes.",
+  body: 'Epochs is set to 5 for this first pass — just enough to see the workflow work end-to-end; you can raise it for a better model on the next round. Click Start Training. This can take a while — the tutorial will pick back up once it finishes. While it runs, scroll down and click the graph icon next to a model\'s progress to watch its loss curves live.',
   panelId: "training",
   targetSelector: '[data-tutorial="start-training-button"]',
   placement: "top",
@@ -267,7 +326,11 @@ export const RUN_TRAINING_STEP: TutorialStep = {
 export const CORRECT_PREDICTIONS_STEP: TutorialStep = {
   id: "correct-predictions",
   title: "Review and correct predictions",
-  body: "Open a suggested frame that now shows a prediction. Accept it — double-click the predicted instance, or press ⌘⇧A / Ctrl+Shift+A to accept all predictions on the frame — then drag any points that are off. Do this for at least one frame (ideally all of them, for a better retrain).",
+  body: "Training is done — now let's review the predictions made on the suggested frames.\n\nOpen a suggested frame that now shows a prediction. Accept it — double-click the predicted instance, or press ⌘⇧A / Ctrl+Shift+A to accept all predictions on the frame — then drag any points that are off. Do this for at least one frame (ideally all of them, for a better retrain).",
+  tips: {
+    label: "Label tips",
+    text: "Predicted nodes are yellow. Once accepted, a node is red until you click or drag it, then it turns green. A hollow gray marker means that node is set non-visible — right-click it and choose \"Mark Node Visible\" (or select several and use \"Toggle Selected Nodes Visibility\") to turn it back on.",
+  },
   panelId: "suggestions",
   targetSelector: '[data-tutorial="suggestions-panel"]',
   placement: "left",
@@ -280,18 +343,35 @@ export const CORRECT_PREDICTIONS_STEP: TutorialStep = {
 export const RETRAIN_STEP: TutorialStep = {
   id: "retrain",
   title: "Re-train with the corrected labels",
-  body: 'Back in the Training tab, click "Train Again", then Start Training to retrain with your corrections included. Epochs is no longer capped at 5 — feel free to raise it now for a better model.',
+  body: 'Back in the Training tab, click "Train Again". Before you click Start Training: set Epochs to 200 (up from the tutorial\'s capped 5), confirm Anchor Part is still torso, and set Post-Training Inference Target to "Random sample (current video)" — that field is disabled once training starts, so set it now, not after.',
   panelId: "training",
   targetSelector: '[data-tutorial="start-training-button"]',
   placement: "top",
-  isComplete: (entry, current) =>
-    entry.everTraining && current.trainingStatus === "completed",
+  isComplete: (entry, current) => {
+    if (
+      !entry.everTraining ||
+      current.trainingStatus !== "completed" ||
+      current.trainingAnchorPart !== "torso" ||
+      current.trainingMaxEpochs !== 200
+    ) {
+      return false;
+    }
+    // Post-Training Inference Target is local component state (TrainingPanel),
+    // not part of any store, and is disabled while training runs — so reading
+    // it once training has completed reflects whatever was set before Start
+    // Training was clicked. Same DOM-text-read idiom GENERATE_SUGGESTIONS_STEP
+    // uses for its own local <Select>.
+    const targetSelect = document.querySelector(
+      '[data-tutorial="post-training-inference-target-select"]',
+    );
+    return (targetSelect?.textContent ?? "").includes("Random sample (current video)");
+  },
 };
 
 export const RUN_INFERENCE_STEP: TutorialStep = {
   id: "run-inference-video",
-  title: "Run inference on the full video",
-  body: 'Open the Inference tab, set Inference Target to "Entire current video", and click Run Inference.',
+  title: "Run inference on a random sample",
+  body: 'Open the Inference tab, set Inference Target to "Random sample (current video)", and click Run Inference.',
   panelId: "inference",
   targetSelector: '[data-tutorial="run-inference-button"]',
   placement: "top",
@@ -305,7 +385,7 @@ export const RUN_INFERENCE_STEP: TutorialStep = {
     const targetSelect = document.querySelector(
       '[data-tutorial="inference-target-select"]',
     );
-    return (targetSelect?.textContent ?? "").includes("Entire current video");
+    return (targetSelect?.textContent ?? "").includes("Random sample (current video)");
   },
 };
 
@@ -328,5 +408,10 @@ export function buildTutorialSteps(startedWithProjectLoaded: boolean): TutorialS
   ];
   return startedWithProjectLoaded
     ? [ADD_VIDEO_STEP, ...rest]
-    : [NEW_PROJECT_STEP, ADD_VIDEO_IN_DIALOG_STEP, ...rest];
+    : [
+        NEW_PROJECT_STEP,
+        ADD_VIDEO_IN_DIALOG_STEP,
+        CONFIRM_VIDEO_AND_CREATE_STEP,
+        ...rest,
+      ];
 }
