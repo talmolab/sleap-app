@@ -25,6 +25,7 @@ import { useAppStore } from "@/stores/appStore";
 import { ModelStatsPreview } from "@/components/dialogs/ModelStatsPreview";
 import { getBaselineProfilesForHead, getDefaultProfileForHead, slotToHeadType } from "@/lib/trainingProfiles";
 import { computeNodeVisibility, visibilityTier, type NodeVisibility } from "@/lib/anchorVisibility";
+import { isTauri } from "@/lib/platform";
 
 /** Tailwind text color per visibility tier, matching the Training panel's log coloring. */
 const VISIBILITY_COLOR: Record<ReturnType<typeof visibilityTier>, string> = {
@@ -368,12 +369,27 @@ function HeadTabContent({
   const headType = slotToHeadType(modelType, slot);
   const baselineProfiles = getBaselineProfilesForHead(headType);
   const showCropSize = slot !== "centroid";
-  const trainingMode = (!configFile?.checkpointPath && hp.trainingMode !== "reuse_config")
-    ? "reuse_config"
-    : (hp.trainingMode ?? "reuse_config");
+  const trainingMode = hp.trainingMode ?? "reuse_config";
   const modelLocked = trainingMode === "resume" || trainingMode === "finetune";
   const allLocked = trainingMode === "resume";
-  const { parseYamlConfig, addConfigFile } = useTrainingStore();
+  const { parseYamlConfig, addConfigFile, updateConfigCheckpointPath } = useTrainingStore();
+
+  const handleBrowseCheckpoint = async () => {
+    try {
+      const { open: tauriOpen } = await import("@tauri-apps/plugin-dialog");
+      const selected = await tauriOpen({
+        title: "Select Checkpoint File",
+        filters: [
+          trainingMode === "finetune"
+            ? { name: "Checkpoint", extensions: ["ckpt", "h5"] }
+            : { name: "Checkpoint", extensions: ["ckpt"] },
+        ],
+      });
+      if (selected) updateConfigCheckpointPath(slot, selected as string);
+    } catch {
+      // User cancelled or not in Tauri
+    }
+  };
 
   const handleConfigBrowse = () => {
     const input = document.createElement("input");
@@ -448,28 +464,58 @@ function HeadTabContent({
         </Select>
       </div>
 
-      {/* ── Training mode — opt-in, only meaningful once a checkpoint is
-          available for this slot; deselecting either one falls back to
+      {/* ── Training mode — opt-in; deselecting either one falls back to
           training from scratch (the implicit default, so it isn't shown as
           its own option). ── */}
-      {configFile?.checkpointPath && (
-        <div className="flex items-center gap-5 mb-5 pb-4 border-b">
-          {([
-            { value: "finetune" as const, label: "Fine-tune (start from prior weights)" },
-            { value: "resume" as const, label: "Resume training (continue from checkpoint)" },
-          ]).map((opt) => (
-            <label key={opt.value} className="flex items-center gap-1.5 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={trainingMode === opt.value}
-                onChange={() =>
-                  onUpdate({ trainingMode: trainingMode === opt.value ? "reuse_config" : opt.value })
-                }
-                className="accent-primary"
-              />
-              <span className="text-sm">{opt.label}</span>
-            </label>
-          ))}
+      {configFile && (
+        <div className="mb-5 pb-4 border-b">
+          <div className="flex items-center gap-5">
+            {([
+              { value: "finetune" as const, label: "Fine-tune (start from prior weights)" },
+              { value: "resume" as const, label: "Resume training (continue from checkpoint)" },
+            ]).map((opt) => (
+              <label key={opt.value} className="flex items-center gap-1.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={trainingMode === opt.value}
+                  onChange={() =>
+                    onUpdate({ trainingMode: trainingMode === opt.value ? "reuse_config" : opt.value })
+                  }
+                  className="accent-primary"
+                />
+                <span className="text-sm">{opt.label}</span>
+              </label>
+            ))}
+          </div>
+
+          {(trainingMode === "finetune" || trainingMode === "resume") && (
+            <div className="mt-3 space-y-1">
+              <div className="flex items-center gap-2">
+                <Input
+                  value={configFile.checkpointPath ?? ""}
+                  onChange={(e) => updateConfigCheckpointPath(slot, e.target.value || null)}
+                  placeholder={trainingMode === "finetune" ? "Path to .ckpt or .h5 file" : "Path to .ckpt file"}
+                  className="h-9 text-sm font-mono flex-1"
+                />
+                {isTauri && (
+                  <button
+                    type="button"
+                    onClick={handleBrowseCheckpoint}
+                    className="h-9 px-3 text-sm rounded-md border hover:bg-muted shrink-0"
+                  >
+                    Browse...
+                  </button>
+                )}
+              </div>
+              {trainingMode === "resume" &&
+                configFile.checkpointPath &&
+                !configFile.checkpointPath.toLowerCase().endsWith(".ckpt") && (
+                  <p className="text-[10px] text-destructive">
+                    Resume training requires a .ckpt file (.h5 is only supported for Fine-tune).
+                  </p>
+                )}
+            </div>
+          )}
         </div>
       )}
 

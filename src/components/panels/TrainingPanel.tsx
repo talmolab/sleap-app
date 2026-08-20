@@ -837,12 +837,24 @@ export function TrainingPanel() {
     cf.hyperparams.pafsLossWeight > 0 &&
     cf.hyperparams.classLossWeight > 0
   );
+  // Resume needs a real .ckpt (it's a full Lightning-state restore); Fine-tune
+  // accepts .ckpt or legacy SLEAP .h5 backbone/head weights — see
+  // model_config.pretrained_*_weights vs trainer_config.resume_ckpt_path in
+  // sleap-nn's lightning_modules.py / trainer_config.py.
+  const hasValidCheckpointSelection = config.configs.every((cf) => {
+    const mode = cf.hyperparams.trainingMode;
+    if (mode === "reuse_config") return true;
+    if (!cf.checkpointPath?.trim()) return false;
+    if (mode === "resume") return cf.checkpointPath.toLowerCase().endsWith(".ckpt");
+    return true;
+  });
   const isModelTypeIncompatible = skeletonCompat.disabledTypes.has(config.modelType);
   const canStart =
     hasAllConfigs &&
     hasData &&
     hasLabeledFrames &&
     hasValidLossWeights &&
+    hasValidCheckpointSelection &&
     !isModelTypeIncompatible &&
     status === "idle" &&
     (remoteEnabled ? !!selectedWorkerId : true);
@@ -1300,9 +1312,11 @@ export function TrainingPanel() {
                     ? "Select training data"
                     : !hasLabeledFrames
                       ? "Label at least one frame before training"
-                      : remoteEnabled && !selectedWorkerId
-                        ? "Select a worker"
-                        : ""}
+                      : !hasValidCheckpointSelection
+                        ? "Select a checkpoint file for Resume/Fine-tune"
+                        : remoteEnabled && !selectedWorkerId
+                          ? "Select a worker"
+                          : ""}
               </p>
             )}
           </>

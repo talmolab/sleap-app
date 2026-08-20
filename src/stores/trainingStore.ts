@@ -345,6 +345,7 @@ interface TrainingState {
   // Actions
   setConfig: <K extends keyof TrainingConfig>(key: K, value: TrainingConfig[K]) => void;
   updateConfigHyperparams: (slot: string, updates: Partial<ConfigHyperparams>) => void;
+  updateConfigCheckpointPath: (slot: string, path: string | null) => void;
   addConfigFile: (file: ConfigFile) => void;
   removeConfigFile: (slot: string) => void;
   parseYamlConfig: (yamlText: string, filename: string, slot: string, checkpointPath?: string | null) => ConfigFile | null;
@@ -701,6 +702,16 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
           c.slot === slot
             ? { ...c, hyperparams: { ...c.hyperparams, ...updates } }
             : c,
+        ),
+      },
+    })),
+
+  updateConfigCheckpointPath: (slot, path) =>
+    set((state) => ({
+      config: {
+        ...state.config,
+        configs: state.config.configs.map((c) =>
+          c.slot === slot ? { ...c, checkpointPath: path } : c,
         ),
       },
     })),

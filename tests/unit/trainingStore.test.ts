@@ -112,6 +112,30 @@ describe("trainingStore", () => {
     });
   });
 
+  describe("updateConfigCheckpointPath", () => {
+    it("sets checkpointPath for a specific slot", () => {
+      useTrainingStore.getState().addConfigFile(makeConfigFile());
+      useTrainingStore.getState().updateConfigCheckpointPath("centroid", "/proj/models/run1/best.ckpt");
+      const cf = useTrainingStore.getState().config.configs[0];
+      expect(cf.checkpointPath).toBe("/proj/models/run1/best.ckpt");
+    });
+
+    it("does not affect other slots", () => {
+      useTrainingStore.getState().addConfigFile(makeConfigFile({ slot: "centroid" }));
+      useTrainingStore.getState().addConfigFile(makeConfigFile({ slot: "centered_instance", modelType: "centered_instance" }));
+      useTrainingStore.getState().updateConfigCheckpointPath("centroid", "/proj/models/run1/best.ckpt");
+      const configs = useTrainingStore.getState().config.configs;
+      expect(configs.find((c) => c.slot === "centroid")!.checkpointPath).toBe("/proj/models/run1/best.ckpt");
+      expect(configs.find((c) => c.slot === "centered_instance")!.checkpointPath).toBeNull();
+    });
+
+    it("accepts null to clear a previously-set path", () => {
+      useTrainingStore.getState().addConfigFile(makeConfigFile({ checkpointPath: "/proj/models/run1/best.ckpt" }));
+      useTrainingStore.getState().updateConfigCheckpointPath("centroid", null);
+      expect(useTrainingStore.getState().config.configs[0].checkpointPath).toBeNull();
+    });
+  });
+
   describe("parseYamlConfig", () => {
     it("parses valid YAML and extracts model type + hyperparams", () => {
       const yamlText = `
