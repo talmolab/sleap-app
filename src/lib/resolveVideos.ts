@@ -24,8 +24,13 @@ import { tailGraftCandidates } from "./pathCandidates";
 import { applyPrefixSwap } from "./videoPrefixSwaps";
 import { fileSize, readRange } from "./nativeRange";
 import { useAppStore } from "@/stores/appStore";
-import { ensureDecodablePath } from "./transcode/transcodeVideo";
+import {
+  ensureDecodablePath,
+  getTranscodeCacheInfo,
+  clearTranscodeCache,
+} from "./transcode/transcodeVideo";
 import { createTauriTranscodeDeps } from "./transcode/transcodeDepsTauri";
+import { useTranscodeStore } from "@/stores/transcodeStore";
 
 /** Extract just the basename from a path or filename. */
 export function getBasename(filename: string | string[]): string {
@@ -1223,16 +1228,26 @@ async function createBackendForPath(path: string): Promise<VideoBackend> {
     // the same behavior as the browser. The `.slp` keeps the ORIGINAL path.
     const platform = await getPlatform();
     if (platform.isTauri) {
+      const store = useTranscodeStore.getState();
+      const controller = new AbortController();
+      let durationMs: number | undefined;
       try {
         const result = await ensureDecodablePath(
           path,
           createTauriTranscodeDeps(),
           {
-            onTranscodeStart: () =>
-              toast.info(`Converting ${name} to a supported format…`, {
-                description:
-                  "Legacy codec — converting once (cached for next time).",
-              }),
+            signal: controller.signal,
+            onTranscodeStart: (info) => {
+              durationMs = info.durationMs;
+              store.startJob(name, () => controller.abort());
+            },
+            onProgress: (p) => {
+              const percent =
+                durationMs && durationMs > 0 && p.outTimeMs !== undefined
+                  ? Math.min(100, (p.outTimeMs / durationMs) * 100)
+                  : null;
+              store.setProgress(percent, p.frame ?? null);
+            },
           }
         );
         if (result.transcoded) {
@@ -1242,9 +1257,18 @@ async function createBackendForPath(path: string): Promise<VideoBackend> {
             { filename: name }
           );
         }
+        // Decodable (H.264/MJPEG) → fall through to AviVideoBackend below.
       } catch (err) {
+        if (controller.signal.aborted) {
+          // User canceled: don't silently fall back (that re-attempts the whole
+          // undecodable open) — surface a clean cancellation so the video is
+          // simply not added.
+          throw new Error(`Conversion canceled for ${name}`);
+        }
         console.warn(`[video] transcode fallback failed for "${name}":`, err);
         // fall through to AviVideoBackend (graceful unsupported-codec message)
+      } finally {
+        store.endJob();
       }
     }
     return AviVideoBackend.fromRangeSource(
@@ -1516,4 +1540,20 @@ export async function pickAndAddVideos(labels: Labels): Promise<Video[]> {
   }
   if (added.length > 0) labels.reindex();
   return added;
+}
+
+/**
+ * Desktop-only: size of the on-disk legacy-codec transcode cache
+ * ({@link getTranscodeCacheInfo}). `{ count: 0, bytes: 0 }` when empty/absent.
+ */
+export function videoTranscodeCacheInfo() {
+  return getTranscodeCacheInfo(createTauriTranscodeDeps());
+}
+
+/**
+ * Desktop-only: delete every cached transcode (regenerable from the originals);
+ * returns what was freed. Powers the "Clear video transcode cache" menu action.
+ */
+export function clearVideoTranscodeCache() {
+  return clearTranscodeCache(createTauriTranscodeDeps());
 }

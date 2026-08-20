@@ -9,14 +9,24 @@ export interface ProbedVideo {
   codec: string;
   /** ffmpeg `pix_fmt` if reported (e.g. "yuv420p", "yuv420p10le"). */
   pixFmt?: string;
+  /** Stream duration in milliseconds, if reported (drives the transcode %). */
+  durationMs?: number;
 }
 
 /**
- * Parse `ffprobe -show_entries stream=codec_name,pix_fmt -of json` output for
- * the first video stream. Returns null if there's no decodable video stream.
+ * Parse `ffprobe -show_entries stream=codec_name,pix_fmt,duration -of json`
+ * output for the first video stream. Returns null if there's no decodable video
+ * stream. `duration` (seconds) is surfaced as `durationMs` for a progress bar;
+ * absent/"N/A" on some containers → undefined (caller shows indeterminate).
  */
 export function parseFfprobeCodec(json: string): ProbedVideo | null {
-  let parsed: { streams?: Array<{ codec_name?: string; pix_fmt?: string }> };
+  let parsed: {
+    streams?: Array<{
+      codec_name?: string;
+      pix_fmt?: string;
+      duration?: string;
+    }>;
+  };
   try {
     parsed = JSON.parse(json);
   } catch {
@@ -24,9 +34,13 @@ export function parseFfprobeCodec(json: string): ProbedVideo | null {
   }
   const stream = parsed.streams?.[0];
   if (!stream?.codec_name) return null;
+  const durationSec = Number.parseFloat(stream.duration ?? "");
   return {
     codec: stream.codec_name.toLowerCase(),
     pixFmt: stream.pix_fmt?.toLowerCase(),
+    durationMs: Number.isFinite(durationSec)
+      ? Math.round(durationSec * 1000)
+      : undefined,
   };
 }
 

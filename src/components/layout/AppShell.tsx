@@ -32,6 +32,7 @@ import { setupLabelsAutosave } from "@/lib/labelsAutosave";
 import { WelcomeScreen } from "./WelcomeScreen";
 import { GoToFrameDialog } from "../dialogs/GoToFrameDialog";
 import { NewProjectDialog } from "../dialogs/NewProjectDialog";
+import { TranscodeProgressDialog } from "../dialogs/TranscodeProgressDialog";
 import { SelectToFrameDialog } from "../dialogs/SelectToFrameDialog";
 import { DeletePredictionsDialog } from "../dialogs/DeletePredictionsDialog";
 import { MergeProjectDialog } from "../dialogs/MergeProjectDialog";
@@ -255,6 +256,7 @@ export function AppShell() {
       {/* Global dialogs */}
       <NewProjectDialog />
       <GoToFrameDialog />
+      <TranscodeProgressDialog />
       <SelectToFrameDialog />
       <MergeProjectDialog />
       <DeletePredictionsDialog

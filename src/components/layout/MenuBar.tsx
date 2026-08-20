@@ -275,6 +275,40 @@ function FileMenu() {
             >
               Open Preferences Directory...
             </MenubarItem>
+            <MenubarItem
+              onClick={async () => {
+                const { toast } = await import("@/lib/notify");
+                const { videoTranscodeCacheInfo, clearVideoTranscodeCache } =
+                  await import("@/lib/resolveVideos");
+                const mb = (b: number) => (b / 1_000_000).toFixed(1);
+                try {
+                  const info = await videoTranscodeCacheInfo();
+                  if (info.count === 0) {
+                    toast.info("No transcoded videos to clear");
+                    return;
+                  }
+                  const plural = info.count > 1 ? "s" : "";
+                  if (
+                    !window.confirm(
+                      `Clear ${info.count} transcoded video${plural} (${mb(info.bytes)} MB)?\n\n` +
+                        "These legacy-format conversions are re-created automatically " +
+                        "the next time you open the original files."
+                    )
+                  )
+                    return;
+                  const freed = await clearVideoTranscodeCache();
+                  toast.success(
+                    `Cleared ${freed.count} transcoded video${freed.count > 1 ? "s" : ""} (${mb(freed.bytes)} MB)`
+                  );
+                } catch (e) {
+                  toast.error("Failed to clear transcode cache", {
+                    description: e instanceof Error ? e.message : String(e),
+                  });
+                }
+              }}
+            >
+              Clear Video Transcode Cache...
+            </MenubarItem>
           </>
         )}
         <MenubarSeparator />

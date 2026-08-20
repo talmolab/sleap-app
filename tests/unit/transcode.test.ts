@@ -16,6 +16,8 @@ import {
   transcodeToMp4,
   ensureDecodablePath,
   parseFfmpegProgress,
+  getTranscodeCacheInfo,
+  clearTranscodeCache,
   __resetEncoderCache,
   type TranscodeDeps,
   type TranscodeProgress,
@@ -158,6 +160,7 @@ function makeFakeDeps(overrides: Partial<TranscodeDeps> = {}): {
       calls.removed.push(p);
       fs.delete(p);
     },
+    readDir: async () => [],
     exec: async (tool) => {
       // Default: ffprobe reports a legacy codec (needs transcode); ffmpeg has a
       // permissive encoder. Tests override as needed.
@@ -236,12 +239,19 @@ describe("transcodeToMp4 orchestration", () => {
 });
 
 describe("videoProbe parsers + encoder selection", () => {
-  it("parseFfprobeCodec: reads first video stream, lowercases, or null", () => {
+  it("parseFfprobeCodec: reads codec/pixfmt/duration, lowercases, or null", () => {
     expect(
       parseFfprobeCodec(
-        JSON.stringify({ streams: [{ codec_name: "MPEG4", pix_fmt: "YUV420P" }] })
+        JSON.stringify({
+          streams: [{ codec_name: "MPEG4", pix_fmt: "YUV420P", duration: "0.4" }],
+        })
       )
-    ).toEqual({ codec: "mpeg4", pixFmt: "yuv420p" });
+    ).toEqual({ codec: "mpeg4", pixFmt: "yuv420p", durationMs: 400 });
+    // absent duration → durationMs undefined (caller shows indeterminate bar)
+    expect(
+      parseFfprobeCodec(JSON.stringify({ streams: [{ codec_name: "h264" }] }))
+        ?.durationMs
+    ).toBeUndefined();
     expect(parseFfprobeCodec(JSON.stringify({ streams: [] }))).toBeNull();
     expect(parseFfprobeCodec("not json")).toBeNull();
   });
@@ -311,5 +321,52 @@ describe("ensureDecodablePath (probe → decide → maybe transcode)", () => {
     const res = await ensureDecodablePath("/weird.bin", deps);
     expect(res).toEqual({ path: "/weird.bin", transcoded: false });
     expect(calls.ran).toHaveLength(0);
+  });
+});
+
+describe("transcode cache maintenance", () => {
+  // Minimal fake keyed by filename→size; readDir lists names, stat returns sizes.
+  function cacheDeps(files: Record<string, number>) {
+    const present = new Set(Object.keys(files));
+    const removed: string[] = [];
+    const deps = {
+      cacheDir: async () => "/cache",
+      join: async (...p: string[]) => p.join("/"),
+      stat: async (path: string) => ({
+        size: files[path.split("/").pop() ?? ""] ?? 0,
+        mtimeMs: 0,
+      }),
+      exists: async () => false,
+      mkdir: async () => {},
+      rename: async () => {},
+      remove: async (p: string) => {
+        removed.push(p);
+        present.delete(p.split("/").pop() ?? "");
+      },
+      readDir: async () => [...present],
+      exec: async () => ({ stdout: "", stderr: "", code: 0 }),
+      runTranscode: async () => {},
+    } as TranscodeDeps;
+    return { deps, removed };
+  }
+
+  it("getTranscodeCacheInfo sums .mp4 sizes and ignores .part temps", async () => {
+    const { deps } = cacheDeps({ "a.mp4": 100, "b.mp4": 200, "c.mp4.part": 999 });
+    expect(await getTranscodeCacheInfo(deps)).toEqual({ count: 2, bytes: 300 });
+  });
+
+  it("getTranscodeCacheInfo is empty when the cache dir is absent", async () => {
+    const { deps } = cacheDeps({});
+    deps.readDir = async () => {
+      throw new Error("ENOENT");
+    };
+    expect(await getTranscodeCacheInfo(deps)).toEqual({ count: 0, bytes: 0 });
+  });
+
+  it("clearTranscodeCache removes .mp4 + .part; count is .mp4 only, bytes are total", async () => {
+    const { deps, removed } = cacheDeps({ "a.mp4": 100, "b.mp4.part": 50 });
+    const freed = await clearTranscodeCache(deps);
+    expect(freed).toEqual({ count: 1, bytes: 150 });
+    expect(removed).toHaveLength(2); // both the finished mp4 and the stray .part
   });
 });

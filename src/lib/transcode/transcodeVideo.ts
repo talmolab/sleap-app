@@ -14,7 +14,7 @@
  */
 
 import { buildTranscodeArgs } from "./transcodeArgs.js";
-import { cacheFilename, computeCacheKey } from "./transcodeCache.js";
+import { TRANSCODE_EXT, cacheFilename, computeCacheKey } from "./transcodeCache.js";
 import { codecNeedsTranscode } from "./videoCodecSupport.js";
 import {
   parseEncoderList,
@@ -47,6 +47,8 @@ export interface TranscodeDeps {
   rename: (from: string, to: string) => Promise<void>;
   /** Best-effort delete (ignore missing). */
   remove: (path: string) => Promise<void>;
+  /** List entry names (files) in a directory; rejects/empty if absent. */
+  readDir: (dir: string) => Promise<string[]>;
   /**
    * One-shot run of a bundled tool, capturing output (for `ffprobe` codec
    * detection and `ffmpeg -encoders`). Resolves regardless of exit code so the
@@ -72,13 +74,15 @@ export interface TranscodeToMp4Options {
   /** Progress callback for a UI bar. */
   onProgress?: (p: TranscodeProgress) => void;
   /**
-   * Called by {@link ensureDecodablePath} once it has decided a transcode is
-   * needed and is about to start — i.e. NOT on a cache hit or a decodable file.
-   * Use it to show a "converting…" notification only when work actually happens.
+   * Fired once a transcode is actually starting (real cache miss) — NOT on a
+   * cache hit or a decodable file. `durationMs` (if the probe knew it) lets the
+   * UI show a real progress %. Use it to open a "converting…" dialog.
    */
-  onTranscodeStart?: () => void;
+  onTranscodeStart?: (info: { durationMs?: number }) => void;
   /** Abort the (running) transcode; a cache hit ignores it. */
   signal?: AbortSignal;
+  /** Source duration in ms (from the probe) — forwarded to `onTranscodeStart`. */
+  durationMs?: number;
   /** Encoder/quality overrides forwarded to {@link buildTranscodeArgs}. */
   encoder?: string;
   quality?: string[];
@@ -105,7 +109,8 @@ export async function transcodeToMp4(
 
   if (await deps.exists(cachePath)) return cachePath; // convert-once: cache hit
 
-  options.onTranscodeStart?.(); // real cache miss — work is about to happen
+  // real cache miss — work is about to happen
+  options.onTranscodeStart?.({ durationMs: options.durationMs });
   await deps.mkdir(dir);
   const tempPath = `${cachePath}.part`;
   await deps.remove(tempPath); // clear any stale partial from a prior crash
@@ -140,7 +145,7 @@ function ffprobeCodecArgs(path: string): string[] {
     "-select_streams",
     "v:0",
     "-show_entries",
-    "stream=codec_name,pix_fmt",
+    "stream=codec_name,pix_fmt,duration",
     "-of",
     "json",
     path,
@@ -197,8 +202,82 @@ export async function ensureDecodablePath(
     return { path: sourcePath, transcoded: false, codec: probed.codec };
   }
   const encoder = await selectEncoder(deps);
-  const mp4 = await transcodeToMp4(sourcePath, deps, { ...options, encoder });
+  const mp4 = await transcodeToMp4(sourcePath, deps, {
+    ...options,
+    encoder,
+    durationMs: probed.durationMs,
+  });
   return { path: mp4, transcoded: true, codec: probed.codec };
+}
+
+// ── Cache maintenance (for a "clear transcode cache" UI) ─────────────────────
+
+export interface TranscodeCacheInfo {
+  /** Number of finished transcodes (`.mp4`) in the cache. */
+  count: number;
+  /** Total bytes on disk (finished `.mp4`s; ignores stray `.part`). */
+  bytes: number;
+}
+
+/** Resolve the transcode cache directory (`<cacheDir>/transcodes`). */
+async function transcodeCacheDir(deps: TranscodeDeps): Promise<string> {
+  return deps.join(await deps.cacheDir(), TRANSCODE_SUBDIR);
+}
+
+/** Summarize the transcode cache (count + total bytes). Empty if the dir is absent. */
+export async function getTranscodeCacheInfo(
+  deps: TranscodeDeps
+): Promise<TranscodeCacheInfo> {
+  const dir = await transcodeCacheDir(deps);
+  let names: string[];
+  try {
+    names = await deps.readDir(dir);
+  } catch {
+    return { count: 0, bytes: 0 };
+  }
+  let count = 0;
+  let bytes = 0;
+  for (const name of names) {
+    if (!name.endsWith(TRANSCODE_EXT)) continue;
+    count++;
+    try {
+      bytes += (await deps.stat(await deps.join(dir, name))).size;
+    } catch {
+      /* raced deletion — ignore */
+    }
+  }
+  return { count, bytes };
+}
+
+/**
+ * Delete every cached transcode (`.mp4`) plus any stray `.part` temps, and
+ * return what was freed. Safe: entries are regenerable from the originals.
+ */
+export async function clearTranscodeCache(
+  deps: TranscodeDeps
+): Promise<TranscodeCacheInfo> {
+  const dir = await transcodeCacheDir(deps);
+  let names: string[];
+  try {
+    names = await deps.readDir(dir);
+  } catch {
+    return { count: 0, bytes: 0 };
+  }
+  let count = 0;
+  let bytes = 0;
+  for (const name of names) {
+    const isMp4 = name.endsWith(TRANSCODE_EXT);
+    if (!isMp4 && !name.endsWith(".part")) continue;
+    const path = await deps.join(dir, name);
+    try {
+      bytes += (await deps.stat(path)).size;
+    } catch {
+      /* ignore */
+    }
+    await deps.remove(path);
+    if (isMp4) count++;
+  }
+  return { count, bytes };
 }
 
 /**

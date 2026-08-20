@@ -67,6 +67,16 @@ export function createTauriTranscodeDeps(): TranscodeDeps {
       }
     },
 
+    async readDir(dir) {
+      const { readDir } = await import("@tauri-apps/plugin-fs");
+      try {
+        const entries = await readDir(dir);
+        return entries.filter((e) => e.isFile).map((e) => e.name);
+      } catch {
+        return []; // dir absent (no cache yet)
+      }
+    },
+
     async exec(tool, args) {
       const { Command } = await import("@tauri-apps/plugin-shell");
       const sidecar = tool === "ffprobe" ? FFPROBE_SIDECAR : FFMPEG_SIDECAR;
