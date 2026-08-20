@@ -19,6 +19,8 @@ import { LogTerminalDialog } from "@/components/monitors/LogTerminalDialog";
 import { ErrorOutput } from "@/components/monitors/ErrorOutput";
 import { useAppStore } from "@/stores/appStore";
 import { isTauri } from "@/platform/index";
+import { getBaselineProfilesForHead, slotToHeadType } from "@/lib/trainingProfiles";
+import type { DiscoveredModel } from "@/lib/modelDiscovery";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
@@ -274,21 +276,43 @@ function Section({
 
 // ── Config upload slot ───────────────────────────────────────────────────────
 
+/** True if `checkpointPath` lives inside `runPath` (either / or \ separator, and not equal to it). */
+function checkpointBelongsToRun(checkpointPath: string, runPath: string): boolean {
+  return checkpointPath.startsWith(`${runPath}/`) || checkpointPath.startsWith(`${runPath}\\`);
+}
+
 function ConfigSlot({
   slot,
+  modelType,
   configFile,
+  discoveredModels,
   onAdd,
   onRemove,
   disabled,
 }: {
   slot: string;
+  modelType: ModelType;
   configFile: ConfigFile | undefined;
+  discoveredModels: DiscoveredModel[];
   onAdd: (slot: string) => void;
   onRemove: (slot: string) => void;
   disabled: boolean;
 }) {
   const [dragOver, setDragOver] = useState(false);
   const { parseYamlConfig, addConfigFile } = useTrainingStore();
+
+  const headType = slotToHeadType(modelType, slot);
+  const baselineProfiles = getBaselineProfilesForHead(headType);
+  const forThisHead = discoveredModels.filter((m) => m.headKey === headType);
+
+  // Which dropdown item the current configFile actually corresponds to — a
+  // discovered run is identified by its checkpoint living inside that run's
+  // directory (every parsed run config shares the same literal filename,
+  // "training_config.yaml", so the filename alone can't tell runs apart).
+  const matchingRun = configFile?.checkpointPath
+    ? forThisHead.find((run) => checkpointBelongsToRun(configFile.checkpointPath!, run.path))
+    : undefined;
+  const selectValue = !configFile ? "" : matchingRun ? matchingRun.path : configFile.filename;
 
   const handleFile = (file: File) => {
     if (!file.name.endsWith(".yaml") && !file.name.endsWith(".yml")) return;
@@ -303,44 +327,26 @@ function ConfigSlot({
     reader.readAsText(file);
   };
 
-  if (configFile) {
-    return (
-      <div className="border border-green-500/50 bg-green-500/5 rounded-md p-2 text-left">
-        <div className="flex items-center justify-between gap-1">
-          <span className="text-xs font-medium truncate">{configFile.filename}</span>
-          <div className="flex items-center gap-1 shrink-0">
-            <Button
-              variant="outline"
-              size="xs"
-              onClick={() => onAdd(slot)}
-              disabled={disabled}
-            >
-              Browse...
-            </Button>
-            <button
-              className="text-muted-foreground hover:text-destructive"
-              onClick={() => onRemove(slot)}
-              disabled={disabled}
-            >
-              <X className="h-3 w-3" />
-            </button>
-          </div>
-        </div>
-        <div className="text-[10px] text-muted-foreground font-mono mt-0.5">
-          head: {configFile.modelType}
-        </div>
-      </div>
-    );
-  }
+  const handleSelectRun = async (run: DiscoveredModel) => {
+    try {
+      const { join } = await import("@tauri-apps/api/path");
+      const { readTextFile } = await import("@tauri-apps/plugin-fs");
+      const yamlText = await readTextFile(await join(run.path, "training_config.yaml"));
+      const checkpointPath = run.checkpointFile ? await join(run.path, run.checkpointFile) : null;
+      const parsed = parseYamlConfig(yamlText, "training_config.yaml", slot, checkpointPath);
+      if (parsed) addConfigFile(parsed);
+    } catch {
+      // Unreadable/missing despite discovery — leave the current config as-is.
+    }
+  };
 
   return (
     <div
-      className={`border border-dashed rounded-md p-3 text-center cursor-pointer transition-colors ${
-        dragOver
-          ? "border-primary bg-primary/5"
-          : "border-border hover:border-primary/50"
+      className={`rounded-md border p-2 transition-colors ${
+        configFile
+          ? "border-green-500/50 bg-green-500/5"
+          : `border-dashed ${dragOver ? "border-primary bg-primary/5" : "border-border hover:border-primary/50"}`
       }`}
-      onClick={() => !disabled && onAdd(slot)}
       onDragOver={(e) => {
         e.preventDefault();
         setDragOver(true);
@@ -353,24 +359,66 @@ function ConfigSlot({
         if (file) handleFile(file);
       }}
     >
-      <div className="text-[11px] text-muted-foreground">
-        Drop YAML config here
+      <div className="flex items-center gap-1">
+        <Select
+          value={selectValue}
+          onValueChange={(v) => {
+            if (v === "__browse__") {
+              onAdd(slot);
+              return;
+            }
+            const baseline = baselineProfiles.find((p) => p.filename === v);
+            if (baseline) {
+              const parsed = parseYamlConfig(baseline.content, baseline.filename, slot);
+              if (parsed) addConfigFile(parsed);
+              return;
+            }
+            const run = forThisHead.find((m) => m.path === v);
+            if (run) handleSelectRun(run);
+          }}
+          disabled={disabled}
+        >
+          <SelectTrigger className="h-8 text-xs flex-1 min-w-0">
+            <SelectValue placeholder="Select training config file..." />
+          </SelectTrigger>
+          <SelectContent>
+            {baselineProfiles.map((p) => (
+              <SelectItem key={p.filename} value={p.filename}>
+                [{p.filename.replace(".yaml", "")}] ({p.filename})
+              </SelectItem>
+            ))}
+            {forThisHead.map((run) => (
+              <SelectItem key={run.path} value={run.path}>
+                [Trained] {run.runName ?? run.path} (training_config.yaml)
+              </SelectItem>
+            ))}
+            {configFile && !matchingRun && !baselineProfiles.some((p) => p.filename === configFile.filename) && (
+              <SelectItem value={configFile.filename}>{configFile.filename}</SelectItem>
+            )}
+            <SelectItem value="__browse__" className="text-primary font-medium">
+              Browse for config file...
+            </SelectItem>
+          </SelectContent>
+        </Select>
+        {configFile && (
+          <button
+            className="text-muted-foreground hover:text-destructive shrink-0"
+            onClick={() => onRemove(slot)}
+            disabled={disabled}
+          >
+            <X className="h-3 w-3" />
+          </button>
+        )}
       </div>
-      <Button
-        variant="outline"
-        size="xs"
-        className="mt-1.5"
-        onClick={(e) => {
-          e.stopPropagation();
-          if (!disabled) onAdd(slot);
-        }}
-        disabled={disabled}
-      >
-        Browse...
-      </Button>
-      <div className="text-[10px] text-muted-foreground mt-1">
-        Accepts .yaml files
-      </div>
+      {configFile ? (
+        <div className="text-[10px] text-muted-foreground font-mono mt-1">
+          head: {configFile.modelType}
+        </div>
+      ) : (
+        <div className="text-[10px] text-muted-foreground mt-1 text-center">
+          or drop a YAML config here
+        </div>
+      )}
     </div>
   );
 }
@@ -653,6 +701,7 @@ export function TrainingPanel() {
   const reset = useTrainingStore((s) => s.reset);
   const resetSeq = useTrainingStore((s) => s.resetSeq);
   const { parseYamlConfig: parseConfig, addConfigFile: addConfig } = useTrainingStore();
+  const [discoveredModels, setDiscoveredModels] = useState<DiscoveredModel[]>([]);
   const projectPath = useAppStore((s) => s.projectPath);
   const tutorialActive = useAppStore((s) => s.tutorialActive);
   const tutorialSteps = useAppStore((s) => s.tutorialSteps);
@@ -691,7 +740,6 @@ export function TrainingPanel() {
     const missingSlots = newSlots.filter(
       (slot) => !config.configs.some((c) => c.slot === slot),
     );
-    if (missingSlots.length === 0) return;
 
     const currentTutorialStepId = tutorialActive
       ? tutorialSteps[tutorialStepIndex]?.id
@@ -703,7 +751,7 @@ export function TrainingPanel() {
     let cancelled = false;
     (async () => {
       const { resolveSlotConfigSource } = await import("@/lib/trainedConfigAutoload");
-      let discovered: import("@/lib/modelDiscovery").DiscoveredModel[] = [];
+      let discovered: DiscoveredModel[] = [];
       // No trained-model lookup possible without a local project dir (browser
       // mode / no project yet) — `discovered` stays empty and every slot below
       // just falls back to its baseline, same as before this feature existed.
@@ -731,6 +779,12 @@ export function TrainingPanel() {
         }
       }
       if (cancelled) return;
+      // Kept in state (not just this closure) so the per-slot config
+      // dropdown can list every discovered run for a head, not just
+      // whichever one this effect happened to auto-load.
+      setDiscoveredModels(discovered);
+
+      if (missingSlots.length === 0) return;
 
       for (const slot of missingSlots) {
         const source = await resolveSlotConfigSource(
@@ -986,7 +1040,9 @@ export function TrainingPanel() {
                 </span>
                 <ConfigSlot
                   slot={slot}
+                  modelType={config.modelType}
                   configFile={configFile}
+                  discoveredModels={discoveredModels}
                   onAdd={handleConfigBrowse}
                   onRemove={removeConfigFile}
                   disabled={isRunning}
