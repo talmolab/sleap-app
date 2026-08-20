@@ -384,7 +384,7 @@ function ConfigSlot({
           <SelectContent>
             {baselineProfiles.map((p) => (
               <SelectItem key={p.filename} value={p.filename}>
-                [{p.filename.replace(".yaml", "")}] ({p.filename})
+                {p.label}
               </SelectItem>
             ))}
             {forThisHead.map((run) => (

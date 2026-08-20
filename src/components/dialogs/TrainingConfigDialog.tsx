@@ -471,7 +471,7 @@ function HeadTabContent({
           <SelectContent>
             {baselineProfiles.map((p) => (
               <SelectItem key={p.filename} value={p.filename}>
-                [{p.filename.replace(".yaml", "")}] ({p.filename})
+                {p.label}
               </SelectItem>
             ))}
             {configFile && !baselineProfiles.some((p) => p.filename === configFile.filename) && (
