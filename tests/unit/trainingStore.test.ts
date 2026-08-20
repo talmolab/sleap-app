@@ -817,6 +817,68 @@ trainer_config:
     });
   });
 
+  describe("parseYamlConfig - detects trainingMode from the file's own config", () => {
+    // Regression: "Train Again" wipes config.configs and re-auto-loads each
+    // slot from the just-completed run's own written training_config.yaml
+    // (findTrainedModels prefers the most recent run). Since sleap-nn bakes
+    // resume_ckpt_path/pretrained_*_weights into that file when they were
+    // actually used, trainingMode must be detected from it — otherwise a
+    // Resume/Fine-tune selection always silently reverted to "reuse_config"
+    // on every re-load, even though the run that just finished really did use
+    // it.
+    it("detects 'resume' when the file has a non-empty trainer_config.resume_ckpt_path", () => {
+      const yamlText = `
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config:
+  resume_ckpt_path: /proj/models/prev_run/last.ckpt
+`;
+      const result = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
+      expect(result!.hyperparams.trainingMode).toBe("resume");
+    });
+
+    it("detects 'finetune' when the file has a non-empty model_config.pretrained_backbone_weights", () => {
+      const yamlText = `
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+  pretrained_backbone_weights: /proj/models/prev_run/best.ckpt
+  pretrained_head_weights: /proj/models/prev_run/best.ckpt
+trainer_config: {}
+`;
+      const result = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
+      expect(result!.hyperparams.trainingMode).toBe("finetune");
+    });
+
+    it("defaults to 'reuse_config' when neither field is populated", () => {
+      const yamlText = `
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config: {}
+`;
+      const result = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
+      expect(result!.hyperparams.trainingMode).toBe("reuse_config");
+    });
+
+    it("treats a null resume_ckpt_path (never set) as 'reuse_config', not 'resume'", () => {
+      const yamlText = `
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config:
+  resume_ckpt_path: null
+`;
+      const result = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
+      expect(result!.hyperparams.trainingMode).toBe("reuse_config");
+    });
+  });
+
   describe("applyHyperparamsToYaml - wandb.name staleness", () => {
     it("clears a pre-existing wandb.name (no UI field for it) so a stale run id can't ride through", () => {
       const yamlText = `

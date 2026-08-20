@@ -840,6 +840,23 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
 
       const hasTrainedModel = typeof trainer.run_name === "string" && trainer.run_name.length > 0;
 
+      // Detect which mode actually produced this config, so re-auto-loading
+      // the just-completed run's own written training_config.yaml (e.g. on
+      // "Train Again") reflects what was really used instead of always
+      // reverting to "reuse_config" — sleap-nn's own config log for the run
+      // still has resume_ckpt_path/pretrained_*_weights populated even though
+      // parseYamlConfig doesn't strip those two (unlike skeletons/
+      // cache_img_path/part_names above): they're the exact fields
+      // applyHyperparamsToYaml re-derives from trainingMode + checkpointPath
+      // on every apply, so leaving them in `content` is harmless either way.
+      const detectedTrainingMode: ConfigHyperparams["trainingMode"] =
+        typeof trainer.resume_ckpt_path === "string" && trainer.resume_ckpt_path.length > 0
+          ? "resume"
+          : typeof modelConfig.pretrained_backbone_weights === "string" &&
+              (modelConfig.pretrained_backbone_weights as string).length > 0
+            ? "finetune"
+            : "reuse_config";
+
       // Extract backbone model params
       const unetConfig = (backboneConfig[activeBackbone.toLowerCase()] ?? {}) as Record<string, unknown>;
 
@@ -970,7 +987,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         onlineMining: ohkmCfg.online_mining === true,
         minHardKeypoints: typeof ohkmCfg.min_hard_keypoints === "number" ? ohkmCfg.min_hard_keypoints : 2,
         maxHardKeypoints: typeof ohkmCfg.max_hard_keypoints === "number" ? ohkmCfg.max_hard_keypoints : null,
-        trainingMode: "reuse_config" as const,
+        trainingMode: detectedTrainingMode,
         // Performance/machine-specific settings — never taken from the
         // uploaded file, always the app's own defaults. A profile trained on
         // someone else's machine (e.g. `trainer_accelerator: mps` from a Mac,
