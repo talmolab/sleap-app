@@ -14,11 +14,18 @@ import {
 } from "@/lib/transcode/transcodeCache";
 import {
   transcodeToMp4,
+  ensureDecodablePath,
   parseFfmpegProgress,
+  __resetEncoderCache,
   type TranscodeDeps,
   type TranscodeProgress,
 } from "@/lib/transcode/transcodeVideo";
 import { codecNeedsTranscode } from "@/lib/transcode/videoCodecSupport";
+import {
+  parseFfprobeCodec,
+  parseEncoderList,
+  pickH264Encoder,
+} from "@/lib/transcode/videoProbe";
 
 describe("buildTranscodeArgs (frame-exact ffmpeg args)", () => {
   it("emits the correctness-critical + WebCodecs-compat flags", () => {
@@ -149,7 +156,21 @@ function makeFakeDeps(overrides: Partial<TranscodeDeps> = {}): {
       calls.removed.push(p);
       fs.delete(p);
     },
-    runFfmpeg: async (args) => {
+    exec: async (tool) => {
+      // Default: ffprobe reports a legacy codec (needs transcode); ffmpeg has a
+      // permissive encoder. Tests override as needed.
+      if (tool === "ffprobe") {
+        return {
+          stdout: JSON.stringify({
+            streams: [{ codec_name: "mpeg4", pix_fmt: "yuv420p" }],
+          }),
+          stderr: "",
+          code: 0,
+        };
+      }
+      return { stdout: " V....D libopenh264 x\n V....D libx264 x", stderr: "", code: 0 };
+    },
+    runTranscode: async (args) => {
       calls.ran.push(args);
       // simulate ffmpeg writing the temp output (last arg)
       fs.add(args[args.length - 1]);
@@ -186,7 +207,7 @@ describe("transcodeToMp4 orchestration", () => {
 
   it("on ffmpeg failure: removes the partial temp and rethrows (no rename)", async () => {
     const { deps, calls } = makeFakeDeps({
-      runFfmpeg: async () => {
+      runTranscode: async () => {
         throw new Error("boom");
       },
     });
@@ -199,7 +220,7 @@ describe("transcodeToMp4 orchestration", () => {
   it("forwards progress updates", async () => {
     const seen: TranscodeProgress[] = [];
     const { deps } = makeFakeDeps({
-      runFfmpeg: async (_args, onProgress) => {
+      runTranscode: async (_args, onProgress) => {
         onProgress({ frame: 5, done: false });
         onProgress({ frame: 10, done: true });
       },
@@ -209,5 +230,84 @@ describe("transcodeToMp4 orchestration", () => {
       { frame: 5, done: false },
       { frame: 10, done: true },
     ]);
+  });
+});
+
+describe("videoProbe parsers + encoder selection", () => {
+  it("parseFfprobeCodec: reads first video stream, lowercases, or null", () => {
+    expect(
+      parseFfprobeCodec(
+        JSON.stringify({ streams: [{ codec_name: "MPEG4", pix_fmt: "YUV420P" }] })
+      )
+    ).toEqual({ codec: "mpeg4", pixFmt: "yuv420p" });
+    expect(parseFfprobeCodec(JSON.stringify({ streams: [] }))).toBeNull();
+    expect(parseFfprobeCodec("not json")).toBeNull();
+  });
+
+  it("parseEncoderList: extracts video encoder names from -encoders output", () => {
+    const stdout = [
+      "Encoders:",
+      " V....D libx264              libx264 H.264",
+      " V....D h264_videotoolbox    VideoToolbox H.264",
+      " A....D aac                  AAC (audio, ignored)",
+    ].join("\n");
+    const names = parseEncoderList(stdout);
+    expect(names).toContain("libx264");
+    expect(names).toContain("h264_videotoolbox");
+    expect(names).not.toContain("aac"); // audio encoder filtered out
+  });
+
+  it("pickH264Encoder: prefers libopenh264, then videotoolbox, never libx264", () => {
+    expect(pickH264Encoder(["libx264", "h264_videotoolbox", "libopenh264"])).toBe(
+      "libopenh264"
+    );
+    // no libopenh264 (this machine's homebrew build) → the permissive hw encoder
+    expect(pickH264Encoder(["libx264", "h264_videotoolbox"])).toBe(
+      "h264_videotoolbox"
+    );
+    // only GPL libx264 available → refuse (would taint a bundled build)
+    expect(() => pickH264Encoder(["libx264"])).toThrow(/libopenh264/);
+  });
+});
+
+describe("ensureDecodablePath (probe → decide → maybe transcode)", () => {
+  it("decodable codec → returns the original path, no transcode", async () => {
+    __resetEncoderCache();
+    const { deps, calls } = makeFakeDeps({
+      exec: async (tool) =>
+        tool === "ffprobe"
+          ? {
+              stdout: JSON.stringify({
+                streams: [{ codec_name: "h264", pix_fmt: "yuv420p" }],
+              }),
+              stderr: "",
+              code: 0,
+            }
+          : { stdout: "", stderr: "", code: 0 },
+    });
+    const res = await ensureDecodablePath("/v.avi", deps);
+    expect(res).toEqual({ path: "/v.avi", transcoded: false, codec: "h264" });
+    expect(calls.ran).toHaveLength(0);
+  });
+
+  it("legacy codec → transcodes with the selected permissive encoder", async () => {
+    __resetEncoderCache();
+    const { deps, calls } = makeFakeDeps(); // default: ffprobe→mpeg4, ffmpeg→libopenh264
+    const res = await ensureDecodablePath("/v.avi", deps);
+    expect(res.transcoded).toBe(true);
+    expect(res.path.endsWith(".mp4")).toBe(true);
+    expect(calls.ran).toHaveLength(1);
+    // the chosen encoder is threaded into the ffmpeg args
+    expect(calls.ran[0][calls.ran[0].indexOf("-c:v") + 1]).toBe("libopenh264");
+  });
+
+  it("unprobeable file → returns original unchanged (lets the normal backend try)", async () => {
+    __resetEncoderCache();
+    const { deps, calls } = makeFakeDeps({
+      exec: async () => ({ stdout: "garbage", stderr: "", code: 1 }),
+    });
+    const res = await ensureDecodablePath("/weird.bin", deps);
+    expect(res).toEqual({ path: "/weird.bin", transcoded: false });
+    expect(calls.ran).toHaveLength(0);
   });
 });

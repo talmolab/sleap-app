@@ -13,8 +13,9 @@
 
 import { parseFfmpegProgress, type TranscodeDeps } from "./transcodeVideo.js";
 
-/** Tauri `externalBin` base name (resolves to `binaries/ffmpeg-<target-triple>`). */
+/** Tauri `externalBin` base names (resolve to `binaries/<name>-<target-triple>`). */
 const FFMPEG_SIDECAR = "binaries/ffmpeg";
+const FFPROBE_SIDECAR = "binaries/ffprobe";
 /** Cache lives under the OS cache dir (disposable), not app-local data. */
 const CACHE_ROOT = "video-cache";
 
@@ -66,7 +67,14 @@ export function createTauriTranscodeDeps(): TranscodeDeps {
       }
     },
 
-    async runFfmpeg(args, onProgress, signal) {
+    async exec(tool, args) {
+      const { Command } = await import("@tauri-apps/plugin-shell");
+      const sidecar = tool === "ffprobe" ? FFPROBE_SIDECAR : FFMPEG_SIDECAR;
+      const output = await Command.sidecar(sidecar, args).execute();
+      return { stdout: output.stdout, stderr: output.stderr, code: output.code };
+    },
+
+    async runTranscode(args, onProgress, signal) {
       const { Command } = await import("@tauri-apps/plugin-shell");
       const command = Command.sidecar(FFMPEG_SIDECAR, args);
 

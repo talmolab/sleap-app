@@ -24,6 +24,8 @@ import { tailGraftCandidates } from "./pathCandidates";
 import { applyPrefixSwap } from "./videoPrefixSwaps";
 import { fileSize, readRange } from "./nativeRange";
 import { useAppStore } from "@/stores/appStore";
+import { ensureDecodablePath } from "./transcode/transcodeVideo";
+import { createTauriTranscodeDeps } from "./transcode/transcodeDepsTauri";
 
 /** Extract just the basename from a path or filename. */
 export function getBasename(filename: string | string[]): string {
@@ -1202,15 +1204,6 @@ function makeVideoRangeSource(path: string): Promise<RangeSource> {
 async function createBackendForPath(path: string): Promise<VideoBackend> {
   const name = getBasename(path);
   const kind = backendKindForFilename(name);
-  // PHASE-2 INTEGRATION POINT (desktop legacy-codec transcode fallback):
-  // Before the container routing below, probe the codec natively (ffprobe
-  // sidecar). If `codecNeedsTranscode(codec, pixFmt)` (Xvid/DivX, WMV3/VC-1,
-  // MPEG-1/2, 10-bit HEVC), call `transcodeToMp4(path, createTauriTranscodeDeps())`
-  // and route the returned cached MP4 through the Mp4Box path below — hardware
-  // decode + fast seeking, no software-decode lag. Keep the ORIGINAL path in the
-  // `.slp` (cache path lives only in backendMetadata). Gated on the bundled
-  // ffmpeg sidecar — see `src-tauri/binaries/README.md`. Modules ready + tested
-  // in `src/lib/transcode/`; wiring is intentionally off until the binary ships.
   if (kind === "mediabunny") {
     return MediaBunnyVideoBackend.fromRangeSource(
       await makeVideoRangeSource(path),
@@ -1218,6 +1211,42 @@ async function createBackendForPath(path: string): Promise<VideoBackend> {
     );
   }
   if (kind === "avi") {
+    // Desktop legacy-codec fallback: probe the codec natively (ffprobe sidecar);
+    // if WebCodecs can't decode it (Xvid/DivX, WMV3/VC-1, MPEG-1/2, 10-bit HEVC)
+    // transcode it to a cached, frame-exact H.264 MP4 once and open THAT via the
+    // hardware Mp4Box path — fast seeking, no software-decode lag, and the source
+    // bytes never enter the WebView (native disk→disk). Decodable AVI/WMV
+    // (H.264/MJPEG) probe cheaply and fall through to AviVideoBackend unchanged.
+    // Requires the bundled ffmpeg/ffprobe sidecars (see src-tauri/binaries/); on
+    // ANY failure (no sidecar, undecodable-and-unencodable) we fall back to
+    // AviVideoBackend, which surfaces the graceful "transcode to H.264" message —
+    // the same behavior as the browser. The `.slp` keeps the ORIGINAL path.
+    const platform = await getPlatform();
+    if (platform.isTauri) {
+      try {
+        const result = await ensureDecodablePath(
+          path,
+          createTauriTranscodeDeps(),
+          {
+            onTranscodeStart: () =>
+              toast.info(`Converting ${name} to a supported format…`, {
+                description:
+                  "Legacy codec — converting once (cached for next time).",
+              }),
+          }
+        );
+        if (result.transcoded) {
+          toast.success(`Converted ${name}`);
+          return new Mp4BoxVideoBackend(
+            await makeVideoRangeSource(result.path),
+            { filename: name }
+          );
+        }
+      } catch (err) {
+        console.warn(`[video] transcode fallback failed for "${name}":`, err);
+        // fall through to AviVideoBackend (graceful unsupported-codec message)
+      }
+    }
     return AviVideoBackend.fromRangeSource(
       await makeVideoRangeSource(path),
       name
@@ -1334,6 +1363,12 @@ const BACKEND_BY_EXT = {
   ts: "mediabunny",
   avi: "avi",
   wmv: "avi",
+  // MPEG program streams: demuxed by the same web-demuxer backend. Their
+  // MPEG-1/2 payload isn't WebCodecs-decodable, so in the browser they surface
+  // the graceful "transcode to H.264" message; on desktop the transcode
+  // fallback (createBackendForPath) converts + plays them.
+  mpeg: "avi",
+  mpg: "avi",
   seq: "seq",
 } as const satisfies Record<string, "mp4box" | "mediabunny" | "avi" | "seq">;
 
@@ -1377,7 +1412,7 @@ export async function buildStandaloneVideo(file: File): Promise<Video | null> {
     const ext = fileExt(file.name);
     toast.error(`${ext ? `.${ext} files are` : "This file is"} not supported`, {
       description:
-        "Supported video formats: MP4, WebM, MKV, MOV, Ogg, MPEG-TS, AVI, WMV, and Norpix .seq.",
+        "Supported video formats: MP4, WebM, MKV, MOV, Ogg, MPEG-TS, AVI, WMV, MPEG, and Norpix .seq.",
     });
     return null;
   }

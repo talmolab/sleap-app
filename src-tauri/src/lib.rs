@@ -570,6 +570,13 @@ fn localhost_capability(port: u16) -> String {
     "dialog:allow-open",
     "dialog:allow-save",
     "shell:allow-open",
+    {{
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {{ "name": "binaries/ffmpeg", "sidecar": true, "args": true }},
+        {{ "name": "binaries/ffprobe", "sidecar": true, "args": true }}
+      ]
+    }},
     "updater:default",
     "process:default",
     "core:window:allow-close",

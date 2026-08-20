@@ -139,11 +139,13 @@ describe("addVideoFileToLabels", () => {
 describe("SUPPORTED_VIDEO_EXTS", () => {
   it("lists every decodable format, including .avi/.wmv", () => {
     expect([...SUPPORTED_VIDEO_EXTS].sort()).toEqual([
-      "avi", "mkv", "mov", "mp4", "ogg", "ogv", "seq", "ts", "webm", "wmv",
+      "avi", "mkv", "mov", "mp4", "mpeg", "mpg", "ogg", "ogv", "seq", "ts", "webm", "wmv",
     ]);
-    // AVI/WMV are now decodable via the web-demuxer AviVideoBackend.
+    // AVI/WMV/MPEG are now selectable + routed via the web-demuxer AviVideoBackend
+    // (desktop transcodes undecodable payloads; browser shows the convert message).
     expect(SUPPORTED_VIDEO_EXTS).toContain("avi");
     expect(SUPPORTED_VIDEO_EXTS).toContain("wmv");
+    expect(SUPPORTED_VIDEO_EXTS).toContain("mpeg");
   });
 });
 
@@ -548,8 +550,8 @@ describe("backendKindForFilename (format → backend dispatch)", () => {
   it("maps Norpix .seq to the Seq backend", () => {
     expect(backendKindForFilename("rec.seq")).toBe("seq");
   });
-  it("maps AVI/WMV to the AVI (web-demuxer) backend", () => {
-    for (const name of ["clip.avi", "clip.wmv"]) {
+  it("maps AVI/WMV/MPEG to the AVI (web-demuxer) backend", () => {
+    for (const name of ["clip.avi", "clip.wmv", "clip.mpeg", "clip.mpg"]) {
       expect(backendKindForFilename(name)).toBe("avi");
     }
   });
@@ -559,7 +561,7 @@ describe("backendKindForFilename (format → backend dispatch)", () => {
     expect(backendKindForFilename("CLIP.AVI")).toBe("avi");
   });
   it("returns null for unsupported or extension-less names", () => {
-    for (const name of ["clip.mpeg", "clip.xyz", "noextension", ""]) {
+    for (const name of ["clip.mj2", "clip.xyz", "noextension", ""]) {
       expect(backendKindForFilename(name)).toBeNull();
     }
   });

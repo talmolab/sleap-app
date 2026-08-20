@@ -15,6 +15,12 @@
 
 import { buildTranscodeArgs } from "./transcodeArgs.js";
 import { cacheFilename, computeCacheKey } from "./transcodeCache.js";
+import { codecNeedsTranscode } from "./videoCodecSupport.js";
+import {
+  parseEncoderList,
+  parseFfprobeCodec,
+  pickH264Encoder,
+} from "./videoProbe.js";
 
 export interface TranscodeProgress {
   /** Frames processed so far (from ffmpeg `-progress`), if known. */
@@ -42,10 +48,20 @@ export interface TranscodeDeps {
   /** Best-effort delete (ignore missing). */
   remove: (path: string) => Promise<void>;
   /**
-   * Run the bundled ffmpeg with `args`, streaming parsed progress. Rejects on a
-   * nonzero exit or spawn failure; honors `signal` (kills the child on abort).
+   * One-shot run of a bundled tool, capturing output (for `ffprobe` codec
+   * detection and `ffmpeg -encoders`). Resolves regardless of exit code so the
+   * caller can inspect `code`/`stderr`.
    */
-  runFfmpeg: (
+  exec: (
+    tool: "ffmpeg" | "ffprobe",
+    args: string[]
+  ) => Promise<{ stdout: string; stderr: string; code: number | null }>;
+  /**
+   * Streaming transcode via the bundled ffmpeg, reporting parsed progress.
+   * Rejects on a nonzero exit or spawn failure; honors `signal` (kills the
+   * child on abort).
+   */
+  runTranscode: (
     args: string[],
     onProgress: (p: TranscodeProgress) => void,
     signal?: AbortSignal
@@ -55,6 +71,12 @@ export interface TranscodeDeps {
 export interface TranscodeToMp4Options {
   /** Progress callback for a UI bar. */
   onProgress?: (p: TranscodeProgress) => void;
+  /**
+   * Called by {@link ensureDecodablePath} once it has decided a transcode is
+   * needed and is about to start — i.e. NOT on a cache hit or a decodable file.
+   * Use it to show a "converting…" notification only when work actually happens.
+   */
+  onTranscodeStart?: () => void;
   /** Abort the (running) transcode; a cache hit ignores it. */
   signal?: AbortSignal;
   /** Encoder/quality overrides forwarded to {@link buildTranscodeArgs}. */
@@ -83,6 +105,7 @@ export async function transcodeToMp4(
 
   if (await deps.exists(cachePath)) return cachePath; // convert-once: cache hit
 
+  options.onTranscodeStart?.(); // real cache miss — work is about to happen
   await deps.mkdir(dir);
   const tempPath = `${cachePath}.part`;
   await deps.remove(tempPath); // clear any stale partial from a prior crash
@@ -95,7 +118,7 @@ export async function transcodeToMp4(
   });
 
   try {
-    await deps.runFfmpeg(
+    await deps.runTranscode(
       args,
       options.onProgress ?? (() => {}),
       options.signal
@@ -107,6 +130,75 @@ export async function transcodeToMp4(
 
   await deps.rename(tempPath, cachePath); // atomic publish
   return cachePath;
+}
+
+/** ffprobe args to read the first video stream's codec + pixel format as JSON. */
+function ffprobeCodecArgs(path: string): string[] {
+  return [
+    "-v",
+    "error",
+    "-select_streams",
+    "v:0",
+    "-show_entries",
+    "stream=codec_name,pix_fmt",
+    "-of",
+    "json",
+    path,
+  ];
+}
+
+/** Probe a file's first video stream (codec + pix_fmt) via the ffprobe sidecar. */
+export async function probeVideo(path: string, deps: TranscodeDeps) {
+  const { stdout } = await deps.exec("ffprobe", ffprobeCodecArgs(path));
+  return parseFfprobeCodec(stdout);
+}
+
+// Cache the chosen encoder across calls — `ffmpeg -encoders` is invariant per
+// bundled binary, so probe it at most once per session.
+let cachedEncoder: string | null = null;
+
+/** Pick (and memoize) a permissive H.264 encoder the bundled ffmpeg supports. */
+export async function selectEncoder(deps: TranscodeDeps): Promise<string> {
+  if (cachedEncoder) return cachedEncoder;
+  const { stdout } = await deps.exec("ffmpeg", ["-hide_banner", "-encoders"]);
+  cachedEncoder = pickH264Encoder(parseEncoderList(stdout));
+  return cachedEncoder;
+}
+
+/** Test-only: reset the memoized encoder. */
+export function __resetEncoderCache(): void {
+  cachedEncoder = null;
+}
+
+export interface EnsureDecodableResult {
+  /** The path to open: the original (decodable) or the cached transcode. */
+  path: string;
+  /** True when a transcode happened (so the caller records the original). */
+  transcoded: boolean;
+  /** The probed source codec, if detection succeeded. */
+  codec?: string;
+}
+
+/**
+ * Return a path the WebCodecs/Mp4Box path can decode: the ORIGINAL if its codec
+ * is already decodable (H.264/HEVC/VP8-9/AV1/MJPEG), else a cached H.264 MP4
+ * produced by transcoding. Desktop-only (needs the ffmpeg/ffprobe sidecars).
+ * If probing fails (unknown/odd file), returns the original unchanged so the
+ * existing backend still gets a chance (and can surface its own error).
+ */
+export async function ensureDecodablePath(
+  sourcePath: string,
+  deps: TranscodeDeps,
+  options: TranscodeToMp4Options = {}
+): Promise<EnsureDecodableResult> {
+  const probed = await probeVideo(sourcePath, deps);
+  if (!probed) return { path: sourcePath, transcoded: false };
+  if (!codecNeedsTranscode(probed.codec, probed.pixFmt)) {
+    return { path: sourcePath, transcoded: false, codec: probed.codec };
+  }
+  const encoder = await selectEncoder(deps);
+  const mp4 = await transcodeToMp4(sourcePath, deps, { ...options, encoder });
+  return { path: mp4, transcoded: true, codec: probed.codec };
 }
 
 /**
