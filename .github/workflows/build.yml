@@ -95,6 +95,54 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      # install.ps1 can be neither run nor parsed on a non-Windows dev machine, so
+      # without this it ships on trust: a syntax error breaks the documented Windows
+      # install path while every other check stays green.
+      #
+      # Runs BEFORE the Rust toolchain and build on purpose. It needs neither, it
+      # finishes in seconds, and -- learned the hard way on v0.1.2-1 -- a lint
+      # placed after the build will throw away a Windows build that succeeded,
+      # leaving the release with no Windows assets at all.
+      - name: Check the Windows installer script
+        if: matrix.target == 'windows'
+        shell: pwsh
+        run: |
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'scripts/install.ps1').Path, [ref] $null, [ref] $errors) | Out-Null
+          if ($errors) {
+            foreach ($e in $errors) {
+              Write-Host "::error file=scripts/install.ps1,line=$($e.Extent.StartLineNumber)::$($e.Message)"
+            }
+            exit 1
+          }
+          Write-Host 'scripts/install.ps1 parses cleanly'
+
+          # Smoke test: -Path with a nonexistent file must fail cleanly. It must
+          # also fail *legibly* -- Write-Fail throws, so without a top-level catch
+          # the user gets a raw PowerShell stack trace instead of the message.
+          $out = (& pwsh -NoProfile -File scripts/install.ps1 -Path 'Z:\nope\missing.msi' 2>&1) | Out-String
+          $rc = $LASTEXITCODE
+          Write-Host "missing-file exit=$rc"
+          Write-Host $out
+          if ($rc -eq 0) {
+            Write-Host '::error::-Path with a missing file exited 0'
+            exit 1
+          }
+          if ($out -match 'Exception:' -or $out -match 'ScriptStackTrace') {
+            Write-Host '::error::install.ps1 leaked a raw PowerShell exception; it should print a clean "Error: ..." line'
+            exit 1
+          }
+          if ($out -notmatch 'No such file') {
+            Write-Host '::error::install.ps1 did not report the missing file by name'
+            exit 1
+          }
+
+          # GitHub's pwsh wrapper exits the step with $LASTEXITCODE, which is still
+          # non-zero from the inner `pwsh` call above -- so a PASSING check would
+          # fail the step. Reset it explicitly.
+          exit 0
+
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -471,32 +519,6 @@ jobs:
               sys.exit(1)
           print("All updater signatures match the configured public key.")
           PY
-
-      # install.ps1 cannot be run or even parsed on a non-Windows dev machine, so
-      # without this it ships on trust. The Windows leg is the only place in this
-      # repo with a PowerShell host, and a syntax error here breaks the documented
-      # Windows install path while every other check stays green.
-      - name: Check the Windows installer script parses
-        if: matrix.target == 'windows'
-        shell: pwsh
-        run: |
-          $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile(
-            (Resolve-Path 'scripts/install.ps1').Path, [ref] $null, [ref] $errors) | Out-Null
-          if ($errors) {
-            foreach ($e in $errors) {
-              Write-Host "::error file=scripts/install.ps1,line=$($e.Extent.StartLineNumber)::$($e.Message)"
-            }
-            exit 1
-          }
-          Write-Host 'scripts/install.ps1 parses cleanly'
-
-          # -WhatIf-style smoke test: -Path with a file that does not exist must
-          # fail cleanly rather than blowing up somewhere unexpected.
-          $out = & pwsh -NoProfile -File scripts/install.ps1 -Path 'Z:\nope\missing.msi' 2>&1
-          $rc = $LASTEXITCODE
-          Write-Host "missing-file exit=$rc output: $out"
-          if ($rc -eq 0) { Write-Host '::error::-Path with a missing file exited 0'; exit 1 }
 
       - name: Collect artifacts
         shell: bash

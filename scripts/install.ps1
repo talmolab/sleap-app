@@ -552,4 +552,14 @@ function Invoke-Main {
     }
 }
 
-Invoke-Main
+# Write-Fail throws, and $ErrorActionPreference = 'Stop' turns any cmdlet error into
+# a throw as well. Without this catch both surface as a raw PowerShell exception
+# report -- "Exception: ...install.ps1:75 | Line | 75 | function Write-Fail" -- which
+# buries the message the user actually needs under a stack trace they cannot act on.
+try {
+    Invoke-Main
+} catch {
+    Write-Host ''
+    Write-Host "Error: $($_.Exception.Message)"
+    exit 1
+}
