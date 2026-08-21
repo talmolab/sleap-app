@@ -58,11 +58,11 @@ export function VideoImportList({
   return (
     <div className="flex flex-col gap-1.5">
       {videos.length > 1 && (
-        <div className="flex items-center gap-1 self-start">
+        <div className="flex items-center gap-2 self-start">
           <Button
             variant="ghost"
             size="sm"
-            className="h-6 px-2 text-xs text-muted-foreground"
+            className="h-7 px-2.5 text-sm text-muted-foreground"
             onClick={() => setAll(true)}
             disabled={disabled}
           >
@@ -71,7 +71,7 @@ export function VideoImportList({
           <Button
             variant="ghost"
             size="sm"
-            className="h-6 px-2 text-xs text-muted-foreground"
+            className="h-7 px-2.5 text-sm text-muted-foreground"
             onClick={() => setAll(false)}
             disabled={disabled}
           >
@@ -79,15 +79,16 @@ export function VideoImportList({
           </Button>
         </div>
       )}
-      <ul className="mt-1 flex flex-col gap-1" data-tutorial={rest["data-tutorial"]}>
+      <ul className="mt-1 flex flex-col gap-1.5" data-tutorial={rest["data-tutorial"]}>
         {videos.map((v, i) => (
           <li
             key={i}
-            className="flex items-center justify-between gap-2 rounded bg-muted/40 px-2 py-1 text-xs"
+            className="flex items-center justify-between gap-2 rounded bg-muted/40 px-2.5 py-1.5 text-sm"
           >
             <span className="min-w-0 flex-1 truncate">{v.file.name}</span>
-            <label className="flex shrink-0 items-center gap-1.5 text-muted-foreground">
+            <label className="flex shrink-0 items-center gap-2 font-medium">
               <Checkbox
+                className="h-4.5 w-4.5"
                 checked={v.grayscale}
                 onCheckedChange={(checked) =>
                   setGrayscale(i, checked === true)
@@ -103,7 +104,7 @@ export function VideoImportList({
               aria-label={`Remove ${v.file.name}`}
               disabled={disabled}
             >
-              <X className="h-3.5 w-3.5" />
+              <X className="h-4 w-4" />
             </button>
           </li>
         ))}
