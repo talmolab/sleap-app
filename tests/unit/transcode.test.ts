@@ -16,6 +16,7 @@ import {
   transcodeToMp4,
   ensureDecodablePath,
   parseFfmpegProgress,
+  createProgressAssembler,
   getTranscodeCacheInfo,
   clearTranscodeCache,
   __resetEncoderCache,
@@ -117,6 +118,38 @@ describe("parseFfmpegProgress", () => {
     expect(a.frame).toBe(10);
     expect(b.frame).toBe(20); // trailing partial (no terminator yet)
     expect(b.done).toBe(false);
+  });
+});
+
+describe("createProgressAssembler (line-by-line → complete blocks)", () => {
+  it("emits ONE complete {frame, outTimeMs} per block from fragmented lines", () => {
+    // Reproduces the Tauri shell plugin's one-line-per-event stdout delivery,
+    // which otherwise fragments into single-key updates that clobber the percent.
+    const seen: TranscodeProgress[] = [];
+    const feed = createProgressAssembler((p) => seen.push(p));
+    for (const line of [
+      "frame=100",
+      "fps=50",
+      "out_time_us=3333333",
+      "out_time_ms=3333333",
+      "progress=continue",
+    ]) {
+      feed(line); // one line per "data" event
+    }
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toEqual({ frame: 100, outTimeMs: 3333, done: false });
+  });
+
+  it("does not emit until a block terminates, then marks the final block done", () => {
+    const seen: TranscodeProgress[] = [];
+    const feed = createProgressAssembler((p) => seen.push(p));
+    feed("frame=10\nout_time_us=1000000"); // partial block, multi-line chunk
+    expect(seen).toHaveLength(0); // no terminator yet → nothing emitted
+    feed("progress=continue");
+    feed("frame=3600\nout_time_us=119966667\nprogress=end");
+    expect(seen).toHaveLength(2);
+    expect(seen[0]).toEqual({ frame: 10, outTimeMs: 1000, done: false });
+    expect(seen[1]).toEqual({ frame: 3600, outTimeMs: 119967, done: true });
   });
 });
 
@@ -372,6 +405,46 @@ describe("ensureDecodablePath (probe → decide → maybe transcode)", () => {
     const res = await ensureDecodablePath("/weird.bin", deps);
     expect(res).toEqual({ path: "/weird.bin", transcoded: false });
     expect(calls.ran).toHaveLength(0);
+  });
+
+  it("confirmTranscode=false → skips the transcode, returns the original", async () => {
+    __resetEncoderCache();
+    const { deps, calls } = makeFakeDeps(); // legacy mpeg4, not cached
+    const res = await ensureDecodablePath("/v.avi", deps, {
+      confirmTranscode: async () => false,
+    });
+    expect(res).toEqual({ path: "/v.avi", transcoded: false, codec: "mpeg4" });
+    expect(calls.ran).toHaveLength(0); // never ran ffmpeg
+  });
+
+  it("confirmTranscode=true → proceeds to transcode", async () => {
+    __resetEncoderCache();
+    const { deps, calls } = makeFakeDeps();
+    const res = await ensureDecodablePath("/v.avi", deps, {
+      confirmTranscode: async () => true,
+    });
+    expect(res.transcoded).toBe(true);
+    expect(calls.ran).toHaveLength(1);
+  });
+
+  it("already-cached legacy video → opens without prompting", async () => {
+    __resetEncoderCache();
+    const { deps, fs } = makeFakeDeps();
+    const key = computeCacheKey("/v.avi", 1234, 99);
+    fs.add(`/cache/transcodes/${key}.mp4`); // already converted
+    let prompted = false;
+    const res = await ensureDecodablePath("/v.avi", deps, {
+      confirmTranscode: async () => {
+        prompted = true;
+        return false;
+      },
+    });
+    expect(prompted).toBe(false); // no nag for a cached conversion
+    expect(res).toEqual({
+      path: `/cache/transcodes/${key}.mp4`,
+      transcoded: true,
+      codec: "mpeg4",
+    });
   });
 });
 

@@ -601,6 +601,12 @@ export function VideoPlayer() {
         // Lazy video backends: the decoder is deferred at load (open one video,
         // not all N). Open it on first view, then read. ensureVideoBackend clears
         // lazyPath after opening, so this whole block is skipped from then on.
+        // Capture the frame count as the seekbar currently sees it BEFORE opening
+        // the backend: a lazy/transcoded backend sets video.shape[0] during
+        // ensureVideoBackend (not via getFrame), so reading it afterwards would
+        // miss the null→real transition and never markVideoUpdated() — leaving the
+        // Seekbar's memoized totalFrames stuck (e.g. at 0 → hover always "Frame 1").
+        const framesBefore = video.shape?.[0] ?? null;
         if (!video.backend) {
           const meta = video.backendMetadata as
             | Record<string, unknown>
@@ -622,12 +628,12 @@ export function VideoPlayer() {
             return;
           }
         }
-        const framesBefore = video.shape?.[0] ?? null;
         const frame = await video.getFrame(frameIdx, { prefetch });
-        // A deferred embedded backend (lazyVideoMetadata) reads its per-video
-        // metadata on this first getFrame and corrects video.shape[0] to the true
-        // source frame count — nudge the store so the seekbar/status bar re-read
-        // the real extent instead of the JSON-seeded (labeled-count) stand-in.
+        // The frame count can become known here two ways: a deferred embedded
+        // backend corrects video.shape[0] on this first getFrame, or a lazy/
+        // transcoded backend set it during ensureVideoBackend above. Either way,
+        // if it changed from what the seekbar last saw, nudge the store so the
+        // seekbar/status bar re-read the real extent (not the JSON-seeded stand-in).
         if ((video.shape?.[0] ?? null) !== framesBefore) {
           useAppStore.getState().markVideoUpdated();
         }

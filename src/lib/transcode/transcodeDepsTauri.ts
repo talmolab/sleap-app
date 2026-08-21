@@ -11,7 +11,7 @@
  * bytes never touch the WebView heap.
  */
 
-import { parseFfmpegProgress, type TranscodeDeps } from "./transcodeVideo.js";
+import { createProgressAssembler, type TranscodeDeps } from "./transcodeVideo.js";
 
 /** Tauri `externalBin` base names (resolve to `binaries/<name>-<target-triple>`). */
 const FFMPEG_SIDECAR = "binaries/ffmpeg";
@@ -88,9 +88,10 @@ export function createTauriTranscodeDeps(): TranscodeDeps {
       const { Command } = await import("@tauri-apps/plugin-shell");
       const command = Command.sidecar(FFMPEG_SIDECAR, args);
 
-      command.stdout.on("data", (line: string) => {
-        for (const p of parseFfmpegProgress(line)) onProgress(p);
-      });
+      // The plugin emits stdout line-by-line; assemble whole `-progress` blocks
+      // before parsing so each update carries a complete {frame, outTimeMs}.
+      const feed = createProgressAssembler(onProgress);
+      command.stdout.on("data", (chunk: string) => feed(chunk));
 
       const child = await command.spawn();
       const onAbort = () => {

@@ -31,6 +31,7 @@ import {
 } from "./transcode/transcodeVideo";
 import { createTauriTranscodeDeps } from "./transcode/transcodeDepsTauri";
 import { useTranscodeStore } from "@/stores/transcodeStore";
+import { useTranscodePromptStore } from "@/stores/transcodePromptStore";
 
 /** Extract just the basename from a path or filename. */
 export function getBasename(filename: string | string[]): string {
@@ -1237,6 +1238,13 @@ async function createBackendForPath(path: string): Promise<VideoBackend> {
           createTauriTranscodeDeps(),
           {
             signal: controller.signal,
+            // Opt-in: ask before converting a legacy codec (only on a cache
+            // miss — an already-converted video reopens silently). Declining
+            // falls through to AviVideoBackend's unsupported-codec message.
+            confirmTranscode: (info) =>
+              useTranscodePromptStore
+                .getState()
+                .confirm(path, name, info.codec),
             onTranscodeStart: (info) => {
               durationMs = info.durationMs;
               store.startJob(name, () => controller.abort());

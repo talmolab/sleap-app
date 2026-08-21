@@ -86,6 +86,17 @@ export interface TranscodeToMp4Options {
   /** Encoder/quality overrides forwarded to {@link buildTranscodeArgs}. */
   encoder?: string;
   quality?: string[];
+  /**
+   * Used by {@link ensureDecodablePath} only: ask the caller (UI) whether to
+   * transcode a legacy-codec video. Invoked ONLY on a cache miss (an
+   * already-converted video just opens, no prompt). Resolving `false` skips the
+   * transcode and returns the original path so the normal backend surfaces its
+   * unsupported-codec message. Omit → always proceed.
+   */
+  confirmTranscode?: (info: {
+    codec: string;
+    durationMs?: number;
+  }) => Promise<boolean>;
 }
 
 /** Subdirectory under the OS cache dir where transcodes live. */
@@ -230,12 +241,36 @@ export interface EnsureDecodableResult {
   codec?: string;
 }
 
+/** Resolve the cache path a transcode of `sourcePath` would use (no I/O beyond stat). */
+async function transcodeCachePath(
+  sourcePath: string,
+  deps: TranscodeDeps
+): Promise<string> {
+  const { size, mtimeMs } = await deps.stat(sourcePath);
+  const key = computeCacheKey(sourcePath, size, mtimeMs);
+  const dir = await deps.join(await deps.cacheDir(), TRANSCODE_SUBDIR);
+  return deps.join(dir, cacheFilename(key));
+}
+
+/** Whether a decodable transcode of `sourcePath` already exists in the cache. */
+export async function isTranscodeCached(
+  sourcePath: string,
+  deps: TranscodeDeps
+): Promise<boolean> {
+  return deps.exists(await transcodeCachePath(sourcePath, deps));
+}
+
 /**
  * Return a path the WebCodecs/Mp4Box path can decode: the ORIGINAL if its codec
  * is already decodable (H.264/HEVC/VP8-9/AV1/MJPEG), else a cached H.264 MP4
  * produced by transcoding. Desktop-only (needs the ffmpeg/ffprobe sidecars).
  * If probing fails (unknown/odd file), returns the original unchanged so the
  * existing backend still gets a chance (and can surface its own error).
+ *
+ * When a transcode is needed AND not already cached, `options.confirmTranscode`
+ * (if supplied) gates it — resolving `false` skips conversion and returns the
+ * original (the caller then surfaces the unsupported-codec message). An
+ * already-cached video opens without prompting.
  */
 export async function ensureDecodablePath(
   sourcePath: string,
@@ -246,6 +281,17 @@ export async function ensureDecodablePath(
   if (!probed) return { path: sourcePath, transcoded: false };
   if (!codecNeedsTranscode(probed.codec, probed.pixFmt)) {
     return { path: sourcePath, transcoded: false, codec: probed.codec };
+  }
+  // Legacy codec → transcode needed. Prompt only on a real cache MISS, so an
+  // already-converted video reopens silently.
+  if (options.confirmTranscode && !(await isTranscodeCached(sourcePath, deps))) {
+    const proceed = await options.confirmTranscode({
+      codec: probed.codec,
+      durationMs: probed.durationMs,
+    });
+    if (!proceed) {
+      return { path: sourcePath, transcoded: false, codec: probed.codec };
+    }
   }
   const encoder = await selectEncoder(deps);
   const mp4 = await transcodeToMp4(sourcePath, deps, {
@@ -367,4 +413,35 @@ export function parseFfmpegProgress(chunk: string): TranscodeProgress[] {
   }
   if (touched) out.push(cur); // trailing partial block (no terminator yet)
   return out;
+}
+
+/**
+ * Assemble ffmpeg `-progress pipe:1` output into COMPLETE blocks before parsing.
+ *
+ * The Tauri shell plugin delivers a child's stdout one line at a time, so feeding
+ * each line straight to {@link parseFfmpegProgress} yields fragmented, single-key
+ * updates (one event has `frame`, the next only `out_time_us`, the next only
+ * `progress=`). A consumer that recomputes a percent per event then keeps
+ * clobbering its last good value back to "unknown" on the frameless events — the
+ * progress bar looks stuck/empty even though data is flowing. Buffer lines until a
+ * `progress=` terminator, then parse the whole block so each `onProgress` carries
+ * a complete `{frame, outTimeMs, done}`. Returns a `feed(chunk)` that tolerates
+ * either line-at-a-time or multi-line delivery.
+ */
+export function createProgressAssembler(
+  onProgress: (p: TranscodeProgress) => void
+): (chunk: string) => void {
+  let block: string[] = [];
+  return (chunk: string) => {
+    for (const raw of chunk.split(/\r?\n/)) {
+      const line = raw.trim();
+      if (!line) continue;
+      block.push(line);
+      if (line.startsWith("progress=")) {
+        const assembled = block.join("\n");
+        block = [];
+        for (const p of parseFfmpegProgress(assembled)) onProgress(p);
+      }
+    }
+  };
 }
