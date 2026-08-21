@@ -177,13 +177,23 @@ export function AppShell() {
     let cancelled = false;
     void diagnosticsReady.then(() => {
       if (cancelled || !getPriorCrashInfo()) return;
-      toast("SLEAP didn't close properly last time", {
+      // Stays until acted on (a crash notice shouldn't silently vanish), but MUST
+      // be dismissable — both actions clear it, plus an explicit Dismiss for users
+      // who don't want to send anything (otherwise the Infinity toast never goes
+      // away).
+      const id = toast("SLEAP didn't close properly last time", {
         description: "Send diagnostics so we can look into what happened.",
         duration: Infinity,
         action: {
           label: "Send diagnostics",
-          onClick: () =>
-            useAppStore.getState().setDiagnosticsDialogOpen(true),
+          onClick: () => {
+            useAppStore.getState().setDiagnosticsDialogOpen(true);
+            toast.dismiss(id);
+          },
+        },
+        cancel: {
+          label: "Dismiss",
+          onClick: () => toast.dismiss(id),
         },
       });
     });

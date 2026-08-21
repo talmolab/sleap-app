@@ -7,7 +7,7 @@
 
 import { useAppStore, type NavigationDomain } from "../../stores/appStore";
 import { PANELS } from "./panelRegistry";
-import { modKey, isTauri } from "../../lib/platform";
+import { modKey, altKey, isTauri } from "../../lib/platform";
 
 async function openExternal(url: string) {
   if (isTauri) {
@@ -441,10 +441,10 @@ function GoMenu() {
         </MenubarItem>
         <MenubarSeparator />
         <MenubarItem disabled={!projectLoaded} onClick={() => exec(GoNextLabeledFrame)}>
-          Next Labeled Frame <MenubarShortcut>Alt+{"\u2192"}</MenubarShortcut>
+          Next Labeled Frame <MenubarShortcut>{altKey}+{"\u2192"}</MenubarShortcut>
         </MenubarItem>
         <MenubarItem disabled={!projectLoaded} onClick={() => exec(GoPrevLabeledFrame)}>
-          Previous Labeled Frame <MenubarShortcut>Alt+{"\u2190"}</MenubarShortcut>
+          Previous Labeled Frame <MenubarShortcut>{altKey}+{"\u2190"}</MenubarShortcut>
         </MenubarItem>
         <MenubarRadioGroup
           value={navigationDomain}
@@ -504,7 +504,7 @@ function GoMenu() {
             if (next) useAppStore.getState().setVideo(next);
           }}
         >
-          Next Video <MenubarShortcut>Alt+Shift+{"\u2192"}</MenubarShortcut>
+          Next Video <MenubarShortcut>{altKey}+Shift+{"\u2192"}</MenubarShortcut>
         </MenubarItem>
         <MenubarItem
           disabled={!projectLoaded}
@@ -517,7 +517,7 @@ function GoMenu() {
             if (prev) useAppStore.getState().setVideo(prev);
           }}
         >
-          Previous Video <MenubarShortcut>Alt+Shift+{"\u2190"}</MenubarShortcut>
+          Previous Video <MenubarShortcut>{altKey}+Shift+{"\u2190"}</MenubarShortcut>
         </MenubarItem>
         <MenubarSeparator />
         <MenubarItem
