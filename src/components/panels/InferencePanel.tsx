@@ -269,7 +269,7 @@ const DEFAULTS: Omit<InferenceConfig, "modelPaths" | "videoIndex" | "frameRange"
   maxEdgeLengthRatio: 0.25,
   distPenaltyWeight: 1.0,
   minLineScores: 0.25,
-  tracking: true,
+  tracking: false,
   trackerMethod: "simple",
   similarityMethod: "oks",
   matchingMethod: "hungarian",
