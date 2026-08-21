@@ -2696,6 +2696,32 @@ export function VideoPlayer() {
                 This frame&apos;s image file couldn&apos;t be read. Other frames
                 are unaffected.
               </p>
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={relocating}
+                  onClick={async () => {
+                    if (!video) return;
+                    // A video-backed frame (e.g. a transcoded AVI whose cached MP4
+                    // was cleared) reads as a missing frame image — but the fix is
+                    // to re-specify the VIDEO, not hunt for one image.
+                    // resolveVideoFile re-points THIS video's backend (re-
+                    // transcoding a legacy codec on desktop), keeping labels aligned
+                    // (same Video, frame-exact). Mirrors "Locate Video" above.
+                    const ok = await resolveVideoFile(video, labels ?? undefined);
+                    useAppStore.getState().bumpOverlayVersion();
+                    if (ok) {
+                      useAppStore.getState().markVideoUpdated();
+                      missingFramesRef.current.clear();
+                      setFrameImageMissing(false);
+                      setReadNonce((n) => n + 1);
+                      useAppStore.getState().setFrameIdx(frameIdx);
+                    }
+                  }}
+                >
+                  Replace Video…
+                </Button>
               {isTauri && (
                 <Button
                   variant="outline"
@@ -2743,6 +2769,7 @@ export function VideoPlayer() {
                   {relocating ? "Locating…" : "Locate Image…"}
                 </Button>
               )}
+              </div>
             </div>
           </div>
         )}
