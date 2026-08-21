@@ -21,6 +21,7 @@ vi.mock("@/lib/platform", () => ({
   isTauri: false,
   isMac: false,
   modKey: "Ctrl",
+  altKey: "Alt",
 }));
 
 // Mock sonner toast for MenuBar

@@ -221,7 +221,11 @@ function renderLineEdge(
     : touchesInvisible ? 0.4 : 0.8;
 
   ctx.save();
-  if (touchesInvisible) {
+  // Predicted edges are dashed (on top of the existing thinner + dimmer styling)
+  // so predictions read as clearly tentative next to solid user labels (#288).
+  // Occluded user edges are dashed too, but predicted stays distinguishable by
+  // its thinner 1px stroke. An intentional step past strict PyQt parity.
+  if (touchesInvisible || isPredicted) {
     ctx.setLineDash([4 / opts.zoom, 3 / opts.zoom]);
   }
   ctx.beginPath();

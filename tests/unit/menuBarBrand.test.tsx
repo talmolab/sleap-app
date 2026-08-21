@@ -20,6 +20,7 @@ vi.mock("@/lib/platform", () => ({
   isTauri: true,
   isMac: false,
   modKey: "Ctrl",
+  altKey: "Alt",
 }));
 
 // MenuBar's click handlers route through sonner via @/lib/notify; stub it so no
