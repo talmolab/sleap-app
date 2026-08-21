@@ -236,6 +236,57 @@ describe("transcodeToMp4 orchestration", () => {
       { frame: 10, done: true },
     ]);
   });
+
+  it("concurrent cache-miss for the same source dedups and both resolve (no rename-race)", async () => {
+    // Two opens of the SAME legacy file race (dev StrictMode double-invoke, or two
+    // Videos referencing one file). Both miss the cache and try to publish the
+    // same temp→final path; without dedup the first rename moves `.part`→`.mp4`
+    // and the second rename then finds no `.part` and throws. A convert-once cache
+    // MUST serialize/dedup concurrent misses so both callers get the one mp4.
+    const { deps, calls, fs } = makeFakeDeps({
+      // Realistic rename: errors when the source is gone — matches std::fs::rename
+      // / Tauri plugin-fs ("No such file or directory (os error 2)"). The default
+      // fake's rename never checked this, which is why the stampede slipped past.
+      rename: async (from, to) => {
+        if (!fs.has(from)) throw new Error(`No such file or directory: ${from}`);
+        calls.renamed.push([from, to]);
+        fs.delete(from);
+        fs.add(to);
+      },
+    });
+    const key = computeCacheKey("/v.avi", 1234, 99);
+    const expected = `/cache/transcodes/${key}.mp4`;
+
+    const [a, b] = await Promise.all([
+      transcodeToMp4("/v.avi", deps),
+      transcodeToMp4("/v.avi", deps),
+    ]);
+
+    expect(a).toBe(expected);
+    expect(b).toBe(expected);
+    // dedup: the same source is transcoded ONCE, not twice
+    expect(calls.ran).toHaveLength(1);
+  });
+
+  it("rename failure is success when the final mp4 is already present (lost publish race)", async () => {
+    // Belt-and-suspenders for any residual race that slips past the in-flight
+    // dedup (e.g. a second app instance sharing the cache dir): our rename fails
+    // because a racer already published `.mp4` and moved the `.part` — but the
+    // result we wanted is on disk, so return it instead of throwing.
+    const key = computeCacheKey("/v.avi", 1234, 99);
+    const expected = `/cache/transcodes/${key}.mp4`;
+    let published = false; // becomes true once "the racer" publishes the final mp4
+    const { deps } = makeFakeDeps({
+      exists: async (p) => p === expected && published, // absent at the top-check
+      runTranscode: async () => {
+        published = true; // a concurrent run publishes the final + consumes the temp
+      },
+      rename: async () => {
+        throw new Error("No such file or directory");
+      },
+    });
+    expect(await transcodeToMp4("/v.avi", deps)).toBe(expected);
+  });
 });
 
 describe("videoProbe parsers + encoder selection", () => {

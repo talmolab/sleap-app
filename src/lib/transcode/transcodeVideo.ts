@@ -92,10 +92,22 @@ export interface TranscodeToMp4Options {
 export const TRANSCODE_SUBDIR = "transcodes";
 
 /**
+ * In-flight transcodes keyed by destination cache path. A convert-once cache
+ * MUST collapse concurrent misses for the SAME source — otherwise two opens
+ * (dev StrictMode double-invoke, or two `Video`s referencing one legacy file)
+ * both miss, both write the same `<hash>.mp4.part`, and whichever renames second
+ * finds no `.part` and throws ("No such file or directory") — a classic cache
+ * stampede. The second caller shares the first's promise instead of racing.
+ */
+const inFlightTranscodes = new Map<string, Promise<string>>();
+
+/**
  * Ensure a decodable H.264 MP4 exists for `sourcePath` and return its path.
  * Cache hit → returns immediately (no reconvert). Cache miss → transcodes to a
  * `.part` temp then atomically renames into place, so an interrupted/cancelled
  * run never leaves a half-written file mistaken for a valid cache entry.
+ * Concurrent misses for the same source are de-duplicated (see
+ * {@link inFlightTranscodes}) so the file is converted exactly once.
  */
 export async function transcodeToMp4(
   sourcePath: string,
@@ -109,6 +121,30 @@ export async function transcodeToMp4(
 
   if (await deps.exists(cachePath)) return cachePath; // convert-once: cache hit
 
+  // Collapse a concurrent miss for the same destination onto the in-flight run
+  // (share its result — including its progress/cancel) rather than racing on the
+  // same temp→final path. The follower forgoes its own onTranscodeStart/onProgress
+  // (the leader already drives the dialog) and simply awaits the one conversion.
+  const inProgress = inFlightTranscodes.get(cachePath);
+  if (inProgress) return inProgress;
+
+  const work = convertToCache(sourcePath, dir, cachePath, deps, options);
+  inFlightTranscodes.set(cachePath, work);
+  try {
+    return await work;
+  } finally {
+    inFlightTranscodes.delete(cachePath);
+  }
+}
+
+/** The actual cache-miss conversion: temp → atomic publish. */
+async function convertToCache(
+  sourcePath: string,
+  dir: string,
+  cachePath: string,
+  deps: TranscodeDeps,
+  options: TranscodeToMp4Options
+): Promise<string> {
   // real cache miss — work is about to happen
   options.onTranscodeStart?.({ durationMs: options.durationMs });
   await deps.mkdir(dir);
@@ -133,7 +169,17 @@ export async function transcodeToMp4(
     throw err;
   }
 
-  await deps.rename(tempPath, cachePath); // atomic publish
+  try {
+    await deps.rename(tempPath, cachePath); // atomic publish
+  } catch (err) {
+    // Lost a publish race (a concurrent run — e.g. a second app instance sharing
+    // the cache dir — already renamed `.part`→`.mp4` and moved our temp away)?
+    // If the file we wanted is now present, that's success; else the rename
+    // failed for a real reason, so clean up the temp and rethrow.
+    await deps.remove(tempPath);
+    if (await deps.exists(cachePath)) return cachePath;
+    throw err;
+  }
   return cachePath;
 }
 
