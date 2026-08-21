@@ -35,13 +35,30 @@ function baseConfig(overrides: Partial<InferenceConfig> = {}): InferenceConfig {
     maxTracks: null,
     connectSingleBreaks: false,
     robust: 1,
+    minMatchPoints: 0,
+    minNewTrackPoints: 0,
+    scoringReduction: "mean",
+    trackingTargetInstanceCount: null,
+    trackingPreCullToTarget: false,
+    trackingPreCullIouThreshold: 0,
+    trackingCleanInstanceCount: null,
+    trackingCleanIouThreshold: 0,
     flowImgScale: 1,
     flowWindowSize: 21,
     flowMaxLevels: 3,
+    kfTrackFeatures: "centroid",
+    kfInitFrameCount: 10,
+    kfNodeIndices: [],
+    kfResetGapSize: 5,
     ensureChannels: "auto",
     filterOverlapping: false,
     filterMethod: "iou",
     filterThreshold: 0.5,
+    filterMinVisibleNodes: null,
+    filterMinVisibleNodeFraction: null,
+    filterMinMeanNodeScore: null,
+    filterMinInstanceScore: null,
+    filterMinCentroidDistance: null,
     ...overrides,
   };
 }
@@ -182,6 +199,90 @@ describe("buildInferenceArgs — tracking / bottom-up / preprocessing / filter",
     expect(valAfter(args, "--scoring_method")).toBe("euclidean_dist");
   });
 
+  it("flow tracker emits --use_flow plus the optical-flow sub-params (regression: these were previously dropped)", () => {
+    const args = buildInferenceArgs(
+      baseConfig({ tracking: true, trackerMethod: "flow", flowImgScale: 0.5, flowWindowSize: 15, flowMaxLevels: 4 }),
+      io()
+    );
+    expect(args).toContain("--use_flow");
+    expect(valAfter(args, "--of_img_scale")).toBe("0.5");
+    expect(valAfter(args, "--of_window_size")).toBe("15");
+    expect(valAfter(args, "--of_max_levels")).toBe("4");
+    expect(args).not.toContain("--use_kalman");
+  });
+
+  it("kalman tracker emits --use_kalman plus kf_* params, and --kf_node_indices only when nodes are selected", () => {
+    const noNodes = buildInferenceArgs(
+      baseConfig({
+        tracking: true,
+        trackerMethod: "kalman",
+        kfTrackFeatures: "keypoints",
+        kfInitFrameCount: 15,
+        kfResetGapSize: 8,
+        kfNodeIndices: [],
+      }),
+      io()
+    );
+    expect(noNodes).toContain("--use_kalman");
+    expect(valAfter(noNodes, "--kf_track_features")).toBe("keypoints");
+    expect(valAfter(noNodes, "--kf_init_frame_count")).toBe("15");
+    expect(valAfter(noNodes, "--kf_reset_gap_size")).toBe("8");
+    expect(noNodes).not.toContain("--kf_node_indices");
+    expect(noNodes).not.toContain("--use_flow");
+
+    const withNodes = buildInferenceArgs(
+      baseConfig({ tracking: true, trackerMethod: "kalman", kfNodeIndices: [0, 2, 3] }),
+      io()
+    );
+    expect(valAfter(withNodes, "--kf_node_indices")).toBe("0,2,3");
+  });
+
+  it("emits the general scoring/matching params unconditionally when tracking is on", () => {
+    const args = buildInferenceArgs(
+      baseConfig({
+        tracking: true,
+        minMatchPoints: 2,
+        minNewTrackPoints: 3,
+        scoringReduction: "robust_quantile",
+      }),
+      io()
+    );
+    expect(valAfter(args, "--min_match_points")).toBe("2");
+    expect(valAfter(args, "--min_new_track_points")).toBe("3");
+    expect(valAfter(args, "--scoring_reduction")).toBe("robust_quantile");
+  });
+
+  it("includes --tracking_target_instance_count only when set", () => {
+    const set = buildInferenceArgs(baseConfig({ tracking: true, trackingTargetInstanceCount: 4 }), io());
+    expect(valAfter(set, "--tracking_target_instance_count")).toBe("4");
+    const unset = buildInferenceArgs(baseConfig({ tracking: true, trackingTargetInstanceCount: null }), io());
+    expect(unset).not.toContain("--tracking_target_instance_count");
+  });
+
+  it("emits pre-cull flags only when enabled", () => {
+    const off = buildInferenceArgs(baseConfig({ tracking: true, trackingPreCullToTarget: false }), io());
+    expect(off).not.toContain("--tracking_pre_cull_to_target");
+    expect(off).not.toContain("--tracking_pre_cull_iou_threshold");
+    const on = buildInferenceArgs(
+      baseConfig({ tracking: true, trackingPreCullToTarget: true, trackingPreCullIouThreshold: 0.6 }),
+      io()
+    );
+    expect(valAfter(on, "--tracking_pre_cull_to_target")).toBe("1");
+    expect(valAfter(on, "--tracking_pre_cull_iou_threshold")).toBe("0.6");
+  });
+
+  it("emits clean-up flags only when an instance count is set", () => {
+    const off = buildInferenceArgs(baseConfig({ tracking: true, trackingCleanInstanceCount: null }), io());
+    expect(off).not.toContain("--tracking_clean_instance_count");
+    expect(off).not.toContain("--tracking_clean_iou_threshold");
+    const on = buildInferenceArgs(
+      baseConfig({ tracking: true, trackingCleanInstanceCount: 2, trackingCleanIouThreshold: 0.7 }),
+      io()
+    );
+    expect(valAfter(on, "--tracking_clean_instance_count")).toBe("2");
+    expect(valAfter(on, "--tracking_clean_iou_threshold")).toBe("0.7");
+  });
+
   it("adds PAF flags for bottom-up pipelines only", () => {
     const bu = buildInferenceArgs(baseConfig({ pipeline: "bottom-up", nPoints: 8 }), io());
     expect(valAfter(bu, "--n_points")).toBe("8");
@@ -205,6 +306,33 @@ describe("buildInferenceArgs — tracking / bottom-up / preprocessing / filter",
     expect(args).toContain("--filter_overlapping");
     expect(valAfter(args, "--filter_overlapping_method")).toBe("oks");
     expect(valAfter(args, "--filter_overlapping_threshold")).toBe("0.3");
+  });
+
+  it("omits every filter_min_* flag when all are unset", () => {
+    const args = buildInferenceArgs(baseConfig(), io());
+    expect(args).not.toContain("--filter_min_visible_nodes");
+    expect(args).not.toContain("--filter_min_visible_node_fraction");
+    expect(args).not.toContain("--filter_min_mean_node_score");
+    expect(args).not.toContain("--filter_min_instance_score");
+    expect(args).not.toContain("--filter_min_centroid_distance");
+  });
+
+  it("emits each filter_min_* flag independently when set", () => {
+    const args = buildInferenceArgs(
+      baseConfig({
+        filterMinVisibleNodes: 3,
+        filterMinVisibleNodeFraction: 0.5,
+        filterMinMeanNodeScore: 0.4,
+        filterMinInstanceScore: 0.2,
+        filterMinCentroidDistance: 10,
+      }),
+      io()
+    );
+    expect(valAfter(args, "--filter_min_visible_nodes")).toBe("3");
+    expect(valAfter(args, "--filter_min_visible_node_fraction")).toBe("0.5");
+    expect(valAfter(args, "--filter_min_mean_node_score")).toBe("0.4");
+    expect(valAfter(args, "--filter_min_instance_score")).toBe("0.2");
+    expect(valAfter(args, "--filter_min_centroid_distance")).toBe("10");
   });
 });
 
@@ -328,12 +456,18 @@ describe("buildInferenceArgs — full-config parity lock", () => {
     "--ensure_rgb",
     "--tracking",
     "--use_flow",
+    "--of_img_scale", "1",
+    "--of_window_size", "21",
+    "--of_max_levels", "3",
     "--scoring_method", "iou",
     "--track_matching_method", "greedy",
     "--tracking_window_size", "9",
     "--max_tracks", "4",
     "--robust_best_instance", "0.95",
     "--post_connect_single_breaks",
+    "--min_match_points", "0",
+    "--min_new_track_points", "0",
+    "--scoring_reduction", "mean",
     "--filter_overlapping",
     "--filter_overlapping_method", "oks",
     "--filter_overlapping_threshold", "0.4",
