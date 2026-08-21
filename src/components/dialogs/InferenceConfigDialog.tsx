@@ -1,5 +1,4 @@
 import { useRef, useCallback, useState } from "react";
-import { createPortal } from "react-dom";
 import {
   Dialog,
   DialogContent,
@@ -15,7 +14,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, HelpCircle, ChevronDown, ChevronRight } from "lucide-react";
+import { Search, ChevronDown, ChevronRight } from "lucide-react";
+import { HintBubble } from "@/components/HintBubble";
 
 export interface InferenceConfigValues {
   peakThreshold: number;
@@ -120,31 +120,6 @@ const SEARCHABLE_FIELDS = [
   { label: "Min Instance Score", section: "postprocess", fieldId: "field-filterminstancescore" },
   { label: "Min Centroid Distance", section: "postprocess", fieldId: "field-filtermincentroiddistance" },
 ];
-
-function HintBubble({ text }: { text: string }) {
-  const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
-  return (
-    <span className="relative">
-      <HelpCircle
-        className="h-3.5 w-3.5 text-muted-foreground/50 hover:text-muted-foreground cursor-help"
-        onMouseEnter={(e) => {
-          const rect = e.currentTarget.getBoundingClientRect();
-          setPos({ x: rect.left + rect.width / 2, y: rect.top });
-        }}
-        onMouseLeave={() => setPos(null)}
-      />
-      {pos && createPortal(
-        <span
-          className="fixed z-[9999] px-3 py-2 text-xs bg-popover border rounded-md shadow-lg w-64 text-foreground leading-relaxed"
-          style={{ left: pos.x, top: pos.y - 8, transform: "translate(-50%, -100%)" }}
-        >
-          {text}
-        </span>,
-        document.body,
-      )}
-    </span>
-  );
-}
 
 function Field({ label, id, hint, children }: { label: string; id?: string; hint?: string; children: React.ReactNode }) {
   return (
@@ -383,7 +358,7 @@ export function InferenceConfigDialog({
                 </p>
               ) : (
                 <>
-                  <Field label="Tracker Method" id="field-trackermethod" hint="Simple uses instance matching across frames. Optical Flow uses pixel motion estimation for more robust tracking with fast-moving animals.">
+                  <Field label="Tracker Method" id="field-trackermethod" hint="Simple matches instances by similarity alone. Optical Flow predicts motion from pixel displacement — best for fast-moving animals. Kalman Filter predicts motion from a per-track velocity model — best for a known, fixed number of animals whose motion helps disambiguate crossings or occlusions.">
                     <Select
                       value={v.trackerMethod}
                       onValueChange={(val) => onUpdate({ trackerMethod: val as typeof v.trackerMethod })}
@@ -428,7 +403,7 @@ export function InferenceConfigDialog({
                       </SelectContent>
                     </Select>
                   </Field>
-                  <Field label="Window Size" id="field-trackwindow" hint="Number of past frames to look back when matching instances to tracks. Larger windows handle longer occlusions but are slower.">
+                  <Field label="Window Size" id="field-trackwindow" hint="Number of past frames used as matching candidates. Fixed Window (default) uses the last N frames; Local Queues (used automatically when Max Tracks is set) keeps the last N instances per track ID instead — more robust to track breaks and occlusions.">
                     <Input
                       type="number"
                       value={v.trackingWindowSize}
@@ -438,7 +413,7 @@ export function InferenceConfigDialog({
                       className="h-9 text-sm"
                     />
                   </Field>
-                  <Field label="Max Tracks" id="field-maxtracks" hint="Maximum number of simultaneous tracks. Leave empty for no limit. Set to the number of animals if known.">
+                  <Field label="Max Tracks" id="field-maxtracks" hint="Maximum number of simultaneous tracks. Leave empty for no limit; set to the number of animals if known. Setting this automatically switches matching to Local Queues, since Fixed Window ignores this cap.">
                     <Input
                       type="number"
                       value={v.maxTracks ?? ""}
@@ -462,7 +437,7 @@ export function InferenceConfigDialog({
                   </button>
                   {showTrackingAdvanced && (
                     <>
-                      <Field label="Robust (quantile)" id="field-robust" hint="Quantile for robust similarity scoring. Lower values are more tolerant of outlier keypoints when comparing instances.">
+                      <Field label="Robust (quantile)" id="field-robust" hint="If between 0 and 1 (exclusive), uses a robust quantile similarity score instead of the plain max across matched keypoints — 0.95 is a good starting value. Leave at 1 to use max similarity (non-robust).">
                         <Input
                           type="number"
                           value={v.robust}
@@ -476,7 +451,7 @@ export function InferenceConfigDialog({
                       <Toggle
                         label="Connect single-frame breaks"
                         id="field-connectbreaks"
-                        hint="Merge tracks that have a single-frame gap between them. Useful for fixing brief detection dropouts."
+                        hint="When Max Tracks is set (Local Queues matching), reconnects a track break where exactly one track is lost and exactly one new track is spawned in the same frame — fixes brief detection dropouts without merging unrelated tracks."
                         checked={v.connectSingleBreaks}
                         onChange={(val) => onUpdate({ connectSingleBreaks: val })}
                       />
@@ -498,7 +473,7 @@ export function InferenceConfigDialog({
                           className="h-9 text-sm"
                         />
                       </Field>
-                      <Field label="Scoring Reduction" id="field-scoringreduction" hint="How to aggregate multiple similarity scores when several detections could match the same track.">
+                      <Field label="Scoring Reduction" id="field-scoringreduction" hint="How to combine multiple similarity scores when several detections could match the same track: Mean averages them, Max takes the best score, Robust quantile is tolerant of outlier scores.">
                         <Select
                           value={v.scoringReduction}
                           onValueChange={(val) => onUpdate({ scoringReduction: val as typeof v.scoringReduction })}
@@ -544,7 +519,7 @@ export function InferenceConfigDialog({
                           />
                         </Field>
                       )}
-                      <Field label="Clean-up Instance Count" id="field-cleaninstancecount" hint="After tracking, cull instances above this target count per frame. Leave empty to disable post-tracking clean-up.">
+                      <Field label="Clean-up Instance Count" id="field-cleaninstancecount" hint="After tracking, cull instances above this target count per frame — unlike Pre-cull (which trims before tracking), this trims the tracked output. Leave empty to disable.">
                         <Input
                           type="number"
                           value={v.trackingCleanInstanceCount ?? ""}
@@ -756,7 +731,7 @@ export function InferenceConfigDialog({
               <Toggle
                 label="Filter Overlapping Instances"
                 id="field-filteroverlapping"
-                hint="Remove duplicate detections that overlap significantly. Useful when the model produces redundant predictions."
+                hint="Remove duplicate detections that overlap significantly, using greedy non-max suppression. Applied independently of tracking, after node-count and confidence filters."
                 checked={v.filterOverlapping}
                 onChange={(val) => onUpdate({ filterOverlapping: val })}
               />
@@ -776,7 +751,7 @@ export function InferenceConfigDialog({
                       </SelectContent>
                     </Select>
                   </Field>
-                  <Field label="Threshold" id="field-filterthreshold" hint="Overlap score above which instances are considered duplicates and the lower-scoring one is removed.">
+                  <Field label="Threshold" id="field-filterthreshold" hint="Overlap score above which instances are considered duplicates and the lower-scoring one is removed. Lower is more aggressive (~0.3), higher is more permissive (0.8 default).">
                     <Input
                       type="number"
                       value={v.filterThreshold}
@@ -823,7 +798,7 @@ export function InferenceConfigDialog({
                   placeholder="No filtering"
                 />
               </Field>
-              <Field label="Min Instance Score" id="field-filterminstancescore" hint="Minimum overall instance confidence score. Instances scoring lower are removed. Leave empty to disable.">
+              <Field label="Min Instance Score" id="field-filterminstancescore" hint="Minimum overall instance confidence score. Instances scoring lower are removed. Leave empty to disable. Meaning differs by pipeline: for Top-Down this is centroid confidence; for Bottom-Up it's derived from PAF grouping quality.">
                 <Input
                   type="number"
                   value={v.filterMinInstanceScore ?? ""}
