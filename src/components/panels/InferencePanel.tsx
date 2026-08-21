@@ -234,6 +234,54 @@ function NullableNumField({
   );
 }
 
+/** A checkbox that enables/disables an optional numeric filter, revealing its value field only when on. */
+function ToggleNumField({
+  label,
+  hint,
+  valueLabel,
+  value,
+  onChange,
+  defaultValue,
+  min,
+  max,
+  step,
+  disabled,
+}: {
+  label: string;
+  hint?: string;
+  valueLabel: string;
+  value: number | null;
+  onChange: (v: number | null) => void;
+  defaultValue: number;
+  min?: number;
+  max?: number;
+  step?: number;
+  disabled?: boolean;
+}) {
+  return (
+    <>
+      <Check
+        label={label}
+        hint={hint}
+        checked={value != null}
+        onChange={(checked) => onChange(checked ? defaultValue : null)}
+        disabled={disabled}
+      />
+      {value != null && (
+        <NumField
+          label={valueLabel}
+          value={value}
+          onChange={onChange}
+          min={min}
+          max={max}
+          step={step}
+          disabled={disabled}
+        />
+      )}
+    </>
+  );
+}
+
 function NodeCheckboxList({
   nodes,
   selected,
@@ -906,21 +954,22 @@ export function InferencePanel() {
                 min={0} max={1} step={0.05} disabled={isRunning} />
             </>
           )}
-          <NullableNumField label="Min visible nodes" value={filterMinVisibleNodes}
-            hint="Minimum number of visible (non-missing) keypoints an instance must have to be kept. Leave empty to disable."
-            onChange={setFilterMinVisibleNodes} min={0} placeholder="Off" disabled={isRunning} />
-          <NullableNumField label="Min visible node fraction" value={filterMinVisibleNodeFraction}
-            hint="Minimum fraction of skeleton nodes that must be visible, e.g. 0.5 requires at least half. Leave empty to disable."
-            onChange={setFilterMinVisibleNodeFraction} min={0} max={1} step={0.05} placeholder="Off" disabled={isRunning} />
-          <NullableNumField label="Min mean node score" value={filterMinMeanNodeScore}
-            hint="Minimum mean confidence score across an instance's visible nodes. Instances scoring lower are removed. Leave empty to disable."
-            onChange={setFilterMinMeanNodeScore} min={0} max={1} step={0.05} placeholder="Off" disabled={isRunning} />
-          <NullableNumField label="Min instance score" value={filterMinInstanceScore}
-            hint="Minimum overall instance confidence score. Leave empty to disable. Meaning differs by pipeline: for Top-Down this is centroid confidence; for Bottom-Up it's derived from PAF grouping quality."
-            onChange={setFilterMinInstanceScore} min={0} max={1} step={0.05} placeholder="Off" disabled={isRunning} />
-          <NullableNumField label="Min centroid distance" value={filterMinCentroidDistance}
-            hint="Centroid-only de-duplication radius in pixels: drops any predicted centroid within this distance of a higher-scored kept centroid. Use this instead of Filter Overlapping for centroid-only output, since bounding-box IoU/OKS are degenerate for single points. Leave empty to disable."
-            onChange={setFilterMinCentroidDistance} min={0} step={1} placeholder="Off" disabled={isRunning} />
+          <Separator />
+          <ToggleNumField label="Min visible nodes" valueLabel="Minimum nodes" value={filterMinVisibleNodes}
+            hint="Minimum number of visible (non-missing) keypoints an instance must have to be kept."
+            onChange={setFilterMinVisibleNodes} defaultValue={1} min={0} disabled={isRunning} />
+          <ToggleNumField label="Min visible node fraction" valueLabel="Minimum fraction" value={filterMinVisibleNodeFraction}
+            hint="Minimum fraction of skeleton nodes that must be visible, e.g. 0.5 requires at least half."
+            onChange={setFilterMinVisibleNodeFraction} defaultValue={0.5} min={0} max={1} step={0.05} disabled={isRunning} />
+          <ToggleNumField label="Min mean node score" valueLabel="Minimum score" value={filterMinMeanNodeScore}
+            hint="Minimum mean confidence score across an instance's visible nodes. Instances scoring lower are removed."
+            onChange={setFilterMinMeanNodeScore} defaultValue={0.3} min={0} max={1} step={0.05} disabled={isRunning} />
+          <ToggleNumField label="Min instance score" valueLabel="Minimum score" value={filterMinInstanceScore}
+            hint="Minimum overall instance confidence score. Meaning differs by pipeline: for Top-Down this is centroid confidence; for Bottom-Up it's derived from PAF grouping quality."
+            onChange={setFilterMinInstanceScore} defaultValue={0.3} min={0} max={1} step={0.05} disabled={isRunning} />
+          <ToggleNumField label="Min centroid distance" valueLabel="Distance (px)" value={filterMinCentroidDistance}
+            hint="Centroid-only de-duplication radius in pixels: drops any predicted centroid within this distance of a higher-scored kept centroid. Use this instead of Filter Overlapping for centroid-only output, since bounding-box IoU/OKS are degenerate for single points."
+            onChange={setFilterMinCentroidDistance} defaultValue={10} min={0} step={1} disabled={isRunning} />
         </Section>
 
         {isTauri && (

@@ -156,6 +156,56 @@ function Toggle({ label, id, hint, checked, onChange }: { label: string; id?: st
   );
 }
 
+/** A Toggle that enables/disables an optional numeric filter, revealing its value field only when on. */
+function ToggleNumberField({
+  label,
+  id,
+  hint,
+  valueLabel,
+  value,
+  onChange,
+  defaultValue,
+  min,
+  max,
+  step,
+}: {
+  label: string;
+  id?: string;
+  hint?: string;
+  valueLabel: string;
+  value: number | null;
+  onChange: (v: number | null) => void;
+  defaultValue: number;
+  min?: number;
+  max?: number;
+  step?: number;
+}) {
+  return (
+    <>
+      <Toggle
+        label={label}
+        id={id}
+        hint={hint}
+        checked={value != null}
+        onChange={(checked) => onChange(checked ? defaultValue : null)}
+      />
+      {value != null && (
+        <Field label={valueLabel}>
+          <Input
+            type="number"
+            value={value}
+            onChange={(e) => onChange(Number(e.target.value))}
+            min={min}
+            max={max}
+            step={step}
+            className="h-9 text-sm"
+          />
+        </Field>
+      )}
+    </>
+  );
+}
+
 function SectionHeading({ id, label }: { id: string; label: string }) {
   return (
     <h3 id={id} className="text-base font-medium pt-6 pb-3 first:pt-0 scroll-mt-4">
@@ -764,63 +814,66 @@ export function InferenceConfigDialog({
                   </Field>
                 </>
               )}
-              <Field label="Min Visible Nodes" id="field-filterminvisiblenodes" hint="Minimum number of visible (non-missing) keypoints an instance must have to be kept. Leave empty to disable.">
-                <Input
-                  type="number"
-                  value={v.filterMinVisibleNodes ?? ""}
-                  onChange={(e) => onUpdate({ filterMinVisibleNodes: e.target.value ? Number(e.target.value) : null })}
-                  min={0}
-                  className="h-9 text-sm"
-                  placeholder="No filtering"
-                />
-              </Field>
-              <Field label="Min Visible Node Fraction" id="field-filterminvisiblenodefraction" hint="Minimum fraction of skeleton nodes that must be visible, e.g. 0.5 requires at least half. Leave empty to disable.">
-                <Input
-                  type="number"
-                  value={v.filterMinVisibleNodeFraction ?? ""}
-                  onChange={(e) => onUpdate({ filterMinVisibleNodeFraction: e.target.value ? Number(e.target.value) : null })}
-                  min={0}
-                  max={1}
-                  step={0.05}
-                  className="h-9 text-sm"
-                  placeholder="No filtering"
-                />
-              </Field>
-              <Field label="Min Mean Node Score" id="field-filterminmeannodescore" hint="Minimum mean confidence score across an instance's visible nodes. Instances scoring lower are removed. Leave empty to disable.">
-                <Input
-                  type="number"
-                  value={v.filterMinMeanNodeScore ?? ""}
-                  onChange={(e) => onUpdate({ filterMinMeanNodeScore: e.target.value ? Number(e.target.value) : null })}
-                  min={0}
-                  max={1}
-                  step={0.05}
-                  className="h-9 text-sm"
-                  placeholder="No filtering"
-                />
-              </Field>
-              <Field label="Min Instance Score" id="field-filterminstancescore" hint="Minimum overall instance confidence score. Instances scoring lower are removed. Leave empty to disable. Meaning differs by pipeline: for Top-Down this is centroid confidence; for Bottom-Up it's derived from PAF grouping quality.">
-                <Input
-                  type="number"
-                  value={v.filterMinInstanceScore ?? ""}
-                  onChange={(e) => onUpdate({ filterMinInstanceScore: e.target.value ? Number(e.target.value) : null })}
-                  min={0}
-                  max={1}
-                  step={0.05}
-                  className="h-9 text-sm"
-                  placeholder="No filtering"
-                />
-              </Field>
-              <Field label="Min Centroid Distance" id="field-filtermincentroiddistance" hint="Centroid-only de-duplication radius in pixels: drops any predicted centroid within this distance of a higher-scored kept centroid. Use this instead of Filter Overlapping for centroid-only output (single-point pipelines), since bounding-box IoU/OKS are degenerate for single points. Leave empty to disable.">
-                <Input
-                  type="number"
-                  value={v.filterMinCentroidDistance ?? ""}
-                  onChange={(e) => onUpdate({ filterMinCentroidDistance: e.target.value ? Number(e.target.value) : null })}
-                  min={0}
-                  step={1}
-                  className="h-9 text-sm"
-                  placeholder="No filtering"
-                />
-              </Field>
+
+              <Separator className="my-4" />
+
+              <ToggleNumberField
+                label="Min Visible Nodes"
+                id="field-filterminvisiblenodes"
+                hint="Minimum number of visible (non-missing) keypoints an instance must have to be kept."
+                valueLabel="Minimum nodes"
+                value={v.filterMinVisibleNodes}
+                onChange={(val) => onUpdate({ filterMinVisibleNodes: val })}
+                defaultValue={1}
+                min={0}
+              />
+              <ToggleNumberField
+                label="Min Visible Node Fraction"
+                id="field-filterminvisiblenodefraction"
+                hint="Minimum fraction of skeleton nodes that must be visible, e.g. 0.5 requires at least half."
+                valueLabel="Minimum fraction"
+                value={v.filterMinVisibleNodeFraction}
+                onChange={(val) => onUpdate({ filterMinVisibleNodeFraction: val })}
+                defaultValue={0.5}
+                min={0}
+                max={1}
+                step={0.05}
+              />
+              <ToggleNumberField
+                label="Min Mean Node Score"
+                id="field-filterminmeannodescore"
+                hint="Minimum mean confidence score across an instance's visible nodes. Instances scoring lower are removed."
+                valueLabel="Minimum score"
+                value={v.filterMinMeanNodeScore}
+                onChange={(val) => onUpdate({ filterMinMeanNodeScore: val })}
+                defaultValue={0.3}
+                min={0}
+                max={1}
+                step={0.05}
+              />
+              <ToggleNumberField
+                label="Min Instance Score"
+                id="field-filterminstancescore"
+                hint="Minimum overall instance confidence score. Instances scoring lower are removed. Meaning differs by pipeline: for Top-Down this is centroid confidence; for Bottom-Up it's derived from PAF grouping quality."
+                valueLabel="Minimum score"
+                value={v.filterMinInstanceScore}
+                onChange={(val) => onUpdate({ filterMinInstanceScore: val })}
+                defaultValue={0.3}
+                min={0}
+                max={1}
+                step={0.05}
+              />
+              <ToggleNumberField
+                label="Min Centroid Distance"
+                id="field-filtermincentroiddistance"
+                hint="Centroid-only de-duplication radius in pixels: drops any predicted centroid within this distance of a higher-scored kept centroid. Use this instead of Filter Overlapping for centroid-only output (single-point pipelines), since bounding-box IoU/OKS are degenerate for single points."
+                valueLabel="Distance (px)"
+                value={v.filterMinCentroidDistance}
+                onChange={(val) => onUpdate({ filterMinCentroidDistance: val })}
+                defaultValue={10}
+                min={0}
+                step={1}
+              />
             </div>
           </div>
         </div>
