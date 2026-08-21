@@ -774,39 +774,41 @@ export function InferencePanel() {
                   onChange={(v) => { setNoMaxTracks(v); if (!v && maxTracks === null) setMaxTracks(2); }}
                   disabled={isRunning} />
               </div>
-              <NumField label="Robust (quantile)" value={robust} onChange={setRobust}
-                min={0} max={1} step={0.05} disabled={isRunning} />
-              <Check label="Connect single-frame breaks" checked={connectSingleBreaks}
-                onChange={setConnectSingleBreaks} disabled={isRunning} />
-              <NumField label="Min match points" value={minMatchPoints} onChange={setMinMatchPoints}
-                min={0} disabled={isRunning} />
-              <NumField label="Min new-track points" value={minNewTrackPoints} onChange={setMinNewTrackPoints}
-                min={0} disabled={isRunning} />
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[10px] text-muted-foreground">Scoring reduction</span>
-                <Select value={scoringReduction} onValueChange={(v) => setScoringReduction(v as typeof scoringReduction)} disabled={isRunning}>
-                  <SelectTrigger className="h-6 text-[10px] w-28"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="mean">Mean</SelectItem>
-                    <SelectItem value="max">Max</SelectItem>
-                    <SelectItem value="robust_quantile">Robust quantile</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <NullableNumField label="Target instance count" value={trackingTargetInstanceCount}
-                onChange={setTrackingTargetInstanceCount} min={1} max={100} placeholder="Auto" disabled={isRunning} />
-              <Check label="Pre-cull to target" checked={trackingPreCullToTarget}
-                onChange={setTrackingPreCullToTarget} disabled={isRunning} />
-              {trackingPreCullToTarget && (
-                <NumField label="Pre-cull IoU threshold" value={trackingPreCullIouThreshold} onChange={setTrackingPreCullIouThreshold}
+              <Section title="Advanced">
+                <NumField label="Robust (quantile)" value={robust} onChange={setRobust}
                   min={0} max={1} step={0.05} disabled={isRunning} />
-              )}
-              <NullableNumField label="Clean-up instance count" value={trackingCleanInstanceCount}
-                onChange={setTrackingCleanInstanceCount} min={1} max={100} placeholder="Disabled" disabled={isRunning} />
-              {trackingCleanInstanceCount != null && (
-                <NumField label="Clean-up IoU threshold" value={trackingCleanIouThreshold} onChange={setTrackingCleanIouThreshold}
-                  min={0} max={1} step={0.05} disabled={isRunning} />
-              )}
+                <Check label="Connect single-frame breaks" checked={connectSingleBreaks}
+                  onChange={setConnectSingleBreaks} disabled={isRunning} />
+                <NumField label="Min match points" value={minMatchPoints} onChange={setMinMatchPoints}
+                  min={0} disabled={isRunning} />
+                <NumField label="Min new-track points" value={minNewTrackPoints} onChange={setMinNewTrackPoints}
+                  min={0} disabled={isRunning} />
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[10px] text-muted-foreground">Scoring reduction</span>
+                  <Select value={scoringReduction} onValueChange={(v) => setScoringReduction(v as typeof scoringReduction)} disabled={isRunning}>
+                    <SelectTrigger className="h-6 text-[10px] w-28"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="mean">Mean</SelectItem>
+                      <SelectItem value="max">Max</SelectItem>
+                      <SelectItem value="robust_quantile">Robust quantile</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <NullableNumField label="Target instance count" value={trackingTargetInstanceCount}
+                  onChange={setTrackingTargetInstanceCount} min={1} max={100} placeholder="Auto" disabled={isRunning} />
+                <Check label="Pre-cull to target" checked={trackingPreCullToTarget}
+                  onChange={setTrackingPreCullToTarget} disabled={isRunning} />
+                {trackingPreCullToTarget && (
+                  <NumField label="Pre-cull IoU threshold" value={trackingPreCullIouThreshold} onChange={setTrackingPreCullIouThreshold}
+                    min={0} max={1} step={0.05} disabled={isRunning} />
+                )}
+                <NullableNumField label="Clean-up instance count" value={trackingCleanInstanceCount}
+                  onChange={setTrackingCleanInstanceCount} min={1} max={100} placeholder="Disabled" disabled={isRunning} />
+                {trackingCleanInstanceCount != null && (
+                  <NumField label="Clean-up IoU threshold" value={trackingCleanIouThreshold} onChange={setTrackingCleanIouThreshold}
+                    min={0} max={1} step={0.05} disabled={isRunning} />
+                )}
+              </Section>
 
               {trackerMethod === "flow" && (
                 <>

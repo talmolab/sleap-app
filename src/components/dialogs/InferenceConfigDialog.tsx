@@ -15,7 +15,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, HelpCircle } from "lucide-react";
+import { Search, HelpCircle, ChevronDown, ChevronRight } from "lucide-react";
 
 export interface InferenceConfigValues {
   peakThreshold: number;
@@ -252,6 +252,7 @@ export function InferenceConfigDialog({
 }: InferenceConfigDialogProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [searchQuery, setSearchQuery] = useState("");
+  const [showTrackingAdvanced, setShowTrackingAdvanced] = useState(false);
 
   const isBottomUp = pipeline === "bottom-up" || pipeline === "bottom-up-id";
 
@@ -448,111 +449,126 @@ export function InferenceConfigDialog({
                       placeholder="No limit"
                     />
                   </Field>
-                  <Field label="Robust (quantile)" id="field-robust" hint="Quantile for robust similarity scoring. Lower values are more tolerant of outlier keypoints when comparing instances.">
-                    <Input
-                      type="number"
-                      value={v.robust}
-                      onChange={(e) => onUpdate({ robust: Number(e.target.value) })}
-                      min={0}
-                      max={1}
-                      step={0.05}
-                      className="h-9 text-sm"
-                    />
-                  </Field>
-                  <Toggle
-                    label="Connect single-frame breaks"
-                    id="field-connectbreaks"
-                    hint="Merge tracks that have a single-frame gap between them. Useful for fixing brief detection dropouts."
-                    checked={v.connectSingleBreaks}
-                    onChange={(val) => onUpdate({ connectSingleBreaks: val })}
-                  />
-                  <Field label="Min Match Points" id="field-minmatchpoints" hint="Minimum number of non-missing keypoints an instance needs to be considered a valid match candidate.">
-                    <Input
-                      type="number"
-                      value={v.minMatchPoints}
-                      onChange={(e) => onUpdate({ minMatchPoints: Number(e.target.value) })}
-                      min={0}
-                      className="h-9 text-sm"
-                    />
-                  </Field>
-                  <Field label="Min New Track Points" id="field-minnewtrackpoints" hint="Minimum number of non-missing keypoints required before an unmatched instance is allowed to spawn a new track.">
-                    <Input
-                      type="number"
-                      value={v.minNewTrackPoints}
-                      onChange={(e) => onUpdate({ minNewTrackPoints: Number(e.target.value) })}
-                      min={0}
-                      className="h-9 text-sm"
-                    />
-                  </Field>
-                  <Field label="Scoring Reduction" id="field-scoringreduction" hint="How to aggregate multiple similarity scores when several detections could match the same track.">
-                    <Select
-                      value={v.scoringReduction}
-                      onValueChange={(val) => onUpdate({ scoringReduction: val as typeof v.scoringReduction })}
-                    >
-                      <SelectTrigger className="h-9 text-sm">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="mean">Mean</SelectItem>
-                        <SelectItem value="max">Max</SelectItem>
-                        <SelectItem value="robust_quantile">Robust quantile</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </Field>
-                  <Field label="Target Instance Count" id="field-targetinstancecount" hint="Target number of instances to track per frame. Required by Kalman filtering and pre-cull; auto-derived from Max Tracks/Max Instances if left empty.">
-                    <Input
-                      type="number"
-                      value={v.trackingTargetInstanceCount ?? ""}
-                      onChange={(e) => onUpdate({ trackingTargetInstanceCount: e.target.value ? Number(e.target.value) : null })}
-                      min={1}
-                      max={100}
-                      className="h-9 text-sm"
-                      placeholder="Auto"
-                    />
-                  </Field>
-                  <Toggle
-                    label="Pre-cull to target"
-                    id="field-precull"
-                    hint="Before tracking, discard excess instances above the target instance count for that frame."
-                    checked={v.trackingPreCullToTarget}
-                    onChange={(val) => onUpdate({ trackingPreCullToTarget: val })}
-                  />
-                  {v.trackingPreCullToTarget && (
-                    <Field label="Pre-cull IoU Threshold" id="field-precull-iou" hint="IoU threshold used to remove overlapping instances above the target count before tracking.">
-                      <Input
-                        type="number"
-                        value={v.trackingPreCullIouThreshold}
-                        onChange={(e) => onUpdate({ trackingPreCullIouThreshold: Number(e.target.value) })}
-                        min={0}
-                        max={1}
-                        step={0.05}
-                        className="h-9 text-sm"
+                  <button
+                    className="flex items-center gap-1 pt-2 text-sm text-muted-foreground hover:text-foreground"
+                    onClick={() => setShowTrackingAdvanced((v) => !v)}
+                  >
+                    {showTrackingAdvanced ? (
+                      <ChevronDown className="h-3.5 w-3.5" />
+                    ) : (
+                      <ChevronRight className="h-3.5 w-3.5" />
+                    )}
+                    Advanced
+                  </button>
+                  {showTrackingAdvanced && (
+                    <>
+                      <Field label="Robust (quantile)" id="field-robust" hint="Quantile for robust similarity scoring. Lower values are more tolerant of outlier keypoints when comparing instances.">
+                        <Input
+                          type="number"
+                          value={v.robust}
+                          onChange={(e) => onUpdate({ robust: Number(e.target.value) })}
+                          min={0}
+                          max={1}
+                          step={0.05}
+                          className="h-9 text-sm"
+                        />
+                      </Field>
+                      <Toggle
+                        label="Connect single-frame breaks"
+                        id="field-connectbreaks"
+                        hint="Merge tracks that have a single-frame gap between them. Useful for fixing brief detection dropouts."
+                        checked={v.connectSingleBreaks}
+                        onChange={(val) => onUpdate({ connectSingleBreaks: val })}
                       />
-                    </Field>
-                  )}
-                  <Field label="Clean-up Instance Count" id="field-cleaninstancecount" hint="After tracking, cull instances above this target count per frame. Leave empty to disable post-tracking clean-up.">
-                    <Input
-                      type="number"
-                      value={v.trackingCleanInstanceCount ?? ""}
-                      onChange={(e) => onUpdate({ trackingCleanInstanceCount: e.target.value ? Number(e.target.value) : null })}
-                      min={1}
-                      max={100}
-                      className="h-9 text-sm"
-                      placeholder="Disabled"
-                    />
-                  </Field>
-                  {v.trackingCleanInstanceCount != null && (
-                    <Field label="Clean-up IoU Threshold" id="field-cleaniou" hint="IoU threshold used when culling instances above the clean-up target count after tracking.">
-                      <Input
-                        type="number"
-                        value={v.trackingCleanIouThreshold}
-                        onChange={(e) => onUpdate({ trackingCleanIouThreshold: Number(e.target.value) })}
-                        min={0}
-                        max={1}
-                        step={0.05}
-                        className="h-9 text-sm"
+                      <Field label="Min Match Points" id="field-minmatchpoints" hint="Minimum number of non-missing keypoints an instance needs to be considered a valid match candidate.">
+                        <Input
+                          type="number"
+                          value={v.minMatchPoints}
+                          onChange={(e) => onUpdate({ minMatchPoints: Number(e.target.value) })}
+                          min={0}
+                          className="h-9 text-sm"
+                        />
+                      </Field>
+                      <Field label="Min New Track Points" id="field-minnewtrackpoints" hint="Minimum number of non-missing keypoints required before an unmatched instance is allowed to spawn a new track.">
+                        <Input
+                          type="number"
+                          value={v.minNewTrackPoints}
+                          onChange={(e) => onUpdate({ minNewTrackPoints: Number(e.target.value) })}
+                          min={0}
+                          className="h-9 text-sm"
+                        />
+                      </Field>
+                      <Field label="Scoring Reduction" id="field-scoringreduction" hint="How to aggregate multiple similarity scores when several detections could match the same track.">
+                        <Select
+                          value={v.scoringReduction}
+                          onValueChange={(val) => onUpdate({ scoringReduction: val as typeof v.scoringReduction })}
+                        >
+                          <SelectTrigger className="h-9 text-sm">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="mean">Mean</SelectItem>
+                            <SelectItem value="max">Max</SelectItem>
+                            <SelectItem value="robust_quantile">Robust quantile</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </Field>
+                      <Field label="Target Instance Count" id="field-targetinstancecount" hint="Target number of instances to track per frame. Required by Kalman filtering and pre-cull; auto-derived from Max Tracks/Max Instances if left empty.">
+                        <Input
+                          type="number"
+                          value={v.trackingTargetInstanceCount ?? ""}
+                          onChange={(e) => onUpdate({ trackingTargetInstanceCount: e.target.value ? Number(e.target.value) : null })}
+                          min={1}
+                          max={100}
+                          className="h-9 text-sm"
+                          placeholder="Auto"
+                        />
+                      </Field>
+                      <Toggle
+                        label="Pre-cull to target"
+                        id="field-precull"
+                        hint="Before tracking, discard excess instances above the target instance count for that frame."
+                        checked={v.trackingPreCullToTarget}
+                        onChange={(val) => onUpdate({ trackingPreCullToTarget: val })}
                       />
-                    </Field>
+                      {v.trackingPreCullToTarget && (
+                        <Field label="Pre-cull IoU Threshold" id="field-precull-iou" hint="IoU threshold used to remove overlapping instances above the target count before tracking.">
+                          <Input
+                            type="number"
+                            value={v.trackingPreCullIouThreshold}
+                            onChange={(e) => onUpdate({ trackingPreCullIouThreshold: Number(e.target.value) })}
+                            min={0}
+                            max={1}
+                            step={0.05}
+                            className="h-9 text-sm"
+                          />
+                        </Field>
+                      )}
+                      <Field label="Clean-up Instance Count" id="field-cleaninstancecount" hint="After tracking, cull instances above this target count per frame. Leave empty to disable post-tracking clean-up.">
+                        <Input
+                          type="number"
+                          value={v.trackingCleanInstanceCount ?? ""}
+                          onChange={(e) => onUpdate({ trackingCleanInstanceCount: e.target.value ? Number(e.target.value) : null })}
+                          min={1}
+                          max={100}
+                          className="h-9 text-sm"
+                          placeholder="Disabled"
+                        />
+                      </Field>
+                      {v.trackingCleanInstanceCount != null && (
+                        <Field label="Clean-up IoU Threshold" id="field-cleaniou" hint="IoU threshold used when culling instances above the clean-up target count after tracking.">
+                          <Input
+                            type="number"
+                            value={v.trackingCleanIouThreshold}
+                            onChange={(e) => onUpdate({ trackingCleanIouThreshold: Number(e.target.value) })}
+                            min={0}
+                            max={1}
+                            step={0.05}
+                            className="h-9 text-sm"
+                          />
+                        </Field>
+                      )}
+                    </>
                   )}
                 </>
               )}
