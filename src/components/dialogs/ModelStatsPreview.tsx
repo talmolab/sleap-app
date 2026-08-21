@@ -3,6 +3,7 @@ import { RotateCcw } from "lucide-react";
 import { useAppStore } from "@/stores/appStore";
 import { Button } from "@/components/ui/button";
 import { computeReceptiveField, computeCropSize, computeParamCount } from "@/lib/modelStats";
+import { expandFrameBytesToRGBA, inferFrameChannels } from "@/lib/videoExport";
 import type { ConfigHyperparams } from "@/stores/trainingStore";
 
 interface ModelStatsPreviewProps {
@@ -86,7 +87,35 @@ export function ModelStatsPreview({ hp, maxStride, filters, filtersRate, outputS
           const shape = video.shape;
           if (!shape) return;
           const [, h, w] = shape;
-          const imageData = new ImageData(new Uint8ClampedArray(bytes), w, h);
+          const channels = inferFrameChannels(bytes.length, w, h, shape[3]);
+          const imageData = new ImageData(
+            expandFrameBytesToRGBA(bytes, w, h, channels),
+            w,
+            h
+          );
+          bmp = await createImageBitmap(imageData);
+        } else if (
+          frame &&
+          typeof frame === "object" &&
+          "data" in frame &&
+          "width" in frame &&
+          "height" in frame
+        ) {
+          const raw = frame as {
+            data: Uint8Array | Uint8ClampedArray;
+            width: number;
+            height: number;
+            channels?: number;
+          };
+          const bytes =
+            raw.data instanceof Uint8ClampedArray
+              ? new Uint8Array(raw.data)
+              : raw.data;
+          const imageData = new ImageData(
+            expandFrameBytesToRGBA(bytes, raw.width, raw.height, raw.channels ?? 1),
+            raw.width,
+            raw.height
+          );
           bmp = await createImageBitmap(imageData);
         } else {
           return;

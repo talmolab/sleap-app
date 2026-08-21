@@ -16,8 +16,12 @@ import { LoadSkeletonTemplateCommand } from "../../commands/skeletonCommands";
 import {
   pickVideoFiles,
   addVideoFileToLabels,
-  type PickedVideoFile,
 } from "../../lib/resolveVideos";
+import {
+  VideoImportList,
+  toVideoImportEntries,
+  type VideoImportEntry,
+} from "./VideoImportList";
 import { SKELETON_TEMPLATES, TEMPLATE_ORDER } from "../../lib/skeletonTemplates";
 import { SAMPLE_VIDEO_URL } from "../../lib/tutorial/steps";
 import {
@@ -38,7 +42,6 @@ import {
 import { Button } from "@/components/ui/button";
 import { toast } from "@/lib/notify";
 import { confirmDiscardUnsavedWork } from "@/lib/unsavedGuard";
-import { X } from "lucide-react";
 
 /** Sentinel for the "no template, empty skeleton" choice. */
 const EMPTY = "empty";
@@ -49,7 +52,7 @@ export function NewProjectDialog() {
   const tutorialActive = useAppStore((s) => s.tutorialActive);
 
   const [templateId, setTemplateId] = useState<string>(EMPTY);
-  const [videos, setVideos] = useState<PickedVideoFile[]>([]);
+  const [videos, setVideos] = useState<VideoImportEntry[]>([]);
   const [creating, setCreating] = useState(false);
 
   const reset = useCallback(() => {
@@ -68,7 +71,9 @@ export function NewProjectDialog() {
 
   const handleAddVideos = useCallback(async () => {
     const picked = await pickVideoFiles();
-    if (picked.length > 0) setVideos((v) => [...v, ...picked]);
+    if (picked.length > 0) {
+      setVideos((v) => [...v, ...toVideoImportEntries(picked)]);
+    }
   }, []);
 
   const removeVideo = useCallback((idx: number) => {
@@ -88,7 +93,7 @@ export function NewProjectDialog() {
 
       let addedAny = false;
       for (const pv of videos) {
-        const v = await addVideoFileToLabels(labels, pv);
+        const v = await addVideoFileToLabels(labels, pv, pv.grayscale);
         if (v) addedAny = true;
       }
       if (addedAny) labels.reindex();
@@ -196,28 +201,13 @@ export function NewProjectDialog() {
                 </a>
               )}
             </div>
-            {videos.length > 0 && (
-              <ul
-                className="mt-1 flex flex-col gap-1"
-                data-tutorial="new-project-video-list"
-              >
-                {videos.map((v, i) => (
-                  <li
-                    key={i}
-                    className="flex items-center justify-between rounded bg-muted/40 px-2 py-1 text-xs"
-                  >
-                    <span className="truncate">{v.file.name}</span>
-                    <button
-                      onClick={() => removeVideo(i)}
-                      className="ml-2 shrink-0 text-muted-foreground hover:text-foreground"
-                      aria-label={`Remove ${v.file.name}`}
-                    >
-                      <X className="h-3.5 w-3.5" />
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
+            <VideoImportList
+              videos={videos}
+              onChange={setVideos}
+              onRemove={removeVideo}
+              disabled={creating}
+              data-tutorial="new-project-video-list"
+            />
           </div>
         </div>
 

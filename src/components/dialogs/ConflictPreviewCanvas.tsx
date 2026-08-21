@@ -21,6 +21,7 @@ import {
   conflictCropRect,
   type Rect,
 } from "@/lib/mergeConflictOverlay";
+import { expandFrameBytesToRGBA, inferFrameChannels } from "@/lib/videoExport";
 
 interface ConflictPreviewCanvasProps {
   /** Base video the conflict frame belongs to (resolved in-project). */
@@ -57,9 +58,39 @@ function frameToDrawable(frame: unknown, video: Video): OffscreenCanvas | null {
     const shape = video.shape;
     if (!shape) return null;
     const [, h, w] = shape;
+    const channels = inferFrameChannels(bytes.length, w, h, shape[3]);
     const c = new OffscreenCanvas(w, h);
     c.getContext("2d")?.putImageData(
-      new ImageData(new Uint8ClampedArray(bytes), w, h),
+      new ImageData(expandFrameBytesToRGBA(bytes, w, h, channels), w, h),
+      0,
+      0
+    );
+    return c;
+  }
+  if (
+    frame &&
+    typeof frame === "object" &&
+    "data" in frame &&
+    "width" in frame &&
+    "height" in frame
+  ) {
+    const raw = frame as {
+      data: Uint8Array | Uint8ClampedArray;
+      width: number;
+      height: number;
+      channels?: number;
+    };
+    const bytes =
+      raw.data instanceof Uint8ClampedArray
+        ? new Uint8Array(raw.data)
+        : raw.data;
+    const c = new OffscreenCanvas(raw.width, raw.height);
+    c.getContext("2d")?.putImageData(
+      new ImageData(
+        expandFrameBytesToRGBA(bytes, raw.width, raw.height, raw.channels ?? 1),
+        raw.width,
+        raw.height
+      ),
       0,
       0
     );

@@ -40,10 +40,15 @@ import {
   resolveVideoFile,
   resolveAllVideosFromFolder,
   resolveVideoPath,
-  pickAndAddVideos,
   pickVideoFiles,
   buildStandaloneVideo,
+  addVideoFileToLabels,
 } from "../../lib/resolveVideos";
+import {
+  VideoImportList,
+  toVideoImportEntries,
+  type VideoImportEntry,
+} from "@/components/dialogs/VideoImportList";
 import { displayFrameCount } from "@/lib/videoFrameCount";
 import { getPlatform, isTauri } from "../../platform/index";
 import {
@@ -353,6 +358,15 @@ export function VideosPanel() {
     frameCount: number;
   } | null>(null);
 
+  // Staged videos from the "Add Videos" picker, awaiting the Import Videos
+  // dialog's grayscale choice + confirmation. null = no dialog open. Mirrors
+  // NewProjectDialog's staged list, but as a standalone confirm step here
+  // since this panel adds directly (no larger dialog already open to stage in).
+  const [pendingImport, setPendingImport] = useState<VideoImportEntry[] | null>(
+    null
+  );
+  const [importing, setImporting] = useState(false);
+
   const handleLocateVideo = async (video: Video) => {
     const ok = await resolveVideoFile(video, labels ?? undefined);
     if (ok) {
@@ -423,24 +437,48 @@ export function VideosPanel() {
     }
   };
 
+  /**
+   * Pick video file(s), then stage them in the Import Videos dialog (grayscale
+   * choice) instead of adding immediately — mirrors the legacy Qt GUI's
+   * "Import Videos" dialog. Actually adding happens in {@link handleConfirmImport}.
+   */
   const handleAddVideos = async () => {
     if (!labels) return;
-    let added: Video[];
+    let picked;
     try {
-      added = await pickAndAddVideos(labels);
+      picked = await pickVideoFiles();
     } catch (err) {
       toast.error("Failed to add video", {
         description: err instanceof Error ? err.message : String(err),
       });
       return;
     }
-    if (added.length === 0) return; // cancelled, unsupported, or failed (toasted)
-    markChanged();
-    bumpOverlayVersion();
-    // Select the first newly-added video and load its first frame.
-    setVideo(added[0]);
-    setFrameIdx(0);
-    toast.success(`Added ${added.length} video${added.length > 1 ? "s" : ""}`);
+    if (picked.length === 0) return; // cancelled
+    setPendingImport(toVideoImportEntries(picked));
+  };
+
+  /** Add every staged video from the Import Videos dialog, with its chosen grayscale flag. */
+  const handleConfirmImport = async () => {
+    if (!labels || !pendingImport) return;
+    setImporting(true);
+    try {
+      const added: Video[] = [];
+      for (const pv of pendingImport) {
+        const video = await addVideoFileToLabels(labels, pv, pv.grayscale);
+        if (video) added.push(video);
+      }
+      if (added.length > 0) labels.reindex();
+      setPendingImport(null);
+      if (added.length === 0) return; // unsupported/failed (already toasted)
+      markChanged();
+      bumpOverlayVersion();
+      // Select the first newly-added video and load its first frame.
+      setVideo(added[0]);
+      setFrameIdx(0);
+      toast.success(`Added ${added.length} video${added.length > 1 ? "s" : ""}`);
+    } finally {
+      setImporting(false);
+    }
   };
 
   /**
@@ -655,6 +693,52 @@ export function VideosPanel() {
           </Button>
         )}
       </div>
+
+      {/* Import Videos dialog: confirm the picked file(s) and choose grayscale
+          per-file/bulk before actually adding them (legacy Qt GUI parity). */}
+      <Dialog
+        open={pendingImport !== null}
+        onOpenChange={(open) => {
+          if (!open && !importing) setPendingImport(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Import Videos</DialogTitle>
+            <DialogDescription>
+              Choose which video(s) to import as grayscale. This can&apos;t be
+              changed after import.
+            </DialogDescription>
+          </DialogHeader>
+          {pendingImport && (
+            <VideoImportList
+              videos={pendingImport}
+              onChange={setPendingImport}
+              onRemove={(i) =>
+                setPendingImport((v) => v?.filter((_, idx) => idx !== i) ?? null)
+              }
+              disabled={importing}
+            />
+          )}
+          <DialogFooter>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPendingImport(null)}
+              disabled={importing}
+            >
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              onClick={handleConfirmImport}
+              disabled={importing || !pendingImport?.length}
+            >
+              {importing ? "Importing…" : "Import"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Replace Video confirm-trim dialog */}
       <Dialog
