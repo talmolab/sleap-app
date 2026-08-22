@@ -326,22 +326,21 @@ function FileMenu() {
                         "“frame image not found” until you re-convert via Replace Video " +
                         "(or reopen the project).\n\n"
                       : "";
-                  // Use the dialog plugin's confirm() — NOT the global
-                  // window.confirm, whose Tauri shim calls a non-existent
-                  // `dialog|confirm` command ("Command not found"). The plugin's
-                  // confirm() runs on the `message` command (dialog:allow-message)
-                  // and returns the user's choice. In the browser build this
-                  // resolves to the stub, which falls back to native window.confirm.
-                  const { confirm: confirmDialog } = await import(
-                    "@tauri-apps/plugin-dialog"
-                  );
-                  const proceed = await confirmDialog(
-                    inUseWarning +
+                  // In-app styled confirm — NOT window.confirm or a native OS
+                  // dialog (both broken/inconsistent in the Tauri WebView); this
+                  // matches the app's look and works in browser + desktop.
+                  const { confirmDialog } = await import("@/stores/confirmStore");
+                  const proceed = await confirmDialog({
+                    title: "Clear video transcode cache",
+                    message:
+                      inUseWarning +
                       `Clear ${info.count} transcoded video${plural} (${mb(info.bytes)} MB)?\n\n` +
                       "These legacy-format conversions are re-created automatically " +
                       "the next time you open the original files.",
-                    { title: "Clear video transcode cache", kind: "warning" }
-                  );
+                    confirmLabel: "Clear",
+                    cancelLabel: "Cancel",
+                    destructive: true,
+                  });
                   if (!proceed) return;
                   const freed = await clearVideoTranscodeCache();
                   toast.success(

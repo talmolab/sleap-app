@@ -34,6 +34,7 @@ import { GoToFrameDialog } from "../dialogs/GoToFrameDialog";
 import { NewProjectDialog } from "../dialogs/NewProjectDialog";
 import { TranscodeProgressDialog } from "../dialogs/TranscodeProgressDialog";
 import { TranscodeConfirmDialog } from "../dialogs/TranscodeConfirmDialog";
+import { ConfirmDialog } from "../dialogs/ConfirmDialog";
 import { SelectToFrameDialog } from "../dialogs/SelectToFrameDialog";
 import { DeletePredictionsDialog } from "../dialogs/DeletePredictionsDialog";
 import { MergeProjectDialog } from "../dialogs/MergeProjectDialog";
@@ -267,6 +268,7 @@ export function AppShell() {
       {/* Global dialogs */}
       <NewProjectDialog />
       <GoToFrameDialog />
+      <ConfirmDialog />
       <TranscodeConfirmDialog />
       <TranscodeProgressDialog />
       <SelectToFrameDialog />
