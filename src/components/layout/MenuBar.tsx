@@ -278,8 +278,18 @@ function FileMenu() {
             <MenubarItem
               onClick={async () => {
                 const { toast } = await import("@/lib/notify");
-                const { videoTranscodeCacheInfo, clearVideoTranscodeCache } =
-                  await import("@/lib/resolveVideos");
+                const {
+                  videoTranscodeCacheInfo,
+                  clearVideoTranscodeCache,
+                  backendKindForFilename,
+                  getBasename,
+                } = await import("@/lib/resolveVideos");
+                const { isTranscodeCached } = await import(
+                  "@/lib/transcode/transcodeVideo"
+                );
+                const { createTauriTranscodeDeps } = await import(
+                  "@/lib/transcode/transcodeDepsTauri"
+                );
                 const mb = (b: number) => (b / 1_000_000).toFixed(1);
                 try {
                   const info = await videoTranscodeCacheInfo();
@@ -288,9 +298,38 @@ function FileMenu() {
                     return;
                   }
                   const plural = info.count > 1 ? "s" : "";
+                  // Legacy-container videos currently OPEN whose transcode is in the
+                  // cache — clearing now breaks their view until Replace Video /
+                  // reopen. (H.264/MJPEG AVIs decode directly → no cache entry → not
+                  // flagged.) Checks the cache file, not the backend class name, so
+                  // it stays correct in a minified build.
+                  const deps = createTauriTranscodeDeps();
+                  const inUse: string[] = [];
+                  for (const v of useAppStore.getState().labels?.videos ?? []) {
+                    const name = Array.isArray(v.filename)
+                      ? v.filename[0] ?? ""
+                      : v.filename;
+                    if (!v.backend || backendKindForFilename(name) !== "avi")
+                      continue;
+                    try {
+                      if (await isTranscodeCached(name, deps))
+                        inUse.push(getBasename(name));
+                    } catch {
+                      /* stat failed — skip */
+                    }
+                  }
+                  const inUseWarning =
+                    inUse.length > 0
+                      ? `⚠ ${inUse.length} open video${inUse.length > 1 ? "s" : ""} ` +
+                        `(${inUse.join(", ")}) ${inUse.length > 1 ? "are" : "is"} using a converted copy right now. ` +
+                        `Clearing will make ${inUse.length > 1 ? "them" : "it"} show ` +
+                        "“frame image not found” until you re-convert via Replace Video " +
+                        "(or reopen the project).\n\n"
+                      : "";
                   if (
                     !window.confirm(
-                      `Clear ${info.count} transcoded video${plural} (${mb(info.bytes)} MB)?\n\n` +
+                      inUseWarning +
+                        `Clear ${info.count} transcoded video${plural} (${mb(info.bytes)} MB)?\n\n` +
                         "These legacy-format conversions are re-created automatically " +
                         "the next time you open the original files."
                     )
