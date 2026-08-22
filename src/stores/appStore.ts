@@ -591,7 +591,7 @@ export const useAppStore = create<AppState>()(
       colorPredicted: false,
       defaultToPan: false,
       palette: "standard",
-      distinctlyColor: "track" as ColorTarget,
+      distinctlyColor: "auto" as ColorTarget,
       markerSize: 4,
       nodeLabelSize: 12,
       insetSize: 400,
