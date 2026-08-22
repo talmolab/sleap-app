@@ -570,6 +570,7 @@ fn localhost_capability(port: u16) -> String {
     "dialog:default",
     "dialog:allow-open",
     "dialog:allow-save",
+    "dialog:allow-message",
     "shell:allow-open",
     {{
       "identifier": "shell:allow-spawn",

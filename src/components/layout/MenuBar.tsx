@@ -326,15 +326,23 @@ function FileMenu() {
                         "“frame image not found” until you re-convert via Replace Video " +
                         "(or reopen the project).\n\n"
                       : "";
-                  if (
-                    !window.confirm(
-                      inUseWarning +
-                        `Clear ${info.count} transcoded video${plural} (${mb(info.bytes)} MB)?\n\n` +
-                        "These legacy-format conversions are re-created automatically " +
-                        "the next time you open the original files."
-                    )
-                  )
-                    return;
+                  // Use the dialog plugin's confirm() — NOT the global
+                  // window.confirm, whose Tauri shim calls a non-existent
+                  // `dialog|confirm` command ("Command not found"). The plugin's
+                  // confirm() runs on the `message` command (dialog:allow-message)
+                  // and returns the user's choice. In the browser build this
+                  // resolves to the stub, which falls back to native window.confirm.
+                  const { confirm: confirmDialog } = await import(
+                    "@tauri-apps/plugin-dialog"
+                  );
+                  const proceed = await confirmDialog(
+                    inUseWarning +
+                      `Clear ${info.count} transcoded video${plural} (${mb(info.bytes)} MB)?\n\n` +
+                      "These legacy-format conversions are re-created automatically " +
+                      "the next time you open the original files.",
+                    { title: "Clear video transcode cache", kind: "warning" }
+                  );
+                  if (!proceed) return;
                   const freed = await clearVideoTranscodeCache();
                   toast.success(
                     `Cleared ${freed.count} transcoded video${freed.count > 1 ? "s" : ""} (${mb(freed.bytes)} MB)`
