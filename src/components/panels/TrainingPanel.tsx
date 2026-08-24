@@ -596,7 +596,10 @@ function HyperparamsFields({
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-2">
-        <span className="text-[10px] text-muted-foreground shrink-0">Max Epochs</span>
+        <span className="text-[10px] text-muted-foreground shrink-0 flex items-center gap-1">
+          Max Epochs
+          <HelpTooltip text="Maximum number of epochs to train for. Training can be stopped manually or automatically if early stopping is enabled and a plateau is detected." />
+        </span>
         <Input
           type="number"
           value={hp.maxEpochs}
@@ -608,7 +611,10 @@ function HyperparamsFields({
       </div>
 
       <div className="flex items-center justify-between gap-2">
-        <span className="text-[10px] text-muted-foreground shrink-0">Batch Size</span>
+        <span className="text-[10px] text-muted-foreground shrink-0 flex items-center gap-1">
+          Batch Size
+          <HelpTooltip text="Number of examples per minibatch. Higher numbers can increase generalization by averaging gradient updates over more examples, at the cost of more GPU memory. Lower numbers may lead to overfitting but can help optimization with few varied examples." />
+        </span>
         <Input
           type="number"
           value={hp.batchSize}
@@ -622,7 +628,10 @@ function HyperparamsFields({
 
       <div className="grid grid-cols-2 gap-2">
         <div className="space-y-1">
-          <span className="text-[10px] text-muted-foreground">Rotation Augmentation</span>
+          <span className="text-[10px] text-muted-foreground flex items-center gap-1">
+            Rotation Augmentation
+            <HelpTooltip text="Rotation augmentation range. Off: disabled. ±15°: for side-view cameras where upside-down would be unnatural. ±180°: for top-view/overhead cameras where all orientations are valid." />
+          </span>
           <Select
             value={hp.rotationPreset}
             onValueChange={(v) => onUpdate(slot, { rotationPreset: v as "off" | "15" | "180" | "custom" })}
@@ -638,7 +647,10 @@ function HyperparamsFields({
           </Select>
         </div>
         <div className="space-y-1">
-          <span className="text-[10px] text-muted-foreground">Scale Augmentation</span>
+          <span className="text-[10px] text-muted-foreground flex items-center gap-1">
+            Scale Augmentation
+            <HelpTooltip text="Enable random scaling augmentation. Scaling is applied independently with 100% probability when enabled." />
+          </span>
           <label className="flex items-center gap-1.5 h-7 cursor-pointer">
             <input
               type="checkbox"
@@ -993,8 +1005,9 @@ export function TrainingPanel() {
         {/* ── Model Type & Configs ─────────────────────────────────── */}
         <Section title="Model Type & Configs" defaultOpen={true}>
           <div className="space-y-1">
-            <span className="text-[10px] text-muted-foreground">
+            <span className="text-[10px] text-muted-foreground flex items-center gap-1">
               Model Type
+              <HelpTooltip text="The pose-estimation pipeline to train. Single Animal predicts node locations for one animal per frame. Top-Down uses a centroid model to locate/crop each animal, then a centered-instance model for its pose. Bottom-Up predicts all keypoints and groups them into animals via part affinity fields. The '+ ID' variants also classify each instance's identity." />
             </span>
             <Select
               value={config.modelType}
@@ -1035,8 +1048,9 @@ export function TrainingPanel() {
             const configFile = config.configs.find((c) => c.slot === slot);
             return (
               <div key={slot} className="space-y-1">
-                <span className="text-[10px] text-muted-foreground">
+                <span className="text-[10px] text-muted-foreground flex items-center gap-1">
                   {getSlotLabel(slot)}
+                  <HelpTooltip text="Config file for this model in the pipeline. Auto-discovered training_config.yaml files from prior runs are picked up automatically; you can also browse to a specific config or a directory of already-trained model checkpoints to reuse." />
                 </span>
                 <ConfigSlot
                   slot={slot}
@@ -1063,10 +1077,11 @@ export function TrainingPanel() {
         {/* ── Data ─────────────────────────────────────────────────── */}
         <Section title="Data" defaultOpen={true}>
           <div className="space-y-1">
-            <span className="text-[10px] text-muted-foreground">
+            <span className="text-[10px] text-muted-foreground flex items-center gap-1">
               {remoteEnabled
                 ? "Training Labels (on worker)"
                 : "Training Labels"}
+              <HelpTooltip text="The .slp file whose labeled frames are used to train the model. Defaults to the currently open project." />
             </span>
             <div className="flex gap-1">
               <Input
@@ -1103,8 +1118,9 @@ export function TrainingPanel() {
             </div>
           </div>
           <div className="space-y-1">
-            <span className="text-[10px] text-muted-foreground">
+            <span className="text-[10px] text-muted-foreground flex items-center gap-1">
               Validation Labels (optional)
+              <HelpTooltip text="A separate .slp file to hold out for validation instead of splitting it from the training labels. Leave empty to auto-split a fraction of the training labels (see Validation Fraction in the per-model Data settings)." />
             </span>
             <div className="flex gap-1">
               <Input
@@ -1142,8 +1158,9 @@ export function TrainingPanel() {
           </div>
 
           <div className="space-y-1">
-            <span className="text-[10px] text-muted-foreground">
+            <span className="text-[10px] text-muted-foreground flex items-center gap-1">
               Post-Training Inference Target
+              <HelpTooltip text="Which frames to run inference on after training completes. Predictions will be merged back into the project." />
             </span>
             <Select
               value={inferenceTarget}
@@ -1169,7 +1186,10 @@ export function TrainingPanel() {
             </Select>
             {(inferenceTarget === "random_video" || inferenceTarget === "random") && (
               <div className="flex items-center justify-between gap-2 mt-1">
-                <span className="text-[10px] text-muted-foreground shrink-0">Sample count</span>
+                <span className="text-[10px] text-muted-foreground shrink-0 flex items-center gap-1">
+                  Sample count
+                  <HelpTooltip text="How many frames to randomly sample for post-training inference." />
+                </span>
                 <Input type="number" min={1} value={sampleCount}
                   onChange={(e) => setSampleCount(Math.max(1, Number(e.target.value)))}
                   className="h-6 text-[10px] w-20" disabled={isRunning} />
@@ -1243,7 +1263,10 @@ export function TrainingPanel() {
             {/* ── Remote (desktop only — web is always remote) ──────── */}
             <Section title="Remote" defaultOpen={false}>
               <div className="flex items-center justify-between py-1">
-                <span className="text-xs">Remote Training</span>
+                <span className="text-xs flex items-center gap-1">
+                  Remote Training
+                  <HelpTooltip text="Send this training job to a connected remote worker machine via sleap-connect instead of running it locally." />
+                </span>
                 <button
                   className={`w-9 h-5 rounded-full relative transition-colors ${
                     remoteEnabled ? "bg-primary" : "bg-zinc-700"
@@ -1268,8 +1291,9 @@ export function TrainingPanel() {
               {remoteEnabled && connectionStatus === "connected" && (
                 <>
                   <div className="space-y-1">
-                    <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+                    <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-1">
                       Room
+                      <HelpTooltip text="The sleap-connect room this app is currently connected to. Workers must join the same room to be selectable below." />
                     </label>
                     <div className="flex items-center gap-1.5 text-[11px]">
                       <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
@@ -1284,8 +1308,9 @@ export function TrainingPanel() {
                   </div>
 
                   <div className="space-y-1">
-                    <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+                    <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-1">
                       Worker
+                      <HelpTooltip text="Which connected machine in the room will actually run training. Only workers with status 'available' can be selected." />
                     </label>
                     <Select
                       value={selectedWorkerId || ""}

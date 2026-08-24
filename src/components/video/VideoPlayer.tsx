@@ -37,7 +37,13 @@ import {
 } from "../../canvas/SkeletonRenderer";
 import { instanceVisible, instanceShowsNonVisible } from "@/lib/instanceVisibility";
 import { useQcVisibility } from "@/hooks/useQcVisibility";
-import { getPaletteColor, getInstanceColor, rgbToCSS } from "../../lib/colorPalettes";
+import {
+  getPaletteColor,
+  getInstanceColor,
+  rgbToCSS,
+  hasAssignedTracks,
+  resolveColorTarget,
+} from "../../lib/colorPalettes";
 import { COLORMAPS } from "../../lib/colormaps";
 import { renderTrails } from "../../canvas/TrailRenderer";
 import {
@@ -114,7 +120,16 @@ export function VideoPlayer() {
   const nodeLabelSize = useAppStore((s) => s.nodeLabelSize);
   const palette = useAppStore((s) => s.palette);
   const overlayVersion = useAppStore((s) => s.overlayVersion);
+  const editSeq = useAppStore((s) => s.editSeq);
   const distinctlyColor = useAppStore((s) => s.distinctlyColor);
+  // Live "auto" color-mode input: recomputed whenever a new project loads
+  // (labels identity change) or any edit lands (editSeq bump, e.g. a track
+  // gets assigned/unassigned) — see resolveColorTarget().
+  const projectHasTracks = useMemo(
+    () => hasAssignedTracks(labels),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [labels, editSeq]
+  );
   const trailLength = useAppStore((s) => s.trailLength);
   const lutMin = useAppStore((s) => s.lutMin);
   const lutMax = useAppStore((s) => s.lutMax);
@@ -1004,23 +1019,24 @@ export function VideoPlayer() {
 
     // Build renderable instances
     const tracks = labels?.tracks ?? [];
+    const resolvedColorTarget = resolveColorTarget(distinctlyColor, projectHasTracks);
     const vis = { showInstances, hiddenInstances, viewOnlyInstance, showNonVisibleOverride };
     const instances: RenderedInstance[] = labeledFrame.instances.map(
       (inst, idx) => {
         const isPredicted = inst instanceof PredictedInstance;
         const skeleton = inst.skeleton;
         const color = getInstanceColor(
-          palette, distinctlyColor, idx, inst.track, tracks, isPredicted, colorPredicted
+          palette, distinctlyColor, idx, inst.track, tracks, isPredicted, colorPredicted, projectHasTracks
         );
 
-        // Per-node colors when distinctlyColor === "node"
-        const nodeColors = distinctlyColor === "node" && !(isPredicted && !colorPredicted)
+        // Per-node colors when (resolved) distinctlyColor === "node"
+        const nodeColors = resolvedColorTarget === "node" && !(isPredicted && !colorPredicted)
           ? skeleton.nodes.map((_, nIdx) => getPaletteColor(palette, nIdx))
           : undefined;
 
-        // Per-edge colors when distinctlyColor === "edge"
+        // Per-edge colors when (resolved) distinctlyColor === "edge"
         const edgeIndices = skeleton.edgeIndices;
-        const edgeColors = distinctlyColor === "edge" && !(isPredicted && !colorPredicted)
+        const edgeColors = resolvedColorTarget === "edge" && !(isPredicted && !colorPredicted)
           ? edgeIndices.map((_, eIdx) => getPaletteColor(palette, eIdx))
           : undefined;
 
@@ -1205,6 +1221,7 @@ export function VideoPlayer() {
     nodeLabelSize,
     palette,
     distinctlyColor,
+    projectHasTracks,
     trailLength,
     zoom,
     panX,

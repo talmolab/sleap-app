@@ -10,10 +10,11 @@
  * This is a read-only preview — no interaction, no store subscriptions.
  */
 
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import type { Instance, Track, Video } from "@/types";
 import { useAppStore } from "@/stores/appStore";
 import { renderInstances } from "@/canvas/SkeletonRenderer";
+import { hasAssignedTracks } from "@/lib/colorPalettes";
 import {
   buildConflictOverlay,
   computeFitTransform,
@@ -95,6 +96,8 @@ export function ConflictPreviewCanvas({
   const palette = useAppStore((s) => s.palette);
   const distinctlyColor = useAppStore((s) => s.distinctlyColor);
   const colorPredicted = useAppStore((s) => s.colorPredicted);
+  const labels = useAppStore((s) => s.labels);
+  const projectHasTracks = useMemo(() => hasAssignedTracks(labels), [labels]);
 
   useEffect(() => {
     let cancelled = false;
@@ -134,7 +137,7 @@ export function ConflictPreviewCanvas({
       const { base, donor } = buildConflictOverlay(
         baseInstances,
         donorInstances,
-        { video, tracks, palette, distinctlyColor, colorPredicted, baseColorIndices }
+        { video, tracks, palette, distinctlyColor, colorPredicted, projectHasTracks, baseColorIndices }
       );
 
       // Crop to the conflict region so the two poses (and their small offset)
@@ -201,6 +204,7 @@ export function ConflictPreviewCanvas({
     palette,
     distinctlyColor,
     colorPredicted,
+    projectHasTracks,
   ]);
 
   return (

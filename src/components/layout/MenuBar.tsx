@@ -771,8 +771,9 @@ function ViewMenu() {
           <MenubarSubContent>
             <MenubarRadioGroup
               value={distinctlyColor}
-              onValueChange={(val) => setVal("distinctlyColor", val as "track" | "instance" | "node" | "edge")}
+              onValueChange={(val) => setVal("distinctlyColor", val as "auto" | "track" | "instance" | "node" | "edge")}
             >
+              <MenubarRadioItem value="auto">Auto (Node / Track)</MenubarRadioItem>
               <MenubarRadioItem value="track">Tracks</MenubarRadioItem>
               <MenubarRadioItem value="instance">Instances</MenubarRadioItem>
               <MenubarRadioItem value="node">Nodes</MenubarRadioItem>

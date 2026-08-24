@@ -11,7 +11,7 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { Clipboard, Check, Search } from "lucide-react";
 import { useAppStore } from "../../stores/appStore";
-import { rgbToCSS, getInstanceColor } from "../../lib/colorPalettes";
+import { rgbToCSS, getInstanceColor, hasAssignedTracks } from "../../lib/colorPalettes";
 import { instanceShowsNonVisible } from "@/lib/instanceVisibility";
 import {
   commandContext,
@@ -121,6 +121,7 @@ function InstanceRow({
   labels,
   distinctlyColor,
   colorPredicted,
+  projectHasTracks,
   visibilityChecked,
   viewOnlyChecked,
   invisibleNodesChecked,
@@ -138,6 +139,7 @@ function InstanceRow({
   labels: Labels | null;
   distinctlyColor: string;
   colorPredicted: boolean;
+  projectHasTracks: boolean;
   visibilityChecked: boolean;
   viewOnlyChecked: boolean;
   invisibleNodesChecked: boolean;
@@ -156,6 +158,7 @@ function InstanceRow({
     labels?.tracks ?? [],
     predicted,
     colorPredicted,
+    projectHasTracks,
   );
   const trackName = instance.track?.name ?? "[no track]";
   const visibleNodes = instance.nVisible;
@@ -371,7 +374,7 @@ export function InstancesPanel() {
   // data IN PLACE without swapping a subscribed reference, so without this the
   // panel only updates by luck via some other re-render (and not at all on a
   // frame with no incidental repaint — e.g. a negative frame).
-  useAppStore((s) => s.editSeq);
+  const editSeq = useAppStore((s) => s.editSeq);
   // Instances require a skeleton with at least one node; a node-less skeleton
   // would yield a null instance. Re-evaluates when the node count changes
   // (skeleton commands bump overlayVersion, which notifies this selector).
@@ -379,6 +382,11 @@ export function InstancesPanel() {
   const palette = useAppStore((s) => s.palette);
   const distinctlyColor = useAppStore((s) => s.distinctlyColor);
   const colorPredicted = useAppStore((s) => s.colorPredicted);
+  const projectHasTracks = useMemo(
+    () => hasAssignedTracks(labels),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [labels, editSeq]
+  );
 
   // Per-instance visibility state + actions (Task 5). These live in the store
   // keyed by instance object identity and are read/written here; the overlay
@@ -567,6 +575,7 @@ export function InstancesPanel() {
                     labels={labels}
                     distinctlyColor={distinctlyColor}
                     colorPredicted={colorPredicted}
+                    projectHasTracks={projectHasTracks}
                     visibilityChecked={visibilityChecked}
                     viewOnlyChecked={viewOnlyInstance === inst}
                     invisibleNodesChecked={instanceShowsNonVisible(

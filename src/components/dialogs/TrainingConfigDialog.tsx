@@ -492,23 +492,21 @@ function HeadTabContent({
         </Select>
       </div>
 
-      {/* ── Training mode — opt-in; deselecting either one falls back to
-          training from scratch (the implicit default, so it isn't shown as
-          its own option). ── */}
+      {/* ── Training mode ── */}
       {configFile && (
         <div className="mb-5 pb-4 border-b">
           <div className="flex items-center gap-5">
             {([
+              { value: "reuse_config" as const, label: "Train from scratch" },
               { value: "finetune" as const, label: "Fine-tune (start from prior weights)" },
               { value: "resume" as const, label: "Resume training (continue from checkpoint)" },
             ]).map((opt) => (
               <label key={opt.value} className="flex items-center gap-1.5 cursor-pointer">
                 <input
-                  type="checkbox"
+                  type="radio"
+                  name={`training-mode-${slot}`}
                   checked={trainingMode === opt.value}
-                  onChange={() =>
-                    onUpdate({ trainingMode: trainingMode === opt.value ? "reuse_config" : opt.value })
-                  }
+                  onChange={() => onUpdate({ trainingMode: opt.value })}
                   className="accent-primary"
                 />
                 <span className="text-sm">{opt.label}</span>
@@ -1179,7 +1177,10 @@ export function TrainingConfigDialog({
                     onChange={onSkipUserLabeledChange}
                   />
                   <div id={PIPELINE_FIELD_DEFS.existingPredictions.id} data-search-field="" className="flex items-center gap-4 scroll-mt-4">
-                    <span className="text-sm text-muted-foreground">Existing predictions:</span>
+                    <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                      Existing predictions:
+                      <HintBubble text="What to do with predicted instances already in the project when this run's post-training inference produces new ones. Clear all removes every existing predicted instance first. Replace overwrites predictions on frames the new inference re-runs. Keep leaves existing predictions untouched and only adds new ones." />
+                    </span>
                     {(["clear_all", "replace", "keep"] as const).map((option) => (
                       <label key={option} className="flex items-center gap-1.5 cursor-pointer">
                         <input
@@ -1238,7 +1239,10 @@ export function TrainingConfigDialog({
                     <div className="flex items-center gap-4">
                       <label id={PIPELINE_FIELD_DEFS.filterOverlapping.id} data-search-field="" className="flex items-center gap-1.5 scroll-mt-4 opacity-50">
                         <input type="checkbox" disabled className="accent-primary" />
-                        <span className="text-sm">{PIPELINE_FIELD_DEFS.filterOverlapping.label}</span>
+                        <span className="text-sm flex items-center gap-1">
+                          {PIPELINE_FIELD_DEFS.filterOverlapping.label}
+                          <HintBubble text="Removes duplicate detections of the same animal by bounding-box IOU or pose OKS overlap. This is an inference-time post-processing step, not a training parameter — it's disabled here and configured when running inference instead." />
+                        </span>
                       </label>
                       <div className="flex items-center gap-2 opacity-50">
                         <span className="text-sm text-muted-foreground">Method:</span>
@@ -1336,21 +1340,33 @@ export function TrainingConfigDialog({
                     </div>
                     <div className="flex items-center gap-6 flex-wrap">
                       <div id={PIPELINE_FIELD_DEFS.wandbEntity.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
-                        <span className="text-sm text-muted-foreground">{PIPELINE_FIELD_DEFS.wandbEntity.label}:</span>
+                        <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                          {PIPELINE_FIELD_DEFS.wandbEntity.label}:
+                          <HintBubble text="Your W&B username or team name that owns the project this run logs to. Leave blank to use your default W&B entity." />
+                        </span>
                         <Input type="text" value={firstHp.wandbEntity} onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { wandbEntity: e.target.value }))} placeholder="" className="h-8 text-sm w-40" disabled={!firstHp.useWandb} />
                       </div>
                       <div id={PIPELINE_FIELD_DEFS.wandbProject.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
-                        <span className="text-sm text-muted-foreground">{PIPELINE_FIELD_DEFS.wandbProject.label}:</span>
+                        <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                          {PIPELINE_FIELD_DEFS.wandbProject.label}:
+                          <HintBubble text="The W&B project this run's metrics and visualizations are logged under. Created automatically if it doesn't already exist." />
+                        </span>
                         <Input type="text" value={firstHp.wandbProject} onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { wandbProject: e.target.value }))} placeholder="" className="h-8 text-sm w-40" disabled={!firstHp.useWandb} />
                       </div>
                     </div>
                     <div className="flex items-center gap-6 flex-wrap">
                       <div id={PIPELINE_FIELD_DEFS.wandbRunId.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
-                        <span className="text-sm text-muted-foreground">{PIPELINE_FIELD_DEFS.wandbRunId.label}:</span>
+                        <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                          {PIPELINE_FIELD_DEFS.wandbRunId.label}:
+                          <HintBubble text="ID of a previous W&B run to resume logging into instead of starting a new one. Pair this with Resume Training so training metrics continue on the same run's timeline." />
+                        </span>
                         <Input type="text" value={firstHp.wandbPrevRunId} onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { wandbPrevRunId: e.target.value }))} placeholder="" className="h-8 text-sm w-40" disabled={!firstHp.useWandb} />
                       </div>
                       <div id={PIPELINE_FIELD_DEFS.wandbGroup.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
-                        <span className="text-sm text-muted-foreground">{PIPELINE_FIELD_DEFS.wandbGroup.label}:</span>
+                        <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                          {PIPELINE_FIELD_DEFS.wandbGroup.label}:
+                          <HintBubble text="Optional label to cluster related runs together in the W&B UI, e.g. runs from the same experiment or hyperparameter sweep." />
+                        </span>
                         <Input type="text" value={firstHp.wandbGroup} onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { wandbGroup: e.target.value }))} placeholder="" className="h-8 text-sm w-40" disabled={!firstHp.useWandb} />
                       </div>
                     </div>
