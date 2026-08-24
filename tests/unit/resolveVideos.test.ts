@@ -128,7 +128,7 @@ describe("addVideoFileToLabels", () => {
   it("skips an unsupported format: returns null and adds nothing", async () => {
     const labels = new Labels();
     const result = await addVideoFileToLabels(labels, {
-      file: fakeFile("clip.avi"), // .avi has no backend → gate-rejected
+      file: fakeFile("clip.xyz"), // .xyz has no backend → gate-rejected
       absPath: null,
     });
     expect(result).toBeNull();
@@ -137,19 +137,23 @@ describe("addVideoFileToLabels", () => {
 });
 
 describe("SUPPORTED_VIDEO_EXTS", () => {
-  it("lists every decodable format and excludes .avi", () => {
+  it("lists every decodable format, including .avi/.wmv", () => {
     expect([...SUPPORTED_VIDEO_EXTS].sort()).toEqual([
-      "mkv", "mov", "mp4", "ogg", "ogv", "seq", "ts", "webm",
+      "avi", "mkv", "mov", "mp4", "ogg", "ogv", "seq", "ts", "webm", "wmv",
     ]);
-    expect(SUPPORTED_VIDEO_EXTS).not.toContain("avi");
+    // AVI/WMV are now decodable via the web-demuxer AviVideoBackend.
+    expect(SUPPORTED_VIDEO_EXTS).toContain("avi");
+    expect(SUPPORTED_VIDEO_EXTS).toContain("wmv");
   });
 });
 
 describe("buildStandaloneVideo (gate)", () => {
   // Only UNSUPPORTED extensions here: a supported ext would attempt a real
-  // MediaBunny/Mp4Box decode, which can't run under the bun test runner.
+  // MediaBunny/Mp4Box/AVI decode, which can't run under the bun test runner.
+  // (`.avi`/`.wmv` are no longer gate-rejected — they route to AviVideoBackend
+  // and fail later at the decode probe, which E2E covers.)
   it("rejects unsupported formats and returns null without decoding", async () => {
-    for (const name of ["clip.avi", "clip.xyz", "noextension"]) {
+    for (const name of ["clip.xyz", "noextension"]) {
       expect(await buildStandaloneVideo(fakeFile(name))).toBeNull();
     }
   });
@@ -544,12 +548,18 @@ describe("backendKindForFilename (format → backend dispatch)", () => {
   it("maps Norpix .seq to the Seq backend", () => {
     expect(backendKindForFilename("rec.seq")).toBe("seq");
   });
+  it("maps AVI/WMV to the AVI (web-demuxer) backend", () => {
+    for (const name of ["clip.avi", "clip.wmv"]) {
+      expect(backendKindForFilename(name)).toBe("avi");
+    }
+  });
   it("is case-insensitive on the extension", () => {
     expect(backendKindForFilename("CLIP.MOV")).toBe("mediabunny");
     expect(backendKindForFilename("CLIP.MP4")).toBe("mp4box");
+    expect(backendKindForFilename("CLIP.AVI")).toBe("avi");
   });
   it("returns null for unsupported or extension-less names", () => {
-    for (const name of ["clip.avi", "clip.xyz", "noextension", ""]) {
+    for (const name of ["clip.mpeg", "clip.xyz", "noextension", ""]) {
       expect(backendKindForFilename(name)).toBeNull();
     }
   });

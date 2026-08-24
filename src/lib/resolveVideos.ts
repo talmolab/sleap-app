@@ -10,6 +10,7 @@ import {
   Mp4BoxVideoBackend,
   MediaBunnyVideoBackend,
   SeqVideoBackend,
+  AviVideoBackend,
   Video,
   createVideoBackend,
   type VideoBackend,
@@ -404,8 +405,10 @@ export function videoIssue(video: Video): VideoIssue {
  * Classify a thrown backend-open error into a structured {@link VideoBackendError}
  * so the UI can show WHY a video failed rather than a blanket "not found".
  * sleap-io.js throws `UnsupportedVideoFormatError` for whole-container formats it
- * can't read (AVI / MPEG-PS) and "Codec <x> not supported" / decode errors for
- * unplayable codecs. We only call this after a file was located and read, so an
+ * can't read (MPEG program streams — `.avi`/`.wmv` are now demuxed) and
+ * "Codec <x> not supported" / decode errors for unplayable codecs (including an
+ * AVI/WMV whose payload is Xvid/DivX/WMV3/VC-1). We only call this after a file
+ * was located and read, so an
  * open failure here is a codec/decode problem (not a missing file) — hence the
  * default codec kind. Pure + decoder-independent (unit-tested).
  */
@@ -1154,14 +1157,17 @@ export async function resolveAllVideosFromFolder(
 
 /**
  * Build the sleap-io.js backend for a user-picked file, dispatching by
- * extension: MP4 → Mp4Box, WebM/MKV/MOV/Ogg/MPEG-TS → MediaBunny, `.seq` → Seq.
- * Unknown / extension-less names fall back to Mp4Box (historical behavior for
- * SLP-referenced external videos with non-standard names).
+ * extension: MP4 → Mp4Box, WebM/MKV/MOV/Ogg/MPEG-TS → MediaBunny, AVI/WMV → the
+ * web-demuxer AviVideoBackend, `.seq` → Seq. Unknown / extension-less names fall
+ * back to Mp4Box (historical behavior for SLP-referenced external videos with
+ * non-standard names).
  */
 async function createBackendForFile(file: File): Promise<VideoBackend> {
   switch (backendKindForFilename(file.name)) {
     case "mediabunny":
       return MediaBunnyVideoBackend.fromBlob(file, file.name);
+    case "avi":
+      return AviVideoBackend.fromBlob(file, file.name);
     case "seq":
       return SeqVideoBackend.create(file);
     case "mp4box":
@@ -1189,13 +1195,21 @@ function makeVideoRangeSource(path: string): Promise<RangeSource> {
  * multi-GB external video is never read whole into memory (the desktop
  * freeze/crash). MP4 → Mp4Box, the MediaBunny formats → MediaBunny, both via a
  * {@link RangeSource}. `.seq` has no range backend and its files are small, so
- * it falls back to a full read.
+ * it falls back to a full read. AVI/WMV also read whole for now — web-demuxer
+ * 4.x can't stream from a lazy source, so {@link AviVideoBackend.fromRangeSource}
+ * materializes the bytes (true AVI byte-range streaming is a follow-up).
  */
 async function createBackendForPath(path: string): Promise<VideoBackend> {
   const name = getBasename(path);
   const kind = backendKindForFilename(name);
   if (kind === "mediabunny") {
     return MediaBunnyVideoBackend.fromRangeSource(
+      await makeVideoRangeSource(path),
+      name
+    );
+  }
+  if (kind === "avi") {
+    return AviVideoBackend.fromRangeSource(
       await makeVideoRangeSource(path),
       name
     );
@@ -1296,8 +1310,10 @@ export async function assignVideoBackendFromPath(
 /**
  * Standalone-video file extensions we can decode, mapped to the sleap-io.js
  * backend that handles each. MP4 → Mp4Box; WebM/MKV/MOV/Ogg/MPEG-TS →
- * MediaBunny; Norpix `.seq` → SeqVideoBackend. `.avi` is intentionally absent
- * (no sleap-io.js backend decodes it).
+ * MediaBunny; AVI/WMV → AviVideoBackend (web-demuxer + WebCodecs/ImageDecoder);
+ * Norpix `.seq` → SeqVideoBackend. `.avi`/`.wmv` decode container-first: their
+ * H.264/MJPEG payloads play, while a codec WebCodecs can't handle (Xvid/DivX,
+ * WMV3/VC-1) surfaces the AviVideoBackend's "transcode to H.264" error later.
  */
 const BACKEND_BY_EXT = {
   mp4: "mp4box",
@@ -1307,8 +1323,10 @@ const BACKEND_BY_EXT = {
   ogg: "mediabunny",
   ogv: "mediabunny",
   ts: "mediabunny",
+  avi: "avi",
+  wmv: "avi",
   seq: "seq",
-} as const satisfies Record<string, "mp4box" | "mediabunny" | "seq">;
+} as const satisfies Record<string, "mp4box" | "mediabunny" | "avi" | "seq">;
 
 type StandaloneBackendKind = (typeof BACKEND_BY_EXT)[keyof typeof BACKEND_BY_EXT];
 
@@ -1340,17 +1358,17 @@ export function backendKindForFilename(
 /**
  * Build a new standalone Video from a user-picked file, dispatching by
  * extension via {@link assignVideoBackend} (which probes shape/fps). Supports
- * every {@link SUPPORTED_VIDEO_EXTS} format (MP4/WebM/MKV/MOV/Ogg/MPEG-TS/.seq);
- * unsupported formats (e.g. `.avi`) are rejected with a toast and return null.
- * Returns null on decode failure too (assignVideoBackend already surfaces the
- * error).
+ * every {@link SUPPORTED_VIDEO_EXTS} format
+ * (MP4/WebM/MKV/MOV/Ogg/MPEG-TS/AVI/WMV/.seq); unsupported formats (e.g.
+ * `.mpeg`) are rejected with a toast and return null. Returns null on decode
+ * failure too (assignVideoBackend already surfaces the error).
  */
 export async function buildStandaloneVideo(file: File): Promise<Video | null> {
   if (!backendKindForFilename(file.name)) {
     const ext = fileExt(file.name);
     toast.error(`${ext ? `.${ext} files are` : "This file is"} not supported`, {
       description:
-        "Supported video formats: MP4, WebM, MKV, MOV, Ogg, MPEG-TS, and Norpix .seq.",
+        "Supported video formats: MP4, WebM, MKV, MOV, Ogg, MPEG-TS, AVI, WMV, and Norpix .seq.",
     });
     return null;
   }
@@ -1373,7 +1391,7 @@ export interface PickedVideoFile {
  * Open a multi-select video file picker and return normalized File objects.
  * Browser yields File(s) directly; Tauri yields path(s), read into File via
  * platform.readFile. Accepts every format in {@link SUPPORTED_VIDEO_EXTS}
- * (MP4/WebM/MKV/MOV/Ogg/MPEG-TS/.seq).
+ * (MP4/WebM/MKV/MOV/Ogg/MPEG-TS/AVI/WMV/.seq).
  * Returns [] if the user cancels. Shared by the Videos panel
  * ({@link pickAndAddVideos}) and the New Project dialog (#138).
  */

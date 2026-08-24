@@ -16,6 +16,7 @@ import {
   registerLibavH264Decoder,
   nativeH264DecodableSync,
   overrideNativeH264Decodable,
+  configureWebDemuxer,
 } from "@talmolab/sleap-io.js";
 import { sleapCmd } from "./lib/sleapPlugin";
 
@@ -92,6 +93,24 @@ export default function App() {
     })().catch((err) => {
       console.warn("[app] libav H.264 fallback setup failed:", err);
     });
+  }, []);
+
+  // Point the AVI backend (web-demuxer) at its vendored wasm so `.avi`/`.wmv`
+  // videos decode without an external ffmpeg install. web-demuxer fetches the
+  // wasm INSIDE a Worker, whose base URL differs from the page, so it must be an
+  // ABSOLUTE URL (a bare `/decoders/...` path 404s in the worker). Synchronous +
+  // idempotent — it only stores the path; the wasm is lazily fetched on the
+  // first `.avi` open. Mirrors the libav decoder-config seam above.
+  useEffect(() => {
+    try {
+      const wasmFilePath = new URL(
+        `${import.meta.env.BASE_URL}decoders/web-demuxer/web-demuxer.wasm`,
+        window.location.origin
+      ).href;
+      configureWebDemuxer({ wasmFilePath });
+    } catch (err) {
+      console.warn("[app] web-demuxer (AVI) setup failed:", err);
+    }
   }, []);
 
   const projectLoaded = useAppStore((s) => s.projectLoaded);
