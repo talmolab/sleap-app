@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach } from "../bun-test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import yaml from "js-yaml";
 import { Skeleton, Video, Labels, LabeledFrame, Instance, PredictedInstance } from "@talmolab/sleap-io.js";
 import { useTrainingStore } from "@/stores/trainingStore";
@@ -533,6 +535,36 @@ trainer_config:
       expect(ohkm.min_hard_keypoints).toBe(3);
       expect(ohkm.max_hard_keypoints).toBe(10);
     });
+
+    it("writes hardToEasyRatio and lossScale to online_hard_keypoint_mining", () => {
+      const hp = { ...defaultHyperparams, hardToEasyRatio: 3.5, lossScale: 7.0 };
+      const result = applyHyperparamsToYaml(baseYaml, hp);
+      const doc = yaml.load(result) as Record<string, any>;
+      const ohkm = doc.trainer_config.online_hard_keypoint_mining;
+      expect(ohkm.hard_to_easy_ratio).toBe(3.5);
+      expect(ohkm.loss_scale).toBe(7.0);
+    });
+
+    it("overrides the shipped baseline profile's OHKM defaults (real config round-trip)", () => {
+      // Read the ACTUAL profile the app ships (and sleap-nn reads via --config-name),
+      // not a synthetic stub, to prove the user's values replace what ships.
+      const baselinePath = join(
+        import.meta.dir,
+        "../../src/assets/training_profiles/baseline_medium_rf.topdown.yaml"
+      );
+      const baselineYaml = readFileSync(baselinePath, "utf8");
+
+      // Sanity: the shipped profile carries the sleap-nn defaults we intend to override.
+      const before = yaml.load(baselineYaml) as Record<string, any>;
+      expect(before.trainer_config.online_hard_keypoint_mining.hard_to_easy_ratio).toBe(2.0);
+      expect(before.trainer_config.online_hard_keypoint_mining.loss_scale).toBe(5.0);
+
+      const hp = { ...defaultHyperparams, hardToEasyRatio: 3.5, lossScale: 7.0 };
+      const doc = yaml.load(applyHyperparamsToYaml(baselineYaml, hp)) as Record<string, any>;
+      const ohkm = doc.trainer_config.online_hard_keypoint_mining;
+      expect(ohkm.hard_to_easy_ratio).toBe(3.5);
+      expect(ohkm.loss_scale).toBe(7.0);
+    });
   });
 
   describe("applyHyperparamsToYaml - performance", () => {
@@ -1027,6 +1059,22 @@ trainer_config:
       expect(result!.hyperparams.onlineMining).toBe(true);
       expect(result!.hyperparams.minHardKeypoints).toBe(3);
       expect(result!.hyperparams.maxHardKeypoints).toBe(10);
+    });
+
+    it("parses hard_to_easy_ratio and loss_scale", () => {
+      const yamlText = `
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config:
+  online_hard_keypoint_mining:
+    hard_to_easy_ratio: 3.5
+    loss_scale: 7.0
+`;
+      const result = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
+      expect(result!.hyperparams.hardToEasyRatio).toBe(3.5);
+      expect(result!.hyperparams.lossScale).toBe(7.0);
     });
 
     it("parses plateauMinDelta from early_stopping.min_delta", () => {

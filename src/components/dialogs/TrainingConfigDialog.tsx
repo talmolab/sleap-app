@@ -179,6 +179,8 @@ const HEAD_FIELD_DEFS = {
   onlineMining: { id: "field-onlinemining", label: "Online Mining", hint: "If enabled, online hard keypoint mining (OHKM) will compute loss per keypoint, sort from easy to hard, and scale hard keypoints to have higher weight. This encourages training to focus on tricky body parts. If disabled, all keypoints are weighted equally.", keywords: "ohkm hard keypoint mining" },
   minHardKeypoints: { id: "field-minhardkeypoints", label: "Min Hard Keypoints", keywords: "ohkm mining online" },
   maxHardKeypoints: { id: "field-maxhardkeypoints", label: "Max Hard Keypoints", keywords: "ohkm mining online" },
+  hardToEasyRatio: { id: "field-hardtoeasyratio", label: "Hard/Easy Ratio", keywords: "ohkm mining online ratio hard easy" },
+  lossScale: { id: "field-lossscale", label: "Loss Scale", keywords: "ohkm mining online loss scale" },
   secModel: { id: "head-model", label: "Model" },
   backbone: { id: "field-backbone", label: "Backbone", hint: "Select the backbone architecture. UNet is the default and works well for most cases. ConvNeXt and Swin Transformer support pretrained ImageNet weights but require RGB images.", keywords: "unet convnext swin architecture" },
   stemStride: { id: "field-stemstride", label: "Stem Stride", keywords: "downsampling stride" },
@@ -678,6 +680,20 @@ function HeadTabContent({
               <HintBubble text="The maximum number of hard keypoints to apply scaling to. This can help when there are few very easy keypoints which may skew the ratio." />
             </span>
             <Input type="number" value={hp.maxHardKeypoints ?? ""} onChange={(e) => onUpdate({ maxHardKeypoints: e.target.value ? Number(e.target.value) : null })} disabled={!hp.onlineMining} placeholder="None" className="h-8 text-sm w-16" />
+          </div>
+          <div id={HEAD_FIELD_DEFS.hardToEasyRatio.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+            <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+              {HEAD_FIELD_DEFS.hardToEasyRatio.label}
+              <HintBubble text="The minimum ratio of an individual keypoint's loss to the lowest keypoint loss for it to be considered 'hard'. This helps switch focus across groups of keypoints during training." />
+            </span>
+            <Input type="number" value={hp.hardToEasyRatio} onChange={(e) => onUpdate({ hardToEasyRatio: Number(e.target.value) })} disabled={!hp.onlineMining} step={0.5} min={0} className="h-8 text-sm w-16" />
+          </div>
+          <div id={HEAD_FIELD_DEFS.lossScale.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+            <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+              {HEAD_FIELD_DEFS.lossScale.label}
+              <HintBubble text="Factor by which the hard keypoints' losses are scaled up in the total loss." />
+            </span>
+            <Input type="number" value={hp.lossScale} onChange={(e) => onUpdate({ lossScale: Number(e.target.value) })} disabled={!hp.onlineMining} step={0.5} min={0} className="h-8 text-sm w-16" />
           </div>
         </div>
       </div>

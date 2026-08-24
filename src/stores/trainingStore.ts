@@ -141,6 +141,8 @@ export interface ConfigHyperparams {
   onlineMining: boolean;
   minHardKeypoints: number;
   maxHardKeypoints: number | null;
+  hardToEasyRatio: number;
+  lossScale: number;
   trainingMode: "reuse_config" | "resume" | "reuse_model";
   accelerator: "auto" | "cuda" | "mps" | "cpu";
   // Performance
@@ -213,6 +215,8 @@ export const defaultHyperparams: ConfigHyperparams = {
   onlineMining: false,
   minHardKeypoints: 2,
   maxHardKeypoints: null,
+  hardToEasyRatio: 2.0,
+  lossScale: 5.0,
   trainingMode: "reuse_config",
   accelerator: "auto",
   dataPipeline: "memory",
@@ -502,6 +506,8 @@ export function applyHyperparamsToYaml(yamlText: string, hp: ConfigHyperparams):
   ohkm.online_mining = hp.onlineMining;
   ohkm.min_hard_keypoints = hp.minHardKeypoints;
   ohkm.max_hard_keypoints = hp.maxHardKeypoints;
+  ohkm.hard_to_easy_ratio = hp.hardToEasyRatio;
+  ohkm.loss_scale = hp.lossScale;
 
   // Sigma — apply to all head configs
   const headConfigs = (model.head_configs ?? {}) as Record<string, unknown>;
@@ -877,6 +883,8 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         onlineMining: ohkmCfg.online_mining === true,
         minHardKeypoints: typeof ohkmCfg.min_hard_keypoints === "number" ? ohkmCfg.min_hard_keypoints : 2,
         maxHardKeypoints: typeof ohkmCfg.max_hard_keypoints === "number" ? ohkmCfg.max_hard_keypoints : null,
+        hardToEasyRatio: typeof ohkmCfg.hard_to_easy_ratio === "number" ? ohkmCfg.hard_to_easy_ratio : 2.0,
+        lossScale: typeof ohkmCfg.loss_scale === "number" ? ohkmCfg.loss_scale : 5.0,
         trainingMode: "reuse_config" as const,
         // Performance/machine-specific settings — never taken from the
         // uploaded file, always the app's own defaults. A profile trained on
