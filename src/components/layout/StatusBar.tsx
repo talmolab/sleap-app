@@ -19,6 +19,7 @@ import { Crosshair, Minus, Pencil, Plus } from "lucide-react";
 import { isTauri } from "../../platform/index";
 import { computeStatusStats, instancesToShowCount } from "@/lib/statusStats";
 import { DEFAULT_SHORTCUTS } from "@/lib/shortcuts";
+import { formatShortcut } from "@/lib/formatShortcut";
 
 export function StatusBar() {
   const filename = useAppStore((s) => s.filename);
@@ -93,7 +94,7 @@ export function StatusBar() {
             <Separator orientation="vertical" className="h-3.5" />
             <button
               type="button"
-              title="Go to frame (Ctrl+J)"
+              title={`Go to frame (${formatShortcut(DEFAULT_SHORTCUTS["goto frame"])})`}
               onClick={() => useAppStore.getState().setGoToFrameDialogOpen(true)}
               className="tabular-nums whitespace-nowrap cursor-pointer rounded-sm px-1 -mx-1 hover:text-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >

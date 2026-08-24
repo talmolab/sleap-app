@@ -201,6 +201,21 @@ describe("saveProjectAsSlp — in-place routing", () => {
     expect(toastErrorMock).toHaveBeenCalledTimes(1);
   });
 
+  it("updates the store filename to the basename after a Tauri Save As (so repeated Save As keeps incrementing the version)", async () => {
+    useAppStore.setState({
+      projectPath: "/old/labels.v001.slp",
+      filename: "labels.v001.slp",
+    });
+    savePath = "/new/dir/labels.v002.slp";
+
+    await saveProjectAsSlp(fakeLabels(false), "labels.v002.slp", /* forceDialog */ true);
+
+    expect(useAppStore.getState().projectPath).toBe("/new/dir/labels.v002.slp");
+    // Without this, the next Save As would recompute the version from the STALE
+    // opened name and re-propose v002 (overwriting the file just written).
+    expect(useAppStore.getState().filename).toBe("labels.v002.slp");
+  });
+
   it("never tries in-place for a NON-embedded in-place save", async () => {
     useAppStore.setState({ projectPath: "/plain.slp" });
 

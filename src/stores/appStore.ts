@@ -137,10 +137,10 @@ export interface AppState {
    */
   sidebarCollapsedSections: string[];
   /**
-   * When true, clicking a rail icon opens panels ADDITIVELY (multiple stacked
-   * sections). When false (default), the sidebar behaves one-at-a-time: a rail
+   * When true (default), clicking a rail icon opens panels ADDITIVELY (multiple
+   * stacked sections). When false, the sidebar behaves one-at-a-time: a rail
    * click shows exactly that panel. Toggled from View > Allow multiple panels.
-   * Persisted.
+   * Persisted (existing users keep whatever they last had).
    */
   sidebarMultiPanel: boolean;
   panelOrder: string[];
@@ -573,7 +573,7 @@ export const useAppStore = create<AppState>()(
       sidebarSide: "right",
       sidebarOpenPanels: [...DEFAULT_OPEN_PANELS],
       sidebarCollapsedSections: [],
-      sidebarMultiPanel: false,
+      sidebarMultiPanel: true,
       panelOrder: [...DEFAULT_PANEL_ORDER],
       hiddenPanels: [],
 

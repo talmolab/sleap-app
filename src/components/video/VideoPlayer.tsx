@@ -36,6 +36,7 @@ import {
   type RenderedNode,
 } from "../../canvas/SkeletonRenderer";
 import { instanceVisible, instanceShowsNonVisible } from "@/lib/instanceVisibility";
+import { formatShortcut } from "@/lib/formatShortcut";
 import { useQcVisibility } from "@/hooks/useQcVisibility";
 import {
   getPaletteColor,
@@ -2802,7 +2803,7 @@ export function VideoPlayer() {
             }
             {" "}[{placementNodeIdx + 1}/{selectedInstance.points.length}]
             {" "}({selectedInstance.points.filter((p) => !isNaN(p.xy[0])).length} placed)
-            {" · Tab/Shift+Tab to cycle · Esc to exit"}
+            {` · ${formatShortcut("Tab")}/${formatShortcut("Shift+Tab")} to cycle · Esc to exit`}
           </Badge>
         )}
 
