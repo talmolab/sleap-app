@@ -1273,7 +1273,7 @@ export function TrainingConfigDialog({
                         <>
                           <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
                           <span className="text-sm text-green-400">
-                            Authenticated{wandbAuth.source ? ` (${wandbAuth.source})` : ""} — API key optional
+                            Authenticated{wandbAuth.source ? ` (${wandbAuth.source})` : ""}
                           </span>
                         </>
                       ) : (
@@ -1303,7 +1303,7 @@ export function TrainingConfigDialog({
                           {PIPELINE_FIELD_DEFS.wandbApiKey.label}:
                           <HintBubble text="W&B API key from wandb.ai/authorize. Optional — leave blank if you've run 'wandb login' or set the WANDB_API_KEY environment variable." />
                         </span>
-                        <Input type="password" autoComplete="off" value={firstHp.wandbApiKey} onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { wandbApiKey: e.target.value }))} placeholder="" className="h-8 text-sm w-52" disabled={!firstHp.useWandb || firstHp.wandbMode === "offline"} />
+                        <Input type="password" autoComplete="off" value={firstHp.wandbApiKey} onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { wandbApiKey: e.target.value }))} placeholder={wandbAuth?.authenticated ? "Detected — leave blank to use it" : ""} className="h-8 text-sm w-56" disabled={!firstHp.useWandb || firstHp.wandbMode === "offline"} />
                       </div>
                       {firstHp.wandbMode === "offline" && (
                         <span className="text-xs text-muted-foreground">Logged locally — run <span className="font-mono">wandb sync</span> to upload later.</span>
