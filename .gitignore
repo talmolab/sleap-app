@@ -50,3 +50,6 @@ src-tauri/models/
 # Session handoff notes (local scratch; keep parity-checklist.md tracked)
 docs/session-*.md
 docs/issue-triage-*.md
+
+# Desktop bundle output collected by .github/workflows/build.yml
+/artifacts/

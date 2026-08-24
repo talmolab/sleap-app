@@ -19,6 +19,7 @@ import { Crosshair, Minus, Pencil, Plus } from "lucide-react";
 import { isTauri } from "../../platform/index";
 import { computeStatusStats, instancesToShowCount } from "@/lib/statusStats";
 import { DEFAULT_SHORTCUTS } from "@/lib/shortcuts";
+import { formatShortcut } from "@/lib/formatShortcut";
 
 export function StatusBar() {
   const filename = useAppStore((s) => s.filename);
@@ -26,6 +27,11 @@ export function StatusBar() {
   const video = useAppStore((s) => s.video);
   const videoRevision = useAppStore((s) => s.videoRevision);
   const labels = useAppStore((s) => s.labels);
+  // Re-render on every label edit. Commands that mutate an already-referenced
+  // LabeledFrame in place (e.g. adding a 2nd+ instance to the same frame)
+  // don't swap any subscribed reference, so without this the stats below go
+  // stale until something else happens to force a render.
+  useAppStore((s) => s.editSeq);
   const hasChanges = useAppStore((s) => s.hasChanges);
   const instance = useAppStore((s) => s.instance);
   const labeledFrame = useAppStore((s) => s.labeledFrame);
@@ -88,7 +94,7 @@ export function StatusBar() {
             <Separator orientation="vertical" className="h-3.5" />
             <button
               type="button"
-              title="Go to frame (Ctrl+J)"
+              title={`Go to frame (${formatShortcut(DEFAULT_SHORTCUTS["goto frame"])})`}
               onClick={() => useAppStore.getState().setGoToFrameDialogOpen(true)}
               className="tabular-nums whitespace-nowrap cursor-pointer rounded-sm px-1 -mx-1 hover:text-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >

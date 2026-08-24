@@ -4,6 +4,8 @@
  * Palettes are arrays of [R, G, B] tuples.
  */
 
+import type { Labels } from "@/types";
+
 export type RGB = [number, number, number];
 
 export const PALETTES: Record<string, RGB[]> = {
@@ -76,6 +78,32 @@ export function rgbToCSS(color: RGB, alpha: number = 1): string {
   return `rgba(${color[0]}, ${color[1]}, ${color[2]}, ${alpha})`;
 }
 
+/**
+ * Whether any instance in the project has been assigned a track.
+ *
+ * `labels.tracks` alone isn't a reliable proxy — tracks can outlive every
+ * instance that referenced them (see the `DeleteUnusedTracks` command), so
+ * this scans actual instance assignments instead.
+ */
+export function hasAssignedTracks(labels: Labels | null | undefined): boolean {
+  if (!labels) return false;
+  return labels.labeledFrames.some((lf) =>
+    lf.instances.some((inst) => inst.track != null)
+  );
+}
+
+/**
+ * Resolve the "auto" color target to a concrete one: color by track once any
+ * instance has been assigned a track, otherwise color by node.
+ */
+export function resolveColorTarget(
+  colorTarget: string,
+  projectHasTracks: boolean
+): Exclude<string, "auto"> {
+  if (colorTarget !== "auto") return colorTarget;
+  return projectHasTracks ? "track" : "node";
+}
+
 /** Get the color for an instance based on the current color target mode. */
 export function getInstanceColor(
   palette: string,
@@ -85,9 +113,10 @@ export function getInstanceColor(
   tracks: unknown[],
   isPredicted: boolean,
   colorPredicted: boolean,
+  projectHasTracks: boolean = false,
 ): RGB {
   if (isPredicted && !colorPredicted) return [128, 128, 128];
-  switch (colorTarget) {
+  switch (resolveColorTarget(colorTarget, projectHasTracks)) {
     case "track":
       if (track) {
         const idx = tracks.indexOf(track);

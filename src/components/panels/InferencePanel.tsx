@@ -18,6 +18,7 @@ import { isTauri } from "../../platform/index";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
+import { HintBubble } from "@/components/HintBubble";
 import {
   Select,
   SelectContent,
@@ -120,13 +121,25 @@ function Section({
   );
 }
 
+/** Label + optional hint bubble, shared by the compact field rows below. */
+function FieldLabel({ label, hint }: { label: string; hint?: string }) {
+  return (
+    <span className="text-[10px] text-muted-foreground shrink-0 flex items-center gap-1">
+      {label}
+      {hint && <HintBubble text={hint} className="h-3 w-3" />}
+    </span>
+  );
+}
+
 function Check({
   label,
+  hint,
   checked,
   onChange,
   disabled,
 }: {
   label: string;
+  hint?: string;
   checked: boolean;
   onChange: (v: boolean) => void;
   disabled?: boolean;
@@ -141,12 +154,14 @@ function Check({
         className="rounded border-border"
       />
       {label}
+      {hint && <HintBubble text={hint} className="h-3 w-3" />}
     </label>
   );
 }
 
 function NumField({
   label,
+  hint,
   value,
   onChange,
   min,
@@ -155,6 +170,7 @@ function NumField({
   disabled,
 }: {
   label: string;
+  hint?: string;
   value: number;
   onChange: (v: number) => void;
   min?: number;
@@ -164,7 +180,7 @@ function NumField({
 }) {
   return (
     <div className="flex items-center justify-between gap-2">
-      <span className="text-[10px] text-muted-foreground shrink-0">{label}</span>
+      <FieldLabel label={label} hint={hint} />
       <Input
         type="number"
         value={value}
@@ -179,12 +195,137 @@ function NumField({
   );
 }
 
+function NullableNumField({
+  label,
+  hint,
+  value,
+  onChange,
+  min,
+  max,
+  step,
+  placeholder = "Off",
+  disabled,
+}: {
+  label: string;
+  hint?: string;
+  value: number | null;
+  onChange: (v: number | null) => void;
+  min?: number;
+  max?: number;
+  step?: number;
+  placeholder?: string;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <FieldLabel label={label} hint={hint} />
+      <Input
+        type="number"
+        value={value ?? ""}
+        onChange={(e) => onChange(e.target.value ? Number(e.target.value) : null)}
+        min={min}
+        max={max}
+        step={step}
+        placeholder={placeholder}
+        className="h-6 text-[10px] w-20"
+        disabled={disabled}
+      />
+    </div>
+  );
+}
+
+/** A checkbox that enables/disables an optional numeric filter, revealing its value field only when on. */
+function ToggleNumField({
+  label,
+  hint,
+  valueLabel,
+  value,
+  onChange,
+  defaultValue,
+  min,
+  max,
+  step,
+  disabled,
+}: {
+  label: string;
+  hint?: string;
+  valueLabel: string;
+  value: number | null;
+  onChange: (v: number | null) => void;
+  defaultValue: number;
+  min?: number;
+  max?: number;
+  step?: number;
+  disabled?: boolean;
+}) {
+  return (
+    <>
+      <Check
+        label={label}
+        hint={hint}
+        checked={value != null}
+        onChange={(checked) => onChange(checked ? defaultValue : null)}
+        disabled={disabled}
+      />
+      {value != null && (
+        <NumField
+          label={valueLabel}
+          value={value}
+          onChange={onChange}
+          min={min}
+          max={max}
+          step={step}
+          disabled={disabled}
+        />
+      )}
+    </>
+  );
+}
+
+function NodeCheckboxList({
+  nodes,
+  selected,
+  onChange,
+  disabled,
+}: {
+  nodes: string[];
+  selected: number[];
+  onChange: (indices: number[]) => void;
+  disabled?: boolean;
+}) {
+  if (nodes.length === 0) {
+    return <p className="text-[10px] text-muted-foreground">No skeleton loaded — all nodes used.</p>;
+  }
+  const toggle = (i: number) => {
+    onChange(
+      selected.includes(i) ? selected.filter((x) => x !== i) : [...selected, i].sort((a, b) => a - b)
+    );
+  };
+  return (
+    <div className="border rounded max-h-28 overflow-y-auto p-1 space-y-0.5">
+      {nodes.map((name, i) => (
+        <label key={i} className="flex items-center gap-1.5 text-[10px] px-1 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={selected.includes(i)}
+            onChange={() => toggle(i)}
+            disabled={disabled}
+            className="rounded border-border"
+          />
+          {name}
+        </label>
+      ))}
+    </div>
+  );
+}
+
 // ── Defaults ──────────────────────────────────────────────────────────────────
 
 const DEFAULTS: Omit<InferenceConfig, "modelPaths" | "videoIndex" | "frameRange"> = {
   pipeline: "top-down",
   sampleCount: 20,
   excludeUserLabeled: false,
+  existingPredictions: "replace",
   batchSize: 4,
   device: "auto",
   maxInstances: null,
@@ -195,7 +336,7 @@ const DEFAULTS: Omit<InferenceConfig, "modelPaths" | "videoIndex" | "frameRange"
   maxEdgeLengthRatio: 0.25,
   distPenaltyWeight: 1.0,
   minLineScores: 0.25,
-  tracking: true,
+  tracking: false,
   trackerMethod: "simple",
   similarityMethod: "oks",
   matchingMethod: "hungarian",
@@ -203,13 +344,30 @@ const DEFAULTS: Omit<InferenceConfig, "modelPaths" | "videoIndex" | "frameRange"
   maxTracks: null,
   connectSingleBreaks: false,
   robust: 0.95,
+  minMatchPoints: 0,
+  minNewTrackPoints: 0,
+  scoringReduction: "mean",
+  trackingTargetInstanceCount: null,
+  trackingPreCullToTarget: false,
+  trackingPreCullIouThreshold: 0,
+  trackingCleanInstanceCount: null,
+  trackingCleanIouThreshold: 0,
   flowImgScale: 1.0,
   flowWindowSize: 21,
   flowMaxLevels: 3,
+  kfTrackFeatures: "centroid",
+  kfInitFrameCount: 10,
+  kfNodeIndices: [],
+  kfResetGapSize: 5,
   ensureChannels: "auto",
   filterOverlapping: false,
   filterMethod: "iou",
   filterThreshold: 0.8,
+  filterMinVisibleNodes: null,
+  filterMinVisibleNodeFraction: null,
+  filterMinMeanNodeScore: null,
+  filterMinInstanceScore: null,
+  filterMinCentroidDistance: null,
 };
 
 // ── Panel ─────────────────────────────────────────────────────────────────────
@@ -217,6 +375,8 @@ const DEFAULTS: Omit<InferenceConfig, "modelPaths" | "videoIndex" | "frameRange"
 export function InferencePanel() {
   const video = useAppStore((s) => s.video);
   const projectPath = useAppStore((s) => s.projectPath);
+  const skeleton = useAppStore((s) => s.skeleton);
+  const skeletonNodeNames = skeleton?.nodes?.map((n) => n.name) ?? [];
   const tools = useEnvironmentStore((s) => s.tools);
   const detectionStatus = useEnvironmentStore((s) => s.detectionStatus);
   const refresh = useEnvironmentStore((s) => s.refresh);
@@ -245,6 +405,7 @@ export function InferencePanel() {
   const [frameEnd, setFrameEnd] = useState("1000");
   const [sampleCount, setSampleCount] = useState(20);
   const [excludeUserLabeled, setExcludeUserLabeled] = useState(DEFAULTS.excludeUserLabeled);
+  const [existingPredictions, setExistingPredictions] = useState(DEFAULTS.existingPredictions);
   const [batchSize, setBatchSize] = useState(DEFAULTS.batchSize);
   const [device, setDevice] = useState(DEFAULTS.device);
   const [maxInstances, setMaxInstances] = useState<number | null>(DEFAULTS.maxInstances);
@@ -265,13 +426,30 @@ export function InferencePanel() {
   const [noMaxTracks, setNoMaxTracks] = useState(true);
   const [connectSingleBreaks, setConnectSingleBreaks] = useState(DEFAULTS.connectSingleBreaks);
   const [robust, setRobust] = useState(DEFAULTS.robust);
+  const [minMatchPoints, setMinMatchPoints] = useState(DEFAULTS.minMatchPoints);
+  const [minNewTrackPoints, setMinNewTrackPoints] = useState(DEFAULTS.minNewTrackPoints);
+  const [scoringReduction, setScoringReduction] = useState(DEFAULTS.scoringReduction);
+  const [trackingTargetInstanceCount, setTrackingTargetInstanceCount] = useState<number | null>(DEFAULTS.trackingTargetInstanceCount);
+  const [trackingPreCullToTarget, setTrackingPreCullToTarget] = useState(DEFAULTS.trackingPreCullToTarget);
+  const [trackingPreCullIouThreshold, setTrackingPreCullIouThreshold] = useState(DEFAULTS.trackingPreCullIouThreshold);
+  const [trackingCleanInstanceCount, setTrackingCleanInstanceCount] = useState<number | null>(DEFAULTS.trackingCleanInstanceCount);
+  const [trackingCleanIouThreshold, setTrackingCleanIouThreshold] = useState(DEFAULTS.trackingCleanIouThreshold);
   const [flowImgScale, setFlowImgScale] = useState(DEFAULTS.flowImgScale);
   const [flowWindowSize, setFlowWindowSize] = useState(DEFAULTS.flowWindowSize);
   const [flowMaxLevels, setFlowMaxLevels] = useState(DEFAULTS.flowMaxLevels);
+  const [kfTrackFeatures, setKfTrackFeatures] = useState(DEFAULTS.kfTrackFeatures);
+  const [kfInitFrameCount, setKfInitFrameCount] = useState(DEFAULTS.kfInitFrameCount);
+  const [kfNodeIndices, setKfNodeIndices] = useState<number[]>(DEFAULTS.kfNodeIndices);
+  const [kfResetGapSize, setKfResetGapSize] = useState(DEFAULTS.kfResetGapSize);
   const [ensureChannels, setEnsureChannels] = useState(DEFAULTS.ensureChannels);
   const [filterOverlapping, setFilterOverlapping] = useState(DEFAULTS.filterOverlapping);
   const [filterMethod, setFilterMethod] = useState(DEFAULTS.filterMethod);
   const [filterThreshold, setFilterThreshold] = useState(DEFAULTS.filterThreshold);
+  const [filterMinVisibleNodes, setFilterMinVisibleNodes] = useState<number | null>(DEFAULTS.filterMinVisibleNodes);
+  const [filterMinVisibleNodeFraction, setFilterMinVisibleNodeFraction] = useState<number | null>(DEFAULTS.filterMinVisibleNodeFraction);
+  const [filterMinMeanNodeScore, setFilterMinMeanNodeScore] = useState<number | null>(DEFAULTS.filterMinMeanNodeScore);
+  const [filterMinInstanceScore, setFilterMinInstanceScore] = useState<number | null>(DEFAULTS.filterMinInstanceScore);
+  const [filterMinCentroidDistance, setFilterMinCentroidDistance] = useState<number | null>(DEFAULTS.filterMinCentroidDistance);
   const [merging, setMerging] = useState(false);
   const [configDialogOpen, setConfigDialogOpen] = useState(false);
   const logRef = useRef<HTMLPreElement>(null);
@@ -393,7 +571,7 @@ export function InferencePanel() {
       pipeline, modelPaths: remoteEnabled ? remoteModelPaths : modelPaths,
       videoIndex,
       frameRange: frameRange === "custom" ? { start: Number(frameStart), end: Number(frameEnd) } : frameRange,
-      sampleCount, excludeUserLabeled, batchSize, device,
+      sampleCount, excludeUserLabeled, existingPredictions, batchSize, device,
       maxInstances: noMaxInstances ? null : maxInstances,
       peakThreshold,
       integralRefinement, integralPatchSize,
@@ -402,8 +580,14 @@ export function InferencePanel() {
       trackingWindowSize,
       maxTracks: noMaxTracks ? null : maxTracks,
       connectSingleBreaks, robust,
+      minMatchPoints, minNewTrackPoints, scoringReduction,
+      trackingTargetInstanceCount, trackingPreCullToTarget, trackingPreCullIouThreshold,
+      trackingCleanInstanceCount, trackingCleanIouThreshold,
       flowImgScale, flowWindowSize, flowMaxLevels,
+      kfTrackFeatures, kfInitFrameCount, kfNodeIndices, kfResetGapSize,
       ensureChannels, filterOverlapping, filterMethod, filterThreshold,
+      filterMinVisibleNodes, filterMinVisibleNodeFraction, filterMinMeanNodeScore,
+      filterMinInstanceScore, filterMinCentroidDistance,
     };
 
     if (remoteEnabled) {
@@ -499,7 +683,7 @@ export function InferencePanel() {
           <div className="space-y-1">
             <span className="text-[10px] text-muted-foreground">Inference Target</span>
             <Select value={frameRange} onValueChange={(v) => setFrameRange(v as FrameRange)} disabled={isRunning}>
-              <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
+              <SelectTrigger className="h-7 text-xs" data-tutorial="inference-target-select"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="frame">Current frame</SelectItem>
                 <SelectItem value="custom">Custom range</SelectItem>
@@ -547,6 +731,28 @@ export function InferencePanel() {
           </div>
           <Check label="Exclude user-labeled frames" checked={excludeUserLabeled}
             onChange={setExcludeUserLabeled} disabled={isRunning} />
+          <div className="space-y-1">
+            <span className="text-[10px] text-muted-foreground">Existing predictions</span>
+            <Select
+              value={existingPredictions}
+              onValueChange={(v) => setExistingPredictions(v as InferenceConfig["existingPredictions"])}
+              disabled={isRunning}
+            >
+              <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="clear_all">Clear all</SelectItem>
+                <SelectItem value="replace">Replace</SelectItem>
+                <SelectItem value="keep">Keep</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-[10px] text-muted-foreground">
+              {existingPredictions === "clear_all"
+                ? "Remove all existing predictions first, then add the new ones."
+                : existingPredictions === "keep"
+                  ? "Add new predictions on top of existing ones (may duplicate)."
+                  : "Replace predictions on re-inferred frames; keep your labels."}
+            </p>
+          </div>
           {remoteEnabled && (
             <div className="space-y-1">
               <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
@@ -613,19 +819,181 @@ export function InferencePanel() {
 
         {/* ── Tracking ────────────────────────────────────────────── */}
         <Section title="Tracking" defaultOpen={false}>
-          <Check label="Enable tracking" checked={tracking} onChange={setTracking} disabled={isRunning} />
+          <Check label="Enable tracking" hint="Connect predicted instances across frames to maintain identity over time."
+            checked={tracking} onChange={setTracking} disabled={isRunning} />
           {tracking && (
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-[10px] text-muted-foreground">Method</span>
-              <Select value={trackerMethod} onValueChange={(v) => setTrackerMethod(v as typeof trackerMethod)} disabled={isRunning}>
-                <SelectTrigger className="h-6 text-[10px] w-28"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="simple">Simple</SelectItem>
-                  <SelectItem value="flow">Optical Flow</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+            <>
+              <div className="flex items-center justify-between gap-2">
+                <FieldLabel label="Method" hint="Simple matches instances by similarity alone. Optical Flow predicts motion from pixel displacement — best for fast-moving animals. Kalman Filter predicts motion from a per-track velocity model — best for a known, fixed number of animals whose motion helps disambiguate crossings or occlusions." />
+                <Select value={trackerMethod} onValueChange={(v) => setTrackerMethod(v as typeof trackerMethod)} disabled={isRunning}>
+                  <SelectTrigger className="h-6 text-[10px] w-28"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="simple">Simple</SelectItem>
+                    <SelectItem value="flow">Optical Flow</SelectItem>
+                    <SelectItem value="kalman">Kalman Filter</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <FieldLabel label="Similarity" hint="Metric for comparing instances across frames. OKS uses keypoint positions, IoU uses bounding boxes, Centroids uses center distance." />
+                <Select value={similarityMethod} onValueChange={(v) => setSimilarityMethod(v as typeof similarityMethod)} disabled={isRunning}>
+                  <SelectTrigger className="h-6 text-[10px] w-28"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="oks">OKS</SelectItem>
+                    <SelectItem value="iou">IoU</SelectItem>
+                    <SelectItem value="centroids">Centroid dist.</SelectItem>
+                    <SelectItem value="euclidean_dist">Euclidean dist.</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <FieldLabel label="Matching" hint="Algorithm for assigning detections to tracks. Hungarian finds the globally optimal assignment; Greedy is faster but may be suboptimal." />
+                <Select value={matchingMethod} onValueChange={(v) => setMatchingMethod(v as typeof matchingMethod)} disabled={isRunning}>
+                  <SelectTrigger className="h-6 text-[10px] w-28"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="hungarian">Hungarian</SelectItem>
+                    <SelectItem value="greedy">Greedy</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <NumField label="Window size" value={trackingWindowSize} onChange={setTrackingWindowSize}
+                hint="Number of past frames used as matching candidates. Fixed Window (default) uses the last N frames; Local Queues (used automatically when Max Tracks is set) keeps the last N instances per track ID instead — more robust to track breaks and occlusions."
+                min={1} max={100} disabled={isRunning} />
+              <div className="space-y-1">
+                <NumField label="Max tracks" value={maxTracks ?? 0}
+                  hint="Maximum number of simultaneous tracks. Leave empty for no limit; set to the number of animals if known. Setting this automatically switches matching to Local Queues, since Fixed Window ignores this cap."
+                  onChange={(v) => setMaxTracks(v)} min={1} max={100} disabled={isRunning || noMaxTracks} />
+                <Check label="No limit" checked={noMaxTracks}
+                  onChange={(v) => { setNoMaxTracks(v); if (!v && maxTracks === null) setMaxTracks(2); }}
+                  disabled={isRunning} />
+              </div>
+              <Section title="Advanced">
+                <NumField label="Robust (quantile)" value={robust} onChange={setRobust}
+                  hint="If between 0 and 1 (exclusive), uses a robust quantile similarity score instead of the plain max across matched keypoints — 0.95 is a good starting value. Leave at 1 to use max similarity (non-robust)."
+                  min={0} max={1} step={0.05} disabled={isRunning} />
+                <Check label="Connect single-frame breaks" checked={connectSingleBreaks}
+                  hint="When Max Tracks is set (Local Queues matching), reconnects a track break where exactly one track is lost and exactly one new track is spawned in the same frame — fixes brief detection dropouts without merging unrelated tracks."
+                  onChange={setConnectSingleBreaks} disabled={isRunning} />
+                <NumField label="Min match points" value={minMatchPoints} onChange={setMinMatchPoints}
+                  hint="Minimum number of non-missing keypoints an instance needs to be considered a valid match candidate."
+                  min={0} disabled={isRunning} />
+                <NumField label="Min new-track points" value={minNewTrackPoints} onChange={setMinNewTrackPoints}
+                  hint="Minimum number of non-missing keypoints required before an unmatched instance is allowed to spawn a new track."
+                  min={0} disabled={isRunning} />
+                <div className="flex items-center justify-between gap-2">
+                  <FieldLabel label="Scoring reduction" hint="How to combine multiple similarity scores when several detections could match the same track: Mean averages them, Max takes the best score, Robust quantile is tolerant of outlier scores." />
+                  <Select value={scoringReduction} onValueChange={(v) => setScoringReduction(v as typeof scoringReduction)} disabled={isRunning}>
+                    <SelectTrigger className="h-6 text-[10px] w-28"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="mean">Mean</SelectItem>
+                      <SelectItem value="max">Max</SelectItem>
+                      <SelectItem value="robust_quantile">Robust quantile</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <NullableNumField label="Target instance count" value={trackingTargetInstanceCount}
+                  hint="Target number of instances to track per frame. Required by Kalman filtering and Pre-cull; auto-derived from Max Tracks/Max Instances if left empty."
+                  onChange={setTrackingTargetInstanceCount} min={1} max={100} placeholder="Auto" disabled={isRunning} />
+                <Check label="Pre-cull to target" checked={trackingPreCullToTarget}
+                  hint="Before tracking, discard detections above the target instance count for that frame."
+                  onChange={setTrackingPreCullToTarget} disabled={isRunning} />
+                {trackingPreCullToTarget && (
+                  <NumField label="Pre-cull IoU threshold" value={trackingPreCullIouThreshold} onChange={setTrackingPreCullIouThreshold}
+                    hint="IoU threshold used to remove overlapping instances above the target count before tracking."
+                    min={0} max={1} step={0.05} disabled={isRunning} />
+                )}
+                <NullableNumField label="Clean-up instance count" value={trackingCleanInstanceCount}
+                  hint="After tracking, cull instances above this target count per frame — unlike Pre-cull (which trims before tracking), this trims the tracked output. Leave empty to disable."
+                  onChange={setTrackingCleanInstanceCount} min={1} max={100} placeholder="Disabled" disabled={isRunning} />
+                {trackingCleanInstanceCount != null && (
+                  <NumField label="Clean-up IoU threshold" value={trackingCleanIouThreshold} onChange={setTrackingCleanIouThreshold}
+                    hint="IoU threshold used when culling instances above the clean-up target count after tracking."
+                    min={0} max={1} step={0.05} disabled={isRunning} />
+                )}
+              </Section>
+
+              {trackerMethod === "flow" && (
+                <>
+                  <div className="pt-1 text-[10px] font-medium text-muted-foreground">Optical Flow</div>
+                  <NumField label="Image scale" value={flowImgScale} onChange={setFlowImgScale}
+                    hint="Scale factor for images before computing optical flow. Lower values are faster but less precise."
+                    min={0.1} max={2} step={0.1} disabled={isRunning} />
+                  <NumField label="Flow window size" value={flowWindowSize} onChange={setFlowWindowSize}
+                    hint="Size of the search window for optical flow computation. Larger windows handle faster motion but are slower."
+                    min={3} max={99} step={2} disabled={isRunning} />
+                  <NumField label="Pyramid levels" value={flowMaxLevels} onChange={setFlowMaxLevels}
+                    hint="Number of image pyramid levels for multi-scale optical flow. More levels handle larger displacements."
+                    min={1} max={10} disabled={isRunning} />
+                </>
+              )}
+
+              {trackerMethod === "kalman" && (
+                <>
+                  <div className="pt-1 text-[10px] font-medium text-muted-foreground">Kalman Filter</div>
+                  <div className="flex items-center justify-between gap-2">
+                    <FieldLabel label="Track features" hint="What the motion model tracks. Centroid (default) rigidly translates the last pose using a single filter per track — stable and recommended. Keypoints runs one filter per node for noisier but sometimes more distinctive per-node motion; pair it with a permissive similarity setting." />
+                    <Select value={kfTrackFeatures} onValueChange={(v) => setKfTrackFeatures(v as typeof kfTrackFeatures)} disabled={isRunning}>
+                      <SelectTrigger className="h-6 text-[10px] w-28"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="centroid">Centroid</SelectItem>
+                        <SelectItem value="keypoints">Keypoints</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <NumField label="Init frame count" value={kfInitFrameCount} onChange={setKfInitFrameCount}
+                    hint="Number of warm-up frames tracked with the base tracker before the Kalman filters are fit via EM."
+                    min={1} disabled={isRunning} />
+                  <NumField label="Reset gap size" value={kfResetGapSize} onChange={setKfResetGapSize}
+                    hint="Number of consecutive missed frames after which a stale track's Kalman filter is reset."
+                    min={1} disabled={isRunning} />
+                  <FieldLabel label="Tracked nodes (all if none checked)" hint="Skeleton nodes to track with the motion model. Useful for restricting to a stable subset, e.g. spine nodes. Leave all unchecked to use every node." />
+                  <NodeCheckboxList nodes={skeletonNodeNames} selected={kfNodeIndices} onChange={setKfNodeIndices} disabled={isRunning} />
+                </>
+              )}
+            </>
           )}
+        </Section>
+
+        <Separator />
+
+        {/* ── Post-processing ─────────────────────────────────────── */}
+        <Section title="Post-processing" defaultOpen={false}>
+          <Check label="Filter overlapping instances" checked={filterOverlapping}
+            hint="Remove duplicate detections that overlap significantly, using greedy non-max suppression. Applied independently of tracking, after node-count and confidence filters."
+            onChange={setFilterOverlapping} disabled={isRunning} />
+          {filterOverlapping && (
+            <>
+              <div className="flex items-center justify-between gap-2">
+                <FieldLabel label="Method" hint="Metric for measuring overlap. IoU uses bounding box intersection; OKS uses keypoint similarity." />
+                <Select value={filterMethod} onValueChange={(v) => setFilterMethod(v as typeof filterMethod)} disabled={isRunning}>
+                  <SelectTrigger className="h-6 text-[10px] w-28"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="iou">IoU</SelectItem>
+                    <SelectItem value="oks">OKS</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <NumField label="Threshold" value={filterThreshold} onChange={setFilterThreshold}
+                hint="Overlap score above which instances are considered duplicates and the lower-scoring one is removed. Lower is more aggressive (~0.3), higher is more permissive (0.8 default)."
+                min={0} max={1} step={0.05} disabled={isRunning} />
+            </>
+          )}
+          <Separator />
+          <ToggleNumField label="Min visible nodes" valueLabel="Minimum nodes" value={filterMinVisibleNodes}
+            hint="Minimum number of visible (non-missing) keypoints an instance must have to be kept."
+            onChange={setFilterMinVisibleNodes} defaultValue={1} min={0} disabled={isRunning} />
+          <ToggleNumField label="Min visible node fraction" valueLabel="Minimum fraction" value={filterMinVisibleNodeFraction}
+            hint="Minimum fraction of skeleton nodes that must be visible, e.g. 0.5 requires at least half."
+            onChange={setFilterMinVisibleNodeFraction} defaultValue={0.5} min={0} max={1} step={0.05} disabled={isRunning} />
+          <ToggleNumField label="Min mean node score" valueLabel="Minimum score" value={filterMinMeanNodeScore}
+            hint="Minimum mean confidence score across an instance's visible nodes. Instances scoring lower are removed."
+            onChange={setFilterMinMeanNodeScore} defaultValue={0.3} min={0} max={1} step={0.05} disabled={isRunning} />
+          <ToggleNumField label="Min instance score" valueLabel="Minimum score" value={filterMinInstanceScore}
+            hint="Minimum overall instance confidence score. Meaning differs by pipeline: for Top-Down this is centroid confidence; for Bottom-Up it's derived from PAF grouping quality."
+            onChange={setFilterMinInstanceScore} defaultValue={0.3} min={0} max={1} step={0.05} disabled={isRunning} />
+          <ToggleNumField label="Min centroid distance" valueLabel="Distance (px)" value={filterMinCentroidDistance}
+            hint="Centroid-only de-duplication radius in pixels: drops any predicted centroid within this distance of a higher-scored kept centroid. Use this instead of Filter Overlapping for centroid-only output, since bounding-box IoU/OKS are degenerate for single points."
+            onChange={setFilterMinCentroidDistance} defaultValue={10} min={0} step={1} disabled={isRunning} />
         </Section>
 
         {isTauri && (
@@ -724,7 +1092,12 @@ export function InferencePanel() {
           <Settings2 className="h-3 w-3 mr-1.5" />
           Full Configuration...
         </Button>
-        <Button className="w-full h-8 text-xs" onClick={handleRunInference} disabled={!canRun}>
+        <Button
+          className="w-full h-8 text-xs"
+          onClick={handleRunInference}
+          disabled={!canRun}
+          data-tutorial="run-inference-button"
+        >
           <Play className="h-3.5 w-3.5 mr-1.5" /> {remoteEnabled ? "Run Remote Inference" : "Run Inference"}
         </Button>
       </div>
@@ -803,7 +1176,7 @@ export function InferencePanel() {
             {inferenceStatus === "completed" && outputPath && (
               isTauri ? (
                 <Button size="sm" className="h-7 text-xs"
-                  onClick={async () => { setMerging(true); await loadAndMergeResults(); setMerging(false); }}
+                  onClick={async () => { setMerging(true); await loadAndMergeResults(existingPredictions); setMerging(false); }}
                   disabled={merging}>
                   {merging ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Download className="h-3.5 w-3.5 mr-1" />}
                   {merging ? "Loading..." : "Load Results"}
@@ -882,14 +1255,21 @@ export function InferencePanel() {
         pipeline={pipeline}
         tracking={tracking}
         onTrackingChange={setTracking}
+        skeletonNodes={skeletonNodeNames}
         values={{
           peakThreshold, maxInstances,
           integralRefinement, integralPatchSize,
           nPoints, maxEdgeLengthRatio, distPenaltyWeight, minLineScores,
           trackerMethod, similarityMethod, matchingMethod,
           trackingWindowSize, maxTracks, connectSingleBreaks, robust,
+          minMatchPoints, minNewTrackPoints, scoringReduction,
+          trackingTargetInstanceCount, trackingPreCullToTarget, trackingPreCullIouThreshold,
+          trackingCleanInstanceCount, trackingCleanIouThreshold,
           flowImgScale, flowWindowSize, flowMaxLevels,
+          kfTrackFeatures, kfInitFrameCount, kfNodeIndices, kfResetGapSize,
           ensureChannels, filterOverlapping, filterMethod, filterThreshold,
+          filterMinVisibleNodes, filterMinVisibleNodeFraction, filterMinMeanNodeScore,
+          filterMinInstanceScore, filterMinCentroidDistance,
         }}
         onUpdate={(updates) => {
           if ("peakThreshold" in updates) setPeakThreshold(updates.peakThreshold!);
@@ -907,13 +1287,30 @@ export function InferencePanel() {
           if ("maxTracks" in updates) { setMaxTracks(updates.maxTracks!); setNoMaxTracks(updates.maxTracks === null); }
           if ("connectSingleBreaks" in updates) setConnectSingleBreaks(updates.connectSingleBreaks!);
           if ("robust" in updates) setRobust(updates.robust!);
+          if ("minMatchPoints" in updates) setMinMatchPoints(updates.minMatchPoints!);
+          if ("minNewTrackPoints" in updates) setMinNewTrackPoints(updates.minNewTrackPoints!);
+          if ("scoringReduction" in updates) setScoringReduction(updates.scoringReduction!);
+          if ("trackingTargetInstanceCount" in updates) setTrackingTargetInstanceCount(updates.trackingTargetInstanceCount!);
+          if ("trackingPreCullToTarget" in updates) setTrackingPreCullToTarget(updates.trackingPreCullToTarget!);
+          if ("trackingPreCullIouThreshold" in updates) setTrackingPreCullIouThreshold(updates.trackingPreCullIouThreshold!);
+          if ("trackingCleanInstanceCount" in updates) setTrackingCleanInstanceCount(updates.trackingCleanInstanceCount!);
+          if ("trackingCleanIouThreshold" in updates) setTrackingCleanIouThreshold(updates.trackingCleanIouThreshold!);
           if ("flowImgScale" in updates) setFlowImgScale(updates.flowImgScale!);
           if ("flowWindowSize" in updates) setFlowWindowSize(updates.flowWindowSize!);
           if ("flowMaxLevels" in updates) setFlowMaxLevels(updates.flowMaxLevels!);
+          if ("kfTrackFeatures" in updates) setKfTrackFeatures(updates.kfTrackFeatures!);
+          if ("kfInitFrameCount" in updates) setKfInitFrameCount(updates.kfInitFrameCount!);
+          if ("kfNodeIndices" in updates) setKfNodeIndices(updates.kfNodeIndices!);
+          if ("kfResetGapSize" in updates) setKfResetGapSize(updates.kfResetGapSize!);
           if ("ensureChannels" in updates) setEnsureChannels(updates.ensureChannels!);
           if ("filterOverlapping" in updates) setFilterOverlapping(updates.filterOverlapping!);
           if ("filterMethod" in updates) setFilterMethod(updates.filterMethod!);
           if ("filterThreshold" in updates) setFilterThreshold(updates.filterThreshold!);
+          if ("filterMinVisibleNodes" in updates) setFilterMinVisibleNodes(updates.filterMinVisibleNodes!);
+          if ("filterMinVisibleNodeFraction" in updates) setFilterMinVisibleNodeFraction(updates.filterMinVisibleNodeFraction!);
+          if ("filterMinMeanNodeScore" in updates) setFilterMinMeanNodeScore(updates.filterMinMeanNodeScore!);
+          if ("filterMinInstanceScore" in updates) setFilterMinInstanceScore(updates.filterMinInstanceScore!);
+          if ("filterMinCentroidDistance" in updates) setFilterMinCentroidDistance(updates.filterMinCentroidDistance!);
         }}
       />
     </div>

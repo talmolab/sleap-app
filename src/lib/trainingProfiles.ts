@@ -1,4 +1,5 @@
-import baselineCentroid from "@/assets/training_profiles/baseline.centroid.yaml?raw";
+import baselineMediumRfCentroid from "@/assets/training_profiles/baseline_medium_rf.centroid.yaml?raw";
+import baselineLargeRfCentroid from "@/assets/training_profiles/baseline_large_rf.centroid.yaml?raw";
 import baselineMediumRfTopdown from "@/assets/training_profiles/baseline_medium_rf.topdown.yaml?raw";
 import baselineLargeRfTopdown from "@/assets/training_profiles/baseline_large_rf.topdown.yaml?raw";
 import baselineMediumRfBottomup from "@/assets/training_profiles/baseline_medium_rf.bottomup.yaml?raw";
@@ -12,19 +13,22 @@ import type { ModelType } from "@/stores/trainingStore";
 export interface BaselineProfile {
   filename: string;
   headType: string;
+  /** Display label for config-picker dropdowns, e.g. "Preset: Centered Instance (Medium RF)". */
+  label: string;
   content: string;
 }
 
 export const BASELINE_PROFILES: BaselineProfile[] = [
-  { filename: "baseline.centroid.yaml", headType: "centroid", content: baselineCentroid },
-  { filename: "baseline_medium_rf.topdown.yaml", headType: "centered_instance", content: baselineMediumRfTopdown },
-  { filename: "baseline_large_rf.topdown.yaml", headType: "centered_instance", content: baselineLargeRfTopdown },
-  { filename: "baseline_medium_rf.bottomup.yaml", headType: "bottomup", content: baselineMediumRfBottomup },
-  { filename: "baseline_large_rf.bottomup.yaml", headType: "bottomup", content: baselineLargeRfBottomup },
-  { filename: "baseline_medium_rf.single.yaml", headType: "single_instance", content: baselineMediumRfSingle },
-  { filename: "baseline_large_rf.single.yaml", headType: "single_instance", content: baselineLargeRfSingle },
-  { filename: "baseline.multi_class_bottomup.yaml", headType: "multi_class_bottomup", content: baselineMultiClassBottomup },
-  { filename: "baseline.multi_class_topdown.yaml", headType: "multi_class_topdown", content: baselineMultiClassTopdown },
+  { filename: "baseline_medium_rf.centroid.yaml", headType: "centroid", label: "Preset: Centroid (Medium RF)", content: baselineMediumRfCentroid },
+  { filename: "baseline_large_rf.centroid.yaml", headType: "centroid", label: "Preset: Centroid (Large RF)", content: baselineLargeRfCentroid },
+  { filename: "baseline_medium_rf.topdown.yaml", headType: "centered_instance", label: "Preset: Centered Instance (Medium RF)", content: baselineMediumRfTopdown },
+  { filename: "baseline_large_rf.topdown.yaml", headType: "centered_instance", label: "Preset: Centered Instance (Large RF)", content: baselineLargeRfTopdown },
+  { filename: "baseline_medium_rf.bottomup.yaml", headType: "bottomup", label: "Preset: Bottom-Up (Medium RF)", content: baselineMediumRfBottomup },
+  { filename: "baseline_large_rf.bottomup.yaml", headType: "bottomup", label: "Preset: Bottom-Up (Large RF)", content: baselineLargeRfBottomup },
+  { filename: "baseline_medium_rf.single.yaml", headType: "single_instance", label: "Preset: Single Instance (Medium RF)", content: baselineMediumRfSingle },
+  { filename: "baseline_large_rf.single.yaml", headType: "single_instance", label: "Preset: Single Instance (Large RF)", content: baselineLargeRfSingle },
+  { filename: "baseline.multi_class_bottomup.yaml", headType: "multi_class_bottomup", label: "Preset: Multi-Class Bottom-Up", content: baselineMultiClassBottomup },
+  { filename: "baseline.multi_class_topdown.yaml", headType: "multi_class_topdown", label: "Preset: Multi-Class Top-Down", content: baselineMultiClassTopdown },
 ];
 
 /**

@@ -22,6 +22,7 @@ import {
   SetInstanceTrack,
 } from "../../commands";
 import { cn } from "@/lib/utils";
+import { formatShortcut } from "@/lib/formatShortcut";
 import type { InstancePlacementMethod } from "../../types";
 
 interface ContextMenuProps {
@@ -162,12 +163,12 @@ export function ContextMenu({
         <>
           <ContextMenuItem
             label="Copy Instance"
-            shortcut="Ctrl+C"
+            shortcut={formatShortcut("$mod+KeyC")}
             onClick={() => exec(CopyInstance)}
           />
           <ContextMenuItem
             label="Delete Instance"
-            shortcut="Ctrl+Bksp"
+            shortcut={formatShortcut("$mod+Backspace")}
             onClick={() => exec(DeleteSelectedInstance)}
           />
           <ContextMenuSeparator />
@@ -197,7 +198,7 @@ export function ContextMenu({
       )}
 
       {/* General actions */}
-      <ContextMenuSubmenu label="Add Instance" shortcut="Ctrl+I">
+      <ContextMenuSubmenu label="Add Instance" shortcut={formatShortcut("$mod+KeyI")}>
         <ContextMenuItem label="Best" disabled={!skeletonHasNodes} onClick={() => addWithMethod("best")} />
         <ContextMenuItem label="Template" disabled={!skeletonHasNodes} onClick={() => addWithMethod("template")} />
         <ContextMenuItem label="Force Directed" disabled={!skeletonHasNodes} onClick={() => addWithMethod("force_directed")} />
@@ -208,7 +209,7 @@ export function ContextMenu({
       {clipboardInstance && (
         <ContextMenuItem
           label="Paste Instance"
-          shortcut="Ctrl+V"
+          shortcut={formatShortcut("$mod+KeyV")}
           disabled={!skeletonHasNodes}
           onClick={() => exec(PasteInstance)}
         />
