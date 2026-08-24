@@ -8,3 +8,6 @@ export const isMac =
 
 /** The modifier key name for display. */
 export const modKey = isMac ? "⌘" : "Ctrl";
+
+/** The Alt/Option key name for display (⌥ on macOS). */
+export const altKey = isMac ? "⌥" : "Alt";

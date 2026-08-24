@@ -663,6 +663,12 @@ export function VideoPlayer() {
         // Lazy video backends: the decoder is deferred at load (open one video,
         // not all N). Open it on first view, then read. ensureVideoBackend clears
         // lazyPath after opening, so this whole block is skipped from then on.
+        // Capture the frame count as the seekbar currently sees it BEFORE opening
+        // the backend: a lazy/transcoded backend sets video.shape[0] during
+        // ensureVideoBackend (not via getFrame), so reading it afterwards would
+        // miss the null→real transition and never markVideoUpdated() — leaving the
+        // Seekbar's memoized totalFrames stuck (e.g. at 0 → hover always "Frame 1").
+        const framesBefore = video.shape?.[0] ?? null;
         if (!video.backend) {
           const meta = video.backendMetadata as
             | Record<string, unknown>
@@ -684,12 +690,12 @@ export function VideoPlayer() {
             return;
           }
         }
-        const framesBefore = video.shape?.[0] ?? null;
         const frame = await video.getFrame(frameIdx, { prefetch });
-        // A deferred embedded backend (lazyVideoMetadata) reads its per-video
-        // metadata on this first getFrame and corrects video.shape[0] to the true
-        // source frame count — nudge the store so the seekbar/status bar re-read
-        // the real extent instead of the JSON-seeded (labeled-count) stand-in.
+        // The frame count can become known here two ways: a deferred embedded
+        // backend corrects video.shape[0] on this first getFrame, or a lazy/
+        // transcoded backend set it during ensureVideoBackend above. Either way,
+        // if it changed from what the seekbar last saw, nudge the store so the
+        // seekbar/status bar re-read the real extent (not the JSON-seeded stand-in).
         if ((video.shape?.[0] ?? null) !== framesBefore) {
           useAppStore.getState().markVideoUpdated();
         }
@@ -2884,6 +2890,32 @@ export function VideoPlayer() {
                 This frame&apos;s image file couldn&apos;t be read. Other frames
                 are unaffected.
               </p>
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={relocating}
+                  onClick={async () => {
+                    if (!video) return;
+                    // A video-backed frame (e.g. a transcoded AVI whose cached MP4
+                    // was cleared) reads as a missing frame image — but the fix is
+                    // to re-specify the VIDEO, not hunt for one image.
+                    // resolveVideoFile re-points THIS video's backend (re-
+                    // transcoding a legacy codec on desktop), keeping labels aligned
+                    // (same Video, frame-exact). Mirrors "Locate Video" above.
+                    const ok = await resolveVideoFile(video, labels ?? undefined);
+                    useAppStore.getState().bumpOverlayVersion();
+                    if (ok) {
+                      useAppStore.getState().markVideoUpdated();
+                      missingFramesRef.current.clear();
+                      setFrameImageMissing(false);
+                      setReadNonce((n) => n + 1);
+                      useAppStore.getState().setFrameIdx(frameIdx);
+                    }
+                  }}
+                >
+                  Replace Video…
+                </Button>
               {isTauri && (
                 <Button
                   variant="outline"
@@ -2931,6 +2963,7 @@ export function VideoPlayer() {
                   {relocating ? "Locating…" : "Locate Image…"}
                 </Button>
               )}
+              </div>
             </div>
           </div>
         )}

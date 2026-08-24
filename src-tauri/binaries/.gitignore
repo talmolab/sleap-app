@@ -1,0 +1,6 @@
+# Bundled ffmpeg/ffprobe sidecars are large + platform-specific — fetched per
+# build (see README.md), never committed. Keep the dir + docs tracked.
+ffmpeg-*
+ffprobe-*
+!.gitkeep
+!README.md

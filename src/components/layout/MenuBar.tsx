@@ -290,6 +290,86 @@ function FileMenu() {
             >
               Open Preferences Directory...
             </MenubarItem>
+            <MenubarItem
+              onClick={async () => {
+                const { toast } = await import("@/lib/notify");
+                const {
+                  videoTranscodeCacheInfo,
+                  clearVideoTranscodeCache,
+                  backendKindForFilename,
+                  getBasename,
+                } = await import("@/lib/resolveVideos");
+                const { isTranscodeCached } = await import(
+                  "@/lib/transcode/transcodeVideo"
+                );
+                const { createTauriTranscodeDeps } = await import(
+                  "@/lib/transcode/transcodeDepsTauri"
+                );
+                const mb = (b: number) => (b / 1_000_000).toFixed(1);
+                try {
+                  const info = await videoTranscodeCacheInfo();
+                  if (info.count === 0) {
+                    toast.info("No transcoded videos to clear");
+                    return;
+                  }
+                  const plural = info.count > 1 ? "s" : "";
+                  // Legacy-container videos currently OPEN whose transcode is in the
+                  // cache — clearing now breaks their view until Replace Video /
+                  // reopen. (H.264/MJPEG AVIs decode directly → no cache entry → not
+                  // flagged.) Checks the cache file, not the backend class name, so
+                  // it stays correct in a minified build.
+                  const deps = createTauriTranscodeDeps();
+                  const inUse: string[] = [];
+                  for (const v of useAppStore.getState().labels?.videos ?? []) {
+                    const name = Array.isArray(v.filename)
+                      ? v.filename[0] ?? ""
+                      : v.filename;
+                    if (!v.backend || backendKindForFilename(name) !== "avi")
+                      continue;
+                    try {
+                      if (await isTranscodeCached(name, deps))
+                        inUse.push(getBasename(name));
+                    } catch {
+                      /* stat failed — skip */
+                    }
+                  }
+                  const inUseWarning =
+                    inUse.length > 0
+                      ? `⚠ ${inUse.length} open video${inUse.length > 1 ? "s" : ""} ` +
+                        `(${inUse.join(", ")}) ${inUse.length > 1 ? "are" : "is"} using a converted copy right now. ` +
+                        `Clearing will make ${inUse.length > 1 ? "them" : "it"} show ` +
+                        "“frame image not found” until you re-convert via Replace Video " +
+                        "(or reopen the project).\n\n"
+                      : "";
+                  // In-app styled confirm — NOT window.confirm or a native OS
+                  // dialog (both broken/inconsistent in the Tauri WebView); this
+                  // matches the app's look and works in browser + desktop.
+                  const { confirmDialog } = await import("@/stores/confirmStore");
+                  const proceed = await confirmDialog({
+                    title: "Clear video transcode cache",
+                    message:
+                      inUseWarning +
+                      `Clear ${info.count} transcoded video${plural} (${mb(info.bytes)} MB)?\n\n` +
+                      "These legacy-format conversions are re-created automatically " +
+                      "the next time you open the original files.",
+                    confirmLabel: "Clear",
+                    cancelLabel: "Cancel",
+                    destructive: true,
+                  });
+                  if (!proceed) return;
+                  const freed = await clearVideoTranscodeCache();
+                  toast.success(
+                    `Cleared ${freed.count} transcoded video${freed.count > 1 ? "s" : ""} (${mb(freed.bytes)} MB)`
+                  );
+                } catch (e) {
+                  toast.error("Failed to clear transcode cache", {
+                    description: e instanceof Error ? e.message : String(e),
+                  });
+                }
+              }}
+            >
+              Clear Video Transcode Cache...
+            </MenubarItem>
           </>
         )}
         <MenubarSeparator />
