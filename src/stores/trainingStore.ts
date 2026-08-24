@@ -162,6 +162,9 @@ export interface ConfigHyperparams {
   wandbUploadViz: boolean;
   wandbPrevRunId: string;
   wandbGroup: string;
+  // "offline" logs to local disk only (no network/login); sync later with `wandb sync`.
+  wandbMode: "online" | "offline";
+  wandbApiKey: string;
 }
 
 export const defaultHyperparams: ConfigHyperparams = {
@@ -232,6 +235,8 @@ export const defaultHyperparams: ConfigHyperparams = {
   wandbUploadViz: false,
   wandbPrevRunId: "",
   wandbGroup: "",
+  wandbMode: "online",
+  wandbApiKey: "",
 };
 
 export interface ConfigFile {
@@ -452,6 +457,9 @@ export function applyHyperparamsToYaml(yamlText: string, hp: ConfigHyperparams):
     wandb.save_viz_imgs_wandb = hp.wandbUploadViz;
     if (hp.wandbPrevRunId) wandb.prv_runid = hp.wandbPrevRunId;
     if (hp.wandbGroup) wandb.group = hp.wandbGroup;
+    // null (not "online") is sleap-nn's default/online sentinel for wandb_mode.
+    wandb.wandb_mode = hp.wandbMode === "offline" ? "offline" : null;
+    if (hp.wandbApiKey) wandb.api_key = hp.wandbApiKey;
   }
   // wandb.name has no corresponding UI field, so a value baked into an
   // uploaded/hand-edited config would otherwise ride through untouched and
@@ -910,6 +918,8 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         wandbUploadViz: wandb.save_viz_imgs_wandb === true,
         wandbPrevRunId: typeof wandb.prv_runid === "string" ? wandb.prv_runid : "",
         wandbGroup: typeof wandb.group === "string" ? wandb.group : "",
+        wandbMode: wandb.wandb_mode === "offline" ? "offline" : "online",
+        wandbApiKey: typeof wandb.api_key === "string" ? wandb.api_key : "",
       };
 
       // Deliberately NOT auto-filling trainingLabelsPath/validationLabelsPath
