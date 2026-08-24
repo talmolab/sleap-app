@@ -17,7 +17,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, HelpCircle, Crosshair } from "lucide-react";
+import { Search, HelpCircle, Crosshair, RefreshCw } from "lucide-react";
 import type { ConfigFile, ConfigHyperparams, Backbone, ModelType, DataPipeline, ColorMode } from "@/stores/trainingStore";
 import { getSlotLabel, getConfigSlots, useTrainingStore } from "@/stores/trainingStore";
 import { checkWandbAuth, type WandbAuth } from "@/platform/backend";
@@ -837,13 +837,15 @@ export function TrainingConfigDialog({
   // API-key field can advertise itself as optional. Desktop-only; a no-op in
   // the browser (checkWandbAuth returns not-authenticated there).
   const [wandbAuth, setWandbAuth] = useState<WandbAuth | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    checkWandbAuth()
-      .then((a) => { if (!cancelled) setWandbAuth(a); })
-      .catch(() => {});
-    return () => { cancelled = true; };
+  const refreshWandbAuth = useCallback(() => {
+    checkWandbAuth().then(setWandbAuth).catch(() => {});
   }, []);
+  // Re-detect every time the dialog opens (the component stays mounted, so a
+  // one-shot mount effect would go stale after a `wandb login`).
+  useEffect(() => {
+    if (!open) return;
+    refreshWandbAuth();
+  }, [open, refreshWandbAuth]);
 
   // App store for suggestions count
   const labels = useAppStore((s) => s.labels);
@@ -1271,7 +1273,7 @@ export function TrainingConfigDialog({
                         <>
                           <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
                           <span className="text-sm text-green-400">
-                            Authenticated{wandbAuth.username ? ` as ${wandbAuth.username}` : ""}{wandbAuth.source ? ` (${wandbAuth.source})` : ""} — API key optional
+                            Authenticated{wandbAuth.source ? ` (${wandbAuth.source})` : ""} — API key optional
                           </span>
                         </>
                       ) : (
@@ -1280,6 +1282,14 @@ export function TrainingConfigDialog({
                           <span className="text-sm text-red-400">Not logged in</span>
                         </>
                       )}
+                      <button
+                        type="button"
+                        onClick={refreshWandbAuth}
+                        title="Re-check W&B login"
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        <RefreshCw className="w-3 h-3" />
+                      </button>
                     </div>
                     <div className="flex items-center gap-4 flex-wrap">
                       <Toggle {...PIPELINE_FIELD_DEFS.wandbEnable} checked={firstHp.useWandb} onChange={(v) => configs.forEach((c) => onUpdateSlot(c.slot, { useWandb: v }))} />
