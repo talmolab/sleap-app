@@ -89,6 +89,7 @@ export function InferenceDialog() {
           : frameRange,
       sampleCount: 20,
       excludeUserLabeled: false,
+      existingPredictions: "replace",
       batchSize: 4,
       device: "auto",
       maxInstances: Number(maxInstances),

@@ -4,7 +4,7 @@ import type { ProcessEvent } from "@/platform/backend";
 import { cancelCommand, runInference } from "@/platform/backend";
 import { getPlatform } from "@/platform";
 import { commandContext } from "@/commands";
-import { MergePredictions } from "@/commands/editCommands";
+import { MergePredictions, type ExistingPredictionsMode } from "@/commands/editCommands";
 import { useAppStore } from "@/stores/appStore";
 import { appendLogLine, subprocessFailureMessage } from "@/lib/processLog";
 
@@ -32,6 +32,8 @@ export interface InferenceConfig {
   frameRange: "all_videos" | "video" | "suggestions" | "user_labeled" | "predicted" | "random_video" | "random" | "frame" | { start: number; end: number };
   sampleCount: number;
   excludeUserLabeled: boolean;
+  /** How new predictions combine with existing ones (see ExistingPredictionsMode). */
+  existingPredictions: ExistingPredictionsMode;
 
   // Inference
   batchSize: number;
@@ -119,7 +121,7 @@ interface InferenceState {
   reset: () => void;
   cancelInference: () => Promise<void>;
   startInference: (config: InferenceConfig, remoteOpts?: RemoteInferenceOptions) => Promise<void>;
-  loadAndMergeResults: () => Promise<void>;
+  loadAndMergeResults: (mode?: ExistingPredictionsMode) => Promise<void>;
 }
 
 const initialState = {
@@ -569,7 +571,7 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
               const platform = await getPlatform();
               const bytes = await platform.readFile(result.outputPath);
               const predictions = await loadSlp(bytes, { openVideos: false, h5: { filenameHint: result.outputPath } });
-              await commandContext.execute(MergePredictions, { predictions });
+              await commandContext.execute(MergePredictions, { predictions, mode: config.existingPredictions });
             }
             if (!result.success) {
               set({ status: "error", error: `Video ${vi + 1} failed` });
@@ -586,7 +588,7 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
           }
           if (result.outputPath) {
             set({ outputPath: result.outputPath });
-            await useInferenceStore.getState().loadAndMergeResults();
+            await useInferenceStore.getState().loadAndMergeResults(config.existingPredictions);
           }
         }
       } catch (e) {
@@ -598,7 +600,7 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
     }
   },
 
-  loadAndMergeResults: async () => {
+  loadAndMergeResults: async (mode: ExistingPredictionsMode = "replace") => {
     const { outputPath } = useInferenceStore.getState();
     if (!outputPath) return;
 
@@ -616,7 +618,7 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
         predictions.tracks?.length ?? 0,
       );
 
-      await commandContext.execute(MergePredictions, { predictions });
+      await commandContext.execute(MergePredictions, { predictions, mode });
       set({ status: "idle" });
     } catch (e) {
       set({

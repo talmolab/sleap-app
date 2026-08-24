@@ -325,6 +325,7 @@ const DEFAULTS: Omit<InferenceConfig, "modelPaths" | "videoIndex" | "frameRange"
   pipeline: "top-down",
   sampleCount: 20,
   excludeUserLabeled: false,
+  existingPredictions: "replace",
   batchSize: 4,
   device: "auto",
   maxInstances: null,
@@ -404,6 +405,7 @@ export function InferencePanel() {
   const [frameEnd, setFrameEnd] = useState("1000");
   const [sampleCount, setSampleCount] = useState(20);
   const [excludeUserLabeled, setExcludeUserLabeled] = useState(DEFAULTS.excludeUserLabeled);
+  const [existingPredictions, setExistingPredictions] = useState(DEFAULTS.existingPredictions);
   const [batchSize, setBatchSize] = useState(DEFAULTS.batchSize);
   const [device, setDevice] = useState(DEFAULTS.device);
   const [maxInstances, setMaxInstances] = useState<number | null>(DEFAULTS.maxInstances);
@@ -569,7 +571,7 @@ export function InferencePanel() {
       pipeline, modelPaths: remoteEnabled ? remoteModelPaths : modelPaths,
       videoIndex,
       frameRange: frameRange === "custom" ? { start: Number(frameStart), end: Number(frameEnd) } : frameRange,
-      sampleCount, excludeUserLabeled, batchSize, device,
+      sampleCount, excludeUserLabeled, existingPredictions, batchSize, device,
       maxInstances: noMaxInstances ? null : maxInstances,
       peakThreshold,
       integralRefinement, integralPatchSize,
@@ -729,6 +731,28 @@ export function InferencePanel() {
           </div>
           <Check label="Exclude user-labeled frames" checked={excludeUserLabeled}
             onChange={setExcludeUserLabeled} disabled={isRunning} />
+          <div className="space-y-1">
+            <span className="text-[10px] text-muted-foreground">Existing predictions</span>
+            <Select
+              value={existingPredictions}
+              onValueChange={(v) => setExistingPredictions(v as InferenceConfig["existingPredictions"])}
+              disabled={isRunning}
+            >
+              <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="clear_all">Clear all</SelectItem>
+                <SelectItem value="replace">Replace</SelectItem>
+                <SelectItem value="keep">Keep</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-[10px] text-muted-foreground">
+              {existingPredictions === "clear_all"
+                ? "Remove all existing predictions first, then add the new ones."
+                : existingPredictions === "keep"
+                  ? "Add new predictions on top of existing ones (may duplicate)."
+                  : "Replace predictions on re-inferred frames; keep your labels."}
+            </p>
+          </div>
           {remoteEnabled && (
             <div className="space-y-1">
               <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
@@ -1152,7 +1176,7 @@ export function InferencePanel() {
             {inferenceStatus === "completed" && outputPath && (
               isTauri ? (
                 <Button size="sm" className="h-7 text-xs"
-                  onClick={async () => { setMerging(true); await loadAndMergeResults(); setMerging(false); }}
+                  onClick={async () => { setMerging(true); await loadAndMergeResults(existingPredictions); setMerging(false); }}
                   disabled={merging}>
                   {merging ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Download className="h-3.5 w-3.5 mr-1" />}
                   {merging ? "Loading..." : "Load Results"}

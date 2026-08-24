@@ -632,8 +632,24 @@ export const DeleteAllPredictions: Command = {
 };
 
 /**
- * Merge predictions from inference output into current labels.
- * Supports "auto" (default) and "replace_predictions" strategies.
+ * How inference output combines with the project's EXISTING predictions.
+ * Mirrors legacy SLEAP's "Existing predictions" choice
+ * (sleap/gui/widgets/frame_target_selector.py + runners.merge_results):
+ *  - `replace` (default): per-frame, scoped to frames the model produced output
+ *    for — keep user instances, drop that frame's old predictions, add the new
+ *    ones (io `frame:"replace_predictions"`). Frames not re-inferred keep theirs.
+ *  - `clear_all`: delete EVERY predicted instance project-wide first (keep user
+ *    instances, drop now-empty frames), then append the new predictions
+ *    (io `frame:"keep_both"`).
+ *  - `keep`: append new predictions on top of existing ones (io `frame:"keep_both"`);
+ *    may create duplicates.
+ * User-labeled instances are never removed in any mode.
+ */
+export type ExistingPredictionsMode = "clear_all" | "replace" | "keep";
+
+/**
+ * Merge predictions from inference output into the current labels, honoring the
+ * "Existing predictions" mode (clear_all / replace / keep — default replace).
  */
 export const MergePredictions: Command = {
   name: "MergePredictions",
@@ -646,10 +662,28 @@ export const MergePredictions: Command = {
     const predictions = params?.predictions as Labels;
     if (!predictions) return;
 
-    const strategy =
-      (params?.strategy as "auto" | "replace_predictions") ?? "auto";
+    const mode = (params?.mode as ExistingPredictionsMode) ?? "replace";
+    // `replace` swaps predictions only on frames present in the new output;
+    // `keep`/`clear_all` append (the project-wide wipe below handles clear_all).
+    const frame = mode === "replace" ? "replace_predictions" : "keep_both";
 
     const snapshot = ctx.takeAllFramesSnapshot("MergePredictions");
+
+    // clear_all: strip every existing PredictedInstance project-wide (keeping
+    // user instances) BEFORE merging, so stale predictions on frames the new
+    // run didn't cover are removed too — io's Labels.merge only visits frames
+    // present in the output, so a per-frame strategy alone can't reach them.
+    if (mode === "clear_all") {
+      for (const lf of labels.labeledFrames) {
+        lf.instances = lf.instances.filter(
+          (inst) => !(inst instanceof PredictedInstance)
+        );
+      }
+      labels.labeledFrames = labels.labeledFrames.filter(
+        (lf) => lf.instances.length > 0
+      );
+    }
+
     // Route through sleap-io.js's Labels.merge (issue #226). Match tracks by
     // NAME — io's default is object IDENTITY, which would duplicate every track
     // because the predictions are loaded from a separate file and never share
@@ -661,7 +695,7 @@ export const MergePredictions: Command = {
     const result = await labels.merge(predictions, {
       track: "name",
       video: "basename",
-      frame: strategy,
+      frame,
     });
     ctx.pushUndoSnapshot(snapshot);
     ctx.state.markChanged();

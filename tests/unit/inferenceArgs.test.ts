@@ -17,6 +17,7 @@ function baseConfig(overrides: Partial<InferenceConfig> = {}): InferenceConfig {
     frameRange: "video",
     sampleCount: 20,
     excludeUserLabeled: false,
+    existingPredictions: "replace",
     batchSize: 4,
     device: "auto",
     maxInstances: null,
