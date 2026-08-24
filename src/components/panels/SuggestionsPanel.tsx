@@ -441,7 +441,7 @@ export function SuggestionsPanel({
 
   return (
     <TooltipProvider delayDuration={200}>
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full" data-tutorial="suggestions-panel">
       {/* Generation controls */}
       <div className="px-2 py-1.5 border-b border-border space-y-1.5">
         <div className="flex items-center gap-1.5">
@@ -459,6 +459,7 @@ export function SuggestionsPanel({
               className="h-7 text-xs flex-1"
               size="sm"
               aria-label="Generation method"
+              data-tutorial="suggestions-method-select"
             >
               <SelectValue />
             </SelectTrigger>
@@ -498,6 +499,7 @@ export function SuggestionsPanel({
               }
               className="h-7 w-16 text-xs"
               aria-label="Per video"
+              data-tutorial="suggestions-per-video-input"
             />
           </div>
         )}
@@ -901,7 +903,7 @@ export function SuggestionsPanel({
         </div>
       </div>
 
-      <ScrollArea className="flex-1 min-h-0">
+      <ScrollArea className="flex-1 min-h-0" data-tutorial="suggestions-table">
         {suggestions.length === 0 ? (
           <p className="text-xs text-muted-foreground p-2">
             No suggestions generated. Click "Generate" to create frame
@@ -1065,7 +1067,12 @@ export function SuggestionsPanel({
               Cancel
             </Button>
           ) : (
-            <Button variant="subtle" size="xs" onClick={handleGenerate}>
+            <Button
+              variant="subtle"
+              size="xs"
+              onClick={handleGenerate}
+              data-tutorial="generate-suggestions-button"
+            >
               Generate
             </Button>
           )}

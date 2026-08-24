@@ -29,6 +29,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
+import { hasAssignedTracks } from "@/lib/colorPalettes";
 import {
   resolveClipFrameRange,
   computeClipOutputDimensions,
@@ -197,6 +198,7 @@ export function ExportClipDialog() {
       const frameToLf = new Map<number, LabeledFrame>();
       for (const lf of labels.find({ video: fvideo })) frameToLf.set(lf.frameIdx, lf);
       const tracks = labels.tracks;
+      const projectHasTracks = hasAssignedTracks(labels);
       const overlayForFrame = (frameIdx: number) => {
         const lf = frameToLf.get(frameIdx);
         if (!lf) return [];
@@ -207,6 +209,7 @@ export function ExportClipDialog() {
           showNonVisibleNodes,
           tracks,
           video: fvideo,
+          projectHasTracks,
         });
       };
 

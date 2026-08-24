@@ -14,6 +14,7 @@ function makeConfigFile(overrides: Partial<ConfigFile> = {}): ConfigFile {
     slot: "centroid",
     hyperparams: { ...defaultHyperparams },
     hasTrainedModel: false,
+    checkpointPath: null,
     ...overrides,
   };
 }
@@ -29,6 +30,28 @@ describe("trainingStore", () => {
       expect(state.status).toBe("idle");
       expect(state.config.modelType).toBe("top_down");
       expect(state.config.configs).toEqual([]);
+    });
+  });
+
+  describe("reset", () => {
+    it("bumps resetSeq every call, even back-to-back with no other state change", () => {
+      const before = useTrainingStore.getState().resetSeq;
+      useTrainingStore.getState().reset();
+      expect(useTrainingStore.getState().resetSeq).toBe(before + 1);
+      useTrainingStore.getState().reset();
+      expect(useTrainingStore.getState().resetSeq).toBe(before + 2);
+    });
+
+    it("bumps resetSeq even when modelType is unchanged (e.g. Train Again on Top-Down)", () => {
+      // TrainingPanel's baseline-autoload effect keys off [config.modelType,
+      // resetSeq] specifically because modelType alone doesn't change here.
+      expect(useTrainingStore.getState().config.modelType).toBe("top_down");
+      const before = useTrainingStore.getState().resetSeq;
+      useTrainingStore.getState().addConfigFile(makeConfigFile({ slot: "centroid" }));
+      useTrainingStore.getState().reset();
+      expect(useTrainingStore.getState().config.modelType).toBe("top_down");
+      expect(useTrainingStore.getState().config.configs).toEqual([]);
+      expect(useTrainingStore.getState().resetSeq).toBe(before + 1);
     });
   });
 
@@ -86,6 +109,30 @@ describe("trainingStore", () => {
       const configs = useTrainingStore.getState().config.configs;
       expect(configs.find((c) => c.slot === "centroid")!.hyperparams.maxEpochs).toBe(300);
       expect(configs.find((c) => c.slot === "centered_instance")!.hyperparams.maxEpochs).toBe(100);
+    });
+  });
+
+  describe("updateConfigCheckpointPath", () => {
+    it("sets checkpointPath for a specific slot", () => {
+      useTrainingStore.getState().addConfigFile(makeConfigFile());
+      useTrainingStore.getState().updateConfigCheckpointPath("centroid", "/proj/models/run1/best.ckpt");
+      const cf = useTrainingStore.getState().config.configs[0];
+      expect(cf.checkpointPath).toBe("/proj/models/run1/best.ckpt");
+    });
+
+    it("does not affect other slots", () => {
+      useTrainingStore.getState().addConfigFile(makeConfigFile({ slot: "centroid" }));
+      useTrainingStore.getState().addConfigFile(makeConfigFile({ slot: "centered_instance", modelType: "centered_instance" }));
+      useTrainingStore.getState().updateConfigCheckpointPath("centroid", "/proj/models/run1/best.ckpt");
+      const configs = useTrainingStore.getState().config.configs;
+      expect(configs.find((c) => c.slot === "centroid")!.checkpointPath).toBe("/proj/models/run1/best.ckpt");
+      expect(configs.find((c) => c.slot === "centered_instance")!.checkpointPath).toBeNull();
+    });
+
+    it("accepts null to clear a previously-set path", () => {
+      useTrainingStore.getState().addConfigFile(makeConfigFile({ checkpointPath: "/proj/models/run1/best.ckpt" }));
+      useTrainingStore.getState().updateConfigCheckpointPath("centroid", null);
+      expect(useTrainingStore.getState().config.configs[0].checkpointPath).toBeNull();
     });
   });
 
@@ -277,6 +324,91 @@ trainer_config: {}
       const result = applyHyperparamsToYaml(input, hp);
       const doc = yaml.load(result) as Record<string, any>;
       expect(doc.data_config.use_same_data_for_val).toBe(true);
+    });
+  });
+
+  describe("applyHyperparamsToYaml - resume / fine-tune", () => {
+    const baseYaml = `
+data_config: {}
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config: {}
+`;
+    const ckptPath = "/proj/models/prev_run/last.ckpt";
+
+    it("sets trainer_config.resume_ckpt_path when trainingMode is 'resume' and a checkpoint is given", () => {
+      const hp = { ...defaultHyperparams, trainingMode: "resume" as const };
+      const doc = yaml.load(applyHyperparamsToYaml(baseYaml, hp, ckptPath)) as Record<string, any>;
+      expect(doc.trainer_config.resume_ckpt_path).toBe(ckptPath);
+      expect(doc.model_config.pretrained_backbone_weights).toBeNull();
+      expect(doc.model_config.pretrained_head_weights).toBeNull();
+    });
+
+    it("sets model_config.pretrained_*_weights when trainingMode is 'finetune' and a checkpoint is given", () => {
+      const hp = { ...defaultHyperparams, trainingMode: "finetune" as const };
+      const doc = yaml.load(applyHyperparamsToYaml(baseYaml, hp, ckptPath)) as Record<string, any>;
+      expect(doc.model_config.pretrained_backbone_weights).toBe(ckptPath);
+      expect(doc.model_config.pretrained_head_weights).toBe(ckptPath);
+      expect(doc.trainer_config.resume_ckpt_path).toBeNull();
+    });
+
+    it("clears both resume/fine-tune fields when trainingMode is 'reuse_config' (train from scratch)", () => {
+      const hp = { ...defaultHyperparams, trainingMode: "reuse_config" as const };
+      const doc = yaml.load(applyHyperparamsToYaml(baseYaml, hp, ckptPath)) as Record<string, any>;
+      expect(doc.trainer_config.resume_ckpt_path).toBeNull();
+      expect(doc.model_config.pretrained_backbone_weights).toBeNull();
+      expect(doc.model_config.pretrained_head_weights).toBeNull();
+    });
+
+    it("REGRESSION: clears a stale resume_ckpt_path baked into an auto-loaded config when mode is switched to fine-tune", () => {
+      const staleYaml = `
+data_config: {}
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config:
+  resume_ckpt_path: /proj/models/some_older_run/last.ckpt
+`;
+      const hp = { ...defaultHyperparams, trainingMode: "finetune" as const };
+      const doc = yaml.load(applyHyperparamsToYaml(staleYaml, hp, ckptPath)) as Record<string, any>;
+      expect(doc.trainer_config.resume_ckpt_path).toBeNull();
+      expect(doc.model_config.pretrained_backbone_weights).toBe(ckptPath);
+    });
+
+    it("does not set resume_ckpt_path for 'resume' mode when no checkpoint path is available", () => {
+      const hp = { ...defaultHyperparams, trainingMode: "resume" as const };
+      const doc = yaml.load(applyHyperparamsToYaml(baseYaml, hp, null)) as Record<string, any>;
+      expect(doc.trainer_config.resume_ckpt_path).toBeNull();
+    });
+  });
+
+  describe("parseYamlConfig - checkpointPath", () => {
+    it("threads a passed checkpointPath onto the returned ConfigFile", () => {
+      const yamlText = `
+model_config:
+  head_configs:
+    centroid: {}
+trainer_config:
+  run_name: "250101_120000.centroid.n=10"
+`;
+      const result = useTrainingStore
+        .getState()
+        .parseYamlConfig(yamlText, "training_config.yaml", "centroid", "/proj/models/run1/last.ckpt");
+      expect(result?.checkpointPath).toBe("/proj/models/run1/last.ckpt");
+    });
+
+    it("defaults checkpointPath to null when not passed", () => {
+      const yamlText = `
+model_config:
+  head_configs:
+    centroid: {}
+trainer_config: {}
+`;
+      const result = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
+      expect(result?.checkpointPath).toBeNull();
     });
   });
 
@@ -685,6 +817,68 @@ trainer_config:
     });
   });
 
+  describe("parseYamlConfig - detects trainingMode from the file's own config", () => {
+    // Regression: "Train Again" wipes config.configs and re-auto-loads each
+    // slot from the just-completed run's own written training_config.yaml
+    // (findTrainedModels prefers the most recent run). Since sleap-nn bakes
+    // resume_ckpt_path/pretrained_*_weights into that file when they were
+    // actually used, trainingMode must be detected from it — otherwise a
+    // Resume/Fine-tune selection always silently reverted to "reuse_config"
+    // on every re-load, even though the run that just finished really did use
+    // it.
+    it("detects 'resume' when the file has a non-empty trainer_config.resume_ckpt_path", () => {
+      const yamlText = `
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config:
+  resume_ckpt_path: /proj/models/prev_run/last.ckpt
+`;
+      const result = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
+      expect(result!.hyperparams.trainingMode).toBe("resume");
+    });
+
+    it("detects 'finetune' when the file has a non-empty model_config.pretrained_backbone_weights", () => {
+      const yamlText = `
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+  pretrained_backbone_weights: /proj/models/prev_run/best.ckpt
+  pretrained_head_weights: /proj/models/prev_run/best.ckpt
+trainer_config: {}
+`;
+      const result = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
+      expect(result!.hyperparams.trainingMode).toBe("finetune");
+    });
+
+    it("defaults to 'reuse_config' when neither field is populated", () => {
+      const yamlText = `
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config: {}
+`;
+      const result = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
+      expect(result!.hyperparams.trainingMode).toBe("reuse_config");
+    });
+
+    it("treats a null resume_ckpt_path (never set) as 'reuse_config', not 'resume'", () => {
+      const yamlText = `
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config:
+  resume_ckpt_path: null
+`;
+      const result = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
+      expect(result!.hyperparams.trainingMode).toBe("reuse_config");
+    });
+  });
+
   describe("applyHyperparamsToYaml - wandb.name staleness", () => {
     it("clears a pre-existing wandb.name (no UI field for it) so a stale run id can't ride through", () => {
       const yamlText = `
@@ -725,6 +919,108 @@ trainer_config: {}
 `;
       const doc = yaml.load(applyHyperparamsToYaml(yamlText, defaultHyperparams)) as Record<string, any>;
       expect(doc.data_config.skeletons).toEqual([]);
+    });
+
+    it("clears a cache_img_path baked into an imported config — it may point at another run's directory", () => {
+      const yamlText = `
+data_config:
+  cache_img_path: /proj/models/old_run/train_imgs
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config: {}
+`;
+      const doc = yaml.load(applyHyperparamsToYaml(yamlText, defaultHyperparams)) as Record<string, any>;
+      expect(doc.data_config.cache_img_path).toBeNull();
+    });
+
+    it("clears part_names baked into an imported config's confmaps head", () => {
+      const yamlText = `
+data_config: {}
+model_config:
+  head_configs:
+    centered_instance:
+      confmaps:
+        sigma: 1.5
+        part_names: ["head", "tail"]
+trainer_config: {}
+`;
+      const doc = yaml.load(applyHyperparamsToYaml(yamlText, defaultHyperparams)) as Record<string, any>;
+      expect(doc.model_config.head_configs.centered_instance.confmaps.part_names).toBeNull();
+    });
+
+    it("does not inject a part_names key into a confmaps head that never had one (centroid)", () => {
+      const yamlText = `
+data_config: {}
+model_config:
+  head_configs:
+    centroid:
+      confmaps:
+        sigma: 1.5
+trainer_config: {}
+`;
+      const doc = yaml.load(applyHyperparamsToYaml(yamlText, defaultHyperparams)) as Record<string, any>;
+      expect("part_names" in doc.model_config.head_configs.centroid.confmaps).toBe(false);
+    });
+  });
+
+  describe("parseYamlConfig - strips skeleton/cache_img_path from stored content at load time", () => {
+    const yamlWithStaleFields = `
+data_config:
+  skeletons:
+    - nodes:
+        - name: head
+        - name: tail
+      edges: []
+  cache_img_path: /proj/models/old_run/train_imgs
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config: {}
+`;
+
+    it("clears skeletons from the stored content, not just at apply time", () => {
+      const result = useTrainingStore.getState().parseYamlConfig(yamlWithStaleFields, "c.yaml", "centroid");
+      const doc = yaml.load(result!.content) as Record<string, any>;
+      expect(doc.data_config.skeletons).toEqual([]);
+    });
+
+    it("clears cache_img_path from the stored content", () => {
+      const result = useTrainingStore.getState().parseYamlConfig(yamlWithStaleFields, "c.yaml", "centroid");
+      const doc = yaml.load(result!.content) as Record<string, any>;
+      expect(doc.data_config.cache_img_path).toBeNull();
+    });
+
+    it("handles a config with no data_config section at all", () => {
+      const noDataConfig = `
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config: {}
+`;
+      const result = useTrainingStore.getState().parseYamlConfig(noDataConfig, "c.yaml", "centroid");
+      const doc = yaml.load(result!.content) as Record<string, any>;
+      expect(doc.data_config.skeletons).toEqual([]);
+      expect(doc.data_config.cache_img_path).toBeNull();
+    });
+
+    it("clears part_names from the stored content's confmaps head", () => {
+      const yamlWithPartNames = `
+data_config: {}
+model_config:
+  head_configs:
+    centered_instance:
+      confmaps:
+        sigma: 1.5
+        part_names: ["head", "tail"]
+trainer_config: {}
+`;
+      const result = useTrainingStore.getState().parseYamlConfig(yamlWithPartNames, "c.yaml", "centered_instance");
+      const doc = yaml.load(result!.content) as Record<string, any>;
+      expect(doc.model_config.head_configs.centered_instance.confmaps.part_names).toBeNull();
     });
   });
 

@@ -23,7 +23,7 @@ import {
   type RenderedNode,
   type RenderOptions,
 } from "@/canvas/SkeletonRenderer";
-import { getInstanceColor, getPaletteColor } from "@/lib/colorPalettes";
+import { getInstanceColor, getPaletteColor, resolveColorTarget } from "@/lib/colorPalettes";
 import { toImageCoords } from "@/lib/cropTransform";
 import type { Instance, Track, Video } from "@/types";
 
@@ -538,6 +538,9 @@ export interface BuildOverlayOptions {
   showNonVisibleNodes: boolean;
   tracks: Track[];
   video: Video | null;
+  /** Whether any instance in the project has an assigned track — resolves
+   * distinctlyColor === "auto" to "track" vs "node". */
+  projectHasTracks?: boolean;
 }
 
 /**
@@ -551,6 +554,10 @@ export function buildExportRenderedInstances(
   instances: readonly Instance[],
   opts: BuildOverlayOptions
 ): RenderedInstance[] {
+  const resolvedColorTarget = resolveColorTarget(
+    opts.distinctlyColor,
+    opts.projectHasTracks ?? false
+  );
   return instances.map((inst, idx) => {
     const isPredicted = inst instanceof PredictedInstance;
     const skeleton = inst.skeleton;
@@ -561,18 +568,19 @@ export function buildExportRenderedInstances(
       inst.track,
       opts.tracks,
       isPredicted,
-      opts.colorPredicted
+      opts.colorPredicted,
+      opts.projectHasTracks ?? false
     );
 
     const paint = !(isPredicted && !opts.colorPredicted);
     const nodeColors =
-      opts.distinctlyColor === "node" && paint
+      resolvedColorTarget === "node" && paint
         ? skeleton.nodes.map((_, nIdx) => getPaletteColor(opts.palette, nIdx))
         : undefined;
 
     const edgeIndices = skeleton.edgeIndices;
     const edgeColors =
-      opts.distinctlyColor === "edge" && paint
+      resolvedColorTarget === "edge" && paint
         ? edgeIndices.map((_, eIdx) => getPaletteColor(opts.palette, eIdx))
         : undefined;
 
