@@ -474,6 +474,7 @@ export function ViewPanel() {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
+              <SelectItem value="auto">Auto (Node / Track)</SelectItem>
               <SelectItem value="instance">Instance</SelectItem>
               <SelectItem value="track">Track</SelectItem>
               <SelectItem value="node">Node</SelectItem>

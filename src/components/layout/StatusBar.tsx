@@ -27,6 +27,11 @@ export function StatusBar() {
   const video = useAppStore((s) => s.video);
   const videoRevision = useAppStore((s) => s.videoRevision);
   const labels = useAppStore((s) => s.labels);
+  // Re-render on every label edit. Commands that mutate an already-referenced
+  // LabeledFrame in place (e.g. adding a 2nd+ instance to the same frame)
+  // don't swap any subscribed reference, so without this the stats below go
+  // stale until something else happens to force a render.
+  useAppStore((s) => s.editSeq);
   const hasChanges = useAppStore((s) => s.hasChanges);
   const instance = useAppStore((s) => s.instance);
   const labeledFrame = useAppStore((s) => s.labeledFrame);

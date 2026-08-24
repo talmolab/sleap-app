@@ -36,6 +36,7 @@ function makeConfigs(modelType: ModelType): ConfigFile[] {
     slot,
     hyperparams: { ...defaultHyperparams },
     hasTrainedModel: false,
+    checkpointPath: null,
   }));
 }
 

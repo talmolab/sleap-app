@@ -8,14 +8,32 @@ import {
 } from "@/lib/trainingProfiles";
 
 describe("trainingProfiles", () => {
-  it("has 9 baseline profiles", () => {
-    expect(BASELINE_PROFILES).toHaveLength(9);
+  it("has 10 baseline profiles", () => {
+    expect(BASELINE_PROFILES).toHaveLength(10);
   });
 
   it("returns correct profiles for centroid", () => {
     const profiles = getBaselineProfilesForHead("centroid");
-    expect(profiles).toHaveLength(1);
-    expect(profiles[0].filename).toBe("baseline.centroid.yaml");
+    expect(profiles).toHaveLength(2);
+    expect(profiles[0].filename).toContain("medium_rf");
+    expect(profiles[1].filename).toContain("large_rf");
+  });
+
+  it("centroid's large-RF profile doubles max_stride and drops filters_rate, matching every other head's medium→large delta", () => {
+    interface UnetDoc {
+      model_config: { backbone_config: { unet: { max_stride: number; filters_rate: number; filters: number } } };
+    }
+    const [medium, large] = getBaselineProfilesForHead("centroid");
+    const mediumDoc = yaml.load(medium.content) as UnetDoc;
+    const largeDoc = yaml.load(large.content) as UnetDoc;
+    const mediumUnet = mediumDoc.model_config.backbone_config.unet;
+    const largeUnet = largeDoc.model_config.backbone_config.unet;
+    expect(mediumUnet.max_stride).toBe(16);
+    expect(largeUnet.max_stride).toBe(32);
+    expect(mediumUnet.filters_rate).toBe(2.0);
+    expect(largeUnet.filters_rate).toBe(1.5);
+    // Everything else about the backbone should be unchanged between tiers.
+    expect(largeUnet.filters).toBe(mediumUnet.filters);
   });
 
   it("returns correct profiles for centered_instance", () => {
@@ -45,14 +63,27 @@ describe("trainingProfiles", () => {
     expect(profiles[0].filename).toBe("baseline.multi_class_topdown.yaml");
   });
 
-  it("returns default profile for centroid", () => {
+  it("returns the medium-RF profile as centroid's default", () => {
     const p = getDefaultProfileForHead("centroid");
     expect(p).toBeDefined();
-    expect(p!.filename).toBe("baseline.centroid.yaml");
+    expect(p!.filename).toBe("baseline_medium_rf.centroid.yaml");
   });
 
   it("returns undefined for unknown head type", () => {
     expect(getDefaultProfileForHead("nonexistent")).toBeUndefined();
+  });
+
+  it("every profile has a unique, non-empty display label", () => {
+    const labels = BASELINE_PROFILES.map((p) => p.label);
+    expect(labels.every((l) => l.length > 0)).toBe(true);
+    expect(new Set(labels).size).toBe(labels.length);
+  });
+
+  it("RF-tiered profiles' labels say which tier they are; single-profile heads' don't", () => {
+    for (const p of BASELINE_PROFILES) {
+      const isTiered = getBaselineProfilesForHead(p.headType).length > 1;
+      expect(p.label.includes("RF)"), p.filename).toBe(isTiered);
+    }
   });
 
   it("all profiles have non-empty content", () => {

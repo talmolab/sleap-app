@@ -228,4 +228,28 @@ describe("saveProjectAsSlp — in-place routing", () => {
     expect(callArg(writeFileMock, 0, 0)).toBe("/plain.slp");
     expect(renameFileMock).not.toHaveBeenCalled();
   });
+
+  it("sets state.filename on a brand-new project's first save (no prior projectPath)", async () => {
+    // Regression: StatusBar / the window title both gate their entire display
+    // on state.filename, which used to only get synced by loadProject (never
+    // by saveProjectAsSlp) — a new project's first Save/Save As left it null
+    // forever, so the footer stayed on "No project loaded" until the file was
+    // closed and reopened, even though the save itself succeeded.
+    useAppStore.setState({ projectPath: null, filename: null });
+    savePath = "/Users/me/Desktop/new_project.slp";
+
+    await saveProjectAsSlp(fakeLabels(false), "new_project.slp");
+
+    expect(useAppStore.getState().projectPath).toBe("/Users/me/Desktop/new_project.slp");
+    expect(useAppStore.getState().filename).toBe("new_project.slp");
+  });
+
+  it("sets state.filename on a Tauri in-place re-save too, not just the first save", async () => {
+    useAppStore.setState({ projectPath: "/proj.pkg.slp", filename: null });
+    inPlaceResult = { ok: true };
+
+    await saveProjectAsSlp(fakeLabels(true), "proj.pkg.slp");
+
+    expect(useAppStore.getState().filename).toBe("proj.pkg.slp");
+  });
 });
