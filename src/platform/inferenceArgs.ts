@@ -183,6 +183,17 @@ export function buildInferenceArgs(
     args.push("--tracking");
     if (config.trackerMethod === "flow") {
       args.push("--use_flow");
+      args.push("--of_img_scale", String(config.flowImgScale));
+      args.push("--of_window_size", String(config.flowWindowSize));
+      args.push("--of_max_levels", String(config.flowMaxLevels));
+    } else if (config.trackerMethod === "kalman") {
+      args.push("--use_kalman");
+      args.push("--kf_track_features", config.kfTrackFeatures);
+      args.push("--kf_init_frame_count", String(config.kfInitFrameCount));
+      args.push("--kf_reset_gap_size", String(config.kfResetGapSize));
+      if (config.kfNodeIndices.length > 0) {
+        args.push("--kf_node_indices", config.kfNodeIndices.join(","));
+      }
     }
     if (config.similarityMethod === "centroids") {
       args.push("--features", "centroids");
@@ -199,6 +210,20 @@ export function buildInferenceArgs(
     if (config.connectSingleBreaks) {
       args.push("--post_connect_single_breaks");
     }
+    args.push("--min_match_points", String(config.minMatchPoints));
+    args.push("--min_new_track_points", String(config.minNewTrackPoints));
+    args.push("--scoring_reduction", config.scoringReduction);
+    if (config.trackingTargetInstanceCount != null) {
+      args.push("--tracking_target_instance_count", String(config.trackingTargetInstanceCount));
+    }
+    if (config.trackingPreCullToTarget) {
+      args.push("--tracking_pre_cull_to_target", "1");
+      args.push("--tracking_pre_cull_iou_threshold", String(config.trackingPreCullIouThreshold));
+    }
+    if (config.trackingCleanInstanceCount != null) {
+      args.push("--tracking_clean_instance_count", String(config.trackingCleanInstanceCount));
+      args.push("--tracking_clean_iou_threshold", String(config.trackingCleanIouThreshold));
+    }
   }
 
   // Post-processing
@@ -206,6 +231,24 @@ export function buildInferenceArgs(
     args.push("--filter_overlapping");
     args.push("--filter_overlapping_method", config.filterMethod);
     args.push("--filter_overlapping_threshold", String(config.filterThreshold));
+  }
+  if (config.filterMinVisibleNodes != null) {
+    args.push("--filter_min_visible_nodes", String(config.filterMinVisibleNodes));
+  }
+  if (config.filterMinVisibleNodeFraction != null) {
+    args.push("--filter_min_visible_node_fraction", String(config.filterMinVisibleNodeFraction));
+  }
+  if (config.filterMinMeanNodeScore != null) {
+    args.push("--filter_min_mean_node_score", String(config.filterMinMeanNodeScore));
+  }
+  if (config.filterMinInstanceScore != null) {
+    args.push("--filter_min_instance_score", String(config.filterMinInstanceScore));
+  }
+  if (config.filterMinCentroidDistance != null) {
+    // predict-only flag (not present in legacy sleap-nn `track`'s flag set) —
+    // only emitted when the user explicitly opts in, so old-version `track`
+    // fallback runs that never set this are unaffected.
+    args.push("--filter_min_centroid_distance", String(config.filterMinCentroidDistance));
   }
 
   return args;

@@ -18,6 +18,7 @@ import {
   clampHandleDrag,
 } from "@/lib/videoExport";
 import { renderInstances } from "@/canvas/SkeletonRenderer";
+import { hasAssignedTracks } from "@/lib/colorPalettes";
 
 interface ClipPreviewProps {
   video: Video;
@@ -69,6 +70,8 @@ export function ClipPreview({ video, start, end, onRangeChange }: ClipPreviewPro
     return m;
   }, [labels, video]);
 
+  const projectHasTracks = useMemo(() => hasAssignedTracks(labels), [labels]);
+
   const drawFrame = useCallback(
     async (frameIdx: number) => {
       const canvas = canvasRef.current;
@@ -103,6 +106,7 @@ export function ClipPreview({ video, start, end, onRangeChange }: ClipPreviewPro
             showNonVisibleNodes,
             tracks: labels.tracks ?? [],
             video,
+            projectHasTracks,
           });
           // Overlay in source space scaled to the display; zoom:s keeps marker
           // sizes visually constant (matches the encoder + the main canvas).
@@ -130,7 +134,7 @@ export function ClipPreview({ video, start, end, onRangeChange }: ClipPreviewPro
     [
       video, srcW, srcH, showOverlay, labels, frameToLf, palette, distinctlyColor,
       colorPredicted, showNonVisibleNodes, showInstances, showLabels, showEdges,
-      markerSize, nodeLabelSize, edgeStyle,
+      markerSize, nodeLabelSize, edgeStyle, projectHasTracks,
     ]
   );
 

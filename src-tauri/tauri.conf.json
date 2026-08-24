@@ -34,13 +34,19 @@
     "longDescription": "Web-based labeling GUI for SLEAP animal pose estimation and tracking.",
     "fileAssociations": [
       {
-        "ext": ["slp"],
+        "ext": [
+          "slp"
+        ],
         "name": "SLEAP Project",
         "description": "SLEAP labeling project",
         "role": "Editor"
       }
     ],
-    "createUpdaterArtifacts": true
+    "createUpdaterArtifacts": true,
+    "macOS": {
+      "signingIdentity": "-",
+      "minimumSystemVersion": "13.0"
+    }
   },
   "plugins": {
     "updater": {

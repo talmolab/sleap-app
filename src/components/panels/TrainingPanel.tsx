@@ -17,9 +17,10 @@ import { TrainingConfigDialog } from "@/components/dialogs/TrainingConfigDialog"
 import { LossViewerDialog } from "@/components/monitors/LossViewerDialog";
 import { LogTerminalDialog } from "@/components/monitors/LogTerminalDialog";
 import { ErrorOutput } from "@/components/monitors/ErrorOutput";
-import { slotToHeadType, getDefaultProfileForHead } from "@/lib/trainingProfiles";
 import { useAppStore } from "@/stores/appStore";
 import { isTauri } from "@/platform/index";
+import { getBaselineProfilesForHead, slotToHeadType } from "@/lib/trainingProfiles";
+import type { DiscoveredModel } from "@/lib/modelDiscovery";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
@@ -54,6 +55,7 @@ import {
   EyeOff,
 } from "lucide-react";
 import { computeNodeVisibility, visibilityTier } from "@/lib/anchorVisibility";
+import { TUTORIAL_FIRST_TRAINING_STEP_IDS } from "@/lib/tutorial/steps";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -274,21 +276,43 @@ function Section({
 
 // ── Config upload slot ───────────────────────────────────────────────────────
 
+/** True if `checkpointPath` lives inside `runPath` (either / or \ separator, and not equal to it). */
+function checkpointBelongsToRun(checkpointPath: string, runPath: string): boolean {
+  return checkpointPath.startsWith(`${runPath}/`) || checkpointPath.startsWith(`${runPath}\\`);
+}
+
 function ConfigSlot({
   slot,
+  modelType,
   configFile,
+  discoveredModels,
   onAdd,
   onRemove,
   disabled,
 }: {
   slot: string;
+  modelType: ModelType;
   configFile: ConfigFile | undefined;
+  discoveredModels: DiscoveredModel[];
   onAdd: (slot: string) => void;
   onRemove: (slot: string) => void;
   disabled: boolean;
 }) {
   const [dragOver, setDragOver] = useState(false);
   const { parseYamlConfig, addConfigFile } = useTrainingStore();
+
+  const headType = slotToHeadType(modelType, slot);
+  const baselineProfiles = getBaselineProfilesForHead(headType);
+  const forThisHead = discoveredModels.filter((m) => m.headKey === headType);
+
+  // Which dropdown item the current configFile actually corresponds to — a
+  // discovered run is identified by its checkpoint living inside that run's
+  // directory (every parsed run config shares the same literal filename,
+  // "training_config.yaml", so the filename alone can't tell runs apart).
+  const matchingRun = configFile?.checkpointPath
+    ? forThisHead.find((run) => checkpointBelongsToRun(configFile.checkpointPath!, run.path))
+    : undefined;
+  const selectValue = !configFile ? "" : matchingRun ? matchingRun.path : configFile.filename;
 
   const handleFile = (file: File) => {
     if (!file.name.endsWith(".yaml") && !file.name.endsWith(".yml")) return;
@@ -303,44 +327,26 @@ function ConfigSlot({
     reader.readAsText(file);
   };
 
-  if (configFile) {
-    return (
-      <div className="border border-green-500/50 bg-green-500/5 rounded-md p-2 text-left">
-        <div className="flex items-center justify-between gap-1">
-          <span className="text-xs font-medium truncate">{configFile.filename}</span>
-          <div className="flex items-center gap-1 shrink-0">
-            <Button
-              variant="outline"
-              size="xs"
-              onClick={() => onAdd(slot)}
-              disabled={disabled}
-            >
-              Browse...
-            </Button>
-            <button
-              className="text-muted-foreground hover:text-destructive"
-              onClick={() => onRemove(slot)}
-              disabled={disabled}
-            >
-              <X className="h-3 w-3" />
-            </button>
-          </div>
-        </div>
-        <div className="text-[10px] text-muted-foreground font-mono mt-0.5">
-          head: {configFile.modelType}
-        </div>
-      </div>
-    );
-  }
+  const handleSelectRun = async (run: DiscoveredModel) => {
+    try {
+      const { join } = await import("@tauri-apps/api/path");
+      const { readTextFile } = await import("@tauri-apps/plugin-fs");
+      const yamlText = await readTextFile(await join(run.path, "training_config.yaml"));
+      const checkpointPath = run.checkpointFile ? await join(run.path, run.checkpointFile) : null;
+      const parsed = parseYamlConfig(yamlText, "training_config.yaml", slot, checkpointPath);
+      if (parsed) addConfigFile(parsed);
+    } catch {
+      // Unreadable/missing despite discovery — leave the current config as-is.
+    }
+  };
 
   return (
     <div
-      className={`border border-dashed rounded-md p-3 text-center cursor-pointer transition-colors ${
-        dragOver
-          ? "border-primary bg-primary/5"
-          : "border-border hover:border-primary/50"
+      className={`rounded-md border p-2 transition-colors ${
+        configFile
+          ? "border-green-500/50 bg-green-500/5"
+          : `border-dashed ${dragOver ? "border-primary bg-primary/5" : "border-border hover:border-primary/50"}`
       }`}
-      onClick={() => !disabled && onAdd(slot)}
       onDragOver={(e) => {
         e.preventDefault();
         setDragOver(true);
@@ -353,24 +359,66 @@ function ConfigSlot({
         if (file) handleFile(file);
       }}
     >
-      <div className="text-[11px] text-muted-foreground">
-        Drop YAML config here
+      <div className="flex items-center gap-1">
+        <Select
+          value={selectValue}
+          onValueChange={(v) => {
+            if (v === "__browse__") {
+              onAdd(slot);
+              return;
+            }
+            const baseline = baselineProfiles.find((p) => p.filename === v);
+            if (baseline) {
+              const parsed = parseYamlConfig(baseline.content, baseline.filename, slot);
+              if (parsed) addConfigFile(parsed);
+              return;
+            }
+            const run = forThisHead.find((m) => m.path === v);
+            if (run) handleSelectRun(run);
+          }}
+          disabled={disabled}
+        >
+          <SelectTrigger className="h-8 text-xs flex-1 min-w-0">
+            <SelectValue placeholder="Select training config file..." />
+          </SelectTrigger>
+          <SelectContent>
+            {baselineProfiles.map((p) => (
+              <SelectItem key={p.filename} value={p.filename}>
+                {p.label}
+              </SelectItem>
+            ))}
+            {forThisHead.map((run) => (
+              <SelectItem key={run.path} value={run.path}>
+                [Trained] {run.runName ?? run.path} (training_config.yaml)
+              </SelectItem>
+            ))}
+            {configFile && !matchingRun && !baselineProfiles.some((p) => p.filename === configFile.filename) && (
+              <SelectItem value={configFile.filename}>{configFile.filename}</SelectItem>
+            )}
+            <SelectItem value="__browse__" className="text-primary font-medium">
+              Browse for config file...
+            </SelectItem>
+          </SelectContent>
+        </Select>
+        {configFile && (
+          <button
+            className="text-muted-foreground hover:text-destructive shrink-0"
+            onClick={() => onRemove(slot)}
+            disabled={disabled}
+          >
+            <X className="h-3 w-3" />
+          </button>
+        )}
       </div>
-      <Button
-        variant="outline"
-        size="xs"
-        className="mt-1.5"
-        onClick={(e) => {
-          e.stopPropagation();
-          if (!disabled) onAdd(slot);
-        }}
-        disabled={disabled}
-      >
-        Browse...
-      </Button>
-      <div className="text-[10px] text-muted-foreground mt-1">
-        Accepts .yaml files
-      </div>
+      {configFile ? (
+        <div className="text-[10px] text-muted-foreground font-mono mt-1">
+          head: {configFile.modelType}
+        </div>
+      ) : (
+        <div className="text-[10px] text-muted-foreground mt-1 text-center">
+          or drop a YAML config here
+        </div>
+      )}
     </div>
   );
 }
@@ -485,7 +533,7 @@ function AnchorPartField({
           onValueChange={(v) => onUpdate({ anchorPart: v === "__auto__" ? null : v })}
           disabled={disabled}
         >
-          <SelectTrigger className="h-7 text-xs flex-1"><SelectValue placeholder="Auto" /></SelectTrigger>
+          <SelectTrigger className="h-7 text-xs flex-1" data-tutorial="anchor-part-select"><SelectValue placeholder="Auto" /></SelectTrigger>
           <SelectContent>
             <SelectItem value="__auto__">Auto (bbox center)</SelectItem>
             {skeleton?.nodes.map((n) => {
@@ -548,7 +596,10 @@ function HyperparamsFields({
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-2">
-        <span className="text-[10px] text-muted-foreground shrink-0">Max Epochs</span>
+        <span className="text-[10px] text-muted-foreground shrink-0 flex items-center gap-1">
+          Max Epochs
+          <HelpTooltip text="Maximum number of epochs to train for. Training can be stopped manually or automatically if early stopping is enabled and a plateau is detected." />
+        </span>
         <Input
           type="number"
           value={hp.maxEpochs}
@@ -560,7 +611,10 @@ function HyperparamsFields({
       </div>
 
       <div className="flex items-center justify-between gap-2">
-        <span className="text-[10px] text-muted-foreground shrink-0">Batch Size</span>
+        <span className="text-[10px] text-muted-foreground shrink-0 flex items-center gap-1">
+          Batch Size
+          <HelpTooltip text="Number of examples per minibatch. Higher numbers can increase generalization by averaging gradient updates over more examples, at the cost of more GPU memory. Lower numbers may lead to overfitting but can help optimization with few varied examples." />
+        </span>
         <Input
           type="number"
           value={hp.batchSize}
@@ -574,7 +628,10 @@ function HyperparamsFields({
 
       <div className="grid grid-cols-2 gap-2">
         <div className="space-y-1">
-          <span className="text-[10px] text-muted-foreground">Rotation Augmentation</span>
+          <span className="text-[10px] text-muted-foreground flex items-center gap-1">
+            Rotation Augmentation
+            <HelpTooltip text="Rotation augmentation range. Off: disabled. ±15°: for side-view cameras where upside-down would be unnatural. ±180°: for top-view/overhead cameras where all orientations are valid." />
+          </span>
           <Select
             value={hp.rotationPreset}
             onValueChange={(v) => onUpdate(slot, { rotationPreset: v as "off" | "15" | "180" | "custom" })}
@@ -590,7 +647,10 @@ function HyperparamsFields({
           </Select>
         </div>
         <div className="space-y-1">
-          <span className="text-[10px] text-muted-foreground">Scale Augmentation</span>
+          <span className="text-[10px] text-muted-foreground flex items-center gap-1">
+            Scale Augmentation
+            <HelpTooltip text="Enable random scaling augmentation. Scaling is applied independently with 100% probability when enabled." />
+          </span>
           <label className="flex items-center gap-1.5 h-7 cursor-pointer">
             <input
               type="checkbox"
@@ -651,10 +711,32 @@ export function TrainingPanel() {
   const stopTraining = useTrainingStore((s) => s.stopTraining);
   const cancelTraining = useTrainingStore((s) => s.cancelTraining);
   const reset = useTrainingStore((s) => s.reset);
+  const resetSeq = useTrainingStore((s) => s.resetSeq);
   const { parseYamlConfig: parseConfig, addConfigFile: addConfig } = useTrainingStore();
+  const [discoveredModels, setDiscoveredModels] = useState<DiscoveredModel[]>([]);
+  const projectPath = useAppStore((s) => s.projectPath);
+  const tutorialActive = useAppStore((s) => s.tutorialActive);
+  const tutorialSteps = useAppStore((s) => s.tutorialSteps);
+  const tutorialStepIndex = useAppStore((s) => s.tutorialStepIndex);
 
-  // Auto-load baseline configs when model type changes: clear stale configs
-  // from the previous model type, then populate defaults for the new one.
+  // Auto-load a config when a slot has none: prefer the EXACT config from that
+  // head's most recently trained run under `{projectDir}/models/` (same
+  // discovery — findTrainedModels — InferencePanel uses to auto-pick a model),
+  // so "Train Again" resumes from what was actually run last time rather than
+  // a generic baseline; falls back to the baseline profile when there's no
+  // trained run for that head (fresh project, or browser/no local project dir).
+  // EXCEPT during the tutorial's first training pass
+  // (`TUTORIAL_FIRST_TRAINING_STEP_IDS`) — that pass is meant to demonstrate
+  // the baseline workflow, so it always loads the baseline even if a trained
+  // run already exists on disk for this head (e.g. a prior tutorial pass on
+  // the same project); the tutorial's later `retrain` step goes through this
+  // same effect again (via `resetSeq`) with trained-config preference back on,
+  // picking up the run that first pass just produced.
+  // Clears stale configs from the previous model type first. Also re-runs on
+  // `resetSeq` (bumped by every `reset()`, e.g. "Train Again"): a reset landing
+  // back on the SAME model type wouldn't otherwise re-trigger this effect (its
+  // other dependency, config.modelType, hasn't changed), so config.configs —
+  // wiped to [] by reset() — would stay empty forever.
   const prevModelType = useRef(config.modelType);
   useEffect(() => {
     const newSlots = getConfigSlots(config.modelType);
@@ -667,16 +749,74 @@ export function TrainingPanel() {
       }
       prevModelType.current = config.modelType;
     }
-    for (const slot of newSlots) {
-      if (config.configs.some((c) => c.slot === slot)) continue;
-      const headType = slotToHeadType(config.modelType, slot);
-      const baseline = getDefaultProfileForHead(headType);
-      if (baseline) {
-        const parsed = parseConfig(baseline.content, baseline.filename, slot);
-        if (parsed) addConfig(parsed);
+    const missingSlots = newSlots.filter(
+      (slot) => !config.configs.some((c) => c.slot === slot),
+    );
+
+    const currentTutorialStepId = tutorialActive
+      ? tutorialSteps[tutorialStepIndex]?.id
+      : undefined;
+    const preferTrained = !(
+      currentTutorialStepId && TUTORIAL_FIRST_TRAINING_STEP_IDS.has(currentTutorialStepId)
+    );
+
+    let cancelled = false;
+    (async () => {
+      const { resolveSlotConfigSource } = await import("@/lib/trainedConfigAutoload");
+      let discovered: DiscoveredModel[] = [];
+      // No trained-model lookup possible without a local project dir (browser
+      // mode / no project yet) — `discovered` stays empty and every slot below
+      // just falls back to its baseline, same as before this feature existed.
+      let fsAccess: import("@/lib/trainedConfigAutoload").TrainedConfigFsAccess = {
+        readTextFile: async () => {
+          throw new Error("no local project — trained-config lookup unavailable");
+        },
+        join: async () => {
+          throw new Error("no local project — trained-config lookup unavailable");
+        },
+      };
+      if (preferTrained && isTauri && projectPath) {
+        try {
+          const [{ findTrainedModels }, { dirname, join }, { readTextFile }] =
+            await Promise.all([
+              import("@/lib/modelDiscovery"),
+              import("@tauri-apps/api/path"),
+              import("@tauri-apps/plugin-fs"),
+            ]);
+          const projectDir = await dirname(projectPath);
+          discovered = await findTrainedModels(projectDir);
+          fsAccess = { readTextFile, join };
+        } catch {
+          discovered = [];
+        }
       }
-    }
-  }, [config.modelType]); // eslint-disable-line react-hooks/exhaustive-deps
+      if (cancelled) return;
+      // Kept in state (not just this closure) so the per-slot config
+      // dropdown can list every discovered run for a head, not just
+      // whichever one this effect happened to auto-load.
+      setDiscoveredModels(discovered);
+
+      if (missingSlots.length === 0) return;
+
+      for (const slot of missingSlots) {
+        const source = await resolveSlotConfigSource(
+          slot,
+          config.modelType,
+          discovered,
+          fsAccess,
+          { preferTrained },
+        );
+        if (cancelled) return;
+        if (source) {
+          const parsed = parseConfig(source.yamlText, source.filename, slot, source.checkpointPath);
+          if (parsed) addConfig(parsed);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [config.modelType, resetSeq]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Config dialog state
   const [configDialogOpen, setConfigDialogOpen] = useState(false);
@@ -717,7 +857,6 @@ export function TrainingPanel() {
   const workerMounts = selectedWorker?.mounts || ["/"];
 
   // App state
-  const projectPath = useAppStore((s) => s.projectPath);
   const skeleton = useAppStore((s) => s.skeleton);
   const labels = useAppStore((s) => s.labels);
   const setModelMetricsDialogOpen = useAppStore(
@@ -764,12 +903,24 @@ export function TrainingPanel() {
     cf.hyperparams.pafsLossWeight > 0 &&
     cf.hyperparams.classLossWeight > 0
   );
+  // Resume needs a real .ckpt (it's a full Lightning-state restore); Fine-tune
+  // accepts .ckpt or legacy SLEAP .h5 backbone/head weights — see
+  // model_config.pretrained_*_weights vs trainer_config.resume_ckpt_path in
+  // sleap-nn's lightning_modules.py / trainer_config.py.
+  const hasValidCheckpointSelection = config.configs.every((cf) => {
+    const mode = cf.hyperparams.trainingMode;
+    if (mode === "reuse_config") return true;
+    if (!cf.checkpointPath?.trim()) return false;
+    if (mode === "resume") return cf.checkpointPath.toLowerCase().endsWith(".ckpt");
+    return true;
+  });
   const isModelTypeIncompatible = skeletonCompat.disabledTypes.has(config.modelType);
   const canStart =
     hasAllConfigs &&
     hasData &&
     hasLabeledFrames &&
     hasValidLossWeights &&
+    hasValidCheckpointSelection &&
     !isModelTypeIncompatible &&
     status === "idle" &&
     (remoteEnabled ? !!selectedWorkerId : true);
@@ -854,8 +1005,9 @@ export function TrainingPanel() {
         {/* ── Model Type & Configs ─────────────────────────────────── */}
         <Section title="Model Type & Configs" defaultOpen={true}>
           <div className="space-y-1">
-            <span className="text-[10px] text-muted-foreground">
+            <span className="text-[10px] text-muted-foreground flex items-center gap-1">
               Model Type
+              <HelpTooltip text="The pose-estimation pipeline to train. Single Animal predicts node locations for one animal per frame. Top-Down uses a centroid model to locate/crop each animal, then a centered-instance model for its pose. Bottom-Up predicts all keypoints and groups them into animals via part affinity fields. The '+ ID' variants also classify each instance's identity." />
             </span>
             <Select
               value={config.modelType}
@@ -896,12 +1048,15 @@ export function TrainingPanel() {
             const configFile = config.configs.find((c) => c.slot === slot);
             return (
               <div key={slot} className="space-y-1">
-                <span className="text-[10px] text-muted-foreground">
+                <span className="text-[10px] text-muted-foreground flex items-center gap-1">
                   {getSlotLabel(slot)}
+                  <HelpTooltip text="Config file for this model in the pipeline. Auto-discovered training_config.yaml files from prior runs are picked up automatically; you can also browse to a specific config or a directory of already-trained model checkpoints to reuse." />
                 </span>
                 <ConfigSlot
                   slot={slot}
+                  modelType={config.modelType}
                   configFile={configFile}
+                  discoveredModels={discoveredModels}
                   onAdd={handleConfigBrowse}
                   onRemove={removeConfigFile}
                   disabled={isRunning}
@@ -922,10 +1077,11 @@ export function TrainingPanel() {
         {/* ── Data ─────────────────────────────────────────────────── */}
         <Section title="Data" defaultOpen={true}>
           <div className="space-y-1">
-            <span className="text-[10px] text-muted-foreground">
+            <span className="text-[10px] text-muted-foreground flex items-center gap-1">
               {remoteEnabled
                 ? "Training Labels (on worker)"
                 : "Training Labels"}
+              <HelpTooltip text="The .slp file whose labeled frames are used to train the model. Defaults to the currently open project." />
             </span>
             <div className="flex gap-1">
               <Input
@@ -962,8 +1118,9 @@ export function TrainingPanel() {
             </div>
           </div>
           <div className="space-y-1">
-            <span className="text-[10px] text-muted-foreground">
+            <span className="text-[10px] text-muted-foreground flex items-center gap-1">
               Validation Labels (optional)
+              <HelpTooltip text="A separate .slp file to hold out for validation instead of splitting it from the training labels. Leave empty to auto-split a fraction of the training labels (see Validation Fraction in the per-model Data settings)." />
             </span>
             <div className="flex gap-1">
               <Input
@@ -1001,15 +1158,19 @@ export function TrainingPanel() {
           </div>
 
           <div className="space-y-1">
-            <span className="text-[10px] text-muted-foreground">
+            <span className="text-[10px] text-muted-foreground flex items-center gap-1">
               Post-Training Inference Target
+              <HelpTooltip text="Which frames to run inference on after training completes. Predictions will be merged back into the project." />
             </span>
             <Select
               value={inferenceTarget}
               onValueChange={(v) => setInferenceTarget(v)}
               disabled={isRunning}
             >
-              <SelectTrigger className="h-7 text-xs">
+              <SelectTrigger
+                className="h-7 text-xs"
+                data-tutorial="post-training-inference-target-select"
+              >
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -1025,7 +1186,10 @@ export function TrainingPanel() {
             </Select>
             {(inferenceTarget === "random_video" || inferenceTarget === "random") && (
               <div className="flex items-center justify-between gap-2 mt-1">
-                <span className="text-[10px] text-muted-foreground shrink-0">Sample count</span>
+                <span className="text-[10px] text-muted-foreground shrink-0 flex items-center gap-1">
+                  Sample count
+                  <HelpTooltip text="How many frames to randomly sample for post-training inference." />
+                </span>
                 <Input type="number" min={1} value={sampleCount}
                   onChange={(e) => setSampleCount(Math.max(1, Number(e.target.value)))}
                   className="h-6 text-[10px] w-20" disabled={isRunning} />
@@ -1099,7 +1263,10 @@ export function TrainingPanel() {
             {/* ── Remote (desktop only — web is always remote) ──────── */}
             <Section title="Remote" defaultOpen={false}>
               <div className="flex items-center justify-between py-1">
-                <span className="text-xs">Remote Training</span>
+                <span className="text-xs flex items-center gap-1">
+                  Remote Training
+                  <HelpTooltip text="Send this training job to a connected remote worker machine via sleap-connect instead of running it locally." />
+                </span>
                 <button
                   className={`w-9 h-5 rounded-full relative transition-colors ${
                     remoteEnabled ? "bg-primary" : "bg-zinc-700"
@@ -1124,8 +1291,9 @@ export function TrainingPanel() {
               {remoteEnabled && connectionStatus === "connected" && (
                 <>
                   <div className="space-y-1">
-                    <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+                    <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-1">
                       Room
+                      <HelpTooltip text="The sleap-connect room this app is currently connected to. Workers must join the same room to be selectable below." />
                     </label>
                     <div className="flex items-center gap-1.5 text-[11px]">
                       <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
@@ -1140,8 +1308,9 @@ export function TrainingPanel() {
                   </div>
 
                   <div className="space-y-1">
-                    <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+                    <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-1">
                       Worker
+                      <HelpTooltip text="Which connected machine in the room will actually run training. Only workers with status 'available' can be selected." />
                     </label>
                     <Select
                       value={selectedWorkerId || ""}
@@ -1211,6 +1380,7 @@ export function TrainingPanel() {
               className="w-full h-8 text-xs"
               onClick={handleStart}
               disabled={!canStart}
+              data-tutorial="start-training-button"
             >
               <Upload className="h-3.5 w-3.5 mr-1.5" />
               {remoteEnabled ? "Start Remote Training" : "Start Training"}
@@ -1223,9 +1393,11 @@ export function TrainingPanel() {
                     ? "Select training data"
                     : !hasLabeledFrames
                       ? "Label at least one frame before training"
-                      : remoteEnabled && !selectedWorkerId
-                        ? "Select a worker"
-                        : ""}
+                      : !hasValidCheckpointSelection
+                        ? "Select a checkpoint file for Resume/Fine-tune"
+                        : remoteEnabled && !selectedWorkerId
+                          ? "Select a worker"
+                          : ""}
               </p>
             )}
           </>

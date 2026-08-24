@@ -98,67 +98,74 @@ export function SkeletonBuildBar() {
 
   return (
     <>
-      <div className="absolute top-2 left-1/2 -translate-x-1/2 z-30 flex items-center gap-1.5 rounded-md bg-black/70 px-2 py-1.5 shadow-lg backdrop-blur-sm pointer-events-auto">
-        {stage === "place" ? (
-          <>
-            <span className="px-1 text-xs font-medium text-white/90">
-              1 · Place nodes
-            </span>
-            <Button
-              variant="secondary"
-              size="xs"
-              className={barBtn}
-              onClick={() => commandContext.undo()}
-            >
-              Undo
-            </Button>
-            <Button
-              variant="default"
-              size="xs"
-              className="pointer-events-auto"
-              onClick={() => setStage("connect")}
-            >
-              Next: Connect edges →
-            </Button>
-          </>
-        ) : (
-          <>
-            <span className="px-1 text-xs font-medium text-white/90">
-              2 · Connect edges
-            </span>
-            <Button
-              variant="secondary"
-              size="xs"
-              className={barBtn}
-              onClick={() => setStage("place")}
-            >
-              ← Back
-            </Button>
-            <Button
-              variant="secondary"
-              size="xs"
-              className={barBtn}
-              onClick={() => commandContext.undo()}
-            >
-              Undo
-            </Button>
-            <Button
-              variant="secondary"
-              size="xs"
-              className={barBtn}
-              onClick={() => commandContext.execute(ClearEdgesCommand)}
-            >
-              Clear edges
-            </Button>
-            <Button
-              variant="default"
-              size="xs"
-              className="pointer-events-auto"
-              onClick={done}
-            >
-              Done
-            </Button>
-          </>
+      <div className="absolute top-2 left-1/2 -translate-x-1/2 z-30 flex flex-col items-center gap-1">
+        <div className="flex items-center gap-1.5 rounded-md bg-black/70 px-2 py-1.5 shadow-lg backdrop-blur-sm pointer-events-auto">
+          {stage === "place" ? (
+            <>
+              <span className="px-1 text-xs font-medium text-white/90">
+                1 · Place nodes
+              </span>
+              <Button
+                variant="secondary"
+                size="xs"
+                className={barBtn}
+                onClick={() => commandContext.undo()}
+              >
+                Undo
+              </Button>
+              <Button
+                variant="default"
+                size="xs"
+                className="pointer-events-auto"
+                onClick={() => setStage("connect")}
+              >
+                Next: Connect edges →
+              </Button>
+            </>
+          ) : (
+            <>
+              <span className="px-1 text-xs font-medium text-white/90">
+                2 · Connect edges
+              </span>
+              <Button
+                variant="secondary"
+                size="xs"
+                className={barBtn}
+                onClick={() => setStage("place")}
+              >
+                ← Back
+              </Button>
+              <Button
+                variant="secondary"
+                size="xs"
+                className={barBtn}
+                onClick={() => commandContext.undo()}
+              >
+                Undo
+              </Button>
+              <Button
+                variant="secondary"
+                size="xs"
+                className={barBtn}
+                onClick={() => commandContext.execute(ClearEdgesCommand)}
+              >
+                Clear edges
+              </Button>
+              <Button
+                variant="default"
+                size="xs"
+                className="pointer-events-auto"
+                onClick={done}
+              >
+                Done
+              </Button>
+            </>
+          )}
+        </div>
+        {stage === "place" && (
+          <span className="rounded bg-black/60 px-2 py-0.5 text-[11px] text-white/70 backdrop-blur-sm">
+            Double-click a node to rename it
+          </span>
         )}
       </div>
 

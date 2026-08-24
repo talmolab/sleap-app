@@ -17,14 +17,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, HelpCircle, Crosshair } from "lucide-react";
+import { Search, HelpCircle, Crosshair, RefreshCw } from "lucide-react";
 import type { ConfigFile, ConfigHyperparams, Backbone, ModelType, DataPipeline, ColorMode } from "@/stores/trainingStore";
 import { getSlotLabel, getConfigSlots, useTrainingStore } from "@/stores/trainingStore";
+import { checkWandbAuth, type WandbAuth } from "@/platform/backend";
 import { useConnectStore } from "@/stores/connectStore";
 import { useAppStore } from "@/stores/appStore";
 import { ModelStatsPreview } from "@/components/dialogs/ModelStatsPreview";
 import { getBaselineProfilesForHead, getDefaultProfileForHead, slotToHeadType } from "@/lib/trainingProfiles";
 import { computeNodeVisibility, visibilityTier, type NodeVisibility } from "@/lib/anchorVisibility";
+import { isTauri } from "@/lib/platform";
 
 /** Tailwind text color per visibility tier, matching the Training panel's log coloring. */
 const VISIBILITY_COLOR: Record<ReturnType<typeof visibilityTier>, string> = {
@@ -137,6 +139,8 @@ const PIPELINE_FIELD_DEFS = {
   numDevices: { id: "field-numdevices", label: "Number of Devices", hint: "Number of GPUs/devices to use for training. Set to 1 for single-GPU training.", keywords: "gpu devices" },
   secWandb: { id: "pipeline-wandb", label: "WandB", keywords: "weights and biases w&b logging" },
   wandbEnable: { id: "field-wandb-enable", label: "Enable WandB for logging", hint: "Log training metrics, loss curves, and visualizations to Weights & Biases for experiment tracking.", keywords: "wandb w&b weights and biases" },
+  wandbOffline: { id: "field-wandb-offline", label: "Offline Mode", hint: "Log to local disk only — no network or W&B login required. Upload later with `wandb sync`.", keywords: "wandb w&b offline mode local sync network airgap" },
+  wandbApiKey: { id: "field-wandb-apikey", label: "API Key", hint: "W&B API key from wandb.ai/authorize. Optional — leave blank if you've run 'wandb login' or set the WANDB_API_KEY environment variable.", keywords: "wandb w&b api key token auth login" },
   wandbUploadViz: { id: "field-wandb-uploadviz", label: "Upload Viz", hint: "Upload prediction visualization images to W&B for remote viewing.", keywords: "wandb w&b" },
   wandbOpenBrowser: { id: "field-wandb-openbrowser", label: "Open in browser", hint: "Automatically open the W&B run page in your browser when training starts.", keywords: "wandb w&b" },
   wandbEntity: { id: "field-wandb-entity", label: "Entity Name", keywords: "wandb w&b entity" },
@@ -256,15 +260,16 @@ function Field({ label, id, hint, children }: { label: string; id?: string; hint
   );
 }
 
-function Toggle({ label, id, hint, checked, onChange }: { label: string; id?: string; hint?: string; checked: boolean; onChange: (v: boolean) => void }) {
+function Toggle({ label, id, hint, checked, onChange, disabled = false }: { label: string; id?: string; hint?: string; checked: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {
   return (
-    <div id={id} data-search-field={id ? "" : undefined} className="flex items-center gap-6 py-2.5 scroll-mt-4">
+    <div id={id} data-search-field={id ? "" : undefined} className={`flex items-center gap-6 py-2.5 scroll-mt-4 ${disabled ? "opacity-50" : ""}`}>
       <span className="text-sm text-muted-foreground shrink-0 flex items-center gap-1.5">
         {label}
         {hint && <HintBubble text={hint} />}
       </span>
       <button
-        className={`w-10 h-6 rounded-full relative transition-colors ${checked ? "bg-primary" : "bg-zinc-700"}`}
+        disabled={disabled}
+        className={`w-10 h-6 rounded-full relative transition-colors ${checked ? "bg-primary" : "bg-zinc-700"} ${disabled ? "cursor-not-allowed" : ""}`}
         onClick={() => onChange(!checked)}
       >
         <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform ${checked ? "translate-x-4" : ""}`} />
@@ -370,12 +375,55 @@ function HeadTabContent({
   const headType = slotToHeadType(modelType, slot);
   const baselineProfiles = getBaselineProfilesForHead(headType);
   const showCropSize = slot !== "centroid";
-  const trainingMode = (!configFile?.hasTrainedModel && hp.trainingMode !== "reuse_config")
-    ? "reuse_config"
-    : (hp.trainingMode ?? "reuse_config");
-  const modelLocked = trainingMode === "resume" || trainingMode === "reuse_model";
-  const allLocked = trainingMode === "reuse_model";
-  const { parseYamlConfig, addConfigFile } = useTrainingStore();
+  const trainingMode = hp.trainingMode ?? "reuse_config";
+  const modelLocked = trainingMode === "resume" || trainingMode === "finetune";
+  const allLocked = trainingMode === "resume";
+  const { parseYamlConfig, addConfigFile, updateConfigCheckpointPath } = useTrainingStore();
+
+  const handleBrowseCheckpoint = async () => {
+    try {
+      const { open: tauriOpen } = await import("@tauri-apps/plugin-dialog");
+      const selected = await tauriOpen({
+        title: "Select Checkpoint File",
+        filters: [
+          trainingMode === "finetune"
+            ? { name: "Checkpoint", extensions: ["ckpt", "h5"] }
+            : { name: "Checkpoint", extensions: ["ckpt"] },
+        ],
+      });
+      if (!selected) return;
+      const checkpointPath = selected as string;
+
+      // Warn (but don't block, mirroring handleConfigBrowse's modelType check
+      // below) if the checkpoint's own head type — read from its sibling
+      // training_config.yaml, sleap-nn's standard run layout — doesn't match
+      // this slot's head. A backbone/head-shape mismatch would otherwise only
+      // surface as an opaque state_dict error once training starts.
+      try {
+        const [{ dirname, join }, { readTextFile, exists }, { parseTrainingConfig }] = await Promise.all([
+          import("@tauri-apps/api/path"),
+          import("@tauri-apps/plugin-fs"),
+          import("@/lib/metrics/loadModelMetrics"),
+        ]);
+        const runDir = await dirname(checkpointPath);
+        const cfgPath = await join(runDir, "training_config.yaml");
+        if (await exists(cfgPath)) {
+          const info = parseTrainingConfig(await readTextFile(cfgPath));
+          if (info.headKey && info.headKey !== headType) {
+            window.alert(
+              `The checkpoint you selected was trained for "${info.headKey}" and may not be compatible with this ${headType} head.`
+            );
+          }
+        }
+      } catch {
+        // Sibling config unreadable/missing — nothing to validate against.
+      }
+
+      updateConfigCheckpointPath(slot, checkpointPath);
+    } catch {
+      // User cancelled or not in Tauri
+    }
+  };
 
   const handleConfigBrowse = () => {
     const input = document.createElement("input");
@@ -429,7 +477,7 @@ function HeadTabContent({
           <SelectContent>
             {baselineProfiles.map((p) => (
               <SelectItem key={p.filename} value={p.filename}>
-                [{p.filename.replace(".yaml", "")}] ({p.filename})
+                {p.label}
               </SelectItem>
             ))}
             {configFile && !baselineProfiles.some((p) => p.filename === configFile.filename) && (
@@ -450,29 +498,58 @@ function HeadTabContent({
         </Select>
       </div>
 
-      {/* ── Training mode radios ── */}
-      <div className="flex items-center gap-5 mb-5 pb-4 border-b">
-        {([
-          { value: "reuse_config" as const, label: "Reuse config (train from scratch)", alwaysEnabled: true },
-          { value: "resume" as const, label: "Resume training (fine-tune)", alwaysEnabled: false },
-          { value: "reuse_model" as const, label: "Reuse model (don't retrain)", alwaysEnabled: false },
-        ]).map((opt) => {
-          const disabled = !opt.alwaysEnabled && !configFile?.hasTrainedModel;
-          return (
-            <label key={opt.value} className={`flex items-center gap-1.5 ${disabled ? "opacity-40 cursor-not-allowed" : "cursor-pointer"}`}>
-              <input
-                type="radio"
-                name={`training-mode-${slot}`}
-                checked={trainingMode === opt.value}
-                onChange={() => onUpdate({ trainingMode: opt.value })}
-                className="accent-primary"
-                disabled={disabled}
-              />
-              <span className="text-sm">{opt.label}</span>
-            </label>
-          );
-        })}
-      </div>
+      {/* ── Training mode ── */}
+      {configFile && (
+        <div className="mb-5 pb-4 border-b">
+          <div className="flex items-center gap-5">
+            {([
+              { value: "reuse_config" as const, label: "Train from scratch" },
+              { value: "finetune" as const, label: "Fine-tune (start from prior weights)" },
+              { value: "resume" as const, label: "Resume training (continue from checkpoint)" },
+            ]).map((opt) => (
+              <label key={opt.value} className="flex items-center gap-1.5 cursor-pointer">
+                <input
+                  type="radio"
+                  name={`training-mode-${slot}`}
+                  checked={trainingMode === opt.value}
+                  onChange={() => onUpdate({ trainingMode: opt.value })}
+                  className="accent-primary"
+                />
+                <span className="text-sm">{opt.label}</span>
+              </label>
+            ))}
+          </div>
+
+          {(trainingMode === "finetune" || trainingMode === "resume") && (
+            <div className="mt-3 space-y-1">
+              <div className="flex items-center gap-2">
+                <Input
+                  value={configFile.checkpointPath ?? ""}
+                  onChange={(e) => updateConfigCheckpointPath(slot, e.target.value || null)}
+                  placeholder={trainingMode === "finetune" ? "Path to .ckpt or .h5 file" : "Path to .ckpt file"}
+                  className="h-9 text-sm font-mono flex-1"
+                />
+                {isTauri && (
+                  <button
+                    type="button"
+                    onClick={handleBrowseCheckpoint}
+                    className="h-9 px-3 text-sm rounded-md border hover:bg-muted shrink-0"
+                  >
+                    Browse...
+                  </button>
+                )}
+              </div>
+              {trainingMode === "resume" &&
+                configFile.checkpointPath &&
+                !configFile.checkpointPath.toLowerCase().endsWith(".ckpt") && (
+                  <p className="text-[10px] text-destructive">
+                    Resume training requires a .ckpt file (.h5 is only supported for Fine-tune).
+                  </p>
+                )}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ── Model Stats Preview (thumbnail + RF + crop size + params) ── */}
       <ModelStatsPreview hp={hp} maxStride={hp.maxStride} filters={hp.filters} filtersRate={hp.filtersRate} outputStride={hp.outputStride} stemStride={hp.stemStride} backbone={hp.backbone || "unet"} slot={slot} />
@@ -845,6 +922,20 @@ export function TrainingConfigDialog({
   const [activeTab, setActiveTab] = useState("pipeline");
   const [searchQuery, setSearchQuery] = useState("");
 
+  // Detect existing W&B auth (env var / ~/.netrc) on the local machine so the
+  // API-key field can advertise itself as optional. Desktop-only; a no-op in
+  // the browser (checkWandbAuth returns not-authenticated there).
+  const [wandbAuth, setWandbAuth] = useState<WandbAuth | null>(null);
+  const refreshWandbAuth = useCallback(() => {
+    checkWandbAuth().then(setWandbAuth).catch(() => {});
+  }, []);
+  // Re-detect every time the dialog opens (the component stays mounted, so a
+  // one-shot mount effect would go stale after a `wandb login`).
+  useEffect(() => {
+    if (!open) return;
+    refreshWandbAuth();
+  }, [open, refreshWandbAuth]);
+
   // App store for suggestions count
   const labels = useAppStore((s) => s.labels);
   const suggestionsCount = labels?.suggestions?.length ?? 0;
@@ -1120,7 +1211,10 @@ export function TrainingConfigDialog({
                     onChange={onSkipUserLabeledChange}
                   />
                   <div id={PIPELINE_FIELD_DEFS.existingPredictions.id} data-search-field="" className="flex items-center gap-4 scroll-mt-4">
-                    <span className="text-sm text-muted-foreground">Existing predictions:</span>
+                    <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                      Existing predictions:
+                      <HintBubble text="What to do with predicted instances already in the project when this run's post-training inference produces new ones. Clear all removes every existing predicted instance first. Replace overwrites predictions on frames the new inference re-runs. Keep leaves existing predictions untouched and only adds new ones." />
+                    </span>
                     {(["clear_all", "replace", "keep"] as const).map((option) => (
                       <label key={option} className="flex items-center gap-1.5 cursor-pointer">
                         <input
@@ -1179,7 +1273,10 @@ export function TrainingConfigDialog({
                     <div className="flex items-center gap-4">
                       <label id={PIPELINE_FIELD_DEFS.filterOverlapping.id} data-search-field="" className="flex items-center gap-1.5 scroll-mt-4 opacity-50">
                         <input type="checkbox" disabled className="accent-primary" />
-                        <span className="text-sm">{PIPELINE_FIELD_DEFS.filterOverlapping.label}</span>
+                        <span className="text-sm flex items-center gap-1">
+                          {PIPELINE_FIELD_DEFS.filterOverlapping.label}
+                          <HintBubble text="Removes duplicate detections of the same animal by bounding-box IOU or pose OKS overlap. This is an inference-time post-processing step, not a training parameter — it's disabled here and configured when running inference instead." />
+                        </span>
                       </label>
                       <div className="flex items-center gap-2 opacity-50">
                         <span className="text-sm text-muted-foreground">Method:</span>
@@ -1267,31 +1364,75 @@ export function TrainingConfigDialog({
                   <div className="space-y-3">
                     <div className="flex items-center gap-2">
                       <span className="text-sm text-muted-foreground">Status:</span>
-                      <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
-                      <span className="text-sm text-red-400">Not logged in</span>
+                      {wandbAuth?.authenticated ? (
+                        <>
+                          <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
+                          <span className="text-sm text-green-400">
+                            Authenticated{wandbAuth.source ? ` (${wandbAuth.source})` : ""}
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
+                          <span className="text-sm text-red-400">Not logged in</span>
+                        </>
+                      )}
+                      <button
+                        type="button"
+                        onClick={refreshWandbAuth}
+                        title="Re-check W&B login"
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        <RefreshCw className="w-3 h-3" />
+                      </button>
                     </div>
                     <div className="flex items-center gap-4 flex-wrap">
                       <Toggle {...PIPELINE_FIELD_DEFS.wandbEnable} checked={firstHp.useWandb} onChange={(v) => configs.forEach((c) => onUpdateSlot(c.slot, { useWandb: v }))} />
-                      <Toggle {...PIPELINE_FIELD_DEFS.wandbUploadViz} checked={firstHp.wandbUploadViz} onChange={(v) => configs.forEach((c) => onUpdateSlot(c.slot, { wandbUploadViz: v }))} />
-                      <Toggle {...PIPELINE_FIELD_DEFS.wandbOpenBrowser} checked={autoOpenWandb} onChange={onAutoOpenWandbChange} />
+                      <Toggle {...PIPELINE_FIELD_DEFS.wandbOffline} checked={firstHp.wandbMode === "offline"} onChange={(v) => configs.forEach((c) => onUpdateSlot(c.slot, { wandbMode: v ? "offline" : "online" }))} disabled={!firstHp.useWandb} />
+                      <Toggle {...PIPELINE_FIELD_DEFS.wandbUploadViz} checked={firstHp.wandbUploadViz} onChange={(v) => configs.forEach((c) => onUpdateSlot(c.slot, { wandbUploadViz: v }))} disabled={!firstHp.useWandb || firstHp.wandbMode === "offline"} />
+                      <Toggle {...PIPELINE_FIELD_DEFS.wandbOpenBrowser} checked={autoOpenWandb} onChange={onAutoOpenWandbChange} disabled={!firstHp.useWandb || firstHp.wandbMode === "offline"} />
+                    </div>
+                    <div className="flex items-center gap-6 flex-wrap">
+                      <div id={PIPELINE_FIELD_DEFS.wandbApiKey.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+                        <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                          {PIPELINE_FIELD_DEFS.wandbApiKey.label}:
+                          <HintBubble text="W&B API key from wandb.ai/authorize. Optional — leave blank if you've run 'wandb login' or set the WANDB_API_KEY environment variable." />
+                        </span>
+                        <Input type="password" autoComplete="off" value={firstHp.wandbApiKey} onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { wandbApiKey: e.target.value }))} placeholder={wandbAuth?.authenticated ? "Detected — leave blank to use it" : ""} className="h-8 text-sm w-56" disabled={!firstHp.useWandb || firstHp.wandbMode === "offline"} />
+                      </div>
+                      {firstHp.wandbMode === "offline" && (
+                        <span className="text-xs text-muted-foreground">Logged locally — run <span className="font-mono">wandb sync</span> to upload later.</span>
+                      )}
                     </div>
                     <div className="flex items-center gap-6 flex-wrap">
                       <div id={PIPELINE_FIELD_DEFS.wandbEntity.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
-                        <span className="text-sm text-muted-foreground">{PIPELINE_FIELD_DEFS.wandbEntity.label}:</span>
+                        <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                          {PIPELINE_FIELD_DEFS.wandbEntity.label}:
+                          <HintBubble text="Your W&B username or team name that owns the project this run logs to. Leave blank to use your default W&B entity." />
+                        </span>
                         <Input type="text" value={firstHp.wandbEntity} onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { wandbEntity: e.target.value }))} placeholder="" className="h-8 text-sm w-40" disabled={!firstHp.useWandb} />
                       </div>
                       <div id={PIPELINE_FIELD_DEFS.wandbProject.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
-                        <span className="text-sm text-muted-foreground">{PIPELINE_FIELD_DEFS.wandbProject.label}:</span>
+                        <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                          {PIPELINE_FIELD_DEFS.wandbProject.label}:
+                          <HintBubble text="The W&B project this run's metrics and visualizations are logged under. Created automatically if it doesn't already exist." />
+                        </span>
                         <Input type="text" value={firstHp.wandbProject} onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { wandbProject: e.target.value }))} placeholder="" className="h-8 text-sm w-40" disabled={!firstHp.useWandb} />
                       </div>
                     </div>
                     <div className="flex items-center gap-6 flex-wrap">
                       <div id={PIPELINE_FIELD_DEFS.wandbRunId.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
-                        <span className="text-sm text-muted-foreground">{PIPELINE_FIELD_DEFS.wandbRunId.label}:</span>
+                        <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                          {PIPELINE_FIELD_DEFS.wandbRunId.label}:
+                          <HintBubble text="ID of a previous W&B run to resume logging into instead of starting a new one. Pair this with Resume Training so training metrics continue on the same run's timeline." />
+                        </span>
                         <Input type="text" value={firstHp.wandbPrevRunId} onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { wandbPrevRunId: e.target.value }))} placeholder="" className="h-8 text-sm w-40" disabled={!firstHp.useWandb} />
                       </div>
                       <div id={PIPELINE_FIELD_DEFS.wandbGroup.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
-                        <span className="text-sm text-muted-foreground">{PIPELINE_FIELD_DEFS.wandbGroup.label}:</span>
+                        <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                          {PIPELINE_FIELD_DEFS.wandbGroup.label}:
+                          <HintBubble text="Optional label to cluster related runs together in the W&B UI, e.g. runs from the same experiment or hyperparameter sweep." />
+                        </span>
                         <Input type="text" value={firstHp.wandbGroup} onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { wandbGroup: e.target.value }))} placeholder="" className="h-8 text-sm w-40" disabled={!firstHp.useWandb} />
                       </div>
                     </div>
