@@ -147,6 +147,24 @@ export async function gpuStats(): Promise<GpuStats> {
   return invokeCmd<GpuStats>("gpu_stats", {});
 }
 
+/** WandB auth status detected from the local machine (env var or ~/.netrc). */
+export interface WandbAuth {
+  authenticated: boolean;
+  source: string | null;
+  username: string | null;
+}
+
+/**
+ * Detect whether WandB is already authenticated on this (desktop) machine —
+ * `WANDB_API_KEY` env var or cached `~/.netrc` credentials — so the training
+ * dialog can tell the user the API key is optional. Returns a
+ * not-authenticated result in the browser (the training machine isn't this one).
+ */
+export async function checkWandbAuth(): Promise<WandbAuth> {
+  if (!isTauri) return { authenticated: false, source: null, username: null };
+  return invokeCmd<WandbAuth>("check_wandb_auth", {});
+}
+
 /** Install a uv tool (e.g., sleap-nn). */
 export async function installUvTool(
   pkg: string,

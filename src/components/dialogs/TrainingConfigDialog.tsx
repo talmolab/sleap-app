@@ -20,6 +20,7 @@ import {
 import { Search, HelpCircle, Crosshair } from "lucide-react";
 import type { ConfigFile, ConfigHyperparams, Backbone, ModelType, DataPipeline, ColorMode } from "@/stores/trainingStore";
 import { getSlotLabel, getConfigSlots, useTrainingStore } from "@/stores/trainingStore";
+import { checkWandbAuth, type WandbAuth } from "@/platform/backend";
 import { useConnectStore } from "@/stores/connectStore";
 import { useAppStore } from "@/stores/appStore";
 import { ModelStatsPreview } from "@/components/dialogs/ModelStatsPreview";
@@ -832,6 +833,18 @@ export function TrainingConfigDialog({
   const [activeTab, setActiveTab] = useState("pipeline");
   const [searchQuery, setSearchQuery] = useState("");
 
+  // Detect existing W&B auth (env var / ~/.netrc) on the local machine so the
+  // API-key field can advertise itself as optional. Desktop-only; a no-op in
+  // the browser (checkWandbAuth returns not-authenticated there).
+  const [wandbAuth, setWandbAuth] = useState<WandbAuth | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    checkWandbAuth()
+      .then((a) => { if (!cancelled) setWandbAuth(a); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
   // App store for suggestions count
   const labels = useAppStore((s) => s.labels);
   const suggestionsCount = labels?.suggestions?.length ?? 0;
@@ -1254,8 +1267,19 @@ export function TrainingConfigDialog({
                   <div className="space-y-3">
                     <div className="flex items-center gap-2">
                       <span className="text-sm text-muted-foreground">Status:</span>
-                      <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
-                      <span className="text-sm text-red-400">Not logged in</span>
+                      {wandbAuth?.authenticated ? (
+                        <>
+                          <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
+                          <span className="text-sm text-green-400">
+                            Authenticated{wandbAuth.username ? ` as ${wandbAuth.username}` : ""}{wandbAuth.source ? ` (${wandbAuth.source})` : ""} — API key optional
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
+                          <span className="text-sm text-red-400">Not logged in</span>
+                        </>
+                      )}
                     </div>
                     <div className="flex items-center gap-4 flex-wrap">
                       <Toggle {...PIPELINE_FIELD_DEFS.wandbEnable} checked={firstHp.useWandb} onChange={(v) => configs.forEach((c) => onUpdateSlot(c.slot, { useWandb: v }))} />

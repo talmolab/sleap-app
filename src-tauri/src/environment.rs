@@ -1286,6 +1286,94 @@ fn extract_downloadable(output: &str) -> Vec<PythonInterpreter> {
     result
 }
 
+/// WandB authentication status, mirroring legacy SLEAP's
+/// `wandb_utils.check_wandb_login_status`.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WandbAuth {
+    pub authenticated: bool,
+    /// Human-readable description of how the user is authenticated, or `None`.
+    pub source: Option<String>,
+    /// Username from the netrc `login` field, if available.
+    pub username: Option<String>,
+}
+
+/// Scan `.netrc`-format text for an `api.wandb.ai` entry. Returns whether a
+/// password (the API key) is present, and the associated `login`/username if
+/// any. Handles both one-per-line and single-line entries; stops the machine
+/// block at the next `machine`/`default` token.
+fn parse_netrc_wandb(text: &str) -> (bool, Option<String>) {
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    let mut i = 0;
+    while i < tokens.len() {
+        if tokens[i] == "machine" && i + 1 < tokens.len() {
+            if tokens[i + 1] == "api.wandb.ai" {
+                let mut j = i + 2;
+                let mut login: Option<String> = None;
+                let mut has_password = false;
+                while j < tokens.len() && tokens[j] != "machine" && tokens[j] != "default" {
+                    match tokens[j] {
+                        "login" if j + 1 < tokens.len() => {
+                            login = Some(tokens[j + 1].to_string());
+                            j += 2;
+                        }
+                        "password" if j + 1 < tokens.len() => {
+                            has_password = true;
+                            j += 2;
+                        }
+                        "account" if j + 1 < tokens.len() => j += 2,
+                        _ => j += 1,
+                    }
+                }
+                if has_password {
+                    return (true, login);
+                }
+            }
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    (false, None)
+}
+
+/// Detect whether WandB is already authenticated on this machine, WITHOUT
+/// calling `wandb login` (which is slow and prompts). Checks the
+/// `WANDB_API_KEY` env var first, then cached credentials in `~/.netrc` /
+/// `~/_netrc`. Desktop-only; mirrors legacy SLEAP's `check_wandb_login_status`.
+#[tauri::command]
+pub fn check_wandb_auth() -> WandbAuth {
+    if std::env::var("WANDB_API_KEY")
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false)
+    {
+        return WandbAuth {
+            authenticated: true,
+            source: Some("WANDB_API_KEY environment variable".to_string()),
+            username: None,
+        };
+    }
+    if let Some(home) = dirs::home_dir() {
+        for name in [".netrc", "_netrc"] {
+            if let Ok(text) = std::fs::read_to_string(home.join(name)) {
+                let (has_password, username) = parse_netrc_wandb(&text);
+                if has_password {
+                    return WandbAuth {
+                        authenticated: true,
+                        source: Some("cached credentials (~/.netrc)".to_string()),
+                        username,
+                    };
+                }
+            }
+        }
+    }
+    WandbAuth {
+        authenticated: false,
+        source: None,
+        username: None,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1293,6 +1381,39 @@ fn extract_downloadable(output: &str) -> Vec<PythonInterpreter> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- WandB netrc parsing --
+
+    #[test]
+    fn netrc_finds_wandb_credentials_multiline() {
+        let netrc = "machine api.wandb.ai\n  login myuser\n  password abc123def\n";
+        let (found, user) = parse_netrc_wandb(netrc);
+        assert!(found);
+        assert_eq!(user, Some("myuser".to_string()));
+    }
+
+    #[test]
+    fn netrc_finds_wandb_credentials_single_line() {
+        let netrc = "machine api.wandb.ai login u password k\n";
+        let (found, user) = parse_netrc_wandb(netrc);
+        assert!(found);
+        assert_eq!(user, Some("u".to_string()));
+    }
+
+    #[test]
+    fn netrc_ignores_other_machines() {
+        let netrc = "machine github.com login x password y\n";
+        let (found, user) = parse_netrc_wandb(netrc);
+        assert!(!found);
+        assert_eq!(user, None);
+    }
+
+    #[test]
+    fn netrc_wandb_without_password_is_not_authenticated() {
+        let netrc = "machine api.wandb.ai login onlyuser\n";
+        let (found, _) = parse_netrc_wandb(netrc);
+        assert!(!found);
+    }
 
     // -- uv resolution / PATH augmentation --
 
