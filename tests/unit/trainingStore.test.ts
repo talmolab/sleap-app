@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach } from "../bun-test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import yaml from "js-yaml";
 import { Skeleton, Video, Labels, LabeledFrame, Instance, PredictedInstance } from "@talmolab/sleap-io.js";
 import { useTrainingStore } from "@/stores/trainingStore";
@@ -1178,6 +1180,59 @@ trainer_config:
       expect(doc.trainer_config.wandb.prv_runid).toBe("abc123");
       expect(doc.trainer_config.wandb.group).toBe("experiment-1");
     });
+
+    it("writes wandb_mode 'offline' and api_key when set", () => {
+      const yamlText = `
+data_config: {}
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config:
+  use_wandb: true
+`;
+      const hp = {
+        ...defaultHyperparams,
+        useWandb: true,
+        wandbMode: "offline" as const,
+        wandbApiKey: "secret-key",
+      };
+      const doc = yaml.load(applyHyperparamsToYaml(yamlText, hp)) as Record<string, any>;
+      expect(doc.trainer_config.wandb.wandb_mode).toBe("offline");
+      expect(doc.trainer_config.wandb.api_key).toBe("secret-key");
+    });
+
+    it("writes wandb_mode null (online) by default and omits an empty api_key", () => {
+      const yamlText = `
+data_config: {}
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config:
+  use_wandb: true
+`;
+      const hp = { ...defaultHyperparams, useWandb: true };
+      const doc = yaml.load(applyHyperparamsToYaml(yamlText, hp)) as Record<string, any>;
+      expect(doc.trainer_config.wandb.wandb_mode).toBeNull();
+      expect(doc.trainer_config.wandb.api_key).toBeUndefined();
+    });
+
+    it("overrides the shipped baseline profile's wandb_mode + api_key (real config round-trip)", () => {
+      const baselinePath = join(
+        import.meta.dir,
+        "../../src/assets/training_profiles/baseline_medium_rf.topdown.yaml"
+      );
+      const baselineYaml = readFileSync(baselinePath, "utf8");
+      const before = yaml.load(baselineYaml) as Record<string, any>;
+      expect(before.trainer_config.wandb.wandb_mode).toBeNull();
+      expect(before.trainer_config.wandb.api_key).toBeNull();
+
+      const hp = { ...defaultHyperparams, useWandb: true, wandbMode: "offline" as const, wandbApiKey: "k" };
+      const doc = yaml.load(applyHyperparamsToYaml(baselineYaml, hp)) as Record<string, any>;
+      expect(doc.trainer_config.wandb.wandb_mode).toBe("offline");
+      expect(doc.trainer_config.wandb.api_key).toBe("k");
+    });
   });
 
   describe("parseYamlConfig - new Output/Evaluation/W&B fields", () => {
@@ -1200,6 +1255,25 @@ trainer_config: {}
       expect(result!.hyperparams.wandbUploadViz).toBe(false);
       expect(result!.hyperparams.wandbPrevRunId).toBe("");
       expect(result!.hyperparams.wandbGroup).toBe("");
+      expect(result!.hyperparams.wandbMode).toBe("online");
+      expect(result!.hyperparams.wandbApiKey).toBe("");
+    });
+
+    it("parses wandb_mode and api_key", () => {
+      const yamlText = `
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config:
+  use_wandb: true
+  wandb:
+    wandb_mode: offline
+    api_key: my-key
+`;
+      const result = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
+      expect(result!.hyperparams.wandbMode).toBe("offline");
+      expect(result!.hyperparams.wandbApiKey).toBe("my-key");
     });
 
     it("respects explicit values in the file, including explicit false overriding the app default", () => {

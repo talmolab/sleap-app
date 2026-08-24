@@ -17,9 +17,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, HelpCircle, Crosshair } from "lucide-react";
+import { Search, HelpCircle, Crosshair, RefreshCw } from "lucide-react";
 import type { ConfigFile, ConfigHyperparams, Backbone, ModelType, DataPipeline, ColorMode } from "@/stores/trainingStore";
 import { getSlotLabel, getConfigSlots, useTrainingStore } from "@/stores/trainingStore";
+import { checkWandbAuth, type WandbAuth } from "@/platform/backend";
 import { useConnectStore } from "@/stores/connectStore";
 import { useAppStore } from "@/stores/appStore";
 import { ModelStatsPreview } from "@/components/dialogs/ModelStatsPreview";
@@ -138,6 +139,8 @@ const PIPELINE_FIELD_DEFS = {
   numDevices: { id: "field-numdevices", label: "Number of Devices", hint: "Number of GPUs/devices to use for training. Set to 1 for single-GPU training.", keywords: "gpu devices" },
   secWandb: { id: "pipeline-wandb", label: "WandB", keywords: "weights and biases w&b logging" },
   wandbEnable: { id: "field-wandb-enable", label: "Enable WandB for logging", hint: "Log training metrics, loss curves, and visualizations to Weights & Biases for experiment tracking.", keywords: "wandb w&b weights and biases" },
+  wandbOffline: { id: "field-wandb-offline", label: "Offline Mode", hint: "Log to local disk only — no network or W&B login required. Upload later with `wandb sync`.", keywords: "wandb w&b offline mode local sync network airgap" },
+  wandbApiKey: { id: "field-wandb-apikey", label: "API Key", hint: "W&B API key from wandb.ai/authorize. Optional — leave blank if you've run 'wandb login' or set the WANDB_API_KEY environment variable.", keywords: "wandb w&b api key token auth login" },
   wandbUploadViz: { id: "field-wandb-uploadviz", label: "Upload Viz", hint: "Upload prediction visualization images to W&B for remote viewing.", keywords: "wandb w&b" },
   wandbOpenBrowser: { id: "field-wandb-openbrowser", label: "Open in browser", hint: "Automatically open the W&B run page in your browser when training starts.", keywords: "wandb w&b" },
   wandbEntity: { id: "field-wandb-entity", label: "Entity Name", keywords: "wandb w&b entity" },
@@ -255,15 +258,16 @@ function Field({ label, id, hint, children }: { label: string; id?: string; hint
   );
 }
 
-function Toggle({ label, id, hint, checked, onChange }: { label: string; id?: string; hint?: string; checked: boolean; onChange: (v: boolean) => void }) {
+function Toggle({ label, id, hint, checked, onChange, disabled = false }: { label: string; id?: string; hint?: string; checked: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {
   return (
-    <div id={id} data-search-field={id ? "" : undefined} className="flex items-center gap-6 py-2.5 scroll-mt-4">
+    <div id={id} data-search-field={id ? "" : undefined} className={`flex items-center gap-6 py-2.5 scroll-mt-4 ${disabled ? "opacity-50" : ""}`}>
       <span className="text-sm text-muted-foreground shrink-0 flex items-center gap-1.5">
         {label}
         {hint && <HintBubble text={hint} />}
       </span>
       <button
-        className={`w-10 h-6 rounded-full relative transition-colors ${checked ? "bg-primary" : "bg-zinc-700"}`}
+        disabled={disabled}
+        className={`w-10 h-6 rounded-full relative transition-colors ${checked ? "bg-primary" : "bg-zinc-700"} ${disabled ? "cursor-not-allowed" : ""}`}
         onClick={() => onChange(!checked)}
       >
         <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform ${checked ? "translate-x-4" : ""}`} />
@@ -902,6 +906,20 @@ export function TrainingConfigDialog({
   const [activeTab, setActiveTab] = useState("pipeline");
   const [searchQuery, setSearchQuery] = useState("");
 
+  // Detect existing W&B auth (env var / ~/.netrc) on the local machine so the
+  // API-key field can advertise itself as optional. Desktop-only; a no-op in
+  // the browser (checkWandbAuth returns not-authenticated there).
+  const [wandbAuth, setWandbAuth] = useState<WandbAuth | null>(null);
+  const refreshWandbAuth = useCallback(() => {
+    checkWandbAuth().then(setWandbAuth).catch(() => {});
+  }, []);
+  // Re-detect every time the dialog opens (the component stays mounted, so a
+  // one-shot mount effect would go stale after a `wandb login`).
+  useEffect(() => {
+    if (!open) return;
+    refreshWandbAuth();
+  }, [open, refreshWandbAuth]);
+
   // App store for suggestions count
   const labels = useAppStore((s) => s.labels);
   const suggestionsCount = labels?.suggestions?.length ?? 0;
@@ -1330,13 +1348,45 @@ export function TrainingConfigDialog({
                   <div className="space-y-3">
                     <div className="flex items-center gap-2">
                       <span className="text-sm text-muted-foreground">Status:</span>
-                      <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
-                      <span className="text-sm text-red-400">Not logged in</span>
+                      {wandbAuth?.authenticated ? (
+                        <>
+                          <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
+                          <span className="text-sm text-green-400">
+                            Authenticated{wandbAuth.source ? ` (${wandbAuth.source})` : ""}
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
+                          <span className="text-sm text-red-400">Not logged in</span>
+                        </>
+                      )}
+                      <button
+                        type="button"
+                        onClick={refreshWandbAuth}
+                        title="Re-check W&B login"
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        <RefreshCw className="w-3 h-3" />
+                      </button>
                     </div>
                     <div className="flex items-center gap-4 flex-wrap">
                       <Toggle {...PIPELINE_FIELD_DEFS.wandbEnable} checked={firstHp.useWandb} onChange={(v) => configs.forEach((c) => onUpdateSlot(c.slot, { useWandb: v }))} />
-                      <Toggle {...PIPELINE_FIELD_DEFS.wandbUploadViz} checked={firstHp.wandbUploadViz} onChange={(v) => configs.forEach((c) => onUpdateSlot(c.slot, { wandbUploadViz: v }))} />
-                      <Toggle {...PIPELINE_FIELD_DEFS.wandbOpenBrowser} checked={autoOpenWandb} onChange={onAutoOpenWandbChange} />
+                      <Toggle {...PIPELINE_FIELD_DEFS.wandbOffline} checked={firstHp.wandbMode === "offline"} onChange={(v) => configs.forEach((c) => onUpdateSlot(c.slot, { wandbMode: v ? "offline" : "online" }))} disabled={!firstHp.useWandb} />
+                      <Toggle {...PIPELINE_FIELD_DEFS.wandbUploadViz} checked={firstHp.wandbUploadViz} onChange={(v) => configs.forEach((c) => onUpdateSlot(c.slot, { wandbUploadViz: v }))} disabled={!firstHp.useWandb || firstHp.wandbMode === "offline"} />
+                      <Toggle {...PIPELINE_FIELD_DEFS.wandbOpenBrowser} checked={autoOpenWandb} onChange={onAutoOpenWandbChange} disabled={!firstHp.useWandb || firstHp.wandbMode === "offline"} />
+                    </div>
+                    <div className="flex items-center gap-6 flex-wrap">
+                      <div id={PIPELINE_FIELD_DEFS.wandbApiKey.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+                        <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                          {PIPELINE_FIELD_DEFS.wandbApiKey.label}:
+                          <HintBubble text="W&B API key from wandb.ai/authorize. Optional — leave blank if you've run 'wandb login' or set the WANDB_API_KEY environment variable." />
+                        </span>
+                        <Input type="password" autoComplete="off" value={firstHp.wandbApiKey} onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { wandbApiKey: e.target.value }))} placeholder={wandbAuth?.authenticated ? "Detected — leave blank to use it" : ""} className="h-8 text-sm w-56" disabled={!firstHp.useWandb || firstHp.wandbMode === "offline"} />
+                      </div>
+                      {firstHp.wandbMode === "offline" && (
+                        <span className="text-xs text-muted-foreground">Logged locally — run <span className="font-mono">wandb sync</span> to upload later.</span>
+                      )}
                     </div>
                     <div className="flex items-center gap-6 flex-wrap">
                       <div id={PIPELINE_FIELD_DEFS.wandbEntity.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
