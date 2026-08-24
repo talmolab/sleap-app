@@ -15,6 +15,8 @@ import type {
   LabeledFrame,
   Instance,
   Skeleton,
+  Node,
+  Edge,
   Track,
   Video,
   EdgeStyle,
@@ -44,6 +46,7 @@ import {
   migrateOpenPanels,
   toggleId,
 } from "@/lib/panelLayout";
+import { buildTutorialSteps, type TutorialStep } from "@/lib/tutorial/steps";
 
 // Required before immer can draft Set/Map fields (hiddenInstances /
 // showNonVisibleOverride). Idempotent global; must run before store creation.
@@ -112,6 +115,8 @@ export interface AppState {
   labeledFrame: LabeledFrame | null;
   skeleton: Skeleton | null;
   lastInteractedFrame: number | null;
+  /** User-bookmarked frame (Mark Frame ⌘M / go-to ⌘⇧M). One per project. */
+  markedFrame: { video: Video; frameIdx: number } | null;
   frameInteractionStack: string[];
 
   // === UI layout state ===
@@ -132,10 +137,10 @@ export interface AppState {
    */
   sidebarCollapsedSections: string[];
   /**
-   * When true, clicking a rail icon opens panels ADDITIVELY (multiple stacked
-   * sections). When false (default), the sidebar behaves one-at-a-time: a rail
+   * When true (default), clicking a rail icon opens panels ADDITIVELY (multiple
+   * stacked sections). When false, the sidebar behaves one-at-a-time: a rail
    * click shows exactly that panel. Toggled from View > Allow multiple panels.
-   * Persisted.
+   * Persisted (existing users keep whatever they last had).
    */
   sidebarMultiPanel: boolean;
   panelOrder: string[];
@@ -176,6 +181,8 @@ export interface AppState {
   nodeLabelSize: number;
   insetSize: number;
   insetZoom: number;
+  /** Show the zoomed-in magnifier while dragging/placing a node or holding Shift. Persisted. */
+  showInset: boolean;
   trailLength: number;
   trailShade: string;
   lutMin: number;
@@ -254,6 +261,60 @@ export interface AppState {
   labelingMode: "select" | "place";
   placementNodeIdx: number | null;
 
+  // === Skeleton-builder state (transient, not persisted) ===
+  // Visual skeleton builder: place nodes on the canvas, then connect them into
+  // edges. This is a pure scratch buffer -- the clicked node POSITIONS live
+  // only here (never inserted into labels.labeledFrames), so no phantom labeled
+  // instance is ever saved. The skeleton graph itself is persisted separately
+  // via the existing skeleton commands. `builderPositions` is index-aligned to
+  // `skeleton.nodes` and holds scene/source-coord positions (null = unplaced).
+  skeletonBuildMode: boolean;
+  skeletonBuildStage: "place" | "connect";
+  builderPositions: ({ x: number; y: number } | null)[];
+  /**
+   * The skeleton's nodes/edges as they were when `enterSkeletonBuild` was
+   * called — lets an unplanned exit (e.g. switching away from the Skeleton
+   * panel mid-draw) offer to revert, without relying on the undo stack
+   * (which may have other, unrelated commands interleaved). `null` outside
+   * an active build session with unresolved unfinished-work state.
+   */
+  skeletonBuildEntrySnapshot: { nodes: Node[]; edges: Edge[] } | null;
+  /**
+   * Non-null → show the "keep or discard?" dialog for an unplanned exit that
+   * left unfinished work (nodes/edges added since `skeletonBuildEntrySnapshot`
+   * was taken). The value is what "Discard" reverts the skeleton to. Escape
+   * and "Done" exits never set this — they're deliberate, so they stay quiet.
+   */
+  skeletonExitPrompt: { nodes: Node[]; edges: Edge[] } | null;
+
+  // Top-down anchor-part picker (Training panel): click a node on the canvas
+  // instead of typing its name. `pickRequestId` disambiguates which requester
+  // a result belongs to when more than one head-config field could ask for a
+  // pick (e.g. switching tabs mid-pick) — a requester only applies a result
+  // whose id matches the one `startAnchorPick` returned it.
+  pickingAnchor: boolean;
+  pickRequestId: number;
+  pickedAnchorNode: { nodeName: string; requestId: number } | null;
+  /**
+   * Persistent (not just hover-during-pick) crop preview for the currently
+   * configured anchor — toggled from the Training panel to check "what would
+   * this crop look like" without re-entering pick mode. `anchorPreviewNode`
+   * is `null` while inactive; once active, `null` means "Auto" (bbox center)
+   * and a string names the anchor node to preview.
+   */
+  anchorPreviewActive: boolean;
+  anchorPreviewNode: string | null;
+  /**
+   * Session-only "template layout": a snapshot of the node positions the user
+   * DREW in the visual skeleton builder (IMAGE space, index-aligned to
+   * `skeleton.nodes`), captured on the builder's Done. When set, the
+   * center-based Add Instance placement methods (best / template /
+   * force_directed) seed their geometry from this drawn layout instead of the
+   * scrambled circle. Transient like the other build-mode fields (NOT in
+   * PERSISTED_KEYS) — a fresh session starts back on the circle default.
+   */
+  skeletonTemplateLayout: ({ x: number; y: number } | null)[] | null;
+
   // === Frame range ===
   frameRange: [number, number] | null;
   hasFrameRange: boolean;
@@ -275,13 +336,34 @@ export interface AppState {
   goToFrameDialogOpen: boolean;
   selectToFrameDialogOpen: boolean;
   deletePredictionsDialogOpen: boolean;
+  mergeProjectDialogOpen: boolean;
   exportDialogOpen: boolean;
   exportClipDialogOpen: boolean;
   modelMetricsDialogOpen: boolean;
   exportPackageDialogOpen: boolean;
   shortcutsDialogOpen: boolean;
   helpDialogOpen: boolean;
+  menuSearchDialogOpen: boolean;
+  diagnosticsDialogOpen: boolean;
   quitConfirmOpen: boolean;
+
+  // === Getting-started tutorial (transient, not persisted) ===
+  tutorialActive: boolean;
+  tutorialStepIndex: number;
+  /**
+   * Resolved once in `startTutorial` (see `buildTutorialSteps`) — whether a
+   * project was already loaded at that moment decides the whole sequence, so
+   * this isn't re-derived mid-run.
+   */
+  tutorialSteps: TutorialStep[];
+  /**
+   * Furthest `tutorialStepIndex` reached so far this run (only advanced by
+   * `advanceTutorialStep`, never by `previousTutorialStep`). Lets
+   * `TutorialOverlay` tell "stepped back to re-read a step already cleared"
+   * apart from "still working on the current frontier step" — a step below
+   * this mark doesn't need its real-world action redone to move forward again.
+   */
+  tutorialHighestStepIndex: number;
 
   // === Area delete mode ===
   areaDeleteMode: boolean;
@@ -320,6 +402,7 @@ export interface AppState {
   resetInstanceVisibility: () => void;
   setInstance: (instance: Instance | null) => void;
   setLabeledFrame: (frame: LabeledFrame | null) => void;
+  setMarkedFrame: (marked: { video: Video; frameIdx: number } | null) => void;
   resetView: () => void;
   markChanged: () => void;
   touchFrame: () => void;
@@ -330,14 +413,65 @@ export interface AppState {
   setGoToFrameDialogOpen: (open: boolean) => void;
   setSelectToFrameDialogOpen: (open: boolean) => void;
   setDeletePredictionsDialogOpen: (open: boolean) => void;
+  setMergeProjectDialogOpen: (open: boolean) => void;
   setExportDialogOpen: (open: boolean) => void;
   setExportClipDialogOpen: (open: boolean) => void;
   setModelMetricsDialogOpen: (open: boolean) => void;
   setExportPackageDialogOpen: (open: boolean) => void;
   setShortcutsDialogOpen: (open: boolean) => void;
   setHelpDialogOpen: (open: boolean) => void;
+  setDiagnosticsDialogOpen: (open: boolean) => void;
+  setMenuSearchDialogOpen: (open: boolean) => void;
+  /** Start the getting-started tutorial from its first step. */
+  startTutorial: () => void;
+  /** Stop the tutorial at any point (Exit button). */
+  exitTutorial: () => void;
+  /** Advance to the next tutorial step, or exit once past the last one. */
+  advanceTutorialStep: () => void;
+  /** Go back to the previous tutorial step; a no-op on the first step. */
+  previousTutorialStep: () => void;
   enterPlacementMode: () => void;
   exitPlacementMode: () => void;
+
+  // Skeleton-builder actions (scratch buffer; see field docs above).
+  enterSkeletonBuild: () => void;
+  /**
+   * `promptIfUnfinished`: when true and the skeleton's nodes/edges changed
+   * since `enterSkeletonBuild`, sets `skeletonExitPrompt` instead of quietly
+   * discarding that info — for an unplanned exit (e.g. leaving the Skeleton
+   * panel) where the user hasn't explicitly said "I'm done" or "cancel"
+   * (Escape/Done omit this so they stay quiet, as before).
+   */
+  exitSkeletonBuild: (opts?: { promptIfUnfinished?: boolean }) => void;
+  /** Resolve the "keep or discard?" prompt: `keep === false` reverts the
+   * skeleton to `skeletonExitPrompt`'s snapshot. Always clears the prompt. */
+  resolveSkeletonExitPrompt: (keep: boolean) => void;
+  setSkeletonBuildStage: (stage: "place" | "connect") => void;
+  setBuilderPosition: (
+    nodeIdx: number,
+    p: { x: number; y: number } | null
+  ) => void;
+  syncBuilderPositions: () => void;
+  /**
+   * Snapshot the current `builderPositions` into `skeletonTemplateLayout` (a
+   * distinct array copy). Empty positions → `null`. Called on the builder's
+   * Done so the drawn layout becomes the session seed for Add Instance.
+   */
+  captureSkeletonTemplateLayout: () => void;
+  /** Discard the captured template layout (back to the circle default). */
+  clearSkeletonTemplateLayout: () => void;
+
+  // Anchor-part picker actions (see field docs above). `startAnchorPick`
+  // returns the new request id so the requester can match it against
+  // `pickedAnchorNode` later without racing a different requester's pick.
+  startAnchorPick: () => number;
+  cancelAnchorPick: () => void;
+  resolveAnchorPick: (nodeName: string) => void;
+  clearPickedAnchorNode: () => void;
+  /** Show/update the persistent anchor crop preview (see field docs above). */
+  setAnchorPreview: (nodeName: string | null) => void;
+  /** Hide the persistent anchor crop preview. */
+  clearAnchorPreview: () => void;
   togglePanelVisibility: (panelId: string) => void;
   resetPanels: () => void;
   /** Rail click: uncollapse the column and open `panelId` if it's collapsed;
@@ -371,6 +505,7 @@ export const PERSISTED_KEYS: (keyof AppState)[] = [
   "trailLength",
   "insetSize",
   "insetZoom",
+  "showInset",
   "defaultToPan",
   "seekbarHeaderGraph",
   "seekbarHeaderReduction",
@@ -429,6 +564,7 @@ export const useAppStore = create<AppState>()(
       labeledFrame: null,
       skeleton: null,
       lastInteractedFrame: null,
+      markedFrame: null,
       frameInteractionStack: [],
 
       // UI layout state
@@ -437,7 +573,7 @@ export const useAppStore = create<AppState>()(
       sidebarSide: "right",
       sidebarOpenPanels: [...DEFAULT_OPEN_PANELS],
       sidebarCollapsedSections: [],
-      sidebarMultiPanel: false,
+      sidebarMultiPanel: true,
       panelOrder: [...DEFAULT_PANEL_ORDER],
       hiddenPanels: [],
 
@@ -455,11 +591,12 @@ export const useAppStore = create<AppState>()(
       colorPredicted: false,
       defaultToPan: false,
       palette: "standard",
-      distinctlyColor: "track" as ColorTarget,
+      distinctlyColor: "auto" as ColorTarget,
       markerSize: 4,
       nodeLabelSize: 12,
       insetSize: 400,
-      insetZoom: 4,
+      insetZoom: 2,
+      showInset: true,
       trailLength: 0,
       trailShade: "Normal",
       lutMin: 0,
@@ -492,6 +629,21 @@ export const useAppStore = create<AppState>()(
       labelingMode: "select" as "select" | "place",
       placementNodeIdx: null as number | null,
 
+      // Skeleton-builder state (transient scratch buffer)
+      skeletonBuildMode: false,
+      skeletonBuildStage: "place" as "place" | "connect",
+      builderPositions: [] as ({ x: number; y: number } | null)[],
+      skeletonBuildEntrySnapshot: null as { nodes: Node[]; edges: Edge[] } | null,
+      skeletonExitPrompt: null as { nodes: Node[]; edges: Edge[] } | null,
+      skeletonTemplateLayout: null as ({ x: number; y: number } | null)[] | null,
+
+      // Anchor-part picker (transient)
+      pickingAnchor: false,
+      pickRequestId: 0,
+      pickedAnchorNode: null as { nodeName: string; requestId: number } | null,
+      anchorPreviewActive: false,
+      anchorPreviewNode: null as string | null,
+
       // Frame range
       frameRange: null,
       hasFrameRange: false,
@@ -507,13 +659,21 @@ export const useAppStore = create<AppState>()(
       goToFrameDialogOpen: false,
       selectToFrameDialogOpen: false,
       deletePredictionsDialogOpen: false,
+      mergeProjectDialogOpen: false,
       exportDialogOpen: false,
       exportClipDialogOpen: false,
       modelMetricsDialogOpen: false,
       exportPackageDialogOpen: false,
       shortcutsDialogOpen: false,
       helpDialogOpen: false,
+      menuSearchDialogOpen: false,
+      diagnosticsDialogOpen: false,
       quitConfirmOpen: false,
+
+      tutorialActive: false,
+      tutorialStepIndex: 0,
+      tutorialSteps: [],
+      tutorialHighestStepIndex: 0,
 
       // Area delete mode
       areaDeleteMode: false,
@@ -725,6 +885,11 @@ export const useAppStore = create<AppState>()(
           state.labeledFrame = frame;
         }),
 
+      setMarkedFrame: (marked) =>
+        set((state) => {
+          state.markedFrame = marked;
+        }),
+
       // Reset the main video canvas view to its default (zoom = 1, no pan,
       // fit-frame). One-shot: bump a nonce that VideoPlayer subscribes to.
       resetView: () =>
@@ -789,6 +954,10 @@ export const useAppStore = create<AppState>()(
         set((state) => {
           state.deletePredictionsDialogOpen = open;
         }),
+      setMergeProjectDialogOpen: (open) =>
+        set((state) => {
+          state.mergeProjectDialogOpen = open;
+        }),
 
       setExportDialogOpen: (open) =>
         set((state) => {
@@ -815,10 +984,67 @@ export const useAppStore = create<AppState>()(
           state.shortcutsDialogOpen = open;
         }),
 
+      setMenuSearchDialogOpen: (open) =>
+        set((state) => {
+          state.menuSearchDialogOpen = open;
+        }),
+
       setHelpDialogOpen: (open) =>
         set((state) => {
           state.helpDialogOpen = open;
         }),
+
+      setDiagnosticsDialogOpen: (open) =>
+        set((state) => {
+          state.diagnosticsDialogOpen = open;
+        }),
+
+      startTutorial: () => {
+        // Whether a project already exists decides the whole sequence (a
+        // fresh app has no Sidebar/panels mounted yet — see AppShell — so it
+        // must go through New Project first); resolved once here, not
+        // re-derived mid-run.
+        const steps = buildTutorialSteps(get().projectLoaded);
+        set((state) => {
+          state.tutorialActive = true;
+          state.tutorialStepIndex = 0;
+          state.tutorialSteps = steps;
+          state.tutorialHighestStepIndex = 0;
+        });
+        if (steps[0]?.panelId) get().openPanel(steps[0].panelId);
+      },
+
+      exitTutorial: () =>
+        set((state) => {
+          state.tutorialActive = false;
+        }),
+
+      advanceTutorialStep: () => {
+        const steps = get().tutorialSteps;
+        const nextIndex = get().tutorialStepIndex + 1;
+        if (nextIndex >= steps.length) {
+          set((state) => {
+            state.tutorialActive = false;
+          });
+          return;
+        }
+        set((state) => {
+          state.tutorialStepIndex = nextIndex;
+          state.tutorialHighestStepIndex = Math.max(state.tutorialHighestStepIndex, nextIndex);
+        });
+        const nextStep = steps[nextIndex];
+        if (nextStep?.panelId) get().openPanel(nextStep.panelId);
+      },
+
+      previousTutorialStep: () => {
+        const prevIndex = get().tutorialStepIndex - 1;
+        if (prevIndex < 0) return;
+        set((state) => {
+          state.tutorialStepIndex = prevIndex;
+        });
+        const prevStep = get().tutorialSteps[prevIndex];
+        if (prevStep?.panelId) get().openPanel(prevStep.panelId);
+      },
 
       enterPlacementMode: () =>
         set((state) => {
@@ -836,6 +1062,161 @@ export const useAppStore = create<AppState>()(
         set((state) => {
           state.labelingMode = "select";
           state.placementNodeIdx = null;
+        }),
+
+      // Enter the visual skeleton builder. Seeds one null slot per skeleton
+      // node (scratch positions, index-aligned). Also clears place-labeling so
+      // the two modes never fight over canvas clicks. Snapshots the current
+      // nodes/edges so an unplanned exit can offer to revert to them.
+      enterSkeletonBuild: () =>
+        set((state) => {
+          state.skeletonBuildMode = true;
+          state.skeletonBuildStage = "place";
+          state.builderPositions = state.skeleton
+            ? state.skeleton.nodes.map(() => null)
+            : [];
+          state.labelingMode = "select";
+          state.placementNodeIdx = null;
+          state.skeletonBuildEntrySnapshot = state.skeleton
+            ? { nodes: [...state.skeleton.nodes], edges: [...state.skeleton.edges] }
+            : { nodes: [], edges: [] };
+        }),
+
+      // Exit the builder and discard the scratch buffer. MUST NOT touch labels
+      // or skeleton -- the net-neutral invariant (no phantom labeled instance).
+      // `promptIfUnfinished`: for an unplanned exit, ask "keep or discard?"
+      // instead of silently leaving whatever was added since entry in place.
+      exitSkeletonBuild: (opts) =>
+        set((state) => {
+          state.skeletonBuildMode = false;
+          state.skeletonBuildStage = "place";
+          state.builderPositions = [];
+
+          const entry = state.skeletonBuildEntrySnapshot;
+          const changedSinceEntry =
+            !!entry &&
+            !!state.skeleton &&
+            (state.skeleton.nodes.length !== entry.nodes.length ||
+              state.skeleton.edges.length !== entry.edges.length);
+
+          if (opts?.promptIfUnfinished && changedSinceEntry && entry) {
+            state.skeletonExitPrompt = entry;
+          }
+          state.skeletonBuildEntrySnapshot = null;
+        }),
+
+      // Resolve the "keep or discard?" prompt. Discard reverts the skeleton
+      // to the pre-build snapshot and marks the project changed (same as any
+      // other skeleton edit); keep leaves it exactly as drawn.
+      //
+      // The skeleton mutation itself happens on the REAL object via `get()`,
+      // not inside the `set()` draft below — matching how every other
+      // skeleton edit in this app works (CommandContext's `ctx.state` is
+      // also plain `useAppStore.getState()`, mutated directly). `Skeleton` is
+      // a sleap-io.js class instance, not a plain object/array/Map/Set, so
+      // Immer doesn't draft it; mutating it "through" a draft would silently
+      // mutate the same live object anyway, so do it explicitly and use
+      // `set()` only for the plain fields that Immer actually tracks.
+      resolveSkeletonExitPrompt: (keep) => {
+        const { skeleton, skeletonExitPrompt: prompt } = get();
+        const discarding = !keep && !!prompt && !!skeleton;
+        if (discarding) {
+          skeleton.nodes = [...prompt.nodes];
+          skeleton.edges = [...prompt.edges];
+          skeleton.rebuildCache(skeleton.nodes);
+        }
+        set((state) => {
+          if (discarding) {
+            state.hasChanges = true;
+            state.editSeq += 1;
+            state.lastInteractedFrame = state.frameIdx;
+            state.overlayVersion += 1;
+          }
+          state.skeletonExitPrompt = null;
+        });
+      },
+
+      setSkeletonBuildStage: (stage) =>
+        set((state) => {
+          state.skeletonBuildStage = stage;
+        }),
+
+      // Replace one scratch position immutably (new array so React/Zustand sees
+      // the change). Growing past the current length back-fills with nulls.
+      setBuilderPosition: (nodeIdx, p) =>
+        set((state) => {
+          const next = state.builderPositions.slice();
+          for (let i = next.length; i < nodeIdx; i++) next[i] = null;
+          next[nodeIdx] = p;
+          state.builderPositions = next;
+        }),
+
+      // Reconcile the scratch buffer length with the current skeleton: append
+      // null for newly added nodes, drop extras for removed ones, preserving
+      // surviving entries by index.
+      syncBuilderPositions: () =>
+        set((state) => {
+          const n = state.skeleton ? state.skeleton.nodes.length : 0;
+          const next = state.builderPositions.slice(0, n);
+          for (let i = next.length; i < n; i++) next[i] = null;
+          state.builderPositions = next;
+        }),
+
+      // Capture the drawn builder layout as a session-only template (a distinct
+      // deep copy, so later builder edits don't mutate the snapshot). Empty
+      // positions → null. The center-based Add Instance methods seed from this
+      // in place of the scrambled circle (see @/lib/instancePlacement).
+      captureSkeletonTemplateLayout: () =>
+        set((state) => {
+          state.skeletonTemplateLayout =
+            state.builderPositions.length > 0
+              ? state.builderPositions.map((p) => (p ? { x: p.x, y: p.y } : null))
+              : null;
+        }),
+
+      clearSkeletonTemplateLayout: () =>
+        set((state) => {
+          state.skeletonTemplateLayout = null;
+        }),
+
+      // Anchor-part picker (Training panel). See field docs above for the
+      // request-id race-avoidance rationale.
+      startAnchorPick: () => {
+        const id = get().pickRequestId + 1;
+        set((state) => {
+          state.pickingAnchor = true;
+          state.pickRequestId = id;
+          state.pickedAnchorNode = null;
+        });
+        return id;
+      },
+
+      cancelAnchorPick: () =>
+        set((state) => {
+          state.pickingAnchor = false;
+        }),
+
+      resolveAnchorPick: (nodeName) =>
+        set((state) => {
+          state.pickingAnchor = false;
+          state.pickedAnchorNode = { nodeName, requestId: state.pickRequestId };
+        }),
+
+      clearPickedAnchorNode: () =>
+        set((state) => {
+          state.pickedAnchorNode = null;
+        }),
+
+      setAnchorPreview: (nodeName) =>
+        set((state) => {
+          state.anchorPreviewActive = true;
+          state.anchorPreviewNode = nodeName;
+        }),
+
+      clearAnchorPreview: () =>
+        set((state) => {
+          state.anchorPreviewActive = false;
+          state.anchorPreviewNode = null;
         }),
 
       // Toggle a sidebar panel's visibility (#135). Hiding the currently-active

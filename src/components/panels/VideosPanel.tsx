@@ -482,9 +482,8 @@ export function VideosPanel() {
       return;
     }
     if (files.length === 0) return; // cancelled
-    const newVideo = await buildStandaloneVideo(files[0].file);
+    const newVideo = await buildStandaloneVideo(files[0].file, files[0].absPath);
     if (!newVideo) return; // unsupported / decode failed (already toasted)
-    if (files[0].absPath) newVideo.filename = files[0].absPath;
 
     const newCount = newVideo.shape?.[0] ?? Infinity;
     const orphans = labeledFramesBeyond(labels, currentVideo, newCount);
@@ -626,6 +625,7 @@ export function VideosPanel() {
           variant="subtle"
           size="xs"
           onClick={handleAddVideos}
+          data-tutorial="add-videos-button"
         >
           Add Videos
         </Button>

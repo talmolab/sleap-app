@@ -36,6 +36,7 @@ function makeConfigs(modelType: ModelType): ConfigFile[] {
     slot,
     hyperparams: { ...defaultHyperparams },
     hasTrainedModel: false,
+    checkpointPath: null,
   }));
 }
 
@@ -68,6 +69,8 @@ function renderDialog(modelType: ModelType) {
       onSkipUserLabeledChange={noop}
       existingPredictions="clear_all"
       onExistingPredictionsChange={noop}
+      autoOpenWandb={false}
+      onAutoOpenWandbChange={noop}
     />
   );
 }
@@ -191,7 +194,6 @@ describe("TrainingConfigDialog search index ↔ DOM consistency", () => {
     }
     // Conditional rows that DO render for centered_instance.
     expect(document.getElementById("field-cropsize")).toBeTruthy();
-    expect(document.getElementById("field-head-anchorpart")).toBeTruthy();
   });
 
   it("head: every searchable DOM row is present in the index (no orphans)", async () => {

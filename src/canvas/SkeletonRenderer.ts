@@ -9,17 +9,25 @@
 import { rgbToCSS, type RGB } from "../lib/colorPalettes";
 import type { EdgeStyle } from "../types";
 
-// Predicted instances render in a fixed color (rather than their track's
-// palette color) so they read as "unconfirmed" at a glance, regardless of
-// which track they belong to.
-const PREDICTED_COLOR: RGB = [250, 204, 21]; // Tailwind yellow-400
-
 // Node-name label colors, matching PyQt SLEAP's QtNodeLabel.adjustStyle():
 // a label starts red ("incomplete" -- placed at a default/unconfirmed
 // position) and turns green once the user explicitly confirms it ("complete").
 const COMPLETE_COLOR: RGB = [80, 194, 159]; // greenish
 const INCOMPLETE_COLOR: RGB = [232, 45, 32]; // redish
 const MISSING_LABEL_COLOR: RGB = [128, 128, 128];
+
+// A predicted node's FILL is always flat gray, matching PyQt SLEAP's QtNode
+// (`self.brush = QBrush(QColor(128, 128, 128, 128))` for predicted points) --
+// its STROKE and every predicted edge instead use the same track/instance/
+// palette `color` a user instance would (computed upstream via
+// getInstanceColor), UNLESS colorPredicted is off, per PyQt's
+// ColorManager.get_item_color: `if is_predicted and not self.color_predicted:
+// return uncolored_prediction_color if isinstance(item, Node) else (128,128,128)`
+// -- i.e. NODE markers fall back to this yellow, while edges/labels fall back
+// to plain gray. Matches PyQt's literal `uncolored_prediction_color = (250, 250, 10)`.
+const UNCOLORED_PREDICTED_NODE_COLOR: RGB = [250, 250, 10];
+const PREDICTED_FILL_COLOR: RGB = [128, 128, 128];
+const PREDICTED_LABEL_COLOR: RGB = [128, 128, 128];
 
 export interface RenderedNode {
   x: number;
@@ -173,9 +181,13 @@ function renderNode(
   ctx.arc(node.x, node.y, radius / opts.zoom, 0, Math.PI * 2);
 
   if (isPredicted) {
-    ctx.strokeStyle = rgbToCSS(PREDICTED_COLOR);
+    // Node marker stroke: track/instance color when colorPredicted is on,
+    // else PyQt's uncolored_prediction_color (yellow) -- edges/labels fall
+    // back to plain gray instead (see renderLineEdge/renderNodeLabel).
+    const strokeColor = opts.colorPredicted ? color : UNCOLORED_PREDICTED_NODE_COLOR;
+    ctx.strokeStyle = rgbToCSS(strokeColor);
     ctx.lineWidth = 1 / opts.zoom;
-    ctx.fillStyle = rgbToCSS(PREDICTED_COLOR, 0.5);
+    ctx.fillStyle = rgbToCSS(PREDICTED_FILL_COLOR, 0.5);
     ctx.fill();
     ctx.stroke();
   } else if (node.visible) {
@@ -209,13 +221,17 @@ function renderLineEdge(
     : touchesInvisible ? 0.4 : 0.8;
 
   ctx.save();
-  if (touchesInvisible) {
+  // Predicted edges are dashed (on top of the existing thinner + dimmer styling)
+  // so predictions read as clearly tentative next to solid user labels (#288).
+  // Occluded user edges are dashed too, but predicted stays distinguishable by
+  // its thinner 1px stroke. An intentional step past strict PyQt parity.
+  if (touchesInvisible || isPredicted) {
     ctx.setLineDash([4 / opts.zoom, 3 / opts.zoom]);
   }
   ctx.beginPath();
   ctx.moveTo(src.x, src.y);
   ctx.lineTo(dst.x, dst.y);
-  ctx.strokeStyle = isPredicted ? rgbToCSS(PREDICTED_COLOR, alpha) : rgbToCSS(color, alpha);
+  ctx.strokeStyle = rgbToCSS(color, alpha);
   ctx.lineWidth = (isPredicted ? 1 : 2) / opts.zoom;
   ctx.stroke();
   ctx.restore();
@@ -253,7 +269,7 @@ function renderWedgeEdge(
   ctx.lineTo(dst.x - nx * dstWidth, dst.y - ny * dstWidth);
   ctx.lineTo(src.x - nx * srcWidth, src.y - ny * srcWidth);
   ctx.closePath();
-  ctx.fillStyle = isPredicted ? rgbToCSS(PREDICTED_COLOR, alpha) : rgbToCSS(color, alpha);
+  ctx.fillStyle = rgbToCSS(color, alpha);
   ctx.fill();
 }
 
@@ -270,13 +286,15 @@ function renderNodeLabel(
   let labelColor: RGB;
   let bold: boolean;
   let italic = false;
+  let showMissingBg = false;
   if (isPredicted) {
-    labelColor = PREDICTED_COLOR;
+    labelColor = PREDICTED_LABEL_COLOR;
     bold = false;
   } else if (!node.visible) {
     labelColor = MISSING_LABEL_COLOR;
     bold = true;
     italic = true;
+    showMissingBg = true;
   } else if (node.complete) {
     labelColor = COMPLETE_COLOR;
     bold = true;
@@ -287,14 +305,26 @@ function renderNodeLabel(
 
   const fontSize = opts.nodeLabelSize / opts.zoom;
   ctx.font = `${italic ? "italic " : ""}${bold ? "bold " : ""}${fontSize}px sans-serif`;
+
+  const labelX = node.x + opts.markerSize / opts.zoom + 2 / opts.zoom;
+  const labelY = node.y - 2 / opts.zoom;
+
+  // A shaded background behind non-visible node labels, matching legacy
+  // SLEAP's QtNodeLabel (sleap/gui/widgets/video.py) -- the dim gray text is
+  // otherwise nearly invisible against grayscale/B&W footage. Solid black at
+  // ~0.4 alpha, sized to the actual text (no rounded corners, matching the
+  // plain fillRect legacy uses), drawn before the text so it sits behind it.
+  if (showMissingBg) {
+    const pad = 2 / opts.zoom;
+    const textWidth = ctx.measureText(node.name).width;
+    ctx.fillStyle = "rgba(0, 0, 0, 0.39)";
+    ctx.fillRect(labelX - pad, labelY - fontSize - pad, textWidth + pad * 2, fontSize + pad * 2);
+  }
+
   ctx.fillStyle = rgbToCSS(labelColor, 0.9);
   ctx.textAlign = "left";
   ctx.textBaseline = "bottom";
-  ctx.fillText(
-    node.name,
-    node.x + opts.markerSize / opts.zoom + 2 / opts.zoom,
-    node.y - 2 / opts.zoom
-  );
+  ctx.fillText(node.name, labelX, labelY);
 }
 
 function renderSelectionBox(
@@ -578,6 +608,66 @@ export function renderHoverInstanceBBox(
   ctx.fillStyle = rgbToCSS(instance.color, 0.05);
   ctx.fillRect(minX, minY, maxX - minX, maxY - minY);
   ctx.strokeRect(minX, minY, maxX - minX, maxY - minY);
+  ctx.setLineDash([]);
+  ctx.restore();
+}
+
+/** A square the size of `instance`'s visible-node bbox, expanded 1.5x — a
+ * reasonable top-down crop-size guess when the user hasn't set one explicitly,
+ * matching sleap-nn's config-picker default crop margin. */
+export function instanceBBoxCropSize(instance: RenderedInstance): number {
+  const visibleNodes = instance.nodes.filter((n) => n.visible && !isNaN(n.x));
+  if (visibleNodes.length === 0) return 100;
+  const xs = visibleNodes.map((n) => n.x);
+  const ys = visibleNodes.map((n) => n.y);
+  return Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) * 1.5;
+}
+
+/** Index of the node named `name` on `instance`, or `null` if it has none (a
+ * differently-shaped/mismatched skeleton). */
+export function findNodeIdxByName(instance: RenderedInstance, name: string): number | null {
+  const idx = instance.nodes.findIndex((n) => n.name === name);
+  return idx === -1 ? null : idx;
+}
+
+/**
+ * Render a dashed crop-box preview for a top-down anchor, sized `cropSize`
+ * (source/video pixels). `nodeIdx === null` previews the "Auto" anchor — the
+ * bbox center of the instance's visible nodes — matching sleap-nn's
+ * config-picker orange dashed box (and its bbox-center crosshair for "None").
+ */
+export function renderAnchorCropPreview(
+  ctx: CanvasRenderingContext2D,
+  instances: RenderedInstance[],
+  instanceIdx: number,
+  nodeIdx: number | null,
+  cropSize: number,
+  opts: RenderOptions
+): void {
+  const instance = instances[instanceIdx];
+  if (!instance) return;
+
+  let cx: number, cy: number;
+  if (nodeIdx !== null) {
+    const node = instance.nodes[nodeIdx];
+    if (!node || isNaN(node.x)) return;
+    cx = node.x;
+    cy = node.y;
+  } else {
+    const visibleNodes = instance.nodes.filter((n) => n.visible && !isNaN(n.x));
+    if (visibleNodes.length === 0) return;
+    const xs = visibleNodes.map((n) => n.x);
+    const ys = visibleNodes.map((n) => n.y);
+    cx = (Math.min(...xs) + Math.max(...xs)) / 2;
+    cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+  }
+
+  const half = cropSize / 2;
+  ctx.save();
+  ctx.setLineDash([6 / opts.zoom, 4 / opts.zoom]);
+  ctx.strokeStyle = "#f97316";
+  ctx.lineWidth = 2 / opts.zoom;
+  ctx.strokeRect(cx - half, cy - half, cropSize, cropSize);
   ctx.setLineDash([]);
   ctx.restore();
 }

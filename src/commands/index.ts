@@ -70,6 +70,8 @@ export {
   GoToFrame,
   GoToLastInteracted,
   GoNextUserFrame,
+  GoPrevUserFrame,
+  GoToMarkedFrame,
   GoNextTrackSpawnFrame,
   SelectToFrame,
 } from "./navCommands";
@@ -77,10 +79,12 @@ export {
 // Edit commands
 export {
   AddInstance,
+  ToggleNegativeFrame,
   DeleteSelectedInstance,
   SetPointLocation,
   CopyInstance,
   PasteInstance,
+  DuplicateInstance,
   DeleteFramePredictions,
   DeleteAllPredictions,
   ConvertPredictionToInstance,
@@ -90,6 +94,9 @@ export {
   MoveInstance,
   RotateInstance,
 } from "./editCommands";
+
+// Merge into Project (File ▸ Merge into Project…)
+export { MergeIntoProjectCommand } from "./mergeProjectCommands";
 
 // Track commands
 export {
@@ -103,6 +110,7 @@ export {
   DeleteTrack,
   DeleteUnusedTracks,
   DeleteAllTracks,
+  SetTrackName,
 } from "./trackCommands";
 
 // Skeleton commands
@@ -111,6 +119,8 @@ export {
   DeleteNodeCommand,
   AddEdgeCommand,
   DeleteEdgeCommand,
+  AddSymmetryCommand,
+  RemoveSymmetryCommand,
   RenameNodeCommand,
   LoadSkeletonTemplateCommand,
   OpenSkeletonCommand,

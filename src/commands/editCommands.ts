@@ -54,14 +54,18 @@ export const AddInstance: Command = {
 
     const priorFrame = findNearestPriorFrame(labels, video, frameIdx);
 
-    // Create instance using the selected placement method
+    // Create instance using the selected placement method. When the visual
+    // skeleton builder has captured a drawn layout this session, the
+    // center-based methods seed geometry from that drawn orientation instead of
+    // the scrambled circle (session-only; null on a fresh session).
     const instance = placeInstance(
       method,
       skeleton,
       video,
       existingInstances,
       priorFrame,
-      useAppStore.getState().visibleSceneRect
+      useAppStore.getState().visibleSceneRect,
+      useAppStore.getState().skeletonTemplateLayout
     );
 
     const location = params?.location as [number, number] | undefined;
@@ -92,6 +96,49 @@ export const AddInstance: Command = {
     if (hasNaNPoints) {
       useAppStore.getState().enterPlacementMode();
     }
+  },
+};
+
+/**
+ * Toggle the current frame's "negative" (background) flag — a frame explicitly
+ * marked as having no animal, used as a negative training example. Creates an
+ * empty flagged frame if none exists; turning the flag off prunes a frame that
+ * only existed to hold it. Undoable (the snapshot captures `isNegative`).
+ */
+export const ToggleNegativeFrame: Command = {
+  name: "ToggleNegativeFrame",
+  topics: [UpdateTopic.Frame, UpdateTopic.Labels],
+  execute(ctx: CommandContext) {
+    const { labels, video, frameIdx } = ctx.state;
+    if (!labels || !video) return;
+
+    const lf = labels.find({ video, frameIdx })[0];
+
+    if (!lf) {
+      const created = new LabeledFrame({ video, frameIdx, isNegative: true });
+      labels.append(created);
+      ctx.state.setLabeledFrame(created);
+      // Seekbar marks + canvas overlays recompute only when overlayVersion
+      // changes (labels is mutated in place). A menu/shortcut toggle has no
+      // canvas path to bump it, so bump explicitly or the tick goes stale.
+      ctx.state.bumpOverlayVersion();
+      ctx.state.markChanged();
+      return;
+    }
+
+    lf.isNegative = !lf.isNegative;
+
+    // Turning OFF an otherwise-empty frame prunes it (it only held the flag).
+    if (!lf.isNegative && lf.instances.length === 0) {
+      const idx = labels.labeledFrames.indexOf(lf);
+      if (idx !== -1) labels.labeledFrames.splice(idx, 1);
+      ctx.state.setLabeledFrame(null);
+    } else {
+      ctx.state.setLabeledFrame(lf);
+    }
+    // See note above: notify overlay/seekbar consumers so the tick repaints.
+    ctx.state.bumpOverlayVersion();
+    ctx.state.markChanged();
   },
 };
 
@@ -220,6 +267,45 @@ export const PasteInstance: Command = {
     });
 
     // Find or create the LabeledFrame
+    const frames = labels.find({ video, frameIdx });
+    let lf: LabeledFrame;
+    if (frames.length > 0) {
+      lf = frames[0];
+    } else {
+      lf = new LabeledFrame({ video, frameIdx });
+      labels.append(lf);
+    }
+
+    lf.instances.push(newInstance);
+    ctx.state.setLabeledFrame(lf);
+    ctx.state.setInstance(newInstance);
+    ctx.state.markChanged();
+  },
+};
+
+/**
+ * Duplicate an instance onto the current frame, selecting the copy. Backs the
+ * canvas's Ctrl+drag "clone and drag" gesture, mirroring PyQt SLEAP's
+ * `QtInstance.mousePressEvent` (Ctrl+click -> `duplicate_instance()` ->
+ * `context.newInstance(copy_instance=self.instance)`).
+ *
+ * Params:
+ *   instance: Instance - the source instance to clone.
+ */
+export const DuplicateInstance: Command = {
+  name: "DuplicateInstance",
+  topics: [UpdateTopic.Frame, UpdateTopic.Instance],
+  execute(ctx: CommandContext, params?: Record<string, unknown>) {
+    const { labels, video, frameIdx, skeleton } = ctx.state;
+    const source = params?.instance as Instance | undefined;
+    if (!labels || !video || !skeleton || !source) return;
+
+    const newInstance = new Instance({
+      skeleton,
+      points: clonePoints(source.points),
+      track: source.track,
+    });
+
     const frames = labels.find({ video, frameIdx });
     let lf: LabeledFrame;
     if (frames.length > 0) {
@@ -546,8 +632,24 @@ export const DeleteAllPredictions: Command = {
 };
 
 /**
- * Merge predictions from inference output into current labels.
- * Supports "auto" (default) and "replace_predictions" strategies.
+ * How inference output combines with the project's EXISTING predictions.
+ * Mirrors legacy SLEAP's "Existing predictions" choice
+ * (sleap/gui/widgets/frame_target_selector.py + runners.merge_results):
+ *  - `replace` (default): per-frame, scoped to frames the model produced output
+ *    for — keep user instances, drop that frame's old predictions, add the new
+ *    ones (io `frame:"replace_predictions"`). Frames not re-inferred keep theirs.
+ *  - `clear_all`: delete EVERY predicted instance project-wide first (keep user
+ *    instances, drop now-empty frames), then append the new predictions
+ *    (io `frame:"keep_both"`).
+ *  - `keep`: append new predictions on top of existing ones (io `frame:"keep_both"`);
+ *    may create duplicates.
+ * User-labeled instances are never removed in any mode.
+ */
+export type ExistingPredictionsMode = "clear_all" | "replace" | "keep";
+
+/**
+ * Merge predictions from inference output into the current labels, honoring the
+ * "Existing predictions" mode (clear_all / replace / keep — default replace).
  */
 export const MergePredictions: Command = {
   name: "MergePredictions",
@@ -560,10 +662,28 @@ export const MergePredictions: Command = {
     const predictions = params?.predictions as Labels;
     if (!predictions) return;
 
-    const strategy =
-      (params?.strategy as "auto" | "replace_predictions") ?? "auto";
+    const mode = (params?.mode as ExistingPredictionsMode) ?? "replace";
+    // `replace` swaps predictions only on frames present in the new output;
+    // `keep`/`clear_all` append (the project-wide wipe below handles clear_all).
+    const frame = mode === "replace" ? "replace_predictions" : "keep_both";
 
     const snapshot = ctx.takeAllFramesSnapshot("MergePredictions");
+
+    // clear_all: strip every existing PredictedInstance project-wide (keeping
+    // user instances) BEFORE merging, so stale predictions on frames the new
+    // run didn't cover are removed too — io's Labels.merge only visits frames
+    // present in the output, so a per-frame strategy alone can't reach them.
+    if (mode === "clear_all") {
+      for (const lf of labels.labeledFrames) {
+        lf.instances = lf.instances.filter(
+          (inst) => !(inst instanceof PredictedInstance)
+        );
+      }
+      labels.labeledFrames = labels.labeledFrames.filter(
+        (lf) => lf.instances.length > 0
+      );
+    }
+
     // Route through sleap-io.js's Labels.merge (issue #226). Match tracks by
     // NAME — io's default is object IDENTITY, which would duplicate every track
     // because the predictions are loaded from a separate file and never share
@@ -575,10 +695,15 @@ export const MergePredictions: Command = {
     const result = await labels.merge(predictions, {
       track: "name",
       video: "basename",
-      frame: strategy,
+      frame,
     });
     ctx.pushUndoSnapshot(snapshot);
     ctx.state.markChanged();
+    // Merge mutates `labels` in place, so overlayVersion-gated consumers (the
+    // seekbar's predicted-frame marks, the canvas overlay) won't recompute
+    // until an unrelated interaction bumps it. Bump now so the light-blue
+    // predicted-frame ticks paint immediately (mirrors ToggleNegativeFrame).
+    ctx.state.bumpOverlayVersion();
 
     const conflicts = result.conflicts.length;
     toast.success(

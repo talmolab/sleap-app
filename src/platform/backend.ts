@@ -11,6 +11,8 @@ import { saveSlpToBytes } from "@talmolab/sleap-io.js";
 import type { InferenceConfig } from "@/stores/inferenceStore";
 import { buildInferenceArgs, pickInferenceSubcommand } from "./inferenceArgs";
 import type { UnlistenFn } from "@tauri-apps/api/event";
+import { formatRunTimestamp as formatPredictionsTimestamp } from "@/lib/timestamp";
+import { buildTrainingArgs } from "./trainingArgs";
 
 function sampleRandomFrames(totalFrames: number, count: number): number[] {
   const n = Math.min(count, totalFrames);
@@ -35,6 +37,9 @@ export interface UvTool {
   name: string;
   version: string | null;
   commands: string[];
+  /** `null` = update check couldn't run (offline, timed out); otherwise whether a newer version is available. */
+  updateAvailable: boolean | null;
+  latestVersion: string | null;
 }
 
 export interface PythonInterpreter {
@@ -130,6 +135,37 @@ export async function installPython(
 /** Detect GPU type: "cuda", "mps", or "cpu". */
 export async function detectGpu(): Promise<string> {
   return invokeCmd<string>("detect_gpu", {});
+}
+
+/** Point-in-time GPU stats (NVIDIA util/VRAM via nvidia-smi; backend-only on mps/cpu). */
+export interface GpuStats {
+  backend: string;
+  name: string | null;
+  memoryTotalMb: number | null;
+  memoryUsedMb: number | null;
+  utilizationPct: number | null;
+}
+
+export async function gpuStats(): Promise<GpuStats> {
+  return invokeCmd<GpuStats>("gpu_stats", {});
+}
+
+/** WandB auth status detected from the local machine (env var or ~/.netrc). */
+export interface WandbAuth {
+  authenticated: boolean;
+  source: string | null;
+  username: string | null;
+}
+
+/**
+ * Detect whether WandB is already authenticated on this (desktop) machine —
+ * `WANDB_API_KEY` env var or cached `~/.netrc` credentials — so the training
+ * dialog can tell the user the API key is optional. Returns a
+ * not-authenticated result in the browser (the training machine isn't this one).
+ */
+export async function checkWandbAuth(): Promise<WandbAuth> {
+  if (!isTauri) return { authenticated: false, source: null, username: null };
+  return invokeCmd<WandbAuth>("check_wandb_auth", {});
 }
 
 /** Install a uv tool (e.g., sleap-nn). */
@@ -300,16 +336,16 @@ export async function runTraining(
   const ckptDir = modelDir || (await join(tmp, "sleap_models"));
   const modelPath = `${ckptDir}/${runName}`;
 
-  const args = [
-    "train",
-    "--config-name", configFileName,
-    "--config-dir", tmp,
-    `data_config.train_labels_path=[${labelsPath}]`,
-    `trainer_config.run_name=${runName}`,
-    `trainer_config.ckpt_dir=${ckptDir}`,
-    `trainer_config.zmq.controller_port=9000`,
-    `trainer_config.zmq.publish_port=9001`,
-  ];
+  // Hydra reads these as `key=value` overrides; interpolated values are quoted
+  // so a run name's legacy `.n=<count>` suffix (or a project path containing
+  // `=`) can't crash the parser. See ./trainingArgs.ts.
+  const args = buildTrainingArgs({
+    configFileName,
+    configDir: tmp,
+    labelsPath,
+    runName,
+    ckptDir,
+  });
 
   const command = `sleap-nn ${args.join(" ")}`;
   console.log("[training] Running:", command);
@@ -337,11 +373,10 @@ export async function runInference(
     return { success: false, outputPath: null, command: "" };
   }
 
-  const { tempDir, join } = await import("@tauri-apps/api/path");
+  const { tempDir, join, dirname, basename } = await import("@tauri-apps/api/path");
 
   const tmp = await tempDir();
   const ts = Date.now();
-  const outputPath = await join(tmp, `sleap_inference_output_${ts}.slp`);
 
   // Use original project file if available, otherwise serialize
   let dataPath: string;
@@ -360,6 +395,81 @@ export async function runInference(
     await writeFile(dataPath, bytes);
     console.log("[inference] Wrote %d bytes to %s", bytes.byteLength, dataPath);
   }
+
+  // "frame"/"video"/"random_video"/a custom range all scope to a single video
+  // (config.videoIndex is a real index, not "all"). If that video has its own
+  // file — i.e. it's not embedded in a .pkg.slp and not an image sequence —
+  // point --data_path directly at it and drop --video_index, so sleap-nn reads
+  // it via VideoProvider instead of silently subsetting only already-labeled
+  // frames via LabelsProvider when --data_path is a .slp (talmolab/sleap#2848).
+  // Embedded/image-sequence videos have no file of their own, so they keep the
+  // project-file route below.
+  let videoDataPath: string | null = null;
+  if (config.videoIndex !== "all") {
+    const { useAppStore } = await import("@/stores/appStore");
+    const video = useAppStore.getState().labels?.videos[config.videoIndex] ?? null;
+    const filename = video?.filename;
+    if (video && !video.hasEmbeddedImages && typeof filename === "string") {
+      videoDataPath = filename;
+    }
+  }
+  if (videoDataPath) {
+    dataPath = videoDataPath;
+    console.log("[inference] Video-scoped run targeting the video file directly:", dataPath);
+  }
+
+  // The current-frame index for frameRange === "frame" (needs the app store).
+  let currentFrameIdx: number | undefined;
+  if (config.frameRange === "frame") {
+    const { useAppStore } = await import("@/stores/appStore");
+    currentFrameIdx = useAppStore.getState().frameIdx;
+  }
+
+  // Resolve where to write the predictions file, matching legacy SLEAP GUI
+  // (sleap/gui/learning/runners.py): a `predictions/` folder next to the saved
+  // project file, or next to the source video when the project has never been
+  // saved. Falls back to the OS temp dir only when neither is resolvable.
+  const ensurePredictionsDirNextToProject = async (pPath: string): Promise<string> => {
+    const dir = await join(await dirname(pPath), "predictions");
+    const { mkdir } = await import("@tauri-apps/plugin-fs");
+    await mkdir(dir, { recursive: true });
+    return dir;
+  };
+
+  let predictionsDir: string;
+  let sourceName: string;
+  let videoPrefix = "";
+  if (videoDataPath) {
+    // Named after the video, matching legacy's basename(item.path) post-#2848.
+    sourceName = await basename(videoDataPath);
+    predictionsDir = projectPath
+      ? await ensurePredictionsDirNextToProject(projectPath)
+      : await dirname(videoDataPath);
+  } else if (projectPath) {
+    predictionsDir = await ensurePredictionsDirNextToProject(projectPath);
+    sourceName = await basename(projectPath);
+    // Embedded/image-sequence videos in a project all share one filename, so
+    // the index is the only thing that disambiguates per-video runs.
+    if (typeof config.videoIndex === "number") {
+      videoPrefix = `video${config.videoIndex}_`;
+    }
+  } else {
+    const { useAppStore } = await import("@/stores/appStore");
+    const activeVideo = useAppStore.getState().video;
+    const videoFilename = activeVideo?.filename;
+    const videoPath = Array.isArray(videoFilename) ? videoFilename[0] : videoFilename;
+    if (videoPath) {
+      predictionsDir = await dirname(videoPath);
+      sourceName = await basename(videoPath);
+    } else {
+      predictionsDir = tmp;
+      sourceName = "sleap_inference_output";
+    }
+  }
+  const outputPath = await join(
+    predictionsDir,
+    `${videoPrefix}${sourceName}.${formatPredictionsTimestamp()}.predictions.slp`
+  );
 
   // Pick the sleap-nn subcommand by installed version: the new `predict`
   // (Predictor) pipeline when available (>= 0.2.0), else fall back to the legacy
@@ -389,7 +499,14 @@ export async function runInference(
     sampledFrames = sampleRandomFrames(nFrames, config.sampleCount);
   }
 
-  const args = buildInferenceArgs(config, { dataPath, outputPath, sampledFrames, subcommand });
+  const args = buildInferenceArgs(config, {
+    dataPath,
+    outputPath,
+    sampledFrames,
+    currentFrameIdx,
+    suppressVideoIndex: videoDataPath !== null,
+    subcommand,
+  });
 
   const command = `${program} ${args.join(" ")}`;
   console.log("[inference] Running:", command);

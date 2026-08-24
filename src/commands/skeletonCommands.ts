@@ -6,7 +6,7 @@
  * data consistently.
  */
 
-import { Node, Edge, Instance, Skeleton } from "@talmolab/sleap-io.js";
+import { Node, Edge, Instance, Skeleton, Symmetry } from "@talmolab/sleap-io.js";
 import { UpdateTopic } from "../types";
 import type { Command } from "./types";
 import type { CommandContext } from "./CommandContext";
@@ -24,6 +24,7 @@ import { remapInstancePoints } from "../lib/skeletonIO";
 interface SkeletonSnapshot {
   nodes: Node[];
   edges: Edge[];
+  symmetries: Symmetry[];
   /** For each labeled frame, the points arrays for every instance. */
   instancePoints: {
     instance: Instance;
@@ -50,6 +51,7 @@ function takeSkeletonSnapshot(ctx: CommandContext): SkeletonSnapshot {
   const { labels, skeleton } = ctx.state;
   const nodes = skeleton ? [...skeleton.nodes] : [];
   const edges = skeleton ? [...skeleton.edges] : [];
+  const symmetries = skeleton ? [...skeleton.symmetries] : [];
 
   const instancePoints: SkeletonSnapshot["instancePoints"] = [];
   if (labels) {
@@ -63,7 +65,7 @@ function takeSkeletonSnapshot(ctx: CommandContext): SkeletonSnapshot {
     }
   }
 
-  return { nodes, edges, instancePoints };
+  return { nodes, edges, symmetries, instancePoints };
 }
 
 /** Restore skeleton state from a snapshot. */
@@ -76,6 +78,7 @@ function restoreSkeletonSnapshot(
 
   skeleton.nodes = snapshot.nodes;
   skeleton.edges = snapshot.edges;
+  skeleton.symmetries = snapshot.symmetries;
   skeleton.rebuildCache(skeleton.nodes);
 
   // Restore instance points AND re-point every instance at the restored
@@ -145,6 +148,10 @@ export const AddNodeCommand: Command = {
       frame: null,
       allFrames: null,
       tracks: labels ? [...labels.tracks] : [],
+      trackNames: labels ? labels.tracks.map((t) => t.name) : [],
+      videos: labels ? [...labels.videos] : [],
+      skeletons: labels ? [...labels.skeletons] : [],
+      suggestions: labels ? [...labels.suggestions] : [],
       selectedIdx: -1,
       activeVideo: ctx.state.video,
       activeFrameIdx: ctx.state.frameIdx,
@@ -324,6 +331,74 @@ export const DeleteEdgeCommand: Command = {
     storeSkeletonUndo(ctx, "DeleteEdge", before, afterSnapshot);
 
     ctx.state.markChanged();
+  },
+};
+
+/**
+ * Remove all edges from the skeleton, keeping the nodes. Used by the visual
+ * builder's "Clear edges" reset. Undoable.
+ */
+export const ClearEdgesCommand: Command = {
+  name: "ClearEdges",
+  topics: [UpdateTopic.Skeleton],
+  skipAutoSnapshot: true,
+  execute(ctx: CommandContext) {
+    const { skeleton } = ctx.state;
+    if (!skeleton || skeleton.edges.length === 0) return;
+
+    const before = takeSkeletonSnapshot(ctx);
+    skeleton.edges = [];
+    const afterSnapshot = takeSkeletonSnapshot(ctx);
+    storeSkeletonUndo(ctx, "ClearEdges", before, afterSnapshot);
+
+    ctx.state.markChanged();
+  },
+};
+
+/**
+ * Delete the entire skeleton: remove all nodes and edges, and clear every
+ * instance's points. An empty skeleton implies zero points per instance, so
+ * this cascades to instance points the same way {@link DeleteNodeCommand} does
+ * for a single node — but for ALL nodes at once (each instance's `points`
+ * becomes `[]`).
+ *
+ * No-op when there is no skeleton or it is already empty (0 nodes AND 0 edges).
+ * Undoable via the snapshot pattern (nodes, edges, and instance points all
+ * restore).
+ */
+export const DeleteSkeletonCommand: Command = {
+  name: "DeleteSkeleton",
+  topics: [UpdateTopic.Skeleton, UpdateTopic.Frame],
+  skipAutoSnapshot: true,
+  execute(ctx: CommandContext) {
+    const { labels, skeleton } = ctx.state;
+    if (!skeleton) return;
+    // Already empty → nothing to do (no undo entry pushed).
+    if (skeleton.nodes.length === 0 && skeleton.edges.length === 0) return;
+
+    const before = takeSkeletonSnapshot(ctx);
+
+    skeleton.nodes = [];
+    skeleton.edges = [];
+    skeleton.rebuildCache([]);
+
+    // Clear every instance's points. Reassign, don't splice in place:
+    // `inst.points` is a columnar snapshot array since sleap-io.js 0.5.x (see
+    // AddNode/DeleteNode).
+    if (labels) {
+      for (const lf of labels.labeledFrames) {
+        for (const inst of lf.instances) {
+          inst.points = [];
+        }
+      }
+    }
+
+    const afterSnapshot = takeSkeletonSnapshot(ctx);
+    storeSkeletonUndo(ctx, "DeleteSkeleton", before, afterSnapshot);
+
+    ctx.state.markChanged();
+    // Node count changed: refresh skeleton-dependent UI (see AddNode).
+    ctx.state.bumpOverlayVersion();
   },
 };
 
@@ -656,3 +731,62 @@ export function installSkeletonUndoInterceptor(ctx: CommandContext): void {
     return result;
   };
 }
+
+/**
+ * Add a symmetry (left/right mirror pair) between two nodes.
+ *
+ * Params: { node1: string, node2: string } (node names)
+ */
+export const AddSymmetryCommand: Command = {
+  name: "AddSymmetry",
+  topics: [UpdateTopic.Skeleton],
+  skipAutoSnapshot: true,
+  execute(ctx: CommandContext, params?: Record<string, unknown>) {
+    const { skeleton } = ctx.state;
+    if (!skeleton) return;
+
+    const node1 = params?.node1 as string | undefined;
+    const node2 = params?.node2 as string | undefined;
+    if (!node1 || !node2 || node1 === node2) return;
+
+    // A node can be in at most one symmetry, and pairs are unordered — reject a
+    // duplicate or a node already symmetric to something.
+    const clash = skeleton.symmetries.some((sym) => {
+      const names = new Set([sym.at(0).name, sym.at(1).name]);
+      return names.has(node1) || names.has(node2);
+    });
+    if (clash) return;
+
+    const before = takeSkeletonSnapshot(ctx);
+    skeleton.addSymmetry(node1, node2);
+    const after = takeSkeletonSnapshot(ctx);
+    storeSkeletonUndo(ctx, "AddSymmetry", before, after);
+
+    ctx.state.markChanged();
+  },
+};
+
+/**
+ * Remove a symmetry pair by its index in `skeleton.symmetries`.
+ *
+ * Params: { symmetryIdx: number }
+ */
+export const RemoveSymmetryCommand: Command = {
+  name: "RemoveSymmetry",
+  topics: [UpdateTopic.Skeleton],
+  skipAutoSnapshot: true,
+  execute(ctx: CommandContext, params?: Record<string, unknown>) {
+    const { skeleton } = ctx.state;
+    if (!skeleton) return;
+
+    const idx = params?.symmetryIdx as number | undefined;
+    if (idx == null || idx < 0 || idx >= skeleton.symmetries.length) return;
+
+    const before = takeSkeletonSnapshot(ctx);
+    skeleton.symmetries.splice(idx, 1);
+    const after = takeSkeletonSnapshot(ctx);
+    storeSkeletonUndo(ctx, "RemoveSymmetry", before, after);
+
+    ctx.state.markChanged();
+  },
+};

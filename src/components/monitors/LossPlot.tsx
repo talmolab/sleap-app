@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import type uPlot from "uplot";
 import type { ModelProgress, TrainingStatus } from "@/stores/trainingStore";
 import { UPlotChart, type UPlotChartHandle } from "@/components/charts/UPlotChart";
-import { buildLossPlotDataBatched, computeYRange, formatRuntimeTitle, lossCsv } from "@/lib/trainingMetrics";
+import { boundedLossYValues, buildLossPlotDataBatched, computeYRange, formatRuntimeTitle, lossCsv } from "@/lib/trainingMetrics";
 import { Button } from "@/components/ui/button";
 import { saveBytesFile } from "@/commands/fileCommands";
 
@@ -83,12 +83,10 @@ export function LossPlot({
   // epoch and bypasses UPlotChart's setData throttle). So we keep the latest
   // y-values in a ref and let uPlot's `range` callback read it on each redraw.
   const latestYsRef = useRef<number[]>([]);
-  latestYsRef.current = [
-    ...model.batchSamples.map((b) => b.loss),
-    ...model.epochSamples.flatMap((s) =>
-      [s.trainLoss, s.valLoss].filter((v): v is number => v != null),
-    ),
-  ];
+  // Bounded input (see boundedLossYValues): the full 20k batch buffer would make
+  // the per-redraw computeYRange sort escalate into a GUI freeze with the monitor
+  // open during a long run. Decimated to the drawn-point cap → no clipping.
+  latestYsRef.current = boundedLossYValues(model.batchSamples, model.epochSamples);
 
   // `scales` is memoized on [logScale, ignoreOutliers] ONLY — NOT on epochSamples.
   // The `range` fn closes over the ref, so it always sees the current data and

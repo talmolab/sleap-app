@@ -13,8 +13,11 @@ import { commandContext } from "../../commands/CommandContext";
 import {
   AddNodeCommand,
   DeleteNodeCommand,
+  DeleteSkeletonCommand,
   AddEdgeCommand,
   DeleteEdgeCommand,
+  AddSymmetryCommand,
+  RemoveSymmetryCommand,
   RenameNodeCommand,
   LoadSkeletonTemplateCommand,
   OpenSkeletonCommand,
@@ -82,6 +85,23 @@ function ensureInterceptor() {
 
 export function SkeletonPanel() {
   const skeleton = useAppStore((s) => s.skeleton);
+  // A video (i.e. a frame to draw on) is required to launch the visual builder.
+  const video = useAppStore((s) => s.video);
+  // Re-render when the skeleton's structure changes. The skeleton commands AND
+  // the on-canvas visual builder mutate the SAME `Skeleton` object IN PLACE
+  // (nodes/edges are reassigned on a stable object; the `s.skeleton` reference
+  // never changes), then signal via a store bump. A plain `s.skeleton` selector
+  // therefore never re-fires for builder-added nodes, so subscribe to the live
+  // node/edge COUNTS (primitives) instead — they re-render this panel exactly
+  // when the structure changes. Without this the panel's `nodes`/`edges` snapshot
+  // (below) goes stale after the builder adds nodes, which makes the "Draw
+  // skeleton on frame" launch guard read a stale count, skip the
+  // Edit/Delete-&-start-new prompt, re-enter the builder on the still-populated
+  // skeleton, and keep numbering new nodes as node_6, node_7, … instead of
+  // restarting at node_0. It also left the Delete Skeleton button wrongly
+  // disabled and the node/edge counts wrong.
+  useAppStore((s) => s.skeleton?.nodes.length ?? 0);
+  useAppStore((s) => s.skeleton?.edges.length ?? 0);
   const [selectedNodeIdx, setSelectedNodeIdx] = useState<number | null>(null);
   const [selectedEdgeIdx, setSelectedEdgeIdx] = useState<number | null>(null);
 
@@ -92,10 +112,21 @@ export function SkeletonPanel() {
   // Dialog state for delete node confirmation
   const [deleteNodeOpen, setDeleteNodeOpen] = useState(false);
 
+  // Dialog state for delete skeleton confirmation
+  const [deleteSkeletonOpen, setDeleteSkeletonOpen] = useState(false);
+
+  // Dialog state for the "Draw skeleton on frame" launch guard: when a skeleton
+  // already exists, warn before entering the builder (Edit / Delete & start new).
+  const [buildGuardOpen, setBuildGuardOpen] = useState(false);
+
   // Dialog state for add edge
   const [addEdgeOpen, setAddEdgeOpen] = useState(false);
   const [edgeSrcName, setEdgeSrcName] = useState("");
   const [edgeDstName, setEdgeDstName] = useState("");
+  const [selectedSymIdx, setSelectedSymIdx] = useState<number | null>(null);
+  const [addSymOpen, setAddSymOpen] = useState(false);
+  const [sym1Name, setSym1Name] = useState("");
+  const [sym2Name, setSym2Name] = useState("");
   // Sticky seed: remember the last destination we connected to, so reopening
   // the dialog can prefer it as the next source (PyQt-like rapid chaining).
   const lastEdgeDst = useRef<string>("");
@@ -121,6 +152,22 @@ export function SkeletonPanel() {
     ensureInterceptor();
   }, []);
 
+  // Auto-exit the visual skeleton builder if this panel is closed, collapsed,
+  // or switched away from while build mode is still active — otherwise the
+  // only way out is the Escape key, which has no visible affordance (and
+  // isn't reachable at all from the Place stage's on-canvas bar).
+  // `promptIfUnfinished` surfaces a "keep or discard?" dialog (rendered
+  // globally in AppShell, since this panel is unmounting) when nodes/edges
+  // were added since the builder was entered — an unplanned exit like this
+  // one shouldn't silently keep a half-finished draft.
+  useEffect(() => {
+    return () => {
+      if (useAppStore.getState().skeletonBuildMode) {
+        useAppStore.getState().exitSkeletonBuild({ promptIfUnfinished: true });
+      }
+    };
+  }, []);
+
   if (!skeleton) {
     return (
       <p className="text-xs text-muted-foreground p-2">No skeleton loaded.</p>
@@ -129,6 +176,12 @@ export function SkeletonPanel() {
 
   const nodes = skeleton.nodes ?? [];
   const edges = skeleton.edges ?? [];
+  const symmetries = skeleton.symmetries ?? [];
+  // Nodes not already part of a symmetry (each node can be in at most one).
+  const symmetricNames = new Set(
+    symmetries.flatMap((s) => [s.at(0).name, s.at(1).name])
+  );
+  const freeNodes = nodes.filter((n) => !symmetricNames.has(n.name));
 
   const addNode = () => {
     if (!newNodeName.trim()) return;
@@ -145,6 +198,45 @@ export function SkeletonPanel() {
     commandContext.execute(DeleteNodeCommand, { nodeIdx: selectedNodeIdx });
     setSelectedNodeIdx(null);
     setDeleteNodeOpen(false);
+  };
+
+  const deleteSkeleton = () => {
+    commandContext.execute(DeleteSkeletonCommand);
+    // Drop any session template layout so a deleted skeleton doesn't leave a
+    // stale center-based Add Instance seed behind.
+    useAppStore.getState().clearSkeletonTemplateLayout();
+    setSelectedNodeIdx(null);
+    setSelectedEdgeIdx(null);
+    setDeleteSkeletonOpen(false);
+  };
+
+  /**
+   * "Draw skeleton on frame" launch. If a non-empty skeleton already exists,
+   * warn first (Edit / Delete & start new / Cancel); otherwise enter the builder
+   * directly on the empty/absent skeleton.
+   */
+  const launchBuilder = () => {
+    if (nodes.length > 0) {
+      setBuildGuardOpen(true);
+    } else {
+      useAppStore.getState().enterSkeletonBuild();
+    }
+  };
+
+  /** Guard → "Edit existing": enter the builder on the current skeleton. */
+  const guardEditExisting = () => {
+    setBuildGuardOpen(false);
+    useAppStore.getState().enterSkeletonBuild();
+  };
+
+  /** Guard → "Delete & start new": clear the skeleton, then enter the builder. */
+  const guardDeleteAndStartNew = () => {
+    commandContext.execute(DeleteSkeletonCommand);
+    useAppStore.getState().clearSkeletonTemplateLayout();
+    setSelectedNodeIdx(null);
+    setSelectedEdgeIdx(null);
+    setBuildGuardOpen(false);
+    useAppStore.getState().enterSkeletonBuild();
   };
 
   const addEdge = () => {
@@ -169,6 +261,24 @@ export function SkeletonPanel() {
     setEdgeDstName(sel.dst);
     setSelectedEdgeIdx(newEdgeIdx);
     // NOTE: intentionally do NOT close the dialog — allows rapid edge chaining.
+  };
+
+  const addSymmetry = () => {
+    if (!sym1Name || !sym2Name || sym1Name === sym2Name) return;
+    commandContext.execute(AddSymmetryCommand, {
+      node1: sym1Name,
+      node2: sym2Name,
+    });
+    setAddSymOpen(false);
+    setSelectedSymIdx(symmetries.length);
+  };
+
+  const deleteSymmetry = () => {
+    if (selectedSymIdx === null || selectedSymIdx >= symmetries.length) return;
+    commandContext.execute(RemoveSymmetryCommand, {
+      symmetryIdx: selectedSymIdx,
+    });
+    setSelectedSymIdx(null);
   };
 
   const deleteEdge = () => {
@@ -354,6 +464,25 @@ export function SkeletonPanel() {
         </div>
       </div>
 
+      {/* Visual skeleton builder launch */}
+      <div className="px-2 py-1.5 border-b border-border">
+        <Button
+          variant="subtle"
+          size="xs"
+          className="w-full"
+          onClick={launchBuilder}
+          disabled={!video}
+          data-tutorial="draw-skeleton-button"
+          title={
+            video
+              ? "Draw the skeleton directly on the current frame"
+              : "Load a video to draw a skeleton"
+          }
+        >
+          Draw skeleton on frame
+        </Button>
+      </div>
+
       {/* Template selector + Load/Save buttons */}
       <div className="px-2 py-1.5 border-b border-border">
         <label className="text-xs text-muted-foreground block mb-1">
@@ -407,6 +536,9 @@ export function SkeletonPanel() {
           <TabsTrigger value="edges" className="text-xs h-7">
             Edges ({edges.length})
           </TabsTrigger>
+          <TabsTrigger value="symmetries" className="text-xs h-7">
+            Symmetries ({symmetries.length})
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="nodes" className="flex flex-col flex-1 min-h-0 mt-0">
@@ -437,6 +569,14 @@ export function SkeletonPanel() {
               disabled={selectedNodeIdx === null}
             >
               Delete Node
+            </Button>
+            <Button
+              variant="subtle"
+              size="xs"
+              onClick={() => setDeleteSkeletonOpen(true)}
+              disabled={!skeleton || nodes.length === 0}
+            >
+              Delete Skeleton
             </Button>
           </div>
         </TabsContent>
@@ -475,6 +615,57 @@ export function SkeletonPanel() {
               disabled={selectedEdgeIdx === null}
             >
               Delete Edge
+            </Button>
+          </div>
+        </TabsContent>
+
+        <TabsContent
+          value="symmetries"
+          className="flex flex-col flex-1 min-h-0 mt-0"
+        >
+          <ScrollArea className="flex-1">
+            {symmetries.length === 0 ? (
+              <p className="p-2 text-xs text-muted-foreground">
+                No symmetries. Pair left/right mirror nodes (e.g. left_ear ↔
+                right_ear) so flip augmentation swaps them during training.
+              </p>
+            ) : (
+              <ul className="p-1 text-xs">
+                {symmetries.map((s, i) => (
+                  <li
+                    key={i}
+                    onClick={() => setSelectedSymIdx(i)}
+                    className={`cursor-pointer rounded px-2 py-1 ${
+                      selectedSymIdx === i ? "bg-accent" : "hover:bg-accent/50"
+                    }`}
+                  >
+                    {s.at(0).name} ↔ {s.at(1).name}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </ScrollArea>
+          <Separator />
+          <div className="flex gap-1 p-2">
+            <Button
+              variant="subtle"
+              size="xs"
+              onClick={() => {
+                setSym1Name(freeNodes[0]?.name ?? "");
+                setSym2Name(freeNodes[1]?.name ?? "");
+                setAddSymOpen(true);
+              }}
+              disabled={freeNodes.length < 2}
+            >
+              New Symmetry
+            </Button>
+            <Button
+              variant="subtle"
+              size="xs"
+              onClick={deleteSymmetry}
+              disabled={selectedSymIdx === null}
+            >
+              Delete Symmetry
             </Button>
           </div>
         </TabsContent>
@@ -554,6 +745,66 @@ export function SkeletonPanel() {
         </DialogContent>
       </Dialog>
 
+      {/* Delete Skeleton Confirmation Dialog */}
+      <Dialog open={deleteSkeletonOpen} onOpenChange={setDeleteSkeletonOpen}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Delete Skeleton</DialogTitle>
+            <DialogDescription>
+              Delete the entire skeleton? This removes all {nodes.length} node
+              {nodes.length !== 1 ? "s" : ""} and {edges.length} edge
+              {edges.length !== 1 ? "s" : ""}. This can be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setDeleteSkeletonOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button variant="destructive" size="sm" onClick={deleteSkeleton}>
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Draw-skeleton Launch Guard Dialog (existing skeleton) */}
+      <Dialog open={buildGuardOpen} onOpenChange={setBuildGuardOpen}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Skeleton already defined</DialogTitle>
+            <DialogDescription>
+              This project already has a skeleton ({nodes.length} node
+              {nodes.length !== 1 ? "s" : ""}, {edges.length} edge
+              {edges.length !== 1 ? "s" : ""}). Editing adds to it; you can also
+              delete it and start fresh.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setBuildGuardOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button variant="subtle" size="sm" onClick={guardEditExisting}>
+              Edit existing
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={guardDeleteAndStartNew}
+            >
+              Delete &amp; start new
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Add Edge Dialog */}
       <Dialog open={addEdgeOpen} onOpenChange={setAddEdgeOpen}>
         <DialogContent className="sm:max-w-sm">
@@ -624,6 +875,78 @@ export function SkeletonPanel() {
               disabled={
                 !isValidEdgeSelection(nodes, edges, edgeSrcName, edgeDstName)
               }
+            >
+              Add
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Add Symmetry Dialog */}
+      <Dialog open={addSymOpen} onOpenChange={setAddSymOpen}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Add Symmetry</DialogTitle>
+            <DialogDescription>
+              Pair two nodes as left/right mirror partners.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-2">
+            <div>
+              <label className="text-xs text-muted-foreground block mb-1">
+                Node A
+              </label>
+              <Select
+                value={sym1Name}
+                onValueChange={(v) => {
+                  setSym1Name(v);
+                  setSym2Name((prev) => (prev === v ? "" : prev));
+                }}
+              >
+                <SelectTrigger className="w-full" size="sm">
+                  <SelectValue placeholder="Select node..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {freeNodes.map((n, i) => (
+                    <SelectItem key={i} value={n.name}>
+                      {n.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <label className="text-xs text-muted-foreground block mb-1">
+                Node B
+              </label>
+              <Select value={sym2Name} onValueChange={setSym2Name}>
+                <SelectTrigger className="w-full" size="sm">
+                  <SelectValue placeholder="Select node..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {freeNodes
+                    .filter((n) => n.name !== sym1Name)
+                    .map((n, i) => (
+                      <SelectItem key={i} value={n.name}>
+                        {n.name}
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setAddSymOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              onClick={addSymmetry}
+              disabled={!sym1Name || !sym2Name || sym1Name === sym2Name}
             >
               Add
             </Button>

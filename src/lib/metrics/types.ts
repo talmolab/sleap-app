@@ -124,6 +124,8 @@ export interface MetricsSummary {
  */
 export interface TrainingConfigInfo {
   runName: string | null;
+  /** Raw head key from `model_config.head_configs` (e.g. "centered_instance"). */
+  headKey: string | null;
   modelType: string | null;
   architecture: string | null;
   nodeNames: string[] | null;

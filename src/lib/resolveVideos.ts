@@ -10,6 +10,7 @@ import {
   Mp4BoxVideoBackend,
   MediaBunnyVideoBackend,
   SeqVideoBackend,
+  AviVideoBackend,
   Video,
   createVideoBackend,
   type VideoBackend,
@@ -23,6 +24,14 @@ import { tailGraftCandidates } from "./pathCandidates";
 import { applyPrefixSwap } from "./videoPrefixSwaps";
 import { fileSize, readRange } from "./nativeRange";
 import { useAppStore } from "@/stores/appStore";
+import {
+  ensureDecodablePath,
+  getTranscodeCacheInfo,
+  clearTranscodeCache,
+} from "./transcode/transcodeVideo";
+import { createTauriTranscodeDeps } from "./transcode/transcodeDepsTauri";
+import { useTranscodeStore } from "@/stores/transcodeStore";
+import { useTranscodePromptStore } from "@/stores/transcodePromptStore";
 
 /** Extract just the basename from a path or filename. */
 export function getBasename(filename: string | string[]): string {
@@ -404,8 +413,10 @@ export function videoIssue(video: Video): VideoIssue {
  * Classify a thrown backend-open error into a structured {@link VideoBackendError}
  * so the UI can show WHY a video failed rather than a blanket "not found".
  * sleap-io.js throws `UnsupportedVideoFormatError` for whole-container formats it
- * can't read (AVI / MPEG-PS) and "Codec <x> not supported" / decode errors for
- * unplayable codecs. We only call this after a file was located and read, so an
+ * can't read (MPEG program streams — `.avi`/`.wmv` are now demuxed) and
+ * "Codec <x> not supported" / decode errors for unplayable codecs (including an
+ * AVI/WMV whose payload is Xvid/DivX/WMV3/VC-1). We only call this after a file
+ * was located and read, so an
  * open failure here is a codec/decode problem (not a missing file) — hence the
  * default codec kind. Pure + decoder-independent (unit-tested).
  */
@@ -1154,14 +1165,17 @@ export async function resolveAllVideosFromFolder(
 
 /**
  * Build the sleap-io.js backend for a user-picked file, dispatching by
- * extension: MP4 → Mp4Box, WebM/MKV/MOV/Ogg/MPEG-TS → MediaBunny, `.seq` → Seq.
- * Unknown / extension-less names fall back to Mp4Box (historical behavior for
- * SLP-referenced external videos with non-standard names).
+ * extension: MP4 → Mp4Box, WebM/MKV/MOV/Ogg/MPEG-TS → MediaBunny, AVI/WMV → the
+ * web-demuxer AviVideoBackend, `.seq` → Seq. Unknown / extension-less names fall
+ * back to Mp4Box (historical behavior for SLP-referenced external videos with
+ * non-standard names).
  */
 async function createBackendForFile(file: File): Promise<VideoBackend> {
   switch (backendKindForFilename(file.name)) {
     case "mediabunny":
       return MediaBunnyVideoBackend.fromBlob(file, file.name);
+    case "avi":
+      return AviVideoBackend.fromBlob(file, file.name);
     case "seq":
       return SeqVideoBackend.create(file);
     case "mp4box":
@@ -1189,13 +1203,83 @@ function makeVideoRangeSource(path: string): Promise<RangeSource> {
  * multi-GB external video is never read whole into memory (the desktop
  * freeze/crash). MP4 → Mp4Box, the MediaBunny formats → MediaBunny, both via a
  * {@link RangeSource}. `.seq` has no range backend and its files are small, so
- * it falls back to a full read.
+ * it falls back to a full read. AVI/WMV also read whole for now — web-demuxer
+ * 4.x can't stream from a lazy source, so {@link AviVideoBackend.fromRangeSource}
+ * materializes the bytes (true AVI byte-range streaming is a follow-up).
  */
 async function createBackendForPath(path: string): Promise<VideoBackend> {
   const name = getBasename(path);
   const kind = backendKindForFilename(name);
   if (kind === "mediabunny") {
     return MediaBunnyVideoBackend.fromRangeSource(
+      await makeVideoRangeSource(path),
+      name
+    );
+  }
+  if (kind === "avi") {
+    // Desktop legacy-codec fallback: probe the codec natively (ffprobe sidecar);
+    // if WebCodecs can't decode it (Xvid/DivX, WMV3/VC-1, MPEG-1/2, 10-bit HEVC)
+    // transcode it to a cached, frame-exact H.264 MP4 once and open THAT via the
+    // hardware Mp4Box path — fast seeking, no software-decode lag, and the source
+    // bytes never enter the WebView (native disk→disk). Decodable AVI/WMV
+    // (H.264/MJPEG) probe cheaply and fall through to AviVideoBackend unchanged.
+    // Requires the bundled ffmpeg/ffprobe sidecars (see src-tauri/binaries/); on
+    // ANY failure (no sidecar, undecodable-and-unencodable) we fall back to
+    // AviVideoBackend, which surfaces the graceful "transcode to H.264" message —
+    // the same behavior as the browser. The `.slp` keeps the ORIGINAL path.
+    const platform = await getPlatform();
+    if (platform.isTauri) {
+      const store = useTranscodeStore.getState();
+      const controller = new AbortController();
+      let durationMs: number | undefined;
+      try {
+        const result = await ensureDecodablePath(
+          path,
+          createTauriTranscodeDeps(),
+          {
+            signal: controller.signal,
+            // Opt-in: ask before converting a legacy codec (only on a cache
+            // miss — an already-converted video reopens silently). Declining
+            // falls through to AviVideoBackend's unsupported-codec message.
+            confirmTranscode: (info) =>
+              useTranscodePromptStore
+                .getState()
+                .confirm(path, name, info.codec),
+            onTranscodeStart: (info) => {
+              durationMs = info.durationMs;
+              store.startJob(name, () => controller.abort());
+            },
+            onProgress: (p) => {
+              const percent =
+                durationMs && durationMs > 0 && p.outTimeMs !== undefined
+                  ? Math.min(100, (p.outTimeMs / durationMs) * 100)
+                  : null;
+              store.setProgress(percent, p.frame ?? null);
+            },
+          }
+        );
+        if (result.transcoded) {
+          toast.success(`Converted ${name}`);
+          return new Mp4BoxVideoBackend(
+            await makeVideoRangeSource(result.path),
+            { filename: name }
+          );
+        }
+        // Decodable (H.264/MJPEG) → fall through to AviVideoBackend below.
+      } catch (err) {
+        if (controller.signal.aborted) {
+          // User canceled: don't silently fall back (that re-attempts the whole
+          // undecodable open) — surface a clean cancellation so the video is
+          // simply not added.
+          throw new Error(`Conversion canceled for ${name}`);
+        }
+        console.warn(`[video] transcode fallback failed for "${name}":`, err);
+        // fall through to AviVideoBackend (graceful unsupported-codec message)
+      } finally {
+        store.endJob();
+      }
+    }
+    return AviVideoBackend.fromRangeSource(
       await makeVideoRangeSource(path),
       name
     );
@@ -1296,8 +1380,10 @@ export async function assignVideoBackendFromPath(
 /**
  * Standalone-video file extensions we can decode, mapped to the sleap-io.js
  * backend that handles each. MP4 → Mp4Box; WebM/MKV/MOV/Ogg/MPEG-TS →
- * MediaBunny; Norpix `.seq` → SeqVideoBackend. `.avi` is intentionally absent
- * (no sleap-io.js backend decodes it).
+ * MediaBunny; AVI/WMV → AviVideoBackend (web-demuxer + WebCodecs/ImageDecoder);
+ * Norpix `.seq` → SeqVideoBackend. `.avi`/`.wmv` decode container-first: their
+ * H.264/MJPEG payloads play, while a codec WebCodecs can't handle (Xvid/DivX,
+ * WMV3/VC-1) surfaces the AviVideoBackend's "transcode to H.264" error later.
  */
 const BACKEND_BY_EXT = {
   mp4: "mp4box",
@@ -1307,8 +1393,16 @@ const BACKEND_BY_EXT = {
   ogg: "mediabunny",
   ogv: "mediabunny",
   ts: "mediabunny",
+  avi: "avi",
+  wmv: "avi",
+  // MPEG program streams: demuxed by the same web-demuxer backend. Their
+  // MPEG-1/2 payload isn't WebCodecs-decodable, so in the browser they surface
+  // the graceful "transcode to H.264" message; on desktop the transcode
+  // fallback (createBackendForPath) converts + plays them.
+  mpeg: "avi",
+  mpg: "avi",
   seq: "seq",
-} as const satisfies Record<string, "mp4box" | "mediabunny" | "seq">;
+} as const satisfies Record<string, "mp4box" | "mediabunny" | "avi" | "seq">;
 
 type StandaloneBackendKind = (typeof BACKEND_BY_EXT)[keyof typeof BACKEND_BY_EXT];
 
@@ -1339,25 +1433,39 @@ export function backendKindForFilename(
 
 /**
  * Build a new standalone Video from a user-picked file, dispatching by
- * extension via {@link assignVideoBackend} (which probes shape/fps). Supports
- * every {@link SUPPORTED_VIDEO_EXTS} format (MP4/WebM/MKV/MOV/Ogg/MPEG-TS/.seq);
- * unsupported formats (e.g. `.avi`) are rejected with a toast and return null.
- * Returns null on decode failure too (assignVideoBackend already surfaces the
- * error).
+ * extension (probing shape/fps). Supports every {@link SUPPORTED_VIDEO_EXTS}
+ * format; unsupported formats are rejected with a toast and return null.
+ *
+ * On desktop pass `absPath` (the file's absolute path): the backend is opened
+ * BY PATH via {@link assignVideoBackendFromPath} — a lazy byte-range read plus
+ * the native codec probe + transcode fallback for legacy codecs
+ * ({@link createBackendForPath}). So a large legacy `.avi`/`.wmv`/`.mpeg` is
+ * never read whole into memory, and Xvid/WMV/MPEG-1/2 convert-and-play instead
+ * of failing. In the browser (no `absPath`) the picked File is opened directly.
+ * Returns null on decode failure too (the assign helpers surface the error).
  */
-export async function buildStandaloneVideo(file: File): Promise<Video | null> {
+export async function buildStandaloneVideo(
+  file: File,
+  absPath?: string | null
+): Promise<Video | null> {
   if (!backendKindForFilename(file.name)) {
     const ext = fileExt(file.name);
     toast.error(`${ext ? `.${ext} files are` : "This file is"} not supported`, {
       description:
-        "Supported video formats: MP4, WebM, MKV, MOV, Ogg, MPEG-TS, and Norpix .seq.",
+        "Supported video formats: MP4, WebM, MKV, MOV, Ogg, MPEG-TS, AVI, WMV, MPEG, and Norpix .seq.",
     });
     return null;
   }
-  const video = new Video({ filename: file.name, openBackend: false });
-  await assignVideoBackend(video, file);
-  // assignVideoBackend sets shape only on a successful probe (and toasts on
-  // failure); a missing shape means the backend never initialized.
+  // Desktop opens by path (canonical filename = the path, so it resolves on
+  // reload); browser opens from the File (filename = the bare name).
+  const video = new Video({ filename: absPath ?? file.name, openBackend: false });
+  if (absPath) {
+    await assignVideoBackendFromPath(video, absPath);
+  } else {
+    await assignVideoBackend(video, file);
+  }
+  // The assign helpers set shape only on a successful frame-0 probe (and toast
+  // on failure); a missing shape means the backend never initialized.
   if (!video.shape) return null;
   return video;
 }
@@ -1373,7 +1481,7 @@ export interface PickedVideoFile {
  * Open a multi-select video file picker and return normalized File objects.
  * Browser yields File(s) directly; Tauri yields path(s), read into File via
  * platform.readFile. Accepts every format in {@link SUPPORTED_VIDEO_EXTS}
- * (MP4/WebM/MKV/MOV/Ogg/MPEG-TS/.seq).
+ * (MP4/WebM/MKV/MOV/Ogg/MPEG-TS/AVI/WMV/.seq).
  * Returns [] if the user cancels. Shared by the Videos panel
  * ({@link pickAndAddVideos}) and the New Project dialog (#138).
  */
@@ -1389,19 +1497,14 @@ export async function pickVideoFiles(): Promise<PickedVideoFile[]> {
   const files: PickedVideoFile[] = [];
   for (const item of picked) {
     if (typeof item === "string") {
-      // Tauri: got a path — read bytes into a File (mirrors resolveVideoFile).
-      try {
-        const bytes = await platform.readFile(item);
-        files.push({
-          file: new File([bytes], getBasename(item), { type: "video/mp4" }),
-          absPath: item,
-        });
-      } catch (err) {
-        console.error(`[video] Failed to read "${item}":`, err);
-        toast.error(`Failed to read ${getBasename(item)}`, {
-          description: err instanceof Error ? err.message : String(err),
-        });
-      }
+      // Tauri: DON'T read the bytes here — the backend opens by PATH (lazy
+      // byte-range + transcode fallback via buildStandaloneVideo/absPath), so a
+      // multi-GB legacy video is never materialized into memory. Carry just the
+      // name (for the format gate) + the absolute path.
+      files.push({
+        file: new File([], getBasename(item), { type: "video/mp4" }),
+        absPath: item,
+      });
     } else {
       files.push({ file: item, absPath: null });
     }
@@ -1420,9 +1523,8 @@ export async function addVideoFileToLabels(
   labels: Labels,
   picked: PickedVideoFile
 ): Promise<Video | null> {
-  const video = await buildStandaloneVideo(picked.file);
+  const video = await buildStandaloneVideo(picked.file, picked.absPath);
   if (!video) return null;
-  if (picked.absPath) video.filename = picked.absPath;
   labels.addVideo(video);
   return video;
 }
@@ -1446,4 +1548,20 @@ export async function pickAndAddVideos(labels: Labels): Promise<Video[]> {
   }
   if (added.length > 0) labels.reindex();
   return added;
+}
+
+/**
+ * Desktop-only: size of the on-disk legacy-codec transcode cache
+ * ({@link getTranscodeCacheInfo}). `{ count: 0, bytes: 0 }` when empty/absent.
+ */
+export function videoTranscodeCacheInfo() {
+  return getTranscodeCacheInfo(createTauriTranscodeDeps());
+}
+
+/**
+ * Desktop-only: delete every cached transcode (regenerable from the originals);
+ * returns what was freed. Powers the "Clear video transcode cache" menu action.
+ */
+export function clearVideoTranscodeCache() {
+  return clearTranscodeCache(createTauriTranscodeDeps());
 }

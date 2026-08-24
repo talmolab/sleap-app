@@ -8,17 +8,17 @@
  * Supports multi-select via Shift+click (range) and Cmd/Ctrl+click (toggle).
  */
 
-import { useState, useRef, useCallback, useEffect } from "react";
-import { Clipboard, Check, Eye, Focus, Ghost } from "lucide-react";
-import type { LucideIcon } from "lucide-react";
+import { useState, useRef, useCallback, useEffect, useMemo } from "react";
+import { Clipboard, Check, Search } from "lucide-react";
 import { useAppStore } from "../../stores/appStore";
-import { rgbToCSS, getInstanceColor } from "../../lib/colorPalettes";
+import { rgbToCSS, getInstanceColor, hasAssignedTracks } from "../../lib/colorPalettes";
 import { instanceShowsNonVisible } from "@/lib/instanceVisibility";
 import {
   commandContext,
   AddInstance,
   DeleteSelectedInstance,
   AddInstancesFromAllPredictions,
+  SetTrackName,
 } from "../../commands";
 import { cn } from "@/lib/utils";
 import {
@@ -29,7 +29,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
@@ -55,62 +55,60 @@ function formatPointsAsPython(instance: Instance | PredictedInstance): string {
   return `np.array([\n${rows.join(",\n")}\n])`;
 }
 
-/** Compact icon column header with a hover tooltip (the panel is narrow). */
-function IconHeader({ icon: Icon, label }: { icon: LucideIcon; label: string }) {
-  return (
-    <TableHead className="py-1 px-1 text-center w-8 h-auto">
-      <TooltipProvider delayDuration={300}>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <span className="inline-flex justify-center">
-              <Icon className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />
-              <span className="sr-only">{label}</span>
-            </span>
-          </TooltipTrigger>
-          <TooltipContent side="top">
-            <p>{label}</p>
-          </TooltipContent>
-        </Tooltip>
-      </TooltipProvider>
-    </TableHead>
-  );
-}
-
 /**
- * One per-instance visibility checkbox cell. Stops click propagation so
- * toggling a box never also selects the row. Muted (but still clickable) when
- * `muted` is set (view-only greying); disabled in non-manual QC modes.
+ * One per-instance visibility toggle, rendered as a clearly-labeled button
+ * (#278) instead of a bare checkbox. The visible `text` says what it does
+ * (show / solo / show inv); the underlying control is still a native checkbox
+ * (kept sr-only) so it stays accessible (role + aria-label) and the wiring
+ * tests keep exercising it. Stops click propagation so toggling never also
+ * selects the row. Muted (but still clickable) when `muted` is set (view-only
+ * greying); disabled in non-manual QC modes.
  */
-function VisibilityCheckbox({
+function VisibilityToggle({
   label,
+  text,
   checked,
   disabled,
   muted,
   onChange,
 }: {
   label: string;
+  text: string;
   checked: boolean;
   disabled: boolean;
   muted?: boolean;
   onChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
 }) {
   return (
-    <TableCell
-      className={cn("py-0.5 px-1 text-center", muted && "opacity-40")}
+    <label
       // A native title= on a disabled <input> isn't reliably shown on hover, so
-      // the read-only hint lives on the enclosing cell instead.
-      title={disabled ? "Set Display: Manual to edit" : undefined}
+      // the read-only hint lives on the enclosing label instead.
+      title={disabled ? "Set Display: Manual to edit" : label}
+      onClick={(e) => e.stopPropagation()}
+      className={cn(
+        // shrink-0 so the toggles keep their width instead of squishing to fit a
+        // narrow cell (which clipped the labels); the table then overflows and
+        // the panel's overflow-auto container scrolls horizontally (#278).
+        "inline-flex shrink-0 items-center justify-center whitespace-nowrap rounded border px-1.5 py-0.5 text-[10px] font-medium leading-none select-none transition-colors",
+        disabled
+          ? "cursor-not-allowed border-border text-muted-foreground opacity-40"
+          : checked
+            ? "cursor-pointer border-primary/50 bg-primary/15 text-foreground"
+            : "cursor-pointer border-border text-muted-foreground hover:bg-muted/50",
+        muted && "opacity-40",
+      )}
     >
       <input
         type="checkbox"
         aria-label={label}
-        className="h-3.5 w-3.5 cursor-pointer accent-primary align-middle"
+        className="sr-only"
         checked={checked}
         disabled={disabled}
         onClick={(e) => e.stopPropagation()}
         onChange={onChange}
       />
-    </TableCell>
+      {text}
+    </label>
   );
 }
 
@@ -123,6 +121,7 @@ function InstanceRow({
   labels,
   distinctlyColor,
   colorPredicted,
+  projectHasTracks,
   visibilityChecked,
   viewOnlyChecked,
   invisibleNodesChecked,
@@ -140,6 +139,7 @@ function InstanceRow({
   labels: Labels | null;
   distinctlyColor: string;
   colorPredicted: boolean;
+  projectHasTracks: boolean;
   visibilityChecked: boolean;
   viewOnlyChecked: boolean;
   invisibleNodesChecked: boolean;
@@ -158,11 +158,26 @@ function InstanceRow({
     labels?.tracks ?? [],
     predicted,
     colorPredicted,
+    projectHasTracks,
   );
   const trackName = instance.track?.name ?? "[no track]";
   const visibleNodes = instance.nVisible;
   const totalNodes = instance.points.length;
   const score = predicted ? (instance as PredictedInstance).score : null;
+
+  // Inline track rename (double-click the name; propagates to all instances).
+  const [editingTrack, setEditingTrack] = useState(false);
+  const [trackDraft, setTrackDraft] = useState("");
+  const canRenameTrack = !!instance.track && !readOnly;
+  const commitTrackName = () => {
+    setEditingTrack(false);
+    if (instance.track) {
+      commandContext.execute(SetTrackName, {
+        track: instance.track,
+        name: trackDraft,
+      });
+    }
+  };
 
   return (
     <TableRow
@@ -180,7 +195,39 @@ function InstanceRow({
           style={{ backgroundColor: rgbToCSS(color) }}
         />
       </TableCell>
-      <TableCell className="py-0.5 px-2 text-xs">{trackName}</TableCell>
+      <TableCell className="py-0.5 px-2 text-xs">
+        {editingTrack ? (
+          <input
+            autoFocus
+            value={trackDraft}
+            onChange={(e) => setTrackDraft(e.target.value)}
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                commitTrackName();
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                setEditingTrack(false);
+              }
+            }}
+            onBlur={commitTrackName}
+            className="w-full rounded border border-border bg-background px-1 py-0 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          />
+        ) : (
+          <span
+            onDoubleClick={(e) => {
+              if (!canRenameTrack) return;
+              e.stopPropagation();
+              setTrackDraft(instance.track?.name ?? "");
+              setEditingTrack(true);
+            }}
+            title={canRenameTrack ? "Double-click to rename track" : undefined}
+          >
+            {trackName}
+          </span>
+        )}
+      </TableCell>
       <TableCell className="py-0.5 px-2 text-xs">
         <Badge
           variant={predicted ? "secondary" : "outline"}
@@ -195,25 +242,35 @@ function InstanceRow({
       <TableCell className="py-0.5 px-2 text-xs text-right tabular-nums text-muted-foreground">
         {score !== null ? score.toFixed(2) : "--"}
       </TableCell>
-      <VisibilityCheckbox
-        label="Visibility"
-        checked={visibilityChecked}
-        disabled={readOnly}
-        muted={viewOnlyActive}
-        onChange={onToggleVisibility}
-      />
-      <VisibilityCheckbox
-        label="View Only"
-        checked={viewOnlyChecked}
-        disabled={readOnly}
-        onChange={onToggleViewOnly}
-      />
-      <VisibilityCheckbox
-        label="Invisible Nodes"
-        checked={invisibleNodesChecked}
-        disabled={readOnly}
-        onChange={onToggleInvisibleNodes}
-      />
+      <TableCell className="py-0.5 px-2">
+        {/* One row, never stacked; the table (in the panel's overflow-auto
+            container) scrolls horizontally when the sidebar is too narrow to
+            show all three toggles (#278 feedback). */}
+        <div className="flex flex-nowrap justify-end gap-1">
+          <VisibilityToggle
+            label="Visibility"
+            text="show"
+            checked={visibilityChecked}
+            disabled={readOnly}
+            muted={viewOnlyActive}
+            onChange={onToggleVisibility}
+          />
+          <VisibilityToggle
+            label="View Only"
+            text="solo"
+            checked={viewOnlyChecked}
+            disabled={readOnly}
+            onChange={onToggleViewOnly}
+          />
+          <VisibilityToggle
+            label="Invisible Nodes"
+            text="show inv"
+            checked={invisibleNodesChecked}
+            disabled={readOnly}
+            onChange={onToggleInvisibleNodes}
+          />
+        </div>
+      </TableCell>
     </TableRow>
   );
 }
@@ -272,26 +329,34 @@ function InstanceDetailPanel({
             max-h + overflow-auto box so many-node skeletons scroll here rather
             than pushing the Add/Delete/Accept buttons off-screen. */}
         <div className="text-[10px] leading-tight font-mono bg-muted/50 rounded p-2 pr-8 max-h-32 overflow-auto">
-          {namedPoints.map((pt, i) => (
-            <div
-              key={i}
-              className="grid grid-cols-[1fr_auto] gap-x-3 whitespace-nowrap"
-            >
-              {/* Node name white; coords green when visible, "not visible" red
-                  — same red/green as the Frames tab (text-red-500/green-500). */}
-              <span className="text-foreground truncate">{pt.name}</span>
-              <span
-                className={cn(
-                  "tabular-nums text-right",
-                  pt.visible ? "text-green-500" : "text-red-500",
-                )}
+          {namedPoints.map((pt, i) => {
+            // Green only when actually placed AND visible; a NaN/unset coord
+            // (not placed) is red, not green (#278 feedback).
+            const placed = Number.isFinite(pt.x) && Number.isFinite(pt.y);
+            const shown = pt.visible && placed;
+            return (
+              <div
+                key={i}
+                className="grid grid-cols-[1fr_auto] gap-x-3 whitespace-nowrap"
               >
-                {pt.visible
-                  ? `${pt.x.toFixed(1)}, ${pt.y.toFixed(1)}`
-                  : "not visible"}
-              </span>
-            </div>
-          ))}
+                {/* Node name white; coords green when placed+visible, else red
+                    ("not visible"/"not placed") — same red/green as Frames tab. */}
+                <span className="text-foreground truncate">{pt.name}</span>
+                <span
+                  className={cn(
+                    "tabular-nums text-right",
+                    shown ? "text-green-500" : "text-red-500",
+                  )}
+                >
+                  {shown
+                    ? `${pt.x.toFixed(1)}, ${pt.y.toFixed(1)}`
+                    : placed
+                      ? "not visible"
+                      : "not placed"}
+                </span>
+              </div>
+            );
+          })}
         </div>
       </div>
     </div>
@@ -304,6 +369,12 @@ export function InstancesPanel() {
   const frameIdx = useAppStore((s) => s.frameIdx);
   const currentInstance = useAppStore((s) => s.instance);
   const setInstance = useAppStore((s) => s.setInstance);
+  // Re-render on every label edit. Track-mutating commands (AddTrack,
+  // SetInstanceTrack, SetTrackName, TransposeInstances) change instance/track
+  // data IN PLACE without swapping a subscribed reference, so without this the
+  // panel only updates by luck via some other re-render (and not at all on a
+  // frame with no incidental repaint — e.g. a negative frame).
+  const editSeq = useAppStore((s) => s.editSeq);
   // Instances require a skeleton with at least one node; a node-less skeleton
   // would yield a null instance. Re-evaluates when the node count changes
   // (skeleton commands bump overlayVersion, which notifies this selector).
@@ -311,6 +382,11 @@ export function InstancesPanel() {
   const palette = useAppStore((s) => s.palette);
   const distinctlyColor = useAppStore((s) => s.distinctlyColor);
   const colorPredicted = useAppStore((s) => s.colorPredicted);
+  const projectHasTracks = useMemo(
+    () => hasAssignedTracks(labels),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [labels, editSeq]
+  );
 
   // Per-instance visibility state + actions (Task 5). These live in the store
   // keyed by instance object identity and are read/written here; the overlay
@@ -334,12 +410,27 @@ export function InstancesPanel() {
   );
   const lastClickedRef = useRef<number | null>(null);
 
+  // Track-name filter (#278). Most useful on many-track / multi-animal frames;
+  // the input is hidden for frames with 0-1 instances where it adds nothing.
+  const [filter, setFilter] = useState("");
+
   // Find the labeled frame for current video + frame
   const labeledFrames =
     labels && video ? labels.find({ video, frameIdx }) : [];
   const labeledFrame = labeledFrames.length > 0 ? labeledFrames[0] : null;
   const instances = labeledFrame?.instances ?? [];
   const hasPredictions = instances.some(isPredicted);
+
+  // Only surface the filter when there's enough to filter. When hidden its
+  // value is ignored so a stale query can't hide a lone instance.
+  const showFilter = instances.length > 1;
+  const query = showFilter ? filter.trim().toLowerCase() : "";
+  const matchesFilter = useMemo(() => {
+    return (inst: Instance | PredictedInstance) =>
+      query === "" ||
+      (inst.track?.name ?? "[no track]").toLowerCase().includes(query);
+  }, [query]);
+  const anyMatch = query === "" || instances.some(matchesFilter);
 
   // Derive the selected index from the store's currentInstance
   const currentIndex = currentInstance
@@ -413,13 +504,37 @@ export function InstancesPanel() {
 
   return (
     <div className="flex flex-col h-full">
-      <ScrollArea className="flex-1 min-h-0">
+      {showFilter && (
+        <div className="relative p-1.5 shrink-0">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            type="text"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="Filter by track..."
+            aria-label="Filter instances by track name"
+            className="h-7 pl-7 text-xs"
+          />
+        </div>
+      )}
+      {/* Plain overflow container (not Radix ScrollArea): its `display:table`
+          viewport made the table's `w-full` size to content, so horizontal
+          scroll never engaged and the wide Display column clipped (#278). A
+          bounded overflow-auto div scrolls both axes reliably in WKWebView. */}
+      <div className="flex-1 min-h-0 overflow-auto">
         {instances.length === 0 ? (
           <p className="text-xs text-muted-foreground p-2">
             No instances on this frame.
           </p>
+        ) : !anyMatch ? (
+          <p className="text-xs text-muted-foreground p-2">
+            No instances match "{filter.trim()}".
+          </p>
         ) : (
-          <Table>
+          // min-w-max: grow the table to content width so a narrow sidebar
+          // overflows and the panel's overflow-auto container scrolls, instead
+          // of clipping the Display toggles (#278).
+          <Table className="min-w-max">
             <TableHeader>
               <TableRow className="border-b hover:bg-transparent">
                 <TableHead className="py-1 px-2 text-xs font-normal w-6 h-auto" />
@@ -435,13 +550,17 @@ export function InstancesPanel() {
                 <TableHead className="py-1 px-2 text-xs font-normal text-right h-auto">
                   Score
                 </TableHead>
-                <IconHeader icon={Eye} label="Visibility" />
-                <IconHeader icon={Focus} label="View Only" />
-                <IconHeader icon={Ghost} label="Invisible Nodes" />
+                <TableHead className="py-1 px-2 text-xs font-normal text-right h-auto">
+                  Display
+                </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {instances.map((inst, i) => {
+                // Filter by track name (#278). Skip non-matching rows but keep
+                // the original index `i` so selection/visibility state (both
+                // index- and identity-keyed) stays correct.
+                if (!matchesFilter(inst)) return null;
                 const visibilityChecked =
                   !hiddenInstances.has(inst) &&
                   (!viewOnlyInstance || viewOnlyInstance === inst);
@@ -456,6 +575,7 @@ export function InstancesPanel() {
                     labels={labels}
                     distinctlyColor={distinctlyColor}
                     colorPredicted={colorPredicted}
+                    projectHasTracks={projectHasTracks}
                     visibilityChecked={visibilityChecked}
                     viewOnlyChecked={viewOnlyInstance === inst}
                     invisibleNodesChecked={instanceShowsNonVisible(
@@ -482,7 +602,7 @@ export function InstancesPanel() {
             </TableBody>
           </Table>
         )}
-      </ScrollArea>
+      </div>
 
       {currentInstance && (
         <>

@@ -26,6 +26,7 @@ import {
   type DlcFileSystem,
 } from "@talmolab/sleap-io.js";
 import { useAppStore } from "../stores/appStore";
+import { useEnvironmentStore } from "../stores/environmentStore";
 import {
   buildDlcLabels,
   dlcProjectPathHint,
@@ -189,6 +190,9 @@ export async function loadProjectFromFile(file: File): Promise<boolean> {
     toast.success(`Loaded ${file.name}`, {
       description: `${labels.videos.length} video(s), ${labels.labeledFrames.length} labeled frames`,
     });
+    // Fire-and-forget: best-effort, no-ops on browser, must not add latency.
+    useEnvironmentStore.getState().checkSleapNnUpdateAndNotify();
+    useEnvironmentStore.getState().checkAppUpdateAndNotify();
     return true;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -348,6 +352,9 @@ export async function loadProjectFromPath(
     toast.success(`Loaded ${filename}`, {
       description: `${labels.videos.length} video(s), ${labels.labeledFrames.length} labeled frames`,
     });
+    // Fire-and-forget: best-effort, no-ops on browser, must not add latency.
+    useEnvironmentStore.getState().checkSleapNnUpdateAndNotify();
+    useEnvironmentStore.getState().checkAppUpdateAndNotify();
 
     // Missing / unsupported-codec videos are summarized (codec-aware) by
     // resolveExternalVideos above — no separate toast here (avoids a duplicate).
@@ -360,6 +367,46 @@ export async function loadProjectFromPath(
   } finally {
     store.setLoading(false);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Load-to-Labels (no activate) — used by Merge into Project
+// ---------------------------------------------------------------------------
+
+/**
+ * Load a `.slp` into a `Labels` object WITHOUT activating it in the store.
+ *
+ * Used by Merge into Project: the picked "donor" file is merged into the current
+ * project, not opened as a new one. This is a DELIBERATELY lightweight load —
+ * annotations + video metadata only:
+ *   - it does NOT drive the global loading overlay (no `onProgress:
+ *     reportParseProgress` — that flips `setLoading(true)`, and only the
+ *     activate-a-project loaders clear it in their `finally`; a donor load would
+ *     otherwise leave the overlay stuck on "Finalizing…"), and
+ *   - it does NOT open or resolve video backends (`openVideos: false`, no
+ *     `resolveExternalVideos`). The merge matches videos by BASENAME, which needs
+ *     only the stored filename; a matched donor video is discarded in favor of the
+ *     project's, and a new one is appended unresolved (locate it later like any
+ *     external video). This avoids hanging on an unreachable external video.
+ * The dialog shows its own "Reading & matching…" indicator during this.
+ */
+export async function loadLabelsFromSlpFile(file: File): Promise<Labels> {
+  return await loadSlp(file, {
+    openVideos: false,
+    h5: { h5wasmUrl: H5WASM_URL },
+  });
+}
+
+/** Tauri path variant of {@link loadLabelsFromSlpFile} (load-to-Labels, no activate). */
+export async function loadLabelsFromSlpPath(
+  path: string,
+  readFile: (path: string) => Promise<Uint8Array>
+): Promise<Labels> {
+  const bytes = await readFile(path);
+  return await loadSlp(bytes, {
+    openVideos: false,
+    h5: { filenameHint: path, h5wasmUrl: H5WASM_URL },
+  });
 }
 
 // ---------------------------------------------------------------------------

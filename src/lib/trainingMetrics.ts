@@ -204,6 +204,31 @@ function downsampleEven<T>(arr: T[], target: number): T[] {
 }
 
 /**
+ * Bounded set of y-values for the loss chart's y-range scale.
+ *
+ * uPlot's `range` callback runs on EVERY redraw. Feeding it the full
+ * `batchSamples` buffer (capped at 20k) means an O(n·log n) sort per redraw
+ * that, as training fills the buffer, escalates into a GUI FREEZE while the
+ * Training Monitor is open. Bound the batch contribution to the SAME even
+ * downsample the chart actually draws ({@link MAX_DRAWN_BATCH_POINTS}) — the
+ * drawn points can never exceed this range, so nothing clips — keeping
+ * computeYRange at O(2000·log 2000). Epoch train/val losses are sparse (one per
+ * epoch), so they're kept in full.
+ */
+export function boundedLossYValues(
+  batchSamples: BatchSample[],
+  epochSamples: EpochSample[],
+): number[] {
+  const batch = downsampleEven(batchSamples, MAX_DRAWN_BATCH_POINTS).map(
+    (b) => b.loss,
+  );
+  const epoch = epochSamples.flatMap((s) =>
+    [s.trainLoss, s.valLoss].filter((v): v is number => v != null),
+  );
+  return [...batch, ...epoch];
+}
+
+/**
  * Unified batch-x-axis chart data (PyQt LossViewer parity). x-axis = global batch
  * number. The dense `batch` series is per-batch train loss; `train`/`val` are
  * epoch-averaged losses placed at epoch boundaries (x = (epoch+1)*epochSize);

@@ -30,7 +30,13 @@ export function ModelStatsPreview({ hp, maxStride, filters, filtersRate, outputS
   const dragRef = useRef<{ startX: number; startY: number; panX: number; panY: number } | null>(null);
   const rf = computeReceptiveField(maxStride, stemStride);
   const showCropSize = slot !== "centroid";
-  const cropSize = showCropSize ? computeCropSize(labels, maxStride, hp.scale) : null;
+  // Honor a MANUAL crop size (hp.cropSize) so the preview + drawn crop box update
+  // when the user edits it in the full config; fall back to the data-derived value
+  // only in "Auto" mode (hp.cropSize === null). Both are in scaled-image px, matching
+  // computeCropSize and the `/ hp.scale` used when drawing the crop rectangle below.
+  const cropSize = showCropSize
+    ? hp.cropSize ?? computeCropSize(labels, maxStride, hp.scale)
+    : null;
   const params = computeParamCount(backbone, maxStride, filters, filtersRate, undefined, outputStride, stemStride, inputChannels);
   const downBlocks = Math.log2(maxStride);
 

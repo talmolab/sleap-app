@@ -9,6 +9,7 @@
 
 import { useRef, useEffect, useState } from "react";
 import { useInferenceStore } from "@/stores/inferenceStore";
+import { ErrorOutput } from "@/components/monitors/ErrorOutput";
 import {
   Dialog,
   DialogContent,
@@ -57,6 +58,7 @@ function InferenceProgressDialog() {
   const progress = useInferenceStore((s) => s.progress);
   const log = useInferenceStore((s) => s.log);
   const error = useInferenceStore((s) => s.error);
+  const stderrTail = useInferenceStore((s) => s.stderrTail);
   const minimized = useInferenceStore((s) => s.minimized);
   const setMinimized = useInferenceStore((s) => s.setMinimized);
   const reset = useInferenceStore((s) => s.reset);
@@ -146,11 +148,14 @@ function InferenceProgressDialog() {
             </p>
           )}
 
-          {/* Error message */}
+          {/* Error message + forwarded sleap-nn error output */}
           {error && (
             <div className="rounded-md bg-destructive/15 border border-destructive/30 px-3 py-2 text-sm text-destructive">
               {error}
             </div>
+          )}
+          {status === "error" && stderrTail.length > 0 && (
+            <ErrorOutput lines={stderrTail} title="Error output (sleap-nn)" />
           )}
 
           {/* Expandable stderr/stdout log */}

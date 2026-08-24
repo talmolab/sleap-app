@@ -35,7 +35,11 @@ import type { InferenceConfig } from "@/stores/inferenceStore";
 export const MIN_SLEAP_NN_PREDICT_VERSION = "0.3.2";
 
 export interface BuildInferenceArgsOptions {
-  /** Path to the input .slp (the project file or a serialized temp copy). */
+  /**
+   * Path to the input .slp (the project file or a serialized temp copy), OR
+   * the target video's own file when the caller resolved a video-scoped run
+   * onto it directly (see `suppressVideoIndex`).
+   */
   dataPath: string;
   /** Path the inference output .slp should be written to. */
   outputPath: string;
@@ -44,6 +48,18 @@ export interface BuildInferenceArgsOptions {
    * resolves these (needs the app store + RNG); required for that range only.
    */
   sampledFrames?: number[];
+  /**
+   * Frame index for `frameRange === "frame"` (current frame). The caller
+   * resolves this from the app store; required for that range only.
+   */
+  currentFrameIdx?: number;
+  /**
+   * Omit `--video_index` even though `config.videoIndex !== "all"`. Set this
+   * when `dataPath` is already the target video's own file — `--video_index`
+   * only means something when `--data_path` is a project .slp (see
+   * talmolab/sleap#2848).
+   */
+  suppressVideoIndex?: boolean;
   /** sleap-nn subcommand. Defaults to `predict` (the current pipeline). */
   subcommand?: string;
 }
@@ -54,13 +70,22 @@ export interface BuildInferenceArgsOptions {
  * mirrors the historical `track` invocation exactly.
  *
  * Throws on frame-range values that cannot be expressed as a single CLI call
- * (`"random"` needs per-video invocation; `"frame"` is not a runnable range).
+ * (`"random"` needs per-video invocation) or that are missing a
+ * caller-resolved value they depend on (`"frame"` needs `currentFrameIdx`,
+ * `"random_video"` needs `sampledFrames`).
  */
 export function buildInferenceArgs(
   config: InferenceConfig,
   opts: BuildInferenceArgsOptions
 ): string[] {
-  const { dataPath, outputPath, sampledFrames, subcommand = "predict" } = opts;
+  const {
+    dataPath,
+    outputPath,
+    sampledFrames,
+    currentFrameIdx,
+    suppressVideoIndex = false,
+    subcommand = "predict",
+  } = opts;
 
   const args = [subcommand, "--gui"];
 
@@ -72,7 +97,7 @@ export function buildInferenceArgs(
   args.push("--output_path", outputPath);
 
   // Data selection
-  if (config.videoIndex !== "all") {
+  if (config.videoIndex !== "all" && !suppressVideoIndex) {
     args.push("--video_index", String(config.videoIndex));
   }
 
@@ -93,6 +118,15 @@ export function buildInferenceArgs(
       case "video":
       case "all_videos":
         break;
+      case "frame": {
+        if (currentFrameIdx == null) {
+          throw new Error(
+            "'frame' frame range requires the current frame index (opts.currentFrameIdx)."
+          );
+        }
+        args.push("--frames", String(currentFrameIdx));
+        break;
+      }
       case "random_video": {
         if (!sampledFrames || sampledFrames.length === 0) {
           throw new Error(
@@ -124,9 +158,6 @@ export function buildInferenceArgs(
     args.push("--max_instances", String(config.maxInstances));
   }
   args.push("--peak_threshold", String(config.peakThreshold));
-  if (config.anchorPart) {
-    args.push("--anchor_part", config.anchorPart);
-  }
 
   // Bottom-up advanced
   if (config.integralRefinement) {
@@ -152,6 +183,17 @@ export function buildInferenceArgs(
     args.push("--tracking");
     if (config.trackerMethod === "flow") {
       args.push("--use_flow");
+      args.push("--of_img_scale", String(config.flowImgScale));
+      args.push("--of_window_size", String(config.flowWindowSize));
+      args.push("--of_max_levels", String(config.flowMaxLevels));
+    } else if (config.trackerMethod === "kalman") {
+      args.push("--use_kalman");
+      args.push("--kf_track_features", config.kfTrackFeatures);
+      args.push("--kf_init_frame_count", String(config.kfInitFrameCount));
+      args.push("--kf_reset_gap_size", String(config.kfResetGapSize));
+      if (config.kfNodeIndices.length > 0) {
+        args.push("--kf_node_indices", config.kfNodeIndices.join(","));
+      }
     }
     if (config.similarityMethod === "centroids") {
       args.push("--features", "centroids");
@@ -168,6 +210,20 @@ export function buildInferenceArgs(
     if (config.connectSingleBreaks) {
       args.push("--post_connect_single_breaks");
     }
+    args.push("--min_match_points", String(config.minMatchPoints));
+    args.push("--min_new_track_points", String(config.minNewTrackPoints));
+    args.push("--scoring_reduction", config.scoringReduction);
+    if (config.trackingTargetInstanceCount != null) {
+      args.push("--tracking_target_instance_count", String(config.trackingTargetInstanceCount));
+    }
+    if (config.trackingPreCullToTarget) {
+      args.push("--tracking_pre_cull_to_target", "1");
+      args.push("--tracking_pre_cull_iou_threshold", String(config.trackingPreCullIouThreshold));
+    }
+    if (config.trackingCleanInstanceCount != null) {
+      args.push("--tracking_clean_instance_count", String(config.trackingCleanInstanceCount));
+      args.push("--tracking_clean_iou_threshold", String(config.trackingCleanIouThreshold));
+    }
   }
 
   // Post-processing
@@ -175,6 +231,24 @@ export function buildInferenceArgs(
     args.push("--filter_overlapping");
     args.push("--filter_overlapping_method", config.filterMethod);
     args.push("--filter_overlapping_threshold", String(config.filterThreshold));
+  }
+  if (config.filterMinVisibleNodes != null) {
+    args.push("--filter_min_visible_nodes", String(config.filterMinVisibleNodes));
+  }
+  if (config.filterMinVisibleNodeFraction != null) {
+    args.push("--filter_min_visible_node_fraction", String(config.filterMinVisibleNodeFraction));
+  }
+  if (config.filterMinMeanNodeScore != null) {
+    args.push("--filter_min_mean_node_score", String(config.filterMinMeanNodeScore));
+  }
+  if (config.filterMinInstanceScore != null) {
+    args.push("--filter_min_instance_score", String(config.filterMinInstanceScore));
+  }
+  if (config.filterMinCentroidDistance != null) {
+    // predict-only flag (not present in legacy sleap-nn `track`'s flag set) —
+    // only emitted when the user explicitly opts in, so old-version `track`
+    // fallback runs that never set this are unaffected.
+    args.push("--filter_min_centroid_distance", String(config.filterMinCentroidDistance));
   }
 
   return args;

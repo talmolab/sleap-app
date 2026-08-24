@@ -1,5 +1,4 @@
 import { useRef, useCallback, useState } from "react";
-import { createPortal } from "react-dom";
 import {
   Dialog,
   DialogContent,
@@ -15,32 +14,49 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, HelpCircle } from "lucide-react";
+import { Search, ChevronDown, ChevronRight } from "lucide-react";
+import { HintBubble } from "@/components/HintBubble";
 
 export interface InferenceConfigValues {
   peakThreshold: number;
   maxInstances: number | null;
-  anchorPart: string | null;
   integralRefinement: boolean;
   integralPatchSize: number;
   nPoints: number;
   maxEdgeLengthRatio: number;
   distPenaltyWeight: number;
   minLineScores: number;
-  trackerMethod: "simple" | "flow";
+  trackerMethod: "simple" | "flow" | "kalman";
   similarityMethod: "oks" | "iou" | "centroids" | "euclidean_dist";
   matchingMethod: "hungarian" | "greedy";
   trackingWindowSize: number;
   maxTracks: number | null;
   connectSingleBreaks: boolean;
   robust: number;
+  minMatchPoints: number;
+  minNewTrackPoints: number;
+  scoringReduction: "mean" | "max" | "robust_quantile";
+  trackingTargetInstanceCount: number | null;
+  trackingPreCullToTarget: boolean;
+  trackingPreCullIouThreshold: number;
+  trackingCleanInstanceCount: number | null;
+  trackingCleanIouThreshold: number;
   flowImgScale: number;
   flowWindowSize: number;
   flowMaxLevels: number;
+  kfTrackFeatures: "centroid" | "keypoints";
+  kfInitFrameCount: number;
+  kfNodeIndices: number[];
+  kfResetGapSize: number;
   ensureChannels: "auto" | "rgb" | "grayscale";
   filterOverlapping: boolean;
   filterMethod: "iou" | "oks";
   filterThreshold: number;
+  filterMinVisibleNodes: number | null;
+  filterMinVisibleNodeFraction: number | null;
+  filterMinMeanNodeScore: number | null;
+  filterMinInstanceScore: number | null;
+  filterMinCentroidDistance: number | null;
 }
 
 interface InferenceConfigDialogProps {
@@ -51,13 +67,14 @@ interface InferenceConfigDialogProps {
   pipeline: string;
   tracking: boolean;
   onTrackingChange: (enabled: boolean) => void;
-  skeletonNodes?: string[];
+  skeletonNodes: string[];
 }
 
 const CATEGORIES = [
   { id: "inference", label: "Inference" },
   { id: "tracking", label: "Tracking" },
   { id: "flow", label: "Optical Flow" },
+  { id: "kalman", label: "Kalman Filter" },
   { id: "advanced", label: "Advanced" },
   { id: "postprocess", label: "Post-processing" },
 ] as const;
@@ -65,7 +82,6 @@ const CATEGORIES = [
 const SEARCHABLE_FIELDS = [
   { label: "Peak Threshold", section: "inference", fieldId: "field-peakthreshold" },
   { label: "Max Instances", section: "inference", fieldId: "field-maxinstances" },
-  { label: "Anchor Part", section: "inference", fieldId: "field-anchorpart" },
   { label: "Ensure Channels", section: "inference", fieldId: "field-ensurechannels" },
   { label: "Tracker Method", section: "tracking", fieldId: "field-trackermethod" },
   { label: "Similarity", section: "tracking", fieldId: "field-similarity" },
@@ -74,9 +90,21 @@ const SEARCHABLE_FIELDS = [
   { label: "Max Tracks", section: "tracking", fieldId: "field-maxtracks" },
   { label: "Robust (quantile)", section: "tracking", fieldId: "field-robust" },
   { label: "Connect Single-Frame Breaks", section: "tracking", fieldId: "field-connectbreaks" },
+  { label: "Min Match Points", section: "tracking", fieldId: "field-minmatchpoints" },
+  { label: "Min New Track Points", section: "tracking", fieldId: "field-minnewtrackpoints" },
+  { label: "Scoring Reduction", section: "tracking", fieldId: "field-scoringreduction" },
+  { label: "Target Instance Count", section: "tracking", fieldId: "field-targetinstancecount" },
+  { label: "Pre-cull to Target", section: "tracking", fieldId: "field-precull" },
+  { label: "Pre-cull IoU Threshold", section: "tracking", fieldId: "field-precull-iou" },
+  { label: "Clean-up Instance Count", section: "tracking", fieldId: "field-cleaninstancecount" },
+  { label: "Clean-up IoU Threshold", section: "tracking", fieldId: "field-cleaniou" },
   { label: "Image Scale", section: "flow", fieldId: "field-flowscale" },
   { label: "Flow Window Size", section: "flow", fieldId: "field-flowwindow" },
   { label: "Pyramid Levels", section: "flow", fieldId: "field-flowlevels" },
+  { label: "Kalman Track Features", section: "kalman", fieldId: "field-kftrackfeatures" },
+  { label: "Kalman Init Frame Count", section: "kalman", fieldId: "field-kfinitframecount" },
+  { label: "Kalman Reset Gap Size", section: "kalman", fieldId: "field-kfresetgapsize" },
+  { label: "Kalman Tracked Nodes", section: "kalman", fieldId: "field-kfnodeindices" },
   { label: "Integral Refinement", section: "advanced", fieldId: "field-integralrefinement" },
   { label: "Integral Patch Size", section: "advanced", fieldId: "field-integralpatch" },
   { label: "Sample Points", section: "advanced", fieldId: "field-npoints" },
@@ -86,32 +114,12 @@ const SEARCHABLE_FIELDS = [
   { label: "Filter Overlapping", section: "postprocess", fieldId: "field-filteroverlapping" },
   { label: "Filter Method", section: "postprocess", fieldId: "field-filtermethod" },
   { label: "Filter Threshold", section: "postprocess", fieldId: "field-filterthreshold" },
+  { label: "Min Visible Nodes", section: "postprocess", fieldId: "field-filterminvisiblenodes" },
+  { label: "Min Visible Node Fraction", section: "postprocess", fieldId: "field-filterminvisiblenodefraction" },
+  { label: "Min Mean Node Score", section: "postprocess", fieldId: "field-filterminmeannodescore" },
+  { label: "Min Instance Score", section: "postprocess", fieldId: "field-filterminstancescore" },
+  { label: "Min Centroid Distance", section: "postprocess", fieldId: "field-filtermincentroiddistance" },
 ];
-
-function HintBubble({ text }: { text: string }) {
-  const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
-  return (
-    <span className="relative">
-      <HelpCircle
-        className="h-3.5 w-3.5 text-muted-foreground/50 hover:text-muted-foreground cursor-help"
-        onMouseEnter={(e) => {
-          const rect = e.currentTarget.getBoundingClientRect();
-          setPos({ x: rect.left + rect.width / 2, y: rect.top });
-        }}
-        onMouseLeave={() => setPos(null)}
-      />
-      {pos && createPortal(
-        <span
-          className="fixed z-[9999] px-3 py-2 text-xs bg-popover border rounded-md shadow-lg w-64 text-foreground leading-relaxed"
-          style={{ left: pos.x, top: pos.y - 8, transform: "translate(-50%, -100%)" }}
-        >
-          {text}
-        </span>,
-        document.body,
-      )}
-    </span>
-  );
-}
 
 function Field({ label, id, hint, children }: { label: string; id?: string; hint?: string; children: React.ReactNode }) {
   return (
@@ -148,11 +156,112 @@ function Toggle({ label, id, hint, checked, onChange }: { label: string; id?: st
   );
 }
 
+/** A Toggle that enables/disables an optional numeric filter, revealing its value field only when on. */
+function ToggleNumberField({
+  label,
+  id,
+  hint,
+  valueLabel,
+  value,
+  onChange,
+  defaultValue,
+  min,
+  max,
+  step,
+}: {
+  label: string;
+  id?: string;
+  hint?: string;
+  valueLabel: string;
+  value: number | null;
+  onChange: (v: number | null) => void;
+  defaultValue: number;
+  min?: number;
+  max?: number;
+  step?: number;
+}) {
+  return (
+    <>
+      <Toggle
+        label={label}
+        id={id}
+        hint={hint}
+        checked={value != null}
+        onChange={(checked) => onChange(checked ? defaultValue : null)}
+      />
+      {value != null && (
+        <Field label={valueLabel}>
+          <Input
+            type="number"
+            value={value}
+            onChange={(e) => onChange(Number(e.target.value))}
+            min={min}
+            max={max}
+            step={step}
+            className="h-9 text-sm"
+          />
+        </Field>
+      )}
+    </>
+  );
+}
+
 function SectionHeading({ id, label }: { id: string; label: string }) {
   return (
     <h3 id={id} className="text-base font-medium pt-6 pb-3 first:pt-0 scroll-mt-4">
       {label}
     </h3>
+  );
+}
+
+function NodeMultiSelect({
+  label,
+  id,
+  hint,
+  nodes,
+  selected,
+  onChange,
+}: {
+  label: string;
+  id?: string;
+  hint?: string;
+  nodes: string[];
+  selected: number[];
+  onChange: (indices: number[]) => void;
+}) {
+  const toggle = (i: number) => {
+    onChange(
+      selected.includes(i) ? selected.filter((x) => x !== i) : [...selected, i].sort((a, b) => a - b)
+    );
+  };
+  return (
+    <div id={id} className="flex items-start gap-6 py-2.5 scroll-mt-4">
+      <span className="text-sm text-muted-foreground shrink-0 flex items-center gap-1.5 pt-1.5">
+        {label}
+        {hint && <HintBubble text={hint} />}
+      </span>
+      <div className="flex-1 min-w-0">
+        {nodes.length === 0 ? (
+          <p className="text-sm text-muted-foreground py-1.5">
+            No skeleton loaded — leave unset to use all nodes.
+          </p>
+        ) : (
+          <div className="border rounded-md max-h-40 overflow-y-auto p-2 space-y-1">
+            {nodes.map((name, i) => (
+              <label key={i} className="flex items-center gap-2 text-sm px-1 py-0.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={selected.includes(i)}
+                  onChange={() => toggle(i)}
+                  className="h-3.5 w-3.5"
+                />
+                {name}
+              </label>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -164,12 +273,12 @@ export function InferenceConfigDialog({
   pipeline,
   tracking,
   onTrackingChange,
-  skeletonNodes = [],
+  skeletonNodes,
 }: InferenceConfigDialogProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [searchQuery, setSearchQuery] = useState("");
+  const [showTrackingAdvanced, setShowTrackingAdvanced] = useState(false);
 
-  const isTopDown = pipeline === "top-down" || pipeline === "top-down-id";
   const isBottomUp = pipeline === "bottom-up" || pipeline === "bottom-up-id";
 
   const scrollTo = useCallback((id: string) => {
@@ -228,7 +337,11 @@ export function InferenceConfigDialog({
         <div className="flex flex-1 min-h-0 border-t">
           {/* Left nav — jump links */}
           <nav className="w-[180px] border-r bg-muted/30 py-3 shrink-0">
-            {CATEGORIES.filter((cat) => cat.id !== "flow" || v.trackerMethod === "flow").map((cat) => (
+            {CATEGORIES.filter(
+              (cat) =>
+                (cat.id !== "flow" || v.trackerMethod === "flow") &&
+                (cat.id !== "kalman" || v.trackerMethod === "kalman")
+            ).map((cat) => (
               <button
                 key={cat.id}
                 className="w-full text-left px-5 py-2.5 text-sm transition-colors text-muted-foreground hover:text-foreground hover:bg-accent/50"
@@ -266,24 +379,6 @@ export function InferenceConfigDialog({
                   placeholder="No limit"
                 />
               </Field>
-              {isTopDown && (
-                <Field label="Anchor Part" id="field-anchorpart" hint="Body part used to center the crop around each instance. Choose one that is consistently visible and near the animal's center.">
-                  <Select
-                    value={v.anchorPart ?? "none"}
-                    onValueChange={(val) => onUpdate({ anchorPart: val === "none" ? null : val })}
-                  >
-                    <SelectTrigger className="h-9 text-sm">
-                      <SelectValue placeholder="Auto" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">Auto (centroid)</SelectItem>
-                      {skeletonNodes.map((node) => (
-                        <SelectItem key={node} value={node}>{node}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </Field>
-              )}
               <Field label="Ensure Channels" id="field-ensurechannels" hint="Convert input images to a specific channel format. Use RGB for pretrained backbones or Grayscale for single-channel videos.">
                 <Select
                   value={v.ensureChannels}
@@ -313,7 +408,7 @@ export function InferenceConfigDialog({
                 </p>
               ) : (
                 <>
-                  <Field label="Tracker Method" id="field-trackermethod" hint="Simple uses instance matching across frames. Optical Flow uses pixel motion estimation for more robust tracking with fast-moving animals.">
+                  <Field label="Tracker Method" id="field-trackermethod" hint="Simple matches instances by similarity alone. Optical Flow predicts motion from pixel displacement — best for fast-moving animals. Kalman Filter predicts motion from a per-track velocity model — best for a known, fixed number of animals whose motion helps disambiguate crossings or occlusions.">
                     <Select
                       value={v.trackerMethod}
                       onValueChange={(val) => onUpdate({ trackerMethod: val as typeof v.trackerMethod })}
@@ -324,6 +419,7 @@ export function InferenceConfigDialog({
                       <SelectContent>
                         <SelectItem value="simple">Simple (instance matching)</SelectItem>
                         <SelectItem value="flow">Optical Flow</SelectItem>
+                        <SelectItem value="kalman">Kalman Filter</SelectItem>
                       </SelectContent>
                     </Select>
                   </Field>
@@ -357,7 +453,7 @@ export function InferenceConfigDialog({
                       </SelectContent>
                     </Select>
                   </Field>
-                  <Field label="Window Size" id="field-trackwindow" hint="Number of past frames to look back when matching instances to tracks. Larger windows handle longer occlusions but are slower.">
+                  <Field label="Window Size" id="field-trackwindow" hint="Number of past frames used as matching candidates. Fixed Window (default) uses the last N frames; Local Queues (used automatically when Max Tracks is set) keeps the last N instances per track ID instead — more robust to track breaks and occlusions.">
                     <Input
                       type="number"
                       value={v.trackingWindowSize}
@@ -367,7 +463,7 @@ export function InferenceConfigDialog({
                       className="h-9 text-sm"
                     />
                   </Field>
-                  <Field label="Max Tracks" id="field-maxtracks" hint="Maximum number of simultaneous tracks. Leave empty for no limit. Set to the number of animals if known.">
+                  <Field label="Max Tracks" id="field-maxtracks" hint="Maximum number of simultaneous tracks. Leave empty for no limit; set to the number of animals if known. Setting this automatically switches matching to Local Queues, since Fixed Window ignores this cap.">
                     <Input
                       type="number"
                       value={v.maxTracks ?? ""}
@@ -378,24 +474,127 @@ export function InferenceConfigDialog({
                       placeholder="No limit"
                     />
                   </Field>
-                  <Field label="Robust (quantile)" id="field-robust" hint="Quantile for robust similarity scoring. Lower values are more tolerant of outlier keypoints when comparing instances.">
-                    <Input
-                      type="number"
-                      value={v.robust}
-                      onChange={(e) => onUpdate({ robust: Number(e.target.value) })}
-                      min={0}
-                      max={1}
-                      step={0.05}
-                      className="h-9 text-sm"
-                    />
-                  </Field>
-                  <Toggle
-                    label="Connect single-frame breaks"
-                    id="field-connectbreaks"
-                    hint="Merge tracks that have a single-frame gap between them. Useful for fixing brief detection dropouts."
-                    checked={v.connectSingleBreaks}
-                    onChange={(val) => onUpdate({ connectSingleBreaks: val })}
-                  />
+                  <button
+                    className="flex items-center gap-1 pt-2 text-sm text-muted-foreground hover:text-foreground"
+                    onClick={() => setShowTrackingAdvanced((v) => !v)}
+                  >
+                    {showTrackingAdvanced ? (
+                      <ChevronDown className="h-3.5 w-3.5" />
+                    ) : (
+                      <ChevronRight className="h-3.5 w-3.5" />
+                    )}
+                    Advanced
+                  </button>
+                  {showTrackingAdvanced && (
+                    <>
+                      <Field label="Robust (quantile)" id="field-robust" hint="If between 0 and 1 (exclusive), uses a robust quantile similarity score instead of the plain max across matched keypoints — 0.95 is a good starting value. Leave at 1 to use max similarity (non-robust).">
+                        <Input
+                          type="number"
+                          value={v.robust}
+                          onChange={(e) => onUpdate({ robust: Number(e.target.value) })}
+                          min={0}
+                          max={1}
+                          step={0.05}
+                          className="h-9 text-sm"
+                        />
+                      </Field>
+                      <Toggle
+                        label="Connect single-frame breaks"
+                        id="field-connectbreaks"
+                        hint="When Max Tracks is set (Local Queues matching), reconnects a track break where exactly one track is lost and exactly one new track is spawned in the same frame — fixes brief detection dropouts without merging unrelated tracks."
+                        checked={v.connectSingleBreaks}
+                        onChange={(val) => onUpdate({ connectSingleBreaks: val })}
+                      />
+                      <Field label="Min Match Points" id="field-minmatchpoints" hint="Minimum number of non-missing keypoints an instance needs to be considered a valid match candidate.">
+                        <Input
+                          type="number"
+                          value={v.minMatchPoints}
+                          onChange={(e) => onUpdate({ minMatchPoints: Number(e.target.value) })}
+                          min={0}
+                          className="h-9 text-sm"
+                        />
+                      </Field>
+                      <Field label="Min New Track Points" id="field-minnewtrackpoints" hint="Minimum number of non-missing keypoints required before an unmatched instance is allowed to spawn a new track.">
+                        <Input
+                          type="number"
+                          value={v.minNewTrackPoints}
+                          onChange={(e) => onUpdate({ minNewTrackPoints: Number(e.target.value) })}
+                          min={0}
+                          className="h-9 text-sm"
+                        />
+                      </Field>
+                      <Field label="Scoring Reduction" id="field-scoringreduction" hint="How to combine multiple similarity scores when several detections could match the same track: Mean averages them, Max takes the best score, Robust quantile is tolerant of outlier scores.">
+                        <Select
+                          value={v.scoringReduction}
+                          onValueChange={(val) => onUpdate({ scoringReduction: val as typeof v.scoringReduction })}
+                        >
+                          <SelectTrigger className="h-9 text-sm">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="mean">Mean</SelectItem>
+                            <SelectItem value="max">Max</SelectItem>
+                            <SelectItem value="robust_quantile">Robust quantile</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </Field>
+                      <Field label="Target Instance Count" id="field-targetinstancecount" hint="Target number of instances to track per frame. Required by Kalman filtering and pre-cull; auto-derived from Max Tracks/Max Instances if left empty.">
+                        <Input
+                          type="number"
+                          value={v.trackingTargetInstanceCount ?? ""}
+                          onChange={(e) => onUpdate({ trackingTargetInstanceCount: e.target.value ? Number(e.target.value) : null })}
+                          min={1}
+                          max={100}
+                          className="h-9 text-sm"
+                          placeholder="Auto"
+                        />
+                      </Field>
+                      <Toggle
+                        label="Pre-cull to target"
+                        id="field-precull"
+                        hint="Before tracking, discard excess instances above the target instance count for that frame."
+                        checked={v.trackingPreCullToTarget}
+                        onChange={(val) => onUpdate({ trackingPreCullToTarget: val })}
+                      />
+                      {v.trackingPreCullToTarget && (
+                        <Field label="Pre-cull IoU Threshold" id="field-precull-iou" hint="IoU threshold used to remove overlapping instances above the target count before tracking.">
+                          <Input
+                            type="number"
+                            value={v.trackingPreCullIouThreshold}
+                            onChange={(e) => onUpdate({ trackingPreCullIouThreshold: Number(e.target.value) })}
+                            min={0}
+                            max={1}
+                            step={0.05}
+                            className="h-9 text-sm"
+                          />
+                        </Field>
+                      )}
+                      <Field label="Clean-up Instance Count" id="field-cleaninstancecount" hint="After tracking, cull instances above this target count per frame — unlike Pre-cull (which trims before tracking), this trims the tracked output. Leave empty to disable.">
+                        <Input
+                          type="number"
+                          value={v.trackingCleanInstanceCount ?? ""}
+                          onChange={(e) => onUpdate({ trackingCleanInstanceCount: e.target.value ? Number(e.target.value) : null })}
+                          min={1}
+                          max={100}
+                          className="h-9 text-sm"
+                          placeholder="Disabled"
+                        />
+                      </Field>
+                      {v.trackingCleanInstanceCount != null && (
+                        <Field label="Clean-up IoU Threshold" id="field-cleaniou" hint="IoU threshold used when culling instances above the clean-up target count after tracking.">
+                          <Input
+                            type="number"
+                            value={v.trackingCleanIouThreshold}
+                            onChange={(e) => onUpdate({ trackingCleanIouThreshold: Number(e.target.value) })}
+                            min={0}
+                            max={1}
+                            step={0.05}
+                            className="h-9 text-sm"
+                          />
+                        </Field>
+                      )}
+                    </>
+                  )}
                 </>
               )}
             </div>
@@ -439,6 +638,61 @@ export function InferenceConfigDialog({
                       className="h-9 text-sm"
                     />
                   </Field>
+                </div>
+
+                <Separator className="my-5" />
+              </>
+            )}
+
+            {v.trackerMethod === "kalman" && (
+              <>
+                {/* ── Kalman Filter ── */}
+                <SectionHeading id="kalman" label="Kalman Filter" />
+                <div className="space-y-2">
+                  <p className="text-sm text-muted-foreground">
+                    Poses are predicted with a per-track constant-velocity Kalman filter. Requires a
+                    Target Instance Count (set above, or auto-derived from Max Tracks/Max Instances).
+                  </p>
+                  <Field label="Track Features" id="field-kftrackfeatures" hint="What the motion model tracks: Centroid is rigid and stable; Keypoints models per-node motion (noisier — pair with IoU scoring for best results).">
+                    <Select
+                      value={v.kfTrackFeatures}
+                      onValueChange={(val) => onUpdate({ kfTrackFeatures: val as typeof v.kfTrackFeatures })}
+                    >
+                      <SelectTrigger className="h-9 text-sm">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="centroid">Centroid</SelectItem>
+                        <SelectItem value="keypoints">Keypoints</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                  <Field label="Init Frame Count" id="field-kfinitframecount" hint="Number of warm-up frames tracked with the base tracker before the Kalman filters are fit.">
+                    <Input
+                      type="number"
+                      value={v.kfInitFrameCount}
+                      onChange={(e) => onUpdate({ kfInitFrameCount: Number(e.target.value) })}
+                      min={1}
+                      className="h-9 text-sm"
+                    />
+                  </Field>
+                  <Field label="Reset Gap Size" id="field-kfresetgapsize" hint="Number of consecutive missed frames after which a stale track's Kalman filter is reset.">
+                    <Input
+                      type="number"
+                      value={v.kfResetGapSize}
+                      onChange={(e) => onUpdate({ kfResetGapSize: Number(e.target.value) })}
+                      min={1}
+                      className="h-9 text-sm"
+                    />
+                  </Field>
+                  <NodeMultiSelect
+                    label="Tracked Nodes"
+                    id="field-kfnodeindices"
+                    hint="Skeleton nodes to track with the motion model. Leave all unchecked to use every node."
+                    nodes={skeletonNodes}
+                    selected={v.kfNodeIndices}
+                    onChange={(indices) => onUpdate({ kfNodeIndices: indices })}
+                  />
                 </div>
 
                 <Separator className="my-5" />
@@ -527,7 +781,7 @@ export function InferenceConfigDialog({
               <Toggle
                 label="Filter Overlapping Instances"
                 id="field-filteroverlapping"
-                hint="Remove duplicate detections that overlap significantly. Useful when the model produces redundant predictions."
+                hint="Remove duplicate detections that overlap significantly, using greedy non-max suppression. Applied independently of tracking, after node-count and confidence filters."
                 checked={v.filterOverlapping}
                 onChange={(val) => onUpdate({ filterOverlapping: val })}
               />
@@ -547,7 +801,7 @@ export function InferenceConfigDialog({
                       </SelectContent>
                     </Select>
                   </Field>
-                  <Field label="Threshold" id="field-filterthreshold" hint="Overlap score above which instances are considered duplicates and the lower-scoring one is removed.">
+                  <Field label="Threshold" id="field-filterthreshold" hint="Overlap score above which instances are considered duplicates and the lower-scoring one is removed. Lower is more aggressive (~0.3), higher is more permissive (0.8 default).">
                     <Input
                       type="number"
                       value={v.filterThreshold}
@@ -560,6 +814,66 @@ export function InferenceConfigDialog({
                   </Field>
                 </>
               )}
+
+              <Separator className="my-4" />
+
+              <ToggleNumberField
+                label="Min Visible Nodes"
+                id="field-filterminvisiblenodes"
+                hint="Minimum number of visible (non-missing) keypoints an instance must have to be kept."
+                valueLabel="Minimum nodes"
+                value={v.filterMinVisibleNodes}
+                onChange={(val) => onUpdate({ filterMinVisibleNodes: val })}
+                defaultValue={1}
+                min={0}
+              />
+              <ToggleNumberField
+                label="Min Visible Node Fraction"
+                id="field-filterminvisiblenodefraction"
+                hint="Minimum fraction of skeleton nodes that must be visible, e.g. 0.5 requires at least half."
+                valueLabel="Minimum fraction"
+                value={v.filterMinVisibleNodeFraction}
+                onChange={(val) => onUpdate({ filterMinVisibleNodeFraction: val })}
+                defaultValue={0.5}
+                min={0}
+                max={1}
+                step={0.05}
+              />
+              <ToggleNumberField
+                label="Min Mean Node Score"
+                id="field-filterminmeannodescore"
+                hint="Minimum mean confidence score across an instance's visible nodes. Instances scoring lower are removed."
+                valueLabel="Minimum score"
+                value={v.filterMinMeanNodeScore}
+                onChange={(val) => onUpdate({ filterMinMeanNodeScore: val })}
+                defaultValue={0.3}
+                min={0}
+                max={1}
+                step={0.05}
+              />
+              <ToggleNumberField
+                label="Min Instance Score"
+                id="field-filterminstancescore"
+                hint="Minimum overall instance confidence score. Instances scoring lower are removed. Meaning differs by pipeline: for Top-Down this is centroid confidence; for Bottom-Up it's derived from PAF grouping quality."
+                valueLabel="Minimum score"
+                value={v.filterMinInstanceScore}
+                onChange={(val) => onUpdate({ filterMinInstanceScore: val })}
+                defaultValue={0.3}
+                min={0}
+                max={1}
+                step={0.05}
+              />
+              <ToggleNumberField
+                label="Min Centroid Distance"
+                id="field-filtermincentroiddistance"
+                hint="Centroid-only de-duplication radius in pixels: drops any predicted centroid within this distance of a higher-scored kept centroid. Use this instead of Filter Overlapping for centroid-only output (single-point pipelines), since bounding-box IoU/OKS are degenerate for single points."
+                valueLabel="Distance (px)"
+                value={v.filterMinCentroidDistance}
+                onChange={(val) => onUpdate({ filterMinCentroidDistance: val })}
+                defaultValue={10}
+                min={0}
+                step={1}
+              />
             </div>
           </div>
         </div>

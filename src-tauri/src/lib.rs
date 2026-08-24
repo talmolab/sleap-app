@@ -455,6 +455,8 @@ fn sleap_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
             open_preferences_directory,
             environment::detect_uv,
             environment::detect_gpu,
+            environment::gpu_stats,
+            environment::check_wandb_auth,
             environment::list_uv_tools,
             environment::list_python_interpreters,
             environment::list_downloadable_pythons,
@@ -564,11 +566,27 @@ fn localhost_capability(port: u16) -> String {
     "fs:allow-remove",
     "fs:allow-exists",
     "fs:allow-stat",
+    "fs:allow-rename",
     {{ "identifier": "fs:scope", "allow": [{{ "path": "**" }}, {{ "path": "$HOME/.sleap-rtc/**" }}] }},
     "dialog:default",
     "dialog:allow-open",
     "dialog:allow-save",
+    "dialog:allow-message",
     "shell:allow-open",
+    {{
+      "identifier": "shell:allow-spawn",
+      "allow": [
+        {{ "name": "binaries/ffmpeg", "sidecar": true, "args": true }},
+        {{ "name": "binaries/ffprobe", "sidecar": true, "args": true }}
+      ]
+    }},
+    {{
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {{ "name": "binaries/ffmpeg", "sidecar": true, "args": true }},
+        {{ "name": "binaries/ffprobe", "sidecar": true, "args": true }}
+      ]
+    }},
     "updater:default",
     "process:default",
     "core:window:allow-close",
@@ -646,6 +664,13 @@ pub fn run() {
       if let tauri::WindowEvent::Destroyed = event {
         use tauri::Manager;
         window.state::<WindowFiles>().0.lock().unwrap().remove(window.label());
+        // Mark the diagnostics session clean on graceful window destroy by
+        // removing the "running" sentinel. A crash / freeze / force-kill never
+        // runs this handler, so the sentinel survives → the next launch offers
+        // to send diagnostics. (Sync + fast, so it lands before the process exits.)
+        if let Ok(dir) = window.app_handle().path().app_local_data_dir() {
+          let _ = std::fs::remove_file(dir.join("sleap-logs").join("session.running"));
+        }
       }
     })
     // All native commands live in the inlined `sleap` plugin (see sleap_plugin()) so they
@@ -685,6 +710,44 @@ pub fn run() {
           .level(log::LevelFilter::Info)
           .build(),
       )?;
+    }
+
+    // macOS: the default app menu ships an Edit ▸ Undo/Redo bound to ⌘Z / ⌘⇧Z.
+    // Those NATIVE accelerators intercept the keystroke before it reaches the
+    // WebView, so the web app's own undo/redo handler never fired (⌘Z did nothing
+    // in the bundled app). Install a custom menu WITHOUT Undo/Redo — keeping the
+    // standard app/window items and cut/copy/paste/select-all for text fields — so
+    // ⌘Z / ⌘⇧Z fall through to the app's own keyboard handler.
+    #[cfg(target_os = "macos")]
+    {
+      use tauri::menu::{MenuBuilder, SubmenuBuilder};
+      let app_menu = SubmenuBuilder::new(app, "SLEAP")
+        .about(None)
+        .separator()
+        .hide()
+        .hide_others()
+        .show_all()
+        .separator()
+        .quit()
+        .build()?;
+      let edit_menu = SubmenuBuilder::new(app, "Edit")
+        // Intentionally NO .undo()/.redo() — see the comment above.
+        .cut()
+        .copy()
+        .paste()
+        .select_all()
+        .build()?;
+      let window_menu = SubmenuBuilder::new(app, "Window")
+        .minimize()
+        .separator()
+        .close_window()
+        .build()?;
+      let menu = MenuBuilder::new(app)
+        .item(&app_menu)
+        .item(&edit_menu)
+        .item(&window_menu)
+        .build()?;
+      app.set_menu(menu)?;
     }
 
     // Build the main window here (removed from tauri.conf.json) so its URL can be

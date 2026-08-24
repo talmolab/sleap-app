@@ -1,4 +1,4 @@
-import { useRef, useCallback, useState, useEffect } from "react";
+import { useRef, useCallback, useState, useEffect, useMemo } from "react";
 import { createPortal } from "react-dom";
 import {
   Dialog,
@@ -17,13 +17,23 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, HelpCircle } from "lucide-react";
-import type { ConfigFile, ConfigHyperparams, Backbone, ModelType, DataPipeline } from "@/stores/trainingStore";
+import { Search, HelpCircle, Crosshair, RefreshCw } from "lucide-react";
+import type { ConfigFile, ConfigHyperparams, Backbone, ModelType, DataPipeline, ColorMode } from "@/stores/trainingStore";
 import { getSlotLabel, getConfigSlots, useTrainingStore } from "@/stores/trainingStore";
+import { checkWandbAuth, type WandbAuth } from "@/platform/backend";
 import { useConnectStore } from "@/stores/connectStore";
 import { useAppStore } from "@/stores/appStore";
 import { ModelStatsPreview } from "@/components/dialogs/ModelStatsPreview";
 import { getBaselineProfilesForHead, getDefaultProfileForHead, slotToHeadType } from "@/lib/trainingProfiles";
+import { computeNodeVisibility, visibilityTier, type NodeVisibility } from "@/lib/anchorVisibility";
+import { isTauri } from "@/lib/platform";
+
+/** Tailwind text color per visibility tier, matching the Training panel's log coloring. */
+const VISIBILITY_COLOR: Record<ReturnType<typeof visibilityTier>, string> = {
+  high: "text-green-600 dark:text-green-400",
+  medium: "text-yellow-600 dark:text-yellow-400",
+  low: "text-destructive",
+};
 
 // ── Props ──────────────────────────────────────────────────────────
 
@@ -44,6 +54,9 @@ interface TrainingConfigDialogProps {
   onSkipUserLabeledChange: (v: boolean) => void;
   existingPredictions: "clear_all" | "replace" | "keep";
   onExistingPredictionsChange: (v: "clear_all" | "replace" | "keep") => void;
+  /** Client-side only — no sleap-nn schema field for this, see trainingStore.ts. */
+  autoOpenWandb: boolean;
+  onAutoOpenWandbChange: (v: boolean) => void;
 }
 
 // ── Constants ──────────────────────────────────────────────────────
@@ -126,6 +139,8 @@ const PIPELINE_FIELD_DEFS = {
   numDevices: { id: "field-numdevices", label: "Number of Devices", hint: "Number of GPUs/devices to use for training. Set to 1 for single-GPU training.", keywords: "gpu devices" },
   secWandb: { id: "pipeline-wandb", label: "WandB", keywords: "weights and biases w&b logging" },
   wandbEnable: { id: "field-wandb-enable", label: "Enable WandB for logging", hint: "Log training metrics, loss curves, and visualizations to Weights & Biases for experiment tracking.", keywords: "wandb w&b weights and biases" },
+  wandbOffline: { id: "field-wandb-offline", label: "Offline Mode", hint: "Log to local disk only — no network or W&B login required. Upload later with `wandb sync`.", keywords: "wandb w&b offline mode local sync network airgap" },
+  wandbApiKey: { id: "field-wandb-apikey", label: "API Key", hint: "W&B API key from wandb.ai/authorize. Optional — leave blank if you've run 'wandb login' or set the WANDB_API_KEY environment variable.", keywords: "wandb w&b api key token auth login" },
   wandbUploadViz: { id: "field-wandb-uploadviz", label: "Upload Viz", hint: "Upload prediction visualization images to W&B for remote viewing.", keywords: "wandb w&b" },
   wandbOpenBrowser: { id: "field-wandb-openbrowser", label: "Open in browser", hint: "Automatically open the W&B run page in your browser when training starts.", keywords: "wandb w&b" },
   wandbEntity: { id: "field-wandb-entity", label: "Entity Name", keywords: "wandb w&b entity" },
@@ -138,8 +153,8 @@ const PIPELINE_FIELD_DEFS = {
   secOutput: { id: "pipeline-output", label: "Output" },
   runName: { id: "field-runname", label: "Run Name", hint: "Name for this training run. Leave empty to auto-generate from timestamp and head type." },
   runsFolder: { id: "field-runsfolder", label: "Runs Folder", hint: "Directory where the run folder and checkpoints will be created." },
-  checkpoint: { id: "field-checkpoint", label: "Checkpoint", keywords: "best model latest model save" },
-  visualization: { id: "field-visualization", label: "Visualization", keywords: "visualize predictions keep viz images" },
+  checkpoint: { id: "field-checkpoint", label: "Checkpoint", hint: "Best Model saves the highest-scoring checkpoint (by validation loss). Latest Model also saves a last.ckpt after every checkpoint, useful for resuming training.", keywords: "best model latest model save" },
+  visualization: { id: "field-visualization", label: "Visualization", hint: "Visualize Predictions saves sample prediction images each epoch (used by this app's epoch scrubber to review training progress). Keep Viz Images keeps that folder after training instead of deleting it; only has an effect when Visualize Predictions is on.", keywords: "visualize predictions keep viz images" },
   secRemote: { id: "pipeline-remote", label: "Remote Training" },
   remoteEnable: { id: "field-remoteenable", label: "Enable Remote Training", hint: "Send training jobs to a remote worker via sleap-connect instead of running locally.", keywords: "remote worker sleap-connect" },
 } satisfies Record<string, SearchField>;
@@ -168,6 +183,8 @@ const HEAD_FIELD_DEFS = {
   onlineMining: { id: "field-onlinemining", label: "Online Mining", hint: "If enabled, online hard keypoint mining (OHKM) will compute loss per keypoint, sort from easy to hard, and scale hard keypoints to have higher weight. This encourages training to focus on tricky body parts. If disabled, all keypoints are weighted equally.", keywords: "ohkm hard keypoint mining" },
   minHardKeypoints: { id: "field-minhardkeypoints", label: "Min Hard Keypoints", keywords: "ohkm mining online" },
   maxHardKeypoints: { id: "field-maxhardkeypoints", label: "Max Hard Keypoints", keywords: "ohkm mining online" },
+  hardToEasyRatio: { id: "field-hardtoeasyratio", label: "Hard/Easy Ratio", keywords: "ohkm mining online ratio hard easy" },
+  lossScale: { id: "field-lossscale", label: "Loss Scale", keywords: "ohkm mining online loss scale" },
   secModel: { id: "head-model", label: "Model" },
   backbone: { id: "field-backbone", label: "Backbone", hint: "Select the backbone architecture. UNet is the default and works well for most cases. ConvNeXt and Swin Transformer support pretrained ImageNet weights but require RGB images.", keywords: "unet convnext swin architecture" },
   stemStride: { id: "field-stemstride", label: "Stem Stride", keywords: "downsampling stride" },
@@ -176,7 +193,6 @@ const HEAD_FIELD_DEFS = {
   filtersRate: { id: "field-filtersrate", label: "Filters Rate", keywords: "channels scale" },
   middleBlock: { id: "field-middleblock", label: "Middle Block" },
   upInterpolate: { id: "field-upinterpolate", label: "Up Interpolate", keywords: "bilinear upsampling" },
-  headAnchorPart: { id: "field-head-anchorpart", label: "Anchor Part", hint: "Text name of a body part (node) to use as the anchor point. If None, the midpoint of the bounding box of all visible points will be used. Setting a reliable anchor point can significantly improve top-down model accuracy.", conditional: true },
   sigma: { id: "field-sigma", label: "Sigma", hint: "Spread of the Gaussian distribution of the confidence maps. Smaller values are more precise but harder to learn. Larger values are easier to learn but less precise. This spread is in units of pixels of the model input image (after any input scaling)." },
   outputStride: { id: "field-outputstride", label: "Output Stride", keywords: "resolution downsample stride" },
   confmapsLossWeight: { id: "field-confmapsweight", label: "Confmaps Loss Weight", keywords: "loss weight", conditional: true },
@@ -244,18 +260,88 @@ function Field({ label, id, hint, children }: { label: string; id?: string; hint
   );
 }
 
-function Toggle({ label, id, hint, checked, onChange }: { label: string; id?: string; hint?: string; checked: boolean; onChange: (v: boolean) => void }) {
+function Toggle({ label, id, hint, checked, onChange, disabled = false }: { label: string; id?: string; hint?: string; checked: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {
   return (
-    <div id={id} data-search-field={id ? "" : undefined} className="flex items-center gap-6 py-2.5 scroll-mt-4">
+    <div id={id} data-search-field={id ? "" : undefined} className={`flex items-center gap-6 py-2.5 scroll-mt-4 ${disabled ? "opacity-50" : ""}`}>
       <span className="text-sm text-muted-foreground shrink-0 flex items-center gap-1.5">
         {label}
         {hint && <HintBubble text={hint} />}
       </span>
       <button
-        className={`w-10 h-6 rounded-full relative transition-colors ${checked ? "bg-primary" : "bg-zinc-700"}`}
+        disabled={disabled}
+        className={`w-10 h-6 rounded-full relative transition-colors ${checked ? "bg-primary" : "bg-zinc-700"} ${disabled ? "cursor-not-allowed" : ""}`}
         onClick={() => onChange(!checked)}
       >
         <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform ${checked ? "translate-x-4" : ""}`} />
+      </button>
+    </div>
+  );
+}
+
+/**
+ * The top-down anchor-part picker, shown once above the centroid /
+ * centered-instance tab split (it's one concept — where to crop around each
+ * animal — not a per-head setting). Writes into the `centered_instance`
+ * slot's hyperparams, which is what actually gets serialized to
+ * `centered_instance.confmaps.anchor_part`.
+ */
+function PipelineAnchorPartField({
+  hp,
+  onUpdate,
+  skeletonNodes,
+  nodeVisibility,
+}: {
+  hp: ConfigHyperparams;
+  onUpdate: (updates: Partial<ConfigHyperparams>) => void;
+  skeletonNodes: string[];
+  nodeVisibility: Map<string, NodeVisibility>;
+}) {
+  const pickedAnchorNode = useAppStore((s) => s.pickedAnchorNode);
+  const [myPickRequestId, setMyPickRequestId] = useState<number | null>(null);
+  const hasLabeledData = [...nodeVisibility.values()].some((v) => v.total > 0);
+
+  useEffect(() => {
+    if (myPickRequestId == null || !pickedAnchorNode) return;
+    if (pickedAnchorNode.requestId !== myPickRequestId) return;
+    onUpdate({ anchorPart: pickedAnchorNode.nodeName });
+    setMyPickRequestId(null);
+    useAppStore.getState().clearPickedAnchorNode();
+  }, [pickedAnchorNode, myPickRequestId, onUpdate]);
+
+  return (
+    <div id={PIPELINE_FIELD_DEFS.anchorPart.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+      <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+        {PIPELINE_FIELD_DEFS.anchorPart.label}
+        <HintBubble text="The body part used to center the crop around each animal. Choose one that is consistently visible and near the center of the animal." />
+      </span>
+      <Select value={hp.anchorPart ?? "__auto__"} onValueChange={(v) => onUpdate({ anchorPart: v === "__auto__" ? null : v })}>
+        <SelectTrigger className="h-8 text-sm w-40"><SelectValue placeholder="Auto" /></SelectTrigger>
+        <SelectContent>
+          <SelectItem value="__auto__">Auto (bbox center)</SelectItem>
+          {skeletonNodes.map((n) => {
+            const vis = nodeVisibility.get(n);
+            return (
+              <SelectItem key={n} value={n}>
+                <span className="flex items-center gap-1.5">
+                  {n}
+                  {vis && vis.total > 0 && (
+                    <span className={`text-xs ${VISIBILITY_COLOR[visibilityTier(vis.pct)]}`}>
+                      {vis.pct}%
+                    </span>
+                  )}
+                </span>
+              </SelectItem>
+            );
+          })}
+        </SelectContent>
+      </Select>
+      <button
+        className="shrink-0 h-8 w-8 flex items-center justify-center rounded-md border border-input text-muted-foreground hover:text-foreground hover:border-primary/50 disabled:opacity-40 disabled:hover:text-muted-foreground disabled:hover:border-input"
+        disabled={!hasLabeledData}
+        title={hasLabeledData ? "Pick anchor from canvas" : "No labeled frames in this project yet"}
+        onClick={() => setMyPickRequestId(useAppStore.getState().startAnchorPick())}
+      >
+        <Crosshair className="h-3.5 w-3.5" />
       </button>
     </div>
   );
@@ -278,7 +364,6 @@ function HeadTabContent({
   hp,
   onUpdate,
   scrollRefCallback,
-  skeletonNodes,
 }: {
   slot: string;
   modelType: ModelType;
@@ -286,18 +371,59 @@ function HeadTabContent({
   hp: ConfigHyperparams;
   onUpdate: (updates: Partial<ConfigHyperparams>) => void;
   scrollRefCallback: (el: HTMLDivElement | null) => void;
-  skeletonNodes: string[];
 }) {
   const headType = slotToHeadType(modelType, slot);
   const baselineProfiles = getBaselineProfilesForHead(headType);
-  const showAnchorPart = slot === "centroid" || slot === "centered_instance";
   const showCropSize = slot !== "centroid";
-  const trainingMode = (!configFile?.hasTrainedModel && hp.trainingMode !== "reuse_config")
-    ? "reuse_config"
-    : (hp.trainingMode ?? "reuse_config");
-  const modelLocked = trainingMode === "resume" || trainingMode === "reuse_model";
-  const allLocked = trainingMode === "reuse_model";
-  const { parseYamlConfig, addConfigFile } = useTrainingStore();
+  const trainingMode = hp.trainingMode ?? "reuse_config";
+  const modelLocked = trainingMode === "resume" || trainingMode === "finetune";
+  const allLocked = trainingMode === "resume";
+  const { parseYamlConfig, addConfigFile, updateConfigCheckpointPath } = useTrainingStore();
+
+  const handleBrowseCheckpoint = async () => {
+    try {
+      const { open: tauriOpen } = await import("@tauri-apps/plugin-dialog");
+      const selected = await tauriOpen({
+        title: "Select Checkpoint File",
+        filters: [
+          trainingMode === "finetune"
+            ? { name: "Checkpoint", extensions: ["ckpt", "h5"] }
+            : { name: "Checkpoint", extensions: ["ckpt"] },
+        ],
+      });
+      if (!selected) return;
+      const checkpointPath = selected as string;
+
+      // Warn (but don't block, mirroring handleConfigBrowse's modelType check
+      // below) if the checkpoint's own head type — read from its sibling
+      // training_config.yaml, sleap-nn's standard run layout — doesn't match
+      // this slot's head. A backbone/head-shape mismatch would otherwise only
+      // surface as an opaque state_dict error once training starts.
+      try {
+        const [{ dirname, join }, { readTextFile, exists }, { parseTrainingConfig }] = await Promise.all([
+          import("@tauri-apps/api/path"),
+          import("@tauri-apps/plugin-fs"),
+          import("@/lib/metrics/loadModelMetrics"),
+        ]);
+        const runDir = await dirname(checkpointPath);
+        const cfgPath = await join(runDir, "training_config.yaml");
+        if (await exists(cfgPath)) {
+          const info = parseTrainingConfig(await readTextFile(cfgPath));
+          if (info.headKey && info.headKey !== headType) {
+            window.alert(
+              `The checkpoint you selected was trained for "${info.headKey}" and may not be compatible with this ${headType} head.`
+            );
+          }
+        }
+      } catch {
+        // Sibling config unreadable/missing — nothing to validate against.
+      }
+
+      updateConfigCheckpointPath(slot, checkpointPath);
+    } catch {
+      // User cancelled or not in Tauri
+    }
+  };
 
   const handleConfigBrowse = () => {
     const input = document.createElement("input");
@@ -351,7 +477,7 @@ function HeadTabContent({
           <SelectContent>
             {baselineProfiles.map((p) => (
               <SelectItem key={p.filename} value={p.filename}>
-                [{p.filename.replace(".yaml", "")}] ({p.filename})
+                {p.label}
               </SelectItem>
             ))}
             {configFile && !baselineProfiles.some((p) => p.filename === configFile.filename) && (
@@ -372,29 +498,58 @@ function HeadTabContent({
         </Select>
       </div>
 
-      {/* ── Training mode radios ── */}
-      <div className="flex items-center gap-5 mb-5 pb-4 border-b">
-        {([
-          { value: "reuse_config" as const, label: "Reuse config (train from scratch)", alwaysEnabled: true },
-          { value: "resume" as const, label: "Resume training (fine-tune)", alwaysEnabled: false },
-          { value: "reuse_model" as const, label: "Reuse model (don't retrain)", alwaysEnabled: false },
-        ]).map((opt) => {
-          const disabled = !opt.alwaysEnabled && !configFile?.hasTrainedModel;
-          return (
-            <label key={opt.value} className={`flex items-center gap-1.5 ${disabled ? "opacity-40 cursor-not-allowed" : "cursor-pointer"}`}>
-              <input
-                type="radio"
-                name={`training-mode-${slot}`}
-                checked={trainingMode === opt.value}
-                onChange={() => onUpdate({ trainingMode: opt.value })}
-                className="accent-primary"
-                disabled={disabled}
-              />
-              <span className="text-sm">{opt.label}</span>
-            </label>
-          );
-        })}
-      </div>
+      {/* ── Training mode ── */}
+      {configFile && (
+        <div className="mb-5 pb-4 border-b">
+          <div className="flex items-center gap-5">
+            {([
+              { value: "reuse_config" as const, label: "Train from scratch" },
+              { value: "finetune" as const, label: "Fine-tune (start from prior weights)" },
+              { value: "resume" as const, label: "Resume training (continue from checkpoint)" },
+            ]).map((opt) => (
+              <label key={opt.value} className="flex items-center gap-1.5 cursor-pointer">
+                <input
+                  type="radio"
+                  name={`training-mode-${slot}`}
+                  checked={trainingMode === opt.value}
+                  onChange={() => onUpdate({ trainingMode: opt.value })}
+                  className="accent-primary"
+                />
+                <span className="text-sm">{opt.label}</span>
+              </label>
+            ))}
+          </div>
+
+          {(trainingMode === "finetune" || trainingMode === "resume") && (
+            <div className="mt-3 space-y-1">
+              <div className="flex items-center gap-2">
+                <Input
+                  value={configFile.checkpointPath ?? ""}
+                  onChange={(e) => updateConfigCheckpointPath(slot, e.target.value || null)}
+                  placeholder={trainingMode === "finetune" ? "Path to .ckpt or .h5 file" : "Path to .ckpt file"}
+                  className="h-9 text-sm font-mono flex-1"
+                />
+                {isTauri && (
+                  <button
+                    type="button"
+                    onClick={handleBrowseCheckpoint}
+                    className="h-9 px-3 text-sm rounded-md border hover:bg-muted shrink-0"
+                  >
+                    Browse...
+                  </button>
+                )}
+              </div>
+              {trainingMode === "resume" &&
+                configFile.checkpointPath &&
+                !configFile.checkpointPath.toLowerCase().endsWith(".ckpt") && (
+                  <p className="text-[10px] text-destructive">
+                    Resume training requires a .ckpt file (.h5 is only supported for Fine-tune).
+                  </p>
+                )}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ── Model Stats Preview (thumbnail + RF + crop size + params) ── */}
       <ModelStatsPreview hp={hp} maxStride={hp.maxStride} filters={hp.filters} filtersRate={hp.filtersRate} outputStride={hp.outputStride} stemStride={hp.stemStride} backbone={hp.backbone || "unet"} slot={slot} />
@@ -603,6 +758,20 @@ function HeadTabContent({
             </span>
             <Input type="number" value={hp.maxHardKeypoints ?? ""} onChange={(e) => onUpdate({ maxHardKeypoints: e.target.value ? Number(e.target.value) : null })} disabled={!hp.onlineMining} placeholder="None" className="h-8 text-sm w-16" />
           </div>
+          <div id={HEAD_FIELD_DEFS.hardToEasyRatio.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+            <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+              {HEAD_FIELD_DEFS.hardToEasyRatio.label}
+              <HintBubble text="The minimum ratio of an individual keypoint's loss to the lowest keypoint loss for it to be considered 'hard'. This helps switch focus across groups of keypoints during training." />
+            </span>
+            <Input type="number" value={hp.hardToEasyRatio} onChange={(e) => onUpdate({ hardToEasyRatio: Number(e.target.value) })} disabled={!hp.onlineMining} step={0.5} min={0} className="h-8 text-sm w-16" />
+          </div>
+          <div id={HEAD_FIELD_DEFS.lossScale.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+            <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+              {HEAD_FIELD_DEFS.lossScale.label}
+              <HintBubble text="Factor by which the hard keypoints' losses are scaled up in the total loss." />
+            </span>
+            <Input type="number" value={hp.lossScale} onChange={(e) => onUpdate({ lossScale: Number(e.target.value) })} disabled={!hp.onlineMining} step={0.5} min={0} className="h-8 text-sm w-16" />
+          </div>
         </div>
       </div>
       </div>
@@ -675,21 +844,6 @@ function HeadTabContent({
         </div>
         <Separator className="my-3" />
         <h4 className="text-sm font-medium text-muted-foreground mb-2">Head</h4>
-        {showAnchorPart && (
-          <div id={HEAD_FIELD_DEFS.headAnchorPart.id} data-search-field="" className="flex items-center gap-2 mb-2 scroll-mt-4">
-            <span className="text-sm text-muted-foreground flex items-center gap-1.5">
-              {HEAD_FIELD_DEFS.headAnchorPart.label}
-              <HintBubble text="Text name of a body part (node) to use as the anchor point. If None, the midpoint of the bounding box of all visible points will be used. Setting a reliable anchor point can significantly improve top-down model accuracy." />
-            </span>
-            <Select value={hp.anchorPart ?? "__auto__"} onValueChange={(v) => onUpdate({ anchorPart: v === "__auto__" ? null : v })}>
-              <SelectTrigger className="h-8 text-sm w-32"><SelectValue placeholder="Auto" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="__auto__">Auto</SelectItem>
-                {skeletonNodes.map((n) => <SelectItem key={n} value={n}>{n}</SelectItem>)}
-              </SelectContent>
-            </Select>
-          </div>
-        )}
         <Field {...HEAD_FIELD_DEFS.sigma}>
           <Input type="number" value={hp.sigma} onChange={(e) => onUpdate({ sigma: Number(e.target.value) })} min={0.5} max={30} step={0.5} className="h-9 text-sm" />
         </Field>
@@ -760,15 +914,38 @@ export function TrainingConfigDialog({
   onSkipUserLabeledChange,
   existingPredictions,
   onExistingPredictionsChange,
+  autoOpenWandb,
+  onAutoOpenWandbChange,
 }: TrainingConfigDialogProps) {
   const pipelineScrollRef = useRef<HTMLDivElement>(null);
   const headScrollRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const [activeTab, setActiveTab] = useState("pipeline");
   const [searchQuery, setSearchQuery] = useState("");
 
+  // Detect existing W&B auth (env var / ~/.netrc) on the local machine so the
+  // API-key field can advertise itself as optional. Desktop-only; a no-op in
+  // the browser (checkWandbAuth returns not-authenticated there).
+  const [wandbAuth, setWandbAuth] = useState<WandbAuth | null>(null);
+  const refreshWandbAuth = useCallback(() => {
+    checkWandbAuth().then(setWandbAuth).catch(() => {});
+  }, []);
+  // Re-detect every time the dialog opens (the component stays mounted, so a
+  // one-shot mount effect would go stale after a `wandb login`).
+  useEffect(() => {
+    if (!open) return;
+    refreshWandbAuth();
+  }, [open, refreshWandbAuth]);
+
   // App store for suggestions count
   const labels = useAppStore((s) => s.labels);
   const suggestionsCount = labels?.suggestions?.length ?? 0;
+  const skeleton = useAppStore((s) => s.skeleton);
+  const overlayVersion = useAppStore((s) => s.overlayVersion);
+  const nodeVisibility = useMemo(
+    () => computeNodeVisibility(labels, skeleton),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [labels, skeleton, overlayVersion]
+  );
 
   // Auto-load baseline configs for empty slots when dialog opens
   const { parseYamlConfig, addConfigFile } = useTrainingStore();
@@ -914,22 +1091,17 @@ export function TrainingConfigDialog({
                   </p>
                   {(modelType === "top_down" || modelType === "top_down_id") && (
                     <div className="flex items-center gap-4 flex-wrap pt-1">
-                      <div id={PIPELINE_FIELD_DEFS.anchorPart.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
-                        <span className="text-sm text-muted-foreground flex items-center gap-1.5">
-                          {PIPELINE_FIELD_DEFS.anchorPart.label}
-                          <HintBubble text="The body part used to center the crop around each animal. Choose one that is consistently visible and near the center of the animal." />
-                        </span>
-                        <Select
-                          value={configs.find((c) => c.slot === "centroid")?.hyperparams.runName ? "auto" : "auto"}
-                          disabled
-                        >
-                          <SelectTrigger className="h-8 text-sm w-32"><SelectValue placeholder="Auto" /></SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="auto">Auto</SelectItem>
-                            {skeletonNodes.map((n) => <SelectItem key={n} value={n}>{n}</SelectItem>)}
-                          </SelectContent>
-                        </Select>
-                      </div>
+                      {(() => {
+                        const ciConfig = configs.find((c) => c.slot === "centered_instance");
+                        return ciConfig ? (
+                          <PipelineAnchorPartField
+                            hp={ciConfig.hyperparams}
+                            onUpdate={(updates) => onUpdateSlot("centered_instance", updates)}
+                            skeletonNodes={skeletonNodes}
+                            nodeVisibility={nodeVisibility}
+                          />
+                        ) : null;
+                      })()}
                       <div id={PIPELINE_FIELD_DEFS.sigmaCentroids.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
                         <span className="text-sm text-muted-foreground flex items-center gap-1.5">
                           {PIPELINE_FIELD_DEFS.sigmaCentroids.label}
@@ -1039,7 +1211,10 @@ export function TrainingConfigDialog({
                     onChange={onSkipUserLabeledChange}
                   />
                   <div id={PIPELINE_FIELD_DEFS.existingPredictions.id} data-search-field="" className="flex items-center gap-4 scroll-mt-4">
-                    <span className="text-sm text-muted-foreground">Existing predictions:</span>
+                    <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                      Existing predictions:
+                      <HintBubble text="What to do with predicted instances already in the project when this run's post-training inference produces new ones. Clear all removes every existing predicted instance first. Replace overwrites predictions on frames the new inference re-runs. Keep leaves existing predictions untouched and only adds new ones." />
+                    </span>
                     {(["clear_all", "replace", "keep"] as const).map((option) => (
                       <label key={option} className="flex items-center gap-1.5 cursor-pointer">
                         <input
@@ -1067,7 +1242,10 @@ export function TrainingConfigDialog({
                           {PIPELINE_FIELD_DEFS.convertColors.label}
                           <HintBubble text="Convert input images to a specific channel format. Use RGB for pretrained backbones or Grayscale for single-channel videos." />
                         </span>
-                        <Select value="grayscale">
+                        <Select
+                          value={firstHp.colorMode}
+                          onValueChange={(v) => configs.forEach((c) => onUpdateSlot(c.slot, { colorMode: v as ColorMode }))}
+                        >
                           <SelectTrigger className="h-8 text-sm w-32"><SelectValue /></SelectTrigger>
                           <SelectContent>
                             <SelectItem value="auto">Auto</SelectItem>
@@ -1095,7 +1273,10 @@ export function TrainingConfigDialog({
                     <div className="flex items-center gap-4">
                       <label id={PIPELINE_FIELD_DEFS.filterOverlapping.id} data-search-field="" className="flex items-center gap-1.5 scroll-mt-4 opacity-50">
                         <input type="checkbox" disabled className="accent-primary" />
-                        <span className="text-sm">{PIPELINE_FIELD_DEFS.filterOverlapping.label}</span>
+                        <span className="text-sm flex items-center gap-1">
+                          {PIPELINE_FIELD_DEFS.filterOverlapping.label}
+                          <HintBubble text="Removes duplicate detections of the same animal by bounding-box IOU or pose OKS overlap. This is an inference-time post-processing step, not a training parameter — it's disabled here and configured when running inference instead." />
+                        </span>
                       </label>
                       <div className="flex items-center gap-2 opacity-50">
                         <span className="text-sm text-muted-foreground">Method:</span>
@@ -1183,32 +1364,76 @@ export function TrainingConfigDialog({
                   <div className="space-y-3">
                     <div className="flex items-center gap-2">
                       <span className="text-sm text-muted-foreground">Status:</span>
-                      <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
-                      <span className="text-sm text-red-400">Not logged in</span>
+                      {wandbAuth?.authenticated ? (
+                        <>
+                          <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
+                          <span className="text-sm text-green-400">
+                            Authenticated{wandbAuth.source ? ` (${wandbAuth.source})` : ""}
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
+                          <span className="text-sm text-red-400">Not logged in</span>
+                        </>
+                      )}
+                      <button
+                        type="button"
+                        onClick={refreshWandbAuth}
+                        title="Re-check W&B login"
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        <RefreshCw className="w-3 h-3" />
+                      </button>
                     </div>
                     <div className="flex items-center gap-4 flex-wrap">
                       <Toggle {...PIPELINE_FIELD_DEFS.wandbEnable} checked={firstHp.useWandb} onChange={(v) => configs.forEach((c) => onUpdateSlot(c.slot, { useWandb: v }))} />
-                      <Toggle {...PIPELINE_FIELD_DEFS.wandbUploadViz} checked={false} onChange={() => {}} />
-                      <Toggle {...PIPELINE_FIELD_DEFS.wandbOpenBrowser} checked={false} onChange={() => {}} />
+                      <Toggle {...PIPELINE_FIELD_DEFS.wandbOffline} checked={firstHp.wandbMode === "offline"} onChange={(v) => configs.forEach((c) => onUpdateSlot(c.slot, { wandbMode: v ? "offline" : "online" }))} disabled={!firstHp.useWandb} />
+                      <Toggle {...PIPELINE_FIELD_DEFS.wandbUploadViz} checked={firstHp.wandbUploadViz} onChange={(v) => configs.forEach((c) => onUpdateSlot(c.slot, { wandbUploadViz: v }))} disabled={!firstHp.useWandb || firstHp.wandbMode === "offline"} />
+                      <Toggle {...PIPELINE_FIELD_DEFS.wandbOpenBrowser} checked={autoOpenWandb} onChange={onAutoOpenWandbChange} disabled={!firstHp.useWandb || firstHp.wandbMode === "offline"} />
+                    </div>
+                    <div className="flex items-center gap-6 flex-wrap">
+                      <div id={PIPELINE_FIELD_DEFS.wandbApiKey.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+                        <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                          {PIPELINE_FIELD_DEFS.wandbApiKey.label}:
+                          <HintBubble text="W&B API key from wandb.ai/authorize. Optional — leave blank if you've run 'wandb login' or set the WANDB_API_KEY environment variable." />
+                        </span>
+                        <Input type="password" autoComplete="off" value={firstHp.wandbApiKey} onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { wandbApiKey: e.target.value }))} placeholder={wandbAuth?.authenticated ? "Detected — leave blank to use it" : ""} className="h-8 text-sm w-56" disabled={!firstHp.useWandb || firstHp.wandbMode === "offline"} />
+                      </div>
+                      {firstHp.wandbMode === "offline" && (
+                        <span className="text-xs text-muted-foreground">Logged locally — run <span className="font-mono">wandb sync</span> to upload later.</span>
+                      )}
                     </div>
                     <div className="flex items-center gap-6 flex-wrap">
                       <div id={PIPELINE_FIELD_DEFS.wandbEntity.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
-                        <span className="text-sm text-muted-foreground">{PIPELINE_FIELD_DEFS.wandbEntity.label}:</span>
+                        <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                          {PIPELINE_FIELD_DEFS.wandbEntity.label}:
+                          <HintBubble text="Your W&B username or team name that owns the project this run logs to. Leave blank to use your default W&B entity." />
+                        </span>
                         <Input type="text" value={firstHp.wandbEntity} onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { wandbEntity: e.target.value }))} placeholder="" className="h-8 text-sm w-40" disabled={!firstHp.useWandb} />
                       </div>
                       <div id={PIPELINE_FIELD_DEFS.wandbProject.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
-                        <span className="text-sm text-muted-foreground">{PIPELINE_FIELD_DEFS.wandbProject.label}:</span>
+                        <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                          {PIPELINE_FIELD_DEFS.wandbProject.label}:
+                          <HintBubble text="The W&B project this run's metrics and visualizations are logged under. Created automatically if it doesn't already exist." />
+                        </span>
                         <Input type="text" value={firstHp.wandbProject} onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { wandbProject: e.target.value }))} placeholder="" className="h-8 text-sm w-40" disabled={!firstHp.useWandb} />
                       </div>
                     </div>
                     <div className="flex items-center gap-6 flex-wrap">
                       <div id={PIPELINE_FIELD_DEFS.wandbRunId.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
-                        <span className="text-sm text-muted-foreground">{PIPELINE_FIELD_DEFS.wandbRunId.label}:</span>
-                        <Input type="text" placeholder="" className="h-8 text-sm w-40" disabled={!firstHp.useWandb} />
+                        <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                          {PIPELINE_FIELD_DEFS.wandbRunId.label}:
+                          <HintBubble text="ID of a previous W&B run to resume logging into instead of starting a new one. Pair this with Resume Training so training metrics continue on the same run's timeline." />
+                        </span>
+                        <Input type="text" value={firstHp.wandbPrevRunId} onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { wandbPrevRunId: e.target.value }))} placeholder="" className="h-8 text-sm w-40" disabled={!firstHp.useWandb} />
                       </div>
                       <div id={PIPELINE_FIELD_DEFS.wandbGroup.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
-                        <span className="text-sm text-muted-foreground">{PIPELINE_FIELD_DEFS.wandbGroup.label}:</span>
-                        <Input type="text" placeholder="" className="h-8 text-sm w-40" disabled={!firstHp.useWandb} />
+                        <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                          {PIPELINE_FIELD_DEFS.wandbGroup.label}:
+                          <HintBubble text="Optional label to cluster related runs together in the W&B UI, e.g. runs from the same experiment or hyperparameter sweep." />
+                        </span>
+                        <Input type="text" value={firstHp.wandbGroup} onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { wandbGroup: e.target.value }))} placeholder="" className="h-8 text-sm w-40" disabled={!firstHp.useWandb} />
                       </div>
                     </div>
                   </div>
@@ -1222,13 +1447,24 @@ export function TrainingConfigDialog({
                 <SectionHeading {...PIPELINE_FIELD_DEFS.secEvaluation} />
                 <div className="space-y-3">
                   <div className="flex items-center gap-6">
-                    <Toggle {...PIPELINE_FIELD_DEFS.evalEnable} checked={false} onChange={() => {}} />
-                    <div id={PIPELINE_FIELD_DEFS.evalFrequency.id} data-search-field="" className="flex items-center gap-2 opacity-50 scroll-mt-4">
+                    <Toggle
+                      {...PIPELINE_FIELD_DEFS.evalEnable}
+                      checked={firstHp?.evalEnabled ?? false}
+                      onChange={(v) => configs.forEach((c) => onUpdateSlot(c.slot, { evalEnabled: v }))}
+                    />
+                    <div id={PIPELINE_FIELD_DEFS.evalFrequency.id} data-search-field="" className={`flex items-center gap-2 scroll-mt-4 ${!firstHp?.evalEnabled ? "opacity-50" : ""}`}>
                       <span className="text-sm text-muted-foreground flex items-center gap-1.5">
                         {PIPELINE_FIELD_DEFS.evalFrequency.label}:
                         <HintBubble text="How often to run full evaluation. Every 1 epoch is most informative but slower. Every 5–10 epochs is a good balance." />
                       </span>
-                      <Input type="number" value={1} min={1} disabled className="h-8 text-sm w-16" />
+                      <Input
+                        type="number"
+                        value={firstHp?.evalFrequency ?? 1}
+                        min={1}
+                        disabled={!firstHp?.evalEnabled}
+                        onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { evalFrequency: Math.max(1, Number(e.target.value)) }))}
+                        className="h-8 text-sm w-16"
+                      />
                     </div>
                   </div>
                 </div>
@@ -1246,24 +1482,51 @@ export function TrainingConfigDialog({
                       <Input type="text" value="models" disabled className="h-9 text-sm" />
                     </Field>
                     <div id={PIPELINE_FIELD_DEFS.checkpoint.id} data-search-field="" className="flex items-center gap-6 scroll-mt-4">
-                      <span className="text-sm text-muted-foreground">{PIPELINE_FIELD_DEFS.checkpoint.label}:</span>
+                      <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                        {PIPELINE_FIELD_DEFS.checkpoint.label}:
+                        <HintBubble text={PIPELINE_FIELD_DEFS.checkpoint.hint} />
+                      </span>
                       <label className="flex items-center gap-1.5 cursor-pointer">
-                        <input type="checkbox" defaultChecked className="accent-primary" />
+                        <input
+                          type="checkbox"
+                          checked={firstHp.saveBestModel}
+                          onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { saveBestModel: e.target.checked }))}
+                          className="accent-primary"
+                        />
                         <span className="text-sm">Best Model</span>
                       </label>
                       <label className="flex items-center gap-1.5 cursor-pointer">
-                        <input type="checkbox" className="accent-primary" />
+                        <input
+                          type="checkbox"
+                          checked={firstHp.saveLastModel}
+                          onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { saveLastModel: e.target.checked }))}
+                          className="accent-primary"
+                        />
                         <span className="text-sm">Latest Model</span>
                       </label>
                     </div>
                     <div id={PIPELINE_FIELD_DEFS.visualization.id} data-search-field="" className="flex items-center gap-6 scroll-mt-4">
-                      <span className="text-sm text-muted-foreground">{PIPELINE_FIELD_DEFS.visualization.label}:</span>
+                      <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                        {PIPELINE_FIELD_DEFS.visualization.label}:
+                        <HintBubble text={PIPELINE_FIELD_DEFS.visualization.hint} />
+                      </span>
                       <label className="flex items-center gap-1.5 cursor-pointer">
-                        <input type="checkbox" defaultChecked className="accent-primary" />
+                        <input
+                          type="checkbox"
+                          checked={firstHp.visualizePredictions}
+                          onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { visualizePredictions: e.target.checked }))}
+                          className="accent-primary"
+                        />
                         <span className="text-sm">Visualize Predictions</span>
                       </label>
-                      <label className="flex items-center gap-1.5 cursor-pointer">
-                        <input type="checkbox" className="accent-primary" />
+                      <label className={`flex items-center gap-1.5 ${firstHp.visualizePredictions ? "cursor-pointer" : "cursor-not-allowed opacity-50"}`}>
+                        <input
+                          type="checkbox"
+                          checked={firstHp.keepVizImages}
+                          disabled={!firstHp.visualizePredictions}
+                          onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { keepVizImages: e.target.checked }))}
+                          className="accent-primary"
+                        />
                         <span className="text-sm">Keep Viz Images</span>
                       </label>
                     </div>
@@ -1337,7 +1600,6 @@ export function TrainingConfigDialog({
                   hp={cf.hyperparams}
                   onUpdate={(updates) => onUpdateSlot(cf.slot, updates)}
                   scrollRefCallback={(el) => { headScrollRefs.current[cf.slot] = el; }}
-                  skeletonNodes={skeletonNodes}
                 />
               </TabsContent>
             ))}

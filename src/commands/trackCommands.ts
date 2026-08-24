@@ -328,3 +328,22 @@ export const PropagateTrackLabels: Command = {
     ctx.state.markChanged();
   },
 };
+
+/**
+ * Rename a track. Because every instance references the same Track object, the
+ * new name propagates to all instances/frames at once. Undoable — the snapshot
+ * captures track names by value.
+ */
+export const SetTrackName: Command = {
+  name: "SetTrackName",
+  topics: [UpdateTopic.Tracks, UpdateTopic.Instance],
+  execute(ctx: CommandContext, params?: Record<string, unknown>) {
+    const track = params?.track as Track | undefined;
+    const name = params?.name as string | undefined;
+    if (!track || name === undefined) return;
+    const trimmed = name.trim();
+    if (!trimmed || trimmed === track.name) return;
+    track.name = trimmed;
+    ctx.state.markChanged();
+  },
+};
