@@ -26,6 +26,7 @@ import { useAppStore } from "@/stores/appStore";
 import { ModelStatsPreview } from "@/components/dialogs/ModelStatsPreview";
 import { getBaselineProfilesForHead, getDefaultProfileForHead, slotToHeadType } from "@/lib/trainingProfiles";
 import { computeNodeVisibility, visibilityTier, type NodeVisibility } from "@/lib/anchorVisibility";
+import { isTauri } from "@/lib/platform";
 
 /** Tailwind text color per visibility tier, matching the Training panel's log coloring. */
 const VISIBILITY_COLOR: Record<ReturnType<typeof visibilityTier>, string> = {
@@ -372,12 +373,55 @@ function HeadTabContent({
   const headType = slotToHeadType(modelType, slot);
   const baselineProfiles = getBaselineProfilesForHead(headType);
   const showCropSize = slot !== "centroid";
-  const trainingMode = (!configFile?.hasTrainedModel && hp.trainingMode !== "reuse_config")
-    ? "reuse_config"
-    : (hp.trainingMode ?? "reuse_config");
-  const modelLocked = trainingMode === "resume" || trainingMode === "reuse_model";
-  const allLocked = trainingMode === "reuse_model";
-  const { parseYamlConfig, addConfigFile } = useTrainingStore();
+  const trainingMode = hp.trainingMode ?? "reuse_config";
+  const modelLocked = trainingMode === "resume" || trainingMode === "finetune";
+  const allLocked = trainingMode === "resume";
+  const { parseYamlConfig, addConfigFile, updateConfigCheckpointPath } = useTrainingStore();
+
+  const handleBrowseCheckpoint = async () => {
+    try {
+      const { open: tauriOpen } = await import("@tauri-apps/plugin-dialog");
+      const selected = await tauriOpen({
+        title: "Select Checkpoint File",
+        filters: [
+          trainingMode === "finetune"
+            ? { name: "Checkpoint", extensions: ["ckpt", "h5"] }
+            : { name: "Checkpoint", extensions: ["ckpt"] },
+        ],
+      });
+      if (!selected) return;
+      const checkpointPath = selected as string;
+
+      // Warn (but don't block, mirroring handleConfigBrowse's modelType check
+      // below) if the checkpoint's own head type — read from its sibling
+      // training_config.yaml, sleap-nn's standard run layout — doesn't match
+      // this slot's head. A backbone/head-shape mismatch would otherwise only
+      // surface as an opaque state_dict error once training starts.
+      try {
+        const [{ dirname, join }, { readTextFile, exists }, { parseTrainingConfig }] = await Promise.all([
+          import("@tauri-apps/api/path"),
+          import("@tauri-apps/plugin-fs"),
+          import("@/lib/metrics/loadModelMetrics"),
+        ]);
+        const runDir = await dirname(checkpointPath);
+        const cfgPath = await join(runDir, "training_config.yaml");
+        if (await exists(cfgPath)) {
+          const info = parseTrainingConfig(await readTextFile(cfgPath));
+          if (info.headKey && info.headKey !== headType) {
+            window.alert(
+              `The checkpoint you selected was trained for "${info.headKey}" and may not be compatible with this ${headType} head.`
+            );
+          }
+        }
+      } catch {
+        // Sibling config unreadable/missing — nothing to validate against.
+      }
+
+      updateConfigCheckpointPath(slot, checkpointPath);
+    } catch {
+      // User cancelled or not in Tauri
+    }
+  };
 
   const handleConfigBrowse = () => {
     const input = document.createElement("input");
@@ -431,7 +475,7 @@ function HeadTabContent({
           <SelectContent>
             {baselineProfiles.map((p) => (
               <SelectItem key={p.filename} value={p.filename}>
-                [{p.filename.replace(".yaml", "")}] ({p.filename})
+                {p.label}
               </SelectItem>
             ))}
             {configFile && !baselineProfiles.some((p) => p.filename === configFile.filename) && (
@@ -452,29 +496,58 @@ function HeadTabContent({
         </Select>
       </div>
 
-      {/* ── Training mode radios ── */}
-      <div className="flex items-center gap-5 mb-5 pb-4 border-b">
-        {([
-          { value: "reuse_config" as const, label: "Reuse config (train from scratch)", alwaysEnabled: true },
-          { value: "resume" as const, label: "Resume training (fine-tune)", alwaysEnabled: false },
-          { value: "reuse_model" as const, label: "Reuse model (don't retrain)", alwaysEnabled: false },
-        ]).map((opt) => {
-          const disabled = !opt.alwaysEnabled && !configFile?.hasTrainedModel;
-          return (
-            <label key={opt.value} className={`flex items-center gap-1.5 ${disabled ? "opacity-40 cursor-not-allowed" : "cursor-pointer"}`}>
-              <input
-                type="radio"
-                name={`training-mode-${slot}`}
-                checked={trainingMode === opt.value}
-                onChange={() => onUpdate({ trainingMode: opt.value })}
-                className="accent-primary"
-                disabled={disabled}
-              />
-              <span className="text-sm">{opt.label}</span>
-            </label>
-          );
-        })}
-      </div>
+      {/* ── Training mode ── */}
+      {configFile && (
+        <div className="mb-5 pb-4 border-b">
+          <div className="flex items-center gap-5">
+            {([
+              { value: "reuse_config" as const, label: "Train from scratch" },
+              { value: "finetune" as const, label: "Fine-tune (start from prior weights)" },
+              { value: "resume" as const, label: "Resume training (continue from checkpoint)" },
+            ]).map((opt) => (
+              <label key={opt.value} className="flex items-center gap-1.5 cursor-pointer">
+                <input
+                  type="radio"
+                  name={`training-mode-${slot}`}
+                  checked={trainingMode === opt.value}
+                  onChange={() => onUpdate({ trainingMode: opt.value })}
+                  className="accent-primary"
+                />
+                <span className="text-sm">{opt.label}</span>
+              </label>
+            ))}
+          </div>
+
+          {(trainingMode === "finetune" || trainingMode === "resume") && (
+            <div className="mt-3 space-y-1">
+              <div className="flex items-center gap-2">
+                <Input
+                  value={configFile.checkpointPath ?? ""}
+                  onChange={(e) => updateConfigCheckpointPath(slot, e.target.value || null)}
+                  placeholder={trainingMode === "finetune" ? "Path to .ckpt or .h5 file" : "Path to .ckpt file"}
+                  className="h-9 text-sm font-mono flex-1"
+                />
+                {isTauri && (
+                  <button
+                    type="button"
+                    onClick={handleBrowseCheckpoint}
+                    className="h-9 px-3 text-sm rounded-md border hover:bg-muted shrink-0"
+                  >
+                    Browse...
+                  </button>
+                )}
+              </div>
+              {trainingMode === "resume" &&
+                configFile.checkpointPath &&
+                !configFile.checkpointPath.toLowerCase().endsWith(".ckpt") && (
+                  <p className="text-[10px] text-destructive">
+                    Resume training requires a .ckpt file (.h5 is only supported for Fine-tune).
+                  </p>
+                )}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ── Model Stats Preview (thumbnail + RF + crop size + params) ── */}
       <ModelStatsPreview hp={hp} maxStride={hp.maxStride} filters={hp.filters} filtersRate={hp.filtersRate} outputStride={hp.outputStride} stemStride={hp.stemStride} backbone={hp.backbone || "unet"} slot={slot} />
@@ -1122,7 +1195,10 @@ export function TrainingConfigDialog({
                     onChange={onSkipUserLabeledChange}
                   />
                   <div id={PIPELINE_FIELD_DEFS.existingPredictions.id} data-search-field="" className="flex items-center gap-4 scroll-mt-4">
-                    <span className="text-sm text-muted-foreground">Existing predictions:</span>
+                    <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                      Existing predictions:
+                      <HintBubble text="What to do with predicted instances already in the project when this run's post-training inference produces new ones. Clear all removes every existing predicted instance first. Replace overwrites predictions on frames the new inference re-runs. Keep leaves existing predictions untouched and only adds new ones." />
+                    </span>
                     {(["clear_all", "replace", "keep"] as const).map((option) => (
                       <label key={option} className="flex items-center gap-1.5 cursor-pointer">
                         <input
@@ -1181,7 +1257,10 @@ export function TrainingConfigDialog({
                     <div className="flex items-center gap-4">
                       <label id={PIPELINE_FIELD_DEFS.filterOverlapping.id} data-search-field="" className="flex items-center gap-1.5 scroll-mt-4 opacity-50">
                         <input type="checkbox" disabled className="accent-primary" />
-                        <span className="text-sm">{PIPELINE_FIELD_DEFS.filterOverlapping.label}</span>
+                        <span className="text-sm flex items-center gap-1">
+                          {PIPELINE_FIELD_DEFS.filterOverlapping.label}
+                          <HintBubble text="Removes duplicate detections of the same animal by bounding-box IOU or pose OKS overlap. This is an inference-time post-processing step, not a training parameter — it's disabled here and configured when running inference instead." />
+                        </span>
                       </label>
                       <div className="flex items-center gap-2 opacity-50">
                         <span className="text-sm text-muted-foreground">Method:</span>
@@ -1311,21 +1390,33 @@ export function TrainingConfigDialog({
                     </div>
                     <div className="flex items-center gap-6 flex-wrap">
                       <div id={PIPELINE_FIELD_DEFS.wandbEntity.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
-                        <span className="text-sm text-muted-foreground">{PIPELINE_FIELD_DEFS.wandbEntity.label}:</span>
+                        <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                          {PIPELINE_FIELD_DEFS.wandbEntity.label}:
+                          <HintBubble text="Your W&B username or team name that owns the project this run logs to. Leave blank to use your default W&B entity." />
+                        </span>
                         <Input type="text" value={firstHp.wandbEntity} onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { wandbEntity: e.target.value }))} placeholder="" className="h-8 text-sm w-40" disabled={!firstHp.useWandb} />
                       </div>
                       <div id={PIPELINE_FIELD_DEFS.wandbProject.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
-                        <span className="text-sm text-muted-foreground">{PIPELINE_FIELD_DEFS.wandbProject.label}:</span>
+                        <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                          {PIPELINE_FIELD_DEFS.wandbProject.label}:
+                          <HintBubble text="The W&B project this run's metrics and visualizations are logged under. Created automatically if it doesn't already exist." />
+                        </span>
                         <Input type="text" value={firstHp.wandbProject} onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { wandbProject: e.target.value }))} placeholder="" className="h-8 text-sm w-40" disabled={!firstHp.useWandb} />
                       </div>
                     </div>
                     <div className="flex items-center gap-6 flex-wrap">
                       <div id={PIPELINE_FIELD_DEFS.wandbRunId.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
-                        <span className="text-sm text-muted-foreground">{PIPELINE_FIELD_DEFS.wandbRunId.label}:</span>
+                        <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                          {PIPELINE_FIELD_DEFS.wandbRunId.label}:
+                          <HintBubble text="ID of a previous W&B run to resume logging into instead of starting a new one. Pair this with Resume Training so training metrics continue on the same run's timeline." />
+                        </span>
                         <Input type="text" value={firstHp.wandbPrevRunId} onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { wandbPrevRunId: e.target.value }))} placeholder="" className="h-8 text-sm w-40" disabled={!firstHp.useWandb} />
                       </div>
                       <div id={PIPELINE_FIELD_DEFS.wandbGroup.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
-                        <span className="text-sm text-muted-foreground">{PIPELINE_FIELD_DEFS.wandbGroup.label}:</span>
+                        <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                          {PIPELINE_FIELD_DEFS.wandbGroup.label}:
+                          <HintBubble text="Optional label to cluster related runs together in the W&B UI, e.g. runs from the same experiment or hyperparameter sweep." />
+                        </span>
                         <Input type="text" value={firstHp.wandbGroup} onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { wandbGroup: e.target.value }))} placeholder="" className="h-8 text-sm w-40" disabled={!firstHp.useWandb} />
                       </div>
                     </div>

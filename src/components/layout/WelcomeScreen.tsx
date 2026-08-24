@@ -165,6 +165,7 @@ export function WelcomeScreen() {
           <Button
             onClick={() => useAppStore.getState().setNewProjectDialogOpen(true)}
             size="lg"
+            data-tutorial="new-project-button"
           >
             <Plus className="h-4 w-4" />
             New Project

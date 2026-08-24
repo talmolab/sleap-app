@@ -84,6 +84,7 @@ import {
   MenubarRadioGroup,
   MenubarRadioItem,
 } from "@/components/ui/menubar";
+import { Button } from "@/components/ui/button";
 import {
   GRAPH_SPECS,
   reconcileReduction,
@@ -120,6 +121,14 @@ export function MenuBar() {
       <LabelsMenu />
       <PredictMenu />
       <TracksMenu />
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-8 rounded-none px-3 text-xs font-normal"
+        onClick={() => useAppStore.getState().startTutorial()}
+      >
+        Start Tutorial
+      </Button>
       <HelpMenu />
     </Menubar>
   );
@@ -136,7 +145,12 @@ function FileMenu() {
 
   return (
     <MenubarMenu>
-      <MenubarTrigger className="px-3 h-8 text-xs rounded-none">File</MenubarTrigger>
+      <MenubarTrigger
+        className="px-3 h-8 text-xs rounded-none"
+        data-tutorial="file-menu-trigger"
+      >
+        File
+      </MenubarTrigger>
       <MenubarContent>
         <MenubarItem onClick={() => void openNewInstance()}>
           New Project... <MenubarShortcut>{modKey}+N</MenubarShortcut>
@@ -521,6 +535,7 @@ function ViewMenu() {
   const showLabels = useAppStore((s) => s.showLabels);
   const showEdges = useAppStore((s) => s.showEdges);
   const showNonVisibleNodes = useAppStore((s) => s.showNonVisibleNodes);
+  const showInset = useAppStore((s) => s.showInset);
   const colorPredicted = useAppStore((s) => s.colorPredicted);
   const fit = useAppStore((s) => s.fit);
   const edgeStyle = useAppStore((s) => s.edgeStyle);
@@ -668,6 +683,12 @@ function ViewMenu() {
         >
           Crosshair When Zoomed
         </MenubarCheckboxItem>
+        <MenubarCheckboxItem
+          checked={showInset}
+          onCheckedChange={() => toggle("showInset")}
+        >
+          Magnifier When Moving Nodes
+        </MenubarCheckboxItem>
         <MenubarSeparator />
         <MenubarSub>
           <MenubarSubTrigger className="text-sm">Edge Style</MenubarSubTrigger>
@@ -750,8 +771,9 @@ function ViewMenu() {
           <MenubarSubContent>
             <MenubarRadioGroup
               value={distinctlyColor}
-              onValueChange={(val) => setVal("distinctlyColor", val as "track" | "instance" | "node" | "edge")}
+              onValueChange={(val) => setVal("distinctlyColor", val as "auto" | "track" | "instance" | "node" | "edge")}
             >
+              <MenubarRadioItem value="auto">Auto (Node / Track)</MenubarRadioItem>
               <MenubarRadioItem value="track">Tracks</MenubarRadioItem>
               <MenubarRadioItem value="instance">Instances</MenubarRadioItem>
               <MenubarRadioItem value="node">Nodes</MenubarRadioItem>

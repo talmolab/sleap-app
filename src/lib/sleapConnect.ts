@@ -72,6 +72,30 @@ export interface TrackJobSpec {
   track_window?: number;
   max_tracks?: number;
   connect_single_breaks?: boolean;
+  min_match_points?: number;
+  min_new_track_points?: number;
+  scoring_reduction?: string;
+  tracking_target_instance_count?: number;
+  tracking_pre_cull_to_target?: boolean;
+  tracking_pre_cull_iou_threshold?: number;
+  tracking_clean_instance_count?: number;
+  tracking_clean_iou_threshold?: number;
+  use_kalman?: boolean;
+  kf_track_features?: string;
+  kf_init_frame_count?: number;
+  kf_node_indices?: string;
+  kf_reset_gap_size?: number;
+  of_img_scale?: number;
+  of_window_size?: number;
+  of_max_levels?: number;
+  filter_overlapping?: boolean;
+  filter_overlapping_method?: string;
+  filter_overlapping_threshold?: number;
+  filter_min_visible_nodes?: number;
+  filter_min_visible_node_fraction?: number;
+  filter_min_mean_node_score?: number;
+  filter_min_instance_score?: number;
+  filter_min_centroid_distance?: number;
 }
 
 export interface TrainJobSpec {

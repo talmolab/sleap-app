@@ -472,6 +472,7 @@ export function SkeletonPanel() {
           className="w-full"
           onClick={launchBuilder}
           disabled={!video}
+          data-tutorial="draw-skeleton-button"
           title={
             video
               ? "Draw the skeleton directly on the current frame"

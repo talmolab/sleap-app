@@ -4,6 +4,126 @@ Pose estimation and tracking app for [SLEAP](https://sleap.ai).
 
 A modern rewrite of SLEAP's Qt/Python desktop labeling interface as a web app, with an optional [Tauri v2](https://v2.tauri.app/) desktop shell for native file access. Runs entirely in the browser -- no server or Python required.
 
+## Install the desktop app
+
+Until the first release with attached builds exists, use the `/dev/` URLs below
+(they go live on the next merge to `main`). After that, drop the `/dev/`.
+
+**macOS / Linux:**
+
+```bash
+curl -fsSL https://app.sleap.ai/dev/install.sh | sh
+```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://app.sleap.ai/dev/install.ps1 | iex
+```
+
+Or use the app in any browser at [app.sleap.ai](https://app.sleap.ai) -- no install needed.
+
+macOS builds are universal, so one `.dmg` covers both Apple Silicon and Intel.
+Linux gets a `.deb`, an `.AppImage` and an `.rpm`; Windows gets an NSIS
+installer and an `.msi`.
+
+<details>
+<summary>Installing a specific version, a pre-release, or a build you already downloaded</summary>
+
+```bash
+# A specific release tag (pre-releases included when named explicitly)
+curl -fsSL https://app.sleap.ai/dev/install.sh | sh -s -- --tag v0.1.2
+
+# The newest build even if it is a pre-release
+curl -fsSL https://app.sleap.ai/dev/install.sh | sh -s -- --pre
+
+# Read it before you run it
+curl -fsSL https://app.sleap.ai/dev/install.sh | less
+```
+
+To install a file you already have -- a `.dmg`, `.deb`, `.AppImage`, `.rpm`, or
+the `.zip` straight off a GitHub Actions artifact page -- download the script
+first, then pass it the file. This path also strips the quarantine flag:
+
+```bash
+curl -fsSL https://app.sleap.ai/dev/install.sh -o install.sh
+sh install.sh ~/Downloads/SLEAP_0.1.2_universal.dmg
+sh install.sh ~/Downloads/sleap-app-macos-universal.zip
+```
+
+```powershell
+irm https://app.sleap.ai/dev/install.ps1 -OutFile install.ps1
+
+# Windows clients default to an ExecutionPolicy of Restricted, which refuses to
+# run ANY .ps1 -- so invoke it explicitly rather than as `.\install.ps1`. This
+# bypasses the policy for one process only; it changes nothing machine-wide.
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Path $HOME\Downloads\sleap-app-windows.zip
+
+# `| iex` cannot forward parameters, so build a script block for -Tag / -Pre.
+# (This route is unaffected by ExecutionPolicy -- nothing is ever written to disk.)
+& ([scriptblock]::Create((irm https://app.sleap.ai/dev/install.ps1))) -Tag v0.1.2
+```
+
+`install.sh --help` and `Get-Help .\install.ps1` list the rest (`--prefix`,
+`--force`, `-Interactive`).
+
+</details>
+
+### Why use the installer?
+
+macOS builds are **signed with a Developer ID and notarized by Apple**, so the
+`.dmg` from the [Releases page](https://github.com/talmolab/sleap-app/releases)
+works on its own -- double-click it, drag `SLEAP.app` to Applications, done. The
+first launch shows the standard "downloaded from the Internet, are you sure?"
+confirmation with an **Open** button. That appears once, for any downloaded app,
+and never again.
+
+The installer is a convenience on top of that, not a workaround. It:
+
+- skips even that one-time prompt, because `curl` never sets `com.apple.quarantine`
+- replaces the app **atomically** (stages alongside, then renames)
+- refuses to overwrite a running copy, so you cannot lose unsaved labels
+- picks the right artifact for your platform and architecture automatically
+
+**On Windows**, SmartScreen may still warn, because the installer is not signed
+with an EV certificate; that warning has a **More info > Run anyway**.
+
+**On Linux**, nothing gates the install. The script prefers the `.AppImage`,
+because that is the only Linux payload the in-app updater can replace without
+root; set `SLEAP_PREFER_DEB=1` if you would rather have the `.deb` in your package
+manager.
+
+<details>
+<summary>If macOS refuses to open the app</summary>
+
+You should not hit this on a release build. If you do -- most likely a build from
+a fork or a PR, which get no signing secrets and fall back to ad-hoc signing --
+clear the quarantine tag on the **`.dmg`, before opening it**, which stops the tag
+propagating to the app in the first place:
+
+```bash
+xattr -dr com.apple.quarantine ~/Downloads/SLEAP_*.dmg
+```
+
+If you already tried and got blocked, clear it on the installed app instead:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/SLEAP.app
+```
+
+The GUI route is **System Settings > Privacy & Security > Security > Open Anyway**,
+which needs your login password and only offers itself for about an hour after a
+blocked launch. Control-click > Open no longer works -- Apple removed that bypass
+in macOS 15.
+
+Two dialogs are worth telling apart. "Apple could not verify..." means valid
+signature, not notarized. "**SLEAP is damaged and can't be opened**" means an
+*invalid* signature, and has no override at all -- if you ever see that on a
+release build, the signing step regressed; see
+[docs/macos-code-signing.md](docs/macos-code-signing.md).
+
+</details>
+
 ## Tech Stack
 
 | Layer | Technology |
@@ -174,7 +294,9 @@ tests/                           # bun unit tests + Playwright E2E
 Deployment is automated via GitHub Actions:
 
 - **On merge to `main`** -- the browser app is built and deployed to the **dev** site at [https://app.sleap.ai/dev/](https://app.sleap.ai/dev/) (`.github/workflows/deploy.yml`, published to the `gh-pages` branch).
-- **On GitHub Release** (published) -- the browser app is deployed to **production** at [https://app.sleap.ai](https://app.sleap.ai), and the Tauri desktop installers are built for all three platforms and attached to the release (`.github/workflows/build.yml`): Linux `.deb` / `.AppImage`, macOS `.dmg`, and Windows `.msi` / `.exe`, along with a `latest.json` auto-update manifest.
+- **On GitHub Release** (published) -- the desktop installers are built for all three platforms and attached to the release (`.github/workflows/build.yml`): Linux `.deb` / `.AppImage` / `.rpm`, a universal macOS `.dmg`, and Windows `.msi` / `-setup.exe`, along with a `latest.json` auto-update manifest. A **non-pre-release** additionally deploys the browser app to **production** at [https://app.sleap.ai](https://app.sleap.ai); a **pre-release** deploys to `/dev/` instead, so tester builds never replace the production site.
+
+  Note that `latest.json` is served from `releases/latest/download/`, which skips pre-releases -- so the in-app updater only ever sees full releases.
 
 Both targets can also be run manually from the **Actions** tab (`deploy.yml` / `build.yml` `workflow_dispatch`).
 

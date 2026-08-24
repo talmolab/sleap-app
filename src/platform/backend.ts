@@ -37,6 +37,9 @@ export interface UvTool {
   name: string;
   version: string | null;
   commands: string[];
+  /** `null` = update check couldn't run (offline, timed out); otherwise whether a newer version is available. */
+  updateAvailable: boolean | null;
+  latestVersion: string | null;
 }
 
 export interface PythonInterpreter {
