@@ -46,6 +46,7 @@ import { ShortcutsDialog } from "../dialogs/ShortcutsDialog";
 import { HelpDialog } from "../dialogs/HelpDialog";
 import { DiagnosticsDialog } from "../dialogs/DiagnosticsDialog";
 import { MenuSearchDialog } from "../dialogs/MenuSearchDialog";
+import { TutorialOverlay } from "../tutorial/TutorialOverlay";
 import { useAppStore } from "../../stores/appStore";
 import { useTrainingStore } from "../../stores/trainingStore";
 import {
@@ -304,6 +305,7 @@ export function AppShell() {
         onOpenChange={setDiagnosticsDialogOpen}
       />
       <MenuSearchDialog />
+      <TutorialOverlay />
       <PathResolutionHost />
 
       {/* Toast notifications. closeButton renders an always-visible X (see the

@@ -13,7 +13,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Search } from "lucide-react";
 import { useAppStore } from "../../stores/appStore";
-import { modKey, isTauri } from "../../lib/platform";
+import { isTauri } from "../../lib/platform";
+import { formatShortcut } from "@/lib/formatShortcut";
 import { openNewInstance } from "@/lib/newInstance";
 import {
   commandContext,
@@ -89,10 +90,10 @@ function buildActions(): MenuAction[] {
 
   return [
     // File
-    { group: "File", label: "New Project", shortcut: `${modKey}+N`, run: () => void openNewInstance() },
-    { group: "File", label: "Open Project", shortcut: `${modKey}+O`, run: exec(OpenProjectCommand) },
-    { group: "File", label: "Save", shortcut: `${modKey}+S`, run: exec(SaveProjectCommand) },
-    { group: "File", label: "Save As", shortcut: `${modKey}+Shift+S`, run: exec(SaveAsProjectCommand) },
+    { group: "File", label: "New Project", shortcut: formatShortcut("$mod+KeyN"), run: () => void openNewInstance() },
+    { group: "File", label: "Open Project", shortcut: formatShortcut("$mod+KeyO"), run: exec(OpenProjectCommand) },
+    { group: "File", label: "Save", shortcut: formatShortcut("$mod+KeyS"), run: exec(SaveProjectCommand) },
+    { group: "File", label: "Save As", shortcut: formatShortcut("$mod+Shift+KeyS"), run: exec(SaveAsProjectCommand) },
     { group: "File", label: "Import NWB dataset", run: exec(ImportNwbCommand) },
     { group: "File", label: "Import COCO dataset", run: exec(ImportCocoCommand) },
     { group: "File", label: "Import DeepLabCut dataset", run: exec(ImportDlcCommand) },
@@ -105,24 +106,24 @@ function buildActions(): MenuAction[] {
     { group: "File", label: "Export Labeled Clip (Video)", run: () => store().setExportClipDialogOpen(true) },
 
     // Edit
-    { group: "Edit", label: "Undo", shortcut: `${modKey}+Z`, run: () => commandContext.undo() },
-    { group: "Edit", label: "Redo", shortcut: `${modKey}+Shift+Z`, run: () => commandContext.redo() },
-    { group: "Edit", label: "Copy Instance", shortcut: `${modKey}+C`, run: exec(CopyInstance) },
-    { group: "Edit", label: "Paste Instance", shortcut: `${modKey}+V`, run: exec(PasteInstance) },
-    { group: "Edit", label: "Add Instance", shortcut: `${modKey}+I`, run: exec(AddInstance) },
+    { group: "Edit", label: "Undo", shortcut: formatShortcut("$mod+KeyZ"), run: () => commandContext.undo() },
+    { group: "Edit", label: "Redo", shortcut: formatShortcut("$mod+Shift+KeyZ"), run: () => commandContext.redo() },
+    { group: "Edit", label: "Copy Instance", shortcut: formatShortcut("$mod+KeyC"), run: exec(CopyInstance) },
+    { group: "Edit", label: "Paste Instance", shortcut: formatShortcut("$mod+KeyV"), run: exec(PasteInstance) },
+    { group: "Edit", label: "Add Instance", shortcut: formatShortcut("$mod+KeyI"), run: exec(AddInstance) },
     { group: "Edit", label: "Delete Instance", run: exec(DeleteSelectedInstance) },
     { group: "Edit", label: "Delete Predictions on Current Frame", run: exec(DeleteFramePredictions) },
 
     // Go
-    { group: "Go", label: "Go to Frame", shortcut: `${modKey}+J`, run: () => store().setGoToFrameDialogOpen(true) },
-    { group: "Go", label: "Select to Frame", shortcut: `${modKey}+Shift+J`, run: () => store().setSelectToFrameDialogOpen(true) },
+    { group: "Go", label: "Go to Frame", shortcut: formatShortcut("$mod+KeyJ"), run: () => store().setGoToFrameDialogOpen(true) },
+    { group: "Go", label: "Select to Frame", shortcut: formatShortcut("$mod+Shift+KeyJ"), run: () => store().setSelectToFrameDialogOpen(true) },
     { group: "Go", label: "Next Labeled Frame", run: exec(GoNextLabeledFrame) },
     { group: "Go", label: "Previous Labeled Frame", run: exec(GoPrevLabeledFrame) },
     { group: "Go", label: "Next Suggestion", run: exec(GoNextSuggestion) },
     { group: "Go", label: "Previous Suggestion", run: exec(GoPrevSuggestion) },
-    { group: "Go", label: "Last Interacted Frame", shortcut: `${modKey}+A`, run: exec(GoToLastInteracted) },
-    { group: "Go", label: "Next User Labeled Frame", shortcut: `${modKey}+U`, run: exec(GoNextUserFrame) },
-    { group: "Go", label: "Next Track Spawn Frame", shortcut: `${modKey}+E`, run: exec(GoNextTrackSpawnFrame) },
+    { group: "Go", label: "Last Interacted Frame", shortcut: formatShortcut("$mod+KeyA"), run: exec(GoToLastInteracted) },
+    { group: "Go", label: "Next User Labeled Frame", shortcut: formatShortcut("$mod+KeyU"), run: exec(GoNextUserFrame) },
+    { group: "Go", label: "Next Track Spawn Frame", shortcut: formatShortcut("$mod+KeyE"), run: exec(GoNextTrackSpawnFrame) },
     { group: "Go", label: "Clear Selection", shortcut: "Esc", run: () => store().setInstance(null) },
     { group: "Go", label: "Navigate All Frames", run: () => store().setNavigationDomain("all") },
     { group: "Go", label: "Navigate Labeled Frames Only", run: () => store().setNavigationDomain("labeled") },
@@ -147,15 +148,15 @@ function buildActions(): MenuAction[] {
     { group: "View", label: "Decrease Text Size", run: () => adjustScale(-0.05) },
 
     // Labels
-    { group: "Labels", label: "Accept All Predictions on Current Frame", shortcut: `${modKey}+Shift+A`, run: exec(AddInstancesFromAllPredictions) },
+    { group: "Labels", label: "Accept All Predictions on Current Frame", shortcut: formatShortcut("$mod+Shift+KeyA"), run: exec(AddInstancesFromAllPredictions) },
     { group: "Labels", label: "Accept All Predictions (Project)", run: exec(AddInstancesFromAllPredictionsInProject) },
     { group: "Labels", label: "Delete Predictions...", run: () => store().setDeletePredictionsDialogOpen(true) },
 
     // Tracks
-    { group: "Tracks", label: "Transpose Instance Tracks", shortcut: `${modKey}+T`, run: exec(TransposeInstances) },
-    { group: "Tracks", label: "New Track", shortcut: `${modKey}+0`, run: exec(AddTrack) },
-    { group: "Tracks", label: "Copy Instance Track", shortcut: `${modKey}+Shift+C`, run: exec(CopyTrack) },
-    { group: "Tracks", label: "Paste Instance Track", shortcut: `${modKey}+Shift+V`, run: exec(PasteTrack) },
+    { group: "Tracks", label: "Transpose Instance Tracks", shortcut: formatShortcut("$mod+KeyT"), run: exec(TransposeInstances) },
+    { group: "Tracks", label: "New Track", shortcut: formatShortcut("$mod+Digit0"), run: exec(AddTrack) },
+    { group: "Tracks", label: "Copy Instance Track", shortcut: formatShortcut("$mod+Shift+KeyC"), run: exec(CopyTrack) },
+    { group: "Tracks", label: "Paste Instance Track", shortcut: formatShortcut("$mod+Shift+KeyV"), run: exec(PasteTrack) },
     { group: "Tracks", label: "Delete Unused Tracks", run: () => { if (confirm("Delete all unused tracks?")) commandContext.execute(DeleteUnusedTracks); } },
 
     // Predict
@@ -165,6 +166,7 @@ function buildActions(): MenuAction[] {
     { group: "Predict", label: "Export Labels Package...", run: () => store().setExportPackageDialogOpen(true) },
 
     // Help
+    { group: "Help", label: "Start Tutorial", run: () => store().startTutorial() },
     { group: "Help", label: "Keyboard Shortcuts", run: () => store().setShortcutsDialogOpen(true) },
     { group: "Help", label: "Documentation", run: () => void openExternal("https://docs.sleap.ai/") },
     { group: "Help", label: "Report Issue", run: () => void openExternal("https://github.com/talmolab/sleap-app/issues") },

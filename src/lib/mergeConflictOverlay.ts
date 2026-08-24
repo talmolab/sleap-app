@@ -32,6 +32,9 @@ export interface ConflictOverlayContext {
   palette?: string;
   distinctlyColor?: string;
   colorPredicted?: boolean;
+  /** Whether any instance in the project has an assigned track — resolves
+   * distinctlyColor === "auto" to "track" vs "node". */
+  projectHasTracks?: boolean;
   /**
    * Frame index of each base instance (from {@link Conflict.baseColorIndices}),
    * used to color the base pose exactly as the main canvas does. Falls back to
@@ -60,6 +63,7 @@ export function buildConflictOverlay(
     showNonVisibleNodes: true,
     tracks: ctx.tracks,
     video: ctx.video,
+    projectHasTracks: ctx.projectHasTracks ?? false,
   };
 
   // Re-color the base pose using each instance's FRAME index (not its position
@@ -75,7 +79,8 @@ export function buildConflictOverlay(
       baseInstances[k].track,
       opts.tracks,
       false,
-      opts.colorPredicted
+      opts.colorPredicted,
+      opts.projectHasTracks
     ),
   }));
   const donor = buildExportRenderedInstances(donorInstances, opts).map((ri) => ({

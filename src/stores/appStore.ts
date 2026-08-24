@@ -46,6 +46,7 @@ import {
   migrateOpenPanels,
   toggleId,
 } from "@/lib/panelLayout";
+import { buildTutorialSteps, type TutorialStep } from "@/lib/tutorial/steps";
 
 // Required before immer can draft Set/Map fields (hiddenInstances /
 // showNonVisibleOverride). Idempotent global; must run before store creation.
@@ -136,10 +137,10 @@ export interface AppState {
    */
   sidebarCollapsedSections: string[];
   /**
-   * When true, clicking a rail icon opens panels ADDITIVELY (multiple stacked
-   * sections). When false (default), the sidebar behaves one-at-a-time: a rail
+   * When true (default), clicking a rail icon opens panels ADDITIVELY (multiple
+   * stacked sections). When false, the sidebar behaves one-at-a-time: a rail
    * click shows exactly that panel. Toggled from View > Allow multiple panels.
-   * Persisted.
+   * Persisted (existing users keep whatever they last had).
    */
   sidebarMultiPanel: boolean;
   panelOrder: string[];
@@ -180,6 +181,8 @@ export interface AppState {
   nodeLabelSize: number;
   insetSize: number;
   insetZoom: number;
+  /** Show the zoomed-in magnifier while dragging/placing a node or holding Shift. Persisted. */
+  showInset: boolean;
   trailLength: number;
   trailShade: string;
   lutMin: number;
@@ -344,6 +347,24 @@ export interface AppState {
   diagnosticsDialogOpen: boolean;
   quitConfirmOpen: boolean;
 
+  // === Getting-started tutorial (transient, not persisted) ===
+  tutorialActive: boolean;
+  tutorialStepIndex: number;
+  /**
+   * Resolved once in `startTutorial` (see `buildTutorialSteps`) — whether a
+   * project was already loaded at that moment decides the whole sequence, so
+   * this isn't re-derived mid-run.
+   */
+  tutorialSteps: TutorialStep[];
+  /**
+   * Furthest `tutorialStepIndex` reached so far this run (only advanced by
+   * `advanceTutorialStep`, never by `previousTutorialStep`). Lets
+   * `TutorialOverlay` tell "stepped back to re-read a step already cleared"
+   * apart from "still working on the current frontier step" — a step below
+   * this mark doesn't need its real-world action redone to move forward again.
+   */
+  tutorialHighestStepIndex: number;
+
   // === Area delete mode ===
   areaDeleteMode: boolean;
 
@@ -401,6 +422,14 @@ export interface AppState {
   setHelpDialogOpen: (open: boolean) => void;
   setDiagnosticsDialogOpen: (open: boolean) => void;
   setMenuSearchDialogOpen: (open: boolean) => void;
+  /** Start the getting-started tutorial from its first step. */
+  startTutorial: () => void;
+  /** Stop the tutorial at any point (Exit button). */
+  exitTutorial: () => void;
+  /** Advance to the next tutorial step, or exit once past the last one. */
+  advanceTutorialStep: () => void;
+  /** Go back to the previous tutorial step; a no-op on the first step. */
+  previousTutorialStep: () => void;
   enterPlacementMode: () => void;
   exitPlacementMode: () => void;
 
@@ -476,6 +505,7 @@ export const PERSISTED_KEYS: (keyof AppState)[] = [
   "trailLength",
   "insetSize",
   "insetZoom",
+  "showInset",
   "defaultToPan",
   "seekbarHeaderGraph",
   "seekbarHeaderReduction",
@@ -543,7 +573,7 @@ export const useAppStore = create<AppState>()(
       sidebarSide: "right",
       sidebarOpenPanels: [...DEFAULT_OPEN_PANELS],
       sidebarCollapsedSections: [],
-      sidebarMultiPanel: false,
+      sidebarMultiPanel: true,
       panelOrder: [...DEFAULT_PANEL_ORDER],
       hiddenPanels: [],
 
@@ -561,11 +591,12 @@ export const useAppStore = create<AppState>()(
       colorPredicted: false,
       defaultToPan: false,
       palette: "standard",
-      distinctlyColor: "track" as ColorTarget,
+      distinctlyColor: "auto" as ColorTarget,
       markerSize: 4,
       nodeLabelSize: 12,
       insetSize: 400,
       insetZoom: 2,
+      showInset: true,
       trailLength: 0,
       trailShade: "Normal",
       lutMin: 0,
@@ -638,6 +669,11 @@ export const useAppStore = create<AppState>()(
       menuSearchDialogOpen: false,
       diagnosticsDialogOpen: false,
       quitConfirmOpen: false,
+
+      tutorialActive: false,
+      tutorialStepIndex: 0,
+      tutorialSteps: [],
+      tutorialHighestStepIndex: 0,
 
       // Area delete mode
       areaDeleteMode: false,
@@ -962,6 +998,53 @@ export const useAppStore = create<AppState>()(
         set((state) => {
           state.diagnosticsDialogOpen = open;
         }),
+
+      startTutorial: () => {
+        // Whether a project already exists decides the whole sequence (a
+        // fresh app has no Sidebar/panels mounted yet — see AppShell — so it
+        // must go through New Project first); resolved once here, not
+        // re-derived mid-run.
+        const steps = buildTutorialSteps(get().projectLoaded);
+        set((state) => {
+          state.tutorialActive = true;
+          state.tutorialStepIndex = 0;
+          state.tutorialSteps = steps;
+          state.tutorialHighestStepIndex = 0;
+        });
+        if (steps[0]?.panelId) get().openPanel(steps[0].panelId);
+      },
+
+      exitTutorial: () =>
+        set((state) => {
+          state.tutorialActive = false;
+        }),
+
+      advanceTutorialStep: () => {
+        const steps = get().tutorialSteps;
+        const nextIndex = get().tutorialStepIndex + 1;
+        if (nextIndex >= steps.length) {
+          set((state) => {
+            state.tutorialActive = false;
+          });
+          return;
+        }
+        set((state) => {
+          state.tutorialStepIndex = nextIndex;
+          state.tutorialHighestStepIndex = Math.max(state.tutorialHighestStepIndex, nextIndex);
+        });
+        const nextStep = steps[nextIndex];
+        if (nextStep?.panelId) get().openPanel(nextStep.panelId);
+      },
+
+      previousTutorialStep: () => {
+        const prevIndex = get().tutorialStepIndex - 1;
+        if (prevIndex < 0) return;
+        set((state) => {
+          state.tutorialStepIndex = prevIndex;
+        });
+        const prevStep = get().tutorialSteps[prevIndex];
+        if (prevStep?.panelId) get().openPanel(prevStep.panelId);
+      },
 
       enterPlacementMode: () =>
         set((state) => {

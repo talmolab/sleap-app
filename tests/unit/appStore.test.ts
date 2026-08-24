@@ -617,8 +617,8 @@ describe("single vs multi panel mode", () => {
     resetStore();
   });
 
-  it("defaults to single-panel mode (one at a time)", () => {
-    expect(useAppStore.getState().sidebarMultiPanel).toBe(false);
+  it("defaults to multi-panel mode (several panels open at once)", () => {
+    expect(useAppStore.getState().sidebarMultiPanel).toBe(true);
   });
 
   it("single mode: clicking a rail icon shows exactly that panel (replaces)", () => {
@@ -786,5 +786,112 @@ describe("per-instance visibility state", () => {
     expect(s.hiddenInstances.size).toBe(0);
     expect(s.viewOnlyInstance).toBeNull();
     expect(s.showNonVisibleOverride.size).toBe(0);
+  });
+});
+
+describe("tutorial step navigation", () => {
+  beforeEach(() => resetStore());
+
+  /** Minimal fake steps — only `id`/`panelId` matter for navigation. */
+  function fakeSteps(...panelIds: (string | undefined)[]) {
+    return panelIds.map((panelId, i) => ({
+      id: `step-${i}`,
+      title: `Step ${i}`,
+      body: "",
+      targetSelector: `[data-tutorial="step-${i}"]`,
+      placement: "top" as const,
+      panelId,
+      isComplete: () => false,
+    }));
+  }
+
+  it("previousTutorialStep is a no-op on the first step", () => {
+    useAppStore.setState({
+      tutorialActive: true,
+      tutorialSteps: fakeSteps("videos", "skeleton"),
+      tutorialStepIndex: 0,
+    });
+    useAppStore.getState().previousTutorialStep();
+    expect(useAppStore.getState().tutorialStepIndex).toBe(0);
+  });
+
+  it("previousTutorialStep decrements the index and opens the prior step's panel", () => {
+    useAppStore.setState({
+      tutorialActive: true,
+      tutorialSteps: fakeSteps("videos", "skeleton"),
+      tutorialStepIndex: 1,
+      sidebarOpenPanels: [],
+    });
+    useAppStore.getState().previousTutorialStep();
+    const s = useAppStore.getState();
+    expect(s.tutorialStepIndex).toBe(0);
+    expect(s.sidebarOpenPanels).toContain("videos");
+  });
+
+  it("previousTutorialStep does not error on a step with no panelId", () => {
+    useAppStore.setState({
+      tutorialActive: true,
+      tutorialSteps: fakeSteps(undefined, undefined),
+      tutorialStepIndex: 1,
+    });
+    expect(() => useAppStore.getState().previousTutorialStep()).not.toThrow();
+    expect(useAppStore.getState().tutorialStepIndex).toBe(0);
+  });
+
+  it("advanceTutorialStep and previousTutorialStep round-trip back to the same step", () => {
+    useAppStore.setState({
+      tutorialActive: true,
+      tutorialSteps: fakeSteps("videos", "skeleton", "training"),
+      tutorialStepIndex: 0,
+    });
+    useAppStore.getState().advanceTutorialStep();
+    expect(useAppStore.getState().tutorialStepIndex).toBe(1);
+    useAppStore.getState().previousTutorialStep();
+    expect(useAppStore.getState().tutorialStepIndex).toBe(0);
+  });
+
+  describe("tutorialHighestStepIndex (high-water mark)", () => {
+    it("starts at 0 and is reset to 0 by startTutorial", () => {
+      useAppStore.setState({
+        tutorialSteps: fakeSteps("videos", "skeleton"),
+        tutorialStepIndex: 0,
+        tutorialHighestStepIndex: 3,
+        projectLoaded: false,
+      });
+      useAppStore.getState().startTutorial();
+      expect(useAppStore.getState().tutorialHighestStepIndex).toBe(0);
+    });
+
+    it("advanceTutorialStep raises the mark, previousTutorialStep does not lower it", () => {
+      useAppStore.setState({
+        tutorialActive: true,
+        tutorialSteps: fakeSteps("videos", "skeleton", "training"),
+        tutorialStepIndex: 0,
+        tutorialHighestStepIndex: 0,
+      });
+      useAppStore.getState().advanceTutorialStep();
+      expect(useAppStore.getState().tutorialHighestStepIndex).toBe(1);
+      useAppStore.getState().advanceTutorialStep();
+      expect(useAppStore.getState().tutorialHighestStepIndex).toBe(2);
+
+      useAppStore.getState().previousTutorialStep();
+      useAppStore.getState().previousTutorialStep();
+      const s = useAppStore.getState();
+      expect(s.tutorialStepIndex).toBe(0);
+      // Stepping back doesn't erase progress already made.
+      expect(s.tutorialHighestStepIndex).toBe(2);
+    });
+
+    it("re-advancing from a revisited step doesn't lower the mark below where it already was", () => {
+      useAppStore.setState({
+        tutorialActive: true,
+        tutorialSteps: fakeSteps("videos", "skeleton", "training"),
+        tutorialStepIndex: 0,
+        tutorialHighestStepIndex: 2,
+      });
+      useAppStore.getState().advanceTutorialStep();
+      expect(useAppStore.getState().tutorialStepIndex).toBe(1);
+      expect(useAppStore.getState().tutorialHighestStepIndex).toBe(2);
+    });
   });
 });

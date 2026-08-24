@@ -4,7 +4,7 @@ import type { ProcessEvent } from "@/platform/backend";
 import { cancelCommand, runInference } from "@/platform/backend";
 import { getPlatform } from "@/platform";
 import { commandContext } from "@/commands";
-import { MergePredictions } from "@/commands/editCommands";
+import { MergePredictions, type ExistingPredictionsMode } from "@/commands/editCommands";
 import { useAppStore } from "@/stores/appStore";
 import { appendLogLine, subprocessFailureMessage } from "@/lib/processLog";
 
@@ -32,6 +32,8 @@ export interface InferenceConfig {
   frameRange: "all_videos" | "video" | "suggestions" | "user_labeled" | "predicted" | "random_video" | "random" | "frame" | { start: number; end: number };
   sampleCount: number;
   excludeUserLabeled: boolean;
+  /** How new predictions combine with existing ones (see ExistingPredictionsMode). */
+  existingPredictions: ExistingPredictionsMode;
 
   // Inference
   batchSize: number;
@@ -49,18 +51,32 @@ export interface InferenceConfig {
 
   // Tracking
   tracking: boolean;
-  trackerMethod: "simple" | "flow";
+  trackerMethod: "simple" | "flow" | "kalman";
   similarityMethod: "oks" | "iou" | "centroids" | "euclidean_dist";
   matchingMethod: "hungarian" | "greedy";
   trackingWindowSize: number;
   maxTracks: number | null;
   connectSingleBreaks: boolean;
   robust: number;
+  minMatchPoints: number;
+  minNewTrackPoints: number;
+  scoringReduction: "mean" | "max" | "robust_quantile";
+  trackingTargetInstanceCount: number | null;
+  trackingPreCullToTarget: boolean;
+  trackingPreCullIouThreshold: number;
+  trackingCleanInstanceCount: number | null;
+  trackingCleanIouThreshold: number;
 
   // Optical flow
   flowImgScale: number;
   flowWindowSize: number;
   flowMaxLevels: number;
+
+  // Kalman filter tracker
+  kfTrackFeatures: "centroid" | "keypoints";
+  kfInitFrameCount: number;
+  kfNodeIndices: number[];
+  kfResetGapSize: number;
 
   // Preprocessing
   ensureChannels: "auto" | "rgb" | "grayscale";
@@ -69,6 +85,11 @@ export interface InferenceConfig {
   filterOverlapping: boolean;
   filterMethod: "iou" | "oks";
   filterThreshold: number;
+  filterMinVisibleNodes: number | null;
+  filterMinVisibleNodeFraction: number | null;
+  filterMinMeanNodeScore: number | null;
+  filterMinInstanceScore: number | null;
+  filterMinCentroidDistance: number | null;
 }
 
 export interface RemoteInferenceOptions {
@@ -100,7 +121,7 @@ interface InferenceState {
   reset: () => void;
   cancelInference: () => Promise<void>;
   startInference: (config: InferenceConfig, remoteOpts?: RemoteInferenceOptions) => Promise<void>;
-  loadAndMergeResults: () => Promise<void>;
+  loadAndMergeResults: (mode?: ExistingPredictionsMode) => Promise<void>;
 }
 
 const initialState = {
@@ -324,6 +345,58 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
             track_window: config.tracking ? config.trackingWindowSize : undefined,
             max_tracks: config.tracking && config.maxTracks != null ? config.maxTracks : undefined,
             connect_single_breaks: config.tracking && config.connectSingleBreaks ? true : undefined,
+            min_match_points: config.tracking ? config.minMatchPoints : undefined,
+            min_new_track_points: config.tracking ? config.minNewTrackPoints : undefined,
+            scoring_reduction: config.tracking ? config.scoringReduction : undefined,
+            tracking_target_instance_count:
+              config.tracking && config.trackingTargetInstanceCount != null
+                ? config.trackingTargetInstanceCount
+                : undefined,
+            tracking_pre_cull_to_target:
+              config.tracking && config.trackingPreCullToTarget ? true : undefined,
+            tracking_pre_cull_iou_threshold:
+              config.tracking && config.trackingPreCullToTarget
+                ? config.trackingPreCullIouThreshold
+                : undefined,
+            tracking_clean_instance_count:
+              config.tracking && config.trackingCleanInstanceCount != null
+                ? config.trackingCleanInstanceCount
+                : undefined,
+            tracking_clean_iou_threshold:
+              config.tracking && config.trackingCleanInstanceCount != null
+                ? config.trackingCleanIouThreshold
+                : undefined,
+            of_img_scale:
+              config.tracking && config.trackerMethod === "flow" ? config.flowImgScale : undefined,
+            of_window_size:
+              config.tracking && config.trackerMethod === "flow" ? config.flowWindowSize : undefined,
+            of_max_levels:
+              config.tracking && config.trackerMethod === "flow" ? config.flowMaxLevels : undefined,
+            use_kalman: config.tracking && config.trackerMethod === "kalman" ? true : undefined,
+            kf_track_features:
+              config.tracking && config.trackerMethod === "kalman"
+                ? config.kfTrackFeatures
+                : undefined,
+            kf_init_frame_count:
+              config.tracking && config.trackerMethod === "kalman"
+                ? config.kfInitFrameCount
+                : undefined,
+            kf_node_indices:
+              config.tracking && config.trackerMethod === "kalman" && config.kfNodeIndices.length > 0
+                ? config.kfNodeIndices.join(",")
+                : undefined,
+            kf_reset_gap_size:
+              config.tracking && config.trackerMethod === "kalman"
+                ? config.kfResetGapSize
+                : undefined,
+            filter_overlapping: config.filterOverlapping || undefined,
+            filter_overlapping_method: config.filterOverlapping ? config.filterMethod : undefined,
+            filter_overlapping_threshold: config.filterOverlapping ? config.filterThreshold : undefined,
+            filter_min_visible_nodes: config.filterMinVisibleNodes ?? undefined,
+            filter_min_visible_node_fraction: config.filterMinVisibleNodeFraction ?? undefined,
+            filter_min_mean_node_score: config.filterMinMeanNodeScore ?? undefined,
+            filter_min_instance_score: config.filterMinInstanceScore ?? undefined,
+            filter_min_centroid_distance: config.filterMinCentroidDistance ?? undefined,
           };
         }).filter(Boolean);
 
@@ -375,6 +448,51 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
         track_window: config.tracking ? config.trackingWindowSize : undefined,
         max_tracks: config.tracking && config.maxTracks != null ? config.maxTracks : undefined,
         connect_single_breaks: config.tracking && config.connectSingleBreaks ? true : undefined,
+        min_match_points: config.tracking ? config.minMatchPoints : undefined,
+        min_new_track_points: config.tracking ? config.minNewTrackPoints : undefined,
+        scoring_reduction: config.tracking ? config.scoringReduction : undefined,
+        tracking_target_instance_count:
+          config.tracking && config.trackingTargetInstanceCount != null
+            ? config.trackingTargetInstanceCount
+            : undefined,
+        tracking_pre_cull_to_target:
+          config.tracking && config.trackingPreCullToTarget ? true : undefined,
+        tracking_pre_cull_iou_threshold:
+          config.tracking && config.trackingPreCullToTarget
+            ? config.trackingPreCullIouThreshold
+            : undefined,
+        tracking_clean_instance_count:
+          config.tracking && config.trackingCleanInstanceCount != null
+            ? config.trackingCleanInstanceCount
+            : undefined,
+        tracking_clean_iou_threshold:
+          config.tracking && config.trackingCleanInstanceCount != null
+            ? config.trackingCleanIouThreshold
+            : undefined,
+        of_img_scale: config.tracking && config.trackerMethod === "flow" ? config.flowImgScale : undefined,
+        of_window_size:
+          config.tracking && config.trackerMethod === "flow" ? config.flowWindowSize : undefined,
+        of_max_levels:
+          config.tracking && config.trackerMethod === "flow" ? config.flowMaxLevels : undefined,
+        use_kalman: config.tracking && config.trackerMethod === "kalman" ? true : undefined,
+        kf_track_features:
+          config.tracking && config.trackerMethod === "kalman" ? config.kfTrackFeatures : undefined,
+        kf_init_frame_count:
+          config.tracking && config.trackerMethod === "kalman" ? config.kfInitFrameCount : undefined,
+        kf_node_indices:
+          config.tracking && config.trackerMethod === "kalman" && config.kfNodeIndices.length > 0
+            ? config.kfNodeIndices.join(",")
+            : undefined,
+        kf_reset_gap_size:
+          config.tracking && config.trackerMethod === "kalman" ? config.kfResetGapSize : undefined,
+        filter_overlapping: config.filterOverlapping || undefined,
+        filter_overlapping_method: config.filterOverlapping ? config.filterMethod : undefined,
+        filter_overlapping_threshold: config.filterOverlapping ? config.filterThreshold : undefined,
+        filter_min_visible_nodes: config.filterMinVisibleNodes ?? undefined,
+        filter_min_visible_node_fraction: config.filterMinVisibleNodeFraction ?? undefined,
+        filter_min_mean_node_score: config.filterMinMeanNodeScore ?? undefined,
+        filter_min_instance_score: config.filterMinInstanceScore ?? undefined,
+        filter_min_centroid_distance: config.filterMinCentroidDistance ?? undefined,
       };
 
       // Log the spec
@@ -453,7 +571,7 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
               const platform = await getPlatform();
               const bytes = await platform.readFile(result.outputPath);
               const predictions = await loadSlp(bytes, { openVideos: false, h5: { filenameHint: result.outputPath } });
-              await commandContext.execute(MergePredictions, { predictions });
+              await commandContext.execute(MergePredictions, { predictions, mode: config.existingPredictions });
             }
             if (!result.success) {
               set({ status: "error", error: `Video ${vi + 1} failed` });
@@ -470,7 +588,7 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
           }
           if (result.outputPath) {
             set({ outputPath: result.outputPath });
-            await useInferenceStore.getState().loadAndMergeResults();
+            await useInferenceStore.getState().loadAndMergeResults(config.existingPredictions);
           }
         }
       } catch (e) {
@@ -482,7 +600,7 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
     }
   },
 
-  loadAndMergeResults: async () => {
+  loadAndMergeResults: async (mode: ExistingPredictionsMode = "replace") => {
     const { outputPath } = useInferenceStore.getState();
     if (!outputPath) return;
 
@@ -500,7 +618,7 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
         predictions.tracks?.length ?? 0,
       );
 
-      await commandContext.execute(MergePredictions, { predictions });
+      await commandContext.execute(MergePredictions, { predictions, mode });
       set({ status: "idle" });
     } catch (e) {
       set({

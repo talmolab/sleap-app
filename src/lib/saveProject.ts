@@ -339,6 +339,11 @@ export async function saveProjectAsSlp(
           }
         }
         store.set("projectPath", savePath);
+        // Track the newly-saved name (basename) so the window title updates and,
+        // for the .vNNN versioning, the NEXT Save As increments from the name we
+        // just wrote instead of the stale opened name. The browser Save-As path
+        // already does this via handle.name.
+        store.set("filename", savePath.split(/[/\\]/).pop() ?? savePath);
         displayName = savePath;
       }
 
@@ -396,6 +401,7 @@ export async function saveProjectAsSlp(
           sourceLastModified: store.projectFile?.lastModified,
         });
         store.set("pendingExport", true);
+        store.set("filename", saveName);
         store.clearChanges();
         console.log(`[save] Saved labels draft -> ${draftPath}`);
         toast.success("Saved locally", {
@@ -482,6 +488,15 @@ export async function saveProjectAsSlp(
       }
     }
 
+    // Every branch above sets `displayName` to the saved file's name/path, but
+    // only the Chromium showSaveFilePicker path (inside saveBrowserInMemory)
+    // syncs `state.filename` as a side effect. Without this, a brand-new
+    // project's first Save/Save As (Tauri, or the browser anchor-download /
+    // compile-export paths) leaves `filename` null forever — StatusBar and the
+    // window title gate their entire display on it, so they'd stay stuck on
+    // "No project loaded" until the file is reopened via loadProject (which
+    // does set it) rather than actually reflecting the freshly-saved project.
+    store.set("filename", displayName.split(/[\\/]/).pop() ?? displayName);
     store.clearChanges();
     toast.success("Project saved", { description: displayName });
   } catch (err) {

@@ -7,7 +7,8 @@
 
 import { useAppStore, type NavigationDomain } from "../../stores/appStore";
 import { PANELS } from "./panelRegistry";
-import { modKey, altKey, isTauri } from "../../lib/platform";
+import { isTauri } from "../../lib/platform";
+import { formatShortcut } from "@/lib/formatShortcut";
 
 async function openExternal(url: string) {
   if (isTauri) {
@@ -84,6 +85,7 @@ import {
   MenubarRadioGroup,
   MenubarRadioItem,
 } from "@/components/ui/menubar";
+import { Button } from "@/components/ui/button";
 import {
   GRAPH_SPECS,
   reconcileReduction,
@@ -120,6 +122,14 @@ export function MenuBar() {
       <LabelsMenu />
       <PredictMenu />
       <TracksMenu />
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-8 rounded-none px-3 text-xs font-normal"
+        onClick={() => useAppStore.getState().startTutorial()}
+      >
+        Start Tutorial
+      </Button>
       <HelpMenu />
     </Menubar>
   );
@@ -136,13 +146,18 @@ function FileMenu() {
 
   return (
     <MenubarMenu>
-      <MenubarTrigger className="px-3 h-8 text-xs rounded-none">File</MenubarTrigger>
+      <MenubarTrigger
+        className="px-3 h-8 text-xs rounded-none"
+        data-tutorial="file-menu-trigger"
+      >
+        File
+      </MenubarTrigger>
       <MenubarContent>
         <MenubarItem onClick={() => void openNewInstance()}>
-          New Project... <MenubarShortcut>{modKey}+N</MenubarShortcut>
+          New Project... <MenubarShortcut>{formatShortcut("$mod+KeyN")}</MenubarShortcut>
         </MenubarItem>
         <MenubarItem onClick={() => exec(OpenProjectCommand)}>
-          Open Project... <MenubarShortcut>{modKey}+O</MenubarShortcut>
+          Open Project... <MenubarShortcut>{formatShortcut("$mod+KeyO")}</MenubarShortcut>
         </MenubarItem>
         <MenubarSub>
           <MenubarSubTrigger>Import</MenubarSubTrigger>
@@ -200,13 +215,13 @@ function FileMenu() {
           disabled={!projectLoaded}
           onClick={() => exec(SaveProjectCommand)}
         >
-          Save <MenubarShortcut>{modKey}+S</MenubarShortcut>
+          Save <MenubarShortcut>{formatShortcut("$mod+KeyS")}</MenubarShortcut>
         </MenubarItem>
         <MenubarItem
           disabled={!projectLoaded}
           onClick={() => exec(SaveAsProjectCommand)}
         >
-          Save As... <MenubarShortcut>{modKey}+Shift+S</MenubarShortcut>
+          Save As... <MenubarShortcut>{formatShortcut("$mod+Shift+KeyS")}</MenubarShortcut>
         </MenubarItem>
         <MenubarSeparator />
         <MenubarSub>
@@ -364,7 +379,7 @@ function FileMenu() {
             await quitApp();
           }}
         >
-          Quit <MenubarShortcut>{modKey}+Q</MenubarShortcut>
+          Quit <MenubarShortcut>{formatShortcut("$mod+KeyQ")}</MenubarShortcut>
         </MenubarItem>
       </MenubarContent>
     </MenubarMenu>
@@ -405,13 +420,13 @@ function EditMenu() {
           disabled={!canUndo}
           onClick={() => commandContext.undo()}
         >
-          {undoLabel} <MenubarShortcut>{modKey}+Z</MenubarShortcut>
+          {undoLabel} <MenubarShortcut>{formatShortcut("$mod+KeyZ")}</MenubarShortcut>
         </MenubarItem>
         <MenubarItem
           disabled={!canRedo}
           onClick={() => commandContext.redo()}
         >
-          {redoLabel} <MenubarShortcut>{modKey}+Shift+Z</MenubarShortcut>
+          {redoLabel} <MenubarShortcut>{formatShortcut("$mod+Shift+KeyZ")}</MenubarShortcut>
         </MenubarItem>
         <MenubarSeparator />
         <MenubarItem
@@ -421,7 +436,7 @@ function EditMenu() {
             toast.info("Instance copied");
           }}
         >
-          Copy Instance <MenubarShortcut>{modKey}+C</MenubarShortcut>
+          Copy Instance <MenubarShortcut>{formatShortcut("$mod+KeyC")}</MenubarShortcut>
         </MenubarItem>
         <MenubarItem
           disabled={!clipboardInstance || !skeletonHasNodes}
@@ -430,14 +445,14 @@ function EditMenu() {
             toast.info("Instance pasted");
           }}
         >
-          Paste Instance <MenubarShortcut>{modKey}+V</MenubarShortcut>
+          Paste Instance <MenubarShortcut>{formatShortcut("$mod+KeyV")}</MenubarShortcut>
         </MenubarItem>
         <MenubarSeparator />
         <MenubarItem
           disabled={!projectLoaded || !skeletonHasNodes}
           onClick={() => exec(AddInstance)}
         >
-          Add Instance <MenubarShortcut>{modKey}+I</MenubarShortcut>
+          Add Instance <MenubarShortcut>{formatShortcut("$mod+KeyI")}</MenubarShortcut>
         </MenubarItem>
         <MenubarItem
           disabled={!instance}
@@ -446,7 +461,7 @@ function EditMenu() {
             toast.info("Instance deleted");
           }}
         >
-          Delete Instance <MenubarShortcut>{modKey}+Backspace</MenubarShortcut>
+          Delete Instance <MenubarShortcut>{formatShortcut("$mod+Backspace")}</MenubarShortcut>
         </MenubarItem>
         <MenubarSeparator />
         <MenubarItem
@@ -477,20 +492,20 @@ function GoMenu() {
           disabled={!projectLoaded}
           onClick={() => useAppStore.getState().setGoToFrameDialogOpen(true)}
         >
-          Go to Frame... <MenubarShortcut>{modKey}+J</MenubarShortcut>
+          Go to Frame... <MenubarShortcut>{formatShortcut("$mod+KeyJ")}</MenubarShortcut>
         </MenubarItem>
         <MenubarItem
           disabled={!projectLoaded}
           onClick={() => useAppStore.getState().setSelectToFrameDialogOpen(true)}
         >
-          Select to Frame... <MenubarShortcut>{modKey}+Shift+J</MenubarShortcut>
+          Select to Frame... <MenubarShortcut>{formatShortcut("$mod+Shift+KeyJ")}</MenubarShortcut>
         </MenubarItem>
         <MenubarSeparator />
         <MenubarItem disabled={!projectLoaded} onClick={() => exec(GoNextLabeledFrame)}>
-          Next Labeled Frame <MenubarShortcut>{altKey}+{"\u2192"}</MenubarShortcut>
+          Next Labeled Frame <MenubarShortcut>{formatShortcut("Alt+ArrowRight")}</MenubarShortcut>
         </MenubarItem>
         <MenubarItem disabled={!projectLoaded} onClick={() => exec(GoPrevLabeledFrame)}>
-          Previous Labeled Frame <MenubarShortcut>{altKey}+{"\u2190"}</MenubarShortcut>
+          Previous Labeled Frame <MenubarShortcut>{formatShortcut("Alt+ArrowLeft")}</MenubarShortcut>
         </MenubarItem>
         <MenubarRadioGroup
           value={navigationDomain}
@@ -511,20 +526,20 @@ function GoMenu() {
           Next Suggestion <MenubarShortcut>Space</MenubarShortcut>
         </MenubarItem>
         <MenubarItem disabled={!projectLoaded} onClick={() => exec(GoPrevSuggestion)}>
-          Previous Suggestion <MenubarShortcut>Shift+Space</MenubarShortcut>
+          Previous Suggestion <MenubarShortcut>{formatShortcut("Shift+Space")}</MenubarShortcut>
         </MenubarItem>
         <MenubarSeparator />
         <MenubarItem disabled={!projectLoaded} onClick={() => exec(GoToLastInteracted)}>
-          Last Interacted Frame <MenubarShortcut>{modKey}+A</MenubarShortcut>
+          Last Interacted Frame <MenubarShortcut>{formatShortcut("$mod+KeyA")}</MenubarShortcut>
         </MenubarItem>
         <MenubarItem disabled={!projectLoaded} onClick={() => exec(GoNextUserFrame)}>
-          Next User Labeled Frame <MenubarShortcut>{modKey}+U</MenubarShortcut>
+          Next User Labeled Frame <MenubarShortcut>{formatShortcut("$mod+KeyU")}</MenubarShortcut>
         </MenubarItem>
         <MenubarItem disabled={!projectLoaded} onClick={() => exec(GoPrevUserFrame)}>
-          Previous User Labeled Frame <MenubarShortcut>{modKey}+Shift+U</MenubarShortcut>
+          Previous User Labeled Frame <MenubarShortcut>{formatShortcut("$mod+Shift+KeyU")}</MenubarShortcut>
         </MenubarItem>
         <MenubarItem disabled={!projectLoaded} onClick={() => exec(GoNextTrackSpawnFrame)}>
-          Next Track Spawn Frame <MenubarShortcut>{modKey}+E</MenubarShortcut>
+          Next Track Spawn Frame <MenubarShortcut>{formatShortcut("$mod+KeyE")}</MenubarShortcut>
         </MenubarItem>
         <MenubarSeparator />
         <MenubarItem
@@ -534,10 +549,10 @@ function GoMenu() {
             if (s.video) s.setMarkedFrame({ video: s.video, frameIdx: s.frameIdx });
           }}
         >
-          Mark Frame <MenubarShortcut>{modKey}+M</MenubarShortcut>
+          Mark Frame <MenubarShortcut>{formatShortcut("$mod+KeyM")}</MenubarShortcut>
         </MenubarItem>
         <MenubarItem disabled={!projectLoaded} onClick={() => exec(GoToMarkedFrame)}>
-          Go to Marked Frame <MenubarShortcut>{modKey}+Shift+M</MenubarShortcut>
+          Go to Marked Frame <MenubarShortcut>{formatShortcut("$mod+Shift+KeyM")}</MenubarShortcut>
         </MenubarItem>
         <MenubarSeparator />
         <MenubarItem
@@ -550,7 +565,7 @@ function GoMenu() {
             if (next) useAppStore.getState().setVideo(next);
           }}
         >
-          Next Video <MenubarShortcut>{altKey}+Shift+{"\u2192"}</MenubarShortcut>
+          Next Video <MenubarShortcut>{formatShortcut("Alt+Shift+ArrowRight")}</MenubarShortcut>
         </MenubarItem>
         <MenubarItem
           disabled={!projectLoaded}
@@ -563,7 +578,7 @@ function GoMenu() {
             if (prev) useAppStore.getState().setVideo(prev);
           }}
         >
-          Previous Video <MenubarShortcut>{altKey}+Shift+{"\u2190"}</MenubarShortcut>
+          Previous Video <MenubarShortcut>{formatShortcut("Alt+Shift+ArrowLeft")}</MenubarShortcut>
         </MenubarItem>
         <MenubarSeparator />
         <MenubarItem
@@ -601,6 +616,7 @@ function ViewMenu() {
   const showLabels = useAppStore((s) => s.showLabels);
   const showEdges = useAppStore((s) => s.showEdges);
   const showNonVisibleNodes = useAppStore((s) => s.showNonVisibleNodes);
+  const showInset = useAppStore((s) => s.showInset);
   const colorPredicted = useAppStore((s) => s.colorPredicted);
   const fit = useAppStore((s) => s.fit);
   const edgeStyle = useAppStore((s) => s.edgeStyle);
@@ -688,10 +704,10 @@ function ViewMenu() {
           <MenubarSubTrigger className="text-sm">Text Size</MenubarSubTrigger>
           <MenubarSubContent>
             <MenubarItem onClick={() => adjustScale(0.05)}>
-              Increase <MenubarShortcut>{modKey}+Shift+=</MenubarShortcut>
+              Increase <MenubarShortcut>{formatShortcut("$mod+Shift+Equal")}</MenubarShortcut>
             </MenubarItem>
             <MenubarItem onClick={() => adjustScale(-0.05)}>
-              Decrease <MenubarShortcut>{modKey}+-</MenubarShortcut>
+              Decrease <MenubarShortcut>{formatShortcut("$mod+Minus")}</MenubarShortcut>
             </MenubarItem>
             <MenubarSeparator />
             <MenubarItem onClick={() => {
@@ -747,6 +763,12 @@ function ViewMenu() {
           onCheckedChange={() => toggle("showCrosshair")}
         >
           Crosshair When Zoomed
+        </MenubarCheckboxItem>
+        <MenubarCheckboxItem
+          checked={showInset}
+          onCheckedChange={() => toggle("showInset")}
+        >
+          Magnifier When Moving Nodes
         </MenubarCheckboxItem>
         <MenubarSeparator />
         <MenubarSub>
@@ -830,8 +852,9 @@ function ViewMenu() {
           <MenubarSubContent>
             <MenubarRadioGroup
               value={distinctlyColor}
-              onValueChange={(val) => setVal("distinctlyColor", val as "track" | "instance" | "node" | "edge")}
+              onValueChange={(val) => setVal("distinctlyColor", val as "auto" | "track" | "instance" | "node" | "edge")}
             >
+              <MenubarRadioItem value="auto">Auto (Node / Track)</MenubarRadioItem>
               <MenubarRadioItem value="track">Tracks</MenubarRadioItem>
               <MenubarRadioItem value="instance">Instances</MenubarRadioItem>
               <MenubarRadioItem value="node">Nodes</MenubarRadioItem>
@@ -914,7 +937,7 @@ function LabelsMenu() {
           disabled={!projectLoaded || !skeletonHasNodes}
           onClick={() => exec(AddInstance)}
         >
-          Add Instance <MenubarShortcut>{modKey}+I</MenubarShortcut>
+          Add Instance <MenubarShortcut>{formatShortcut("$mod+KeyI")}</MenubarShortcut>
         </MenubarItem>
         <MenubarSub>
           <MenubarSubTrigger>Instance Placement Method</MenubarSubTrigger>
@@ -936,7 +959,7 @@ function LabelsMenu() {
           disabled={!instance}
           onClick={() => exec(DeleteSelectedInstance)}
         >
-          Delete Instance <MenubarShortcut>{modKey}+Backspace</MenubarShortcut>
+          Delete Instance <MenubarShortcut>{formatShortcut("$mod+Backspace")}</MenubarShortcut>
         </MenubarItem>
         <MenubarCheckboxItem
           disabled={!projectLoaded}
@@ -951,7 +974,7 @@ function LabelsMenu() {
           onClick={() => exec(AddInstancesFromAllPredictions)}
         >
           Accept All Predictions on Current Frame
-          <MenubarShortcut>{modKey}+Shift+A</MenubarShortcut>
+          <MenubarShortcut>{formatShortcut("$mod+Shift+KeyA")}</MenubarShortcut>
         </MenubarItem>
         <MenubarItem
           disabled={!projectLoaded}
@@ -977,7 +1000,7 @@ function LabelsMenu() {
           disabled={!projectLoaded}
           onClick={() => useAppStore.getState().toggle("areaDeleteMode")}
         >
-          Delete Predictions from Area... <MenubarShortcut>{modKey}+K</MenubarShortcut>
+          Delete Predictions from Area... <MenubarShortcut>{formatShortcut("$mod+KeyK")}</MenubarShortcut>
         </MenubarItem>
         <MenubarItem
           disabled={!projectLoaded}
@@ -1066,14 +1089,14 @@ function TracksMenu() {
           disabled={!instance}
           onClick={() => exec(TransposeInstances)}
         >
-          Transpose Instance Tracks <MenubarShortcut>{modKey}+T</MenubarShortcut>
+          Transpose Instance Tracks <MenubarShortcut>{formatShortcut("$mod+KeyT")}</MenubarShortcut>
         </MenubarItem>
         <MenubarSeparator />
         <MenubarItem
           disabled={!instance}
           onClick={() => exec(AddTrack)}
         >
-          New Track <MenubarShortcut>{modKey}+0</MenubarShortcut>
+          New Track <MenubarShortcut>{formatShortcut("$mod+Digit0")}</MenubarShortcut>
         </MenubarItem>
         {labels?.tracks && labels.tracks.length > 0 && (
           <MenubarSub>
@@ -1084,7 +1107,7 @@ function TracksMenu() {
               <div className="max-h-[60vh] overflow-y-auto">
                 {labels.tracks.map((track, idx) => (
                   <MenubarItem key={idx} onClick={() => commandContext.execute(SetInstanceTrack, { trackIdx: idx })}>
-                    {track.name} {idx < 9 && <MenubarShortcut>{modKey}+{idx + 1}</MenubarShortcut>}
+                    {track.name} {idx < 9 && <MenubarShortcut>{formatShortcut(`$mod+Digit${idx + 1}`)}</MenubarShortcut>}
                   </MenubarItem>
                 ))}
               </div>
@@ -1096,13 +1119,13 @@ function TracksMenu() {
           disabled={!instance}
           onClick={() => exec(CopyTrack)}
         >
-          Copy Instance Track <MenubarShortcut>{modKey}+Shift+C</MenubarShortcut>
+          Copy Instance Track <MenubarShortcut>{formatShortcut("$mod+Shift+KeyC")}</MenubarShortcut>
         </MenubarItem>
         <MenubarItem
           disabled={!projectLoaded}
           onClick={() => exec(PasteTrack)}
         >
-          Paste Instance Track <MenubarShortcut>{modKey}+Shift+V</MenubarShortcut>
+          Paste Instance Track <MenubarShortcut>{formatShortcut("$mod+Shift+KeyV")}</MenubarShortcut>
         </MenubarItem>
         <MenubarSeparator />
         <MenubarItem
@@ -1135,7 +1158,7 @@ function TracksMenu() {
               exec(DeleteInstanceAndTrack);
           }}
         >
-          Delete Instance and Track <MenubarShortcut>{modKey}+Shift+Backspace</MenubarShortcut>
+          Delete Instance and Track <MenubarShortcut>{formatShortcut("$mod+Shift+Backspace")}</MenubarShortcut>
         </MenubarItem>
         <MenubarSeparator />
         {labels?.tracks && labels.tracks.length > 0 && (

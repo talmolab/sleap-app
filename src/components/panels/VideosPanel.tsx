@@ -625,6 +625,7 @@ export function VideosPanel() {
           variant="subtle"
           size="xs"
           onClick={handleAddVideos}
+          data-tutorial="add-videos-button"
         >
           Add Videos
         </Button>
