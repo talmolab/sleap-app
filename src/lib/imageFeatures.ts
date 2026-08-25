@@ -16,6 +16,7 @@ import type { Labels, Video, SuggestionFrame } from "@/types";
 import { sampleFrames, type SamplingMethod } from "./suggestionStrategies";
 import { mulberry32 } from "./seededRng";
 import { clampCropRect, capDimensions, type CropRect } from "./imageFeaturesCore";
+import { expandFrameBytesToRGBA, inferFrameChannels } from "./videoExport";
 import type {
   ImageFeaturesJob,
   ImageFeaturesResult,
@@ -149,13 +150,49 @@ async function frameToCanvas(
     return c;
   }
   if (frame instanceof ArrayBuffer || frame instanceof Uint8Array) {
+    // Raw decoder output may be grayscale (1ch), RGB (3ch), or RGBA (4ch) —
+    // infer the real channel count instead of assuming 4 (parity with
+    // VideoPlayer.tsx / the export pipeline's decodeExportFrame).
     const bytes = frame instanceof ArrayBuffer ? new Uint8Array(frame) : frame;
     const shape = video.shape;
     if (!shape) return null;
     const [, h, w] = shape;
+    const channels = inferFrameChannels(bytes.length, w, h, shape[3]);
+    const rgba = expandFrameBytesToRGBA(bytes, w, h, channels);
     const c = new OffscreenCanvas(w, h);
+    c.getContext("2d")?.putImageData(new ImageData(rgba, w, h), 0, 0);
+    return c;
+  }
+  if (
+    frame &&
+    typeof frame === "object" &&
+    "data" in frame &&
+    "width" in frame &&
+    "height" in frame
+  ) {
+    // A plain-object RawFrame (e.g. from a grayscale-forced video backend):
+    // {data, width, height, channels}. Not a valid ImageBitmapSource, so it
+    // would otherwise fall through to the createImageBitmap fallback below
+    // and throw (silently skipping the frame via the catch).
+    const raw = frame as {
+      data: Uint8Array | Uint8ClampedArray;
+      width: number;
+      height: number;
+      channels?: number;
+    };
+    const bytes =
+      raw.data instanceof Uint8ClampedArray
+        ? new Uint8Array(raw.data)
+        : raw.data;
+    const rgba = expandFrameBytesToRGBA(
+      bytes,
+      raw.width,
+      raw.height,
+      raw.channels ?? 1
+    );
+    const c = new OffscreenCanvas(raw.width, raw.height);
     c.getContext("2d")?.putImageData(
-      new ImageData(new Uint8ClampedArray(bytes), w, h),
+      new ImageData(rgba, raw.width, raw.height),
       0,
       0
     );

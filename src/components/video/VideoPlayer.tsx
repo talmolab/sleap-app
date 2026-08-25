@@ -68,6 +68,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { toImageCoords, toSourceCoords } from "@/lib/cropTransform";
 import { shouldPrefetch } from "@/lib/videoPrefetch";
+import { expandFrameBytesToRGBA, inferFrameChannels } from "@/lib/videoExport";
 import {
   isVideoMissing,
   resolveVideoFile,
@@ -721,13 +722,50 @@ export function VideoPlayer() {
           bmp = new OffscreenCanvas(frame.width, frame.height);
           bmp.getContext("2d")?.putImageData(frame, 0, 0);
         } else if (frame instanceof ArrayBuffer || frame instanceof Uint8Array) {
+          // Raw decoder output may be grayscale (1ch), RGB (3ch), or RGBA
+          // (4ch) — infer the real channel count (parity with the export
+          // pipeline's decodeExportFrame) instead of assuming 4, which throws
+          // a RangeError for anything else.
           const bytes =
             frame instanceof ArrayBuffer ? new Uint8Array(frame) : frame;
           const shape = video.shape;
           if (!shape) return;
           const [, h, w] = shape;
-          const imageData = new ImageData(new Uint8ClampedArray(bytes), w, h);
+          const channels = inferFrameChannels(bytes.length, w, h, shape[3]);
+          const rgba = expandFrameBytesToRGBA(bytes, w, h, channels);
+          const imageData = new ImageData(rgba, w, h);
           bmp = new OffscreenCanvas(w, h);
+          bmp.getContext("2d")?.putImageData(imageData, 0, 0);
+        } else if (
+          frame &&
+          typeof frame === "object" &&
+          "data" in frame &&
+          "width" in frame &&
+          "height" in frame
+        ) {
+          // A plain-object RawFrame (sleap-io.js's GrayscaleVideoBackend /
+          // CropVideoBackend can return this for a non-ImageData source):
+          // {data, width, height, channels}. Never 4-channel-tight-packed, so
+          // it must go through the same RGBA expansion as the raw-bytes case
+          // above rather than the final else-branch's silent no-op.
+          const raw = frame as {
+            data: Uint8Array | Uint8ClampedArray;
+            width: number;
+            height: number;
+            channels?: number;
+          };
+          const bytes =
+            raw.data instanceof Uint8ClampedArray
+              ? new Uint8Array(raw.data)
+              : raw.data;
+          const rgba = expandFrameBytesToRGBA(
+            bytes,
+            raw.width,
+            raw.height,
+            raw.channels ?? 1
+          );
+          const imageData = new ImageData(rgba, raw.width, raw.height);
+          bmp = new OffscreenCanvas(raw.width, raw.height);
           bmp.getContext("2d")?.putImageData(imageData, 0, 0);
         } else {
           return;

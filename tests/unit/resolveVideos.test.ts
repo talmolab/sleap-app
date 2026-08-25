@@ -8,10 +8,16 @@
  */
 
 import { describe, it, expect } from "../bun-test";
-import { Labels, Video, setImageBytesReader } from "@talmolab/sleap-io.js";
+import {
+  Labels,
+  Video,
+  setImageBytesReader,
+  GrayscaleVideoBackend,
+} from "@talmolab/sleap-io.js";
 import {
   buildStandaloneVideo,
   addVideoFileToLabels,
+  assignVideoBackend,
   backendKindForFilename,
   resolveImageFramesInFolder,
   resolveExternalVideos,
@@ -54,6 +60,73 @@ const asDir = (h: MockHandle) => h as any;
 
 function fakeFile(name: string): File {
   return new File([new Uint8Array([0])], name, { type: "video/mp4" });
+}
+
+// --- Minimal synthetic .seq builder -----------------------------------------
+// `.seq` is the one supported video format that decodes with pure JS parsing
+// (no WebCodecs/Mp4Box), so it's the only real-decode path usable in bun's
+// test runner without an E2E browser. Trimmed from sleap-io.js's own
+// `tests/video/seq.test.ts` fixture builder (uncompressed path only).
+const SEQ_HEADER_SIZE = 1024;
+const SEQ_MAGIC = 0xfeed;
+
+function seqHeader(opts: {
+  width: number;
+  height: number;
+  color: boolean;
+  numFrames: number;
+  imageSizeBytes: number;
+  trueImageSize: number;
+}): Uint8Array {
+  const buf = new Uint8Array(SEQ_HEADER_SIZE);
+  const dv = new DataView(buf.buffer);
+  dv.setUint32(0, SEQ_MAGIC, true);
+  dv.setInt32(28, 4, true); // version
+  dv.setUint32(32, SEQ_HEADER_SIZE, true);
+  dv.setUint32(548, opts.width, true);
+  dv.setUint32(552, opts.height, true);
+  dv.setUint32(556, opts.color ? 24 : 8, true); // bitDepth
+  dv.setUint32(560, 8, true); // bitDepthReal
+  dv.setUint32(564, opts.imageSizeBytes, true);
+  dv.setUint32(568, opts.color ? 200 : 100, true); // imageFormat: raw BGR / monoraw
+  dv.setUint32(572, opts.numFrames, true);
+  dv.setUint32(580, opts.trueImageSize, true);
+  dv.setFloat64(584, 30, true); // fps
+  return buf;
+}
+
+/** One uncompressed frame's raw bytes: BGR (color) or mono, value `v` on every byte. */
+function seqFrameBytes(width: number, height: number, color: boolean, v: number): Uint8Array {
+  const nch = color ? 3 : 1;
+  return new Uint8Array(width * height * nch).fill(v);
+}
+
+/** Build a minimal single-frame uncompressed `.seq` File (version 4 -> 6-byte timestamps). */
+function buildSeqFile(opts: {
+  name: string;
+  width: number;
+  height: number;
+  color: boolean;
+  pixelValue: number;
+}): File {
+  const nch = opts.color ? 3 : 1;
+  const imageSizeBytes = opts.width * opts.height * nch;
+  const tsSize = 6;
+  const header = seqHeader({
+    width: opts.width,
+    height: opts.height,
+    color: opts.color,
+    numFrames: 1,
+    imageSizeBytes,
+    trueImageSize: imageSizeBytes + tsSize,
+  });
+  const frame = seqFrameBytes(opts.width, opts.height, opts.color, opts.pixelValue);
+  const ts = new Uint8Array(tsSize); // all-zero timestamp is fine
+  const buf = new Uint8Array(header.length + frame.length + ts.length);
+  buf.set(header, 0);
+  buf.set(frame, header.length);
+  buf.set(ts, header.length + frame.length);
+  return new File([buf], opts.name);
 }
 
 describe("classifyVideoError + videoIssue (codec failure surfacing)", () => {
@@ -134,6 +207,84 @@ describe("addVideoFileToLabels", () => {
     expect(result).toBeNull();
     expect(labels.videos.length).toBe(0);
   });
+});
+
+describe("import-time grayscale (real .seq decode, no WebCodecs needed)", () => {
+  it("grayscale: true forces the backend to 1 channel and persists the flag", async () => {
+    const file = buildSeqFile({
+      name: "color.seq",
+      width: 4,
+      height: 3,
+      color: true,
+      pixelValue: 42,
+    });
+    const video = await buildStandaloneVideo(file, null, true);
+    expect(video).not.toBeNull();
+    expect(video!.shape).toEqual([1, 3, 4, 1]);
+    expect(video!.backendMetadata.grayscale).toBe(true);
+    expect(video!.backend).toBeInstanceOf(GrayscaleVideoBackend);
+
+    const frame = (await video!.getFrame(0)) as {
+      channels?: number;
+      width?: number;
+      height?: number;
+    };
+    expect(frame.channels).toBe(1);
+  });
+
+  it("grayscale: false preserves the source's native channel count", async () => {
+    const file = buildSeqFile({
+      name: "color2.seq",
+      width: 4,
+      height: 3,
+      color: true,
+      pixelValue: 99,
+    });
+    const video = await buildStandaloneVideo(file, null, false);
+    expect(video).not.toBeNull();
+    expect(video!.shape).toEqual([1, 3, 4, 3]);
+    expect(video!.backendMetadata.grayscale).toBe(false);
+  });
+
+  it("omitting grayscale adds the video unflagged (today's behavior, unchanged)", async () => {
+    const file = buildSeqFile({
+      name: "plain.seq",
+      width: 4,
+      height: 3,
+      color: true,
+      pixelValue: 7,
+    });
+    const video = await buildStandaloneVideo(file);
+    expect(video).not.toBeNull();
+    expect(video!.backend instanceof GrayscaleVideoBackend).toBe(false);
+    expect(Object.hasOwn(video!.backendMetadata, "grayscale")).toBe(false);
+  });
+
+  it(
+    "round-trip: reassigning a backend without an explicit grayscale option " +
+      "re-derives it from the video's already-persisted backendMetadata " +
+      "(the reopen/relink case after a project reload)",
+    async () => {
+      const file = buildSeqFile({
+        name: "roundtrip.seq",
+        width: 4,
+        height: 3,
+        color: true,
+        pixelValue: 55,
+      });
+      const video = await buildStandaloneVideo(file, null, true);
+      expect(video).not.toBeNull();
+      expect(video!.shape).toEqual([1, 3, 4, 1]);
+
+      // Simulate a relink/reopen (e.g. "Locate video" after a project reload):
+      // a fresh assignVideoBackend call with NO explicit grayscale option.
+      const ok = await assignVideoBackend(video!, file);
+      expect(ok).toBe(true);
+      expect(video!.backend).toBeInstanceOf(GrayscaleVideoBackend);
+      expect(video!.shape).toEqual([1, 3, 4, 1]); // still forced to 1 channel.
+      expect(video!.backendMetadata.grayscale).toBe(true); // still persisted.
+    }
+  );
 });
 
 describe("SUPPORTED_VIDEO_EXTS", () => {

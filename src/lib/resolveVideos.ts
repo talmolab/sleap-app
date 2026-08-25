@@ -11,6 +11,7 @@ import {
   MediaBunnyVideoBackend,
   SeqVideoBackend,
   AviVideoBackend,
+  GrayscaleVideoBackend,
   Video,
   createVideoBackend,
   type VideoBackend,
@@ -1169,19 +1170,32 @@ export async function resolveAllVideosFromFolder(
  * web-demuxer AviVideoBackend, `.seq` → Seq. Unknown / extension-less names fall
  * back to Mp4Box (historical behavior for SLP-referenced external videos with
  * non-standard names).
+ *
+ * When `grayscale` is given (not `undefined`), the backend is wrapped in a
+ * {@link GrayscaleVideoBackend} — `true`/`false` force-collapse/force-preserve
+ * channels immediately (no autodetect decode needed), matching the import
+ * dialog's checkbox, which always yields a definite boolean, never "autodetect".
  */
-async function createBackendForFile(file: File): Promise<VideoBackend> {
-  switch (backendKindForFilename(file.name)) {
-    case "mediabunny":
-      return MediaBunnyVideoBackend.fromBlob(file, file.name);
-    case "avi":
-      return AviVideoBackend.fromBlob(file, file.name);
-    case "seq":
-      return SeqVideoBackend.create(file);
-    case "mp4box":
-    default:
-      return new Mp4BoxVideoBackend(file);
-  }
+async function createBackendForFile(
+  file: File,
+  grayscale?: boolean | null
+): Promise<VideoBackend> {
+  const backend = await (async () => {
+    switch (backendKindForFilename(file.name)) {
+      case "mediabunny":
+        return MediaBunnyVideoBackend.fromBlob(file, file.name);
+      case "avi":
+        return AviVideoBackend.fromBlob(file, file.name);
+      case "seq":
+        return SeqVideoBackend.create(file);
+      case "mp4box":
+      default:
+        return new Mp4BoxVideoBackend(file);
+    }
+  })();
+  return grayscale === undefined
+    ? backend
+    : GrayscaleVideoBackend.wrap({ inner: backend, grayscale });
 }
 
 /**
@@ -1207,93 +1221,117 @@ function makeVideoRangeSource(path: string): Promise<RangeSource> {
  * 4.x can't stream from a lazy source, so {@link AviVideoBackend.fromRangeSource}
  * materializes the bytes (true AVI byte-range streaming is a follow-up).
  */
-async function createBackendForPath(path: string): Promise<VideoBackend> {
+async function createBackendForPath(
+  path: string,
+  grayscale?: boolean | null
+): Promise<VideoBackend> {
   const name = getBasename(path);
   const kind = backendKindForFilename(name);
-  if (kind === "mediabunny") {
-    return MediaBunnyVideoBackend.fromRangeSource(
-      await makeVideoRangeSource(path),
-      name
-    );
-  }
-  if (kind === "avi") {
-    // Desktop legacy-codec fallback: probe the codec natively (ffprobe sidecar);
-    // if WebCodecs can't decode it (Xvid/DivX, WMV3/VC-1, MPEG-1/2, 10-bit HEVC)
-    // transcode it to a cached, frame-exact H.264 MP4 once and open THAT via the
-    // hardware Mp4Box path — fast seeking, no software-decode lag, and the source
-    // bytes never enter the WebView (native disk→disk). Decodable AVI/WMV
-    // (H.264/MJPEG) probe cheaply and fall through to AviVideoBackend unchanged.
-    // Requires the bundled ffmpeg/ffprobe sidecars (see src-tauri/binaries/); on
-    // ANY failure (no sidecar, undecodable-and-unencodable) we fall back to
-    // AviVideoBackend, which surfaces the graceful "transcode to H.264" message —
-    // the same behavior as the browser. The `.slp` keeps the ORIGINAL path.
-    const platform = await getPlatform();
-    if (platform.isTauri) {
-      const store = useTranscodeStore.getState();
-      const controller = new AbortController();
-      let durationMs: number | undefined;
-      try {
-        const result = await ensureDecodablePath(
-          path,
-          createTauriTranscodeDeps(),
-          {
-            signal: controller.signal,
-            // Opt-in: ask before converting a legacy codec (only on a cache
-            // miss — an already-converted video reopens silently). Declining
-            // falls through to AviVideoBackend's unsupported-codec message.
-            confirmTranscode: (info) =>
-              useTranscodePromptStore
-                .getState()
-                .confirm(path, name, info.codec),
-            onTranscodeStart: (info) => {
-              durationMs = info.durationMs;
-              store.startJob(name, () => controller.abort());
-            },
-            onProgress: (p) => {
-              const percent =
-                durationMs && durationMs > 0 && p.outTimeMs !== undefined
-                  ? Math.min(100, (p.outTimeMs / durationMs) * 100)
-                  : null;
-              store.setProgress(percent, p.frame ?? null);
-            },
-          }
-        );
-        if (result.transcoded) {
-          toast.success(`Converted ${name}`);
-          return new Mp4BoxVideoBackend(
-            await makeVideoRangeSource(result.path),
-            { filename: name }
-          );
-        }
-        // Decodable (H.264/MJPEG) → fall through to AviVideoBackend below.
-      } catch (err) {
-        if (controller.signal.aborted) {
-          // User canceled: don't silently fall back (that re-attempts the whole
-          // undecodable open) — surface a clean cancellation so the video is
-          // simply not added.
-          throw new Error(`Conversion canceled for ${name}`);
-        }
-        console.warn(`[video] transcode fallback failed for "${name}":`, err);
-        // fall through to AviVideoBackend (graceful unsupported-codec message)
-      } finally {
-        store.endJob();
-      }
+  const backend = await (async () => {
+    if (kind === "mediabunny") {
+      return MediaBunnyVideoBackend.fromRangeSource(
+        await makeVideoRangeSource(path),
+        name
+      );
     }
-    return AviVideoBackend.fromRangeSource(
-      await makeVideoRangeSource(path),
-      name
-    );
-  }
-  if (kind === "seq") {
-    const platform = await getPlatform();
-    return SeqVideoBackend.create(
-      new File([await platform.readFile(path)], name)
-    );
-  }
-  // mp4box + unknown/extension-less names (historical mp4box default).
-  return new Mp4BoxVideoBackend(await makeVideoRangeSource(path), {
-    filename: name,
-  });
+    if (kind === "avi") {
+      // Desktop legacy-codec fallback: probe the codec natively (ffprobe sidecar);
+      // if WebCodecs can't decode it (Xvid/DivX, WMV3/VC-1, MPEG-1/2, 10-bit HEVC)
+      // transcode it to a cached, frame-exact H.264 MP4 once and open THAT via the
+      // hardware Mp4Box path — fast seeking, no software-decode lag, and the source
+      // bytes never enter the WebView (native disk→disk). Decodable AVI/WMV
+      // (H.264/MJPEG) probe cheaply and fall through to AviVideoBackend unchanged.
+      // Requires the bundled ffmpeg/ffprobe sidecars (see src-tauri/binaries/); on
+      // ANY failure (no sidecar, undecodable-and-unencodable) we fall back to
+      // AviVideoBackend, which surfaces the graceful "transcode to H.264" message —
+      // the same behavior as the browser. The `.slp` keeps the ORIGINAL path.
+      const platform = await getPlatform();
+      if (platform.isTauri) {
+        const store = useTranscodeStore.getState();
+        const controller = new AbortController();
+        let durationMs: number | undefined;
+        try {
+          const result = await ensureDecodablePath(
+            path,
+            createTauriTranscodeDeps(),
+            {
+              signal: controller.signal,
+              // Opt-in: ask before converting a legacy codec (only on a cache
+              // miss — an already-converted video reopens silently). Declining
+              // falls through to AviVideoBackend's unsupported-codec message.
+              confirmTranscode: (info) =>
+                useTranscodePromptStore
+                  .getState()
+                  .confirm(path, name, info.codec),
+              onTranscodeStart: (info) => {
+                durationMs = info.durationMs;
+                store.startJob(name, () => controller.abort());
+              },
+              onProgress: (p) => {
+                const percent =
+                  durationMs && durationMs > 0 && p.outTimeMs !== undefined
+                    ? Math.min(100, (p.outTimeMs / durationMs) * 100)
+                    : null;
+                store.setProgress(percent, p.frame ?? null);
+              },
+            }
+          );
+          if (result.transcoded) {
+            toast.success(`Converted ${name}`);
+            return new Mp4BoxVideoBackend(
+              await makeVideoRangeSource(result.path),
+              { filename: name }
+            );
+          }
+          // Decodable (H.264/MJPEG) → fall through to AviVideoBackend below.
+        } catch (err) {
+          if (controller.signal.aborted) {
+            // User canceled: don't silently fall back (that re-attempts the whole
+            // undecodable open) — surface a clean cancellation so the video is
+            // simply not added.
+            throw new Error(`Conversion canceled for ${name}`);
+          }
+          console.warn(
+            `[video] transcode fallback failed for "${name}":`,
+            err
+          );
+          // fall through to AviVideoBackend (graceful unsupported-codec message)
+        } finally {
+          store.endJob();
+        }
+      }
+      return AviVideoBackend.fromRangeSource(
+        await makeVideoRangeSource(path),
+        name
+      );
+    }
+    if (kind === "seq") {
+      const platform = await getPlatform();
+      return SeqVideoBackend.create(
+        new File([await platform.readFile(path)], name)
+      );
+    }
+    // mp4box + unknown/extension-less names (historical mp4box default).
+    return new Mp4BoxVideoBackend(await makeVideoRangeSource(path), {
+      filename: name,
+    });
+  })();
+  return grayscale === undefined
+    ? backend
+    : GrayscaleVideoBackend.wrap({ inner: backend, grayscale });
+}
+
+/** Shared options for {@link assignVideoBackend} / {@link assignVideoBackendFromPath}. */
+export interface AssignBackendOptions {
+  silent?: boolean;
+  /**
+   * Force (`true`/`false`) grayscale on the newly-built backend, or leave it
+   * unset (`undefined`) to inherit whatever `video.backendMetadata.grayscale`
+   * already records (the round-trip case: reopening/relinking a video that
+   * was already flagged at add time). Passing an explicit value here always
+   * wins over — and re-persists into — `backendMetadata.grayscale`.
+   */
+  grayscale?: boolean | null;
 }
 
 /**
@@ -1306,12 +1344,18 @@ async function createBackendForPath(path: string): Promise<VideoBackend> {
  * black, error-free video. A failed probe nulls the backend and records WHY (so
  * the UI shows "unsupported codec" vs "not found") rather than leaving a
  * half-open backend that isVideoMissing would miscount as resolved.
+ *
+ * When `opts.grayscale` is given, it's persisted into `video.backendMetadata`
+ * on success — BEFORE `video.shape` is captured from the (already
+ * grayscale-wrapped) backend, so the frozen `video.shape` override reflects the
+ * forced channel count from the start (setting grayscale via a later
+ * `Video.grayscale` setter call would NOT correct an already-frozen shape).
  */
 async function probeAndAssignBackend(
   video: Video,
   create: () => Promise<VideoBackend>,
   name: string,
-  opts?: { silent?: boolean }
+  opts?: AssignBackendOptions
 ): Promise<boolean> {
   try {
     const backend = await create();
@@ -1319,6 +1363,10 @@ async function probeAndAssignBackend(
     const frame = await backend.getFrame(0);
     if (!frame) {
       throw new Error("could not decode the first video frame");
+    }
+    if (opts?.grayscale !== undefined) {
+      (video.backendMetadata as Record<string, unknown>).grayscale =
+        opts.grayscale;
     }
     if (backend.shape) video.shape = backend.shape;
     if (backend.fps) video.fps = backend.fps;
@@ -1344,17 +1392,25 @@ async function probeAndAssignBackend(
  * Build the backend for a user-picked File and assign it (probing shape/fps).
  * Dispatches by extension (see {@link createBackendForFile}). Browser Files are
  * disk-backed, so slicing reads lazily — no whole-file copy needed here.
+ *
+ * `opts.grayscale`, when omitted, defaults to this video's already-persisted
+ * `backendMetadata.grayscale` (round-trip: reopening/relinking a video that was
+ * flagged grayscale at add time keeps behaving the same way).
  */
 export async function assignVideoBackend(
   video: Video,
   file: File,
-  opts?: { silent?: boolean }
+  opts?: AssignBackendOptions
 ): Promise<boolean> {
+  const grayscale =
+    opts?.grayscale !== undefined
+      ? opts.grayscale
+      : (video.backendMetadata.grayscale as boolean | null | undefined);
   return probeAndAssignBackend(
     video,
-    () => createBackendForFile(file),
+    () => createBackendForFile(file, grayscale),
     file.name,
-    opts
+    { ...opts, grayscale }
   );
 }
 
@@ -1363,17 +1419,23 @@ export async function assignVideoBackend(
  * native file PATH via a lazy {@link RangeSource}, so opening a large external
  * video reads only the container index + the viewed frames instead of the whole
  * file. Use this on every Tauri path where the alternative is `readFile(path)`.
+ *
+ * `opts.grayscale` defaults the same way as {@link assignVideoBackend}.
  */
 export async function assignVideoBackendFromPath(
   video: Video,
   path: string,
-  opts?: { silent?: boolean }
+  opts?: AssignBackendOptions
 ): Promise<boolean> {
+  const grayscale =
+    opts?.grayscale !== undefined
+      ? opts.grayscale
+      : (video.backendMetadata.grayscale as boolean | null | undefined);
   return probeAndAssignBackend(
     video,
-    () => createBackendForPath(path),
+    () => createBackendForPath(path, grayscale),
     getBasename(path),
-    opts
+    { ...opts, grayscale }
   );
 }
 
@@ -1443,10 +1505,17 @@ export function backendKindForFilename(
  * never read whole into memory, and Xvid/WMV/MPEG-1/2 convert-and-play instead
  * of failing. In the browser (no `absPath`) the picked File is opened directly.
  * Returns null on decode failure too (the assign helpers surface the error).
+ *
+ * `grayscale`, when given, forces (`true`) or preserves (`false`) channels on
+ * this new video and persists the choice into `backendMetadata.grayscale` —
+ * the import dialog's per-file/bulk checkbox (mirroring the legacy Qt GUI's
+ * "Import Videos" dialog). Omit it to add the video unflagged (today's
+ * behavior, unchanged).
  */
 export async function buildStandaloneVideo(
   file: File,
-  absPath?: string | null
+  absPath?: string | null,
+  grayscale?: boolean
 ): Promise<Video | null> {
   if (!backendKindForFilename(file.name)) {
     const ext = fileExt(file.name);
@@ -1460,9 +1529,9 @@ export async function buildStandaloneVideo(
   // reload); browser opens from the File (filename = the bare name).
   const video = new Video({ filename: absPath ?? file.name, openBackend: false });
   if (absPath) {
-    await assignVideoBackendFromPath(video, absPath);
+    await assignVideoBackendFromPath(video, absPath, { grayscale });
   } else {
-    await assignVideoBackend(video, file);
+    await assignVideoBackend(video, file, { grayscale });
   }
   // The assign helpers set shape only on a successful frame-0 probe (and toast
   // on failure); a missing shape means the backend never initialized.
@@ -1518,12 +1587,19 @@ export async function pickVideoFiles(): Promise<PickedVideoFile[]> {
  * On Tauri, the absolute path becomes the canonical filename so the video
  * resolves on reload. Returns the Video, or null if unsupported/decode failed
  * (already toasted). Used by both the Videos panel and the New Project dialog.
+ *
+ * `grayscale` is forwarded to {@link buildStandaloneVideo} — see its doc.
  */
 export async function addVideoFileToLabels(
   labels: Labels,
-  picked: PickedVideoFile
+  picked: PickedVideoFile,
+  grayscale?: boolean
 ): Promise<Video | null> {
-  const video = await buildStandaloneVideo(picked.file, picked.absPath);
+  const video = await buildStandaloneVideo(
+    picked.file,
+    picked.absPath,
+    grayscale
+  );
   if (!video) return null;
   labels.addVideo(video);
   return video;
