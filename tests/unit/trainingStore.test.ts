@@ -15,6 +15,7 @@ function makeConfigFile(overrides: Partial<ConfigFile> = {}): ConfigFile {
     modelType: "centroid",
     slot: "centroid",
     hyperparams: { ...defaultHyperparams },
+    originalHyperparams: { ...defaultHyperparams },
     hasTrainedModel: false,
     checkpointPath: null,
     ...overrides,
