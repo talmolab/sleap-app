@@ -362,8 +362,6 @@ interface TrainingState {
   updateConfigHyperparams: (slot: string, updates: Partial<ConfigHyperparams>) => void;
   /** Restore ALL of a config's hyperparameters to its as-loaded baseline. */
   resetConfigHyperparams: (slot: string) => void;
-  /** Restore only the given hyperparameter fields to the config's as-loaded baseline. */
-  resetConfigFields: (slot: string, fields: (keyof ConfigHyperparams)[]) => void;
   updateConfigCheckpointPath: (slot: string, path: string | null) => void;
   addConfigFile: (file: ConfigFile) => void;
   removeConfigFile: (slot: string) => void;
@@ -755,20 +753,6 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
             ? { ...c, hyperparams: { ...c.originalHyperparams } }
             : c,
         ),
-      },
-    })),
-
-  resetConfigFields: (slot, fields) =>
-    set((state) => ({
-      config: {
-        ...state.config,
-        configs: state.config.configs.map((c) => {
-          if (c.slot !== slot) return c;
-          const patch = Object.fromEntries(
-            fields.map((f) => [f, c.originalHyperparams[f]]),
-          ) as Partial<ConfigHyperparams>;
-          return { ...c, hyperparams: { ...c.hyperparams, ...patch } };
-        }),
       },
     })),
 

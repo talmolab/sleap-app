@@ -3,7 +3,6 @@ import { createPortal } from "react-dom";
 import {
   Dialog,
   DialogContent,
-  DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -17,7 +16,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, HelpCircle, Crosshair, RefreshCw } from "lucide-react";
+import { Search, HelpCircle, Crosshair, RefreshCw, Check, RotateCcw } from "lucide-react";
 import type { ConfigFile, ConfigHyperparams, Backbone, ModelType, DataPipeline, ColorMode } from "@/stores/trainingStore";
 import { getSlotLabel, getConfigSlots, useTrainingStore } from "@/stores/trainingStore";
 import { checkWandbAuth, type WandbAuth } from "@/platform/backend";
@@ -27,6 +26,7 @@ import { ModelStatsPreview } from "@/components/dialogs/ModelStatsPreview";
 import { getBaselineProfilesForHead, getDefaultProfileForHead, slotToHeadType } from "@/lib/trainingProfiles";
 import { computeNodeVisibility, visibilityTier, type NodeVisibility } from "@/lib/anchorVisibility";
 import { isTauri } from "@/lib/platform";
+import { confirmDialog } from "@/stores/confirmStore";
 
 /** Tailwind text color per visibility tier, matching the Training panel's log coloring. */
 const VISIBILITY_COLOR: Record<ReturnType<typeof visibilityTier>, string> = {
@@ -948,7 +948,7 @@ export function TrainingConfigDialog({
   );
 
   // Auto-load baseline configs for empty slots when dialog opens
-  const { parseYamlConfig, addConfigFile } = useTrainingStore();
+  const { parseYamlConfig, addConfigFile, resetConfigHyperparams } = useTrainingStore();
   useEffect(() => {
     if (!open) return;
     const slots = getConfigSlots(modelType);
@@ -1015,31 +1015,59 @@ export function TrainingConfigDialog({
     }, 100);
   };
 
+  // Reset to the values loaded from the baseline profile (each config's
+  // `originalHyperparams`). Scoped to the active tab: the Pipeline tab edits
+  // shared fields across every slot, so it resets them all; a head tab resets
+  // only its own slot.
+  const handleResetDefaults = async () => {
+    const isPipeline = activeTab === "pipeline";
+    const scope = isPipeline
+      ? "all model configs"
+      : `the ${getSlotLabel(activeTab).replace(" Config", "")} config`;
+    const ok = await confirmDialog({
+      title: "Reset to profile defaults?",
+      message: `This restores ${scope} to the values loaded from the baseline profile, discarding your edits.`,
+      confirmLabel: "Reset",
+      destructive: true,
+    });
+    if (!ok) return;
+    if (isPipeline) sortedConfigs.forEach((c) => resetConfigHyperparams(c.slot));
+    else resetConfigHyperparams(activeTab);
+  };
+
   const navItems = activeTab === "pipeline" ? PIPELINE_NAV : HEAD_NAV;
   const firstConfig = sortedConfigs[0];
   const firstHp = firstConfig?.hyperparams;
 
   return (
     <Dialog open={open} onOpenChange={(isOpen) => { if (!isOpen) { onClose(); setSearchQuery(""); } }}>
-      <DialogContent className="w-full sm:max-w-[1000px] h-[70vh] p-0 overflow-hidden inset-0 translate-x-0 translate-y-0 m-auto flex flex-col" onKeyDown={(e) => e.stopPropagation()}>
-        <DialogHeader className="px-6 pt-5 pb-3 shrink-0">
-          <DialogTitle className="text-lg">Training Configuration</DialogTitle>
-        </DialogHeader>
-
-        <Tabs value={activeTab} onValueChange={setActiveTab} className="flex flex-col flex-1 min-h-0">
-          <div className="flex justify-center mx-6 shrink-0">
-            <TabsList className="h-9">
-              <TabsTrigger value="pipeline" className="text-sm">Training Pipeline</TabsTrigger>
-              {sortedConfigs.map((cf) => (
-                <TabsTrigger key={cf.slot} value={cf.slot} className="text-sm">
-                  {getSlotLabel(cf.slot).replace(" Config", "")} Model Configuration
-                </TabsTrigger>
-              ))}
-            </TabsList>
+      <DialogContent showCloseButton={false} className="w-full sm:max-w-[1000px] h-[70vh] p-0 overflow-hidden inset-0 translate-x-0 translate-y-0 m-auto flex flex-col" onKeyDown={(e) => e.stopPropagation()}>
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="flex flex-col flex-1 min-h-0 gap-0">
+          {/* Compact header: title (left) · flat centered tabs · saved indicator (right) */}
+          <div className="relative flex items-center justify-between gap-4 px-6 py-2.5 border-b shrink-0">
+            <DialogTitle className="text-base font-semibold shrink-0">Training Configuration</DialogTitle>
+            <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+              <TabsList>
+                <TabsTrigger value="pipeline" className="text-base px-4">Pipeline</TabsTrigger>
+                {sortedConfigs.map((cf) => (
+                  <TabsTrigger key={cf.slot} value={cf.slot} className="text-base px-4">
+                    {getSlotLabel(cf.slot).replace(" Config", "")}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+            </div>
+            <span
+              className="flex items-center gap-1.5 text-xs text-muted-foreground shrink-0"
+              title="Edits are saved automatically as you type"
+            >
+              <Check className="h-3.5 w-3.5 text-emerald-500" />
+              All changes saved
+            </span>
           </div>
 
-          <div className="relative mx-6 mt-2 mb-2 shrink-0">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          {/* Field search — full-width row snug below the header */}
+          <div className="relative px-6 py-2 border-b shrink-0">
+            <Search className="absolute left-8 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
             <Input
               type="text"
               placeholder="Search parameters..."
@@ -1048,7 +1076,7 @@ export function TrainingConfigDialog({
               className="h-9 text-sm pl-9"
             />
             {searchResults.length > 0 && (
-              <div className="absolute top-full left-0 right-0 mt-1 bg-popover border rounded-md shadow-lg z-10 max-h-48 overflow-y-auto">
+              <div className="absolute top-full left-6 right-6 mt-1 bg-popover border rounded-md shadow-lg z-10 max-h-48 overflow-y-auto">
                 {searchResults.map((r) => (
                   <button
                     key={`${r.tab}:${r.id}`}
@@ -1063,7 +1091,7 @@ export function TrainingConfigDialog({
             )}
           </div>
 
-          <div className="flex flex-1 min-h-0 border-t mt-2">
+          <div className="flex flex-1 min-h-0">
             <nav className="w-[180px] border-r bg-muted/30 py-3 shrink-0">
               {navItems.map((item) => (
                 <button
@@ -1603,6 +1631,24 @@ export function TrainingConfigDialog({
                 />
               </TabsContent>
             ))}
+          </div>
+          {/* Footer: reset (left) · Done (right) */}
+          <div className="flex items-center justify-between px-6 py-3 border-t shrink-0">
+            <button
+              type="button"
+              onClick={handleResetDefaults}
+              className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+              Reset to profile defaults…
+            </button>
+            <button
+              type="button"
+              onClick={() => { onClose(); setSearchQuery(""); }}
+              className="px-4 h-8 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90"
+            >
+              Done
+            </button>
           </div>
         </Tabs>
       </DialogContent>

@@ -41,15 +41,6 @@ describe("config baseline snapshot + reset to as-loaded values", () => {
     expect(hp.maxEpochs).toBe(300);
   });
 
-  it("resetConfigFields restores only the listed fields, leaving others tuned", () => {
-    useTrainingStore.getState().addConfigFile(makeConfig({ learningRate: 0.005, maxEpochs: 300 }));
-    useTrainingStore.getState().updateConfigHyperparams("centroid", { learningRate: 0.01, maxEpochs: 50 });
-    useTrainingStore.getState().resetConfigFields("centroid", ["learningRate"]);
-    const hp = useTrainingStore.getState().config.configs[0].hyperparams;
-    expect(hp.learningRate).toBe(0.005); // reset to baseline
-    expect(hp.maxEpochs).toBe(50); // untouched
-  });
-
   it("reset does not mutate the originalHyperparams snapshot itself", () => {
     useTrainingStore.getState().addConfigFile(makeConfig({ learningRate: 0.005 }));
     useTrainingStore.getState().updateConfigHyperparams("centroid", { learningRate: 0.01 });
