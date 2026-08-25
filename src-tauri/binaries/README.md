@@ -35,8 +35,14 @@ host triple with `rustc -Vv | grep host`.
 |--------------|------------------------|
 | `x86_64-unknown-linux-gnu` | `ffmpeg-x86_64-unknown-linux-gnu` |
 | `x86_64-pc-windows-msvc` | `ffmpeg-x86_64-pc-windows-msvc.exe` |
-| `universal-apple-darwin` | `ffmpeg-universal-apple-darwin` (fat: arm64 + x86_64) |
+| `universal-apple-darwin` | **all three**: `ffmpeg-aarch64-apple-darwin` + `ffmpeg-x86_64-apple-darwin` (one per compile leg) + the lipo'd `ffmpeg-universal-apple-darwin` (for bundling) |
 | `aarch64-apple-darwin` / `x86_64-apple-darwin` | single-arch (local dev) |
+
+> The universal build genuinely needs all three per tool: Tauri's `build.rs`
+> resolves a **per-arch** sidecar for each of the two compile legs, and the
+> bundler then copies the pre-merged **universal** one into the `.app`. Missing a
+> per-arch file panics at compile; missing the universal file fails at
+> "copy external binaries" during bundling.
 
 ## Encoder / license policy
 

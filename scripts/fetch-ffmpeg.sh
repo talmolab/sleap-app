@@ -126,10 +126,16 @@ case "$TRIPLE" in
     ;;
   universal-apple-darwin)
     command -v lipo >/dev/null 2>&1 || fail "lipo not found (universal build needs macOS)"
+    # Tauri's `--target universal-apple-darwin` build needs ALL THREE files per
+    # tool: the two PER-ARCH sidecars (build.rs resolves one per compile leg) AND
+    # the pre-lipo'd UNIVERSAL binary (the bundler copies that into the .app). Miss
+    # the per-arch ones and it panics at compile; miss the universal one and it
+    # fails at "copy external binaries" during bundling.
     for tool in ffmpeg ffprobe; do
-      mr_tool arm64 "$tool" "$TMP/$tool.arm64"
-      mr_tool amd64 "$tool" "$TMP/$tool.amd64"
-      lipo -create "$TMP/$tool.arm64" "$TMP/$tool.amd64" -output "$DEST/$tool-$TRIPLE"
+      mr_tool arm64 "$tool" "$DEST/$tool-aarch64-apple-darwin"
+      mr_tool amd64 "$tool" "$DEST/$tool-x86_64-apple-darwin"
+      lipo -create "$DEST/$tool-aarch64-apple-darwin" "$DEST/$tool-x86_64-apple-darwin" \
+        -output "$DEST/$tool-universal-apple-darwin"
     done
     ;;
   *)
@@ -138,7 +144,9 @@ case "$TRIPLE" in
 esac
 
 # Executable bit (lost through zip on some extractors; harmless on Windows).
-chmod +x "$DEST"/ffmpeg-"$TRIPLE"* "$DEST"/ffprobe-"$TRIPLE"* 2>/dev/null || true
+# Covers every file we just wrote — for the universal build that is the two
+# per-arch sidecars plus the lipo'd universal one.
+chmod +x "$DEST"/ffmpeg-* "$DEST"/ffprobe-* 2>/dev/null || true
 
 FFMPEG_BIN="$(ls "$DEST"/ffmpeg-"$TRIPLE"* | head -n1)"
 FFPROBE_BIN="$(ls "$DEST"/ffprobe-"$TRIPLE"* | head -n1)"
