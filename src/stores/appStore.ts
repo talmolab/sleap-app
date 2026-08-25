@@ -63,6 +63,10 @@ function clearTransientVisibility(state: Draft<AppState>) {
   state.showNonVisibleOverride = new Map<Instance, boolean>();
 }
 
+/** Which desktop self-update channel to check: full releases only, the
+ * newest of {release, pre-release}, or continuous builds off `main`. */
+export type UpdateChannel = "stable" | "latest" | "dev";
+
 export interface AppState {
   // === Project state ===
   labels: Labels | null;
@@ -241,6 +245,17 @@ export interface AppState {
   showNonVisibleOverride: Map<Instance, boolean>;
   // Label-QC display mode (persisted app preference)
   qcDisplayMode: QcMode;
+  // Desktop self-update channel (persisted app preference)
+  updateChannel: UpdateChannel;
+  // Whether a newer STABLE / LATEST release exists than the one currently
+  // running — each checked once at startup against its own channel
+  // regardless of updateChannel above, so a user on any channel (or just
+  // behind) still gets nudged. Transient — NOT persisted, re-checked every
+  // launch. Drives the blinking Environment badge (AppShell + WelcomeScreen).
+  stableUpdateAvailable: boolean;
+  stableUpdateVersion: string | null;
+  latestUpdateAvailable: boolean;
+  latestUpdateVersion: string | null;
 
   // === Editing state ===
   instanceInitMethod: InstancePlacementMethod;
@@ -397,6 +412,9 @@ export interface AppState {
   setViewOnlyInstance: (instance: Instance | null) => void;
   setInstanceInvisibleOverride: (instance: Instance, value: boolean | undefined) => void;
   setQcDisplayMode: (mode: QcMode) => void;
+  setUpdateChannel: (channel: UpdateChannel) => void;
+  setStableUpdateInfo: (available: boolean, version: string | null) => void;
+  setLatestUpdateInfo: (available: boolean, version: string | null) => void;
   /** Remember a learned video path prefix swap (deduped, newest-first, capped). */
   addVideoPrefixSwap: (swap: VideoPrefixSwap) => void;
   resetInstanceVisibility: () => void;
@@ -512,6 +530,7 @@ export const PERSISTED_KEYS: (keyof AppState)[] = [
   "seekbarHeaderHeight",
   "navigationDomain",
   "qcDisplayMode",
+  "updateChannel",
   "videoPrefixSwaps",
   // Layout + scale persistence (PyQt saveState/restoreState parity).
   "panelOrder",
@@ -616,6 +635,11 @@ export const useAppStore = create<AppState>()(
       viewOnlyInstance: null,
       showNonVisibleOverride: new Map<Instance, boolean>(),
       qcDisplayMode: "manual",
+      updateChannel: "stable",
+      stableUpdateAvailable: false,
+      stableUpdateVersion: null,
+      latestUpdateAvailable: false,
+      latestUpdateVersion: null,
 
       // Editing state
       instanceInitMethod: "best" as InstancePlacementMethod,
@@ -859,6 +883,23 @@ export const useAppStore = create<AppState>()(
       setQcDisplayMode: (mode) =>
         set((state) => {
           state.qcDisplayMode = mode;
+        }),
+
+      setUpdateChannel: (channel) =>
+        set((state) => {
+          state.updateChannel = channel;
+        }),
+
+      setStableUpdateInfo: (available, version) =>
+        set((state) => {
+          state.stableUpdateAvailable = available;
+          state.stableUpdateVersion = version;
+        }),
+
+      setLatestUpdateInfo: (available, version) =>
+        set((state) => {
+          state.latestUpdateAvailable = available;
+          state.latestUpdateVersion = version;
         }),
 
       addVideoPrefixSwap: (swap) => {

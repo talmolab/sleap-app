@@ -5,6 +5,7 @@ import { SkeletonExitPromptDialog } from "./components/dialogs/SkeletonExitPromp
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useWindowTitle } from "./hooks/useWindowTitle";
 import { useAppStore } from "./stores/appStore";
+import { useEnvironmentStore } from "./stores/environmentStore";
 import { applyHashState, initUrlStateSync } from "./lib/urlState";
 import { loadProjectFromPath } from "./lib/loadProject";
 import { readOpenFileParam } from "./lib/windowRouting";
@@ -255,28 +256,60 @@ export default function App() {
     };
   }, []);
 
-  // Check for updates on startup (Tauri only)
+  // Always check "stable" AND "latest" regardless of which channel the user
+  // has selected in the Environment panel — this drives the blinking
+  // Environment badge (AppShell's sidebar icon + WelcomeScreen's corner
+  // button), so someone on "dev", or just behind on either of the other two,
+  // still gets a persistent nudge. Read-only (never installs) — actually
+  // applying an update only ever happens via an explicit click on the Update
+  // button in the Environment panel (EnvironmentPanel.tsx's doUpdate), never
+  // automatically from a startup check.
+  //
+  // Skipped in tauri:dev: a local checkout's version is essentially
+  // arbitrary relative to the last published release, so EVERY developer
+  // running tauri:dev would permanently see "update available" with nothing
+  // actionable to do about it (the Update button is already disabled for
+  // local builds) — pure noise, not a real signal.
+  useEffect(() => {
+    if (!isTauri || import.meta.env.DEV) return;
+    (async () => {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const checkChannel = async (
+        channel: "stable" | "latest",
+        setInfo: (available: boolean, version: string | null) => void
+      ) => {
+        try {
+          const update = await invoke<{ version: string } | null>(
+            sleapCmd("check_update"),
+            { channel }
+          );
+          setInfo(!!update, update?.version ?? null);
+        } catch (e) {
+          console.warn(`[updater] ${channel}-channel check failed:`, e);
+        }
+      };
+      const { setStableUpdateInfo, setLatestUpdateInfo } =
+        useAppStore.getState();
+      await Promise.all([
+        checkChannel("stable", setStableUpdateInfo),
+        checkChannel("latest", setLatestUpdateInfo),
+      ]);
+    })();
+  }, []);
+
+  // Also check sleap-nn (a `uv tool`, unrelated to the sleap-app channels
+  // above) once at startup, so the Environment badge can reflect a new
+  // sleap-nn release even before any project is loaded. Reuses the exact
+  // same lightweight, per-version-deduped check loadProject.ts already runs
+  // on project open (see environmentStore.ts's checkSleapNnUpdateAndNotify)
+  // — running it here too just means the badge (and its one-time toast)
+  // can fire from the Welcome screen instead of waiting for a project.
+  // Unlike the sleap-app self-update effect above, this has no install-time
+  // corruption risk (`uv tool upgrade` is unrelated to the running desktop
+  // binary), so it isn't gated on tauri:dev.
   useEffect(() => {
     if (!isTauri) return;
-    (async () => {
-      try {
-        const { check } = await import("@tauri-apps/plugin-updater");
-        const update = await check();
-        if (update) {
-          console.log(`[updater] Update available: ${update.version}`);
-          const yes = window.confirm(
-            `A new version of SLEAP is available (${update.version}). Download and install?`
-          );
-          if (yes) {
-            await update.downloadAndInstall();
-            const { relaunch } = await import("@tauri-apps/plugin-process");
-            await relaunch();
-          }
-        }
-      } catch (e) {
-        console.warn("[updater] Update check failed:", e);
-      }
-    })();
+    void useEnvironmentStore.getState().checkSleapNnUpdateAndNotify();
   }, []);
 
   // Apply hash state once after project loads, then start syncing

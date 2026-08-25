@@ -187,8 +187,9 @@ export async function loadProjectFromFile(file: File): Promise<boolean> {
       description: `${labels.videos.length} video(s), ${labels.labeledFrames.length} labeled frames`,
     });
     // Fire-and-forget: best-effort, no-ops on browser, must not add latency.
+    // (sleap-app's own update is surfaced via the Environment badge instead
+    // of a toast now — see App.tsx's stable-channel check.)
     useEnvironmentStore.getState().checkSleapNnUpdateAndNotify();
-    useEnvironmentStore.getState().checkAppUpdateAndNotify();
     return true;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -291,8 +292,9 @@ export async function loadProjectFromPath(
       description: `${labels.videos.length} video(s), ${labels.labeledFrames.length} labeled frames`,
     });
     // Fire-and-forget: best-effort, no-ops on browser, must not add latency.
+    // (sleap-app's own update is surfaced via the Environment badge instead
+    // of a toast now — see App.tsx's stable-channel check.)
     useEnvironmentStore.getState().checkSleapNnUpdateAndNotify();
-    useEnvironmentStore.getState().checkAppUpdateAndNotify();
 
     // Missing / unsupported-codec videos are summarized (codec-aware) by
     // resolveExternalVideos above — no separate toast here (avoids a duplicate).
