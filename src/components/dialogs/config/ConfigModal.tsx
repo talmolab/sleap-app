@@ -3,6 +3,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { ConfigShell } from "@/components/dialogs/config/ConfigShell";
 import { SlotSwitcher } from "@/components/dialogs/config/SlotSwitcher";
 import { buildTrainingSections } from "@/components/dialogs/config/trainingSections";
+import { TRAINING_SEARCH_INDEX } from "@/lib/configSearch";
 import { getSlotLabel } from "@/stores/trainingStore";
 import type { ConfigFile, ConfigHyperparams } from "@/stores/trainingStore";
 
@@ -44,6 +45,7 @@ export function ConfigModal({
         <ConfigShell
           title="Training Configuration"
           sections={sections}
+          searchIndex={TRAINING_SEARCH_INDEX}
           hp={active.hyperparams}
           onUpdate={(patch) => onUpdateSlot(active.slot, patch)}
           onResetAll={() => onResetSlot(active.slot)}
