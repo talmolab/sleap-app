@@ -101,26 +101,6 @@ export function ConfigShell({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sectionsKey]);
 
-  // Scroll-spy: keep the rail highlight on the section nearest the top of the pane.
-  useEffect(() => {
-    const pane = paneRef.current;
-    if (!pane) return;
-    const els = Array.from(pane.querySelectorAll<HTMLElement>("[data-section]"));
-    if (!els.length) return;
-    const io = new IntersectionObserver(
-      (entries) => {
-        const vis = entries
-          .filter((e) => e.isIntersecting)
-          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
-        const id = vis[0]?.target.getAttribute("data-section");
-        if (id) setVisibleId((prev) => (prev === id ? prev : id));
-      },
-      { root: pane, rootMargin: "0px 0px -60% 0px", threshold: 0 },
-    );
-    els.forEach((el) => io.observe(el));
-    return () => io.disconnect();
-  }, [sectionsKey]);
-
   // Search jump: after the (possibly new) tab renders, scroll to the field and
   // flash an orange ring on it (matches the legacy ring-2 ring-primary, 1.5s).
   useEffect(() => {
