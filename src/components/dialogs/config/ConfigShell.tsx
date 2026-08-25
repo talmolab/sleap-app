@@ -21,10 +21,10 @@ export interface ShellSection extends ConfigSection {
 }
 
 /**
- * Host-agnostic two-pane config surface: a left section rail and a right field
- * pane, with a field-search row beneath the header. Auto-save is live (edits
- * flow straight through onUpdate), so the header says so plainly; the footer
- * offers reset-to-defaults. Rendered inside either a modal or a docked panel.
+ * Host-agnostic config surface: a left section rail + a right pane that stacks
+ * ALL of the current tab's sections in one long scroll. Clicking a rail item
+ * jumps to that section; the rail highlight follows the scroll position. Auto-
+ * save is live; the footer offers reset. Rendered inside a modal or docked panel.
  */
 export function ConfigShell({
   title,
@@ -32,58 +32,35 @@ export function ConfigShell({
   hp,
   onUpdate,
   onResetAll,
-  initialSectionId,
   slot,
   modelType,
   headerAccessory,
   onDone,
   searchIndex,
-  activeSectionId,
-  onActiveSectionChange,
+  onSearchNavigate,
 }: {
   title: string;
   sections: ShellSection[];
   hp: ConfigHyperparams;
   onUpdate: (updates: Partial<ConfigHyperparams>) => void;
   onResetAll: () => void;
-  initialSectionId?: string;
   slot?: string;
   modelType?: string;
-  /** Optional control shown in the header next to the title (e.g. a slot switcher). */
+  /** Optional control shown centered in the header (e.g. the tab switcher). */
   headerAccessory?: React.ReactNode;
   /** When provided (modal host), renders a "Done" button in the footer. */
   onDone?: () => void;
   /** Field search index; when provided, the search row is shown. */
   searchIndex?: SearchEntry[];
-  /** Controlled active section id. Falls back to internal state when omitted. */
-  activeSectionId?: string;
-  /** Called when the active section changes (rail click / search jump). May switch tabs in the host. */
-  onActiveSectionChange?: (sectionId: string) => void;
+  /** Called when a search result targets a section — lets the host switch tabs. */
+  onSearchNavigate?: (sectionId: string) => void;
 }) {
-  const [internalActive, setInternalActive] = useState(initialSectionId ?? sections[0]?.id ?? "");
-  const activeId = activeSectionId ?? internalActive;
-  const setActive = (id: string) =>
-    onActiveSectionChange ? onActiveSectionChange(id) : setInternalActive(id);
   const [query, setQuery] = useState("");
   const [searchFocused, setSearchFocused] = useState(false);
+  const [visibleId, setVisibleId] = useState(sections[0]?.id ?? "");
   const [pendingHighlight, setPendingHighlight] = useState<string | null>(null);
   const paneRef = useRef<HTMLDivElement>(null);
-
-  // After a search jump switches sections, scroll to the target field and flash
-  // an orange ring on it (mirrors the legacy dialog's ring-2 ring-primary, 1.5s).
-  useEffect(() => {
-    if (!pendingHighlight) return;
-    const raf = requestAnimationFrame(() => {
-      const el = paneRef.current?.querySelector<HTMLElement>(`[data-field="${pendingHighlight}"]`);
-      if (el) {
-        el.scrollIntoView({ behavior: "smooth", block: "center" });
-        el.classList.add("ring-2", "ring-primary");
-        setTimeout(() => el.classList.remove("ring-2", "ring-primary"), 1500);
-      }
-      setPendingHighlight(null);
-    });
-    return () => cancelAnimationFrame(raf);
-  }, [pendingHighlight, activeId]);
+  const sectionsKey = sections.map((s) => s.id).join("|");
 
   const sectionLabel = useMemo(() => {
     const m: Record<string, string> = {};
@@ -96,14 +73,69 @@ export function ConfigShell({
     [searchIndex, query],
   );
 
-  const active = sections.find((s) => s.id === activeId) ?? sections[0];
+  function scrollToSection(id: string) {
+    paneRef.current
+      ?.querySelector<HTMLElement>(`[data-section="${id}"]`)
+      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function railClick(id: string) {
+    setVisibleId(id);
+    scrollToSection(id);
+  }
 
   function goToResult(entry: SearchEntry) {
-    setActive(entry.sectionId);
-    setPendingHighlight(fieldSlug(entry.label));
     setQuery("");
     setSearchFocused(false);
+    onSearchNavigate?.(entry.sectionId); // host may switch tabs
+    setVisibleId(entry.sectionId);
+    setPendingHighlight(fieldSlug(entry.label));
   }
+
+  // On tab change (sections swap), jump back to the top — unless a search jump is
+  // pending, which will scroll to its field instead.
+  useEffect(() => {
+    if (pendingHighlight) return;
+    paneRef.current?.scrollTo({ top: 0 });
+    setVisibleId(sections[0]?.id ?? "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sectionsKey]);
+
+  // Scroll-spy: keep the rail highlight on the section nearest the top of the pane.
+  useEffect(() => {
+    const pane = paneRef.current;
+    if (!pane) return;
+    const els = Array.from(pane.querySelectorAll<HTMLElement>("[data-section]"));
+    if (!els.length) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        const vis = entries
+          .filter((e) => e.isIntersecting)
+          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+        const id = vis[0]?.target.getAttribute("data-section");
+        if (id) setVisibleId((prev) => (prev === id ? prev : id));
+      },
+      { root: pane, rootMargin: "0px 0px -60% 0px", threshold: 0 },
+    );
+    els.forEach((el) => io.observe(el));
+    return () => io.disconnect();
+  }, [sectionsKey]);
+
+  // Search jump: after the (possibly new) tab renders, scroll to the field and
+  // flash an orange ring on it (matches the legacy ring-2 ring-primary, 1.5s).
+  useEffect(() => {
+    if (!pendingHighlight) return;
+    const raf = requestAnimationFrame(() => {
+      const el = paneRef.current?.querySelector<HTMLElement>(`[data-field="${pendingHighlight}"]`);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        el.classList.add("ring-2", "ring-primary");
+        setTimeout(() => el.classList.remove("ring-2", "ring-primary"), 1500);
+      }
+      setPendingHighlight(null);
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [pendingHighlight, sectionsKey]);
 
   return (
     <div className="flex flex-col h-full bg-muted/20 text-foreground">
@@ -164,15 +196,15 @@ export function ConfigShell({
         </div>
       )}
 
-      {/* Body: rail + field pane */}
+      {/* Body: rail (jump nav) + long-scroll pane */}
       <div className="flex flex-1 min-h-0">
         <nav className="w-56 shrink-0 border-r overflow-y-auto py-2">
           {sections.map((s) => {
-            const isActive = active?.id === s.id;
+            const isActive = visibleId === s.id;
             return (
               <button
                 key={s.id}
-                onClick={() => setActive(s.id)}
+                onClick={() => railClick(s.id)}
                 className={`w-full flex items-center px-4 py-2 text-sm text-left transition-colors ${
                   isActive
                     ? "bg-primary/10 text-foreground border-l-2 border-primary"
@@ -186,14 +218,18 @@ export function ConfigShell({
         </nav>
 
         <div ref={paneRef} className="flex-1 min-w-0 overflow-y-auto px-8 py-6">
-          <h3 className="text-base font-medium pb-3">{active?.label}</h3>
-          {active?.render ? (
-            active.render({ hp, onUpdate, slot, modelType })
-          ) : (
-            <p className="text-sm text-muted-foreground py-8">
-              This section isn’t wired up in the new layout yet.
-            </p>
-          )}
+          {sections.map((s) => (
+            <section key={s.id} data-section={s.id} className="scroll-mt-2 pb-10">
+              <h3 className="text-base font-medium pb-3">{s.label}</h3>
+              {s.render ? (
+                s.render({ hp, onUpdate, slot, modelType })
+              ) : (
+                <p className="text-sm text-muted-foreground pb-4">
+                  This section isn’t wired up in the new layout yet.
+                </p>
+              )}
+            </section>
+          ))}
         </div>
       </div>
 

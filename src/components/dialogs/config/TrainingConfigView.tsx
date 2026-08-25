@@ -17,8 +17,8 @@ const PIPELINE_TAB = "pipeline";
  * Flat top tabs like the legacy top-down "Full Configuration": Pipeline, then one
  * tab per head slot (Centroid, Centered Instance). The Pipeline tab shows the
  * shared sections (displayed from the first config, written to ALL slots); each
- * head tab shows that slot's per-head sections. Owns the active tab + section so
- * search can jump across tabs; hands a resolved view to the ConfigShell.
+ * head tab shows that slot's per-head sections. Owns the active tab so search can
+ * jump across tabs; the ConfigShell renders each tab as one long scroll.
  */
 export function TrainingConfigView({
   modelType,
@@ -39,9 +39,6 @@ export function TrainingConfigView({
   // tab, so a search jump from Pipeline into a head field returns you to it.
   const [activeTab, setActiveTab] = useState<string>(PIPELINE_TAB);
   const [headSlot, setHeadSlot] = useState(firstConfig?.slot ?? "");
-  const [activeSectionId, setActiveSectionId] = useState<string>(
-    () => allSections.find((s) => s.scope === "pipeline")?.id ?? allSections[0]?.id ?? "",
-  );
 
   if (!firstConfig) return null;
   const isPipeline = activeTab === PIPELINE_TAB;
@@ -66,17 +63,13 @@ export function TrainingConfigView({
   function selectTab(id: string) {
     setActiveTab(id);
     if (id !== PIPELINE_TAB) setHeadSlot(id);
-    const scope = id === PIPELINE_TAB ? "pipeline" : "head";
-    const first = allSections.find((s) => s.scope === scope);
-    if (first) setActiveSectionId(first.id);
   }
 
-  // Rail click / search jump — switch tab when the target lives in the other scope.
-  function navigate(sectionId: string) {
+  // A search result may live in the other scope — switch tabs so it's rendered.
+  function onSearchNavigate(sectionId: string) {
     const scope = SCOPE_BY_SECTION[sectionId] ?? "pipeline";
     if (scope === "pipeline") setActiveTab(PIPELINE_TAB);
     else if (isPipeline) setActiveTab(headSlot);
-    setActiveSectionId(sectionId);
   }
 
   return (
@@ -91,8 +84,7 @@ export function TrainingConfigView({
       slot={isPipeline ? undefined : headConfig.slot}
       modelType={modelType}
       headerAccessory={<SlotSwitcher slots={tabs} active={activeTab} onChange={selectTab} size="lg" />}
-      activeSectionId={activeSectionId}
-      onActiveSectionChange={navigate}
+      onSearchNavigate={onSearchNavigate}
     />
   );
 }
