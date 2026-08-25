@@ -1,17 +1,11 @@
-import { useState } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { ConfigShell } from "@/components/dialogs/config/ConfigShell";
-import { SlotSwitcher } from "@/components/dialogs/config/SlotSwitcher";
-import { buildTrainingSections } from "@/components/dialogs/config/trainingSections";
-import { TRAINING_SEARCH_INDEX } from "@/lib/configSearch";
-import { getSlotLabel } from "@/stores/trainingStore";
+import { TrainingConfigView } from "@/components/dialogs/config/TrainingConfigView";
 import type { ConfigFile, ConfigHyperparams } from "@/stores/trainingStore";
 
 /**
- * Modal host for the training config shell. Owns the active-slot selection and
- * feeds the shell the selected config's live hyperparameters. Edits auto-save
- * through onUpdateSlot; "Reset to profile defaults" restores that slot's
- * as-loaded values via onResetSlot.
+ * Modal host for the training config shell. Wraps TrainingConfigView (which owns
+ * the Pipeline | Head tabs, head-slot switcher, and shared-vs-per-head data) in a
+ * Dialog. Edits auto-save through onUpdateSlot; reset restores as-loaded values.
  */
 export function ConfigModal({
   open,
@@ -28,13 +22,7 @@ export function ConfigModal({
   onUpdateSlot: (slot: string, updates: Partial<ConfigHyperparams>) => void;
   onResetSlot: (slot: string) => void;
 }) {
-  const [activeSlot, setActiveSlot] = useState(configs[0]?.slot ?? "");
-  const active = configs.find((c) => c.slot === activeSlot) ?? configs[0];
-
-  if (!active) return null;
-
-  const slotTabs = configs.map((c) => ({ id: c.slot, label: getSlotLabel(c.slot).replace(" Config", "") }));
-  const sections = buildTrainingSections();
+  if (!configs[0]) return null;
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
@@ -42,19 +30,12 @@ export function ConfigModal({
         <DialogHeader className="sr-only">
           <DialogTitle>Training Configuration</DialogTitle>
         </DialogHeader>
-        <ConfigShell
-          title="Training Configuration"
-          sections={sections}
-          searchIndex={TRAINING_SEARCH_INDEX}
-          hp={active.hyperparams}
-          onUpdate={(patch) => onUpdateSlot(active.slot, patch)}
-          onResetAll={() => onResetSlot(active.slot)}
-          onDone={onClose}
-          slot={active.slot}
+        <TrainingConfigView
           modelType={modelType}
-          headerAccessory={
-            <SlotSwitcher slots={slotTabs} active={active.slot} onChange={setActiveSlot} />
-          }
+          configs={configs}
+          onUpdateSlot={onUpdateSlot}
+          onResetSlot={onResetSlot}
+          onDone={onClose}
         />
       </DialogContent>
     </Dialog>

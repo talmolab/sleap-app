@@ -38,6 +38,8 @@ export function ConfigShell({
   headerAccessory,
   onDone,
   searchIndex,
+  activeSectionId,
+  onActiveSectionChange,
 }: {
   title: string;
   sections: ShellSection[];
@@ -53,8 +55,15 @@ export function ConfigShell({
   onDone?: () => void;
   /** Field search index; when provided, the search row is shown. */
   searchIndex?: SearchEntry[];
+  /** Controlled active section id. Falls back to internal state when omitted. */
+  activeSectionId?: string;
+  /** Called when the active section changes (rail click / search jump). May switch tabs in the host. */
+  onActiveSectionChange?: (sectionId: string) => void;
 }) {
-  const [activeId, setActiveId] = useState(initialSectionId ?? sections[0]?.id ?? "");
+  const [internalActive, setInternalActive] = useState(initialSectionId ?? sections[0]?.id ?? "");
+  const activeId = activeSectionId ?? internalActive;
+  const setActive = (id: string) =>
+    onActiveSectionChange ? onActiveSectionChange(id) : setInternalActive(id);
   const [query, setQuery] = useState("");
   const [searchFocused, setSearchFocused] = useState(false);
   const [pendingHighlight, setPendingHighlight] = useState<string | null>(null);
@@ -90,7 +99,7 @@ export function ConfigShell({
   const active = sections.find((s) => s.id === activeId) ?? sections[0];
 
   function goToResult(entry: SearchEntry) {
-    setActiveId(entry.sectionId);
+    setActive(entry.sectionId);
     setPendingHighlight(fieldSlug(entry.label));
     setQuery("");
     setSearchFocused(false);
@@ -161,7 +170,7 @@ export function ConfigShell({
             return (
               <button
                 key={s.id}
-                onClick={() => setActiveId(s.id)}
+                onClick={() => setActive(s.id)}
                 className={`w-full flex items-center px-4 py-2 text-sm text-left transition-colors ${
                   isActive
                     ? "bg-primary/10 text-foreground border-l-2 border-primary"
