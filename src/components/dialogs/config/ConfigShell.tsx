@@ -33,6 +33,8 @@ export function ConfigShell({
   initialSectionId,
   slot,
   modelType,
+  headerAccessory,
+  onDone,
 }: {
   title: string;
   sections: ShellSection[];
@@ -42,6 +44,10 @@ export function ConfigShell({
   initialSectionId?: string;
   slot?: string;
   modelType?: string;
+  /** Optional control shown in the header next to the title (e.g. a slot switcher). */
+  headerAccessory?: React.ReactNode;
+  /** When provided (modal host), renders a "Done" button in the footer. */
+  onDone?: () => void;
 }) {
   const [activeId, setActiveId] = useState(initialSectionId ?? sections[0]?.id ?? "");
   const [query, setQuery] = useState("");
@@ -54,8 +60,11 @@ export function ConfigShell({
   return (
     <div className="flex flex-col h-full bg-muted/20 text-foreground">
       {/* Header */}
-      <div className="flex items-center justify-between px-6 py-3 border-b shrink-0">
-        <h2 className="text-base font-semibold">{title}</h2>
+      <div className="flex items-center justify-between gap-4 pl-6 pr-12 py-3 border-b shrink-0">
+        <div className="flex items-center gap-4 min-w-0">
+          <h2 className="text-base font-semibold shrink-0">{title}</h2>
+          {headerAccessory}
+        </div>
         <span
           className="flex items-center gap-1.5 text-xs text-muted-foreground"
           title="Edits are saved automatically as you type"
@@ -107,7 +116,7 @@ export function ConfigShell({
       </div>
 
       {/* Footer */}
-      <div className="flex items-center px-6 py-3 border-t shrink-0">
+      <div className="flex items-center justify-between px-6 py-3 border-t shrink-0">
         <button
           onClick={onResetAll}
           className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
@@ -115,6 +124,14 @@ export function ConfigShell({
           <RotateCcw className="h-3.5 w-3.5" />
           Reset to profile defaults…
         </button>
+        {onDone && (
+          <button
+            onClick={onDone}
+            className="px-4 h-8 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90"
+          >
+            Done
+          </button>
+        )}
       </div>
     </div>
   );
