@@ -1,77 +1,65 @@
-# Bundled ffmpeg sidecar (legacy-codec transcode fallback)
+# Bundled ffmpeg/ffprobe sidecars (legacy-codec transcode fallback)
 
 The desktop app transcodes videos whose codec WebCodecs can't decode
 (Xvid/DivX = MPEG-4 ASP, WMV3/VC-1, MPEG-1/2, 10-bit HEVC) into a plain H.264
 MP4 once, caches it, and opens that through the normal hardware path. The
-transcode runs in a **bundled ffmpeg sidecar** so it needs no external install
-and honors the "label without the training stack" goal.
+transcode runs in **bundled ffmpeg + ffprobe sidecars** so it needs no external
+install and honors the "label without the training stack" goal. The
+transcode/cache logic lives in `src/lib/transcode/` (unit tested), and the
+sidecars are wired in via `externalBin` in `tauri.conf.json` + a scoped
+`shell:allow-execute` capability (`capabilities/default.json` and the inlined
+localhost capability in `src/lib.rs`).
 
-The transcode/cache logic already lives in `src/lib/transcode/` and is unit
-tested. What remains is **vendoring the binaries and turning the wiring on** —
-the steps below. They are intentionally NOT applied yet, because adding
-`externalBin` without the binaries present breaks `tauri build`.
+## The binaries are fetched, never committed
 
-## 1. Obtain per-platform ffmpeg builds (libopenh264, permissive)
+`ffmpeg-<triple>` / `ffprobe-<triple>` are large and platform-specific, so they
+are `.gitignore`'d and populated by **`scripts/fetch-ffmpeg.sh`**:
 
-Use a build compiled with **`libopenh264`** (BSD) as the H.264 encoder — NOT
-`libx264` (GPL). This matches CVAT's choice and keeps our bundle permissively
-licensed (libavcodec is LGPL). One binary per Tauri target triple:
-
-| Platform | Target triple (example) | File to drop here |
-|----------|-------------------------|-------------------|
-| macOS (Apple Silicon) | `aarch64-apple-darwin` | `ffmpeg-aarch64-apple-darwin` |
-| macOS (Intel) | `x86_64-apple-darwin` | `ffmpeg-x86_64-apple-darwin` |
-| Windows | `x86_64-pc-windows-msvc` | `ffmpeg-x86_64-pc-windows-msvc.exe` |
-| Linux | `x86_64-unknown-linux-gnu` | `ffmpeg-x86_64-unknown-linux-gnu` |
-
-Tauri resolves `Command.sidecar("binaries/ffmpeg", …)` to
-`binaries/ffmpeg-<target-triple>` at build time (see `FFMPEG_SIDECAR` in
-`src/lib/transcode/transcodeDepsTauri.ts`). Get the target triple with
-`rustc -Vv | grep host`.
-
-> If we also want native codec **probing** (recommended, so a large legacy file
-> never gets materialized into the WebView just to detect its codec), bundle a
-> matching `ffprobe-<target-triple>` too and add a second `externalBin` entry.
-
-## 2. Declare the sidecar in `tauri.conf.json`
-
-```jsonc
-// bundle: { … }
-"externalBin": ["binaries/ffmpeg"]   // + "binaries/ffprobe" if probing natively
+```bash
+bun run fetch:ffmpeg                       # host triple (before `bun run tauri:dev`)
+bun run fetch:ffmpeg universal-apple-darwin
+bash scripts/fetch-ffmpeg.sh x86_64-pc-windows-msvc
 ```
 
-## 3. Grant the shell permission (capability sync — THREE surfaces)
+CI runs this automatically in `.github/workflows/build.yml` (the "Vendor ffmpeg
+sidecars" step, before "Build Tauri app"), once per platform using the matrix's
+`sidecar-triple`. Without it, `tauri build` panics with
+`resource path binaries/ffmpeg-<triple> doesn't exist`.
 
-Per the project's capability-sync rule, a shell/sidecar permission must be
-added everywhere a capability is defined, or it silently fails only in bundles:
+Tauri resolves `Command.sidecar("binaries/ffmpeg", …)` to `binaries/ffmpeg-<target-triple>`.
+For the macOS `--target universal-apple-darwin` build that suffix is
+`universal-apple-darwin` (a `lipo` of both arches), **not** the host arch. Get a
+host triple with `rustc -Vv | grep host`.
 
-- `src-tauri/capabilities/default.json`
-- the inlined **localhost** capability (bundled builds serve from
-  `http://localhost`; grep `lib.rs` / capabilities for the localhost capability)
-- `build.rs` ACL, if the project enumerates permissions there
+| Tauri target | File the script writes |
+|--------------|------------------------|
+| `x86_64-unknown-linux-gnu` | `ffmpeg-x86_64-unknown-linux-gnu` |
+| `x86_64-pc-windows-msvc` | `ffmpeg-x86_64-pc-windows-msvc.exe` |
+| `universal-apple-darwin` | `ffmpeg-universal-apple-darwin` (fat: arm64 + x86_64) |
+| `aarch64-apple-darwin` / `x86_64-apple-darwin` | single-arch (local dev) |
 
-Add a scoped execute permission (do NOT grant unrestricted `shell:allow-execute`):
+## Encoder / license policy
 
-```jsonc
-{
-  "identifier": "shell:allow-execute",
-  "allow": [
-    { "name": "binaries/ffmpeg", "sidecar": true, "args": true }
-  ]
-}
-```
+The transcode router only accepts a **permissive** H.264 encoder — `libopenh264`
+(Cisco, BSD) or `h264_videotoolbox` (macOS OS framework) — never `libx264`
+(GPL). `scripts/fetch-ffmpeg.sh` sources builds accordingly and **asserts** the
+encoder is present after download, failing the build if a source ever stops
+shipping it:
 
-## 4. Turn on the router branch
+- **Windows / Linux** — [BtbN/FFmpeg-Builds] *lgpl* variant (LGPL, libopenh264).
+- **macOS** — [ffmpeg.martin-riedl.de] arm64 + amd64 (GPL builds; bundled as an
+  arm's-length CLI sidecar, so they don't relicense the app's own code).
 
-Wire `src/lib/resolveVideos.ts` `createBackendForPath` to probe the codec and,
-when `codecNeedsTranscode()` is true, call `transcodeToMp4()` with
-`createTauriTranscodeDeps()` and open the returned MP4 via the normal Mp4Box
-path. See the marked integration point in that file. Keep the video's ORIGINAL
-path in the `.slp` (store the cache path only in `backendMetadata`).
+License + corresponding-source details are in
+[`FFMPEG_LICENSE_NOTICE.md`](./FFMPEG_LICENSE_NOTICE.md), which ships in the
+bundle via `bundle.resources`.
 
 ## Notes
-- `.gitignore` the binaries themselves (they're large / platform-specific);
-  fetch them in CI or a setup script. This README + `.gitkeep` keep the dir.
 - Frame-exactness is guaranteed by `-fps_mode passthrough` (see
-  `transcodeArgs.ts`) — verified in the spike (10→10, 500→500 frame parity), so
-  SLEAP labels stay aligned to the original.
+  `src/lib/transcode/transcodeArgs.ts`) — verified in the spike (10→10, 500→500
+  frame parity), so SLEAP labels stay aligned to the original video.
+- The video's ORIGINAL path stays in the `.slp`; the cache path lives only in
+  `backendMetadata` (see `src/lib/resolveVideos.ts`).
+
+[BtbN/FFmpeg-Builds]: https://github.com/BtbN/FFmpeg-Builds
+[ffmpeg.martin-riedl.de]: https://ffmpeg.martin-riedl.de

@@ -4,3 +4,4 @@ ffmpeg-*
 ffprobe-*
 !.gitkeep
 !README.md
+!FFMPEG_LICENSE_NOTICE.md

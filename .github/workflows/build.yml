@@ -57,6 +57,9 @@ jobs:
           - platform: ubuntu-22.04
             target: linux
             rust-targets: x86_64-unknown-linux-gnu
+            # Tauri sidecar triple: the suffix `Command.sidecar("binaries/ffmpeg")`
+            # resolves to. For --target builds it is that target (see macOS below).
+            sidecar-triple: x86_64-unknown-linux-gnu
             tauri-args: ""
             bundle-dir: src-tauri/target/release/bundle
             job-timeout: 60
@@ -67,6 +70,9 @@ jobs:
           - platform: macos-latest
             target: macos-universal
             rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+            # --target universal-apple-darwin => sidecars must be a fat
+            # `binaries/ffmpeg-universal-apple-darwin` (lipo of both arches).
+            sidecar-triple: universal-apple-darwin
             tauri-args: "--target universal-apple-darwin"
             bundle-dir: src-tauri/target/universal-apple-darwin/release/bundle
             # Tauri notarizes the .app INSIDE its build step, emitting no progress
@@ -79,6 +85,7 @@ jobs:
           - platform: windows-latest
             target: windows
             rust-targets: x86_64-pc-windows-msvc
+            sidecar-triple: x86_64-pc-windows-msvc
             tauri-args: ""
             bundle-dir: src-tauri/target/release/bundle
             job-timeout: 60
@@ -309,6 +316,14 @@ jobs:
                  "APPLE_ID, APPLE_PASSWORD and APPLE_TEAM_ID must all three be set." \
                  "An un-notarized Developer ID build is still gated in a browser."
           fi
+
+      # tauri.conf.json declares the ffmpeg/ffprobe sidecars as externalBin, so
+      # `tauri build` panics unless binaries/ffmpeg-<triple> exist. They are
+      # .gitignore'd (large, per-platform) and fetched here. The script asserts a
+      # permissive H.264 encoder is present, failing the build if a source rots.
+      - name: Vendor ffmpeg sidecars
+        shell: bash
+        run: bash scripts/fetch-ffmpeg.sh "${{ matrix.sidecar-triple }}"
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
