@@ -11,12 +11,14 @@ const SCOPE_BY_SECTION: Record<string, SectionScope> = Object.fromEntries(
   TRAINING_SECTIONS.map((s) => [s.id, s.scope]),
 );
 
+const PIPELINE_TAB = "pipeline";
+
 /**
- * Restores the legacy Pipeline | Head split inside the new shell. Pipeline
- * sections are shared across heads (displayed from the first config, written to
- * ALL slots); Head sections are per-slot, with the Centroid | Centered-Instance
- * sub-switcher. Owns tab + active-slot + active-section so search can jump across
- * tabs; hands a fully-resolved view to the (host-agnostic) ConfigShell.
+ * Flat top tabs like the legacy top-down "Full Configuration": Pipeline, then one
+ * tab per head slot (Centroid, Centered Instance). The Pipeline tab shows the
+ * shared sections (displayed from the first config, written to ALL slots); each
+ * head tab shows that slot's per-head sections. Owns the active tab + section so
+ * search can jump across tabs; hands a resolved view to the ConfigShell.
  */
 export function TrainingConfigView({
   modelType,
@@ -32,58 +34,50 @@ export function TrainingConfigView({
   onDone?: () => void;
 }) {
   const allSections = useMemo(() => buildTrainingSections(), []);
-  const [tab, setTab] = useState<SectionScope>("pipeline");
-  const [activeSlot, setActiveSlot] = useState(configs[0]?.slot ?? "");
+  const firstConfig = configs[0];
+  // activeTab is PIPELINE_TAB or a head slot id. headSlot remembers the last head
+  // tab, so a search jump from Pipeline into a head field returns you to it.
+  const [activeTab, setActiveTab] = useState<string>(PIPELINE_TAB);
+  const [headSlot, setHeadSlot] = useState(firstConfig?.slot ?? "");
   const [activeSectionId, setActiveSectionId] = useState<string>(
     () => allSections.find((s) => s.scope === "pipeline")?.id ?? allSections[0]?.id ?? "",
   );
 
-  const firstConfig = configs[0];
-  const activeConfig = configs.find((c) => c.slot === activeSlot) ?? firstConfig;
-  if (!activeConfig || !firstConfig) return null;
+  if (!firstConfig) return null;
+  const isPipeline = activeTab === PIPELINE_TAB;
+  const headConfig = configs.find((c) => c.slot === (isPipeline ? headSlot : activeTab)) ?? firstConfig;
 
-  const sections: ShellSection[] = allSections.filter((s) => s.scope === tab);
-  const isPipeline = tab === "pipeline";
+  const sections: ShellSection[] = allSections.filter((s) => s.scope === (isPipeline ? "pipeline" : "head"));
 
-  // Pipeline scope: display the first config, write/reset ALL slots (shared).
-  // Head scope: the active slot only.
-  const hp = isPipeline ? firstConfig.hyperparams : activeConfig.hyperparams;
+  // Pipeline: display the first config, write/reset ALL slots. Head: the tab's slot.
+  const hp = isPipeline ? firstConfig.hyperparams : headConfig.hyperparams;
   const onUpdate = isPipeline
     ? (patch: Partial<ConfigHyperparams>) => configs.forEach((c) => onUpdateSlot(c.slot, patch))
-    : (patch: Partial<ConfigHyperparams>) => onUpdateSlot(activeConfig.slot, patch);
+    : (patch: Partial<ConfigHyperparams>) => onUpdateSlot(headConfig.slot, patch);
   const onResetAll = isPipeline
     ? () => configs.forEach((c) => onResetSlot(c.slot))
-    : () => onResetSlot(activeConfig.slot);
+    : () => onResetSlot(headConfig.slot);
 
-  // Rail click / search jump — switch tabs when the target lives in the other scope.
-  function navigate(sectionId: string) {
-    const scope = SCOPE_BY_SECTION[sectionId] ?? "pipeline";
-    if (scope !== tab) setTab(scope);
-    setActiveSectionId(sectionId);
-  }
+  const tabs = [
+    { id: PIPELINE_TAB, label: "Pipeline" },
+    ...configs.map((c) => ({ id: c.slot, label: getSlotLabel(c.slot).replace(" Config", "") })),
+  ];
 
-  function switchTab(next: SectionScope) {
-    setTab(next);
-    const first = allSections.find((s) => s.scope === next);
+  function selectTab(id: string) {
+    setActiveTab(id);
+    if (id !== PIPELINE_TAB) setHeadSlot(id);
+    const scope = id === PIPELINE_TAB ? "pipeline" : "head";
+    const first = allSections.find((s) => s.scope === scope);
     if (first) setActiveSectionId(first.id);
   }
 
-  const headerAccessory = (
-    <div className="flex items-center gap-2">
-      <SlotSwitcher
-        slots={[{ id: "pipeline", label: "Pipeline" }, { id: "head", label: "Head" }]}
-        active={tab}
-        onChange={(id) => switchTab(id as SectionScope)}
-      />
-      {tab === "head" && (
-        <SlotSwitcher
-          slots={configs.map((c) => ({ id: c.slot, label: getSlotLabel(c.slot).replace(" Config", "") }))}
-          active={activeConfig.slot}
-          onChange={setActiveSlot}
-        />
-      )}
-    </div>
-  );
+  // Rail click / search jump — switch tab when the target lives in the other scope.
+  function navigate(sectionId: string) {
+    const scope = SCOPE_BY_SECTION[sectionId] ?? "pipeline";
+    if (scope === "pipeline") setActiveTab(PIPELINE_TAB);
+    else if (isPipeline) setActiveTab(headSlot);
+    setActiveSectionId(sectionId);
+  }
 
   return (
     <ConfigShell
@@ -94,9 +88,9 @@ export function TrainingConfigView({
       onUpdate={onUpdate}
       onResetAll={onResetAll}
       onDone={onDone}
-      slot={isPipeline ? undefined : activeConfig.slot}
+      slot={isPipeline ? undefined : headConfig.slot}
       modelType={modelType}
-      headerAccessory={headerAccessory}
+      headerAccessory={<SlotSwitcher slots={tabs} active={activeTab} onChange={selectTab} size="lg" />}
       activeSectionId={activeSectionId}
       onActiveSectionChange={navigate}
     />

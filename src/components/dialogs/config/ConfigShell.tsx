@@ -107,12 +107,14 @@ export function ConfigShell({
 
   return (
     <div className="flex flex-col h-full bg-muted/20 text-foreground">
-      {/* Header: title + accessory (slot switcher) + saved indicator */}
-      <div className="flex items-center justify-between gap-4 pl-6 pr-12 py-3 border-b shrink-0">
-        <div className="flex items-center gap-4 min-w-0">
-          <h2 className="text-base font-semibold shrink-0">{title}</h2>
-          {headerAccessory}
-        </div>
+      {/* Header: title (left) + centered tab switcher + saved indicator (right) */}
+      <div className="relative flex items-center justify-between gap-4 pl-6 pr-12 py-3 border-b shrink-0">
+        <h2 className="text-base font-semibold shrink-0">{title}</h2>
+        {headerAccessory && (
+          <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+            {headerAccessory}
+          </div>
+        )}
         <span
           className="flex items-center gap-1.5 text-xs text-muted-foreground shrink-0"
           title="Edits are saved automatically as you type"
