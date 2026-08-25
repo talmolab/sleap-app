@@ -29,6 +29,11 @@ export function HintBubble({ text }: { text: string }) {
   );
 }
 
+/** Stable anchor for a field, derived from its label (for search jump/highlight). */
+export function fieldSlug(label: string): string {
+  return label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
 /** Label + optional hint on the left, control on the right. */
 export function Field({
   label,
@@ -42,7 +47,7 @@ export function Field({
   children: React.ReactNode;
 }) {
   return (
-    <div id={id} data-search-field={id ? "" : undefined} className="flex items-center gap-6 py-2.5 scroll-mt-4">
+    <div id={id} data-field={fieldSlug(label)} data-search-field={id ? "" : undefined} className="flex items-center gap-6 py-2.5 scroll-mt-4 rounded-md">
       <span className="text-sm text-muted-foreground shrink-0 flex items-center gap-1.5">
         {label}
         {hint && <HintBubble text={hint} />}
@@ -71,8 +76,9 @@ export function Toggle({
   return (
     <div
       id={id}
+      data-field={fieldSlug(label)}
       data-search-field={id ? "" : undefined}
-      className={`flex items-center gap-6 py-2.5 scroll-mt-4 ${disabled ? "opacity-50" : ""}`}
+      className={`flex items-center gap-6 py-2.5 scroll-mt-4 rounded-md ${disabled ? "opacity-50" : ""}`}
     >
       <span className="text-sm text-muted-foreground shrink-0 flex items-center gap-1.5">
         {label}

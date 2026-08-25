@@ -1,6 +1,7 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, RotateCcw, Search } from "lucide-react";
 import { matchConfigSearch, type SearchEntry } from "@/lib/configSearch";
+import { fieldSlug } from "@/components/dialogs/config/primitives";
 import type { ConfigSection } from "@/lib/configSections";
 import type { ConfigHyperparams } from "@/stores/trainingStore";
 
@@ -56,6 +57,24 @@ export function ConfigShell({
   const [activeId, setActiveId] = useState(initialSectionId ?? sections[0]?.id ?? "");
   const [query, setQuery] = useState("");
   const [searchFocused, setSearchFocused] = useState(false);
+  const [pendingHighlight, setPendingHighlight] = useState<string | null>(null);
+  const paneRef = useRef<HTMLDivElement>(null);
+
+  // After a search jump switches sections, scroll to the target field and flash
+  // an orange ring on it (mirrors the legacy dialog's ring-2 ring-primary, 1.5s).
+  useEffect(() => {
+    if (!pendingHighlight) return;
+    const raf = requestAnimationFrame(() => {
+      const el = paneRef.current?.querySelector<HTMLElement>(`[data-field="${pendingHighlight}"]`);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        el.classList.add("ring-2", "ring-primary");
+        setTimeout(() => el.classList.remove("ring-2", "ring-primary"), 1500);
+      }
+      setPendingHighlight(null);
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [pendingHighlight, activeId]);
 
   const sectionLabel = useMemo(() => {
     const m: Record<string, string> = {};
@@ -70,8 +89,9 @@ export function ConfigShell({
 
   const active = sections.find((s) => s.id === activeId) ?? sections[0];
 
-  function goToResult(sectionId: string) {
-    setActiveId(sectionId);
+  function goToResult(entry: SearchEntry) {
+    setActiveId(entry.sectionId);
+    setPendingHighlight(fieldSlug(entry.label));
     setQuery("");
     setSearchFocused(false);
   }
@@ -104,7 +124,7 @@ export function ConfigShell({
               onFocus={() => setSearchFocused(true)}
               onBlur={() => setTimeout(() => setSearchFocused(false), 120)}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && results[0]) goToResult(results[0].sectionId);
+                if (e.key === "Enter" && results[0]) goToResult(results[0]);
                 if (e.key === "Escape") setQuery("");
               }}
               placeholder="Search fields…"
@@ -119,7 +139,7 @@ export function ConfigShell({
                 results.map((r, i) => (
                   <li key={`${r.sectionId}-${r.label}-${i}`}>
                     <button
-                      onMouseDown={(e) => { e.preventDefault(); goToResult(r.sectionId); }}
+                      onMouseDown={(e) => { e.preventDefault(); goToResult(r); }}
                       className="w-full flex items-center justify-between gap-3 px-3 py-1.5 text-left text-sm hover:bg-muted/60"
                     >
                       <span className="truncate">{r.label}</span>
@@ -154,7 +174,7 @@ export function ConfigShell({
           })}
         </nav>
 
-        <div className="flex-1 min-w-0 overflow-y-auto px-8 py-6">
+        <div ref={paneRef} className="flex-1 min-w-0 overflow-y-auto px-8 py-6">
           <h3 className="text-base font-medium pb-3">{active?.label}</h3>
           {active?.render ? (
             active.render({ hp, onUpdate, slot, modelType })
