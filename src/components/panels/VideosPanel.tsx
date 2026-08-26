@@ -438,26 +438,6 @@ export function VideosPanel() {
     }
   };
 
-  /**
-   * Pick video file(s), then stage them in the Import Videos dialog (grayscale
-   * choice) instead of adding immediately — mirrors the legacy Qt GUI's
-   * "Import Videos" dialog. Actually adding happens in {@link handleConfirmImport}.
-   */
-  const handleAddVideos = async () => {
-    if (!labels) return;
-    let picked;
-    try {
-      picked = await pickVideoFiles();
-    } catch (err) {
-      toast.error("Failed to add video", {
-        description: err instanceof Error ? err.message : String(err),
-      });
-      return;
-    }
-    if (picked.length === 0) return; // cancelled
-    setPendingImport(toVideoImportEntries(picked));
-  };
-
   /** Add every staged video from the Import Videos dialog, with its chosen grayscale flag. */
   const handleConfirmImport = async () => {
     if (!labels || !pendingImport) return;
@@ -663,18 +643,10 @@ export function VideosPanel() {
       <div className="px-2 pt-2">
         <VideoDropzone
           onFiles={(picked) => setPendingImport(toVideoImportEntries(picked))}
-          data-tutorial="add-videos-dropzone"
+          data-tutorial="add-videos-button"
         />
       </div>
       <div className="flex gap-1 p-2">
-        <Button
-          variant="subtle"
-          size="xs"
-          onClick={handleAddVideos}
-          data-tutorial="add-videos-button"
-        >
-          Add Videos
-        </Button>
         <Button
           variant="subtle"
           size="xs"
