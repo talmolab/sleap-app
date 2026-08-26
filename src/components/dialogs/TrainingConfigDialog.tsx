@@ -1048,9 +1048,9 @@ export function TrainingConfigDialog({
             <DialogTitle className="text-base font-semibold shrink-0">Training Configuration</DialogTitle>
             <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
               <TabsList>
-                <TabsTrigger value="pipeline" className="text-base px-4">Pipeline</TabsTrigger>
+                <TabsTrigger value="pipeline" className="text-sm px-4 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground dark:data-[state=active]:bg-primary dark:data-[state=active]:text-primary-foreground">Pipeline</TabsTrigger>
                 {sortedConfigs.map((cf) => (
-                  <TabsTrigger key={cf.slot} value={cf.slot} className="text-base px-4">
+                  <TabsTrigger key={cf.slot} value={cf.slot} className="text-sm px-4 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground dark:data-[state=active]:bg-primary dark:data-[state=active]:text-primary-foreground">
                     {getSlotLabel(cf.slot).replace(" Config", "")}
                   </TabsTrigger>
                 ))}
