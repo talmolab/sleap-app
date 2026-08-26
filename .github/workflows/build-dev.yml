@@ -1,16 +1,24 @@
 name: Build Dev Channel
 
-# Continuous desktop builds off `main`, for the in-app "dev" update channel.
+# Nightly desktop builds off `main`, for the in-app "dev" update channel.
 # Unlike build.yml's release pipeline, these are ad-hoc/unsigned (no Apple
-# Developer ID, no notarization) so a push doesn't wait on Apple's notary
+# Developer ID, no notarization) so a run doesn't wait on Apple's notary
 # service, and they publish to a single rolling `channel-dev` pre-release
 # instead of a per-version tag -- see the `publish` job.
+#
+# Runs on a nightly schedule (not per-push -- a full 3-platform native build
+# on every merge is expensive, especially macOS runners' 10x-per-minute
+# billing multiplier) plus workflow_dispatch for an on-demand build. The
+# `meta` job's should_build check skips the (expensive) build+publish jobs
+# entirely when `main` hasn't moved since the last dev build -- a scheduled
+# run on a quiet day is nearly free. workflow_dispatch always forces a build
+# regardless, for testing the pipeline itself.
 on:
-  push:
-    branches: [main]
+  schedule:
+    - cron: "0 0 * * *" # 00:00 UTC daily
   workflow_dispatch:
 
-# A newer push supersedes an in-flight dev build -- there's no reason to
+# A newer run supersedes an in-flight dev build -- there's no reason to
 # finish building a commit `main` has already moved past.
 concurrency:
   group: build-dev
@@ -21,47 +29,115 @@ env:
   RUST_BACKTRACE: short
 
 jobs:
-  # Computes the one version string every matrix leg and the publish job
-  # need to agree on. `X.Y.Z-N` (not the commit SHA) because the Windows MSI
-  # bundler requires a NUMERIC pre-release identifier (see build.yml's
-  # `validate` job) -- the commit is carried separately, as metadata.
+  # Decides whether this run should actually build anything, and computes the
+  # one version string every matrix leg and the publish job need to agree on.
   meta:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       version: ${{ steps.compute.outputs.version }}
       short_sha: ${{ steps.compute.outputs.short_sha }}
+      should_build: ${{ steps.should_build.outputs.should_build }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Compute the dev build's version
-        id: compute
+      # Compares against the exact commit the LAST dev build actually used
+      # (the `channel-dev` tag, which the publish job below pins via
+      # `--target` precisely so this comparison is reliable) rather than a
+      # rolling time window -- robust to a delayed/queued scheduled run, a
+      # paused-then-resumed schedule, or a prior build that failed and needs
+      # a retry on the same commit. workflow_dispatch always builds: it's the
+      # "give me a fresh dev build right now" escape hatch, e.g. for testing
+      # this pipeline after a workflow-only change with no app code change.
+      - name: Decide whether main has moved since the last dev build
+        id: should_build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          BASE="$(python3 -c "import json; print(json.load(open('package.json'))['version'])")"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "Manual trigger -- building regardless of whether main moved."
+            exit 0
+          fi
+          LAST_SHA="$(gh api "repos/$REPO/git/ref/tags/channel-dev" --jq .object.sha 2>/dev/null || true)"
+          if [ -z "$LAST_SHA" ]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "No prior channel-dev tag found -- building."
+          elif [ "$LAST_SHA" = "${{ github.sha }}" ]; then
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            echo "main is unchanged since the last dev build ($LAST_SHA) -- skipping."
+          else
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "main has moved ($LAST_SHA -> ${{ github.sha }}) -- building."
+          fi
 
-          # One patch ahead of whatever's committed, not the bare committed
-          # version: in strict semver a "-N" pre-release sorts BELOW its own
-          # base release, so a plain "<BASE>-<run>" would make every dev
-          # build look OLDER than a real release tagged exactly BASE. A user
-          # running that stable release who switches to the "dev" channel
-          # would then see "no update available" even though main has moved
-          # on. Bumping the patch first guarantees the dev channel's base
-          # always outranks the last real release sharing this BASE.
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE"
-          NEXT_BASE="${MAJOR}.${MINOR}.$((PATCH + 1))"
-          VERSION="${NEXT_BASE}-${{ github.run_number }}"
-          SHORT_SHA="$(printf '%s' "${{ github.sha }}" | cut -c1-8)"
+      - name: Compute the dev build's version
+        id: compute
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # BASE is the HIGHEST-precedence version tag actually published on
+          # GitHub (release OR pre-release, drafts excluded), reused VERBATIM
+          # -- NOT `package.json`'s committed version. package.json is never
+          # updated on `main` by the real release pipeline (build.yml only
+          # patches it inside its own ephemeral, unpushed CI checkout when
+          # stamping a release build), so it silently drifts arbitrarily far
+          # behind actual shipped versions. Deriving from real tags instead is
+          # self-correcting: it reflects whatever has ACTUALLY shipped, with
+          # no dependency on anyone remembering to bump a committed file. A
+          # real release outranks a pre-release of the same base (semver:
+          # "1.0.0" > "1.0.0-1"), which the sort key below encodes explicitly.
+          BASE="$(gh api "repos/$REPO/releases?per_page=100" --paginate \
+            --jq '[.[] | select(.draft == false) | .tag_name as $t
+                   | ($t | capture("^v?(?<major>[0-9]+)\\.(?<minor>[0-9]+)\\.(?<patch>[0-9]+)(-(?<pre>[0-9]+))?$"))?
+                   | select(. != null)
+                   | {sortkey: [(.major|tonumber), (.minor|tonumber), (.patch|tonumber),
+                                (if .pre == null then 1 else 0 end), (.pre // "0" | tonumber)],
+                      base: ($t | ltrimstr("v"))}]
+                  | max_by(.sortkey) | if . == null then null else .base end')"
+          if [ -z "$BASE" ] || [ "$BASE" = "null" ]; then
+            # Defensive fallback (e.g. a brand-new repo with no version-tagged
+            # releases yet) -- package.json's committed version is at least a
+            # starting point, even though it can't be trusted to track reality.
+            BASE="$(python3 -c "import json; print(json.load(open('package.json'))['version'])")"
+            echo "No valid version-tagged releases found on GitHub; falling back to package.json's $BASE"
+          fi
+
+          SHORT_SHA="$(printf '%s' "${{ github.sha }}" | cut -c1-7)"
+
+          # Build metadata ("+...") can hold multiple DOT-separated
+          # identifiers (only ONE "+" is valid in semver at all -- everything
+          # after it is one field). Order inside it is load-bearing: verified
+          # directly against the `semver` crate update_channels.rs and
+          # Tauri's own updater use (Cargo.lock-pinned version) that build
+          # metadata identifiers compare numerically-if-purely-numeric, same
+          # as pre-release identifiers, in the order given -- so putting the
+          # numeric, always-unique-per-build "<run_number>" FIRST makes it the
+          # deciding factor between any two dev builds sharing the same BASE
+          # (e.g. "+48.1a2b3c4" > "+47.9f8e7d6" correctly, even though
+          # "9f8e7d6" > "1a2b3c4" as a raw string). The short SHA comes
+          # second, purely as human-readable commit provenance -- it never
+          # actually gets consulted for ordering since <run_number> is never
+          # tied. Reversing this order would silently break ordering between
+          # dev builds again. <run_number> must stay numeric-only, same
+          # constraint as any semver identifier compared numerically here.
+          VERSION="${BASE}+${{ github.run_number }}.${SHORT_SHA}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
-          echo "Dev build version: $VERSION (package.json base $BASE; commit $SHORT_SHA)"
+          echo "Dev build version: $VERSION (base tag $BASE; commit $SHORT_SHA)"
 
   # Mirrors build.yml's `build` job matrix/steps, minus: the install.ps1 lint
   # (release-only concern), Apple Developer ID signing + notarization (dev
   # builds stay ad-hoc on purpose -- see the workflow comment above).
   build:
     needs: meta
+    if: needs.meta.outputs.should_build == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -180,7 +256,7 @@ jobs:
           "
 
       # No Apple Developer ID secrets are configured for this job on purpose --
-      # dev builds stay ad-hoc-signed (Tauri's fallback identity), so a push
+      # dev builds stay ad-hoc-signed (Tauri's fallback identity), so this
       # doesn't wait on Apple's notary service. Ad-hoc means a normal Gatekeeper
       # "unidentified developer" prompt on macOS, same as any un-notarized build.
       - name: Build Tauri app
@@ -287,13 +363,23 @@ jobs:
         with:
           name: sleap-app-dev-${{ matrix.target }}
           path: artifacts/*
-          retention-days: 7
+          # 30 days rather than the default 7 -- channel-dev itself only ever
+          # keeps the SINGLE most recent build (delete + recreate), so this is
+          # the only place a past dev build survives at all. Not publicly
+          # downloadable without a GitHub-authenticated request (Actions
+          # artifacts always require auth, even on a public repo -- verified
+          # directly, a plain unauthenticated fetch 401s), so this is for a
+          # maintainer digging through history, not for handing a tester a link.
+          retention-days: 30
           if-no-files-found: error
 
   # Publishes to a single rolling `channel-dev` pre-release: deleted and
-  # recreated every run (rather than accumulating assets across pushes), so
-  # `.../releases/download/channel-dev/latest.json` always reflects HEAD of
-  # `main`. See build.yml's `release` job for the per-version-tag equivalent.
+  # recreated every run that actually builds (rather than accumulating assets
+  # across runs), so `.../releases/download/channel-dev/latest.json` always
+  # reflects whatever commit was last built (not necessarily HEAD of `main`
+  # at any given moment, since a quiet night skips the build entirely -- see
+  # the `meta` job). See build.yml's `release` job for the per-version-tag
+  # equivalent.
   publish:
     needs: [meta, build]
     if: ${{ !cancelled() && needs.build.result != 'skipped' }}
@@ -338,10 +424,16 @@ jobs:
         run: |
           set -euo pipefail
           gh release delete channel-dev --repo "$REPO" --cleanup-tag --yes || true
+          # --target pins the tag to the EXACT commit this run built (github.sha),
+          # not whatever main's HEAD happens to be when this step runs -- the
+          # `meta` job's should_build check on the next run compares against
+          # this tag's commit, so it must reflect what was actually built, not
+          # a newer commit that raced in after the build started.
           gh release create channel-dev --repo "$REPO" \
+            --target "${{ github.sha }}" \
             --prerelease \
-            --title "Dev channel — v$VERSION ($SHORT_SHA)" \
-            --notes "Continuous build from \`main\` @ $SHORT_SHA (run #${{ github.run_number }}). Unsigned/ad-hoc -- expect a Gatekeeper \"unidentified developer\" prompt on macOS. Replaced on every push to main; not a stable release." \
+            --title "Dev channel — v$VERSION" \
+            --notes "Continuous build from \`main\` @ $SHORT_SHA (run #${{ github.run_number }}). Unsigned/ad-hoc -- expect a Gatekeeper \"unidentified developer\" prompt on macOS. Built nightly (or on-demand via workflow_dispatch); not a stable release." \
             artifacts/*
 
       - name: Generate update manifest (latest.json)
