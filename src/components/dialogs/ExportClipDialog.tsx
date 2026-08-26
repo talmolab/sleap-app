@@ -241,6 +241,7 @@ export function ExportClipDialog() {
             showEdges,
             showNonVisibleNodes,
             colorPredicted,
+            showTrackScore: false,
           },
         },
         deps,

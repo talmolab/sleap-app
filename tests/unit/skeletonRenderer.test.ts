@@ -227,3 +227,85 @@ describe("non-visible node labels get a shaded background (legacy QtNodeLabel pa
     expect(ctx.__styles.fillStyle).not.toContain("rgba(0, 0, 0, 0.39)");
   });
 });
+
+/** ctx spy that records fillText/strokeText calls with the font/style active at call time. */
+function mockCtxRecordingText() {
+  const texts: {
+    method: "fill" | "stroke";
+    text: string;
+    font: string;
+    fillStyle: unknown;
+    strokeStyle: unknown;
+  }[] = [];
+  let font = "";
+  let fillStyle: unknown = null;
+  let strokeStyle: unknown = null;
+  return new Proxy(
+    {},
+    {
+      get(_t, prop) {
+        if (prop === "__texts") return texts;
+        if (prop === "measureText") return () => ({ width: 40 }) as TextMetrics;
+        if (prop === "fillText")
+          return (text: string) => texts.push({ method: "fill", text, font, fillStyle, strokeStyle });
+        if (prop === "strokeText")
+          return (text: string) => texts.push({ method: "stroke", text, font, fillStyle, strokeStyle });
+        return () => {};
+      },
+      set(_t, prop, value) {
+        if (prop === "font") font = value as string;
+        if (prop === "fillStyle") fillStyle = value;
+        if (prop === "strokeStyle") strokeStyle = value;
+        return true;
+      },
+    },
+  ) as unknown as CanvasRenderingContext2D & { __texts: ReturnType<typeof Array.prototype.slice> };
+}
+
+const trackTexts = (ctx: ReturnType<typeof mockCtxRecordingText>) =>
+  (ctx.__texts as { method: string; text: string; font: string }[]).filter((t) =>
+    t.text.startsWith("Track:"),
+  );
+
+describe("track label readability (#316)", () => {
+  const selected = (over: Partial<RenderedInstance> = {}) =>
+    inst({ isSelected: true, trackName: "3", score: 0.66, ...over });
+
+  it("draws a dark outline halo (strokeText) behind the label, then fills it", () => {
+    const ctx = mockCtxRecordingText();
+    renderInstances(ctx, [selected()], { showInstances: true });
+    const tt = trackTexts(ctx);
+    expect(tt.some((t) => t.method === "stroke")).toBe(true); // halo
+    expect(tt.some((t) => t.method === "fill")).toBe(true);
+  });
+
+  it("omits the score suffix by default", () => {
+    const ctx = mockCtxRecordingText();
+    renderInstances(ctx, [selected()], { showInstances: true });
+    const fill = trackTexts(ctx).find((t) => t.method === "fill");
+    expect(fill?.text).toBe("Track: 3");
+  });
+
+  it("includes the score when showTrackScore is enabled", () => {
+    const ctx = mockCtxRecordingText();
+    renderInstances(ctx, [selected()], { showInstances: true, showTrackScore: true });
+    const fill = trackTexts(ctx).find((t) => t.method === "fill");
+    expect(fill?.text).toBe("Track: 3 (0.66)");
+  });
+
+  it("scales the track-label font with nodeLabelSize (not a hardcoded 10)", () => {
+    const ctx = mockCtxRecordingText();
+    renderInstances(ctx, [selected()], { showInstances: true, zoom: 2, nodeLabelSize: 20 });
+    const fill = trackTexts(ctx).find((t) => t.method === "fill");
+    expect(fill?.font).toContain("10px"); // 20 / zoom(2)
+  });
+
+  it("draws track labels for every predicted instance in colorPredicted mode", () => {
+    const ctx = mockCtxRecordingText();
+    const a = inst({ isPredicted: true, trackName: "1", nodes: [{ x: 5, y: 5, visible: true, complete: true, name: "n" }] });
+    const b = inst({ isPredicted: true, trackName: "2", nodes: [{ x: 9, y: 9, visible: true, complete: true, name: "n" }] });
+    renderInstances(ctx, [a, b], { showInstances: true, colorPredicted: true });
+    const fills = trackTexts(ctx).filter((t) => t.method === "fill");
+    expect(fills.map((t) => t.text).sort()).toEqual(["Track: 1", "Track: 2"]);
+  });
+});

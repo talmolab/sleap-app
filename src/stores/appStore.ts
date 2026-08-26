@@ -174,6 +174,8 @@ export interface AppState {
    */
   resetViewNonce: number;
   colorPredicted: boolean;
+  /** Append the ` (0.81)` prediction score to on-canvas track labels. Default off (#316). Persisted. */
+  showTrackScore: boolean;
   defaultToPan: boolean;
   palette: string;
   distinctlyColor: ColorTarget;
@@ -502,6 +504,7 @@ export const PERSISTED_KEYS: (keyof AppState)[] = [
   "showNonVisibleNodes",
   "showCrosshair",
   "colorPredicted",
+  "showTrackScore",
   "trailLength",
   "insetSize",
   "insetZoom",
@@ -589,6 +592,7 @@ export const useAppStore = create<AppState>()(
       fitSelection: false,
       resetViewNonce: 0,
       colorPredicted: false,
+      showTrackScore: false,
       defaultToPan: false,
       palette: "standard",
       distinctlyColor: "auto" as ColorTarget,
