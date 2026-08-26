@@ -40,6 +40,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
+import { VideoDropzone } from "@/components/common/VideoDropzone";
 import { toast } from "@/lib/notify";
 import { confirmDiscardUnsavedWork } from "@/lib/unsavedGuard";
 
@@ -201,6 +202,12 @@ export function NewProjectDialog() {
                 </a>
               )}
             </div>
+            <VideoDropzone
+              onFiles={(picked) =>
+                setVideos((v) => [...v, ...toVideoImportEntries(picked)])
+              }
+              data-tutorial="new-project-video-dropzone"
+            />
             <VideoImportList
               videos={videos}
               onChange={setVideos}

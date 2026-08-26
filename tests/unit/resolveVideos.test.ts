@@ -19,6 +19,8 @@ import {
   addVideoFileToLabels,
   assignVideoBackend,
   backendKindForFilename,
+  pickedFromFiles,
+  pickedFromPaths,
   resolveImageFramesInFolder,
   resolveExternalVideos,
   ensureVideoBackend,
@@ -984,5 +986,33 @@ describe("resolveAllVideosFromFolder — image-sequence safety", () => {
     expect(count).toBe(0);
     expect(imgSeq.filename).toBe(before);
     expect(imgSeq.backend).toBeNull();
+  });
+});
+
+describe("drag-and-drop video filtering (dropzone, #138)", () => {
+  it("pickedFromFiles keeps supported videos and drops the rest (browser, no absPath)", () => {
+    const picked = pickedFromFiles([
+      new File([], "a.mp4"),
+      new File([], "b.slp"), // project file, not a video
+      new File([], "c.avi"),
+      new File([], "notes.txt"),
+    ]);
+    expect(picked.map((p) => p.file.name)).toEqual(["a.mp4", "c.avi"]);
+    expect(picked.every((p) => p.absPath === null)).toBe(true);
+  });
+
+  it("pickedFromPaths keeps supported videos by path (desktop: absPath set, basename as file name)", () => {
+    const picked = pickedFromPaths([
+      "/data/clip1.mp4",
+      "/data/proj.slp",
+      "/vids/legacy.wmv",
+    ]);
+    expect(picked.map((p) => p.absPath)).toEqual(["/data/clip1.mp4", "/vids/legacy.wmv"]);
+    expect(picked.map((p) => p.file.name)).toEqual(["clip1.mp4", "legacy.wmv"]);
+  });
+
+  it("returns [] when nothing dropped is a supported video", () => {
+    expect(pickedFromFiles([new File([], "x.slp")])).toEqual([]);
+    expect(pickedFromPaths(["/a/y.json"])).toEqual([]);
   });
 });
