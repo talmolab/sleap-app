@@ -17,7 +17,7 @@ export function ClearAllToastsButton() {
       <button
         type="button"
         onClick={() => dismiss()}
-        className="pointer-events-auto flex items-center gap-1.5 rounded-full border border-border bg-card px-4 py-1.5 text-sm font-medium text-muted-foreground shadow-md transition-colors hover:bg-accent hover:text-foreground"
+        className="pointer-events-auto flex items-center gap-1.5 rounded-full border border-border bg-black px-4 py-1.5 text-sm font-medium text-muted-foreground shadow-md transition-colors hover:bg-neutral-900 hover:text-foreground"
       >
         <X className="h-3.5 w-3.5" />
         Clear all ({count})
