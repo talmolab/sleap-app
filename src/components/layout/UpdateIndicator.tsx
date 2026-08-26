@@ -16,23 +16,32 @@ import { useEnvironmentStore } from "@/stores/environmentStore";
  * newer sleap-nn — into one available/title pair. Shared so the sidebar icon
  * rail and the Welcome screen's corner button can't compute this
  * inconsistently with each other.
+ *
+ * "latest" only contributes once the user has EVER selected it at least
+ * once (appStore's hasOptedIntoLatestChannel, sticky — stays true even after
+ * switching back to "stable"): by default the badge reflects "stable" only,
+ * so someone who's never asked for anything but stable releases doesn't get
+ * nagged about a pre-release they never opted into.
  */
 export function useEnvironmentUpdateStatus() {
   const stableUpdateAvailable = useAppStore((s) => s.stableUpdateAvailable);
   const stableUpdateVersion = useAppStore((s) => s.stableUpdateVersion);
   const latestUpdateAvailable = useAppStore((s) => s.latestUpdateAvailable);
   const latestUpdateVersion = useAppStore((s) => s.latestUpdateVersion);
+  const hasOptedIntoLatestChannel = useAppStore(
+    (s) => s.hasOptedIntoLatestChannel
+  );
   const sleapNnUpdateAvailable = useEnvironmentStore(
     (s) => s.tools.find((t) => t.name === "sleap-nn")?.updateAvailable ?? false
   );
+  const latestCounts = hasOptedIntoLatestChannel && latestUpdateAvailable;
 
-  const available =
-    stableUpdateAvailable || latestUpdateAvailable || sleapNnUpdateAvailable;
+  const available = stableUpdateAvailable || latestCounts || sleapNnUpdateAvailable;
 
   const title =
     stableUpdateAvailable && stableUpdateVersion
       ? `SLEAP v${stableUpdateVersion} is available`
-      : latestUpdateAvailable && latestUpdateVersion
+      : latestCounts && latestUpdateVersion
         ? `SLEAP v${latestUpdateVersion} is available (latest channel)`
         : sleapNnUpdateAvailable
           ? "sleap-nn update available"
