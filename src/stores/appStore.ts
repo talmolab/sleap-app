@@ -337,6 +337,7 @@ export interface AppState {
   selectToFrameDialogOpen: boolean;
   deletePredictionsDialogOpen: boolean;
   mergeProjectDialogOpen: boolean;
+  addVideoUrlDialogOpen: boolean;
   exportDialogOpen: boolean;
   exportClipDialogOpen: boolean;
   modelMetricsDialogOpen: boolean;
@@ -414,6 +415,7 @@ export interface AppState {
   setSelectToFrameDialogOpen: (open: boolean) => void;
   setDeletePredictionsDialogOpen: (open: boolean) => void;
   setMergeProjectDialogOpen: (open: boolean) => void;
+  setAddVideoUrlDialogOpen: (open: boolean) => void;
   setExportDialogOpen: (open: boolean) => void;
   setExportClipDialogOpen: (open: boolean) => void;
   setModelMetricsDialogOpen: (open: boolean) => void;
@@ -660,6 +662,7 @@ export const useAppStore = create<AppState>()(
       selectToFrameDialogOpen: false,
       deletePredictionsDialogOpen: false,
       mergeProjectDialogOpen: false,
+      addVideoUrlDialogOpen: false,
       exportDialogOpen: false,
       exportClipDialogOpen: false,
       modelMetricsDialogOpen: false,
@@ -957,6 +960,11 @@ export const useAppStore = create<AppState>()(
       setMergeProjectDialogOpen: (open) =>
         set((state) => {
           state.mergeProjectDialogOpen = open;
+        }),
+
+      setAddVideoUrlDialogOpen: (open) =>
+        set((state) => {
+          state.addVideoUrlDialogOpen = open;
         }),
 
       setExportDialogOpen: (open) =>

@@ -32,6 +32,7 @@ import {
   resolveAllVideosFromFolder,
   isImageSequenceVideo,
   relocateMissingImageFrames,
+  isSupportedVideoUrl,
 } from "@/lib/resolveVideos";
 import { useAppStore } from "@/stores/appStore";
 
@@ -984,5 +985,35 @@ describe("resolveAllVideosFromFolder — image-sequence safety", () => {
     expect(count).toBe(0);
     expect(imgSeq.filename).toBe(before);
     expect(imgSeq.backend).toBeNull();
+  });
+});
+
+describe("isSupportedVideoUrl", () => {
+  it("accepts an http(s) URL ending in a supported video extension", () => {
+    expect(isSupportedVideoUrl("https://example.com/clip.mp4")).toBe(true);
+    expect(isSupportedVideoUrl("http://example.com/a/b/clip.avi")).toBe(true);
+    expect(isSupportedVideoUrl("https://example.com/clip.webm")).toBe(true);
+  });
+
+  it("strips query/hash so presigned URLs resolve by extension", () => {
+    expect(
+      isSupportedVideoUrl(
+        "https://bucket.s3.amazonaws.com/clip.mp4?X-Amz-Signature=abc&X-Amz-Expires=900",
+      ),
+    ).toBe(true);
+    expect(isSupportedVideoUrl("https://example.com/clip.mov#t=10")).toBe(true);
+  });
+
+  it("rejects unsupported extensions and extension-less URLs", () => {
+    expect(isSupportedVideoUrl("https://example.com/notes.txt")).toBe(false);
+    expect(isSupportedVideoUrl("https://drive.google.com/file/d/ID")).toBe(
+      false,
+    );
+  });
+
+  it("rejects non-fetchable (non-URL / unsupported scheme) inputs", () => {
+    expect(isSupportedVideoUrl("/local/path/clip.mp4")).toBe(false);
+    expect(isSupportedVideoUrl("ftp://example.com/clip.mp4")).toBe(false);
+    expect(isSupportedVideoUrl("")).toBe(false);
   });
 });

@@ -38,6 +38,7 @@ import { ConfirmDialog } from "../dialogs/ConfirmDialog";
 import { SelectToFrameDialog } from "../dialogs/SelectToFrameDialog";
 import { DeletePredictionsDialog } from "../dialogs/DeletePredictionsDialog";
 import { MergeProjectDialog } from "../dialogs/MergeProjectDialog";
+import { AddVideoUrlDialog } from "../dialogs/AddVideoUrlDialog";
 import { ExportDialog } from "../dialogs/ExportDialog";
 import { ExportClipDialog } from "../dialogs/ExportClipDialog";
 import { ModelMetricsDialog } from "../dialogs/ModelMetricsDialog";
@@ -274,6 +275,7 @@ export function AppShell() {
       <TranscodeProgressDialog />
       <SelectToFrameDialog />
       <MergeProjectDialog />
+      <AddVideoUrlDialog />
       <DeletePredictionsDialog
         open={deletePredictionsDialogOpen}
         onOpenChange={setDeletePredictionsDialogOpen}
