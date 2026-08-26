@@ -9,6 +9,7 @@ import { UpdateTopic } from "../types";
 import type { Command } from "./types";
 import type { CommandContext } from "./CommandContext";
 import { isUserLabeledFrame } from "@/lib/frameLabeling";
+import { promptDialog } from "@/stores/promptStore";
 
 /** Navigate to the next frame that has labels (any instance). */
 export const GoNextLabeledFrame: Command = {
@@ -234,11 +235,15 @@ export const GoToMarkedFrame: Command = {
 export const SelectToFrame: Command = {
   name: "SelectToFrame",
   topics: [],
-  execute(ctx: CommandContext) {
+  async execute(ctx: CommandContext) {
     const { frameIdx, video } = ctx.state;
     if (!video) return;
 
-    const input = window.prompt("Select to frame number:", String(frameIdx));
+    const input = await promptDialog({
+      title: "Select to frame",
+      message: "Select to frame number:",
+      defaultValue: String(frameIdx),
+    });
     if (input === null) return;
 
     const target = parseInt(input, 10);

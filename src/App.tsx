@@ -12,6 +12,7 @@ import { readOpenFileParam } from "./lib/windowRouting";
 import { isTauri } from "./platform";
 import { setupCloseHandler } from "./lib/quit";
 import { toast } from "./lib/notify";
+import { confirmDialog } from "@/stores/confirmStore";
 import {
   configureLibavDecoder,
   registerLibavH264Decoder,
@@ -301,9 +302,12 @@ export default function App() {
         const update = await check();
         if (update) {
           console.log(`[updater] Update available: ${update.version}`);
-          const yes = window.confirm(
-            `A new version of SLEAP is available (${update.version}). Download and install?`
-          );
+          const yes = await confirmDialog({
+            title: "Update available",
+            message: `A new version of SLEAP is available (${update.version}). Download and install?`,
+            confirmLabel: "Download & install",
+            cancelLabel: "Later",
+          });
           if (yes) {
             await update.downloadAndInstall();
             const { relaunch } = await import("@tauri-apps/plugin-process");
