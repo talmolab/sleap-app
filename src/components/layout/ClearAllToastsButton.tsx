@@ -13,13 +13,13 @@ export function ClearAllToastsButton() {
   const count = toasts.length;
   if (count < 2) return null;
   return (
-    <div className="fixed bottom-4 right-4 z-[9999] flex justify-end pointer-events-none">
+    <div className="fixed bottom-4 right-6 z-[9999] flex w-[356px] justify-center pointer-events-none">
       <button
         type="button"
         onClick={() => dismiss()}
-        className="pointer-events-auto flex items-center gap-1.5 rounded-full border border-border bg-card/95 px-3 py-1 text-xs font-medium text-muted-foreground shadow-md backdrop-blur transition-colors hover:bg-card hover:text-foreground"
+        className="pointer-events-auto flex items-center gap-1.5 rounded-full border border-border bg-card px-4 py-1.5 text-sm font-medium text-muted-foreground shadow-md transition-colors hover:bg-accent hover:text-foreground"
       >
-        <X className="h-3 w-3" />
+        <X className="h-3.5 w-3.5" />
         Clear all ({count})
       </button>
     </div>
