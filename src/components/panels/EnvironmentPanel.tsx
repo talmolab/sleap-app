@@ -402,9 +402,10 @@ function AppUpdateSection() {
               openExternal(`${SLEAP_APP_RELEASES_URL}/v${latestVersion}`)
             }
             title="View release notes"
-            className="text-muted-foreground hover:text-foreground transition-colors"
+            className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
           >
             <ExternalLink className="h-3 w-3" />
+            Release Notes
           </button>
         )}
         <Button
@@ -813,9 +814,10 @@ export function EnvironmentPanel() {
                       )
                     }
                     title="View release notes"
-                    className="text-muted-foreground hover:text-foreground transition-colors"
+                    className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
                   >
                     <ExternalLink className="h-3 w-3" />
+                    Release Notes
                   </button>
                 </>
               )}
