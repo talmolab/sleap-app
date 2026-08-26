@@ -1041,7 +1041,7 @@ export function TrainingConfigDialog({
 
   return (
     <Dialog open={open} onOpenChange={(isOpen) => { if (!isOpen) { onClose(); setSearchQuery(""); } }}>
-      <DialogContent showCloseButton={false} className="w-full sm:max-w-[1000px] h-[70vh] p-0 overflow-hidden inset-0 translate-x-0 translate-y-0 m-auto flex flex-col" onKeyDown={(e) => e.stopPropagation()}>
+      <DialogContent showCloseButton={false} className="w-[92vw] h-[90vh] min-w-[640px] min-h-[480px] max-w-[96vw] sm:max-w-[96vw] max-h-[94vh] resize overflow-hidden p-0 inset-0 translate-x-0 translate-y-0 m-auto flex flex-col" onKeyDown={(e) => e.stopPropagation()}>
         <Tabs value={activeTab} onValueChange={setActiveTab} className="flex flex-col flex-1 min-h-0 gap-0">
           {/* Compact header: title (left) · flat centered tabs · saved indicator (right) */}
           <div className="relative flex items-center justify-between gap-4 px-6 py-2.5 border-b shrink-0">
