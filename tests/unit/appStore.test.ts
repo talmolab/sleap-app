@@ -553,15 +553,55 @@ describe("open-panel stack actions (multi-panel sidebar)", () => {
     useAppStore.setState({ sidebarMultiPanel: true });
   });
 
-  it("togglePanelOpen adds a closed panel and removes an open one", () => {
-    useAppStore.setState({ sidebarOpenPanels: ["videos"], sidebarCollapsed: false });
+  it("togglePanelOpen focuses the clicked panel and minimizes the others (accordion)", () => {
+    useAppStore.setState({
+      sidebarOpenPanels: ["videos", "frames"],
+      sidebarCollapsedSections: [],
+      sidebarCollapsed: false,
+    });
     useAppStore.getState().togglePanelOpen("skeleton");
-    expect(useAppStore.getState().sidebarOpenPanels).toEqual([
-      "videos",
-      "skeleton",
-    ]);
+    const s = useAppStore.getState();
+    // Clicked panel is open + expanded; previously-open panels stay open but minimized.
+    expect(s.sidebarOpenPanels).toEqual(["videos", "frames", "skeleton"]);
+    expect([...s.sidebarCollapsedSections].sort()).toEqual(["frames", "videos"]);
+    expect(s.sidebarCollapsedSections).not.toContain("skeleton");
+  });
+
+  it("re-clicking the expanded panel collapses it to a header strip (keeps it open)", () => {
+    useAppStore.setState({
+      sidebarOpenPanels: ["videos", "skeleton"],
+      sidebarCollapsedSections: ["videos"],
+      sidebarCollapsed: false,
+    });
+    // skeleton is the expanded one; clicking its rail icon again collapses it.
+    useAppStore.getState().togglePanelOpen("skeleton");
+    const s = useAppStore.getState();
+    expect(s.sidebarOpenPanels).toContain("skeleton");
+    expect(s.sidebarCollapsedSections).toContain("skeleton");
+  });
+
+  it("clicking a minimized tab re-expands it and minimizes the others", () => {
+    useAppStore.setState({
+      sidebarOpenPanels: ["videos", "skeleton"],
+      sidebarCollapsedSections: ["videos"],
+      sidebarCollapsed: false,
+    });
     useAppStore.getState().togglePanelOpen("videos");
-    expect(useAppStore.getState().sidebarOpenPanels).toEqual(["skeleton"]);
+    const s = useAppStore.getState();
+    expect(s.sidebarOpenPanels).toEqual(["videos", "skeleton"]);
+    expect(s.sidebarCollapsedSections).toEqual(["skeleton"]);
+  });
+
+  it("toggleSectionCollapsed on one panel leaves the other open panels untouched", () => {
+    useAppStore.setState({
+      sidebarOpenPanels: ["videos", "skeleton"],
+      sidebarCollapsedSections: [],
+      sidebarCollapsed: false,
+    });
+    useAppStore.getState().toggleSectionCollapsed("videos");
+    const s = useAppStore.getState();
+    expect(s.sidebarCollapsedSections).toEqual(["videos"]);
+    expect(s.sidebarOpenPanels).toEqual(["videos", "skeleton"]);
   });
 
   it("togglePanelOpen on a collapsed column reveals it and opens the panel", () => {
