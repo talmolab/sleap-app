@@ -1652,6 +1652,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
           };
           const inferenceConfig: import("@/stores/inferenceStore").InferenceConfig = {
             pipeline: pipelineMap[config.modelType] || "top-down",
+            trackOnly: false,
             modelPaths: trainedModelPaths,
             videoIndex: (inferenceTarget === "video" || inferenceTarget === "random_video")
               ? (() => {

@@ -5,6 +5,15 @@ on:
     branches: [main]
   release:
     types: [published]
+  # Fires whenever the desktop "Build Dev Channel" workflow (build-dev.yml)
+  # finishes -- whether it actually built (main moved) or skipped (quiet
+  # night) -- so app.sleap.ai/dev/ always tracks the SAME cadence and the
+  # SAME commit as the desktop dev release, rather than rebuilding
+  # on every push like /main/ does. Safe to fire on a skip too: the final
+  # `git diff --cached --quiet` below no-ops if nothing actually changed.
+  workflow_run:
+    workflows: ["Build Dev Channel"]
+    types: [completed]
   # Manual deploy from the Actions tab (or `gh workflow run deploy.yml`).
   # Pick the target; the selected branch/tag in the run's ref is what gets built.
   workflow_dispatch:
@@ -12,9 +21,9 @@ on:
       target:
         description: "Deploy target"
         type: choice
-        default: dev
+        default: main
         options:
-          - dev
+          - main
           - prod
         required: true
 
@@ -29,33 +38,120 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    # A workflow_run event fires for ANY run of build-dev.yml, on any ref it
+    # was invoked against -- only actually deploy for a successful run on
+    # `main` (the schedule/workflow_dispatch triggers build-dev.yml can react
+    # to). Every other event type (push, release, workflow_dispatch on THIS
+    # workflow) is unaffected by this guard.
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
 
     steps:
+      # On a workflow_run trigger, pin to the EXACT commit build-dev.yml just
+      # built (head_sha) rather than whatever main's HEAD happens to be when
+      # THIS step runs -- eliminates any race if something else pushed to
+      # main in the moments between that build finishing and this starting.
       - name: Checkout source
         uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.ref }}
 
-      - name: Determine deploy target
-        id: target
+      # Computes EVERY path this run needs to (re)build, as a JSON array of
+      # {path, base, label} -- e.g. a real (non-pre-)release publish can
+      # deploy to THREE places in one run: its own permanent version path (so
+      # any past version stays reachable forever, e.g. app.sleap.ai/v0.1.2-1/),
+      # root (stable), and /latest/ IF this is genuinely the highest version
+      # known. /main/ (every push) and /dev/ (synced with the desktop
+      # dev build) are each driven by their own distinct trigger --
+      # see the `elif` branches below.
+      #
+      # github.event.release.* fields are passed via env, NEVER interpolated
+      # directly into this script body -- a `"` or newline in a tag or release
+      # body must not be able to become code (this exact mistake is what made
+      # release v0.1.1 ship zero assets; see build.yml's "Set version from
+      # release tag" step for the incident this pattern comes from).
+      - name: Determine deploy targets
+        id: targets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_IS_PRERELEASE: ${{ github.event.release.prerelease }}
+          DISPATCH_TARGET: ${{ inputs.target }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          # A pre-release is a tester build, not a production cut -- it must not
-          # replace app.sleap.ai. Send it to /dev/ like a main-branch push.
-          if [[ "${{ github.event_name }}" == "release" && "${{ github.event.release.prerelease }}" == "true" ]]; then
-            echo "path=dev" >> "$GITHUB_OUTPUT"
-            echo "base=/dev/" >> "$GITHUB_OUTPUT"
-            echo "label=pre-release ${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
-          elif [[ "${{ github.event_name }}" == "release" ]]; then
-            echo "path=" >> "$GITHUB_OUTPUT"
-            echo "base=/" >> "$GITHUB_OUTPUT"
-            echo "label=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
-          elif [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.target }}" == "prod" ]]; then
-            echo "path=" >> "$GITHUB_OUTPUT"
-            echo "base=/" >> "$GITHUB_OUTPUT"
-            echo "label=manual-prod ${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          TARGETS='[]'
+          add_target() {
+            TARGETS="$(jq -c --arg path "$1" --arg base "$2" --arg label "$3" \
+              '. + [{path: $path, base: $base, label: $label}]' <<< "$TARGETS")"
+          }
+
+          if [ "$EVENT_NAME" = "release" ]; then
+            # Every published release (full or pre-release) gets its own
+            # permanent path that's never touched again -- so a specific past
+            # version is always reachable, e.g. app.sleap.ai/v0.1.2-1/. That
+            # alone fully covers a pre-release's visibility -- it deliberately
+            # does NOT also touch /dev/ (which now means "synced with the
+            # desktop dev build," driven solely by the workflow_run
+            # branch below) or /main/ (every-push bleeding edge); overloading
+            # either with an unrelated pre-release publish would reintroduce
+            # exactly the "which commit does this actually reflect" confusion
+            # this whole naming scheme exists to avoid.
+            add_target "$RELEASE_TAG" "/$RELEASE_TAG/" "$RELEASE_TAG (permanent)"
+
+            if [ "$RELEASE_IS_PRERELEASE" != "true" ]; then
+              add_target "" "/" "$RELEASE_TAG (stable)"
+            fi
+
+            # /latest/ only advances if this release is genuinely the highest
+            # version known (release OR pre-release, drafts excluded) --
+            # GitHub does not guarantee releases publish in increasing
+            # version order (a backport, or plain human error, could publish
+            # an older version after a newer one already exists), so a naive
+            # "always update /latest/ on publish" would risk silently
+            # downgrading it. Same selection logic as the desktop update
+            # channel's "latest" resolution (update_channels.rs) and the dev
+            # build's version-base derivation (build-dev.yml) -- including
+            # requiring a latest.json asset, so this can never point
+            # app.sleap.ai/latest/ at a release the desktop updater itself
+            # would skip (e.g. one whose manifest-upload step failed).
+            HIGHEST="$(gh api "repos/$REPO/releases?per_page=100" --paginate \
+              --jq '[.[] | select(.draft == false)
+                     | select(.assets | any(.name == "latest.json")) | .tag_name as $t
+                     | ($t | capture("^v?(?<major>[0-9]+)\\.(?<minor>[0-9]+)\\.(?<patch>[0-9]+)(-(?<pre>[0-9]+))?$"))?
+                     | select(. != null)
+                     | {sortkey: [(.major|tonumber), (.minor|tonumber), (.patch|tonumber),
+                                  (if .pre == null then 1 else 0 end), (.pre // "0" | tonumber)],
+                        base: $t}]
+                    | max_by(.sortkey) | if . == null then null else .base end')"
+            if [ "$HIGHEST" = "$RELEASE_TAG" ]; then
+              add_target "latest" "/latest/" "$RELEASE_TAG (latest)"
+            else
+              echo "This release ($RELEASE_TAG) is not the highest known version ($HIGHEST) -- leaving /latest/ untouched."
+            fi
+          elif [ "$EVENT_NAME" = "workflow_run" ]; then
+            # Only reached for a successful build-dev.yml run on `main` (see
+            # the job-level `if:` guard) -- redeploy /dev/ to match, so it
+            # always reflects the exact same commit the desktop dev
+            # release does, refreshed on the exact same cadence (nightly or
+            # manual), never on every plain push.
+            add_target "dev" "/dev/" "dev (synced with desktop dev build)"
+          elif [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$DISPATCH_TARGET" = "prod" ]; then
+            add_target "" "/" "manual-prod $REF_NAME"
           else
-            echo "path=dev" >> "$GITHUB_OUTPUT"
-            echo "base=/dev/" >> "$GITHUB_OUTPUT"
-            echo "label=dev" >> "$GITHUB_OUTPUT"
+            # Plain push to main (or a manual workflow_dispatch with the
+            # default "main" target): the bleeding-edge view, rebuilt on
+            # every single commit -- what /dev/ used to do before it was
+            # repointed to track the desktop dev channel's cadence instead.
+            add_target "main" "/main/" "main"
           fi
+
+          echo "Deploy targets: $TARGETS"
+          echo "targets=$TARGETS" >> "$GITHUB_OUTPUT"
 
       - name: Setup bun
         uses: oven-sh/setup-bun@v2
@@ -72,21 +168,45 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Build
-        run: bun run build
+      # One `bun run build` PER target (each needs its own VITE_BASE_PATH so
+      # its internal asset links resolve correctly at that path), staged into
+      # its own folder rather than deployed immediately -- so the actual
+      # gh-pages push below happens exactly ONCE per workflow run even when
+      # multiple targets changed, avoiding any multi-push race on that branch.
+      - name: Build every deploy target
         env:
-          VITE_BASE_PATH: ${{ steps.target.outputs.base }}
-
-      # Must run AFTER Build: `vite build` empties dist/ on entry. These live in
-      # scripts/ rather than public/ on purpose -- public/ is copied into the
-      # frontend bundle that gets embedded in the desktop binary, so an installer
-      # in there ships a copy of itself inside the app.
-      - name: Stage the install scripts into the site
-        run: cp scripts/install.sh scripts/install.ps1 dist/
+          TARGETS_JSON: ${{ steps.targets.outputs.targets }}
+        run: |
+          set -euo pipefail
+          mkdir -p staging
+          echo "$TARGETS_JSON" > /tmp/targets.json
+          COUNT="$(jq 'length' /tmp/targets.json)"
+          for i in $(seq 0 $((COUNT - 1))); do
+            TARGET_PATH="$(jq -r ".[$i].path" /tmp/targets.json)"
+            TARGET_BASE="$(jq -r ".[$i].base" /tmp/targets.json)"
+            SAFE_NAME="${TARGET_PATH:-ROOT}"
+            echo "Building target '$SAFE_NAME' (base=$TARGET_BASE)"
+            rm -rf dist
+            VITE_BASE_PATH="$TARGET_BASE" bun run build
+            # Must run AFTER build: `vite build` empties dist/ on entry. These
+            # live in scripts/ rather than public/ on purpose -- public/ is
+            # copied into the frontend bundle embedded in the desktop binary,
+            # so an installer in there would ship a copy of itself inside the app.
+            cp scripts/install.sh scripts/install.ps1 dist/
+            mkdir -p "staging/$SAFE_NAME"
+            cp -r dist/* "staging/$SAFE_NAME/"
+          done
 
       - name: Deploy to gh-pages
+        env:
+          # Matches the exact commit the "Checkout source" step used --
+          # plain $GITHUB_SHA reflects the triggering EVENT, which for a
+          # workflow_run isn't guaranteed to equal build-dev.yml's head_sha,
+          # so the commit message would otherwise cite a slightly different
+          # commit than what was actually built and deployed.
+          DEPLOY_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
         run: |
-          DEPLOY_PATH="${{ steps.target.outputs.path }}"
+          set -euo pipefail
 
           # Set up a fresh clone of just the gh-pages branch
           mkdir gh-pages-dir
@@ -103,25 +223,31 @@ jobs:
             git checkout --orphan gh-pages
           fi
 
-          # Clean target directory
-          if [[ -z "$DEPLOY_PATH" ]]; then
-            # Root deploy: remove everything except dev/
-            find . -maxdepth 1 \
-              ! -name '.' \
-              ! -name '.git' \
-              ! -name 'dev' \
-              -exec rm -rf {} +
-          else
-            # Dev deploy: remove only dev/
-            rm -rf "${DEPLOY_PATH}"
-          fi
+          COUNT="$(jq 'length' /tmp/targets.json)"
+          for i in $(seq 0 $((COUNT - 1))); do
+            TARGET_PATH="$(jq -r ".[$i].path" /tmp/targets.json)"
+            SAFE_NAME="${TARGET_PATH:-ROOT}"
 
-          # Copy build output
-          if [[ -z "$DEPLOY_PATH" ]]; then
-            cp -r ../dist/* .
-          else
-            cp -r ../dist "${DEPLOY_PATH}"
-          fi
+            if [ -z "$TARGET_PATH" ]; then
+              # Root deploy: remove every top-level entry EXCEPT the special
+              # named channels and any permanent per-version folder (v1.2.3,
+              # v1.2.3-1, ...) -- those must survive a stable redeploy, not
+              # just "dev" as before. Everything else is root's own previous
+              # build output (index.html, assets/, etc.) and gets replaced.
+              find . -maxdepth 1 -mindepth 1 \
+                ! -name '.git' \
+                ! -name 'main' \
+                ! -name 'dev' \
+                ! -name 'latest' \
+                ! -regex './v[0-9].*' \
+                -exec rm -rf {} +
+              cp -r "../staging/$SAFE_NAME"/* .
+            else
+              # Every other target only ever touches its own folder.
+              rm -rf "$TARGET_PATH"
+              cp -r "../staging/$SAFE_NAME" "$TARGET_PATH"
+            fi
+          done
 
           # Ensure required files exist
           touch .nojekyll
@@ -130,5 +256,6 @@ jobs:
           # Commit and push
           git add -A
           git diff --cached --quiet && echo "No changes to deploy" && exit 0
-          git commit -m "Deploy ${{ steps.target.outputs.label }} (${GITHUB_SHA::8})"
+          LABELS="$(jq -r '[.[].label] | join(", ")' /tmp/targets.json)"
+          git commit -m "Deploy $LABELS (${DEPLOY_SHA::8})"
           git push origin gh-pages

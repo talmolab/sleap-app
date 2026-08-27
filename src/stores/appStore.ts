@@ -63,6 +63,10 @@ function clearTransientVisibility(state: Draft<AppState>) {
   state.showNonVisibleOverride = new Map<Instance, boolean>();
 }
 
+/** Which desktop self-update channel to check: full releases only, the
+ * newest of {release, pre-release}, or continuous builds off `main`. */
+export type UpdateChannel = "stable" | "latest" | "dev";
+
 export interface AppState {
   // === Project state ===
   labels: Labels | null;
@@ -243,6 +247,25 @@ export interface AppState {
   showNonVisibleOverride: Map<Instance, boolean>;
   // Label-QC display mode (persisted app preference)
   qcDisplayMode: QcMode;
+  // Desktop self-update channel (persisted app preference)
+  updateChannel: UpdateChannel;
+  // Whether the user has EVER selected the "latest" channel (persisted,
+  // sticky — sees latest's badge even after switching back to "stable").
+  // Gates whether latestUpdateAvailable below contributes to the ambient
+  // Environment badge: by default the badge only reflects "stable", so a
+  // pre-release doesn't nag someone who never asked for anything but stable
+  // releases; opting into "latest" once permanently earns it a say too.
+  hasOptedIntoLatestChannel: boolean;
+  // Whether a newer STABLE / LATEST release exists than the one currently
+  // running — each checked once at startup against its own channel
+  // regardless of updateChannel above, so a user on any channel (or just
+  // behind) still gets nudged. Transient — NOT persisted, re-checked every
+  // launch. Drives the blinking Environment badge (AppShell + WelcomeScreen),
+  // gated by hasOptedIntoLatestChannel above for the "latest" half.
+  stableUpdateAvailable: boolean;
+  stableUpdateVersion: string | null;
+  latestUpdateAvailable: boolean;
+  latestUpdateVersion: string | null;
 
   // === Editing state ===
   instanceInitMethod: InstancePlacementMethod;
@@ -339,6 +362,7 @@ export interface AppState {
   selectToFrameDialogOpen: boolean;
   deletePredictionsDialogOpen: boolean;
   mergeProjectDialogOpen: boolean;
+  addVideoUrlDialogOpen: boolean;
   exportDialogOpen: boolean;
   exportClipDialogOpen: boolean;
   modelMetricsDialogOpen: boolean;
@@ -399,6 +423,9 @@ export interface AppState {
   setViewOnlyInstance: (instance: Instance | null) => void;
   setInstanceInvisibleOverride: (instance: Instance, value: boolean | undefined) => void;
   setQcDisplayMode: (mode: QcMode) => void;
+  setUpdateChannel: (channel: UpdateChannel) => void;
+  setStableUpdateInfo: (available: boolean, version: string | null) => void;
+  setLatestUpdateInfo: (available: boolean, version: string | null) => void;
   /** Remember a learned video path prefix swap (deduped, newest-first, capped). */
   addVideoPrefixSwap: (swap: VideoPrefixSwap) => void;
   resetInstanceVisibility: () => void;
@@ -416,6 +443,7 @@ export interface AppState {
   setSelectToFrameDialogOpen: (open: boolean) => void;
   setDeletePredictionsDialogOpen: (open: boolean) => void;
   setMergeProjectDialogOpen: (open: boolean) => void;
+  setAddVideoUrlDialogOpen: (open: boolean) => void;
   setExportDialogOpen: (open: boolean) => void;
   setExportClipDialogOpen: (open: boolean) => void;
   setModelMetricsDialogOpen: (open: boolean) => void;
@@ -515,6 +543,8 @@ export const PERSISTED_KEYS: (keyof AppState)[] = [
   "seekbarHeaderHeight",
   "navigationDomain",
   "qcDisplayMode",
+  "updateChannel",
+  "hasOptedIntoLatestChannel",
   "videoPrefixSwaps",
   // Layout + scale persistence (PyQt saveState/restoreState parity).
   "panelOrder",
@@ -620,6 +650,12 @@ export const useAppStore = create<AppState>()(
       viewOnlyInstance: null,
       showNonVisibleOverride: new Map<Instance, boolean>(),
       qcDisplayMode: "manual",
+      updateChannel: "stable",
+      hasOptedIntoLatestChannel: false,
+      stableUpdateAvailable: false,
+      stableUpdateVersion: null,
+      latestUpdateAvailable: false,
+      latestUpdateVersion: null,
 
       // Editing state
       instanceInitMethod: "best" as InstancePlacementMethod,
@@ -664,6 +700,7 @@ export const useAppStore = create<AppState>()(
       selectToFrameDialogOpen: false,
       deletePredictionsDialogOpen: false,
       mergeProjectDialogOpen: false,
+      addVideoUrlDialogOpen: false,
       exportDialogOpen: false,
       exportClipDialogOpen: false,
       modelMetricsDialogOpen: false,
@@ -865,6 +902,26 @@ export const useAppStore = create<AppState>()(
           state.qcDisplayMode = mode;
         }),
 
+      setUpdateChannel: (channel) =>
+        set((state) => {
+          state.updateChannel = channel;
+          // Sticky: once earned, "latest" keeps a say in the ambient badge
+          // even if the user later switches back to "stable" — never unset.
+          if (channel === "latest") state.hasOptedIntoLatestChannel = true;
+        }),
+
+      setStableUpdateInfo: (available, version) =>
+        set((state) => {
+          state.stableUpdateAvailable = available;
+          state.stableUpdateVersion = version;
+        }),
+
+      setLatestUpdateInfo: (available, version) =>
+        set((state) => {
+          state.latestUpdateAvailable = available;
+          state.latestUpdateVersion = version;
+        }),
+
       addVideoPrefixSwap: (swap) => {
         // Compute from the finalized array (not the immer draft) so the pure
         // merge helper sees plain objects, then reassign.
@@ -961,6 +1018,11 @@ export const useAppStore = create<AppState>()(
       setMergeProjectDialogOpen: (open) =>
         set((state) => {
           state.mergeProjectDialogOpen = open;
+        }),
+
+      setAddVideoUrlDialogOpen: (open) =>
+        set((state) => {
+          state.addVideoUrlDialogOpen = open;
         }),
 
       setExportDialogOpen: (open) =>

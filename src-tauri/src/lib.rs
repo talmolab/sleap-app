@@ -1,5 +1,6 @@
 mod environment;
 mod rtc;
+mod update_channels;
 
 use std::collections::HashMap;
 use std::path::{Component, PathBuf};
@@ -479,6 +480,8 @@ fn sleap_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
             rtc::rtc_send,
             rtc::rtc_disconnect_worker,
             rtc::rtc_leave_room,
+            update_channels::check_update,
+            update_channels::install_update,
         ])
         .build()
 }
