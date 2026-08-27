@@ -41,27 +41,6 @@ export function removeSuggestionAt(
   return [...list.slice(0, idx), ...list.slice(idx + 1)];
 }
 
-/**
- * Return a NEW list = `existing` with every entry from `generated` appended,
- * skipping any (video, frameIdx) pair already present -- whether that's in
- * `existing` already, or a duplicate within `generated` itself. Used so
- * re-running "Generate" (or generating with a different method/target)
- * accumulates onto whatever suggestions the user already has (manually added
- * ones included) instead of silently discarding them.
- */
-export function mergeSuggestionFrames(
-  existing: readonly SuggestionFrame[],
-  generated: readonly SuggestionFrame[]
-): SuggestionFrame[] {
-  const merged = [...existing];
-  for (const s of generated) {
-    if (!suggestionExists(merged, s.video, s.frameIdx)) {
-      merged.push(s);
-    }
-  }
-  return merged;
-}
-
 export interface LabeledSummary {
   labeled: number;
   total: number;
@@ -78,4 +57,70 @@ export function labeledSummary(flags: readonly boolean[]): LabeledSummary {
   for (const f of flags) if (f) labeled++;
   const pct = total ? (labeled / total) * 100 : 0;
   return { labeled, total, pct };
+}
+
+/**
+ * Return a NEW list = `existing` followed by the entries of `incoming` that
+ * aren't already present (same video reference AND frameIdx) — also deduping
+ * duplicates within `incoming`. Backs the "Add" (append) generation mode and
+ * "Add all labeled frames". Neither input is mutated.
+ */
+export function mergeSuggestions(
+  existing: readonly SuggestionFrame[],
+  incoming: readonly SuggestionFrame[]
+): SuggestionFrame[] {
+  const out: SuggestionFrame[] = [...existing];
+  for (const s of incoming) {
+    if (!suggestionExists(out, s.video, s.frameIdx)) out.push(s);
+  }
+  return out;
+}
+
+/**
+ * Return a NEW list with `list`'s elements in random order (Fisher–Yates),
+ * driven by an injectable `rng` returning floats in [0, 1) (`Math.random`, or a
+ * seeded {@link import("./seededRng").mulberry32} for reproducible tests).
+ * Sequential suggestion order nudges users to over-label one video; shuffling
+ * spreads the work. Input is not mutated.
+ */
+export function shuffleSuggestions(
+  list: readonly SuggestionFrame[],
+  rng: () => number
+): SuggestionFrame[] {
+  const out = [...list];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+}
+
+/**
+ * Return a NEW list keeping only the suggestions `isLabeled` marks true — i.e.
+ * drop suggestions for frames with no user labeling, keeping the annotated ones.
+ * Input is not mutated.
+ */
+export function removeUnlabeledSuggestions(
+  list: readonly SuggestionFrame[],
+  isLabeled: (s: SuggestionFrame) => boolean
+): SuggestionFrame[] {
+  return list.filter(isLabeled);
+}
+
+/**
+ * Map user-labeled frames to suggestion entries `{ video, frameIdx }`, dropping
+ * predicted-only / empty frames (`isUserLabeled === false`). `labeledFrames` is
+ * typically `labels.labeledFrames`; merge the result into the existing list to
+ * "add all labeled frames to suggestions".
+ */
+export function userLabeledFramesAsSuggestions(
+  labeledFrames: readonly {
+    video: Video;
+    frameIdx: number;
+    isUserLabeled: boolean;
+  }[]
+): SuggestionFrame[] {
+  return labeledFrames
+    .filter((lf) => lf.isUserLabeled)
+    .map((lf) => ({ video: lf.video, frameIdx: lf.frameIdx }) as SuggestionFrame);
 }

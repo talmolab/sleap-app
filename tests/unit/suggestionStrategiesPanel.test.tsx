@@ -27,6 +27,7 @@ import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import { useAppStore } from "@/stores/appStore";
 import {
   Labels,
+  Instance,
   LabeledFrame,
   PredictedInstance,
   Skeleton,
@@ -203,12 +204,11 @@ describe("SuggestionsPanel generation methods (#162)", () => {
     expect(input.value).toBe("0");
   });
 
-  it("frame_chunk + Generate merges the consecutive range onto existing suggestions (#326)", async () => {
+  it("frame_chunk + Generate (default Add mode) appends the range to existing suggestions (#327)", async () => {
     const skel = makeSkeleton();
     const video = makeVideo(100);
     const labels = new Labels({ videos: [video], skeletons: [skel] });
-    // Pre-existing suggestion to prove MERGE (not replace) semantics --
-    // re-generating must not silently discard it.
+    // Pre-existing suggestion — the default "Add" mode keeps it.
     labels.suggestions = [{ video, frameIdx: 99 } as SuggestionFrame];
     useAppStore.getState().setLabels(labels, "test.slp");
 
@@ -225,22 +225,19 @@ describe("SuggestionsPanel generation methods (#162)", () => {
       target: { value: "6" },
     });
 
-    fireEvent.click(screen.getByRole("button", { name: /^generate$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /generate suggestions/i }));
 
-    // 1-based 3..6 inclusive -> 0-based 2,3,4,5, APPENDED onto the prior [99].
+    // Default Add: existing [99] kept, then 1-based 3..6 -> 0-based 2,3,4,5 appended.
     const result = useAppStore.getState().labels?.suggestions ?? [];
     expect(result.map((s) => s.frameIdx)).toEqual([99, 2, 3, 4, 5]);
     for (const s of result) expect(s.video).toBe(video);
   });
 
-  it("frame_chunk + Generate does not duplicate a frame that's already suggested", async () => {
+  it("frame_chunk + Generate in Replace mode swaps the list wholesale (#327)", async () => {
     const skel = makeSkeleton();
     const video = makeVideo(100);
     const labels = new Labels({ videos: [video], skeletons: [skel] });
-    // frame_chunk has no internal dedup against existing suggestions (unlike
-    // stride/random) -- mergeSuggestionFrames is the only guard, so frame 3
-    // (inside the 3..6 window generated below) must not appear twice.
-    labels.suggestions = [{ video, frameIdx: 2 } as SuggestionFrame];
+    labels.suggestions = [{ video, frameIdx: 99 } as SuggestionFrame];
     useAppStore.getState().setLabels(labels, "test.slp");
 
     const { SuggestionsPanel } = await import(
@@ -255,7 +252,9 @@ describe("SuggestionsPanel generation methods (#162)", () => {
       target: { value: "6" },
     });
 
-    fireEvent.click(screen.getByRole("button", { name: /^generate$/i }));
+    // Switch to Replace, then Generate: the prior [99] is discarded.
+    fireEvent.click(screen.getByRole("button", { name: /^replace$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /generate suggestions/i }));
 
     const result = useAppStore.getState().labels?.suggestions ?? [];
     expect(result.map((s) => s.frameIdx)).toEqual([2, 3, 4, 5]);
@@ -283,23 +282,22 @@ describe("SuggestionsPanel generation methods (#162)", () => {
     );
     render(<SuggestionsPanel initialMethod="prediction_score" />);
 
-    fireEvent.click(screen.getByRole("button", { name: /^generate$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /generate suggestions/i }));
 
     // Defaults scoreLimit=3, lower=1, upper=2 -> only frame 0 qualifies.
     const result = useAppStore.getState().labels?.suggestions ?? [];
     expect(result.map((s) => s.frameIdx)).toEqual([0]);
   });
 
-  it("Score column shows the LOWEST instance score (not the mean, not the point-mean)", async () => {
+  it("Mean Score column shows the mean instance score (not the min, not the point-mean)", async () => {
     const skel = makeSkeleton();
     const video = makeVideo(100);
     const labels = new Labels({ videos: [video], skeletons: [skel] });
     // Two predicted instances — instance scores 0.40 and 0.90 (mean 0.65), every
-    // point score 0.70 (point-mean 0.70). The column must render the MIN instance
-    // score 0.40 (the value prediction_score thresholds), NOT the 0.65 mean and
-    // NOT the 0.70 point-mean. (The per-row breakdown is a Radix Tooltip rendered
-    // in a portal on hover — not asserted here per the documented happy-dom Radix
-    // limitation; it's verified in desktop E2E.)
+    // point score 0.70. The "Mean Score" column must render the MEAN 0.65, NOT
+    // the 0.40 min (that lives in the hover tooltip) and NOT the 0.70 point-mean.
+    // (The tooltip is a Radix portal on hover — not asserted here per the
+    // documented happy-dom Radix limitation; it's verified in desktop E2E.)
     const lf = new LabeledFrame({ video, frameIdx: 7 });
     lf.instances.push(predictedInstanceScored(skel, 0.4, 0.7));
     lf.instances.push(predictedInstanceScored(skel, 0.9, 0.7));
@@ -312,37 +310,13 @@ describe("SuggestionsPanel generation methods (#162)", () => {
     );
     render(<SuggestionsPanel />);
 
-    expect(screen.getByText("0.40")).toBeInTheDocument();
-    expect(screen.queryByText("0.65")).not.toBeInTheDocument(); // not the mean
+    expect(screen.getByText("0.65")).toBeInTheDocument(); // the mean of 0.40 and 0.90
+    expect(screen.queryByText("0.40")).not.toBeInTheDocument(); // min lives in the hover tooltip
     expect(screen.queryByText("0.70")).not.toBeInTheDocument(); // not the point-mean
   });
 
-  it("default target (all videos): Generate spans every video (#324)", async () => {
-    // Default path: no Radix interaction. Default method is stride; Target now
-    // defaults to ALL videos (#324 -- "current" led to poor generalization).
-    const skel = makeSkeleton();
-    const v1 = makeVideo(100, "v1.mp4");
-    const v2 = makeVideo(100, "v2.mp4");
-    const labels = new Labels({ videos: [v1, v2], skeletons: [skel] });
-    labels.suggestions = [];
-    useAppStore.getState().setLabels(labels, "test.slp");
-    useAppStore.getState().setVideo(v1); // active video (should be ignored for "all")
-
-    const { SuggestionsPanel } = await import(
-      "@/components/panels/SuggestionsPanel"
-    );
-    render(<SuggestionsPanel />);
-
-    fireEvent.click(screen.getByRole("button", { name: /^generate$/i }));
-
-    const result = useAppStore.getState().labels?.suggestions ?? [];
-    // 20 strided frames per video, spanning both videos.
-    expect(result.length).toBe(40);
-    expect(result.some((s) => s.video === v1)).toBe(true);
-    expect(result.some((s) => s.video === v2)).toBe(true);
-  });
-
-  it("Target = current video restricts to the active video (initialTarget seam)", async () => {
+  it("Target = current video restricts to the active video (seam)", async () => {
+    // Explicit current-video path via the seam (the default is now All videos, #324).
     const skel = makeSkeleton();
     const v1 = makeVideo(100, "v1.mp4");
     const v2 = makeVideo(100, "v2.mp4");
@@ -354,11 +328,9 @@ describe("SuggestionsPanel generation methods (#162)", () => {
     const { SuggestionsPanel } = await import(
       "@/components/panels/SuggestionsPanel"
     );
-    // Mount directly into the current-video path (avoids driving the Radix
-    // Target popover, unreliable in happy-dom).
     render(<SuggestionsPanel initialTarget="current" />);
 
-    fireEvent.click(screen.getByRole("button", { name: /^generate$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /generate suggestions/i }));
 
     const result = useAppStore.getState().labels?.suggestions ?? [];
     // Default perVideo (20) strided over 100 frames, current video (v1) only.
@@ -366,7 +338,7 @@ describe("SuggestionsPanel generation methods (#162)", () => {
     expect(result.every((s) => s.video === v1)).toBe(true);
   });
 
-  it("Target = All videos spans every video (initialTarget seam)", async () => {
+  it("Target defaults to All videos and spans every video (#324)", async () => {
     const skel = makeSkeleton();
     const v1 = makeVideo(100, "v1.mp4");
     const v2 = makeVideo(100, "v2.mp4");
@@ -378,16 +350,109 @@ describe("SuggestionsPanel generation methods (#162)", () => {
     const { SuggestionsPanel } = await import(
       "@/components/panels/SuggestionsPanel"
     );
-    // Mount directly into the all-videos path (avoids driving the Radix Target
-    // popover, unreliable in happy-dom).
-    render(<SuggestionsPanel initialTarget="all" />);
+    // Default Target is now All videos (#324) — no seam needed.
+    render(<SuggestionsPanel />);
 
-    fireEvent.click(screen.getByRole("button", { name: /^generate$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /generate suggestions/i }));
 
     const result = useAppStore.getState().labels?.suggestions ?? [];
     // 20 strided frames per video, spanning both videos.
     expect(result.length).toBe(40);
     expect(result.some((s) => s.video === v1)).toBe(true);
     expect(result.some((s) => s.video === v2)).toBe(true);
+  });
+
+  it("Tools › Add labeled frames merges user-labeled frames (not predicted-only) (#327)", async () => {
+    const skel = makeSkeleton();
+    const video = makeVideo(100);
+    const labels = new Labels({ videos: [video], skeletons: [skel] });
+    // frame 10: a USER (non-predicted) instance -> user-labeled.
+    const lfUser = new LabeledFrame({ video, frameIdx: 10 });
+    lfUser.instances.push(
+      Instance.fromArray(
+        [
+          [1, 1],
+          [2, 2],
+        ],
+        skel,
+      ),
+    );
+    // frame 20: predicted-only -> NOT user-labeled.
+    const lfPred = new LabeledFrame({ video, frameIdx: 20 });
+    lfPred.instances.push(predictedInstance(skel, 1.0));
+    labels.labeledFrames.push(lfUser, lfPred);
+    labels.suggestions = [];
+    useAppStore.getState().setLabels(labels, "test.slp");
+
+    const { SuggestionsPanel } = await import(
+      "@/components/panels/SuggestionsPanel"
+    );
+    render(<SuggestionsPanel />);
+
+    fireEvent.click(screen.getByRole("button", { name: /add labeled frames/i }));
+
+    // Only the user-labeled frame (10) is added; predicted-only (20) is not.
+    const result = useAppStore.getState().labels?.suggestions ?? [];
+    expect(result.map((s) => s.frameIdx)).toEqual([10]);
+  });
+
+  it("Tools › Remove unlabeled keeps only suggestions on user-labeled frames (#327)", async () => {
+    const skel = makeSkeleton();
+    const video = makeVideo(100);
+    const labels = new Labels({ videos: [video], skeletons: [skel] });
+    const lfUser = new LabeledFrame({ video, frameIdx: 10 });
+    lfUser.instances.push(
+      Instance.fromArray(
+        [
+          [1, 1],
+          [2, 2],
+        ],
+        skel,
+      ),
+    );
+    labels.labeledFrames.push(lfUser);
+    // Suggestions on a labeled frame (10) and an unlabeled one (20).
+    labels.suggestions = [
+      { video, frameIdx: 10 } as SuggestionFrame,
+      { video, frameIdx: 20 } as SuggestionFrame,
+    ];
+    useAppStore.getState().setLabels(labels, "test.slp");
+
+    const { SuggestionsPanel } = await import(
+      "@/components/panels/SuggestionsPanel"
+    );
+    render(<SuggestionsPanel />);
+
+    fireEvent.click(screen.getByRole("button", { name: /remove unlabeled/i }));
+
+    const result = useAppStore.getState().labels?.suggestions ?? [];
+    expect(result.map((s) => s.frameIdx)).toEqual([10]);
+  });
+
+  it("Generate with an empty Per video box toasts and generates nothing (#327)", async () => {
+    const skel = makeSkeleton();
+    const video = makeVideo(100);
+    const labels = new Labels({ videos: [video], skeletons: [skel] });
+    labels.suggestions = [];
+    useAppStore.getState().setLabels(labels, "test.slp");
+
+    const { SuggestionsPanel } = await import(
+      "@/components/panels/SuggestionsPanel"
+    );
+    const { toast } = await import("@/lib/notify");
+    render(<SuggestionsPanel initialMethod="stride" />);
+
+    // Empty the Per video box (now allowed), then Generate — it must abort.
+    fireEvent.change(screen.getByLabelText(/per video/i), {
+      target: { value: "" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: /generate suggestions/i })
+    );
+
+    expect(toast.error).toHaveBeenCalledWith(
+      "Per video can't be none or invalid"
+    );
+    expect(useAppStore.getState().labels?.suggestions.length ?? 0).toBe(0);
   });
 });

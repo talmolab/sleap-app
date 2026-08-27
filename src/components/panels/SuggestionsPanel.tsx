@@ -7,21 +7,19 @@
 
 import { useState, useMemo, useReducer, useRef, useEffect } from "react";
 import { useAppStore } from "../../stores/appStore";
-import { commandContext } from "../../commands/CommandContext";
-import { GoNextSuggestion, GoPrevSuggestion } from "../../commands/navCommands";
 import {
   suggestionExists,
   addSuggestionFrame,
   removeSuggestionAt,
-  mergeSuggestionFrames,
   labeledSummary,
+  mergeSuggestions,
+  shuffleSuggestions,
+  removeUnlabeledSuggestions,
+  userLabeledFramesAsSuggestions,
 } from "../../lib/suggestionEdits";
 import { toast } from "@/lib/notify";
 import { cn } from "@/lib/utils";
-import {
-  frameHasUserLabels,
-  frameUserInstanceCount,
-} from "@/lib/frameLabeling";
+import { frameHasUserLabels } from "@/lib/frameLabeling";
 import {
   Table,
   TableBody,
@@ -30,7 +28,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
@@ -76,7 +73,7 @@ function basename(path: string | string[]): string {
   return parts[parts.length - 1] ?? p;
 }
 
-type SortColumn = "index" | "video" | "frame" | "score" | "labeled" | "instances";
+type SortColumn = "index" | "video" | "frame" | "score";
 type SortDir = "asc" | "desc";
 
 /**
@@ -165,9 +162,8 @@ export interface SuggestionsPanelProps {
   initialMethod?: GenerationMethod;
   /**
    * Initial target video set. Production callers omit this (defaults to
-   * "all"); a test seam like {@link initialMethod} so a test can mount
-   * directly into the current-video path without driving the Radix Target
-   * popover.
+   * "current"); a test seam like {@link initialMethod} so a test can mount
+   * directly into the all-videos path without driving the Radix Target popover.
    */
   initialTarget?: GenerationTarget;
 }
@@ -215,10 +211,10 @@ export function SuggestionsPanel({
     };
   }, [resetImageFeatureRoi]);
   // stride/random per-video count.
-  const [perVideo, setPerVideo] = useState(20);
+  const [perVideo, setPerVideo] = useState<number | "">(20);
   // frame_chunk bounds (1-based).
-  const [chunkFrom, setChunkFrom] = useState(1);
-  const [chunkTo, setChunkTo] = useState(1000);
+  const [chunkFrom, setChunkFrom] = useState<number | "">(1);
+  const [chunkTo, setChunkTo] = useState<number | "">(1000);
   // prediction_score params.
   const [scoreLimit, setScoreLimit] = useState(3);
   const [instanceLimitLower, setInstanceLimitLower] = useState(1);
@@ -237,6 +233,8 @@ export function SuggestionsPanel({
   const [ifPcaComponents, setIfPcaComponents] = useState(5);
   const [ifSeed, setIfSeed] = useState(0);
   const [ifAdvancedOpen, setIfAdvancedOpen] = useState(false);
+  // Generate mode: append to the existing list ("add", default) or replace it.
+  const [genMode, setGenMode] = useState<"add" | "replace">("add");
   // image_features async generation state (decode + worker).
   const [isGenerating, setIsGenerating] = useState(false);
   const [ifProgress, setIfProgress] = useState<{
@@ -246,14 +244,12 @@ export function SuggestionsPanel({
   } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   // Target (all videos vs current) + optional global frame-range restriction.
-  // Default to ALL videos (#324): defaulting to the current video led users to
-  // do all their labeling on a single video, hurting generalization. Note
-  // this means image_features now decodes every video in a multi-video
-  // project by default too, unless the user narrows it to "current" themselves.
+  // Default to the CURRENT video: least-surprising for a labeling workflow and,
+  // for image_features, avoids decoding every video in a multi-video project.
   const [target, setTarget] = useState<GenerationTarget>(initialTarget);
   const [frameRangeEnabled, setFrameRangeEnabled] = useState(false);
-  const [rangeFrom, setRangeFrom] = useState(1);
-  const [rangeTo, setRangeTo] = useState(1000);
+  const [rangeFrom, setRangeFrom] = useState<number | "">(1);
+  const [rangeTo, setRangeTo] = useState<number | "">(1000);
 
   const [sortCol, setSortCol] = useState<SortColumn>("index");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
@@ -276,7 +272,6 @@ export function SuggestionsPanel({
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       score: computeFrameScore(s, labels as any),
       hasLabels: frameHasUserLabels(labels, s.video, s.frameIdx),
-      instanceCount: frameUserInstanceCount(labels, s.video, s.frameIdx),
     }));
 
     // Sort
@@ -295,18 +290,12 @@ export function SuggestionsPanel({
           cmp = a.suggestion.frameIdx - b.suggestion.frameIdx;
           break;
         case "score": {
-          // Sort by the displayed value (each frame's lowest instance score).
-          const sa = a.score?.min ?? -Infinity;
-          const sb = b.score?.min ?? -Infinity;
+          // Sort by the displayed value (each frame's mean instance score).
+          const sa = a.score?.mean ?? -Infinity;
+          const sb = b.score?.mean ?? -Infinity;
           cmp = sa - sb;
           break;
         }
-        case "labeled":
-          cmp = Number(a.hasLabels) - Number(b.hasLabels);
-          break;
-        case "instances":
-          cmp = a.instanceCount - b.instanceCount;
-          break;
       }
       return sortDir === "asc" ? cmp : -cmp;
     });
@@ -331,6 +320,85 @@ export function SuggestionsPanel({
     labels.suggestions = next;
     useAppStore.getState().markChanged();
     forceUpdate();
+  };
+
+  /**
+   * Commit freshly generated suggestions per the Add/Replace mode: "add"
+   * appends the new frames to the existing list (deduped); "replace" swaps the
+   * list wholesale (the legacy behavior).
+   */
+  const commitGenerated = (next: SuggestionFrame[]) => {
+    if (!labels) return;
+    applySuggestions(
+      genMode === "add" ? mergeSuggestions(labels.suggestions, next) : next
+    );
+  };
+
+  /** Tools: add every user-labeled frame to the suggestions (deduped). */
+  const addAllLabeledFrames = () => {
+    if (!labels) return;
+    const before = labels.suggestions.length;
+    const merged = mergeSuggestions(
+      labels.suggestions,
+      userLabeledFramesAsSuggestions(labels.labeledFrames)
+    );
+    applySuggestions(merged);
+    setSelectedIdx(null);
+    const added = merged.length - before;
+    toast.success(
+      added > 0
+        ? `Added ${added} labeled frame${added === 1 ? "" : "s"} to suggestions`
+        : "No new labeled frames to add"
+    );
+  };
+
+  /** Tools: shuffle order so users don't over-label one video top-to-bottom. */
+  const shuffleAllSuggestions = () => {
+    if (!labels || labels.suggestions.length === 0) return;
+    applySuggestions(shuffleSuggestions(labels.suggestions, Math.random));
+    setSelectedIdx(null);
+    toast.success("Shuffled suggestions");
+  };
+
+  /** Tools: drop suggestions for frames with no user labeling; keep annotated. */
+  const removeUnlabeled = () => {
+    if (!labels) return;
+    const before = labels.suggestions.length;
+    const kept = removeUnlabeledSuggestions(labels.suggestions, (s) =>
+      frameHasUserLabels(labels, s.video, s.frameIdx)
+    );
+    applySuggestions(kept);
+    setSelectedIdx(null);
+    const removed = before - kept.length;
+    toast.info(
+      removed > 0
+        ? `Removed ${removed} unlabeled suggestion${removed === 1 ? "" : "s"}`
+        : "No unlabeled suggestions to remove"
+    );
+  };
+
+  /** Prev/Next: move to the neighbouring row in the DISPLAYED (sorted/shuffled)
+   *  list — NOT the frame-index order the global command uses, which ignores the
+   *  table order and other videos — and select it so the landed row highlights
+   *  (and Remove targets it). Wraps at the ends. */
+  const goToSuggestionOffset = (delta: 1 | -1) => {
+    if (sortedSuggestions.length === 0) return;
+    const s = useAppStore.getState();
+    // Where are we now? Prefer the selected row, else the row matching the
+    // current video+frame, else start from the top/bottom.
+    let pos = sortedSuggestions.findIndex((e) => e.originalIndex === selectedIdx);
+    if (pos === -1) {
+      pos = sortedSuggestions.findIndex(
+        (e) =>
+          e.suggestion.video === s.video && e.suggestion.frameIdx === s.frameIdx
+      );
+    }
+    const len = sortedSuggestions.length;
+    const nextPos =
+      pos === -1 ? (delta === 1 ? 0 : len - 1) : (pos + delta + len) % len;
+    const entry = sortedSuggestions[nextPos];
+    navigateToSuggestion(entry.suggestion);
+    setSelectedIdx(entry.originalIndex);
   };
 
   const addCurrentFrame = () => {
@@ -384,14 +452,9 @@ export function SuggestionsPanel({
         signal: controller.signal,
         onProgress: (phase, done, total) => setIfProgress({ phase, done, total }),
       });
-      // Merge onto whatever's already there rather than replacing it --
-      // otherwise a re-generate silently discards prior suggestions
-      // (manually added ones included).
-      const merged = mergeSuggestionFrames(labels.suggestions, next);
-      const added = merged.length - labels.suggestions.length;
-      applySuggestions(merged);
+      commitGenerated(next);
       setSelectedIdx(null);
-      toast.success(`Added ${added} new suggestion(s)`);
+      toast.success(`Generated ${next.length} suggestion(s)`);
     } catch (err) {
       if ((err as Error)?.name === "AbortError") {
         toast.info("Generation canceled");
@@ -407,6 +470,20 @@ export function SuggestionsPanel({
     }
   };
 
+  /** A positive-integer numeric input value (not empty / NaN / < 1). */
+  const validPosInt = (v: number | "") =>
+    typeof v === "number" && Number.isInteger(v) && v >= 1;
+  /** Coerce an empty box to 0 for the params object (only the validated fields matter). */
+  const asInt = (v: number | "") => (typeof v === "number" ? v : 0);
+  /** number-input onChange that allows an EMPTY box (stored as "") so the user
+   *  can clear it and retype; the value is validated on Generate. */
+  const onNumInput =
+    (setter: (v: number | "") => void) =>
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const n = e.target.valueAsNumber;
+      setter(Number.isNaN(n) ? "" : n);
+    };
+
   const handleGenerate = () => {
     if (!labels) return;
     const videos =
@@ -417,12 +494,33 @@ export function SuggestionsPanel({
       void handleGenerateImageFeatures(videos);
       return;
     }
+    // Validate the numeric inputs the selected method / options require — an
+    // empty or invalid (e.g. negative) box aborts with a toast rather than
+    // silently coercing (#327).
+    if ((method === "stride" || method === "random") && !validPosInt(perVideo)) {
+      toast.error("Per video can't be none or invalid");
+      return;
+    }
+    if (
+      method === "frame_chunk" &&
+      (!validPosInt(chunkFrom) || !validPosInt(chunkTo))
+    ) {
+      toast.error("Frame chunk From/To can't be none or invalid");
+      return;
+    }
+    if (
+      frameRangeEnabled &&
+      (!validPosInt(rangeFrom) || !validPosInt(rangeTo))
+    ) {
+      toast.error("Frame range From/To can't be none or invalid");
+      return;
+    }
     const params: GenerateParams = {
       method,
       videos,
-      perVideo,
-      frameFrom: chunkFrom,
-      frameTo: chunkTo,
+      perVideo: asInt(perVideo),
+      frameFrom: asInt(chunkFrom),
+      frameTo: asInt(chunkTo),
       scoreLimit,
       instanceLimitLower,
       instanceLimitUpper,
@@ -431,18 +529,14 @@ export function SuggestionsPanel({
       displacementThreshold,
       frameRange: {
         enabled: frameRangeEnabled,
-        frameFrom: rangeFrom,
-        frameTo: rangeTo,
+        frameFrom: asInt(rangeFrom),
+        frameTo: asInt(rangeTo),
       },
     };
     const next = generateSuggestionFrames(labels, params);
-    // Merge onto whatever's already there rather than replacing it -- see
-    // handleGenerateImageFeatures above for why.
-    const merged = mergeSuggestionFrames(labels.suggestions, next);
-    const added = merged.length - labels.suggestions.length;
-    applySuggestions(merged);
+    commitGenerated(next);
     setSelectedIdx(null);
-    toast.success(`Added ${added} new suggestion(s)`);
+    toast.success(`Generated ${next.length} suggestion(s)`);
   };
 
   // % labeled across the (filtered/sorted) suggestion list.
@@ -466,7 +560,7 @@ export function SuggestionsPanel({
     <TooltipProvider delayDuration={200}>
     <div className="flex flex-col h-full" data-tutorial="suggestions-panel">
       {/* Generation controls */}
-      <div className="px-2 py-1.5 border-b border-border space-y-1.5">
+      <div className="@container px-2 py-1.5 border-b border-border space-y-1.5">
         <div className="flex items-center gap-1.5">
           <Badge variant="secondary" className="text-xs shrink-0">
             {suggestions.length} suggestion
@@ -517,9 +611,7 @@ export function SuggestionsPanel({
               min={1}
               max={10000}
               value={perVideo}
-              onChange={(e) =>
-                setPerVideo(Math.max(1, parseIntInput(e.target.value, perVideo)))
-              }
+              onChange={onNumInput(setPerVideo)}
               className="h-7 w-16 text-xs"
               aria-label="Per video"
               data-tutorial="suggestions-per-video-input"
@@ -537,9 +629,7 @@ export function SuggestionsPanel({
                 type="number"
                 min={1}
                 value={chunkFrom}
-                onChange={(e) =>
-                  setChunkFrom(parseIntInput(e.target.value, chunkFrom))
-                }
+                onChange={onNumInput(setChunkFrom)}
                 className="h-7 w-16 text-xs"
                 aria-label="Frame chunk from"
               />
@@ -548,16 +638,16 @@ export function SuggestionsPanel({
                 type="number"
                 min={1}
                 value={chunkTo}
-                onChange={(e) =>
-                  setChunkTo(parseIntInput(e.target.value, chunkTo))
-                }
+                onChange={onNumInput(setChunkTo)}
                 className="h-7 w-16 text-xs"
                 aria-label="Frame chunk to"
               />
             </div>
-            {chunkFrom > chunkTo && (
-              <p className="text-xs text-destructive">From must be ≤ To</p>
-            )}
+            {typeof chunkFrom === "number" &&
+              typeof chunkTo === "number" &&
+              chunkFrom > chunkTo && (
+                <p className="text-xs text-destructive">From must be ≤ To</p>
+              )}
           </div>
         )}
 
@@ -856,6 +946,29 @@ export function SuggestionsPanel({
           </div>
         )}
 
+        {/* Add vs Replace on generate (by the per-video / count controls) */}
+        <div className="flex items-center gap-1.5">
+          <span className="text-xs text-muted-foreground shrink-0">
+            On Generate
+          </span>
+          <Button
+            variant={genMode === "add" ? "default" : "subtle"}
+            size="xs"
+            aria-pressed={genMode === "add"}
+            onClick={() => setGenMode("add")}
+          >
+            Add
+          </Button>
+          <Button
+            variant={genMode === "replace" ? "default" : "subtle"}
+            size="xs"
+            aria-pressed={genMode === "replace"}
+            onClick={() => setGenMode("replace")}
+          >
+            Replace
+          </Button>
+        </div>
+
         {/* Target video set */}
         <div className="flex items-center gap-1.5">
           <span className="text-xs text-muted-foreground shrink-0">Target</span>
@@ -875,6 +988,37 @@ export function SuggestionsPanel({
               <SelectItem value="current">Current video</SelectItem>
             </SelectContent>
           </Select>
+        </div>
+
+        {/* Bulk suggestion tools — fill the width; stack when the panel is narrow */}
+        <div className="flex flex-col gap-1 @[18rem]:flex-row">
+          <Button
+            variant="subtle"
+            size="xs"
+            className="@[18rem]:flex-1 min-w-0"
+            disabled={isGenerating}
+            onClick={addAllLabeledFrames}
+          >
+            Add labeled frames
+          </Button>
+          <Button
+            variant="subtle"
+            size="xs"
+            className="@[18rem]:flex-1 min-w-0"
+            disabled={suggestions.length === 0 || isGenerating}
+            onClick={shuffleAllSuggestions}
+          >
+            Shuffle
+          </Button>
+          <Button
+            variant="subtle"
+            size="xs"
+            className="@[18rem]:flex-1 min-w-0"
+            disabled={suggestions.length === 0 || isGenerating}
+            onClick={removeUnlabeled}
+          >
+            Remove unlabeled
+          </Button>
         </div>
 
         {/* Optional global frame-range restriction */}
@@ -898,9 +1042,7 @@ export function SuggestionsPanel({
                   type="number"
                   min={1}
                   value={rangeFrom}
-                  onChange={(e) =>
-                    setRangeFrom(parseIntInput(e.target.value, rangeFrom))
-                  }
+                  onChange={onNumInput(setRangeFrom)}
                   className="h-7 w-16 text-xs"
                   aria-label="Frame range from"
                 />
@@ -911,168 +1053,40 @@ export function SuggestionsPanel({
                   type="number"
                   min={1}
                   value={rangeTo}
-                  onChange={(e) =>
-                    setRangeTo(parseIntInput(e.target.value, rangeTo))
-                  }
+                  onChange={onNumInput(setRangeTo)}
                   className="h-7 w-16 text-xs"
                   aria-label="Frame range to"
                 />
               </div>
-              {rangeFrom > rangeTo && (
-                <p className="text-xs text-destructive">From must be ≤ To</p>
-              )}
+              {typeof rangeFrom === "number" &&
+                typeof rangeTo === "number" &&
+                rangeFrom > rangeTo && (
+                  <p className="text-xs text-destructive">From must be ≤ To</p>
+                )}
             </>
           )}
         </div>
-      </div>
 
-      <ScrollArea className="flex-1 min-h-0" data-tutorial="suggestions-table">
-        {suggestions.length === 0 ? (
-          <p className="text-xs text-muted-foreground p-2">
-            No suggestions generated. Click "Generate" to create frame
-            suggestions.
-          </p>
+        {/* Generate — wide primary action, isolated by dividers (PyQt-style) */}
+        <Separator />
+        {isGenerating ? (
+          <Button
+            variant="outline"
+            className="w-full h-8 text-xs"
+            onClick={() => abortRef.current?.abort()}
+          >
+            Cancel
+          </Button>
         ) : (
-          <Table>
-            <TableHeader>
-              <TableRow className="border-b hover:bg-transparent">
-                <TableHead
-                  className="py-1 px-2 text-xs font-normal h-auto cursor-pointer select-none"
-                  onClick={() => toggleSort("index")}
-                >
-                  #{sortIndicator("index")}
-                </TableHead>
-                <TableHead
-                  className="py-1 px-2 text-xs font-normal h-auto cursor-pointer select-none"
-                  onClick={() => toggleSort("video")}
-                >
-                  Video{sortIndicator("video")}
-                </TableHead>
-                <TableHead
-                  className="py-1 px-2 text-xs font-normal text-right h-auto cursor-pointer select-none"
-                  onClick={() => toggleSort("frame")}
-                >
-                  Frame{sortIndicator("frame")}
-                </TableHead>
-                <TableHead
-                  className="py-1 px-2 text-xs font-normal text-right h-auto cursor-pointer select-none"
-                  onClick={() => toggleSort("score")}
-                  title="Lowest instance score in each frame (hover a row for the full breakdown)"
-                >
-                  Score{sortIndicator("score")}
-                </TableHead>
-                <TableHead
-                  className="py-1 px-2 text-xs font-normal text-right h-auto cursor-pointer select-none"
-                  onClick={() => toggleSort("instances")}
-                  title="Number of user-labeled instances in this frame"
-                >
-                  Instances{sortIndicator("instances")}
-                </TableHead>
-                <TableHead
-                  className="py-1 px-2 text-xs font-normal text-center h-auto cursor-pointer select-none"
-                  onClick={() => toggleSort("labeled")}
-                  title="Whether this frame has any user labels"
-                >
-                  Labeled{sortIndicator("labeled")}
-                </TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {sortedSuggestions.map((entry) => (
-                <TableRow
-                  key={entry.originalIndex}
-                  onClick={() => {
-                    navigateToSuggestion(entry.suggestion);
-                    setSelectedIdx(entry.originalIndex);
-                  }}
-                  className={cn(
-                    "cursor-pointer border-b-0",
-                    entry.originalIndex === selectedIdx ||
-                      (entry.suggestion.video === currentVideo &&
-                        entry.suggestion.frameIdx === frameIdx)
-                      ? "bg-orange-500/10 border-l-2 border-l-orange-500 text-foreground"
-                      : "hover:bg-muted/50 text-foreground"
-                  )}
-                >
-                  <TableCell className="py-0.5 px-2 text-xs text-muted-foreground">
-                    {entry.originalIndex + 1}
-                  </TableCell>
-                  <TableCell className="py-0.5 px-2 text-xs">
-                    {basename(entry.suggestion.video.filename)}
-                  </TableCell>
-                  <TableCell className="py-0.5 px-2 text-xs text-right tabular-nums">
-                    {entry.suggestion.frameIdx}
-                  </TableCell>
-                  <TableCell className="py-0.5 px-2 text-xs text-right tabular-nums text-muted-foreground">
-                    {entry.score ? (
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <span className="cursor-help underline decoration-dotted decoration-muted-foreground/50 underline-offset-2">
-                            {entry.score.min.toFixed(2)}
-                          </span>
-                        </TooltipTrigger>
-                        <TooltipContent side="left">
-                          <div className="tabular-nums">
-                            Instances:{" "}
-                            {entry.score.scores
-                              .map((s) => s.toFixed(2))
-                              .join(", ")}
-                            <br />
-                            mean {entry.score.mean.toFixed(2)}
-                          </div>
-                        </TooltipContent>
-                      </Tooltip>
-                    ) : (
-                      "--"
-                    )}
-                  </TableCell>
-                  <TableCell className="py-0.5 px-2 text-xs text-right tabular-nums text-muted-foreground">
-                    {entry.instanceCount > 0 ? entry.instanceCount : ""}
-                  </TableCell>
-                  <TableCell className="py-0.5 px-2 text-xs text-center">
-                    {entry.hasLabels && (
-                      <span
-                        className="inline-block w-2 h-2 rounded-full bg-green-500"
-                        title="Has user labels"
-                      />
-                    )}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+          <Button
+            className="w-full h-8 text-xs"
+            onClick={handleGenerate}
+            data-tutorial="generate-suggestions-button"
+          >
+            Generate Suggestions
+          </Button>
         )}
-      </ScrollArea>
-
-      <Separator />
-      <div className="flex flex-col gap-1 p-2">
-        {/* Nav row: Prev · status · Next */}
-        <div className="flex items-center gap-1">
-          <Button
-            variant="subtle"
-            size="xs"
-            disabled={suggestions.length === 0}
-            onClick={() => commandContext.execute(GoPrevSuggestion)}
-          >
-            {"◀"} Prev
-          </Button>
-          {summary.total > 0 ? (
-            <span className="flex-1 text-center text-xs text-muted-foreground">
-              {summary.labeled}/{summary.total} labeled (
-              {summary.pct.toFixed(1)}%)
-            </span>
-          ) : (
-            <span className="flex-1" />
-          )}
-          <Button
-            variant="subtle"
-            size="xs"
-            disabled={suggestions.length === 0}
-            onClick={() => commandContext.execute(GoNextSuggestion)}
-          >
-            Next {"▶"}
-          </Button>
-        </div>
+        <Separator />
         {/* Image-features generation progress (2-phase: decoding then clustering). */}
         {isGenerating && (
           <div className="space-y-1">
@@ -1094,38 +1108,138 @@ export function SuggestionsPanel({
             </p>
           </div>
         )}
-        {/* Edit row: Generate/Cancel · Add current · Remove · Clear
-            (Generate leads so the primary action is the most visible). */}
-        <div className="flex gap-1">
-          {isGenerating ? (
-            <Button
-              variant="subtle"
-              size="xs"
-              onClick={() => abortRef.current?.abort()}
-            >
-              Cancel
-            </Button>
-          ) : (
-            <Button
-              variant="subtle"
-              size="xs"
-              onClick={handleGenerate}
-              data-tutorial="generate-suggestions-button"
-            >
-              Generate
-            </Button>
-          )}
+      </div>
+
+      <div
+        className="flex-1 min-h-0 overflow-y-auto"
+        data-tutorial="suggestions-table"
+      >
+        {suggestions.length === 0 ? (
+          <p className="text-xs text-muted-foreground p-2">
+            No suggestions generated. Click "Generate" to create frame
+            suggestions.
+          </p>
+        ) : (
+          <Table className="table-fixed border-separate border-spacing-0">
+            <TableHeader className="sticky top-0 z-10 bg-background">
+              <TableRow className="border-b hover:bg-transparent">
+                <TableHead
+                  className="py-1 px-2 text-xs font-normal h-auto border-b cursor-pointer select-none"
+                  onClick={() => toggleSort("video")}
+                >
+                  Video{sortIndicator("video")}
+                </TableHead>
+                <TableHead
+                  className="py-1 px-2 text-xs font-normal text-right h-auto w-14 border-b cursor-pointer select-none"
+                  onClick={() => toggleSort("frame")}
+                >
+                  Frame{sortIndicator("frame")}
+                </TableHead>
+                <TableHead className="py-1 px-2 text-xs font-normal text-right h-auto w-12 border-b">
+                  Group
+                </TableHead>
+                <TableHead className="py-1 px-1 text-xs font-normal text-center h-auto w-14 border-b">
+                  Labeled
+                </TableHead>
+                <TableHead
+                  className="py-1 px-2 text-xs font-normal text-right h-auto w-20 border-b cursor-pointer select-none"
+                  onClick={() => toggleSort("score")}
+                  title="Mean instance score in each frame (hover a row for the full breakdown)"
+                >
+                  Mean Score{sortIndicator("score")}
+                </TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {sortedSuggestions.map((entry) => (
+                <TableRow
+                  key={entry.originalIndex}
+                  onClick={() => {
+                    navigateToSuggestion(entry.suggestion);
+                    setSelectedIdx(entry.originalIndex);
+                  }}
+                  className={cn(
+                    "cursor-pointer border-b-0",
+                    entry.originalIndex === selectedIdx ||
+                      (entry.suggestion.video === currentVideo &&
+                        entry.suggestion.frameIdx === frameIdx)
+                      ? "bg-orange-500/10 border-l-2 border-l-orange-500 text-foreground"
+                      : "hover:bg-muted/50 text-foreground"
+                  )}
+                >
+                  <TableCell className="py-0.5 px-2 text-xs overflow-hidden">
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span className="block truncate">
+                          {basename(entry.suggestion.video.filename)}
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent side="left">
+                        {basename(entry.suggestion.video.filename)}
+                      </TooltipContent>
+                    </Tooltip>
+                  </TableCell>
+                  <TableCell className="py-0.5 px-2 text-xs text-right tabular-nums">
+                    {entry.suggestion.frameIdx}
+                  </TableCell>
+                  <TableCell className="py-0.5 px-2 text-xs text-right tabular-nums text-muted-foreground">
+                    {entry.suggestion.group || "0"}
+                  </TableCell>
+                  <TableCell className="py-0.5 px-1 text-xs text-center">
+                    {entry.hasLabels && (
+                      <span
+                        className="inline-block w-2 h-2 rounded-full bg-green-500"
+                        title="Has user labels"
+                      />
+                    )}
+                  </TableCell>
+                  <TableCell className="py-0.5 px-2 text-xs text-right tabular-nums text-muted-foreground">
+                    {entry.score ? (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span className="cursor-help underline decoration-dotted decoration-muted-foreground/50 underline-offset-2">
+                            {entry.score.mean.toFixed(2)}
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent side="left">
+                          <div className="tabular-nums">
+                            Instances:{" "}
+                            {entry.score.scores
+                              .map((s) => s.toFixed(2))
+                              .join(", ")}
+                            <br />
+                            min {entry.score.min.toFixed(2)}
+                          </div>
+                        </TooltipContent>
+                      </Tooltip>
+                    ) : (
+                      "--"
+                    )}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+      </div>
+
+      <Separator />
+      <div className="@container flex flex-col gap-1 p-2">
+        {/* Edit row: Add current frame · Remove · Clear all — stack when narrow */}
+        <div className="flex flex-col gap-1 @[18rem]:flex-row">
           <Button
             variant="subtle"
             size="xs"
+            className="@[18rem]:flex-1 min-w-0"
             disabled={!currentVideo || isGenerating}
             onClick={addCurrentFrame}
           >
-            Add current
+            Add current frame
           </Button>
           <Button
             variant="subtle"
             size="xs"
+            className="@[18rem]:flex-1 min-w-0"
             disabled={selectedIdx === null || isGenerating}
             onClick={removeSelected}
           >
@@ -1134,10 +1248,38 @@ export function SuggestionsPanel({
           <Button
             variant="subtle"
             size="xs"
+            className="@[18rem]:flex-1 min-w-0"
             disabled={suggestions.length === 0 || isGenerating}
             onClick={() => setClearConfirmOpen(true)}
           >
-            Clear
+            Clear all
+          </Button>
+        </div>
+        {/* Nav row: Prev · status · Next */}
+        <div className="flex items-center gap-1">
+          <Button
+            variant="subtle"
+            size="xs"
+            disabled={suggestions.length === 0}
+            onClick={() => goToSuggestionOffset(-1)}
+          >
+            {"◀"} Prev
+          </Button>
+          {summary.total > 0 ? (
+            <span className="flex-1 text-center text-xs text-muted-foreground">
+              {summary.labeled}/{summary.total} labeled (
+              {summary.pct.toFixed(1)}%)
+            </span>
+          ) : (
+            <span className="flex-1" />
+          )}
+          <Button
+            variant="subtle"
+            size="xs"
+            disabled={suggestions.length === 0}
+            onClick={() => goToSuggestionOffset(1)}
+          >
+            Next {"▶"}
           </Button>
         </div>
       </div>
