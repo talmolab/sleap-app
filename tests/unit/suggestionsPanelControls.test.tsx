@@ -282,4 +282,74 @@ describe("SuggestionsPanel controls (#159)", () => {
       expect(useAppStore.getState().labels!.suggestions.length).toBe(0);
     });
   });
+
+  it("Labeled column header sorts by whether each frame has user labels", async () => {
+    const { labels, skeleton, video } = makeProject();
+    // frame 20 is user-labeled; frame 10 is not.
+    const lf = new LabeledFrame({ video, frameIdx: 20 });
+    lf.instances.push(Instance.empty({ skeleton }));
+    labels.labeledFrames.push(lf);
+
+    // Original order: labeled frame (20) first, unlabeled (10) second -- so
+    // an ascending "Labeled" sort should visibly flip the row order.
+    labels.suggestions = [
+      { video, frameIdx: 20 } as SuggestionFrame,
+      { video, frameIdx: 10 } as SuggestionFrame,
+    ];
+    useAppStore.getState().setLabels(labels, "test.slp");
+    useAppStore.getState().setVideo(video);
+
+    const { SuggestionsPanel } = await import(
+      "@/components/panels/SuggestionsPanel"
+    );
+    render(<SuggestionsPanel />);
+
+    const frameCellsInOrder = () =>
+      screen
+        .getAllByRole("row")
+        .slice(1) // skip header row
+        .map((row) => row.querySelectorAll("td")[2]?.textContent);
+
+    // Default sort is by original index: labeled (20) then unlabeled (10).
+    expect(frameCellsInOrder()).toEqual(["20", "10"]);
+
+    fireEvent.click(screen.getByText(/^Labeled/));
+
+    // Ascending "Labeled" sort: unlabeled (false) before labeled (true).
+    expect(frameCellsInOrder()).toEqual(["10", "20"]);
+  });
+
+  it("Instances column shows the user-instance count and sorts by it", async () => {
+    const { labels, skeleton, video } = makeProject();
+    // frame 20 has 2 user instances; frame 10 has none.
+    const lf = new LabeledFrame({ video, frameIdx: 20 });
+    lf.instances.push(Instance.empty({ skeleton }), Instance.empty({ skeleton }));
+    labels.labeledFrames.push(lf);
+
+    labels.suggestions = [
+      { video, frameIdx: 20 } as SuggestionFrame,
+      { video, frameIdx: 10 } as SuggestionFrame,
+    ];
+    useAppStore.getState().setLabels(labels, "test.slp");
+    useAppStore.getState().setVideo(video);
+
+    const { SuggestionsPanel } = await import(
+      "@/components/panels/SuggestionsPanel"
+    );
+    render(<SuggestionsPanel />);
+
+    const instanceCellsInOrder = () =>
+      screen
+        .getAllByRole("row")
+        .slice(1) // skip header row
+        .map((row) => row.querySelectorAll("td")[4]?.textContent);
+
+    // Default sort is by original index: frame 20 (2 instances) then 10 (blank).
+    expect(instanceCellsInOrder()).toEqual(["2", ""]);
+
+    fireEvent.click(screen.getByText(/^Instances/));
+
+    // Ascending "Instances" sort: 0 (blank) before 2.
+    expect(instanceCellsInOrder()).toEqual(["", "2"]);
+  });
 });

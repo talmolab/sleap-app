@@ -13,11 +13,15 @@ import {
   suggestionExists,
   addSuggestionFrame,
   removeSuggestionAt,
+  mergeSuggestionFrames,
   labeledSummary,
 } from "../../lib/suggestionEdits";
 import { toast } from "@/lib/notify";
 import { cn } from "@/lib/utils";
-import { frameHasUserLabels } from "@/lib/frameLabeling";
+import {
+  frameHasUserLabels,
+  frameUserInstanceCount,
+} from "@/lib/frameLabeling";
 import {
   Table,
   TableBody,
@@ -72,7 +76,7 @@ function basename(path: string | string[]): string {
   return parts[parts.length - 1] ?? p;
 }
 
-type SortColumn = "index" | "video" | "frame" | "score";
+type SortColumn = "index" | "video" | "frame" | "score" | "labeled" | "instances";
 type SortDir = "asc" | "desc";
 
 /**
@@ -161,15 +165,16 @@ export interface SuggestionsPanelProps {
   initialMethod?: GenerationMethod;
   /**
    * Initial target video set. Production callers omit this (defaults to
-   * "current"); a test seam like {@link initialMethod} so a test can mount
-   * directly into the all-videos path without driving the Radix Target popover.
+   * "all"); a test seam like {@link initialMethod} so a test can mount
+   * directly into the current-video path without driving the Radix Target
+   * popover.
    */
   initialTarget?: GenerationTarget;
 }
 
 export function SuggestionsPanel({
   initialMethod = "stride",
-  initialTarget = "current",
+  initialTarget = "all",
 }: SuggestionsPanelProps = {}) {
   const labels = useAppStore((s) => s.labels);
   const currentVideo = useAppStore((s) => s.video);
@@ -241,8 +246,10 @@ export function SuggestionsPanel({
   } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   // Target (all videos vs current) + optional global frame-range restriction.
-  // Default to the CURRENT video: least-surprising for a labeling workflow and,
-  // for image_features, avoids decoding every video in a multi-video project.
+  // Default to ALL videos (#324): defaulting to the current video led users to
+  // do all their labeling on a single video, hurting generalization. Note
+  // this means image_features now decodes every video in a multi-video
+  // project by default too, unless the user narrows it to "current" themselves.
   const [target, setTarget] = useState<GenerationTarget>(initialTarget);
   const [frameRangeEnabled, setFrameRangeEnabled] = useState(false);
   const [rangeFrom, setRangeFrom] = useState(1);
@@ -269,6 +276,7 @@ export function SuggestionsPanel({
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       score: computeFrameScore(s, labels as any),
       hasLabels: frameHasUserLabels(labels, s.video, s.frameIdx),
+      instanceCount: frameUserInstanceCount(labels, s.video, s.frameIdx),
     }));
 
     // Sort
@@ -293,6 +301,12 @@ export function SuggestionsPanel({
           cmp = sa - sb;
           break;
         }
+        case "labeled":
+          cmp = Number(a.hasLabels) - Number(b.hasLabels);
+          break;
+        case "instances":
+          cmp = a.instanceCount - b.instanceCount;
+          break;
       }
       return sortDir === "asc" ? cmp : -cmp;
     });
@@ -370,9 +384,14 @@ export function SuggestionsPanel({
         signal: controller.signal,
         onProgress: (phase, done, total) => setIfProgress({ phase, done, total }),
       });
-      applySuggestions(next);
+      // Merge onto whatever's already there rather than replacing it --
+      // otherwise a re-generate silently discards prior suggestions
+      // (manually added ones included).
+      const merged = mergeSuggestionFrames(labels.suggestions, next);
+      const added = merged.length - labels.suggestions.length;
+      applySuggestions(merged);
       setSelectedIdx(null);
-      toast.success(`Generated ${next.length} suggestion(s)`);
+      toast.success(`Added ${added} new suggestion(s)`);
     } catch (err) {
       if ((err as Error)?.name === "AbortError") {
         toast.info("Generation canceled");
@@ -417,9 +436,13 @@ export function SuggestionsPanel({
       },
     };
     const next = generateSuggestionFrames(labels, params);
-    applySuggestions(next);
+    // Merge onto whatever's already there rather than replacing it -- see
+    // handleGenerateImageFeatures above for why.
+    const merged = mergeSuggestionFrames(labels.suggestions, next);
+    const added = merged.length - labels.suggestions.length;
+    applySuggestions(merged);
     setSelectedIdx(null);
-    toast.success(`Generated ${next.length} suggestion(s)`);
+    toast.success(`Added ${added} new suggestion(s)`);
   };
 
   // % labeled across the (filtered/sorted) suggestion list.
@@ -938,7 +961,20 @@ export function SuggestionsPanel({
                 >
                   Score{sortIndicator("score")}
                 </TableHead>
-                <TableHead className="py-1 px-1 text-xs font-normal h-auto w-6" />
+                <TableHead
+                  className="py-1 px-2 text-xs font-normal text-right h-auto cursor-pointer select-none"
+                  onClick={() => toggleSort("instances")}
+                  title="Number of user-labeled instances in this frame"
+                >
+                  Instances{sortIndicator("instances")}
+                </TableHead>
+                <TableHead
+                  className="py-1 px-2 text-xs font-normal text-center h-auto cursor-pointer select-none"
+                  onClick={() => toggleSort("labeled")}
+                  title="Whether this frame has any user labels"
+                >
+                  Labeled{sortIndicator("labeled")}
+                </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -990,7 +1026,10 @@ export function SuggestionsPanel({
                       "--"
                     )}
                   </TableCell>
-                  <TableCell className="py-0.5 px-1 text-xs text-center w-6">
+                  <TableCell className="py-0.5 px-2 text-xs text-right tabular-nums text-muted-foreground">
+                    {entry.instanceCount > 0 ? entry.instanceCount : ""}
+                  </TableCell>
+                  <TableCell className="py-0.5 px-2 text-xs text-center">
                     {entry.hasLabels && (
                       <span
                         className="inline-block w-2 h-2 rounded-full bg-green-500"
