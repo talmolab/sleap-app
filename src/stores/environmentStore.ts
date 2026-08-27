@@ -31,6 +31,13 @@ import { openExternal } from "@/lib/openExternal";
 
 const SLEAP_NN_RELEASES_URL = "https://github.com/talmolab/sleap-nn/releases/tag";
 
+// De-dupes concurrent callers of checkSleapNnUpdateAndNotify (e.g. App.tsx's
+// startup check racing loadProject.ts's post-load check for a project opened
+// via a CLI arg or file-association launch): without this, both calls await
+// listUvTools() before either has written lastNotifiedSleapNnVersion, so both
+// read the stale guard value and both fire the "update available" toast.
+let sleapNnCheckInFlight: Promise<void> | null = null;
+
 export type DetectionStatus = "idle" | "checking" | "done" | "error";
 export type InstallStatus = "idle" | "installing" | "done" | "error";
 
@@ -425,28 +432,35 @@ export const useEnvironmentStore = create<EnvironmentState>()(
       // Lightweight, best-effort check (just the two `uv tool list` calls, not
       // the full uv/interpreters/python detection `refresh()` does) — meant to
       // run on every project open without adding noticeable latency.
-      checkSleapNnUpdateAndNotify: async () => {
-        if (!isTauri) return;
-        try {
-          const uvTools = await listUvTools();
-          set({ tools: uvTools });
+      checkSleapNnUpdateAndNotify: () => {
+        if (!isTauri) return Promise.resolve();
+        if (sleapNnCheckInFlight) return sleapNnCheckInFlight;
 
-          const tool = uvTools.find((t) => t.name === "sleap-nn");
-          if (!tool?.updateAvailable || !tool.latestVersion) return;
-          if (tool.latestVersion === get().lastNotifiedSleapNnVersion) return;
+        sleapNnCheckInFlight = (async () => {
+          try {
+            const uvTools = await listUvTools();
+            set({ tools: uvTools });
 
-          set({ lastNotifiedSleapNnVersion: tool.latestVersion });
-          toast.info(`sleap-nn v${tool.latestVersion} is available`, {
-            description: `You're on v${tool.version}.`,
-            action: {
-              label: "Release notes",
-              onClick: () =>
-                openExternal(`${SLEAP_NN_RELEASES_URL}/v${tool.latestVersion}`),
-            },
-          });
-        } catch (err) {
-          console.error("[env] sleap-nn update check failed:", err);
-        }
+            const tool = uvTools.find((t) => t.name === "sleap-nn");
+            if (!tool?.updateAvailable || !tool.latestVersion) return;
+            if (tool.latestVersion === get().lastNotifiedSleapNnVersion) return;
+
+            set({ lastNotifiedSleapNnVersion: tool.latestVersion });
+            toast.info(`sleap-nn v${tool.latestVersion} is available`, {
+              description: `You're on v${tool.version}.`,
+              action: {
+                label: "Release notes",
+                onClick: () =>
+                  openExternal(`${SLEAP_NN_RELEASES_URL}/v${tool.latestVersion}`),
+              },
+            });
+          } catch (err) {
+            console.error("[env] sleap-nn update check failed:", err);
+          } finally {
+            sleapNnCheckInFlight = null;
+          }
+        })();
+        return sleapNnCheckInFlight;
       },
     }),
     {
