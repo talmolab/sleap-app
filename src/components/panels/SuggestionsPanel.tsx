@@ -14,6 +14,10 @@ import {
   addSuggestionFrame,
   removeSuggestionAt,
   labeledSummary,
+  mergeSuggestions,
+  shuffleSuggestions,
+  removeUnlabeledSuggestions,
+  userLabeledFramesAsSuggestions,
 } from "../../lib/suggestionEdits";
 import { toast } from "@/lib/notify";
 import { cn } from "@/lib/utils";
@@ -232,6 +236,10 @@ export function SuggestionsPanel({
   const [ifPcaComponents, setIfPcaComponents] = useState(5);
   const [ifSeed, setIfSeed] = useState(0);
   const [ifAdvancedOpen, setIfAdvancedOpen] = useState(false);
+  // Generate mode: append to the existing list ("add", default) or replace it.
+  const [genMode, setGenMode] = useState<"add" | "replace">("add");
+  // Collapsible "Tools" section (bulk suggestion QOL actions).
+  const [toolsOpen, setToolsOpen] = useState(false);
   // image_features async generation state (decode + worker).
   const [isGenerating, setIsGenerating] = useState(false);
   const [ifProgress, setIfProgress] = useState<{
@@ -319,6 +327,61 @@ export function SuggestionsPanel({
     forceUpdate();
   };
 
+  /**
+   * Commit freshly generated suggestions per the Add/Replace mode: "add"
+   * appends the new frames to the existing list (deduped); "replace" swaps the
+   * list wholesale (the legacy behavior).
+   */
+  const commitGenerated = (next: SuggestionFrame[]) => {
+    if (!labels) return;
+    applySuggestions(
+      genMode === "add" ? mergeSuggestions(labels.suggestions, next) : next
+    );
+  };
+
+  /** Tools: add every user-labeled frame to the suggestions (deduped). */
+  const addAllLabeledFrames = () => {
+    if (!labels) return;
+    const before = labels.suggestions.length;
+    const merged = mergeSuggestions(
+      labels.suggestions,
+      userLabeledFramesAsSuggestions(labels.labeledFrames)
+    );
+    applySuggestions(merged);
+    setSelectedIdx(null);
+    const added = merged.length - before;
+    toast.success(
+      added > 0
+        ? `Added ${added} labeled frame${added === 1 ? "" : "s"} to suggestions`
+        : "No new labeled frames to add"
+    );
+  };
+
+  /** Tools: shuffle order so users don't over-label one video top-to-bottom. */
+  const shuffleAllSuggestions = () => {
+    if (!labels || labels.suggestions.length === 0) return;
+    applySuggestions(shuffleSuggestions(labels.suggestions, Math.random));
+    setSelectedIdx(null);
+    toast.success("Shuffled suggestions");
+  };
+
+  /** Tools: drop suggestions for frames with no user labeling; keep annotated. */
+  const removeUnlabeled = () => {
+    if (!labels) return;
+    const before = labels.suggestions.length;
+    const kept = removeUnlabeledSuggestions(labels.suggestions, (s) =>
+      frameHasUserLabels(labels, s.video, s.frameIdx)
+    );
+    applySuggestions(kept);
+    setSelectedIdx(null);
+    const removed = before - kept.length;
+    toast.info(
+      removed > 0
+        ? `Removed ${removed} unlabeled suggestion${removed === 1 ? "" : "s"}`
+        : "No unlabeled suggestions to remove"
+    );
+  };
+
   const addCurrentFrame = () => {
     if (!labels || !currentVideo) return;
     if (suggestionExists(labels.suggestions, currentVideo, frameIdx)) {
@@ -370,7 +433,7 @@ export function SuggestionsPanel({
         signal: controller.signal,
         onProgress: (phase, done, total) => setIfProgress({ phase, done, total }),
       });
-      applySuggestions(next);
+      commitGenerated(next);
       setSelectedIdx(null);
       toast.success(`Generated ${next.length} suggestion(s)`);
     } catch (err) {
@@ -417,7 +480,7 @@ export function SuggestionsPanel({
       },
     };
     const next = generateSuggestionFrames(labels, params);
-    applySuggestions(next);
+    commitGenerated(next);
     setSelectedIdx(null);
     toast.success(`Generated ${next.length} suggestion(s)`);
   };
@@ -1055,6 +1118,28 @@ export function SuggestionsPanel({
             </p>
           </div>
         )}
+        {/* Generate mode: append (Add, default) or replace the existing list */}
+        <div className="flex items-center gap-1.5">
+          <span className="text-xs text-muted-foreground shrink-0">
+            On Generate
+          </span>
+          <Button
+            variant={genMode === "add" ? "default" : "subtle"}
+            size="xs"
+            aria-pressed={genMode === "add"}
+            onClick={() => setGenMode("add")}
+          >
+            Add
+          </Button>
+          <Button
+            variant={genMode === "replace" ? "default" : "subtle"}
+            size="xs"
+            aria-pressed={genMode === "replace"}
+            onClick={() => setGenMode("replace")}
+          >
+            Replace
+          </Button>
+        </div>
         {/* Edit row: Generate/Cancel · Add current · Remove · Clear
             (Generate leads so the primary action is the most visible). */}
         <div className="flex gap-1">
@@ -1101,6 +1186,43 @@ export function SuggestionsPanel({
             Clear
           </Button>
         </div>
+
+        {/* Suggestion tools (collapsible): bulk QOL actions */}
+        <button
+          type="button"
+          className="text-xs text-muted-foreground underline decoration-dotted"
+          onClick={() => setToolsOpen((o) => !o)}
+        >
+          {toolsOpen ? "▾ Tools" : "▸ Tools"}
+        </button>
+        {toolsOpen && (
+          <div className="flex flex-wrap gap-1">
+            <Button
+              variant="subtle"
+              size="xs"
+              disabled={isGenerating}
+              onClick={addAllLabeledFrames}
+            >
+              Add labeled frames
+            </Button>
+            <Button
+              variant="subtle"
+              size="xs"
+              disabled={suggestions.length === 0 || isGenerating}
+              onClick={shuffleAllSuggestions}
+            >
+              Shuffle
+            </Button>
+            <Button
+              variant="subtle"
+              size="xs"
+              disabled={suggestions.length === 0 || isGenerating}
+              onClick={removeUnlabeled}
+            >
+              Remove unlabeled
+            </Button>
+          </div>
+        )}
       </div>
 
       {/* Clear-all confirmation */}

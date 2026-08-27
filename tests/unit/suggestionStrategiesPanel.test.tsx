@@ -27,6 +27,7 @@ import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import { useAppStore } from "@/stores/appStore";
 import {
   Labels,
+  Instance,
   LabeledFrame,
   PredictedInstance,
   Skeleton,
@@ -203,11 +204,11 @@ describe("SuggestionsPanel generation methods (#162)", () => {
     expect(input.value).toBe("0");
   });
 
-  it("frame_chunk + Generate replaces labels.suggestions with the consecutive range", async () => {
+  it("frame_chunk + Generate (default Add mode) appends the range to existing suggestions (#327)", async () => {
     const skel = makeSkeleton();
     const video = makeVideo(100);
     const labels = new Labels({ videos: [video], skeletons: [skel] });
-    // Pre-existing suggestion to prove REPLACE semantics.
+    // Pre-existing suggestion — the default "Add" mode keeps it.
     labels.suggestions = [{ video, frameIdx: 99 } as SuggestionFrame];
     useAppStore.getState().setLabels(labels, "test.slp");
 
@@ -226,10 +227,37 @@ describe("SuggestionsPanel generation methods (#162)", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /^generate$/i }));
 
-    // 1-based 3..6 inclusive -> 0-based 2,3,4,5. REPLACES the prior [99].
+    // Default Add: existing [99] kept, then 1-based 3..6 -> 0-based 2,3,4,5 appended.
+    const result = useAppStore.getState().labels?.suggestions ?? [];
+    expect(result.map((s) => s.frameIdx)).toEqual([99, 2, 3, 4, 5]);
+    for (const s of result) expect(s.video).toBe(video);
+  });
+
+  it("frame_chunk + Generate in Replace mode swaps the list wholesale (#327)", async () => {
+    const skel = makeSkeleton();
+    const video = makeVideo(100);
+    const labels = new Labels({ videos: [video], skeletons: [skel] });
+    labels.suggestions = [{ video, frameIdx: 99 } as SuggestionFrame];
+    useAppStore.getState().setLabels(labels, "test.slp");
+
+    const { SuggestionsPanel } = await import(
+      "@/components/panels/SuggestionsPanel"
+    );
+    render(<SuggestionsPanel initialMethod="frame_chunk" />);
+
+    fireEvent.change(screen.getByLabelText(/frame chunk from/i), {
+      target: { value: "3" },
+    });
+    fireEvent.change(screen.getByLabelText(/frame chunk to/i), {
+      target: { value: "6" },
+    });
+
+    // Switch to Replace, then Generate: the prior [99] is discarded.
+    fireEvent.click(screen.getByRole("button", { name: /^replace$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^generate$/i }));
+
     const result = useAppStore.getState().labels?.suggestions ?? [];
     expect(result.map((s) => s.frameIdx)).toEqual([2, 3, 4, 5]);
-    for (const s of result) expect(s.video).toBe(video);
   });
 
   it("prediction_score + Generate selects only the qualifying predicted frames", async () => {
@@ -335,5 +363,74 @@ describe("SuggestionsPanel generation methods (#162)", () => {
     expect(result.length).toBe(40);
     expect(result.some((s) => s.video === v1)).toBe(true);
     expect(result.some((s) => s.video === v2)).toBe(true);
+  });
+
+  it("Tools › Add labeled frames merges user-labeled frames (not predicted-only) (#327)", async () => {
+    const skel = makeSkeleton();
+    const video = makeVideo(100);
+    const labels = new Labels({ videos: [video], skeletons: [skel] });
+    // frame 10: a USER (non-predicted) instance -> user-labeled.
+    const lfUser = new LabeledFrame({ video, frameIdx: 10 });
+    lfUser.instances.push(
+      Instance.fromArray(
+        [
+          [1, 1],
+          [2, 2],
+        ],
+        skel,
+      ),
+    );
+    // frame 20: predicted-only -> NOT user-labeled.
+    const lfPred = new LabeledFrame({ video, frameIdx: 20 });
+    lfPred.instances.push(predictedInstance(skel, 1.0));
+    labels.labeledFrames.push(lfUser, lfPred);
+    labels.suggestions = [];
+    useAppStore.getState().setLabels(labels, "test.slp");
+
+    const { SuggestionsPanel } = await import(
+      "@/components/panels/SuggestionsPanel"
+    );
+    render(<SuggestionsPanel />);
+
+    fireEvent.click(screen.getByRole("button", { name: /tools/i }));
+    fireEvent.click(screen.getByRole("button", { name: /add labeled frames/i }));
+
+    // Only the user-labeled frame (10) is added; predicted-only (20) is not.
+    const result = useAppStore.getState().labels?.suggestions ?? [];
+    expect(result.map((s) => s.frameIdx)).toEqual([10]);
+  });
+
+  it("Tools › Remove unlabeled keeps only suggestions on user-labeled frames (#327)", async () => {
+    const skel = makeSkeleton();
+    const video = makeVideo(100);
+    const labels = new Labels({ videos: [video], skeletons: [skel] });
+    const lfUser = new LabeledFrame({ video, frameIdx: 10 });
+    lfUser.instances.push(
+      Instance.fromArray(
+        [
+          [1, 1],
+          [2, 2],
+        ],
+        skel,
+      ),
+    );
+    labels.labeledFrames.push(lfUser);
+    // Suggestions on a labeled frame (10) and an unlabeled one (20).
+    labels.suggestions = [
+      { video, frameIdx: 10 } as SuggestionFrame,
+      { video, frameIdx: 20 } as SuggestionFrame,
+    ];
+    useAppStore.getState().setLabels(labels, "test.slp");
+
+    const { SuggestionsPanel } = await import(
+      "@/components/panels/SuggestionsPanel"
+    );
+    render(<SuggestionsPanel />);
+
+    fireEvent.click(screen.getByRole("button", { name: /tools/i }));
+    fireEvent.click(screen.getByRole("button", { name: /remove unlabeled/i }));
+
+    const result = useAppStore.getState().labels?.suggestions ?? [];
+    expect(result.map((s) => s.frameIdx)).toEqual([10]);
   });
 });
