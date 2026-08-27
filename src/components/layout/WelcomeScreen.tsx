@@ -13,11 +13,14 @@ import { useCallback, useEffect, useState } from "react";
 import { useFileIO } from "../../hooks/useFileIO";
 import { useAppStore } from "../../stores/appStore";
 import { Button } from "@/components/ui/button";
-import { Plus, FolderOpen } from "lucide-react";
+import { Plus, FolderOpen, Cpu } from "lucide-react";
 import {
   loadRecoverableDrafts,
   type RecoverableDraft,
 } from "@/lib/recoverableDrafts";
+import { WelcomeEnvironmentsPanel } from "./WelcomeEnvironmentsPanel";
+import { UpdatePingDot, UpdatePill, useEnvironmentUpdateStatus } from "./UpdateIndicator";
+import { cn } from "@/lib/utils";
 
 /** Compact "saved N ago" for the restore list. */
 function timeAgo(ms: number): string {
@@ -37,6 +40,11 @@ export function WelcomeScreen() {
   // Which draft (if any) is mid "discard — are you sure?". An in-app inline
   // confirm (keyed by draft path) that replaces the old window.confirm.
   const [confirmingKey, setConfirmingKey] = useState<string | null>(null);
+  const [showEnvironments, setShowEnvironments] = useState(false);
+  const {
+    available: environmentUpdateAvailable,
+    title: environmentUpdateTitle,
+  } = useEnvironmentUpdateStatus();
 
   // Discover recoverable drafts on mount — both runtimes (browser OPFS + desktop
   // disk), normalized. Idempotent (a StrictMode double-invoke just re-lists).
@@ -89,6 +97,31 @@ export function WelcomeScreen() {
       onDrop={handleDrop}
       onDragOver={handleDragOver}
     >
+      <Button
+        onClick={() => setShowEnvironments((v) => !v)}
+        variant="ghost"
+        size="sm"
+        className={cn(
+          "absolute bottom-3 right-3 z-30 bg-card/80 backdrop-blur-sm hover:bg-card",
+          environmentUpdateAvailable && "ring-1 ring-orange-500/60"
+        )}
+      >
+        <span className="relative flex items-center">
+          <Cpu className="h-4 w-4" />
+          {environmentUpdateAvailable && (
+            <UpdatePingDot className="-top-0.5 -right-0.5" />
+          )}
+        </span>
+        Environment
+        {environmentUpdateAvailable && (
+          <UpdatePill title={environmentUpdateTitle}>Update available</UpdatePill>
+        )}
+      </Button>
+
+      {showEnvironments && (
+        <WelcomeEnvironmentsPanel onClose={() => setShowEnvironments(false)} />
+      )}
+
       <div className="relative z-10 flex flex-col items-center gap-2">
         {error && (
           <div className="max-w-sm text-center text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-md border border-destructive/20">

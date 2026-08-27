@@ -5,7 +5,7 @@
  * install Python versions, and manage uv tools (sleap-nn, sleap-rtc).
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   CheckCircle2,
   XCircle,
@@ -20,6 +20,12 @@ import {
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import {
   Select,
   SelectContent,
@@ -37,6 +43,14 @@ import {
 import type { UvTool } from "../../platform/backend";
 import { openExternal } from "@/lib/openExternal";
 import { cn } from "@/lib/utils";
+import { sleapCmd } from "@/lib/sleapPlugin";
+import {
+  checkUpdateCached,
+  type PendingUpdate,
+} from "@/lib/updateCheckCache";
+import { useAppStore, type UpdateChannel } from "@/stores/appStore";
+import { hasUnsavedWork } from "@/lib/unsavedGuard";
+import { toast } from "@/lib/notify";
 
 const SLEAP_NN_RELEASES_URL = "https://github.com/talmolab/sleap-nn/releases/tag";
 const SLEAP_APP_RELEASES_URL = "https://github.com/talmolab/sleap-app/releases/tag";
@@ -226,27 +240,63 @@ function ToolActions({
 // sleap-app self-update section
 // ---------------------------------------------------------------------------
 
-/** Minimal shape we use from the `Update` object returned by plugin-updater's `check()`. */
-interface PendingUpdate {
-  version: string;
-  downloadAndInstall: () => Promise<void>;
-}
+const UPDATE_CHANNELS: { value: UpdateChannel; label: string }[] = [
+  { value: "stable", label: "Stable" },
+  { value: "latest", label: "Latest" },
+  { value: "dev", label: "Dev (main)" },
+];
 
 /**
- * Shows the desktop app's own version, whether a newer release is available
- * (via the same tauri-plugin-updater manifest App.tsx's startup check uses),
- * a release-notes link, and a manual Update button. Independent of the
- * uv/Python detection cycle above — checks once on mount.
+ * Shows the desktop app's own version, whether a newer version is available
+ * on the selected update channel (via the check_update/install_update
+ * commands — see src-tauri/src/update_channels.rs — the same ones App.tsx's
+ * startup check uses), a release-notes link, and a manual Update button.
+ * Independent of the uv/Python detection cycle above.
  */
-// Self-update only makes sense for a packaged desktop install: `tauri:dev`
-// has no installer for downloadAndInstall() to swap, and the update
-// manifest generally isn't reachable/meaningful for a dev build anyway.
-const isDevBuild = import.meta.env.DEV;
+// Whether this is an unpackaged `tauri:dev` run — checking still works (it's
+// just a network call + version compare), but there's no installer for
+// download_and_install() to swap, so the Update button stays hidden. This is
+// entirely orthogonal to the "Dev (main)" UPDATE CHANNEL above, which is a
+// normal PACKAGED build, just one built continuously off `main` instead of a
+// tagged release — hence the distinct "local build" label below rather than
+// reusing the word "dev" for both.
+const isLocalBuild = import.meta.env.DEV;
 
 function AppUpdateSection() {
   const [version, setVersion] = useState<string | null>(null);
   const [pendingUpdate, setPendingUpdate] = useState<PendingUpdate | null>(null);
   const [updating, setUpdating] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const channel = useAppStore((s) => s.updateChannel);
+  const setChannel = useAppStore((s) => s.setUpdateChannel);
+
+  // Guards against a stale response from an earlier channel overwriting a
+  // fresher one: check_update's requests can resolve out of order (e.g. a
+  // slow "latest" GitHub-API lookup started before a fast "dev" static-URL
+  // check, but resolving after it), so only the response matching the most
+  // recently STARTED request is ever applied.
+  const requestIdRef = useRef(0);
+
+  // Routed through checkUpdateCached (src/lib/updateCheckCache.ts) rather
+  // than invoking check_update directly: opening/closing this panel remounts
+  // AppUpdateSection each time, and without the shared cache that would
+  // re-hit the GitHub API on every visit to this sidebar section within the
+  // same session, not just once per app start.
+  const runCheck = useCallback(async (ch: UpdateChannel, force = false) => {
+    const requestId = ++requestIdRef.current;
+    setChecking(true);
+    setPendingUpdate(null);
+    try {
+      const update = await checkUpdateCached(ch, { force });
+      if (requestIdRef.current !== requestId) return; // superseded — drop it
+      setPendingUpdate(update);
+    } catch (err) {
+      if (requestIdRef.current !== requestId) return;
+      console.warn("[env] App update check failed:", err);
+    } finally {
+      if (requestIdRef.current === requestId) setChecking(false);
+    }
+  }, []);
 
   useEffect(() => {
     if (!isTauri) return;
@@ -259,97 +309,180 @@ function AppUpdateSection() {
       } catch (err) {
         console.warn("[env] Failed to read app version:", err);
       }
-      if (isDevBuild) return; // no installer to update to/from in dev
-      try {
-        const { check } = await import("@tauri-apps/plugin-updater");
-        const update = await check();
-        if (active && update) setPendingUpdate(update);
-      } catch (err) {
-        console.warn("[env] App update check failed:", err);
-      }
     })();
     return () => {
       active = false;
     };
   }, []);
 
+  useEffect(() => {
+    if (!isTauri) return;
+    void runCheck(channel);
+  }, [channel, runCheck]);
+
   if (!isTauri) return null;
 
   const doUpdate = async () => {
     if (!pendingUpdate) return;
+    // Installing swaps the app's files and relaunches the process — a full
+    // restart, not a hot-reload — so warn first if there's anything that
+    // hasn't been saved to disk yet.
+    if (hasUnsavedWork(useAppStore.getState())) {
+      const proceed = window.confirm(
+        "You have unsaved changes. Installing this update will restart SLEAP. Continue?"
+      );
+      if (!proceed) return;
+    }
     setUpdating(true);
     try {
-      await pendingUpdate.downloadAndInstall();
+      const { invoke } = await import("@tauri-apps/api/core");
+      // Pinned to the exact version shown/clicked: install_update refuses
+      // (and reports back) if a newer release landed on this channel in the
+      // moments since we last checked, rather than silently installing a
+      // different version than the one the user agreed to.
+      await invoke(sleapCmd("install_update"), {
+        channel,
+        expectedVersion: pendingUpdate.version,
+      });
       const { relaunch } = await import("@tauri-apps/plugin-process");
       await relaunch();
     } catch (err) {
       console.error("[env] App update failed:", err);
+      toast.error("Update failed", {
+        description: err instanceof Error ? err.message : String(err),
+      });
       setUpdating(false);
+      // Forced: install_update's own rejection (e.g. a newer version landed
+      // on this channel since we last checked) means the cached result is
+      // now known-stale -- reusing it here would just reproduce the same
+      // rejection on the next click until the 1h cache TTL happens to expire.
+      void runCheck(channel, true);
     }
   };
 
   const latestVersion = pendingUpdate?.version ?? (version ? version : null);
   const updateAvailable = !!pendingUpdate;
+  // Dev-channel builds live under a single rolling `dev` release tag,
+  // not their own `v{version}` tag, so there's no per-version release page to
+  // link to (unlike stable/latest, which are always a real GitHub Release).
+  const hasReleaseNotesPage = updateAvailable && channel !== "dev";
 
   return (
     <section>
       <h4 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1">
         SLEAP App
       </h4>
+      {/* Row 1: status + action — always full opacity, never disabled by
+          isLocalBuild (only the channel control below is). */}
       <div className="flex items-center gap-2 py-0.5">
         <StatusIcon ok={!!version} />
         <span className="text-xs font-medium">sleap-app</span>
         {version && (
           <span className="text-xs text-muted-foreground">v{version}</span>
         )}
-        {isDevBuild ? (
+        {isLocalBuild && (
           <Badge
             variant="secondary"
             className="text-[10px] px-1.5 py-0 h-4 rounded-sm"
-            title="Self-update is unavailable in tauri:dev — only packaged installs can check/apply updates"
+            title="Running via `tauri:dev` (unpackaged) — channel checks still work, but there's no installer to apply an update to. Run `bun run tauri:build` to actually install one."
           >
-            dev build
+            local build
           </Badge>
-        ) : (
-          latestVersion && (
-            <>
-              <span
-                className={cn(
-                  "text-xs",
-                  updateAvailable ? "text-orange-500" : "text-green-500"
-                )}
-              >
-                {updateAvailable ? `→ v${latestVersion}` : "latest"}
-              </span>
-              <button
-                onClick={() =>
-                  openExternal(`${SLEAP_APP_RELEASES_URL}/v${latestVersion}`)
-                }
-                title="View release notes"
-                className="text-muted-foreground hover:text-foreground transition-colors"
-              >
-                <ExternalLink className="h-3 w-3" />
-              </button>
-            </>
-          )
         )}
-        {!isDevBuild && updateAvailable && (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-5 text-[10px] ml-auto"
-            onClick={doUpdate}
-            disabled={updating}
-            title="Download and install the new version, then relaunch"
-          >
-            {updating ? (
-              <Loader2 className="h-3 w-3 animate-spin mr-1" />
-            ) : (
-              <ArrowUpCircle className="h-3 w-3 mr-1" />
+        {latestVersion && (
+          <span
+            className={cn(
+              "text-xs",
+              updateAvailable ? "text-orange-500" : "text-green-500"
             )}
-            {updating ? "Updating..." : "Update"}
-          </Button>
+          >
+            {updateAvailable ? `→ v${latestVersion}` : "up to date"}
+          </span>
         )}
+        {hasReleaseNotesPage && (
+          <button
+            onClick={() =>
+              openExternal(`${SLEAP_APP_RELEASES_URL}/v${latestVersion}`)
+            }
+            title="View release notes"
+            className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <ExternalLink className="h-3 w-3" />
+            Release Notes
+          </button>
+        )}
+        <Button
+          variant="ghost"
+          size="sm"
+          className={cn(
+            "h-5 text-[10px] ml-auto",
+            (isLocalBuild || !updateAvailable) && "opacity-60"
+          )}
+          onClick={doUpdate}
+          disabled={updating || isLocalBuild || !updateAvailable}
+          title={
+            isLocalBuild
+              ? "Running via tauri:dev — there's no installer to apply this update to. Run `bun run tauri:build` to actually install one."
+              : updateAvailable
+                ? "Download and install the new version, then relaunch"
+                : "You're already on the newest version for this channel"
+          }
+        >
+          {updating ? (
+            <Loader2 className="h-3 w-3 animate-spin mr-1" />
+          ) : (
+            <ArrowUpCircle className="h-3 w-3 mr-1" />
+          )}
+          {updating ? "Updating..." : "Update"}
+        </Button>
+      </div>
+
+      {/* Row 2: channel control, on its own line so row 1 doesn't wrap. */}
+      <div
+        className={cn(
+          "flex items-center gap-1.5 py-0.5 pl-5",
+          isLocalBuild && "opacity-60"
+        )}
+      >
+        <span className="text-[10px] text-muted-foreground">Channel</span>
+        <Select
+          value={channel}
+          onValueChange={(v) => setChannel(v as UpdateChannel)}
+          disabled={checking || updating || isLocalBuild}
+        >
+          <SelectTrigger className="h-5 w-auto gap-1 px-1.5 text-[10px]">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {UPDATE_CHANNELS.map((c) => (
+              <SelectItem key={c.value} value={c.value} className="text-xs">
+                {c.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <TooltipProvider delayDuration={200}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Info className="h-3 w-3 text-muted-foreground cursor-help" />
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="max-w-64 space-y-1 text-left">
+              <p>
+                <span className="font-semibold">Stable</span> — full releases
+                only. Recommended for most users.
+              </p>
+              <p>
+                <span className="font-semibold">Latest</span> — whichever is
+                newest: a full release or a pre-release.
+              </p>
+              <p>
+                <span className="font-semibold">Dev (main)</span> — Latest
+                changes from GitHub (<code>main</code> branch). May be less
+                stable than a released version.
+              </p>
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
       </div>
     </section>
   );
@@ -675,7 +808,7 @@ export function EnvironmentPanel() {
                   >
                     {sleapNnTool.updateAvailable
                       ? `→ v${sleapNnTool.latestVersion}`
-                      : "latest"}
+                      : "up to date"}
                   </span>
                   <button
                     onClick={() =>
@@ -684,9 +817,10 @@ export function EnvironmentPanel() {
                       )
                     }
                     title="View release notes"
-                    className="text-muted-foreground hover:text-foreground transition-colors"
+                    className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
                   >
                     <ExternalLink className="h-3 w-3" />
+                    Release Notes
                   </button>
                 </>
               )}
