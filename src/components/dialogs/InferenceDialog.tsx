@@ -81,6 +81,7 @@ export function InferenceDialog() {
   const handleRunInference = async () => {
     const config: InferenceConfig = {
       pipeline: "top-down",
+      trackOnly: false,
       modelPaths: [modelPath.trim()],
       videoIndex: selectedVideo === "all" ? "all" : Number(selectedVideo),
       frameRange:

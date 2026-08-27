@@ -198,11 +198,24 @@ async function maybeAutosaveTauriDraft(reArm?: () => void): Promise<void> {
  * only once), so each edit resets the debounce; the save fires once edits
  * settle. Skips/failures re-arm themselves. Returns a teardown. Call once.
  */
+// While a node-drag gesture is active, autosave must NOT serialize the whole
+// project — on a large project that write freezes the drag. VideoPlayer toggles
+// this; a debounce that lands mid-gesture re-arms past it instead of saving so
+// the save happens once, after release. (#329)
+let autosaveInteracting = false;
+export function setLabelsAutosaveInteracting(active: boolean): void {
+  autosaveInteracting = active;
+}
+
 export function setupLabelsAutosave(): () => void {
   let timer: ReturnType<typeof setTimeout> | null = null;
   const arm = (): void => {
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => {
+      if (autosaveInteracting) {
+        arm(); // defer: never serialize mid node-drag gesture (#329)
+        return;
+      }
       void maybeAutosaveLabelsDraft(arm);
     }, AUTOSAVE_DEBOUNCE_MS);
   };
