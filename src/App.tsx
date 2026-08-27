@@ -5,6 +5,7 @@ import { SkeletonExitPromptDialog } from "./components/dialogs/SkeletonExitPromp
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useWindowTitle } from "./hooks/useWindowTitle";
 import { useAppStore } from "./stores/appStore";
+import { useEnvironmentStore } from "./stores/environmentStore";
 import { applyHashState, initUrlStateSync } from "./lib/urlState";
 import { loadProjectFromPath, loadProjectFromUrl } from "./lib/loadProject";
 import { readOpenParam } from "./lib/urlOpen";
@@ -20,6 +21,7 @@ import {
   configureWebDemuxer,
 } from "@talmolab/sleap-io.js";
 import { sleapCmd } from "./lib/sleapPlugin";
+import { checkUpdateCached } from "./lib/updateCheckCache";
 
 // Drain (take, once) the pending "initial file" slot in Rust. The slot is
 // populated from a CLI argument on launch OR a macOS file-association open
@@ -244,10 +246,21 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    // Prevent browser default drag-and-drop behavior
+    // Prevent the browser from navigating to a dropped file. If an .slp is
+    // dropped while a project is open (and no in-app dropzone claimed it), point
+    // the user at File > New Project — in the browser that opens a fresh SLEAP
+    // tab (this one keeps its project), where they can open the other project
+    // (#325). A browser tab can't route a locally-dropped file to a new tab.
     const prevent = (e: DragEvent) => {
+      const claimed = e.defaultPrevented; // a dropzone (video/welcome) handled it
       e.preventDefault();
       e.stopPropagation();
+      if (e.type !== "drop" || claimed || isTauri) return;
+      const files = Array.from(e.dataTransfer?.files ?? []);
+      if (!files.some((f) => f.name.toLowerCase().endsWith(".slp"))) return;
+      if (useAppStore.getState().projectLoaded) {
+        toast("A project is already open in this tab. Use File > New Project to open another in a new tab.");
+      }
     };
     window.addEventListener("dragover", prevent);
     window.addEventListener("drop", prevent);
@@ -257,11 +270,12 @@ export default function App() {
     };
   }, []);
 
-  // Desktop drag-and-drop (#132). The Tauri webview intercepts OS file drops, so
-  // the HTML drop event never fires in the desktop app — wire Tauri's own
-  // drag-drop event to load a dropped .slp by path. Reuses loadProjectFromPath,
-  // so it inherits the unsaved-changes confirm + toasts and works whether the
-  // welcome screen or the editor is showing. (Browser keeps its HTML drop.)
+  // Desktop drag-and-drop (#132, #325). The Tauri webview intercepts OS file
+  // drops, so the HTML drop event never fires in the desktop app — wire Tauri's
+  // own drag-drop event to route a dropped .slp by path. On an empty window it
+  // loads in place; on a window that already holds a project it never clobbers
+  // it — the user is told the file is already open, or confirms opening it in a
+  // separate window (see routeSlpDrop). Browser drops are handled above.
   useEffect(() => {
     if (!isTauri) return;
     let active = true;
@@ -270,17 +284,12 @@ export default function App() {
       const { getCurrentWebview } = await import("@tauri-apps/api/webview");
       const fn = await getCurrentWebview().onDragDropEvent(async (event) => {
         if (event.payload.type !== "drop") return;
-        // Only open via drag-drop on the welcome screen; never replace a project
-        // that's already loaded (a stray drop could discard unsaved work).
-        if (useAppStore.getState().projectLoaded) return;
         const slp = event.payload.paths.find((p) =>
           p.toLowerCase().endsWith(".slp")
         );
         if (!slp) return;
-        // Route so a drop of an already-open file focuses that window instead of
-        // loading a duplicate; on this empty window it otherwise loads in place.
-        const { openOrFocusPath } = await import("./lib/windowRouting");
-        await openOrFocusPath(slp);
+        const { routeSlpDrop } = await import("./lib/slpDrop");
+        await routeSlpDrop(slp);
       });
       // Component may have unmounted before the listener resolved.
       if (active) unlisten = fn;
@@ -292,28 +301,52 @@ export default function App() {
     };
   }, []);
 
-  // Check for updates on startup (Tauri only)
+  // Always check "stable" AND "latest" regardless of which channel the user
+  // has selected in the Environment panel — this drives the blinking
+  // Environment badge (AppShell's sidebar icon + WelcomeScreen's corner
+  // button), so someone on "dev", or just behind on either of the other two,
+  // still gets a persistent nudge. Read-only (never installs) — actually
+  // applying an update only ever happens via an explicit click on the Update
+  // button in the Environment panel (EnvironmentPanel.tsx's doUpdate), never
+  // automatically from a startup check.
+  //
+  // Skipped in tauri:dev: a local checkout's version is essentially
+  // arbitrary relative to the last published release, so EVERY developer
+  // running tauri:dev would permanently see "update available" with nothing
+  // actionable to do about it (the Update button is already disabled for
+  // local builds) — pure noise, not a real signal.
+  useEffect(() => {
+    if (!isTauri || import.meta.env.DEV) return;
+    // checkUpdateCached itself writes the result into appStore's
+    // stableUpdateAvailable/latestUpdateAvailable fields (see
+    // src/lib/updateCheckCache.ts) -- this effect just needs to trigger the
+    // checks, not plumb the result anywhere itself. That's also what lets
+    // EnvironmentPanel.tsx's own later checks of "stable"/"latest" (e.g.
+    // after this result's 1h cache TTL expires) keep the ambient badge
+    // current for the rest of the session, not just at this one startup call.
+    const checkChannel = async (channel: "stable" | "latest") => {
+      try {
+        await checkUpdateCached(channel);
+      } catch (e) {
+        console.warn(`[updater] ${channel}-channel check failed:`, e);
+      }
+    };
+    void Promise.all([checkChannel("stable"), checkChannel("latest")]);
+  }, []);
+
+  // Also check sleap-nn (a `uv tool`, unrelated to the sleap-app channels
+  // above) once at startup, so the Environment badge can reflect a new
+  // sleap-nn release even before any project is loaded. Reuses the exact
+  // same lightweight, per-version-deduped check loadProject.ts already runs
+  // on project open (see environmentStore.ts's checkSleapNnUpdateAndNotify)
+  // — running it here too just means the badge (and its one-time toast)
+  // can fire from the Welcome screen instead of waiting for a project.
+  // Unlike the sleap-app self-update effect above, this has no install-time
+  // corruption risk (`uv tool upgrade` is unrelated to the running desktop
+  // binary), so it isn't gated on tauri:dev.
   useEffect(() => {
     if (!isTauri) return;
-    (async () => {
-      try {
-        const { check } = await import("@tauri-apps/plugin-updater");
-        const update = await check();
-        if (update) {
-          console.log(`[updater] Update available: ${update.version}`);
-          const yes = window.confirm(
-            `A new version of SLEAP is available (${update.version}). Download and install?`
-          );
-          if (yes) {
-            await update.downloadAndInstall();
-            const { relaunch } = await import("@tauri-apps/plugin-process");
-            await relaunch();
-          }
-        }
-      } catch (e) {
-        console.warn("[updater] Update check failed:", e);
-      }
-    })();
+    void useEnvironmentStore.getState().checkSleapNnUpdateAndNotify();
   }, []);
 
   // Apply hash state once after project loads, then start syncing

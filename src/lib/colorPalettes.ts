@@ -104,7 +104,28 @@ export function resolveColorTarget(
   return projectHasTracks ? "track" : "node";
 }
 
-/** Get the color for an instance based on the current color target mode. */
+/**
+ * Evenly-spaced gray for an untracked instance in "track" mode, spread across
+ * [50, 220] by its rank among the OTHER untracked instances in the SAME
+ * frame (tracked instances don't count toward the denominator, and don't
+ * consume any of the range). A lone untracked instance gets the midpoint.
+ */
+export function getUntrackedGray(rank: number, totalUntracked: number): RGB {
+  const value =
+    totalUntracked <= 1
+      ? 135
+      : Math.round(50 + (rank * (220 - 50)) / (totalUntracked - 1));
+  return [value, value, value];
+}
+
+/**
+ * Get the color for an instance based on the current color target mode.
+ *
+ * `frameInstanceTracks` is the `.track` of every instance in the SAME frame
+ * as this one, aligned by index with `instanceIndex` -- used only to compute
+ * an untracked instance's rank among its untracked frame-mates for the
+ * "track" mode gray fallback below.
+ */
 export function getInstanceColor(
   palette: string,
   colorTarget: string,
@@ -114,6 +135,7 @@ export function getInstanceColor(
   isPredicted: boolean,
   colorPredicted: boolean,
   projectHasTracks: boolean = false,
+  frameInstanceTracks: unknown[] = [],
 ): RGB {
   if (isPredicted && !colorPredicted) return [128, 128, 128];
   switch (resolveColorTarget(colorTarget, projectHasTracks)) {
@@ -122,7 +144,21 @@ export function getInstanceColor(
         const idx = tracks.indexOf(track);
         return getPaletteColor(palette, idx >= 0 ? idx : instanceIndex);
       }
-      return getPaletteColor(palette, instanceIndex);
+      // Untracked instance: evenly-spaced gray by rank among untracked
+      // frame-mates -- was previously getPaletteColor(palette, instanceIndex),
+      // which visually read as "colored by instance" since it reused the same
+      // colored palette, just keyed by position instead of by track.
+      {
+        const untrackedIndices: number[] = [];
+        frameInstanceTracks.forEach((t, i) => {
+          if (t == null) untrackedIndices.push(i);
+        });
+        const rank = untrackedIndices.indexOf(instanceIndex);
+        return getUntrackedGray(
+          rank >= 0 ? rank : 0,
+          untrackedIndices.length || 1
+        );
+      }
     case "node":
     case "edge":
       return [180, 180, 180]; // Neutral for per-node/edge coloring

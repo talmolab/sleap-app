@@ -713,3 +713,50 @@ export const MergePredictions: Command = {
     );
   },
 };
+
+/**
+ * Merge track-only results (a re-track run with no pose model — see
+ * `InferenceConfig.trackOnly`) into the current labels.
+ *
+ * Deliberately does NOT reuse {@link MergePredictions}: a track-only run never
+ * adds, removes, or moves an instance — every instance in the input .slp is
+ * still exactly there, just with `.track` (re)assigned. Routes through
+ * sleap-io.js's `"update_tracks"` frame strategy, which spatially matches
+ * instances between the current project and the retracked output (the output
+ * was round-tripped through a temp file, so its instances are structurally
+ * equal but not object-identical to the project's) and copies over ONLY
+ * `.track` + `.trackingScore`, leaving geometry/scores/everything else
+ * untouched. No `ExistingPredictionsMode` concept applies here — there is
+ * nothing to clear/replace/keep, since no instances are added or removed.
+ */
+export const MergeTracks: Command = {
+  name: "MergeTracks",
+  topics: [UpdateTopic.Labels, UpdateTopic.Frame, UpdateTopic.Instance],
+  skipAutoSnapshot: true,
+  async execute(ctx, params) {
+    const { labels } = ctx.state;
+    if (!labels) return;
+
+    const retracked = params?.retracked as Labels;
+    if (!retracked) return;
+
+    const snapshot = ctx.takeAllFramesSnapshot("MergeTracks");
+
+    // Match tracks by NAME (retracked.tracks are freshly deserialized from a
+    // temp file, so they never share object identity with the project's own
+    // Track objects) and videos by BASENAME (same reasoning as
+    // MergePredictions) — see sleap-io.js's Labels.merge().
+    const result = await labels.merge(retracked, {
+      track: "name",
+      video: "basename",
+      frame: "update_tracks",
+    });
+    ctx.pushUndoSnapshot(snapshot);
+    ctx.state.markChanged();
+    // Merge mutates `labels` in place — bump so overlay-version-gated
+    // consumers (seekbar track ticks, canvas overlay) repaint immediately.
+    ctx.state.bumpOverlayVersion();
+
+    toast.success(`Updated tracks across ${result.framesMerged} frame(s).`);
+  },
+};

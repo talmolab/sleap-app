@@ -404,8 +404,13 @@ export async function runInference(
   // frames via LabelsProvider when --data_path is a .slp (talmolab/sleap#2848).
   // Embedded/image-sequence videos have no file of their own, so they keep the
   // project-file route below.
+  //
+  // NEVER for track-only: sleap-nn's retrack-only path requires --data_path to
+  // be a .slp (it needs the existing instances to retrack; a raw video has
+  // none) — pointing it at the video file errors with "Tracking-only mode
+  // requires --data_path to be a .slp file." Verified against a real run.
   let videoDataPath: string | null = null;
-  if (config.videoIndex !== "all") {
+  if (!config.trackOnly && config.videoIndex !== "all") {
     const { useAppStore } = await import("@/stores/appStore");
     const video = useAppStore.getState().labels?.videos[config.videoIndex] ?? null;
     const filename = video?.filename;

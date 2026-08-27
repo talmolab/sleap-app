@@ -6,6 +6,7 @@ import { describe, it, expect } from "../bun-test";
 import {
   getPaletteColor,
   getInstanceColor,
+  getUntrackedGray,
   hasAssignedTracks,
   resolveColorTarget,
   rgbToCSS,
@@ -209,6 +210,77 @@ describe("colorPalettes", () => {
     it("still shows the flat predicted-instance color regardless of auto resolution", () => {
       const color = getInstanceColor("standard", "auto", 0, null, [], true, false, true);
       expect(color).toEqual([128, 128, 128]);
+    });
+  });
+
+  describe("getUntrackedGray", () => {
+    it("gives a lone untracked instance the midpoint gray", () => {
+      expect(getUntrackedGray(0, 1)).toEqual([135, 135, 135]);
+    });
+
+    it("spans exactly [50, 220] for the first and last rank", () => {
+      expect(getUntrackedGray(0, 5)).toEqual([50, 50, 50]);
+      expect(getUntrackedGray(4, 5)).toEqual([220, 220, 220]);
+    });
+
+    it("spaces ranks evenly in between", () => {
+      // linspace(50, 220, 3) = [50, 135, 220]
+      expect(getUntrackedGray(0, 3)).toEqual([50, 50, 50]);
+      expect(getUntrackedGray(1, 3)).toEqual([135, 135, 135]);
+      expect(getUntrackedGray(2, 3)).toEqual([220, 220, 220]);
+    });
+
+    it("treats a zero/negative total the same as a single instance", () => {
+      expect(getUntrackedGray(0, 0)).toEqual([135, 135, 135]);
+    });
+  });
+
+  describe("getInstanceColor in track mode: untracked fallback", () => {
+    it("gives a lone untracked instance the midpoint gray, not a palette color", () => {
+      const color = getInstanceColor(
+        "standard", "track", 0, null, [], false, false, true, [null]
+      );
+      expect(color).toEqual([135, 135, 135]);
+    });
+
+    it("spreads multiple untracked instances across the gray range, distinct from each other", () => {
+      // Three untracked instances at frame positions 0, 1, 2.
+      const frameInstanceTracks = [null, null, null];
+      const colors = [0, 1, 2].map((idx) =>
+        getInstanceColor(
+          "standard", "track", idx, null, [], false, false, true, frameInstanceTracks
+        )
+      );
+      expect(colors).toEqual([
+        [50, 50, 50],
+        [135, 135, 135],
+        [220, 220, 220],
+      ]);
+    });
+
+    it("does not let a tracked sibling consume a slot in the gray spacing", () => {
+      // Frame has 1 tracked + 2 untracked instances (positions 0, 1, 2); the
+      // tracked one at position 1 must not count toward the untracked total.
+      const track = new Track("t1");
+      const frameInstanceTracks = [null, track, null];
+      const untracked0 = getInstanceColor(
+        "standard", "track", 0, null, [], false, false, true, frameInstanceTracks
+      );
+      const untracked2 = getInstanceColor(
+        "standard", "track", 2, null, [], false, false, true, frameInstanceTracks
+      );
+      // Only 2 untracked instances total -> linspace(50, 220, 2) = [50, 220].
+      expect(untracked0).toEqual([50, 50, 50]);
+      expect(untracked2).toEqual([220, 220, 220]);
+    });
+
+    it("still colors a tracked instance by its track, unaffected by untracked siblings", () => {
+      const track = new Track("t1");
+      const tracks = [track];
+      const color = getInstanceColor(
+        "standard", "track", 1, track, tracks, false, false, true, [null, track]
+      );
+      expect(color).toEqual(getPaletteColor("standard", 0));
     });
   });
 });

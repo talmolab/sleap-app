@@ -1,0 +1,523 @@
+name: Build Dev Channel
+
+# Nightly desktop builds off `main`, for the in-app "dev" update channel.
+# Unlike build.yml's release pipeline, these are ad-hoc/unsigned (no Apple
+# Developer ID, no notarization) so a run doesn't wait on Apple's notary
+# service, and they publish to a single rolling `dev` pre-release
+# instead of a per-version tag -- see the `publish` job.
+#
+# Runs on a nightly schedule (not per-push -- a full 3-platform native build
+# on every merge is expensive, especially macOS runners' 10x-per-minute
+# billing multiplier) plus workflow_dispatch for an on-demand build. The
+# `meta` job's should_build check skips the (expensive) build+publish jobs
+# entirely when `main` hasn't moved since the last dev build -- a scheduled
+# run on a quiet day is nearly free. workflow_dispatch always forces a build
+# regardless, for testing the pipeline itself.
+on:
+  schedule:
+    - cron: "0 0 * * *" # 00:00 UTC daily
+  workflow_dispatch:
+
+# A newer run supersedes an in-flight dev build -- there's no reason to
+# finish building a commit `main` has already moved past.
+concurrency:
+  group: build-dev
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: short
+
+jobs:
+  # Decides whether this run should actually build anything, and computes the
+  # one version string every matrix leg and the publish job need to agree on.
+  meta:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.compute.outputs.version }}
+      short_sha: ${{ steps.compute.outputs.short_sha }}
+      should_build: ${{ steps.should_build.outputs.should_build }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      # Compares against the exact commit the LAST dev build actually used
+      # (the `dev` tag, which the publish job below pins via
+      # `--target` precisely so this comparison is reliable) rather than a
+      # rolling time window -- robust to a delayed/queued scheduled run, a
+      # paused-then-resumed schedule, or a prior build that failed and needs
+      # a retry on the same commit. workflow_dispatch always builds: it's the
+      # "give me a fresh dev build right now" escape hatch, e.g. for testing
+      # this pipeline after a workflow-only change with no app code change.
+      - name: Decide whether main has moved since the last dev build
+        id: should_build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "Manual trigger -- building regardless of whether main moved."
+            exit 0
+          fi
+          LAST_SHA="$(gh api "repos/$REPO/git/ref/tags/dev" --jq .object.sha 2>/dev/null || true)"
+          if [ -z "$LAST_SHA" ]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "No prior dev tag found -- building."
+          elif [ "$LAST_SHA" = "${{ github.sha }}" ]; then
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            echo "main is unchanged since the last dev build ($LAST_SHA) -- skipping."
+          else
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "main has moved ($LAST_SHA -> ${{ github.sha }}) -- building."
+          fi
+
+      - name: Compute the dev build's version
+        id: compute
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # BASE is the HIGHEST-precedence version tag actually published on
+          # GitHub (release OR pre-release, drafts excluded), reused VERBATIM
+          # -- NOT `package.json`'s committed version. package.json is never
+          # updated on `main` by the real release pipeline (build.yml only
+          # patches it inside its own ephemeral, unpushed CI checkout when
+          # stamping a release build), so it silently drifts arbitrarily far
+          # behind actual shipped versions. Deriving from real tags instead is
+          # self-correcting: it reflects whatever has ACTUALLY shipped, with
+          # no dependency on anyone remembering to bump a committed file. A
+          # real release outranks a pre-release of the same base (semver:
+          # "1.0.0" > "1.0.0-1"), which the sort key below encodes explicitly.
+          BASE="$(gh api "repos/$REPO/releases?per_page=100" --paginate \
+            --jq '[.[] | select(.draft == false) | .tag_name as $t
+                   | ($t | capture("^v?(?<major>[0-9]+)\\.(?<minor>[0-9]+)\\.(?<patch>[0-9]+)(-(?<pre>[0-9]+))?$"))?
+                   | select(. != null)
+                   | {sortkey: [(.major|tonumber), (.minor|tonumber), (.patch|tonumber),
+                                (if .pre == null then 1 else 0 end), (.pre // "0" | tonumber)],
+                      base: ($t | ltrimstr("v"))}]
+                  | max_by(.sortkey) | if . == null then null else .base end')"
+          if [ -z "$BASE" ] || [ "$BASE" = "null" ]; then
+            # Defensive fallback (e.g. a brand-new repo with no version-tagged
+            # releases yet) -- package.json's committed version is at least a
+            # starting point, even though it can't be trusted to track reality.
+            BASE="$(python3 -c "import json; print(json.load(open('package.json'))['version'])")"
+            echo "No valid version-tagged releases found on GitHub; falling back to package.json's $BASE"
+          fi
+
+          SHORT_SHA="$(printf '%s' "${{ github.sha }}" | cut -c1-7)"
+
+          # Build metadata ("+...") can hold multiple DOT-separated
+          # identifiers (only ONE "+" is valid in semver at all -- everything
+          # after it is one field). Order inside it is load-bearing: verified
+          # directly against the `semver` crate update_channels.rs and
+          # Tauri's own updater use (Cargo.lock-pinned version) that build
+          # metadata identifiers compare numerically-if-purely-numeric, same
+          # as pre-release identifiers, in the order given -- so putting the
+          # numeric, always-unique-per-build "<run_number>" FIRST makes it the
+          # deciding factor between any two dev builds sharing the same BASE
+          # (e.g. "+48.1a2b3c4" > "+47.9f8e7d6" correctly, even though
+          # "9f8e7d6" > "1a2b3c4" as a raw string). The short SHA comes
+          # second, purely as human-readable commit provenance -- it never
+          # actually gets consulted for ordering since <run_number> is never
+          # tied. Reversing this order would silently break ordering between
+          # dev builds again. <run_number> must stay numeric-only, same
+          # constraint as any semver identifier compared numerically here.
+          VERSION="${BASE}+${{ github.run_number }}.${SHORT_SHA}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+          echo "Dev build version: $VERSION (base tag $BASE; commit $SHORT_SHA)"
+
+  # Mirrors build.yml's `build` job matrix/steps, minus: the install.ps1 lint
+  # (release-only concern), Apple Developer ID signing + notarization (dev
+  # builds stay ad-hoc on purpose -- see the workflow comment above).
+  build:
+    needs: meta
+    if: needs.meta.outputs.should_build == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: ubuntu-22.04
+            target: linux
+            rust-targets: x86_64-unknown-linux-gnu
+            # Tauri sidecar triple: the suffix `Command.sidecar("binaries/ffmpeg")`
+            # resolves to. For --target builds it is that target (see macOS below).
+            sidecar-triple: x86_64-unknown-linux-gnu
+            tauri-args: ""
+            bundle-dir: src-tauri/target/release/bundle
+            job-timeout: 60
+          - platform: macos-latest
+            target: macos-universal
+            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+            # --target universal-apple-darwin => sidecars must be a fat
+            # `binaries/ffmpeg-universal-apple-darwin` (lipo of both arches).
+            sidecar-triple: universal-apple-darwin
+            tauri-args: "--target universal-apple-darwin"
+            bundle-dir: src-tauri/target/universal-apple-darwin/release/bundle
+            job-timeout: 60
+          - platform: windows-latest
+            target: windows
+            rust-targets: x86_64-pc-windows-msvc
+            sidecar-triple: x86_64-pc-windows-msvc
+            tauri-args: ""
+            bundle-dir: src-tauri/target/release/bundle
+            job-timeout: 60
+
+    runs-on: ${{ matrix.platform }}
+    timeout-minutes: ${{ matrix.job-timeout }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+
+      - name: Ensure cargo is in PATH
+        shell: bash
+        run: echo "${CARGO_HOME:-$HOME/.cargo}/bin" >> "$GITHUB_PATH"
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install system dependencies (Linux)
+        if: matrix.target == 'linux'
+        timeout-minutes: 32
+        run: |
+          set -uo pipefail
+          APT_OPTS="-o Acquire::ForceIPv4=true
+                    -o Acquire::Retries=3
+                    -o Acquire::http::Timeout=30
+                    -o Acquire::https::Timeout=30
+                    -o DPkg::Lock::Timeout=60"
+
+          apt_retry() {
+            for attempt in 1 2 3; do
+              if sudo timeout 300 apt-get $APT_OPTS "$@"; then
+                return 0
+              fi
+              echo "apt-get $1 failed or stalled (attempt $attempt of 3); retrying"
+              sleep 10
+            done
+            return 1
+          }
+
+          apt_retry update ||
+            echo "::warning::apt-get update did not fully succeed; continuing anyway"
+
+          apt_retry install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libjavascriptcoregtk-4.1-dev \
+            librsvg2-dev \
+            patchelf \
+            libglib2.0-dev \
+            libayatana-appindicator3-dev ||
+            {
+              echo "::error::could not install Linux build dependencies"
+              exit 1
+            }
+
+      - name: Setup bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      - name: Cache bun dependencies
+        uses: actions/cache@v5
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
+          restore-keys: ${{ runner.os }}-bun-
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Set version for this dev build
+        shell: bash
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          echo "Setting version to $VERSION"
+          # See build.yml's "Set version from release tag" -- same reason both
+          # files need patching: tauri.conf.json drives bundle filenames + the
+          # version the in-app updater reports; package.json drives the window
+          # title's __APP_VERSION__ constant.
+          VERSION="$VERSION" bun -e "
+            const fs = require('fs');
+            for (const p of ['src-tauri/tauri.conf.json', 'package.json']) {
+              const o = JSON.parse(fs.readFileSync(p, 'utf8'));
+              o.version = process.env.VERSION;
+              fs.writeFileSync(p, JSON.stringify(o, null, 2) + '\n');
+            }
+          "
+
+      # tauri.conf.json declares the ffmpeg/ffprobe sidecars as externalBin, so
+      # `tauri build` panics unless binaries/ffmpeg-<triple> exist. They are
+      # .gitignore'd (large, per-platform) and fetched here. The script asserts a
+      # permissive H.264 encoder is present, failing the build if a source rots.
+      - name: Vendor ffmpeg sidecars
+        shell: bash
+        run: bash scripts/fetch-ffmpeg.sh "${{ matrix.sidecar-triple }}"
+
+      # No Apple Developer ID secrets are configured for this job on purpose --
+      # dev builds stay ad-hoc-signed (Tauri's fallback identity), so this
+      # doesn't wait on Apple's notary service. Ad-hoc means a normal Gatekeeper
+      # "unidentified developer" prompt on macOS, same as any un-notarized build.
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        with:
+          args: ${{ matrix.tauri-args }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      # Same guard as build.yml: an ad-hoc .app with no real Contents/_CodeSignature
+      # opens as "damaged" on macOS, so assert the fallback signing actually held.
+      - name: Verify macOS code signature
+        if: matrix.target == 'macos-universal'
+        shell: bash
+        run: |
+          set -euo pipefail
+          B="${{ matrix.bundle-dir }}"
+          [ -d "$B" ] || { echo "::error::bundle dir $B does not exist"; exit 1; }
+          APP="$B/macos/SLEAP.app"
+          [ -d "$APP" ] || { echo "::error::$APP does not exist"; exit 1; }
+          test -d "$APP/Contents/_CodeSignature" \
+            || { echo "::error::SLEAP.app has no Contents/_CodeSignature"; exit 1; }
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          _desc="$(codesign -dv --verbose=2 "$APP" 2>&1 || true)"
+          case "$_desc" in
+            *flags=*adhoc*) ;;
+            *) echo "::error::SLEAP.app is not ad-hoc signed as expected for a dev build"; exit 1 ;;
+          esac
+          echo "ok: SLEAP.app carries a valid ad-hoc bundle signature"
+
+      # Same as build.yml: a mismatched TAURI_SIGNING_PRIVATE_KEY is only a
+      # bundler WARNING, so every dev-channel update would silently fail
+      # signature verification at install time without this check.
+      - name: Verify updater signatures match the configured public key
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64, glob, json, os, sys
+
+          def keyid(blob: str) -> str:
+              line = next(l for l in blob.splitlines()
+                          if l and not l.startswith(("untrusted", "trusted")))
+              return base64.b64decode(line)[2:10][::-1].hex().upper()
+
+          conf = json.load(open("src-tauri/tauri.conf.json"))
+          want = keyid(base64.b64decode(conf["plugins"]["updater"]["pubkey"]).decode())
+          print("configured pubkey key id:", want)
+
+          sigs = sorted(glob.glob("src-tauri/target/**/release/bundle/**/*.sig",
+                                  recursive=True))
+          if not sigs:
+              print("::warning::no .sig files produced; the in-app updater will "
+                    "have nothing to verify")
+              sys.exit(0)
+
+          bad = []
+          for p in sigs:
+              got = keyid(base64.b64decode(open(p, "rb").read()).decode())
+              print(f"  {os.path.basename(p)}: {got}")
+              if got != want:
+                  bad.append((p, got))
+          if bad:
+              for p, got in bad:
+                  print(f"::error::{p} was signed with key id {got}, but "
+                        f"plugins.updater.pubkey expects {want}; every update "
+                        f"would be rejected at runtime")
+              sys.exit(1)
+          print("All updater signatures match the configured public key.")
+          PY
+
+      - name: Collect artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf artifacts
+          mkdir -p artifacts
+          B="${{ matrix.bundle-dir }}"
+          [ -d "$B" ] || { echo "::error::bundle dir $B does not exist -- did the output path change?"; exit 1; }
+
+          find "$B" -maxdepth 2 -type f ! -name 'rw.*' \( \
+            -name '*.dmg' \
+            -o -name '*.deb' \
+            -o -name '*.rpm' \
+            -o -name '*.AppImage' \
+            -o -name '*.msi' \
+            -o -name '*-setup.exe' \
+            -o -name '*.tar.gz' \
+            -o -name '*.sig' \
+            \) -exec cp {} artifacts/ \;
+
+          ls -lh artifacts/
+          count="$(find artifacts -type f | wc -l | tr -d '[:space:]')"
+          if [ "$count" -eq 0 ]; then
+            echo "::error::no bundles found under $B -- did the bundle output path change?"
+            exit 1
+          fi
+          echo "Collected $count file(s)"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: sleap-app-dev-${{ matrix.target }}
+          path: artifacts/*
+          # Retention left at the repo default: the dev release itself only
+          # ever keeps the SINGLE most recent build (delete + recreate), so
+          # this artifact copy is the only place a past dev build survives at
+          # all. Not publicly downloadable without a GitHub-authenticated
+          # request (Actions artifacts always require auth, even on a public
+          # repo -- verified directly, a plain unauthenticated fetch 401s), so
+          # this is for a maintainer digging through history, not for handing
+          # a tester a link.
+          if-no-files-found: error
+
+  # Publishes to a single rolling `dev` pre-release: deleted and
+  # recreated every run that actually builds (rather than accumulating assets
+  # across runs), so `.../releases/download/dev/latest.json` always
+  # reflects whatever commit was last built (not necessarily HEAD of `main`
+  # at any given moment, since a quiet night skips the build entirely -- see
+  # the `meta` job). See build.yml's `release` job for the per-version-tag
+  # equivalent.
+  #
+  # Requires build to have FULLY succeeded, not merely non-skipped -- unlike
+  # build.yml's per-version releases (where a partial-platform release only
+  # ever affects that one new version), this release is ROLLING: publishing
+  # on a partial matrix failure would DELETE the last good multi-platform
+  # dev release and replace it with a regressed one missing whatever
+  # platform failed. Better to leave the previous good build in place and
+  # let the next successful run supersede it.
+  publish:
+    needs: [meta, build]
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.meta.outputs.version }}
+      SHORT_SHA: ${{ needs.meta.outputs.short_sha }}
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v7
+        continue-on-error: true
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Summarize artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          ls -lhR artifacts/ || true
+          count="$(find artifacts -type f | wc -l | tr -d '[:space:]')"
+          if [ "$count" -eq 0 ]; then
+            echo "::error::every platform build failed; nothing to publish to the dev channel"
+            exit 1
+          fi
+          for pattern in '*_universal.dmg' '*-setup.exe' '*.msi' '*.deb' '*.AppImage'; do
+            if ! find artifacts -name "$pattern" -type f | grep -q .; then
+              echo "::warning::this dev build has no $pattern (that platform's build did not succeed)"
+            fi
+          done
+
+      # Delete-then-recreate is what makes this "rolling": old assets never
+      # accumulate, and a stale filename from a prior run can't linger
+      # alongside a same-named new one.
+      - name: Recreate the dev pre-release
+        run: |
+          set -euo pipefail
+          gh release delete dev --repo "$REPO" --cleanup-tag --yes || true
+          # --target pins the tag to the EXACT commit this run built (github.sha),
+          # not whatever main's HEAD happens to be when this step runs -- the
+          # `meta` job's should_build check on the next run compares against
+          # this tag's commit, so it must reflect what was actually built, not
+          # a newer commit that raced in after the build started.
+          gh release create dev --repo "$REPO" \
+            --target "${{ github.sha }}" \
+            --prerelease \
+            --title "Dev channel — v$VERSION" \
+            --notes "Continuous build from \`main\` @ $SHORT_SHA (run #${{ github.run_number }}). Unsigned/ad-hoc -- expect a Gatekeeper \"unidentified developer\" prompt on macOS. Built nightly (or on-demand via workflow_dispatch); not a stable release." \
+            artifacts/*
+
+      - name: Generate update manifest (latest.json)
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import glob, json, os
+          from datetime import datetime, timezone
+
+          repo = os.environ["REPO"]
+          version = os.environ["VERSION"]
+          short_sha = os.environ["SHORT_SHA"]
+          base = f"https://github.com/{repo}/releases/download/dev"
+
+          # Same RULES/keys as build.yml's manifest step -- see there for the
+          # tauri-plugin-updater key-lookup rationale.
+          RULES = [
+              (".app.tar.gz.sig",        ["darwin-aarch64-app", "darwin-x86_64-app",
+                                          "darwin-aarch64", "darwin-x86_64"]),
+              ("-setup.nsis.zip.sig",    ["windows-x86_64-nsis", "windows-x86_64"]),
+              ("-setup.exe.sig",         ["windows-x86_64-nsis", "windows-x86_64"]),
+              (".msi.zip.sig",           ["windows-x86_64-msi", "windows-x86_64"]),
+              (".msi.sig",               ["windows-x86_64-msi", "windows-x86_64"]),
+              (".AppImage.tar.gz.sig",   ["linux-x86_64-appimage", "linux-x86_64"]),
+              (".AppImage.sig",          ["linux-x86_64-appimage", "linux-x86_64"]),
+              (".deb.sig",               ["linux-x86_64-deb"]),
+              (".rpm.sig",               ["linux-x86_64-rpm"]),
+          ]
+
+          platforms = {}
+          for suffix, keys in RULES:
+              for sig_path in sorted(glob.glob(f"artifacts/*{suffix}")):
+                  artifact = os.path.basename(sig_path)[: -len(".sig")]
+                  if not os.path.exists(os.path.join("artifacts", artifact)):
+                      print(f"::warning::{artifact} is missing next to its .sig; skipping")
+                      continue
+                  with open(sig_path) as fh:
+                      signature = fh.read().strip()
+                  for key in keys:
+                      platforms.setdefault(key, {
+                          "signature": signature,
+                          "url": f"{base}/{artifact}",
+                      })
+
+          if not platforms:
+              raise SystemExit(
+                  "::error::no signed updater artifacts found; refusing to write an "
+                  "empty latest.json, which would break the in-app updater"
+              )
+
+          manifest = {
+              "version": version,
+              "notes": f"Continuous build from main @ {short_sha}.",
+              "pub_date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "platforms": platforms,
+          }
+
+          with open("latest.json", "w") as fh:
+              json.dump(manifest, fh, indent=2)
+          print(json.dumps(manifest, indent=2))
+          PY
+
+      - name: Upload the update manifest to dev
+        run: gh release upload dev latest.json --repo "$REPO" --clobber

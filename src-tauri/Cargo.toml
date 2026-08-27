@@ -29,6 +29,26 @@ tauri-plugin-dialog = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+# For update_channels.rs: UpdaterBuilder::endpoints() takes a Vec<url::Url>, so
+# `url` needs to be a direct dependency to name that type (it's already pulled
+# in transitively by tauri-plugin-updater).
+url = "2"
+# For update_channels.rs: the "latest" channel resolves dynamically via the
+# GitHub Releases API (whichever non-draft release/pre-release is newest AND
+# actually has a latest.json asset), rather than a CI-maintained rolling
+# release. reqwest itself is already pulled in transitively (by
+# tauri-plugin-updater and the webrtc stack), so this adds no new CRATE to
+# resolve -- but default-features MUST stay disabled: enabling them here
+# would additionally turn on reqwest's http2/http3 support repo-wide (Cargo
+# unifies features across the whole dependency graph), pulling in the quinn
+# QUIC stack and its aws-lc-sys backend -- which needs `cmake` to build --
+# for a plain JSON GET this module never needed.
+reqwest = { version = "0.13", default-features = false, features = ["json"] }
+# For update_channels.rs: parses/compares release tags as real semver
+# versions (excludes non-version-tagged releases like `dev` from
+# "latest" candidacy, rather than relying on them sorting low by accident).
+# Already pulled in transitively by tauri-plugin-updater.
+semver = "1"
 
 # SPIKE (spike/tauri-localhost-origin): serve the frontend over a real
 # http://localhost origin instead of the tauri:// custom scheme. On macOS,

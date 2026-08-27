@@ -903,11 +903,12 @@ function PanelsMenu() {
         ))}
         <MenubarSeparator />
         <MenubarItem
-          onClick={() => {
+          onClick={async () => {
+            const { confirmDialog } = await import("@/stores/confirmStore");
             if (
-              window.confirm(
-                "Reset panels to their default order and visibility?"
-              )
+              await confirmDialog({
+                message: "Reset panels to their default order and visibility?",
+              })
             ) {
               useAppStore.getState().resetPanels();
             }
