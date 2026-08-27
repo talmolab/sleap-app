@@ -499,7 +499,7 @@ describe("Component rendering", () => {
       );
       render(<SuggestionsPanel />);
       expect(
-        screen.getByText("Generate")
+        screen.getByText("Generate Suggestions")
       ).toBeInTheDocument();
     });
   });

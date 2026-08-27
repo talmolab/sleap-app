@@ -558,6 +558,7 @@ export function buildExportRenderedInstances(
     opts.distinctlyColor,
     opts.projectHasTracks ?? false
   );
+  const frameInstanceTracks = instances.map((inst) => inst.track);
   return instances.map((inst, idx) => {
     const isPredicted = inst instanceof PredictedInstance;
     const skeleton = inst.skeleton;
@@ -569,7 +570,8 @@ export function buildExportRenderedInstances(
       opts.tracks,
       isPredicted,
       opts.colorPredicted,
-      opts.projectHasTracks ?? false
+      opts.projectHasTracks ?? false,
+      frameInstanceTracks
     );
 
     const paint = !(isPredicted && !opts.colorPredicted);

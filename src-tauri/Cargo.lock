@@ -4536,6 +4536,8 @@ dependencies = [
  "futures-util",
  "libc",
  "log",
+ "reqwest",
+ "semver",
  "serde",
  "serde_json",
  "tauri",
@@ -4550,6 +4552,7 @@ dependencies = [
  "tauri-plugin-updater",
  "tokio",
  "tokio-tungstenite",
+ "url",
  "urlencoding",
  "webrtc",
 ]

@@ -6,9 +6,11 @@
  */
 
 import { UpdateTopic } from "../types";
+import type { Video } from "../types";
 import type { Command } from "./types";
 import type { CommandContext } from "./CommandContext";
 import { isUserLabeledFrame } from "@/lib/frameLabeling";
+import { promptDialog } from "@/stores/promptStore";
 
 /** Navigate to the next frame that has labels (any instance). */
 export const GoNextLabeledFrame: Command = {
@@ -66,6 +68,21 @@ export const GoPrevLabeledFrame: Command = {
   },
 };
 
+/**
+ * Orders (video, frameIdx) positions by video position (per ctx.state.videos
+ * -- the same order the Videos/Frames panels use), then frame index. Lets
+ * GoNext/PrevSuggestion compare an arbitrary suggestion against the current
+ * position without collapsing both into one combined scalar.
+ */
+function suggestionOrder(videos: Video[]) {
+  const videoOrder = new Map(videos.map((v, i) => [v, i]));
+  return (aVideo: Video, aFrame: number, bVideo: Video, bFrame: number) => {
+    const va = videoOrder.get(aVideo) ?? 0;
+    const vb = videoOrder.get(bVideo) ?? 0;
+    return va !== vb ? va - vb : aFrame - bFrame;
+  };
+}
+
 /** Navigate to the next suggestion frame. */
 export const GoNextSuggestion: Command = {
   name: "GoNextSuggestion",
@@ -73,21 +90,23 @@ export const GoNextSuggestion: Command = {
   execute(ctx: CommandContext) {
     const { labels, video, frameIdx } = ctx.state;
     if (!labels || !video) return;
+    if (labels.suggestions.length === 0) return;
 
-    // Filter suggestions for current video, sorted by frame index
-    const suggestions = labels.suggestions
-      .filter((s) => s.video === video)
-      .sort((a, b) => a.frameIdx - b.frameIdx);
+    // Ordered across ALL videos, not just the current one -- so once the
+    // current video's suggestions run out, Next carries the user into the
+    // next video's instead of getting stuck (#326). Suggestions commonly
+    // span every video now that #324 changed the generation default.
+    const compare = suggestionOrder(labels.videos);
+    const sorted = [...labels.suggestions].sort((a, b) =>
+      compare(a.video, a.frameIdx, b.video, b.frameIdx)
+    );
 
-    if (suggestions.length === 0) return;
-
-    const next = suggestions.find((s) => s.frameIdx > frameIdx);
-    if (next) {
-      ctx.state.setFrameIdx(next.frameIdx);
-    } else {
-      // Wrap around
-      ctx.state.setFrameIdx(suggestions[0].frameIdx);
-    }
+    const next = sorted.find(
+      (s) => compare(s.video, s.frameIdx, video, frameIdx) > 0
+    );
+    const target = next ?? sorted[0]; // wrap around
+    if (target.video !== video) ctx.state.setVideo(target.video);
+    ctx.state.setFrameIdx(target.frameIdx);
   },
 };
 
@@ -98,20 +117,20 @@ export const GoPrevSuggestion: Command = {
   execute(ctx: CommandContext) {
     const { labels, video, frameIdx } = ctx.state;
     if (!labels || !video) return;
+    if (labels.suggestions.length === 0) return;
 
-    const suggestions = labels.suggestions
-      .filter((s) => s.video === video)
-      .sort((a, b) => a.frameIdx - b.frameIdx);
+    // See GoNextSuggestion above -- same cross-video ordering (#326).
+    const compare = suggestionOrder(labels.videos);
+    const sorted = [...labels.suggestions].sort((a, b) =>
+      compare(a.video, a.frameIdx, b.video, b.frameIdx)
+    );
 
-    if (suggestions.length === 0) return;
-
-    const prev = [...suggestions].reverse().find((s) => s.frameIdx < frameIdx);
-    if (prev) {
-      ctx.state.setFrameIdx(prev.frameIdx);
-    } else {
-      // Wrap around
-      ctx.state.setFrameIdx(suggestions[suggestions.length - 1].frameIdx);
-    }
+    const prev = [...sorted]
+      .reverse()
+      .find((s) => compare(s.video, s.frameIdx, video, frameIdx) < 0);
+    const target = prev ?? sorted[sorted.length - 1]; // wrap around
+    if (target.video !== video) ctx.state.setVideo(target.video);
+    ctx.state.setFrameIdx(target.frameIdx);
   },
 };
 
@@ -234,11 +253,15 @@ export const GoToMarkedFrame: Command = {
 export const SelectToFrame: Command = {
   name: "SelectToFrame",
   topics: [],
-  execute(ctx: CommandContext) {
+  async execute(ctx: CommandContext) {
     const { frameIdx, video } = ctx.state;
     if (!video) return;
 
-    const input = window.prompt("Select to frame number:", String(frameIdx));
+    const input = await promptDialog({
+      title: "Select to frame",
+      message: "Select to frame number:",
+      defaultValue: String(frameIdx),
+    });
     if (input === null) return;
 
     const target = parseInt(input, 10);

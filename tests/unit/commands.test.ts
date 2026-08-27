@@ -867,6 +867,32 @@ describe("Navigation commands", () => {
       await ctx.execute(GoNextSuggestion);
       expect(useAppStore.getState().frameIdx).toBe(5);
     });
+
+    it("crosses into the next video once the current video's suggestions run out (#326)", async () => {
+      const skeleton = new Skeleton({ nodes: ["a"], name: "test" });
+      const videoA = new Video({
+        filename: "a.mp4",
+        backendMetadata: { shape: [100, 480, 640, 3] },
+        openBackend: false,
+      });
+      const videoB = new Video({
+        filename: "b.mp4",
+        backendMetadata: { shape: [100, 480, 640, 3] },
+        openBackend: false,
+      });
+      const labels = new Labels({ videos: [videoA, videoB], skeletons: [skeleton] });
+      labels.suggestions.push(
+        { video: videoA, frameIdx: 80 } as unknown as import("@/types").SuggestionFrame,
+        { video: videoB, frameIdx: 10 } as unknown as import("@/types").SuggestionFrame
+      );
+      useAppStore.getState().setLabels(labels, "test.slp");
+      useAppStore.getState().setVideo(videoA);
+      useAppStore.getState().setFrameIdx(80); // videoA's last (only) suggestion
+
+      await ctx.execute(GoNextSuggestion);
+      expect(useAppStore.getState().video).toBe(videoB);
+      expect(useAppStore.getState().frameIdx).toBe(10);
+    });
   });
 
   describe("GoPrevSuggestion", () => {
@@ -885,6 +911,32 @@ describe("Navigation commands", () => {
 
       await ctx.execute(GoPrevSuggestion);
       expect(useAppStore.getState().frameIdx).toBe(35);
+    });
+
+    it("crosses into the previous video once the current video's suggestions run out (#326)", async () => {
+      const skeleton = new Skeleton({ nodes: ["a"], name: "test" });
+      const videoA = new Video({
+        filename: "a.mp4",
+        backendMetadata: { shape: [100, 480, 640, 3] },
+        openBackend: false,
+      });
+      const videoB = new Video({
+        filename: "b.mp4",
+        backendMetadata: { shape: [100, 480, 640, 3] },
+        openBackend: false,
+      });
+      const labels = new Labels({ videos: [videoA, videoB], skeletons: [skeleton] });
+      labels.suggestions.push(
+        { video: videoA, frameIdx: 80 } as unknown as import("@/types").SuggestionFrame,
+        { video: videoB, frameIdx: 10 } as unknown as import("@/types").SuggestionFrame
+      );
+      useAppStore.getState().setLabels(labels, "test.slp");
+      useAppStore.getState().setVideo(videoB);
+      useAppStore.getState().setFrameIdx(10); // videoB's first (only) suggestion
+
+      await ctx.execute(GoPrevSuggestion);
+      expect(useAppStore.getState().video).toBe(videoA);
+      expect(useAppStore.getState().frameIdx).toBe(80);
     });
   });
 

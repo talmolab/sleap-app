@@ -115,6 +115,7 @@ function VisibilityToggle({
 function InstanceRow({
   instance,
   index,
+  frameInstanceTracks,
   isSelected,
   onSelect,
   palette,
@@ -133,6 +134,7 @@ function InstanceRow({
 }: {
   instance: Instance | PredictedInstance;
   index: number;
+  frameInstanceTracks: unknown[];
   isSelected: boolean;
   onSelect: (e: React.MouseEvent) => void;
   palette: string;
@@ -159,6 +161,7 @@ function InstanceRow({
     predicted,
     colorPredicted,
     projectHasTracks,
+    frameInstanceTracks,
   );
   const trackName = instance.track?.name ?? "[no track]";
   const visibleNodes = instance.nVisible;
@@ -419,6 +422,7 @@ export function InstancesPanel() {
     labels && video ? labels.find({ video, frameIdx }) : [];
   const labeledFrame = labeledFrames.length > 0 ? labeledFrames[0] : null;
   const instances = labeledFrame?.instances ?? [];
+  const frameInstanceTracks = instances.map((inst) => inst.track);
   const hasPredictions = instances.some(isPredicted);
 
   // Only surface the filter when there's enough to filter. When hidden its
@@ -569,6 +573,7 @@ export function InstancesPanel() {
                     key={i}
                     instance={inst}
                     index={i}
+                    frameInstanceTracks={frameInstanceTracks}
                     isSelected={selectedIndices.has(i)}
                     onSelect={(e) => handleSelect(i, e)}
                     palette={palette}

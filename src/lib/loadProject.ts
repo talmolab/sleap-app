@@ -164,7 +164,7 @@ export async function loadProjectFromFile(file: File): Promise<boolean> {
 
   // Confirm discarding unsaved work (in-memory edits OR a not-yet-exported OPFS
   // working copy) before replacing the current project.
-  if (!confirmDiscardUnsavedWork("Opening a new project")) return false;
+  if (!(await confirmDiscardUnsavedWork("Opening a new project"))) return false;
 
   store.setLoading(true, `Reading ${file.name}...`);
 
@@ -191,8 +191,9 @@ export async function loadProjectFromFile(file: File): Promise<boolean> {
       description: `${labels.videos.length} video(s), ${labels.labeledFrames.length} labeled frames`,
     });
     // Fire-and-forget: best-effort, no-ops on browser, must not add latency.
+    // (sleap-app's own update is surfaced via the Environment badge instead
+    // of a toast now — see App.tsx's stable-channel check.)
     useEnvironmentStore.getState().checkSleapNnUpdateAndNotify();
-    useEnvironmentStore.getState().checkAppUpdateAndNotify();
     return true;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -216,7 +217,7 @@ export async function loadProjectFromFile(file: File): Promise<boolean> {
 export async function loadProjectFromUrl(url: string): Promise<boolean> {
   const store = useAppStore.getState();
 
-  if (!confirmDiscardUnsavedWork("Opening a new project")) return false;
+  if (!(await confirmDiscardUnsavedWork("Opening a new project"))) return false;
 
   const name = basenameFromUrl(url);
   store.setLoading(true, `Streaming ${name}...`);
@@ -276,7 +277,7 @@ export async function loadProjectFromPath(
 
   // Confirm discarding unsaved work (in-memory edits OR a not-yet-exported OPFS
   // working copy) before replacing the current project.
-  if (!confirmDiscardUnsavedWork("Opening a new project")) return false;
+  if (!(await confirmDiscardUnsavedWork("Opening a new project"))) return false;
 
   const filename = path.split(/[\\/]/).pop() ?? path;
   store.setLoading(true, `Reading ${filename}...`);
@@ -353,8 +354,9 @@ export async function loadProjectFromPath(
       description: `${labels.videos.length} video(s), ${labels.labeledFrames.length} labeled frames`,
     });
     // Fire-and-forget: best-effort, no-ops on browser, must not add latency.
+    // (sleap-app's own update is surfaced via the Environment badge instead
+    // of a toast now — see App.tsx's stable-channel check.)
     useEnvironmentStore.getState().checkSleapNnUpdateAndNotify();
-    useEnvironmentStore.getState().checkAppUpdateAndNotify();
 
     // Missing / unsupported-codec videos are summarized (codec-aware) by
     // resolveExternalVideos above — no separate toast here (avoids a duplicate).
@@ -437,7 +439,7 @@ function readAnalysisLabels(source: AnalysisSource): Promise<Labels> {
 export async function loadAnalysisProjectFromFile(file: File): Promise<boolean> {
   const store = useAppStore.getState();
 
-  if (!confirmDiscardUnsavedWork("Importing a file")) return false;
+  if (!(await confirmDiscardUnsavedWork("Importing a file"))) return false;
 
   store.setLoading(true, `Reading ${file.name}...`);
 
@@ -476,7 +478,7 @@ export async function loadAnalysisProjectFromPath(
 ): Promise<boolean> {
   const store = useAppStore.getState();
 
-  if (!confirmDiscardUnsavedWork("Importing a file")) return false;
+  if (!(await confirmDiscardUnsavedWork("Importing a file"))) return false;
 
   const filename = path.split(/[\\/]/).pop() ?? path;
   store.setLoading(true, `Reading ${filename}...`);
@@ -534,7 +536,7 @@ function readNwbLabels(source: AnalysisSource): Promise<Labels> {
 export async function loadNwbProjectFromFile(file: File): Promise<boolean> {
   const store = useAppStore.getState();
 
-  if (!confirmDiscardUnsavedWork("Importing a file")) return false;
+  if (!(await confirmDiscardUnsavedWork("Importing a file"))) return false;
 
   store.setLoading(true, `Reading ${file.name}...`);
 
@@ -573,7 +575,7 @@ export async function loadNwbProjectFromPath(
 ): Promise<boolean> {
   const store = useAppStore.getState();
 
-  if (!confirmDiscardUnsavedWork("Importing a file")) return false;
+  if (!(await confirmDiscardUnsavedWork("Importing a file"))) return false;
 
   const filename = path.split(/[\\/]/).pop() ?? path;
   store.setLoading(true, `Reading ${filename}...`);
@@ -665,7 +667,7 @@ function resolveCocoImageUnderRoot(
 export async function loadCocoProjectFromFile(file: File): Promise<boolean> {
   const store = useAppStore.getState();
 
-  if (!confirmDiscardUnsavedWork("Importing a file")) return false;
+  if (!(await confirmDiscardUnsavedWork("Importing a file"))) return false;
 
   store.setLoading(true, `Reading ${file.name}...`);
 
@@ -706,7 +708,7 @@ export async function loadCocoProjectFromPath(
 ): Promise<boolean> {
   const store = useAppStore.getState();
 
-  if (!confirmDiscardUnsavedWork("Importing a file")) return false;
+  if (!(await confirmDiscardUnsavedWork("Importing a file"))) return false;
 
   const filename = path.split(/[\\/]/).pop() ?? path;
   store.setLoading(true, `Reading ${filename}...`);
@@ -780,7 +782,7 @@ export async function loadDlcFromFileSystem(
 ): Promise<boolean> {
   const store = useAppStore.getState();
 
-  if (!confirmDiscardUnsavedWork("Importing a file")) return false;
+  if (!(await confirmDiscardUnsavedWork("Importing a file"))) return false;
 
   store.setLoading(true, `Reading ${displayName}...`);
 

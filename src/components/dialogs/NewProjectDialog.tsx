@@ -74,7 +74,7 @@ export function NewProjectDialog() {
   const handleCreate = useCallback(async () => {
     // Creating discards the current project — confirm if there is unsaved work
     // (in-memory edits OR a not-yet-exported OPFS working copy).
-    if (!confirmDiscardUnsavedWork("Creating a new project")) return;
+    if (!(await confirmDiscardUnsavedWork("Creating a new project"))) return;
 
     setCreating(true);
     try {
