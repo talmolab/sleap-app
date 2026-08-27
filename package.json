@@ -21,7 +21,8 @@
     "test:e2e": "playwright test",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "fetch:ffmpeg": "bash scripts/fetch-ffmpeg.sh"
   },
   "dependencies": {
     "@talmolab/sleap-io.js": "^0.5.11",

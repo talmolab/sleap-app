@@ -7,6 +7,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { toast } from "@/lib/notify";
 import { LogNumberInput } from "@/components/LogNumberInput";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
@@ -410,9 +411,9 @@ function HeadTabContent({
         if (await exists(cfgPath)) {
           const info = parseTrainingConfig(await readTextFile(cfgPath));
           if (info.headKey && info.headKey !== headType) {
-            window.alert(
-              `The checkpoint you selected was trained for "${info.headKey}" and may not be compatible with this ${headType} head.`
-            );
+            toast.warning("Possible checkpoint head mismatch", {
+              description: `The checkpoint you selected was trained for "${info.headKey}" and may not be compatible with this ${headType} head.`,
+            });
           }
         }
       } catch {
@@ -438,13 +439,13 @@ function HeadTabContent({
           const parsed = parseYamlConfig(text, file.name, slot);
           if (parsed) {
             if (parsed.modelType !== slot && parsed.modelType !== "unknown") {
-              window.alert(
-                `The file you selected was a training config for ${parsed.modelType} and cannot be used for ${slot}.`
-              );
+              toast.error("Wrong model type", {
+                description: `The file you selected was a training config for ${parsed.modelType} and cannot be used for ${slot}.`,
+              });
             }
             addConfigFile(parsed);
           } else {
-            window.alert("The file you selected was not a valid training config.");
+            toast.error("The file you selected was not a valid training config.");
           }
         };
         reader.readAsText(file);

@@ -1582,6 +1582,32 @@ export async function pickVideoFiles(): Promise<PickedVideoFile[]> {
 }
 
 /**
+ * Filter dropped browser `File`s down to supported videos, as PickedVideoFiles
+ * (browser path: no absPath). Used by the drag-and-drop dropzone; `.slp` and
+ * other non-video files are dropped. Pure — the extension table is unit-tested.
+ */
+export function pickedFromFiles(files: File[]): PickedVideoFile[] {
+  return files
+    .filter((f) => backendKindForFilename(f.name))
+    .map((f) => ({ file: f, absPath: null }));
+}
+
+/**
+ * Filter dropped desktop file PATHS down to supported videos, as by-path
+ * PickedVideoFiles (Tauri opens by path — no bytes read here). Non-video paths
+ * (e.g. a dropped `.slp`, handled separately by the welcome-screen opener) are
+ * dropped. Pure.
+ */
+export function pickedFromPaths(paths: string[]): PickedVideoFile[] {
+  return paths
+    .filter((p) => backendKindForFilename(p))
+    .map((p) => ({
+      file: new File([], getBasename(p), { type: "video/mp4" }),
+      absPath: p,
+    }));
+}
+
+/**
  * Build a standalone Video from a picked file and append it to labels (NO
  * reindex — callers batch a single labels.reindex() after adding all videos).
  * On Tauri, the absolute path becomes the canonical filename so the video

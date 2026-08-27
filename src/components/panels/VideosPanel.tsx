@@ -17,7 +17,8 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
+import { VideoDropzone } from "@/components/common/VideoDropzone";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
@@ -437,26 +438,6 @@ export function VideosPanel() {
     }
   };
 
-  /**
-   * Pick video file(s), then stage them in the Import Videos dialog (grayscale
-   * choice) instead of adding immediately — mirrors the legacy Qt GUI's
-   * "Import Videos" dialog. Actually adding happens in {@link handleConfirmImport}.
-   */
-  const handleAddVideos = async () => {
-    if (!labels) return;
-    let picked;
-    try {
-      picked = await pickVideoFiles();
-    } catch (err) {
-      toast.error("Failed to add video", {
-        description: err instanceof Error ? err.message : String(err),
-      });
-      return;
-    }
-    if (picked.length === 0) return; // cancelled
-    setPendingImport(toVideoImportEntries(picked));
-  };
-
   /** Add every staged video from the Import Videos dialog, with its chosen grayscale flag. */
   const handleConfirmImport = async () => {
     if (!labels || !pendingImport) return;
@@ -599,7 +580,7 @@ export function VideosPanel() {
           </div>
         </div>
       )}
-      <ScrollArea className="flex-1">
+      <ScrollArea className="flex-1 min-h-0">
         {videos.length === 0 ? (
           <p className="text-xs text-muted-foreground p-2">
             No videos in project.
@@ -609,7 +590,7 @@ export function VideosPanel() {
             No videos match “{search}”.
           </p>
         ) : (
-          <Table>
+          <Table className="w-max min-w-full">
             <TableHeader>
               <TableRow className="border-b hover:bg-transparent">
                 <TableHead className="py-1 px-2 text-xs font-normal h-auto">
@@ -648,6 +629,7 @@ export function VideosPanel() {
             </TableBody>
           </Table>
         )}
+        <ScrollBar orientation="horizontal" />
       </ScrollArea>
 
       {currentVideo && (
@@ -658,15 +640,13 @@ export function VideosPanel() {
       )}
 
       <Separator />
-      <div className="flex gap-1 p-2">
-        <Button
-          variant="subtle"
-          size="xs"
-          onClick={handleAddVideos}
+      <div className="px-2 pt-2">
+        <VideoDropzone
+          onFiles={(picked) => setPendingImport(toVideoImportEntries(picked))}
           data-tutorial="add-videos-button"
-        >
-          Add Videos
-        </Button>
+        />
+      </div>
+      <div className="flex gap-1 p-2">
         <Button
           variant="subtle"
           size="xs"
