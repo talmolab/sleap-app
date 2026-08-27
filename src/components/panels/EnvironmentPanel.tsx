@@ -282,12 +282,12 @@ function AppUpdateSection() {
   // AppUpdateSection each time, and without the shared cache that would
   // re-hit the GitHub API on every visit to this sidebar section within the
   // same session, not just once per app start.
-  const runCheck = useCallback(async (ch: UpdateChannel) => {
+  const runCheck = useCallback(async (ch: UpdateChannel, force = false) => {
     const requestId = ++requestIdRef.current;
     setChecking(true);
     setPendingUpdate(null);
     try {
-      const update = await checkUpdateCached(ch);
+      const update = await checkUpdateCached(ch, { force });
       if (requestIdRef.current !== requestId) return; // superseded — drop it
       setPendingUpdate(update);
     } catch (err) {
@@ -352,7 +352,11 @@ function AppUpdateSection() {
         description: err instanceof Error ? err.message : String(err),
       });
       setUpdating(false);
-      void runCheck(channel);
+      // Forced: install_update's own rejection (e.g. a newer version landed
+      // on this channel since we last checked) means the cached result is
+      // now known-stale -- reusing it here would just reproduce the same
+      // rejection on the next click until the 1h cache TTL happens to expire.
+      void runCheck(channel, true);
     }
   };
 

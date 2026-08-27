@@ -273,25 +273,21 @@ export default function App() {
   // local builds) — pure noise, not a real signal.
   useEffect(() => {
     if (!isTauri || import.meta.env.DEV) return;
-    (async () => {
-      const checkChannel = async (
-        channel: "stable" | "latest",
-        setInfo: (available: boolean, version: string | null) => void
-      ) => {
-        try {
-          const update = await checkUpdateCached(channel);
-          setInfo(!!update, update?.version ?? null);
-        } catch (e) {
-          console.warn(`[updater] ${channel}-channel check failed:`, e);
-        }
-      };
-      const { setStableUpdateInfo, setLatestUpdateInfo } =
-        useAppStore.getState();
-      await Promise.all([
-        checkChannel("stable", setStableUpdateInfo),
-        checkChannel("latest", setLatestUpdateInfo),
-      ]);
-    })();
+    // checkUpdateCached itself writes the result into appStore's
+    // stableUpdateAvailable/latestUpdateAvailable fields (see
+    // src/lib/updateCheckCache.ts) -- this effect just needs to trigger the
+    // checks, not plumb the result anywhere itself. That's also what lets
+    // EnvironmentPanel.tsx's own later checks of "stable"/"latest" (e.g.
+    // after this result's 1h cache TTL expires) keep the ambient badge
+    // current for the rest of the session, not just at this one startup call.
+    const checkChannel = async (channel: "stable" | "latest") => {
+      try {
+        await checkUpdateCached(channel);
+      } catch (e) {
+        console.warn(`[updater] ${channel}-channel check failed:`, e);
+      }
+    };
+    void Promise.all([checkChannel("stable"), checkChannel("latest")]);
   }, []);
 
   // Also check sleap-nn (a `uv tool`, unrelated to the sleap-app channels
