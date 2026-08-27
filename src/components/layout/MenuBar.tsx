@@ -626,6 +626,7 @@ function ViewMenu() {
   const showNonVisibleNodes = useAppStore((s) => s.showNonVisibleNodes);
   const showInset = useAppStore((s) => s.showInset);
   const colorPredicted = useAppStore((s) => s.colorPredicted);
+  const showTrackScore = useAppStore((s) => s.showTrackScore);
   const fit = useAppStore((s) => s.fit);
   const edgeStyle = useAppStore((s) => s.edgeStyle);
   const markerSize = useAppStore((s) => s.markerSize);
@@ -875,6 +876,12 @@ function ViewMenu() {
           onCheckedChange={() => toggle("colorPredicted")}
         >
           Color Predicted Instances
+        </MenubarCheckboxItem>
+        <MenubarCheckboxItem
+          checked={showTrackScore}
+          onCheckedChange={() => toggle("showTrackScore")}
+        >
+          Show Track Scores
         </MenubarCheckboxItem>
       </MenubarContent>
     </MenubarMenu>

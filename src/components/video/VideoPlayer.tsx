@@ -117,6 +117,7 @@ export function VideoPlayer() {
   const viewOnlyInstance = useAppStore((s) => s.viewOnlyInstance);
   const showNonVisibleOverride = useAppStore((s) => s.showNonVisibleOverride);
   const colorPredicted = useAppStore((s) => s.colorPredicted);
+  const showTrackScore = useAppStore((s) => s.showTrackScore);
   const fit = useAppStore((s) => s.fit);
   const edgeStyle = useAppStore((s) => s.edgeStyle);
   const markerSize = useAppStore((s) => s.markerSize);
@@ -1036,6 +1037,7 @@ export function VideoPlayer() {
         showEdges: true,
         showNonVisibleNodes: true,
         colorPredicted: false,
+        showTrackScore: false,
         zoom: baseScale * zoom,
       };
       renderInstances(ctx, [ri], bOpts);
@@ -1163,6 +1165,7 @@ export function VideoPlayer() {
       showEdges,
       showNonVisibleNodes,
       colorPredicted,
+      showTrackScore,
       zoom: baseScale * zoom,
     };
 
@@ -1263,6 +1266,7 @@ export function VideoPlayer() {
     viewOnlyInstance,
     showNonVisibleOverride,
     colorPredicted,
+    showTrackScore,
     edgeStyle,
     markerSize,
     nodeLabelSize,

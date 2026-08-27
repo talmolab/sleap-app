@@ -68,6 +68,8 @@ export interface RenderOptions {
   showEdges: boolean;
   showNonVisibleNodes: boolean;
   colorPredicted: boolean;
+  /** Append the ` (0.81)` prediction score to track labels. Default off (#316). */
+  showTrackScore: boolean;
   zoom: number;
 }
 
@@ -80,6 +82,7 @@ const DEFAULT_OPTIONS: RenderOptions = {
   showEdges: true,
   showNonVisibleNodes: true,
   colorPredicted: false,
+  showTrackScore: false,
   zoom: 1,
 };
 
@@ -108,6 +111,25 @@ export function renderInstances(
       ...opts,
       showNonVisibleNodes: instance.showNonVisible, // #2782 per-instance occluded
     });
+  }
+
+  // Track labels drawn in a dedicated pass ON TOP of every skeleton, so a later
+  // instance's nodes/edges can't overdraw an earlier label. Iterating in the same
+  // sort order keeps the selected instance's label frontmost (#316). `placed`
+  // collects scene-space label boxes so overlapping labels get nudged upward.
+  const placed: Array<[number, number, number, number]> = [];
+  for (const instance of sorted) {
+    if (!instance.visible || !instance.trackName) continue;
+    if (!(instance.isSelected || (instance.isPredicted && opts.colorPredicted))) continue;
+    renderTrackLabel(
+      ctx,
+      instance.nodes,
+      instance.trackName,
+      instance.color,
+      instance.score,
+      opts,
+      placed,
+    );
   }
 }
 
@@ -159,11 +181,7 @@ function renderInstance(
   if (isSelected) {
     renderSelectionBox(ctx, nodes, color, opts);
   }
-
-  // Draw track label on selection (always show for predicted if colorPredicted)
-  if ((isSelected || (isPredicted && opts.colorPredicted)) && instance.trackName) {
-    renderTrackLabel(ctx, nodes, instance.trackName, color, instance.score, opts.zoom);
-  }
+  // Track labels are drawn in a separate pass in renderInstances (see #316).
 }
 
 function renderNode(
@@ -356,28 +374,56 @@ function renderTrackLabel(
   nodes: RenderedNode[],
   trackName: string,
   color: RGB,
-  score?: number,
-  zoom: number = 1
+  score: number | undefined,
+  opts: RenderOptions,
+  placed: Array<[number, number, number, number]>,
 ): void {
   const visibleNodes = nodes.filter((n) => n.visible);
   if (visibleNodes.length === 0) return;
 
+  const zoom = opts.zoom;
   const minY = Math.min(...visibleNodes.map((n) => n.y));
   const centerX =
     visibleNodes.reduce((s, n) => s + n.x, 0) / visibleNodes.length;
 
   let text = `Track: ${trackName}`;
-  if (score !== undefined) {
+  if (opts.showTrackScore && score !== undefined) {
     text += ` (${score.toFixed(2)})`;
   }
 
-  // Scale font size inversely with zoom so labels remain readable
-  const fontSize = 10 / zoom;
+  // Font follows the node-label size control (so "bigger labels" finally affects
+  // these) and stays screen-constant by dividing out zoom.
+  const fontSize = opts.nodeLabelSize / zoom;
   ctx.font = `${fontSize}px sans-serif`;
-  ctx.fillStyle = rgbToCSS(color, 0.8);
   ctx.textAlign = "center";
   ctx.textBaseline = "bottom";
-  ctx.fillText(text, centerX, minY - 14 / zoom);
+
+  // Nudge upward while this label's box would overlap one already placed, so
+  // clustered instances don't smear their labels together (#316 problem 2).
+  const halfW = ctx.measureText(text).width / 2;
+  const lineH = fontSize * 1.2;
+  const gap = 2 / zoom;
+  const x1 = centerX - halfW;
+  const x2 = centerX + halfW;
+  let y = minY - 14 / zoom;
+  for (let guard = 0; guard < 24; guard++) {
+    const top = y - lineH;
+    const clash = placed.some(
+      ([px1, pTop, px2, pBottom]) => x1 < px2 && x2 > px1 && top < pBottom && y > pTop,
+    );
+    if (!clash) break;
+    y -= lineH + gap;
+  }
+  placed.push([x1, y - lineH, x2, y]);
+
+  // Dark outline halo so the full-opacity, track-colored text stays legible on
+  // any background (#316 problem 1). Halo width is screen-constant.
+  ctx.lineJoin = "round";
+  ctx.lineWidth = Math.max(2, opts.nodeLabelSize * 0.18) / zoom;
+  ctx.strokeStyle = "rgba(0, 0, 0, 0.85)";
+  ctx.strokeText(text, centerX, y);
+  ctx.fillStyle = rgbToCSS(color);
+  ctx.fillText(text, centerX, y);
 }
 
 /** Options enabling hitTestNode to also treat a node's rendered name label as part of its clickable area. */
