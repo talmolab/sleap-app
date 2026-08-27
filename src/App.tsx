@@ -246,10 +246,21 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    // Prevent browser default drag-and-drop behavior
+    // Prevent the browser from navigating to a dropped file. If an .slp is
+    // dropped while a project is open (and no in-app dropzone claimed it), point
+    // the user at File > New Project — in the browser that opens a fresh SLEAP
+    // tab (this one keeps its project), where they can open the other project
+    // (#325). A browser tab can't route a locally-dropped file to a new tab.
     const prevent = (e: DragEvent) => {
+      const claimed = e.defaultPrevented; // a dropzone (video/welcome) handled it
       e.preventDefault();
       e.stopPropagation();
+      if (e.type !== "drop" || claimed || isTauri) return;
+      const files = Array.from(e.dataTransfer?.files ?? []);
+      if (!files.some((f) => f.name.toLowerCase().endsWith(".slp"))) return;
+      if (useAppStore.getState().projectLoaded) {
+        toast("A project is already open in this tab. Use File > New Project to open another in a new tab.");
+      }
     };
     window.addEventListener("dragover", prevent);
     window.addEventListener("drop", prevent);
@@ -259,11 +270,12 @@ export default function App() {
     };
   }, []);
 
-  // Desktop drag-and-drop (#132). The Tauri webview intercepts OS file drops, so
-  // the HTML drop event never fires in the desktop app — wire Tauri's own
-  // drag-drop event to load a dropped .slp by path. Reuses loadProjectFromPath,
-  // so it inherits the unsaved-changes confirm + toasts and works whether the
-  // welcome screen or the editor is showing. (Browser keeps its HTML drop.)
+  // Desktop drag-and-drop (#132, #325). The Tauri webview intercepts OS file
+  // drops, so the HTML drop event never fires in the desktop app — wire Tauri's
+  // own drag-drop event to route a dropped .slp by path. On an empty window it
+  // loads in place; on a window that already holds a project it never clobbers
+  // it — the user is told the file is already open, or confirms opening it in a
+  // separate window (see routeSlpDrop). Browser drops are handled above.
   useEffect(() => {
     if (!isTauri) return;
     let active = true;
@@ -272,17 +284,12 @@ export default function App() {
       const { getCurrentWebview } = await import("@tauri-apps/api/webview");
       const fn = await getCurrentWebview().onDragDropEvent(async (event) => {
         if (event.payload.type !== "drop") return;
-        // Only open via drag-drop on the welcome screen; never replace a project
-        // that's already loaded (a stray drop could discard unsaved work).
-        if (useAppStore.getState().projectLoaded) return;
         const slp = event.payload.paths.find((p) =>
           p.toLowerCase().endsWith(".slp")
         );
         if (!slp) return;
-        // Route so a drop of an already-open file focuses that window instead of
-        // loading a duplicate; on this empty window it otherwise loads in place.
-        const { openOrFocusPath } = await import("./lib/windowRouting");
-        await openOrFocusPath(slp);
+        const { routeSlpDrop } = await import("./lib/slpDrop");
+        await routeSlpDrop(slp);
       });
       // Component may have unmounted before the listener resolved.
       if (active) unlisten = fn;

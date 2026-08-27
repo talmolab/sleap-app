@@ -47,6 +47,38 @@ export function planOpen(r: Resolution, myLabel: string): OpenPlan {
   return { kind: "newWindow" };
 }
 
+/** What a drag-dropped `.slp` should do, given where Rust would route it. */
+export type SlpDropPlan =
+  | { kind: "openHere" } // empty window → load in place (existing behavior)
+  | { kind: "alreadyHere" } // same file already loaded in THIS window → info pop-up
+  | { kind: "focusOther"; label: string } // same file open elsewhere → focus it
+  | { kind: "confirmNewWindow" }; // a different file → warn, then open a new window
+
+/**
+ * Pure decision for dropping an `.slp` onto a window (desktop). Unlike a Welcome
+ * drop (which loads in place), dropping onto a window that already holds a project
+ * must never clobber it:
+ *   - empty window        → load here (unchanged behavior),
+ *   - same file, here     → just tell the user it's already open here,
+ *   - same file, elsewhere→ focus that window,
+ *   - anything else       → confirm, then open in a separate window.
+ * Mirrors {@link planOpen}: any ambiguous/malformed resolution falls back to the
+ * always-safe "new window" path (never loads over a live project).
+ */
+export function planSlpDrop(
+  resolution: Resolution,
+  myLabel: string,
+  projectLoaded: boolean
+): SlpDropPlan {
+  if (!projectLoaded) return { kind: "openHere" };
+  if (resolution.action === "focus" && resolution.label) {
+    return resolution.label === myLabel
+      ? { kind: "alreadyHere" }
+      : { kind: "focusOther", label: resolution.label };
+  }
+  return { kind: "confirmNewWindow" };
+}
+
 /** The `?openFile=` path a window was spawned to load, if any (decoded). */
 export function readOpenFileParam(search: string): string | null {
   return new URLSearchParams(search).get("openFile");
