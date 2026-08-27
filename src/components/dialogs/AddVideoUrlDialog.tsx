@@ -86,6 +86,12 @@ export function AddVideoUrlDialog() {
               onChange={(e) => setUrl(e.target.value)}
               spellCheck={false}
             />
+            <p className="text-muted-foreground text-xs leading-snug">
+              Must be a direct link to a video file (e.g. a presigned S3/GCS URL)
+              on a host that allows cross-origin range requests. Watch/share
+              pages such as YouTube or Google Drive links won&rsquo;t
+              work&nbsp;— account-based Drive/Dropbox loading is coming soon.
+            </p>
           </div>
           <div className="flex justify-end gap-2">
             <Button
