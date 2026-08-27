@@ -549,7 +549,7 @@ export function SuggestionsPanel({
     <TooltipProvider delayDuration={200}>
     <div className="flex flex-col h-full" data-tutorial="suggestions-panel">
       {/* Generation controls */}
-      <div className="px-2 py-1.5 border-b border-border space-y-1.5">
+      <div className="@container px-2 py-1.5 border-b border-border space-y-1.5">
         <div className="flex items-center gap-1.5">
           <Badge variant="secondary" className="text-xs shrink-0">
             {suggestions.length} suggestion
@@ -979,12 +979,12 @@ export function SuggestionsPanel({
           </Select>
         </div>
 
-        {/* Bulk suggestion tools (PyQt: under the Target row) — fill the width */}
-        <div className="flex gap-1">
+        {/* Bulk suggestion tools — fill the width; stack when the panel is narrow */}
+        <div className="flex flex-col gap-1 @[18rem]:flex-row">
           <Button
             variant="subtle"
             size="xs"
-            className="flex-1 min-w-0"
+            className="@[18rem]:flex-1 min-w-0"
             disabled={isGenerating}
             onClick={addAllLabeledFrames}
           >
@@ -993,7 +993,7 @@ export function SuggestionsPanel({
           <Button
             variant="subtle"
             size="xs"
-            className="flex-1 min-w-0"
+            className="@[18rem]:flex-1 min-w-0"
             disabled={suggestions.length === 0 || isGenerating}
             onClick={shuffleAllSuggestions}
           >
@@ -1002,7 +1002,7 @@ export function SuggestionsPanel({
           <Button
             variant="subtle"
             size="xs"
-            className="flex-1 min-w-0"
+            className="@[18rem]:flex-1 min-w-0"
             disabled={suggestions.length === 0 || isGenerating}
             onClick={removeUnlabeled}
           >
@@ -1213,13 +1213,13 @@ export function SuggestionsPanel({
       </div>
 
       <Separator />
-      <div className="flex flex-col gap-1 p-2">
-        {/* Edit row: Add current frame · Remove · Clear all (below the table) */}
-        <div className="flex gap-1">
+      <div className="@container flex flex-col gap-1 p-2">
+        {/* Edit row: Add current frame · Remove · Clear all — stack when narrow */}
+        <div className="flex flex-col gap-1 @[18rem]:flex-row">
           <Button
             variant="subtle"
             size="xs"
-            className="flex-1 min-w-0"
+            className="@[18rem]:flex-1 min-w-0"
             disabled={!currentVideo || isGenerating}
             onClick={addCurrentFrame}
           >
@@ -1228,7 +1228,7 @@ export function SuggestionsPanel({
           <Button
             variant="subtle"
             size="xs"
-            className="flex-1 min-w-0"
+            className="@[18rem]:flex-1 min-w-0"
             disabled={selectedIdx === null || isGenerating}
             onClick={removeSelected}
           >
@@ -1237,7 +1237,7 @@ export function SuggestionsPanel({
           <Button
             variant="subtle"
             size="xs"
-            className="flex-1 min-w-0"
+            className="@[18rem]:flex-1 min-w-0"
             disabled={suggestions.length === 0 || isGenerating}
             onClick={() => setClearConfirmOpen(true)}
           >
