@@ -379,6 +379,17 @@ export function SuggestionsPanel({
     );
   };
 
+  /** Prev/Next: navigate to the neighbouring suggestion AND select it, so the
+   *  landed frame is highlighted in the table (and Remove targets it). */
+  const navSuggestion = (cmd: typeof GoNextSuggestion) => {
+    commandContext.execute(cmd);
+    const s = useAppStore.getState();
+    const idx = (labels?.suggestions ?? []).findIndex(
+      (sg) => sg.video === s.video && sg.frameIdx === s.frameIdx
+    );
+    if (idx !== -1) setSelectedIdx(idx);
+  };
+
   const addCurrentFrame = () => {
     if (!labels || !currentVideo) return;
     if (suggestionExists(labels.suggestions, currentVideo, frameIdx)) {
@@ -968,11 +979,12 @@ export function SuggestionsPanel({
           </Select>
         </div>
 
-        {/* Bulk suggestion tools (PyQt: under the Target row) */}
-        <div className="flex flex-wrap gap-1">
+        {/* Bulk suggestion tools (PyQt: under the Target row) — fill the width */}
+        <div className="flex gap-1">
           <Button
             variant="subtle"
             size="xs"
+            className="flex-1 min-w-0"
             disabled={isGenerating}
             onClick={addAllLabeledFrames}
           >
@@ -981,6 +993,7 @@ export function SuggestionsPanel({
           <Button
             variant="subtle"
             size="xs"
+            className="flex-1 min-w-0"
             disabled={suggestions.length === 0 || isGenerating}
             onClick={shuffleAllSuggestions}
           >
@@ -989,6 +1002,7 @@ export function SuggestionsPanel({
           <Button
             variant="subtle"
             size="xs"
+            className="flex-1 min-w-0"
             disabled={suggestions.length === 0 || isGenerating}
             onClick={removeUnlabeled}
           >
@@ -1042,7 +1056,8 @@ export function SuggestionsPanel({
           )}
         </div>
 
-        {/* Generate — wide primary action (PyQt: under the frame-range option) */}
+        {/* Generate — wide primary action, isolated by dividers (PyQt-style) */}
+        <Separator />
         {isGenerating ? (
           <Button
             variant="outline"
@@ -1060,6 +1075,7 @@ export function SuggestionsPanel({
             Generate Suggestions
           </Button>
         )}
+        <Separator />
         {/* Image-features generation progress (2-phase: decoding then clustering). */}
         {isGenerating && (
           <div className="space-y-1">
@@ -1143,12 +1159,19 @@ export function SuggestionsPanel({
                   <TableCell className="py-0.5 px-2 text-xs overflow-hidden">
                     <Tooltip>
                       <TooltipTrigger asChild>
-                        <span className="block truncate">
-                          {basename(entry.suggestion.video.filename)}
+                        <span className="flex items-center gap-1.5 min-w-0">
+                          <span className="shrink-0 tabular-nums text-muted-foreground">
+                            {labels?.videos.indexOf(entry.suggestion.video) ?? 0}
+                          </span>
+                          <span className="truncate">
+                            {basename(entry.suggestion.video.filename)}
+                          </span>
                         </span>
                       </TooltipTrigger>
                       <TooltipContent side="left">
-                        {basename(entry.suggestion.video.filename)}
+                        {`${
+                          labels?.videos.indexOf(entry.suggestion.video) ?? 0
+                        }: ${basename(entry.suggestion.video.filename)}`}
                       </TooltipContent>
                     </Tooltip>
                   </TableCell>
@@ -1203,6 +1226,7 @@ export function SuggestionsPanel({
           <Button
             variant="subtle"
             size="xs"
+            className="flex-1 min-w-0"
             disabled={!currentVideo || isGenerating}
             onClick={addCurrentFrame}
           >
@@ -1211,6 +1235,7 @@ export function SuggestionsPanel({
           <Button
             variant="subtle"
             size="xs"
+            className="flex-1 min-w-0"
             disabled={selectedIdx === null || isGenerating}
             onClick={removeSelected}
           >
@@ -1219,6 +1244,7 @@ export function SuggestionsPanel({
           <Button
             variant="subtle"
             size="xs"
+            className="flex-1 min-w-0"
             disabled={suggestions.length === 0 || isGenerating}
             onClick={() => setClearConfirmOpen(true)}
           >
@@ -1231,7 +1257,7 @@ export function SuggestionsPanel({
             variant="subtle"
             size="xs"
             disabled={suggestions.length === 0}
-            onClick={() => commandContext.execute(GoPrevSuggestion)}
+            onClick={() => navSuggestion(GoPrevSuggestion)}
           >
             {"◀"} Prev
           </Button>
@@ -1247,7 +1273,7 @@ export function SuggestionsPanel({
             variant="subtle"
             size="xs"
             disabled={suggestions.length === 0}
-            onClick={() => commandContext.execute(GoNextSuggestion)}
+            onClick={() => navSuggestion(GoNextSuggestion)}
           >
             Next {"▶"}
           </Button>
