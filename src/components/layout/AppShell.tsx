@@ -48,6 +48,8 @@ import { DiagnosticsDialog } from "../dialogs/DiagnosticsDialog";
 import { MenuSearchDialog } from "../dialogs/MenuSearchDialog";
 import { TutorialOverlay } from "../tutorial/TutorialOverlay";
 import { useAppStore } from "../../stores/appStore";
+import { UpdatePingDot, UpdatePill, useEnvironmentUpdateStatus } from "./UpdateIndicator";
+import { PanelCloseButton } from "./PanelCloseButton";
 import { useTrainingStore } from "../../stores/trainingStore";
 import {
   PanelRightClose,
@@ -57,7 +59,6 @@ import {
   GripVertical,
   ChevronDown,
   ChevronRight,
-  X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Progress } from "@/components/ui/progress";
@@ -335,6 +336,10 @@ function Sidebar() {
   const togglePanelOpenAction = useAppStore((s) => s.togglePanelOpen);
   const toggleSectionCollapsed = useAppStore((s) => s.toggleSectionCollapsed);
   const closePanel = useAppStore((s) => s.closePanel);
+  const {
+    available: environmentUpdateAvailable,
+    title: environmentUpdateTitle,
+  } = useEnvironmentUpdateStatus();
 
   // When docked left, the whole sidebar (rail | panel | resize) mirrors so the
   // icon rail sits on the window edge and the resize handle faces the canvas.
@@ -619,13 +624,10 @@ function Sidebar() {
                       {panel.label}
                     </span>
                   </button>
-                  <button
+                  <PanelCloseButton
                     onClick={() => closePanel(panel.id)}
-                    aria-label={`Close ${panel.label}`}
-                    className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors shrink-0"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
+                    label={`Close ${panel.label}`}
+                  />
                 </div>
                 {/* Section body */}
                 {!sectionCollapsed && (
@@ -739,15 +741,24 @@ function Sidebar() {
                       {unreadCount > 99 ? "99+" : unreadCount}
                     </span>
                   )}
+                  {/* New-stable-release indicator: a "live" ping dot, visible
+                      even when the rail is collapsed (see the "Update" text
+                      pill below for the expanded/labeled form). */}
+                  {panel.id === "environment" && environmentUpdateAvailable && (
+                    <UpdatePingDot className="top-1 right-1.5" />
+                  )}
                 </span>
                 <span
                   className={cn(
-                    "flex-1 min-w-0 truncate whitespace-nowrap pr-6 text-left text-sm",
+                    "flex-1 min-w-0 flex items-center gap-1.5 whitespace-nowrap pr-6 text-left text-sm",
                     "transition-opacity duration-150",
                     railExpanded ? "opacity-100" : "opacity-0"
                   )}
                 >
-                  {panel.label}
+                  <span className="truncate">{panel.label}</span>
+                  {panel.id === "environment" && environmentUpdateAvailable && (
+                    <UpdatePill title={environmentUpdateTitle}>Update</UpdatePill>
+                  )}
                 </span>
                 {/* Drag grip (visible on hover) */}
                 <GripVertical className="absolute right-1 top-1/2 -translate-y-1/2 h-3 w-3 opacity-0 group-hover:opacity-30 transition-opacity" />

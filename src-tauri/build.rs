@@ -66,6 +66,9 @@ fn main() {
                     "rtc_send",
                     "rtc_disconnect_worker",
                     "rtc_leave_room",
+                    // self-update channels
+                    "check_update",
+                    "install_update",
                 ])
                 .default_permission(DefaultPermissionRule::AllowAllCommands),
         ),
