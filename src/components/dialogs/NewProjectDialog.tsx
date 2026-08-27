@@ -137,7 +137,7 @@ export function NewProjectDialog() {
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex flex-col gap-4 py-2">
+        <div className="flex min-w-0 flex-col gap-4 py-2">
           {/* Skeleton template */}
           <div className="flex flex-col gap-1.5">
             <label className="text-sm font-medium">Skeleton</label>
