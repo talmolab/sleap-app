@@ -1064,6 +1064,7 @@ export function VideoPlayer() {
 
     // Build renderable instances
     const tracks = labels?.tracks ?? [];
+    const frameInstanceTracks = labeledFrame.instances.map((i) => i.track);
     const resolvedColorTarget = resolveColorTarget(distinctlyColor, projectHasTracks);
     const vis = { showInstances, hiddenInstances, viewOnlyInstance, showNonVisibleOverride };
     const instances: RenderedInstance[] = labeledFrame.instances.map(
@@ -1071,7 +1072,7 @@ export function VideoPlayer() {
         const isPredicted = inst instanceof PredictedInstance;
         const skeleton = inst.skeleton;
         const color = getInstanceColor(
-          palette, distinctlyColor, idx, inst.track, tracks, isPredicted, colorPredicted, projectHasTracks
+          palette, distinctlyColor, idx, inst.track, tracks, isPredicted, colorPredicted, projectHasTracks, frameInstanceTracks
         );
 
         // Per-node colors when (resolved) distinctlyColor === "node"
