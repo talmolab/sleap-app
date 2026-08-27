@@ -161,7 +161,7 @@ export const SAMPLE_VIDEO_URL =
 export const ADD_VIDEO_IN_DIALOG_STEP: TutorialStep = {
   id: "add-video-in-dialog",
   title: "Add a video",
-  body: 'This tutorial is built around a short sample video (mice.mp4) — click it to download, then click "+ Add video(s)…" to pick it.',
+  body: 'This tutorial is built around a short sample video (mice.mp4) — click it to download, then use the video dropzone to add it (drag it in, or click to browse).',
   bodyLink: { text: "mice.mp4", href: SAMPLE_VIDEO_URL },
   targetSelector: '[data-tutorial="new-project-add-video-button"]',
   placement: "bottom",
@@ -186,7 +186,7 @@ export const CONFIRM_VIDEO_AND_CREATE_STEP: TutorialStep = {
 export const ADD_VIDEO_STEP: TutorialStep = {
   id: "add-video",
   title: "Add a video",
-  body: "This tutorial is built around a short sample video (mice.mp4) — click it to download if you don't have it, then click \"Add Videos\" to import it.",
+  body: "This tutorial is built around a short sample video (mice.mp4) — click it to download if you don't have it, then use the video dropzone to import it (drag it in, or click to browse).",
   bodyLink: { text: "mice.mp4", href: SAMPLE_VIDEO_URL },
   panelId: "videos",
   targetSelector: '[data-tutorial="add-videos-button"]',

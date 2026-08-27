@@ -13,10 +13,7 @@ import { Labels, Skeleton } from "@talmolab/sleap-io.js";
 import { useAppStore } from "../../stores/appStore";
 import { commandContext } from "../../commands/CommandContext";
 import { LoadSkeletonTemplateCommand } from "../../commands/skeletonCommands";
-import {
-  pickVideoFiles,
-  addVideoFileToLabels,
-} from "../../lib/resolveVideos";
+import { addVideoFileToLabels } from "../../lib/resolveVideos";
 import {
   VideoImportList,
   toVideoImportEntries,
@@ -40,6 +37,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
+import { VideoDropzone } from "@/components/common/VideoDropzone";
 import { toast } from "@/lib/notify";
 import { confirmDiscardUnsavedWork } from "@/lib/unsavedGuard";
 
@@ -68,13 +66,6 @@ export function NewProjectDialog() {
     },
     [reset, setOpen]
   );
-
-  const handleAddVideos = useCallback(async () => {
-    const picked = await pickVideoFiles();
-    if (picked.length > 0) {
-      setVideos((v) => [...v, ...toVideoImportEntries(picked)]);
-    }
-  }, []);
 
   const removeVideo = useCallback((idx: number) => {
     setVideos((v) => v.filter((_, i) => i !== idx));
@@ -146,7 +137,7 @@ export function NewProjectDialog() {
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex flex-col gap-4 py-2">
+        <div className="flex min-w-0 flex-col gap-4 py-2">
           {/* Skeleton template */}
           <div className="flex flex-col gap-1.5">
             <label className="text-sm font-medium">Skeleton</label>
@@ -179,28 +170,22 @@ export function NewProjectDialog() {
                 (optional)
               </span>
             </label>
-            <div className="flex items-center gap-2">
-              <Button
-                variant="subtle"
-                size="sm"
-                className="self-start"
-                onClick={handleAddVideos}
-                disabled={creating}
-                data-tutorial="new-project-add-video-button"
+            {!tutorialActive && (
+              <a
+                href={SAMPLE_VIDEO_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="self-start text-xs text-muted-foreground underline hover:text-foreground"
               >
-                + Add video(s)…
-              </Button>
-              {!tutorialActive && (
-                <a
-                  href={SAMPLE_VIDEO_URL}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-xs text-muted-foreground underline hover:text-foreground"
-                >
-                  No video handy? Download a sample
-                </a>
-              )}
-            </div>
+                No video handy? Download a sample
+              </a>
+            )}
+            <VideoDropzone
+              onFiles={(picked) =>
+                setVideos((v) => [...v, ...toVideoImportEntries(picked)])
+              }
+              data-tutorial="new-project-add-video-button"
+            />
             <VideoImportList
               videos={videos}
               onChange={setVideos}
