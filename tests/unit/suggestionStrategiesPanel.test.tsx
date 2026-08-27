@@ -225,7 +225,7 @@ describe("SuggestionsPanel generation methods (#162)", () => {
       target: { value: "6" },
     });
 
-    fireEvent.click(screen.getByRole("button", { name: /^generate$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /generate suggestions/i }));
 
     // Default Add: existing [99] kept, then 1-based 3..6 -> 0-based 2,3,4,5 appended.
     const result = useAppStore.getState().labels?.suggestions ?? [];
@@ -254,7 +254,7 @@ describe("SuggestionsPanel generation methods (#162)", () => {
 
     // Switch to Replace, then Generate: the prior [99] is discarded.
     fireEvent.click(screen.getByRole("button", { name: /^replace$/i }));
-    fireEvent.click(screen.getByRole("button", { name: /^generate$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /generate suggestions/i }));
 
     const result = useAppStore.getState().labels?.suggestions ?? [];
     expect(result.map((s) => s.frameIdx)).toEqual([2, 3, 4, 5]);
@@ -282,23 +282,22 @@ describe("SuggestionsPanel generation methods (#162)", () => {
     );
     render(<SuggestionsPanel initialMethod="prediction_score" />);
 
-    fireEvent.click(screen.getByRole("button", { name: /^generate$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /generate suggestions/i }));
 
     // Defaults scoreLimit=3, lower=1, upper=2 -> only frame 0 qualifies.
     const result = useAppStore.getState().labels?.suggestions ?? [];
     expect(result.map((s) => s.frameIdx)).toEqual([0]);
   });
 
-  it("Score column shows the LOWEST instance score (not the mean, not the point-mean)", async () => {
+  it("Mean Score column shows the mean instance score (not the min, not the point-mean)", async () => {
     const skel = makeSkeleton();
     const video = makeVideo(100);
     const labels = new Labels({ videos: [video], skeletons: [skel] });
     // Two predicted instances — instance scores 0.40 and 0.90 (mean 0.65), every
-    // point score 0.70 (point-mean 0.70). The column must render the MIN instance
-    // score 0.40 (the value prediction_score thresholds), NOT the 0.65 mean and
-    // NOT the 0.70 point-mean. (The per-row breakdown is a Radix Tooltip rendered
-    // in a portal on hover — not asserted here per the documented happy-dom Radix
-    // limitation; it's verified in desktop E2E.)
+    // point score 0.70. The "Mean Score" column must render the MEAN 0.65, NOT
+    // the 0.40 min (that lives in the hover tooltip) and NOT the 0.70 point-mean.
+    // (The tooltip is a Radix portal on hover — not asserted here per the
+    // documented happy-dom Radix limitation; it's verified in desktop E2E.)
     const lf = new LabeledFrame({ video, frameIdx: 7 });
     lf.instances.push(predictedInstanceScored(skel, 0.4, 0.7));
     lf.instances.push(predictedInstanceScored(skel, 0.9, 0.7));
@@ -311,14 +310,13 @@ describe("SuggestionsPanel generation methods (#162)", () => {
     );
     render(<SuggestionsPanel />);
 
-    expect(screen.getByText("0.40")).toBeInTheDocument();
-    expect(screen.queryByText("0.65")).not.toBeInTheDocument(); // not the mean
+    expect(screen.getByText("0.65")).toBeInTheDocument(); // the mean of 0.40 and 0.90
+    expect(screen.queryByText("0.40")).not.toBeInTheDocument(); // min lives in the hover tooltip
     expect(screen.queryByText("0.70")).not.toBeInTheDocument(); // not the point-mean
   });
 
-  it("default target (current video): Generate restricts to the active video", async () => {
-    // Default path: no Radix interaction. Default method is stride; Target now
-    // defaults to the CURRENT video.
+  it("Target = current video restricts to the active video (seam)", async () => {
+    // Explicit current-video path via the seam (the default is now All videos, #324).
     const skel = makeSkeleton();
     const v1 = makeVideo(100, "v1.mp4");
     const v2 = makeVideo(100, "v2.mp4");
@@ -330,9 +328,9 @@ describe("SuggestionsPanel generation methods (#162)", () => {
     const { SuggestionsPanel } = await import(
       "@/components/panels/SuggestionsPanel"
     );
-    render(<SuggestionsPanel />);
+    render(<SuggestionsPanel initialTarget="current" />);
 
-    fireEvent.click(screen.getByRole("button", { name: /^generate$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /generate suggestions/i }));
 
     const result = useAppStore.getState().labels?.suggestions ?? [];
     // Default perVideo (20) strided over 100 frames, current video (v1) only.
@@ -340,7 +338,7 @@ describe("SuggestionsPanel generation methods (#162)", () => {
     expect(result.every((s) => s.video === v1)).toBe(true);
   });
 
-  it("Target = All videos spans every video (initialTarget seam)", async () => {
+  it("Target defaults to All videos and spans every video (#324)", async () => {
     const skel = makeSkeleton();
     const v1 = makeVideo(100, "v1.mp4");
     const v2 = makeVideo(100, "v2.mp4");
@@ -352,11 +350,10 @@ describe("SuggestionsPanel generation methods (#162)", () => {
     const { SuggestionsPanel } = await import(
       "@/components/panels/SuggestionsPanel"
     );
-    // Mount directly into the all-videos path (avoids driving the Radix Target
-    // popover, unreliable in happy-dom).
-    render(<SuggestionsPanel initialTarget="all" />);
+    // Default Target is now All videos (#324) — no seam needed.
+    render(<SuggestionsPanel />);
 
-    fireEvent.click(screen.getByRole("button", { name: /^generate$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /generate suggestions/i }));
 
     const result = useAppStore.getState().labels?.suggestions ?? [];
     // 20 strided frames per video, spanning both videos.
@@ -392,7 +389,6 @@ describe("SuggestionsPanel generation methods (#162)", () => {
     );
     render(<SuggestionsPanel />);
 
-    fireEvent.click(screen.getByRole("button", { name: /tools/i }));
     fireEvent.click(screen.getByRole("button", { name: /add labeled frames/i }));
 
     // Only the user-labeled frame (10) is added; predicted-only (20) is not.
@@ -427,10 +423,36 @@ describe("SuggestionsPanel generation methods (#162)", () => {
     );
     render(<SuggestionsPanel />);
 
-    fireEvent.click(screen.getByRole("button", { name: /tools/i }));
     fireEvent.click(screen.getByRole("button", { name: /remove unlabeled/i }));
 
     const result = useAppStore.getState().labels?.suggestions ?? [];
     expect(result.map((s) => s.frameIdx)).toEqual([10]);
+  });
+
+  it("Generate with an empty Per video box toasts and generates nothing (#327)", async () => {
+    const skel = makeSkeleton();
+    const video = makeVideo(100);
+    const labels = new Labels({ videos: [video], skeletons: [skel] });
+    labels.suggestions = [];
+    useAppStore.getState().setLabels(labels, "test.slp");
+
+    const { SuggestionsPanel } = await import(
+      "@/components/panels/SuggestionsPanel"
+    );
+    const { toast } = await import("@/lib/notify");
+    render(<SuggestionsPanel initialMethod="stride" />);
+
+    // Empty the Per video box (now allowed), then Generate — it must abort.
+    fireEvent.change(screen.getByLabelText(/per video/i), {
+      target: { value: "" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: /generate suggestions/i })
+    );
+
+    expect(toast.error).toHaveBeenCalledWith(
+      "Per video can't be none or invalid"
+    );
+    expect(useAppStore.getState().labels?.suggestions.length ?? 0).toBe(0);
   });
 });
