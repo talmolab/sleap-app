@@ -380,9 +380,17 @@ jobs:
   # at any given moment, since a quiet night skips the build entirely -- see
   # the `meta` job). See build.yml's `release` job for the per-version-tag
   # equivalent.
+  #
+  # Requires build to have FULLY succeeded, not merely non-skipped -- unlike
+  # build.yml's per-version releases (where a partial-platform release only
+  # ever affects that one new version), this release is ROLLING: publishing
+  # on a partial matrix failure would DELETE the last good multi-platform
+  # dev release and replace it with a regressed one missing whatever
+  # platform failed. Better to leave the previous good build in place and
+  # let the next successful run supersede it.
   publish:
     needs: [meta, build]
-    if: ${{ !cancelled() && needs.build.result != 'skipped' }}
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
