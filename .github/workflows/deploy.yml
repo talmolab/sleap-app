@@ -115,9 +115,13 @@ jobs:
             # "always update /latest/ on publish" would risk silently
             # downgrading it. Same selection logic as the desktop update
             # channel's "latest" resolution (update_channels.rs) and the dev
-            # build's version-base derivation (build-dev.yml).
+            # build's version-base derivation (build-dev.yml) -- including
+            # requiring a latest.json asset, so this can never point
+            # app.sleap.ai/latest/ at a release the desktop updater itself
+            # would skip (e.g. one whose manifest-upload step failed).
             HIGHEST="$(gh api "repos/$REPO/releases?per_page=100" --paginate \
-              --jq '[.[] | select(.draft == false) | .tag_name as $t
+              --jq '[.[] | select(.draft == false)
+                     | select(.assets | any(.name == "latest.json")) | .tag_name as $t
                      | ($t | capture("^v?(?<major>[0-9]+)\\.(?<minor>[0-9]+)\\.(?<patch>[0-9]+)(-(?<pre>[0-9]+))?$"))?
                      | select(. != null)
                      | {sortkey: [(.major|tonumber), (.minor|tonumber), (.patch|tonumber),
