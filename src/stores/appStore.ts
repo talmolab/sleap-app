@@ -305,6 +305,13 @@ export interface AppState {
   anchorPreviewActive: boolean;
   anchorPreviewNode: string | null;
   /**
+   * The actual configured/auto-computed crop size (in source-image px) for
+   * the head whose "Preview crop on canvas" toggle is active — see
+   * resolveEffectiveCropSize in lib/modelStats.ts. `null` while inactive, or
+   * if no project is loaded yet to compute an Auto value from.
+   */
+  anchorPreviewCropSize: number | null;
+  /**
    * Session-only "template layout": a snapshot of the node positions the user
    * DREW in the visual skeleton builder (IMAGE space, index-aligned to
    * `skeleton.nodes`), captured on the builder's Done. When set, the
@@ -469,7 +476,7 @@ export interface AppState {
   resolveAnchorPick: (nodeName: string) => void;
   clearPickedAnchorNode: () => void;
   /** Show/update the persistent anchor crop preview (see field docs above). */
-  setAnchorPreview: (nodeName: string | null) => void;
+  setAnchorPreview: (nodeName: string | null, cropSize: number | null) => void;
   /** Hide the persistent anchor crop preview. */
   clearAnchorPreview: () => void;
   togglePanelVisibility: (panelId: string) => void;
@@ -643,6 +650,7 @@ export const useAppStore = create<AppState>()(
       pickedAnchorNode: null as { nodeName: string; requestId: number } | null,
       anchorPreviewActive: false,
       anchorPreviewNode: null as string | null,
+      anchorPreviewCropSize: null as number | null,
 
       // Frame range
       frameRange: null,
@@ -1207,16 +1215,18 @@ export const useAppStore = create<AppState>()(
           state.pickedAnchorNode = null;
         }),
 
-      setAnchorPreview: (nodeName) =>
+      setAnchorPreview: (nodeName, cropSize) =>
         set((state) => {
           state.anchorPreviewActive = true;
           state.anchorPreviewNode = nodeName;
+          state.anchorPreviewCropSize = cropSize;
         }),
 
       clearAnchorPreview: () =>
         set((state) => {
           state.anchorPreviewActive = false;
           state.anchorPreviewNode = null;
+          state.anchorPreviewCropSize = null;
         }),
 
       // Toggle a sidebar panel's visibility (#135). Hiding the currently-active

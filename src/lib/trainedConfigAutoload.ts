@@ -12,7 +12,8 @@
  */
 
 import type { DiscoveredModel } from "./modelDiscovery";
-import { slotToHeadType, getDefaultProfileForHead } from "./trainingProfiles";
+import { slotToHeadType, getRecommendedProfileForHead } from "./trainingProfiles";
+import type { BackboneProfileRecommendation } from "./modelStats";
 import type { ModelType } from "@/stores/trainingStore";
 
 export interface SlotConfigSource {
@@ -20,6 +21,11 @@ export interface SlotConfigSource {
   filename: string;
   /** Absolute path to the source run's checkpoint file, for Resume/Fine-tune. `null` for a baseline profile or a trained run with no resolvable checkpoint. */
   checkpointPath: string | null;
+  /** Where this config came from — a prior trained run, or a baseline preset
+   *  (fresh project, no matching trained run). Callers use this to know
+   *  whether to seed a fresh baseline's max_stride as Auto (`null`) — a
+   *  trained run's own max_stride should always be honored as-is. */
+  source: "trained" | "baseline";
 }
 
 /** Minimal filesystem surface this resolver needs (injectable for tests). */
@@ -38,6 +44,10 @@ export interface ResolveSlotConfigOptions {
    * project). Defaults to `true` (normal "Train Again" behavior).
    */
   preferTrained?: boolean;
+  /** Size-derived Medium/Large RF recommendation (see recommendBackboneProfile
+   *  in modelStats.ts) used to pick the baseline profile's RF tier. `null`/
+   *  omitted falls back to the Medium RF profile (e.g. no project loaded yet). */
+  recommendation?: BackboneProfileRecommendation | null;
 }
 
 /**
@@ -63,12 +73,14 @@ export async function resolveSlotConfigSource(
         const checkpointPath = trainedMatch.checkpointFile
           ? await fs.join(trainedMatch.path, trainedMatch.checkpointFile)
           : null;
-        return { yamlText, filename: "training_config.yaml", checkpointPath };
+        return { yamlText, filename: "training_config.yaml", checkpointPath, source: "trained" };
       } catch {
         // Unreadable/missing despite discovery — fall through to the baseline.
       }
     }
   }
-  const baseline = getDefaultProfileForHead(headType);
-  return baseline ? { yamlText: baseline.content, filename: baseline.filename, checkpointPath: null } : null;
+  const baseline = getRecommendedProfileForHead(headType, opts.recommendation ?? null);
+  return baseline
+    ? { yamlText: baseline.content, filename: baseline.filename, checkpointPath: null, source: "baseline" }
+    : null;
 }

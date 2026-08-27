@@ -4,6 +4,7 @@ import {
   BASELINE_PROFILES,
   getBaselineProfilesForHead,
   getDefaultProfileForHead,
+  getRecommendedProfileForHead,
   slotToHeadType,
 } from "@/lib/trainingProfiles";
 
@@ -19,7 +20,7 @@ describe("trainingProfiles", () => {
     expect(profiles[1].filename).toContain("large_rf");
   });
 
-  it("centroid's large-RF profile doubles max_stride and drops filters_rate, matching every other head's medium→large delta", () => {
+  it("centroid's large-RF profile doubles max_stride, drops filters_rate, and standardizes filters to 32, matching every other head's medium→large delta", () => {
     interface UnetDoc {
       model_config: { backbone_config: { unet: { max_stride: number; filters_rate: number; filters: number } } };
     }
@@ -32,8 +33,10 @@ describe("trainingProfiles", () => {
     expect(largeUnet.max_stride).toBe(32);
     expect(mediumUnet.filters_rate).toBe(2.0);
     expect(largeUnet.filters_rate).toBe(1.5);
-    // Everything else about the backbone should be unchanged between tiers.
-    expect(largeUnet.filters).toBe(mediumUnet.filters);
+    // Large RF always standardizes to 32 filters, regardless of what the
+    // matching Medium RF profile uses (16 for centroid/single, 24 for
+    // topdown) — every baseline_large_rf.*.yaml agrees on this.
+    expect(largeUnet.filters).toBe(32);
   });
 
   it("returns correct profiles for centered_instance", () => {
@@ -71,6 +74,32 @@ describe("trainingProfiles", () => {
 
   it("returns undefined for unknown head type", () => {
     expect(getDefaultProfileForHead("nonexistent")).toBeUndefined();
+  });
+
+  describe("getRecommendedProfileForHead", () => {
+    it("picks the medium-RF profile when the recommendation says medium", () => {
+      const p = getRecommendedProfileForHead("centroid", { tier: "medium", maxStride: 16, filtersRate: 2.0, reason: "" });
+      expect(p!.filename).toBe("baseline_medium_rf.centroid.yaml");
+    });
+
+    it("picks the large-RF profile when the recommendation says large", () => {
+      const p = getRecommendedProfileForHead("centroid", { tier: "large", maxStride: 32, filtersRate: 1.5, reason: "" });
+      expect(p!.filename).toBe("baseline_large_rf.centroid.yaml");
+    });
+
+    it("falls back to the medium-RF profile when there's no recommendation (e.g. no project loaded)", () => {
+      const p = getRecommendedProfileForHead("centered_instance", null);
+      expect(p!.filename).toBe("baseline_medium_rf.topdown.yaml");
+    });
+
+    it("ignores the recommendation for single-profile head types (no RF tiers to choose between)", () => {
+      const p = getRecommendedProfileForHead("multi_class_bottomup", { tier: "large", maxStride: 32, filtersRate: 1.5, reason: "" });
+      expect(p!.filename).toBe("baseline.multi_class_bottomup.yaml");
+    });
+
+    it("returns undefined for an unknown head type", () => {
+      expect(getRecommendedProfileForHead("nonexistent", null)).toBeUndefined();
+    });
   });
 
   it("every profile has a unique, non-empty display label", () => {

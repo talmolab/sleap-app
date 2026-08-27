@@ -40,6 +40,7 @@ describe("resolveSlotConfigSource", () => {
       yamlText: "trained: yaml",
       filename: "training_config.yaml",
       checkpointPath: "/proj/models/run1/best.ckpt",
+      source: "trained",
     });
     expect(fs.join).toHaveBeenCalledWith("/proj/models/run1", "training_config.yaml");
     expect(fs.join).toHaveBeenCalledWith("/proj/models/run1", "best.ckpt");
@@ -66,7 +67,22 @@ describe("resolveSlotConfigSource", () => {
     );
     expect(result?.filename).not.toBe("training_config.yaml");
     expect(result?.yamlText.length).toBeGreaterThan(0);
+    expect(result?.source).toBe("baseline");
     expect(fs.readTextFile).not.toHaveBeenCalled();
+  });
+
+  it("picks the Medium RF baseline by default (no recommendation)", async () => {
+    const fs = fakeFs();
+    const result = await resolveSlotConfigSource("centroid", "top_down", [], fs);
+    expect(result?.filename).toBe("baseline_medium_rf.centroid.yaml");
+  });
+
+  it("picks the Large RF baseline when the recommendation says large", async () => {
+    const fs = fakeFs();
+    const result = await resolveSlotConfigSource("centroid", "top_down", [], fs, {
+      recommendation: { tier: "large", maxStride: 32, filtersRate: 1.5, reason: "" },
+    });
+    expect(result?.filename).toBe("baseline_large_rf.centroid.yaml");
   });
 
   it("falls back to the baseline when discovered is empty (fresh project, no models/ dir)", async () => {

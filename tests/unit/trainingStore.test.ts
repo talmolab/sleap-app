@@ -577,6 +577,31 @@ trainer_config: {}
       const doc = yaml.load(result) as Record<string, any>;
       expect(doc.model_config.head_configs.centroid.confmaps.anchor_part).toBe("thorax");
     });
+
+    // max_stride has no server-side Auto resolution (unlike crop_size, which
+    // intentionally rides through as `null` for sleap-nn to resolve at real
+    // training time) — a null hp.maxStride must always be resolved to a
+    // concrete int before this function's output leaves the app.
+    it("resolves a null (Auto) maxStride to the legacy default when no resolvedMaxStride is supplied", () => {
+      const hp = { ...defaultHyperparams, maxStride: null };
+      const result = applyHyperparamsToYaml(baseYaml, hp);
+      const doc = yaml.load(result) as Record<string, any>;
+      expect(doc.model_config.backbone_config.unet.max_stride).toBe(16);
+    });
+
+    it("resolves a null (Auto) maxStride using the caller-supplied resolvedMaxStride", () => {
+      const hp = { ...defaultHyperparams, maxStride: null };
+      const result = applyHyperparamsToYaml(baseYaml, hp, null, 64);
+      const doc = yaml.load(result) as Record<string, any>;
+      expect(doc.model_config.backbone_config.unet.max_stride).toBe(64);
+    });
+
+    it("prefers an explicit maxStride over a caller-supplied resolvedMaxStride", () => {
+      const hp = { ...defaultHyperparams, maxStride: 32 };
+      const result = applyHyperparamsToYaml(baseYaml, hp, null, 64);
+      const doc = yaml.load(result) as Record<string, any>;
+      expect(doc.model_config.backbone_config.unet.max_stride).toBe(32);
+    });
   });
 
   describe("parseYamlConfig - model params", () => {

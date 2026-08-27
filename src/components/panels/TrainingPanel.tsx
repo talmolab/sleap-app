@@ -20,6 +20,7 @@ import { ErrorOutput } from "@/components/monitors/ErrorOutput";
 import { useAppStore } from "@/stores/appStore";
 import { isTauri } from "@/platform/index";
 import { getBaselineProfilesForHead, slotToHeadType } from "@/lib/trainingProfiles";
+import { computeInstanceSizeStats, recommendBackboneProfile, recommendCentroidScale, resolveEffectiveCropSize, detectVideoChannels, estimateHeadGpuMemory, estimateHeadCacheMemory, formatBytes, formatParamCount, type GpuMemoryLevel } from "@/lib/modelStats";
 import type { DiscoveredModel } from "@/lib/modelDiscovery";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -66,6 +67,12 @@ const MODEL_TYPE_OPTIONS: { value: ModelType; label: string }[] = [
   { value: "top_down_id", label: "Top-Down + ID" },
   { value: "bottom_up_id", label: "Bottom-Up + ID" },
 ];
+
+const GPU_MEMORY_LEVEL_COLOR: Record<GpuMemoryLevel, string> = {
+  ok: "text-green-400",
+  warning: "text-yellow-400",
+  danger: "text-destructive",
+};
 
 // ── Skeleton ↔ Pipeline Compatibility & Recommendation ───────────────────────
 
@@ -502,15 +509,24 @@ function AnchorPartField({
     useAppStore.getState().clearPickedAnchorNode();
   }, [pickedAnchorNode, myPickRequestId, onUpdate]);
 
+  // The real crop size this head will actually use (manual override, or the
+  // augmentation-padded Auto value) — shared with ModelStatsPreview's
+  // diagram via resolveEffectiveCropSize so both viewers always agree.
+  const effectiveCropSize = useMemo(
+    () => resolveEffectiveCropSize(labels, hp).cropSize,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [labels, hp.cropSize, hp.maxStride, hp.scale, hp.rotationPreset, hp.rotationCustomAngle, hp.scaleEnabled, hp.scaleMax],
+  );
+
   // Keep the on-canvas crop preview in sync with the current selection while
   // the toggle is on; drop it the moment it's toggled off.
   useEffect(() => {
     if (previewOn) {
-      useAppStore.getState().setAnchorPreview(hp.anchorPart);
+      useAppStore.getState().setAnchorPreview(hp.anchorPart, effectiveCropSize);
     } else {
       useAppStore.getState().clearAnchorPreview();
     }
-  }, [previewOn, hp.anchorPart]);
+  }, [previewOn, hp.anchorPart, effectiveCropSize]);
 
   // Safety net: never leave the preview dangling with no way to turn it off
   // if this field disappears entirely (e.g. pipeline switched away from
@@ -798,18 +814,57 @@ export function TrainingPanel() {
 
       if (missingSlots.length === 0) return;
 
+      // Size-derived Medium/Large RF recommendation for any slot that falls
+      // back to a baseline profile below (no trained run yet for that head).
+      const sizeStats = computeInstanceSizeStats(labels);
+      const backboneRecommendation = sizeStats
+        ? recommendBackboneProfile(sizeStats.maxBboxDim, sizeStats.maxFrameDim)
+        : null;
+      // recommendCentroidScale handles a null avgBboxDim itself (e.g. a
+      // single-keypoint skeleton has no bounding box to measure) by
+      // defaulting to the standard 0.5 — always call it, don't gate on
+      // sizeStats.
+      const centroidScaleRecommendation = recommendCentroidScale(
+        sizeStats?.avgBboxDim ?? null,
+        sizeStats?.maxFrameDim ?? 0,
+      );
+      const detectedVideoChannels = detectVideoChannels(labels);
+
       for (const slot of missingSlots) {
         const source = await resolveSlotConfigSource(
           slot,
           config.modelType,
           discovered,
           fsAccess,
-          { preferTrained },
+          { preferTrained, recommendation: backboneRecommendation },
         );
         if (cancelled) return;
         if (source) {
           const parsed = parseConfig(source.yamlText, source.filename, slot, source.checkpointPath);
-          if (parsed) addConfig(parsed);
+          if (parsed) {
+            // Fresh baseline configs start in Auto mode for max_stride (see
+            // recommendMaxStride in modelStats.ts) rather than inheriting the
+            // preset's fixed value. A trained run's own max_stride is always
+            // honored as-is. The centroid head's input scale similarly starts
+            // from the size-derived recommendation instead of the baseline's
+            // static 0.5, for a small-in-frame animal (see
+            // recommendCentroidScale in modelStats.ts).
+            const hyperparams = { ...parsed.hyperparams };
+            if (source.source === "baseline") {
+              hyperparams.maxStride = null;
+              if (slot === "centroid" && centroidScaleRecommendation) {
+                hyperparams.scale = centroidScaleRecommendation.scale;
+              }
+              // Detect the project's actual video channels so a fresh config
+              // starts as RGB when the source video is RGB, instead of
+              // silently relying on "auto" passthrough (see
+              // resolveInputChannels in modelStats.ts).
+              if (detectedVideoChannels === 3) {
+                hyperparams.colorMode = "rgb";
+              }
+            }
+            addConfig({ ...parsed, hyperparams });
+          }
         }
       }
     })();
@@ -864,6 +919,36 @@ export function TrainingPanel() {
   );
   const skeletonCompat = useMemo(() => getSkeletonCompatibility(skeleton), [skeleton]);
   const pipelineRec = useMemo(() => recommendPipeline(labels as LabelsLike | null), [labels]);
+
+  // Auto-select the recommended model type for a freshly-loaded project —
+  // mirrors the RF-preset/max_stride auto-select pattern: it only applies
+  // once per distinct `labels` object (a genuine new-project load), and only
+  // when no head configs exist yet (config.configs.length === 0), so it
+  // never overrides a choice the user has already started configuring
+  // around (including after "Train Again", which resets configs but keeps
+  // the same `labels`).
+  const autoSelectedModelTypeForLabels = useRef<typeof labels>(null);
+  useEffect(() => {
+    if (!pipelineRec || labels == null) return;
+    if (autoSelectedModelTypeForLabels.current === labels) return;
+    autoSelectedModelTypeForLabels.current = labels;
+    if (config.configs.length === 0) {
+      setConfig("modelType", pipelineRec.recommended);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [labels, pipelineRec]);
+
+  // Estimated GPU + image-cache memory per head config — shown in the
+  // collapsible section right above the Start Training button.
+  const memoryEstimates = useMemo(
+    () =>
+      config.configs.map((cf) => ({
+        slot: cf.slot,
+        gpu: estimateHeadGpuMemory(labels, cf.slot, cf.hyperparams),
+        cache: estimateHeadCacheMemory(labels, cf.hyperparams),
+      })),
+    [config.configs, labels],
+  );
 
   // Elapsed time ticker
   const [elapsed, setElapsed] = useState(0);
@@ -1031,9 +1116,11 @@ export function TrainingPanel() {
                 })}
               </SelectContent>
             </Select>
-            {pipelineRec && config.modelType !== pipelineRec.recommended && !skeletonCompat.disabledTypes.has(config.modelType) && (
+            {pipelineRec && !skeletonCompat.disabledTypes.has(config.modelType) && (
               <p className="text-[10px] text-green-400">
-                💡 Recommended: {MODEL_TYPE_OPTIONS.find((o) => o.value === pipelineRec.recommended)?.label} — {pipelineRec.reason}
+                {config.modelType === pipelineRec.recommended
+                  ? `💡 ${pipelineRec.reason}`
+                  : `💡 Recommended: ${MODEL_TYPE_OPTIONS.find((o) => o.value === pipelineRec.recommended)?.label} — ${pipelineRec.reason}`}
               </p>
             )}
             {skeletonCompat.warnings.has(config.modelType) && (
@@ -1373,6 +1460,50 @@ export function TrainingPanel() {
             <Settings2 className="h-3 w-3 mr-1.5" />
             Full Configuration...
           </Button>
+        )}
+        {memoryEstimates.length > 0 && (
+          <Section title="Estimated Memory Usage">
+            <div className="space-y-3">
+              {memoryEstimates.map(({ slot, gpu, cache }) => (
+                <div key={slot} className="space-y-1">
+                  <div className="flex items-center justify-between gap-2 text-[11px]">
+                    <span className="font-medium shrink-0">{getSlotLabel(slot).replace(" Config", "")}</span>
+                    {gpu ? (
+                      <span className={`text-right ${GPU_MEMORY_LEVEL_COLOR[gpu.level]}`}>
+                        ~{formatBytes(gpu.totalBytes)} — {gpu.message}
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground text-right">Not enough data to estimate</span>
+                    )}
+                  </div>
+                  {gpu && (
+                    <div className="pl-2 space-y-0.5 text-[10px] text-muted-foreground">
+                      <div className="flex items-center justify-between"><span>Params</span><span>{formatParamCount(gpu.numParams)}</span></div>
+                      <div className="flex items-center justify-between"><span>Weights</span><span>{formatBytes(gpu.weightsBytes)}</span></div>
+                      <div className="flex items-center justify-between"><span>Batch Images</span><span>{formatBytes(gpu.batchImgBytes)}</span></div>
+                      <div className="flex items-center justify-between"><span>Activations</span><span>{formatBytes(gpu.activationBytes)}</span></div>
+                      <div className="flex items-center justify-between"><span>Conf Maps</span><span>{formatBytes(gpu.confmapBytes)}</span></div>
+                      <div className="flex items-center justify-between"><span>Gradients</span><span>{formatBytes(gpu.gradientBytes)}</span></div>
+                      <div className="flex items-center justify-between">
+                        <span>Input Size</span>
+                        <span className={gpu.paddedHeight !== gpu.scaledHeight || gpu.paddedWidth !== gpu.scaledWidth ? "text-orange-400" : "text-green-400"}>
+                          {Math.round(gpu.scaledWidth)}×{Math.round(gpu.scaledHeight)} → {gpu.paddedWidth}×{gpu.paddedHeight}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                  {cache && (
+                    <div className="flex items-center justify-between gap-2 text-[11px] pl-2">
+                      <span className="text-muted-foreground">Image Cache</span>
+                      <span className={cache.isDisk ? "text-muted-foreground" : GPU_MEMORY_LEVEL_COLOR[cache.level]}>
+                        ~{formatBytes(cache.totalBytes)} {cache.message}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </Section>
         )}
         {status === "idle" && (
           <>
