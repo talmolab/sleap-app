@@ -164,7 +164,7 @@ export async function loadProjectFromFile(file: File): Promise<boolean> {
 
   // Confirm discarding unsaved work (in-memory edits OR a not-yet-exported OPFS
   // working copy) before replacing the current project.
-  if (!confirmDiscardUnsavedWork("Opening a new project")) return false;
+  if (!(await confirmDiscardUnsavedWork("Opening a new project"))) return false;
 
   store.setLoading(true, `Reading ${file.name}...`);
 
@@ -217,7 +217,7 @@ export async function loadProjectFromFile(file: File): Promise<boolean> {
 export async function loadProjectFromUrl(url: string): Promise<boolean> {
   const store = useAppStore.getState();
 
-  if (!confirmDiscardUnsavedWork("Opening a new project")) return false;
+  if (!(await confirmDiscardUnsavedWork("Opening a new project"))) return false;
 
   const name = basenameFromUrl(url);
   store.setLoading(true, `Streaming ${name}...`);
@@ -277,7 +277,7 @@ export async function loadProjectFromPath(
 
   // Confirm discarding unsaved work (in-memory edits OR a not-yet-exported OPFS
   // working copy) before replacing the current project.
-  if (!confirmDiscardUnsavedWork("Opening a new project")) return false;
+  if (!(await confirmDiscardUnsavedWork("Opening a new project"))) return false;
 
   const filename = path.split(/[\\/]/).pop() ?? path;
   store.setLoading(true, `Reading ${filename}...`);
@@ -439,7 +439,7 @@ function readAnalysisLabels(source: AnalysisSource): Promise<Labels> {
 export async function loadAnalysisProjectFromFile(file: File): Promise<boolean> {
   const store = useAppStore.getState();
 
-  if (!confirmDiscardUnsavedWork("Importing a file")) return false;
+  if (!(await confirmDiscardUnsavedWork("Importing a file"))) return false;
 
   store.setLoading(true, `Reading ${file.name}...`);
 
@@ -478,7 +478,7 @@ export async function loadAnalysisProjectFromPath(
 ): Promise<boolean> {
   const store = useAppStore.getState();
 
-  if (!confirmDiscardUnsavedWork("Importing a file")) return false;
+  if (!(await confirmDiscardUnsavedWork("Importing a file"))) return false;
 
   const filename = path.split(/[\\/]/).pop() ?? path;
   store.setLoading(true, `Reading ${filename}...`);
@@ -536,7 +536,7 @@ function readNwbLabels(source: AnalysisSource): Promise<Labels> {
 export async function loadNwbProjectFromFile(file: File): Promise<boolean> {
   const store = useAppStore.getState();
 
-  if (!confirmDiscardUnsavedWork("Importing a file")) return false;
+  if (!(await confirmDiscardUnsavedWork("Importing a file"))) return false;
 
   store.setLoading(true, `Reading ${file.name}...`);
 
@@ -575,7 +575,7 @@ export async function loadNwbProjectFromPath(
 ): Promise<boolean> {
   const store = useAppStore.getState();
 
-  if (!confirmDiscardUnsavedWork("Importing a file")) return false;
+  if (!(await confirmDiscardUnsavedWork("Importing a file"))) return false;
 
   const filename = path.split(/[\\/]/).pop() ?? path;
   store.setLoading(true, `Reading ${filename}...`);
@@ -667,7 +667,7 @@ function resolveCocoImageUnderRoot(
 export async function loadCocoProjectFromFile(file: File): Promise<boolean> {
   const store = useAppStore.getState();
 
-  if (!confirmDiscardUnsavedWork("Importing a file")) return false;
+  if (!(await confirmDiscardUnsavedWork("Importing a file"))) return false;
 
   store.setLoading(true, `Reading ${file.name}...`);
 
@@ -708,7 +708,7 @@ export async function loadCocoProjectFromPath(
 ): Promise<boolean> {
   const store = useAppStore.getState();
 
-  if (!confirmDiscardUnsavedWork("Importing a file")) return false;
+  if (!(await confirmDiscardUnsavedWork("Importing a file"))) return false;
 
   const filename = path.split(/[\\/]/).pop() ?? path;
   store.setLoading(true, `Reading ${filename}...`);
@@ -782,7 +782,7 @@ export async function loadDlcFromFileSystem(
 ): Promise<boolean> {
   const store = useAppStore.getState();
 
-  if (!confirmDiscardUnsavedWork("Importing a file")) return false;
+  if (!(await confirmDiscardUnsavedWork("Importing a file"))) return false;
 
   store.setLoading(true, `Reading ${displayName}...`);
 

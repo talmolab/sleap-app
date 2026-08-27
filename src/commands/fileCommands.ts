@@ -172,10 +172,10 @@ export async function pickClipDestination(): Promise<
 export const NewProjectCommand: Command = {
   name: "NewProject",
   topics: [UpdateTopic.Project, UpdateTopic.Labels],
-  execute(ctx: CommandContext) {
+  async execute(ctx: CommandContext) {
     // Confirm discarding unsaved work (in-memory edits OR a not-yet-exported
     // OPFS working copy) before creating a new project.
-    if (!confirmDiscardUnsavedWork("Creating a new project")) return;
+    if (!(await confirmDiscardUnsavedWork("Creating a new project"))) return;
 
     // Seed an empty skeleton so the editor lands in a usable state: the
     // Skeleton panel (and its template dropdown) require a non-null skeleton —
