@@ -77,6 +77,7 @@ import {
   relocateMissingImageFrames,
 } from "../../lib/resolveVideos";
 import { toast } from "@/lib/notify";
+import { setLabelsAutosaveInteracting } from "@/lib/labelsAutosave";
 import { spacePanState } from "@/lib/spacePanTracking";
 import { getPlatform, isTauri } from "@/platform/index";
 import { Film, Frame, Hand, ImageOff, MousePointer2, Tag } from "lucide-react";
@@ -2000,6 +2001,18 @@ export function VideoPlayer() {
     [canvasToScene, markerSize, nodeLabelSize, showLabels, panX, panY, zoom, baseScale, shouldPan, isCmdHeld, isSpaceHeld, offsetX, offsetY, selectedNodes, areaDeleteMode, imageFeatureRoiDrawActive, skeletonBuildMode, skeleton, builderRI, pickingAnchor]
   );
 
+  // Node-drag perf (#329): coalesce the overlay redraw to one per frame and
+  // commit the edit once on mouse-up (see handleMouseMove/Up).
+  const dragRafRef = useRef<number | null>(null);
+  const dragMovedRef = useRef(false);
+  useEffect(
+    () => () => {
+      if (dragRafRef.current != null) cancelAnimationFrame(dragRafRef.current);
+      setLabelsAutosaveInteracting(false);
+    },
+    []
+  );
+
   const handleMouseMove = useCallback(
     (e: React.MouseEvent) => {
       // Skeleton builder owns the move gesture in build mode (no fall-through to
@@ -2168,18 +2181,35 @@ export function VideoPlayer() {
           }
         }
 
-        // Update hover tooltip — pin at drag-start position, not cursor
-        setHoveredNode({
-          instanceIdx: dragNodeInfo.instanceIdx,
-          nodeIdx: dragNodeInfo.nodeIdx,
-          clientX: dragStartClient.current?.clientX ?? e.clientX,
-          clientY: dragStartClient.current?.clientY ?? e.clientY,
-        });
+        // Pin the hover tooltip ONCE (at drag-start position). It was set every
+        // move, which re-rendered VideoPlayer and re-ran the overlay effect
+        // (hoveredNode is a dep) on top of the redraw below — pure per-move waste
+        // since the pin never changes during the gesture.
+        if (!dragMovedRef.current) {
+          setHoveredNode({
+            instanceIdx: dragNodeInfo.instanceIdx,
+            nodeIdx: dragNodeInfo.nodeIdx,
+            clientX: dragStartClient.current?.clientX ?? e.clientX,
+            clientY: dragStartClient.current?.clientY ?? e.clientY,
+          });
+          dragMovedRef.current = true;
+          // Suspend autosave for the gesture so a drag longer than the debounce
+          // can't trigger a mid-drag project serialization (#329).
+          setLabelsAutosaveInteracting(true);
+        }
 
         lastDragPos.current = { x, y };
-        useAppStore.getState().markChanged();
-        useAppStore.getState().touchFrame();
-        useAppStore.getState().bumpOverlayVersion();
+        // Coalesce the (potentially O(instances×nodes)) overlay rebuild to at
+        // most one per animation frame — a high-Hz pointer otherwise rebuilds on
+        // every event. markChanged/touchFrame are deferred to mouse-up so the
+        // ~10 editSeq/frame-stack subscribers don't re-render per move and
+        // autosave can't serialize the whole project mid-drag (#329).
+        if (dragRafRef.current == null) {
+          dragRafRef.current = requestAnimationFrame(() => {
+            dragRafRef.current = null;
+            useAppStore.getState().bumpOverlayVersion();
+          });
+        }
         return;
       }
 
@@ -2304,6 +2334,21 @@ export function VideoPlayer() {
       lastDragPos.current = null;
       dragStartClient.current = null;
       setInteractionMode("idle");
+      setLabelsAutosaveInteracting(false);
+      // Flush the coalesced redraw and commit the gesture's edit ONCE (deferred
+      // from per-move). markChanged here arms autosave a single time, after the
+      // gesture — never mid-drag (#329).
+      if (dragRafRef.current != null) {
+        cancelAnimationFrame(dragRafRef.current);
+        dragRafRef.current = null;
+      }
+      if (dragMovedRef.current) {
+        dragMovedRef.current = false;
+        const s = useAppStore.getState();
+        s.markChanged();
+        s.touchFrame();
+        s.bumpOverlayVersion();
+      }
     }
   }, [isDragging, isPanning, isZoomDragging, interactionMode, marqueeStart, marqueeEnd, isAreaDeleting, areaDeleteStart, areaDeleteEnd, roiStart, roiEnd, setImageFeatureRoi]);
 
