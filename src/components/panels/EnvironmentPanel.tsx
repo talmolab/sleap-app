@@ -44,6 +44,10 @@ import type { UvTool } from "../../platform/backend";
 import { openExternal } from "@/lib/openExternal";
 import { cn } from "@/lib/utils";
 import { sleapCmd } from "@/lib/sleapPlugin";
+import {
+  checkUpdateCached,
+  type PendingUpdate,
+} from "@/lib/updateCheckCache";
 import { useAppStore, type UpdateChannel } from "@/stores/appStore";
 import { hasUnsavedWork } from "@/lib/unsavedGuard";
 import { toast } from "@/lib/notify";
@@ -236,12 +240,6 @@ function ToolActions({
 // sleap-app self-update section
 // ---------------------------------------------------------------------------
 
-/** Shape returned by the `check_update` Rust command (update_channels.rs). */
-interface PendingUpdate {
-  version: string;
-  notes?: string | null;
-}
-
 const UPDATE_CHANNELS: { value: UpdateChannel; label: string }[] = [
   { value: "stable", label: "Stable" },
   { value: "latest", label: "Latest" },
@@ -279,16 +277,17 @@ function AppUpdateSection() {
   // recently STARTED request is ever applied.
   const requestIdRef = useRef(0);
 
+  // Routed through checkUpdateCached (src/lib/updateCheckCache.ts) rather
+  // than invoking check_update directly: opening/closing this panel remounts
+  // AppUpdateSection each time, and without the shared cache that would
+  // re-hit the GitHub API on every visit to this sidebar section within the
+  // same session, not just once per app start.
   const runCheck = useCallback(async (ch: UpdateChannel) => {
     const requestId = ++requestIdRef.current;
     setChecking(true);
     setPendingUpdate(null);
     try {
-      const { invoke } = await import("@tauri-apps/api/core");
-      const update = await invoke<PendingUpdate | null>(
-        sleapCmd("check_update"),
-        { channel: ch }
-      );
+      const update = await checkUpdateCached(ch);
       if (requestIdRef.current !== requestId) return; // superseded — drop it
       setPendingUpdate(update);
     } catch (err) {
@@ -359,7 +358,7 @@ function AppUpdateSection() {
 
   const latestVersion = pendingUpdate?.version ?? (version ? version : null);
   const updateAvailable = !!pendingUpdate;
-  // Dev-channel builds live under a single rolling `channel-dev` release tag,
+  // Dev-channel builds live under a single rolling `dev` release tag,
   // not their own `v{version}` tag, so there's no per-version release page to
   // link to (unlike stable/latest, which are always a real GitHub Release).
   const hasReleaseNotesPage = updateAvailable && channel !== "dev";

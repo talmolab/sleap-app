@@ -19,6 +19,7 @@ import {
   overrideNativeH264Decodable,
 } from "@talmolab/sleap-io.js";
 import { sleapCmd } from "./lib/sleapPlugin";
+import { checkUpdateCached } from "./lib/updateCheckCache";
 
 // Drain (take, once) the pending "initial file" slot in Rust. The slot is
 // populated from a CLI argument on launch OR a macOS file-association open
@@ -273,16 +274,12 @@ export default function App() {
   useEffect(() => {
     if (!isTauri || import.meta.env.DEV) return;
     (async () => {
-      const { invoke } = await import("@tauri-apps/api/core");
       const checkChannel = async (
         channel: "stable" | "latest",
         setInfo: (available: boolean, version: string | null) => void
       ) => {
         try {
-          const update = await invoke<{ version: string } | null>(
-            sleapCmd("check_update"),
-            { channel }
-          );
+          const update = await checkUpdateCached(channel);
           setInfo(!!update, update?.version ?? null);
         } catch (e) {
           console.warn(`[updater] ${channel}-channel check failed:`, e);
