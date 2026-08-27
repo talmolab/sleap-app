@@ -203,11 +203,12 @@ describe("SuggestionsPanel generation methods (#162)", () => {
     expect(input.value).toBe("0");
   });
 
-  it("frame_chunk + Generate replaces labels.suggestions with the consecutive range", async () => {
+  it("frame_chunk + Generate merges the consecutive range onto existing suggestions (#326)", async () => {
     const skel = makeSkeleton();
     const video = makeVideo(100);
     const labels = new Labels({ videos: [video], skeletons: [skel] });
-    // Pre-existing suggestion to prove REPLACE semantics.
+    // Pre-existing suggestion to prove MERGE (not replace) semantics --
+    // re-generating must not silently discard it.
     labels.suggestions = [{ video, frameIdx: 99 } as SuggestionFrame];
     useAppStore.getState().setLabels(labels, "test.slp");
 
@@ -226,10 +227,38 @@ describe("SuggestionsPanel generation methods (#162)", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /^generate$/i }));
 
-    // 1-based 3..6 inclusive -> 0-based 2,3,4,5. REPLACES the prior [99].
+    // 1-based 3..6 inclusive -> 0-based 2,3,4,5, APPENDED onto the prior [99].
+    const result = useAppStore.getState().labels?.suggestions ?? [];
+    expect(result.map((s) => s.frameIdx)).toEqual([99, 2, 3, 4, 5]);
+    for (const s of result) expect(s.video).toBe(video);
+  });
+
+  it("frame_chunk + Generate does not duplicate a frame that's already suggested", async () => {
+    const skel = makeSkeleton();
+    const video = makeVideo(100);
+    const labels = new Labels({ videos: [video], skeletons: [skel] });
+    // frame_chunk has no internal dedup against existing suggestions (unlike
+    // stride/random) -- mergeSuggestionFrames is the only guard, so frame 3
+    // (inside the 3..6 window generated below) must not appear twice.
+    labels.suggestions = [{ video, frameIdx: 2 } as SuggestionFrame];
+    useAppStore.getState().setLabels(labels, "test.slp");
+
+    const { SuggestionsPanel } = await import(
+      "@/components/panels/SuggestionsPanel"
+    );
+    render(<SuggestionsPanel initialMethod="frame_chunk" />);
+
+    fireEvent.change(screen.getByLabelText(/frame chunk from/i), {
+      target: { value: "3" },
+    });
+    fireEvent.change(screen.getByLabelText(/frame chunk to/i), {
+      target: { value: "6" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /^generate$/i }));
+
     const result = useAppStore.getState().labels?.suggestions ?? [];
     expect(result.map((s) => s.frameIdx)).toEqual([2, 3, 4, 5]);
-    for (const s of result) expect(s.video).toBe(video);
   });
 
   it("prediction_score + Generate selects only the qualifying predicted frames", async () => {
@@ -288,9 +317,32 @@ describe("SuggestionsPanel generation methods (#162)", () => {
     expect(screen.queryByText("0.70")).not.toBeInTheDocument(); // not the point-mean
   });
 
-  it("default target (current video): Generate restricts to the active video", async () => {
+  it("default target (all videos): Generate spans every video (#324)", async () => {
     // Default path: no Radix interaction. Default method is stride; Target now
-    // defaults to the CURRENT video.
+    // defaults to ALL videos (#324 -- "current" led to poor generalization).
+    const skel = makeSkeleton();
+    const v1 = makeVideo(100, "v1.mp4");
+    const v2 = makeVideo(100, "v2.mp4");
+    const labels = new Labels({ videos: [v1, v2], skeletons: [skel] });
+    labels.suggestions = [];
+    useAppStore.getState().setLabels(labels, "test.slp");
+    useAppStore.getState().setVideo(v1); // active video (should be ignored for "all")
+
+    const { SuggestionsPanel } = await import(
+      "@/components/panels/SuggestionsPanel"
+    );
+    render(<SuggestionsPanel />);
+
+    fireEvent.click(screen.getByRole("button", { name: /^generate$/i }));
+
+    const result = useAppStore.getState().labels?.suggestions ?? [];
+    // 20 strided frames per video, spanning both videos.
+    expect(result.length).toBe(40);
+    expect(result.some((s) => s.video === v1)).toBe(true);
+    expect(result.some((s) => s.video === v2)).toBe(true);
+  });
+
+  it("Target = current video restricts to the active video (initialTarget seam)", async () => {
     const skel = makeSkeleton();
     const v1 = makeVideo(100, "v1.mp4");
     const v2 = makeVideo(100, "v2.mp4");
@@ -302,7 +354,9 @@ describe("SuggestionsPanel generation methods (#162)", () => {
     const { SuggestionsPanel } = await import(
       "@/components/panels/SuggestionsPanel"
     );
-    render(<SuggestionsPanel />);
+    // Mount directly into the current-video path (avoids driving the Radix
+    // Target popover, unreliable in happy-dom).
+    render(<SuggestionsPanel initialTarget="current" />);
 
     fireEvent.click(screen.getByRole("button", { name: /^generate$/i }));
 

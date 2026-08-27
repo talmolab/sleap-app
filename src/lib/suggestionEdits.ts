@@ -41,6 +41,27 @@ export function removeSuggestionAt(
   return [...list.slice(0, idx), ...list.slice(idx + 1)];
 }
 
+/**
+ * Return a NEW list = `existing` with every entry from `generated` appended,
+ * skipping any (video, frameIdx) pair already present -- whether that's in
+ * `existing` already, or a duplicate within `generated` itself. Used so
+ * re-running "Generate" (or generating with a different method/target)
+ * accumulates onto whatever suggestions the user already has (manually added
+ * ones included) instead of silently discarding them.
+ */
+export function mergeSuggestionFrames(
+  existing: readonly SuggestionFrame[],
+  generated: readonly SuggestionFrame[]
+): SuggestionFrame[] {
+  const merged = [...existing];
+  for (const s of generated) {
+    if (!suggestionExists(merged, s.video, s.frameIdx)) {
+      merged.push(s);
+    }
+  }
+  return merged;
+}
+
 export interface LabeledSummary {
   labeled: number;
   total: number;
