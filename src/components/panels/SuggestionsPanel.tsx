@@ -7,8 +7,6 @@
 
 import { useState, useMemo, useReducer, useRef, useEffect } from "react";
 import { useAppStore } from "../../stores/appStore";
-import { commandContext } from "../../commands/CommandContext";
-import { GoNextSuggestion, GoPrevSuggestion } from "../../commands/navCommands";
 import {
   suggestionExists,
   addSuggestionFrame,
@@ -379,15 +377,28 @@ export function SuggestionsPanel({
     );
   };
 
-  /** Prev/Next: navigate to the neighbouring suggestion AND select it, so the
-   *  landed frame is highlighted in the table (and Remove targets it). */
-  const navSuggestion = (cmd: typeof GoNextSuggestion) => {
-    commandContext.execute(cmd);
+  /** Prev/Next: move to the neighbouring row in the DISPLAYED (sorted/shuffled)
+   *  list — NOT the frame-index order the global command uses, which ignores the
+   *  table order and other videos — and select it so the landed row highlights
+   *  (and Remove targets it). Wraps at the ends. */
+  const goToSuggestionOffset = (delta: 1 | -1) => {
+    if (sortedSuggestions.length === 0) return;
     const s = useAppStore.getState();
-    const idx = (labels?.suggestions ?? []).findIndex(
-      (sg) => sg.video === s.video && sg.frameIdx === s.frameIdx
-    );
-    if (idx !== -1) setSelectedIdx(idx);
+    // Where are we now? Prefer the selected row, else the row matching the
+    // current video+frame, else start from the top/bottom.
+    let pos = sortedSuggestions.findIndex((e) => e.originalIndex === selectedIdx);
+    if (pos === -1) {
+      pos = sortedSuggestions.findIndex(
+        (e) =>
+          e.suggestion.video === s.video && e.suggestion.frameIdx === s.frameIdx
+      );
+    }
+    const len = sortedSuggestions.length;
+    const nextPos =
+      pos === -1 ? (delta === 1 ? 0 : len - 1) : (pos + delta + len) % len;
+    const entry = sortedSuggestions[nextPos];
+    navigateToSuggestion(entry.suggestion);
+    setSelectedIdx(entry.originalIndex);
   };
 
   const addCurrentFrame = () => {
@@ -1250,7 +1261,7 @@ export function SuggestionsPanel({
             variant="subtle"
             size="xs"
             disabled={suggestions.length === 0}
-            onClick={() => navSuggestion(GoPrevSuggestion)}
+            onClick={() => goToSuggestionOffset(-1)}
           >
             {"◀"} Prev
           </Button>
@@ -1266,7 +1277,7 @@ export function SuggestionsPanel({
             variant="subtle"
             size="xs"
             disabled={suggestions.length === 0}
-            onClick={() => navSuggestion(GoNextSuggestion)}
+            onClick={() => goToSuggestionOffset(1)}
           >
             Next {"▶"}
           </Button>
