@@ -1159,19 +1159,12 @@ export function SuggestionsPanel({
                   <TableCell className="py-0.5 px-2 text-xs overflow-hidden">
                     <Tooltip>
                       <TooltipTrigger asChild>
-                        <span className="flex items-center gap-1.5 min-w-0">
-                          <span className="shrink-0 tabular-nums text-muted-foreground">
-                            {labels?.videos.indexOf(entry.suggestion.video) ?? 0}
-                          </span>
-                          <span className="truncate">
-                            {basename(entry.suggestion.video.filename)}
-                          </span>
+                        <span className="block truncate">
+                          {basename(entry.suggestion.video.filename)}
                         </span>
                       </TooltipTrigger>
                       <TooltipContent side="left">
-                        {`${
-                          labels?.videos.indexOf(entry.suggestion.video) ?? 0
-                        }: ${basename(entry.suggestion.video.filename)}`}
+                        {basename(entry.suggestion.video.filename)}
                       </TooltipContent>
                     </Tooltip>
                   </TableCell>
