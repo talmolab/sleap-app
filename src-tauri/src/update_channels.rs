@@ -10,7 +10,7 @@
 //! a URL — and this module maps it to a manifest.
 //!
 //! `stable` and `dev` are simple static manifest URLs. `dev` is a rolling
-//! GitHub Release (tag `channel-dev`) that build-dev.yml replaces on every
+//! GitHub Release (tag `dev`) that build-dev.yml replaces on every
 //! push to `main`.
 //!
 //! `latest` ("pre-release or release, whichever is newest") is resolved
@@ -32,7 +32,7 @@ const REPO: &str = "talmolab/sleap-app";
 const ENDPOINT_STABLE: &str =
     "https://github.com/talmolab/sleap-app/releases/latest/download/latest.json";
 const ENDPOINT_DEV: &str =
-    "https://github.com/talmolab/sleap-app/releases/download/channel-dev/latest.json";
+    "https://github.com/talmolab/sleap-app/releases/download/dev/latest.json";
 
 #[derive(Deserialize)]
 struct GhAsset {
@@ -51,7 +51,7 @@ struct GhRelease {
 /// release whose tag doesn't match `vX.Y.Z`/`vX.Y.Z-N` (see build.yml's
 /// `validate` job) is explicitly EXCLUDED from "latest" candidacy instead of
 /// silently sorting as version 0 — which also naturally excludes rolling,
-/// non-version-tagged releases like `channel-dev`, rather than relying on
+/// non-version-tagged releases like `dev`, rather than relying on
 /// that tag merely happening to sort low.
 fn parse_tag_version(tag: &str) -> Option<Version> {
     Version::parse(tag.strip_prefix('v').unwrap_or(tag)).ok()
@@ -187,7 +187,6 @@ mod tests {
     fn rejects_non_version_tags() {
         // The rolling dev-channel release tag must never be mistaken for a
         // real version by the "latest" resolver.
-        assert!(parse_tag_version("channel-dev").is_none());
         assert!(parse_tag_version("dev").is_none());
         assert!(parse_tag_version("").is_none());
     }

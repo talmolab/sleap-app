@@ -8,7 +8,7 @@ on:
   # Fires whenever the desktop "Build Dev Channel" workflow (build-dev.yml)
   # finishes -- whether it actually built (main moved) or skipped (quiet
   # night) -- so app.sleap.ai/dev/ always tracks the SAME cadence and the
-  # SAME commit as the desktop channel-dev release, rather than rebuilding
+  # SAME commit as the desktop dev release, rather than rebuilding
   # on every push like /main/ does. Safe to fire on a skip too: the final
   # `git diff --cached --quiet` below no-ops if nothing actually changed.
   workflow_run:
@@ -64,7 +64,7 @@ jobs:
       # any past version stays reachable forever, e.g. app.sleap.ai/v0.1.2-1/),
       # root (stable), and /latest/ IF this is genuinely the highest version
       # known. /main/ (every push) and /dev/ (synced with the desktop
-      # channel-dev build) are each driven by their own distinct trigger --
+      # dev build) are each driven by their own distinct trigger --
       # see the `elif` branches below.
       #
       # github.event.release.* fields are passed via env, NEVER interpolated
@@ -96,7 +96,7 @@ jobs:
             # version is always reachable, e.g. app.sleap.ai/v0.1.2-1/. That
             # alone fully covers a pre-release's visibility -- it deliberately
             # does NOT also touch /dev/ (which now means "synced with the
-            # desktop channel-dev build," driven solely by the workflow_run
+            # desktop dev build," driven solely by the workflow_run
             # branch below) or /main/ (every-push bleeding edge); overloading
             # either with an unrelated pre-release publish would reintroduce
             # exactly the "which commit does this actually reflect" confusion
@@ -132,10 +132,10 @@ jobs:
           elif [ "$EVENT_NAME" = "workflow_run" ]; then
             # Only reached for a successful build-dev.yml run on `main` (see
             # the job-level `if:` guard) -- redeploy /dev/ to match, so it
-            # always reflects the exact same commit the desktop channel-dev
+            # always reflects the exact same commit the desktop dev
             # release does, refreshed on the exact same cadence (nightly or
             # manual), never on every plain push.
-            add_target "dev" "/dev/" "dev (synced with channel-dev)"
+            add_target "dev" "/dev/" "dev (synced with desktop dev build)"
           elif [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$DISPATCH_TARGET" = "prod" ]; then
             add_target "" "/" "manual-prod $REF_NAME"
           else

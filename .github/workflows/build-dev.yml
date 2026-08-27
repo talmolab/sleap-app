@@ -3,7 +3,7 @@ name: Build Dev Channel
 # Nightly desktop builds off `main`, for the in-app "dev" update channel.
 # Unlike build.yml's release pipeline, these are ad-hoc/unsigned (no Apple
 # Developer ID, no notarization) so a run doesn't wait on Apple's notary
-# service, and they publish to a single rolling `channel-dev` pre-release
+# service, and they publish to a single rolling `dev` pre-release
 # instead of a per-version tag -- see the `publish` job.
 #
 # Runs on a nightly schedule (not per-push -- a full 3-platform native build
@@ -43,7 +43,7 @@ jobs:
         uses: actions/checkout@v5
 
       # Compares against the exact commit the LAST dev build actually used
-      # (the `channel-dev` tag, which the publish job below pins via
+      # (the `dev` tag, which the publish job below pins via
       # `--target` precisely so this comparison is reliable) rather than a
       # rolling time window -- robust to a delayed/queued scheduled run, a
       # paused-then-resumed schedule, or a prior build that failed and needs
@@ -62,10 +62,10 @@ jobs:
             echo "Manual trigger -- building regardless of whether main moved."
             exit 0
           fi
-          LAST_SHA="$(gh api "repos/$REPO/git/ref/tags/channel-dev" --jq .object.sha 2>/dev/null || true)"
+          LAST_SHA="$(gh api "repos/$REPO/git/ref/tags/dev" --jq .object.sha 2>/dev/null || true)"
           if [ -z "$LAST_SHA" ]; then
             echo "should_build=true" >> "$GITHUB_OUTPUT"
-            echo "No prior channel-dev tag found -- building."
+            echo "No prior dev tag found -- building."
           elif [ "$LAST_SHA" = "${{ github.sha }}" ]; then
             echo "should_build=false" >> "$GITHUB_OUTPUT"
             echo "main is unchanged since the last dev build ($LAST_SHA) -- skipping."
@@ -363,19 +363,19 @@ jobs:
         with:
           name: sleap-app-dev-${{ matrix.target }}
           path: artifacts/*
-          # 30 days rather than the default 7 -- channel-dev itself only ever
-          # keeps the SINGLE most recent build (delete + recreate), so this is
-          # the only place a past dev build survives at all. Not publicly
-          # downloadable without a GitHub-authenticated request (Actions
-          # artifacts always require auth, even on a public repo -- verified
-          # directly, a plain unauthenticated fetch 401s), so this is for a
-          # maintainer digging through history, not for handing a tester a link.
-          retention-days: 30
+          # Retention left at the repo default: the dev release itself only
+          # ever keeps the SINGLE most recent build (delete + recreate), so
+          # this artifact copy is the only place a past dev build survives at
+          # all. Not publicly downloadable without a GitHub-authenticated
+          # request (Actions artifacts always require auth, even on a public
+          # repo -- verified directly, a plain unauthenticated fetch 401s), so
+          # this is for a maintainer digging through history, not for handing
+          # a tester a link.
           if-no-files-found: error
 
-  # Publishes to a single rolling `channel-dev` pre-release: deleted and
+  # Publishes to a single rolling `dev` pre-release: deleted and
   # recreated every run that actually builds (rather than accumulating assets
-  # across runs), so `.../releases/download/channel-dev/latest.json` always
+  # across runs), so `.../releases/download/dev/latest.json` always
   # reflects whatever commit was last built (not necessarily HEAD of `main`
   # at any given moment, since a quiet night skips the build entirely -- see
   # the `meta` job). See build.yml's `release` job for the per-version-tag
@@ -420,16 +420,16 @@ jobs:
       # Delete-then-recreate is what makes this "rolling": old assets never
       # accumulate, and a stale filename from a prior run can't linger
       # alongside a same-named new one.
-      - name: Recreate the channel-dev pre-release
+      - name: Recreate the dev pre-release
         run: |
           set -euo pipefail
-          gh release delete channel-dev --repo "$REPO" --cleanup-tag --yes || true
+          gh release delete dev --repo "$REPO" --cleanup-tag --yes || true
           # --target pins the tag to the EXACT commit this run built (github.sha),
           # not whatever main's HEAD happens to be when this step runs -- the
           # `meta` job's should_build check on the next run compares against
           # this tag's commit, so it must reflect what was actually built, not
           # a newer commit that raced in after the build started.
-          gh release create channel-dev --repo "$REPO" \
+          gh release create dev --repo "$REPO" \
             --target "${{ github.sha }}" \
             --prerelease \
             --title "Dev channel — v$VERSION" \
@@ -446,7 +446,7 @@ jobs:
           repo = os.environ["REPO"]
           version = os.environ["VERSION"]
           short_sha = os.environ["SHORT_SHA"]
-          base = f"https://github.com/{repo}/releases/download/channel-dev"
+          base = f"https://github.com/{repo}/releases/download/dev"
 
           # Same RULES/keys as build.yml's manifest step -- see there for the
           # tauri-plugin-updater key-lookup rationale.
@@ -496,5 +496,5 @@ jobs:
           print(json.dumps(manifest, indent=2))
           PY
 
-      - name: Upload the update manifest to channel-dev
-        run: gh release upload channel-dev latest.json --repo "$REPO" --clobber
+      - name: Upload the update manifest to dev
+        run: gh release upload dev latest.json --repo "$REPO" --clobber

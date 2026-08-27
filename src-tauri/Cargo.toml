@@ -40,7 +40,7 @@ url = "2"
 # the webrtc stack respectively), so this adds no new version to resolve.
 reqwest = { version = "0.13", features = ["json"] }
 # For update_channels.rs: parses/compares release tags as real semver
-# versions (excludes non-version-tagged releases like channel-dev from
+# versions (excludes non-version-tagged releases like `dev` from
 # "latest" candidacy, rather than relying on them sorting low by accident).
 # Already pulled in transitively by tauri-plugin-updater.
 semver = "1"
