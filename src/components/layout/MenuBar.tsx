@@ -210,6 +210,14 @@ function FileMenu() {
             </div>
           </MenubarSubContent>
         </MenubarSub>
+        <MenubarItem
+          disabled={!projectLoaded}
+          onClick={() =>
+            useAppStore.getState().setAddVideoUrlDialogOpen(true)
+          }
+        >
+          Add Video from URL...
+        </MenubarItem>
         <MenubarSeparator />
         <MenubarItem
           disabled={!projectLoaded}
