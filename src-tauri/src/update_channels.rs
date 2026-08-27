@@ -53,29 +53,56 @@ struct GhRelease {
 /// silently sorting as version 0 — which also naturally excludes rolling,
 /// non-version-tagged releases like `dev`, rather than relying on
 /// that tag merely happening to sort low.
+///
+/// Also rejects a non-numeric prerelease identifier (e.g. `v1.0.0-rc1`):
+/// build-dev.yml's and deploy.yml's own bash/jq tag-format regexes only ever
+/// capture a purely-numeric prerelease (`-[0-9]+`), so accepting anything
+/// `semver::Version` considers valid here would let this resolver and the
+/// website's `/latest/` path disagree about which release is newest.
 fn parse_tag_version(tag: &str) -> Option<Version> {
-    Version::parse(tag.strip_prefix('v').unwrap_or(tag)).ok()
+    let version = Version::parse(tag.strip_prefix('v').unwrap_or(tag)).ok()?;
+    if !version.pre.is_empty() && !version.pre.as_str().chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    Some(version)
 }
 
 /// Finds whichever non-draft release/pre-release is newest AND has a
 /// `latest.json` asset, and returns that release's own manifest URL.
 async fn resolve_latest_endpoint() -> Result<url::Url, String> {
-    let api_url = format!("https://api.github.com/repos/{REPO}/releases?per_page=100");
     let client = reqwest::Client::builder()
         .user_agent("sleap-app-updater")
         .build()
         .map_err(|e| e.to_string())?;
-    let releases: Vec<GhRelease> = client
-        .get(&api_url)
-        .header("Accept", "application/vnd.github+json")
-        .send()
-        .await
-        .map_err(|e| e.to_string())?
-        .error_for_status()
-        .map_err(|e| e.to_string())?
-        .json()
-        .await
-        .map_err(|e| e.to_string())?;
+
+    // Pages through every release rather than trusting the repo to stay
+    // under 100 forever -- build-dev.yml's and deploy.yml's equivalent
+    // bash/jq logic already uses `gh api --paginate` for the same reason; a
+    // release beyond the first page must not go invisible to this resolver
+    // while the website's /latest/ path (which does paginate) still sees it.
+    let mut releases: Vec<GhRelease> = Vec::new();
+    let mut page: u32 = 1;
+    loop {
+        let api_url =
+            format!("https://api.github.com/repos/{REPO}/releases?per_page=100&page={page}");
+        let batch: Vec<GhRelease> = client
+            .get(&api_url)
+            .header("Accept", "application/vnd.github+json")
+            .send()
+            .await
+            .map_err(|e| e.to_string())?
+            .error_for_status()
+            .map_err(|e| e.to_string())?
+            .json()
+            .await
+            .map_err(|e| e.to_string())?;
+        let batch_len = batch.len();
+        releases.extend(batch);
+        if batch_len < 100 {
+            break;
+        }
+        page += 1;
+    }
 
     let best = releases
         .iter()
@@ -189,6 +216,16 @@ mod tests {
         // real version by the "latest" resolver.
         assert!(parse_tag_version("dev").is_none());
         assert!(parse_tag_version("").is_none());
+    }
+
+    #[test]
+    fn rejects_non_numeric_prerelease_tags() {
+        // build-dev.yml/deploy.yml's bash/jq tag-format regexes only ever
+        // capture a purely-numeric prerelease -- a tag like this would be
+        // invisible to their HIGHEST/BASE computations, so it must be
+        // rejected here too rather than silently winning "latest" candidacy.
+        assert!(parse_tag_version("v1.0.0-rc1").is_none());
+        assert!(parse_tag_version("v1.0.0-alpha").is_none());
     }
 
     #[test]
