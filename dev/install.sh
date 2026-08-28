@@ -6,6 +6,11 @@
 #   curl -fsSL https://app.sleap.ai/install.sh | sh -s -- --tag v0.1.2
 #   sh install.sh ~/Downloads/SLEAP_0.1.2_universal.dmg   # a file you already have
 #
+# Same script, but defaults to the "latest" or "dev" channel instead of
+# stable -- see CHANNEL_DEFAULT below.
+#   curl -fsSL https://app.sleap.ai/latest/install.sh | sh
+#   curl -fsSL https://app.sleap.ai/dev/install.sh | sh
+#
 # Why this exists (macOS): the app is ad-hoc signed but not notarized, because
 # notarization needs a paid Apple Developer ID this project does not have. A .dmg
 # that arrives through a browser -- or Slack, email, AirDrop -- is tagged with
@@ -40,6 +45,18 @@ OPT_PRE=0
 OPT_PREFIX="${SLEAP_PREFIX:-}"
 OPT_FORCE=0
 LOCAL_FILE=""
+
+# Channel this deployed copy defaults to when no --tag/--pre is given
+# explicitly on the command line. deploy.yml stamps this line verbatim per
+# destination directory (stable/latest/dev) -- this repo copy defaults to
+# "stable", matching today's behavior at the plain
+# https://app.sleap.ai/install.sh. An explicit --tag/--pre, or the SLEAP_TAG
+# env var above, always overrides this.
+CHANNEL_DEFAULT="dev"
+case "$CHANNEL_DEFAULT" in
+dev) : "${OPT_TAG:=dev}" ;;
+latest) OPT_PRE=1 ;;
+esac
 
 WORKDIR=""
 MNT=""

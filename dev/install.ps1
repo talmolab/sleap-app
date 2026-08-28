@@ -16,6 +16,12 @@
   irm https://app.sleap.ai/install.ps1 | iex
 
 .EXAMPLE
+  # Same script, but defaults to the "latest" or "dev" channel instead of
+  # stable -- see $ChannelDefault below.
+  irm https://app.sleap.ai/latest/install.ps1 | iex
+  irm https://app.sleap.ai/dev/install.ps1 | iex
+
+.EXAMPLE
   # `| iex` cannot forward parameters, so build a script block first.
   & ([scriptblock]::Create((irm https://app.sleap.ai/install.ps1))) -Tag v0.1.2
 
@@ -45,6 +51,16 @@ param(
 # registry data, where a merely-absent property would become a hard failure.
 # Presence is checked explicitly below instead.
 $ErrorActionPreference = 'Stop'
+
+# Channel this deployed copy defaults to when no -Tag/-Pre is given
+# explicitly. deploy.yml stamps this line verbatim per destination directory
+# (stable/latest/dev) -- this repo copy defaults to 'stable', matching
+# today's behavior at the plain https://app.sleap.ai/install.ps1. An
+# explicit -Tag/-Pre always overrides this ('| iex' can't forward parameters
+# at all, so this default is the only lever those invocations have).
+$ChannelDefault = 'dev'
+if (-not $PSBoundParameters.ContainsKey('Tag') -and $ChannelDefault -eq 'dev') { $Tag = 'dev' }
+if (-not $PSBoundParameters.ContainsKey('Pre') -and $ChannelDefault -eq 'latest') { $Pre = $true }
 
 # Windows PowerShell 5.1 still defaults to TLS 1.0, which github.com refuses --
 # without this the first request dies with a bare "Could not create SSL/TLS
