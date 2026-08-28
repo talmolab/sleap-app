@@ -385,7 +385,10 @@ function AppUpdateSection() {
   // Dev-channel builds live under a single rolling `dev` release tag,
   // not their own `v{version}` tag, so there's no per-version release page to
   // link to (unlike stable/latest, which are always a real GitHub Release).
-  const hasReleaseNotesPage = updateAvailable && channel !== "dev";
+  // Also hidden on a local build, same reasoning as the arrow above: it
+  // links to notes for a version there's no installer here to apply.
+  const hasReleaseNotesPage =
+    updateAvailable && channel !== "dev" && !isLocalBuild;
 
   return (
     <section>
