@@ -13,6 +13,7 @@ import { buildInferenceArgs, pickInferenceSubcommand } from "./inferenceArgs";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { formatRunTimestamp as formatPredictionsTimestamp } from "@/lib/timestamp";
 import { buildTrainingArgs } from "./trainingArgs";
+import { buildExportArgs, type BuildExportArgsOptions } from "./exportArgs";
 
 function sampleRandomFrames(totalFrames: number, count: number): number[] {
   const n = Math.min(count, totalFrames);
@@ -518,6 +519,29 @@ export async function runInference(
   const success = await runPythonCommand(program, args, onEvent);
   console.log("[inference] Process finished: success=%s, output=%s", success, outputPath);
   return { success, outputPath, command };
+}
+
+/**
+ * Run `sleap-nn export` to convert trained model directory(ies) to ONNX /
+ * TensorRT. `opts.modelPaths` are run directories (a top-down model passes both
+ * the centroid + centered_instance dirs together); the exported model.onnx /
+ * model.trt land in `opts.outputDir`. Streams stdout/stderr like train/predict
+ * via the existing `run_python_command` — no dedicated Rust command needed.
+ */
+export async function runExport(
+  opts: BuildExportArgsOptions,
+  onEvent: (event: ProcessEvent) => void,
+): Promise<{ success: boolean; command: string; outputDir: string }> {
+  if (!isTauri) {
+    console.warn("Model export is only available in Tauri desktop mode");
+    return { success: false, command: "", outputDir: opts.outputDir };
+  }
+  const args = buildExportArgs(opts);
+  const command = `sleap-nn ${args.join(" ")}`;
+  console.log("[export] Running:", command);
+  const success = await runPythonCommand("sleap-nn", args, onEvent);
+  console.log("[export] Process finished: success=%s", success);
+  return { success, command, outputDir: opts.outputDir };
 }
 
 // === RTC commands (native WebRTC via Rust backend) ===
