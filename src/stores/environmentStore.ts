@@ -73,6 +73,12 @@ export interface EnvironmentState {
   clearSelection: () => void;
   doInstallPython: (version: string) => Promise<void>;
   doInstallTool: (pkg: string) => Promise<void>;
+  /**
+   * (Re)install sleap-nn WITH the ONNX/TensorRT export extras so exported-model
+   * export + `--runtime onnx|tensorrt` inference work. `uv tool install` REPLACES
+   * the tool env, so this reinstalls the FULL extra set (torch + export[,tensorrt]).
+   */
+  installExportExtra: (withTensorrt: boolean) => Promise<void>;
   doUpgradeTool: (pkg: string) => Promise<void>;
   doReinstallTool: (pkg: string) => Promise<void>;
   doUpdateUv: () => Promise<void>;
@@ -267,6 +273,58 @@ export const useEnvironmentStore = create<EnvironmentState>()(
             false,
             onEvent,
             extraArgs
+          );
+          await get().refresh();
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          set((state) => ({
+            installStatus: "error",
+            installLog: [...state.installLog, `Error: ${msg}`],
+          }));
+        }
+      },
+
+      installExportExtra: async (withTensorrt: boolean) => {
+        const { selectedPythonPath } = get();
+        set({
+          installStatus: "installing",
+          installTarget: withTensorrt
+            ? "sleap-nn ONNX + TensorRT support"
+            : "sleap-nn ONNX support",
+          installLog: [],
+        });
+
+        const onEvent = (event: ProcessEvent) => {
+          if (event.event === "stdout" || event.event === "stderr") {
+            set((state) => ({
+              installLog: [...state.installLog, event.data.line],
+            }));
+          } else if (event.event === "finished") {
+            set({ installStatus: event.data.success ? "done" : "error" });
+          }
+        };
+
+        try {
+          const gpu = await detectGpu();
+          const torchExtra = gpu === "cuda" ? "torch-cuda130" : "torch-cpu";
+          // `uv tool install` REPLACES the tool env — it can't add an extra
+          // incrementally — so include the full extra set and force a reinstall,
+          // or the existing torch backend / deps would be dropped. TensorRT is
+          // only offered on CUDA hosts (linux/win + NVIDIA).
+          const extras = withTensorrt ? "export,tensorrt" : "export";
+          const installPkg = `sleap-nn[${torchExtra},${extras}]`;
+          set((state) => ({
+            installLog: [
+              ...state.installLog,
+              `[env] GPU: ${gpu} → installing ${installPkg}`,
+            ],
+          }));
+          await installUvToolCmd(
+            installPkg,
+            selectedPythonPath,
+            true,
+            onEvent,
+            ["--torch-backend=auto"]
           );
           await get().refresh();
         } catch (err) {
