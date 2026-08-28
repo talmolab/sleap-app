@@ -270,6 +270,80 @@ describe("appStore", () => {
     });
   });
 
+  describe("instance sequence picker (multi-instance transpose)", () => {
+    const instA = { name: "a" } as unknown as Instance;
+    const instB = { name: "b" } as unknown as Instance;
+    const instC = { name: "c" } as unknown as Instance;
+
+    it("starts empty and accumulates clicked instances up to seqLen", () => {
+      const id = useAppStore.getState().startInstanceSequencePick(2);
+      expect(useAppStore.getState().instanceSequencePick).toEqual({
+        requestId: id,
+        seqLen: 2,
+        collected: [],
+      });
+      expect(useAppStore.getState().instanceSequenceResult).toBeNull();
+
+      useAppStore.getState().pushInstanceSequencePick(instA);
+      expect(useAppStore.getState().instanceSequencePick?.collected).toEqual([instA]);
+      expect(useAppStore.getState().instanceSequenceResult).toBeNull(); // not done yet
+    });
+
+    it("resolves into instanceSequenceResult once seqLen instances are collected, and clears the in-progress pick", () => {
+      const id = useAppStore.getState().startInstanceSequencePick(2);
+      useAppStore.getState().pushInstanceSequencePick(instA);
+      useAppStore.getState().pushInstanceSequencePick(instB);
+
+      expect(useAppStore.getState().instanceSequencePick).toBeNull();
+      expect(useAppStore.getState().instanceSequenceResult).toEqual({
+        instances: [instA, instB],
+        requestId: id,
+      });
+    });
+
+    it("ignores a re-click on an already-collected instance instead of completing early", () => {
+      useAppStore.getState().startInstanceSequencePick(2);
+      useAppStore.getState().pushInstanceSequencePick(instA);
+      useAppStore.getState().pushInstanceSequencePick(instA); // re-click — ignored
+      expect(useAppStore.getState().instanceSequencePick?.collected).toEqual([instA]);
+      expect(useAppStore.getState().instanceSequenceResult).toBeNull();
+
+      useAppStore.getState().pushInstanceSequencePick(instB);
+      expect(useAppStore.getState().instanceSequenceResult?.instances).toEqual([instA, instB]);
+    });
+
+    it("a push while no pick is active is a no-op", () => {
+      useAppStore.getState().pushInstanceSequencePick(instC);
+      expect(useAppStore.getState().instanceSequencePick).toBeNull();
+      expect(useAppStore.getState().instanceSequenceResult).toBeNull();
+    });
+
+    it("cancel clears the in-progress pick without producing a result", () => {
+      useAppStore.getState().startInstanceSequencePick(2);
+      useAppStore.getState().pushInstanceSequencePick(instA);
+      useAppStore.getState().cancelInstanceSequencePick();
+      expect(useAppStore.getState().instanceSequencePick).toBeNull();
+      expect(useAppStore.getState().instanceSequenceResult).toBeNull();
+    });
+
+    it("clearInstanceSequenceResult clears a resolved result", () => {
+      useAppStore.getState().startInstanceSequencePick(2);
+      useAppStore.getState().pushInstanceSequencePick(instA);
+      useAppStore.getState().pushInstanceSequencePick(instB);
+      expect(useAppStore.getState().instanceSequenceResult).not.toBeNull();
+
+      useAppStore.getState().clearInstanceSequenceResult();
+      expect(useAppStore.getState().instanceSequenceResult).toBeNull();
+    });
+
+    it("starting a new pick bumps the request id and clears any stale result", () => {
+      const id1 = useAppStore.getState().startInstanceSequencePick(2);
+      const id2 = useAppStore.getState().startInstanceSequencePick(2);
+      expect(id2).toBe(id1 + 1);
+      expect(useAppStore.getState().instanceSequencePick?.requestId).toBe(id2);
+    });
+  });
+
   describe("set", () => {
     it("sets arbitrary state values", () => {
       useAppStore.getState().set("palette", "alphabet");

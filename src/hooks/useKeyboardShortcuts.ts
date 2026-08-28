@@ -36,7 +36,7 @@ import {
   DeleteSelectedInstance,
   CopyInstance,
   PasteInstance,
-  TransposeInstances,
+  requestTranspose,
   AddTrack,
   SetInstanceTrack,
   CopyTrack,
@@ -240,7 +240,7 @@ export function useKeyboardShortcuts() {
       // Track commands
       [DEFAULT_SHORTCUTS.transpose]: (e) => {
         e.preventDefault();
-        commandContext.execute(TransposeInstances);
+        requestTranspose(commandContext);
       },
       [DEFAULT_SHORTCUTS["add track"]]: (e) => {
         e.preventDefault();

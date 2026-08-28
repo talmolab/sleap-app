@@ -37,6 +37,16 @@ interface UndoSnapshot {
   frame: SingleFrameData | null;
   /** Multi-frame data (for bulk operations like DeleteAllPredictions). */
   allFrames: SingleFrameData[] | null;
+  /**
+   * Bounded multi-frame data for a bulk op that can PROVABLY never touch
+   * anything outside this set (e.g. PropagateTrackLabels, which only ever
+   * reassigns `.track` on existing instances in one video from the current
+   * frame onward — never creating/deleting frames or touching other videos).
+   * Unlike `allFrames`, restoring this patches only the listed (video,
+   * frameIdx) frames in place instead of wiping and rebuilding every labeled
+   * frame in the project. Mutually exclusive with `allFrames`/`frame`.
+   */
+  scopedFrames: SingleFrameData[] | null;
   /** Tracks array snapshot (by reference, order matters). */
   tracks: Track[];
   /** Track names captured by value, so a rename (SetTrackName) is undoable. */
@@ -141,6 +151,7 @@ export class CommandContext {
       commandName,
       frame,
       allFrames: null,
+      scopedFrames: null,
       tracks: labels ? [...labels.tracks] : [],
       trackNames: labels ? labels.tracks.map((t) => t.name) : [],
       videos: labels ? [...labels.videos] : [],
@@ -179,6 +190,7 @@ export class CommandContext {
       commandName,
       frame: null,
       allFrames,
+      scopedFrames: null,
       tracks: labels ? [...labels.tracks] : [],
       trackNames: labels ? labels.tracks.map((t) => t.name) : [],
       videos: labels ? [...labels.videos] : [],
@@ -188,6 +200,72 @@ export class CommandContext {
       activeVideo: video,
       activeFrameIdx: frameIdx,
     };
+  }
+
+  /**
+   * Take a snapshot of one video's frames strictly after `minFrameIdx` (and,
+   * if given, at or before `maxFrameIdx` — e.g. a user-selected seekbar
+   * range), plus the matching `LabeledFrame[]` (sorted by frameIdx) for that
+   * same range — a single traversal shared by the snapshot AND the caller's
+   * own mutation loop, instead of {@link takeAllFramesSnapshot}'s
+   * full-project clone plus a separate `labels.find({video})` scan (which,
+   * without a `frameIdx`, falls into sleap-io.js's O(total project frames)
+   * linear-scan path).
+   *
+   * Only safe for a bulk op that can PROVABLY never touch any other video or
+   * any frame outside `(minFrameIdx, maxFrameIdx]`, and never creates/deletes
+   * frames (see {@link UndoSnapshot.scopedFrames} — currently
+   * TransposeInstances/PropagateTrackLabels's track-swap propagation).
+   */
+  takeVideoFramesSnapshotFrom(
+    commandName: string,
+    video: Video,
+    minFrameIdx: number,
+    maxFrameIdx?: number,
+  ): { snapshot: UndoSnapshot; frames: LabeledFrame[] } {
+    const { labels, video: activeVideo, frameIdx: activeFrameIdx, instance } = this.state;
+    const scopedFrames: SingleFrameData[] = [];
+    const frames: LabeledFrame[] = [];
+    let selectedIdx = -1;
+
+    if (labels) {
+      for (const lf of labels.labeledFrames) {
+        if (lf.video !== video || lf.frameIdx <= minFrameIdx) continue;
+        if (maxFrameIdx !== undefined && lf.frameIdx > maxFrameIdx) continue;
+        scopedFrames.push({
+          videoRef: lf.video,
+          frameIdx: lf.frameIdx,
+          instances: cloneInstances(lf.instances),
+          isNegative: lf.isNegative,
+        });
+        frames.push(lf);
+      }
+      frames.sort((a, b) => a.frameIdx - b.frameIdx);
+
+      if (activeVideo && instance) {
+        const activeFrames = labels.find({ video: activeVideo, frameIdx: activeFrameIdx });
+        if (activeFrames.length > 0) {
+          selectedIdx = activeFrames[0].instances.indexOf(instance);
+        }
+      }
+    }
+
+    const snapshot: UndoSnapshot = {
+      commandName,
+      frame: null,
+      allFrames: null,
+      scopedFrames,
+      tracks: labels ? [...labels.tracks] : [],
+      trackNames: labels ? labels.tracks.map((t) => t.name) : [],
+      videos: labels ? [...labels.videos] : [],
+      skeletons: labels ? [...labels.skeletons] : [],
+      suggestions: labels ? [...labels.suggestions] : [],
+      selectedIdx,
+      activeVideo,
+      activeFrameIdx,
+    };
+
+    return { snapshot, frames };
   }
 
   /** Push a custom snapshot onto the undo stack. */
@@ -204,10 +282,25 @@ export class CommandContext {
     const { labels } = this.state;
     if (!labels) return this.takeSnapshot(snapshot.commandName);
 
-    // If this is a multi-frame snapshot, take a multi-frame before-snapshot
-    const before = snapshot.allFrames
-      ? this.takeAllFramesSnapshot(snapshot.commandName)
-      : this.takeSnapshot(snapshot.commandName);
+    // If this is a multi-frame snapshot, take a matching before-snapshot —
+    // scoped to the same (video, frame-range) the original snapshot covered
+    // when possible, so undo/redo of a scoped op (e.g. PropagateTrackLabels)
+    // never pays for a full-project clone/scan.
+    let before: UndoSnapshot;
+    if (snapshot.allFrames) {
+      before = this.takeAllFramesSnapshot(snapshot.commandName);
+    } else if (snapshot.scopedFrames) {
+      const scopedVideo = snapshot.scopedFrames[0]?.videoRef ?? null;
+      const minFrameIdx =
+        snapshot.scopedFrames.length > 0
+          ? Math.min(...snapshot.scopedFrames.map((f) => f.frameIdx)) - 1
+          : -Infinity;
+      before = scopedVideo
+        ? this.takeVideoFramesSnapshotFrom(snapshot.commandName, scopedVideo, minFrameIdx).snapshot
+        : this.takeSnapshot(snapshot.commandName);
+    } else {
+      before = this.takeSnapshot(snapshot.commandName);
+    }
 
     // Restore tracks + the project-level collections a merge can grow (videos,
     // skeletons, suggestions), so undoing a merge that added a video/skeleton
@@ -246,6 +339,39 @@ export class CommandContext {
       labels.reindex();
 
       // Restore view to the active frame
+      if (snapshot.activeVideo) {
+        const currentFrames = labels.find({ video: snapshot.activeVideo!, frameIdx: snapshot.activeFrameIdx });
+        const currentLf = currentFrames.length > 0 ? currentFrames[0] : null;
+        this.state.setLabeledFrame(currentLf);
+
+        if (
+          currentLf &&
+          snapshot.selectedIdx >= 0 &&
+          snapshot.selectedIdx < currentLf.instances.length
+        ) {
+          this.state.setInstance(currentLf.instances[snapshot.selectedIdx]);
+        } else {
+          this.state.setInstance(null);
+        }
+      }
+    } else if (snapshot.scopedFrames) {
+      // Scoped multi-frame restore: patch only the (video, frameIdx) frames
+      // this snapshot covers, in place — every frame outside that scope
+      // (other videos, or this video's frames at/before the original cutoff)
+      // is left untouched, unlike the `allFrames` branch above which wipes
+      // and rebuilds every labeled frame in the project. Safe because a
+      // scoped snapshot is only ever taken for an op that never creates or
+      // deletes frames (see `UndoSnapshot.scopedFrames`), so every entry is
+      // guaranteed to already exist.
+      for (const frameData of snapshot.scopedFrames) {
+        const frames = labels.find({ video: frameData.videoRef, frameIdx: frameData.frameIdx });
+        if (frames.length === 0) continue;
+        const lf = frames[0];
+        lf.instances = cloneInstances(frameData.instances);
+        lf.isNegative = frameData.isNegative;
+      }
+
+      // Restore view to the active frame (same as the `allFrames` branch).
       if (snapshot.activeVideo) {
         const currentFrames = labels.find({ video: snapshot.activeVideo!, frameIdx: snapshot.activeFrameIdx });
         const currentLf = currentFrames.length > 0 ? currentFrames[0] : null;

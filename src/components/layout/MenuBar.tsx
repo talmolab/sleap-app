@@ -54,10 +54,9 @@ import {
   AddInstancesFromAllPredictionsInProject,
   AddTrack,
   SetInstanceTrack,
-  TransposeInstances,
+  requestTranspose,
   CopyTrack,
   PasteTrack,
-  PropagateTrackLabels,
   DeleteInstanceAndTrack,
   DeleteTrack,
   DeleteUnusedTracks,
@@ -1092,6 +1091,8 @@ function TracksMenu() {
   const instance = useAppStore((s) => s.instance);
   const labels = useAppStore((s) => s.labels);
   const seekbarHeaderGraph = useAppStore((s) => s.seekbarHeaderGraph);
+  const propagateTrackLabels = useAppStore((s) => s.propagateTrackLabels);
+  const toggle = useAppStore((s) => s.toggle);
 
   const exec = (cmd: Parameters<typeof commandContext.execute>[0]) => {
     commandContext.execute(cmd);
@@ -1103,7 +1104,7 @@ function TracksMenu() {
       <MenubarContent>
         <MenubarItem
           disabled={!instance}
-          onClick={() => exec(TransposeInstances)}
+          onClick={() => requestTranspose(commandContext)}
         >
           Transpose Instance Tracks <MenubarShortcut>{formatShortcut("$mod+KeyT")}</MenubarShortcut>
         </MenubarItem>
@@ -1144,28 +1145,12 @@ function TracksMenu() {
           Paste Instance Track <MenubarShortcut>{formatShortcut("$mod+Shift+KeyV")}</MenubarShortcut>
         </MenubarItem>
         <MenubarSeparator />
-        <MenubarItem
-          disabled={!instance || !instance.track}
-          onClick={() => {
-            const { instance: inst, labels: lbl } = useAppStore.getState();
-            if (!inst?.track || !lbl) return;
-            // Use the current track as both old and new (user should have
-            // just swapped tracks on this frame via TransposeInstances first)
-            // For now, propagate from the current track forward
-            const tracks = lbl.tracks;
-            if (tracks.length < 2) return;
-            const trackIdx = tracks.indexOf(inst.track);
-            const otherTrack = tracks[(trackIdx + 1) % tracks.length];
-            exec(PropagateTrackLabels);
-            // Since PropagateTrackLabels needs params, execute with them
-            commandContext.execute(PropagateTrackLabels, {
-              oldTrack: inst.track,
-              newTrack: otherTrack,
-            });
-          }}
+        <MenubarCheckboxItem
+          checked={propagateTrackLabels}
+          onCheckedChange={() => toggle("propagateTrackLabels")}
         >
           Propagate Track Labels
-        </MenubarItem>
+        </MenubarCheckboxItem>
         <MenubarSeparator />
         <MenubarItem
           disabled={!instance}
