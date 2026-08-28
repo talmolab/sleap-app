@@ -164,7 +164,14 @@ jobs:
             target: windows
             rust-targets: x86_64-pc-windows-msvc
             sidecar-triple: x86_64-pc-windows-msvc
-            tauri-args: ""
+            # NSIS only: the version string below is `+<run_number>.<short_sha>`,
+            # and WiX/MSI requires build metadata to be numeric-only (see
+            # tauri-apps/tauri discussion #7600) -- a hex git SHA can never
+            # satisfy that, so `tauri build`'s MSI bundler fails every dev
+            # build. NSIS has no such constraint. build.yml's real releases use
+            # clean semver tags with no hex metadata, so they never hit this
+            # and keep shipping both MSI+NSIS.
+            tauri-args: "--bundles nsis"
             bundle-dir: src-tauri/target/release/bundle
             job-timeout: 60
 
@@ -434,7 +441,10 @@ jobs:
             echo "::error::every platform build failed; nothing to publish to the dev channel"
             exit 1
           fi
-          for pattern in '*_universal.dmg' '*-setup.exe' '*.msi' '*.deb' '*.AppImage'; do
+          # No '*.msi' here on purpose: the Windows leg builds NSIS only (see
+          # the matrix comment above), so a missing .msi is expected on every
+          # run, not a build failure to warn about.
+          for pattern in '*_universal.dmg' '*-setup.exe' '*.deb' '*.AppImage'; do
             if ! find artifacts -name "$pattern" -type f | grep -q .; then
               echo "::warning::this dev build has no $pattern (that platform's build did not succeed)"
             fi

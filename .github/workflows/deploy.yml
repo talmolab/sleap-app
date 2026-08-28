@@ -192,7 +192,31 @@ jobs:
             # live in scripts/ rather than public/ on purpose -- public/ is
             # copied into the frontend bundle embedded in the desktop binary,
             # so an installer in there would ship a copy of itself inside the app.
-            cp scripts/install.sh scripts/install.ps1 dist/
+            #
+            # Stamp each deployed copy with the channel it should default to
+            # when no --tag/--pre (or -Tag/-Pre) is given explicitly -- see
+            # CHANNEL_DEFAULT in install.sh / $ChannelDefault in install.ps1.
+            # Everything except /latest/ and /dev/ keeps today's plain-stable
+            # default (root/stable, /main/, and permanent per-tag paths).
+            case "$SAFE_NAME" in
+              latest) CHANNEL=latest ;;
+              dev) CHANNEL=dev ;;
+              *) CHANNEL=stable ;;
+            esac
+            sed "s/^CHANNEL_DEFAULT=.*/CHANNEL_DEFAULT=\"$CHANNEL\"/" scripts/install.sh > dist/install.sh
+            sed "s/^\$ChannelDefault = .*/\$ChannelDefault = '$CHANNEL'/" scripts/install.ps1 > dist/install.ps1
+
+            if [ -z "$TARGET_PATH" ]; then
+              # /stable/ is a convenience alias for root's install scripts
+              # (root IS the stable deployment -- see CLAUDE.md's Deployment
+              # section) so `curl -fsSL https://app.sleap.ai/stable/install.sh
+              # | sh` works too (issue #344). No full app here: root already
+              # serves the actual stable site, so duplicating the whole SPA
+              # under /stable/ as well would just be redundant weight.
+              mkdir -p staging/stable
+              cp dist/install.sh dist/install.ps1 staging/stable/
+            fi
+
             mkdir -p "staging/$SAFE_NAME"
             cp -r dist/* "staging/$SAFE_NAME/"
           done
@@ -239,9 +263,17 @@ jobs:
                 ! -name 'main' \
                 ! -name 'dev' \
                 ! -name 'latest' \
+                ! -name 'stable' \
                 ! -regex './v[0-9].*' \
                 -exec rm -rf {} +
               cp -r "../staging/$SAFE_NAME"/* .
+
+              # /stable/install.sh + install.ps1 (issue #344) -- only staged
+              # when root itself deployed this run (see the build step above).
+              if [ -d ../staging/stable ]; then
+                rm -rf stable
+                cp -r ../staging/stable stable
+              fi
             else
               # Every other target only ever touches its own folder.
               rm -rf "$TARGET_PATH"
