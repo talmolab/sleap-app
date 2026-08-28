@@ -106,6 +106,27 @@ async function flush(): Promise<void> {
 }
 
 /**
+ * Whether this is the PRIMARY (cold-launch) window. Sibling windows spawned by a
+ * running instance — File > New Project / open-in-new-window / a viz window — are
+ * labelled "main-…" (the primary is exactly "main"; see src-tauri/src/lib.rs).
+ * Only the primary runs crash-detection and claims the shared "running" sentinel;
+ * a sibling would otherwise see the first window's LIVE sentinel and falsely flag
+ * it as a prior crash. Browser: always primary (a single JS context).
+ */
+async function isPrimaryWindow(): Promise<boolean> {
+  if (!isTauri) return true;
+  try {
+    const { getCurrentWebviewWindow } = await import(
+      "@tauri-apps/api/webviewWindow"
+    );
+    return getCurrentWebviewWindow().label === "main";
+  } catch {
+    // Best-effort: default to primary so a real crash is still surfaced.
+    return true;
+  }
+}
+
+/**
  * Initialize identity and (on desktop) the durable disk sink. Idempotent per
  * process. Rotates old session logs, keeping the current + last
  * {@link KEEP_PREVIOUS_SESSIONS}.
@@ -142,24 +163,31 @@ export async function initSessionLog(): Promise<void> {
       /* readDir may fail on first run; non-fatal */
     }
 
-    // Improper-shutdown detection: a leftover "running" sentinel from a PRIOR
-    // session means it never marked clean (crash / freeze / force-quit). Capture
-    // it for the recovery prompt before we claim the sentinel for this run.
+    // Only the primary (cold-launch) window manages the shared "running" sentinel
+    // + crash-detection; a sibling window (File > New Project, etc.) would see the
+    // first window's LIVE sentinel and falsely flag it as a prior crash.
+    const primary = await isPrimaryWindow();
     const sentinelPath = await join(dir, SENTINEL_FILE);
-    try {
-      const { readTextFile, exists } = await import("@tauri-apps/plugin-fs");
-      if (await exists(sentinelPath)) {
-        const prev = JSON.parse(await readTextFile(sentinelPath));
-        if (prev?.sessionId && prev.sessionId !== sessionId) {
-          priorCrashInfo = {
-            sessionId: String(prev.sessionId),
-            bootTimestamp: Number(prev.bootTimestamp) || 0,
-            logName: String(prev.logName || ""),
-          };
+
+    // Improper-shutdown detection: a leftover sentinel from a PRIOR session means
+    // it never cleared (crash / freeze / force-quit). Capture it for the recovery
+    // prompt before we claim the sentinel for this run. Primary window only.
+    if (primary) {
+      try {
+        const { readTextFile, exists } = await import("@tauri-apps/plugin-fs");
+        if (await exists(sentinelPath)) {
+          const prev = JSON.parse(await readTextFile(sentinelPath));
+          if (prev?.sessionId && prev.sessionId !== sessionId) {
+            priorCrashInfo = {
+              sessionId: String(prev.sessionId),
+              bootTimestamp: Number(prev.bootTimestamp) || 0,
+              logName: String(prev.logName || ""),
+            };
+          }
         }
+      } catch {
+        /* no / corrupt sentinel — nothing to recover */
       }
-    } catch {
-      /* no / corrupt sentinel — nothing to recover */
     }
 
     const shortId = sessionId.slice(0, 8);
@@ -171,15 +199,19 @@ export async function initSessionLog(): Promise<void> {
       { append: false },
     );
 
-    // Claim the sentinel for THIS session (removed on clean shutdown).
-    try {
-      await writeTextFile(
-        sentinelPath,
-        JSON.stringify({ sessionId, bootTimestamp, logName }),
-        { append: false },
-      );
-    } catch {
-      /* non-fatal */
+    // Claim the sentinel for THIS session — primary only. It means "the app is
+    // running" and is cleared once, on RunEvent::Exit in src-tauri (reliable on
+    // every quit path incl. the macOS predefined Cmd+Q); siblings leave it alone.
+    if (primary) {
+      try {
+        await writeTextFile(
+          sentinelPath,
+          JSON.stringify({ sessionId, bootTimestamp, logName }),
+          { append: false },
+        );
+      } catch {
+        /* non-fatal */
+      }
     }
 
     registerLogSink((entry) => {
@@ -188,8 +220,10 @@ export async function initSessionLog(): Promise<void> {
     });
 
     window.addEventListener("beforeunload", () => {
+      // Flush the tail; do NOT clear the sentinel here — a per-window unload would
+      // clear the SHARED sentinel while sibling windows keep running. RunEvent::Exit
+      // (src-tauri) owns the single clear-on-app-exit.
       void flush();
-      void markCleanShutdown();
     });
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "hidden") void flush();
@@ -206,9 +240,9 @@ export function getPriorCrashInfo(): PriorCrashInfo | null {
   return priorCrashInfo;
 }
 
-/** Clear this session's crash flag by removing the running sentinel. Called from
- *  graceful-exit paths (quit.ts `forceQuit` + `beforeunload`) and the Rust
- *  `Destroyed` window handler. Best-effort. */
+/** Clear the running sentinel. Now a belt-and-suspenders call from the JS quit
+ *  path (quit.ts `forceQuit`); the authoritative clear is `RunEvent::Exit` in
+ *  src-tauri, which fires on every quit path incl. the macOS Cmd+Q. Best-effort. */
 export async function markCleanShutdown(): Promise<void> {
   if (!isTauri) return;
   try {
