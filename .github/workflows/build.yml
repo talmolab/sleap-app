@@ -574,10 +574,16 @@ jobs:
           fi
           echo "Collected $count file(s)"
 
+      # macOS gets its own human-readable name for this one: it's the only
+      # platform where the file a person actually double-clicks (.dmg) and
+      # the file Tauri's updater consumes (.app.tar.gz, next step) differ --
+      # "-dmg" says what it is without requiring "universal" (arch jargon) to
+      # make sense of it. Windows/Linux keep the plain sleap-app-<target>
+      # name, since there's nothing to disambiguate there.
       - name: Upload installer artifacts
         uses: actions/upload-artifact@v6
         with:
-          name: sleap-app-${{ matrix.target }}
+          name: ${{ matrix.target == 'macos-universal' && 'sleap-app-macos-dmg' || format('sleap-app-{0}', matrix.target) }}
           path: |
             artifacts/*
             !artifacts/*.tar.gz
@@ -589,13 +595,18 @@ jobs:
       # second copy of the app in an extractable format the in-app updater
       # needs, alongside the .dmg a human actually double-clicks. Bundling
       # both into one artifact zip roughly doubled its size for anyone who
-      # only wanted one of the two (#345). Split out into its own artifact;
-      # `ignore` rather than `error` since Windows/Linux don't produce this
-      # format at all today.
+      # only wanted one of the two (#345). Split out into its own artifact,
+      # named the same plain sleap-app-<target> way every other platform's
+      # single artifact already is -- this IS the real cross-platform build
+      # output (what Tauri's updater actually ships), the .dmg above is the
+      # one-time-install extra. `ignore` rather than `error` since
+      # Windows/Linux don't produce this format at all today -- when they
+      # match zero files, this step uploads nothing under this name, so it
+      # never collides with their own (differently-named) installer artifact.
       - name: Upload updater artifacts
         uses: actions/upload-artifact@v6
         with:
-          name: sleap-app-${{ matrix.target }}-updater
+          name: sleap-app-${{ matrix.target }}
           path: |
             artifacts/*.tar.gz
             artifacts/*.tar.gz.sig
