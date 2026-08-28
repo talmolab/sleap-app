@@ -145,6 +145,8 @@ export interface ConfigHyperparams {
   lossScale: number;
   trainingMode: "reuse_config" | "resume" | "finetune";
   accelerator: "auto" | "cuda" | "mps" | "cpu";
+  /** Multi-GPU distribution strategy; only meaningful when numDevices > 1. */
+  trainerStrategy: "auto" | "ddp" | "fsdp";
   // Performance
   dataPipeline: DataPipeline;
   dataloaderWorkers: number;
@@ -222,6 +224,7 @@ export const defaultHyperparams: ConfigHyperparams = {
   lossScale: 5.0,
   trainingMode: "reuse_config",
   accelerator: "auto",
+  trainerStrategy: "auto",
   dataPipeline: "memory",
   dataloaderWorkers: 2,
   numDevices: "auto",
@@ -534,6 +537,10 @@ export function applyHyperparamsToYaml(
 
   // Number of devices ("auto" or a positive integer)
   trainer.trainer_devices = hp.numDevices;
+
+  // Multi-GPU distribution strategy ("auto"/"ddp"/"fsdp"); Lightning ignores it
+  // for single-device runs, so it only matters when trainer_devices > 1.
+  trainer.trainer_strategy = hp.trainerStrategy;
 
   // Early stopping
   if (!trainer.early_stopping) trainer.early_stopping = {};
@@ -1014,6 +1021,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         // treatment for the same reason, even though legacy doesn't call it
         // out by that name).
         accelerator: defaultHyperparams.accelerator,
+        trainerStrategy: defaultHyperparams.trainerStrategy,
         dataPipeline: defaultHyperparams.dataPipeline,
         dataloaderWorkers: defaultHyperparams.dataloaderWorkers,
         numDevices: defaultHyperparams.numDevices,
