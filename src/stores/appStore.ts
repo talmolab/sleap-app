@@ -249,6 +249,14 @@ export interface AppState {
   qcDisplayMode: QcMode;
   // Desktop self-update channel (persisted app preference)
   updateChannel: UpdateChannel;
+  // Whether the user has EVER manually picked a channel (persisted, sticky).
+  // False on a fresh profile — that's the window where AppUpdateSection is
+  // allowed to correct updateChannel's hardcoded "stable" default to match
+  // whatever channel the running build actually is (detected from its own
+  // version string), rather than showing "Stable" on a dev-channel install
+  // that was never told otherwise. Once true, auto-detection never fires
+  // again — an explicit choice always wins.
+  updateChannelExplicitlySet: boolean;
   // Whether the user has EVER selected the "latest" channel (persisted,
   // sticky — sees latest's badge even after switching back to "stable").
   // Gates whether latestUpdateAvailable below contributes to the ambient
@@ -544,6 +552,7 @@ export const PERSISTED_KEYS: (keyof AppState)[] = [
   "navigationDomain",
   "qcDisplayMode",
   "updateChannel",
+  "updateChannelExplicitlySet",
   "hasOptedIntoLatestChannel",
   "videoPrefixSwaps",
   // Layout + scale persistence (PyQt saveState/restoreState parity).
@@ -651,6 +660,7 @@ export const useAppStore = create<AppState>()(
       showNonVisibleOverride: new Map<Instance, boolean>(),
       qcDisplayMode: "manual",
       updateChannel: "stable",
+      updateChannelExplicitlySet: false,
       hasOptedIntoLatestChannel: false,
       stableUpdateAvailable: false,
       stableUpdateVersion: null,
@@ -905,6 +915,9 @@ export const useAppStore = create<AppState>()(
       setUpdateChannel: (channel) =>
         set((state) => {
           state.updateChannel = channel;
+          // An explicit pick permanently disables the auto-detect default in
+          // AppUpdateSection (see updateChannelExplicitlySet's own comment).
+          state.updateChannelExplicitlySet = true;
           // Sticky: once earned, "latest" keeps a say in the ambient badge
           // even if the user later switches back to "stable" — never unset.
           if (channel === "latest") state.hasOptedIntoLatestChannel = true;

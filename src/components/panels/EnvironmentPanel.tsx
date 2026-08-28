@@ -240,10 +240,14 @@ function ToolActions({
 // sleap-app self-update section
 // ---------------------------------------------------------------------------
 
-const UPDATE_CHANNELS: { value: UpdateChannel; label: string }[] = [
-  { value: "stable", label: "Stable" },
-  { value: "latest", label: "Latest" },
-  { value: "dev", label: "Dev (main)" },
+const UPDATE_CHANNELS: {
+  value: UpdateChannel;
+  label: string;
+  shortLabel: string;
+}[] = [
+  { value: "stable", label: "Stable", shortLabel: "Stable" },
+  { value: "latest", label: "Latest", shortLabel: "Latest" },
+  { value: "dev", label: "Dev (main)", shortLabel: "Dev" },
 ];
 
 /**
@@ -305,7 +309,21 @@ function AppUpdateSection() {
       try {
         const { getVersion } = await import("@tauri-apps/api/app");
         const v = await getVersion();
-        if (active) setVersion(v);
+        if (!active) return;
+        setVersion(v);
+        // Only build-dev.yml's dev-channel builds carry a "+run.sha" build
+        // metadata suffix -- stable/latest are always a clean tagged
+        // release with no "+". Correct updateChannel's hardcoded "stable"
+        // default to match, but only before the user has ever touched the
+        // dropdown themselves (see updateChannelExplicitlySet's comment).
+        if (
+          !useAppStore.getState().updateChannelExplicitlySet &&
+          v.includes("+")
+        ) {
+          useAppStore.setState((state) => {
+            state.updateChannel = "dev";
+          });
+        }
       } catch (err) {
         console.warn("[env] Failed to read app version:", err);
       }
@@ -362,6 +380,8 @@ function AppUpdateSection() {
 
   const latestVersion = pendingUpdate?.version ?? (version ? version : null);
   const updateAvailable = !!pendingUpdate;
+  const channelShortLabel =
+    UPDATE_CHANNELS.find((c) => c.value === channel)?.shortLabel ?? channel;
   // Dev-channel builds live under a single rolling `dev` release tag,
   // not their own `v{version}` tag, so there's no per-version release page to
   // link to (unlike stable/latest, which are always a real GitHub Release).
@@ -372,13 +392,19 @@ function AppUpdateSection() {
       <h4 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1">
         SLEAP App
       </h4>
-      {/* Row 1: status + action — always full opacity, never disabled by
-          isLocalBuild (only the channel control below is). */}
+      {/* Row 1: status + version/channel — always full opacity, never
+          disabled by isLocalBuild (only the channel control below is). */}
       <div className="flex items-center gap-2 py-0.5">
         <StatusIcon ok={!!version} />
         <span className="text-xs font-medium">sleap-app</span>
         {version && (
-          <span className="text-xs text-muted-foreground">v{version}</span>
+          <span className="text-xs text-muted-foreground">
+            v{version}
+            <span className="text-muted-foreground/70">
+              {" "}
+              · {channelShortLabel}
+            </span>
+          </span>
         )}
         {isLocalBuild && (
           <Badge
@@ -411,33 +437,11 @@ function AppUpdateSection() {
             Release Notes
           </button>
         )}
-        <Button
-          variant="ghost"
-          size="sm"
-          className={cn(
-            "h-5 text-[10px] ml-auto",
-            (isLocalBuild || !updateAvailable) && "opacity-60"
-          )}
-          onClick={doUpdate}
-          disabled={updating || isLocalBuild || !updateAvailable}
-          title={
-            isLocalBuild
-              ? "Running via tauri:dev — there's no installer to apply this update to. Run `bun run tauri:build` to actually install one."
-              : updateAvailable
-                ? "Download and install the new version, then relaunch"
-                : "You're already on the newest version for this channel"
-          }
-        >
-          {updating ? (
-            <Loader2 className="h-3 w-3 animate-spin mr-1" />
-          ) : (
-            <ArrowUpCircle className="h-3 w-3 mr-1" />
-          )}
-          {updating ? "Updating..." : "Update"}
-        </Button>
       </div>
 
-      {/* Row 2: channel control, on its own line so row 1 doesn't wrap. */}
+      {/* Row 2: channel control + Update action, on its own line so row 1
+          (which can already carry a version/channel/badge/notes-link combo)
+          doesn't wrap. */}
       <div
         className={cn(
           "flex items-center gap-1.5 py-0.5 pl-5",
@@ -483,6 +487,30 @@ function AppUpdateSection() {
             </TooltipContent>
           </Tooltip>
         </TooltipProvider>
+        <Button
+          variant="ghost"
+          size="sm"
+          className={cn(
+            "h-5 text-[10px] ml-auto",
+            (isLocalBuild || !updateAvailable) && "opacity-60"
+          )}
+          onClick={doUpdate}
+          disabled={updating || isLocalBuild || !updateAvailable}
+          title={
+            isLocalBuild
+              ? "Running via tauri:dev — there's no installer to apply this update to. Run `bun run tauri:build` to actually install one."
+              : updateAvailable
+                ? "Download and install the new version, then relaunch"
+                : "You're already on the newest version for this channel"
+          }
+        >
+          {updating ? (
+            <Loader2 className="h-3 w-3 animate-spin mr-1" />
+          ) : (
+            <ArrowUpCircle className="h-3 w-3 mr-1" />
+          )}
+          {updating ? "Updating..." : "Update"}
+        </Button>
       </div>
     </section>
   );

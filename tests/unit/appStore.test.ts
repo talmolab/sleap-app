@@ -934,4 +934,29 @@ describe("tutorial step navigation", () => {
       expect(useAppStore.getState().tutorialHighestStepIndex).toBe(2);
     });
   });
+
+  describe("setUpdateChannel", () => {
+    it("defaults to stable, unset", () => {
+      const s = useAppStore.getState();
+      expect(s.updateChannel).toBe("stable");
+      expect(s.updateChannelExplicitlySet).toBe(false);
+    });
+
+    it("marks updateChannelExplicitlySet on any explicit pick", () => {
+      useAppStore.getState().setUpdateChannel("stable");
+      expect(useAppStore.getState().updateChannelExplicitlySet).toBe(true);
+    });
+
+    it("picking latest also sets the sticky hasOptedIntoLatestChannel flag", () => {
+      useAppStore.getState().setUpdateChannel("latest");
+      const s = useAppStore.getState();
+      expect(s.hasOptedIntoLatestChannel).toBe(true);
+      expect(s.updateChannelExplicitlySet).toBe(true);
+    });
+
+    it("PERSISTED_KEYS includes both updateChannel and updateChannelExplicitlySet", () => {
+      expect(PERSISTED_KEYS).toContain("updateChannel");
+      expect(PERSISTED_KEYS).toContain("updateChannelExplicitlySet");
+    });
+  });
 });
