@@ -574,7 +574,7 @@ function Sidebar() {
           share the column height (flex-1); collapsed ones show header only. */}
       {showPanel && (
         <div
-          className="h-full bg-card flex flex-col overflow-hidden"
+          className="h-full bg-card flex flex-col overflow-y-auto"
           style={{ width: panelWidth }}
         >
           {stackPanels.map((panel, idx) => {
@@ -600,8 +600,19 @@ function Sidebar() {
                 <div
                   data-section-id={panel.id}
                   className={cn(
-                    "flex flex-col min-h-0 border-b border-border last:border-b-0",
-                    sectionCollapsed && "shrink-0"
+                    "flex flex-col border-b border-border last:border-b-0",
+                    // Expanded sections get a real floor (not min-h-0) so an
+                    // open panel always has enough room for its header +
+                    // a few table rows, even when several panels are open —
+                    // otherwise the accordion can squeeze a section below what
+                    // its own content needs, which hands scrolling off to this
+                    // outer stack and makes the panel's sticky table header
+                    // stop sticking (it only tracks its own inner scroll).
+                    // The stack above is now overflow-y-auto, so if all the
+                    // open sections' floors together exceed the column's
+                    // height, you scroll the stack to reach the rest instead
+                    // of everything getting clipped or crushed.
+                    sectionCollapsed ? "shrink-0" : "min-h-40"
                   )}
                   style={
                     sectionCollapsed

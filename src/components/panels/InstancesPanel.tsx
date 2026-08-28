@@ -524,8 +524,25 @@ export function InstancesPanel() {
       {/* Plain overflow container (not Radix ScrollArea): its `display:table`
           viewport made the table's `w-full` size to content, so horizontal
           scroll never engaged and the wide Display column clipped (#278). A
-          bounded overflow-auto div scrolls both axes reliably in WKWebView. */}
-      <div className="flex-1 min-h-0 overflow-auto">
+          bounded overflow-auto div scrolls both axes reliably in WKWebView.
+          min-h (not min-h-0): a scroll container's automatic min-height is 0,
+          so without a floor this shrinks away entirely once the selected
+          instance's detail panel (below) has room to grow — hiding the table
+          instead of the panel scrolling as a whole (#339-class bug). Sized to
+          comfortably fit inside the section's own min-h-40 floor (AppShell)
+          alongside this panel's other fixed chrome — if this floor were
+          bigger than that leaves room for, the panel's natural content would
+          exceed the section box, pushing scrolling up to the section's outer
+          overflow-auto wrapper instead of this div, and the sticky header
+          below only tracks ITS OWN scroll — not the outer one — so it would
+          stop sticking. */}
+      {/* [&_[data-slot=table-container]]:overflow-visible neutralizes Table's
+          own overflow-x-auto wrapper, which otherwise counts as its own
+          scroll container (overflow-x:auto forces overflow-y:auto too) and
+          steals the sticky thead's "nearest scrolling ancestor" — making
+          sticky a no-op since that inner wrapper itself never scrolls. This
+          div already handles both axes via overflow-auto. */}
+      <div className="flex-1 min-h-24 overflow-auto [&_[data-slot=table-container]]:overflow-visible">
         {instances.length === 0 ? (
           <p className="text-xs text-muted-foreground p-2">
             No instances on this frame.
@@ -538,23 +555,23 @@ export function InstancesPanel() {
           // min-w-max: grow the table to content width so a narrow sidebar
           // overflows and the panel's overflow-auto container scrolls, instead
           // of clipping the Display toggles (#278).
-          <Table className="min-w-max">
-            <TableHeader>
+          <Table className="min-w-max border-separate border-spacing-0">
+            <TableHeader className="sticky top-0 z-10 bg-background">
               <TableRow className="border-b hover:bg-transparent">
-                <TableHead className="py-1 px-2 text-xs font-normal w-6 h-auto" />
-                <TableHead className="py-1 px-2 text-xs font-normal h-auto">
+                <TableHead className="py-1 px-2 text-xs font-normal w-6 h-auto border-b" />
+                <TableHead className="py-1 px-2 text-xs font-normal h-auto border-b">
                   Track
                 </TableHead>
-                <TableHead className="py-1 px-2 text-xs font-normal h-auto">
+                <TableHead className="py-1 px-2 text-xs font-normal h-auto border-b">
                   Type
                 </TableHead>
-                <TableHead className="py-1 px-2 text-xs font-normal text-right h-auto">
+                <TableHead className="py-1 px-2 text-xs font-normal text-right h-auto border-b">
                   Nodes
                 </TableHead>
-                <TableHead className="py-1 px-2 text-xs font-normal text-right h-auto">
+                <TableHead className="py-1 px-2 text-xs font-normal text-right h-auto border-b">
                   Score
                 </TableHead>
-                <TableHead className="py-1 px-2 text-xs font-normal text-right h-auto">
+                <TableHead className="py-1 px-2 text-xs font-normal text-right h-auto border-b">
                   Display
                 </TableHead>
               </TableRow>

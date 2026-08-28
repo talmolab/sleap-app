@@ -774,23 +774,36 @@ export function FramesPanel() {
         )}
       </div>
 
-      {/* Table */}
-      <div ref={scrollRootRef} className="flex-1 min-h-0">
-      <ScrollArea className="h-full">
+      {/* Table. min-h (not min-h-0): a scroll container's automatic
+          min-height is 0, so without a floor this shrinks away entirely once
+          the footer below has room to grow — hiding the table instead of the
+          panel scrolling as a whole (#339-class bug). Sized to comfortably
+          fit inside the section's own min-h-40 floor (AppShell) alongside
+          this panel's other fixed chrome — if this floor were bigger than
+          that leaves room for, the panel's natural content would exceed the
+          section box, pushing scrolling up to the section's outer
+          overflow-auto wrapper instead of this one, and the sticky header
+          below only tracks ITS OWN scroll — not the outer one — so it would
+          stop sticking. */}
+      <div ref={scrollRootRef} className="flex-1 min-h-24">
+      {/* Neutralize Table's own overflow-x-auto wrapper (see VideosPanel) so
+          the sticky thead sticks to this ScrollArea's actually-scrolling
+          Viewport instead of that inert nested scroll container. */}
+      <ScrollArea className="h-full [&_[data-slot=table-container]]:overflow-visible">
         {rows.length === 0 ? (
           <p className="text-xs text-muted-foreground p-2">
             No labeled frames
           </p>
         ) : (
-          <Table className="w-max min-w-full">
-            <TableHeader>
+          <Table className="w-max min-w-full border-separate border-spacing-0">
+            <TableHeader className="sticky top-0 z-10 bg-background">
               <TableRow className="border-b hover:bg-transparent">
                 {visibleColumns.map((col) => (
                   <TableHead
                     key={col.key}
                     onClick={() => toggleSort(col.key)}
                     className={cn(
-                      "py-1 px-2 text-xs font-normal h-auto cursor-pointer select-none whitespace-nowrap",
+                      "py-1 px-2 text-xs font-normal h-auto cursor-pointer select-none whitespace-nowrap border-b",
                       col.align === "right" && "text-right",
                       (col.align as string) === "center" && "text-center"
                     )}
