@@ -822,7 +822,10 @@ export function EnvironmentPanel() {
               UV Tools
             </h4>
 
-            {/* sleap-nn */}
+            {/* sleap-nn: status/version on their own line, actions on the
+                next one -- crammed into a single non-wrapping row, the
+                Update/Reinstall buttons got pushed off and clipped on a
+                narrow panel. */}
             <div className="flex items-center gap-2 py-0.5">
               <StatusIcon ok={!!sleapNnTool} />
               <span className="text-xs font-medium">sleap-nn</span>
@@ -859,6 +862,8 @@ export function EnvironmentPanel() {
                   </button>
                 </>
               )}
+            </div>
+            <div className="flex items-center py-0.5 pl-5">
               <div className="ml-auto">
                 <ToolActions
                   tool={sleapNnTool}
