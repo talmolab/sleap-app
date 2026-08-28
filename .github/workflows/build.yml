@@ -574,13 +574,33 @@ jobs:
           fi
           echo "Collected $count file(s)"
 
-      - name: Upload build artifacts
+      - name: Upload installer artifacts
         uses: actions/upload-artifact@v6
         with:
           name: sleap-app-${{ matrix.target }}
-          path: artifacts/*
+          path: |
+            artifacts/*
+            !artifacts/*.tar.gz
+            !artifacts/*.tar.gz.sig
           retention-days: 7
           if-no-files-found: error
+
+      # macOS's createUpdaterArtifacts also produces SLEAP.app.tar.gz -- a full
+      # second copy of the app in an extractable format the in-app updater
+      # needs, alongside the .dmg a human actually double-clicks. Bundling
+      # both into one artifact zip roughly doubled its size for anyone who
+      # only wanted one of the two (#345). Split out into its own artifact;
+      # `ignore` rather than `error` since Windows/Linux don't produce this
+      # format at all today.
+      - name: Upload updater artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: sleap-app-${{ matrix.target }}-updater
+          path: |
+            artifacts/*.tar.gz
+            artifacts/*.tar.gz.sig
+          retention-days: 7
+          if-no-files-found: ignore
 
   release:
     needs: build
