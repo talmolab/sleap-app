@@ -1110,8 +1110,23 @@ export function SuggestionsPanel({
         )}
       </div>
 
+      {/* min-h (not min-h-0): a scroll container's automatic min-height is 0,
+          so without a floor this shrinks away entirely once the generation
+          controls above have room to grow — hiding the suggestions table
+          instead of the panel scrolling as a whole (#339-class bug). Sized to
+          comfortably fit inside the section's own min-h-40 floor (AppShell)
+          alongside this panel's other fixed chrome — if this floor were
+          bigger than that leaves room for, the panel's natural content would
+          exceed the section box, pushing scrolling up to the section's outer
+          overflow-auto wrapper instead of this div, and the sticky header
+          below only tracks ITS OWN scroll — not the outer one — so it would
+          stop sticking.
+          [&_[data-slot=table-container]]:overflow-visible neutralizes
+          Table's own overflow-x-auto wrapper, which otherwise counts as its
+          own scroll container and steals the sticky thead's "nearest
+          scrolling ancestor" — making sticky a no-op. */}
       <div
-        className="flex-1 min-h-0 overflow-y-auto"
+        className="flex-1 min-h-24 overflow-y-auto [&_[data-slot=table-container]]:overflow-visible"
         data-tutorial="suggestions-table"
       >
         {suggestions.length === 0 ? (
