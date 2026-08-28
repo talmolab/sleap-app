@@ -27,6 +27,7 @@ import { PANELS } from "./panelRegistry";
 import { reorderById, visibleOpenPanels } from "@/lib/panelLayout";
 import { hasUnsavedWork } from "@/lib/unsavedGuard";
 import { toast } from "@/lib/notify";
+import { ClearAllToastsButton } from "@/components/layout/ClearAllToastsButton";
 import { diagnosticsReady, getPriorCrashInfo } from "@/lib/diagnostics";
 import { setupLabelsAutosave } from "@/lib/labelsAutosave";
 import { WelcomeScreen } from "./WelcomeScreen";
@@ -320,10 +321,12 @@ export function AppShell() {
         theme="dark"
         position="bottom-right"
         closeButton
+        offset={{ bottom: 56 }}
         toastOptions={{
           className: "bg-card border-border text-foreground",
         }}
       />
+      <ClearAllToastsButton />
     </div>
   );
 }

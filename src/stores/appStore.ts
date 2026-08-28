@@ -1336,21 +1336,40 @@ export const useAppStore = create<AppState>()(
             }
             return;
           }
-          // Multi-panel mode: stack toggle.
+          // Multi-panel mode: accordion. A rail click focuses the clicked panel
+          // (open + expanded) and minimizes every OTHER open panel to a header
+          // strip. Re-clicking the currently-expanded panel collapses it. The
+          // per-panel chevron (toggleSectionCollapsed), resize, and close (X)
+          // stay independent, so interacting with one open panel never affects
+          // its neighbors. Panels are removed from the stack only via closePanel.
           if (state.sidebarCollapsed) {
             state.sidebarCollapsed = false;
             if (!state.sidebarOpenPanels.includes(panelId)) {
               state.sidebarOpenPanels = [...state.sidebarOpenPanels, panelId];
             }
+            state.sidebarCollapsedSections = state.sidebarOpenPanels.filter(
+              (id) => id !== panelId,
+            );
             return;
           }
-          const wasOpen = state.sidebarOpenPanels.includes(panelId);
-          state.sidebarOpenPanels = toggleId(state.sidebarOpenPanels, panelId);
-          if (wasOpen) {
-            // Closing: drop any collapsed marker so a re-open starts expanded.
-            state.sidebarCollapsedSections =
-              state.sidebarCollapsedSections.filter((id) => id !== panelId);
+          const isOpen = state.sidebarOpenPanels.includes(panelId);
+          const isExpanded =
+            isOpen && !state.sidebarCollapsedSections.includes(panelId);
+          if (isExpanded) {
+            // Re-click the expanded panel → collapse it to a header strip.
+            state.sidebarCollapsedSections = [
+              ...state.sidebarCollapsedSections,
+              panelId,
+            ];
+            return;
           }
+          // Open (if needed) + expand the clicked panel, minimize the rest.
+          if (!isOpen) {
+            state.sidebarOpenPanels = [...state.sidebarOpenPanels, panelId];
+          }
+          state.sidebarCollapsedSections = state.sidebarOpenPanels.filter(
+            (id) => id !== panelId,
+          );
         }),
 
       // Programmatically open + expand a panel and reveal the column. In single
