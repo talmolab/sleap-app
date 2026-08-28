@@ -572,11 +572,14 @@ jobs:
           fi
           echo "Collected $count file(s)"
 
-      - name: Upload build artifacts
+      - name: Upload installer artifacts
         uses: actions/upload-artifact@v6
         with:
           name: sleap-app-dev-${{ matrix.target }}
-          path: artifacts/*
+          path: |
+            artifacts/*
+            !artifacts/*.tar.gz
+            !artifacts/*.tar.gz.sig
           # Retention left at the repo default: the dev release itself only
           # ever keeps the SINGLE most recent build (delete + recreate), so
           # this artifact copy is the only place a past dev build survives at
@@ -586,6 +589,22 @@ jobs:
           # this is for a maintainer digging through history, not for handing
           # a tester a link.
           if-no-files-found: error
+
+      # macOS's createUpdaterArtifacts also produces SLEAP.app.tar.gz -- a full
+      # second copy of the app in an extractable format the in-app updater
+      # needs, alongside the .dmg a human actually double-clicks. Bundling
+      # both into one artifact zip roughly doubled its size for anyone who
+      # only wanted one of the two (#345). Split out into its own artifact;
+      # `ignore` rather than `error` since Windows/Linux don't produce this
+      # format at all today.
+      - name: Upload updater artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: sleap-app-dev-${{ matrix.target }}-updater
+          path: |
+            artifacts/*.tar.gz
+            artifacts/*.tar.gz.sig
+          if-no-files-found: ignore
 
   # Publishes to a single rolling `dev` pre-release: deleted and
   # recreated every run that actually builds (rather than accumulating assets
