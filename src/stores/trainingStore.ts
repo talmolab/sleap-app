@@ -252,6 +252,12 @@ export interface ConfigFile {
   modelType: string; // parsed from head_configs (e.g., "centroid")
   slot: string; // which slot this fills (e.g., "centroid", "centered_instance", "config")
   hyperparams: ConfigHyperparams; // per-config hyperparameters
+  /**
+   * Snapshot of `hyperparams` as the config was loaded/imported. Powers the
+   * "modified" indicators (diff against this) and Reset, which restores to these
+   * as-loaded values — not the global `defaultHyperparams`.
+   */
+  originalHyperparams: ConfigHyperparams;
   hasTrainedModel: boolean; // true if config has a non-empty run_name (trained model exists)
   /** Absolute path to this config's source run's checkpoint file, for Resume/Fine-tune. `null` for a baseline profile or a manually-browsed file (no known run directory). */
   checkpointPath: string | null;
@@ -357,6 +363,8 @@ interface TrainingState {
   // Actions
   setConfig: <K extends keyof TrainingConfig>(key: K, value: TrainingConfig[K]) => void;
   updateConfigHyperparams: (slot: string, updates: Partial<ConfigHyperparams>) => void;
+  /** Restore ALL of a config's hyperparameters to its as-loaded baseline. */
+  resetConfigHyperparams: (slot: string) => void;
   updateConfigCheckpointPath: (slot: string, path: string | null) => void;
   addConfigFile: (file: ConfigFile) => void;
   removeConfigFile: (slot: string) => void;
@@ -743,6 +751,18 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       },
     })),
 
+  resetConfigHyperparams: (slot) =>
+    set((state) => ({
+      config: {
+        ...state.config,
+        configs: state.config.configs.map((c) =>
+          c.slot === slot
+            ? { ...c, hyperparams: { ...c.originalHyperparams } }
+            : c,
+        ),
+      },
+    })),
+
   updateConfigCheckpointPath: (slot, path) =>
     set((state) => ({
       config: {
@@ -1062,6 +1082,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         modelType: detectedModelType,
         slot,
         hyperparams,
+        originalHyperparams: { ...hyperparams },
         hasTrainedModel,
         checkpointPath,
       };

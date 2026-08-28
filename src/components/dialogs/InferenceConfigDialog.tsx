@@ -2,7 +2,6 @@ import { useRef, useCallback, useState } from "react";
 import {
   Dialog,
   DialogContent,
-  DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -14,8 +13,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, ChevronDown, ChevronRight } from "lucide-react";
+import { Search, ChevronDown, ChevronRight, Check, RotateCcw } from "lucide-react";
 import { HintBubble } from "@/components/HintBubble";
+import { confirmDialog } from "@/stores/confirmStore";
 
 export interface InferenceConfigValues {
   peakThreshold: number;
@@ -68,6 +68,8 @@ interface InferenceConfigDialogProps {
   tracking: boolean;
   onTrackingChange: (enabled: boolean) => void;
   skeletonNodes: string[];
+  /** When provided, shows a "Reset to defaults…" footer action. */
+  onResetDefaults?: () => void;
 }
 
 const CATEGORIES = [
@@ -274,6 +276,7 @@ export function InferenceConfigDialog({
   tracking,
   onTrackingChange,
   skeletonNodes,
+  onResetDefaults,
 }: InferenceConfigDialogProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [searchQuery, setSearchQuery] = useState("");
@@ -302,39 +305,58 @@ export function InferenceConfigDialog({
     }
   };
 
+  const handleResetDefaults = async () => {
+    const ok = await confirmDialog({
+      title: "Reset to defaults?",
+      message: "This restores all inference parameters to their default values, discarding your edits.",
+      confirmLabel: "Reset",
+      destructive: true,
+    });
+    if (ok) onResetDefaults?.();
+  };
+
   return (
     <Dialog open={open} onOpenChange={(isOpen) => { if (!isOpen) { onClose(); setSearchQuery(""); } }}>
-      <DialogContent className="w-full sm:max-w-[1000px] h-[70vh] p-0 overflow-hidden inset-0 translate-x-0 translate-y-0 m-auto flex flex-col" onKeyDown={(e) => e.stopPropagation()}>
-        <DialogHeader className="px-6 pt-5 pb-3 shrink-0">
-          <DialogTitle className="text-lg">Inference Configuration</DialogTitle>
-          {/* Search bar */}
-          <div className="relative mt-2">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-            <Input
-              type="text"
-              placeholder="Search parameters..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="h-9 text-sm pl-9"
-            />
-            {searchResults.length > 0 && (
-              <div className="absolute top-full left-0 right-0 mt-1 bg-popover border rounded-md shadow-lg z-10 max-h-48 overflow-y-auto">
-                {searchResults.map((r) => (
-                  <button
-                    key={r.fieldId}
-                    className="w-full text-left px-3 py-2 text-sm hover:bg-accent/50 flex items-center justify-between"
-                    onClick={() => handleSearchSelect(r.fieldId)}
-                  >
-                    <span>{r.label}</span>
-                    <span className="text-xs text-muted-foreground">{CATEGORIES.find((c) => c.id === r.section)?.label}</span>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-        </DialogHeader>
+      <DialogContent showCloseButton={false} className="w-[92vw] h-[90vh] min-w-[640px] min-h-[480px] max-w-[96vw] sm:max-w-[96vw] max-h-[94vh] resize overflow-hidden p-0 inset-0 translate-x-0 translate-y-0 m-auto flex flex-col" onKeyDown={(e) => e.stopPropagation()}>
+        {/* Compact header: title (left) · saved indicator (right) */}
+        <div className="relative flex items-center justify-between gap-4 px-6 py-2.5 border-b shrink-0">
+          <DialogTitle className="text-base font-semibold shrink-0">Inference Configuration</DialogTitle>
+          <span
+            className="flex items-center gap-1.5 text-xs text-muted-foreground shrink-0"
+            title="Edits are saved automatically as you type"
+          >
+            <Check className="h-3.5 w-3.5 text-emerald-500" />
+            All changes saved
+          </span>
+        </div>
 
-        <div className="flex flex-1 min-h-0 border-t">
+        {/* Field search — full-width row snug below the header */}
+        <div className="relative px-6 py-2 border-b shrink-0">
+          <Search className="absolute left-8 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
+          <Input
+            type="text"
+            placeholder="Search parameters..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="h-9 text-sm pl-9"
+          />
+          {searchResults.length > 0 && (
+            <div className="absolute top-full left-6 right-6 mt-1 bg-popover border rounded-md shadow-lg z-10 max-h-48 overflow-y-auto">
+              {searchResults.map((r) => (
+                <button
+                  key={r.fieldId}
+                  className="w-full text-left px-3 py-2 text-sm hover:bg-accent/50 flex items-center justify-between"
+                  onClick={() => handleSearchSelect(r.fieldId)}
+                >
+                  <span>{r.label}</span>
+                  <span className="text-xs text-muted-foreground">{CATEGORIES.find((c) => c.id === r.section)?.label}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="flex flex-1 min-h-0">
           {/* Left nav — jump links */}
           <nav className="w-[180px] border-r bg-muted/30 py-3 shrink-0">
             {CATEGORIES.filter(
@@ -876,6 +898,29 @@ export function InferenceConfigDialog({
               />
             </div>
           </div>
+        </div>
+
+        {/* Footer: reset (left) · Done (right) */}
+        <div className="flex items-center justify-between px-6 py-3 border-t shrink-0">
+          {onResetDefaults ? (
+            <button
+              type="button"
+              onClick={handleResetDefaults}
+              className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+              Reset to defaults…
+            </button>
+          ) : (
+            <span />
+          )}
+          <button
+            type="button"
+            onClick={() => { onClose(); setSearchQuery(""); }}
+            className="px-4 h-8 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90"
+          >
+            Done
+          </button>
         </div>
       </DialogContent>
     </Dialog>

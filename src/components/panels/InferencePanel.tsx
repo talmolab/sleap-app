@@ -1348,6 +1348,48 @@ export function InferencePanel() {
         tracking={tracking}
         onTrackingChange={setTracking}
         skeletonNodes={skeletonNodeNames}
+        onResetDefaults={() => {
+          setPeakThreshold(DEFAULTS.peakThreshold);
+          setMaxInstances(DEFAULTS.maxInstances); setNoMaxInstances(DEFAULTS.maxInstances === null);
+          setIntegralRefinement(DEFAULTS.integralRefinement);
+          setIntegralPatchSize(DEFAULTS.integralPatchSize);
+          setNPoints(DEFAULTS.nPoints);
+          setMaxEdgeLengthRatio(DEFAULTS.maxEdgeLengthRatio);
+          setDistPenaltyWeight(DEFAULTS.distPenaltyWeight);
+          setMinLineScores(DEFAULTS.minLineScores);
+          setTracking(DEFAULTS.tracking);
+          setTrackerMethod(DEFAULTS.trackerMethod);
+          setSimilarityMethod(DEFAULTS.similarityMethod);
+          setMatchingMethod(DEFAULTS.matchingMethod);
+          setTrackingWindowSize(DEFAULTS.trackingWindowSize);
+          setMaxTracks(DEFAULTS.maxTracks); setNoMaxTracks(DEFAULTS.maxTracks === null);
+          setConnectSingleBreaks(DEFAULTS.connectSingleBreaks);
+          setRobust(DEFAULTS.robust);
+          setMinMatchPoints(DEFAULTS.minMatchPoints);
+          setMinNewTrackPoints(DEFAULTS.minNewTrackPoints);
+          setScoringReduction(DEFAULTS.scoringReduction);
+          setTrackingTargetInstanceCount(DEFAULTS.trackingTargetInstanceCount);
+          setTrackingPreCullToTarget(DEFAULTS.trackingPreCullToTarget);
+          setTrackingPreCullIouThreshold(DEFAULTS.trackingPreCullIouThreshold);
+          setTrackingCleanInstanceCount(DEFAULTS.trackingCleanInstanceCount);
+          setTrackingCleanIouThreshold(DEFAULTS.trackingCleanIouThreshold);
+          setFlowImgScale(DEFAULTS.flowImgScale);
+          setFlowWindowSize(DEFAULTS.flowWindowSize);
+          setFlowMaxLevels(DEFAULTS.flowMaxLevels);
+          setKfTrackFeatures(DEFAULTS.kfTrackFeatures);
+          setKfInitFrameCount(DEFAULTS.kfInitFrameCount);
+          setKfNodeIndices(DEFAULTS.kfNodeIndices);
+          setKfResetGapSize(DEFAULTS.kfResetGapSize);
+          setEnsureChannels(DEFAULTS.ensureChannels);
+          setFilterOverlapping(DEFAULTS.filterOverlapping);
+          setFilterMethod(DEFAULTS.filterMethod);
+          setFilterThreshold(DEFAULTS.filterThreshold);
+          setFilterMinVisibleNodes(DEFAULTS.filterMinVisibleNodes);
+          setFilterMinVisibleNodeFraction(DEFAULTS.filterMinVisibleNodeFraction);
+          setFilterMinMeanNodeScore(DEFAULTS.filterMinMeanNodeScore);
+          setFilterMinInstanceScore(DEFAULTS.filterMinInstanceScore);
+          setFilterMinCentroidDistance(DEFAULTS.filterMinCentroidDistance);
+        }}
         values={{
           peakThreshold, maxInstances,
           integralRefinement, integralPatchSize,
