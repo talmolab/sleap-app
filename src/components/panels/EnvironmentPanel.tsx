@@ -415,7 +415,11 @@ function AppUpdateSection() {
             local build
           </Badge>
         )}
-        {latestVersion && (
+        {/* A local build can't install anything (Update stays disabled
+            below), so "→ vX" here would read as actionable when it isn't.
+            "up to date" still shows -- that's just informational either
+            way. */}
+        {latestVersion && !(isLocalBuild && updateAvailable) && (
           <span
             className={cn(
               "text-xs",
