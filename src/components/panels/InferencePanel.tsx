@@ -15,6 +15,7 @@ import type { InferenceConfig, PipelineType } from "@/stores/inferenceStore";
 import { useConnectStore } from "@/stores/connectStore";
 import { RemoteFileBrowser } from "@/components/dialogs/RemoteFileBrowser";
 import { isTauri } from "../../platform/index";
+import { detectGpu } from "../../platform/backend";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
@@ -63,6 +64,13 @@ const DEVICE_OPTIONS = [
   { value: "cuda", label: "CUDA (GPU)" },
   { value: "cpu", label: "CPU" },
   { value: "mps", label: "MPS (Apple Silicon)" },
+];
+
+const RUNTIME_OPTIONS = [
+  { value: "auto", label: "Auto" },
+  { value: "onnx", label: "ONNX" },
+  // TensorRT is NVIDIA-only (Linux/Windows); filtered out on non-CUDA hosts.
+  { value: "tensorrt", label: "TensorRT" },
 ];
 
 
@@ -329,6 +337,7 @@ const DEFAULTS: Omit<InferenceConfig, "modelPaths" | "videoIndex" | "frameRange"
   existingPredictions: "replace",
   batchSize: 4,
   device: "auto",
+  runtime: "auto",
   maxInstances: null,
   peakThreshold: 0.2,
   integralRefinement: true,
@@ -410,6 +419,13 @@ export function InferencePanel() {
   const [existingPredictions, setExistingPredictions] = useState(DEFAULTS.existingPredictions);
   const [batchSize, setBatchSize] = useState(DEFAULTS.batchSize);
   const [device, setDevice] = useState(DEFAULTS.device);
+  const [runtime, setRuntime] = useState(DEFAULTS.runtime);
+  // GPU backend, used to gate the TensorRT runtime option (NVIDIA/Linux/Windows
+  // only — detectGpu() returns "cuda" exactly there; Mac returns mps/cpu).
+  const [gpuBackend, setGpuBackend] = useState<string | null>(null);
+  useEffect(() => {
+    if (isTauri) detectGpu().then(setGpuBackend).catch(() => setGpuBackend(null));
+  }, []);
   const [maxInstances, setMaxInstances] = useState<number | null>(DEFAULTS.maxInstances);
   const [noMaxInstances, setNoMaxInstances] = useState(true);
   const [peakThreshold, setPeakThreshold] = useState(DEFAULTS.peakThreshold);
@@ -591,7 +607,7 @@ export function InferencePanel() {
       frameRange: frameRange === "custom" ? { start: Number(frameStart), end: Number(frameEnd) } : frameRange,
       sampleCount,
       excludeUserLabeled: trackOnly ? false : excludeUserLabeled,
-      existingPredictions, batchSize, device,
+      existingPredictions, batchSize, device, runtime,
       maxInstances: noMaxInstances ? null : maxInstances,
       peakThreshold,
       integralRefinement, integralPatchSize,
@@ -853,6 +869,21 @@ export function InferencePanel() {
                     <SelectTrigger className="h-6 text-[10px] w-32"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       {DEVICE_OPTIONS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+
+              {isTauri && (
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[10px] text-muted-foreground flex items-center gap-1">
+                    Runtime
+                    <HintBubble text="Inference engine. 'Auto' lets sleap-nn choose. 'ONNX'/'TensorRT' apply only when the selected model is an exported model directory (containing model.onnx / model.trt) — they're ignored for regular checkpoints, and require ONNX/TensorRT export support to be installed." />
+                  </span>
+                  <Select value={runtime} onValueChange={(v) => setRuntime(v as typeof runtime)} disabled={isRunning}>
+                    <SelectTrigger className="h-6 text-[10px] w-32"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {RUNTIME_OPTIONS.filter((o) => o.value !== "tensorrt" || gpuBackend === "cuda").map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
                     </SelectContent>
                   </Select>
                 </div>

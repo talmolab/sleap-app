@@ -154,6 +154,14 @@ export function buildInferenceArgs(
   // Inference settings
   args.push("--batch_size", String(config.batchSize));
   args.push("--device", config.device);
+  // Runtime override for an exported ONNX/TensorRT model directory. Only the
+  // `predict` subcommand accepts --runtime (the legacy `track` fallback has no
+  // such flag), and "auto" is sleap-nn's own default, so emit only for a
+  // non-auto predict run (mirrors the opt-in convention of the predict-only
+  // filter flags below).
+  if (subcommand === "predict" && config.runtime && config.runtime !== "auto") {
+    args.push("--runtime", config.runtime);
+  }
   if (config.maxInstances != null) {
     args.push("--max_instances", String(config.maxInstances));
   }

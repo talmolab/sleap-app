@@ -21,6 +21,7 @@ function baseConfig(overrides: Partial<InferenceConfig> = {}): InferenceConfig {
     existingPredictions: "replace",
     batchSize: 4,
     device: "auto",
+    runtime: "auto",
     maxInstances: null,
     peakThreshold: 0.2,
     integralRefinement: false,
@@ -81,6 +82,28 @@ function allAfter(args: string[], flag: string): string[] {
   }
   return out;
 }
+
+describe("buildInferenceArgs — runtime (ONNX/TensorRT)", () => {
+  it("omits --runtime when runtime is 'auto' (sleap-nn's own default)", () => {
+    const args = buildInferenceArgs(baseConfig({ runtime: "auto" }), io());
+    expect(args).not.toContain("--runtime");
+  });
+
+  it("emits --runtime onnx when selected", () => {
+    const args = buildInferenceArgs(baseConfig({ runtime: "onnx" }), io());
+    expect(valAfter(args, "--runtime")).toBe("onnx");
+  });
+
+  it("emits --runtime tensorrt when selected", () => {
+    const args = buildInferenceArgs(baseConfig({ runtime: "tensorrt" }), io());
+    expect(valAfter(args, "--runtime")).toBe("tensorrt");
+  });
+
+  it("never emits --runtime on the legacy `track` subcommand (no such flag there)", () => {
+    const args = buildInferenceArgs(baseConfig({ runtime: "onnx" }), { ...io(), subcommand: "track" });
+    expect(args).not.toContain("--runtime");
+  });
+});
 
 describe("buildInferenceArgs — subcommand", () => {
   it("defaults to the `predict` subcommand followed by --gui", () => {
