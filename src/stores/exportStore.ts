@@ -21,6 +21,8 @@ interface ExportState {
   /** Where the exported model was/will be written (<first model dir>/exported). */
   outputDir: string | null;
   openExport: (modelPaths: string[]) => void;
+  /** Replace the run directories to export (used by the in-dialog model picker). */
+  setModelPaths: (paths: string[]) => void;
   close: () => void;
   startExport: (format: ExportFormat, precision: ExportPrecision) => Promise<void>;
 }
@@ -54,6 +56,8 @@ export const useExportStore = create<ExportState>((set, get) => ({
 
   openExport: (modelPaths) =>
     set({ open: true, modelPaths, status: "idle", log: [], outputDir: null }),
+
+  setModelPaths: (paths) => set({ modelPaths: paths }),
 
   close: () => set({ open: false }),
 

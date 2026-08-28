@@ -6,6 +6,7 @@
  */
 
 import { useAppStore, type NavigationDomain } from "../../stores/appStore";
+import { useExportStore } from "@/stores/exportStore";
 import { PANELS } from "./panelRegistry";
 import { isTauri } from "../../lib/platform";
 import { APP_VERSION, APP_VERSION_KIND_LABEL } from "@/lib/version";
@@ -1103,6 +1104,7 @@ function PredictMenu() {
   const setOverlayModelsDialogOpen = useAppStore(
     (s) => s.setOverlayModelsDialogOpen
   );
+  const openExport = useExportStore((s) => s.openExport);
 
   return (
     <MenubarMenu>
@@ -1120,6 +1122,13 @@ function PredictMenu() {
           onClick={() => setExportPackageDialogOpen(true)}
         >
           Export Labels Package...
+        </MenubarItem>
+        <MenubarItem
+          disabled={!isTauri}
+          onClick={() => openExport([])}
+          title="Export a trained model to ONNX/TensorRT for faster inference (desktop only)"
+        >
+          Export Model to ONNX/TensorRT...
         </MenubarItem>
         <MenubarItem
           onClick={() =>

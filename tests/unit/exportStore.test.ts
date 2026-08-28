@@ -2,7 +2,22 @@ import { describe, it, expect } from "../bun-test";
 import {
   defaultExportOutputDir,
   logIndicatesMissingExportSupport,
+  useExportStore,
 } from "@/stores/exportStore";
+
+describe("useExportStore model paths", () => {
+  it("openExport([]) opens the dialog with no preset model (menu entry point)", () => {
+    useExportStore.getState().openExport([]);
+    expect(useExportStore.getState().open).toBe(true);
+    expect(useExportStore.getState().modelPaths).toEqual([]);
+  });
+
+  it("setModelPaths replaces the run directories (in-dialog picker)", () => {
+    useExportStore.getState().openExport(["/models/a"]);
+    useExportStore.getState().setModelPaths(["/models/a", "/models/b"]);
+    expect(useExportStore.getState().modelPaths).toEqual(["/models/a", "/models/b"]);
+  });
+});
 
 describe("defaultExportOutputDir", () => {
   it("places the exported bundle in the run dirs' PARENT, not under one run", () => {
