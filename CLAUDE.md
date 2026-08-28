@@ -100,3 +100,4 @@ Claude Code). For native MCP tool use instead of the CLI, run `tauri-pilot mcp`.
   - A full (non-prerelease) release also becomes: `https://app.sleap.ai` (stable/root).
   - If it's genuinely the highest known version (release or pre-release), also becomes: `https://app.sleap.ai/latest/`.
   - Tauri installer is built and attached to the release.
+- CLI one-liner installers (`scripts/install.sh`, `scripts/install.ps1`) are deployed under every channel path above, each defaulting to *that* channel when run with no flags: `.../install.sh` (root) and `.../stable/install.sh` both resolve the stable release, `.../latest/install.sh` the newest release-or-prerelease, `.../dev/install.sh` the rolling `dev` build. `--tag`/`--pre` (or `-Tag`/`-Pre`) always override the baked-in default.
