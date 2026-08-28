@@ -877,19 +877,6 @@ export function EnvironmentPanel() {
                 />
               </div>
             </div>
-            {sleapNnTool && sleapNnTool.commands.length > 0 && (
-              <div className="flex flex-wrap gap-1 pl-5 mt-0.5">
-                {sleapNnTool.commands.map((cmd) => (
-                  <Badge
-                    key={cmd}
-                    variant="secondary"
-                    className="text-[10px] px-1.5 py-0 h-4 rounded-sm font-mono"
-                  >
-                    {cmd}
-                  </Badge>
-                ))}
-              </div>
-            )}
 
             {/* sleap-rtc */}
             <div className="flex items-center gap-2 py-0.5 mt-1">
@@ -913,19 +900,6 @@ export function EnvironmentPanel() {
                 />
               </div>
             </div>
-            {sleapRtcTool && sleapRtcTool.commands.length > 0 && (
-              <div className="flex flex-wrap gap-1 pl-5 mt-0.5">
-                {sleapRtcTool.commands.map((cmd) => (
-                  <Badge
-                    key={cmd}
-                    variant="secondary"
-                    className="text-[10px] px-1.5 py-0 h-4 rounded-sm font-mono"
-                  >
-                    {cmd}
-                  </Badge>
-                ))}
-              </div>
-            )}
           </section>
         )}
 
