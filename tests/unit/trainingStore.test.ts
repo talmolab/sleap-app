@@ -755,6 +755,17 @@ trainer_config:
       const doc = yaml.load(applyHyperparamsToYaml(baseYaml, hp)) as Record<string, any>;
       expect(doc.trainer_config.trainer_devices).toBe(2);
     });
+
+    it("writes trainerStrategy to trainer_strategy", () => {
+      const hp = { ...defaultHyperparams, trainerStrategy: "ddp" as const };
+      const doc = yaml.load(applyHyperparamsToYaml(baseYaml, hp)) as Record<string, any>;
+      expect(doc.trainer_config.trainer_strategy).toBe("ddp");
+    });
+
+    it("writes the default trainerStrategy ('auto') to trainer_strategy", () => {
+      const doc = yaml.load(applyHyperparamsToYaml(baseYaml, defaultHyperparams)) as Record<string, any>;
+      expect(doc.trainer_config.trainer_strategy).toBe("auto");
+    });
   });
 
   describe("parseYamlConfig - performance", () => {
@@ -818,6 +829,7 @@ trainer_config:
   run_name: stale_run_from_another_machine
   trainer_accelerator: mps
   trainer_devices: 3
+  trainer_strategy: fsdp
   train_data_loader:
     num_workers: 8
 `;
@@ -846,6 +858,15 @@ trainer_config:
     it("resets dataPipeline to the default instead of the file's value", () => {
       const result = useTrainingStore.getState().parseYamlConfig(yamlWithStaleFields, "c.yaml", "centroid");
       expect(result!.hyperparams.dataPipeline).toBe(defaultHyperparams.dataPipeline);
+    });
+
+    it("resets trainerStrategy to the default ('auto') instead of the file's value", () => {
+      // Multi-GPU strategy is machine/topology-specific — a cluster's `fsdp`
+      // must not silently ride onto a single-GPU machine (same rationale as
+      // accelerator/numDevices above).
+      const result = useTrainingStore.getState().parseYamlConfig(yamlWithStaleFields, "c.yaml", "centroid");
+      expect(result!.hyperparams.trainerStrategy).toBe("auto");
+      expect(result!.hyperparams.trainerStrategy).toBe(defaultHyperparams.trainerStrategy);
     });
   });
 

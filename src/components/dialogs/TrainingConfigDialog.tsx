@@ -138,6 +138,7 @@ const PIPELINE_FIELD_DEFS = {
   dataloaderWorkers: { id: "field-dataloaderworkers", label: "Dataloader Workers", hint: "Number of parallel workers for loading training data. More workers = faster data loading but more CPU/memory usage. 0 = main thread only. Only takes effect with a caching pipeline (Cache in Memory / Cache to Disk); the Stream pipeline forces 0." },
   accelerator: { id: "field-accelerator", label: "Accelerator", hint: "Hardware to use for training. 'Auto' detects available hardware. Use 'cuda' for NVIDIA GPUs, 'mps' for Apple Silicon, or 'cpu' for CPU-only (slow).", keywords: "gpu cuda mps cpu device hardware" },
   numDevices: { id: "field-numdevices", label: "Number of Devices", hint: "Number of GPUs/devices to use for training. Set to 1 for single-GPU training.", keywords: "gpu devices" },
+  trainerStrategy: { id: "field-trainerstrategy", label: "Multi-GPU Strategy", hint: "Distributed-training strategy across multiple GPUs. 'auto' lets Lightning choose; 'ddp' (DistributedDataParallel) is the common multi-GPU default; 'fsdp' (Fully Sharded Data Parallel) shards model state for very large models. Only applies when Number of Devices > 1.", keywords: "gpu multi ddp fsdp strategy distributed parallel" },
   secWandb: { id: "pipeline-wandb", label: "WandB", keywords: "weights and biases w&b logging" },
   wandbEnable: { id: "field-wandb-enable", label: "Enable WandB for logging", hint: "Log training metrics, loss curves, and visualizations to Weights & Biases for experiment tracking.", keywords: "wandb w&b weights and biases" },
   wandbOffline: { id: "field-wandb-offline", label: "Offline Mode", hint: "Log to local disk only — no network or W&B login required. Upload later with `wandb sync`.", keywords: "wandb w&b offline mode local sync network airgap" },
@@ -1354,6 +1355,20 @@ export function TrainingConfigDialog({
                       <input type="checkbox" checked={(firstHp?.numDevices ?? "auto") === "auto"} onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { numDevices: e.target.checked ? "auto" : 1 }))} className="accent-primary" />
                       <span className="text-sm">Auto</span>
                     </label>
+                    <div id={PIPELINE_FIELD_DEFS.trainerStrategy.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+                      <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                        {PIPELINE_FIELD_DEFS.trainerStrategy.label}
+                        <HintBubble text={PIPELINE_FIELD_DEFS.trainerStrategy.hint} />
+                      </span>
+                      <Select value={firstHp?.trainerStrategy ?? "auto"} onValueChange={(v) => configs.forEach((c) => onUpdateSlot(c.slot, { trainerStrategy: v as "auto" | "ddp" | "fsdp" }))} disabled={firstHp?.numDevices === "auto" || (typeof firstHp?.numDevices === "number" && firstHp.numDevices <= 1)}>
+                        <SelectTrigger className="h-8 text-sm w-28"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="auto">auto</SelectItem>
+                          <SelectItem value="ddp">ddp</SelectItem>
+                          <SelectItem value="fsdp">fsdp</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
                   </div>
                 </div>
 
