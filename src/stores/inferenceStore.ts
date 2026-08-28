@@ -49,6 +49,12 @@ export interface InferenceConfig {
   // Inference
   batchSize: number;
   device: "auto" | "cuda" | "cpu" | "mps";
+  /**
+   * Inference runtime for an exported model directory (one containing
+   * model.onnx / model.trt). "auto" lets sleap-nn choose (and is ignored for
+   * plain checkpoints); "onnx"/"tensorrt" force that runtime.
+   */
+  runtime: "auto" | "onnx" | "tensorrt";
   maxInstances: number | null;
   peakThreshold: number;
 

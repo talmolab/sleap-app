@@ -93,6 +93,7 @@ export function InferenceDialog() {
       existingPredictions: "replace",
       batchSize: 4,
       device: "auto",
+      runtime: "auto",
       maxInstances: Number(maxInstances),
       peakThreshold: 0.2,
       integralRefinement: true,

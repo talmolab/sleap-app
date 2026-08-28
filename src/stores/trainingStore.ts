@@ -1666,6 +1666,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
             existingPredictions: localOpts?.existingPredictions ?? "replace",
             batchSize: 4,
             device: "auto",
+            runtime: "auto",
             maxInstances: null,
             peakThreshold: 0.2,
             integralRefinement: true,
