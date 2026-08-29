@@ -44,6 +44,8 @@ export function WelcomeScreen() {
   const {
     available: environmentUpdateAvailable,
     title: environmentUpdateTitle,
+    label: environmentUpdateLabel,
+    onDismiss: dismissEnvironmentUpdate,
   } = useEnvironmentUpdateStatus();
 
   // Discover recoverable drafts on mount — both runtimes (browser OPFS + desktop
@@ -114,7 +116,12 @@ export function WelcomeScreen() {
         </span>
         Environment
         {environmentUpdateAvailable && (
-          <UpdatePill title={environmentUpdateTitle}>Update available</UpdatePill>
+          <UpdatePill
+            title={environmentUpdateTitle}
+            onDismiss={dismissEnvironmentUpdate}
+          >
+            {environmentUpdateLabel}
+          </UpdatePill>
         )}
       </Button>
 

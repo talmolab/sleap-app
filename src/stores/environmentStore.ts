@@ -487,17 +487,25 @@ export const useEnvironmentStore = create<EnvironmentState>()(
         set({ installStatus: "idle", installLog: [], installTarget: null });
       },
 
-      // Lightweight, best-effort check (just the two `uv tool list` calls, not
-      // the full uv/interpreters/python detection `refresh()` does) — meant to
-      // run on every project open without adding noticeable latency.
+      // Lightweight, best-effort check (just `uv --version` + `uv tool list`,
+      // not the full interpreters/downloadable-Pythons detection `refresh()`
+      // does) — meant to run on every project open without adding noticeable
+      // latency. Also the ONLY thing that populates `uv`/`tools` before the
+      // Environment panel has ever been opened (refresh() otherwise only
+      // runs on that panel's mount) — App.tsx's startup effect relies on
+      // that so the Environment badge can reflect "uv/sleap-nn missing" from
+      // the Welcome screen, not just sleap-nn update availability.
       checkSleapNnUpdateAndNotify: () => {
         if (!isTauri) return Promise.resolve();
         if (sleapNnCheckInFlight) return sleapNnCheckInFlight;
 
         sleapNnCheckInFlight = (async () => {
           try {
-            const uvTools = await listUvTools();
-            set({ tools: uvTools });
+            const [uvInfo, uvTools] = await Promise.all([
+              detectUv(),
+              listUvTools(),
+            ]);
+            set({ uv: uvInfo, tools: uvTools });
 
             const tool = uvTools.find((t) => t.name === "sleap-nn");
             if (!tool?.updateAvailable || !tool.latestVersion) return;

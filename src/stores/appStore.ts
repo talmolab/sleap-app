@@ -249,6 +249,14 @@ export interface AppState {
   qcDisplayMode: QcMode;
   // Desktop self-update channel (persisted app preference)
   updateChannel: UpdateChannel;
+  // Whether the user has EVER manually picked a channel (persisted, sticky).
+  // False on a fresh profile — that's the window where AppUpdateSection is
+  // allowed to correct updateChannel's hardcoded "stable" default to match
+  // whatever channel the running build actually is (detected from its own
+  // version string), rather than showing "Stable" on a dev-channel install
+  // that was never told otherwise. Once true, auto-detection never fires
+  // again — an explicit choice always wins.
+  updateChannelExplicitlySet: boolean;
   // Whether the user has EVER selected the "latest" channel (persisted,
   // sticky — sees latest's badge even after switching back to "stable").
   // Gates whether latestUpdateAvailable below contributes to the ambient
@@ -256,6 +264,13 @@ export interface AppState {
   // pre-release doesn't nag someone who never asked for anything but stable
   // releases; opting into "latest" once permanently earns it a say too.
   hasOptedIntoLatestChannel: boolean;
+  // Whether the user has dismissed the "install packages" Environment badge
+  // (uv missing, or sleap-nn not installed as a uv tool) — persisted, sticky.
+  // Unlike hasOptedIntoLatestChannel this is an opt-OUT: someone who only
+  // labels and never trains/infers genuinely doesn't need uv/sleap-nn, so
+  // dismissing it should mean "never nag me about this again," not just
+  // "not right now" (which the badge reappearing on next launch would imply).
+  packagesSetupNudgeDismissed: boolean;
   // Whether a newer STABLE / LATEST release exists than the one currently
   // running — each checked once at startup against its own channel
   // regardless of updateChannel above, so a user on any channel (or just
@@ -424,6 +439,7 @@ export interface AppState {
   setInstanceInvisibleOverride: (instance: Instance, value: boolean | undefined) => void;
   setQcDisplayMode: (mode: QcMode) => void;
   setUpdateChannel: (channel: UpdateChannel) => void;
+  dismissPackagesSetupNudge: () => void;
   setStableUpdateInfo: (available: boolean, version: string | null) => void;
   setLatestUpdateInfo: (available: boolean, version: string | null) => void;
   /** Remember a learned video path prefix swap (deduped, newest-first, capped). */
@@ -544,7 +560,9 @@ export const PERSISTED_KEYS: (keyof AppState)[] = [
   "navigationDomain",
   "qcDisplayMode",
   "updateChannel",
+  "updateChannelExplicitlySet",
   "hasOptedIntoLatestChannel",
+  "packagesSetupNudgeDismissed",
   "videoPrefixSwaps",
   // Layout + scale persistence (PyQt saveState/restoreState parity).
   "panelOrder",
@@ -651,7 +669,9 @@ export const useAppStore = create<AppState>()(
       showNonVisibleOverride: new Map<Instance, boolean>(),
       qcDisplayMode: "manual",
       updateChannel: "stable",
+      updateChannelExplicitlySet: false,
       hasOptedIntoLatestChannel: false,
+      packagesSetupNudgeDismissed: false,
       stableUpdateAvailable: false,
       stableUpdateVersion: null,
       latestUpdateAvailable: false,
@@ -905,9 +925,17 @@ export const useAppStore = create<AppState>()(
       setUpdateChannel: (channel) =>
         set((state) => {
           state.updateChannel = channel;
+          // An explicit pick permanently disables the auto-detect default in
+          // AppUpdateSection (see updateChannelExplicitlySet's own comment).
+          state.updateChannelExplicitlySet = true;
           // Sticky: once earned, "latest" keeps a say in the ambient badge
           // even if the user later switches back to "stable" — never unset.
           if (channel === "latest") state.hasOptedIntoLatestChannel = true;
+        }),
+
+      dismissPackagesSetupNudge: () =>
+        set((state) => {
+          state.packagesSetupNudgeDismissed = true;
         }),
 
       setStableUpdateInfo: (available, version) =>

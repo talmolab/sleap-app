@@ -17,6 +17,7 @@ import {
   ArrowUpCircle,
   ExternalLink,
   Info,
+  ChevronRight,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -240,10 +241,14 @@ function ToolActions({
 // sleap-app self-update section
 // ---------------------------------------------------------------------------
 
-const UPDATE_CHANNELS: { value: UpdateChannel; label: string }[] = [
-  { value: "stable", label: "Stable" },
-  { value: "latest", label: "Latest" },
-  { value: "dev", label: "Dev (main)" },
+const UPDATE_CHANNELS: {
+  value: UpdateChannel;
+  label: string;
+  shortLabel: string;
+}[] = [
+  { value: "stable", label: "Stable", shortLabel: "Stable" },
+  { value: "latest", label: "Latest", shortLabel: "Latest" },
+  { value: "dev", label: "Dev (main)", shortLabel: "Dev" },
 ];
 
 /**
@@ -305,7 +310,21 @@ function AppUpdateSection() {
       try {
         const { getVersion } = await import("@tauri-apps/api/app");
         const v = await getVersion();
-        if (active) setVersion(v);
+        if (!active) return;
+        setVersion(v);
+        // Only build-dev.yml's dev-channel builds carry a "+run.sha" build
+        // metadata suffix -- stable/latest are always a clean tagged
+        // release with no "+". Correct updateChannel's hardcoded "stable"
+        // default to match, but only before the user has ever touched the
+        // dropdown themselves (see updateChannelExplicitlySet's comment).
+        if (
+          !useAppStore.getState().updateChannelExplicitlySet &&
+          v.includes("+")
+        ) {
+          useAppStore.setState((state) => {
+            state.updateChannel = "dev";
+          });
+        }
       } catch (err) {
         console.warn("[env] Failed to read app version:", err);
       }
@@ -362,23 +381,34 @@ function AppUpdateSection() {
 
   const latestVersion = pendingUpdate?.version ?? (version ? version : null);
   const updateAvailable = !!pendingUpdate;
+  const channelShortLabel =
+    UPDATE_CHANNELS.find((c) => c.value === channel)?.shortLabel ?? channel;
   // Dev-channel builds live under a single rolling `dev` release tag,
   // not their own `v{version}` tag, so there's no per-version release page to
   // link to (unlike stable/latest, which are always a real GitHub Release).
-  const hasReleaseNotesPage = updateAvailable && channel !== "dev";
+  // Also hidden on a local build, same reasoning as the arrow above: it
+  // links to notes for a version there's no installer here to apply.
+  const hasReleaseNotesPage =
+    updateAvailable && channel !== "dev" && !isLocalBuild;
 
   return (
     <section>
       <h4 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1">
         SLEAP App
       </h4>
-      {/* Row 1: status + action — always full opacity, never disabled by
-          isLocalBuild (only the channel control below is). */}
+      {/* Row 1: status + version/channel — always full opacity, never
+          disabled by isLocalBuild (only the channel control below is). */}
       <div className="flex items-center gap-2 py-0.5">
         <StatusIcon ok={!!version} />
         <span className="text-xs font-medium">sleap-app</span>
         {version && (
-          <span className="text-xs text-muted-foreground">v{version}</span>
+          <span className="text-xs text-muted-foreground">
+            v{version}
+            <span className="text-muted-foreground/70">
+              {" "}
+              · {channelShortLabel}
+            </span>
+          </span>
         )}
         {isLocalBuild && (
           <Badge
@@ -389,7 +419,11 @@ function AppUpdateSection() {
             local build
           </Badge>
         )}
-        {latestVersion && (
+        {/* A local build can't install anything (Update stays disabled
+            below), so "→ vX" here would read as actionable when it isn't.
+            "up to date" still shows -- that's just informational either
+            way. */}
+        {latestVersion && !(isLocalBuild && updateAvailable) && (
           <span
             className={cn(
               "text-xs",
@@ -411,33 +445,11 @@ function AppUpdateSection() {
             Release Notes
           </button>
         )}
-        <Button
-          variant="ghost"
-          size="sm"
-          className={cn(
-            "h-5 text-[10px] ml-auto",
-            (isLocalBuild || !updateAvailable) && "opacity-60"
-          )}
-          onClick={doUpdate}
-          disabled={updating || isLocalBuild || !updateAvailable}
-          title={
-            isLocalBuild
-              ? "Running via tauri:dev — there's no installer to apply this update to. Run `bun run tauri:build` to actually install one."
-              : updateAvailable
-                ? "Download and install the new version, then relaunch"
-                : "You're already on the newest version for this channel"
-          }
-        >
-          {updating ? (
-            <Loader2 className="h-3 w-3 animate-spin mr-1" />
-          ) : (
-            <ArrowUpCircle className="h-3 w-3 mr-1" />
-          )}
-          {updating ? "Updating..." : "Update"}
-        </Button>
       </div>
 
-      {/* Row 2: channel control, on its own line so row 1 doesn't wrap. */}
+      {/* Row 2: channel control + Update action, on its own line so row 1
+          (which can already carry a version/channel/badge/notes-link combo)
+          doesn't wrap. */}
       <div
         className={cn(
           "flex items-center gap-1.5 py-0.5 pl-5",
@@ -483,6 +495,30 @@ function AppUpdateSection() {
             </TooltipContent>
           </Tooltip>
         </TooltipProvider>
+        <Button
+          variant="ghost"
+          size="sm"
+          className={cn(
+            "h-5 text-[10px] ml-auto",
+            (isLocalBuild || !updateAvailable) && "opacity-60"
+          )}
+          onClick={doUpdate}
+          disabled={updating || isLocalBuild || !updateAvailable}
+          title={
+            isLocalBuild
+              ? "Running via tauri:dev — there's no installer to apply this update to. Run `bun run tauri:build` to actually install one."
+              : updateAvailable
+                ? "Download and install the new version, then relaunch"
+                : "You're already on the newest version for this channel"
+          }
+        >
+          {updating ? (
+            <Loader2 className="h-3 w-3 animate-spin mr-1" />
+          ) : (
+            <ArrowUpCircle className="h-3 w-3 mr-1" />
+          )}
+          {updating ? "Updating..." : "Update"}
+        </Button>
       </div>
     </section>
   );
@@ -522,6 +558,12 @@ export function EnvironmentPanel() {
       refresh();
     }
   }, [refresh, detectionStatus]);
+
+  // Collapsed by default: uv provisions Python itself (including
+  // downloading one, if none exists at all — see uv's own default
+  // python-downloads: automatic) whenever a specific interpreter isn't
+  // selected, so most users never need to open this at all.
+  const [showAdvancedPython, setShowAdvancedPython] = useState(false);
 
   if (!isTauri) {
     return (
@@ -587,6 +629,12 @@ export function EnvironmentPanel() {
             <h4 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1">
               Package Manager
             </h4>
+            {/* Row 1: status + version — Update/Install moved to its own
+                row below, same reasoning as the SLEAP App/sleap-nn
+                sections above: icon + name + version + status text +
+                Detected badge + action button all in one non-wrapping row
+                overflowed a narrow panel once the up-to-date/outdated
+                status text was added. */}
             <div className="flex items-center gap-2 py-0.5">
               <StatusIcon ok={uv?.available ?? false} />
               <span className="text-xs font-medium">uv</span>
@@ -595,6 +643,29 @@ export function EnvironmentPanel() {
                   v{uv.version}
                 </span>
               )}
+              {/* uv.updateAvailable is null until the (network-dependent,
+                  best-effort) `uv self update --dry-run` check resolves --
+                  see detect_uv/check_uv_self_update in environment.rs. Same
+                  up-to-date/outdated status text as the UV TOOLS section
+                  below, just for uv itself. */}
+              {uv?.available && uv.updateAvailable !== null && (
+                <span
+                  className={cn(
+                    "text-xs",
+                    uv.updateAvailable ? "text-orange-500" : "text-green-500"
+                  )}
+                >
+                  {uv.updateAvailable
+                    ? uv.latestVersion
+                      ? `→ v${uv.latestVersion}`
+                      : "update available"
+                    : "up to date"}
+                </span>
+              )}
+            </div>
+
+            {/* Row 2: detection badge + action, on its own line. */}
+            <div className="flex items-center gap-2 py-0.5 pl-5">
               {/* Explicit detection declaration (auto-detected on mount, before
                   any install). Makes "found vs not found" unmistakable. */}
               <Badge
@@ -614,8 +685,20 @@ export function EnvironmentPanel() {
                     size="sm"
                     className="h-5 text-[10px]"
                     onClick={doUpdateUv}
-                    disabled={isInstalling}
-                    title="Update uv to latest version"
+                    disabled={
+                      isInstalling ||
+                      uv.updateAvailable === false ||
+                      uv.selfUpdateSupported === false
+                    }
+                    title={
+                      uv.selfUpdateSupported === false
+                        ? "This uv was installed via a package manager — update it with `brew upgrade`, `pip install --upgrade uv`, or similar instead."
+                        : uv.updateAvailable === false
+                          ? "Already up to date"
+                          : uv.updateAvailable && uv.latestVersion
+                            ? `Update to v${uv.latestVersion}`
+                            : "Update uv to latest version"
+                    }
                   >
                     <ArrowUpCircle className="h-3 w-3 mr-1" />
                     Update
@@ -650,131 +733,155 @@ export function EnvironmentPanel() {
           </section>
         )}
 
-        {/* Section 2: Python Interpreter */}
+        {/* Section 2: Python Interpreter — collapsed by default and
+            relabeled "Advanced": uv already provisions a suitable Python
+            on its own (downloading one if none exists at all) whenever no
+            specific interpreter is selected here, so this is a manual
+            override for the rare case someone wants sleap-nn built against
+            a particular Python, not something most users ever need to
+            open. */}
         {detected && uv?.available && (
           <section>
-            <h4 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1">
-              Python Interpreter
-            </h4>
+            <button
+              onClick={() => setShowAdvancedPython((v) => !v)}
+              className="flex items-center gap-1 w-full text-[10px] font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground transition-colors mb-1"
+            >
+              <ChevronRight
+                className={cn(
+                  "h-3 w-3 transition-transform",
+                  showAdvancedPython && "rotate-90"
+                )}
+              />
+              Advanced: Python Interpreter Manager
+            </button>
 
-            {interpreters.length > 0 ? (
-              <Select
-                value={selectedPythonPath ?? ""}
-                onValueChange={(path) => selectPython(path)}
-              >
-                <SelectTrigger className="h-7 text-xs">
-                  <SelectValue placeholder="Select interpreter..." />
-                </SelectTrigger>
-                <SelectContent>
-                  {managedInterps.length > 0 && (
-                    <SelectGroup>
-                      <SelectLabel className="text-[10px]">
-                        uv Managed
-                      </SelectLabel>
-                      {managedInterps.map((i) => (
-                        <SelectItem
-                          key={i.path}
-                          value={i.path!}
-                          className="text-xs"
-                        >
-                          Python {i.version}
-                        </SelectItem>
-                      ))}
-                    </SelectGroup>
-                  )}
-                  {systemInterps.length > 0 && (
-                    <SelectGroup>
-                      <SelectLabel className="text-[10px]">System</SelectLabel>
-                      {systemInterps.map((i) => (
-                        <SelectItem
-                          key={i.path}
-                          value={i.path!}
-                          className="text-xs"
-                        >
-                          Python {i.version}
-                        </SelectItem>
-                      ))}
-                    </SelectGroup>
-                  )}
-                </SelectContent>
-              </Select>
-            ) : (
-              <div className="text-xs text-muted-foreground py-1">
-                No Python interpreters found.
-              </div>
-            )}
+            {showAdvancedPython && (
+              <div>
+                {interpreters.length > 0 ? (
+                  <Select
+                    value={selectedPythonPath ?? ""}
+                    onValueChange={(path) => selectPython(path)}
+                  >
+                    <SelectTrigger className="h-7 text-xs">
+                      <SelectValue placeholder="Select interpreter..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {managedInterps.length > 0 && (
+                        <SelectGroup>
+                          <SelectLabel className="text-[10px]">
+                            uv Managed
+                          </SelectLabel>
+                          {managedInterps.map((i) => (
+                            <SelectItem
+                              key={i.path}
+                              value={i.path!}
+                              className="text-xs"
+                            >
+                              Python {i.version}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      )}
+                      {systemInterps.length > 0 && (
+                        <SelectGroup>
+                          <SelectLabel className="text-[10px]">
+                            System
+                          </SelectLabel>
+                          {systemInterps.map((i) => (
+                            <SelectItem
+                              key={i.path}
+                              value={i.path!}
+                              className="text-xs"
+                            >
+                              Python {i.version}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      )}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <div className="text-xs text-muted-foreground py-1">
+                    No Python interpreters found.
+                  </div>
+                )}
 
-            {/* Selected interpreter details */}
-            {selectedPythonPath && (
-              <div className="mt-1.5 pl-1">
-                <PathDisplay path={selectedPythonPath} />
-                {pythonCheck && (
-                  <div className="mt-1">
-                    {pythonCheck.sleapNnVersion ? (
-                      // Importable directly in the selected interpreter.
-                      <StatusRow
-                        label="sleap-nn"
-                        ok
-                        detail={`v${pythonCheck.sleapNnVersion}`}
-                      />
-                    ) : sleapNnTool ? (
-                      // Not in THIS interpreter, but installed as an isolated uv
-                      // tool — which is what training/inference actually runs
-                      // (the `sleap-nn` shim uses its own venv). Info, not error.
-                      <>
-                        <div className="flex items-center gap-2 py-0.5">
-                          <Info className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                          <span className="text-xs font-medium">sleap-nn</span>
-                          <span className="text-[10px] text-muted-foreground ml-auto">
-                            v{sleapNnTool.version} (uv tool)
-                          </span>
-                        </div>
-                        <div className="text-[10px] text-muted-foreground pl-5">
-                          Not installed in this interpreter — training uses the
-                          isolated uv-tool install, so this is expected.
-                        </div>
-                      </>
-                    ) : (
-                      // Not importable here and no uv tool — genuinely missing.
-                      <StatusRow
-                        label="sleap-nn"
-                        ok={false}
-                        detail="Not installed"
-                      />
+                {/* Selected interpreter details */}
+                {selectedPythonPath && (
+                  <div className="mt-1.5 pl-1">
+                    <PathDisplay path={selectedPythonPath} />
+                    {pythonCheck && (
+                      <div className="mt-1">
+                        {pythonCheck.sleapNnVersion ? (
+                          // Importable directly in the selected interpreter.
+                          <StatusRow
+                            label="sleap-nn"
+                            ok
+                            detail={`v${pythonCheck.sleapNnVersion}`}
+                          />
+                        ) : sleapNnTool ? (
+                          // Not in THIS interpreter, but installed as an isolated uv
+                          // tool — which is what training/inference actually runs
+                          // (the `sleap-nn` shim uses its own venv). Info, not error.
+                          <>
+                            <div className="flex items-center gap-2 py-0.5">
+                              <Info className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                              <span className="text-xs font-medium">
+                                sleap-nn
+                              </span>
+                              <span className="text-[10px] text-muted-foreground ml-auto">
+                                v{sleapNnTool.version} (uv tool)
+                              </span>
+                            </div>
+                            <div className="text-[10px] text-muted-foreground pl-5">
+                              Not installed in this interpreter — training
+                              uses the isolated uv-tool install, so this is
+                              expected.
+                            </div>
+                          </>
+                        ) : (
+                          // Not importable here and no uv tool — genuinely missing.
+                          <StatusRow
+                            label="sleap-nn"
+                            ok={false}
+                            detail="Not installed"
+                          />
+                        )}
+                      </div>
+                    )}
+                    {!pythonCheck && selectedPythonPath && (
+                      <div className="flex items-center gap-2 text-xs text-muted-foreground mt-1">
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                        Checking packages...
+                      </div>
                     )}
                   </div>
                 )}
-                {!pythonCheck && selectedPythonPath && (
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground mt-1">
-                    <Loader2 className="h-3 w-3 animate-spin" />
-                    Checking packages...
+
+                {/* Install new Python */}
+                {downloadable.length > 0 && (
+                  <div className="mt-2 flex items-center gap-1.5">
+                    <Select
+                      onValueChange={(version) => doInstallPython(version)}
+                      disabled={isInstalling}
+                    >
+                      <SelectTrigger className="h-6 text-[10px] flex-1">
+                        <SelectValue placeholder="Install Python..." />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {downloadable.map((d) => (
+                          <SelectItem
+                            key={d.key}
+                            value={d.version}
+                            className="text-xs"
+                          >
+                            Python {d.version}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </div>
                 )}
-              </div>
-            )}
-
-            {/* Install new Python */}
-            {downloadable.length > 0 && (
-              <div className="mt-2 flex items-center gap-1.5">
-                <Select
-                  onValueChange={(version) => doInstallPython(version)}
-                  disabled={isInstalling}
-                >
-                  <SelectTrigger className="h-6 text-[10px] flex-1">
-                    <SelectValue placeholder="Install Python..." />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {downloadable.map((d) => (
-                      <SelectItem
-                        key={d.key}
-                        value={d.version}
-                        className="text-xs"
-                      >
-                        Python {d.version}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
               </div>
             )}
           </section>
@@ -787,7 +894,10 @@ export function EnvironmentPanel() {
               UV Tools
             </h4>
 
-            {/* sleap-nn */}
+            {/* sleap-nn: status/version on their own line, actions on the
+                next one -- crammed into a single non-wrapping row, the
+                Update/Reinstall buttons got pushed off and clipped on a
+                narrow panel. */}
             <div className="flex items-center gap-2 py-0.5">
               <StatusIcon ok={!!sleapNnTool} />
               <span className="text-xs font-medium">sleap-nn</span>
@@ -824,6 +934,8 @@ export function EnvironmentPanel() {
                   </button>
                 </>
               )}
+            </div>
+            <div className="flex items-center py-0.5 pl-5">
               <div className="ml-auto">
                 <ToolActions
                   tool={sleapNnTool}
@@ -837,19 +949,6 @@ export function EnvironmentPanel() {
                 />
               </div>
             </div>
-            {sleapNnTool && sleapNnTool.commands.length > 0 && (
-              <div className="flex flex-wrap gap-1 pl-5 mt-0.5">
-                {sleapNnTool.commands.map((cmd) => (
-                  <Badge
-                    key={cmd}
-                    variant="secondary"
-                    className="text-[10px] px-1.5 py-0 h-4 rounded-sm font-mono"
-                  >
-                    {cmd}
-                  </Badge>
-                ))}
-              </div>
-            )}
 
             {/* sleap-rtc */}
             <div className="flex items-center gap-2 py-0.5 mt-1">
@@ -873,19 +972,6 @@ export function EnvironmentPanel() {
                 />
               </div>
             </div>
-            {sleapRtcTool && sleapRtcTool.commands.length > 0 && (
-              <div className="flex flex-wrap gap-1 pl-5 mt-0.5">
-                {sleapRtcTool.commands.map((cmd) => (
-                  <Badge
-                    key={cmd}
-                    variant="secondary"
-                    className="text-[10px] px-1.5 py-0 h-4 rounded-sm font-mono"
-                  >
-                    {cmd}
-                  </Badge>
-                ))}
-              </div>
-            )}
           </section>
         )}
 
