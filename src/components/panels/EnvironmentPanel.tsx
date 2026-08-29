@@ -17,6 +17,7 @@ import {
   ArrowUpCircle,
   ExternalLink,
   Info,
+  ChevronRight,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -558,6 +559,12 @@ export function EnvironmentPanel() {
     }
   }, [refresh, detectionStatus]);
 
+  // Collapsed by default: uv provisions Python itself (including
+  // downloading one, if none exists at all — see uv's own default
+  // python-downloads: automatic) whenever a specific interpreter isn't
+  // selected, so most users never need to open this at all.
+  const [showAdvancedPython, setShowAdvancedPython] = useState(false);
+
   if (!isTauri) {
     return (
       <div className="p-2 text-xs text-muted-foreground">
@@ -685,131 +692,155 @@ export function EnvironmentPanel() {
           </section>
         )}
 
-        {/* Section 2: Python Interpreter */}
+        {/* Section 2: Python Interpreter — collapsed by default and
+            relabeled "Advanced": uv already provisions a suitable Python
+            on its own (downloading one if none exists at all) whenever no
+            specific interpreter is selected here, so this is a manual
+            override for the rare case someone wants sleap-nn built against
+            a particular Python, not something most users ever need to
+            open. */}
         {detected && uv?.available && (
           <section>
-            <h4 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1">
-              Python Interpreter
-            </h4>
+            <button
+              onClick={() => setShowAdvancedPython((v) => !v)}
+              className="flex items-center gap-1 w-full text-[10px] font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground transition-colors mb-1"
+            >
+              <ChevronRight
+                className={cn(
+                  "h-3 w-3 transition-transform",
+                  showAdvancedPython && "rotate-90"
+                )}
+              />
+              Advanced: Python Interpreter Manager
+            </button>
 
-            {interpreters.length > 0 ? (
-              <Select
-                value={selectedPythonPath ?? ""}
-                onValueChange={(path) => selectPython(path)}
-              >
-                <SelectTrigger className="h-7 text-xs">
-                  <SelectValue placeholder="Select interpreter..." />
-                </SelectTrigger>
-                <SelectContent>
-                  {managedInterps.length > 0 && (
-                    <SelectGroup>
-                      <SelectLabel className="text-[10px]">
-                        uv Managed
-                      </SelectLabel>
-                      {managedInterps.map((i) => (
-                        <SelectItem
-                          key={i.path}
-                          value={i.path!}
-                          className="text-xs"
-                        >
-                          Python {i.version}
-                        </SelectItem>
-                      ))}
-                    </SelectGroup>
-                  )}
-                  {systemInterps.length > 0 && (
-                    <SelectGroup>
-                      <SelectLabel className="text-[10px]">System</SelectLabel>
-                      {systemInterps.map((i) => (
-                        <SelectItem
-                          key={i.path}
-                          value={i.path!}
-                          className="text-xs"
-                        >
-                          Python {i.version}
-                        </SelectItem>
-                      ))}
-                    </SelectGroup>
-                  )}
-                </SelectContent>
-              </Select>
-            ) : (
-              <div className="text-xs text-muted-foreground py-1">
-                No Python interpreters found.
-              </div>
-            )}
+            {showAdvancedPython && (
+              <div>
+                {interpreters.length > 0 ? (
+                  <Select
+                    value={selectedPythonPath ?? ""}
+                    onValueChange={(path) => selectPython(path)}
+                  >
+                    <SelectTrigger className="h-7 text-xs">
+                      <SelectValue placeholder="Select interpreter..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {managedInterps.length > 0 && (
+                        <SelectGroup>
+                          <SelectLabel className="text-[10px]">
+                            uv Managed
+                          </SelectLabel>
+                          {managedInterps.map((i) => (
+                            <SelectItem
+                              key={i.path}
+                              value={i.path!}
+                              className="text-xs"
+                            >
+                              Python {i.version}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      )}
+                      {systemInterps.length > 0 && (
+                        <SelectGroup>
+                          <SelectLabel className="text-[10px]">
+                            System
+                          </SelectLabel>
+                          {systemInterps.map((i) => (
+                            <SelectItem
+                              key={i.path}
+                              value={i.path!}
+                              className="text-xs"
+                            >
+                              Python {i.version}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      )}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <div className="text-xs text-muted-foreground py-1">
+                    No Python interpreters found.
+                  </div>
+                )}
 
-            {/* Selected interpreter details */}
-            {selectedPythonPath && (
-              <div className="mt-1.5 pl-1">
-                <PathDisplay path={selectedPythonPath} />
-                {pythonCheck && (
-                  <div className="mt-1">
-                    {pythonCheck.sleapNnVersion ? (
-                      // Importable directly in the selected interpreter.
-                      <StatusRow
-                        label="sleap-nn"
-                        ok
-                        detail={`v${pythonCheck.sleapNnVersion}`}
-                      />
-                    ) : sleapNnTool ? (
-                      // Not in THIS interpreter, but installed as an isolated uv
-                      // tool — which is what training/inference actually runs
-                      // (the `sleap-nn` shim uses its own venv). Info, not error.
-                      <>
-                        <div className="flex items-center gap-2 py-0.5">
-                          <Info className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                          <span className="text-xs font-medium">sleap-nn</span>
-                          <span className="text-[10px] text-muted-foreground ml-auto">
-                            v{sleapNnTool.version} (uv tool)
-                          </span>
-                        </div>
-                        <div className="text-[10px] text-muted-foreground pl-5">
-                          Not installed in this interpreter — training uses the
-                          isolated uv-tool install, so this is expected.
-                        </div>
-                      </>
-                    ) : (
-                      // Not importable here and no uv tool — genuinely missing.
-                      <StatusRow
-                        label="sleap-nn"
-                        ok={false}
-                        detail="Not installed"
-                      />
+                {/* Selected interpreter details */}
+                {selectedPythonPath && (
+                  <div className="mt-1.5 pl-1">
+                    <PathDisplay path={selectedPythonPath} />
+                    {pythonCheck && (
+                      <div className="mt-1">
+                        {pythonCheck.sleapNnVersion ? (
+                          // Importable directly in the selected interpreter.
+                          <StatusRow
+                            label="sleap-nn"
+                            ok
+                            detail={`v${pythonCheck.sleapNnVersion}`}
+                          />
+                        ) : sleapNnTool ? (
+                          // Not in THIS interpreter, but installed as an isolated uv
+                          // tool — which is what training/inference actually runs
+                          // (the `sleap-nn` shim uses its own venv). Info, not error.
+                          <>
+                            <div className="flex items-center gap-2 py-0.5">
+                              <Info className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                              <span className="text-xs font-medium">
+                                sleap-nn
+                              </span>
+                              <span className="text-[10px] text-muted-foreground ml-auto">
+                                v{sleapNnTool.version} (uv tool)
+                              </span>
+                            </div>
+                            <div className="text-[10px] text-muted-foreground pl-5">
+                              Not installed in this interpreter — training
+                              uses the isolated uv-tool install, so this is
+                              expected.
+                            </div>
+                          </>
+                        ) : (
+                          // Not importable here and no uv tool — genuinely missing.
+                          <StatusRow
+                            label="sleap-nn"
+                            ok={false}
+                            detail="Not installed"
+                          />
+                        )}
+                      </div>
+                    )}
+                    {!pythonCheck && selectedPythonPath && (
+                      <div className="flex items-center gap-2 text-xs text-muted-foreground mt-1">
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                        Checking packages...
+                      </div>
                     )}
                   </div>
                 )}
-                {!pythonCheck && selectedPythonPath && (
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground mt-1">
-                    <Loader2 className="h-3 w-3 animate-spin" />
-                    Checking packages...
+
+                {/* Install new Python */}
+                {downloadable.length > 0 && (
+                  <div className="mt-2 flex items-center gap-1.5">
+                    <Select
+                      onValueChange={(version) => doInstallPython(version)}
+                      disabled={isInstalling}
+                    >
+                      <SelectTrigger className="h-6 text-[10px] flex-1">
+                        <SelectValue placeholder="Install Python..." />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {downloadable.map((d) => (
+                          <SelectItem
+                            key={d.key}
+                            value={d.version}
+                            className="text-xs"
+                          >
+                            Python {d.version}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </div>
                 )}
-              </div>
-            )}
-
-            {/* Install new Python */}
-            {downloadable.length > 0 && (
-              <div className="mt-2 flex items-center gap-1.5">
-                <Select
-                  onValueChange={(version) => doInstallPython(version)}
-                  disabled={isInstalling}
-                >
-                  <SelectTrigger className="h-6 text-[10px] flex-1">
-                    <SelectValue placeholder="Install Python..." />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {downloadable.map((d) => (
-                      <SelectItem
-                        key={d.key}
-                        value={d.version}
-                        className="text-xs"
-                      >
-                        Python {d.version}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
               </div>
             )}
           </section>
