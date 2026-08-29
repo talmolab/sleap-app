@@ -348,6 +348,8 @@ function Sidebar() {
   const {
     available: environmentUpdateAvailable,
     title: environmentUpdateTitle,
+    label: environmentUpdateLabel,
+    onDismiss: dismissEnvironmentUpdate,
   } = useEnvironmentUpdateStatus();
 
   // When docked left, the whole sidebar (rail | panel | resize) mirrors so the
@@ -777,7 +779,12 @@ function Sidebar() {
                 >
                   <span className="truncate">{panel.label}</span>
                   {panel.id === "environment" && environmentUpdateAvailable && (
-                    <UpdatePill title={environmentUpdateTitle}>Update</UpdatePill>
+                    <UpdatePill
+                      title={environmentUpdateTitle}
+                      onDismiss={dismissEnvironmentUpdate}
+                    >
+                      {environmentUpdateLabel}
+                    </UpdatePill>
                   )}
                 </span>
                 {/* Drag grip (visible on hover) */}

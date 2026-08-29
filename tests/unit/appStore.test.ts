@@ -959,4 +959,19 @@ describe("tutorial step navigation", () => {
       expect(PERSISTED_KEYS).toContain("updateChannelExplicitlySet");
     });
   });
+
+  describe("dismissPackagesSetupNudge", () => {
+    it("defaults to false, unset", () => {
+      expect(useAppStore.getState().packagesSetupNudgeDismissed).toBe(false);
+    });
+
+    it("permanently sets packagesSetupNudgeDismissed", () => {
+      useAppStore.getState().dismissPackagesSetupNudge();
+      expect(useAppStore.getState().packagesSetupNudgeDismissed).toBe(true);
+    });
+
+    it("PERSISTED_KEYS includes packagesSetupNudgeDismissed", () => {
+      expect(PERSISTED_KEYS).toContain("packagesSetupNudgeDismissed");
+    });
+  });
 });

@@ -264,6 +264,13 @@ export interface AppState {
   // pre-release doesn't nag someone who never asked for anything but stable
   // releases; opting into "latest" once permanently earns it a say too.
   hasOptedIntoLatestChannel: boolean;
+  // Whether the user has dismissed the "install packages" Environment badge
+  // (uv missing, or sleap-nn not installed as a uv tool) — persisted, sticky.
+  // Unlike hasOptedIntoLatestChannel this is an opt-OUT: someone who only
+  // labels and never trains/infers genuinely doesn't need uv/sleap-nn, so
+  // dismissing it should mean "never nag me about this again," not just
+  // "not right now" (which the badge reappearing on next launch would imply).
+  packagesSetupNudgeDismissed: boolean;
   // Whether a newer STABLE / LATEST release exists than the one currently
   // running — each checked once at startup against its own channel
   // regardless of updateChannel above, so a user on any channel (or just
@@ -432,6 +439,7 @@ export interface AppState {
   setInstanceInvisibleOverride: (instance: Instance, value: boolean | undefined) => void;
   setQcDisplayMode: (mode: QcMode) => void;
   setUpdateChannel: (channel: UpdateChannel) => void;
+  dismissPackagesSetupNudge: () => void;
   setStableUpdateInfo: (available: boolean, version: string | null) => void;
   setLatestUpdateInfo: (available: boolean, version: string | null) => void;
   /** Remember a learned video path prefix swap (deduped, newest-first, capped). */
@@ -554,6 +562,7 @@ export const PERSISTED_KEYS: (keyof AppState)[] = [
   "updateChannel",
   "updateChannelExplicitlySet",
   "hasOptedIntoLatestChannel",
+  "packagesSetupNudgeDismissed",
   "videoPrefixSwaps",
   // Layout + scale persistence (PyQt saveState/restoreState parity).
   "panelOrder",
@@ -662,6 +671,7 @@ export const useAppStore = create<AppState>()(
       updateChannel: "stable",
       updateChannelExplicitlySet: false,
       hasOptedIntoLatestChannel: false,
+      packagesSetupNudgeDismissed: false,
       stableUpdateAvailable: false,
       stableUpdateVersion: null,
       latestUpdateAvailable: false,
@@ -921,6 +931,11 @@ export const useAppStore = create<AppState>()(
           // Sticky: once earned, "latest" keeps a say in the ambient badge
           // even if the user later switches back to "stable" — never unset.
           if (channel === "latest") state.hasOptedIntoLatestChannel = true;
+        }),
+
+      dismissPackagesSetupNudge: () =>
+        set((state) => {
+          state.packagesSetupNudgeDismissed = true;
         }),
 
       setStableUpdateInfo: (available, version) =>
