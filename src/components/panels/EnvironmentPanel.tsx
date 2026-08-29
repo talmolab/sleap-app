@@ -629,6 +629,12 @@ export function EnvironmentPanel() {
             <h4 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1">
               Package Manager
             </h4>
+            {/* Row 1: status + version — Update/Install moved to its own
+                row below, same reasoning as the SLEAP App/sleap-nn
+                sections above: icon + name + version + status text +
+                Detected badge + action button all in one non-wrapping row
+                overflowed a narrow panel once the up-to-date/outdated
+                status text was added. */}
             <div className="flex items-center gap-2 py-0.5">
               <StatusIcon ok={uv?.available ?? false} />
               <span className="text-xs font-medium">uv</span>
@@ -637,6 +643,29 @@ export function EnvironmentPanel() {
                   v{uv.version}
                 </span>
               )}
+              {/* uv.updateAvailable is null until the (network-dependent,
+                  best-effort) `uv self update --dry-run` check resolves --
+                  see detect_uv/check_uv_self_update in environment.rs. Same
+                  up-to-date/outdated status text as the UV TOOLS section
+                  below, just for uv itself. */}
+              {uv?.available && uv.updateAvailable !== null && (
+                <span
+                  className={cn(
+                    "text-xs",
+                    uv.updateAvailable ? "text-orange-500" : "text-green-500"
+                  )}
+                >
+                  {uv.updateAvailable
+                    ? uv.latestVersion
+                      ? `→ v${uv.latestVersion}`
+                      : "update available"
+                    : "up to date"}
+                </span>
+              )}
+            </div>
+
+            {/* Row 2: detection badge + action, on its own line. */}
+            <div className="flex items-center gap-2 py-0.5 pl-5">
               {/* Explicit detection declaration (auto-detected on mount, before
                   any install). Makes "found vs not found" unmistakable. */}
               <Badge
@@ -656,8 +685,20 @@ export function EnvironmentPanel() {
                     size="sm"
                     className="h-5 text-[10px]"
                     onClick={doUpdateUv}
-                    disabled={isInstalling}
-                    title="Update uv to latest version"
+                    disabled={
+                      isInstalling ||
+                      uv.updateAvailable === false ||
+                      uv.selfUpdateSupported === false
+                    }
+                    title={
+                      uv.selfUpdateSupported === false
+                        ? "This uv was installed via a package manager — update it with `brew upgrade`, `pip install --upgrade uv`, or similar instead."
+                        : uv.updateAvailable === false
+                          ? "Already up to date"
+                          : uv.updateAvailable && uv.latestVersion
+                            ? `Update to v${uv.latestVersion}`
+                            : "Update uv to latest version"
+                    }
                   >
                     <ArrowUpCircle className="h-3 w-3 mr-1" />
                     Update

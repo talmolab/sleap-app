@@ -32,6 +32,11 @@ export interface UvInfo {
   version: string | null;
   path: string | null;
   pythonDir: string | null;
+  /** `null` = the self-update check couldn't run or doesn't apply (offline, timed out, or see selfUpdateSupported); otherwise whether a newer uv version is available. */
+  updateAvailable: boolean | null;
+  latestVersion: string | null;
+  /** `false` = uv was installed via a package manager (brew/pip/etc.) and refuses to self-update; `null` = not determined yet. */
+  selfUpdateSupported: boolean | null;
 }
 
 export interface UvTool {
@@ -76,7 +81,15 @@ async function invokeCmd<T>(
 /** Detect whether `uv` is installed and get its version. */
 export async function detectUv(): Promise<UvInfo> {
   if (!isTauri) {
-    return { available: false, version: null, path: null, pythonDir: null };
+    return {
+      available: false,
+      version: null,
+      path: null,
+      pythonDir: null,
+      updateAvailable: null,
+      latestVersion: null,
+      selfUpdateSupported: null,
+    };
   }
   return invokeCmd<UvInfo>("detect_uv");
 }
