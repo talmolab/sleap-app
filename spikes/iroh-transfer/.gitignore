@@ -1,0 +1,7 @@
+# Downloaded binaries + transfer artifacts (never commit these)
+bin/
+received/
+ticket.txt
+*.zip
+*.tar.gz
+*.bin
