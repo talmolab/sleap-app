@@ -233,13 +233,10 @@ describe("PropagateTrackLabels", () => {
     // EVERY labeled frame in the project regardless of which video/frame
     // range could actually change — so a large SECOND video in the project
     // made every propagate slow even though this command only ever touches
-    // the current video going forward. Verified manually outside this suite
-    // (not asserted here — wall-clock bounds are flaky across CI machines,
-    // and cheap at the frame counts that keep this test fast to run): at
-    // 1,000,000 decoy frames in another video, the pre-fix implementation
-    // took ~2.6s per propagate call; this fix takes ~9ms, independent of the
-    // decoy video's size — a ~290x improvement matching the identity-based
-    // scoping proof below.
+    // the current video going forward. Not asserted on wall-clock here (flaky
+    // across CI machines, and cheap at the frame counts that keep this test
+    // fast to run) — see the identity-based scoping proof below instead,
+    // which shows the fix stays O(scope) regardless of decoy video size.
     const sk = makeSkeleton();
     const video = makeVideo("main");
     const bigOtherVideo = makeVideo("big-other");
