@@ -1,7 +1,7 @@
 {
   "name": "sleap-app",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.2-2",
   "description": "SLEAP pose estimation and tracking app",
   "type": "module",
   "packageManager": "bun@1.3.14",

@@ -95,9 +95,11 @@ Claude Code). For native MCP tool use instead of the CLI, run `tauri-pilot mcp`.
   - Deployed to: `https://app.sleap.ai/main/`
 - `https://app.sleap.ai/dev/`:
   - Synced with the desktop app's "dev" update channel instead — refreshed nightly (or on-demand via `workflow_dispatch`), not on every push. See `.github/workflows/build-dev.yml`.
-- On GitHub Release (full release or pre-release):
+- On GitHub Release (full release or pre-release), **after `build.yml` succeeds** — not when the release is published:
   - Deployed to its own permanent path, never touched again: `https://app.sleap.ai/<tag>/` (e.g. `/v0.1.2-1/`).
   - A full (non-prerelease) release also becomes: `https://app.sleap.ai` (stable/root).
   - If it's genuinely the highest known version (release or pre-release), also becomes: `https://app.sleap.ai/latest/`.
   - Tauri installer is built and attached to the release.
+  - The web deploy is deliberately gated on the desktop build *succeeding*: a release is atomic, so if any platform's installer fails to build, app.sleap.ai must not start serving that version either. Re-running the failed platform leg re-fires the deploy on success — there is no manual deploy step. (`/latest/` also requires the release's `latest.json` asset, which only exists once `build.yml` has finished; checking for it on `release: published` could never pass, which is why `/latest/` was never deployed before this was wired up.)
+- **Versions are stamped by CI, never committed.** `build.yml` patches `package.json` + `tauri.conf.json` from the release tag; `deploy.yml` stamps each web target the same way, so a deployed page's `__APP_VERSION__` (window/tab title) always matches the desktop build of the same thing: `/v<tag>/`, `/latest/` and root report the tag; `/dev/` reports the value read from the `dev` release's `latest.json`; `/main/` reports `<highest-tag>+main.<sha>`. The committed `package.json` version is only the local-dev fallback — don't rely on it to know what shipped.
 - CLI one-liner installers (`scripts/install.sh`, `scripts/install.ps1`) are deployed under every channel path above, each defaulting to *that* channel when run with no flags: `.../install.sh` (root) and `.../stable/install.sh` both resolve the stable release, `.../latest/install.sh` the newest release-or-prerelease, `.../dev/install.sh` the rolling `dev` build. `--tag`/`--pre` (or `-Tag`/`-Pre`) always override the baked-in default.
