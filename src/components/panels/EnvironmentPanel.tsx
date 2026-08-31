@@ -15,6 +15,7 @@ import {
   Download,
   RotateCw,
   ArrowUpCircle,
+  ArrowDownCircle,
   ExternalLink,
   Info,
   ChevronRight,
@@ -251,6 +252,50 @@ const UPDATE_CHANNELS: {
   { value: "dev", label: "Dev (main)", shortLabel: "Dev" },
 ];
 
+// Classifies the running version from its own semver shape, so users who
+// don't recognize semver conventions still see in plain text what kind of
+// build they're ACTUALLY on -- distinct from channelShortLabel above, which
+// is just the channel currently selected in the dropdown (a preference that
+// can point at a different version than what's installed, e.g. right after
+// switching channels but before clicking Update/Switch). Dev-channel builds
+// are stamped by build-dev.yml as `BASE+<run_number>.<short_sha>` (build
+// metadata); a `-` before that is a pre-release identifier (e.g.
+// `1.2.3-rc.1`); anything else is a plain tagged release.
+export type VersionKind = "stable" | "prerelease" | "dev";
+
+export function classifyVersion(version: string): VersionKind {
+  if (version.includes("+")) return "dev";
+  if (version.includes("-")) return "prerelease";
+  return "stable";
+}
+
+const VERSION_KIND_LABEL: Record<VersionKind, string> = {
+  stable: "Stable release",
+  prerelease: "Pre-release",
+  dev: "Dev build",
+};
+
+// Base (major.minor.patch) comparison only -- ignores pre-release/build
+// metadata, since that's all that's needed to tell whether switching
+// channels would move to an older release, to pick the right icon/wording.
+// Not a full semver comparator.
+export function parseBaseVersion(version: string): [number, number, number] {
+  const [major = 0, minor = 0, patch = 0] = version
+    .split(/[-+]/)[0]
+    .split(".")
+    .map((n) => Number(n) || 0);
+  return [major, minor, patch];
+}
+
+export function isOlderVersion(target: string, current: string): boolean {
+  const t = parseBaseVersion(target);
+  const c = parseBaseVersion(current);
+  for (let i = 0; i < 3; i++) {
+    if (t[i] !== c[i]) return t[i] < c[i];
+  }
+  return false;
+}
+
 /**
  * Shows the desktop app's own version, whether a newer version is available
  * on the selected update channel (via the check_update/install_update
@@ -287,14 +332,29 @@ function AppUpdateSection() {
   // AppUpdateSection each time, and without the shared cache that would
   // re-hit the GitHub API on every visit to this sidebar section within the
   // same session, not just once per app start.
+  //
+  // allowDowngrade: true because this check is for the channel the user
+  // currently has selected in the dropdown -- it should report that
+  // channel's actual current version even if it's older than what's running
+  // (e.g. switching off a `dev` build back to `stable`), not just "nothing
+  // newer here".
   const runCheck = useCallback(async (ch: UpdateChannel, force = false) => {
     const requestId = ++requestIdRef.current;
     setChecking(true);
     setPendingUpdate(null);
     try {
-      const update = await checkUpdateCached(ch, { force });
+      const update = await checkUpdateCached(ch, { force, allowDowngrade: true });
       if (requestIdRef.current !== requestId) return; // superseded — drop it
       setPendingUpdate(update);
+      // The allowDowngrade check above never feeds the ambient "something
+      // newer is out" badge (see updateCheckCache.ts) -- fire the plain
+      // strict check too so App.tsx's badge stays current for the rest of
+      // the session even if this panel is the only thing re-checking
+      // "stable"/"latest" past the 1h cache TTL. Fire-and-forget: doesn't
+      // affect what's rendered here.
+      if (ch === "stable" || ch === "latest") {
+        void checkUpdateCached(ch, { force }).catch(() => {});
+      }
     } catch (err) {
       if (requestIdRef.current !== requestId) return;
       console.warn("[env] App update check failed:", err);
@@ -358,10 +418,12 @@ function AppUpdateSection() {
       // Pinned to the exact version shown/clicked: install_update refuses
       // (and reports back) if a newer release landed on this channel in the
       // moments since we last checked, rather than silently installing a
-      // different version than the one the user agreed to.
+      // different version than the one the user agreed to. allowDowngrade
+      // must match the runCheck call above that produced pendingUpdate.
       await invoke(sleapCmd("install_update"), {
         channel,
         expectedVersion: pendingUpdate.version,
+        allowDowngrade: true,
       });
       const { relaunch } = await import("@tauri-apps/plugin-process");
       await relaunch();
@@ -381,6 +443,15 @@ function AppUpdateSection() {
 
   const latestVersion = pendingUpdate?.version ?? (version ? version : null);
   const updateAvailable = !!pendingUpdate;
+  // With allowDowngrade, "available" can mean this channel's version is
+  // actually OLDER than what's running (e.g. moving off a `dev` build back
+  // to `stable`) -- distinguish that so the wording/icon don't say "update"
+  // for what's really a downgrade.
+  const isSwitchDowngrade =
+    updateAvailable &&
+    !!version &&
+    !!latestVersion &&
+    isOlderVersion(latestVersion, version);
   const channelShortLabel =
     UPDATE_CHANNELS.find((c) => c.value === channel)?.shortLabel ?? channel;
   // Dev-channel builds live under a single rolling `dev` release tag,
@@ -410,6 +481,15 @@ function AppUpdateSection() {
             </span>
           </span>
         )}
+        {version && (
+          <Badge
+            variant="outline"
+            className="text-[10px] px-1.5 py-0 h-4 rounded-sm text-muted-foreground"
+            title="Inferred from the version string: a `-pre.release` suffix means a pre-release, a `+build.meta` suffix means a continuous Dev-channel build, otherwise it's a full Stable release."
+          >
+            {VERSION_KIND_LABEL[classifyVersion(version)]}
+          </Badge>
+        )}
         {isLocalBuild && (
           <Badge
             variant="secondary"
@@ -427,10 +507,18 @@ function AppUpdateSection() {
           <span
             className={cn(
               "text-xs",
-              updateAvailable ? "text-orange-500" : "text-green-500"
+              !updateAvailable
+                ? "text-green-500"
+                : isSwitchDowngrade
+                  ? "text-blue-500"
+                  : "text-orange-500"
             )}
           >
-            {updateAvailable ? `→ v${latestVersion}` : "up to date"}
+            {!updateAvailable
+              ? "up to date"
+              : isSwitchDowngrade
+                ? `→ v${latestVersion} (switch)`
+                : `→ v${latestVersion}`}
           </span>
         )}
         {hasReleaseNotesPage && (
@@ -508,16 +596,20 @@ function AppUpdateSection() {
             isLocalBuild
               ? "Running via tauri:dev — there's no installer to apply this update to. Run `bun run tauri:build` to actually install one."
               : updateAvailable
-                ? "Download and install the new version, then relaunch"
+                ? isSwitchDowngrade
+                  ? `Download and install v${latestVersion} (this channel's current version, older than what's running), then relaunch`
+                  : "Download and install the new version, then relaunch"
                 : "You're already on the newest version for this channel"
           }
         >
           {updating ? (
             <Loader2 className="h-3 w-3 animate-spin mr-1" />
+          ) : isSwitchDowngrade ? (
+            <ArrowDownCircle className="h-3 w-3 mr-1" />
           ) : (
             <ArrowUpCircle className="h-3 w-3 mr-1" />
           )}
-          {updating ? "Updating..." : "Update"}
+          {updating ? "Updating..." : isSwitchDowngrade ? "Switch" : "Update"}
         </Button>
       </div>
     </section>

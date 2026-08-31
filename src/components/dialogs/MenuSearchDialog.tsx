@@ -45,7 +45,7 @@ import {
   AddInstancesFromAllPredictions,
   AddInstancesFromAllPredictionsInProject,
   AddTrack,
-  TransposeInstances,
+  requestTranspose,
   CopyTrack,
   PasteTrack,
   DeleteUnusedTracks,
@@ -153,7 +153,7 @@ function buildActions(): MenuAction[] {
     { group: "Labels", label: "Delete Predictions...", run: () => store().setDeletePredictionsDialogOpen(true) },
 
     // Tracks
-    { group: "Tracks", label: "Transpose Instance Tracks", shortcut: formatShortcut("$mod+KeyT"), run: exec(TransposeInstances) },
+    { group: "Tracks", label: "Transpose Instance Tracks", shortcut: formatShortcut("$mod+KeyT"), run: () => requestTranspose(commandContext) },
     { group: "Tracks", label: "New Track", shortcut: formatShortcut("$mod+Digit0"), run: exec(AddTrack) },
     { group: "Tracks", label: "Copy Instance Track", shortcut: formatShortcut("$mod+Shift+KeyC"), run: exec(CopyTrack) },
     { group: "Tracks", label: "Paste Instance Track", shortcut: formatShortcut("$mod+Shift+KeyV"), run: exec(PasteTrack) },

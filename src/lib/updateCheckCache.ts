@@ -16,10 +16,18 @@
  *
  * Also the single choke point that keeps appStore's ambient "something's
  * available" badge fields (stableUpdateAvailable/latestUpdateVersion, etc.)
- * in sync: every completed "stable"/"latest" check writes them here, so the
- * badge reflects whichever code path (startup check or an Environment panel
- * visit) most recently actually checked — rather than only the one-time
- * startup effect that used to own them exclusively.
+ * in sync: every completed strict "stable"/"latest" check writes them here,
+ * so the badge reflects whichever code path (startup check or an
+ * Environment panel visit) most recently actually checked — rather than
+ * only the one-time startup effect that used to own them exclusively.
+ *
+ * `allowDowngrade` is a separate query mode (see check_update's Rust doc
+ * comment) for when the user explicitly picks a channel in the Environment
+ * panel's dropdown: it surfaces that channel's real current version even if
+ * it's older than what's running (e.g. switching off a `dev` build back to
+ * `stable`), rather than only "is there something newer". It's cached under
+ * its own key and never feeds the ambient badge — that badge means "a newer
+ * version is out", not "this other channel has a different version".
  */
 
 import { sleapCmd } from "./sleapPlugin";
@@ -38,11 +46,20 @@ interface CacheEntry {
   checkedAt: number;
 }
 
-const cache = new Map<UpdateChannel, CacheEntry>();
+// Keyed by `${channel}:${mode}` -- a strict "is there something newer" check
+// and an allowDowngrade "what's this channel's current version" check are
+// different queries and must not share a cache slot.
+type CacheKey = `${UpdateChannel}:${"strict" | "any"}`;
+
+function cacheKey(channel: UpdateChannel, allowDowngrade: boolean): CacheKey {
+  return `${channel}:${allowDowngrade ? "any" : "strict"}`;
+}
+
+const cache = new Map<CacheKey, CacheEntry>();
 // De-dupes concurrent misses on the same channel (e.g. App.tsx's startup
 // check and an already-open Environment panel both checking "latest" at
 // once) into a single in-flight request, rather than each firing its own.
-const inFlight = new Map<UpdateChannel, Promise<PendingUpdate | null>>();
+const inFlight = new Map<CacheKey, Promise<PendingUpdate | null>>();
 
 function recordAmbientBadgeInfo(
   channel: UpdateChannel,
@@ -57,16 +74,21 @@ function recordAmbientBadgeInfo(
 
 export async function checkUpdateCached(
   channel: UpdateChannel,
-  { force = false }: { force?: boolean } = {}
+  {
+    force = false,
+    allowDowngrade = false,
+  }: { force?: boolean; allowDowngrade?: boolean } = {}
 ): Promise<PendingUpdate | null> {
+  const key = cacheKey(channel, allowDowngrade);
+
   if (!force) {
-    const cached = cache.get(channel);
+    const cached = cache.get(key);
     if (cached && Date.now() - cached.checkedAt < CACHE_TTL_MS) {
       return cached.result;
     }
   }
 
-  const pending = inFlight.get(channel);
+  const pending = inFlight.get(key);
   if (pending) return pending;
 
   const promise = (async () => {
@@ -74,15 +96,18 @@ export async function checkUpdateCached(
       const { invoke } = await import("@tauri-apps/api/core");
       const result = await invoke<PendingUpdate | null>(
         sleapCmd("check_update"),
-        { channel }
+        { channel, allowDowngrade }
       );
-      cache.set(channel, { result, checkedAt: Date.now() });
-      recordAmbientBadgeInfo(channel, result);
+      cache.set(key, { result, checkedAt: Date.now() });
+      // Ambient badge means "a newer version is out" -- only a strict check
+      // speaks to that; an allowDowngrade result may just be a different
+      // (possibly older) version on a channel the user is previewing.
+      if (!allowDowngrade) recordAmbientBadgeInfo(channel, result);
       return result;
     } finally {
-      inFlight.delete(channel);
+      inFlight.delete(key);
     }
   })();
-  inFlight.set(channel, promise);
+  inFlight.set(key, promise);
   return promise;
 }

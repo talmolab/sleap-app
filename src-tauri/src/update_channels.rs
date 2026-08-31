@@ -132,13 +132,45 @@ async fn endpoint_for(channel: &str) -> Result<url::Url, String> {
     }
 }
 
-async fn build_updater<R: Runtime>(app: &AppHandle<R>, channel: &str) -> Result<Updater, String> {
+/// Decides whether `release` should be offered, given what's currently
+/// running. Pulled out of the `version_comparator` closure so it's unit
+/// testable without a live `Updater`/network access.
+///
+/// Default (`allow_downgrade: false`) matches tauri-plugin-updater's own
+/// fallback (`release.version > current`) exactly -- this function is used
+/// unconditionally (not just when overriding) so that behavior is covered by
+/// the same tests as the `allow_downgrade: true` path below.
+///
+/// With `allow_downgrade: true` (explicit channel switch -- see
+/// `check_update`'s doc comment): the default `>` comparison would treat a
+/// `dev` build as already newer than any `stable`/`latest` release of the
+/// same base version, since `Version`'s derived `Ord` also orders by build
+/// metadata (a non-empty `+build` sorts above an empty one) -- even though
+/// it's a DIFFERENT, non-tagged build a user may want to move off of.
+/// Comparing on inequality instead surfaces (and allows installing) that
+/// channel's real current version, upgrade or downgrade.
+fn should_offer_update(current: &Version, release: &Version, allow_downgrade: bool) -> bool {
+    if allow_downgrade {
+        release != current
+    } else {
+        release > current
+    }
+}
+
+async fn build_updater<R: Runtime>(
+    app: &AppHandle<R>,
+    channel: &str,
+    allow_downgrade: bool,
+) -> Result<Updater, String> {
     let endpoint = endpoint_for(channel).await?;
-    app.updater_builder()
+    let builder = app
+        .updater_builder()
         .endpoints(vec![endpoint])
         .map_err(|e| e.to_string())?
-        .build()
-        .map_err(|e| e.to_string())
+        .version_comparator(move |current, release| {
+            should_offer_update(&current, &release.version, allow_downgrade)
+        });
+    builder.build().map_err(|e| e.to_string())
 }
 
 /// Info about a pending update, serialized to the frontend.
@@ -150,13 +182,19 @@ pub struct UpdateInfo {
     pub pub_date: Option<String>,
 }
 
-/// Checks the given channel's manifest for a version newer than what's running.
+/// Checks the given channel's manifest for a version newer than what's
+/// running -- or, with `allow_downgrade`, for whichever version that channel
+/// currently points at, even if it's older than what's running. The latter
+/// is for an explicit channel switch (e.g. moving from `dev` back to
+/// `stable`), where the user wants to move to that channel's real current
+/// version, not just be told there's nothing "newer".
 #[tauri::command]
 pub async fn check_update<R: Runtime>(
     app: AppHandle<R>,
     channel: String,
+    allow_downgrade: bool,
 ) -> Result<Option<UpdateInfo>, String> {
-    let updater = build_updater(&app, &channel).await?;
+    let updater = build_updater(&app, &channel, allow_downgrade).await?;
     let update = updater.check().await.map_err(|e| e.to_string())?;
     Ok(update.map(|u| UpdateInfo {
         version: u.version,
@@ -173,13 +211,20 @@ pub async fn check_update<R: Runtime>(
 /// "Update" for: if a newer release lands on the channel in the moments
 /// between that render and this call, we refuse to silently install the
 /// different version — the frontend re-checks and asks again instead.
+///
+/// `allow_downgrade` must match whatever `check_update` call produced
+/// `expected_version` (see its doc comment) — otherwise this re-check would
+/// use stricter "newer only" semantics than the one that showed the user the
+/// button, and could wrongly report "no update available" for an intentional
+/// channel-switch downgrade.
 #[tauri::command]
 pub async fn install_update<R: Runtime>(
     app: AppHandle<R>,
     channel: String,
     expected_version: String,
+    allow_downgrade: bool,
 ) -> Result<(), String> {
-    let updater = build_updater(&app, &channel).await?;
+    let updater = build_updater(&app, &channel, allow_downgrade).await?;
     let Some(update) = updater.check().await.map_err(|e| e.to_string())? else {
         return Err("no update available".into());
     };
@@ -247,5 +292,70 @@ mod tests {
         let newer_base = parse_tag_version("v0.2.0").unwrap();
         let older_prerelease = parse_tag_version("v0.1.2-99").unwrap();
         assert!(newer_base > older_prerelease);
+    }
+
+    mod should_offer_update_tests {
+        use super::*;
+
+        #[test]
+        fn strict_mode_offers_a_genuinely_newer_release() {
+            let current = Version::parse("1.4.0").unwrap();
+            let release = Version::parse("1.5.0").unwrap();
+            assert!(should_offer_update(&current, &release, false));
+        }
+
+        #[test]
+        fn strict_mode_refuses_an_older_release() {
+            let current = Version::parse("1.5.0").unwrap();
+            let release = Version::parse("1.4.0").unwrap();
+            assert!(!should_offer_update(&current, &release, false));
+        }
+
+        // The bug this whole feature exists to fix: a dev build's version is
+        // stamped as `BASE+<run_number>.<short_sha>` (build-dev.yml). Per
+        // Version's derived Ord, a non-empty `+build` sorts ABOVE an empty
+        // one at the same major.minor.patch.pre, so in strict mode the
+        // *build itself* looks newer than the plain stable tag of the same
+        // base -- hiding the channel-switch entirely.
+        #[test]
+        fn strict_mode_hides_a_same_base_dev_build_from_stable() {
+            let current = Version::parse("1.5.0+42.abc1234").unwrap();
+            let release = Version::parse("1.5.0").unwrap();
+            assert!(!should_offer_update(&current, &release, false));
+        }
+
+        #[test]
+        fn allow_downgrade_surfaces_that_same_base_dev_build_case() {
+            let current = Version::parse("1.5.0+42.abc1234").unwrap();
+            let release = Version::parse("1.5.0").unwrap();
+            assert!(should_offer_update(&current, &release, true));
+        }
+
+        // The scenario from the conversation: running a dev build whose base
+        // is ahead of the last real stable tag (dev builds off `main`, which
+        // is ahead of the last release). Strict mode says "no update" (dev's
+        // base outranks stable's); allow_downgrade must still offer the
+        // switch since it's a genuinely different version.
+        #[test]
+        fn allow_downgrade_offers_switch_to_an_older_base_version() {
+            let current = Version::parse("1.5.0+42.abc1234").unwrap();
+            let release = Version::parse("1.4.0").unwrap();
+            assert!(!should_offer_update(&current, &release, false));
+            assert!(should_offer_update(&current, &release, true));
+        }
+
+        #[test]
+        fn allow_downgrade_offers_a_genuinely_newer_release_too() {
+            let current = Version::parse("1.4.0").unwrap();
+            let release = Version::parse("1.5.0").unwrap();
+            assert!(should_offer_update(&current, &release, true));
+        }
+
+        #[test]
+        fn allow_downgrade_does_not_offer_the_exact_same_version() {
+            let current = Version::parse("1.5.0").unwrap();
+            let release = Version::parse("1.5.0").unwrap();
+            assert!(!should_offer_update(&current, &release, true));
+        }
     }
 }
