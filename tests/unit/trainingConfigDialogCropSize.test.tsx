@@ -51,6 +51,7 @@ function makeConfigs(modelType: ModelType, cropSize: number | null): ConfigFile[
     modelType: slot,
     slot,
     hyperparams: { ...defaultHyperparams, cropSize },
+    originalHyperparams: { ...defaultHyperparams, cropSize },
     hasTrainedModel: false,
     checkpointPath: null,
   }));
