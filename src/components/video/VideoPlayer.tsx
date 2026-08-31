@@ -32,6 +32,9 @@ import {
   nodesInRect,
   makeNodeKey,
   parseNodeKey,
+  COMPLETE_COLOR,
+  INCOMPLETE_COLOR,
+  UNCOLORED_PREDICTED_NODE_COLOR,
   type RenderedInstance,
   type RenderedNode,
 } from "../../canvas/SkeletonRenderer";
@@ -77,6 +80,7 @@ import {
   relocateMissingImageFrames,
 } from "../../lib/resolveVideos";
 import { toast } from "@/lib/notify";
+import { hintIfPredictionsRemain, hintIfFirstNodeConfirm } from "@/lib/labelingHints";
 import { setLabelsAutosaveInteracting } from "@/lib/labelsAutosave";
 import { spacePanState } from "@/lib/spacePanTracking";
 import { getPlatform, isTauri } from "@/platform/index";
@@ -205,6 +209,18 @@ export function VideoPlayer() {
   const [hoveredNode, setHoveredNode] = useState<{
     instanceIdx: number;
     nodeIdx: number;
+    clientX: number;
+    clientY: number;
+  } | null>(null);
+  /**
+   * Hovering an instance's body (near its centroid) without landing precisely
+   * on one of its nodes (#346) — a lighter-weight sibling to `hoveredNode`'s
+   * detailed per-node tooltip. Only tracked when `hoveredNode` is null; the
+   * caption it drives ("User Instance" / "Predicted Instance") would be
+   * redundant with the "predicted"/"user" line already in that tooltip.
+   */
+  const [hoveredInstanceIdx, setHoveredInstanceIdx] = useState<{
+    idx: number;
     clientX: number;
     clientY: number;
   } | null>(null);
@@ -941,6 +957,7 @@ export function VideoPlayer() {
   useEffect(() => {
     setSelectedNodes(new Set());
     setHoveredNode(null);
+    setHoveredInstanceIdx(null);
     setInteractionMode("idle");
     setMarqueeStart(null);
     setMarqueeEnd(null);
@@ -1858,6 +1875,7 @@ export function VideoPlayer() {
             y
           );
           currentInstance.points[targetIdx].visible = true;
+          hintIfFirstNodeConfirm(currentInstance.points[targetIdx].complete);
           currentInstance.points[targetIdx].complete = true;
           store.markChanged();
           store.touchFrame();
@@ -1876,7 +1894,7 @@ export function VideoPlayer() {
           if (nextUnplaced !== -1) {
             store.set("placementNodeIdx", nextUnplaced);
           } else {
-            // All nodes placed — exit placement mode
+            // All nodes placed — exit placement mode.
             store.exitPlacementMode();
           }
 
@@ -1909,7 +1927,17 @@ export function VideoPlayer() {
 
         const keys = new Set<string>();
         newInstance.points.forEach((p, pIdx) => {
-          if (!isNaN(p.xy[0]) && !isNaN(p.xy[1])) keys.add(makeNodeKey(newIdx, pIdx));
+          if (!isNaN(p.xy[0]) && !isNaN(p.xy[1])) {
+            keys.add(makeNodeKey(newIdx, pIdx));
+            // Dragging the clone into place is a deliberate confirm of each
+            // point, same as a plain single-node click/drag — previously
+            // these silently kept whatever `complete` they inherited from
+            // the source instance (clonePoints copies it verbatim), so a
+            // clone of an unconfirmed instance stayed red even after being
+            // positioned.
+            hintIfFirstNodeConfirm(p.complete);
+            p.complete = true;
+          }
         });
         setSelectedNodes(keys);
         setDragNodeInfo({ instanceIdx: newIdx, nodeIdx: 0 });
@@ -1957,8 +1985,23 @@ export function VideoPlayer() {
           commandContext.execute(BeginEdit);
           // Clicking a node marks it "complete" (confirmed by the user), same
           // as PyQt SLEAP's QtNode.mousePressEvent -- turns its label green.
-          const targetPoint = lf?.instances[nodeHit.instanceIdx]?.points[nodeHit.nodeIdx];
-          if (targetPoint) targetPoint.complete = true;
+          // When this click is the start of a GROUP drag (e.g. after
+          // double-clicking to select every node in the instance), every
+          // selected node moves together via handleMouseMove's group-drag
+          // branch -- mark all of them confirmed, not just the one clicked,
+          // or the others would keep moving while staying red. `selectedNodes`
+          // (the pre-click set) is the right source here when the clicked key
+          // was already in it; `setSelectedNodes` above hasn't landed yet for
+          // a fresh single-node click, so fall back to just `key` then.
+          const workingKeys = alreadySelected ? selectedNodes : new Set([key]);
+          for (const wKey of workingKeys) {
+            const { instanceIdx: wInstIdx, nodeIdx: wNodeIdx } = parseNodeKey(wKey);
+            const wPoint = lf?.instances[wInstIdx]?.points[wNodeIdx];
+            if (wPoint) {
+              hintIfFirstNodeConfirm(wPoint.complete);
+              wPoint.complete = true;
+            }
+          }
           setDragNodeInfo(nodeHit);
           setIsDragging(true);
           setInteractionMode("dragging");
@@ -1996,7 +2039,9 @@ export function VideoPlayer() {
       // No hit: start marquee or deselect
       if (!e.shiftKey) {
         setSelectedNodes(new Set());
-        useAppStore.getState().setInstance(null);
+        const store = useAppStore.getState();
+        hintIfPredictionsRemain(store.instance, store.labeledFrame);
+        store.setInstance(null);
       }
       setInteractionMode("marquee");
       setMarqueeStart({ x, y });
@@ -2242,15 +2287,28 @@ export function VideoPlayer() {
           clientX: e.clientX,
           clientY: e.clientY,
         });
+        if (hoveredInstanceIdx) setHoveredInstanceIdx(null);
         if (prevIdx !== hit.instanceIdx || prevNode !== hit.nodeIdx) {
           useAppStore.getState().bumpOverlayVersion();
         }
-      } else if (hoveredNode) {
-        setHoveredNode(null);
-        useAppStore.getState().bumpOverlayVersion();
+      } else {
+        if (hoveredNode) {
+          setHoveredNode(null);
+          useAppStore.getState().bumpOverlayVersion();
+        }
+        // #346: not on a node, but maybe still on the instance's body — same
+        // centroid-distance test used for click-to-select (instanceThreshold
+        // elsewhere in this file).
+        const instanceThreshold = 30 / (baseScale * zoom);
+        const instHit = hitTestInstance(instances, x, y, instanceThreshold);
+        if (instHit !== null) {
+          setHoveredInstanceIdx({ idx: instHit, clientX: e.clientX, clientY: e.clientY });
+        } else if (hoveredInstanceIdx) {
+          setHoveredInstanceIdx(null);
+        }
       }
     },
-    [isDragging, isPanning, isZoomDragging, dragNodeInfo, canvasToScene, panStart, constrainPan, zoom, baseScale, interactionMode, selectedNodes, markerSize, nodeLabelSize, showLabels, hoveredNode, offsetX, offsetY, isPlacingNodes, isShiftHeld, isAreaDeleting, areaDeleteStart, skeletonBuildMode, skeleton, builderRI]
+    [isDragging, isPanning, isZoomDragging, dragNodeInfo, canvasToScene, panStart, constrainPan, zoom, baseScale, interactionMode, selectedNodes, markerSize, nodeLabelSize, showLabels, hoveredNode, hoveredInstanceIdx, offsetX, offsetY, isPlacingNodes, isShiftHeld, isAreaDeleting, areaDeleteStart, skeletonBuildMode, skeleton, builderRI]
   );
 
   const handleMouseUp = useCallback(() => {
@@ -2682,7 +2740,7 @@ export function VideoPlayer() {
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
-          onMouseLeave={() => { handleMouseUp(); setHoveredNode(null); cursorScene.current = null; }}
+          onMouseLeave={() => { handleMouseUp(); setHoveredNode(null); setHoveredInstanceIdx(null); cursorScene.current = null; }}
           onDoubleClick={handleDoubleClick}
           onContextMenu={handleContextMenu}
         />
@@ -2785,18 +2843,42 @@ export function VideoPlayer() {
           const instScore = lfInst instanceof PredictedInstance ? lfInst.score : undefined;
           const isPredicted = lfInst instanceof PredictedInstance;
           const isDragActive = interactionMode === "dragging" && selectedNodes.size > 1;
+          // #341: color this line to match the same convention the canvas
+          // node/label itself uses — yellow (predicted), red (unconfirmed),
+          // green (confirmed) — so the tooltip text reads as a direct
+          // translation of what's on screen, not just a separate caption.
+          const statusColor = isPredicted
+            ? UNCOLORED_PREDICTED_NODE_COLOR
+            : point.complete
+              ? COMPLETE_COLOR
+              : INCOMPLETE_COLOR;
           return (
             <div
               className="absolute pointer-events-none bg-black/80 text-white text-xs rounded shadow-lg px-2 py-1.5 z-20 leading-relaxed"
               style={{ left: tipX, top: tipY }}
             >
               <div className="font-medium">{nodeName}</div>
+              <div style={{ color: rgbToCSS(statusColor) }}>
+                <strong>{isPredicted ? "predicted" : "user"}</strong> · {point.visible ? "visible" : "not visible"}
+                {/* #341: translate the red/green node-color convention inline,
+                    here rather than a one-shot toast, so it's discoverable
+                    every time — not just once, and not just if the toast
+                    happened to be caught. Doesn't apply to predicted points,
+                    which are always yellow regardless of `complete`. */}
+                {!isPredicted && ` · ${point.complete ? "confirmed" : "unconfirmed"}`}
+              </div>
               <div className="text-white/70">
                 x: {point.xy[0].toFixed(1)}, y: {point.xy[1].toFixed(1)}
               </div>
-              <div className="text-white/50">
-                {isPredicted ? "predicted" : "user"} · {point.visible ? "visible" : "not visible"}
-              </div>
+              {/* #341: same reasoning as above — teach the right-click-to-toggle
+                  mechanic wherever it's actually relevant (any hidden node on a
+                  user instance, not just ones auto-hidden by converting a
+                  prediction with missing detections). */}
+              {!isPredicted && !point.visible && (
+                <div className="text-white/40 text-[10px] mt-0.5">
+                  right-click to toggle visible
+                </div>
+              )}
               {nodeScore !== undefined && (
                 <div className="text-white/70">conf: {nodeScore.toFixed(3)}</div>
               )}
@@ -2809,6 +2891,29 @@ export function VideoPlayer() {
                   {instScore !== undefined && ` (${instScore.toFixed(2)})`}
                 </div>
               )}
+            </div>
+          );
+        })()}
+
+        {/* Instance hover caption (#346): a subtle "User Instance" / "Predicted
+            Instance" translation of the color coding, shown when hovering an
+            instance's body without landing precisely on one of its nodes (the
+            more detailed node tooltip above already says "predicted"/"user"
+            when it's showing, so this is skipped whenever that one is). */}
+        {!hoveredNode && hoveredInstanceIdx && labeledFrame && (() => {
+          const lfInst = labeledFrame.instances[hoveredInstanceIdx.idx];
+          if (!lfInst) return null;
+          const containerRect = containerRef.current?.getBoundingClientRect();
+          if (!containerRect) return null;
+          const tipX = hoveredInstanceIdx.clientX - containerRect.left + 16;
+          const tipY = hoveredInstanceIdx.clientY - containerRect.top - 8;
+          const isPredicted = lfInst instanceof PredictedInstance;
+          return (
+            <div
+              className="absolute pointer-events-none bg-black/70 text-white/90 text-[11px] rounded shadow px-1.5 py-1 z-20"
+              style={{ left: tipX, top: tipY }}
+            >
+              {isPredicted ? "Predicted Instance" : "User Instance"}
             </div>
           );
         })()}

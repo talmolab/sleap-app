@@ -47,6 +47,7 @@ import { ExportClipDialog } from "../dialogs/ExportClipDialog";
 import { ModelMetricsDialog } from "../dialogs/ModelMetricsDialog";
 import { ExportPackageDialog } from "../dialogs/ExportPackageDialog";
 import { ShortcutsDialog } from "../dialogs/ShortcutsDialog";
+import { LabelingTipsDialog } from "../dialogs/LabelingTipsDialog";
 import { HelpDialog } from "../dialogs/HelpDialog";
 import { DiagnosticsDialog } from "../dialogs/DiagnosticsDialog";
 import { MenuSearchDialog } from "../dialogs/MenuSearchDialog";
@@ -154,6 +155,8 @@ export function AppShell() {
   );
   const shortcutsDialogOpen = useAppStore((s) => s.shortcutsDialogOpen);
   const setShortcutsDialogOpen = useAppStore((s) => s.setShortcutsDialogOpen);
+  const labelingTipsDialogOpen = useAppStore((s) => s.labelingTipsDialogOpen);
+  const setLabelingTipsDialogOpen = useAppStore((s) => s.setLabelingTipsDialogOpen);
   const helpDialogOpen = useAppStore((s) => s.helpDialogOpen);
   const setHelpDialogOpen = useAppStore((s) => s.setHelpDialogOpen);
   const diagnosticsDialogOpen = useAppStore((s) => s.diagnosticsDialogOpen);
@@ -303,6 +306,10 @@ export function AppShell() {
       <ShortcutsDialog
         open={shortcutsDialogOpen}
         onOpenChange={setShortcutsDialogOpen}
+      />
+      <LabelingTipsDialog
+        open={labelingTipsDialogOpen}
+        onOpenChange={setLabelingTipsDialogOpen}
       />
       <HelpDialog
         open={helpDialogOpen}

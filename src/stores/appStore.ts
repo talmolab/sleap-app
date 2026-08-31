@@ -180,6 +180,21 @@ export interface AppState {
   colorPredicted: boolean;
   /** Append the ` (0.81)` prediction score to on-canvas track labels. Default off (#316). Persisted. */
   showTrackScore: boolean;
+  /**
+   * Show contextual "gentle hint" toasts for common novice labeling pitfalls
+   * (e.g. right-clicking to reveal missing nodes, double-clicking predictions
+   * instead of drawing from scratch). Default on; toggled from
+   * Labels > Show Hints During Labeling for expert users who find them
+   * unnecessary. Persisted. See `lib/labelingHints.ts`.
+   */
+  showLabelingHints: boolean;
+  /**
+   * Whether the one-time "New to SLEAP?" welcome-screen prompt (#341) has
+   * been answered (or dismissed) yet — gates showing it again. Answering
+   * sets `showLabelingHints` accordingly; dismissing without answering
+   * leaves the existing default (on) untouched. Persisted.
+   */
+  hasSeenLabelingHintsPrompt: boolean;
   defaultToPan: boolean;
   palette: string;
   distinctlyColor: ColorTarget;
@@ -383,6 +398,7 @@ export interface AppState {
   modelMetricsDialogOpen: boolean;
   exportPackageDialogOpen: boolean;
   shortcutsDialogOpen: boolean;
+  labelingTipsDialogOpen: boolean;
   helpDialogOpen: boolean;
   menuSearchDialogOpen: boolean;
   diagnosticsDialogOpen: boolean;
@@ -465,6 +481,7 @@ export interface AppState {
   setModelMetricsDialogOpen: (open: boolean) => void;
   setExportPackageDialogOpen: (open: boolean) => void;
   setShortcutsDialogOpen: (open: boolean) => void;
+  setLabelingTipsDialogOpen: (open: boolean) => void;
   setHelpDialogOpen: (open: boolean) => void;
   setDiagnosticsDialogOpen: (open: boolean) => void;
   setMenuSearchDialogOpen: (open: boolean) => void;
@@ -549,6 +566,8 @@ export const PERSISTED_KEYS: (keyof AppState)[] = [
   "showCrosshair",
   "colorPredicted",
   "showTrackScore",
+  "showLabelingHints",
+  "hasSeenLabelingHintsPrompt",
   "trailLength",
   "insetSize",
   "insetZoom",
@@ -641,6 +660,8 @@ export const useAppStore = create<AppState>()(
       resetViewNonce: 0,
       colorPredicted: false,
       showTrackScore: false,
+      showLabelingHints: true,
+      hasSeenLabelingHintsPrompt: false,
       defaultToPan: false,
       palette: "standard",
       distinctlyColor: "auto" as ColorTarget,
@@ -726,6 +747,7 @@ export const useAppStore = create<AppState>()(
       modelMetricsDialogOpen: false,
       exportPackageDialogOpen: false,
       shortcutsDialogOpen: false,
+      labelingTipsDialogOpen: false,
       helpDialogOpen: false,
       menuSearchDialogOpen: false,
       diagnosticsDialogOpen: false,
@@ -1076,6 +1098,11 @@ export const useAppStore = create<AppState>()(
       setShortcutsDialogOpen: (open) =>
         set((state) => {
           state.shortcutsDialogOpen = open;
+        }),
+
+      setLabelingTipsDialogOpen: (open) =>
+        set((state) => {
+          state.labelingTipsDialogOpen = open;
         }),
 
       setMenuSearchDialogOpen: (open) =>

@@ -12,9 +12,11 @@ import type { EdgeStyle } from "../types";
 // Node-name label colors, matching PyQt SLEAP's QtNodeLabel.adjustStyle():
 // a label starts red ("incomplete" -- placed at a default/unconfirmed
 // position) and turns green once the user explicitly confirms it ("complete").
-const COMPLETE_COLOR: RGB = [80, 194, 159]; // greenish
-const INCOMPLETE_COLOR: RGB = [232, 45, 32]; // redish
-const MISSING_LABEL_COLOR: RGB = [128, 128, 128];
+// Exported so other UI (e.g. VideoPlayer's node-hover tooltip) can color text
+// to match these same canvas conventions instead of drifting out of sync.
+export const COMPLETE_COLOR: RGB = [80, 194, 159]; // greenish
+export const INCOMPLETE_COLOR: RGB = [232, 45, 32]; // redish
+export const MISSING_LABEL_COLOR: RGB = [128, 128, 128];
 
 // A predicted node's FILL is always flat gray, matching PyQt SLEAP's QtNode
 // (`self.brush = QBrush(QColor(128, 128, 128, 128))` for predicted points) --
@@ -25,7 +27,7 @@ const MISSING_LABEL_COLOR: RGB = [128, 128, 128];
 // return uncolored_prediction_color if isinstance(item, Node) else (128,128,128)`
 // -- i.e. NODE markers fall back to this yellow, while edges/labels fall back
 // to plain gray. Matches PyQt's literal `uncolored_prediction_color = (250, 250, 10)`.
-const UNCOLORED_PREDICTED_NODE_COLOR: RGB = [250, 250, 10];
+export const UNCOLORED_PREDICTED_NODE_COLOR: RGB = [250, 250, 10];
 const PREDICTED_FILL_COLOR: RGB = [128, 128, 128];
 const PREDICTED_LABEL_COLOR: RGB = [128, 128, 128];
 

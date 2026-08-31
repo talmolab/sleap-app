@@ -934,6 +934,7 @@ function LabelsMenu() {
   const instance = useAppStore((s) => s.instance);
   const labeledFrame = useAppStore((s) => s.labeledFrame);
   const instanceInitMethod = useAppStore((s) => s.instanceInitMethod);
+  const showLabelingHints = useAppStore((s) => s.showLabelingHints);
   // Instances require a skeleton with at least one node (see EditMenu).
   useAppStore((s) => s.overlayVersion);
   const skeletonHasNodes = useAppStore((s) => (s.skeleton?.nodes?.length ?? 0) > 0);
@@ -971,6 +972,12 @@ function LabelsMenu() {
             </MenubarRadioGroup>
           </MenubarSubContent>
         </MenubarSub>
+        <MenubarCheckboxItem
+          checked={showLabelingHints}
+          onCheckedChange={() => useAppStore.getState().toggle("showLabelingHints")}
+        >
+          Show Hints During Labeling
+        </MenubarCheckboxItem>
         <MenubarItem
           disabled={!instance}
           onClick={() => exec(DeleteSelectedInstance)}
@@ -1273,6 +1280,13 @@ function HelpMenu() {
           }
         >
           Keyboard Shortcuts...
+        </MenubarItem>
+        <MenubarItem
+          onClick={() =>
+            useAppStore.getState().setLabelingTipsDialogOpen(true)
+          }
+        >
+          Labeling Tips...
         </MenubarItem>
         <MenubarItem
           onClick={() => openExternal("https://docs.sleap.ai/")}

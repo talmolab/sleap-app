@@ -14,6 +14,11 @@ import type { CommandContext } from "./CommandContext";
 import { useAppStore } from "../stores/appStore";
 import { toast } from "@/lib/notify";
 import {
+  showLabelingHint,
+  hintIfFirstInstance,
+  hintIfFirstPredictionConversion,
+} from "@/lib/labelingHints";
+import {
   placeInstance,
   findNearestPriorFrame,
   fillMissingPredictedNodes,
@@ -95,6 +100,31 @@ export const AddInstance: Command = {
     );
     if (hasNaNPoints) {
       useAppStore.getState().enterPlacementMode();
+    }
+
+    // #341: exactly one hint per call. The very first user instance in the
+    // whole project is its own milestone (hintIfFirstInstance) and takes
+    // priority over the frame-based ones below — showing both at once would
+    // stack right on top of the node-confirmed-color hint the user is about
+    // to trigger by dragging this instance's (all-red) nodes into place.
+    if (!hintIfFirstInstance(labels)) {
+      // #341: picked by what's actually on the frame — converting a
+      // prediction beats cloning a user instance beats a bare repositioning
+      // tip, since each is progressively less specific to this frame's
+      // contents.
+      if (existingInstances.some((inst) => inst instanceof PredictedInstance)) {
+        // Drawing from scratch when a prediction is already sitting right
+        // there is almost always slower than double-clicking it.
+        showLabelingHint("double-click-to-convert");
+      } else if (existingInstances.length > 0) {
+        // A similarly-posed user instance is already here — cloning it
+        // (Ctrl/Cmd-drag) usually beats placing points from scratch.
+        showLabelingHint("clone-instance-drag");
+      } else {
+        // Nothing to convert or clone (first instance on this frame) — teach
+        // bulk repositioning instead of node-by-node dragging.
+        showLabelingHint("move-rotate-whole-instance");
+      }
     }
   },
 };
@@ -381,6 +411,9 @@ export const ConvertPredictionToInstance: Command = {
       track: predicted.track,
       fromPredicted: predicted,
     });
+    const hadMissingNodes = userInstance.points.some(
+      (p) => isNaN(p.xy[0]) || isNaN(p.xy[1])
+    );
     fillMissingPredictedNodes(userInstance);
 
     // Replace the predicted instance with the user instance
@@ -389,6 +422,16 @@ export const ConvertPredictionToInstance: Command = {
     ctx.state.setLabeledFrame(lf);
     ctx.state.setInstance(userInstance);
     ctx.state.markChanged();
+
+    // #341: same one-hint-at-a-time reasoning as AddInstance — the
+    // first-ever-instance milestone takes priority, then the first-ever
+    // conversion of the session (explains why this already-positioned
+    // instance still starts red), then the missing-nodes nudge. Stacking any
+    // two of these would compete with the node-confirmed-color hint the user
+    // is about to trigger by dragging one of this instance's red nodes.
+    if (!hintIfFirstInstance(labels) && !hintIfFirstPredictionConversion() && hadMissingNodes) {
+      showLabelingHint("missing-nodes-right-click");
+    }
   },
 };
 
@@ -452,6 +495,7 @@ export const AddInstancesFromAllPredictions: Command = {
       `Accepted ${predictedCount} prediction${predictedCount > 1 ? "s" : ""} as ` +
         `user instance${predictedCount > 1 ? "s" : ""}`
     );
+    if (!hintIfFirstInstance(labels)) hintIfFirstPredictionConversion();
   },
 };
 
@@ -509,6 +553,7 @@ export const AddInstancesFromAllPredictionsInProject: Command = {
       `Accepted ${totalAccepted} prediction${totalAccepted > 1 ? "s" : ""} across ` +
         `${framesWithPredictions.length} frame${framesWithPredictions.length > 1 ? "s" : ""}`
     );
+    if (!hintIfFirstInstance(labels)) hintIfFirstPredictionConversion();
   },
 };
 

@@ -168,6 +168,7 @@ function buildActions(): MenuAction[] {
     // Help
     { group: "Help", label: "Start Tutorial", run: () => store().startTutorial() },
     { group: "Help", label: "Keyboard Shortcuts", run: () => store().setShortcutsDialogOpen(true) },
+    { group: "Help", label: "Labeling Tips", run: () => store().setLabelingTipsDialogOpen(true) },
     { group: "Help", label: "Documentation", run: () => void openExternal("https://docs.sleap.ai/") },
     { group: "Help", label: "Report Issue", run: () => void openExternal("https://github.com/talmolab/sleap-app/issues") },
     { group: "Help", label: "About SLEAP Label", run: () => store().setHelpDialogOpen(true) },
