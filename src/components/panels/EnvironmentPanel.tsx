@@ -38,6 +38,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { isTauri } from "../../platform/index";
+import { classifyVersion, VERSION_KIND_LABEL } from "@/lib/version";
 import {
   useEnvironmentStore,
   type InstallStatus,
@@ -252,28 +253,13 @@ const UPDATE_CHANNELS: {
   { value: "dev", label: "Dev (main)", shortLabel: "Dev" },
 ];
 
-// Classifies the running version from its own semver shape, so users who
-// don't recognize semver conventions still see in plain text what kind of
-// build they're ACTUALLY on -- distinct from channelShortLabel above, which
-// is just the channel currently selected in the dropdown (a preference that
-// can point at a different version than what's installed, e.g. right after
-// switching channels but before clicking Update/Switch). Dev-channel builds
-// are stamped by build-dev.yml as `BASE+<run_number>.<short_sha>` (build
-// metadata); a `-` before that is a pre-release identifier (e.g.
-// `1.2.3-rc.1`); anything else is a plain tagged release.
-export type VersionKind = "stable" | "prerelease" | "dev";
-
-export function classifyVersion(version: string): VersionKind {
-  if (version.includes("+")) return "dev";
-  if (version.includes("-")) return "prerelease";
-  return "stable";
-}
-
-const VERSION_KIND_LABEL: Record<VersionKind, string> = {
-  stable: "Stable release",
-  prerelease: "Pre-release",
-  dev: "Dev build",
-};
+// classifyVersion / VERSION_KIND_LABEL now live in @/lib/version, because the
+// About dialog and the web menu-bar wordmark need the same wording -- see the
+// import at the top of this file. What they describe is unchanged: the kind of
+// build ACTUALLY running, which is distinct from channelShortLabel above (the
+// channel currently selected in the dropdown, a preference that can point at a
+// different version than what's installed, e.g. right after switching channels
+// but before clicking Update/Switch).
 
 // Base (major.minor.patch) comparison only -- ignores pre-release/build
 // metadata, since that's all that's needed to tell whether switching

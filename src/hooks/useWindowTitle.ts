@@ -7,18 +7,14 @@
  *   requires the `core:window:allow-set-title` capability (see
  *   src-tauri/capabilities/default.json).
  *
- * The app version comes from the Vite-injected `__APP_VERSION__` constant
- * (see vite.config.ts `define`); under `bun test` (no Vite) it falls back to
- * "dev".
+ * The app version comes from @/lib/version (the Vite-injected
+ * `__APP_VERSION__`, stamped per build by CI), shared with the About dialog
+ * and the web menu-bar wordmark so all three can never disagree.
  */
 import { useEffect } from "react";
 import { useAppStore } from "@/stores/appStore";
 import { isTauri } from "@/lib/platform";
-
-// `__APP_VERSION__` is declared once in `src/globals.d.ts`. Under `bun test`
-// there is no Vite `define`, so guard the reference and fall back to "dev".
-const APP_VERSION =
-  typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "dev";
+import { APP_VERSION } from "@/lib/version";
 
 // Memoized dynamic import of the Tauri window API. The setTitle effect re-runs
 // on every filename/hasChanges change; caching the import promise avoids

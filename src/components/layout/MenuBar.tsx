@@ -8,6 +8,7 @@
 import { useAppStore, type NavigationDomain } from "../../stores/appStore";
 import { PANELS } from "./panelRegistry";
 import { isTauri } from "../../lib/platform";
+import { APP_VERSION, APP_VERSION_KIND_LABEL } from "@/lib/version";
 import { formatShortcut } from "@/lib/formatShortcut";
 
 async function openExternal(url: string) {
@@ -104,13 +105,28 @@ export function MenuBar() {
       }`}
     >
       {!isTauri && (
-        <div className="flex items-center gap-1.5 px-3 text-sm font-semibold tracking-wider text-primary select-none">
+        <div className="flex items-baseline gap-1.5 px-3 text-sm font-semibold tracking-wider text-primary select-none">
           <img
             src={`${import.meta.env.BASE_URL}icon.png`}
             alt=""
-            className="h-4 w-4"
+            className="h-4 w-4 self-center"
           />
-          SLEAP
+          <span>SLEAP</span>
+          {/* The desktop shell gets its version from the native title bar
+              ("SLEAP v1.2.3"), which the web has no equivalent of -- a browser
+              tab title is usually truncated to the point of being unreadable.
+              So carry it here instead, in the block that exists for exactly
+              this reason (#133 / #142). Same @/lib/version source as the title
+              and the About dialog, so a deployed path can't misreport itself.
+              `title` spells out the channel wording rather than crowding the
+              bar with it. */}
+          <span
+            className="text-[10px] font-normal tracking-normal text-muted-foreground"
+            title={`SLEAP v${APP_VERSION} — ${APP_VERSION_KIND_LABEL}`}
+            data-testid="menubar-version"
+          >
+            v{APP_VERSION}
+          </span>
         </div>
       )}
       <FileMenu />

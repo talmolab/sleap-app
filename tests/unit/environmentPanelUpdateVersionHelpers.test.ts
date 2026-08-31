@@ -5,8 +5,11 @@
  */
 
 import { describe, it, expect } from "../bun-test";
+// classifyVersion moved to @/lib/version when the About dialog and the web
+// menu-bar wordmark started needing the same wording; the update-comparison
+// helpers below are still EnvironmentPanel's own.
+import { classifyVersion } from "@/lib/version";
 import {
-  classifyVersion,
   parseBaseVersion,
   isOlderVersion,
 } from "@/components/panels/EnvironmentPanel";
