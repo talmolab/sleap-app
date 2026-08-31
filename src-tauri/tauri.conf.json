@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "SLEAP",
-  "version": "0.1.0",
+  "version": "0.1.2-2",
   "identifier": "org.sleap.app",
   "build": {
     "frontendDist": "../dist",

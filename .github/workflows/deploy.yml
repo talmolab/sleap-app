@@ -3,16 +3,35 @@ name: Deploy to GitHub Pages
 on:
   push:
     branches: [main]
-  release:
-    types: [published]
-  # Fires whenever the desktop "Build Dev Channel" workflow (build-dev.yml)
-  # finishes -- whether it actually built (main moved) or skipped (quiet
-  # night) -- so app.sleap.ai/dev/ always tracks the SAME cadence and the
-  # SAME commit as the desktop dev release, rather than rebuilding
-  # on every push like /main/ does. Safe to fire on a skip too: the final
-  # `git diff --cached --quiet` below no-ops if nothing actually changed.
+  # BOTH desktop build workflows feed this one. Nothing web-facing deploys
+  # directly off `release: published` any more, and dropping that trigger is
+  # the entire point of this wiring:
+  #
+  #  - A release is atomic. If any platform's installer fails to build, the
+  #    tag is not a real release, so app.sleap.ai must not start serving it
+  #    either. Gating the whole release deploy on a SUCCESSFUL build.yml is
+  #    what stops the web app and the desktop app from ever disagreeing about
+  #    what actually shipped.
+  #  - The version each page reports is whatever the desktop build stamped,
+  #    which does not exist until that build has run.
+  #  - /latest/ additionally requires the release to already carry a
+  #    latest.json asset, which build.yml uploads at the very END of its
+  #    release job. Testing for that on `release: published` -- as this
+  #    workflow used to -- could NEVER pass: the asset is produced by the
+  #    build that same event kicks off, tens of minutes later. So /latest/
+  #    was never deployed even once (gh-pages has no `latest/` folder at all).
+  #
+  # A flaky platform leg therefore self-heals: re-running it re-fires this
+  # workflow on success, with no manual deploy step for anyone to remember.
+  #
+  # "Build Dev Channel" keeps its original meaning -- it fires whether that
+  # workflow actually built (main moved) or skipped (quiet night), so
+  # app.sleap.ai/dev/ tracks the SAME cadence and the SAME commit as the
+  # desktop dev release rather than rebuilding on every push like /main/.
+  # Safe to fire on a skip: the final `git diff --cached --quiet` below
+  # no-ops if nothing actually changed.
   workflow_run:
-    workflows: ["Build Dev Channel"]
+    workflows: ["Build Desktop Apps", "Build Dev Channel"]
     types: [completed]
   # Manual deploy from the Actions tab (or `gh workflow run deploy.yml`).
   # Pick the target; the selected branch/tag in the run's ref is what gets built.
@@ -38,15 +57,27 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    # A workflow_run event fires for ANY run of build-dev.yml, on any ref it
-    # was invoked against -- only actually deploy for a successful run on
-    # `main` (the schedule/workflow_dispatch triggers build-dev.yml can react
-    # to). Every other event type (push, release, workflow_dispatch on THIS
-    # workflow) is unaffected by this guard.
+    # A workflow_run event fires for ANY run of either upstream workflow, on
+    # any ref and from any trigger, so qualify both -- and require success in
+    # both cases, because a red build must not reach app.sleap.ai at all:
+    #
+    #  - Build Dev Channel: only its runs on `main` (the schedule /
+    #    workflow_dispatch triggers it reacts to) deploy /dev/.
+    #  - Build Desktop Apps: only its RELEASE runs deploy. That workflow also
+    #    has a workflow_dispatch trigger for test builds off a branch, and
+    #    those have no release to publish. `workflow_run.event` is the
+    #    ORIGINAL event that started the upstream run, which is how the two
+    #    are told apart.
+    #
+    # Every other event type (push, workflow_dispatch on THIS workflow) is
+    # unaffected by this guard.
     if: >-
       github.event_name != 'workflow_run' ||
       (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_branch == 'main')
+       ((github.event.workflow_run.name == 'Build Dev Channel' &&
+         github.event.workflow_run.head_branch == 'main') ||
+        (github.event.workflow_run.name == 'Build Desktop Apps' &&
+         github.event.workflow_run.event == 'release')))
 
     steps:
       # On a workflow_run trigger, pin to the EXACT commit build-dev.yml just
@@ -59,38 +90,73 @@ jobs:
           ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.ref }}
 
       # Computes EVERY path this run needs to (re)build, as a JSON array of
-      # {path, base, label} -- e.g. a real (non-pre-)release publish can
-      # deploy to THREE places in one run: its own permanent version path (so
-      # any past version stays reachable forever, e.g. app.sleap.ai/v0.1.2-1/),
-      # root (stable), and /latest/ IF this is genuinely the highest version
-      # known. /main/ (every push) and /dev/ (synced with the desktop
-      # dev build) are each driven by their own distinct trigger --
-      # see the `elif` branches below.
+      # {path, base, label, version} -- e.g. a full release deploys to THREE
+      # places in one run: its own permanent version path (so any past version
+      # stays reachable forever, e.g. app.sleap.ai/v0.1.2-1/), root (stable),
+      # and /latest/ IF this is genuinely the highest version known. /main/
+      # (every push) and /dev/ (synced with the desktop dev build) are each
+      # driven by their own distinct trigger -- see the `elif` branches below.
       #
-      # github.event.release.* fields are passed via env, NEVER interpolated
-      # directly into this script body -- a `"` or newline in a tag or release
-      # body must not be able to become code (this exact mistake is what made
-      # release v0.1.1 ship zero assets; see build.yml's "Set version from
-      # release tag" step for the incident this pattern comes from).
+      # `version` is what the built page reports as __APP_VERSION__ (the
+      # window/tab title, via vite.config.ts `define` -> useWindowTitle). It
+      # is derived PER TARGET so a web build always agrees with the desktop
+      # build of the same thing. package.json's committed version is only a
+      # local-dev fallback and is deliberately not trusted here -- nothing on
+      # `main` bumps it as part of shipping, so it drifts (build-dev.yml's
+      # BASE derivation documents the same reasoning).
+      #
+      # Upstream event fields are passed via env, NEVER interpolated directly
+      # into this script body -- a `"` or newline in a tag must not be able to
+      # become code (that exact mistake is what made release v0.1.1 ship zero
+      # assets; see build.yml's "Set version from release tag" step).
       - name: Determine deploy targets
         id: targets
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           EVENT_NAME: ${{ github.event_name }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-          RELEASE_IS_PRERELEASE: ${{ github.event.release.prerelease }}
+          WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
+          # For a release-triggered upstream run, head_branch is the TAG name.
+          WORKFLOW_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
           DISPATCH_TARGET: ${{ inputs.target }}
           REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           TARGETS='[]'
           add_target() {
-            TARGETS="$(jq -c --arg path "$1" --arg base "$2" --arg label "$3" \
-              '. + [{path: $path, base: $base, label: $label}]' <<< "$TARGETS")"
+            TARGETS="$(jq -c --arg path "$1" --arg base "$2" --arg label "$3" --arg version "$4" \
+              '. + [{path: $path, base: $base, label: $label, version: $version}]' <<< "$TARGETS")"
           }
 
-          if [ "$EVENT_NAME" = "release" ]; then
+          # Highest published version tag, mirroring build-dev.yml's BASE
+          # derivation (non-draft, release OR pre-release, a real release
+          # outranking a pre-release of the same base). Used only to LABEL the
+          # bleeding-edge paths, so unlike the /latest/ query below it does not
+          # require a latest.json asset -- it is naming a web build, not
+          # deciding what the updater is allowed to point at.
+          highest_tag() {
+            gh api "repos/$REPO/releases?per_page=100" --paginate \
+              --jq '[.[] | select(.draft == false) | .tag_name as $t
+                     | ($t | capture("^v?(?<major>[0-9]+)\\.(?<minor>[0-9]+)\\.(?<patch>[0-9]+)(-(?<pre>[0-9]+))?$"))?
+                     | select(. != null)
+                     | {sortkey: [(.major|tonumber), (.minor|tonumber), (.patch|tonumber),
+                                  (if .pre == null then 1 else 0 end), (.pre // "0" | tonumber)],
+                        base: ($t | ltrimstr("v"))}]
+                    | max_by(.sortkey) | if . == null then "0.0.0" else .base end'
+          }
+
+          if [ "$EVENT_NAME" = "workflow_run" ] && [ "$WORKFLOW_NAME" = "Build Desktop Apps" ]; then
+            # The job guard restricts this to SUCCESSFUL release runs, so every
+            # platform's installer exists and the tag is a real release.
+            RELEASE_TAG="$WORKFLOW_HEAD_BRANCH"
+            # Identical derivation to build.yml's "Set version from release
+            # tag" (VERSION="${RELEASE_TAG#v}"), which is the version the
+            # desktop app reports -- so the web build at /v<tag>/ and the
+            # installers attached to that same release can never disagree.
+            RELEASE_VERSION="${RELEASE_TAG#v}"
+            RELEASE_IS_PRERELEASE="$(gh api "repos/$REPO/releases/tags/$RELEASE_TAG" --jq '.prerelease')"
+            echo "Release $RELEASE_TAG (prerelease=$RELEASE_IS_PRERELEASE) -> version $RELEASE_VERSION"
             # Every published release (full or pre-release) gets its own
             # permanent path that's never touched again -- so a specific past
             # version is always reachable, e.g. app.sleap.ai/v0.1.2-1/. That
@@ -101,10 +167,10 @@ jobs:
             # either with an unrelated pre-release publish would reintroduce
             # exactly the "which commit does this actually reflect" confusion
             # this whole naming scheme exists to avoid.
-            add_target "$RELEASE_TAG" "/$RELEASE_TAG/" "$RELEASE_TAG (permanent)"
+            add_target "$RELEASE_TAG" "/$RELEASE_TAG/" "$RELEASE_TAG (permanent)" "$RELEASE_VERSION"
 
             if [ "$RELEASE_IS_PRERELEASE" != "true" ]; then
-              add_target "" "/" "$RELEASE_TAG (stable)"
+              add_target "" "/" "$RELEASE_TAG (stable)" "$RELEASE_VERSION"
             fi
 
             # /latest/ only advances if this release is genuinely the highest
@@ -129,7 +195,7 @@ jobs:
                         base: $t}]
                     | max_by(.sortkey) | if . == null then null else .base end')"
             if [ "$HIGHEST" = "$RELEASE_TAG" ]; then
-              add_target "latest" "/latest/" "$RELEASE_TAG (latest)"
+              add_target "latest" "/latest/" "$RELEASE_TAG (latest)" "$RELEASE_VERSION"
             else
               echo "This release ($RELEASE_TAG) is not the highest known version ($HIGHEST) -- leaving /latest/ untouched."
             fi
@@ -139,15 +205,36 @@ jobs:
             # always reflects the exact same commit the desktop dev
             # release does, refreshed on the exact same cadence (nightly or
             # manual), never on every plain push.
-            add_target "dev" "/dev/" "dev (synced with desktop dev build)"
+            #
+            # The dev version is BASE+<run_number>.<sha>, computed inside
+            # build-dev.yml against ITS OWN run number -- which is unknowable
+            # from here, so recomputing it would be guesswork. Read the value
+            # that build actually stamped straight out of the `dev` release's
+            # latest.json instead: that is the same manifest the desktop
+            # updater consumes, so /dev/ and the desktop dev build report
+            # byte-identical versions by construction rather than by two
+            # copies of one formula agreeing.
+            DEV_VERSION="$(curl -fsSL "https://github.com/$REPO/releases/download/dev/latest.json" \
+              | jq -r '.version // empty' || true)"
+            if [ -z "$DEV_VERSION" ]; then
+              DEV_VERSION="$(highest_tag)+dev.${HEAD_SHA:0:7}"
+              echo "::warning::could not read the dev release's latest.json; labelling /dev/ as $DEV_VERSION"
+            fi
+            add_target "dev" "/dev/" "dev (synced with desktop dev build)" "$DEV_VERSION"
           elif [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$DISPATCH_TARGET" = "prod" ]; then
-            add_target "" "/" "manual-prod $REF_NAME"
+            add_target "" "/" "manual-prod $REF_NAME" "$(highest_tag)+manual.${HEAD_SHA:0:7}"
           else
             # Plain push to main (or a manual workflow_dispatch with the
             # default "main" target): the bleeding-edge view, rebuilt on
             # every single commit -- what /dev/ used to do before it was
             # repointed to track the desktop dev channel's cadence instead.
-            add_target "main" "/main/" "main"
+            #
+            # /main/ is the one path with NO desktop counterpart, so there is
+            # nothing for it to be version-consistent with. Label it with the
+            # highest shipped version plus the commit, in the same shape
+            # build-dev.yml uses, so the title is at least truthful about what
+            # it is and traceable to the commit it was built from.
+            add_target "main" "/main/" "main" "$(highest_tag)+main.${HEAD_SHA:0:7}"
           fi
 
           echo "Deploy targets: $TARGETS"
@@ -184,8 +271,23 @@ jobs:
           for i in $(seq 0 $((COUNT - 1))); do
             TARGET_PATH="$(jq -r ".[$i].path" /tmp/targets.json)"
             TARGET_BASE="$(jq -r ".[$i].base" /tmp/targets.json)"
+            TARGET_VERSION="$(jq -r ".[$i].version" /tmp/targets.json)"
             SAFE_NAME="${TARGET_PATH:-ROOT}"
-            echo "Building target '$SAFE_NAME' (base=$TARGET_BASE)"
+            echo "Building target '$SAFE_NAME' (base=$TARGET_BASE, version=$TARGET_VERSION)"
+            # Stamp the version this target must report BEFORE building it:
+            # vite.config.ts reads package.json at config load and injects it
+            # as the __APP_VERSION__ constant (consumed by useWindowTitle), so
+            # it has to be correct on disk at build time. Patched per target in
+            # this ephemeral CI checkout only and never committed -- exactly
+            # what build.yml does when stamping a desktop release. Passed
+            # through the environment rather than interpolated, same reason as
+            # everywhere else in this file.
+            TARGET_VERSION="$TARGET_VERSION" bun -e "
+              const fs = require('fs');
+              const o = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+              o.version = process.env.TARGET_VERSION;
+              fs.writeFileSync('package.json', JSON.stringify(o, null, 2) + '\n');
+            "
             rm -rf dist
             VITE_BASE_PATH="$TARGET_BASE" bun run build
             # Must run AFTER build: `vite build` empties dist/ on entry. These
