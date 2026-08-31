@@ -4537,6 +4537,7 @@ dependencies = [
  "libc",
  "log",
  "reqwest",
+ "rustls",
  "semver",
  "serde",
  "serde_json",
