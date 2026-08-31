@@ -147,6 +147,7 @@ export const AddNodeCommand: Command = {
       commandName: "AddNode",
       frame: null,
       allFrames: null,
+      scopedFrames: null,
       tracks: labels ? [...labels.tracks] : [],
       trackNames: labels ? labels.tracks.map((t) => t.name) : [],
       videos: labels ? [...labels.videos] : [],

@@ -17,6 +17,7 @@ import { Seekbar } from "./Seekbar";
 import { ContextMenu } from "./ContextMenu";
 import { SkeletonBuildBar } from "./SkeletonBuildBar";
 import { AnchorPickBar } from "./AnchorPickBar";
+import { TransposePickBar } from "./TransposePickBar";
 import {
   renderInstances,
   hitTestNode,
@@ -161,6 +162,8 @@ export function VideoPlayer() {
   const builderPositions = useAppStore((s) => s.builderPositions);
   // Top-down anchor-part picker (Training panel): click a node to select it.
   const pickingAnchor = useAppStore((s) => s.pickingAnchor);
+  // Multi-instance transpose picker: click instances to select the pair to swap.
+  const instanceSequencePick = useAppStore((s) => s.instanceSequencePick);
   // Persistent anchor crop preview (Training panel "Preview" toggle) — shown
   // independently of pick mode/hover, for every instance on the current frame.
   const anchorPreviewActive = useAppStore((s) => s.anchorPreviewActive);
@@ -1800,6 +1803,22 @@ export function VideoPlayer() {
         return;
       }
 
+      // Multi-instance transpose picker: clicking an instance (by centroid)
+      // advances the pick. A miss is a no-op — stay in pick mode. See
+      // requestTranspose in trackCommands.ts.
+      if (instanceSequencePick) {
+        e.preventDefault();
+        const p = canvasToScene(e.clientX, e.clientY);
+        const instances = renderedInstancesRef.current;
+        const threshold = 30 / (baseScale * zoom);
+        const instHit = hitTestInstance(instances, p.x, p.y, threshold);
+        const lf = useAppStore.getState().labeledFrame;
+        if (instHit !== null && lf) {
+          useAppStore.getState().pushInstanceSequencePick(lf.instances[instHit]);
+        }
+        return;
+      }
+
       // A left-click while Space is held means the user is using this Space
       // press to drag/pan, not to tap for the next-suggestion shortcut --
       // suppress that shortcut's jump when Space is released (see
@@ -2047,7 +2066,7 @@ export function VideoPlayer() {
       setMarqueeStart({ x, y });
       setMarqueeEnd({ x, y });
     },
-    [canvasToScene, markerSize, nodeLabelSize, showLabels, panX, panY, zoom, baseScale, shouldPan, isCmdHeld, isSpaceHeld, offsetX, offsetY, selectedNodes, areaDeleteMode, imageFeatureRoiDrawActive, skeletonBuildMode, skeleton, builderRI, pickingAnchor]
+    [canvasToScene, markerSize, nodeLabelSize, showLabels, panX, panY, zoom, baseScale, shouldPan, isCmdHeld, isSpaceHeld, offsetX, offsetY, selectedNodes, areaDeleteMode, imageFeatureRoiDrawActive, skeletonBuildMode, skeleton, builderRI, pickingAnchor, instanceSequencePick]
   );
 
   // Node-drag perf (#329): coalesce the overlay redraw to one per frame and
@@ -2715,7 +2734,7 @@ export function VideoPlayer() {
         ref={containerRef}
         className={cn(
           "flex-1 relative overflow-hidden bg-background min-h-0",
-          pickingAnchor ? "cursor-crosshair" : skeletonBuildMode ? (skeletonBuildStage === "connect" ? "cursor-crosshair" : "cursor-cell") : imageFeatureRoiDrawActive ? "cursor-crosshair" : isPanning ? "cursor-grabbing" : isZoomDragging ? "cursor-zoom-in" : (shouldPan && isCmdHeld) ? "cursor-zoom-in" : shouldPan ? "cursor-grab" : isDragging ? "cursor-grabbing" : areaDeleteMode ? "cursor-crosshair" : interactionMode === "marquee" ? "cursor-crosshair" : isPlacingNodes ? "cursor-cell" : hoveredNode ? "cursor-pointer" : "cursor-default"
+          pickingAnchor ? "cursor-crosshair" : instanceSequencePick ? "cursor-crosshair" : skeletonBuildMode ? (skeletonBuildStage === "connect" ? "cursor-crosshair" : "cursor-cell") : imageFeatureRoiDrawActive ? "cursor-crosshair" : isPanning ? "cursor-grabbing" : isZoomDragging ? "cursor-zoom-in" : (shouldPan && isCmdHeld) ? "cursor-zoom-in" : shouldPan ? "cursor-grab" : isDragging ? "cursor-grabbing" : areaDeleteMode ? "cursor-crosshair" : interactionMode === "marquee" ? "cursor-crosshair" : isPlacingNodes ? "cursor-cell" : hoveredNode ? "cursor-pointer" : "cursor-default"
         )}
         onMouseMove={crosshairActive ? handleCrosshairMove : undefined}
         onMouseLeave={
@@ -3165,6 +3184,8 @@ export function VideoPlayer() {
         <SkeletonBuildBar />
         {/* Anchor-part picker prompt (self-guards to pick mode). */}
         <AnchorPickBar />
+        {/* Multi-instance transpose picker prompt (self-guards to pick mode). */}
+        <TransposePickBar />
       </div>
 
       {/* Seekbar */}

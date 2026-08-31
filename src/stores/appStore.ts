@@ -350,6 +350,29 @@ export interface AppState {
   pickingAnchor: boolean;
   pickRequestId: number;
   pickedAnchorNode: { nodeName: string; requestId: number } | null;
+
+  /**
+   * Whether a track swap (TransposeInstances) propagates forward to
+   * subsequent frames instead of only the current one — a persisted
+   * preference mirroring legacy SLEAP's "Propagate Track Labels" checkbox.
+   * When on, the swap extends from the current frame to the end of the
+   * video, or to the active seekbar frame range if one is selected.
+   */
+  propagateTrackLabels: boolean;
+  /**
+   * Multi-instance transpose picker: TransposeInstances can auto-pick the
+   * pair to swap when a frame has exactly 2 instances, but can't guess with
+   * 3+, so the user is asked to click-select exactly 2. `instanceSequencePick`
+   * is non-null while picking is active, accumulating instances as they're
+   * clicked; `instanceSequenceResult` holds the resolved pair once complete.
+   * `instanceSequenceRequestId` disambiguates which pick a result belongs to
+   * (same race-avoidance pattern as `pickRequestId` above) — a requester only
+   * applies a result whose id matches the one `startInstanceSequencePick`
+   * returned it.
+   */
+  instanceSequenceRequestId: number;
+  instanceSequencePick: { requestId: number; seqLen: number; collected: Instance[] } | null;
+  instanceSequenceResult: { instances: Instance[]; requestId: number } | null;
   /**
    * Persistent (not just hover-during-pick) crop preview for the currently
    * configured anchor — toggled from the Training panel to check "what would
@@ -531,6 +554,15 @@ export interface AppState {
   cancelAnchorPick: () => void;
   resolveAnchorPick: (nodeName: string) => void;
   clearPickedAnchorNode: () => void;
+
+  // Multi-instance transpose picker actions (see field docs above).
+  // `startInstanceSequencePick` returns the new request id so the requester
+  // can match it against `instanceSequenceResult` later.
+  startInstanceSequencePick: (seqLen: number) => number;
+  pushInstanceSequencePick: (instance: Instance) => void;
+  cancelInstanceSequencePick: () => void;
+  clearInstanceSequenceResult: () => void;
+
   /** Show/update the persistent anchor crop preview (see field docs above). */
   setAnchorPreview: (nodeName: string | null) => void;
   /** Hide the persistent anchor crop preview. */
@@ -592,6 +624,7 @@ export const PERSISTED_KEYS: (keyof AppState)[] = [
   "sidebarCollapsedSections",
   "sidebarMultiPanel",
   "uiScale",
+  "propagateTrackLabels",
 ];
 
 /**
@@ -724,6 +757,12 @@ export const useAppStore = create<AppState>()(
       pickedAnchorNode: null as { nodeName: string; requestId: number } | null,
       anchorPreviewActive: false,
       anchorPreviewNode: null as string | null,
+
+      // Track-swap propagation preference + multi-instance transpose picker
+      propagateTrackLabels: false,
+      instanceSequenceRequestId: 0,
+      instanceSequencePick: null as { requestId: number; seqLen: number; collected: Instance[] } | null,
+      instanceSequenceResult: null as { instances: Instance[]; requestId: number } | null,
 
       // Frame range
       frameRange: null,
@@ -1326,6 +1365,52 @@ export const useAppStore = create<AppState>()(
       clearPickedAnchorNode: () =>
         set((state) => {
           state.pickedAnchorNode = null;
+        }),
+
+      // Multi-instance transpose picker. See field docs above for the
+      // request-id race-avoidance rationale.
+      startInstanceSequencePick: (seqLen) => {
+        const id = get().instanceSequenceRequestId + 1;
+        set((state) => {
+          state.instanceSequenceRequestId = id;
+          state.instanceSequencePick = { requestId: id, seqLen, collected: [] };
+          state.instanceSequenceResult = null;
+        });
+        return id;
+      },
+
+      pushInstanceSequencePick: (instance) => {
+        // Read the dedupe/completion check off `get()` (the real, already-
+        // finalized state) rather than the immer draft inside `set()` — Immer
+        // drafts plain-object array elements (unlike class instances, which
+        // it treats as atomic), so `state.instanceSequencePick.collected`
+        // inside a producer can hold draft-wrapped copies that fail a `===`
+        // reference check against the raw `instance` argument.
+        const pick = get().instanceSequencePick;
+        if (!pick) return;
+        // Ignore a re-click on an already-collected instance — otherwise
+        // clicking the same instance twice would "complete" the sequence
+        // with itself.
+        if (pick.collected.includes(instance)) return;
+        const collected = [...pick.collected, instance];
+        set((state) => {
+          if (collected.length >= pick.seqLen) {
+            state.instanceSequenceResult = { instances: collected, requestId: pick.requestId };
+            state.instanceSequencePick = null;
+          } else {
+            state.instanceSequencePick = { ...pick, collected };
+          }
+        });
+      },
+
+      cancelInstanceSequencePick: () =>
+        set((state) => {
+          state.instanceSequencePick = null;
+        }),
+
+      clearInstanceSequenceResult: () =>
+        set((state) => {
+          state.instanceSequenceResult = null;
         }),
 
       setAnchorPreview: (nodeName) =>
