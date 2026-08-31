@@ -602,6 +602,22 @@ trainer_config: {}
       const doc = yaml.load(result) as Record<string, any>;
       expect(doc.model_config.backbone_config.unet.max_stride).toBe(32);
     });
+
+    // in_channels has no server-side Auto resolution either — a caller must
+    // resolve colorMode against the project's actual video channel count
+    // (see resolveInputChannels in modelStats.ts) before this function's
+    // output leaves the app.
+    it("defaults in_channels to 1 (grayscale) when no resolvedInChannels is supplied", () => {
+      const result = applyHyperparamsToYaml(baseYaml, defaultHyperparams);
+      const doc = yaml.load(result) as Record<string, any>;
+      expect(doc.model_config.backbone_config.unet.in_channels).toBe(1);
+    });
+
+    it("applies the caller-supplied resolvedInChannels (e.g. a 3-channel video under Auto colorMode)", () => {
+      const result = applyHyperparamsToYaml(baseYaml, defaultHyperparams, null, undefined, 3);
+      const doc = yaml.load(result) as Record<string, any>;
+      expect(doc.model_config.backbone_config.unet.in_channels).toBe(3);
+    });
   });
 
   describe("parseYamlConfig - model params", () => {

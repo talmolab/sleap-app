@@ -5,7 +5,7 @@ import { isTauri } from "@/platform";
 import { computeRuntimeMetrics } from "@/lib/trainingMetrics";
 import { lastErrorLine } from "@/lib/processLog";
 import { formatRunTimestamp } from "@/lib/timestamp";
-import { computeInstanceSizeStats, recommendMaxStride } from "@/lib/modelStats";
+import { computeInstanceSizeStats, recommendMaxStride, detectVideoChannels, resolveInputChannels } from "@/lib/modelStats";
 import type { Labels } from "@/types";
 
 const MAX_BATCH_SAMPLES = 20000; // bound batchSamples; drop oldest beyond this
@@ -417,12 +417,21 @@ export function countUserLabeledFrames(labels: Labels | null): number | null {
  * `startTraining` — before this function ever runs. Falls back to the
  * historical default of 16 if the caller can't resolve one (e.g. no
  * project loaded), which also keeps pre-existing callers that don't pass
- * this argument (most unit tests) working unchanged. */
+ * this argument (most unit tests) working unchanged.
+ *
+ * `resolvedInChannels` mirrors that same pattern for the UNet backbone's
+ * `in_channels`: sleap-nn has no server-side Auto for it either, so the
+ * caller must resolve `hp.colorMode` ("auto"/"rgb"/"grayscale") against the
+ * project's actual video channel count — see `resolveInputChannels` in
+ * `modelStats.ts` — before this function runs. Falls back to 1 (grayscale,
+ * matching every baseline profile's default) if the caller can't resolve
+ * one. */
 export function applyHyperparamsToYaml(
   yamlText: string,
   hp: ConfigHyperparams,
   checkpointPath: string | null = null,
   resolvedMaxStride?: number,
+  resolvedInChannels?: number,
 ): string {
   const doc = yaml.load(yamlText) as Record<string, unknown> | null;
   if (!doc || typeof doc !== "object") return yamlText;
@@ -602,6 +611,7 @@ export function applyHyperparamsToYaml(
     unet.middle_block = hp.middleBlock;
     unet.up_interpolate = hp.upInterpolate;
     unet.stem_stride = hp.stemStride;
+    unet.in_channels = resolvedInChannels ?? 1;
     model.backbone_config = backboneConfig;
   }
 
@@ -1213,6 +1223,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
           hp.backbone,
         );
       };
+      const remoteDetectedChannels = detectVideoChannels(labels);
 
       const spec = {
         type: "train" as const,
@@ -1225,6 +1236,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
             },
             c.checkpointPath,
             resolveMaxStride(c.hyperparams),
+            resolveInputChannels(c.hyperparams.colorMode, remoteDetectedChannels),
           ),
         ),
         model_types: config.configs.map((c) => c.modelType),
@@ -1572,11 +1584,19 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
                   cf.hyperparams.backbone,
                 )
               : undefined;
+          // in_channels has no server-side Auto resolution either — resolve
+          // colorMode against the project's actual video channel count
+          // before this config is written out for training.
+          const resolvedInChannels = resolveInputChannels(
+            cf.hyperparams.colorMode,
+            detectVideoChannels(localLabels),
+          );
           const configYaml = applyHyperparamsToYaml(
             cf.content,
             cf.hyperparams,
             cf.checkpointPath,
             resolvedMaxStride,
+            resolvedInChannels,
           );
           // Default run name matches legacy SLEAP's format exactly:
           // `{timestamp}.{head_name}.n={num_user_labeled_frames}`
