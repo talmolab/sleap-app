@@ -57,7 +57,7 @@ model_config:
     unet:
       in_channels: 1
       kernel_size: 3
-      filters: 24
+      filters: 32
       filters_rate: 1.5
       max_stride: 32
       stem_stride: null

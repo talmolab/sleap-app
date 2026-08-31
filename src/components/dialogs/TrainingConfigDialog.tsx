@@ -17,14 +17,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, HelpCircle, Crosshair, RefreshCw, Check, RotateCcw } from "lucide-react";
+import { Search, HelpCircle, RefreshCw, Check, RotateCcw } from "lucide-react";
 import type { ConfigFile, ConfigHyperparams, Backbone, ModelType, DataPipeline, ColorMode } from "@/stores/trainingStore";
 import { getSlotLabel, getConfigSlots, useTrainingStore } from "@/stores/trainingStore";
 import { checkWandbAuth, type WandbAuth } from "@/platform/backend";
 import { useConnectStore } from "@/stores/connectStore";
 import { useAppStore } from "@/stores/appStore";
 import { ModelStatsPreview } from "@/components/dialogs/ModelStatsPreview";
-import { getBaselineProfilesForHead, getDefaultProfileForHead, slotToHeadType } from "@/lib/trainingProfiles";
+import { getBaselineProfilesForHead, getRecommendedProfileForHead, slotToHeadType } from "@/lib/trainingProfiles";
+import { computeInstanceSizeStats, recommendMaxStride, recommendBackboneProfile, recommendCentroidScale, resolveEffectiveCropSize, detectVideoChannels, resolveInputChannels } from "@/lib/modelStats";
 import { computeNodeVisibility, visibilityTier, type NodeVisibility } from "@/lib/anchorVisibility";
 import { isTauri } from "@/lib/platform";
 import { confirmDialog } from "@/stores/confirmStore";
@@ -308,6 +309,9 @@ function Toggle({ label, id, hint, checked, onChange, disabled = false }: { labe
  * slot's hyperparams, which is what actually gets serialized to
  * `centered_instance.confmaps.anchor_part`.
  */
+// Note: unlike the sidebar's AnchorPartField, this does NOT offer "pick from
+// canvas" — the video canvas is behind this modal dialog, so an interactive
+// canvas pick can't actually work here. Use the sidebar field for that.
 function PipelineAnchorPartField({
   hp,
   onUpdate,
@@ -319,18 +323,6 @@ function PipelineAnchorPartField({
   skeletonNodes: string[];
   nodeVisibility: Map<string, NodeVisibility>;
 }) {
-  const pickedAnchorNode = useAppStore((s) => s.pickedAnchorNode);
-  const [myPickRequestId, setMyPickRequestId] = useState<number | null>(null);
-  const hasLabeledData = [...nodeVisibility.values()].some((v) => v.total > 0);
-
-  useEffect(() => {
-    if (myPickRequestId == null || !pickedAnchorNode) return;
-    if (pickedAnchorNode.requestId !== myPickRequestId) return;
-    onUpdate({ anchorPart: pickedAnchorNode.nodeName });
-    setMyPickRequestId(null);
-    useAppStore.getState().clearPickedAnchorNode();
-  }, [pickedAnchorNode, myPickRequestId, onUpdate]);
-
   return (
     <div id={PIPELINE_FIELD_DEFS.anchorPart.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
       <span className="text-sm text-muted-foreground flex items-center gap-1.5">
@@ -358,14 +350,6 @@ function PipelineAnchorPartField({
           })}
         </SelectContent>
       </Select>
-      <button
-        className="shrink-0 h-8 w-8 flex items-center justify-center rounded-md border border-input text-muted-foreground hover:text-foreground hover:border-primary/50 disabled:opacity-40 disabled:hover:text-muted-foreground disabled:hover:border-input"
-        disabled={!hasLabeledData}
-        title={hasLabeledData ? "Pick anchor from canvas" : "No labeled frames in this project yet"}
-        onClick={() => setMyPickRequestId(useAppStore.getState().startAnchorPick())}
-      >
-        <Crosshair className="h-3.5 w-3.5" />
-      </button>
     </div>
   );
 }
@@ -398,6 +382,34 @@ function HeadTabContent({
   const headType = slotToHeadType(modelType, slot);
   const baselineProfiles = getBaselineProfilesForHead(headType);
   const showCropSize = slot !== "centroid";
+  const labels = useAppStore((s) => s.labels);
+  const sizeStats = useMemo(() => computeInstanceSizeStats(labels), [labels]);
+  const isPretrainedBackbone = !!hp.backbone && hp.backbone !== "unet";
+  const recommendedMaxStride = isPretrainedBackbone
+    ? 32
+    : sizeStats
+      ? recommendMaxStride(sizeStats.avgAnimalSize, sizeStats.maxBboxDim, hp.scale, hp.backbone)
+      : 16;
+  const effectiveMaxStride = hp.maxStride ?? recommendedMaxStride;
+  const backboneRecommendation = sizeStats
+    ? recommendBackboneProfile(sizeStats.maxBboxDim, sizeStats.maxFrameDim)
+    : null;
+  // recommendCentroidScale handles a null avgBboxDim itself (e.g. a
+  // single-keypoint skeleton has no bounding box to measure) by defaulting
+  // to the standard 0.5 — always call it, so the reasoning hint below still
+  // explains why, instead of silently showing nothing.
+  const centroidScaleRecommendation = recommendCentroidScale(
+    sizeStats?.avgBboxDim ?? null,
+    sizeStats?.maxFrameDim ?? 0,
+  );
+  const effectiveInputChannels = resolveInputChannels(hp.colorMode, detectVideoChannels(labels));
+  // The real Auto crop size (padding-aware), so unchecking "Auto" seeds the
+  // value the user was just looking at instead of an arbitrary fallback.
+  const effectiveCropSize = useMemo(
+    () => resolveEffectiveCropSize(labels, hp).cropSize,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [labels, hp.cropSize, hp.maxStride, hp.scale, hp.rotationPreset, hp.rotationCustomAngle, hp.scaleEnabled, hp.scaleMax],
+  );
   const trainingMode = hp.trainingMode ?? "reuse_config";
   const modelLocked = trainingMode === "resume" || trainingMode === "finetune";
   const allLocked = trainingMode === "resume";
@@ -519,6 +531,18 @@ function HeadTabContent({
             </SelectItem>
           </SelectContent>
         </Select>
+        {(() => {
+          if (!backboneRecommendation || !configFile || baselineProfiles.length <= 1) return null;
+          const isLarge = configFile.filename.includes("large_rf");
+          const isMedium = configFile.filename.includes("medium_rf");
+          if (!isLarge && !isMedium) return null; // not an RF-tiered profile (e.g. multi-class)
+          if ((backboneRecommendation.tier === "large") === isLarge) return null;
+          return (
+            <p className="text-[10px] text-muted-foreground mt-1.5">
+              💡 Recommended: {backboneRecommendation.tier === "large" ? "Large RF" : "Medium RF"} — {backboneRecommendation.reason}
+            </p>
+          );
+        })()}
       </div>
 
       {/* ── Training mode ── */}
@@ -575,7 +599,7 @@ function HeadTabContent({
       )}
 
       {/* ── Model Stats Preview (thumbnail + RF + crop size + params) ── */}
-      <ModelStatsPreview hp={hp} maxStride={hp.maxStride} filters={hp.filters} filtersRate={hp.filtersRate} outputStride={hp.outputStride} stemStride={hp.stemStride} backbone={hp.backbone || "unet"} slot={slot} />
+      <ModelStatsPreview hp={hp} maxStride={effectiveMaxStride} filters={hp.filters} filtersRate={hp.filtersRate} outputStride={hp.outputStride} stemStride={hp.stemStride} backbone={hp.backbone || "unet"} inputChannels={effectiveInputChannels} slot={slot} />
 
       {/* ── 1. Data ── */}
       <div className={allLocked ? "opacity-40 pointer-events-none" : ""}>
@@ -605,16 +629,47 @@ function HeadTabContent({
         <Field {...HEAD_FIELD_DEFS.inputScaling} hint="Rescaling factor applied to input images before training. Values less than 1.0 downsample the image, which reduces memory usage and speeds up training at the cost of spatial resolution. Note that crop size and sigma values are relative to the scaled image.">
           <Input type="number" value={hp.scale} onChange={(e) => onUpdate({ scale: Number(e.target.value) })} min={0.125} max={1} step={0.125} className="h-9 text-sm" />
         </Field>
+        {slot === "centroid" && centroidScaleRecommendation && (
+          <p className="text-[10px] text-green-400 -mt-1 pl-1">
+            {hp.scale === centroidScaleRecommendation.scale
+              ? `💡 ${centroidScaleRecommendation.scale}× recommended — ${centroidScaleRecommendation.reason}`
+              : `💡 Recommended: ${centroidScaleRecommendation.scale}× — ${centroidScaleRecommendation.reason}`}
+          </p>
+        )}
         {showCropSize && (
-          <div className="flex items-center gap-4">
-            <Field {...HEAD_FIELD_DEFS.cropSize} hint="Bounding box crop size around each instance in pixels. Set to 'Auto' to compute from the data (largest instance bounding box, aligned to max_stride).">
-              <Input type="number" value={hp.cropSize ?? ""} onChange={(e) => onUpdate({ cropSize: e.target.value ? Number(e.target.value) : null })} disabled={hp.cropSize === null} className="h-9 text-sm" />
-            </Field>
-            <label className="flex items-center gap-1.5 cursor-pointer shrink-0">
-              <input type="checkbox" checked={hp.cropSize === null} onChange={(e) => onUpdate({ cropSize: e.target.checked ? null : 256 })} className="accent-primary" />
-              <span className="text-sm">Auto</span>
-            </label>
-          </div>
+          <>
+            <div className="flex items-center gap-4">
+              <Field {...HEAD_FIELD_DEFS.cropSize} hint="Bounding box crop size around each instance in pixels. Set to 'Auto' to compute from the data (largest instance bounding box, padded for rotation/scale augmentation, aligned to max_stride).">
+                <Input
+                  type="number"
+                  value={hp.cropSize ?? effectiveCropSize ?? ""}
+                  onChange={(e) => {
+                    // Don't force Auto just because the field is momentarily
+                    // empty mid-edit (e.g. select-all + retype) — only the
+                    // explicit "Auto" checkbox below should set cropSize:null.
+                    // Previously this fired on every keystroke, including the
+                    // empty intermediate value, which flipped `disabled` on
+                    // the input and dropped the rest of the user's typing.
+                    if (e.target.value === "") return;
+                    const n = Number(e.target.value);
+                    if (!Number.isNaN(n)) onUpdate({ cropSize: n });
+                  }}
+                  disabled={hp.cropSize === null}
+                  className="h-9 text-sm"
+                />
+              </Field>
+              <label className="flex items-center gap-1.5 cursor-pointer shrink-0">
+                <input type="checkbox" checked={hp.cropSize === null} onChange={(e) => onUpdate({ cropSize: e.target.checked ? null : (effectiveCropSize ?? 256) })} className="accent-primary" />
+                <span className="text-sm">Auto</span>
+              </label>
+            </div>
+            {hp.cropSize === null && sizeStats && (
+              <p className="text-[10px] text-muted-foreground pl-1">
+                💡 Auto: padded for ±{hp.rotationPreset === "custom" ? hp.rotationCustomAngle : hp.rotationPreset === "off" ? 0 : hp.rotationPreset}° rotation
+                {hp.scaleEnabled ? ` and ${hp.scaleMax}× scale` : ""} augmentation.
+              </p>
+            )}
+          </>
         )}
       </div>
 
@@ -896,13 +951,28 @@ function HeadTabContent({
       <SectionHeading {...HEAD_FIELD_DEFS.secModel} />
       <div className="space-y-2">
         <Field {...HEAD_FIELD_DEFS.backbone}>
-          <Select value={hp.backbone || ""} onValueChange={(v) => onUpdate({ backbone: v as Backbone })}>
+          <Select
+            value={hp.backbone || ""}
+            onValueChange={(v) => {
+              const backbone = v as Backbone;
+              // ConvNeXt/SwinT are pretrained on RGB images and require 3-channel
+              // input — nudge Convert Colors to RGB the moment a pretrained
+              // backbone is picked (still freely overridable afterward).
+              const needsRgb = backbone === "convnext" || backbone === "swint";
+              onUpdate(needsRgb ? { backbone, colorMode: "rgb" as ColorMode } : { backbone });
+            }}
+          >
             <SelectTrigger className="h-9 text-sm"><SelectValue placeholder="From config..." /></SelectTrigger>
             <SelectContent>
               {BACKBONE_OPTIONS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
             </SelectContent>
           </Select>
         </Field>
+        {isPretrainedBackbone && (
+          <p className="text-[10px] text-muted-foreground pl-1">
+            💡 {hp.backbone === "convnext" ? "ConvNeXt" : "Swin Transformer"} is pretrained on RGB images — Convert Colors set to RGB
+          </p>
+        )}
         <Separator className="my-3" />
         <div className="flex items-center gap-6 flex-wrap">
           <div id={HEAD_FIELD_DEFS.stemStride.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
@@ -921,14 +991,23 @@ function HeadTabContent({
           <div id={HEAD_FIELD_DEFS.maxStride.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
             <span className="text-sm text-muted-foreground flex items-center gap-1.5">
               {HEAD_FIELD_DEFS.maxStride.label}
-              <HintBubble text="Determines the number of downsampling blocks in the network, increasing receptive field size at the cost of network size." />
+              <HintBubble text="Determines the number of downsampling blocks in the network, increasing receptive field size at the cost of network size. Auto picks a value from your labeled animals' sizes." />
             </span>
-            <Select value={String(hp.maxStride)} onValueChange={(v) => onUpdate({ maxStride: Number(v) })}>
+            <Select value={String(effectiveMaxStride)} onValueChange={(v) => onUpdate({ maxStride: Number(v) })} disabled={hp.maxStride === null}>
               <SelectTrigger className="h-8 text-sm w-20"><SelectValue /></SelectTrigger>
               <SelectContent>
                 {[2, 4, 8, 16, 32, 64, 128].map((v) => <SelectItem key={v} value={String(v)}>{v}</SelectItem>)}
               </SelectContent>
             </Select>
+            <label className="flex items-center gap-1.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={hp.maxStride === null}
+                onChange={(e) => onUpdate({ maxStride: e.target.checked ? null : effectiveMaxStride })}
+                className="accent-primary"
+              />
+              <span className="text-sm">Auto</span>
+            </label>
           </div>
           <div id={HEAD_FIELD_DEFS.filters.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
             <span className="text-sm text-muted-foreground flex items-center gap-1.5">
@@ -938,6 +1017,16 @@ function HeadTabContent({
             <Input type="number" value={hp.filters} onChange={(e) => onUpdate({ filters: Number(e.target.value) })} className="h-8 text-sm w-16" />
           </div>
         </div>
+        {hp.maxStride === null && isPretrainedBackbone && (
+          <p className="text-[10px] text-muted-foreground pl-1">
+            💡 Auto: {effectiveMaxStride} — fixed for pretrained {hp.backbone === "convnext" ? "ConvNeXt" : "Swin Transformer"} backbones
+          </p>
+        )}
+        {hp.maxStride === null && !isPretrainedBackbone && sizeStats && (
+          <p className="text-[10px] text-muted-foreground pl-1">
+            💡 Auto: {effectiveMaxStride} — based on avg. animal size ~{Math.round(sizeStats.avgAnimalSize)}px (scaled {hp.scale}×)
+          </p>
+        )}
         <div className="flex items-center gap-6 flex-wrap">
           <div id={HEAD_FIELD_DEFS.filtersRate.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
             <span className="text-sm text-muted-foreground flex items-center gap-1.5">
@@ -1065,14 +1154,20 @@ export function TrainingConfigDialog({
   useEffect(() => {
     if (!open) return;
     const slots = getConfigSlots(modelType);
+    const sizeStats = computeInstanceSizeStats(labels);
+    const backboneRecommendation = sizeStats
+      ? recommendBackboneProfile(sizeStats.maxBboxDim, sizeStats.maxFrameDim)
+      : null;
     for (const slot of slots) {
       const existing = configs.find((c) => c.slot === slot);
       if (existing) continue;
       const headType = slotToHeadType(modelType, slot);
-      const baseline = getDefaultProfileForHead(headType);
+      const baseline = getRecommendedProfileForHead(headType, backboneRecommendation);
       if (baseline) {
         const parsed = parseYamlConfig(baseline.content, baseline.filename, slot);
-        if (parsed) addConfigFile(parsed);
+        // Fresh configs start in Auto mode for max_stride (see recommendMaxStride
+        // in modelStats.ts) rather than inheriting the preset's fixed value.
+        if (parsed) addConfigFile({ ...parsed, hyperparams: { ...parsed.hyperparams, maxStride: null } });
       }
     }
   }, [open, modelType]); // eslint-disable-line react-hooks/exhaustive-deps

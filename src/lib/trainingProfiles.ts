@@ -9,6 +9,7 @@ import baselineLargeRfSingle from "@/assets/training_profiles/baseline_large_rf.
 import baselineMultiClassBottomup from "@/assets/training_profiles/baseline.multi_class_bottomup.yaml?raw";
 import baselineMultiClassTopdown from "@/assets/training_profiles/baseline.multi_class_topdown.yaml?raw";
 import type { ModelType } from "@/stores/trainingStore";
+import type { BackboneProfileRecommendation } from "@/lib/modelStats";
 
 export interface BaselineProfile {
   filename: string;
@@ -60,4 +61,21 @@ export function getBaselineProfilesForHead(headType: string): BaselineProfile[] 
 
 export function getDefaultProfileForHead(headType: string): BaselineProfile | undefined {
   return BASELINE_PROFILES.find((p) => p.headType === headType);
+}
+
+/**
+ * Like getDefaultProfileForHead, but picks the Medium/Large RF variant based
+ * on a size-derived recommendation (see recommendBackboneProfile in
+ * modelStats.ts) instead of always defaulting to Medium. Head types with
+ * only one profile (e.g. multi-class heads, which have no RF variants)
+ * ignore the recommendation and fall back to the single available profile.
+ */
+export function getRecommendedProfileForHead(
+  headType: string,
+  recommendation: BackboneProfileRecommendation | null,
+): BaselineProfile | undefined {
+  const profiles = getBaselineProfilesForHead(headType);
+  if (profiles.length <= 1) return profiles[0];
+  const tier = recommendation?.tier ?? "medium";
+  return profiles.find((p) => p.filename.includes(`${tier}_rf`)) ?? profiles[0];
 }

@@ -2,7 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import { RotateCcw } from "lucide-react";
 import { useAppStore } from "@/stores/appStore";
 import { Button } from "@/components/ui/button";
-import { computeReceptiveField, computeCropSize, computeParamCount } from "@/lib/modelStats";
+import {
+  computeReceptiveField,
+  computeCropSize,
+  computeParamCount,
+  computeInstanceSizeStats,
+  computeAugmentationPadding,
+} from "@/lib/modelStats";
 import { expandFrameBytesToRGBA, inferFrameChannels } from "@/lib/videoExport";
 import type { ConfigHyperparams } from "@/stores/trainingStore";
 
@@ -31,12 +37,26 @@ export function ModelStatsPreview({ hp, maxStride, filters, filtersRate, outputS
   const dragRef = useRef<{ startX: number; startY: number; panX: number; panY: number } | null>(null);
   const rf = computeReceptiveField(maxStride, stemStride);
   const showCropSize = slot !== "centroid";
+  // Auto crop size must account for rotation/scale augmentation padding —
+  // otherwise a rotated/scaled instance can be clipped by the crop window,
+  // and this preview would understate what sleap-nn actually uses at
+  // training time (it resolves crop_size:null the same augmentation-aware
+  // way — see compute_augmentation_padding in sleap-nn's instance_cropping.py).
+  const rotationMaxDeg =
+    hp.rotationPreset === "off" ? 0
+    : hp.rotationPreset === "custom" ? hp.rotationCustomAngle
+    : Number(hp.rotationPreset);
+  const scaleMaxForPadding = hp.scaleEnabled ? hp.scaleMax : 1.0;
+  const sizeStats = computeInstanceSizeStats(labels);
+  const augPadding = sizeStats
+    ? computeAugmentationPadding(sizeStats.maxBboxDim, rotationMaxDeg, scaleMaxForPadding)
+    : 0;
   // Honor a MANUAL crop size (hp.cropSize) so the preview + drawn crop box update
   // when the user edits it in the full config; fall back to the data-derived value
   // only in "Auto" mode (hp.cropSize === null). Both are in scaled-image px, matching
   // computeCropSize and the `/ hp.scale` used when drawing the crop rectangle below.
   const cropSize = showCropSize
-    ? hp.cropSize ?? computeCropSize(labels, maxStride, hp.scale)
+    ? hp.cropSize ?? computeCropSize(labels, maxStride, hp.scale, augPadding)
     : null;
   const params = computeParamCount(backbone, maxStride, filters, filtersRate, undefined, outputStride, stemStride, inputChannels);
   const downBlocks = Math.log2(maxStride);
@@ -270,6 +290,12 @@ export function ModelStatsPreview({ hp, maxStride, filters, filtersRate, outputS
               <span className="text-sm"><span className="font-medium">Receptive Field:</span> {rf} px</span>
             </div>
           </div>
+
+          {showCropSize && hp.cropSize == null && cropSize != null && (
+            <p className="text-[10px] text-muted-foreground">
+              Auto: {cropSize}px = ceil((max animal bbox + aug. padding) / max_stride) × max_stride, min 100px.
+            </p>
+          )}
 
           <div className="text-sm text-muted-foreground leading-relaxed">
             <p>

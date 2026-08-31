@@ -5,6 +5,7 @@ import { isTauri } from "@/platform";
 import { computeRuntimeMetrics } from "@/lib/trainingMetrics";
 import { lastErrorLine } from "@/lib/processLog";
 import { formatRunTimestamp } from "@/lib/timestamp";
+import { computeInstanceSizeStats, recommendMaxStride, detectVideoChannels, resolveInputChannels } from "@/lib/modelStats";
 import type { Labels } from "@/types";
 
 const MAX_BATCH_SAMPLES = 20000; // bound batchSamples; drop oldest beyond this
@@ -102,7 +103,10 @@ export interface ConfigHyperparams {
   scale: number;
   // Model — backbone
   stemStride: number | null;
-  maxStride: number;
+  /** `null` = Auto (live-recomputed from the loaded project's instance
+   *  sizes, see recommendMaxStride in modelStats.ts); a number is a
+   *  manual override. */
+  maxStride: number | null;
   filters: number;
   filtersRate: number;
   middleBlock: boolean;
@@ -209,7 +213,7 @@ export const defaultHyperparams: ConfigHyperparams = {
   sigma: 5.0,
   scale: 1.0,
   stemStride: null,
-  maxStride: 16,
+  maxStride: null,
   filters: 16,
   filtersRate: 2.0,
   middleBlock: true,
@@ -462,11 +466,30 @@ export function countUserLabeledFrames(labels: Labels | null): number | null {
 
 // ── YAML override helper ─────────────────────────────────────────
 
-/** Apply ConfigHyperparams overrides to raw YAML config content. */
+/** Apply ConfigHyperparams overrides to raw YAML config content.
+ *
+ * `resolvedMaxStride` is used only when `hp.maxStride` is `null` (Auto):
+ * unlike `crop_size`, sleap-nn's max_stride has no server-side auto-compute
+ * (it's a plain non-Optional int in the model config schema), so Auto mode
+ * must be resolved to a concrete integer by the caller — see call sites in
+ * `startTraining` — before this function ever runs. Falls back to the
+ * historical default of 16 if the caller can't resolve one (e.g. no
+ * project loaded), which also keeps pre-existing callers that don't pass
+ * this argument (most unit tests) working unchanged.
+ *
+ * `resolvedInChannels` mirrors that same pattern for the UNet backbone's
+ * `in_channels`: sleap-nn has no server-side Auto for it either, so the
+ * caller must resolve `hp.colorMode` ("auto"/"rgb"/"grayscale") against the
+ * project's actual video channel count — see `resolveInputChannels` in
+ * `modelStats.ts` — before this function runs. Falls back to 1 (grayscale,
+ * matching every baseline profile's default) if the caller can't resolve
+ * one. */
 export function applyHyperparamsToYaml(
   yamlText: string,
   hp: ConfigHyperparams,
   checkpointPath: string | null = null,
+  resolvedMaxStride?: number,
+  resolvedInChannels?: number,
 ): string {
   const doc = yaml.load(yamlText) as Record<string, unknown> | null;
   if (!doc || typeof doc !== "object") return yamlText;
@@ -687,12 +710,13 @@ export function applyHyperparamsToYaml(
   if (hp.backbone === "unet" || !hp.backbone) {
     if (!backboneConfig.unet) backboneConfig.unet = {};
     const unet = backboneConfig.unet as Record<string, unknown>;
-    unet.max_stride = hp.maxStride;
+    unet.max_stride = hp.maxStride ?? resolvedMaxStride ?? 16;
     unet.filters = hp.filters;
     unet.filters_rate = hp.filtersRate;
     unet.middle_block = hp.middleBlock;
     unet.up_interpolate = hp.upInterpolate;
     unet.stem_stride = hp.stemStride;
+    unet.in_channels = resolvedInChannels ?? 1;
     model.backbone_config = backboneConfig;
   }
 
@@ -1345,6 +1369,23 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
           ? `${runTimestamp}.${modelType}.n=${userLabeledFrameCount}`
           : `${runTimestamp}.${modelType}`);
 
+      // max_stride has no server-side Auto resolution (unlike crop_size) —
+      // resolve it client-side from the project's actual instance sizes
+      // before this config ever leaves the app.
+      const remoteSizeStats = computeInstanceSizeStats(labels);
+      const resolveMaxStride = (hp: ConfigHyperparams) => {
+        if (hp.maxStride != null) return undefined;
+        const isPretrainedBackbone = !!hp.backbone && hp.backbone !== "unet";
+        if (!remoteSizeStats && !isPretrainedBackbone) return undefined;
+        return recommendMaxStride(
+          remoteSizeStats?.avgAnimalSize ?? 0,
+          remoteSizeStats?.maxBboxDim ?? 0,
+          hp.scale,
+          hp.backbone,
+        );
+      };
+      const remoteDetectedChannels = detectVideoChannels(labels);
+
       const spec = {
         type: "train" as const,
         config_contents: config.configs.map((c) =>
@@ -1355,6 +1396,8 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
               runName: resolveRunName(c.hyperparams, c.modelType),
             },
             c.checkpointPath,
+            resolveMaxStride(c.hyperparams),
+            resolveInputChannels(c.hyperparams.colorMode, remoteDetectedChannels),
           ),
         ),
         model_types: config.configs.map((c) => c.modelType),
@@ -1672,6 +1715,10 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         ),
       }));
 
+      const { useAppStore } = await import("@/stores/appStore");
+      const localLabels = useAppStore.getState().labels;
+      const localSizeStats = computeInstanceSizeStats(localLabels);
+
       try {
         for (let i = 0; i < slots.length; i++) {
           const cf = config.configs.find((c) => c.slot === slots[i]);
@@ -1685,7 +1732,33 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
             log: i > 0 ? appendLog(s.log, `— Starting ${s.models[i]?.label}...`) : s.log,
           }));
 
-          const configYaml = applyHyperparamsToYaml(cf.content, cf.hyperparams, cf.checkpointPath);
+          // max_stride has no server-side Auto resolution (unlike crop_size)
+          // — resolve it client-side from the project's actual instance
+          // sizes before this config is written out for training.
+          const isPretrainedBackbone = !!cf.hyperparams.backbone && cf.hyperparams.backbone !== "unet";
+          const resolvedMaxStride =
+            cf.hyperparams.maxStride == null && (localSizeStats || isPretrainedBackbone)
+              ? recommendMaxStride(
+                  localSizeStats?.avgAnimalSize ?? 0,
+                  localSizeStats?.maxBboxDim ?? 0,
+                  cf.hyperparams.scale,
+                  cf.hyperparams.backbone,
+                )
+              : undefined;
+          // in_channels has no server-side Auto resolution either — resolve
+          // colorMode against the project's actual video channel count
+          // before this config is written out for training.
+          const resolvedInChannels = resolveInputChannels(
+            cf.hyperparams.colorMode,
+            detectVideoChannels(localLabels),
+          );
+          const configYaml = applyHyperparamsToYaml(
+            cf.content,
+            cf.hyperparams,
+            cf.checkpointPath,
+            resolvedMaxStride,
+            resolvedInChannels,
+          );
           // Default run name matches legacy SLEAP's format exactly:
           // `{timestamp}.{head_name}.n={num_user_labeled_frames}`
           // (sleap/gui/learning/runners.py get_timestamp() + base_run_name) —
@@ -1694,8 +1767,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
           // used how much data" comparisons useful across a project's history.
           let runName = cf.hyperparams.runName;
           if (!runName) {
-            const { useAppStore } = await import("@/stores/appStore");
-            const n = countUserLabeledFrames(useAppStore.getState().labels);
+            const n = countUserLabeledFrames(localLabels);
             const ts = formatRunTimestamp();
             runName = n !== null ? `${ts}.${cf.modelType}.n=${n}` : `${ts}.${cf.modelType}`;
           }

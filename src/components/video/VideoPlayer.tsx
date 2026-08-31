@@ -168,6 +168,7 @@ export function VideoPlayer() {
   // independently of pick mode/hover, for every instance on the current frame.
   const anchorPreviewActive = useAppStore((s) => s.anchorPreviewActive);
   const anchorPreviewNode = useAppStore((s) => s.anchorPreviewNode);
+  const anchorPreviewCropSize = useAppStore((s) => s.anchorPreviewCropSize);
 
   // Local zoom/pan state
   const [zoom, setZoom] = useState(1);
@@ -1235,7 +1236,7 @@ export function VideoPlayer() {
           nodeIdx = findNodeIdxByName(inst, anchorPreviewNode);
           if (nodeIdx === null) continue; // this instance's skeleton lacks the node
         }
-        renderAnchorCropPreview(ctx, instances, i, nodeIdx, instanceBBoxCropSize(inst), renderOpts);
+        renderAnchorCropPreview(ctx, instances, i, nodeIdx, anchorPreviewCropSize ?? instanceBBoxCropSize(inst), renderOpts);
       }
     }
 
@@ -1308,6 +1309,7 @@ export function VideoPlayer() {
     pickingAnchor,
     anchorPreviewActive,
     anchorPreviewNode,
+    anchorPreviewCropSize,
     marqueeStart,
     marqueeEnd,
     roiStart,
