@@ -451,6 +451,26 @@ describe("Component rendering", () => {
       expect(icon?.getAttribute("src")).toContain("icon.png");
     });
 
+    it("shows the app version beside the wordmark in web mode", async () => {
+      // The desktop shell carries its version in the native title bar; the web
+      // has no equivalent (a browser tab title is usually truncated away), so
+      // the brand block that exists to replace that title bar carries it here.
+      const { APP_VERSION, APP_VERSION_KIND_LABEL } = await import(
+        "@/lib/version"
+      );
+      const { MenuBar } = await import(
+        "@/components/layout/MenuBar"
+      );
+      render(<MenuBar />);
+      const badge = screen.getByTestId("menubar-version");
+      expect(badge).toHaveTextContent(`v${APP_VERSION}`);
+      // Channel wording is a tooltip rather than visible text, to avoid
+      // crowding an h-8 menu bar.
+      expect(badge.getAttribute("title")).toBe(
+        `SLEAP v${APP_VERSION} — ${APP_VERSION_KIND_LABEL}`,
+      );
+    });
+
     it("renders all menu triggers including Help", async () => {
       const { MenuBar } = await import(
         "@/components/layout/MenuBar"

@@ -43,4 +43,13 @@ describe("MenuBar SLEAP brand (desktop / Tauri)", () => {
     expect(screen.queryByText("SLEAP")).not.toBeInTheDocument();
     expect(container.querySelector("img")).not.toBeInTheDocument();
   });
+
+  it("hides the version badge on desktop too", async () => {
+    // The version lives in the brand block, so it must disappear with it --
+    // on desktop the native title bar already reads "SLEAP v<version>", and
+    // showing it twice is the redundancy #133 removed the wordmark over.
+    const { MenuBar } = await import("@/components/layout/MenuBar");
+    render(<MenuBar />);
+    expect(screen.queryByTestId("menubar-version")).not.toBeInTheDocument();
+  });
 });

@@ -56,6 +56,7 @@ jobs:
         include:
           - platform: ubuntu-22.04
             target: linux
+            os-tag: linux
             rust-targets: x86_64-unknown-linux-gnu
             # Tauri sidecar triple: the suffix `Command.sidecar("binaries/ffmpeg")`
             # resolves to. For --target builds it is that target (see macOS below).
@@ -69,6 +70,7 @@ jobs:
           # NOTE: passing --target moves the bundle output out of target/release/.
           - platform: macos-latest
             target: macos-universal
+            os-tag: macos
             rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
             # --target universal-apple-darwin => sidecars must be a fat
             # `binaries/ffmpeg-universal-apple-darwin` (lipo of both arches).
@@ -84,6 +86,7 @@ jobs:
             job-timeout: 120
           - platform: windows-latest
             target: windows
+            os-tag: windows
             rust-targets: x86_64-pc-windows-msvc
             sidecar-triple: x86_64-pc-windows-msvc
             tauri-args: ""
@@ -573,6 +576,68 @@ jobs:
             exit 1
           fi
           echo "Collected $count file(s)"
+
+      # Insert the OS into every artifact's filename, so someone browsing the
+      # release page can tell at a glance which file is theirs. Before this,
+      # nothing said "windows"/"macos"/"linux" -- `universal`, `amd64` and
+      # `x64` are ARCHITECTURE, and picking the right download meant knowing
+      # that .dmg means Mac and .msi means Windows.
+      #
+      # The OS goes AFTER the product name and keeps the existing separator,
+      # which is what makes this a rename nothing has to be taught about:
+      #
+      #   SLEAP_0.1.2_x64-setup.exe  ->  SLEAP_windows_0.1.2_x64-setup.exe
+      #
+      # scripts/install.{sh,ps1} resolve assets with patterns shaped like
+      # `SLEAP_*_x64-setup.exe` and `/SLEAP_[^/]*_universal\.dmg$`, so the new
+      # token lands INSIDE the existing wildcard and every one of them still
+      # matches -- old published copies of those scripts included. Putting the
+      # OS first (`windows-SLEAP_...`) would have broken the `SLEAP_` prefix
+      # they all anchor on.
+      #
+      # The .rpm keeps hyphens (`SLEAP-linux-<ver>-1.x86_64.rpm`): RPM naming
+      # is hyphen-separated and install.sh matches it with a separate
+      # `/SLEAP-[^/]*\.x86_64\.rpm$` pattern anchored on `SLEAP-`.
+      #
+      # SUFFIXES ARE LOAD-BEARING and must survive untouched: the updater
+      # manifest below pairs artifacts to platforms purely by suffix
+      # (`-setup.exe.sig`, `.msi.sig`, `.app.tar.gz.sig`, `.AppImage.sig`,
+      # `.deb.sig`, `.rpm.sig`), and the release job's completeness check
+      # globs `*-setup.exe` / `*.msi` / `*_universal.dmg`. A prefix is safe;
+      # renaming `-setup.exe` to something friendlier would silently drop
+      # Windows out of latest.json and strand every Windows install with no
+      # updates.
+      #
+      # Runs AFTER "Collect artifacts" (so the bundle-dir paths the signing and
+      # verification steps use are untouched) and renames each `.sig` with its
+      # artifact, since they are paired by basename.
+      - name: Add the OS to artifact filenames
+        shell: bash
+        env:
+          OS_TAG: ${{ matrix.os-tag }}
+        run: |
+          set -euo pipefail
+          cd artifacts
+          for f in *; do
+            [ -f "$f" ] || continue
+            case "$f" in
+              # Already prefixed (a re-run against a warm workspace) -- leave it.
+              SLEAP_"$OS_TAG"_* | SLEAP-"$OS_TAG"-* | SLEAP_"$OS_TAG".*) continue ;;
+              SLEAP_*) new="SLEAP_${OS_TAG}_${f#SLEAP_}" ;;
+              SLEAP-*) new="SLEAP-${OS_TAG}-${f#SLEAP-}" ;;
+              # SLEAP.app.tar.gz has no separator to reuse; give it "_" rather
+              # than a second dot, so it reads as a name and not an extension.
+              SLEAP.*) new="SLEAP_${OS_TAG}.${f#SLEAP.}" ;;
+              *)
+                echo "::warning::unrecognised artifact name '$f' -- left unrenamed"
+                continue
+                ;;
+            esac
+            mv -- "$f" "$new"
+            echo "$f -> $new"
+          done
+          echo "Renamed artifacts:"
+          ls -1
 
       # macOS gets its own human-readable name for this one: it's the only
       # platform where the file a person actually double-clicks (.dmg) and

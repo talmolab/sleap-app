@@ -145,6 +145,7 @@ jobs:
         include:
           - platform: ubuntu-22.04
             target: linux
+            os-tag: linux
             rust-targets: x86_64-unknown-linux-gnu
             # Tauri sidecar triple: the suffix `Command.sidecar("binaries/ffmpeg")`
             # resolves to. For --target builds it is that target (see macOS below).
@@ -154,6 +155,7 @@ jobs:
             job-timeout: 60
           - platform: macos-latest
             target: macos-universal
+            os-tag: macos
             rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
             # --target universal-apple-darwin => sidecars must be a fat
             # `binaries/ffmpeg-universal-apple-darwin` (lipo of both arches).
@@ -168,6 +170,7 @@ jobs:
             job-timeout: 120
           - platform: windows-latest
             target: windows
+            os-tag: windows
             rust-targets: x86_64-pc-windows-msvc
             sidecar-triple: x86_64-pc-windows-msvc
             # NSIS only: the version string below is `+<run_number>.<short_sha>`,
@@ -571,6 +574,36 @@ jobs:
             exit 1
           fi
           echo "Collected $count file(s)"
+
+      # Mirrors build.yml's "Add the OS to artifact filenames" -- see there for
+      # why the OS goes after the product name, why the .rpm keeps hyphens, and
+      # why the suffixes must not change. Kept in step with the release builds
+      # on purpose: the dev channel drifting into a second naming convention is
+      # exactly the confusion this rename exists to remove.
+      - name: Add the OS to artifact filenames
+        shell: bash
+        env:
+          OS_TAG: ${{ matrix.os-tag }}
+        run: |
+          set -euo pipefail
+          cd artifacts
+          for f in *; do
+            [ -f "$f" ] || continue
+            case "$f" in
+              SLEAP_"$OS_TAG"_* | SLEAP-"$OS_TAG"-* | SLEAP_"$OS_TAG".*) continue ;;
+              SLEAP_*) new="SLEAP_${OS_TAG}_${f#SLEAP_}" ;;
+              SLEAP-*) new="SLEAP-${OS_TAG}-${f#SLEAP-}" ;;
+              SLEAP.*) new="SLEAP_${OS_TAG}.${f#SLEAP.}" ;;
+              *)
+                echo "::warning::unrecognised artifact name '$f' -- left unrenamed"
+                continue
+                ;;
+            esac
+            mv -- "$f" "$new"
+            echo "$f -> $new"
+          done
+          echo "Renamed artifacts:"
+          ls -1
 
       # macOS gets its own human-readable name for this one: it's the only
       # platform where the file a person actually double-clicks (.dmg) and
