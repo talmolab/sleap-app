@@ -17,7 +17,8 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
+import { VideoDropzone } from "@/components/common/VideoDropzone";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
@@ -437,26 +438,6 @@ export function VideosPanel() {
     }
   };
 
-  /**
-   * Pick video file(s), then stage them in the Import Videos dialog (grayscale
-   * choice) instead of adding immediately — mirrors the legacy Qt GUI's
-   * "Import Videos" dialog. Actually adding happens in {@link handleConfirmImport}.
-   */
-  const handleAddVideos = async () => {
-    if (!labels) return;
-    let picked;
-    try {
-      picked = await pickVideoFiles();
-    } catch (err) {
-      toast.error("Failed to add video", {
-        description: err instanceof Error ? err.message : String(err),
-      });
-      return;
-    }
-    if (picked.length === 0) return; // cancelled
-    setPendingImport(toVideoImportEntries(picked));
-  };
-
   /** Add every staged video from the Import Videos dialog, with its chosen grayscale flag. */
   const handleConfirmImport = async () => {
     if (!labels || !pendingImport) return;
@@ -599,7 +580,23 @@ export function VideosPanel() {
           </div>
         </div>
       )}
-      <ScrollArea className="flex-1">
+      {/* min-h instead of min-h-0: keeps the header + a couple of rows visible
+          even when other panels squeeze this section short, instead of
+          shrinking to nothing while the detail panel/buttons below stay put
+          (#339). Sized to comfortably fit inside the section's own min-h-40
+          floor (AppShell) alongside this panel's other fixed chrome — if this
+          floor were bigger than that leaves room for, the panel's natural
+          content would exceed the section box, pushing scrolling up to the
+          section's outer overflow-auto wrapper instead of this one, and the
+          sticky header below only tracks ITS OWN scroll — not the outer
+          one — so it would stop sticking. */}
+      {/* Neutralize Table's own overflow-x-auto wrapper: it silently becomes
+          a second scroll container (overflow-x:auto forces overflow-y:auto
+          too), and a sticky thead sticks to its NEAREST scrolling ancestor —
+          which would be that inert wrapper instead of this actually-scrolling
+          one, making "sticky" a no-op. This ScrollArea's own Viewport already
+          handles both axes (it renders a horizontal ScrollBar below). */}
+      <ScrollArea className="flex-1 min-h-24 [&_[data-slot=table-container]]:overflow-visible">
         {videos.length === 0 ? (
           <p className="text-xs text-muted-foreground p-2">
             No videos in project.
@@ -609,19 +606,19 @@ export function VideosPanel() {
             No videos match “{search}”.
           </p>
         ) : (
-          <Table>
-            <TableHeader>
+          <Table className="w-max min-w-full border-separate border-spacing-0">
+            <TableHeader className="sticky top-0 z-10 bg-background">
               <TableRow className="border-b hover:bg-transparent">
-                <TableHead className="py-1 px-2 text-xs font-normal h-auto">
+                <TableHead className="py-1 px-2 text-xs font-normal h-auto border-b">
                   #
                 </TableHead>
-                <TableHead className="py-1 px-2 text-xs font-normal h-auto">
+                <TableHead className="py-1 px-2 text-xs font-normal h-auto border-b">
                   Filename
                 </TableHead>
-                <TableHead className="py-1 px-2 text-xs font-normal text-right h-auto">
+                <TableHead className="py-1 px-2 text-xs font-normal text-right h-auto border-b">
                   Frames
                 </TableHead>
-                <TableHead className="py-1 px-2 text-xs font-normal text-right h-auto">
+                <TableHead className="py-1 px-2 text-xs font-normal text-right h-auto border-b">
                   Size
                 </TableHead>
               </TableRow>
@@ -648,6 +645,7 @@ export function VideosPanel() {
             </TableBody>
           </Table>
         )}
+        <ScrollBar orientation="horizontal" />
       </ScrollArea>
 
       {currentVideo && (
@@ -658,15 +656,13 @@ export function VideosPanel() {
       )}
 
       <Separator />
-      <div className="flex gap-1 p-2">
-        <Button
-          variant="subtle"
-          size="xs"
-          onClick={handleAddVideos}
+      <div className="px-2 pt-2">
+        <VideoDropzone
+          onFiles={(picked) => setPendingImport(toVideoImportEntries(picked))}
           data-tutorial="add-videos-button"
-        >
-          Add Videos
-        </Button>
+        />
+      </div>
+      <div className="flex gap-1 p-2">
         <Button
           variant="subtle"
           size="xs"

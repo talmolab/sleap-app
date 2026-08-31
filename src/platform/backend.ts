@@ -13,6 +13,7 @@ import { buildInferenceArgs, pickInferenceSubcommand } from "./inferenceArgs";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { formatRunTimestamp as formatPredictionsTimestamp } from "@/lib/timestamp";
 import { buildTrainingArgs } from "./trainingArgs";
+import { buildExportArgs, type BuildExportArgsOptions } from "./exportArgs";
 
 function sampleRandomFrames(totalFrames: number, count: number): number[] {
   const n = Math.min(count, totalFrames);
@@ -31,6 +32,11 @@ export interface UvInfo {
   version: string | null;
   path: string | null;
   pythonDir: string | null;
+  /** `null` = the self-update check couldn't run or doesn't apply (offline, timed out, or see selfUpdateSupported); otherwise whether a newer uv version is available. */
+  updateAvailable: boolean | null;
+  latestVersion: string | null;
+  /** `false` = uv was installed via a package manager (brew/pip/etc.) and refuses to self-update; `null` = not determined yet. */
+  selfUpdateSupported: boolean | null;
 }
 
 export interface UvTool {
@@ -75,7 +81,15 @@ async function invokeCmd<T>(
 /** Detect whether `uv` is installed and get its version. */
 export async function detectUv(): Promise<UvInfo> {
   if (!isTauri) {
-    return { available: false, version: null, path: null, pythonDir: null };
+    return {
+      available: false,
+      version: null,
+      path: null,
+      pythonDir: null,
+      updateAvailable: null,
+      latestVersion: null,
+      selfUpdateSupported: null,
+    };
   }
   return invokeCmd<UvInfo>("detect_uv");
 }
@@ -404,8 +418,13 @@ export async function runInference(
   // frames via LabelsProvider when --data_path is a .slp (talmolab/sleap#2848).
   // Embedded/image-sequence videos have no file of their own, so they keep the
   // project-file route below.
+  //
+  // NEVER for track-only: sleap-nn's retrack-only path requires --data_path to
+  // be a .slp (it needs the existing instances to retrack; a raw video has
+  // none) — pointing it at the video file errors with "Tracking-only mode
+  // requires --data_path to be a .slp file." Verified against a real run.
   let videoDataPath: string | null = null;
-  if (config.videoIndex !== "all") {
+  if (!config.trackOnly && config.videoIndex !== "all") {
     const { useAppStore } = await import("@/stores/appStore");
     const video = useAppStore.getState().labels?.videos[config.videoIndex] ?? null;
     const filename = video?.filename;
@@ -513,6 +532,29 @@ export async function runInference(
   const success = await runPythonCommand(program, args, onEvent);
   console.log("[inference] Process finished: success=%s, output=%s", success, outputPath);
   return { success, outputPath, command };
+}
+
+/**
+ * Run `sleap-nn export` to convert trained model directory(ies) to ONNX /
+ * TensorRT. `opts.modelPaths` are run directories (a top-down model passes both
+ * the centroid + centered_instance dirs together); the exported model.onnx /
+ * model.trt land in `opts.outputDir`. Streams stdout/stderr like train/predict
+ * via the existing `run_python_command` — no dedicated Rust command needed.
+ */
+export async function runExport(
+  opts: BuildExportArgsOptions,
+  onEvent: (event: ProcessEvent) => void,
+): Promise<{ success: boolean; command: string; outputDir: string }> {
+  if (!isTauri) {
+    console.warn("Model export is only available in Tauri desktop mode");
+    return { success: false, command: "", outputDir: opts.outputDir };
+  }
+  const args = buildExportArgs(opts);
+  const command = `sleap-nn ${args.join(" ")}`;
+  console.log("[export] Running:", command);
+  const success = await runPythonCommand("sleap-nn", args, onEvent);
+  console.log("[export] Process finished: success=%s", success);
+  return { success, command, outputDir: opts.outputDir };
 }
 
 // === RTC commands (native WebRTC via Rust backend) ===

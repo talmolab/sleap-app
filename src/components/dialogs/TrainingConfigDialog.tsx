@@ -3,10 +3,10 @@ import { createPortal } from "react-dom";
 import {
   Dialog,
   DialogContent,
-  DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { toast } from "@/lib/notify";
 import { LogNumberInput } from "@/components/LogNumberInput";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
@@ -17,7 +17,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, HelpCircle, RefreshCw } from "lucide-react";
+import { Search, HelpCircle, Crosshair, RefreshCw, Check, RotateCcw } from "lucide-react";
 import type { ConfigFile, ConfigHyperparams, Backbone, ModelType, DataPipeline, ColorMode } from "@/stores/trainingStore";
 import { getSlotLabel, getConfigSlots, useTrainingStore } from "@/stores/trainingStore";
 import { checkWandbAuth, type WandbAuth } from "@/platform/backend";
@@ -28,6 +28,7 @@ import { getBaselineProfilesForHead, getRecommendedProfileForHead, slotToHeadTyp
 import { computeInstanceSizeStats, recommendMaxStride, recommendBackboneProfile, recommendCentroidScale, resolveEffectiveCropSize, detectVideoChannels, resolveInputChannels } from "@/lib/modelStats";
 import { computeNodeVisibility, visibilityTier, type NodeVisibility } from "@/lib/anchorVisibility";
 import { isTauri } from "@/lib/platform";
+import { confirmDialog } from "@/stores/confirmStore";
 
 /** Tailwind text color per visibility tier, matching the Training panel's log coloring. */
 const VISIBILITY_COLOR: Record<ReturnType<typeof visibilityTier>, string> = {
@@ -138,6 +139,7 @@ const PIPELINE_FIELD_DEFS = {
   dataloaderWorkers: { id: "field-dataloaderworkers", label: "Dataloader Workers", hint: "Number of parallel workers for loading training data. More workers = faster data loading but more CPU/memory usage. 0 = main thread only. Only takes effect with a caching pipeline (Cache in Memory / Cache to Disk); the Stream pipeline forces 0." },
   accelerator: { id: "field-accelerator", label: "Accelerator", hint: "Hardware to use for training. 'Auto' detects available hardware. Use 'cuda' for NVIDIA GPUs, 'mps' for Apple Silicon, or 'cpu' for CPU-only (slow).", keywords: "gpu cuda mps cpu device hardware" },
   numDevices: { id: "field-numdevices", label: "Number of Devices", hint: "Number of GPUs/devices to use for training. Set to 1 for single-GPU training.", keywords: "gpu devices" },
+  trainerStrategy: { id: "field-trainerstrategy", label: "Multi-GPU Strategy", hint: "Distributed-training strategy across multiple GPUs. 'auto' lets Lightning choose; 'ddp' (DistributedDataParallel) is the common multi-GPU default; 'fsdp' (Fully Sharded Data Parallel) shards model state for very large models. Only applies when Number of Devices > 1.", keywords: "gpu multi ddp fsdp strategy distributed parallel" },
   secWandb: { id: "pipeline-wandb", label: "WandB", keywords: "weights and biases w&b logging" },
   wandbEnable: { id: "field-wandb-enable", label: "Enable WandB for logging", hint: "Log training metrics, loss curves, and visualizations to Weights & Biases for experiment tracking.", keywords: "wandb w&b weights and biases" },
   wandbOffline: { id: "field-wandb-offline", label: "Offline Mode", hint: "Log to local disk only — no network or W&B login required. Upload later with `wandb sync`.", keywords: "wandb w&b offline mode local sync network airgap" },
@@ -151,10 +153,16 @@ const PIPELINE_FIELD_DEFS = {
   secEvaluation: { id: "pipeline-evaluation", label: "Evaluation" },
   evalEnable: { id: "field-eval-enable", label: "Run evaluation during training", hint: "Run inference on validation frames at epoch intervals and compute pose metrics (mOKS, mAP, PCK). Useful for monitoring training quality beyond loss.", keywords: "evaluation metrics moks map pck" },
   evalFrequency: { id: "field-eval-frequency", label: "Frequency (epochs)", keywords: "evaluation frequency epochs" },
+  evalOksStddev: { id: "field-eval-oksstddev", label: "OKS Std. Dev.", hint: "Object Keypoint Similarity standard deviation used when scoring evaluation predictions.", keywords: "evaluation oks stddev standard deviation" },
+  evalOksScale: { id: "field-eval-oksscale", label: "OKS Scale", hint: "Override the OKS scale used during evaluation. Leave empty to use the model's own scale.", keywords: "evaluation oks scale" },
+  evalMatchThreshold: { id: "field-eval-matchthreshold", label: "Match Threshold", hint: "Centroid models: max centroid distance in pixels to count as a match. Segmentation models: minimum mask IoU (0, 1].", keywords: "evaluation pck centroid distance match threshold iou" },
   secOutput: { id: "pipeline-output", label: "Output" },
   runName: { id: "field-runname", label: "Run Name", hint: "Name for this training run. Leave empty to auto-generate from timestamp and head type." },
   runsFolder: { id: "field-runsfolder", label: "Runs Folder", hint: "Directory where the run folder and checkpoints will be created." },
-  checkpoint: { id: "field-checkpoint", label: "Checkpoint", hint: "Best Model saves the highest-scoring checkpoint (by validation loss). Latest Model also saves a last.ckpt after every checkpoint, useful for resuming training.", keywords: "best model latest model save" },
+  checkpoint: { id: "field-checkpoint", label: "Checkpoint", hint: "Best Model saves the highest-scoring checkpoint(s) (by the Monitor metric). Latest Model also saves a last.ckpt after every checkpoint, useful for resuming training.", keywords: "best model latest model save" },
+  checkpointTopK: { id: "field-checkpoint-topk", label: "Keep Top N", hint: "How many of the best checkpoints to keep. -1 keeps all of them.", keywords: "save top k checkpoint retention count" },
+  checkpointMonitor: { id: "field-checkpoint-monitor", label: "Monitor", hint: "Metric name used to pick the \"best\" checkpoint(s), e.g. val/loss.", keywords: "checkpoint monitor metric" },
+  checkpointMode: { id: "field-checkpoint-mode", label: "Mode", hint: "Direction of improvement for the Monitor metric — Min for loss-like metrics, Max for accuracy-like metrics.", keywords: "checkpoint mode min max" },
   visualization: { id: "field-visualization", label: "Visualization", hint: "Visualize Predictions saves sample prediction images each epoch (used by this app's epoch scrubber to review training progress). Keep Viz Images keeps that folder after training instead of deleting it; only has an effect when Visualize Predictions is on.", keywords: "visualize predictions keep viz images" },
   secRemote: { id: "pipeline-remote", label: "Remote Training" },
   remoteEnable: { id: "field-remoteenable", label: "Enable Remote Training", hint: "Send training jobs to a remote worker via sleap-connect instead of running locally.", keywords: "remote worker sleap-connect" },
@@ -178,6 +186,21 @@ const HEAD_FIELD_DEFS = {
   batchSize: { id: "field-batchsize", label: "Batch Size", hint: "Number of examples per minibatch. Higher numbers can increase generalization by averaging gradient updates over more examples, at the cost of more GPU memory. Lower numbers may lead to overfitting but can help optimization with few varied examples." },
   maxEpochs: { id: "field-maxepochs", label: "Epochs", hint: "Maximum number of epochs to train for. Training can be stopped manually or automatically if early stopping is enabled and a plateau is detected.", keywords: "max epochs" },
   learningRate: { id: "field-learningrate", label: "Initial Learning Rate", hint: "The initial learning rate for the optimizer. Typically 1e-3 or 1e-4. Can be decreased automatically with learning rate reduction on plateau. If too high or too low, training may fail to find good initial local minima.", keywords: "lr learning rate" },
+  lrSchedulerType: { id: "field-lrschedulertype", label: "LR Scheduler", hint: "How the learning rate changes over training. Reduce on Plateau lowers it when validation loss stalls; Step decays it on a fixed epoch schedule; the warmup schedulers ramp up then cosine/linearly decay it.", keywords: "learning rate scheduler step cosine warmup decay plateau" },
+  lrStepSize: { id: "field-lrscheduler-stepsize", label: "Step Size", keywords: "learning rate scheduler step lr", conditional: true },
+  lrGamma: { id: "field-lrscheduler-gamma", label: "Gamma", keywords: "learning rate scheduler step lr decay factor", conditional: true },
+  lrThreshold: { id: "field-lrscheduler-threshold", label: "Threshold", keywords: "learning rate scheduler reduce plateau" },
+  lrThresholdMode: { id: "field-lrscheduler-thresholdmode", label: "Threshold Mode", keywords: "learning rate scheduler reduce plateau rel abs" },
+  lrCooldown: { id: "field-lrscheduler-cooldown", label: "Cooldown", keywords: "learning rate scheduler reduce plateau" },
+  lrPatience: { id: "field-lrscheduler-patience", label: "LR Patience", keywords: "learning rate scheduler reduce plateau patience" },
+  lrFactor: { id: "field-lrscheduler-factor", label: "Factor", keywords: "learning rate scheduler reduce plateau" },
+  lrMinLR: { id: "field-lrscheduler-minlr", label: "Min LR", keywords: "learning rate scheduler reduce plateau minimum" },
+  lrCosineWarmupEpochs: { id: "field-lrscheduler-cosine-warmupepochs", label: "Warmup Epochs", keywords: "learning rate scheduler cosine annealing warmup", conditional: true },
+  lrCosineWarmupStartLR: { id: "field-lrscheduler-cosine-warmupstartlr", label: "Warmup Start LR", keywords: "learning rate scheduler cosine annealing warmup", conditional: true },
+  lrCosineEtaMin: { id: "field-lrscheduler-cosine-etamin", label: "Eta Min", keywords: "learning rate scheduler cosine annealing warmup minimum", conditional: true },
+  lrLinearWarmupEpochs: { id: "field-lrscheduler-linear-warmupepochs", label: "Warmup Epochs", keywords: "learning rate scheduler linear warmup decay", conditional: true },
+  lrLinearWarmupStartLR: { id: "field-lrscheduler-linear-warmupstartlr", label: "Warmup Start LR", keywords: "learning rate scheduler linear warmup decay", conditional: true },
+  lrLinearEndLR: { id: "field-lrscheduler-linear-endlr", label: "End LR", keywords: "learning rate scheduler linear warmup decay", conditional: true },
   stopOnPlateau: { id: "field-stoponplateau", label: "Stop Training on Plateau", hint: "If enabled, training will terminate automatically when the validation loss plateaus. This saves time and compute, and prevents training into the overfitting regime.", keywords: "early stopping plateau" },
   plateauMinDelta: { id: "field-plateaumindelta", label: "Plateau Min. Delta", hint: "Minimum absolute decrease in the loss in order to consider an epoch as not in a plateau.", keywords: "plateau min delta" },
   plateauPatience: { id: "field-earlystopping", label: "Plateau Patience", hint: "Number of epochs without an improvement of at least min_delta in order for a plateau to be detected.", keywords: "early stopping patience plateau" },
@@ -422,9 +445,9 @@ function HeadTabContent({
         if (await exists(cfgPath)) {
           const info = parseTrainingConfig(await readTextFile(cfgPath));
           if (info.headKey && info.headKey !== headType) {
-            window.alert(
-              `The checkpoint you selected was trained for "${info.headKey}" and may not be compatible with this ${headType} head.`
-            );
+            toast.warning("Possible checkpoint head mismatch", {
+              description: `The checkpoint you selected was trained for "${info.headKey}" and may not be compatible with this ${headType} head.`,
+            });
           }
         }
       } catch {
@@ -450,13 +473,13 @@ function HeadTabContent({
           const parsed = parseYamlConfig(text, file.name, slot);
           if (parsed) {
             if (parsed.modelType !== slot && parsed.modelType !== "unknown") {
-              window.alert(
-                `The file you selected was a training config for ${parsed.modelType} and cannot be used for ${slot}.`
-              );
+              toast.error("Wrong model type", {
+                description: `The file you selected was a training config for ${parsed.modelType} and cannot be used for ${slot}.`,
+              });
             }
             addConfigFile(parsed);
           } else {
-            window.alert("The file you selected was not a valid training config.");
+            toast.error("The file you selected was not a valid training config.");
           }
         };
         reader.readAsText(file);
@@ -790,6 +813,96 @@ function HeadTabContent({
         <Field {...HEAD_FIELD_DEFS.learningRate}>
           <Input type="number" value={hp.learningRate} onChange={(e) => onUpdate({ learningRate: Number(e.target.value) })} step={0.0001} className="h-9 text-sm" />
         </Field>
+        <Field {...HEAD_FIELD_DEFS.lrSchedulerType}>
+          <Select value={hp.lrSchedulerType} onValueChange={(v) => onUpdate({ lrSchedulerType: v as ConfigHyperparams["lrSchedulerType"] })}>
+            <SelectTrigger className="h-9 text-sm"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="reduce_lr_on_plateau">Reduce on Plateau</SelectItem>
+              <SelectItem value="step_lr">Step</SelectItem>
+              <SelectItem value="cosine_annealing_warmup">Cosine Annealing Warmup</SelectItem>
+              <SelectItem value="linear_warmup_linear_decay">Linear Warmup + Decay</SelectItem>
+              <SelectItem value="none">None</SelectItem>
+            </SelectContent>
+          </Select>
+        </Field>
+        {hp.lrSchedulerType === "step_lr" && (
+          <div className="flex items-center gap-4 flex-wrap">
+            <div id={HEAD_FIELD_DEFS.lrStepSize.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+              <span className="text-sm text-muted-foreground">{HEAD_FIELD_DEFS.lrStepSize.label}</span>
+              <Input type="number" value={hp.stepLRStepSize} onChange={(e) => onUpdate({ stepLRStepSize: Number(e.target.value) })} min={1} className="h-8 text-sm w-20" />
+            </div>
+            <div id={HEAD_FIELD_DEFS.lrGamma.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+              <span className="text-sm text-muted-foreground">{HEAD_FIELD_DEFS.lrGamma.label}</span>
+              <Input type="number" value={hp.stepLRGamma} onChange={(e) => onUpdate({ stepLRGamma: Number(e.target.value) })} step={0.01} className="h-8 text-sm w-20" />
+            </div>
+          </div>
+        )}
+        {hp.lrSchedulerType === "reduce_lr_on_plateau" && (
+          <div className="flex items-center gap-4 flex-wrap">
+            <div id={HEAD_FIELD_DEFS.lrThreshold.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+              <span className="text-sm text-muted-foreground">{HEAD_FIELD_DEFS.lrThreshold.label}</span>
+              <Input type="text" value={hp.reduceLRThreshold} onChange={(e) => onUpdate({ reduceLRThreshold: Number(e.target.value) })} className="h-8 text-sm w-20" />
+            </div>
+            <div id={HEAD_FIELD_DEFS.lrThresholdMode.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+              <span className="text-sm text-muted-foreground">{HEAD_FIELD_DEFS.lrThresholdMode.label}</span>
+              <Select value={hp.reduceLRThresholdMode} onValueChange={(v) => onUpdate({ reduceLRThresholdMode: v as "rel" | "abs" })}>
+                <SelectTrigger className="h-8 text-sm w-20"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="abs">abs</SelectItem>
+                  <SelectItem value="rel">rel</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div id={HEAD_FIELD_DEFS.lrCooldown.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+              <span className="text-sm text-muted-foreground">{HEAD_FIELD_DEFS.lrCooldown.label}</span>
+              <Input type="number" value={hp.reduceLRCooldown} onChange={(e) => onUpdate({ reduceLRCooldown: Number(e.target.value) })} min={0} className="h-8 text-sm w-16" />
+            </div>
+            <div id={HEAD_FIELD_DEFS.lrPatience.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+              <span className="text-sm text-muted-foreground">{HEAD_FIELD_DEFS.lrPatience.label}</span>
+              <Input type="number" value={hp.reduceLRPatience} onChange={(e) => onUpdate({ reduceLRPatience: Number(e.target.value) })} min={0} className="h-8 text-sm w-16" />
+            </div>
+            <div id={HEAD_FIELD_DEFS.lrFactor.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+              <span className="text-sm text-muted-foreground">{HEAD_FIELD_DEFS.lrFactor.label}</span>
+              <Input type="number" value={hp.reduceLRFactor} onChange={(e) => onUpdate({ reduceLRFactor: Number(e.target.value) })} step={0.05} min={0} max={1} className="h-8 text-sm w-16" />
+            </div>
+            <div id={HEAD_FIELD_DEFS.lrMinLR.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+              <span className="text-sm text-muted-foreground">{HEAD_FIELD_DEFS.lrMinLR.label}</span>
+              <Input type="text" value={hp.reduceLRMinLR} onChange={(e) => onUpdate({ reduceLRMinLR: Number(e.target.value) })} className="h-8 text-sm w-20" />
+            </div>
+          </div>
+        )}
+        {hp.lrSchedulerType === "cosine_annealing_warmup" && (
+          <div className="flex items-center gap-4 flex-wrap">
+            <div id={HEAD_FIELD_DEFS.lrCosineWarmupEpochs.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+              <span className="text-sm text-muted-foreground">{HEAD_FIELD_DEFS.lrCosineWarmupEpochs.label}</span>
+              <Input type="number" value={hp.cosineWarmupEpochs} onChange={(e) => onUpdate({ cosineWarmupEpochs: Number(e.target.value) })} min={0} className="h-8 text-sm w-16" />
+            </div>
+            <div id={HEAD_FIELD_DEFS.lrCosineWarmupStartLR.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+              <span className="text-sm text-muted-foreground">{HEAD_FIELD_DEFS.lrCosineWarmupStartLR.label}</span>
+              <Input type="number" value={hp.cosineWarmupStartLR} onChange={(e) => onUpdate({ cosineWarmupStartLR: Number(e.target.value) })} step={0.0001} min={0} className="h-8 text-sm w-20" />
+            </div>
+            <div id={HEAD_FIELD_DEFS.lrCosineEtaMin.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+              <span className="text-sm text-muted-foreground">{HEAD_FIELD_DEFS.lrCosineEtaMin.label}</span>
+              <Input type="number" value={hp.cosineEtaMin} onChange={(e) => onUpdate({ cosineEtaMin: Number(e.target.value) })} step={0.0001} min={0} className="h-8 text-sm w-20" />
+            </div>
+          </div>
+        )}
+        {hp.lrSchedulerType === "linear_warmup_linear_decay" && (
+          <div className="flex items-center gap-4 flex-wrap">
+            <div id={HEAD_FIELD_DEFS.lrLinearWarmupEpochs.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+              <span className="text-sm text-muted-foreground">{HEAD_FIELD_DEFS.lrLinearWarmupEpochs.label}</span>
+              <Input type="number" value={hp.linearWarmupEpochs} onChange={(e) => onUpdate({ linearWarmupEpochs: Number(e.target.value) })} min={0} className="h-8 text-sm w-16" />
+            </div>
+            <div id={HEAD_FIELD_DEFS.lrLinearWarmupStartLR.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+              <span className="text-sm text-muted-foreground">{HEAD_FIELD_DEFS.lrLinearWarmupStartLR.label}</span>
+              <Input type="number" value={hp.linearWarmupStartLR} onChange={(e) => onUpdate({ linearWarmupStartLR: Number(e.target.value) })} step={0.0001} min={0} className="h-8 text-sm w-20" />
+            </div>
+            <div id={HEAD_FIELD_DEFS.lrLinearEndLR.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+              <span className="text-sm text-muted-foreground">{HEAD_FIELD_DEFS.lrLinearEndLR.label}</span>
+              <Input type="number" value={hp.linearEndLR} onChange={(e) => onUpdate({ linearEndLR: Number(e.target.value) })} step={0.0001} min={0} className="h-8 text-sm w-20" />
+            </div>
+          </div>
+        )}
         <Toggle {...HEAD_FIELD_DEFS.stopOnPlateau} checked={hp.stopOnPlateau} onChange={(v) => onUpdate({ stopOnPlateau: v })} />
         <Field {...HEAD_FIELD_DEFS.plateauMinDelta}>
           <Input type="text" value={hp.plateauMinDelta} onChange={(e) => onUpdate({ plateauMinDelta: Number(e.target.value) })} disabled={!hp.stopOnPlateau} className="h-9 text-sm" />
@@ -1037,7 +1150,7 @@ export function TrainingConfigDialog({
   );
 
   // Auto-load baseline configs for empty slots when dialog opens
-  const { parseYamlConfig, addConfigFile } = useTrainingStore();
+  const { parseYamlConfig, addConfigFile, resetConfigHyperparams } = useTrainingStore();
   useEffect(() => {
     if (!open) return;
     const slots = getConfigSlots(modelType);
@@ -1110,31 +1223,59 @@ export function TrainingConfigDialog({
     }, 100);
   };
 
+  // Reset to the values loaded from the baseline profile (each config's
+  // `originalHyperparams`). Scoped to the active tab: the Pipeline tab edits
+  // shared fields across every slot, so it resets them all; a head tab resets
+  // only its own slot.
+  const handleResetDefaults = async () => {
+    const isPipeline = activeTab === "pipeline";
+    const scope = isPipeline
+      ? "all model configs"
+      : `the ${getSlotLabel(activeTab).replace(" Config", "")} config`;
+    const ok = await confirmDialog({
+      title: "Reset to profile defaults?",
+      message: `This restores ${scope} to the values loaded from the baseline profile, discarding your edits.`,
+      confirmLabel: "Reset",
+      destructive: true,
+    });
+    if (!ok) return;
+    if (isPipeline) sortedConfigs.forEach((c) => resetConfigHyperparams(c.slot));
+    else resetConfigHyperparams(activeTab);
+  };
+
   const navItems = activeTab === "pipeline" ? PIPELINE_NAV : HEAD_NAV;
   const firstConfig = sortedConfigs[0];
   const firstHp = firstConfig?.hyperparams;
 
   return (
     <Dialog open={open} onOpenChange={(isOpen) => { if (!isOpen) { onClose(); setSearchQuery(""); } }}>
-      <DialogContent className="w-full sm:max-w-[1000px] h-[70vh] p-0 overflow-hidden inset-0 translate-x-0 translate-y-0 m-auto flex flex-col" onKeyDown={(e) => e.stopPropagation()}>
-        <DialogHeader className="px-6 pt-5 pb-3 shrink-0">
-          <DialogTitle className="text-lg">Training Configuration</DialogTitle>
-        </DialogHeader>
-
-        <Tabs value={activeTab} onValueChange={setActiveTab} className="flex flex-col flex-1 min-h-0">
-          <div className="flex justify-center mx-6 shrink-0">
-            <TabsList className="h-9">
-              <TabsTrigger value="pipeline" className="text-sm">Training Pipeline</TabsTrigger>
-              {sortedConfigs.map((cf) => (
-                <TabsTrigger key={cf.slot} value={cf.slot} className="text-sm">
-                  {getSlotLabel(cf.slot).replace(" Config", "")} Model Configuration
-                </TabsTrigger>
-              ))}
-            </TabsList>
+      <DialogContent showCloseButton={false} className="w-[92vw] h-[90vh] min-w-[640px] min-h-[480px] max-w-[96vw] sm:max-w-[96vw] max-h-[94vh] resize overflow-hidden p-0 inset-0 translate-x-0 translate-y-0 m-auto flex flex-col" onKeyDown={(e) => e.stopPropagation()}>
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="flex flex-col flex-1 min-h-0 gap-0">
+          {/* Compact header: title (left) · flat centered tabs · saved indicator (right) */}
+          <div className="relative flex items-center justify-between gap-4 px-6 py-2.5 border-b shrink-0">
+            <DialogTitle className="text-base font-semibold shrink-0">Training Configuration</DialogTitle>
+            <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+              <TabsList>
+                <TabsTrigger value="pipeline" className="text-sm px-4 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground dark:data-[state=active]:bg-primary dark:data-[state=active]:text-primary-foreground">Pipeline</TabsTrigger>
+                {sortedConfigs.map((cf) => (
+                  <TabsTrigger key={cf.slot} value={cf.slot} className="text-sm px-4 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground dark:data-[state=active]:bg-primary dark:data-[state=active]:text-primary-foreground">
+                    {getSlotLabel(cf.slot).replace(" Config", "")}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+            </div>
+            <span
+              className="flex items-center gap-1.5 text-xs text-muted-foreground shrink-0"
+              title="Edits are saved automatically as you type"
+            >
+              <Check className="h-3.5 w-3.5 text-emerald-500" />
+              All changes saved
+            </span>
           </div>
 
-          <div className="relative mx-6 mt-2 mb-2 shrink-0">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          {/* Field search — full-width row snug below the header */}
+          <div className="relative px-6 py-2 border-b shrink-0">
+            <Search className="absolute left-8 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
             <Input
               type="text"
               placeholder="Search parameters..."
@@ -1143,7 +1284,7 @@ export function TrainingConfigDialog({
               className="h-9 text-sm pl-9"
             />
             {searchResults.length > 0 && (
-              <div className="absolute top-full left-0 right-0 mt-1 bg-popover border rounded-md shadow-lg z-10 max-h-48 overflow-y-auto">
+              <div className="absolute top-full left-6 right-6 mt-1 bg-popover border rounded-md shadow-lg z-10 max-h-48 overflow-y-auto">
                 {searchResults.map((r) => (
                   <button
                     key={`${r.tab}:${r.id}`}
@@ -1158,7 +1299,7 @@ export function TrainingConfigDialog({
             )}
           </div>
 
-          <div className="flex flex-1 min-h-0 border-t mt-2">
+          <div className="flex flex-1 min-h-0">
             <nav className="w-[180px] border-r bg-muted/30 py-3 shrink-0">
               {navItems.map((item) => (
                 <button
@@ -1448,6 +1589,20 @@ export function TrainingConfigDialog({
                       <input type="checkbox" checked={(firstHp?.numDevices ?? "auto") === "auto"} onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { numDevices: e.target.checked ? "auto" : 1 }))} className="accent-primary" />
                       <span className="text-sm">Auto</span>
                     </label>
+                    <div id={PIPELINE_FIELD_DEFS.trainerStrategy.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+                      <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                        {PIPELINE_FIELD_DEFS.trainerStrategy.label}
+                        <HintBubble text={PIPELINE_FIELD_DEFS.trainerStrategy.hint} />
+                      </span>
+                      <Select value={firstHp?.trainerStrategy ?? "auto"} onValueChange={(v) => configs.forEach((c) => onUpdateSlot(c.slot, { trainerStrategy: v as "auto" | "ddp" | "fsdp" }))} disabled={firstHp?.numDevices === "auto" || (typeof firstHp?.numDevices === "number" && firstHp.numDevices <= 1)}>
+                        <SelectTrigger className="h-8 text-sm w-28"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="auto">auto</SelectItem>
+                          <SelectItem value="ddp">ddp</SelectItem>
+                          <SelectItem value="fsdp">fsdp</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
                   </div>
                 </div>
 
@@ -1562,6 +1717,54 @@ export function TrainingConfigDialog({
                       />
                     </div>
                   </div>
+                  <div className={`flex items-center gap-4 flex-wrap ${!firstHp?.evalEnabled ? "opacity-50" : ""}`}>
+                    <div id={PIPELINE_FIELD_DEFS.evalOksStddev.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+                      <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                        {PIPELINE_FIELD_DEFS.evalOksStddev.label}
+                        <HintBubble text={PIPELINE_FIELD_DEFS.evalOksStddev.hint} />
+                      </span>
+                      <Input
+                        type="number"
+                        value={firstHp?.evalOksStddev ?? 0.025}
+                        step={0.001}
+                        min={0}
+                        disabled={!firstHp?.evalEnabled}
+                        onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { evalOksStddev: Number(e.target.value) }))}
+                        className="h-8 text-sm w-20"
+                      />
+                    </div>
+                    <div id={PIPELINE_FIELD_DEFS.evalOksScale.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+                      <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                        {PIPELINE_FIELD_DEFS.evalOksScale.label}
+                        <HintBubble text={PIPELINE_FIELD_DEFS.evalOksScale.hint} />
+                      </span>
+                      <Input
+                        type="number"
+                        value={firstHp?.evalOksScale ?? ""}
+                        step={0.01}
+                        min={0}
+                        placeholder="Auto"
+                        disabled={!firstHp?.evalEnabled}
+                        onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { evalOksScale: e.target.value ? Number(e.target.value) : null }))}
+                        className="h-8 text-sm w-20"
+                      />
+                    </div>
+                    <div id={PIPELINE_FIELD_DEFS.evalMatchThreshold.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+                      <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                        {PIPELINE_FIELD_DEFS.evalMatchThreshold.label}
+                        <HintBubble text={PIPELINE_FIELD_DEFS.evalMatchThreshold.hint} />
+                      </span>
+                      <Input
+                        type="number"
+                        value={firstHp?.evalMatchThreshold ?? 50.0}
+                        step={0.5}
+                        min={0}
+                        disabled={!firstHp?.evalEnabled}
+                        onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { evalMatchThreshold: Number(e.target.value) }))}
+                        className="h-8 text-sm w-20"
+                      />
+                    </div>
+                  </div>
                 </div>
 
                 <Separator className="my-5" />
@@ -1599,6 +1802,47 @@ export function TrainingConfigDialog({
                         />
                         <span className="text-sm">Latest Model</span>
                       </label>
+                      <div id={PIPELINE_FIELD_DEFS.checkpointTopK.id} data-search-field="" className={`flex items-center gap-2 scroll-mt-4 ${!firstHp.saveBestModel ? "opacity-50" : ""}`}>
+                        <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                          {PIPELINE_FIELD_DEFS.checkpointTopK.label}
+                          <HintBubble text={PIPELINE_FIELD_DEFS.checkpointTopK.hint} />
+                        </span>
+                        <Input
+                          type="number"
+                          value={firstHp.saveTopKCount}
+                          min={-1}
+                          disabled={!firstHp.saveBestModel}
+                          onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { saveTopKCount: Number(e.target.value) }))}
+                          className="h-8 text-sm w-16"
+                        />
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-6 flex-wrap">
+                      <div id={PIPELINE_FIELD_DEFS.checkpointMonitor.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+                        <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                          {PIPELINE_FIELD_DEFS.checkpointMonitor.label}
+                          <HintBubble text={PIPELINE_FIELD_DEFS.checkpointMonitor.hint} />
+                        </span>
+                        <Input
+                          type="text"
+                          value={firstHp.checkpointMonitor}
+                          onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { checkpointMonitor: e.target.value }))}
+                          className="h-8 text-sm w-32"
+                        />
+                      </div>
+                      <div id={PIPELINE_FIELD_DEFS.checkpointMode.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+                        <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                          {PIPELINE_FIELD_DEFS.checkpointMode.label}
+                          <HintBubble text={PIPELINE_FIELD_DEFS.checkpointMode.hint} />
+                        </span>
+                        <Select value={firstHp.checkpointMode} onValueChange={(v) => configs.forEach((c) => onUpdateSlot(c.slot, { checkpointMode: v as "min" | "max" }))}>
+                          <SelectTrigger className="h-8 text-sm w-20"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="min">Min</SelectItem>
+                            <SelectItem value="max">Max</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
                     </div>
                     <div id={PIPELINE_FIELD_DEFS.visualization.id} data-search-field="" className="flex items-center gap-6 scroll-mt-4">
                       <span className="text-sm text-muted-foreground flex items-center gap-1.5">
@@ -1698,6 +1942,24 @@ export function TrainingConfigDialog({
                 />
               </TabsContent>
             ))}
+          </div>
+          {/* Footer: reset (left) · Done (right) */}
+          <div className="flex items-center justify-between px-6 py-3 border-t shrink-0">
+            <button
+              type="button"
+              onClick={handleResetDefaults}
+              className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+              Reset to profile defaults…
+            </button>
+            <button
+              type="button"
+              onClick={() => { onClose(); setSearchQuery(""); }}
+              className="px-4 h-8 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90"
+            >
+              Done
+            </button>
           </div>
         </Tabs>
       </DialogContent>

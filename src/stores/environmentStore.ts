@@ -30,7 +30,13 @@ import { toast } from "@/lib/notify";
 import { openExternal } from "@/lib/openExternal";
 
 const SLEAP_NN_RELEASES_URL = "https://github.com/talmolab/sleap-nn/releases/tag";
-const SLEAP_APP_RELEASES_URL = "https://github.com/talmolab/sleap-app/releases/tag";
+
+// De-dupes concurrent callers of checkSleapNnUpdateAndNotify (e.g. App.tsx's
+// startup check racing loadProject.ts's post-load check for a project opened
+// via a CLI arg or file-association launch): without this, both calls await
+// listUvTools() before either has written lastNotifiedSleapNnVersion, so both
+// read the stale guard value and both fire the "update available" toast.
+let sleapNnCheckInFlight: Promise<void> | null = null;
 
 export type DetectionStatus = "idle" | "checking" | "done" | "error";
 export type InstallStatus = "idle" | "installing" | "done" | "error";
@@ -46,11 +52,11 @@ export interface EnvironmentState {
   selectedPythonPath: string | null;
   pythonCheck: PythonInfo | null;
 
-  // Last sleap-nn / sleap-app version we already showed an "update available"
-  // toast for (persisted, so we don't nag on every project open — only on
-  // new versions).
+  // Last sleap-nn version we already showed an "update available" toast for
+  // (persisted, so we don't nag on every project open — only on new
+  // versions). sleap-app's own version has no equivalent toast anymore —
+  // see the Environment badge (appStore's stableUpdateAvailable) instead.
   lastNotifiedSleapNnVersion: string | null;
-  lastNotifiedAppVersion: string | null;
 
   // Status
   detectionStatus: DetectionStatus;
@@ -67,20 +73,24 @@ export interface EnvironmentState {
   clearSelection: () => void;
   doInstallPython: (version: string) => Promise<void>;
   doInstallTool: (pkg: string) => Promise<void>;
+  /**
+   * (Re)install sleap-nn WITH the ONNX/TensorRT export extras so exported-model
+   * export + `--runtime onnx|tensorrt` inference work. `uv tool install` REPLACES
+   * the tool env, so this reinstalls the FULL extra set (torch + export[,tensorrt]).
+   */
+  installExportExtra: (withTensorrt: boolean) => Promise<void>;
   doUpgradeTool: (pkg: string) => Promise<void>;
   doReinstallTool: (pkg: string) => Promise<void>;
   doUpdateUv: () => Promise<void>;
   doInstallUv: () => Promise<void>;
   clearInstallLog: () => void;
   checkSleapNnUpdateAndNotify: () => Promise<void>;
-  checkAppUpdateAndNotify: () => Promise<void>;
 }
 
 /** Keys persisted to localStorage. */
 const PERSISTED_KEYS: (keyof EnvironmentState)[] = [
   "selectedPythonPath",
   "lastNotifiedSleapNnVersion",
-  "lastNotifiedAppVersion",
 ];
 
 export const useEnvironmentStore = create<EnvironmentState>()(
@@ -96,7 +106,6 @@ export const useEnvironmentStore = create<EnvironmentState>()(
       selectedPythonPath: null,
       pythonCheck: null,
       lastNotifiedSleapNnVersion: null,
-      lastNotifiedAppVersion: null,
 
       // Status
       detectionStatus: "idle",
@@ -275,6 +284,58 @@ export const useEnvironmentStore = create<EnvironmentState>()(
         }
       },
 
+      installExportExtra: async (withTensorrt: boolean) => {
+        const { selectedPythonPath } = get();
+        set({
+          installStatus: "installing",
+          installTarget: withTensorrt
+            ? "sleap-nn ONNX + TensorRT support"
+            : "sleap-nn ONNX support",
+          installLog: [],
+        });
+
+        const onEvent = (event: ProcessEvent) => {
+          if (event.event === "stdout" || event.event === "stderr") {
+            set((state) => ({
+              installLog: [...state.installLog, event.data.line],
+            }));
+          } else if (event.event === "finished") {
+            set({ installStatus: event.data.success ? "done" : "error" });
+          }
+        };
+
+        try {
+          const gpu = await detectGpu();
+          const torchExtra = gpu === "cuda" ? "torch-cuda130" : "torch-cpu";
+          // `uv tool install` REPLACES the tool env — it can't add an extra
+          // incrementally — so include the full extra set and force a reinstall,
+          // or the existing torch backend / deps would be dropped. TensorRT is
+          // only offered on CUDA hosts (linux/win + NVIDIA).
+          const extras = withTensorrt ? "export,tensorrt" : "export";
+          const installPkg = `sleap-nn[${torchExtra},${extras}]`;
+          set((state) => ({
+            installLog: [
+              ...state.installLog,
+              `[env] GPU: ${gpu} → installing ${installPkg}`,
+            ],
+          }));
+          await installUvToolCmd(
+            installPkg,
+            selectedPythonPath,
+            true,
+            onEvent,
+            ["--torch-backend=auto"]
+          );
+          await get().refresh();
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          set((state) => ({
+            installStatus: "error",
+            installLog: [...state.installLog, `Error: ${msg}`],
+          }));
+        }
+      },
+
       doUpgradeTool: async (pkg: string) => {
         set({
           installStatus: "installing",
@@ -426,58 +487,46 @@ export const useEnvironmentStore = create<EnvironmentState>()(
         set({ installStatus: "idle", installLog: [], installTarget: null });
       },
 
-      // Lightweight, best-effort check (just the two `uv tool list` calls, not
-      // the full uv/interpreters/python detection `refresh()` does) — meant to
-      // run on every project open without adding noticeable latency.
-      checkSleapNnUpdateAndNotify: async () => {
-        if (!isTauri) return;
-        try {
-          const uvTools = await listUvTools();
-          set({ tools: uvTools });
+      // Lightweight, best-effort check (just `uv --version` + `uv tool list`,
+      // not the full interpreters/downloadable-Pythons detection `refresh()`
+      // does) — meant to run on every project open without adding noticeable
+      // latency. Also the ONLY thing that populates `uv`/`tools` before the
+      // Environment panel has ever been opened (refresh() otherwise only
+      // runs on that panel's mount) — App.tsx's startup effect relies on
+      // that so the Environment badge can reflect "uv/sleap-nn missing" from
+      // the Welcome screen, not just sleap-nn update availability.
+      checkSleapNnUpdateAndNotify: () => {
+        if (!isTauri) return Promise.resolve();
+        if (sleapNnCheckInFlight) return sleapNnCheckInFlight;
 
-          const tool = uvTools.find((t) => t.name === "sleap-nn");
-          if (!tool?.updateAvailable || !tool.latestVersion) return;
-          if (tool.latestVersion === get().lastNotifiedSleapNnVersion) return;
+        sleapNnCheckInFlight = (async () => {
+          try {
+            const [uvInfo, uvTools] = await Promise.all([
+              detectUv(),
+              listUvTools(),
+            ]);
+            set({ uv: uvInfo, tools: uvTools });
 
-          set({ lastNotifiedSleapNnVersion: tool.latestVersion });
-          toast.info(`sleap-nn v${tool.latestVersion} is available`, {
-            description: `You're on v${tool.version}.`,
-            action: {
-              label: "Release notes",
-              onClick: () =>
-                openExternal(`${SLEAP_NN_RELEASES_URL}/v${tool.latestVersion}`),
-            },
-          });
-        } catch (err) {
-          console.error("[env] sleap-nn update check failed:", err);
-        }
-      },
+            const tool = uvTools.find((t) => t.name === "sleap-nn");
+            if (!tool?.updateAvailable || !tool.latestVersion) return;
+            if (tool.latestVersion === get().lastNotifiedSleapNnVersion) return;
 
-      // Same pattern as checkSleapNnUpdateAndNotify, for the desktop app's own
-      // version. Coexists with (doesn't replace) the blocking window.confirm
-      // startup check in App.tsx — this fires on project open instead, as a
-      // non-blocking toast, deduped per version like the sleap-nn one above.
-      // No-ops in tauri:dev (no installer/manifest to check against there —
-      // see AppUpdateSection's isDevBuild gate in EnvironmentPanel.tsx).
-      checkAppUpdateAndNotify: async () => {
-        if (!isTauri || import.meta.env.DEV) return;
-        try {
-          const { check } = await import("@tauri-apps/plugin-updater");
-          const update = await check();
-          if (!update) return;
-          if (update.version === get().lastNotifiedAppVersion) return;
-
-          set({ lastNotifiedAppVersion: update.version });
-          toast.info(`SLEAP App v${update.version} is available`, {
-            action: {
-              label: "Release notes",
-              onClick: () =>
-                openExternal(`${SLEAP_APP_RELEASES_URL}/v${update.version}`),
-            },
-          });
-        } catch (err) {
-          console.error("[env] App update check failed:", err);
-        }
+            set({ lastNotifiedSleapNnVersion: tool.latestVersion });
+            toast.info(`sleap-nn v${tool.latestVersion} is available`, {
+              description: `You're on v${tool.version}.`,
+              action: {
+                label: "Release notes",
+                onClick: () =>
+                  openExternal(`${SLEAP_NN_RELEASES_URL}/v${tool.latestVersion}`),
+              },
+            });
+          } catch (err) {
+            console.error("[env] sleap-nn update check failed:", err);
+          } finally {
+            sleapNnCheckInFlight = null;
+          }
+        })();
+        return sleapNnCheckInFlight;
       },
     }),
     {

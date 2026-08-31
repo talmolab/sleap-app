@@ -14,6 +14,7 @@ import { Track } from "@talmolab/sleap-io.js";
 import { quitApp } from "../lib/quit";
 import { openNewInstance } from "../lib/newInstance";
 import { dismiss, toast } from "../lib/notify";
+import { hintIfPredictionsRemain } from "../lib/labelingHints";
 import { spacePanState } from "../lib/spacePanTracking";
 import {
   commandContext,
@@ -364,6 +365,7 @@ export function useKeyboardShortcuts() {
         } else if (s.labelingMode === "place") {
           s.exitPlacementMode();
         } else {
+          hintIfPredictionsRemain(s.instance, s.labeledFrame);
           s.setInstance(null);
         }
       },

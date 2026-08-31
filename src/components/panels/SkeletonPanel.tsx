@@ -53,7 +53,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -542,13 +542,26 @@ export function SkeletonPanel() {
         </TabsList>
 
         <TabsContent value="nodes" className="flex flex-col flex-1 min-h-0 mt-0">
-          <ScrollArea className="flex-1">
+          {/* min-h floor: a scroll container's automatic min-height is 0, so
+              without one this shrinks away entirely once the buttons below
+              have room to grow — hiding the table (#339-class bug). Sized to
+              comfortably fit inside the section's own min-h-40 floor
+              (AppShell) alongside this tab's buttons row — if this floor
+              were bigger than that leaves room for, the sticky header below
+              would only track ITS OWN scroll and stop sticking once the
+              outer wrapper took over instead. */}
+          {/* Neutralize Table's own overflow-x-auto wrapper (see VideosPanel)
+              so the sticky thead sticks to this ScrollArea's Viewport instead
+              of that inert nested scroll container; the horizontal ScrollBar
+              moves scrolling authority for wide content up to the Viewport. */}
+          <ScrollArea className="flex-1 min-h-24 [&_[data-slot=table-container]]:overflow-visible">
             <NodesTable
               nodes={nodes}
               selectedIdx={selectedNodeIdx}
               onSelect={setSelectedNodeIdx}
               onRename={handleRename}
             />
+            <ScrollBar orientation="horizontal" />
           </ScrollArea>
           <Separator />
           <div className="flex gap-1 p-2">
@@ -582,12 +595,13 @@ export function SkeletonPanel() {
         </TabsContent>
 
         <TabsContent value="edges" className="flex flex-col flex-1 min-h-0 mt-0">
-          <ScrollArea className="flex-1">
+          <ScrollArea className="flex-1 min-h-24 [&_[data-slot=table-container]]:overflow-visible">
             <EdgesTable
               edges={edges}
               selectedIdx={selectedEdgeIdx}
               onSelect={setSelectedEdgeIdx}
             />
+            <ScrollBar orientation="horizontal" />
           </ScrollArea>
           <Separator />
           <div className="flex gap-1 p-2">
@@ -623,7 +637,7 @@ export function SkeletonPanel() {
           value="symmetries"
           className="flex flex-col flex-1 min-h-0 mt-0"
         >
-          <ScrollArea className="flex-1">
+          <ScrollArea className="flex-1 min-h-24">
             {symmetries.length === 0 ? (
               <p className="p-2 text-xs text-muted-foreground">
                 No symmetries. Pair left/right mirror nodes (e.g. left_ear ↔
@@ -1065,13 +1079,13 @@ function NodesTable({
     nodes.some((n, i) => n.name === editValue.trim() && i !== editingIdx);
 
   return (
-    <Table>
-      <TableHeader>
+    <Table className="border-separate border-spacing-0">
+      <TableHeader className="sticky top-0 z-10 bg-background">
         <TableRow className="border-b hover:bg-transparent">
-          <TableHead className="py-1 px-2 text-xs font-normal h-auto">
+          <TableHead className="py-1 px-2 text-xs font-normal h-auto border-b">
             #
           </TableHead>
-          <TableHead className="py-1 px-2 text-xs font-normal h-auto">
+          <TableHead className="py-1 px-2 text-xs font-normal h-auto border-b">
             Name
           </TableHead>
         </TableRow>
@@ -1156,17 +1170,17 @@ function EdgesTable({
   }
 
   return (
-    <Table>
-      <TableHeader>
+    <Table className="border-separate border-spacing-0">
+      <TableHeader className="sticky top-0 z-10 bg-background">
         <TableRow className="border-b hover:bg-transparent">
-          <TableHead className="py-1 px-2 text-xs font-normal h-auto">
+          <TableHead className="py-1 px-2 text-xs font-normal h-auto border-b">
             #
           </TableHead>
-          <TableHead className="py-1 px-2 text-xs font-normal h-auto">
+          <TableHead className="py-1 px-2 text-xs font-normal h-auto border-b">
             Source
           </TableHead>
-          <TableHead className="py-1 px-2 text-xs font-normal h-auto" />
-          <TableHead className="py-1 px-2 text-xs font-normal h-auto">
+          <TableHead className="py-1 px-2 text-xs font-normal h-auto border-b" />
+          <TableHead className="py-1 px-2 text-xs font-normal h-auto border-b">
             Destination
           </TableHead>
         </TableRow>

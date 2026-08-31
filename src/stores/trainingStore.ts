@@ -147,8 +147,27 @@ export interface ConfigHyperparams {
   maxHardKeypoints: number | null;
   hardToEasyRatio: number;
   lossScale: number;
+  // LR scheduler (trainer_config.lr_scheduler — only the selected type's
+  // sub-config is ever written; the other three are nulled)
+  lrSchedulerType: "reduce_lr_on_plateau" | "step_lr" | "cosine_annealing_warmup" | "linear_warmup_linear_decay" | "none";
+  stepLRStepSize: number;
+  stepLRGamma: number;
+  reduceLRThreshold: number;
+  reduceLRThresholdMode: "rel" | "abs";
+  reduceLRCooldown: number;
+  reduceLRPatience: number;
+  reduceLRFactor: number;
+  reduceLRMinLR: number;
+  cosineWarmupEpochs: number;
+  cosineWarmupStartLR: number;
+  cosineEtaMin: number;
+  linearWarmupEpochs: number;
+  linearWarmupStartLR: number;
+  linearEndLR: number;
   trainingMode: "reuse_config" | "resume" | "finetune";
   accelerator: "auto" | "cuda" | "mps" | "cpu";
+  /** Multi-GPU distribution strategy; only meaningful when numDevices > 1. */
+  trainerStrategy: "auto" | "ddp" | "fsdp";
   // Performance
   dataPipeline: DataPipeline;
   dataloaderWorkers: number;
@@ -156,6 +175,9 @@ export interface ConfigHyperparams {
   // Output — checkpoint saving
   saveBestModel: boolean;
   saveLastModel: boolean;
+  saveTopKCount: number;
+  checkpointMonitor: string;
+  checkpointMode: "min" | "max";
   // Output — visualization
   visualizePredictions: boolean;
   keepVizImages: boolean;
@@ -164,6 +186,9 @@ export interface ConfigHyperparams {
   // Epoch-end evaluation (distinct from the regular per-epoch validation loop)
   evalEnabled: boolean;
   evalFrequency: number;
+  evalOksStddev: number;
+  evalOksScale: number | null;
+  evalMatchThreshold: number;
   // W&B extras (entity/project are above, near useWandb)
   wandbUploadViz: boolean;
   wandbPrevRunId: string;
@@ -224,13 +249,35 @@ export const defaultHyperparams: ConfigHyperparams = {
   maxHardKeypoints: null,
   hardToEasyRatio: 2.0,
   lossScale: 5.0,
+  // Matches the reduce_lr_on_plateau values already baked into every checked-in
+  // baseline YAML preset (see src/assets/training_profiles/*.yaml), so picking
+  // a preset and never touching this control keeps today's behavior unchanged.
+  lrSchedulerType: "reduce_lr_on_plateau",
+  stepLRStepSize: 10,
+  stepLRGamma: 0.1,
+  reduceLRThreshold: 1e-6,
+  reduceLRThresholdMode: "abs",
+  reduceLRCooldown: 3,
+  reduceLRPatience: 5,
+  reduceLRFactor: 0.5,
+  reduceLRMinLR: 1e-8,
+  cosineWarmupEpochs: 5,
+  cosineWarmupStartLR: 0.0,
+  cosineEtaMin: 0.0,
+  linearWarmupEpochs: 5,
+  linearWarmupStartLR: 0.0,
+  linearEndLR: 0.0,
   trainingMode: "reuse_config",
   accelerator: "auto",
+  trainerStrategy: "auto",
   dataPipeline: "memory",
   dataloaderWorkers: 2,
   numDevices: "auto",
   saveBestModel: true,
   saveLastModel: false,
+  saveTopKCount: 1,
+  checkpointMonitor: "val/loss",
+  checkpointMode: "min",
   // Deliberately true (sleap-nn's own defaults are both false): this is what
   // actually makes the app's own epoch-viz-scrubber feature work out of the
   // box — see the `keep_viz`/`visualize_preds_during_training` comment in
@@ -240,6 +287,9 @@ export const defaultHyperparams: ConfigHyperparams = {
   colorMode: "auto",
   evalEnabled: false,
   evalFrequency: 1,
+  evalOksStddev: 0.025,
+  evalOksScale: null,
+  evalMatchThreshold: 50.0,
   wandbUploadViz: false,
   wandbPrevRunId: "",
   wandbGroup: "",
@@ -253,6 +303,12 @@ export interface ConfigFile {
   modelType: string; // parsed from head_configs (e.g., "centroid")
   slot: string; // which slot this fills (e.g., "centroid", "centered_instance", "config")
   hyperparams: ConfigHyperparams; // per-config hyperparameters
+  /**
+   * Snapshot of `hyperparams` as the config was loaded/imported. Powers the
+   * "modified" indicators (diff against this) and Reset, which restores to these
+   * as-loaded values — not the global `defaultHyperparams`.
+   */
+  originalHyperparams: ConfigHyperparams;
   hasTrainedModel: boolean; // true if config has a non-empty run_name (trained model exists)
   /** Absolute path to this config's source run's checkpoint file, for Resume/Fine-tune. `null` for a baseline profile or a manually-browsed file (no known run directory). */
   checkpointPath: string | null;
@@ -358,6 +414,8 @@ interface TrainingState {
   // Actions
   setConfig: <K extends keyof TrainingConfig>(key: K, value: TrainingConfig[K]) => void;
   updateConfigHyperparams: (slot: string, updates: Partial<ConfigHyperparams>) => void;
+  /** Restore ALL of a config's hyperparameters to its as-loaded baseline. */
+  resetConfigHyperparams: (slot: string) => void;
   updateConfigCheckpointPath: (slot: string, path: string | null) => void;
   addConfigFile: (file: ConfigFile) => void;
   removeConfigFile: (slot: string) => void;
@@ -447,13 +505,14 @@ export function applyHyperparamsToYaml(
   // Basic training params
   trainer.max_epochs = hp.maxEpochs;
 
-  // Checkpoint saving. The UI only exposes a binary choice for "best model"
-  // (sleap-nn's save_top_k is a count; 1 = on, 0 = off — there's no control
-  // for saving more than the single best).
+  // Checkpoint saving. save_top_k is a count (0 = off, -1 = keep all, N =
+  // keep best N); saveTopKCount only takes effect while saveBestModel is on.
   if (!trainer.model_ckpt) trainer.model_ckpt = {};
   const modelCkpt = trainer.model_ckpt as Record<string, unknown>;
-  modelCkpt.save_top_k = hp.saveBestModel ? 1 : 0;
+  modelCkpt.save_top_k = hp.saveBestModel ? hp.saveTopKCount : 0;
   modelCkpt.save_last = hp.saveLastModel;
+  modelCkpt.monitor = hp.checkpointMonitor;
+  modelCkpt.mode = hp.checkpointMode;
 
   // Visualization — keep_viz only has any effect when
   // visualize_preds_during_training is also true (per sleap-nn's docstring:
@@ -548,6 +607,9 @@ export function applyHyperparamsToYaml(
   const evalConfig = trainer.eval as Record<string, unknown>;
   evalConfig.enabled = hp.evalEnabled;
   evalConfig.frequency = hp.evalFrequency;
+  evalConfig.oks_stddev = hp.evalOksStddev;
+  evalConfig.oks_scale = hp.evalOksScale;
+  evalConfig.match_threshold = hp.evalMatchThreshold;
 
   // Seed
   trainer.seed = hp.randomSeed;
@@ -558,12 +620,55 @@ export function applyHyperparamsToYaml(
   // Number of devices ("auto" or a positive integer)
   trainer.trainer_devices = hp.numDevices;
 
+  // Multi-GPU distribution strategy ("auto"/"ddp"/"fsdp"); Lightning ignores it
+  // for single-device runs, so it only matters when trainer_devices > 1.
+  trainer.trainer_strategy = hp.trainerStrategy;
+
   // Early stopping
   if (!trainer.early_stopping) trainer.early_stopping = {};
   const es = trainer.early_stopping as Record<string, unknown>;
   es.stop_training_on_plateau = hp.stopOnPlateau;
   es.patience = hp.earlyStoppingPatience;
   es.min_delta = hp.plateauMinDelta;
+
+  // LR scheduler — only the selected type's sub-config is populated; the
+  // other three are explicitly nulled so sleap-nn's per-field `is not None`
+  // priority chain (cosine > linear > step_lr > reduce_on_plateau, see
+  // lightning_modules.py) picks exactly one scheduler, or none at all when
+  // every sub-key is null.
+  if (!trainer.lr_scheduler) trainer.lr_scheduler = {};
+  const lrs = trainer.lr_scheduler as Record<string, unknown>;
+  lrs.step_lr =
+    hp.lrSchedulerType === "step_lr"
+      ? { step_size: hp.stepLRStepSize, gamma: hp.stepLRGamma }
+      : null;
+  lrs.reduce_lr_on_plateau =
+    hp.lrSchedulerType === "reduce_lr_on_plateau"
+      ? {
+          threshold: hp.reduceLRThreshold,
+          threshold_mode: hp.reduceLRThresholdMode,
+          cooldown: hp.reduceLRCooldown,
+          patience: hp.reduceLRPatience,
+          factor: hp.reduceLRFactor,
+          min_lr: hp.reduceLRMinLR,
+        }
+      : null;
+  lrs.cosine_annealing_warmup =
+    hp.lrSchedulerType === "cosine_annealing_warmup"
+      ? {
+          warmup_epochs: hp.cosineWarmupEpochs,
+          warmup_start_lr: hp.cosineWarmupStartLR,
+          eta_min: hp.cosineEtaMin,
+        }
+      : null;
+  lrs.linear_warmup_linear_decay =
+    hp.lrSchedulerType === "linear_warmup_linear_decay"
+      ? {
+          warmup_epochs: hp.linearWarmupEpochs,
+          warmup_start_lr: hp.linearWarmupStartLR,
+          end_lr: hp.linearEndLR,
+        }
+      : null;
 
   // Online hard keypoint mining
   if (!trainer.online_hard_keypoint_mining) trainer.online_hard_keypoint_mining = {};
@@ -760,6 +865,18 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       },
     })),
 
+  resetConfigHyperparams: (slot) =>
+    set((state) => ({
+      config: {
+        ...state.config,
+        configs: state.config.configs.map((c) =>
+          c.slot === slot
+            ? { ...c, hyperparams: { ...c.originalHyperparams } }
+            : c,
+        ),
+      },
+    })),
+
   updateConfigCheckpointPath: (slot, path) =>
     set((state) => ({
       config: {
@@ -860,6 +977,24 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       // Extract checkpoint + epoch-end-evaluation config
       const modelCkpt = (trainer.model_ckpt ?? {}) as Record<string, unknown>;
       const evalConfig = (trainer.eval ?? {}) as Record<string, unknown>;
+
+      // Extract LR scheduler config — priority order mirrors sleap-nn's own
+      // (lightning_modules.py: cosine > linear > step_lr > reduce_on_plateau).
+      const lrSchedulerCfg = (trainer.lr_scheduler ?? {}) as Record<string, unknown>;
+      const stepLRCfg = (lrSchedulerCfg.step_lr ?? {}) as Record<string, unknown>;
+      const reduceLRCfg = (lrSchedulerCfg.reduce_lr_on_plateau ?? {}) as Record<string, unknown>;
+      const cosineLRCfg = (lrSchedulerCfg.cosine_annealing_warmup ?? {}) as Record<string, unknown>;
+      const linearLRCfg = (lrSchedulerCfg.linear_warmup_linear_decay ?? {}) as Record<string, unknown>;
+      const lrSchedulerType: ConfigHyperparams["lrSchedulerType"] =
+        lrSchedulerCfg.cosine_annealing_warmup != null
+          ? "cosine_annealing_warmup"
+          : lrSchedulerCfg.linear_warmup_linear_decay != null
+            ? "linear_warmup_linear_decay"
+            : lrSchedulerCfg.step_lr != null
+              ? "step_lr"
+              : lrSchedulerCfg.reduce_lr_on_plateau != null
+                ? "reduce_lr_on_plateau"
+                : "none";
 
       // Extract online hard keypoint mining config
       const ohkmCfg = (trainer.online_hard_keypoint_mining ?? {}) as Record<string, unknown>;
@@ -1027,6 +1162,21 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         maxHardKeypoints: typeof ohkmCfg.max_hard_keypoints === "number" ? ohkmCfg.max_hard_keypoints : null,
         hardToEasyRatio: typeof ohkmCfg.hard_to_easy_ratio === "number" ? ohkmCfg.hard_to_easy_ratio : 2.0,
         lossScale: typeof ohkmCfg.loss_scale === "number" ? ohkmCfg.loss_scale : 5.0,
+        lrSchedulerType,
+        stepLRStepSize: typeof stepLRCfg.step_size === "number" ? stepLRCfg.step_size : 10,
+        stepLRGamma: typeof stepLRCfg.gamma === "number" ? stepLRCfg.gamma : 0.1,
+        reduceLRThreshold: typeof reduceLRCfg.threshold === "number" ? reduceLRCfg.threshold : 1e-6,
+        reduceLRThresholdMode: reduceLRCfg.threshold_mode === "rel" ? "rel" : "abs",
+        reduceLRCooldown: typeof reduceLRCfg.cooldown === "number" ? reduceLRCfg.cooldown : 3,
+        reduceLRPatience: typeof reduceLRCfg.patience === "number" ? reduceLRCfg.patience : 5,
+        reduceLRFactor: typeof reduceLRCfg.factor === "number" ? reduceLRCfg.factor : 0.5,
+        reduceLRMinLR: typeof reduceLRCfg.min_lr === "number" ? reduceLRCfg.min_lr : 1e-8,
+        cosineWarmupEpochs: typeof cosineLRCfg.warmup_epochs === "number" ? cosineLRCfg.warmup_epochs : 5,
+        cosineWarmupStartLR: typeof cosineLRCfg.warmup_start_lr === "number" ? cosineLRCfg.warmup_start_lr : 0.0,
+        cosineEtaMin: typeof cosineLRCfg.eta_min === "number" ? cosineLRCfg.eta_min : 0.0,
+        linearWarmupEpochs: typeof linearLRCfg.warmup_epochs === "number" ? linearLRCfg.warmup_epochs : 5,
+        linearWarmupStartLR: typeof linearLRCfg.warmup_start_lr === "number" ? linearLRCfg.warmup_start_lr : 0.0,
+        linearEndLR: typeof linearLRCfg.end_lr === "number" ? linearLRCfg.end_lr : 0.0,
         trainingMode: detectedTrainingMode,
         // Performance/machine-specific settings — never taken from the
         // uploaded file, always the app's own defaults. A profile trained on
@@ -1038,14 +1188,21 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         // treatment for the same reason, even though legacy doesn't call it
         // out by that name).
         accelerator: defaultHyperparams.accelerator,
+        trainerStrategy: defaultHyperparams.trainerStrategy,
         dataPipeline: defaultHyperparams.dataPipeline,
         dataloaderWorkers: defaultHyperparams.dataloaderWorkers,
         numDevices: defaultHyperparams.numDevices,
         // Checkpoint saving — sleap-nn's own default is save_top_k=1 (best
         // model on), save_last=None (off), so an absent key means "on"/"off"
         // respectively, matching those real defaults.
-        saveBestModel: typeof modelCkpt.save_top_k === "number" ? modelCkpt.save_top_k > 0 : true,
+        saveBestModel: typeof modelCkpt.save_top_k === "number" ? modelCkpt.save_top_k !== 0 : true,
         saveLastModel: modelCkpt.save_last === true,
+        saveTopKCount:
+          typeof modelCkpt.save_top_k === "number" && modelCkpt.save_top_k !== 0
+            ? modelCkpt.save_top_k
+            : 1,
+        checkpointMonitor: typeof modelCkpt.monitor === "string" ? modelCkpt.monitor : "val/loss",
+        checkpointMode: modelCkpt.mode === "max" ? "max" : "min",
         // Visualization — absent means "on" here (this app's own default,
         // not sleap-nn's raw False default — see defaultHyperparams above).
         visualizePredictions: trainer.visualize_preds_during_training !== false,
@@ -1057,6 +1214,9 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
             : "auto",
         evalEnabled: evalConfig.enabled === true,
         evalFrequency: typeof evalConfig.frequency === "number" ? evalConfig.frequency : 1,
+        evalOksStddev: typeof evalConfig.oks_stddev === "number" ? evalConfig.oks_stddev : 0.025,
+        evalOksScale: typeof evalConfig.oks_scale === "number" ? evalConfig.oks_scale : null,
+        evalMatchThreshold: typeof evalConfig.match_threshold === "number" ? evalConfig.match_threshold : 50.0,
         wandbUploadViz: wandb.save_viz_imgs_wandb === true,
         wandbPrevRunId: typeof wandb.prv_runid === "string" ? wandb.prv_runid : "",
         wandbGroup: typeof wandb.group === "string" ? wandb.group : "",
@@ -1078,6 +1238,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         modelType: detectedModelType,
         slot,
         hyperparams,
+        originalHyperparams: { ...hyperparams },
         hasTrainedModel,
         checkpointPath,
       };
@@ -1724,6 +1885,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
           };
           const inferenceConfig: import("@/stores/inferenceStore").InferenceConfig = {
             pipeline: pipelineMap[config.modelType] || "top-down",
+            trackOnly: false,
             modelPaths: trainedModelPaths,
             videoIndex: (inferenceTarget === "video" || inferenceTarget === "random_video")
               ? (() => {
@@ -1737,6 +1899,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
             existingPredictions: localOpts?.existingPredictions ?? "replace",
             batchSize: 4,
             device: "auto",
+            runtime: "auto",
             maxInstances: null,
             peakThreshold: 0.2,
             integralRefinement: true,

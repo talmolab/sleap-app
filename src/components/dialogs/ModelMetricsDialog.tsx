@@ -157,12 +157,16 @@ export function ModelMetricsDialog({
 
           {/* Both-axis scroll so the wide 10-column table stays inside the
               dialog instead of spilling past its right edge. */}
-          <div className="max-h-[60vh] w-full overflow-auto rounded-md border border-border/40">
-            <Table className="min-w-[860px]">
-              <TableHeader>
+          {/* [&_[data-slot=table-container]]:overflow-visible neutralizes
+              Table's own overflow-x-auto wrapper, which otherwise counts as
+              its own scroll container and steals the sticky thead's "nearest
+              scrolling ancestor" — making sticky a no-op. */}
+          <div className="max-h-[60vh] w-full overflow-auto rounded-md border border-border/40 [&_[data-slot=table-container]]:overflow-visible">
+            <Table className="min-w-[860px] border-separate border-spacing-0">
+              <TableHeader className="sticky top-0 z-10 bg-background">
                 <TableRow>
                   {COLUMNS.map((c) => (
-                    <TableHead key={c} className="text-[11px]">
+                    <TableHead key={c} className="text-[11px] border-b">
                       {c}
                     </TableHead>
                   ))}

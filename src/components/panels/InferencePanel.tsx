@@ -15,6 +15,7 @@ import type { InferenceConfig, PipelineType } from "@/stores/inferenceStore";
 import { useConnectStore } from "@/stores/connectStore";
 import { RemoteFileBrowser } from "@/components/dialogs/RemoteFileBrowser";
 import { isTauri } from "../../platform/index";
+import { detectGpu } from "../../platform/backend";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
@@ -63,6 +64,13 @@ const DEVICE_OPTIONS = [
   { value: "cuda", label: "CUDA (GPU)" },
   { value: "cpu", label: "CPU" },
   { value: "mps", label: "MPS (Apple Silicon)" },
+];
+
+const RUNTIME_OPTIONS = [
+  { value: "auto", label: "Auto" },
+  { value: "onnx", label: "ONNX" },
+  // TensorRT is NVIDIA-only (Linux/Windows); filtered out on non-CUDA hosts.
+  { value: "tensorrt", label: "TensorRT" },
 ];
 
 
@@ -323,11 +331,13 @@ function NodeCheckboxList({
 
 const DEFAULTS: Omit<InferenceConfig, "modelPaths" | "videoIndex" | "frameRange"> = {
   pipeline: "top-down",
+  trackOnly: false,
   sampleCount: 20,
   excludeUserLabeled: false,
   existingPredictions: "replace",
   batchSize: 4,
   device: "auto",
+  runtime: "auto",
   maxInstances: null,
   peakThreshold: 0.2,
   integralRefinement: true,
@@ -398,6 +408,7 @@ export function InferencePanel() {
 
   // Config state
   const [pipeline, setPipeline] = useState<PipelineType>(DEFAULTS.pipeline);
+  const [trackOnly, setTrackOnly] = useState(DEFAULTS.trackOnly);
   const [logDialogOpen, setLogDialogOpen] = useState(false);
   const [modelPaths, setModelPaths] = useState<string[]>([]);
   const [frameRange, setFrameRange] = useState<FrameRange>("suggestions");
@@ -408,6 +419,13 @@ export function InferencePanel() {
   const [existingPredictions, setExistingPredictions] = useState(DEFAULTS.existingPredictions);
   const [batchSize, setBatchSize] = useState(DEFAULTS.batchSize);
   const [device, setDevice] = useState(DEFAULTS.device);
+  const [runtime, setRuntime] = useState(DEFAULTS.runtime);
+  // GPU backend, used to gate the TensorRT runtime option (NVIDIA/Linux/Windows
+  // only — detectGpu() returns "cuda" exactly there; Mac returns mps/cpu).
+  const [gpuBackend, setGpuBackend] = useState<string | null>(null);
+  useEffect(() => {
+    if (isTauri) detectGpu().then(setGpuBackend).catch(() => setGpuBackend(null));
+  }, []);
   const [maxInstances, setMaxInstances] = useState<number | null>(DEFAULTS.maxInstances);
   const [noMaxInstances, setNoMaxInstances] = useState(true);
   const [peakThreshold, setPeakThreshold] = useState(DEFAULTS.peakThreshold);
@@ -471,6 +489,18 @@ export function InferencePanel() {
   const selectedWorker = workers.find((w) => w.peerId === selectedWorkerId);
   const workerMounts = selectedWorker?.mounts || ["/"];
 
+  // Track-only needs a temporally CONTIGUOUS run of frames to track across —
+  // a single frame or a scattered subset (suggestions/user-labeled/predicted/
+  // random) has no meaningful "previous frame" for the tracker to associate
+  // against. If Track only is enabled while one of those is selected, fall
+  // back to a contiguous target instead of leaving an option selected that's
+  // no longer even shown in the dropdown.
+  useEffect(() => {
+    if (trackOnly && !["video", "all_videos", "custom"].includes(frameRange)) {
+      setFrameRange("video");
+    }
+  }, [trackOnly, frameRange]);
+
   // Elapsed time ticker
   const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
@@ -530,7 +560,7 @@ export function InferencePanel() {
     isNaN(Number(frameEnd))
   );
 
-  const canRun = (remoteEnabled ? (!!selectedWorkerId && !!remoteDataPath) : sleapNnAvailable) && !isRunning && !isDone && activeModelPaths.length > 0 && !customRangeInvalid;
+  const canRun = (remoteEnabled ? (!!selectedWorkerId && !!remoteDataPath) : sleapNnAvailable) && !isRunning && !isDone && (trackOnly || activeModelPaths.length > 0) && !customRangeInvalid;
   const isTopDown = pipeline === "top-down" || pipeline === "top-down-id";
 
   if (!isTauri && connectionStatus !== "connected") {
@@ -568,15 +598,23 @@ export function InferencePanel() {
       : ("all" as const);
 
     const config: InferenceConfig = {
-      pipeline, modelPaths: remoteEnabled ? remoteModelPaths : modelPaths,
+      pipeline, trackOnly,
+      // Track-only never sends a model: sleap-nn's predict CLI detects
+      // "--tracking with no --model_paths" and takes its dedicated
+      // retrack-only path (see InferenceConfig.trackOnly's doc).
+      modelPaths: trackOnly ? [] : (remoteEnabled ? remoteModelPaths : modelPaths),
       videoIndex,
       frameRange: frameRange === "custom" ? { start: Number(frameStart), end: Number(frameEnd) } : frameRange,
-      sampleCount, excludeUserLabeled, existingPredictions, batchSize, device,
+      sampleCount,
+      excludeUserLabeled: trackOnly ? false : excludeUserLabeled,
+      existingPredictions, batchSize, device, runtime,
       maxInstances: noMaxInstances ? null : maxInstances,
       peakThreshold,
       integralRefinement, integralPatchSize,
       nPoints, maxEdgeLengthRatio, distPenaltyWeight, minLineScores,
-      tracking, trackerMethod, similarityMethod, matchingMethod,
+      // Track-only implies tracking is always on, regardless of the
+      // (hidden, in this mode) "Enable tracking" checkbox's own state.
+      tracking: trackOnly || tracking, trackerMethod, similarityMethod, matchingMethod,
       trackingWindowSize,
       maxTracks: noMaxTracks ? null : maxTracks,
       connectSingleBreaks, robust,
@@ -614,69 +652,84 @@ export function InferencePanel() {
           </div>
         )}
 
+        {/* ── Track only ──────────────────────────────────────────── */}
+        <Check
+          label="Track only"
+          hint="Run tracking on the instances already in this project (labeled or predicted) without running pose estimation. No model needed — hides pipeline/model selection below."
+          checked={trackOnly}
+          onChange={setTrackOnly}
+          disabled={isRunning}
+        />
+
+        <Separator />
+
         {/* ── Pipeline ────────────────────────────────────────────── */}
-        <Section title="Pipeline" defaultOpen={true}>
-          <Select value={pipeline} onValueChange={(v) => setPipeline(v as PipelineType)} disabled={isRunning}>
-            <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              {PIPELINE_OPTIONS.map((o) => (
-                <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <p className="text-[10px] text-muted-foreground">
-            {PIPELINE_OPTIONS.find((o) => o.value === pipeline)?.desc}
-          </p>
-        </Section>
+        {!trackOnly && (
+          <>
+            <Section title="Pipeline" defaultOpen={true}>
+              <Select value={pipeline} onValueChange={(v) => setPipeline(v as PipelineType)} disabled={isRunning}>
+                <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {PIPELINE_OPTIONS.map((o) => (
+                    <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-[10px] text-muted-foreground">
+                {PIPELINE_OPTIONS.find((o) => o.value === pipeline)?.desc}
+              </p>
+            </Section>
 
-        <Separator />
+            <Separator />
 
-        {/* ── Models ──────────────────────────────────────────────── */}
-        <Section title="Models" defaultOpen={true}>
-          <div className="flex justify-end">
-            <Button variant="outline" size="sm" className="h-6 text-[10px] px-2"
-              onClick={() => {
-                if (remoteEnabled) {
-                  setFileBrowserMode("directory");
-                  setFileBrowserCallback(() => (path: string) => {
-                    setRemoteModelPaths((prev) => [...prev, path]);
-                  });
-                  setFileBrowserOpen(true);
-                } else {
-                  handleAddModel();
-                }
-              }} disabled={isRunning}>
-              <FolderOpen className="h-3 w-3 mr-1" /> {remoteEnabled ? "Browse Worker" : "Add"}
-            </Button>
-          </div>
-          {activeModelPaths.length === 0 ? (
-            <p className="text-[10px] text-muted-foreground">
-              {isTopDown ? "Add two directories (centroid + centered-instance)." : "Add a model directory."}
-            </p>
-          ) : (
-            <div className="space-y-1">
-              {activeModelPaths.map((p, i) => (
-                <div key={i} className="flex items-center gap-1 rounded border border-green-500/50 bg-green-500/5 px-2 py-1">
-                  <Folder className="h-3.5 w-3.5 text-green-500 flex-shrink-0" />
-                  <span className="text-[10px] truncate flex-1 font-medium" title={p}>{remoteEnabled ? p : p.split(/[\\/]/).pop()}</span>
-                  <button className="text-muted-foreground hover:text-destructive shrink-0"
-                    onClick={() => {
-                      if (remoteEnabled) {
-                        setRemoteModelPaths((prev) => prev.filter((_, j) => j !== i));
-                      } else {
-                        setModelPaths((prev) => prev.filter((_, j) => j !== i));
-                      }
-                    }}
-                    disabled={isRunning} title="Remove">
-                    <X className="h-3 w-3" />
-                  </button>
+            {/* ── Models ──────────────────────────────────────────────── */}
+            <Section title="Models" defaultOpen={true}>
+              <div className="flex justify-end">
+                <Button variant="outline" size="sm" className="h-6 text-[10px] px-2"
+                  onClick={() => {
+                    if (remoteEnabled) {
+                      setFileBrowserMode("directory");
+                      setFileBrowserCallback(() => (path: string) => {
+                        setRemoteModelPaths((prev) => [...prev, path]);
+                      });
+                      setFileBrowserOpen(true);
+                    } else {
+                      handleAddModel();
+                    }
+                  }} disabled={isRunning}>
+                  <FolderOpen className="h-3 w-3 mr-1" /> {remoteEnabled ? "Browse Worker" : "Add"}
+                </Button>
+              </div>
+              {activeModelPaths.length === 0 ? (
+                <p className="text-[10px] text-muted-foreground">
+                  {isTopDown ? "Add two directories (centroid + centered-instance)." : "Add a model directory."}
+                </p>
+              ) : (
+                <div className="space-y-1">
+                  {activeModelPaths.map((p, i) => (
+                    <div key={i} className="flex items-center gap-1 rounded border border-green-500/50 bg-green-500/5 px-2 py-1">
+                      <Folder className="h-3.5 w-3.5 text-green-500 flex-shrink-0" />
+                      <span className="text-[10px] truncate flex-1 font-medium" title={p}>{remoteEnabled ? p : p.split(/[\\/]/).pop()}</span>
+                      <button className="text-muted-foreground hover:text-destructive shrink-0"
+                        onClick={() => {
+                          if (remoteEnabled) {
+                            setRemoteModelPaths((prev) => prev.filter((_, j) => j !== i));
+                          } else {
+                            setModelPaths((prev) => prev.filter((_, j) => j !== i));
+                          }
+                        }}
+                        disabled={isRunning} title="Remove">
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-          )}
-        </Section>
+              )}
+            </Section>
 
-        <Separator />
+            <Separator />
+          </>
+        )}
 
         {/* ── Data ────────────────────────────────────────────────── */}
         <Section title="Data" defaultOpen={true}>
@@ -685,15 +738,19 @@ export function InferencePanel() {
             <Select value={frameRange} onValueChange={(v) => setFrameRange(v as FrameRange)} disabled={isRunning}>
               <SelectTrigger className="h-7 text-xs" data-tutorial="inference-target-select"><SelectValue /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="frame">Current frame</SelectItem>
                 <SelectItem value="custom">Custom range</SelectItem>
                 <SelectItem value="video">Entire current video</SelectItem>
                 <SelectItem value="all_videos">All videos</SelectItem>
-                <SelectItem value="random_video">Random sample (current video)</SelectItem>
-                <SelectItem value="random">Random sample (all videos)</SelectItem>
-                <SelectItem value="suggestions">Suggested frames</SelectItem>
-                <SelectItem value="user_labeled">User labeled frames</SelectItem>
-                <SelectItem value="predicted">Frames with predictions</SelectItem>
+                {!trackOnly && (
+                  <>
+                    <SelectItem value="frame">Current frame</SelectItem>
+                    <SelectItem value="random_video">Random sample (current video)</SelectItem>
+                    <SelectItem value="random">Random sample (all videos)</SelectItem>
+                    <SelectItem value="suggestions">Suggested frames</SelectItem>
+                    <SelectItem value="user_labeled">User labeled frames</SelectItem>
+                    <SelectItem value="predicted">Frames with predictions</SelectItem>
+                  </>
+                )}
               </SelectContent>
             </Select>
             {(frameRange === "random_video" || frameRange === "random") && (
@@ -729,30 +786,43 @@ export function InferencePanel() {
               </div>
             )}
           </div>
-          <Check label="Exclude user-labeled frames" checked={excludeUserLabeled}
-            onChange={setExcludeUserLabeled} disabled={isRunning} />
-          <div className="space-y-1">
-            <span className="text-[10px] text-muted-foreground">Existing predictions</span>
-            <Select
-              value={existingPredictions}
-              onValueChange={(v) => setExistingPredictions(v as InferenceConfig["existingPredictions"])}
-              disabled={isRunning}
-            >
-              <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="clear_all">Clear all</SelectItem>
-                <SelectItem value="replace">Replace</SelectItem>
-                <SelectItem value="keep">Keep</SelectItem>
-              </SelectContent>
-            </Select>
+          <Check
+            label="Exclude user-labeled frames"
+            hint={trackOnly
+              ? "Always off in track-only mode -- excluding user-labeled frames would leave gaps a tracker can't bridge, and sleap-nn's retrack path tracks user instances (preferentially) anyway."
+              : undefined}
+            checked={trackOnly ? false : excludeUserLabeled}
+            onChange={setExcludeUserLabeled} disabled={isRunning || trackOnly} />
+          {!trackOnly && (
+            <div className="space-y-1">
+              <span className="text-[10px] text-muted-foreground">Existing predictions</span>
+              <Select
+                value={existingPredictions}
+                onValueChange={(v) => setExistingPredictions(v as InferenceConfig["existingPredictions"])}
+                disabled={isRunning}
+              >
+                <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="clear_all">Clear all</SelectItem>
+                  <SelectItem value="replace">Replace</SelectItem>
+                  <SelectItem value="keep">Keep</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-[10px] text-muted-foreground">
+                {existingPredictions === "clear_all"
+                  ? "Remove all existing predictions first, then add the new ones."
+                  : existingPredictions === "keep"
+                    ? "Add new predictions on top of existing ones (may duplicate)."
+                    : "Replace predictions on re-inferred frames; keep your labels."}
+              </p>
+            </div>
+          )}
+          {trackOnly && (
             <p className="text-[10px] text-muted-foreground">
-              {existingPredictions === "clear_all"
-                ? "Remove all existing predictions first, then add the new ones."
-                : existingPredictions === "keep"
-                  ? "Add new predictions on top of existing ones (may duplicate)."
-                  : "Replace predictions on re-inferred frames; keep your labels."}
+              Track-only never adds, removes, or replaces instances — every
+              instance keeps its geometry; only its track assignment changes.
             </p>
-          </div>
+          )}
           {remoteEnabled && (
             <div className="space-y-1">
               <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
@@ -787,41 +857,63 @@ export function InferencePanel() {
         <Separator />
 
         {/* ── Inference ───────────────────────────────────────────── */}
-        <Section title="Inference" defaultOpen={true}>
-          <NumField label="Batch size" value={batchSize} onChange={setBatchSize} min={1} max={128} disabled={isRunning} />
+        {!trackOnly && (
+          <>
+            <Section title="Inference" defaultOpen={true}>
+              <NumField label="Batch size" value={batchSize} onChange={setBatchSize} min={1} max={128} disabled={isRunning} />
 
-          {isTauri && (
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-[10px] text-muted-foreground">Device</span>
-              <Select value={device} onValueChange={(v) => setDevice(v as typeof device)} disabled={isRunning}>
-                <SelectTrigger className="h-6 text-[10px] w-32"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {DEVICE_OPTIONS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-          )}
+              {isTauri && (
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[10px] text-muted-foreground">Device</span>
+                  <Select value={device} onValueChange={(v) => setDevice(v as typeof device)} disabled={isRunning}>
+                    <SelectTrigger className="h-6 text-[10px] w-32"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {DEVICE_OPTIONS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
 
-          <NumField label="Peak threshold" value={peakThreshold} onChange={setPeakThreshold}
-            min={0} max={1} step={0.05} disabled={isRunning} />
+              {isTauri && (
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[10px] text-muted-foreground flex items-center gap-1">
+                    Runtime
+                    <HintBubble text="Inference engine. 'Auto' lets sleap-nn choose. 'ONNX'/'TensorRT' apply only when the selected model is an exported model directory (containing model.onnx / model.trt) — they're ignored for regular checkpoints, and require ONNX/TensorRT export support to be installed." />
+                  </span>
+                  <Select value={runtime} onValueChange={(v) => setRuntime(v as typeof runtime)} disabled={isRunning}>
+                    <SelectTrigger className="h-6 text-[10px] w-32"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {RUNTIME_OPTIONS.filter((o) => o.value !== "tensorrt" || gpuBackend === "cuda").map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
 
-          <div className="space-y-1">
-            <NumField label="Max instances" value={maxInstances ?? 0}
-              onChange={(v) => setMaxInstances(v)} min={1} max={100} disabled={isRunning || noMaxInstances} />
-            <Check label="No limit" checked={noMaxInstances}
-              onChange={(v) => { setNoMaxInstances(v); if (!v && maxInstances === null) setMaxInstances(2); }}
-              disabled={isRunning} />
-          </div>
+              <NumField label="Peak threshold" value={peakThreshold} onChange={setPeakThreshold}
+                min={0} max={1} step={0.05} disabled={isRunning} />
 
-        </Section>
+              <div className="space-y-1">
+                <NumField label="Max instances" value={maxInstances ?? 0}
+                  onChange={(v) => setMaxInstances(v)} min={1} max={100} disabled={isRunning || noMaxInstances} />
+                <Check label="No limit" checked={noMaxInstances}
+                  onChange={(v) => { setNoMaxInstances(v); if (!v && maxInstances === null) setMaxInstances(2); }}
+                  disabled={isRunning} />
+              </div>
 
-        <Separator />
+            </Section>
+
+            <Separator />
+          </>
+        )}
 
         {/* ── Tracking ────────────────────────────────────────────── */}
         <Section title="Tracking" defaultOpen={false}>
-          <Check label="Enable tracking" hint="Connect predicted instances across frames to maintain identity over time."
-            checked={tracking} onChange={setTracking} disabled={isRunning} />
-          {tracking && (
+          <Check label="Enable tracking"
+            hint={trackOnly
+              ? "Always on in track-only mode."
+              : "Connect predicted instances across frames to maintain identity over time."}
+            checked={trackOnly || tracking} onChange={setTracking} disabled={isRunning || trackOnly} />
+          {(trackOnly || tracking) && (
             <>
               <div className="flex items-center justify-between gap-2">
                 <FieldLabel label="Method" hint="Simple matches instances by similarity alone. Optical Flow predicts motion from pixel displacement — best for fast-moving animals. Kalman Filter predicts motion from a per-track velocity model — best for a known, fixed number of animals whose motion helps disambiguate crossings or occlusions." />
@@ -1176,7 +1268,7 @@ export function InferencePanel() {
             {inferenceStatus === "completed" && outputPath && (
               isTauri ? (
                 <Button size="sm" className="h-7 text-xs"
-                  onClick={async () => { setMerging(true); await loadAndMergeResults(existingPredictions); setMerging(false); }}
+                  onClick={async () => { setMerging(true); await loadAndMergeResults(existingPredictions, trackOnly); setMerging(false); }}
                   disabled={merging}>
                   {merging ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Download className="h-3.5 w-3.5 mr-1" />}
                   {merging ? "Loading..." : "Load Results"}
@@ -1256,6 +1348,48 @@ export function InferencePanel() {
         tracking={tracking}
         onTrackingChange={setTracking}
         skeletonNodes={skeletonNodeNames}
+        onResetDefaults={() => {
+          setPeakThreshold(DEFAULTS.peakThreshold);
+          setMaxInstances(DEFAULTS.maxInstances); setNoMaxInstances(DEFAULTS.maxInstances === null);
+          setIntegralRefinement(DEFAULTS.integralRefinement);
+          setIntegralPatchSize(DEFAULTS.integralPatchSize);
+          setNPoints(DEFAULTS.nPoints);
+          setMaxEdgeLengthRatio(DEFAULTS.maxEdgeLengthRatio);
+          setDistPenaltyWeight(DEFAULTS.distPenaltyWeight);
+          setMinLineScores(DEFAULTS.minLineScores);
+          setTracking(DEFAULTS.tracking);
+          setTrackerMethod(DEFAULTS.trackerMethod);
+          setSimilarityMethod(DEFAULTS.similarityMethod);
+          setMatchingMethod(DEFAULTS.matchingMethod);
+          setTrackingWindowSize(DEFAULTS.trackingWindowSize);
+          setMaxTracks(DEFAULTS.maxTracks); setNoMaxTracks(DEFAULTS.maxTracks === null);
+          setConnectSingleBreaks(DEFAULTS.connectSingleBreaks);
+          setRobust(DEFAULTS.robust);
+          setMinMatchPoints(DEFAULTS.minMatchPoints);
+          setMinNewTrackPoints(DEFAULTS.minNewTrackPoints);
+          setScoringReduction(DEFAULTS.scoringReduction);
+          setTrackingTargetInstanceCount(DEFAULTS.trackingTargetInstanceCount);
+          setTrackingPreCullToTarget(DEFAULTS.trackingPreCullToTarget);
+          setTrackingPreCullIouThreshold(DEFAULTS.trackingPreCullIouThreshold);
+          setTrackingCleanInstanceCount(DEFAULTS.trackingCleanInstanceCount);
+          setTrackingCleanIouThreshold(DEFAULTS.trackingCleanIouThreshold);
+          setFlowImgScale(DEFAULTS.flowImgScale);
+          setFlowWindowSize(DEFAULTS.flowWindowSize);
+          setFlowMaxLevels(DEFAULTS.flowMaxLevels);
+          setKfTrackFeatures(DEFAULTS.kfTrackFeatures);
+          setKfInitFrameCount(DEFAULTS.kfInitFrameCount);
+          setKfNodeIndices(DEFAULTS.kfNodeIndices);
+          setKfResetGapSize(DEFAULTS.kfResetGapSize);
+          setEnsureChannels(DEFAULTS.ensureChannels);
+          setFilterOverlapping(DEFAULTS.filterOverlapping);
+          setFilterMethod(DEFAULTS.filterMethod);
+          setFilterThreshold(DEFAULTS.filterThreshold);
+          setFilterMinVisibleNodes(DEFAULTS.filterMinVisibleNodes);
+          setFilterMinVisibleNodeFraction(DEFAULTS.filterMinVisibleNodeFraction);
+          setFilterMinMeanNodeScore(DEFAULTS.filterMinMeanNodeScore);
+          setFilterMinInstanceScore(DEFAULTS.filterMinInstanceScore);
+          setFilterMinCentroidDistance(DEFAULTS.filterMinCentroidDistance);
+        }}
         values={{
           peakThreshold, maxInstances,
           integralRefinement, integralPatchSize,

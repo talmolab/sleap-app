@@ -1,5 +1,6 @@
 mod environment;
 mod rtc;
+mod update_channels;
 
 use std::collections::HashMap;
 use std::path::{Component, PathBuf};
@@ -479,6 +480,8 @@ fn sleap_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
             rtc::rtc_send,
             rtc::rtc_disconnect_worker,
             rtc::rtc_leave_room,
+            update_channels::check_update,
+            update_channels::install_update,
         ])
         .build()
 }
@@ -664,13 +667,11 @@ pub fn run() {
       if let tauri::WindowEvent::Destroyed = event {
         use tauri::Manager;
         window.state::<WindowFiles>().0.lock().unwrap().remove(window.label());
-        // Mark the diagnostics session clean on graceful window destroy by
-        // removing the "running" sentinel. A crash / freeze / force-kill never
-        // runs this handler, so the sentinel survives → the next launch offers
-        // to send diagnostics. (Sync + fast, so it lands before the process exits.)
-        if let Ok(dir) = window.app_handle().path().app_local_data_dir() {
-          let _ = std::fs::remove_file(dir.join("sleap-logs").join("session.running"));
-        }
+        // The diagnostics "running" sentinel is intentionally NOT cleared here:
+        // with multiple windows (File > New Project spawns a sibling) a per-window
+        // Destroyed would clear the SHARED sentinel while other windows are still
+        // alive. It means "the app is running" and is cleared once, on
+        // RunEvent::Exit (see app.run below) — reliable even for the macOS Cmd+Q.
       }
     })
     // All native commands live in the inlined `sleap` plugin (see sleap_plugin()) so they
@@ -796,6 +797,17 @@ pub fn run() {
     .expect("error while building tauri application");
 
   app.run(|_app_handle, _event| {
+    use tauri::Manager;
+    // Clear the diagnostics "running" sentinel exactly once, when the app is
+    // actually exiting. RunEvent::Exit fires on every quit path — including the
+    // macOS predefined Cmd+Q, which terminates the process without reliably running
+    // the per-window Destroyed handler — so a clean quit never leaves the sentinel
+    // behind (which would falsely re-trigger the crash-recovery prompt next launch).
+    if matches!(&_event, tauri::RunEvent::Exit) {
+      if let Ok(dir) = _app_handle.path().app_local_data_dir() {
+        let _ = std::fs::remove_file(dir.join("sleap-logs").join("session.running"));
+      }
+    }
     // macOS delivers files opened via Finder / a file association ("Open With",
     // double-click) as an Apple Event, surfaced here as RunEvent::Opened — NOT as
     // a CLI argument. Stash the first path into the same InitialFile slot the CLI
@@ -812,7 +824,7 @@ pub fn run() {
     // they can't double-load the same file.
     #[cfg(target_os = "macos")]
     {
-      use tauri::{Emitter, Manager};
+      use tauri::Emitter;
       if let tauri::RunEvent::Opened { urls } = _event {
         if let Some(path) = urls
           .iter()

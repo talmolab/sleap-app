@@ -15,6 +15,7 @@ function makeConfigFile(overrides: Partial<ConfigFile> = {}): ConfigFile {
     modelType: "centroid",
     slot: "centroid",
     hyperparams: { ...defaultHyperparams },
+    originalHyperparams: { ...defaultHyperparams },
     hasTrainedModel: false,
     checkpointPath: null,
     ...overrides,
@@ -235,6 +236,108 @@ trainer_config:
       expect(result!.hasTrainedModel).toBe(true);
     });
 
+    it("parses lr_scheduler.reduce_lr_on_plateau and reports its type + values", () => {
+      const yamlText = `
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config:
+  lr_scheduler:
+    step_lr: null
+    reduce_lr_on_plateau:
+      threshold: 2.0e-06
+      threshold_mode: rel
+      cooldown: 7
+      patience: 9
+      factor: 0.3
+      min_lr: 5.0e-09
+`;
+      const result = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
+      expect(result!.hyperparams.lrSchedulerType).toBe("reduce_lr_on_plateau");
+      expect(result!.hyperparams.reduceLRThreshold).toBe(2e-6);
+      expect(result!.hyperparams.reduceLRThresholdMode).toBe("rel");
+      expect(result!.hyperparams.reduceLRCooldown).toBe(7);
+      expect(result!.hyperparams.reduceLRPatience).toBe(9);
+      expect(result!.hyperparams.reduceLRFactor).toBe(0.3);
+      expect(result!.hyperparams.reduceLRMinLR).toBe(5e-9);
+    });
+
+    it("parses lr_scheduler.cosine_annealing_warmup and reports its type + values", () => {
+      const yamlText = `
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config:
+  lr_scheduler:
+    cosine_annealing_warmup:
+      warmup_epochs: 6
+      warmup_start_lr: 0.00001
+      eta_min: 0.000002
+`;
+      const result = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
+      expect(result!.hyperparams.lrSchedulerType).toBe("cosine_annealing_warmup");
+      expect(result!.hyperparams.cosineWarmupEpochs).toBe(6);
+      expect(result!.hyperparams.cosineWarmupStartLR).toBe(0.00001);
+      expect(result!.hyperparams.cosineEtaMin).toBe(0.000002);
+    });
+
+    it("reports lrSchedulerType 'none' when no scheduler sub-config is set", () => {
+      const yamlText = `
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config:
+  lr_scheduler:
+    step_lr: null
+    reduce_lr_on_plateau: null
+`;
+      const result = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
+      expect(result!.hyperparams.lrSchedulerType).toBe("none");
+    });
+
+    it("parses model_ckpt.save_top_k/monitor/mode", () => {
+      const yamlText = `
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config:
+  model_ckpt:
+    save_top_k: 3
+    save_last: true
+    monitor: eval/val/moks
+    mode: max
+`;
+      const result = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
+      expect(result!.hyperparams.saveBestModel).toBe(true);
+      expect(result!.hyperparams.saveTopKCount).toBe(3);
+      expect(result!.hyperparams.saveLastModel).toBe(true);
+      expect(result!.hyperparams.checkpointMonitor).toBe("eval/val/moks");
+      expect(result!.hyperparams.checkpointMode).toBe("max");
+    });
+
+    it("parses eval.oks_stddev/oks_scale/match_threshold", () => {
+      const yamlText = `
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config:
+  eval:
+    enabled: true
+    oks_stddev: 0.04
+    oks_scale: 1.5
+    match_threshold: 0.6
+`;
+      const result = useTrainingStore.getState().parseYamlConfig(yamlText, "c.yaml", "centroid");
+      expect(result!.hyperparams.evalOksStddev).toBe(0.04);
+      expect(result!.hyperparams.evalOksScale).toBe(1.5);
+      expect(result!.hyperparams.evalMatchThreshold).toBe(0.6);
+    });
+
     it("hasTrainedModel is false when no run_name", () => {
       const yamlText = `
 model_config:
@@ -326,6 +429,142 @@ trainer_config: {}
       const result = applyHyperparamsToYaml(input, hp);
       const doc = yaml.load(result) as Record<string, any>;
       expect(doc.data_config.use_same_data_for_val).toBe(true);
+    });
+  });
+
+  describe("applyHyperparamsToYaml - lr_scheduler", () => {
+    const baseYaml = `
+data_config: {}
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config: {}
+`;
+
+    it("writes only reduce_lr_on_plateau when selected, nulling the other three", () => {
+      const hp = {
+        ...defaultHyperparams,
+        lrSchedulerType: "reduce_lr_on_plateau" as const,
+        reduceLRThreshold: 1e-5,
+        reduceLRThresholdMode: "rel" as const,
+        reduceLRCooldown: 2,
+        reduceLRPatience: 4,
+        reduceLRFactor: 0.25,
+        reduceLRMinLR: 1e-7,
+      };
+      const doc = yaml.load(applyHyperparamsToYaml(baseYaml, hp)) as Record<string, any>;
+      expect(doc.trainer_config.lr_scheduler.reduce_lr_on_plateau).toEqual({
+        threshold: 1e-5,
+        threshold_mode: "rel",
+        cooldown: 2,
+        patience: 4,
+        factor: 0.25,
+        min_lr: 1e-7,
+      });
+      expect(doc.trainer_config.lr_scheduler.step_lr).toBeNull();
+      expect(doc.trainer_config.lr_scheduler.cosine_annealing_warmup).toBeNull();
+      expect(doc.trainer_config.lr_scheduler.linear_warmup_linear_decay).toBeNull();
+    });
+
+    it("writes only step_lr when selected", () => {
+      const hp = { ...defaultHyperparams, lrSchedulerType: "step_lr" as const, stepLRStepSize: 20, stepLRGamma: 0.2 };
+      const doc = yaml.load(applyHyperparamsToYaml(baseYaml, hp)) as Record<string, any>;
+      expect(doc.trainer_config.lr_scheduler.step_lr).toEqual({ step_size: 20, gamma: 0.2 });
+      expect(doc.trainer_config.lr_scheduler.reduce_lr_on_plateau).toBeNull();
+    });
+
+    it("writes only cosine_annealing_warmup when selected", () => {
+      const hp = {
+        ...defaultHyperparams,
+        lrSchedulerType: "cosine_annealing_warmup" as const,
+        cosineWarmupEpochs: 8,
+        cosineWarmupStartLR: 0.00001,
+        cosineEtaMin: 0.000001,
+      };
+      const doc = yaml.load(applyHyperparamsToYaml(baseYaml, hp)) as Record<string, any>;
+      expect(doc.trainer_config.lr_scheduler.cosine_annealing_warmup).toEqual({
+        warmup_epochs: 8,
+        warmup_start_lr: 0.00001,
+        eta_min: 0.000001,
+      });
+      expect(doc.trainer_config.lr_scheduler.step_lr).toBeNull();
+      expect(doc.trainer_config.lr_scheduler.reduce_lr_on_plateau).toBeNull();
+    });
+
+    it("writes only linear_warmup_linear_decay when selected", () => {
+      const hp = {
+        ...defaultHyperparams,
+        lrSchedulerType: "linear_warmup_linear_decay" as const,
+        linearWarmupEpochs: 3,
+        linearWarmupStartLR: 0.00002,
+        linearEndLR: 0.0000001,
+      };
+      const doc = yaml.load(applyHyperparamsToYaml(baseYaml, hp)) as Record<string, any>;
+      expect(doc.trainer_config.lr_scheduler.linear_warmup_linear_decay).toEqual({
+        warmup_epochs: 3,
+        warmup_start_lr: 0.00002,
+        end_lr: 0.0000001,
+      });
+      expect(doc.trainer_config.lr_scheduler.cosine_annealing_warmup).toBeNull();
+    });
+
+    it("nulls all four sub-schedulers when type is 'none'", () => {
+      const hp = { ...defaultHyperparams, lrSchedulerType: "none" as const };
+      const doc = yaml.load(applyHyperparamsToYaml(baseYaml, hp)) as Record<string, any>;
+      expect(doc.trainer_config.lr_scheduler.step_lr).toBeNull();
+      expect(doc.trainer_config.lr_scheduler.reduce_lr_on_plateau).toBeNull();
+      expect(doc.trainer_config.lr_scheduler.cosine_annealing_warmup).toBeNull();
+      expect(doc.trainer_config.lr_scheduler.linear_warmup_linear_decay).toBeNull();
+    });
+  });
+
+  describe("applyHyperparamsToYaml - checkpoint retention", () => {
+    const baseYaml = `
+data_config: {}
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config: {}
+`;
+
+    it("writes save_top_k as the configured count when saveBestModel is on", () => {
+      const hp = { ...defaultHyperparams, saveBestModel: true, saveTopKCount: 3, checkpointMonitor: "eval/val/moks", checkpointMode: "max" as const };
+      const doc = yaml.load(applyHyperparamsToYaml(baseYaml, hp)) as Record<string, any>;
+      expect(doc.trainer_config.model_ckpt.save_top_k).toBe(3);
+      expect(doc.trainer_config.model_ckpt.monitor).toBe("eval/val/moks");
+      expect(doc.trainer_config.model_ckpt.mode).toBe("max");
+    });
+
+    it("writes save_top_k as 0 when saveBestModel is off, regardless of saveTopKCount", () => {
+      const hp = { ...defaultHyperparams, saveBestModel: false, saveTopKCount: 5 };
+      const doc = yaml.load(applyHyperparamsToYaml(baseYaml, hp)) as Record<string, any>;
+      expect(doc.trainer_config.model_ckpt.save_top_k).toBe(0);
+    });
+
+    it("supports -1 (keep all) as a valid save_top_k count", () => {
+      const hp = { ...defaultHyperparams, saveBestModel: true, saveTopKCount: -1 };
+      const doc = yaml.load(applyHyperparamsToYaml(baseYaml, hp)) as Record<string, any>;
+      expect(doc.trainer_config.model_ckpt.save_top_k).toBe(-1);
+    });
+  });
+
+  describe("applyHyperparamsToYaml - epoch-end eval extras", () => {
+    it("writes oks_stddev, oks_scale, and match_threshold", () => {
+      const input = `
+data_config: {}
+model_config:
+  head_configs:
+    centroid:
+      sigma: 1.5
+trainer_config: {}
+`;
+      const hp = { ...defaultHyperparams, evalEnabled: true, evalOksStddev: 0.05, evalOksScale: 1.2, evalMatchThreshold: 0.5 };
+      const doc = yaml.load(applyHyperparamsToYaml(input, hp)) as Record<string, any>;
+      expect(doc.trainer_config.eval.oks_stddev).toBe(0.05);
+      expect(doc.trainer_config.eval.oks_scale).toBe(1.2);
+      expect(doc.trainer_config.eval.match_threshold).toBe(0.5);
     });
   });
 
@@ -796,6 +1035,17 @@ trainer_config:
       const doc = yaml.load(applyHyperparamsToYaml(baseYaml, hp)) as Record<string, any>;
       expect(doc.trainer_config.trainer_devices).toBe(2);
     });
+
+    it("writes trainerStrategy to trainer_strategy", () => {
+      const hp = { ...defaultHyperparams, trainerStrategy: "ddp" as const };
+      const doc = yaml.load(applyHyperparamsToYaml(baseYaml, hp)) as Record<string, any>;
+      expect(doc.trainer_config.trainer_strategy).toBe("ddp");
+    });
+
+    it("writes the default trainerStrategy ('auto') to trainer_strategy", () => {
+      const doc = yaml.load(applyHyperparamsToYaml(baseYaml, defaultHyperparams)) as Record<string, any>;
+      expect(doc.trainer_config.trainer_strategy).toBe("auto");
+    });
   });
 
   describe("parseYamlConfig - performance", () => {
@@ -859,6 +1109,7 @@ trainer_config:
   run_name: stale_run_from_another_machine
   trainer_accelerator: mps
   trainer_devices: 3
+  trainer_strategy: fsdp
   train_data_loader:
     num_workers: 8
 `;
@@ -887,6 +1138,15 @@ trainer_config:
     it("resets dataPipeline to the default instead of the file's value", () => {
       const result = useTrainingStore.getState().parseYamlConfig(yamlWithStaleFields, "c.yaml", "centroid");
       expect(result!.hyperparams.dataPipeline).toBe(defaultHyperparams.dataPipeline);
+    });
+
+    it("resets trainerStrategy to the default ('auto') instead of the file's value", () => {
+      // Multi-GPU strategy is machine/topology-specific — a cluster's `fsdp`
+      // must not silently ride onto a single-GPU machine (same rationale as
+      // accelerator/numDevices above).
+      const result = useTrainingStore.getState().parseYamlConfig(yamlWithStaleFields, "c.yaml", "centroid");
+      expect(result!.hyperparams.trainerStrategy).toBe("auto");
+      expect(result!.hyperparams.trainerStrategy).toBe(defaultHyperparams.trainerStrategy);
     });
   });
 

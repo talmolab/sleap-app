@@ -12,6 +12,7 @@ import {
 function baseConfig(overrides: Partial<InferenceConfig> = {}): InferenceConfig {
   return {
     pipeline: "top-down",
+    trackOnly: false,
     modelPaths: ["/models/centroid", "/models/centered_instance"],
     videoIndex: "all",
     frameRange: "video",
@@ -20,6 +21,7 @@ function baseConfig(overrides: Partial<InferenceConfig> = {}): InferenceConfig {
     existingPredictions: "replace",
     batchSize: 4,
     device: "auto",
+    runtime: "auto",
     maxInstances: null,
     peakThreshold: 0.2,
     integralRefinement: false,
@@ -81,6 +83,28 @@ function allAfter(args: string[], flag: string): string[] {
   return out;
 }
 
+describe("buildInferenceArgs — runtime (ONNX/TensorRT)", () => {
+  it("omits --runtime when runtime is 'auto' (sleap-nn's own default)", () => {
+    const args = buildInferenceArgs(baseConfig({ runtime: "auto" }), io());
+    expect(args).not.toContain("--runtime");
+  });
+
+  it("emits --runtime onnx when selected", () => {
+    const args = buildInferenceArgs(baseConfig({ runtime: "onnx" }), io());
+    expect(valAfter(args, "--runtime")).toBe("onnx");
+  });
+
+  it("emits --runtime tensorrt when selected", () => {
+    const args = buildInferenceArgs(baseConfig({ runtime: "tensorrt" }), io());
+    expect(valAfter(args, "--runtime")).toBe("tensorrt");
+  });
+
+  it("never emits --runtime on the legacy `track` subcommand (no such flag there)", () => {
+    const args = buildInferenceArgs(baseConfig({ runtime: "onnx" }), { ...io(), subcommand: "track" });
+    expect(args).not.toContain("--runtime");
+  });
+});
+
 describe("buildInferenceArgs — subcommand", () => {
   it("defaults to the `predict` subcommand followed by --gui", () => {
     const args = buildInferenceArgs(baseConfig(), io());
@@ -92,6 +116,34 @@ describe("buildInferenceArgs — subcommand", () => {
     const args = buildInferenceArgs(baseConfig(), { ...io(), subcommand: "track" });
     expect(args[0]).toBe("track");
     expect(args[1]).toBe("--gui");
+  });
+});
+
+describe("buildInferenceArgs — track-only mode", () => {
+  it("omits --model_paths entirely when modelPaths is empty, still emits --tracking", () => {
+    // This is the exact shape sleap-nn's predict CLI detects as its
+    // dedicated retrack-only path: "--tracking with no --model_paths".
+    const args = buildInferenceArgs(
+      baseConfig({ trackOnly: true, modelPaths: [], tracking: true }),
+      io()
+    );
+    expect(args).not.toContain("--model_paths");
+    expect(args).toContain("--tracking");
+    expect(valAfter(args, "--data_path")).toBe("in.slp");
+    expect(valAfter(args, "--output_path")).toBe("out.slp");
+  });
+
+  it("still emits pose-inference flags regardless of trackOnly (the panel hides them, not this builder)", () => {
+    // buildInferenceArgs is a pure function of `config` — it doesn't read
+    // `trackOnly` at all. Track-only-ness is expressed entirely by an empty
+    // modelPaths; batch_size/device/peak_threshold are harmless no-ops to
+    // sleap-nn's retrack-only path when present alongside them.
+    const args = buildInferenceArgs(
+      baseConfig({ trackOnly: true, modelPaths: [], tracking: true }),
+      io()
+    );
+    expect(args).toContain("--batch_size");
+    expect(args).toContain("--peak_threshold");
   });
 });
 

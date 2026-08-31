@@ -210,6 +210,14 @@ function FileMenu() {
             </div>
           </MenubarSubContent>
         </MenubarSub>
+        <MenubarItem
+          disabled={!projectLoaded}
+          onClick={() =>
+            useAppStore.getState().setAddVideoUrlDialogOpen(true)
+          }
+        >
+          Add Video from URL...
+        </MenubarItem>
         <MenubarSeparator />
         <MenubarItem
           disabled={!projectLoaded}
@@ -618,6 +626,7 @@ function ViewMenu() {
   const showNonVisibleNodes = useAppStore((s) => s.showNonVisibleNodes);
   const showInset = useAppStore((s) => s.showInset);
   const colorPredicted = useAppStore((s) => s.colorPredicted);
+  const showTrackScore = useAppStore((s) => s.showTrackScore);
   const fit = useAppStore((s) => s.fit);
   const edgeStyle = useAppStore((s) => s.edgeStyle);
   const markerSize = useAppStore((s) => s.markerSize);
@@ -868,6 +877,12 @@ function ViewMenu() {
         >
           Color Predicted Instances
         </MenubarCheckboxItem>
+        <MenubarCheckboxItem
+          checked={showTrackScore}
+          onCheckedChange={() => toggle("showTrackScore")}
+        >
+          Show Track Scores
+        </MenubarCheckboxItem>
       </MenubarContent>
     </MenubarMenu>
   );
@@ -895,11 +910,12 @@ function PanelsMenu() {
         ))}
         <MenubarSeparator />
         <MenubarItem
-          onClick={() => {
+          onClick={async () => {
+            const { confirmDialog } = await import("@/stores/confirmStore");
             if (
-              window.confirm(
-                "Reset panels to their default order and visibility?"
-              )
+              await confirmDialog({
+                message: "Reset panels to their default order and visibility?",
+              })
             ) {
               useAppStore.getState().resetPanels();
             }
@@ -918,6 +934,7 @@ function LabelsMenu() {
   const instance = useAppStore((s) => s.instance);
   const labeledFrame = useAppStore((s) => s.labeledFrame);
   const instanceInitMethod = useAppStore((s) => s.instanceInitMethod);
+  const showLabelingHints = useAppStore((s) => s.showLabelingHints);
   // Instances require a skeleton with at least one node (see EditMenu).
   useAppStore((s) => s.overlayVersion);
   const skeletonHasNodes = useAppStore((s) => (s.skeleton?.nodes?.length ?? 0) > 0);
@@ -955,6 +972,12 @@ function LabelsMenu() {
             </MenubarRadioGroup>
           </MenubarSubContent>
         </MenubarSub>
+        <MenubarCheckboxItem
+          checked={showLabelingHints}
+          onCheckedChange={() => useAppStore.getState().toggle("showLabelingHints")}
+        >
+          Show Hints During Labeling
+        </MenubarCheckboxItem>
         <MenubarItem
           disabled={!instance}
           onClick={() => exec(DeleteSelectedInstance)}
@@ -1257,6 +1280,13 @@ function HelpMenu() {
           }
         >
           Keyboard Shortcuts...
+        </MenubarItem>
+        <MenubarItem
+          onClick={() =>
+            useAppStore.getState().setLabelingTipsDialogOpen(true)
+          }
+        >
+          Labeling Tips...
         </MenubarItem>
         <MenubarItem
           onClick={() => openExternal("https://docs.sleap.ai/")}

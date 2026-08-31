@@ -57,6 +57,9 @@ jobs:
           - platform: ubuntu-22.04
             target: linux
             rust-targets: x86_64-unknown-linux-gnu
+            # Tauri sidecar triple: the suffix `Command.sidecar("binaries/ffmpeg")`
+            # resolves to. For --target builds it is that target (see macOS below).
+            sidecar-triple: x86_64-unknown-linux-gnu
             tauri-args: ""
             bundle-dir: src-tauri/target/release/bundle
             job-timeout: 60
@@ -67,6 +70,9 @@ jobs:
           - platform: macos-latest
             target: macos-universal
             rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+            # --target universal-apple-darwin => sidecars must be a fat
+            # `binaries/ffmpeg-universal-apple-darwin` (lipo of both arches).
+            sidecar-triple: universal-apple-darwin
             tauri-args: "--target universal-apple-darwin"
             bundle-dir: src-tauri/target/universal-apple-darwin/release/bundle
             # Tauri notarizes the .app INSIDE its build step, emitting no progress
@@ -79,6 +85,7 @@ jobs:
           - platform: windows-latest
             target: windows
             rust-targets: x86_64-pc-windows-msvc
+            sidecar-triple: x86_64-pc-windows-msvc
             tauri-args: ""
             bundle-dir: src-tauri/target/release/bundle
             job-timeout: 60
@@ -309,6 +316,14 @@ jobs:
                  "APPLE_ID, APPLE_PASSWORD and APPLE_TEAM_ID must all three be set." \
                  "An un-notarized Developer ID build is still gated in a browser."
           fi
+
+      # tauri.conf.json declares the ffmpeg/ffprobe sidecars as externalBin, so
+      # `tauri build` panics unless binaries/ffmpeg-<triple> exist. They are
+      # .gitignore'd (large, per-platform) and fetched here. The script asserts a
+      # permissive H.264 encoder is present, failing the build if a source rots.
+      - name: Vendor ffmpeg sidecars
+        shell: bash
+        run: bash scripts/fetch-ffmpeg.sh "${{ matrix.sidecar-triple }}"
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
@@ -559,13 +574,44 @@ jobs:
           fi
           echo "Collected $count file(s)"
 
-      - name: Upload build artifacts
+      # macOS gets its own human-readable name for this one: it's the only
+      # platform where the file a person actually double-clicks (.dmg) and
+      # the file Tauri's updater consumes (.app.tar.gz, next step) differ --
+      # "-dmg" says what it is without requiring "universal" (arch jargon) to
+      # make sense of it. Windows/Linux keep the plain sleap-app-<target>
+      # name, since there's nothing to disambiguate there.
+      - name: Upload installer artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.target == 'macos-universal' && 'sleap-app-macos-dmg' || format('sleap-app-{0}', matrix.target) }}
+          path: |
+            artifacts/*
+            !artifacts/*.tar.gz
+            !artifacts/*.tar.gz.sig
+          retention-days: 7
+          if-no-files-found: error
+
+      # macOS's createUpdaterArtifacts also produces SLEAP.app.tar.gz -- a full
+      # second copy of the app in an extractable format the in-app updater
+      # needs, alongside the .dmg a human actually double-clicks. Bundling
+      # both into one artifact zip roughly doubled its size for anyone who
+      # only wanted one of the two (#345). Split out into its own artifact,
+      # named the same plain sleap-app-<target> way every other platform's
+      # single artifact already is -- this IS the real cross-platform build
+      # output (what Tauri's updater actually ships), the .dmg above is the
+      # one-time-install extra. `ignore` rather than `error` since
+      # Windows/Linux don't produce this format at all today -- when they
+      # match zero files, this step uploads nothing under this name, so it
+      # never collides with their own (differently-named) installer artifact.
+      - name: Upload updater artifacts
         uses: actions/upload-artifact@v6
         with:
           name: sleap-app-${{ matrix.target }}
-          path: artifacts/*
+          path: |
+            artifacts/*.tar.gz
+            artifacts/*.tar.gz.sig
           retention-days: 7
-          if-no-files-found: error
+          if-no-files-found: ignore
 
   release:
     needs: build

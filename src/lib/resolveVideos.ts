@@ -1440,6 +1440,30 @@ export async function assignVideoBackendFromPath(
 }
 
 /**
+ * URL counterpart of {@link assignVideoBackendFromPath}: build the backend from
+ * an http(s) URL via io's {@link createVideoBackend}, which lazily HTTP-Range-
+ * streams the remote file (MP4 via Mp4Box, others via MediaBunny.fromUrl) — so
+ * adding a remote video never downloads it whole. The URL is the canonical
+ * filename, so a public/presigned URL re-streams on project reload.
+ */
+export async function assignVideoBackendFromUrl(
+  video: Video,
+  url: string,
+  opts?: AssignBackendOptions
+): Promise<boolean> {
+  const grayscale =
+    opts?.grayscale !== undefined
+      ? opts.grayscale
+      : (video.backendMetadata.grayscale as boolean | null | undefined);
+  return probeAndAssignBackend(
+    video,
+    () => createVideoBackend(url, { grayscale }),
+    getBasename(url),
+    { ...opts, grayscale }
+  );
+}
+
+/**
  * Standalone-video file extensions we can decode, mapped to the sleap-io.js
  * backend that handles each. MP4 → Mp4Box; WebM/MKV/MOV/Ogg/MPEG-TS →
  * MediaBunny; AVI/WMV → AviVideoBackend (web-demuxer + WebCodecs/ImageDecoder);
@@ -1491,6 +1515,18 @@ export function backendKindForFilename(
     (BACKEND_BY_EXT as Record<string, StandaloneBackendKind>)[fileExt(name)] ??
     null
   );
+}
+
+/**
+ * True when `url` is a fetchable http(s)/blob/data URL pointing at a supported
+ * video format. Strips `?query`/`#hash` first so presigned links
+ * (`…/clip.mp4?X-Amz-Signature=…`) resolve by their real extension. Used to gate
+ * the "Add video from URL" flow. Pure.
+ */
+export function isSupportedVideoUrl(url: string): boolean {
+  if (!isFetchableUrl(url)) return false;
+  const path = url.split(/[?#]/)[0];
+  return backendKindForFilename(path) !== null;
 }
 
 /**
@@ -1582,6 +1618,32 @@ export async function pickVideoFiles(): Promise<PickedVideoFile[]> {
 }
 
 /**
+ * Filter dropped browser `File`s down to supported videos, as PickedVideoFiles
+ * (browser path: no absPath). Used by the drag-and-drop dropzone; `.slp` and
+ * other non-video files are dropped. Pure — the extension table is unit-tested.
+ */
+export function pickedFromFiles(files: File[]): PickedVideoFile[] {
+  return files
+    .filter((f) => backendKindForFilename(f.name))
+    .map((f) => ({ file: f, absPath: null }));
+}
+
+/**
+ * Filter dropped desktop file PATHS down to supported videos, as by-path
+ * PickedVideoFiles (Tauri opens by path — no bytes read here). Non-video paths
+ * (e.g. a dropped `.slp`, handled separately by the welcome-screen opener) are
+ * dropped. Pure.
+ */
+export function pickedFromPaths(paths: string[]): PickedVideoFile[] {
+  return paths
+    .filter((p) => backendKindForFilename(p))
+    .map((p) => ({
+      file: new File([], getBasename(p), { type: "video/mp4" }),
+      absPath: p,
+    }));
+}
+
+/**
  * Build a standalone Video from a picked file and append it to labels (NO
  * reindex — callers batch a single labels.reindex() after adding all videos).
  * On Tauri, the absolute path becomes the canonical filename so the video
@@ -1600,6 +1662,48 @@ export async function addVideoFileToLabels(
     picked.absPath,
     grayscale
   );
+  if (!video) return null;
+  labels.addVideo(video);
+  return video;
+}
+
+/**
+ * Build a standalone Video that streams from an http(s) URL (public or
+ * presigned). Rejects (with a toast) a non-URL or unsupported-format URL via
+ * {@link isSupportedVideoUrl}; returns null on decode failure too (already
+ * toasted). The URL is stored as the Video's canonical filename, so the
+ * reference is portable — the project re-streams it on reload with no path
+ * repointing (for authenticated providers, re-auth-on-open is a later phase).
+ */
+export async function buildStandaloneVideoFromUrl(
+  url: string,
+  grayscale?: boolean
+): Promise<Video | null> {
+  if (!isSupportedVideoUrl(url)) {
+    toast.error("Unsupported or invalid video URL", {
+      description:
+        "Enter an http(s) URL ending in a supported video file (MP4, WebM, MKV, MOV, Ogg, MPEG-TS, AVI, WMV, MPEG). A presigned URL with a ?query is fine.",
+    });
+    return null;
+  }
+  const video = new Video({ filename: url, openBackend: false });
+  await assignVideoBackendFromUrl(video, url, { grayscale });
+  // probeAndAssignBackend sets shape only on a successful frame-0 probe.
+  if (!video.shape) return null;
+  return video;
+}
+
+/**
+ * Build a URL-backed standalone Video and append it to labels (NO reindex —
+ * callers batch a single labels.reindex()). Returns the Video, or null if the
+ * URL is unsupported / failed to open (already toasted).
+ */
+export async function addVideoUrlToLabels(
+  labels: Labels,
+  url: string,
+  grayscale?: boolean
+): Promise<Video | null> {
+  const video = await buildStandaloneVideoFromUrl(url, grayscale);
   if (!video) return null;
   labels.addVideo(video);
   return video;

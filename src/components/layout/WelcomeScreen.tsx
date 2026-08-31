@@ -13,11 +13,15 @@ import { useCallback, useEffect, useState } from "react";
 import { useFileIO } from "../../hooks/useFileIO";
 import { useAppStore } from "../../stores/appStore";
 import { Button } from "@/components/ui/button";
-import { Plus, FolderOpen } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Plus, FolderOpen, Cpu } from "lucide-react";
 import {
   loadRecoverableDrafts,
   type RecoverableDraft,
 } from "@/lib/recoverableDrafts";
+import { WelcomeEnvironmentsPanel } from "./WelcomeEnvironmentsPanel";
+import { UpdatePingDot, UpdatePill, useEnvironmentUpdateStatus } from "./UpdateIndicator";
+import { cn } from "@/lib/utils";
 
 /** Compact "saved N ago" for the restore list. */
 function timeAgo(ms: number): string {
@@ -37,6 +41,20 @@ export function WelcomeScreen() {
   // Which draft (if any) is mid "discard — are you sure?". An in-app inline
   // confirm (keyed by draft path) that replaces the old window.confirm.
   const [confirmingKey, setConfirmingKey] = useState<string | null>(null);
+  const [showEnvironments, setShowEnvironments] = useState(false);
+  const hasSeenLabelingHintsPrompt = useAppStore((s) => s.hasSeenLabelingHintsPrompt);
+  const showLabelingHints = useAppStore((s) => s.showLabelingHints);
+  const answerLabelingHintsPrompt = useCallback((wantsHints: boolean) => {
+    const store = useAppStore.getState();
+    store.set("showLabelingHints", wantsHints);
+    store.set("hasSeenLabelingHintsPrompt", true);
+  }, []);
+  const {
+    available: environmentUpdateAvailable,
+    title: environmentUpdateTitle,
+    label: environmentUpdateLabel,
+    onDismiss: dismissEnvironmentUpdate,
+  } = useEnvironmentUpdateStatus();
 
   // Discover recoverable drafts on mount — both runtimes (browser OPFS + desktop
   // disk), normalized. Idempotent (a StrictMode double-invoke just re-lists).
@@ -89,6 +107,36 @@ export function WelcomeScreen() {
       onDrop={handleDrop}
       onDragOver={handleDragOver}
     >
+      <Button
+        onClick={() => setShowEnvironments((v) => !v)}
+        variant="ghost"
+        size="sm"
+        className={cn(
+          "absolute bottom-3 right-3 z-30 bg-card/80 backdrop-blur-sm hover:bg-card",
+          environmentUpdateAvailable && "ring-1 ring-orange-500/60"
+        )}
+      >
+        <span className="relative flex items-center">
+          <Cpu className="h-4 w-4" />
+          {environmentUpdateAvailable && (
+            <UpdatePingDot className="-top-0.5 -right-0.5" />
+          )}
+        </span>
+        Environment
+        {environmentUpdateAvailable && (
+          <UpdatePill
+            title={environmentUpdateTitle}
+            onDismiss={dismissEnvironmentUpdate}
+          >
+            {environmentUpdateLabel}
+          </UpdatePill>
+        )}
+      </Button>
+
+      {showEnvironments && (
+        <WelcomeEnvironmentsPanel onClose={() => setShowEnvironments(false)} />
+      )}
+
       <div className="relative z-10 flex flex-col items-center gap-2">
         {error && (
           <div className="max-w-sm text-center text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-md border border-destructive/20">
@@ -160,29 +208,87 @@ export function WelcomeScreen() {
           </div>
         )}
 
-        {/* Compact popup: New + Open only */}
-        <div className="flex items-center gap-3 rounded-xl border border-border bg-card/95 backdrop-blur-sm px-4 py-3 shadow-lg">
-          <Button
-            onClick={() => useAppStore.getState().setNewProjectDialogOpen(true)}
-            size="lg"
-            data-tutorial="new-project-button"
-          >
-            <Plus className="h-4 w-4" />
-            New Project
-          </Button>
-          <Button
-            onClick={openProject}
-            disabled={loading}
-            variant="outline"
-            size="lg"
-          >
-            <FolderOpen className="h-4 w-4" />
-            {loading ? "Loading..." : "Open Project"}
-          </Button>
+        <div className="flex items-center gap-3">
+          {/* One-time "new to SLEAP?" prompt (#341), off to the side rather
+              than stacked in-line — sets the default for the contextual
+              labeling hints. Answering either way (or dismissing) marks it
+              seen so it never asks again. Shown once, ever. */}
+          {!hasSeenLabelingHintsPrompt && (
+            <div className="w-52 rounded-lg border border-border/60 bg-card/70 backdrop-blur-sm px-3 py-2.5 shadow-md">
+              <div className="flex items-start justify-between gap-2">
+                <span className="text-xs font-medium text-foreground/90">
+                  New to SLEAP?
+                </span>
+                <button
+                  type="button"
+                  aria-label="Dismiss"
+                  className="text-xs leading-none text-muted-foreground hover:text-foreground"
+                  onClick={() =>
+                    useAppStore.getState().set("hasSeenLabelingHintsPrompt", true)
+                  }
+                >
+                  ✕
+                </button>
+              </div>
+              <p className="mt-1 text-[11px] leading-snug text-muted-foreground">
+                Show gentle tips for common labeling pitfalls as you go?
+              </p>
+              <div className="mt-2 flex gap-1.5">
+                <Button size="xs" onClick={() => answerLabelingHintsPrompt(true)}>
+                  Yes
+                </Button>
+                <Button
+                  size="xs"
+                  variant="outline"
+                  onClick={() => answerLabelingHintsPrompt(false)}
+                >
+                  No
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {/* Compact popup: New + Open only */}
+          <div className="flex items-center gap-3 rounded-xl border border-border bg-card/95 backdrop-blur-sm px-4 py-3 shadow-lg">
+            <Button
+              onClick={() => useAppStore.getState().setNewProjectDialogOpen(true)}
+              size="lg"
+              data-tutorial="new-project-button"
+            >
+              <Plus className="h-4 w-4" />
+              New Project
+            </Button>
+            <Button
+              onClick={openProject}
+              disabled={loading}
+              variant="outline"
+              size="lg"
+            >
+              <FolderOpen className="h-4 w-4" />
+              {loading ? "Loading..." : "Open Project"}
+            </Button>
+          </div>
         </div>
 
         <p className="text-xs text-muted-foreground/80">
           Drag &amp; drop a .slp file anywhere
+        </p>
+
+        {/* Persistent (not one-time, unlike the prompt above) — same setting
+            as Labels > Show Hints During Labeling, surfaced here too since
+            not everyone finds it in the menu. */}
+        <label className="flex items-center gap-1.5 text-xs text-muted-foreground/80">
+          <Checkbox
+            className="h-3.5 w-3.5"
+            checked={showLabelingHints}
+            onCheckedChange={(checked) =>
+              useAppStore.getState().set("showLabelingHints", checked === true)
+            }
+          />
+          Show labeling hints
+        </label>
+        <p className="text-xs text-muted-foreground/60">
+          See all of them anytime under Help → Labeling Tips
         </p>
       </div>
     </div>

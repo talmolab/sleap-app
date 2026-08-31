@@ -4,7 +4,7 @@ import type { ProcessEvent } from "@/platform/backend";
 import { cancelCommand, runInference } from "@/platform/backend";
 import { getPlatform } from "@/platform";
 import { commandContext } from "@/commands";
-import { MergePredictions, type ExistingPredictionsMode } from "@/commands/editCommands";
+import { MergePredictions, MergeTracks, type ExistingPredictionsMode } from "@/commands/editCommands";
 import { useAppStore } from "@/stores/appStore";
 import { appendLogLine, subprocessFailureMessage } from "@/lib/processLog";
 
@@ -26,6 +26,17 @@ export interface InferenceConfig {
   // Pipeline
   pipeline: PipelineType;
   modelPaths: string[];
+  /**
+   * Track-only mode: skip pose estimation entirely and just (re)track the
+   * instances already present in the input .slp (user-labeled or predicted).
+   * When true, modelPaths is ignored/empty — sleap-nn's `predict` CLI detects
+   * "--tracking with no --model_paths" and takes its dedicated retrack-only
+   * path (no model forward pass), so no other argv changes are needed. The
+   * merge-back also differs: track-only never adds/removes instances, so it
+   * goes through MergeTracks (sleap-io.js's "update_tracks" strategy: spatial
+   * match + copy .track/.trackingScore only) instead of MergePredictions.
+   */
+  trackOnly: boolean;
 
   // Data
   videoIndex: number | "all";
@@ -38,6 +49,12 @@ export interface InferenceConfig {
   // Inference
   batchSize: number;
   device: "auto" | "cuda" | "cpu" | "mps";
+  /**
+   * Inference runtime for an exported model directory (one containing
+   * model.onnx / model.trt). "auto" lets sleap-nn choose (and is ignored for
+   * plain checkpoints); "onnx"/"tensorrt" force that runtime.
+   */
+  runtime: "auto" | "onnx" | "tensorrt";
   maxInstances: number | null;
   peakThreshold: number;
 
@@ -121,7 +138,7 @@ interface InferenceState {
   reset: () => void;
   cancelInference: () => Promise<void>;
   startInference: (config: InferenceConfig, remoteOpts?: RemoteInferenceOptions) => Promise<void>;
-  loadAndMergeResults: (mode?: ExistingPredictionsMode) => Promise<void>;
+  loadAndMergeResults: (mode?: ExistingPredictionsMode, trackOnly?: boolean) => Promise<void>;
 }
 
 const initialState = {
@@ -571,7 +588,11 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
               const platform = await getPlatform();
               const bytes = await platform.readFile(result.outputPath);
               const predictions = await loadSlp(bytes, { openVideos: false, h5: { filenameHint: result.outputPath } });
-              await commandContext.execute(MergePredictions, { predictions, mode: config.existingPredictions });
+              if (config.trackOnly) {
+                await commandContext.execute(MergeTracks, { retracked: predictions });
+              } else {
+                await commandContext.execute(MergePredictions, { predictions, mode: config.existingPredictions });
+              }
             }
             if (!result.success) {
               set({ status: "error", error: `Video ${vi + 1} failed` });
@@ -588,7 +609,7 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
           }
           if (result.outputPath) {
             set({ outputPath: result.outputPath });
-            await useInferenceStore.getState().loadAndMergeResults(config.existingPredictions);
+            await useInferenceStore.getState().loadAndMergeResults(config.existingPredictions, config.trackOnly);
           }
         }
       } catch (e) {
@@ -600,7 +621,7 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
     }
   },
 
-  loadAndMergeResults: async (mode: ExistingPredictionsMode = "replace") => {
+  loadAndMergeResults: async (mode: ExistingPredictionsMode = "replace", trackOnly = false) => {
     const { outputPath } = useInferenceStore.getState();
     if (!outputPath) return;
 
@@ -618,8 +639,31 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
         predictions.tracks?.length ?? 0,
       );
 
-      await commandContext.execute(MergePredictions, { predictions, mode });
-      set({ status: "idle" });
+      if (trackOnly) {
+        await commandContext.execute(MergeTracks, { retracked: predictions });
+      } else {
+        await commandContext.execute(MergePredictions, { predictions, mode });
+      }
+
+      set({ status: "completed" });
+      // Keep the "Complete" banner (checkmark, progress bar, log) on screen
+      // for a beat before resetting to idle, rather than clearing it the
+      // instant the merge finishes. A track-only run in particular can
+      // complete this entire cycle -- spawn, track, save, merge -- in well
+      // under a second, too fast to ever perceive without this pause
+      // (confirmed via a live run: nothing appeared to flash by at all).
+      // Deliberately NOT awaited: this is a purely cosmetic delay before the
+      // NEXT state transition, not part of what "the merge finished" means —
+      // callers (including tests) that await loadAndMergeResults() only care
+      // about the merge itself, not this visual timing.
+      setTimeout(() => {
+        // Only reset if nothing else has started a new run in the meantime —
+        // a fresh startInference() call resets outputPath to null immediately,
+        // so this comparison fails and we correctly leave its state alone.
+        if (useInferenceStore.getState().outputPath === outputPath) {
+          set({ status: "idle" });
+        }
+      }, 1500);
     } catch (e) {
       set({
         status: "error",

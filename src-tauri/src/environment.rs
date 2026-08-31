@@ -26,6 +26,19 @@ pub struct UvInfo {
     pub version: Option<String>,
     pub path: Option<String>,
     pub python_dir: Option<String>,
+    /// Same meaning as `UvTool::update_available`: `None` = the self-update
+    /// check couldn't run or doesn't apply (offline, timed out, or uv was
+    /// installed via a package manager — see `self_update_supported`);
+    /// `Some(false)` = confirmed already the latest version; `Some(true)` =
+    /// a newer version is available (see `latest_version`).
+    pub update_available: Option<bool>,
+    pub latest_version: Option<String>,
+    /// `uv self update` refuses outright for a uv installed via a package
+    /// manager (brew/pip/etc. — no install receipt to update against), not
+    /// just for this one check but for the real "Update" button too. `None`
+    /// = not determined yet (the check itself failed/timed out, distinct
+    /// from a confirmed refusal); `Some(false)` = confirmed refused.
+    pub self_update_supported: Option<bool>,
 }
 
 /// A tool installed via `uv tool`.
@@ -293,6 +306,90 @@ async fn stream_command<R: Runtime>(
 // Detection commands
 // ---------------------------------------------------------------------------
 
+/// Best-effort, network-dependent check for whether uv itself is out of
+/// date, via `uv self update --dry-run` (never actually applies an update).
+/// All of uv's dry-run messaging goes to STDERR, not stdout (verified
+/// directly against upstream's crates/uv/src/commands/self_update.rs), and
+/// resolves through one of two different code paths depending on how uv was
+/// installed, with different wording:
+///   - Standalone installer (has an install receipt): "You're already on
+///     version vX.Y.Z of uv (the latest version)." when current, or "Would
+///     update uv from vX.Y.Z to vA.B.C" when outdated — an exact target
+///     version either way.
+///   - Installed via a package manager (pip/brew/etc., no receipt found):
+///     self-update is refused outright with a non-zero exit and a message
+///     pointing at `pip install --upgrade`/`brew upgrade` instead — there is
+///     no dry-run result to report in that case, and the real "Update"
+///     button would fail the exact same way if clicked.
+///
+/// Bounded by a timeout, same reasoning as `list_uv_tools`'s own
+/// `--outdated` check: this is network-dependent (hits GitHub), and a
+/// slow/offline resolution must not stall detect_uv (which now runs at app
+/// startup, not just when the Environment panel opens).
+async fn check_uv_self_update<R: Runtime>(
+    app: &AppHandle<R>,
+    uv: &str,
+) -> (Option<bool>, Option<String>, Option<bool>) {
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        app.shell()
+            .command(uv)
+            .args(["self", "update", "--dry-run"])
+            .env_clear()
+            .envs(child_env())
+            .output(),
+    )
+    .await;
+
+    let Ok(Ok(output)) = result else {
+        return (None, None, None);
+    };
+
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    parse_self_update_dry_run(output.status.success(), &stderr)
+}
+
+/// Pure parser for `check_uv_self_update`'s output, so the two upstream
+/// message shapes can be tested without spawning a real `uv` process. See
+/// `check_uv_self_update`'s doc comment for exactly which wording maps to
+/// which case.
+fn parse_self_update_dry_run(
+    success: bool,
+    stderr: &str,
+) -> (Option<bool>, Option<String>, Option<bool>) {
+    if !success {
+        // Almost always "installed via a package manager, self-update not
+        // supported" (see check_uv_self_update's doc comment). A genuinely
+        // transient failure here is already covered by the timeout/spawn-
+        // failure branch in the caller, so treating any non-zero exit as
+        // "not supported" is strictly better than a wrong up-to-date/
+        // outdated guess.
+        return (None, None, Some(false));
+    }
+
+    if stderr.contains("already on version") || stderr.contains("on the latest version of uv") {
+        return (Some(false), None, Some(true));
+    }
+
+    if let Some(rest) = stderr
+        .lines()
+        .find_map(|l| l.strip_prefix("Would update uv from "))
+    {
+        // "vX.Y.Z to vA.B.C" (standalone installer) or "vX.Y.Z to the latest
+        // version" (custom-updater path with no exact target resolved).
+        let latest_version = rest
+            .split(" to ")
+            .nth(1)
+            .map(str::trim)
+            .and_then(|v| v.strip_prefix('v'))
+            .filter(|v| v.chars().next().is_some_and(|c| c.is_ascii_digit()))
+            .map(str::to_string);
+        return (Some(true), latest_version, Some(true));
+    }
+
+    (None, None, None)
+}
+
 /// Detect whether `uv` is installed and get its version.
 #[tauri::command]
 pub async fn detect_uv<R: Runtime>(app: AppHandle<R>) -> UvInfo {
@@ -308,6 +405,9 @@ pub async fn detect_uv<R: Runtime>(app: AppHandle<R>) -> UvInfo {
             version: None,
             path: None,
             python_dir: None,
+            update_available: None,
+            latest_version: None,
+            self_update_supported: None,
         };
     }
 
@@ -321,11 +421,17 @@ pub async fn detect_uv<R: Runtime>(app: AppHandle<R>) -> UvInfo {
     // Get managed Python directory
     let python_dir = shell_output(&app, &uv, &["python", "dir"]).await;
 
+    let (update_available, latest_version, self_update_supported) =
+        check_uv_self_update(&app, &uv).await;
+
     UvInfo {
         available: true,
         version,
         path,
         python_dir,
+        update_available,
+        latest_version,
+        self_update_supported,
     }
 }
 
@@ -1685,6 +1791,68 @@ jupyter v1.1.1
     #[test]
     fn test_parse_uv_tool_outdated_empty() {
         assert!(parse_uv_tool_outdated("").is_empty());
+    }
+
+    #[test]
+    fn test_parse_self_update_dry_run_already_latest_standalone() {
+        let stderr = "info: Checking for updates...\nsuccess: You're already on version v0.12.7 of uv (the latest version).\n";
+        let (update_available, latest_version, supported) =
+            parse_self_update_dry_run(true, stderr);
+        assert_eq!(update_available, Some(false));
+        assert_eq!(latest_version, None);
+        assert_eq!(supported, Some(true));
+    }
+
+    #[test]
+    fn test_parse_self_update_dry_run_already_latest_custom_path() {
+        let stderr = "You're on the latest version of uv (v0.12.7)\n";
+        let (update_available, latest_version, supported) =
+            parse_self_update_dry_run(true, stderr);
+        assert_eq!(update_available, Some(false));
+        assert_eq!(latest_version, None);
+        assert_eq!(supported, Some(true));
+    }
+
+    #[test]
+    fn test_parse_self_update_dry_run_outdated_standalone_has_exact_version() {
+        let stderr = "Would update uv from v0.12.7 to v0.13.0\n";
+        let (update_available, latest_version, supported) =
+            parse_self_update_dry_run(true, stderr);
+        assert_eq!(update_available, Some(true));
+        assert_eq!(latest_version, Some("0.13.0".to_string()));
+        assert_eq!(supported, Some(true));
+    }
+
+    #[test]
+    fn test_parse_self_update_dry_run_outdated_custom_path_no_exact_version() {
+        // The custom-updater path (UpdateRequest::Latest) can't resolve an
+        // exact target version in dry-run mode -- literally "the latest
+        // version" instead of a vX.Y.Z string.
+        let stderr = "Would update uv from v0.12.7 to the latest version\n";
+        let (update_available, latest_version, supported) =
+            parse_self_update_dry_run(true, stderr);
+        assert_eq!(update_available, Some(true));
+        assert_eq!(latest_version, None);
+        assert_eq!(supported, Some(true));
+    }
+
+    #[test]
+    fn test_parse_self_update_dry_run_refused_for_package_manager_install() {
+        let stderr = "error: Self-update is only available for uv binaries installed via the standalone installation scripts.\n\nIf you installed uv with pip, brew, or another package manager, update uv with `pip install --upgrade`, `brew upgrade`, or similar.\n";
+        let (update_available, latest_version, supported) =
+            parse_self_update_dry_run(false, stderr);
+        assert_eq!(update_available, None);
+        assert_eq!(latest_version, None);
+        assert_eq!(supported, Some(false));
+    }
+
+    #[test]
+    fn test_parse_self_update_dry_run_unrecognized_output_is_unknown() {
+        let (update_available, latest_version, supported) =
+            parse_self_update_dry_run(true, "some future uv release changed the wording\n");
+        assert_eq!(update_available, None);
+        assert_eq!(latest_version, None);
+        assert_eq!(supported, None);
     }
 
     #[test]

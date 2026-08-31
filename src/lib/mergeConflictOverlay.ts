@@ -66,6 +66,18 @@ export function buildConflictOverlay(
     projectHasTracks: ctx.projectHasTracks ?? false,
   };
 
+  // frameInstanceTracks is indexed by FRAME position (not this conflict's
+  // small array position), matching the instanceIndex passed to
+  // getInstanceColor below -- built sparse from just what's known here (the
+  // OTHER, non-conflicting instances in the frame aren't visible to this
+  // function), so an untracked instance's gray rank is only ever computed
+  // among the conflicting instances actually being colored, not the true
+  // full frame. Good enough to keep them visually distinct from each other.
+  const frameInstanceTracks: unknown[] = [];
+  baseInstances.forEach((inst, k) => {
+    frameInstanceTracks[ctx.baseColorIndices?.[k] ?? k] = inst.track;
+  });
+
   // Re-color the base pose using each instance's FRAME index (not its position
   // in this conflict's small array) so instance 0 = palette[0], instance 1 =
   // palette[1]… exactly as on the main canvas. Tracked instances color by track
@@ -80,7 +92,8 @@ export function buildConflictOverlay(
       opts.tracks,
       false,
       opts.colorPredicted,
-      opts.projectHasTracks
+      opts.projectHasTracks,
+      frameInstanceTracks
     ),
   }));
   const donor = buildExportRenderedInstances(donorInstances, opts).map((ri) => ({

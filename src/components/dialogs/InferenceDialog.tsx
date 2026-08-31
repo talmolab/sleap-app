@@ -81,6 +81,7 @@ export function InferenceDialog() {
   const handleRunInference = async () => {
     const config: InferenceConfig = {
       pipeline: "top-down",
+      trackOnly: false,
       modelPaths: [modelPath.trim()],
       videoIndex: selectedVideo === "all" ? "all" : Number(selectedVideo),
       frameRange:
@@ -92,6 +93,7 @@ export function InferenceDialog() {
       existingPredictions: "replace",
       batchSize: 4,
       device: "auto",
+      runtime: "auto",
       maxInstances: Number(maxInstances),
       peakThreshold: 0.2,
       integralRefinement: true,

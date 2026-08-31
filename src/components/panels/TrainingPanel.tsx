@@ -10,6 +10,7 @@
 import { useState, useRef, useEffect, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { useTrainingStore, getConfigSlots, getSlotLabel, countUserLabeledFrames } from "@/stores/trainingStore";
+import { useExportStore } from "@/stores/exportStore";
 import type { ModelType, ConfigFile, ConfigHyperparams } from "@/stores/trainingStore";
 import { useConnectStore } from "@/stores/connectStore";
 import { RemoteFileBrowser } from "@/components/dialogs/RemoteFileBrowser";
@@ -697,6 +698,7 @@ export function TrainingPanel() {
   const currentModelIndex = useTrainingStore((s) => s.currentModelIndex);
   const wandbUrl = useTrainingStore((s) => s.wandbUrl);
   const modelOutputDirs = useTrainingStore((s) => s.modelOutputDirs);
+  const openExport = useExportStore((s) => s.openExport);
   const log = useTrainingStore((s) => s.log);
   // Memoize the rendered log lines so we only re-map when `log` actually changes,
   // not on every panel render (the log can update frequently during training).
@@ -1577,6 +1579,16 @@ export function TrainingPanel() {
           >
             <BarChart3 className="h-3.5 w-3.5 mr-1" />
             View Metrics
+          </Button>
+        )}
+        {status === "completed" && isTauri && modelOutputDirs.length > 0 && (
+          <Button
+            variant="outline"
+            className="w-full h-8 text-xs"
+            onClick={() => openExport(modelOutputDirs)}
+            title="Export the trained model to ONNX/TensorRT for faster inference"
+          >
+            Export Model…
           </Button>
         )}
         {status === "completed" && (
