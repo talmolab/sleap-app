@@ -152,10 +152,16 @@ const PIPELINE_FIELD_DEFS = {
   secEvaluation: { id: "pipeline-evaluation", label: "Evaluation" },
   evalEnable: { id: "field-eval-enable", label: "Run evaluation during training", hint: "Run inference on validation frames at epoch intervals and compute pose metrics (mOKS, mAP, PCK). Useful for monitoring training quality beyond loss.", keywords: "evaluation metrics moks map pck" },
   evalFrequency: { id: "field-eval-frequency", label: "Frequency (epochs)", keywords: "evaluation frequency epochs" },
+  evalOksStddev: { id: "field-eval-oksstddev", label: "OKS Std. Dev.", hint: "Object Keypoint Similarity standard deviation used when scoring evaluation predictions.", keywords: "evaluation oks stddev standard deviation" },
+  evalOksScale: { id: "field-eval-oksscale", label: "OKS Scale", hint: "Override the OKS scale used during evaluation. Leave empty to use the model's own scale.", keywords: "evaluation oks scale" },
+  evalMatchThreshold: { id: "field-eval-matchthreshold", label: "Match Threshold", hint: "Centroid models: max centroid distance in pixels to count as a match. Segmentation models: minimum mask IoU (0, 1].", keywords: "evaluation pck centroid distance match threshold iou" },
   secOutput: { id: "pipeline-output", label: "Output" },
   runName: { id: "field-runname", label: "Run Name", hint: "Name for this training run. Leave empty to auto-generate from timestamp and head type." },
   runsFolder: { id: "field-runsfolder", label: "Runs Folder", hint: "Directory where the run folder and checkpoints will be created." },
-  checkpoint: { id: "field-checkpoint", label: "Checkpoint", hint: "Best Model saves the highest-scoring checkpoint (by validation loss). Latest Model also saves a last.ckpt after every checkpoint, useful for resuming training.", keywords: "best model latest model save" },
+  checkpoint: { id: "field-checkpoint", label: "Checkpoint", hint: "Best Model saves the highest-scoring checkpoint(s) (by the Monitor metric). Latest Model also saves a last.ckpt after every checkpoint, useful for resuming training.", keywords: "best model latest model save" },
+  checkpointTopK: { id: "field-checkpoint-topk", label: "Keep Top N", hint: "How many of the best checkpoints to keep. -1 keeps all of them.", keywords: "save top k checkpoint retention count" },
+  checkpointMonitor: { id: "field-checkpoint-monitor", label: "Monitor", hint: "Metric name used to pick the \"best\" checkpoint(s), e.g. val/loss.", keywords: "checkpoint monitor metric" },
+  checkpointMode: { id: "field-checkpoint-mode", label: "Mode", hint: "Direction of improvement for the Monitor metric — Min for loss-like metrics, Max for accuracy-like metrics.", keywords: "checkpoint mode min max" },
   visualization: { id: "field-visualization", label: "Visualization", hint: "Visualize Predictions saves sample prediction images each epoch (used by this app's epoch scrubber to review training progress). Keep Viz Images keeps that folder after training instead of deleting it; only has an effect when Visualize Predictions is on.", keywords: "visualize predictions keep viz images" },
   secRemote: { id: "pipeline-remote", label: "Remote Training" },
   remoteEnable: { id: "field-remoteenable", label: "Enable Remote Training", hint: "Send training jobs to a remote worker via sleap-connect instead of running locally.", keywords: "remote worker sleap-connect" },
@@ -179,6 +185,21 @@ const HEAD_FIELD_DEFS = {
   batchSize: { id: "field-batchsize", label: "Batch Size", hint: "Number of examples per minibatch. Higher numbers can increase generalization by averaging gradient updates over more examples, at the cost of more GPU memory. Lower numbers may lead to overfitting but can help optimization with few varied examples." },
   maxEpochs: { id: "field-maxepochs", label: "Epochs", hint: "Maximum number of epochs to train for. Training can be stopped manually or automatically if early stopping is enabled and a plateau is detected.", keywords: "max epochs" },
   learningRate: { id: "field-learningrate", label: "Initial Learning Rate", hint: "The initial learning rate for the optimizer. Typically 1e-3 or 1e-4. Can be decreased automatically with learning rate reduction on plateau. If too high or too low, training may fail to find good initial local minima.", keywords: "lr learning rate" },
+  lrSchedulerType: { id: "field-lrschedulertype", label: "LR Scheduler", hint: "How the learning rate changes over training. Reduce on Plateau lowers it when validation loss stalls; Step decays it on a fixed epoch schedule; the warmup schedulers ramp up then cosine/linearly decay it.", keywords: "learning rate scheduler step cosine warmup decay plateau" },
+  lrStepSize: { id: "field-lrscheduler-stepsize", label: "Step Size", keywords: "learning rate scheduler step lr", conditional: true },
+  lrGamma: { id: "field-lrscheduler-gamma", label: "Gamma", keywords: "learning rate scheduler step lr decay factor", conditional: true },
+  lrThreshold: { id: "field-lrscheduler-threshold", label: "Threshold", keywords: "learning rate scheduler reduce plateau" },
+  lrThresholdMode: { id: "field-lrscheduler-thresholdmode", label: "Threshold Mode", keywords: "learning rate scheduler reduce plateau rel abs" },
+  lrCooldown: { id: "field-lrscheduler-cooldown", label: "Cooldown", keywords: "learning rate scheduler reduce plateau" },
+  lrPatience: { id: "field-lrscheduler-patience", label: "LR Patience", keywords: "learning rate scheduler reduce plateau patience" },
+  lrFactor: { id: "field-lrscheduler-factor", label: "Factor", keywords: "learning rate scheduler reduce plateau" },
+  lrMinLR: { id: "field-lrscheduler-minlr", label: "Min LR", keywords: "learning rate scheduler reduce plateau minimum" },
+  lrCosineWarmupEpochs: { id: "field-lrscheduler-cosine-warmupepochs", label: "Warmup Epochs", keywords: "learning rate scheduler cosine annealing warmup", conditional: true },
+  lrCosineWarmupStartLR: { id: "field-lrscheduler-cosine-warmupstartlr", label: "Warmup Start LR", keywords: "learning rate scheduler cosine annealing warmup", conditional: true },
+  lrCosineEtaMin: { id: "field-lrscheduler-cosine-etamin", label: "Eta Min", keywords: "learning rate scheduler cosine annealing warmup minimum", conditional: true },
+  lrLinearWarmupEpochs: { id: "field-lrscheduler-linear-warmupepochs", label: "Warmup Epochs", keywords: "learning rate scheduler linear warmup decay", conditional: true },
+  lrLinearWarmupStartLR: { id: "field-lrscheduler-linear-warmupstartlr", label: "Warmup Start LR", keywords: "learning rate scheduler linear warmup decay", conditional: true },
+  lrLinearEndLR: { id: "field-lrscheduler-linear-endlr", label: "End LR", keywords: "learning rate scheduler linear warmup decay", conditional: true },
   stopOnPlateau: { id: "field-stoponplateau", label: "Stop Training on Plateau", hint: "If enabled, training will terminate automatically when the validation loss plateaus. This saves time and compute, and prevents training into the overfitting regime.", keywords: "early stopping plateau" },
   plateauMinDelta: { id: "field-plateaumindelta", label: "Plateau Min. Delta", hint: "Minimum absolute decrease in the loss in order to consider an epoch as not in a plateau.", keywords: "plateau min delta" },
   plateauPatience: { id: "field-earlystopping", label: "Plateau Patience", hint: "Number of epochs without an improvement of at least min_delta in order for a plateau to be detected.", keywords: "early stopping patience plateau" },
@@ -737,6 +758,96 @@ function HeadTabContent({
         <Field {...HEAD_FIELD_DEFS.learningRate}>
           <Input type="number" value={hp.learningRate} onChange={(e) => onUpdate({ learningRate: Number(e.target.value) })} step={0.0001} className="h-9 text-sm" />
         </Field>
+        <Field {...HEAD_FIELD_DEFS.lrSchedulerType}>
+          <Select value={hp.lrSchedulerType} onValueChange={(v) => onUpdate({ lrSchedulerType: v as ConfigHyperparams["lrSchedulerType"] })}>
+            <SelectTrigger className="h-9 text-sm"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="reduce_lr_on_plateau">Reduce on Plateau</SelectItem>
+              <SelectItem value="step_lr">Step</SelectItem>
+              <SelectItem value="cosine_annealing_warmup">Cosine Annealing Warmup</SelectItem>
+              <SelectItem value="linear_warmup_linear_decay">Linear Warmup + Decay</SelectItem>
+              <SelectItem value="none">None</SelectItem>
+            </SelectContent>
+          </Select>
+        </Field>
+        {hp.lrSchedulerType === "step_lr" && (
+          <div className="flex items-center gap-4 flex-wrap">
+            <div id={HEAD_FIELD_DEFS.lrStepSize.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+              <span className="text-sm text-muted-foreground">{HEAD_FIELD_DEFS.lrStepSize.label}</span>
+              <Input type="number" value={hp.stepLRStepSize} onChange={(e) => onUpdate({ stepLRStepSize: Number(e.target.value) })} min={1} className="h-8 text-sm w-20" />
+            </div>
+            <div id={HEAD_FIELD_DEFS.lrGamma.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+              <span className="text-sm text-muted-foreground">{HEAD_FIELD_DEFS.lrGamma.label}</span>
+              <Input type="number" value={hp.stepLRGamma} onChange={(e) => onUpdate({ stepLRGamma: Number(e.target.value) })} step={0.01} className="h-8 text-sm w-20" />
+            </div>
+          </div>
+        )}
+        {hp.lrSchedulerType === "reduce_lr_on_plateau" && (
+          <div className="flex items-center gap-4 flex-wrap">
+            <div id={HEAD_FIELD_DEFS.lrThreshold.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+              <span className="text-sm text-muted-foreground">{HEAD_FIELD_DEFS.lrThreshold.label}</span>
+              <Input type="text" value={hp.reduceLRThreshold} onChange={(e) => onUpdate({ reduceLRThreshold: Number(e.target.value) })} className="h-8 text-sm w-20" />
+            </div>
+            <div id={HEAD_FIELD_DEFS.lrThresholdMode.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+              <span className="text-sm text-muted-foreground">{HEAD_FIELD_DEFS.lrThresholdMode.label}</span>
+              <Select value={hp.reduceLRThresholdMode} onValueChange={(v) => onUpdate({ reduceLRThresholdMode: v as "rel" | "abs" })}>
+                <SelectTrigger className="h-8 text-sm w-20"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="abs">abs</SelectItem>
+                  <SelectItem value="rel">rel</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div id={HEAD_FIELD_DEFS.lrCooldown.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+              <span className="text-sm text-muted-foreground">{HEAD_FIELD_DEFS.lrCooldown.label}</span>
+              <Input type="number" value={hp.reduceLRCooldown} onChange={(e) => onUpdate({ reduceLRCooldown: Number(e.target.value) })} min={0} className="h-8 text-sm w-16" />
+            </div>
+            <div id={HEAD_FIELD_DEFS.lrPatience.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+              <span className="text-sm text-muted-foreground">{HEAD_FIELD_DEFS.lrPatience.label}</span>
+              <Input type="number" value={hp.reduceLRPatience} onChange={(e) => onUpdate({ reduceLRPatience: Number(e.target.value) })} min={0} className="h-8 text-sm w-16" />
+            </div>
+            <div id={HEAD_FIELD_DEFS.lrFactor.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+              <span className="text-sm text-muted-foreground">{HEAD_FIELD_DEFS.lrFactor.label}</span>
+              <Input type="number" value={hp.reduceLRFactor} onChange={(e) => onUpdate({ reduceLRFactor: Number(e.target.value) })} step={0.05} min={0} max={1} className="h-8 text-sm w-16" />
+            </div>
+            <div id={HEAD_FIELD_DEFS.lrMinLR.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+              <span className="text-sm text-muted-foreground">{HEAD_FIELD_DEFS.lrMinLR.label}</span>
+              <Input type="text" value={hp.reduceLRMinLR} onChange={(e) => onUpdate({ reduceLRMinLR: Number(e.target.value) })} className="h-8 text-sm w-20" />
+            </div>
+          </div>
+        )}
+        {hp.lrSchedulerType === "cosine_annealing_warmup" && (
+          <div className="flex items-center gap-4 flex-wrap">
+            <div id={HEAD_FIELD_DEFS.lrCosineWarmupEpochs.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+              <span className="text-sm text-muted-foreground">{HEAD_FIELD_DEFS.lrCosineWarmupEpochs.label}</span>
+              <Input type="number" value={hp.cosineWarmupEpochs} onChange={(e) => onUpdate({ cosineWarmupEpochs: Number(e.target.value) })} min={0} className="h-8 text-sm w-16" />
+            </div>
+            <div id={HEAD_FIELD_DEFS.lrCosineWarmupStartLR.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+              <span className="text-sm text-muted-foreground">{HEAD_FIELD_DEFS.lrCosineWarmupStartLR.label}</span>
+              <Input type="number" value={hp.cosineWarmupStartLR} onChange={(e) => onUpdate({ cosineWarmupStartLR: Number(e.target.value) })} step={0.0001} min={0} className="h-8 text-sm w-20" />
+            </div>
+            <div id={HEAD_FIELD_DEFS.lrCosineEtaMin.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+              <span className="text-sm text-muted-foreground">{HEAD_FIELD_DEFS.lrCosineEtaMin.label}</span>
+              <Input type="number" value={hp.cosineEtaMin} onChange={(e) => onUpdate({ cosineEtaMin: Number(e.target.value) })} step={0.0001} min={0} className="h-8 text-sm w-20" />
+            </div>
+          </div>
+        )}
+        {hp.lrSchedulerType === "linear_warmup_linear_decay" && (
+          <div className="flex items-center gap-4 flex-wrap">
+            <div id={HEAD_FIELD_DEFS.lrLinearWarmupEpochs.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+              <span className="text-sm text-muted-foreground">{HEAD_FIELD_DEFS.lrLinearWarmupEpochs.label}</span>
+              <Input type="number" value={hp.linearWarmupEpochs} onChange={(e) => onUpdate({ linearWarmupEpochs: Number(e.target.value) })} min={0} className="h-8 text-sm w-16" />
+            </div>
+            <div id={HEAD_FIELD_DEFS.lrLinearWarmupStartLR.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+              <span className="text-sm text-muted-foreground">{HEAD_FIELD_DEFS.lrLinearWarmupStartLR.label}</span>
+              <Input type="number" value={hp.linearWarmupStartLR} onChange={(e) => onUpdate({ linearWarmupStartLR: Number(e.target.value) })} step={0.0001} min={0} className="h-8 text-sm w-20" />
+            </div>
+            <div id={HEAD_FIELD_DEFS.lrLinearEndLR.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+              <span className="text-sm text-muted-foreground">{HEAD_FIELD_DEFS.lrLinearEndLR.label}</span>
+              <Input type="number" value={hp.linearEndLR} onChange={(e) => onUpdate({ linearEndLR: Number(e.target.value) })} step={0.0001} min={0} className="h-8 text-sm w-20" />
+            </div>
+          </div>
+        )}
         <Toggle {...HEAD_FIELD_DEFS.stopOnPlateau} checked={hp.stopOnPlateau} onChange={(v) => onUpdate({ stopOnPlateau: v })} />
         <Field {...HEAD_FIELD_DEFS.plateauMinDelta}>
           <Input type="text" value={hp.plateauMinDelta} onChange={(e) => onUpdate({ plateauMinDelta: Number(e.target.value) })} disabled={!hp.stopOnPlateau} className="h-9 text-sm" />
@@ -1511,6 +1622,54 @@ export function TrainingConfigDialog({
                       />
                     </div>
                   </div>
+                  <div className={`flex items-center gap-4 flex-wrap ${!firstHp?.evalEnabled ? "opacity-50" : ""}`}>
+                    <div id={PIPELINE_FIELD_DEFS.evalOksStddev.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+                      <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                        {PIPELINE_FIELD_DEFS.evalOksStddev.label}
+                        <HintBubble text={PIPELINE_FIELD_DEFS.evalOksStddev.hint} />
+                      </span>
+                      <Input
+                        type="number"
+                        value={firstHp?.evalOksStddev ?? 0.025}
+                        step={0.001}
+                        min={0}
+                        disabled={!firstHp?.evalEnabled}
+                        onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { evalOksStddev: Number(e.target.value) }))}
+                        className="h-8 text-sm w-20"
+                      />
+                    </div>
+                    <div id={PIPELINE_FIELD_DEFS.evalOksScale.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+                      <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                        {PIPELINE_FIELD_DEFS.evalOksScale.label}
+                        <HintBubble text={PIPELINE_FIELD_DEFS.evalOksScale.hint} />
+                      </span>
+                      <Input
+                        type="number"
+                        value={firstHp?.evalOksScale ?? ""}
+                        step={0.01}
+                        min={0}
+                        placeholder="Auto"
+                        disabled={!firstHp?.evalEnabled}
+                        onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { evalOksScale: e.target.value ? Number(e.target.value) : null }))}
+                        className="h-8 text-sm w-20"
+                      />
+                    </div>
+                    <div id={PIPELINE_FIELD_DEFS.evalMatchThreshold.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+                      <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                        {PIPELINE_FIELD_DEFS.evalMatchThreshold.label}
+                        <HintBubble text={PIPELINE_FIELD_DEFS.evalMatchThreshold.hint} />
+                      </span>
+                      <Input
+                        type="number"
+                        value={firstHp?.evalMatchThreshold ?? 50.0}
+                        step={0.5}
+                        min={0}
+                        disabled={!firstHp?.evalEnabled}
+                        onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { evalMatchThreshold: Number(e.target.value) }))}
+                        className="h-8 text-sm w-20"
+                      />
+                    </div>
+                  </div>
                 </div>
 
                 <Separator className="my-5" />
@@ -1548,6 +1707,47 @@ export function TrainingConfigDialog({
                         />
                         <span className="text-sm">Latest Model</span>
                       </label>
+                      <div id={PIPELINE_FIELD_DEFS.checkpointTopK.id} data-search-field="" className={`flex items-center gap-2 scroll-mt-4 ${!firstHp.saveBestModel ? "opacity-50" : ""}`}>
+                        <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                          {PIPELINE_FIELD_DEFS.checkpointTopK.label}
+                          <HintBubble text={PIPELINE_FIELD_DEFS.checkpointTopK.hint} />
+                        </span>
+                        <Input
+                          type="number"
+                          value={firstHp.saveTopKCount}
+                          min={-1}
+                          disabled={!firstHp.saveBestModel}
+                          onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { saveTopKCount: Number(e.target.value) }))}
+                          className="h-8 text-sm w-16"
+                        />
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-6 flex-wrap">
+                      <div id={PIPELINE_FIELD_DEFS.checkpointMonitor.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+                        <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                          {PIPELINE_FIELD_DEFS.checkpointMonitor.label}
+                          <HintBubble text={PIPELINE_FIELD_DEFS.checkpointMonitor.hint} />
+                        </span>
+                        <Input
+                          type="text"
+                          value={firstHp.checkpointMonitor}
+                          onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { checkpointMonitor: e.target.value }))}
+                          className="h-8 text-sm w-32"
+                        />
+                      </div>
+                      <div id={PIPELINE_FIELD_DEFS.checkpointMode.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+                        <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                          {PIPELINE_FIELD_DEFS.checkpointMode.label}
+                          <HintBubble text={PIPELINE_FIELD_DEFS.checkpointMode.hint} />
+                        </span>
+                        <Select value={firstHp.checkpointMode} onValueChange={(v) => configs.forEach((c) => onUpdateSlot(c.slot, { checkpointMode: v as "min" | "max" }))}>
+                          <SelectTrigger className="h-8 text-sm w-20"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="min">Min</SelectItem>
+                            <SelectItem value="max">Max</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
                     </div>
                     <div id={PIPELINE_FIELD_DEFS.visualization.id} data-search-field="" className="flex items-center gap-6 scroll-mt-4">
                       <span className="text-sm text-muted-foreground flex items-center gap-1.5">
