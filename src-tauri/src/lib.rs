@@ -607,6 +607,22 @@ fn localhost_capability(port: u16) -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+  // reqwest's rustls backend needs a process-wide default `CryptoProvider`
+  // installed before the first TLS handshake, or it panics with "No provider
+  // set" -- taking the whole app down, not just that one request. Cargo
+  // feature-unifies `reqwest` across the whole dependency graph, so our own
+  // bare client in update_channels.rs's resolve_latest_endpoint() ends up
+  // rustls-backed too even though it never asked for TLS features itself;
+  // tauri-plugin-updater's own client installs this lazily on first use
+  // (gated `if get_default().is_none()`), but that's a race between however
+  // many reqwest clients fire their first request concurrently -- whichever
+  // loses starts its TLS handshake before the winner's install_default()
+  // call completes, and panics. Installing once here, before ANYTHING else
+  // runs (no other thread exists yet to race), removes the race entirely.
+  // install_default() returning Err just means a provider is already set
+  // (impossible this early, but harmless either way) -- never a fatal state.
+  let _ = rustls::crypto::ring::default_provider().install_default();
+
   // Extract the first non-flag argument as a file path to open on launch.
   // Resolve to absolute path so the frontend FS plugin can read it.
   let file_arg = std::env::args()

@@ -49,6 +49,16 @@ reqwest = { version = "0.13", default-features = false, features = ["json"] }
 # "latest" candidacy, rather than relying on them sorting low by accident).
 # Already pulled in transitively by tauri-plugin-updater.
 semver = "1"
+# For lib.rs's startup rustls::crypto::ring::default_provider().install_default()
+# call: reqwest's rustls backend needs a process-wide default CryptoProvider
+# installed before its first TLS handshake or it panics. Already resolved
+# transitively at 0.23 with the "ring" backend (tauri-plugin-updater's own
+# reqwest usage pulls it in), so naming it directly here adds no new crate to
+# the build -- BUT default-features MUST stay disabled and only "ring"
+# enabled: rustls's own defaults pull in "aws_lc_rs", which (like reqwest's
+# http2/http3 features above) needs cmake to build aws-lc-sys -- a second,
+# unused crypto backend we don't want just to call one install fn.
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 
 # SPIKE (spike/tauri-localhost-origin): serve the frontend over a real
 # http://localhost origin instead of the tauri:// custom scheme. On macOS,
