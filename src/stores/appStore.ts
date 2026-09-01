@@ -426,6 +426,7 @@ export interface AppState {
   exportDialogOpen: boolean;
   exportClipDialogOpen: boolean;
   modelMetricsDialogOpen: boolean;
+  sizeDistributionDialogOpen: boolean;
   exportPackageDialogOpen: boolean;
   shortcutsDialogOpen: boolean;
   labelingTipsDialogOpen: boolean;
@@ -509,6 +510,7 @@ export interface AppState {
   setExportDialogOpen: (open: boolean) => void;
   setExportClipDialogOpen: (open: boolean) => void;
   setModelMetricsDialogOpen: (open: boolean) => void;
+  setSizeDistributionDialogOpen: (open: boolean) => void;
   setExportPackageDialogOpen: (open: boolean) => void;
   setShortcutsDialogOpen: (open: boolean) => void;
   setLabelingTipsDialogOpen: (open: boolean) => void;
@@ -792,6 +794,7 @@ export const useAppStore = create<AppState>()(
       exportDialogOpen: false,
       exportClipDialogOpen: false,
       modelMetricsDialogOpen: false,
+      sizeDistributionDialogOpen: false,
       exportPackageDialogOpen: false,
       shortcutsDialogOpen: false,
       labelingTipsDialogOpen: false,
@@ -1135,6 +1138,11 @@ export const useAppStore = create<AppState>()(
       setModelMetricsDialogOpen: (open) =>
         set((state) => {
           state.modelMetricsDialogOpen = open;
+        }),
+
+      setSizeDistributionDialogOpen: (open) =>
+        set((state) => {
+          state.sizeDistributionDialogOpen = open;
         }),
 
       setExportPackageDialogOpen: (open) =>

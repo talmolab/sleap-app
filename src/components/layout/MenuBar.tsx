@@ -121,6 +121,7 @@ export function MenuBar() {
       <LabelsMenu />
       <PredictMenu />
       <TracksMenu />
+      <AnalyzeMenu />
       <Button
         variant="ghost"
         size="sm"
@@ -131,6 +132,26 @@ export function MenuBar() {
       </Button>
       <HelpMenu />
     </Menubar>
+  );
+}
+
+function AnalyzeMenu() {
+  const projectLoaded = useAppStore((s) => s.projectLoaded);
+  const setSizeDistributionDialogOpen = useAppStore(
+    (s) => s.setSizeDistributionDialogOpen
+  );
+  return (
+    <MenubarMenu>
+      <MenubarTrigger className="px-3 h-8 text-xs rounded-none">Analyze</MenubarTrigger>
+      <MenubarContent>
+        <MenubarItem
+          disabled={!projectLoaded}
+          onClick={() => setSizeDistributionDialogOpen(true)}
+        >
+          Instance Size Distribution…
+        </MenubarItem>
+      </MenubarContent>
+    </MenubarMenu>
   );
 }
 

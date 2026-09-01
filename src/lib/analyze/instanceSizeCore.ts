@@ -99,3 +99,63 @@ export function summarizeSizes(sizes: number[]): SizeSummary {
     outlierCount,
   };
 }
+
+export interface SizeHistogram {
+  /** Number of bins (0 for empty input, 1 for a single distinct value). */
+  binCount: number;
+  min: number;
+  max: number;
+  /** (max - min) / binCount; 0 when all values are identical. */
+  binWidth: number;
+  /** Bin boundaries, length `binCount + 1` (empty when `binCount` is 0). */
+  edges: number[];
+  /** Per-bin counts, length `binCount`. */
+  counts: number[];
+}
+
+/**
+ * Evenly-spaced histogram of instance sizes over `[min, max]`. Non-finite entries
+ * are ignored. The maximum value is placed in the last bin (not its own extra
+ * bin). A single distinct value collapses to one bin; no finite input yields an
+ * empty histogram (`binCount: 0`).
+ */
+export function binSizes(sizes: number[], binCount = 24): SizeHistogram {
+  const vals = sizes.filter((s) => Number.isFinite(s));
+  if (vals.length === 0) {
+    return { binCount: 0, min: NaN, max: NaN, binWidth: NaN, edges: [], counts: [] };
+  }
+  let min = Infinity;
+  let max = -Infinity;
+  for (const v of vals) {
+    if (v < min) min = v;
+    if (v > max) max = v;
+  }
+  if (min === max) {
+    return { binCount: 1, min, max, binWidth: 0, edges: [min, max], counts: [vals.length] };
+  }
+  const bins = Math.max(1, Math.floor(binCount));
+  const binWidth = (max - min) / bins;
+  const edges: number[] = [];
+  for (let i = 0; i <= bins; i++) edges.push(min + i * binWidth);
+  const counts = new Array<number>(bins).fill(0);
+  for (const v of vals) {
+    let idx = Math.floor((v - min) / binWidth);
+    if (idx >= bins) idx = bins - 1; // max value lands in the last bin
+    if (idx < 0) idx = 0;
+    counts[idx]++;
+  }
+  return { binCount: bins, min, max, binWidth, edges, counts };
+}
+
+/**
+ * The bin index a size falls into (clamped to `[0, binCount-1]`); the max value
+ * lands in the last bin. Returns -1 for a non-finite size or an empty histogram.
+ */
+export function binIndexOf(hist: SizeHistogram, size: number): number {
+  if (!Number.isFinite(size) || hist.binCount === 0) return -1;
+  if (hist.binWidth === 0) return 0;
+  let idx = Math.floor((size - hist.min) / hist.binWidth);
+  if (idx >= hist.binCount) idx = hist.binCount - 1;
+  if (idx < 0) idx = 0;
+  return idx;
+}
