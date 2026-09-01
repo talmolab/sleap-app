@@ -45,6 +45,7 @@ import { AddVideoUrlDialog } from "../dialogs/AddVideoUrlDialog";
 import { ExportDialog } from "../dialogs/ExportDialog";
 import { ExportClipDialog } from "../dialogs/ExportClipDialog";
 import { ModelMetricsDialog } from "../dialogs/ModelMetricsDialog";
+import { SizeDistributionDialog } from "../dialogs/SizeDistributionDialog";
 import { ExportPackageDialog } from "../dialogs/ExportPackageDialog";
 import { ShortcutsDialog } from "../dialogs/ShortcutsDialog";
 import { LabelingTipsDialog } from "../dialogs/LabelingTipsDialog";
@@ -147,6 +148,12 @@ export function AppShell() {
   const modelMetricsDialogOpen = useAppStore((s) => s.modelMetricsDialogOpen);
   const setModelMetricsDialogOpen = useAppStore(
     (s) => s.setModelMetricsDialogOpen
+  );
+  const sizeDistributionDialogOpen = useAppStore(
+    (s) => s.sizeDistributionDialogOpen
+  );
+  const setSizeDistributionDialogOpen = useAppStore(
+    (s) => s.setSizeDistributionDialogOpen
   );
   const modelOutputDirs = useTrainingStore((s) => s.modelOutputDirs);
   const exportPackageDialogOpen = useAppStore((s) => s.exportPackageDialogOpen);
@@ -298,6 +305,10 @@ export function AppShell() {
         open={modelMetricsDialogOpen}
         onOpenChange={setModelMetricsDialogOpen}
         runDirs={modelOutputDirs}
+      />
+      <SizeDistributionDialog
+        open={sizeDistributionDialogOpen}
+        onOpenChange={setSizeDistributionDialogOpen}
       />
       <ExportPackageDialog
         open={exportPackageDialogOpen}
