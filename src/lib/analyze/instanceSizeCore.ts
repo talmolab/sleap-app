@@ -43,6 +43,76 @@ export function bboxSize(points: number[][]): BBox | null {
   return { w, h, size: Math.max(w, h) };
 }
 
+/**
+ * Size a crop must have to contain an instance under rotation augmentation that
+ * samples uniformly from `[-maxAngleDegrees, +maxAngleDegrees]`. Port of the
+ * fork's `InstanceSizeInfo.get_rotated_size`.
+ *
+ * For a `w × h` box rotated by θ the axis-aligned bbox is
+ * `(w·|cosθ| + h·|sinθ|) × (w·|sinθ| + h·|cosθ|)`; the worst case over the range
+ * is at 0°, at the boundary angle, or (for ranges reaching 45°) at 45°. Angles
+ * beyond 90° repeat by symmetry, so the range is clamped to 90°.
+ *
+ * Returns the raw size (`max(w, h)`) when the angle is 0, and NaN for non-finite
+ * dimensions.
+ */
+export function rotatedSize(w: number, h: number, maxAngleDegrees: number): number {
+  if (!Number.isFinite(w) || !Number.isFinite(h)) return NaN;
+  const raw = Math.max(w, h);
+  if (maxAngleDegrees === 0) return raw;
+  const maxAngle = Math.min(Math.abs(maxAngleDegrees), 90); // symmetry beyond 90
+  const angles = new Set<number>([0, maxAngle]);
+  if (maxAngle >= 45) angles.add(45);
+  let max = 0;
+  for (const a of angles) {
+    const t = (a * Math.PI) / 180;
+    const c = Math.cos(t);
+    const s = Math.sin(t);
+    const newW = w * c + h * s;
+    const newH = w * s + h * c;
+    max = Math.max(max, newW, newH);
+  }
+  return max;
+}
+
+/** A "nice" number near `x` (Heckbert): 1, 2, 5, or 10 × a power of ten. */
+function niceNum(x: number, round: boolean): number {
+  if (!(x > 0)) return 0;
+  const exp = Math.floor(Math.log10(x));
+  const f = x / 10 ** exp;
+  let nf: number;
+  if (round) nf = f < 1.5 ? 1 : f < 3 ? 2 : f < 7 ? 5 : 10;
+  else nf = f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10;
+  return nf * 10 ** exp;
+}
+
+/**
+ * Evenly-spaced "nice" axis ticks covering `[min, max]` (Heckbert's algorithm),
+ * so a chart axis reads 70, 80, 90, ... rather than 74.3, 88.6, .... Returns a
+ * single tick when `min === max`, and `[]` for non-finite bounds.
+ */
+export function niceTicks(min: number, max: number, targetCount = 5): number[] {
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return [];
+  if (min === max) return [min];
+  let lo = min;
+  let hi = max;
+  if (hi < lo) [lo, hi] = [hi, lo];
+  const n = Math.max(2, Math.floor(targetCount));
+  const range = niceNum(hi - lo, false);
+  const step = niceNum(range / (n - 1), true);
+  if (!(step > 0)) return [lo, hi];
+  const niceMin = Math.floor(lo / step) * step;
+  const niceMax = Math.ceil(hi / step) * step;
+  const count = Math.round((niceMax - niceMin) / step);
+  const ticks: number[] = [];
+  for (let i = 0; i <= count; i++) {
+    // Round to the step's precision to shed float drift (e.g. 0.30000000000000004).
+    const v = niceMin + i * step;
+    ticks.push(Number(v.toPrecision(12)));
+  }
+  return ticks;
+}
+
 export interface SizeSummary {
   count: number;
   min: number;
@@ -118,20 +188,32 @@ export interface SizeHistogram {
  * are ignored. The maximum value is placed in the last bin (not its own extra
  * bin). A single distinct value collapses to one bin; no finite input yields an
  * empty histogram (`binCount: 0`).
+ *
+ * Pass an explicit `range` to fix the axis (the histogram X-min / X-max controls):
+ * bins span `[range.min, range.max]` and values outside that window are dropped
+ * (matching numpy `histogram(range=...)`), while summary stats still use all data.
  */
-export function binSizes(sizes: number[], binCount = 24): SizeHistogram {
+export function binSizes(
+  sizes: number[],
+  binCount = 24,
+  range?: { min: number; max: number },
+): SizeHistogram {
   const vals = sizes.filter((s) => Number.isFinite(s));
   if (vals.length === 0) {
     return { binCount: 0, min: NaN, max: NaN, binWidth: NaN, edges: [], counts: [] };
   }
-  let min = Infinity;
-  let max = -Infinity;
+  let dataMin = Infinity;
+  let dataMax = -Infinity;
   for (const v of vals) {
-    if (v < min) min = v;
-    if (v > max) max = v;
+    if (v < dataMin) dataMin = v;
+    if (v > dataMax) dataMax = v;
   }
+  let min = range && Number.isFinite(range.min) ? range.min : dataMin;
+  let max = range && Number.isFinite(range.max) ? range.max : dataMax;
+  if (min > max) [min, max] = [max, min];
   if (min === max) {
-    return { binCount: 1, min, max, binWidth: 0, edges: [min, max], counts: [vals.length] };
+    const inRange = vals.filter((v) => v === min).length;
+    return { binCount: 1, min, max, binWidth: 0, edges: [min, max], counts: [inRange] };
   }
   const bins = Math.max(1, Math.floor(binCount));
   const binWidth = (max - min) / bins;
@@ -139,6 +221,7 @@ export function binSizes(sizes: number[], binCount = 24): SizeHistogram {
   for (let i = 0; i <= bins; i++) edges.push(min + i * binWidth);
   const counts = new Array<number>(bins).fill(0);
   for (const v of vals) {
+    if (v < min || v > max) continue; // drop values outside an explicit range
     let idx = Math.floor((v - min) / binWidth);
     if (idx >= bins) idx = bins - 1; // max value lands in the last bin
     if (idx < 0) idx = 0;

@@ -19,7 +19,7 @@ describe("collectSizedInstances", () => {
     ]);
     const out = collectSizedInstances(mockLabels([vA, vB], framesByVideo) as never);
     expect(out).toHaveLength(3);
-    expect(out[0]).toMatchObject({ size: 40, videoIdx: 0, frameIdx: 3, instanceIdx: 0 });
+    expect(out[0]).toMatchObject({ size: 40, rawWidth: 40, rawHeight: 10, videoIdx: 0, frameIdx: 3, instanceIdx: 0 });
     expect(out[1]).toMatchObject({ size: 5, videoIdx: 0, frameIdx: 3, instanceIdx: 1 });
     expect(out[2]).toMatchObject({ size: 20, videoIdx: 1, frameIdx: 7, instanceIdx: 0 });
     expect(out[0].video as unknown).toBe(vA);

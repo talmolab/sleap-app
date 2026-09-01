@@ -8,8 +8,12 @@ import type { Labels, Video } from "@/types";
 import { bboxSize } from "@/lib/analyze/instanceSizeCore";
 
 export interface SizedInstance {
-  /** max(w, h) of the instance's visible points. */
+  /** max(w, h) of the instance's visible points (the un-rotated "raw" size). */
   size: number;
+  /** Bounding-box width of the visible points. */
+  rawWidth: number;
+  /** Bounding-box height of the visible points. */
+  rawHeight: number;
   video: Video;
   /** Index of `video` in `labels.videos` (for setVideo/navigation). */
   videoIdx: number;
@@ -35,6 +39,8 @@ export function collectSizedInstances(labels: Labels): SizedInstance[] {
         if (box) {
           out.push({
             size: box.size,
+            rawWidth: box.w,
+            rawHeight: box.h,
             video,
             videoIdx: v,
             frameIdx: lf.frameIdx,

@@ -34,6 +34,17 @@ describe("binSizes", () => {
     expect(h.counts).toEqual([]);
     expect(h.edges).toEqual([]);
   });
+
+  it("honors an explicit [min,max] range, dropping out-of-range values", () => {
+    const h = binSizes([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 5, { min: 2, max: 8 });
+    expect(h.min).toBe(2);
+    expect(h.max).toBe(8);
+    expect(h.binWidth).toBeCloseTo(1.2, 6);
+    expect(h.edges).toHaveLength(6);
+    // only 2..8 are counted (0,1,9,10 dropped); 8 lands in the last bin
+    expect(h.counts.reduce((a, b) => a + b, 0)).toBe(7);
+    expect(h.counts[4]).toBe(2); // 6.8..8 -> {7, 8}
+  });
 });
 
 describe("binIndexOf", () => {
