@@ -43,6 +43,8 @@ const KIND_LABEL: Record<QcIssueKind, string> = {
   sparse_instance: "Sparse instance",
   empty_instance: "Empty instance",
   out_of_range: "Out of range",
+  chain_order: "Chain order",
+  chirality: "Chirality (L/R)",
 };
 
 export function LabelQcDialog({ open, onOpenChange }: LabelQcDialogProps) {
