@@ -156,6 +156,7 @@ function AnalyzeMenu() {
   const setSizeDistributionDialogOpen = useAppStore(
     (s) => s.setSizeDistributionDialogOpen
   );
+  const setLabelQcDialogOpen = useAppStore((s) => s.setLabelQcDialogOpen);
   return (
     <MenubarMenu>
       <MenubarTrigger className="px-3 h-8 text-xs rounded-none">Analyze</MenubarTrigger>
@@ -165,6 +166,12 @@ function AnalyzeMenu() {
           onClick={() => setSizeDistributionDialogOpen(true)}
         >
           Instance Size Distribution…
+        </MenubarItem>
+        <MenubarItem
+          disabled={!projectLoaded}
+          onClick={() => setLabelQcDialogOpen(true)}
+        >
+          Label Quality Check…
         </MenubarItem>
       </MenubarContent>
     </MenubarMenu>

@@ -427,6 +427,7 @@ export interface AppState {
   exportClipDialogOpen: boolean;
   modelMetricsDialogOpen: boolean;
   sizeDistributionDialogOpen: boolean;
+  labelQcDialogOpen: boolean;
   exportPackageDialogOpen: boolean;
   shortcutsDialogOpen: boolean;
   labelingTipsDialogOpen: boolean;
@@ -511,6 +512,7 @@ export interface AppState {
   setExportClipDialogOpen: (open: boolean) => void;
   setModelMetricsDialogOpen: (open: boolean) => void;
   setSizeDistributionDialogOpen: (open: boolean) => void;
+  setLabelQcDialogOpen: (open: boolean) => void;
   setExportPackageDialogOpen: (open: boolean) => void;
   setShortcutsDialogOpen: (open: boolean) => void;
   setLabelingTipsDialogOpen: (open: boolean) => void;
@@ -795,6 +797,7 @@ export const useAppStore = create<AppState>()(
       exportClipDialogOpen: false,
       modelMetricsDialogOpen: false,
       sizeDistributionDialogOpen: false,
+      labelQcDialogOpen: false,
       exportPackageDialogOpen: false,
       shortcutsDialogOpen: false,
       labelingTipsDialogOpen: false,
@@ -1143,6 +1146,11 @@ export const useAppStore = create<AppState>()(
       setSizeDistributionDialogOpen: (open) =>
         set((state) => {
           state.sizeDistributionDialogOpen = open;
+        }),
+
+      setLabelQcDialogOpen: (open) =>
+        set((state) => {
+          state.labelQcDialogOpen = open;
         }),
 
       setExportPackageDialogOpen: (open) =>

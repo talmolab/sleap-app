@@ -46,6 +46,7 @@ import { ExportDialog } from "../dialogs/ExportDialog";
 import { ExportClipDialog } from "../dialogs/ExportClipDialog";
 import { ModelMetricsDialog } from "../dialogs/ModelMetricsDialog";
 import { SizeDistributionDialog } from "../dialogs/SizeDistributionDialog";
+import { LabelQcDialog } from "../dialogs/LabelQcDialog";
 import { ExportPackageDialog } from "../dialogs/ExportPackageDialog";
 import { ShortcutsDialog } from "../dialogs/ShortcutsDialog";
 import { LabelingTipsDialog } from "../dialogs/LabelingTipsDialog";
@@ -155,6 +156,8 @@ export function AppShell() {
   const setSizeDistributionDialogOpen = useAppStore(
     (s) => s.setSizeDistributionDialogOpen
   );
+  const labelQcDialogOpen = useAppStore((s) => s.labelQcDialogOpen);
+  const setLabelQcDialogOpen = useAppStore((s) => s.setLabelQcDialogOpen);
   const modelOutputDirs = useTrainingStore((s) => s.modelOutputDirs);
   const exportPackageDialogOpen = useAppStore((s) => s.exportPackageDialogOpen);
   const setExportPackageDialogOpen = useAppStore(
@@ -309,6 +312,10 @@ export function AppShell() {
       <SizeDistributionDialog
         open={sizeDistributionDialogOpen}
         onOpenChange={setSizeDistributionDialogOpen}
+      />
+      <LabelQcDialog
+        open={labelQcDialogOpen}
+        onOpenChange={setLabelQcDialogOpen}
       />
       <ExportPackageDialog
         open={exportPackageDialogOpen}
