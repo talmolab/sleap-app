@@ -15,6 +15,13 @@ import {
   visibleNodeCount,
   hasOutOfRangePoints,
 } from "@/lib/analyze/labelQcRules";
+import { longestSkeletonChain, chainOrderStats } from "@/lib/analyze/labelQcGeometry";
+import {
+  buildChiralityModel,
+  chiralityWrongFraction,
+  inferSymmetryPairsByName,
+  type ChiralityModel,
+} from "@/lib/analyze/labelQcChirality";
 
 export type QcIssueKind =
   | "duplicate"
@@ -22,7 +29,9 @@ export type QcIssueKind =
   | "negative_frame"
   | "sparse_instance"
   | "empty_instance"
-  | "out_of_range";
+  | "out_of_range"
+  | "chain_order"
+  | "chirality";
 
 export interface QcFinding {
   kind: QcIssueKind;
@@ -40,10 +49,74 @@ export interface QcOptions {
   minVisibleNodes?: number;
 }
 
+type SkeletonLike = {
+  symmetries?: { nodes?: Iterable<object> }[];
+  nodeNames?: string[];
+  nodes?: unknown[];
+  index?: (node: object) => number;
+};
+
+/** Symmetric node-index pairs of a skeleton: its declared symmetries, else
+ *  inferred from L/R node names. */
+function skeletonPairs(skel: SkeletonLike): [number, number][] {
+  const pairs: [number, number][] = [];
+  for (const sym of skel.symmetries ?? []) {
+    const members = [...(sym.nodes ?? [])];
+    if (members.length === 2 && skel.index) {
+      const a = skel.index(members[0]);
+      const b = skel.index(members[1]);
+      if (a >= 0 && b >= 0 && a !== b) pairs.push([a, b]);
+    }
+  }
+  return pairs.length > 0 ? pairs : inferSymmetryPairsByName(skel.nodeNames ?? []);
+}
+
 export function runLabelQc(labels: Labels, opts: QcOptions = {}): QcFinding[] {
   const minVisible = opts.minVisibleNodes ?? 2;
   const findings: QcFinding[] = [];
   const videos = labels.videos;
+
+  // The ordered "chain" for chain-order is derived once per skeleton (the graph
+  // diameter); auto-enabled only when the chain is long enough to be meaningful.
+  const chainCache = new Map<object, number[]>();
+  const chainFor = (
+    skel: { edgeIndices?: number[][]; nodes?: unknown[] } | undefined,
+  ): number[] => {
+    if (!skel) return [];
+    let c = chainCache.get(skel);
+    if (!c) {
+      c = longestSkeletonChain(skel.edgeIndices ?? [], skel.nodes?.length ?? 0);
+      chainCache.set(skel, c);
+    }
+    return c;
+  };
+
+  // Chirality needs a per-skeleton fit over ALL instances of that skeleton, so
+  // gather them first, then learn the canonical side per symmetric pair.
+  const pointsBySkel = new Map<object, number[][][]>();
+  for (const video of videos) {
+    for (const lf of labels.find({ video })) {
+      for (const inst of lf.instances) {
+        const skel = (inst as unknown as { skeleton?: object }).skeleton;
+        if (!skel) continue;
+        let arr = pointsBySkel.get(skel);
+        if (!arr) {
+          arr = [];
+          pointsBySkel.set(skel, arr);
+        }
+        arr.push(inst.numpy());
+      }
+    }
+  }
+  const chiralityBySkel = new Map<object, ChiralityModel | null>();
+  for (const [skel, pts] of pointsBySkel) {
+    const s = skel as SkeletonLike;
+    const pairs = skeletonPairs(s);
+    chiralityBySkel.set(
+      skel,
+      pairs.length > 0 ? buildChiralityModel(pts, pairs, s.nodes?.length ?? 0) : null,
+    );
+  }
 
   for (let v = 0; v < videos.length; v++) {
     const video = videos[v];
@@ -86,7 +159,9 @@ export function runLabelQc(labels: Labels, opts: QcOptions = {}): QcFinding[] {
         const detail =
           d.reason === "iou"
             ? `IoU ${d.iou.toFixed(2)}`
-            : `${Math.round(d.overlapRatio * 100)}% of nodes overlap`;
+            : d.reason === "node_overlap"
+              ? `${Math.round(d.overlapRatio * 100)}% of nodes overlap`
+              : "one animal split across both";
         findings.push({
           kind: "duplicate",
           message: `Instances ${d.indexA + 1} & ${d.indexB + 1} look duplicated (${detail})`,
@@ -126,6 +201,42 @@ export function runLabelQc(labels: Labels, opts: QcOptions = {}): QcFinding[] {
             frameIdx: lf.frameIdx,
             instanceIdx: i,
           });
+        }
+
+        const skel = (insts[i] as unknown as {
+          skeleton?: { edgeIndices?: number[][]; nodes?: unknown[] };
+        }).skeleton;
+        const chain = chainFor(skel);
+        if (chain.length >= 4) {
+          const co = chainOrderStats(p, chain);
+          if (co.inversionRate >= 0.3 || co.intersectionCount >= 1) {
+            findings.push({
+              kind: "chain_order",
+              message:
+                co.intersectionCount >= 1
+                  ? `Skeleton chain crosses itself (${co.intersectionCount}×)`
+                  : `Nodes out of order along the body (${Math.round(co.inversionRate * 100)}% of turns)`,
+              video,
+              videoIdx: v,
+              frameIdx: lf.frameIdx,
+              instanceIdx: i,
+            });
+          }
+        }
+
+        const model = skel ? chiralityBySkel.get(skel) ?? null : null;
+        if (model) {
+          const { wrongFraction, nPairs } = chiralityWrongFraction(p, model);
+          if (nPairs >= 2 && wrongFraction >= 0.5) {
+            findings.push({
+              kind: "chirality",
+              message: `Left/right sides look flipped (${Math.round(wrongFraction * 100)}% of symmetric pairs)`,
+              video,
+              videoIdx: v,
+              frameIdx: lf.frameIdx,
+              instanceIdx: i,
+            });
+          }
         }
       });
     }

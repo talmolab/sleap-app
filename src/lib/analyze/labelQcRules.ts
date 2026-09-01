@@ -75,13 +75,15 @@ export interface DuplicatePair {
   indexB: number;
   iou: number;
   overlapRatio: number;
-  reason: "iou" | "node_overlap";
+  reason: "iou" | "node_overlap" | "split_duplicate";
 }
 
 export interface DuplicateOptions {
   iouThreshold?: number;
   nodeDistanceThreshold?: number;
   nodeOverlapRatio?: number;
+  /** Combined split-duplicate cutoff (Tier 3). Default 0.5. */
+  splitScoreThreshold?: number;
 }
 
 /**
@@ -97,6 +99,7 @@ export function detectDuplicates(
   const iouThreshold = opts.iouThreshold ?? 0.5;
   const distanceThreshold = opts.nodeDistanceThreshold ?? 10;
   const ratioThreshold = opts.nodeOverlapRatio ?? 0.8;
+  const splitThreshold = opts.splitScoreThreshold ?? 0.5;
   const out: DuplicatePair[] = [];
   for (let i = 0; i < instances.length; i++) {
     for (let j = i + 1; j < instances.length; j++) {
@@ -106,6 +109,10 @@ export function detectDuplicates(
         out.push({ indexA: i, indexB: j, iou, overlapRatio: ov.overlapRatio, reason: "iou" });
       } else if (ov.commonNodes >= 2 && ov.overlapRatio > ratioThreshold) {
         out.push({ indexA: i, indexB: j, iou, overlapRatio: ov.overlapRatio, reason: "node_overlap" });
+      } else if (splitDuplicateScore(instances[i], instances[j]) >= splitThreshold) {
+        // One animal split across two instances on disjoint-but-contiguous nodes
+        // (the complementary case IoU + node-overlap miss).
+        out.push({ indexA: i, indexB: j, iou, overlapRatio: ov.overlapRatio, reason: "split_duplicate" });
       }
     }
   }
@@ -155,4 +162,109 @@ export function hasOutOfRangePoints(points: number[][], width: number, height: n
     if (p[0] < 0 || p[0] > width || p[1] < 0 || p[1] > height) return true;
   }
   return false;
+}
+
+// ── Split-duplicate (Tier 3, features/duplicate_split.py) ────────────────────
+// One animal split across two instances labeled on largely disjoint node sets —
+// the complementary case bbox-IoU and node-overlap miss. All distances are
+// normalized by a length scale (bbox diagonal of the larger instance, since we
+// don't fit dataset edge stats app-side), so a single cutoff works.
+
+const _DISJOINT_MIN = 0.55;
+const _DISJOINT_FULL = 0.85;
+const _GAP_TOL = 2.5;
+const _COHERENCE_OK = 1.5;
+const _COHERENCE_MAX = 3.0;
+const _SPLIT_MIN_VISIBLE = 2;
+
+/** Linear ramp: 0 at `lo` → 1 at `hi` (clamped); works for lo<hi and lo>hi. */
+function linearScore(value: number, lo: number, hi: number): number {
+  if (hi === lo) return value >= hi ? 1 : 0;
+  return Math.max(0, Math.min(1, (value - lo) / (hi - lo)));
+}
+
+function bboxDiagonal(points: number[][]): number {
+  const vis = points.filter(isVisible);
+  if (vis.length < 2) return 0;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const [x, y] of vis) {
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+  }
+  return Math.hypot(maxX - minX, maxY - minY);
+}
+
+function nearestNodeDistance(a: number[][], b: number[][]): number {
+  const va = a.filter(isVisible);
+  const vb = b.filter(isVisible);
+  let min = Infinity;
+  for (const pa of va) {
+    for (const pb of vb) {
+      const d = Math.hypot(pa[0] - pb[0], pa[1] - pb[1]);
+      if (d < min) min = d;
+    }
+  }
+  return min;
+}
+
+/** Median nearest-neighbor spacing among an instance's own visible nodes (NaN if <2). */
+function internalSpacing(points: number[][]): number {
+  const vis = points.filter(isVisible);
+  if (vis.length < 2) return NaN;
+  const mins: number[] = [];
+  for (let i = 0; i < vis.length; i++) {
+    let m = Infinity;
+    for (let j = 0; j < vis.length; j++) {
+      if (i === j) continue;
+      const d = Math.hypot(vis[i][0] - vis[j][0], vis[i][1] - vis[j][1]);
+      if (d < m) m = d;
+    }
+    mins.push(m);
+  }
+  return medianCount(mins);
+}
+
+/**
+ * Score (0-1) that two instances are one animal split across both: largely
+ * disjoint visible-node sets (`0.55→0.85`), touching at the body (nearest-node
+ * gap `2.5→0` scale units), and coherent (gap `3.0→1.5` internal spacings).
+ * Mirrors `compute_split_duplicate` with the bbox-diagonal scale fallback.
+ */
+export function splitDuplicateScore(a: number[][], b: number[][]): number {
+  const va = a.map(isVisible);
+  const vb = b.map(isVisible);
+  const na = va.filter(Boolean).length;
+  const nb = vb.filter(Boolean).length;
+  if (na < _SPLIT_MIN_VISIBLE || nb < _SPLIT_MIN_VISIBLE) return 0;
+  const n = Math.max(va.length, vb.length);
+  let union = 0;
+  for (let i = 0; i < n; i++) if (va[i] || vb[i]) union++;
+  if (union < _SPLIT_MIN_VISIBLE) return 0;
+
+  const diag = Math.max(bboxDiagonal(a), bboxDiagonal(b));
+  const scale = diag > 1e-8 ? diag : 1;
+
+  const disjointness = union / (na + nb);
+  const sDisjoint = linearScore(disjointness, _DISJOINT_MIN, _DISJOINT_FULL);
+  if (sDisjoint <= 0) return 0;
+
+  const gap = nearestNodeDistance(a, b);
+  const sGap = linearScore(gap / scale, _GAP_TOL, 0);
+  if (sGap <= 0) return 0;
+
+  const spacings = [internalSpacing(a), internalSpacing(b)].filter(
+    (s) => Number.isFinite(s) && s > 1e-8,
+  );
+  let sCoherent = 1;
+  if (spacings.length) {
+    const rel = gap / (spacings.reduce((x, y) => x + y, 0) / spacings.length);
+    sCoherent = linearScore(rel, _COHERENCE_MAX, _COHERENCE_OK);
+  }
+
+  return sDisjoint * sGap * sCoherent;
 }
