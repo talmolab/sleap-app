@@ -246,50 +246,86 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    // Prevent the browser from navigating to a dropped file. If an .slp is
-    // dropped while a project is open (and no in-app dropzone claimed it), point
-    // the user at File > New Project — in the browser that opens a fresh SLEAP
-    // tab (this one keeps its project), where they can open the other project
-    // (#325). A browser tab can't route a locally-dropped file to a new tab.
-    const prevent = (e: DragEvent) => {
-      const claimed = e.defaultPrevented; // a dropzone (video/welcome) handled it
+    // Browser whole-window drag-and-drop. Prevent the browser from navigating to
+    // a dropped file, drive the drop-catcher overlay, and route a dropped video
+    // into the open project (Add prompt, via windowDrop). A dropped .slp can't be
+    // routed to a new tab from here (#325) → point the user at File > New Project.
+    // Element dropzones (Videos panel / Welcome) claim their own drops via
+    // preventDefault → `defaultPrevented` here. Desktop uses onDragDropEvent below.
+    if (isTauri) return;
+    const setDrag = (active: boolean) =>
+      useAppStore.getState().setWindowDragActive(active);
+    const hasFiles = (e: DragEvent) =>
+      Array.from(e.dataTransfer?.types ?? []).includes("Files");
+
+    const onOver = (e: DragEvent) => {
+      e.preventDefault(); // required to allow the drop
+      if (useAppStore.getState().projectLoaded && hasFiles(e)) setDrag(true);
+    };
+    const onLeave = (e: DragEvent) => {
+      if (!e.relatedTarget) setDrag(false); // pointer left the window
+    };
+    const onDrop = (e: DragEvent) => {
+      const claimed = e.defaultPrevented; // a dropzone handled it
       e.preventDefault();
       e.stopPropagation();
-      if (e.type !== "drop" || claimed || isTauri) return;
+      setDrag(false);
+      if (claimed) return;
       const files = Array.from(e.dataTransfer?.files ?? []);
-      if (!files.some((f) => f.name.toLowerCase().endsWith(".slp"))) return;
-      if (useAppStore.getState().projectLoaded) {
-        toast("A project is already open in this tab. Use File > New Project to open another in a new tab.");
+      if (files.length === 0) return;
+      if (files.some((f) => f.name.toLowerCase().endsWith(".slp"))) {
+        if (useAppStore.getState().projectLoaded) {
+          toast("A project is already open in this tab. Use File > New Project to open another in a new tab.");
+        }
+        return;
       }
+      void import("./lib/windowDrop").then((m) => m.routeDroppedFiles(files));
     };
-    window.addEventListener("dragover", prevent);
-    window.addEventListener("drop", prevent);
+
+    window.addEventListener("dragover", onOver);
+    window.addEventListener("dragleave", onLeave);
+    window.addEventListener("drop", onDrop);
     return () => {
-      window.removeEventListener("dragover", prevent);
-      window.removeEventListener("drop", prevent);
+      window.removeEventListener("dragover", onOver);
+      window.removeEventListener("dragleave", onLeave);
+      window.removeEventListener("drop", onDrop);
     };
   }, []);
 
   // Desktop drag-and-drop (#132, #325). The Tauri webview intercepts OS file
   // drops, so the HTML drop event never fires in the desktop app — wire Tauri's
-  // own drag-drop event to route a dropped .slp by path. On an empty window it
-  // loads in place; on a window that already holds a project it never clobbers
-  // it — the user is told the file is already open, or confirms opening it in a
-  // separate window (see routeSlpDrop). Browser drops are handled above.
+  // own drag-drop event: track drag-active for the catcher overlay, and on drop
+  // route by type (video → Add; .slp → open/merge; else reject) via windowDrop.
+  // A drop landing on an element-scoped dropzone ([data-file-dropzone], e.g. the
+  // Videos panel) is left to that dropzone. On an empty window nothing clobbers a
+  // loaded project — see routeSlpDrop. Browser drops are handled above.
   useEffect(() => {
     if (!isTauri) return;
     let active = true;
     let unlisten: (() => void) | undefined;
     (async () => {
       const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+      const setDrag = (a: boolean) =>
+        useAppStore.getState().setWindowDragActive(a);
       const fn = await getCurrentWebview().onDragDropEvent(async (event) => {
-        if (event.payload.type !== "drop") return;
-        const slp = event.payload.paths.find((p) =>
-          p.toLowerCase().endsWith(".slp")
-        );
-        if (!slp) return;
-        const { routeSlpDrop } = await import("./lib/slpDrop");
-        await routeSlpDrop(slp);
+        const p = event.payload;
+        if (p.type === "enter" || p.type === "over") {
+          if (useAppStore.getState().projectLoaded) setDrag(true);
+          return;
+        }
+        if (p.type === "leave") {
+          setDrag(false);
+          return;
+        }
+        // type === "drop"
+        setDrag(false);
+        // Skip drops claimed by an element-scoped dropzone (it handles them). The
+        // Tauri position is physical px → divide by DPR for elementFromPoint.
+        const dpr = window.devicePixelRatio || 1;
+        const el = document.elementFromPoint(p.position.x / dpr, p.position.y / dpr);
+        if (el?.closest("[data-file-dropzone]")) return;
+        const { routeDroppedPaths } = await import("./lib/windowDrop");
+        await routeDroppedPaths(p.paths);
       });
       // Component may have unmounted before the listener resolved.
       if (active) unlisten = fn;
