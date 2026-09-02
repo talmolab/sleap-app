@@ -327,7 +327,17 @@ export interface LocalTrainingOptions {
   sampleCount?: number;
   skipUserLabeled?: boolean;
   existingPredictions?: "clear_all" | "replace" | "keep";
+  /** Post-training model export ("none" = don't export). Desktop-only. */
+  exportFormat?: "none" | "onnx" | "tensorrt";
+  /** Run post-training inference on the exported model (falls back to the checkpoint on failure). */
+  useExportedForInference?: boolean;
 }
+
+// Session guard: whether we've already installed sleap-nn's [export] extra this
+// app session, so a format-selected training run doesn't force a redundant tool
+// reinstall before every run. (No cheap "is it installed?" probe exists; a proper
+// presence check would need a backend command — tracked as a follow-up.) Resets on reload.
+let exportSupportEnsured = { onnx: false, tensorrt: false };
 
 export type TrainingStatus = "idle" | "running" | "completed" | "error" | "stopped";
 
@@ -1603,6 +1613,26 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       const modelDir = labelsPath.replace(/[/\\][^/\\]+$/, "") + "/models";
       const trainedModelPaths: string[] = [];
 
+      // Ensure sleap-nn's [export] support is installed BEFORE training when the
+      // user picked an export format, so a long run isn't wasted on a missing
+      // exporter. Installed once per session; failure is non-fatal (training still
+      // runs; the post-training export just logs a failure).
+      if (localOpts?.exportFormat && localOpts.exportFormat !== "none") {
+        const needTrt = localOpts.exportFormat === "tensorrt";
+        const already = exportSupportEnsured.onnx && (!needTrt || exportSupportEnsured.tensorrt);
+        if (!already) {
+          const { useEnvironmentStore } = await import("@/stores/environmentStore");
+          set((s) => ({ log: appendLog(s.log, `— Ensuring sleap-nn ${needTrt ? "ONNX + TensorRT" : "ONNX"} export support is installed...`) }));
+          await useEnvironmentStore.getState().installExportExtra(needTrt);
+          if (useEnvironmentStore.getState().installStatus === "done") {
+            exportSupportEnsured = { onnx: true, tensorrt: exportSupportEnsured.tensorrt || needTrt };
+            set((s) => ({ log: appendLog(s.log, "— Export support ready.") }));
+          } else {
+            set((s) => ({ log: appendLog(s.log, "— Export support install failed — training will proceed; export may fail.") }));
+          }
+        }
+      }
+
       // Holder for the ZMQ progress-relay subscription; cleaned up in finally.
       let unlistenProgress: (() => void) | null = null;
       const batchBuffer: { epoch: number; batch: number; loss: number }[] = [];
@@ -1862,11 +1892,57 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
 
         set({ modelOutputDirs: trainedModelPaths });
 
+        // ── Post-training model export (ONNX / TensorRT) ──────
+        // Auto-export the trained model to a portable runtime when the user picked a
+        // format in the Training config Output section. On failure we keep going with
+        // the PyTorch checkpoint (exportDir stays null → inference falls back to it).
+        const exportFormat = localOpts?.exportFormat;
+        let exportDir: string | null = null;
+        if (exportFormat && exportFormat !== "none" && trainedModelPaths.length > 0) {
+          const { runExport } = await import("@/platform/backend");
+          const { defaultExportOutputDir } = await import("@/stores/exportStore");
+          const outputDir = defaultExportOutputDir(trainedModelPaths);
+          // List the run dirs being bundled so a top-down export reads clearly as
+          // both heads (e.g. "centroid.n=1 + centered_instance.n=1"), not centroid-only.
+          const exportRunNames = trainedModelPaths
+            .map((d) => d.replace(/[/\\]+$/, "").split(/[/\\]/).pop())
+            .join(" + ");
+          set((s) => ({ log: appendLog(s.log, `— Exporting trained model to ${exportFormat.toUpperCase()} (${exportRunNames}) → ${outputDir}...`) }));
+          const exportLogEvent = (event: import("@/platform/backend").ProcessEvent) => {
+            if (event.event === "stdout" || event.event === "stderr") {
+              const line = event.data.line;
+              if (line.trim()) set((s) => ({ log: appendLog(s.log, line) }));
+            }
+          };
+          const exportResult = await runExport(
+            { modelPaths: trainedModelPaths, outputDir, format: exportFormat, precision: "fp16" },
+            exportLogEvent,
+          );
+          if (exportResult.success) {
+            exportDir = outputDir;
+            set((s) => ({ log: appendLog(s.log, `— Export complete: ${outputDir}`) }));
+          } else {
+            set((s) => ({ log: appendLog(s.log, "— Export failed — continuing with the PyTorch model.") }));
+          }
+        }
+        // Whether post-training inference should target the exported model.
+        const useExported = !!exportDir && !!localOpts?.useExportedForInference;
+        const exportRuntime: "onnx" | "tensorrt" = exportFormat === "tensorrt" ? "tensorrt" : "onnx";
+        // Exported ONNX must NOT run on the CoreML EP — onnxruntime resolves "auto"
+        // → mps → CoreML on macOS, which fails on these dynamic-shape models
+        // ("CoreML does not support shapes with dimension values of 0"). Use CPU on
+        // non-CUDA hosts (proven to run the exported model), CUDA where available.
+        let exportDevice: "cuda" | "cpu" = "cpu";
+        if (useExported) {
+          const { detectGpu } = await import("@/platform/backend");
+          exportDevice = (await detectGpu()) === "cuda" ? "cuda" : "cpu";
+        }
+
         // ── Post-training inference ───────────────────────────
         const inferenceTarget = localOpts?.inferenceTarget;
         if (inferenceTarget && inferenceTarget !== "nothing" && trainedModelPaths.length > 0) {
           set((s) => ({
-            log: appendLog(s.log, `— Training complete. Running inference (${inferenceTarget}) with models: ${trainedModelPaths.join(", ")}...`),
+            log: appendLog(s.log, `— Running inference (${inferenceTarget}) with ${useExported ? `exported model: ${exportDir}` : `models: ${trainedModelPaths.join(", ")}`}...`),
           }));
 
           const { runInference } = await import("@/platform/backend");
@@ -1886,7 +1962,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
           const inferenceConfig: import("@/stores/inferenceStore").InferenceConfig = {
             pipeline: pipelineMap[config.modelType] || "top-down",
             trackOnly: false,
-            modelPaths: trainedModelPaths,
+            modelPaths: useExported ? [exportDir!] : trainedModelPaths,
             videoIndex: (inferenceTarget === "video" || inferenceTarget === "random_video")
               ? (() => {
                   const { labels, video } = useAppStore.getState();
@@ -1898,8 +1974,8 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
             excludeUserLabeled: localOpts?.skipUserLabeled ?? false,
             existingPredictions: localOpts?.existingPredictions ?? "replace",
             batchSize: 4,
-            device: "auto",
-            runtime: "auto",
+            device: useExported ? exportDevice : "auto",
+            runtime: useExported ? exportRuntime : "auto",
             maxInstances: null,
             peakThreshold: 0.2,
             integralRefinement: true,
@@ -1971,6 +2047,17 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
               });
             };
 
+            // Run inference; if it targeted the exported model and failed, retry
+            // once with the PyTorch checkpoint (runtime auto) as a fallback.
+            const runInferenceWithFallback = async (cfg: typeof inferenceConfig) => {
+              let result = await runInference(cfg, projectPath, logEvent);
+              if (!result.success && useExported) {
+                set((s) => ({ log: appendLog(s.log, "— Exported-model inference failed; retrying with the PyTorch checkpoint...") }));
+                result = await runInference({ ...cfg, modelPaths: trainedModelPaths, runtime: "auto", device: "auto" }, projectPath, logEvent);
+              }
+              return result;
+            };
+
             if (inferenceTarget === "random") {
               // Per-video random sampling
               const videos = currentLabels?.videos ?? [];
@@ -1979,13 +2066,13 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
                 if (nFrames === 0) continue;
                 set((s) => ({ log: appendLog(s.log, `— Inference: video ${vi + 1}/${videos.length}...`) }));
                 const perVideoConfig = { ...inferenceConfig, videoIndex: vi as number | "all", frameRange: "random_video" as typeof inferenceConfig.frameRange };
-                const result = await runInference(perVideoConfig, projectPath, logEvent);
+                const result = await runInferenceWithFallback(perVideoConfig);
                 if (result.success && result.outputPath) {
                   await mergeOutputSlp(result.outputPath);
                 }
               }
             } else {
-              const result = await runInference(inferenceConfig, projectPath, logEvent);
+              const result = await runInferenceWithFallback(inferenceConfig);
               if (result.success && result.outputPath) {
                 await mergeOutputSlp(result.outputPath);
               } else if (!result.success) {

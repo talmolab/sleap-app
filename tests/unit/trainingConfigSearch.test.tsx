@@ -72,6 +72,10 @@ function renderDialog(modelType: ModelType) {
       onExistingPredictionsChange={noop}
       autoOpenWandb={false}
       onAutoOpenWandbChange={noop}
+      exportFormat="none"
+      onExportFormatChange={noop}
+      useExportedForInference={false}
+      onUseExportedForInferenceChange={noop}
     />
   );
 }

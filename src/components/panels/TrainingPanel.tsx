@@ -892,6 +892,10 @@ export function TrainingPanel() {
   const [existingPredictions, setExistingPredictions] = useState<"clear_all" | "replace" | "keep">("replace");
   // Client-side only — no sleap-nn schema field for this (see trainingStore.ts).
   const [autoOpenWandb, setAutoOpenWandb] = useState(false);
+  // Client-side only — post-training model export ("none" = don't export) + whether to
+  // run the post-training inference on the exported model (see trainingStore.ts).
+  const [exportFormat, setExportFormat] = useState<"none" | "onnx" | "tensorrt">("none");
+  const [useExportedForInference, setUseExportedForInference] = useState(false);
   // Auto-open the W&B run page once its URL becomes available, if requested.
   const openedWandbUrlRef = useRef<string | null>(null);
   useEffect(() => {
@@ -1071,6 +1075,8 @@ export function TrainingPanel() {
         sampleCount,
         skipUserLabeled,
         existingPredictions,
+        exportFormat,
+        useExportedForInference,
       });
     }
   };
@@ -1884,6 +1890,10 @@ export function TrainingPanel() {
         onExistingPredictionsChange={setExistingPredictions}
         autoOpenWandb={autoOpenWandb}
         onAutoOpenWandbChange={setAutoOpenWandb}
+        exportFormat={exportFormat}
+        onExportFormatChange={setExportFormat}
+        useExportedForInference={useExportedForInference}
+        onUseExportedForInferenceChange={setUseExportedForInference}
       />
     </div>
   );

@@ -88,6 +88,10 @@ function renderDialog(onUpdateSlot: (slot: string, updates: Partial<ConfigHyperp
       onExistingPredictionsChange={noop}
       autoOpenWandb={false}
       onAutoOpenWandbChange={noop}
+      exportFormat="none"
+      onExportFormatChange={noop}
+      useExportedForInference={false}
+      onUseExportedForInferenceChange={noop}
     />
   );
 }

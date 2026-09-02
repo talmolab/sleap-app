@@ -20,7 +20,7 @@ import {
 import { Search, HelpCircle, RefreshCw, Check, RotateCcw } from "lucide-react";
 import type { ConfigFile, ConfigHyperparams, Backbone, ModelType, DataPipeline, ColorMode } from "@/stores/trainingStore";
 import { getSlotLabel, getConfigSlots, useTrainingStore } from "@/stores/trainingStore";
-import { checkWandbAuth, type WandbAuth } from "@/platform/backend";
+import { checkWandbAuth, detectGpu, type WandbAuth } from "@/platform/backend";
 import { useConnectStore } from "@/stores/connectStore";
 import { useAppStore } from "@/stores/appStore";
 import { ModelStatsPreview } from "@/components/dialogs/ModelStatsPreview";
@@ -59,6 +59,12 @@ interface TrainingConfigDialogProps {
   /** Client-side only — no sleap-nn schema field for this, see trainingStore.ts. */
   autoOpenWandb: boolean;
   onAutoOpenWandbChange: (v: boolean) => void;
+  /** Client-side only — post-training model export ("none" = don't export). */
+  exportFormat: "none" | "onnx" | "tensorrt";
+  onExportFormatChange: (v: "none" | "onnx" | "tensorrt") => void;
+  /** Run post-training inference on the exported model (falls back to the checkpoint on failure). */
+  useExportedForInference: boolean;
+  onUseExportedForInferenceChange: (v: boolean) => void;
 }
 
 // ── Constants ──────────────────────────────────────────────────────
@@ -164,6 +170,8 @@ const PIPELINE_FIELD_DEFS = {
   checkpointMonitor: { id: "field-checkpoint-monitor", label: "Monitor", hint: "Metric name used to pick the \"best\" checkpoint(s), e.g. val/loss.", keywords: "checkpoint monitor metric" },
   checkpointMode: { id: "field-checkpoint-mode", label: "Mode", hint: "Direction of improvement for the Monitor metric — Min for loss-like metrics, Max for accuracy-like metrics.", keywords: "checkpoint mode min max" },
   visualization: { id: "field-visualization", label: "Visualization", hint: "Visualize Predictions saves sample prediction images each epoch (used by this app's epoch scrubber to review training progress). Keep Viz Images keeps that folder after training instead of deleting it; only has an effect when Visualize Predictions is on.", keywords: "visualize predictions keep viz images" },
+  exportFormat: { id: "field-export-format", label: "Export Model", hint: "Convert the trained model to a portable runtime after training completes, for faster inference. ONNX runs everywhere; TensorRT is NVIDIA-only (CUDA). The sleap-nn [export] support is installed automatically before training if you pick a format.", keywords: "export onnx tensorrt model convert runtime" },
+  useExportedForInference: { id: "field-use-exported-inference", label: "Use exported for inference", hint: "Run the post-training inference on the exported model instead of the PyTorch checkpoint. Falls back to the checkpoint automatically if the exported model fails to load or run.", keywords: "export onnx tensorrt inference runtime fallback" },
   secRemote: { id: "pipeline-remote", label: "Remote Training" },
   remoteEnable: { id: "field-remoteenable", label: "Enable Remote Training", hint: "Send training jobs to a remote worker via sleap-connect instead of running locally.", keywords: "remote worker sleap-connect" },
 } satisfies Record<string, SearchField>;
@@ -1118,11 +1126,21 @@ export function TrainingConfigDialog({
   onExistingPredictionsChange,
   autoOpenWandb,
   onAutoOpenWandbChange,
+  exportFormat,
+  onExportFormatChange,
+  useExportedForInference,
+  onUseExportedForInferenceChange,
 }: TrainingConfigDialogProps) {
   const pipelineScrollRef = useRef<HTMLDivElement>(null);
   const headScrollRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const [activeTab, setActiveTab] = useState("pipeline");
   const [searchQuery, setSearchQuery] = useState("");
+  // TensorRT export is NVIDIA/CUDA-only — detect the GPU to gate the dropdown option.
+  const [gpuBackend, setGpuBackend] = useState<string | null>(null);
+  useEffect(() => {
+    if (isTauri) detectGpu().then(setGpuBackend).catch(() => setGpuBackend(null));
+  }, []);
+  const trtAvailable = gpuBackend === "cuda";
 
   // Detect existing W&B auth (env var / ~/.netrc) on the local machine so the
   // API-key field can advertise itself as optional. Desktop-only; a no-op in
@@ -1867,6 +1885,35 @@ export function TrainingConfigDialog({
                           className="accent-primary"
                         />
                         <span className="text-sm">Keep Viz Images</span>
+                      </label>
+                    </div>
+                    <div className="flex items-center gap-6 flex-wrap">
+                      <div id={PIPELINE_FIELD_DEFS.exportFormat.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
+                        <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                          {PIPELINE_FIELD_DEFS.exportFormat.label}
+                          <HintBubble text={PIPELINE_FIELD_DEFS.exportFormat.hint} />
+                        </span>
+                        <Select value={exportFormat} onValueChange={(v) => onExportFormatChange(v as "none" | "onnx" | "tensorrt")}>
+                          <SelectTrigger className="h-8 text-sm w-36"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="none">Don't export</SelectItem>
+                            <SelectItem value="onnx">ONNX</SelectItem>
+                            {trtAvailable && <SelectItem value="tensorrt">TensorRT</SelectItem>}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <label id={PIPELINE_FIELD_DEFS.useExportedForInference.id} data-search-field="" className={`flex items-center gap-1.5 scroll-mt-4 ${exportFormat !== "none" ? "cursor-pointer" : "cursor-not-allowed opacity-50"}`}>
+                        <input
+                          type="checkbox"
+                          checked={exportFormat !== "none" && useExportedForInference}
+                          disabled={exportFormat === "none"}
+                          onChange={(e) => onUseExportedForInferenceChange(e.target.checked)}
+                          className="accent-primary"
+                        />
+                        <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                          {PIPELINE_FIELD_DEFS.useExportedForInference.label}
+                          <HintBubble text={PIPELINE_FIELD_DEFS.useExportedForInference.hint} />
+                        </span>
                       </label>
                     </div>
                   </div>

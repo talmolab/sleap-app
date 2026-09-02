@@ -5,18 +5,22 @@ import {
 } from "@/stores/exportStore";
 
 describe("defaultExportOutputDir", () => {
-  it("appends /exported to the first model dir", () => {
-    expect(defaultExportOutputDir(["/models/run1"])).toBe("/models/run1/exported");
+  it("places the exported bundle in the run dirs' PARENT, not under one run", () => {
+    expect(defaultExportOutputDir(["/models/run1"])).toBe("/models/exported");
   });
 
-  it("strips a trailing slash before appending", () => {
-    expect(defaultExportOutputDir(["/models/run1/"])).toBe("/models/run1/exported");
+  it("strips a trailing slash before deriving the parent", () => {
+    expect(defaultExportOutputDir(["/models/run1/"])).toBe("/models/exported");
   });
 
-  it("uses the FIRST dir for a top-down bundle (centroid + centered_instance)", () => {
+  it("is neutral for a top-down bundle — not nested under the centroid run", () => {
     expect(defaultExportOutputDir(["/models/centroid", "/models/centered"])).toBe(
-      "/models/centroid/exported",
+      "/models/exported",
     );
+  });
+
+  it("falls back to <dir>/exported when there is no parent segment", () => {
+    expect(defaultExportOutputDir(["run1"])).toBe("run1/exported");
   });
 });
 
