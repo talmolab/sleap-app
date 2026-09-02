@@ -1923,6 +1923,15 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         // Whether post-training inference should target the exported model.
         const useExported = !!exportDir && !!localOpts?.useExportedForInference;
         const exportRuntime: "onnx" | "tensorrt" = exportFormat === "tensorrt" ? "tensorrt" : "onnx";
+        // Exported ONNX must NOT run on the CoreML EP — onnxruntime resolves "auto"
+        // → mps → CoreML on macOS, which fails on these dynamic-shape models
+        // ("CoreML does not support shapes with dimension values of 0"). Use CPU on
+        // non-CUDA hosts (proven to run the exported model), CUDA where available.
+        let exportDevice: "cuda" | "cpu" = "cpu";
+        if (useExported) {
+          const { detectGpu } = await import("@/platform/backend");
+          exportDevice = (await detectGpu()) === "cuda" ? "cuda" : "cpu";
+        }
 
         // ── Post-training inference ───────────────────────────
         const inferenceTarget = localOpts?.inferenceTarget;
@@ -1960,7 +1969,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
             excludeUserLabeled: localOpts?.skipUserLabeled ?? false,
             existingPredictions: localOpts?.existingPredictions ?? "replace",
             batchSize: 4,
-            device: "auto",
+            device: useExported ? exportDevice : "auto",
             runtime: useExported ? exportRuntime : "auto",
             maxInstances: null,
             peakThreshold: 0.2,
@@ -2039,7 +2048,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
               let result = await runInference(cfg, projectPath, logEvent);
               if (!result.success && useExported) {
                 set((s) => ({ log: appendLog(s.log, "— Exported-model inference failed; retrying with the PyTorch checkpoint...") }));
-                result = await runInference({ ...cfg, modelPaths: trainedModelPaths, runtime: "auto" }, projectPath, logEvent);
+                result = await runInference({ ...cfg, modelPaths: trainedModelPaths, runtime: "auto", device: "auto" }, projectPath, logEvent);
               }
               return result;
             };
