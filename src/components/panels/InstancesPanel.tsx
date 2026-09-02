@@ -302,7 +302,7 @@ function InstanceDetailPanel({
 
   return (
     <div className="px-2 py-1.5 space-y-1.5">
-      <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
+      <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground select-text">
         <span>
           <span className="text-foreground">{trackName}</span>
         </span>
@@ -331,7 +331,7 @@ function InstanceDetailPanel({
         {/* Readable named list (node name + coords). Must stay inside a
             max-h + overflow-auto box so many-node skeletons scroll here rather
             than pushing the Add/Delete/Accept buttons off-screen. */}
-        <div className="text-[10px] leading-tight font-mono bg-muted/50 rounded p-2 pr-8 max-h-32 overflow-auto">
+        <div className="text-[10px] leading-tight font-mono bg-muted/50 rounded p-2 pr-8 max-h-32 overflow-auto select-text">
           {namedPoints.map((pt, i) => {
             // Green only when actually placed AND visible; a NaN/unset coord
             // (not placed) is red, not green (#278 feedback).

@@ -172,7 +172,7 @@ export function ModelMetricsDialog({
                   ))}
                 </TableRow>
               </TableHeader>
-              <TableBody>
+              <TableBody className="select-text">
                 {rows.length === 0 && !loading && (
                   <TableRow>
                     <TableCell colSpan={COLUMNS.length} className="text-center text-muted-foreground text-xs py-6">

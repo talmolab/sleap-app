@@ -155,7 +155,7 @@ function InstallLog({
           </Button>
         )}
       </div>
-      <div className="max-h-32 overflow-auto p-1 text-[10px] font-mono leading-4 text-muted-foreground">
+      <div className="max-h-32 overflow-auto p-1 text-[10px] font-mono leading-4 text-muted-foreground select-text">
         {lines.map((line, i) => (
           <div key={i}>{line}</div>
         ))}

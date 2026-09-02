@@ -246,7 +246,7 @@ export function RemoteFileBrowser({
             </div>
           )}
           {error && (
-            <div className="bg-red-500/8 border border-red-500/20 rounded-md p-2 text-[11px] text-red-400">
+            <div className="bg-red-500/8 border border-red-500/20 rounded-md p-2 text-[11px] text-red-400 select-text">
               {error}
             </div>
           )}

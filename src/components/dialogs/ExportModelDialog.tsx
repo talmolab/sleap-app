@@ -170,7 +170,7 @@ export function ExportModelDialog() {
           )}
 
           {status === "done" && (
-            <p className="text-sm text-green-500">Exported to {outputDir}</p>
+            <p className="text-sm text-green-500 select-text">Exported to {outputDir}</p>
           )}
 
           {missingSupport && (

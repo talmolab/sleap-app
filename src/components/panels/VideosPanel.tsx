@@ -235,7 +235,7 @@ function VideoDetailPanel({ video }: { video: Video }) {
 
       {/* Video stats */}
       {shape && (
-        <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-muted-foreground">
+        <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-muted-foreground select-text">
           {width != null && height != null && (
             <div>
               <span className="font-medium text-foreground">Resolution: </span>
@@ -270,7 +270,7 @@ function VideoDetailPanel({ video }: { video: Video }) {
           <summary className="cursor-pointer text-muted-foreground hover:text-foreground select-none font-medium">
             Metadata
           </summary>
-          <div className="mt-1 space-y-0.5 text-muted-foreground">
+          <div className="mt-1 space-y-0.5 text-muted-foreground select-text">
             {sourceFilename && (
               <div className="break-all">
                 <span className="font-medium text-foreground">

@@ -38,7 +38,7 @@ export function HelpDialog({ open, onOpenChange }: HelpDialogProps) {
             <p className="font-semibold">
               {isTauri ? "SLEAP Label Desktop" : "SLEAP Label Web"}
             </p>
-            <p className="text-muted-foreground">
+            <p className="text-muted-foreground select-text">
               Version {APP_VERSION}
               {" · "}
               <span data-testid="about-version-kind">

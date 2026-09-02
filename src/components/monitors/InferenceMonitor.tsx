@@ -150,7 +150,7 @@ function InferenceProgressDialog() {
 
           {/* Error message + forwarded sleap-nn error output */}
           {error && (
-            <div className="rounded-md bg-destructive/15 border border-destructive/30 px-3 py-2 text-sm text-destructive">
+            <div className="rounded-md bg-destructive/15 border border-destructive/30 px-3 py-2 text-sm text-destructive select-text">
               {error}
             </div>
           )}

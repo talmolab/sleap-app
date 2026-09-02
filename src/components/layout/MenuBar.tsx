@@ -122,7 +122,7 @@ export function MenuBar() {
               `title` spells out the channel wording rather than crowding the
               bar with it. */}
           <span
-            className="text-[10px] font-normal tracking-normal text-muted-foreground"
+            className="text-[10px] font-normal tracking-normal text-muted-foreground select-text"
             title={`SLEAP v${APP_VERSION} — ${APP_VERSION_KIND_LABEL}`}
             data-testid="menubar-version"
           >

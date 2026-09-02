@@ -74,7 +74,7 @@ export function StatusBar() {
   return (
     <div className="flex items-center h-7 px-2 text-xs bg-card border-t border-border text-muted-foreground gap-2 shrink-0">
       {/* Left: project info */}
-      <div className="flex items-center gap-2 flex-1 min-w-0">
+      <div className="flex items-center gap-2 flex-1 min-w-0 select-text">
         {filename ? (
           <>
             <span className="text-foreground truncate">
