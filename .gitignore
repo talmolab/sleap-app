@@ -53,3 +53,7 @@ docs/issue-triage-*.md
 
 # Desktop bundle output collected by .github/workflows/build.yml
 /artifacts/
+
+# Docs site build output (zensical) + its incremental build cache
+/site/
+/.cache/
