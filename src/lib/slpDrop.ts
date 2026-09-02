@@ -8,7 +8,7 @@
  */
 
 import { useAppStore } from "@/stores/appStore";
-import { confirmDialog } from "@/stores/confirmStore";
+import { choiceDialog } from "@/stores/choiceStore";
 import { toast } from "@/lib/notify";
 import { ellipsizeMiddle } from "@/lib/ellipsize";
 import {
@@ -63,12 +63,24 @@ export async function routeSlpDrop(path: string): Promise<void> {
       return;
 
     case "confirmNewWindow": {
-      const ok = await confirmDialog({
-        title: "Open in a new window?",
-        message: `"${name}" will open in a separate SLEAP window.\nYour current project stays open here.`,
-        confirmLabel: "Open in new window",
+      // A different .slp dropped onto a loaded project: never clobber it — offer
+      // to merge it into the current project (via the merge pipeline) or open it
+      // in a separate window.
+      const choice = await choiceDialog({
+        title: "Add this project?",
+        message: `"${name}" is a different SLEAP project.\nMerge it into your current project, or open it in a separate window.`,
+        options: [
+          { key: "merge", label: "Merge into project", primary: true },
+          { key: "newWindow", label: "Open in new window" },
+        ],
       });
-      if (ok) await openOrFocusPath(path);
+      if (choice === "merge") {
+        const st = useAppStore.getState();
+        st.setMergeProjectSeedPath(path);
+        st.setMergeProjectDialogOpen(true);
+      } else if (choice === "newWindow") {
+        await openOrFocusPath(path);
+      }
       return;
     }
   }

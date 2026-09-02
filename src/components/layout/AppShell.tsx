@@ -36,6 +36,7 @@ import { NewProjectDialog } from "../dialogs/NewProjectDialog";
 import { TranscodeProgressDialog } from "../dialogs/TranscodeProgressDialog";
 import { TranscodeConfirmDialog } from "../dialogs/TranscodeConfirmDialog";
 import { ConfirmDialog } from "../dialogs/ConfirmDialog";
+import { ChoiceDialog } from "../dialogs/ChoiceDialog";
 import { PromptDialog } from "../dialogs/PromptDialog";
 import { SelectToFrameDialog } from "../dialogs/SelectToFrameDialog";
 import { DeletePredictionsDialog } from "../dialogs/DeletePredictionsDialog";
@@ -133,6 +134,7 @@ function PathResolutionHost() {
 export function AppShell() {
   const projectLoaded = useAppStore((s) => s.projectLoaded);
   const isLoading = useAppStore((s) => s.isLoading);
+  const windowDragActive = useAppStore((s) => s.windowDragActive);
   const loadingMessage = useAppStore((s) => s.loadingMessage);
   const loadingProgress = useAppStore((s) => s.loadingProgress);
   const sidebarSide = useAppStore((s) => s.sidebarSide);
@@ -279,6 +281,21 @@ export function AppShell() {
               </div>
             </div>
           )}
+
+          {/* Whole-window drag catcher: dashed border + hint while a file is
+              dragged over a loaded project. Drop routing lives in windowDrop.ts
+              (video → Add; .slp → Merge / new window). pointer-events-none so it
+              never eats the drop itself. */}
+          {windowDragActive && projectLoaded && (
+            <div className="pointer-events-none absolute inset-2 z-[60] flex items-center justify-center rounded-lg border-2 border-dashed border-primary/70 bg-background/70 backdrop-blur-sm">
+              <div className="flex flex-col items-center gap-1.5 text-center">
+                <span className="text-lg font-medium">Drop a video or .slp file</span>
+                <span className="text-sm text-muted-foreground">
+                  Add a video to this project, or merge / open a .slp
+                </span>
+              </div>
+            </div>
+          )}
         </div>
       </ErrorBoundary>
 
@@ -288,6 +305,7 @@ export function AppShell() {
       <NewProjectDialog />
       <GoToFrameDialog />
       <ConfirmDialog />
+      <ChoiceDialog />
       <PromptDialog />
       <TranscodeConfirmDialog />
       <TranscodeProgressDialog />

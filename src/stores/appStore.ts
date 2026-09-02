@@ -422,6 +422,10 @@ export interface AppState {
   selectToFrameDialogOpen: boolean;
   deletePredictionsDialogOpen: boolean;
   mergeProjectDialogOpen: boolean;
+  /** Path to auto-load into the Merge dialog when it opens (seeded by an .slp drop). */
+  mergeProjectSeedPath: string | null;
+  /** A file is being dragged over the app window (drives the drop-catcher overlay). */
+  windowDragActive: boolean;
   addVideoUrlDialogOpen: boolean;
   exportDialogOpen: boolean;
   exportClipDialogOpen: boolean;
@@ -507,6 +511,8 @@ export interface AppState {
   setSelectToFrameDialogOpen: (open: boolean) => void;
   setDeletePredictionsDialogOpen: (open: boolean) => void;
   setMergeProjectDialogOpen: (open: boolean) => void;
+  setMergeProjectSeedPath: (path: string | null) => void;
+  setWindowDragActive: (active: boolean) => void;
   setAddVideoUrlDialogOpen: (open: boolean) => void;
   setExportDialogOpen: (open: boolean) => void;
   setExportClipDialogOpen: (open: boolean) => void;
@@ -792,6 +798,8 @@ export const useAppStore = create<AppState>()(
       selectToFrameDialogOpen: false,
       deletePredictionsDialogOpen: false,
       mergeProjectDialogOpen: false,
+      mergeProjectSeedPath: null,
+      windowDragActive: false,
       addVideoUrlDialogOpen: false,
       exportDialogOpen: false,
       exportClipDialogOpen: false,
@@ -1121,6 +1129,14 @@ export const useAppStore = create<AppState>()(
       setMergeProjectDialogOpen: (open) =>
         set((state) => {
           state.mergeProjectDialogOpen = open;
+        }),
+      setMergeProjectSeedPath: (path) =>
+        set((state) => {
+          state.mergeProjectSeedPath = path;
+        }),
+      setWindowDragActive: (active) =>
+        set((state) => {
+          state.windowDragActive = active;
         }),
 
       setAddVideoUrlDialogOpen: (open) =>

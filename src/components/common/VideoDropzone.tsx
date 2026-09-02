@@ -53,6 +53,7 @@ export function VideoDropzone({
     <button
       ref={ref}
       type="button"
+      data-file-dropzone=""
       onClick={openPicker}
       onDragOver={(e) => {
         e.preventDefault();

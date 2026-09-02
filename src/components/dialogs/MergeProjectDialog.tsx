@@ -10,7 +10,7 @@
  * combines the two. See memory `project_merge_into_project_design`.
  */
 
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback, useMemo, useEffect } from "react";
 import type { Labels } from "@talmolab/sleap-io.js";
 import { useAppStore } from "../../stores/appStore";
 import { commandContext } from "../../commands/CommandContext";
@@ -37,6 +37,12 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -73,6 +79,44 @@ export function MergeProjectDialog() {
     [reset, setOpen]
   );
 
+  // Load a donor .slp (by path or File) and compute the non-mutating preview.
+  // Shared by the file picker and the drop-seeded open.
+  const previewDonor = useCallback(
+    async (source: string | File) => {
+      if (!labels) return;
+      setError(null);
+      setBusy("loading");
+      setDonor(null);
+      setPreview(null);
+      setConflicts([]);
+      setChoices({});
+      try {
+        const platform = await getPlatform();
+        const donorLabels =
+          typeof source === "string"
+            ? await loadLabelsFromSlpPath(source, platform.readFile)
+            : await loadLabelsFromSlpFile(source);
+        const name =
+          typeof source === "string" ? source.split(/[\\/]/).pop() ?? source : source.name;
+        // Same matchers as the merge, so the preview reflects what will happen.
+        const match = await labels.match(donorLabels, MERGE_INTO_PROJECT_MATCHERS);
+        const previewSummary = summarizeMatch(match);
+        setDonor(donorLabels);
+        setDonorName(name);
+        setPreview(previewSummary);
+        // Enumerate real per-instance conflicts (only meaningful if not blocked).
+        if (!previewSummary.skeletonBlocked) {
+          setConflicts(await enumerateConflicts(labels, donorLabels));
+        }
+      } catch (e) {
+        setError(errMsg(e));
+      } finally {
+        setBusy(null);
+      }
+    },
+    [labels]
+  );
+
   const pickAndPreview = useCallback(async () => {
     if (!labels) return;
     setError(null);
@@ -87,35 +131,19 @@ export function MergeProjectDialog() {
       return;
     }
     if (!result || Array.isArray(result)) return; // canceled
+    await previewDonor(result);
+  }, [labels, previewDonor]);
 
-    setBusy("loading");
-    setDonor(null);
-    setPreview(null);
-    setConflicts([]);
-    setChoices({});
-    try {
-      const donorLabels =
-        typeof result === "string"
-          ? await loadLabelsFromSlpPath(result, platform.readFile)
-          : await loadLabelsFromSlpFile(result);
-      const name =
-        typeof result === "string" ? result.split(/[\\/]/).pop() ?? result : result.name;
-      // Same matchers as the merge, so the preview reflects what will happen.
-      const match = await labels.match(donorLabels, MERGE_INTO_PROJECT_MATCHERS);
-      const previewSummary = summarizeMatch(match);
-      setDonor(donorLabels);
-      setDonorName(name);
-      setPreview(previewSummary);
-      // Enumerate real per-instance conflicts (only meaningful if not blocked).
-      if (!previewSummary.skeletonBlocked) {
-        setConflicts(await enumerateConflicts(labels, donorLabels));
-      }
-    } catch (e) {
-      setError(errMsg(e));
-    } finally {
-      setBusy(null);
+  // Seeded open: an .slp drop routed here with a path → auto-load + preview it.
+  const seedPath = useAppStore((s) => s.mergeProjectSeedPath);
+  const setSeedPath = useAppStore((s) => s.setMergeProjectSeedPath);
+  useEffect(() => {
+    if (open && seedPath) {
+      const p = seedPath;
+      setSeedPath(null);
+      void previewDonor(p);
     }
-  }, [labels]);
+  }, [open, seedPath, setSeedPath, previewDonor]);
 
   const handleMerge = useCallback(async () => {
     if (!donor) return;
@@ -232,13 +260,26 @@ export function MergeProjectDialog() {
           <Button variant="ghost" onClick={() => handleOpenChange(false)} disabled={busy === "merging"}>
             Cancel
           </Button>
-          <Button onClick={handleMerge} disabled={!canMerge}>
-            {busy === "merging"
-              ? "Merging…"
-              : hasConflicts
-                ? `Merge (${conflicts.length} conflict${conflicts.length !== 1 ? "s" : ""})`
-                : "Merge"}
-          </Button>
+          <TooltipProvider delayDuration={200}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                {/* span so the tooltip still shows while the button is disabled */}
+                <span tabIndex={0}>
+                  <Button onClick={handleMerge} disabled={!canMerge}>
+                    {busy === "merging"
+                      ? "Merging…"
+                      : hasConflicts
+                        ? `Merge (${conflicts.length} conflict${conflicts.length !== 1 ? "s" : ""})`
+                        : "Merge"}
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent className="max-w-xs">
+                Runs the merge pipeline — a structural preview and per-conflict
+                review — not an immediate merge. Nothing changes until you confirm here.
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
         </DialogFooter>
       </DialogContent>
     </Dialog>
