@@ -55,6 +55,8 @@ fn main() {
                     "run_python_command",
                     "cancel_command",
                     "export_nwb",
+                    "start_overlay_serve",
+                    "stop_overlay_serve",
                     "start_zmq_relay",
                     "send_training_stop",
                     "stop_zmq_relay",

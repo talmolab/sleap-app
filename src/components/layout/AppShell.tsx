@@ -48,6 +48,7 @@ import { ExportClipDialog } from "../dialogs/ExportClipDialog";
 import { ModelMetricsDialog } from "../dialogs/ModelMetricsDialog";
 import { SizeDistributionDialog } from "../dialogs/SizeDistributionDialog";
 import { LabelQcDialog } from "../dialogs/LabelQcDialog";
+import { OverlayModelsDialog } from "../dialogs/OverlayModelsDialog";
 import { ExportPackageDialog } from "../dialogs/ExportPackageDialog";
 import { ShortcutsDialog } from "../dialogs/ShortcutsDialog";
 import { LabelingTipsDialog } from "../dialogs/LabelingTipsDialog";
@@ -161,6 +162,10 @@ export function AppShell() {
   const labelQcDialogOpen = useAppStore((s) => s.labelQcDialogOpen);
   const setLabelQcDialogOpen = useAppStore((s) => s.setLabelQcDialogOpen);
   const modelOutputDirs = useTrainingStore((s) => s.modelOutputDirs);
+  const overlayModelsDialogOpen = useAppStore((s) => s.overlayModelsDialogOpen);
+  const setOverlayModelsDialogOpen = useAppStore(
+    (s) => s.setOverlayModelsDialogOpen
+  );
   const exportPackageDialogOpen = useAppStore((s) => s.exportPackageDialogOpen);
   const setExportPackageDialogOpen = useAppStore(
     (s) => s.setExportPackageDialogOpen
@@ -334,6 +339,10 @@ export function AppShell() {
       <LabelQcDialog
         open={labelQcDialogOpen}
         onOpenChange={setLabelQcDialogOpen}
+      />
+      <OverlayModelsDialog
+        open={overlayModelsDialogOpen}
+        onOpenChange={setOverlayModelsDialogOpen}
       />
       <ExportPackageDialog
         open={exportPackageDialogOpen}

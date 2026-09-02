@@ -85,6 +85,7 @@ import { hintIfPredictionsRemain, hintIfFirstNodeConfirm } from "@/lib/labelingH
 import { setLabelsAutosaveInteracting } from "@/lib/labelsAutosave";
 import { spacePanState } from "@/lib/spacePanTracking";
 import { getPlatform, isTauri } from "@/platform/index";
+import { spawnOverlayServe, killOverlayServe, detectGpu } from "@/platform/backend";
 import { Film, Frame, Hand, ImageOff, MousePointer2, Tag } from "lucide-react";
 
 /**
@@ -106,6 +107,9 @@ export function VideoPlayer() {
   const frameCanvasRef = useRef<HTMLCanvasElement>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
   const insetCanvasRef = useRef<HTMLCanvasElement>(null);
+  // Model-output overlay (confidence-map heatmap) layer — above the video image,
+  // below the skeleton overlay. Fed by the warm sleap-nn overlay sidecar.
+  const heatmapCanvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const crosshairRef = useRef<HTMLDivElement>(null);
 
@@ -144,6 +148,8 @@ export function VideoPlayer() {
   const lutMax = useAppStore((s) => s.lutMax);
   const colormap = useAppStore((s) => s.colormap);
   const rotation = useAppStore((s) => s.rotation);
+  const overlayModelOutputs = useAppStore((s) => s.overlayModelOutputs);
+  const overlayModelPaths = useAppStore((s) => s.overlayModelPaths);
   const defaultToPan = useAppStore((s) => s.defaultToPan);
   const fitSelection = useAppStore((s) => s.fitSelection);
   const resetViewNonce = useAppStore((s) => s.resetViewNonce);
@@ -305,6 +311,14 @@ export function VideoPlayer() {
   const [frameDims, setFrameDims] = useState<[number, number]>([0, 0]);
   // Counter to trigger frame canvas re-render when a new bitmap is loaded (even same dims)
   const [bitmapVersion, setBitmapVersion] = useState(0);
+  // Model-output overlay heatmap: the latest confidence-map bitmap + a version
+  // counter to trigger the draw effect. (Render spike: sidecar URL hardcoded to
+  // the standalone overlay-serve prototype; Phase-1 will get the port from the
+  // Rust-spawned sidecar instead.)
+  const overlayBitmapRef = useRef<ImageBitmap | null>(null);
+  const [overlayHeatmapVersion, setOverlayHeatmapVersion] = useState(0);
+  // Loopback port of the Rust-spawned overlay-serve sidecar (null until ready).
+  const [overlaySidecarPort, setOverlaySidecarPort] = useState<number | null>(null);
   // The current frame's image couldn't be read (resolved backend, but this one
   // frame's file is missing/unreadable). Drives a non-blocking per-frame
   // placeholder; distinct from a wholly-missing video (see isVideoMissing).
@@ -856,6 +870,138 @@ export function VideoPlayer() {
     }, 150);
     return () => clearTimeout(id);
   }, [bitmapVersion]);
+
+  // Spawn/kill the warm overlay-serve sidecar with the toggle (desktop-only). The
+  // returned loopback port feeds the compute effect below; the model loads once in
+  // the sidecar, so per-frame requests are just a forward pass.
+  useEffect(() => {
+    if (!overlayModelOutputs || !isTauri || overlayModelPaths.length === 0) {
+      setOverlaySidecarPort(null);
+      return;
+    }
+    let cancelled = false;
+    setOverlaySidecarPort(null);
+    (async () => {
+      try {
+        // Detect the accelerator (cuda/mps/cpu) so overlays work beyond Apple
+        // Silicon; the sidecar itself also falls back to cpu if that device
+        // fails to build.
+        const device = await detectGpu().catch(() => "cpu");
+        const port = await spawnOverlayServe(overlayModelPaths, device);
+        if (cancelled) {
+          await killOverlayServe();
+          return;
+        }
+        setOverlaySidecarPort(port);
+      } catch (err) {
+        console.error("[overlay] failed to start overlay-serve sidecar:", err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      void killOverlayServe();
+    };
+  }, [overlayModelOutputs, overlayModelPaths]);
+
+  // Model-output overlay (confidence map). Desktop-only, computed OFF the seek
+  // path like the histogram: on frame-settle (debounced, skipped while scrubbing)
+  // read back the current frame's pixels, POST them to the warm sleap-nn overlay
+  // sidecar, and build a colormapped heatmap bitmap the draw effect composites.
+  // Cleared when the toggle is off or the sidecar isn't ready/reachable.
+  useEffect(() => {
+    if (!overlayModelOutputs || overlaySidecarPort === null) {
+      if (overlayBitmapRef.current) {
+        overlayBitmapRef.current.close?.();
+        overlayBitmapRef.current = null;
+        setOverlayHeatmapVersion((v) => v + 1);
+      }
+      return;
+    }
+    if (useAppStore.getState().isScrubbing) return;
+    let cancelled = false;
+    const id = setTimeout(async () => {
+      const bmp = frameBitmapRef.current;
+      const offCtx = bmp?.getContext("2d");
+      if (!bmp || !offCtx) return;
+      try {
+        const w = bmp.width, h = bmp.height;
+        // Grayscale channel from the RGBA readback (R=G=B for a grayscale video).
+        const rgba = offCtx.getImageData(0, 0, w, h).data;
+        const gray = new Uint8Array(w * h);
+        for (let i = 0, j = 0; j < gray.length; i += 4, j++) gray[j] = rgba[i];
+        const header = new TextEncoder().encode(
+          JSON.stringify({ w, h, ch: 1, dtype: "uint8" }) + "\n",
+        );
+        const body = new Uint8Array(header.length + gray.length);
+        body.set(header, 0);
+        body.set(gray, header.length);
+        const resp = await fetch(`http://127.0.0.1:${overlaySidecarPort}/infer`, {
+          method: "POST",
+          body,
+        });
+        if (!resp.ok || cancelled) return;
+        const [ho, wo] = (resp.headers.get("X-Shape") || "0,0").split(",").map(Number);
+        const cm = new Uint8Array(await resp.arrayBuffer());
+        if (!ho || !wo || cm.length !== ho * wo) return;
+        // Hot ramp; alpha = confidence so low-confidence areas stay transparent.
+        const img = new ImageData(wo, ho);
+        const px = img.data;
+        for (let k = 0, p = 0; k < cm.length; k++, p += 4) {
+          const v = cm[k];
+          px[p] = Math.min(255, v * 3);
+          px[p + 1] = Math.max(0, Math.min(255, v * 3 - 255));
+          px[p + 2] = Math.max(0, Math.min(255, v * 3 - 510));
+          px[p + 3] = v;
+        }
+        const bitmap = await createImageBitmap(img);
+        if (cancelled) { bitmap.close(); return; }
+        overlayBitmapRef.current?.close?.();
+        overlayBitmapRef.current = bitmap;
+        setOverlayHeatmapVersion((v) => v + 1);
+      } catch {
+        // Sidecar down / fetch failed — keep whatever's on screen, try next frame.
+      }
+    }, 200);
+    return () => { cancelled = true; clearTimeout(id); };
+  }, [bitmapVersion, overlayModelOutputs, overlaySidecarPort]);
+
+  // Draw the model-output heatmap: a layer above the video image, below the
+  // skeleton overlay. Same fit + zoom/pan + rotation transform as the frame, so
+  // the confmap (at output stride/scale) upscales to align with the frame pixels.
+  useEffect(() => {
+    const canvas = heatmapCanvasRef.current;
+    if (!canvas) return;
+    const [cw, ch] = containerSize;
+    if (cw === 0 || ch === 0) return;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = cw * dpr;
+    canvas.height = ch * dpr;
+    canvas.style.width = `${cw}px`;
+    canvas.style.height = `${ch}px`;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, cw, ch);
+    const bitmap = overlayBitmapRef.current;
+    if (!overlayModelOutputs || !bitmap || fw === 0 || fh === 0) return;
+    ctx.save();
+    ctx.translate(offsetX + panX, offsetY + panY);
+    ctx.scale(baseScale * zoom, baseScale * zoom);
+    if (rotation === 90) {
+      ctx.translate(fh, 0);
+      ctx.rotate(Math.PI / 2);
+    } else if (rotation === 180) {
+      ctx.translate(fw, fh);
+      ctx.rotate(Math.PI);
+    } else if (rotation === 270) {
+      ctx.translate(0, fw);
+      ctx.rotate((3 * Math.PI) / 2);
+    }
+    ctx.imageSmoothingEnabled = true;
+    ctx.globalAlpha = 0.6;
+    ctx.drawImage(bitmap, 0, 0, fw, fh);
+    ctx.restore();
+  }, [overlayHeatmapVersion, overlayModelOutputs, frameDims, containerSize, zoom, panX, panY, baseScale, offsetX, offsetY, rotation]);
 
   // Render the frame with fit-to-window base transform + user zoom/pan
   useEffect(() => {
@@ -2777,6 +2923,11 @@ export function VideoPlayer() {
         <canvas
           ref={frameCanvasRef}
           className="absolute inset-0"
+        />
+        {/* Model-output overlay (confidence-map heatmap) — above video, below skeleton */}
+        <canvas
+          ref={heatmapCanvasRef}
+          className="absolute inset-0 pointer-events-none"
         />
         {/* Skeleton overlay layer */}
         <canvas

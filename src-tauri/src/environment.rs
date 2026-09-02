@@ -1107,6 +1107,164 @@ pub async fn stop_zmq_relay(
     Ok(())
 }
 
+/// Start the warm sleap-nn `overlay-serve` sidecar (model-output overlays).
+///
+/// Resolves the app's sleap-nn venv Python and the bundled `overlay-serve` script,
+/// spawns it with the chosen model dirs (`OVERLAY_MODELS`, os-pathsep-joined) +
+/// device, then reads stdout until the `OVERLAY_SERVE_READY port=<n>` line and
+/// returns the port. The app then fetches confmaps from
+/// `http://127.0.0.1:<port>/infer`. The model loads ONCE in the sidecar (warmed with
+/// a synthetic frame — no video), so per-frame requests are just a forward pass.
+#[tauri::command]
+pub async fn start_overlay_serve<R: Runtime>(
+    app: AppHandle<R>,
+    model_paths: Vec<String>,
+    device: String,
+    overlay: tauri::State<'_, crate::OverlayServe>,
+) -> Result<u16, String> {
+    // Kill any sidecars we already own (previous toggle / racing spawn).
+    {
+        let mut guard = overlay.0.lock().map_err(|e| e.to_string())?;
+        for mut child in guard.drain(..) {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+
+    if model_paths.is_empty() {
+        return Err("No overlay model directories provided".into());
+    }
+
+    // Resolve sleap-nn's venv Python (same env inference uses) + the bundled script.
+    let python = resolve_sleap_nn_python(&app).await?;
+    let script = {
+        use tauri::Manager;
+        match app
+            .path()
+            .resolve("resources/overlay_serve.py", tauri::path::BaseDirectory::Resource)
+        {
+            Ok(p) if p.exists() => p,
+            _ => {
+                // Dev fallback (tauri dev may not stage resources): manifest-relative.
+                let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("resources/overlay_serve.py");
+                if dev.exists() {
+                    dev
+                } else {
+                    return Err("overlay-serve script not found (resource + dev fallback)".into());
+                }
+            }
+        }
+    };
+    let models_joined = std::env::join_paths(model_paths.iter())
+        .map_err(|e| format!("Invalid model path: {}", e))?;
+
+    log::info!(
+        "[overlay-serve] starting: {} {} (models: {:?})",
+        python.display(),
+        script.display(),
+        model_paths
+    );
+    let mut child = std::process::Command::new(&python)
+        .arg("-u")
+        .arg(&script)
+        .env_clear()
+        .envs(child_env())
+        .env("OVERLAY_MODELS", &models_joined)
+        .env("OVERLAY_DEVICE", &device)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to spawn overlay-serve: {}", e))?;
+
+    // Read stdout until the READY handshake. Model load + warmup can take
+    // ~10-20s; earlier lines (load logs / warnings) are skipped.
+    let mut port: Option<u16> = None;
+    let mut device_used: Option<String> = None;
+    if let Some(ref mut stdout) = child.stdout {
+        use std::io::BufRead;
+        let reader = std::io::BufReader::new(stdout);
+        for line in reader.lines() {
+            let line = match line {
+                Ok(l) => l,
+                Err(e) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!("Failed to read overlay-serve stdout: {}", e));
+                }
+            };
+            if let Some(rest) = line.strip_prefix("OVERLAY_SERVE_READY port=") {
+                // rest = "<port> device=<cuda|mps|cpu>" (device optional/older scripts)
+                let mut parts = rest.split_whitespace();
+                port = parts.next().and_then(|p| p.parse::<u16>().ok());
+                device_used = parts.find_map(|t| t.strip_prefix("device=").map(str::to_string));
+                break;
+            }
+        }
+    }
+
+    let port = match port {
+        Some(p) => p,
+        None => {
+            let stderr_msg = child
+                .stderr
+                .as_mut()
+                .map(|se| {
+                    use std::io::Read;
+                    let mut buf = String::new();
+                    let _ = se.read_to_string(&mut buf);
+                    buf
+                })
+                .unwrap_or_default();
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!(
+                "overlay-serve did not report a ready port. {}",
+                stderr_msg.trim()
+            ));
+        }
+    };
+
+    // Detach pipes so the sidecar never blocks on a full stdout/stderr buffer.
+    child.stdout.take();
+    child.stderr.take();
+
+    {
+        let mut guard = overlay.0.lock().map_err(|e| e.to_string())?;
+        // Kill any sidecar a racing spawn stored before tracking this one, so a
+        // dev double-mount leaves exactly one live sidecar (never an orphan).
+        for mut old in guard.drain(..) {
+            let _ = old.kill();
+            let _ = old.wait();
+        }
+        guard.push(child);
+    }
+    log::info!(
+        "[overlay-serve] ready on port {} (device={})",
+        port,
+        device_used.as_deref().unwrap_or("?")
+    );
+    Ok(port)
+}
+
+/// Kill all overlay-serve sidecars we own.
+#[tauri::command]
+pub async fn stop_overlay_serve(
+    overlay: tauri::State<'_, crate::OverlayServe>,
+) -> Result<(), String> {
+    let mut guard = overlay.0.lock().map_err(|e| e.to_string())?;
+    let mut n = 0;
+    for mut child in guard.drain(..) {
+        let _ = child.kill();
+        let _ = child.wait();
+        n += 1;
+    }
+    if n > 0 {
+        log::info!("[overlay-serve] stopped {} sidecar(s)", n);
+    }
+    Ok(())
+}
+
 /// Start a ZMQ SUB relay that BINDS port 9001 and forwards every training-progress
 /// message published by sleap-nn (ProgressReporterZMQ) to the frontend as a
 /// "training-progress" Tauri event. sleap-nn's PUB CONNECTs to 9001, so the SUB binds.
