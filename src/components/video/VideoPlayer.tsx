@@ -980,6 +980,88 @@ export function VideoPlayer() {
     }
   }, [skeletonBuildMode, skeleton, overlayVersion]);
 
+  // Rendered-instance geometry (image-pixel coords + colors). Memoized so a mere
+  // hover / zoom / pan / node-selection change does NOT rebuild it — the build
+  // reads every point through sleap-io's proxy-point getters (a fresh PointView[]
+  // per instance + a new xy array per read), which was the dominant cost of the
+  // per-hover overlay re-run on dense predicted / fromPredicted frames. Recomputes
+  // only when the frame, its instances (overlayVersion), the video crop, colors,
+  // or visibility actually change.
+  const renderedInstances = useMemo<RenderedInstance[]>(() => {
+    if (!labeledFrame || !showInstances) return [];
+    const tracks = labels?.tracks ?? [];
+    const frameInstanceTracks = labeledFrame.instances.map((i) => i.track);
+    const resolvedColorTarget = resolveColorTarget(distinctlyColor, projectHasTracks);
+    const vis = { showInstances, hiddenInstances, viewOnlyInstance, showNonVisibleOverride };
+    return labeledFrame.instances.map((inst, idx) => {
+      const isPredicted = inst instanceof PredictedInstance;
+      const skeleton = inst.skeleton;
+      const color = getInstanceColor(
+        palette, distinctlyColor, idx, inst.track, tracks, isPredicted, colorPredicted, projectHasTracks, frameInstanceTracks
+      );
+
+      // Per-node colors when (resolved) distinctlyColor === "node"
+      const nodeColors = resolvedColorTarget === "node" && !(isPredicted && !colorPredicted)
+        ? skeleton.nodes.map((_, nIdx) => getPaletteColor(palette, nIdx))
+        : undefined;
+
+      // Per-edge colors when (resolved) distinctlyColor === "edge"
+      const edgeIndices = skeleton.edgeIndices;
+      const edgeColors = resolvedColorTarget === "edge" && !(isPredicted && !colorPredicted)
+        ? edgeIndices.map((_, eIdx) => getPaletteColor(palette, eIdx))
+        : undefined;
+
+      const nodes: RenderedNode[] = inst.points.map((point, nIdx) => {
+        // Cropped videos store points in SOURCE coords; translate into the
+        // displayed crop-local image space so they overlay the cropped frame.
+        // Identity for uncropped videos. (cropped pkg.slp / SLP-2.3)
+        const [nx, ny] = toImageCoords(video, point.xy[0], point.xy[1]);
+        return {
+          x: nx,
+          y: ny,
+          visible: point.visible && !isNaN(point.xy[0]),
+          complete: point.complete,
+          name: skeleton.nodes[nIdx]?.name ?? `node_${nIdx}`,
+          score: point.score,
+        };
+      });
+
+      const edges = edgeIndices.map(
+        ([srcIdx, dstIdx]) =>
+          ({ srcIdx, dstIdx }) as { srcIdx: number; dstIdx: number }
+      );
+
+      return {
+        nodes,
+        edges,
+        color,
+        nodeColors,
+        edgeColors,
+        isPredicted,
+        isSelected: inst === selectedInstance,
+        trackName: inst.track?.name ?? null,
+        score: isPredicted ? inst.score : undefined,
+        visible: instanceVisible(vis, inst),
+        showNonVisible: instanceShowsNonVisible(vis, inst, showNonVisibleNodes),
+      };
+    });
+  }, [
+    labeledFrame,
+    showInstances,
+    labels,
+    distinctlyColor,
+    projectHasTracks,
+    palette,
+    colorPredicted,
+    selectedInstance,
+    hiddenInstances,
+    viewOnlyInstance,
+    showNonVisibleOverride,
+    showNonVisibleNodes,
+    video,
+    overlayVersion,
+  ]);
+
   useEffect(() => {
     const canvas = overlayCanvasRef.current;
     if (!canvas) return;
@@ -1086,66 +1168,9 @@ export function VideoPlayer() {
       return;
     }
 
-    // Build renderable instances
-    const tracks = labels?.tracks ?? [];
-    const frameInstanceTracks = labeledFrame.instances.map((i) => i.track);
-    const resolvedColorTarget = resolveColorTarget(distinctlyColor, projectHasTracks);
-    const vis = { showInstances, hiddenInstances, viewOnlyInstance, showNonVisibleOverride };
-    const instances: RenderedInstance[] = labeledFrame.instances.map(
-      (inst, idx) => {
-        const isPredicted = inst instanceof PredictedInstance;
-        const skeleton = inst.skeleton;
-        const color = getInstanceColor(
-          palette, distinctlyColor, idx, inst.track, tracks, isPredicted, colorPredicted, projectHasTracks, frameInstanceTracks
-        );
-
-        // Per-node colors when (resolved) distinctlyColor === "node"
-        const nodeColors = resolvedColorTarget === "node" && !(isPredicted && !colorPredicted)
-          ? skeleton.nodes.map((_, nIdx) => getPaletteColor(palette, nIdx))
-          : undefined;
-
-        // Per-edge colors when (resolved) distinctlyColor === "edge"
-        const edgeIndices = skeleton.edgeIndices;
-        const edgeColors = resolvedColorTarget === "edge" && !(isPredicted && !colorPredicted)
-          ? edgeIndices.map((_, eIdx) => getPaletteColor(palette, eIdx))
-          : undefined;
-
-        const nodes: RenderedNode[] = inst.points.map((point, nIdx) => {
-          // Cropped videos store points in SOURCE coords; translate into the
-          // displayed crop-local image space so they overlay the cropped frame.
-          // Identity for uncropped videos. (cropped pkg.slp / SLP-2.3)
-          const [nx, ny] = toImageCoords(video, point.xy[0], point.xy[1]);
-          return {
-            x: nx,
-            y: ny,
-            visible: point.visible && !isNaN(point.xy[0]),
-            complete: point.complete,
-            name: skeleton.nodes[nIdx]?.name ?? `node_${nIdx}`,
-            score: point.score,
-          };
-        });
-
-        const edges = edgeIndices.map(
-          ([srcIdx, dstIdx]) =>
-            ({ srcIdx, dstIdx }) as { srcIdx: number; dstIdx: number }
-        );
-
-        return {
-          nodes,
-          edges,
-          color,
-          nodeColors,
-          edgeColors,
-          isPredicted,
-          isSelected: inst === selectedInstance,
-          trackName: inst.track?.name ?? null,
-          score: isPredicted ? inst.score : undefined,
-          visible: instanceVisible(vis, inst),
-          showNonVisible: instanceShowsNonVisible(vis, inst, showNonVisibleNodes),
-        };
-      }
-    );
-
+    // Geometry is memoized (see `renderedInstances` above) — hover/zoom/pan
+    // re-runs of this effect repaint from the cache instead of rebuilding.
+    const instances = renderedInstances;
     renderedInstancesRef.current = instances;
 
     // Apply fit-to-window base transform + user zoom/pan + rotation
@@ -1277,6 +1302,7 @@ export function VideoPlayer() {
 
     ctx.restore();
   }, [
+    renderedInstances,
     labeledFrame,
     selectedInstance,
     showInstances,
@@ -2300,8 +2326,10 @@ export function VideoPlayer() {
       );
 
       if (hit) {
-        const prevIdx = hoveredNode?.instanceIdx;
-        const prevNode = hoveredNode?.nodeIdx;
+        // Hover no longer bumps overlayVersion: that fanned a re-render storm to
+        // ~6 unrelated subscribers (Seekbar/MenuBar/TrainingPanel/…). The overlay
+        // effect already redraws the hover highlight via its `hoveredNode` dep,
+        // and geometry is memoized, so this repaints from cache — no rebuild.
         setHoveredNode({
           instanceIdx: hit.instanceIdx,
           nodeIdx: hit.nodeIdx,
@@ -2309,13 +2337,9 @@ export function VideoPlayer() {
           clientY: e.clientY,
         });
         if (hoveredInstanceIdx) setHoveredInstanceIdx(null);
-        if (prevIdx !== hit.instanceIdx || prevNode !== hit.nodeIdx) {
-          useAppStore.getState().bumpOverlayVersion();
-        }
       } else {
         if (hoveredNode) {
           setHoveredNode(null);
-          useAppStore.getState().bumpOverlayVersion();
         }
         // #346: not on a node, but maybe still on the instance's body — same
         // centroid-distance test used for click-to-select (instanceThreshold
