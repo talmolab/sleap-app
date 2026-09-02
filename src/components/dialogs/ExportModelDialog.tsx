@@ -38,6 +38,7 @@ export function ExportModelDialog() {
   const outputDir = useExportStore((s) => s.outputDir);
   const modelPaths = useExportStore((s) => s.modelPaths);
   const setModelPaths = useExportStore((s) => s.setModelPaths);
+  const addModelPaths = useExportStore((s) => s.addModelPaths);
   const close = useExportStore((s) => s.close);
   const startExport = useExportStore((s) => s.startExport);
 
@@ -72,10 +73,14 @@ export function ExportModelDialog() {
   const handleAddModelDir = async () => {
     try {
       const { open: tauriOpen } = await import("@tauri-apps/plugin-dialog");
-      const selected = await tauriOpen({ directory: true, title: "Select trained-model directory" });
-      if (typeof selected === "string" && !modelPaths.includes(selected)) {
-        setModelPaths([...modelPaths, selected]);
-      }
+      const selected = await tauriOpen({
+        directory: true,
+        multiple: true,
+        title: "Select trained-model directory (two for a top-down bundle)",
+      });
+      // `multiple` yields string[]; guard the single/cancelled shapes too.
+      const picked = Array.isArray(selected) ? selected : selected ? [selected] : [];
+      if (picked.length > 0) addModelPaths(picked);
     } catch {
       /* cancelled */
     }

@@ -23,6 +23,12 @@ interface ExportState {
   openExport: (modelPaths: string[]) => void;
   /** Replace the run directories to export (used by the in-dialog model picker). */
   setModelPaths: (paths: string[]) => void;
+  /**
+   * Append run directories from the in-dialog picker, deduping against the
+   * existing selection and within the incoming batch. Lets a top-down bundle
+   * (centroid + centered_instance) be picked in a single multi-select dialog.
+   */
+  addModelPaths: (paths: string[]) => void;
   close: () => void;
   startExport: (format: ExportFormat, precision: ExportPrecision) => Promise<void>;
 }
@@ -58,6 +64,15 @@ export const useExportStore = create<ExportState>((set, get) => ({
     set({ open: true, modelPaths, status: "idle", log: [], outputDir: null }),
 
   setModelPaths: (paths) => set({ modelPaths: paths }),
+
+  addModelPaths: (paths) =>
+    set((s) => {
+      const merged = [...s.modelPaths];
+      for (const p of paths) {
+        if (!merged.includes(p)) merged.push(p);
+      }
+      return { modelPaths: merged };
+    }),
 
   close: () => set({ open: false }),
 

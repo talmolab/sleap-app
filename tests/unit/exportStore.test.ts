@@ -17,6 +17,23 @@ describe("useExportStore model paths", () => {
     useExportStore.getState().setModelPaths(["/models/a", "/models/b"]);
     expect(useExportStore.getState().modelPaths).toEqual(["/models/a", "/models/b"]);
   });
+
+  it("addModelPaths appends a multi-select batch to the existing dirs", () => {
+    useExportStore.getState().openExport(["/models/a"]);
+    // A top-down bundle: user picks both remaining run dirs in one native dialog.
+    useExportStore.getState().addModelPaths(["/models/b", "/models/c"]);
+    expect(useExportStore.getState().modelPaths).toEqual([
+      "/models/a",
+      "/models/b",
+      "/models/c",
+    ]);
+  });
+
+  it("addModelPaths dedupes against existing and within the incoming batch", () => {
+    useExportStore.getState().openExport(["/models/a"]);
+    useExportStore.getState().addModelPaths(["/models/a", "/models/b", "/models/b"]);
+    expect(useExportStore.getState().modelPaths).toEqual(["/models/a", "/models/b"]);
+  });
 });
 
 describe("defaultExportOutputDir", () => {
