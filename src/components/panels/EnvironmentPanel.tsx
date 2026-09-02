@@ -246,20 +246,22 @@ function ToolActions({
 const UPDATE_CHANNELS: {
   value: UpdateChannel;
   label: string;
-  shortLabel: string;
 }[] = [
-  { value: "stable", label: "Stable", shortLabel: "Stable" },
-  { value: "latest", label: "Latest", shortLabel: "Latest" },
-  { value: "dev", label: "Dev (main)", shortLabel: "Dev" },
+  { value: "stable", label: "Stable" },
+  { value: "latest", label: "Latest" },
+  { value: "dev", label: "Dev (main)" },
 ];
 
 // classifyVersion / VERSION_KIND_LABEL now live in @/lib/version, because the
 // About dialog and the web menu-bar wordmark need the same wording -- see the
-// import at the top of this file. What they describe is unchanged: the kind of
-// build ACTUALLY running, which is distinct from channelShortLabel above (the
-// channel currently selected in the dropdown, a preference that can point at a
-// different version than what's installed, e.g. right after switching channels
-// but before clicking Update/Switch).
+// import at the top of this file. What they describe is the kind of build
+// ACTUALLY running, which is why the badge next to the version is derived from
+// the version string and NOT from the channel selected above: the dropdown is
+// a preference that can point at a different version than what's installed
+// (e.g. right after switching channels but before clicking Update/Switch), so
+// echoing it beside the version made the label appear to change the build the
+// moment the selection changed. The selected channel is shown once, on the
+// Channel row, where it reads as the preference it is.
 
 // Base (major.minor.patch) comparison only -- ignores pre-release/build
 // metadata, since that's all that's needed to tell whether switching
@@ -298,11 +300,19 @@ export function isOlderVersion(target: string, current: string): boolean {
 // reusing the word "dev" for both.
 const isLocalBuild = import.meta.env.DEV;
 
-function AppUpdateSection() {
+// Exported for tests only (environmentPanelChannelLabel.test.tsx); the panel
+// itself renders it below.
+export function AppUpdateSection() {
   const [version, setVersion] = useState<string | null>(null);
   const [pendingUpdate, setPendingUpdate] = useState<PendingUpdate | null>(null);
   const [updating, setUpdating] = useState(false);
   const [checking, setChecking] = useState(false);
+  // Why the last check failed, or null if it didn't. Rendered on row 1 with
+  // a Retry -- a check that fails has to SAY so. It used to only
+  // console.warn, which meant the panel showed a version, no "up to date",
+  // and a greyed-out Channel dropdown, with nothing anywhere explaining
+  // that anything had gone wrong.
+  const [checkError, setCheckError] = useState<string | null>(null);
   const channel = useAppStore((s) => s.updateChannel);
   const setChannel = useAppStore((s) => s.setUpdateChannel);
 
@@ -328,6 +338,7 @@ function AppUpdateSection() {
     const requestId = ++requestIdRef.current;
     setChecking(true);
     setPendingUpdate(null);
+    setCheckError(null);
     try {
       const update = await checkUpdateCached(ch, { force, allowDowngrade: true });
       if (requestIdRef.current !== requestId) return; // superseded — drop it
@@ -344,6 +355,7 @@ function AppUpdateSection() {
     } catch (err) {
       if (requestIdRef.current !== requestId) return;
       console.warn("[env] App update check failed:", err);
+      setCheckError(err instanceof Error ? err.message : String(err));
     } finally {
       if (requestIdRef.current === requestId) setChecking(false);
     }
@@ -438,8 +450,6 @@ function AppUpdateSection() {
     !!version &&
     !!latestVersion &&
     isOlderVersion(latestVersion, version);
-  const channelShortLabel =
-    UPDATE_CHANNELS.find((c) => c.value === channel)?.shortLabel ?? channel;
   // Dev-channel builds live under a single rolling `dev` release tag,
   // not their own `v{version}` tag, so there's no per-version release page to
   // link to (unlike stable/latest, which are always a real GitHub Release).
@@ -459,13 +469,7 @@ function AppUpdateSection() {
         <StatusIcon ok={!!version} />
         <span className="text-xs font-medium">sleap-app</span>
         {version && (
-          <span className="text-xs text-muted-foreground">
-            v{version}
-            <span className="text-muted-foreground/70">
-              {" "}
-              · {channelShortLabel}
-            </span>
-          </span>
+          <span className="text-xs text-muted-foreground">v{version}</span>
         )}
         {version && (
           <Badge
@@ -485,11 +489,35 @@ function AppUpdateSection() {
             local build
           </Badge>
         )}
+        {checking && (
+          <span className="flex items-center gap-1 text-xs text-muted-foreground">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            Checking...
+          </span>
+        )}
+        {/* A failed check leaves pendingUpdate null, which the "up to date"
+            branch below is otherwise indistinguishable from -- so without
+            this the panel would cheerfully report "up to date" on the
+            strength of a check that never completed. Report the failure and
+            offer a retry instead; the full message (which can be actionable,
+            e.g. "no full release has a latest.json manifest yet") is in the
+            tooltip, since the sidebar has no room to spell it out inline. */}
+        {!checking && checkError && (
+          <span className="flex items-center gap-1.5 text-xs text-amber-500">
+            <span title={checkError}>Update check failed</span>
+            <button
+              onClick={() => void runCheck(channel, true)}
+              className="text-[10px] underline underline-offset-2 hover:text-foreground transition-colors"
+            >
+              Retry
+            </button>
+          </span>
+        )}
         {/* A local build can't install anything (Update stays disabled
             below), so "→ vX" here would read as actionable when it isn't.
             "up to date" still shows -- that's just informational either
             way. */}
-        {latestVersion && !(isLocalBuild && updateAvailable) && (
+        {!checking && !checkError && latestVersion && !(isLocalBuild && updateAvailable) && (
           <span
             className={cn(
               "text-xs",
@@ -531,10 +559,19 @@ function AppUpdateSection() {
         )}
       >
         <span className="text-[10px] text-muted-foreground">Channel</span>
+        {/* Deliberately NOT disabled while `checking`. It used to be, and a
+            check that never settled (a hung request, or -- before the
+            rustls crash fix -- a panic in the check_update command, which
+            leaves the invoke promise unresolved forever) left this control
+            greyed out permanently with no spinner or error to explain it.
+            Switching mid-check is safe anyway: requestIdRef already drops
+            any superseded response. `updating` still disables it, since
+            changing channel while an installer is being applied is
+            genuinely incoherent. */}
         <Select
           value={channel}
           onValueChange={(v) => setChannel(v as UpdateChannel)}
-          disabled={checking || updating || isLocalBuild}
+          disabled={updating || isLocalBuild}
         >
           <SelectTrigger className="h-5 w-auto gap-1 px-1.5 text-[10px]">
             <SelectValue />

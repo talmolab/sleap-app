@@ -206,9 +206,10 @@ jobs:
             # release does, refreshed on the exact same cadence (nightly or
             # manual), never on every plain push.
             #
-            # The dev version is BASE+<run_number>.<sha>, computed inside
-            # build-dev.yml against ITS OWN run number -- which is unknowable
-            # from here, so recomputing it would be guesswork. Read the value
+            # The dev version is BASE+<count>.<sha>, computed inside
+            # build-dev.yml from the commits `main` has advanced past its own
+            # BASE tag -- which depends on when that build ran, so recomputing
+            # it here would be guesswork. Read the value
             # that build actually stamped straight out of the `dev` release's
             # latest.json instead: that is the same manifest the desktop
             # updater consumes, so /dev/ and the desktop dev build report
