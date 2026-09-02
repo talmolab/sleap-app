@@ -96,7 +96,7 @@ export function StatusBar() {
               type="button"
               title={`Go to frame (${formatShortcut(DEFAULT_SHORTCUTS["goto frame"])})`}
               onClick={() => useAppStore.getState().setGoToFrameDialogOpen(true)}
-              className="tabular-nums whitespace-nowrap cursor-pointer rounded-sm px-1 -mx-1 hover:text-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="tabular-nums whitespace-nowrap cursor-pointer select-none rounded-sm px-1 -mx-1 hover:text-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
               {/* 0-based frame index (matches the seekbar/overlay convention). */}
               Frame {frameIdx.toLocaleString()}
