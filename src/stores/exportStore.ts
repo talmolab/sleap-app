@@ -25,10 +25,17 @@ interface ExportState {
   startExport: (format: ExportFormat, precision: ExportPrecision) => Promise<void>;
 }
 
-/** Default export output dir: `<first model dir>/exported` (sleap-nn's own default). */
+/**
+ * Default export output dir: `<run dirs' parent>/exported` (e.g. `models/exported`).
+ * A top-down export bundles BOTH heads (centroid + centered_instance) into a single
+ * `model.onnx`, so nesting it under the first (centroid) run dir read as "centroid
+ * only". Placing it in the parent keeps it neutral. Falls back to `<dir>/exported`
+ * when the first path has no parent segment.
+ */
 export function defaultExportOutputDir(modelPaths: string[]): string {
   const first = (modelPaths[0] ?? "").replace(/[/\\]+$/, "");
-  return `${first}/exported`;
+  const parent = first.replace(/[/\\][^/\\]+$/, "");
+  return `${parent && parent !== first ? parent : first}/exported`;
 }
 
 /** True if the export log shows onnx/onnxruntime is missing (the [export] extra isn't installed). */

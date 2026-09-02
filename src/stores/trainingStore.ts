@@ -1902,7 +1902,12 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
           const { runExport } = await import("@/platform/backend");
           const { defaultExportOutputDir } = await import("@/stores/exportStore");
           const outputDir = defaultExportOutputDir(trainedModelPaths);
-          set((s) => ({ log: appendLog(s.log, `— Exporting trained model to ${exportFormat.toUpperCase()} → ${outputDir}...`) }));
+          // List the run dirs being bundled so a top-down export reads clearly as
+          // both heads (e.g. "centroid.n=1 + centered_instance.n=1"), not centroid-only.
+          const exportRunNames = trainedModelPaths
+            .map((d) => d.replace(/[/\\]+$/, "").split(/[/\\]/).pop())
+            .join(" + ");
+          set((s) => ({ log: appendLog(s.log, `— Exporting trained model to ${exportFormat.toUpperCase()} (${exportRunNames}) → ${outputDir}...`) }));
           const exportLogEvent = (event: import("@/platform/backend").ProcessEvent) => {
             if (event.event === "stdout" || event.event === "stderr") {
               const line = event.data.line;
