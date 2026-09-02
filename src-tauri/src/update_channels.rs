@@ -9,18 +9,32 @@
 //! call on the Rust side. The frontend only ever sends a channel name — never
 //! a URL — and this module maps it to a manifest.
 //!
-//! `stable` and `dev` are simple static manifest URLs. `dev` is a rolling
-//! GitHub Release (tag `dev`) that build-dev.yml replaces on every
-//! push to `main`.
+//! `dev` is a simple static manifest URL: a rolling GitHub Release (tag
+//! `dev`) that build-dev.yml replaces on every push to `main`, so the URL
+//! never changes and always has a manifest.
 //!
-//! `latest` ("pre-release or release, whichever is newest") is resolved
-//! DYNAMICALLY on every check by querying the GitHub Releases API directly
-//! for whichever non-draft release/pre-release is newest AND actually has a
-//! `latest.json` asset (this also skips releases like v0.1.0/v0.1.1, which
-//! shipped with none). There is deliberately no CI-maintained rolling
-//! "latest" release to go stale or need bootstrapping — this always reflects
-//! whatever is really on GitHub Releases right now, including releases
-//! published before this channel system existed.
+//! `stable` and `latest` are both resolved DYNAMICALLY on every check by
+//! querying the GitHub Releases API for whichever non-draft release is
+//! newest AND actually has a `latest.json` asset -- `latest` over releases
+//! and pre-releases alike, `stable` over full releases only. There is
+//! deliberately no CI-maintained rolling release for either to go stale or
+//! need bootstrapping: this always reflects whatever is really on GitHub
+//! Releases right now, including releases published before this channel
+//! system existed.
+//!
+//! `stable` used to be the static `releases/latest/download/latest.json`,
+//! which resolves to whatever GitHub itself calls the latest release -- the
+//! newest NON-pre-release, with no regard for whether it carries a manifest.
+//! v0.1.0 and v0.1.1 shipped before updater artifacts existed, so that URL
+//! 404'd for every user on the default channel, and would 404 again for any
+//! future full release published without a `latest.json` (e.g. one whose
+//! platform legs failed). Filtering on the asset skips those and falls back
+//! to the newest full release that CAN actually be installed. The cost is
+//! one GitHub API call per check where there used to be none; the
+//! frontend's 1h cache (src/lib/updateCheckCache.ts) holds that to roughly
+//! one call per hour per channel per session.
+
+use std::time::Duration;
 
 use semver::Version;
 use serde::{Deserialize, Serialize};
@@ -29,8 +43,6 @@ use tauri_plugin_updater::{Updater, UpdaterExt};
 
 const REPO: &str = "talmolab/sleap-app";
 
-const ENDPOINT_STABLE: &str =
-    "https://github.com/talmolab/sleap-app/releases/latest/download/latest.json";
 const ENDPOINT_DEV: &str =
     "https://github.com/talmolab/sleap-app/releases/download/dev/latest.json";
 
@@ -43,6 +55,7 @@ struct GhAsset {
 struct GhRelease {
     tag_name: String,
     draft: bool,
+    prerelease: bool,
     assets: Vec<GhAsset>,
 }
 
@@ -67,11 +80,42 @@ fn parse_tag_version(tag: &str) -> Option<Version> {
     Some(version)
 }
 
-/// Finds whichever non-draft release/pre-release is newest AND has a
-/// `latest.json` asset, and returns that release's own manifest URL.
-async fn resolve_latest_endpoint() -> Result<url::Url, String> {
+/// Picks the installable release for a channel: newest by version among
+/// non-draft releases that carry a `latest.json` manifest, restricted to
+/// full releases when `full_releases_only`.
+///
+/// Split out from the HTTP call above purely so it can be tested -- it is
+/// the whole of what distinguishes `stable` from `latest`, and getting the
+/// manifest filter wrong is what made `stable` 404.
+fn pick_release(releases: &[GhRelease], full_releases_only: bool) -> Option<&GhRelease> {
+    releases
+        .iter()
+        .filter(|r| !r.draft)
+        .filter(|r| !(full_releases_only && r.prerelease))
+        .filter(|r| r.assets.iter().any(|a| a.name == "latest.json"))
+        .filter_map(|r| parse_tag_version(&r.tag_name).map(|v| (v, r)))
+        .max_by(|(v1, _), (v2, _)| v1.cmp(v2))
+        .map(|(_, r)| r)
+}
+
+/// How long any single update-related network call may take. Without this,
+/// a connection that stalls rather than refuses (flaky wifi, a captive
+/// portal, a proxy that blackholes) leaves the check pending indefinitely --
+/// and a `check_update` that never returns used to leave the Environment
+/// panel's channel dropdown disabled forever, with no spinner or error to
+/// say why (see EnvironmentPanel.tsx). Every failure mode has to be
+/// observable, so every one of them has to terminate.
+const NETWORK_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Finds whichever non-draft release is newest AND has a `latest.json`
+/// asset, and returns that release's own manifest URL.
+///
+/// `full_releases_only` picks the channel: `false` considers releases and
+/// pre-releases alike (`latest`), `true` only full releases (`stable`).
+async fn resolve_release_endpoint(full_releases_only: bool) -> Result<url::Url, String> {
     let client = reqwest::Client::builder()
         .user_agent("sleap-app-updater")
+        .timeout(NETWORK_TIMEOUT)
         .build()
         .map_err(|e| e.to_string())?;
 
@@ -104,17 +148,20 @@ async fn resolve_latest_endpoint() -> Result<url::Url, String> {
         page += 1;
     }
 
-    let best = releases
-        .iter()
-        .filter(|r| !r.draft)
-        .filter(|r| r.assets.iter().any(|a| a.name == "latest.json"))
-        .filter_map(|r| parse_tag_version(&r.tag_name).map(|v| (v, r)))
-        .max_by(|(v1, _), (v2, _)| v1.cmp(v2))
-        .map(|(_, r)| r)
-        .ok_or_else(|| {
-            "no GitHub release has both a valid version tag and a latest.json manifest"
+    let best = pick_release(&releases, full_releases_only).ok_or_else(|| {
+        // Reachable today on `stable`: every release carrying a
+        // latest.json so far is a pre-release. Say so plainly -- the
+        // frontend surfaces this string, and "no stable release yet"
+        // is a state to explain, not an error to look broken.
+        if full_releases_only {
+            "no full release has a latest.json manifest yet (only pre-releases do) \
+                 -- switch to the Latest or Dev channel to get builds before the first \
+                 stable release"
                 .to_string()
-        })?;
+        } else {
+            "no GitHub release has both a valid version tag and a latest.json manifest".to_string()
+        }
+    })?;
 
     url::Url::parse(&format!(
         "https://github.com/{REPO}/releases/download/{}/latest.json",
@@ -125,8 +172,8 @@ async fn resolve_latest_endpoint() -> Result<url::Url, String> {
 
 async fn endpoint_for(channel: &str) -> Result<url::Url, String> {
     match channel {
-        "stable" => url::Url::parse(ENDPOINT_STABLE).map_err(|e| e.to_string()),
-        "latest" => resolve_latest_endpoint().await,
+        "stable" => resolve_release_endpoint(true).await,
+        "latest" => resolve_release_endpoint(false).await,
         "dev" => url::Url::parse(ENDPOINT_DEV).map_err(|e| e.to_string()),
         other => Err(format!("unknown update channel: {other}")),
     }
@@ -167,6 +214,11 @@ async fn build_updater<R: Runtime>(
         .updater_builder()
         .endpoints(vec![endpoint])
         .map_err(|e| e.to_string())?
+        // Same reasoning as NETWORK_TIMEOUT above, for the plugin's own
+        // manifest fetch -- resolving the endpoint and then hanging while
+        // downloading latest.json is the identical failure from the user's
+        // side.
+        .timeout(NETWORK_TIMEOUT)
         .version_comparator(move |current, release| {
             should_offer_update(&current, &release.version, allow_downgrade)
         });
@@ -294,6 +346,87 @@ mod tests {
         assert!(newer_base > older_prerelease);
     }
 
+    mod pick_release_tests {
+        use super::*;
+
+        fn rel(tag: &str, prerelease: bool, manifest: bool) -> GhRelease {
+            GhRelease {
+                tag_name: tag.to_string(),
+                draft: false,
+                prerelease,
+                assets: if manifest {
+                    vec![GhAsset {
+                        name: "latest.json".to_string(),
+                    }]
+                } else {
+                    vec![GhAsset {
+                        name: "SLEAP_macos.app.tar.gz".to_string(),
+                    }]
+                },
+            }
+        }
+
+        /// The repo as it actually stands: the only releases carrying a
+        /// manifest are pre-releases, because v0.1.0/v0.1.1 predate updater
+        /// artifacts. This is the exact shape that made the old static
+        /// `releases/latest/download/latest.json` 404 for every default-
+        /// channel user.
+        fn real_world() -> Vec<GhRelease> {
+            vec![
+                rel("v0.1.2-2", true, true),
+                rel("dev", true, true),
+                rel("v0.1.2-1", true, true),
+                rel("v0.1.1", false, false),
+                rel("v0.1.0", false, false),
+            ]
+        }
+
+        #[test]
+        fn stable_refuses_a_full_release_that_has_no_manifest() {
+            // Rather than picking v0.1.1 and 404ing on a manifest it does
+            // not have, stable reports that there is nothing installable.
+            assert!(pick_release(&real_world(), true).is_none());
+        }
+
+        #[test]
+        fn latest_picks_the_newest_prerelease_with_a_manifest() {
+            let releases = real_world();
+            let best = pick_release(&releases, false).expect("a pre-release has a manifest");
+            assert_eq!(best.tag_name, "v0.1.2-2");
+        }
+
+        /// `dev` is not a parseable version, so it must never be selected by
+        /// version comparison -- that channel has its own static URL.
+        #[test]
+        fn the_rolling_dev_tag_is_never_picked_by_version() {
+            let releases = vec![rel("dev", true, true)];
+            assert!(pick_release(&releases, false).is_none());
+        }
+
+        #[test]
+        fn stable_picks_the_newest_full_release_that_has_a_manifest() {
+            let releases = vec![
+                rel("v0.2.0", true, true),   // newer, but a pre-release
+                rel("v0.1.3", false, false), // full, but no manifest
+                rel("v0.1.2", false, true),  // <- newest installable full release
+                rel("v0.1.1", false, true),
+            ];
+            let best = pick_release(&releases, true).expect("v0.1.2 is installable");
+            assert_eq!(best.tag_name, "v0.1.2");
+            // ...while `latest` still prefers the newer pre-release.
+            assert_eq!(pick_release(&releases, false).unwrap().tag_name, "v0.2.0");
+        }
+
+        #[test]
+        fn drafts_are_ignored_on_both_channels() {
+            let mut draft = rel("v9.9.9", false, true);
+            draft.draft = true;
+            let releases = vec![draft, rel("v0.1.2", false, true)];
+            assert_eq!(pick_release(&releases, true).unwrap().tag_name, "v0.1.2");
+            assert_eq!(pick_release(&releases, false).unwrap().tag_name, "v0.1.2");
+        }
+    }
+
     mod should_offer_update_tests {
         use super::*;
 
@@ -312,7 +445,7 @@ mod tests {
         }
 
         // The bug this whole feature exists to fix: a dev build's version is
-        // stamped as `BASE+<run_number>.<short_sha>` (build-dev.yml). Per
+        // stamped as `BASE+<count>.<short_sha>` (build-dev.yml). Per
         // Version's derived Ord, a non-empty `+build` sorts ABOVE an empty
         // one at the same major.minor.patch.pre, so in strict mode the
         // *build itself* looks newer than the plain stable tag of the same
@@ -356,6 +489,50 @@ mod tests {
             let current = Version::parse("1.5.0").unwrap();
             let release = Version::parse("1.5.0").unwrap();
             assert!(!should_offer_update(&current, &release, true));
+        }
+
+        // Dev -> dev, the case `<count>` exists to order. build-dev.yml
+        // stamps it as the commits `main` has advanced past BASE's tag, so
+        // it increments with every merge and is the FIRST build-metadata
+        // identifier precisely so it decides here -- note the SHAs are
+        // chosen so a raw string comparison would order these backwards.
+        #[test]
+        fn strict_mode_offers_a_newer_dev_build_of_the_same_base() {
+            let current = Version::parse("1.5.0+7.9f8e7d6").unwrap();
+            let release = Version::parse("1.5.0+8.1a2b3c4").unwrap();
+            assert!(should_offer_update(&current, &release, false));
+        }
+
+        #[test]
+        fn strict_mode_refuses_an_older_dev_build_of_the_same_base() {
+            let current = Version::parse("1.5.0+8.1a2b3c4").unwrap();
+            let release = Version::parse("1.5.0+7.9f8e7d6").unwrap();
+            assert!(!should_offer_update(&current, &release, false));
+        }
+
+        // The counter RESTARTS at each new release, so a dev build off a
+        // fresh base carries a much SMALLER count than the one the user is
+        // running. The base must still win, or every dev client would be
+        // stranded on the old base the moment a release was cut. A count of
+        // 0 is reachable (release tagged at `main`'s head, then a manual
+        // build before the next merge), so test the extreme.
+        #[test]
+        fn a_new_base_outranks_a_higher_count_on_the_old_base() {
+            let current = Version::parse("1.5.0+42.abc1234").unwrap();
+            for release in ["1.6.0+0.def5678", "1.6.0+1.def5678"] {
+                let release = Version::parse(release).unwrap();
+                assert!(should_offer_update(&current, &release, false));
+            }
+        }
+
+        // Same, across the pre-release -> release boundary: dev builds are
+        // cut off pre-release bases too (e.g. "0.1.2-2"), and "0.1.3" must
+        // still outrank them however far the old counter had climbed.
+        #[test]
+        fn a_new_base_outranks_a_dev_build_of_a_prerelease_base() {
+            let current = Version::parse("0.1.2-2+99.abc1234").unwrap();
+            let release = Version::parse("0.1.3+0.def5678").unwrap();
+            assert!(should_offer_update(&current, &release, false));
         }
     }
 }

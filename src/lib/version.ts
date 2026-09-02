@@ -24,10 +24,12 @@ export const APP_VERSION =
 // but before clicking Update/Switch), whereas this always describes the build
 // that is actually running -- which is what an About box has to report.
 //
-// Dev builds are stamped `BASE+<run_number>.<short_sha>` by build-dev.yml, and
-// web /main/ builds `BASE+main.<short_sha>` by deploy.yml (both build
-// metadata); a `-` before any build metadata is a pre-release identifier (e.g.
-// `0.1.2-2`); anything else is a plain tagged release.
+// Dev builds are stamped `BASE+<count>.<short_sha>` by build-dev.yml (<count>
+// being how far `main` has advanced past BASE's own tag, so it restarts at
+// each new release), and web /main/ builds `BASE+main.<short_sha>` by
+// deploy.yml (both build metadata); a `-` before any build metadata is a
+// pre-release identifier (e.g. `0.1.2-2`); anything else is a plain tagged
+// release.
 export type VersionKind = "stable" | "prerelease" | "dev";
 
 export function classifyVersion(version: string): VersionKind {
