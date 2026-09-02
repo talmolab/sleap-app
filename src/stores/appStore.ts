@@ -195,6 +195,20 @@ export interface AppState {
    * leaves the existing default (on) untouched. Persisted.
    */
   hasSeenLabelingHintsPrompt: boolean;
+  /**
+   * Overlay a trained model's raw confidence-map output on the current frame
+   * (#model-output-overlays). Desktop-only; computed on-demand per frame via a
+   * warm sleap-nn overlay sidecar. Off by default each session (NOT persisted —
+   * an overlay should never silently resume on reload).
+   */
+  overlayModelOutputs: boolean;
+  /**
+   * Trained model directories used for the model-output overlay (top-down =
+   * centroid + centered-instance, in any order; single-animal = one dir). Empty
+   * until the user picks models via Predict ▸ Set Overlay Models…. NOT persisted
+   * (reset each session); the dialog only writes a complete, valid set.
+   */
+  overlayModelPaths: string[];
   defaultToPan: boolean;
   palette: string;
   distinctlyColor: ColorTarget;
@@ -432,6 +446,7 @@ export interface AppState {
   modelMetricsDialogOpen: boolean;
   sizeDistributionDialogOpen: boolean;
   labelQcDialogOpen: boolean;
+  overlayModelsDialogOpen: boolean;
   exportPackageDialogOpen: boolean;
   shortcutsDialogOpen: boolean;
   labelingTipsDialogOpen: boolean;
@@ -519,6 +534,7 @@ export interface AppState {
   setModelMetricsDialogOpen: (open: boolean) => void;
   setSizeDistributionDialogOpen: (open: boolean) => void;
   setLabelQcDialogOpen: (open: boolean) => void;
+  setOverlayModelsDialogOpen: (open: boolean) => void;
   setExportPackageDialogOpen: (open: boolean) => void;
   setShortcutsDialogOpen: (open: boolean) => void;
   setLabelingTipsDialogOpen: (open: boolean) => void;
@@ -712,6 +728,8 @@ export const useAppStore = create<AppState>()(
       showTrackScore: false,
       showLabelingHints: true,
       hasSeenLabelingHintsPrompt: false,
+      overlayModelOutputs: false,
+      overlayModelPaths: [],
       defaultToPan: false,
       palette: "standard",
       distinctlyColor: "auto" as ColorTarget,
@@ -806,6 +824,7 @@ export const useAppStore = create<AppState>()(
       modelMetricsDialogOpen: false,
       sizeDistributionDialogOpen: false,
       labelQcDialogOpen: false,
+      overlayModelsDialogOpen: false,
       exportPackageDialogOpen: false,
       shortcutsDialogOpen: false,
       labelingTipsDialogOpen: false,
@@ -1167,6 +1186,11 @@ export const useAppStore = create<AppState>()(
       setLabelQcDialogOpen: (open) =>
         set((state) => {
           state.labelQcDialogOpen = open;
+        }),
+
+      setOverlayModelsDialogOpen: (open) =>
+        set((state) => {
+          state.overlayModelsDialogOpen = open;
         }),
 
       setExportPackageDialogOpen: (open) =>
@@ -1644,6 +1668,11 @@ export const useAppStore = create<AppState>()(
         const merged = {
           ...current,
           ...p,
+          // The model-output overlay is a transient action, not a saved pref:
+          // always start OFF + unset. This also clears any value persisted before
+          // these keys were removed from PERSISTED_KEYS.
+          overlayModelOutputs: false,
+          overlayModelPaths: [],
           // Migrate the pre-tri-state #137 boolean to the navigationDomain enum.
           navigationDomain: navigationDomainFromPersisted(p),
           panelOrder: reconcilePanelOrder(p.panelOrder),

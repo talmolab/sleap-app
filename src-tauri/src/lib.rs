@@ -17,6 +17,13 @@ pub struct ZmqRelay(pub Mutex<Option<std::process::Child>>);
 /// Uses std::process::Child (python3 sidecar) like ZmqRelay.
 pub struct ProgressRelay(pub Mutex<Option<std::process::Child>>);
 
+/// Warm sleap-nn overlay-serve sidecar(s) (model-output overlays). A Vec (not a
+/// single slot) so a racing double-spawn — e.g. React StrictMode's dev double-mount
+/// firing two spawns before either stores its child — never orphans a process:
+/// every spawned child is tracked and killed on stop. Spawned when the overlay
+/// toggle turns on, killed on toggle-off, project close, or app quit.
+pub struct OverlayServe(pub Mutex<Vec<std::process::Child>>);
+
 /// Holds a file path passed as a CLI argument, consumed once by the frontend.
 struct InitialFile(Mutex<Option<String>>);
 
@@ -473,6 +480,8 @@ fn sleap_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
             environment::start_zmq_relay,
             environment::send_training_stop,
             environment::stop_zmq_relay,
+            environment::start_overlay_serve,
+            environment::stop_overlay_serve,
             environment::start_progress_relay,
             environment::stop_progress_relay,
             rtc::rtc_join_room,
@@ -563,6 +572,7 @@ fn localhost_capability(port: u16) -> String {
     "fs:default",
     "fs:allow-read-file",
     "fs:allow-read-text-file",
+    "fs:allow-read-dir",
     "fs:allow-write-file",
     "fs:allow-write-text-file",
     "fs:allow-mkdir",
@@ -673,6 +683,7 @@ pub fn run() {
     .manage(RunningProcess(Mutex::new(None)))
     .manage(ZmqRelay(Mutex::new(None)))
     .manage(ProgressRelay(Mutex::new(None)))
+    .manage(OverlayServe(Mutex::new(Vec::new())))
     .manage(WriteHandle(Mutex::new(None)))
     .manage(WindowFiles(Mutex::new(HashMap::new())))
     .manage(tokio::sync::Mutex::new(rtc::RtcState::new()))

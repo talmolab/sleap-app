@@ -288,6 +288,29 @@ export async function stopZmqRelay(): Promise<void> {
 }
 
 /**
+ * Spawn the warm overlay-serve sidecar (resolving the app's sleap-nn env + bundled
+ * script in Rust) and return its loopback port. The app then fetches confidence maps
+ * from `http://127.0.0.1:<port>/infer`. Desktop-only.
+ *
+ * @param modelPaths Trained model directories (top-down = centroid +
+ *   centered-instance, in any order — the type is detected from each config).
+ * @param device Torch device: "mps" | "cuda" | "cpu".
+ */
+export async function spawnOverlayServe(
+  modelPaths: string[],
+  device: string,
+): Promise<number> {
+  if (!isTauri) throw new Error("Model-output overlays require the desktop app");
+  return invokeCmd<number>("start_overlay_serve", { modelPaths, device });
+}
+
+/** Kill the overlay-serve sidecar. No-op outside Tauri. */
+export async function killOverlayServe(): Promise<void> {
+  if (!isTauri) return;
+  return invokeCmd<void>("stop_overlay_serve");
+}
+
+/**
  * Start the ZMQ SUB progress relay (binds :9001) that forwards sleap-nn
  * training loss telemetry to the frontend as "training-progress" events.
  * No-op outside Tauri.

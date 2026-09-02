@@ -1097,6 +1097,12 @@ function PredictMenu() {
   const setExportPackageDialogOpen = useAppStore(
     (s) => s.setExportPackageDialogOpen
   );
+  const overlayModelOutputs = useAppStore((s) => s.overlayModelOutputs);
+  const overlayModelPaths = useAppStore((s) => s.overlayModelPaths);
+  const toggle = useAppStore((s) => s.toggle);
+  const setOverlayModelsDialogOpen = useAppStore(
+    (s) => s.setOverlayModelsDialogOpen
+  );
 
   return (
     <MenubarMenu>
@@ -1128,10 +1134,24 @@ function PredictMenu() {
         <MenubarItem onClick={() => setModelMetricsDialogOpen(true)}>
           Evaluation Metrics for Trained Models...
         </MenubarItem>
-        <MenubarItem disabled>
-          Visualize Model Outputs...
-          <MenubarShortcut className="text-xs opacity-60">Coming Soon</MenubarShortcut>
+        <MenubarItem
+          disabled={!projectLoaded}
+          onClick={() => setOverlayModelsDialogOpen(true)}
+        >
+          Set Overlay Models…
+          {overlayModelPaths.length > 0 && (
+            <MenubarShortcut className="text-xs opacity-60">
+              {overlayModelPaths.length} set
+            </MenubarShortcut>
+          )}
         </MenubarItem>
+        <MenubarCheckboxItem
+          checked={overlayModelOutputs}
+          onCheckedChange={() => toggle("overlayModelOutputs")}
+          disabled={!projectLoaded || overlayModelPaths.length === 0}
+        >
+          Visualize Model Outputs
+        </MenubarCheckboxItem>
       </MenubarContent>
     </MenubarMenu>
   );
