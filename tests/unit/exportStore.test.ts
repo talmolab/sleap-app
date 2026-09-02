@@ -2,7 +2,39 @@ import { describe, it, expect } from "../bun-test";
 import {
   defaultExportOutputDir,
   logIndicatesMissingExportSupport,
+  useExportStore,
 } from "@/stores/exportStore";
+
+describe("useExportStore model paths", () => {
+  it("openExport([]) opens the dialog with no preset model (menu entry point)", () => {
+    useExportStore.getState().openExport([]);
+    expect(useExportStore.getState().open).toBe(true);
+    expect(useExportStore.getState().modelPaths).toEqual([]);
+  });
+
+  it("setModelPaths replaces the run directories (in-dialog picker)", () => {
+    useExportStore.getState().openExport(["/models/a"]);
+    useExportStore.getState().setModelPaths(["/models/a", "/models/b"]);
+    expect(useExportStore.getState().modelPaths).toEqual(["/models/a", "/models/b"]);
+  });
+
+  it("addModelPaths appends a multi-select batch to the existing dirs", () => {
+    useExportStore.getState().openExport(["/models/a"]);
+    // A top-down bundle: user picks both remaining run dirs in one native dialog.
+    useExportStore.getState().addModelPaths(["/models/b", "/models/c"]);
+    expect(useExportStore.getState().modelPaths).toEqual([
+      "/models/a",
+      "/models/b",
+      "/models/c",
+    ]);
+  });
+
+  it("addModelPaths dedupes against existing and within the incoming batch", () => {
+    useExportStore.getState().openExport(["/models/a"]);
+    useExportStore.getState().addModelPaths(["/models/a", "/models/b", "/models/b"]);
+    expect(useExportStore.getState().modelPaths).toEqual(["/models/a", "/models/b"]);
+  });
+});
 
 describe("defaultExportOutputDir", () => {
   it("places the exported bundle in the run dirs' PARENT, not under one run", () => {

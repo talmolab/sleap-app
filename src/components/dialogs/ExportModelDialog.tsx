@@ -37,6 +37,8 @@ export function ExportModelDialog() {
   const log = useExportStore((s) => s.log);
   const outputDir = useExportStore((s) => s.outputDir);
   const modelPaths = useExportStore((s) => s.modelPaths);
+  const setModelPaths = useExportStore((s) => s.setModelPaths);
+  const addModelPaths = useExportStore((s) => s.addModelPaths);
   const close = useExportStore((s) => s.close);
   const startExport = useExportStore((s) => s.startExport);
 
@@ -64,6 +66,26 @@ export function ExportModelDialog() {
   const missingSupport = status === "error" && logIndicatesMissingExportSupport(log);
   const shownLog = installing ? installLog : log;
 
+  const basename = (p: string) => p.split(/[/\\]+/).filter(Boolean).pop() ?? p;
+  // Directory picker so the exporter is usable outside the post-training flow
+  // (e.g. Predict > Export Model…): pick the trained run dir(s) — two for a
+  // top-down bundle (centroid + centered_instance).
+  const handleAddModelDir = async () => {
+    try {
+      const { open: tauriOpen } = await import("@tauri-apps/plugin-dialog");
+      const selected = await tauriOpen({
+        directory: true,
+        multiple: true,
+        title: "Select trained-model directory (two for a top-down bundle)",
+      });
+      // `multiple` yields string[]; guard the single/cancelled shapes too.
+      const picked = Array.isArray(selected) ? selected : selected ? [selected] : [];
+      if (picked.length > 0) addModelPaths(picked);
+    } catch {
+      /* cancelled */
+    }
+  };
+
   return (
     <Dialog
       open={open}
@@ -75,13 +97,42 @@ export function ExportModelDialog() {
         <DialogHeader>
           <DialogTitle>Export model</DialogTitle>
         </DialogHeader>
-        <div className="flex flex-col gap-4">
+        <div className="flex min-w-0 flex-col gap-4">
           <p className="text-sm text-muted-foreground">
             Convert the trained model to a portable runtime for faster inference.
             {modelPaths.length > 1
               ? " Top-down bundle (centroid + centered-instance) exported together."
               : ""}
           </p>
+
+          <div className="flex items-start gap-3">
+            <span className="w-20 shrink-0 pt-1 text-sm">Model</span>
+            <div className="flex min-w-0 flex-1 flex-col gap-1">
+              {modelPaths.length === 0 ? (
+                <span className="text-xs text-muted-foreground">
+                  No model selected — add the trained run directory (two for a top-down bundle).
+                </span>
+              ) : (
+                modelPaths.map((p, i) => (
+                  <div key={p} className="flex min-w-0 items-center gap-2">
+                    <span className="truncate font-mono text-xs" title={p}>{basename(p)}</span>
+                    <button
+                      type="button"
+                      className="shrink-0 text-xs text-muted-foreground hover:text-foreground"
+                      onClick={() => setModelPaths(modelPaths.filter((_, j) => j !== i))}
+                      disabled={busy}
+                      aria-label={`Remove ${basename(p)}`}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))
+              )}
+              <Button variant="outline" size="sm" className="self-start" onClick={handleAddModelDir} disabled={busy}>
+                Add directory…
+              </Button>
+            </div>
+          </div>
 
           <div className="flex items-center gap-3">
             <span className="w-20 text-sm">Format</span>
@@ -112,7 +163,7 @@ export function ExportModelDialog() {
           {shownLog.length > 0 && (
             <pre
               ref={logRef}
-              className="max-h-48 overflow-auto whitespace-pre-wrap rounded bg-muted p-2 text-[11px]"
+              className="max-h-48 min-w-0 overflow-auto whitespace-pre-wrap break-all rounded bg-muted p-2 text-[11px]"
             >
               {shownLog.join("\n")}
             </pre>
