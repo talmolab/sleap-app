@@ -5,7 +5,9 @@ node_modules/
 dist/
 
 # Rust/Tauri build output (also in src-tauri/.gitignore)
-src-tauri/target/
+# No trailing slash: also ignores a stray `target` symlink/file, not just the dir
+# (a self-referential `src-tauri/target` symlink was once committed by mistake).
+src-tauri/target
 src-tauri/gen/schemas
 
 # Environment and secrets
