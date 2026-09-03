@@ -47,13 +47,18 @@ export function computeNodeVisibility(
   for (const lf of labels.labeledFrames) {
     for (const inst of lf.instances) {
       if (inst instanceof PredictedInstance) continue;
-      for (let i = 0; i < inst.points.length; i++) {
+      // Read the allocating sleap-io proxy getter ONCE per instance. Using
+      // `inst.points` directly in the loop condition + body re-allocated the
+      // whole PointView[] every iteration → O(n²) allocations/instance and a
+      // multi-second freeze on densely-labeled projects.
+      const pts = inst.points;
+      for (let i = 0; i < pts.length; i++) {
         const name = skeleton.nodes[i]?.name;
         if (!name) continue;
         const stat = result.get(name);
         if (!stat) continue;
         stat.total += 1;
-        if (inst.points[i]?.visible) stat.visible += 1;
+        if (pts[i]?.visible) stat.visible += 1;
       }
     }
   }

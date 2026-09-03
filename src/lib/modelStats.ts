@@ -64,12 +64,19 @@ export function computeInstanceSizeStats(labels: Labels | null): InstanceSizeSta
       let validCount = 0;
 
       for (const pt of inst.points) {
-        if (!pt.visible || isNaN(pt.xy[0]) || isNaN(pt.xy[1])) continue;
+        if (!pt.visible) continue;
+        // Read the allocating sleap-io proxy getter once per point: `pt.xy`
+        // returns a fresh [x,y] array on every access, and the bbox scan read
+        // it ~6-10× per point → an allocation storm on densely-labeled projects.
+        const xy = pt.xy;
+        const px = xy[0];
+        const py = xy[1];
+        if (isNaN(px) || isNaN(py)) continue;
         validCount++;
-        if (pt.xy[0] < xMin) xMin = pt.xy[0];
-        if (pt.xy[0] > xMax) xMax = pt.xy[0];
-        if (pt.xy[1] < yMin) yMin = pt.xy[1];
-        if (pt.xy[1] > yMax) yMax = pt.xy[1];
+        if (px < xMin) xMin = px;
+        if (px > xMax) xMax = px;
+        if (py < yMin) yMin = py;
+        if (py > yMax) yMax = py;
       }
       if (validCount < 2) continue;
 
