@@ -176,13 +176,21 @@ export function Seekbar() {
   const controlsOrder = sidebarOnLeft ? "order-first" : "";
   const overlayVersion = useAppStore((s) => s.overlayVersion);
   // The header-graph series + labeled-frame marks are derived from label CONTENT,
-  // so they key on `editSeq` (bumped once per edit — and #329 defers it to a
-  // single bump per drag gesture, on release) rather than `overlayVersion` (bumped
-  // every rAF to drive the overlay repaint). Keying on editSeq is why the header
-  // no longer re-extracts every frame / blanks mid-drag: it recomputes once, when
-  // the edit commits. PyQt likewise rebuilds the header series on data change, not
-  // live during a drag.
-  const editSeq = useAppStore((s) => s.editSeq);
+  // so they key on the edit counter, NOT `overlayVersion` (which bumps every rAF
+  // to drive the overlay repaint — keying on that re-extracted every frame and
+  // blanked the graph mid-drag). `rawEditSeq` bumps once per edit (#329 defers it
+  // to a single bump per drag gesture, on release).
+  const rawEditSeq = useAppStore((s) => s.editSeq);
+  // Debounced further: rebuild the (whole-project) header series/marks only after
+  // edits SETTLE, so a burst of drags triggers one rebuild when you pause, not one
+  // per release. The header rarely needs to reflect the latest edit instantly;
+  // ~0.8s stale is fine (and closer to how PyQt lazily refreshes it). Every
+  // `editSeq` consumer below (series builds + headerData) uses this debounced copy.
+  const [editSeq, setEditSeq] = useState(rawEditSeq);
+  useEffect(() => {
+    const t = setTimeout(() => setEditSeq(rawEditSeq), 800);
+    return () => clearTimeout(t);
+  }, [rawEditSeq]);
   const videoRevision = useAppStore((s) => s.videoRevision);
   const setKey = useAppStore((s) => s.set);
   const navigationDomain = useAppStore((s) => s.navigationDomain);
