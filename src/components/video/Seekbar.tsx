@@ -17,6 +17,7 @@ import {
   useEffect,
   useLayoutEffect,
   useMemo,
+  useDeferredValue,
 } from "react";
 import { useAppStore } from "../../stores/appStore";
 import { getPaletteColor, rgbToCSS } from "../../lib/colorPalettes";
@@ -765,6 +766,12 @@ export function Seekbar() {
   // getState() per inner iteration) froze the UI for seconds on videos with many
   // labeled frames. A single pass + a track→index Map makes it O(frames ×
   // instances). overlayVersion is in the deps because labels is mutated in place.
+  //
+  // Deferred: this scan is O(all frames), and a node drag bumps overlayVersion
+  // every rAF even though moving a point never changes the marks. useDeferredValue
+  // lets the recompute lag behind a rapid drag and catch up once it settles,
+  // instead of re-walking every frame each tick (multi-thousand-frame drag stall).
+  const deferredOverlayVersion = useDeferredValue(overlayVersion);
   const headerData = useMemo(() => {
     if (!labels || !video) return null;
     const tracks = labels.tracks as unknown[];
@@ -787,7 +794,7 @@ export function Seekbar() {
     }
     return { byTrack, marks };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [labels, video, overlayVersion]);
+  }, [labels, video, deferredOverlayVersion]);
 
   // Render seekbar
   useEffect(() => {
