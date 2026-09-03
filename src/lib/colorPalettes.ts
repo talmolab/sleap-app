@@ -87,6 +87,15 @@ export function rgbToCSS(color: RGB, alpha: number = 1): string {
  */
 export function hasAssignedTracks(labels: Labels | null | undefined): boolean {
   if (!labels) return false;
+  // Fast path for the common no-tracks project: every track-assignment path
+  // adds the track to `labels.tracks` first (and loading a .slp populates it
+  // with every referenced track), so an empty track list means no instance can
+  // carry a track. Short-circuit here instead of walking every frame×instance —
+  // this scan otherwise reran on every edit (`editSeq`) in two always-mounted
+  // components (VideoPlayer + the default-visible InstancesPanel). The reverse
+  // isn't true — a non-empty `labels.tracks` may hold only orphaned tracks (see
+  // DeleteUnusedTracks) — so we still scan assignments when tracks exist.
+  if (labels.tracks.length === 0) return false;
   return labels.labeledFrames.some((lf) =>
     lf.instances.some((inst) => inst.track != null)
   );

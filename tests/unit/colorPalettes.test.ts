@@ -175,6 +175,23 @@ describe("colorPalettes", () => {
       });
       expect(hasAssignedTracks(labels)).toBe(false);
     });
+
+    it("short-circuits without scanning frames when there are no tracks", () => {
+      // The common no-tracks case must be O(1): an empty track list means no
+      // instance can carry a track (every assignment path adds the track to
+      // labels.tracks first), so we must NOT walk every frame×instance. Without
+      // the fast path this ran a full project scan on every edit (Cluster A).
+      let scanned = false;
+      const fakeLabels = {
+        tracks: [],
+        get labeledFrames() {
+          scanned = true;
+          return [];
+        },
+      };
+      expect(hasAssignedTracks(fakeLabels as unknown as Labels)).toBe(false);
+      expect(scanned).toBe(false);
+    });
   });
 
   describe("resolveColorTarget", () => {
