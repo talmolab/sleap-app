@@ -17,7 +17,6 @@ import {
   useEffect,
   useLayoutEffect,
   useMemo,
-  useDeferredValue,
 } from "react";
 import { useAppStore } from "../../stores/appStore";
 import { getPaletteColor, rgbToCSS } from "../../lib/colorPalettes";
@@ -176,13 +175,14 @@ export function Seekbar() {
   const sidebarOnLeft = useAppStore((s) => s.sidebarSide) === "left";
   const controlsOrder = sidebarOnLeft ? "order-first" : "";
   const overlayVersion = useAppStore((s) => s.overlayVersion);
-  // Deferred copy for the EXPENSIVE per-frame Seekbar recomputes (header-graph
-  // series + header marks). A node drag bumps overlayVersion every rAF, but
-  // those all-frames scans (the worker series extraction re-reads every frame's
-  // points on the MAIN thread) don't need to keep up mid-gesture. useDeferredValue
-  // lets them lag behind a rapid drag and catch up once it settles — this is what
-  // was blanking the header graph and stalling the drag on large projects.
-  const deferredOverlayVersion = useDeferredValue(overlayVersion);
+  // The header-graph series + labeled-frame marks are derived from label CONTENT,
+  // so they key on `editSeq` (bumped once per edit — and #329 defers it to a
+  // single bump per drag gesture, on release) rather than `overlayVersion` (bumped
+  // every rAF to drive the overlay repaint). Keying on editSeq is why the header
+  // no longer re-extracts every frame / blanks mid-drag: it recomputes once, when
+  // the edit commits. PyQt likewise rebuilds the header series on data change, not
+  // live during a drag.
+  const editSeq = useAppStore((s) => s.editSeq);
   const videoRevision = useAppStore((s) => s.videoRevision);
   const setKey = useAppStore((s) => s.set);
   const navigationDomain = useAppStore((s) => s.navigationDomain);
@@ -281,11 +281,11 @@ export function Seekbar() {
     return getOrComputeSeries(
       seriesCacheRef.current,
       video,
-      deferredOverlayVersion,
+      editSeq,
       `${seekbarHeaderGraph}|${seekbarHeaderReduction}`,
       () => computeStatisticSeries(labels, video, seekbarHeaderGraph, seekbarHeaderReduction),
     );
-  }, [labels, video, seekbarHeaderGraph, seekbarHeaderReduction, deferredOverlayVersion, useWorker]);
+  }, [labels, video, seekbarHeaderGraph, seekbarHeaderReduction, editSeq, useWorker]);
 
   // Worker-computed series for heavy graphs over the frame threshold.
   const [workerHeaderSeries, setWorkerHeaderSeries] = useState<Map<number, number> | null>(null);
@@ -306,7 +306,7 @@ export function Seekbar() {
     // Cache hit: re-selecting a heavy graph is instant, no worker round-trip
     // (issue #105 AC2). Keyed by graph|reduction; invalidated on video/label change.
     const cacheKey = `${seekbarHeaderGraph}|${seekbarHeaderReduction}`;
-    const cached = peekSeries(seriesCacheRef.current, video, deferredOverlayVersion, cacheKey);
+    const cached = peekSeries(seriesCacheRef.current, video, editSeq, cacheKey);
     if (cached) {
       setWorkerHeaderSeries(cached);
       return;
@@ -338,7 +338,7 @@ export function Seekbar() {
       if (reqId !== requestIdRef.current) return;
       const series = new Map(e.data.entries);
       // Cache the result so re-selecting this heavy graph is instant.
-      putSeries(seriesCacheRef.current, video, deferredOverlayVersion, cacheKey, series);
+      putSeries(seriesCacheRef.current, video, editSeq, cacheKey, series);
       setWorkerHeaderSeries(series);
     };
     worker.addEventListener("message", handleMessage);
@@ -362,7 +362,7 @@ export function Seekbar() {
       // kept for reuse and only torn down on unmount (see effect below).
       worker.removeEventListener("message", handleMessage);
     };
-  }, [useWorker, labels, video, seekbarHeaderGraph, seekbarHeaderReduction, deferredOverlayVersion]);
+  }, [useWorker, labels, video, seekbarHeaderGraph, seekbarHeaderReduction, editSeq]);
 
   // Terminate the worker on unmount.
   useEffect(() => {
@@ -772,9 +772,8 @@ export function Seekbar() {
   // O(tracks × labeledFrames × instances) `.some()` scan there (with a
   // getState() per inner iteration) froze the UI for seconds on videos with many
   // labeled frames. A single pass + a track→index Map makes it O(frames ×
-  // instances). overlayVersion is in the deps because labels is mutated in place.
-  // Deferred (see deferredOverlayVersion above) so this O(all frames) scan
-  // doesn't re-walk every frame on each drag tick.
+  // instances). Keyed on editSeq (see above), NOT overlayVersion, so this
+  // O(all frames) scan recomputes once per edit-commit — not on every drag tick.
   const headerData = useMemo(() => {
     if (!labels || !video) return null;
     const tracks = labels.tracks as unknown[];
@@ -797,7 +796,7 @@ export function Seekbar() {
     }
     return { byTrack, marks };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [labels, video, deferredOverlayVersion]);
+  }, [labels, video, editSeq]);
 
   // Render seekbar
   useEffect(() => {
