@@ -38,6 +38,7 @@ import {
   HEADER_FILL,
 } from "@/lib/headerSeriesRender";
 import { resizeHeaderHeight } from "@/lib/seekbarHeaderHeight";
+import { inferFrameCount } from "@/lib/inferFrameCount";
 import { isUserLabeledFrame } from "@/lib/frameLabeling";
 import { frameHoverInfo } from "@/lib/seekbarHoverInfo";
 import { navigableDomain, nearestFrameInDomain } from "@/lib/navigableFrames";
@@ -203,9 +204,12 @@ export function Seekbar() {
     () => video?.shape?.[0] ?? null,
     [video, videoRevision]
   );
-  const inferredFrames = labels && video
-    ? Math.max(0, ...labels.find({ video }).map((lf) => lf.frameIdx)) + 1
-    : 0;
+  // Fallback length only when the video's own frame count is unknown. Guarded
+  // by `shapeFrames == null` so a known-length video (the common case) skips the
+  // whole-project scan entirely — it used to run on EVERY render (incl. every
+  // node-drag tick via overlayVersion) and then get discarded, stalling drags on
+  // many-thousand-frame projects.
+  const inferredFrames = shapeFrames == null ? inferFrameCount(labels, video) : 0;
   const totalFrames = shapeFrames ?? (inferredFrames > 0 ? inferredFrames : 0);
 
   // The active navigation domain (#137) for the current video, used to snap
