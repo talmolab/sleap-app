@@ -9,7 +9,8 @@
  * click/drag snapping.
  */
 
-import type { Labels, Video } from "@/types";
+import type { Labels, Track, Video } from "@/types";
+import { isUserLabeledFrame } from "./frameLabeling";
 
 /**
  * Sorted, ascending list of frame indices that have a LabeledFrame for the
@@ -33,6 +34,72 @@ export function labeledFrameIndices(
     .filter((lf) => lf.instances.length > 0)
     .map((lf) => lf.frameIdx)
     .sort((a, b) => a - b);
+}
+
+/**
+ * Sorted, ascending list of ALL LabeledFrame indices for the video, INCLUDING
+ * empty frames (no instances). Backs the `GoNext/PrevLabeledFrame` commands,
+ * which intentionally keep empty frames (PyQt parity — they are still labeled
+ * frames). Deliberately distinct from {@link labeledFrameIndices}, which drops
+ * empty frames for #137 confined navigation (an empty frame has no image, so
+ * stepping onto one in confined mode shows a frozen frame).
+ */
+export function allLabeledFrameIndices(
+  labels: Labels | null,
+  video: Video | null
+): number[] {
+  if (!labels || !video) return [];
+  return labels
+    .find({ video })
+    .map((lf) => lf.frameIdx)
+    .sort((a, b) => a - b);
+}
+
+/**
+ * Sorted, ascending frame indices the USER labeled (see `isUserLabeledFrame`:
+ * user instances / centroid / bbox / mask / negative flag — never
+ * predicted-only or empty frames) for the video. Backs `GoNext/PrevUserFrame`.
+ */
+export function userLabeledFrameIndices(
+  labels: Labels | null,
+  video: Video | null
+): number[] {
+  if (!labels || !video) return [];
+  return labels
+    .find({ video })
+    .filter((lf) => isUserLabeledFrame(lf))
+    .map((lf) => lf.frameIdx)
+    .sort((a, b) => a - b);
+}
+
+/**
+ * Sorted, ascending, deduped frame indices where a track first appears
+ * ("spawns") in the video — the first frame index carrying each of
+ * `labels.tracks`. Backs `GoNextTrackSpawnFrame`. A single pass over the
+ * video's frames finds every track's earliest frame at once (equivalent to the
+ * old per-track rescan, but O(frames × instances) instead of
+ * O(tracks × frames × instances)); instances carrying a track not in
+ * `labels.tracks` are ignored, matching the command's original behavior.
+ */
+export function trackSpawnFrameIndices(
+  labels: Labels | null,
+  video: Video | null
+): number[] {
+  if (!labels || !video) return [];
+  const validTracks = new Set<Track>(labels.tracks);
+  if (validTracks.size === 0) return [];
+  const earliest = new Map<Track, number>();
+  for (const lf of labels.find({ video })) {
+    for (const inst of lf.instances) {
+      const track = inst.track;
+      if (!track || !validTracks.has(track)) continue;
+      const prev = earliest.get(track);
+      if (prev === undefined || lf.frameIdx < prev) {
+        earliest.set(track, lf.frameIdx);
+      }
+    }
+  }
+  return [...new Set(earliest.values())].sort((a, b) => a - b);
 }
 
 /**

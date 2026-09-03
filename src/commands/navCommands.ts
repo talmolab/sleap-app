@@ -9,7 +9,12 @@ import { UpdateTopic } from "../types";
 import type { Video } from "../types";
 import type { Command } from "./types";
 import type { CommandContext } from "./CommandContext";
-import { isUserLabeledFrame } from "@/lib/frameLabeling";
+import { stepLabeled } from "@/lib/navigableFrames";
+import {
+  cachedAllLabeledFrameIndices,
+  cachedUserFrameIndices,
+  cachedTrackSpawnFrames,
+} from "@/lib/navigationDomainCache";
 import { promptDialog } from "@/stores/promptStore";
 
 /** Navigate to the next frame that has labels (any instance). */
@@ -17,27 +22,19 @@ export const GoNextLabeledFrame: Command = {
   name: "GoNextLabeledFrame",
   topics: [UpdateTopic.Frame],
   execute(ctx: CommandContext) {
-    const { labels, video, frameIdx } = ctx.state;
+    const { labels, video, frameIdx, editSeq } = ctx.state;
     if (!labels || !video) return;
 
-    // Get all labeled frame indices for the current video, sorted. Empty
-    // LabeledFrames are kept (PyQt parity: GoNextLabeledFrame has no instance
-    // filter — they are still labeled frames). Skipping over image-less frames
-    // is the separate imaged-navigation mode's job.
-    const frameIndices = labels.find({ video })
-      .map((lf) => lf.frameIdx)
-      .sort((a, b) => a - b);
-
-    if (frameIndices.length === 0) return;
-
-    // Find the first frame index strictly greater than current
-    const next = frameIndices.find((idx) => idx > frameIdx);
-    if (next !== undefined) {
-      ctx.state.setFrameIdx(next);
-    } else {
-      // Wrap around to the first labeled frame
-      ctx.state.setFrameIdx(frameIndices[0]);
-    }
+    // All labeled frame indices for the current video, sorted, INCLUDING empty
+    // LabeledFrames (PyQt parity: GoNextLabeledFrame has no instance filter —
+    // they are still labeled frames; skipping image-less frames is the separate
+    // imaged-navigation mode's job). Cached on editSeq (Cluster B).
+    // `stepLabeled(domain, current, 1)` == "first index strictly greater than
+    // current, else wrap to the first"; it returns null only for an empty
+    // domain, which is the old `length === 0 → return` early-out.
+    const domain = cachedAllLabeledFrameIndices(labels, video, editSeq);
+    const target = stepLabeled(domain, frameIdx, 1);
+    if (target !== null) ctx.state.setFrameIdx(target);
   },
 };
 
@@ -46,25 +43,14 @@ export const GoPrevLabeledFrame: Command = {
   name: "GoPrevLabeledFrame",
   topics: [UpdateTopic.Frame],
   execute(ctx: CommandContext) {
-    const { labels, video, frameIdx } = ctx.state;
+    const { labels, video, frameIdx, editSeq } = ctx.state;
     if (!labels || !video) return;
 
-    // All labeled frame indices for the current video, sorted (empties kept —
-    // see GoNextLabeledFrame).
-    const frameIndices = labels.find({ video })
-      .map((lf) => lf.frameIdx)
-      .sort((a, b) => a - b);
-
-    if (frameIndices.length === 0) return;
-
-    // Find the last frame index strictly less than current
-    const prev = [...frameIndices].reverse().find((idx) => idx < frameIdx);
-    if (prev !== undefined) {
-      ctx.state.setFrameIdx(prev);
-    } else {
-      // Wrap around to the last labeled frame
-      ctx.state.setFrameIdx(frameIndices[frameIndices.length - 1]);
-    }
+    // Empties kept — see GoNextLabeledFrame. `stepLabeled(..., -1)` == "last
+    // index strictly less than current, else wrap to the last".
+    const domain = cachedAllLabeledFrameIndices(labels, video, editSeq);
+    const target = stepLabeled(domain, frameIdx, -1);
+    if (target !== null) ctx.state.setFrameIdx(target);
   },
 };
 
@@ -185,20 +171,15 @@ export const GoNextUserFrame: Command = {
   name: "GoNextUserFrame",
   topics: [UpdateTopic.Frame],
   execute(ctx: CommandContext) {
-    const { labels, video, frameIdx } = ctx.state;
+    const { labels, video, frameIdx, editSeq } = ctx.state;
     if (!labels || !video) return;
 
-    const userFrames = labels.find({ video })
-      // "user-labeled" = any manual annotation (incl. a user centroid), not just
-      // a non-predicted skeleton instance — mirrors io.js isUserLabeled.
-      .filter((lf) => isUserLabeledFrame(lf))
-      .map((lf) => lf.frameIdx)
-      .sort((a, b) => a - b);
-
-    if (userFrames.length === 0) return;
-
-    const next = userFrames.find((idx) => idx > frameIdx);
-    ctx.state.setFrameIdx(next !== undefined ? next : userFrames[0]);
+    // "user-labeled" = any manual annotation (incl. a user centroid), not just
+    // a non-predicted skeleton instance — mirrors io.js isUserLabeled. Cached
+    // on editSeq (Cluster B); stepLabeled(+1) == "first > current, else wrap".
+    const domain = cachedUserFrameIndices(labels, video, editSeq);
+    const target = stepLabeled(domain, frameIdx, 1);
+    if (target !== null) ctx.state.setFrameIdx(target);
   },
 };
 
@@ -207,26 +188,13 @@ export const GoPrevUserFrame: Command = {
   name: "GoPrevUserFrame",
   topics: [UpdateTopic.Frame],
   execute(ctx: CommandContext) {
-    const { labels, video, frameIdx } = ctx.state;
+    const { labels, video, frameIdx, editSeq } = ctx.state;
     if (!labels || !video) return;
 
-    const userFrames = labels
-      .find({ video })
-      .filter((lf) => isUserLabeledFrame(lf))
-      .map((lf) => lf.frameIdx)
-      .sort((a, b) => a - b);
-
-    if (userFrames.length === 0) return;
-
     // Last user frame strictly before the current one; wrap to the last.
-    let prev: number | undefined;
-    for (let i = userFrames.length - 1; i >= 0; i--) {
-      if (userFrames[i] < frameIdx) {
-        prev = userFrames[i];
-        break;
-      }
-    }
-    ctx.state.setFrameIdx(prev !== undefined ? prev : userFrames[userFrames.length - 1]);
+    const domain = cachedUserFrameIndices(labels, video, editSeq);
+    const target = stepLabeled(domain, frameIdx, -1);
+    if (target !== null) ctx.state.setFrameIdx(target);
   },
 };
 
@@ -282,37 +250,14 @@ export const GoNextTrackSpawnFrame: Command = {
   name: "GoNextTrackSpawnFrame",
   topics: [UpdateTopic.Frame],
   execute(ctx: CommandContext) {
-    const { labels, video, frameIdx } = ctx.state;
+    const { labels, video, frameIdx, editSeq } = ctx.state;
     if (!labels || !video) return;
 
-    const tracks = labels.tracks;
-    if (tracks.length === 0) return;
-
-    // Get all labeled frames for this video
-    const videoFrames = labels.find({ video });
-
-    // For each track, find the first frame where it appears
-    const spawnFrames = new Set<number>();
-    for (const track of tracks) {
-      let earliest = Infinity;
-      for (const lf of videoFrames) {
-        if (lf.instances.some((inst) => inst.track === track)) {
-          if (lf.frameIdx < earliest) {
-            earliest = lf.frameIdx;
-          }
-        }
-      }
-      if (earliest !== Infinity) {
-        spawnFrames.add(earliest);
-      }
-    }
-
-    if (spawnFrames.size === 0) return;
-
-    const sorted = [...spawnFrames].sort((a, b) => a - b);
-
-    // Find the next spawn frame after current
-    const next = sorted.find((idx) => idx > frameIdx);
-    ctx.state.setFrameIdx(next !== undefined ? next : sorted[0]);
+    // First frame each track appears ("spawns"), sorted + deduped, cached on
+    // editSeq (Cluster B). stepLabeled(+1) == "first spawn after current, else
+    // wrap to the first"; returns null for no tracks/spawns (old early-out).
+    const domain = cachedTrackSpawnFrames(labels, video, editSeq);
+    const target = stepLabeled(domain, frameIdx, 1);
+    if (target !== null) ctx.state.setFrameIdx(target);
   },
 };

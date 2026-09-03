@@ -9,6 +9,9 @@
 import { describe, it, expect, beforeEach } from "../bun-test";
 import {
   labeledFrameIndices,
+  allLabeledFrameIndices,
+  userLabeledFrameIndices,
+  trackSpawnFrameIndices,
   stepLabeled,
   nearestFrameInDomain,
 } from "@/lib/navigableFrames";
@@ -16,8 +19,10 @@ import { useAppStore } from "@/stores/appStore";
 import {
   Labels,
   Instance,
+  PredictedInstance,
   LabeledFrame,
   Skeleton,
+  Track,
   Video,
 } from "@talmolab/sleap-io.js";
 
@@ -157,6 +162,134 @@ describe("labeledFrameIndices", () => {
     expect(skeleton.nodes.length).toBeGreaterThan(0);
 
     expect(labeledFrameIndices(labels, video)).toEqual([10, 30]);
+  });
+});
+
+/** A user (non-predicted) instance — makes its frame `isUserLabeled`. */
+function userInst(skeleton: Skeleton) {
+  return Instance.empty({ skeleton });
+}
+/** A predicted instance, optionally assigned to a track. */
+function predInst(skeleton: Skeleton, track?: Track) {
+  const inst = PredictedInstance.fromArray(
+    [
+      [0, 0],
+      [1, 1],
+    ],
+    skeleton,
+    0.9
+  );
+  if (track) inst.track = track;
+  return inst;
+}
+function emptyVideo(name = "mixed.mp4") {
+  return new Video({
+    filename: name,
+    backendMetadata: { shape: [100, 480, 640, 3] },
+    openBackend: false,
+  });
+}
+
+describe("allLabeledFrameIndices (includes empty frames — GoNext/PrevLabeledFrame parity)", () => {
+  it("returns every LabeledFrame index sorted, INCLUDING empty ones", () => {
+    // GoNext/PrevLabeledFrame intentionally keep empty frames (PyQt parity),
+    // unlike labeledFrameIndices (#137 confined nav), which drops them.
+    const skeleton = new Skeleton({ nodes: ["a", "b"], name: "s" });
+    const video = emptyVideo();
+    const labels = new Labels({ videos: [video], skeletons: [skeleton] });
+    labels.labeledFrames.push(
+      new LabeledFrame({ video, frameIdx: 30, instances: [predInst(skeleton)] })
+    );
+    labels.labeledFrames.push(
+      new LabeledFrame({ video, frameIdx: 10, instances: [userInst(skeleton)] })
+    );
+    labels.labeledFrames.push(new LabeledFrame({ video, frameIdx: 20 })); // empty
+
+    expect(allLabeledFrameIndices(labels, video)).toEqual([10, 20, 30]);
+    // Contrast: the #137 (excl-empty) builder drops the empty frame.
+    expect(labeledFrameIndices(labels, video)).toEqual([10, 30]);
+  });
+
+  it("returns [] when labels or video is null", () => {
+    const skeleton = new Skeleton({ nodes: ["a"], name: "s" });
+    const video = emptyVideo();
+    const labels = new Labels({ videos: [video], skeletons: [skeleton] });
+    expect(allLabeledFrameIndices(null, video)).toEqual([]);
+    expect(allLabeledFrameIndices(labels, null)).toEqual([]);
+  });
+
+  it("excludes frames belonging to other videos", () => {
+    const skeleton = new Skeleton({ nodes: ["a"], name: "s" });
+    const videoA = emptyVideo("a.mp4");
+    const videoB = emptyVideo("b.mp4");
+    const labels = new Labels({ videos: [videoA, videoB], skeletons: [skeleton] });
+    labels.labeledFrames.push(
+      new LabeledFrame({ video: videoA, frameIdx: 1, instances: [userInst(skeleton)] })
+    );
+    labels.labeledFrames.push(
+      new LabeledFrame({ video: videoB, frameIdx: 2, instances: [userInst(skeleton)] })
+    );
+    expect(allLabeledFrameIndices(labels, videoA)).toEqual([1]);
+  });
+});
+
+describe("userLabeledFrameIndices", () => {
+  it("returns only user-labeled frames (excludes predicted-only and empty)", () => {
+    const skeleton = new Skeleton({ nodes: ["a", "b"], name: "s" });
+    const video = emptyVideo();
+    const labels = new Labels({ videos: [video], skeletons: [skeleton] });
+    labels.labeledFrames.push(
+      new LabeledFrame({ video, frameIdx: 10, instances: [userInst(skeleton)] })
+    );
+    labels.labeledFrames.push(
+      new LabeledFrame({ video, frameIdx: 20, instances: [predInst(skeleton)] }) // predicted-only
+    );
+    labels.labeledFrames.push(new LabeledFrame({ video, frameIdx: 30 })); // empty
+
+    expect(userLabeledFrameIndices(labels, video)).toEqual([10]);
+  });
+
+  it("returns [] when labels or video is null", () => {
+    const video = emptyVideo();
+    expect(userLabeledFrameIndices(null, video)).toEqual([]);
+  });
+});
+
+describe("trackSpawnFrameIndices", () => {
+  it("returns the first frame each track appears, sorted and deduped", () => {
+    const skeleton = new Skeleton({ nodes: ["a", "b"], name: "s" });
+    const video = emptyVideo();
+    const trackA = new Track("A");
+    const trackB = new Track("B");
+    const labels = new Labels({ videos: [video], skeletons: [skeleton] });
+    labels.tracks = [trackA, trackB];
+    // A appears at 5 and 15 (spawn = 5); B appears at 10 (spawn = 10).
+    labels.labeledFrames.push(
+      new LabeledFrame({ video, frameIdx: 15, instances: [predInst(skeleton, trackA)] })
+    );
+    labels.labeledFrames.push(
+      new LabeledFrame({ video, frameIdx: 5, instances: [predInst(skeleton, trackA)] })
+    );
+    labels.labeledFrames.push(
+      new LabeledFrame({ video, frameIdx: 10, instances: [predInst(skeleton, trackB)] })
+    );
+
+    expect(trackSpawnFrameIndices(labels, video)).toEqual([5, 10]);
+  });
+
+  it("returns [] when there are no tracks", () => {
+    const skeleton = new Skeleton({ nodes: ["a"], name: "s" });
+    const video = emptyVideo();
+    const labels = new Labels({ videos: [video], skeletons: [skeleton] });
+    labels.labeledFrames.push(
+      new LabeledFrame({ video, frameIdx: 1, instances: [userInst(skeleton)] })
+    );
+    expect(trackSpawnFrameIndices(labels, video)).toEqual([]);
+  });
+
+  it("returns [] when labels or video is null", () => {
+    const video = emptyVideo();
+    expect(trackSpawnFrameIndices(null, video)).toEqual([]);
   });
 });
 
