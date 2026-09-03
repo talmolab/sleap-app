@@ -22,9 +22,12 @@ import { isOpfsSaveSupported } from "@/lib/saveEmbeddedPkgOpfs";
 import { newDraftPath, isLabelsDraftSupported } from "@/lib/labelsDraft";
 import { recordDraftSave } from "@/lib/draftManifest";
 import { newTauriDraftPath, recordTauriDraftSave } from "@/lib/tauriDraft";
+import { computeAutosaveDebounceMs } from "@/lib/autosaveDebounce";
 
-/** Save the draft this long after edits settle. */
-export const AUTOSAVE_DEBOUNCE_MS = 1500;
+/** Duration (ms) of the most recent draft write, measured around the actual
+ *  save. Seeds the adaptive debounce so a slow (large-project) write backs off
+ *  the next schedule. 0 until the first save. */
+let lastAutosaveWriteMs = 0;
 
 /** Serialize the whole draft each time, so overlapping runs would double-write;
  *  a single-flight guard keeps only one in flight. */
@@ -100,6 +103,7 @@ export async function maybeAutosaveLabelsDraft(
     const draftPath =
       store.labelsDraftPath ?? newDraftPath(store.filename ?? undefined);
     store.set("labelsDraftPath", draftPath);
+    const writeT0 = performance.now();
     await recordDraftSave(labels, {
       draftPath,
       sourceHandle: store.projectFileHandle,
@@ -110,6 +114,7 @@ export async function maybeAutosaveLabelsDraft(
       sourceSize: store.projectFile?.size,
       sourceLastModified: store.projectFile?.lastModified,
     });
+    lastAutosaveWriteMs = performance.now() - writeT0;
     store.set("pendingExport", true);
     // Mark clean only when the draft is the primary save target AND no edit
     // landed mid-write. A mid-write edit already re-armed via the editSeq
@@ -173,6 +178,7 @@ async function maybeAutosaveTauriDraft(reArm?: () => void): Promise<void> {
       }
     }
 
+    const writeT0 = performance.now();
     await recordTauriDraftSave(labels, {
       draftPath,
       projectPath: store.projectPath,
@@ -181,6 +187,7 @@ async function maybeAutosaveTauriDraft(reArm?: () => void): Promise<void> {
       sourceSize,
       sourceLastModified,
     });
+    lastAutosaveWriteMs = performance.now() - writeT0;
     // NOTE: intentionally NO store.clearChanges() — desktop ⌘S owns the disk
     // file; the draft is only a net, so the project stays dirty until ⌘S.
     console.log("[autosave] Tauri labels draft saved ->", draftPath);
@@ -211,13 +218,20 @@ export function setupLabelsAutosave(): () => void {
   let timer: ReturnType<typeof setTimeout> | null = null;
   const arm = (): void => {
     if (timer) clearTimeout(timer);
+    // Adaptive debounce: the draft write re-serializes the WHOLE project, so on
+    // a large project wait proportionally longer. A fixed 1.5s fired the
+    // multi-second serialize right after an edit-pause and froze the next
+    // interaction (the "freeze on click"). Estimated from the labeled-frame
+    // count, refined by the last measured write.
+    const frameCount = useAppStore.getState().labels?.labeledFrames.length ?? 0;
+    const delay = computeAutosaveDebounceMs(frameCount, lastAutosaveWriteMs);
     timer = setTimeout(() => {
       if (autosaveInteracting) {
         arm(); // defer: never serialize mid node-drag gesture (#329)
         return;
       }
       void maybeAutosaveLabelsDraft(arm);
-    }, AUTOSAVE_DEBOUNCE_MS);
+    }, delay);
   };
   const unsub = useAppStore.subscribe(
     (s) => s.editSeq,
