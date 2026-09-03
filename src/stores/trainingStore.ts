@@ -469,9 +469,20 @@ export function getSlotLabel(slot: string): string {
  * ones). Used for the `n=` suffix in a default run name; `null` with no
  * project loaded.
  */
+let _userLabeledFramesCache: { labels: Labels; result: number } | null = null;
+
 export function countUserLabeledFrames(labels: Labels | null): number | null {
   if (!labels) return null;
-  return labels.labeledFrames.filter((lf) => lf.userInstances.length > 0 || lf.isNegative).length;
+  // Called on every TrainingPanel render; cache by `labels` reference so it
+  // isn't re-scanned (allocating `lf.userInstances` per frame) each time.
+  if (_userLabeledFramesCache && _userLabeledFramesCache.labels === labels) {
+    return _userLabeledFramesCache.result;
+  }
+  const result = labels.labeledFrames.filter(
+    (lf) => lf.userInstances.length > 0 || lf.isNegative,
+  ).length;
+  _userLabeledFramesCache = { labels, result };
+  return result;
 }
 
 // ── YAML override helper ─────────────────────────────────────────

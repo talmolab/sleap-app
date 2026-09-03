@@ -2091,5 +2091,31 @@ describe("markEpochBegin / epochStartedAt", () => {
       // user-labeled + negative count, NOT predicted-only or empty
       expect(countUserLabeledFrames(labels)).toBe(2);
     });
+
+    it("caches by labels reference so it isn't re-scanned every render", () => {
+      const frame = new LabeledFrame({ video, frameIdx: 0 });
+      frame.instances.push(Instance.empty({ skeleton }));
+      const labels = new Labels({ videos: [video], skeletons: [skeleton], labeledFrames: [frame] });
+
+      // Spy the allocating `userInstances` filter: the fn ran on every render;
+      // the cache should serve the second call without re-scanning.
+      const proto = Object.getPrototypeOf(labels.labeledFrames[0]);
+      const orig = Object.getOwnPropertyDescriptor(proto, "userInstances")!;
+      let reads = 0;
+      Object.defineProperty(proto, "userInstances", {
+        configurable: true,
+        get() {
+          reads++;
+          return orig.get!.call(this);
+        },
+      });
+      try {
+        expect(countUserLabeledFrames(labels)).toBe(1);
+        expect(countUserLabeledFrames(labels)).toBe(1);
+      } finally {
+        Object.defineProperty(proto, "userInstances", orig);
+      }
+      expect(reads).toBe(1); // second call served from cache
+    });
   });
 });

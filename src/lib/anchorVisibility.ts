@@ -32,7 +32,37 @@ export function visibilityTier(pct: number): VisibilityTier {
  * across every user-labeled instance in `labels` (all videos). Returns an
  * empty map for a null/empty skeleton.
  */
+let _nodeVisCache: {
+  labels: Labels | null;
+  skeleton: Skeleton | null;
+  result: Map<string, NodeVisibility>;
+} | null = null;
+
+/**
+ * Cached by (labels, skeleton) reference so the repeated calls during one
+ * training-window open — and the per-render recompute while it stays open —
+ * reuse a single scan instead of re-walking every instance. Same invalidation
+ * semantics as the callers' `useMemo`s (which already key on `labels`): a new
+ * project / skeleton reference recomputes; an in-place edit does not (the
+ * visibility percentages are a training-set overview, not live per-point state).
+ */
 export function computeNodeVisibility(
+  labels: Labels | null,
+  skeleton: Skeleton | null
+): Map<string, NodeVisibility> {
+  if (
+    _nodeVisCache &&
+    _nodeVisCache.labels === labels &&
+    _nodeVisCache.skeleton === skeleton
+  ) {
+    return _nodeVisCache.result;
+  }
+  const result = _computeNodeVisibility(labels, skeleton);
+  _nodeVisCache = { labels, skeleton, result };
+  return result;
+}
+
+function _computeNodeVisibility(
   labels: Labels | null,
   skeleton: Skeleton | null
 ): Map<string, NodeVisibility> {
@@ -47,13 +77,18 @@ export function computeNodeVisibility(
   for (const lf of labels.labeledFrames) {
     for (const inst of lf.instances) {
       if (inst instanceof PredictedInstance) continue;
-      for (let i = 0; i < inst.points.length; i++) {
+      // Read the allocating sleap-io proxy getter ONCE per instance. Using
+      // `inst.points` directly in the loop condition + body re-allocated the
+      // whole PointView[] every iteration → O(n²) allocations/instance and a
+      // multi-second freeze on densely-labeled projects.
+      const pts = inst.points;
+      for (let i = 0; i < pts.length; i++) {
         const name = skeleton.nodes[i]?.name;
         if (!name) continue;
         const stat = result.get(name);
         if (!stat) continue;
         stat.total += 1;
-        if (inst.points[i]?.visible) stat.visible += 1;
+        if (pts[i]?.visible) stat.visible += 1;
       }
     }
   }

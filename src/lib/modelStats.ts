@@ -49,7 +49,20 @@ export interface InstanceSizeStats {
 /** Single shared scan of a project's labeled user instances for size
  *  stats, backing computeCropSize, recommendMaxStride, and
  *  recommendBackboneProfile below. */
+let _sizeStatsCache: { labels: Labels; result: InstanceSizeStats | null } | null = null;
+
 export function computeInstanceSizeStats(labels: Labels | null): InstanceSizeStats | null {
+  // Cache by `labels` reference so the ~6-7 independent call sites during one
+  // training-window open (recommendPipeline, per-config memory estimates,
+  // crop-size, autoload) share a single scan. Same invalidation semantics as
+  // the callers' `useMemo`s, which already key on `labels`.
+  if (_sizeStatsCache && _sizeStatsCache.labels === labels) return _sizeStatsCache.result;
+  const result = _computeInstanceSizeStats(labels);
+  if (labels) _sizeStatsCache = { labels, result };
+  return result;
+}
+
+function _computeInstanceSizeStats(labels: Labels | null): InstanceSizeStats | null {
   if (!labels) return null;
 
   let maxBboxDim = 0;
@@ -64,12 +77,19 @@ export function computeInstanceSizeStats(labels: Labels | null): InstanceSizeSta
       let validCount = 0;
 
       for (const pt of inst.points) {
-        if (!pt.visible || isNaN(pt.xy[0]) || isNaN(pt.xy[1])) continue;
+        if (!pt.visible) continue;
+        // Read the allocating sleap-io proxy getter once per point: `pt.xy`
+        // returns a fresh [x,y] array on every access, and the bbox scan read
+        // it ~6-10× per point → an allocation storm on densely-labeled projects.
+        const xy = pt.xy;
+        const px = xy[0];
+        const py = xy[1];
+        if (isNaN(px) || isNaN(py)) continue;
         validCount++;
-        if (pt.xy[0] < xMin) xMin = pt.xy[0];
-        if (pt.xy[0] > xMax) xMax = pt.xy[0];
-        if (pt.xy[1] < yMin) yMin = pt.xy[1];
-        if (pt.xy[1] > yMax) yMax = pt.xy[1];
+        if (px < xMin) xMin = px;
+        if (px > xMax) xMax = px;
+        if (py < yMin) yMin = py;
+        if (py > yMax) yMax = py;
       }
       if (validCount < 2) continue;
 

@@ -38,6 +38,7 @@ import {
   HEADER_FILL,
 } from "@/lib/headerSeriesRender";
 import { resizeHeaderHeight } from "@/lib/seekbarHeaderHeight";
+import { inferFrameCount } from "@/lib/inferFrameCount";
 import { isUserLabeledFrame } from "@/lib/frameLabeling";
 import { frameHoverInfo } from "@/lib/seekbarHoverInfo";
 import { navigableDomain, nearestFrameInDomain } from "@/lib/navigableFrames";
@@ -174,6 +175,22 @@ export function Seekbar() {
   const sidebarOnLeft = useAppStore((s) => s.sidebarSide) === "left";
   const controlsOrder = sidebarOnLeft ? "order-first" : "";
   const overlayVersion = useAppStore((s) => s.overlayVersion);
+  // The header-graph series + labeled-frame marks are derived from label CONTENT,
+  // so they key on the edit counter, NOT `overlayVersion` (which bumps every rAF
+  // to drive the overlay repaint — keying on that re-extracted every frame and
+  // blanked the graph mid-drag). `rawEditSeq` bumps once per edit (#329 defers it
+  // to a single bump per drag gesture, on release).
+  const rawEditSeq = useAppStore((s) => s.editSeq);
+  // Debounced further: rebuild the (whole-project) header series/marks only after
+  // edits SETTLE, so a burst of drags triggers one rebuild when you pause, not one
+  // per release. The header rarely needs to reflect the latest edit instantly;
+  // ~0.8s stale is fine (and closer to how PyQt lazily refreshes it). Every
+  // `editSeq` consumer below (series builds + headerData) uses this debounced copy.
+  const [editSeq, setEditSeq] = useState(rawEditSeq);
+  useEffect(() => {
+    const t = setTimeout(() => setEditSeq(rawEditSeq), 800);
+    return () => clearTimeout(t);
+  }, [rawEditSeq]);
   const videoRevision = useAppStore((s) => s.videoRevision);
   const setKey = useAppStore((s) => s.set);
   const navigationDomain = useAppStore((s) => s.navigationDomain);
@@ -203,9 +220,12 @@ export function Seekbar() {
     () => video?.shape?.[0] ?? null,
     [video, videoRevision]
   );
-  const inferredFrames = labels && video
-    ? Math.max(0, ...labels.find({ video }).map((lf) => lf.frameIdx)) + 1
-    : 0;
+  // Fallback length only when the video's own frame count is unknown. Guarded
+  // by `shapeFrames == null` so a known-length video (the common case) skips the
+  // whole-project scan entirely — it used to run on EVERY render (incl. every
+  // node-drag tick via overlayVersion) and then get discarded, stalling drags on
+  // many-thousand-frame projects.
+  const inferredFrames = shapeFrames == null ? inferFrameCount(labels, video) : 0;
   const totalFrames = shapeFrames ?? (inferredFrames > 0 ? inferredFrames : 0);
 
   // The active navigation domain (#137) for the current video, used to snap
@@ -269,11 +289,11 @@ export function Seekbar() {
     return getOrComputeSeries(
       seriesCacheRef.current,
       video,
-      overlayVersion,
+      editSeq,
       `${seekbarHeaderGraph}|${seekbarHeaderReduction}`,
       () => computeStatisticSeries(labels, video, seekbarHeaderGraph, seekbarHeaderReduction),
     );
-  }, [labels, video, seekbarHeaderGraph, seekbarHeaderReduction, overlayVersion, useWorker]);
+  }, [labels, video, seekbarHeaderGraph, seekbarHeaderReduction, editSeq, useWorker]);
 
   // Worker-computed series for heavy graphs over the frame threshold.
   const [workerHeaderSeries, setWorkerHeaderSeries] = useState<Map<number, number> | null>(null);
@@ -294,7 +314,7 @@ export function Seekbar() {
     // Cache hit: re-selecting a heavy graph is instant, no worker round-trip
     // (issue #105 AC2). Keyed by graph|reduction; invalidated on video/label change.
     const cacheKey = `${seekbarHeaderGraph}|${seekbarHeaderReduction}`;
-    const cached = peekSeries(seriesCacheRef.current, video, overlayVersion, cacheKey);
+    const cached = peekSeries(seriesCacheRef.current, video, editSeq, cacheKey);
     if (cached) {
       setWorkerHeaderSeries(cached);
       return;
@@ -326,7 +346,7 @@ export function Seekbar() {
       if (reqId !== requestIdRef.current) return;
       const series = new Map(e.data.entries);
       // Cache the result so re-selecting this heavy graph is instant.
-      putSeries(seriesCacheRef.current, video, overlayVersion, cacheKey, series);
+      putSeries(seriesCacheRef.current, video, editSeq, cacheKey, series);
       setWorkerHeaderSeries(series);
     };
     worker.addEventListener("message", handleMessage);
@@ -350,7 +370,7 @@ export function Seekbar() {
       // kept for reuse and only torn down on unmount (see effect below).
       worker.removeEventListener("message", handleMessage);
     };
-  }, [useWorker, labels, video, seekbarHeaderGraph, seekbarHeaderReduction, overlayVersion]);
+  }, [useWorker, labels, video, seekbarHeaderGraph, seekbarHeaderReduction, editSeq]);
 
   // Terminate the worker on unmount.
   useEffect(() => {
@@ -760,7 +780,8 @@ export function Seekbar() {
   // O(tracks × labeledFrames × instances) `.some()` scan there (with a
   // getState() per inner iteration) froze the UI for seconds on videos with many
   // labeled frames. A single pass + a track→index Map makes it O(frames ×
-  // instances). overlayVersion is in the deps because labels is mutated in place.
+  // instances). Keyed on editSeq (see above), NOT overlayVersion, so this
+  // O(all frames) scan recomputes once per edit-commit — not on every drag tick.
   const headerData = useMemo(() => {
     if (!labels || !video) return null;
     const tracks = labels.tracks as unknown[];
@@ -783,7 +804,7 @@ export function Seekbar() {
     }
     return { byTrack, marks };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [labels, video, overlayVersion]);
+  }, [labels, video, editSeq]);
 
   // Render seekbar
   useEffect(() => {
