@@ -120,7 +120,7 @@ Two dialogs are worth telling apart. "Apple could not verify..." means valid
 signature, not notarized. "**SLEAP is damaged and can't be opened**" means an
 *invalid* signature, and has no override at all -- if you ever see that on a
 release build, the signing step regressed; see
-[docs/macos-code-signing.md](docs/macos-code-signing.md).
+[docs/internal/macos-code-signing.md](docs/internal/macos-code-signing.md).
 
 </details>
 
