@@ -238,7 +238,7 @@ export function DetailedModelMetricsDialog({
       <DialogContent className="max-w-3xl sm:max-w-3xl">
         <DialogHeader>
           <DialogTitle className="break-all">{title}</DialogTitle>
-          <DialogDescription>
+          <DialogDescription className="select-text">
             {row?.path}
             {metrics ? ` • ${metrics.split} split` : ""}
           </DialogDescription>
@@ -273,7 +273,7 @@ export function DetailedModelMetricsDialog({
 
             {/* Scalar metrics — two columns to reduce vertical clutter. */}
             {labeled.length > 0 ? (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-1.5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-1.5 select-text">
                 {labeled.map((row2) => (
                   <div
                     key={row2.label}

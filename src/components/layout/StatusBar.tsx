@@ -74,7 +74,7 @@ export function StatusBar() {
   return (
     <div className="flex items-center h-7 px-2 text-xs bg-card border-t border-border text-muted-foreground gap-2 shrink-0">
       {/* Left: project info */}
-      <div className="flex items-center gap-2 flex-1 min-w-0">
+      <div className="flex items-center gap-2 flex-1 min-w-0 select-text">
         {filename ? (
           <>
             <span className="text-foreground truncate">
@@ -96,7 +96,7 @@ export function StatusBar() {
               type="button"
               title={`Go to frame (${formatShortcut(DEFAULT_SHORTCUTS["goto frame"])})`}
               onClick={() => useAppStore.getState().setGoToFrameDialogOpen(true)}
-              className="tabular-nums whitespace-nowrap cursor-pointer rounded-sm px-1 -mx-1 hover:text-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="tabular-nums whitespace-nowrap cursor-pointer select-none rounded-sm px-1 -mx-1 hover:text-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
               {/* 0-based frame index (matches the seekbar/overlay convention). */}
               Frame {frameIdx.toLocaleString()}

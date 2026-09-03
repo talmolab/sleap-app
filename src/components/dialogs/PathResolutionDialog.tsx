@@ -195,7 +195,7 @@ export function PathResolutionDialog({
                   <td className="px-3 py-2">
                     {p.worker !== null ? (
                       <div
-                        className="text-muted-foreground overflow-x-auto whitespace-nowrap max-w-[550px] text-xs font-mono scrollbar-thin"
+                        className="text-muted-foreground overflow-x-auto whitespace-nowrap max-w-[550px] text-xs font-mono scrollbar-thin select-text"
                         title={p.worker}
                       >
                         {p.worker}
