@@ -176,6 +176,13 @@ export function Seekbar() {
   const sidebarOnLeft = useAppStore((s) => s.sidebarSide) === "left";
   const controlsOrder = sidebarOnLeft ? "order-first" : "";
   const overlayVersion = useAppStore((s) => s.overlayVersion);
+  // Deferred copy for the EXPENSIVE per-frame Seekbar recomputes (header-graph
+  // series + header marks). A node drag bumps overlayVersion every rAF, but
+  // those all-frames scans (the worker series extraction re-reads every frame's
+  // points on the MAIN thread) don't need to keep up mid-gesture. useDeferredValue
+  // lets them lag behind a rapid drag and catch up once it settles — this is what
+  // was blanking the header graph and stalling the drag on large projects.
+  const deferredOverlayVersion = useDeferredValue(overlayVersion);
   const videoRevision = useAppStore((s) => s.videoRevision);
   const setKey = useAppStore((s) => s.set);
   const navigationDomain = useAppStore((s) => s.navigationDomain);
@@ -274,11 +281,11 @@ export function Seekbar() {
     return getOrComputeSeries(
       seriesCacheRef.current,
       video,
-      overlayVersion,
+      deferredOverlayVersion,
       `${seekbarHeaderGraph}|${seekbarHeaderReduction}`,
       () => computeStatisticSeries(labels, video, seekbarHeaderGraph, seekbarHeaderReduction),
     );
-  }, [labels, video, seekbarHeaderGraph, seekbarHeaderReduction, overlayVersion, useWorker]);
+  }, [labels, video, seekbarHeaderGraph, seekbarHeaderReduction, deferredOverlayVersion, useWorker]);
 
   // Worker-computed series for heavy graphs over the frame threshold.
   const [workerHeaderSeries, setWorkerHeaderSeries] = useState<Map<number, number> | null>(null);
@@ -299,7 +306,7 @@ export function Seekbar() {
     // Cache hit: re-selecting a heavy graph is instant, no worker round-trip
     // (issue #105 AC2). Keyed by graph|reduction; invalidated on video/label change.
     const cacheKey = `${seekbarHeaderGraph}|${seekbarHeaderReduction}`;
-    const cached = peekSeries(seriesCacheRef.current, video, overlayVersion, cacheKey);
+    const cached = peekSeries(seriesCacheRef.current, video, deferredOverlayVersion, cacheKey);
     if (cached) {
       setWorkerHeaderSeries(cached);
       return;
@@ -331,7 +338,7 @@ export function Seekbar() {
       if (reqId !== requestIdRef.current) return;
       const series = new Map(e.data.entries);
       // Cache the result so re-selecting this heavy graph is instant.
-      putSeries(seriesCacheRef.current, video, overlayVersion, cacheKey, series);
+      putSeries(seriesCacheRef.current, video, deferredOverlayVersion, cacheKey, series);
       setWorkerHeaderSeries(series);
     };
     worker.addEventListener("message", handleMessage);
@@ -355,7 +362,7 @@ export function Seekbar() {
       // kept for reuse and only torn down on unmount (see effect below).
       worker.removeEventListener("message", handleMessage);
     };
-  }, [useWorker, labels, video, seekbarHeaderGraph, seekbarHeaderReduction, overlayVersion]);
+  }, [useWorker, labels, video, seekbarHeaderGraph, seekbarHeaderReduction, deferredOverlayVersion]);
 
   // Terminate the worker on unmount.
   useEffect(() => {
@@ -766,12 +773,8 @@ export function Seekbar() {
   // getState() per inner iteration) froze the UI for seconds on videos with many
   // labeled frames. A single pass + a track→index Map makes it O(frames ×
   // instances). overlayVersion is in the deps because labels is mutated in place.
-  //
-  // Deferred: this scan is O(all frames), and a node drag bumps overlayVersion
-  // every rAF even though moving a point never changes the marks. useDeferredValue
-  // lets the recompute lag behind a rapid drag and catch up once it settles,
-  // instead of re-walking every frame each tick (multi-thousand-frame drag stall).
-  const deferredOverlayVersion = useDeferredValue(overlayVersion);
+  // Deferred (see deferredOverlayVersion above) so this O(all frames) scan
+  // doesn't re-walk every frame on each drag tick.
   const headerData = useMemo(() => {
     if (!labels || !video) return null;
     const tracks = labels.tracks as unknown[];
