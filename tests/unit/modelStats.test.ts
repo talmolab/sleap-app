@@ -49,6 +49,24 @@ function makeVideo(filename: string, height: number, width: number, channels = 3
 }
 
 describe("computeInstanceSizeStats", () => {
+  it("caches by labels reference so the ~7 training-open scans share one", () => {
+    const skeleton = new Skeleton({ nodes: ["a", "b"], name: "s" });
+    const video = makeVideo("v.mp4", 100, 100);
+    const lf = new LabeledFrame({ video, frameIdx: 0 });
+    lf.instances.push(
+      makeInstance(skeleton, [
+        { xy: [0, 0], visible: true },
+        { xy: [30, 20], visible: true },
+      ])
+    );
+    const labels = new Labels({ videos: [video], skeletons: [skeleton], labeledFrames: [lf] });
+
+    const a = computeInstanceSizeStats(labels);
+    const b = computeInstanceSizeStats(labels);
+    expect(a).not.toBeNull();
+    expect(b).toBe(a); // second call served from cache, not re-scanned
+  });
+
   it("reads pt.xy once per point, not ~6× (proxy-allocation hoist)", () => {
     const skeleton = new Skeleton({ nodes: ["a", "b", "c"], name: "s" });
     const video = makeVideo("v.mp4", 100, 100);

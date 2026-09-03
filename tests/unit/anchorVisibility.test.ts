@@ -102,6 +102,22 @@ describe("computeNodeVisibility", () => {
     expect(stats.get("c")).toEqual({ visible: 0, total: 1, pct: 0 });
   });
 
+  it("caches by (labels, skeleton) reference so repeated calls reuse one scan", () => {
+    const skeleton = new Skeleton({ nodes: ["a", "b"], name: "s" });
+    const video = new Video({
+      filename: "v.mp4",
+      backendMetadata: { shape: [10, 100, 100, 3] },
+      openBackend: false,
+    });
+    const lf = new LabeledFrame({ video, frameIdx: 0 });
+    lf.instances.push(makeInstance(skeleton, [true, false]));
+    const labels = new Labels({ videos: [video], skeletons: [skeleton], labeledFrames: [lf] });
+
+    const a = computeNodeVisibility(labels, skeleton);
+    const b = computeNodeVisibility(labels, skeleton);
+    expect(b).toBe(a); // same Map object → second call served from cache
+  });
+
   it("excludes predicted instances (not part of the training set)", () => {
     const skeleton = new Skeleton({ nodes: ["head"], name: "s" });
     const video = new Video({

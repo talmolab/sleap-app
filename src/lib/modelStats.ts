@@ -49,7 +49,20 @@ export interface InstanceSizeStats {
 /** Single shared scan of a project's labeled user instances for size
  *  stats, backing computeCropSize, recommendMaxStride, and
  *  recommendBackboneProfile below. */
+let _sizeStatsCache: { labels: Labels; result: InstanceSizeStats | null } | null = null;
+
 export function computeInstanceSizeStats(labels: Labels | null): InstanceSizeStats | null {
+  // Cache by `labels` reference so the ~6-7 independent call sites during one
+  // training-window open (recommendPipeline, per-config memory estimates,
+  // crop-size, autoload) share a single scan. Same invalidation semantics as
+  // the callers' `useMemo`s, which already key on `labels`.
+  if (_sizeStatsCache && _sizeStatsCache.labels === labels) return _sizeStatsCache.result;
+  const result = _computeInstanceSizeStats(labels);
+  if (labels) _sizeStatsCache = { labels, result };
+  return result;
+}
+
+function _computeInstanceSizeStats(labels: Labels | null): InstanceSizeStats | null {
   if (!labels) return null;
 
   let maxBboxDim = 0;
