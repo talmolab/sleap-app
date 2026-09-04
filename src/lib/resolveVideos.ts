@@ -1313,6 +1313,68 @@ export async function resolveScrubProxyOpenPath(
   }
 }
 
+/** Injected seams for {@link openViaProxyOrNull}; default to the real desktop impls. */
+export interface ProxyOpenDeps {
+  /** True only on desktop (a proxy needs the bundled ffmpeg sidecar). */
+  isTauri: () => Promise<boolean>;
+  /** The transcode-store job UI to start/forward and clear. */
+  getStore: () => ProxyJobUi & { endJob: () => void };
+  /** The proxy decision/build (see {@link resolveScrubProxyOpenPath}). */
+  resolveProxy: typeof resolveScrubProxyOpenPath;
+  /** Open an Mp4Box backend on the (local, frame-exact `.mp4`) proxy path. */
+  openProxyBackend: (proxyPath: string, name: string) => Promise<VideoBackend>;
+}
+
+const defaultProxyOpenDeps: ProxyOpenDeps = {
+  isTauri: async () => (await getPlatform()).isTauri,
+  getStore: () => useTranscodeStore.getState(),
+  resolveProxy: resolveScrubProxyOpenPath,
+  openProxyBackend: async (proxyPath, name) =>
+    new Mp4BoxVideoBackend(await makeVideoRangeSource(proxyPath), {
+      filename: name,
+    }),
+};
+
+/**
+ * DRY entry point for the scrub-proxy step, called at the TOP of each decodable
+ * external-video open branch (mediabunny, mp4box, and the decodable-AVI
+ * fallthrough). On desktop it builds/reuses a local short-GOP scrub proxy for a
+ * big file on a network mount and, if one was produced, returns an Mp4Box backend
+ * opened on that frame-exact `.mp4`. Returns `null` to mean "no proxy — open the
+ * source normally", which is the outcome whenever the feature is off, the file
+ * isn't worth proxying, the frame-exact gate fails, the build errors/cancels, or
+ * we're not on desktop.
+ *
+ * It owns the SAME {@link useTranscodeStore} job UI the legacy transcode uses:
+ * {@link resolveScrubProxyOpenPath} starts + forwards progress, and this
+ * function's `finally` clears it exactly once (build OR fallback) — so mp4/mov
+ * opens, which previously showed no job, now show the shared conversion dialog
+ * while a proxy builds.
+ *
+ * INVARIANT: the `.slp`/Video ALWAYS records the ORIGINAL `path`. The proxy path
+ * is confined to the returned backend's byte source (and the backend keeps the
+ * original `name`); it is never written back to the Video.
+ */
+export async function openViaProxyOrNull(
+  path: string,
+  name: string,
+  deps: ProxyOpenDeps = defaultProxyOpenDeps
+): Promise<VideoBackend | null> {
+  if (!(await deps.isTauri())) return null; // proxy needs the ffmpeg sidecar
+  const store = deps.getStore();
+  const controller = new AbortController();
+  try {
+    const proxy = await deps.resolveProxy(path, name, store, controller);
+    return proxy.isProxy ? await deps.openProxyBackend(proxy.path, name) : null;
+  } catch (err) {
+    // Best-effort: a proxy must NEVER fail the open — open the source normally.
+    console.warn(`[video] scrub-proxy open failed for "${name}":`, err);
+    return null;
+  } finally {
+    store.endJob(); // clear the shared job UI on build OR fallback
+  }
+}
+
 /**
  * Build a backend that reads a native video path lazily by byte range, so a
  * multi-GB external video is never read whole into memory (the desktop
@@ -1321,6 +1383,11 @@ export async function resolveScrubProxyOpenPath(
  * it falls back to a full read. AVI/WMV also read whole for now — web-demuxer
  * 4.x can't stream from a lazy source, so {@link AviVideoBackend.fromRangeSource}
  * materializes the bytes (true AVI byte-range streaming is a follow-up).
+ *
+ * DECODABLE external videos (mediabunny, mp4box, and decodable AVI/WMV) first go
+ * through {@link openViaProxyOrNull}: on desktop a big network-mounted file gets a
+ * local scrub proxy for fast seeking. The proxy path is used ONLY to open the
+ * backend — the Video keeps recording the ORIGINAL `path`.
  */
 async function createBackendForPath(
   path: string,
@@ -1330,6 +1397,10 @@ async function createBackendForPath(
   const kind = backendKindForFilename(name);
   const backend = await (async () => {
     if (kind === "mediabunny") {
+      // Decodable external video (MOV/MKV/WebM/Ogg/TS): on desktop, proxy a big
+      // network-mounted file for fast scrubbing, else open the source normally.
+      const proxied = await openViaProxyOrNull(path, name);
+      if (proxied) return proxied;
       return MediaBunnyVideoBackend.fromRangeSource(
         await makeVideoRangeSource(path),
         name
@@ -1384,29 +1455,13 @@ async function createBackendForPath(
               { filename: name }
             );
           }
-          // Decodable original (H.264/MJPEG in an AVI/WMV container). Only a
+          // Decodable original (H.264/MJPEG in an AVI/WMV container): only a
           // legacy transcode above produced a local copy; this file did not, so
-          // if it's big and on a network mount, build a local short-GOP scrub
-          // PROXY once for fast scrubbing — reusing the SAME transcode-store job
-          // UI. The proxy is a frame-exact local `.mp4` → open it via Mp4Box; on
-          // ANY fallback (feature off / not worth it / frame-check mismatch /
-          // build error) `isProxy` is false and we open the ORIGINAL below. The
-          // `.slp`/Video ALWAYS records the ORIGINAL `path`: the proxy path is
-          // confined to this backend's byte source (and the backend still carries
-          // the original `name`), never written back to the Video.
-          const proxy = await resolveScrubProxyOpenPath(
-            path,
-            name,
-            store,
-            controller
-          );
-          if (proxy.isProxy) {
-            return new Mp4BoxVideoBackend(
-              await makeVideoRangeSource(proxy.path),
-              { filename: name }
-            );
-          }
-          // Not proxied → open the decodable original via AviVideoBackend below.
+          // try a local scrub proxy for fast network scrubbing (own job
+          // lifecycle). On any fallback, open the decodable original via
+          // AviVideoBackend below. The `.slp` keeps the ORIGINAL path.
+          const proxied = await openViaProxyOrNull(path, name);
+          if (proxied) return proxied;
         } catch (err) {
           if (controller.signal.aborted) {
             // User canceled: don't silently fall back (that re-attempts the whole
@@ -1435,6 +1490,13 @@ async function createBackendForPath(
       );
     }
     // mp4box + unknown/extension-less names (historical mp4box default).
+    if (kind === "mp4box") {
+      // Decodable `.mp4`: on desktop, proxy a big network-mounted file for fast
+      // scrubbing (this is the primary target case), else open normally. Unknown
+      // / extension-less names skip the proxy — we can't assume they're decodable.
+      const proxied = await openViaProxyOrNull(path, name);
+      if (proxied) return proxied;
+    }
     return new Mp4BoxVideoBackend(await makeVideoRangeSource(path), {
       filename: name,
     });
