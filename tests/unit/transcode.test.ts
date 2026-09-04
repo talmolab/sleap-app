@@ -21,9 +21,11 @@ import {
   getTranscodeCacheInfo,
   clearTranscodeCache,
   __resetEncoderCache,
+  TRANSCODE_SUBDIR,
   type TranscodeDeps,
   type TranscodeProgress,
 } from "@/lib/transcode/transcodeVideo";
+import { PROXY_SUBDIR } from "@/lib/transcode/scrubProxy";
 import { codecNeedsTranscode } from "@/lib/transcode/videoCodecSupport";
 import {
   parseFfprobeCodec,
@@ -475,15 +477,24 @@ describe("ensureDecodablePath (probe → decide → maybe transcode)", () => {
 });
 
 describe("transcode cache maintenance", () => {
-  // Minimal fake keyed by filename→size; readDir lists names, stat returns sizes.
-  function cacheDeps(files: Record<string, number>) {
-    const present = new Set(Object.keys(files));
+  // Minimal fake keyed by filename→size, scoped per cache subdir (transcodes /
+  // proxies). readDir lists a subdir's names; stat returns sizes. The second arg
+  // populates the proxies/ dir; omit it for a transcodes-only cache.
+  function cacheDeps(
+    transcodeFiles: Record<string, number>,
+    proxyFiles: Record<string, number> = {}
+  ) {
+    const byDir: Record<string, Set<string>> = {
+      [TRANSCODE_SUBDIR]: new Set(Object.keys(transcodeFiles)),
+      [PROXY_SUBDIR]: new Set(Object.keys(proxyFiles)),
+    };
+    const sizes: Record<string, number> = { ...transcodeFiles, ...proxyFiles };
     const removed: string[] = [];
     const deps = {
       cacheDir: async () => "/cache",
       join: async (...p: string[]) => p.join("/"),
       stat: async (path: string) => ({
-        size: files[path.split("/").pop() ?? ""] ?? 0,
+        size: sizes[path.split("/").pop() ?? ""] ?? 0,
         mtimeMs: 0,
       }),
       exists: async () => false,
@@ -491,9 +502,13 @@ describe("transcode cache maintenance", () => {
       rename: async () => {},
       remove: async (p: string) => {
         removed.push(p);
-        present.delete(p.split("/").pop() ?? "");
+        const name = p.split("/").pop() ?? "";
+        for (const set of Object.values(byDir)) set.delete(name);
       },
-      readDir: async () => [...present],
+      readDir: async (dir: string) => {
+        const set = byDir[dir.split("/").pop() ?? ""];
+        return set ? [...set] : [];
+      },
       exec: async () => ({ stdout: "", stderr: "", code: 0 }),
       runTranscode: async () => {},
     } as TranscodeDeps;
@@ -505,6 +520,15 @@ describe("transcode cache maintenance", () => {
     expect(await getTranscodeCacheInfo(deps)).toEqual({ count: 2, bytes: 300 });
   });
 
+  it("getTranscodeCacheInfo sums .mp4s across BOTH transcodes/ and proxies/", async () => {
+    const { deps } = cacheDeps(
+      { "a.mp4": 100, "b.mp4": 200, "t.mp4.part": 999 }, // transcodes/
+      { "p1.mp4": 300, "p2.mp4": 400, "p.mp4.part": 999 } // proxies/
+    );
+    // 2 transcodes (300 B) + 2 proxies (700 B); `.part` temps ignored in both.
+    expect(await getTranscodeCacheInfo(deps)).toEqual({ count: 4, bytes: 1000 });
+  });
+
   it("getTranscodeCacheInfo is empty when the cache dir is absent", async () => {
     const { deps } = cacheDeps({});
     deps.readDir = async () => {
@@ -513,10 +537,48 @@ describe("transcode cache maintenance", () => {
     expect(await getTranscodeCacheInfo(deps)).toEqual({ count: 0, bytes: 0 });
   });
 
+  it("getTranscodeCacheInfo tolerates a missing proxies/ dir (still counts transcodes)", async () => {
+    const { deps } = cacheDeps({ "a.mp4": 100, "b.mp4": 200 }, { "p.mp4": 999 });
+    const readTranscodesOnly = deps.readDir;
+    deps.readDir = async (dir: string) => {
+      if (dir.endsWith(`/${PROXY_SUBDIR}`)) throw new Error("ENOENT");
+      return readTranscodesOnly(dir);
+    };
+    // proxies/ readDir rejects → transcodes totals only, no throw.
+    expect(await getTranscodeCacheInfo(deps)).toEqual({ count: 2, bytes: 300 });
+  });
+
   it("clearTranscodeCache removes .mp4 + .part; count is .mp4 only, bytes are total", async () => {
     const { deps, removed } = cacheDeps({ "a.mp4": 100, "b.mp4.part": 50 });
     const freed = await clearTranscodeCache(deps);
     expect(freed).toEqual({ count: 1, bytes: 150 });
     expect(removed).toHaveLength(2); // both the finished mp4 and the stray .part
+  });
+
+  it("clearTranscodeCache removes .mp4 + .part from BOTH transcodes/ and proxies/", async () => {
+    const { deps, removed } = cacheDeps(
+      { "a.mp4": 100, "b.mp4.part": 50 }, // transcodes/
+      { "p.mp4": 300, "q.mp4.part": 25 } // proxies/
+    );
+    const freed = await clearTranscodeCache(deps);
+    // count = finished .mp4s across both dirs (a + p); bytes = everything removed.
+    expect(freed).toEqual({ count: 2, bytes: 475 });
+    expect(removed).toContain("/cache/transcodes/a.mp4");
+    expect(removed).toContain("/cache/transcodes/b.mp4.part");
+    expect(removed).toContain("/cache/proxies/p.mp4");
+    expect(removed).toContain("/cache/proxies/q.mp4.part");
+    expect(removed).toHaveLength(4);
+  });
+
+  it("clearTranscodeCache tolerates a missing proxies/ dir (still clears transcodes)", async () => {
+    const { deps, removed } = cacheDeps({ "a.mp4": 100 }, { "p.mp4": 300 });
+    const readTranscodesOnly = deps.readDir;
+    deps.readDir = async (dir: string) => {
+      if (dir.endsWith(`/${PROXY_SUBDIR}`)) throw new Error("ENOENT");
+      return readTranscodesOnly(dir);
+    };
+    const freed = await clearTranscodeCache(deps);
+    expect(freed).toEqual({ count: 1, bytes: 100 }); // transcodes only
+    expect(removed).toEqual(["/cache/transcodes/a.mp4"]);
   });
 });
