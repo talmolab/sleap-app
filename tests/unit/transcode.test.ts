@@ -70,6 +70,22 @@ describe("buildTranscodeArgs (frame-exact ffmpeg args)", () => {
       buildTranscodeArgs({ input: "a", output: "b", progress: false })
     ).not.toContain("-progress");
   });
+
+  it("short-GOP proxy profile: gopSize sets -g, keeps fps passthrough, never scales", () => {
+    // The scrub proxy reuses this builder with a short GOP for cheap seeking. It
+    // sets ONLY the keyframe interval — no fps resampling (frame-exact) and no
+    // resolution change (same-res proxy). This documents the contract Task 6 relies on.
+    const proxy = buildTranscodeArgs({ input: "in.mp4", output: "out.mp4.part", gopSize: 15 });
+    expect(proxy[proxy.indexOf("-g") + 1]).toBe("15");
+    expect(proxy).toContain("-fps_mode");
+    expect(proxy.join(" ")).not.toContain("scale");
+
+    // Default (no gopSize) keeps the existing legacy GOP of 30 — unchanged.
+    const legacy = buildTranscodeArgs({ input: "in.mp4", output: "out.mp4.part" });
+    expect(legacy[legacy.indexOf("-g") + 1]).toBe("30");
+    expect(legacy).toContain("-fps_mode");
+    expect(legacy.join(" ")).not.toContain("scale");
+  });
 });
 
 describe("transcodeCache (key + eviction)", () => {
