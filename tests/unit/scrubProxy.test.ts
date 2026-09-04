@@ -34,13 +34,16 @@ const CACHE_PATH = `/cache/${PROXY_SUBDIR}/${proxyCacheFilename(KEY, PROXY_GOP)}
 const TEMP_PATH = `${CACHE_PATH}.part`;
 
 /**
- * An `exec` fake whose ONLY ffprobe use is frame counting: route on tool,
- * return `libopenh264` for the encoder probe, and canned `nb_read_frames` JSON
- * per file so `probeFrameCount` yields the count `countFor(path)` returns
- * (`null` → empty `streams`, which parses back to `null`).
+ * An `exec` fake whose ONLY ffprobe use is frame counting. Routes on tool
+ * (`libopenh264` for the encoder probe) and, for ffprobe, answers BOTH probe
+ * shapes the gate uses: the FAST container-metadata probe (`nb_frames`) and, if
+ * `-count_frames` is present, the exact decode probe (`nb_read_frames`). Both
+ * report `countFor(path)`. `opts.containerUnknown(path)` simulates a container
+ * with no usable `nb_frames` (→ the gate's exact fallback kicks in for it).
  */
 function frameExec(
-  countFor: (path: string) => number | null
+  countFor: (path: string) => number | null,
+  opts: { containerUnknown?: (path: string) => boolean } = {}
 ): TranscodeDeps["exec"] {
   return async (tool, args) => {
     if (tool === "ffmpeg") {
@@ -48,10 +51,19 @@ function frameExec(
     }
     const path = args[args.length - 1];
     const n = countFor(path);
+    if (args.includes("-count_frames")) {
+      const stdout =
+        n == null
+          ? JSON.stringify({ streams: [] })
+          : JSON.stringify({ streams: [{ nb_read_frames: n }] });
+      return { stdout, stderr: "", code: 0 };
+    }
+    // Fast container-metadata probe (`nb_frames`).
+    const meta = opts.containerUnknown?.(path) ? null : n;
     const stdout =
-      n == null
-        ? JSON.stringify({ streams: [] })
-        : JSON.stringify({ streams: [{ nb_read_frames: n }] });
+      meta == null
+        ? JSON.stringify({ streams: [{ nb_frames: "N/A" }] })
+        : JSON.stringify({ streams: [{ nb_frames: meta }] });
     return { stdout, stderr: "", code: 0 };
   };
 }
@@ -91,13 +103,15 @@ function makeFakeDeps(overrides: Partial<TranscodeDeps> = {}): {
     },
     readDir: async () => [],
     // Default: encoder probe → libopenh264; frame counts match (source == proxy).
+    // Answers the fast `nb_frames` probe and the exact `-count_frames` probe alike.
     exec: async (tool, args) => {
       if (tool === "ffmpeg") {
         return { stdout: " V....D libopenh264 x", stderr: "", code: 0 };
       }
       calls.probed.push(args[args.length - 1]);
+      const key = args.includes("-count_frames") ? "nb_read_frames" : "nb_frames";
       return {
-        stdout: JSON.stringify({ streams: [{ nb_read_frames: 100 }] }),
+        stdout: JSON.stringify({ streams: [{ [key]: 100 }] }),
         stderr: "",
         code: 0,
       };
@@ -172,6 +186,43 @@ describe("ensureScrubProxyPath", () => {
     expect(res).toEqual({ path: SOURCE, isProxy: false });
     expect(calls.removed).toContain(TEMP_PATH);
     expect(calls.renamed).toHaveLength(0);
+  });
+
+  it("verifies via FAST container metadata — never decodes (no -count_frames) when nb_frames is present", async () => {
+    // The perf fix: a big/network source must not be fully decoded to verify.
+    const usedCountFrames: boolean[] = [];
+    const { deps, calls } = makeFakeDeps({
+      exec: async (tool, args) => {
+        if (tool === "ffmpeg") {
+          return { stdout: " V....D libopenh264 x", stderr: "", code: 0 };
+        }
+        usedCountFrames.push(args.includes("-count_frames"));
+        return {
+          stdout: JSON.stringify({ streams: [{ nb_frames: 100 }] }),
+          stderr: "",
+          code: 0,
+        };
+      },
+    });
+
+    const res = await ensureScrubProxyPath(SOURCE, deps);
+
+    expect(res).toEqual({ path: CACHE_PATH, isProxy: true });
+    expect(usedCountFrames.length).toBeGreaterThan(0); // it did verify...
+    expect(usedCountFrames.every((x) => x === false)).toBe(true); // ...without decoding
+    expect(calls.renamed).toEqual([[TEMP_PATH, CACHE_PATH]]);
+  });
+
+  it("falls back to the exact decode count when container metadata is missing, and still publishes on parity", async () => {
+    // No usable nb_frames for either side → the gate re-counts via -count_frames.
+    const { deps, calls } = makeFakeDeps({
+      exec: frameExec(() => 100, { containerUnknown: () => true }),
+    });
+
+    const res = await ensureScrubProxyPath(SOURCE, deps);
+
+    expect(res).toEqual({ path: CACHE_PATH, isProxy: true });
+    expect(calls.renamed).toEqual([[TEMP_PATH, CACHE_PATH]]);
   });
 
   it("runTranscode throws: removes the partial temp, propagates the error, publishes nothing", async () => {

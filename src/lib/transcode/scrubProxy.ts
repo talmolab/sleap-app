@@ -19,7 +19,7 @@
  * unit-testable with fakes; the real desktop impl is `createTauriTranscodeDeps`.
  */
 
-import { probeFrameCount } from "./frameCount.js";
+import { probeContainerFrameCount, probeFrameCount } from "./frameCount.js";
 import { buildTranscodeArgs } from "./transcodeArgs.js";
 import { computeCacheKey, proxyCacheFilename } from "./transcodeCache.js";
 import {
@@ -138,10 +138,7 @@ async function buildProxy(
 
   // FRAME-EXACT gate (before publishing): a proxy that lost/gained a frame would
   // misalign labels. If we can't PROVE parity, discard and fall back to the source.
-  const [srcFrames, proxyFrames] = await Promise.all([
-    probeFrameCount(sourcePath, deps),
-    probeFrameCount(tempPath, deps),
-  ]);
+  const [srcFrames, proxyFrames] = await frameExactCounts(sourcePath, tempPath, deps);
   if (srcFrames == null || proxyFrames == null || srcFrames !== proxyFrames) {
     await deps.remove(tempPath);
     return { path: sourcePath, isProxy: false };
@@ -158,4 +155,31 @@ async function buildProxy(
     throw err;
   }
   return { path: cachePath, isProxy: true };
+}
+
+/**
+ * Frame counts of (source, proxy) for the frame-exact gate. Prefer the FAST
+ * container-metadata count (`nb_frames`, no decode); fall back to the exact
+ * `-count_frames` DECODE only for a side whose metadata is missing/unreliable
+ * (rare — some containers report no `nb_frames`). This matters a lot: the exact
+ * path decodes the ENTIRE source (over the network!) and the entire proxy on
+ * every build, which turned the gate into a minutes-long silent pause on large
+ * videos; container metadata answers in milliseconds.
+ */
+async function frameExactCounts(
+  source: string,
+  proxy: string,
+  deps: TranscodeDeps
+): Promise<[number | null, number | null]> {
+  const [srcMeta, proxyMeta] = await Promise.all([
+    probeContainerFrameCount(source, deps),
+    probeContainerFrameCount(proxy, deps),
+  ]);
+  if (srcMeta != null && proxyMeta != null) return [srcMeta, proxyMeta];
+  // Rare fallback: re-count by decoding ONLY the side(s) that lacked metadata.
+  const [src, prox] = await Promise.all([
+    srcMeta ?? probeFrameCount(source, deps),
+    proxyMeta ?? probeFrameCount(proxy, deps),
+  ]);
+  return [src, prox];
 }
