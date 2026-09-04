@@ -41,7 +41,8 @@ import { resizeHeaderHeight } from "@/lib/seekbarHeaderHeight";
 import { inferFrameCount } from "@/lib/inferFrameCount";
 import { isUserLabeledFrame } from "@/lib/frameLabeling";
 import { frameHoverInfo } from "@/lib/seekbarHoverInfo";
-import { navigableDomain, nearestFrameInDomain } from "@/lib/navigableFrames";
+import { nearestFrameInDomain } from "@/lib/navigableFrames";
+import { cachedNavigableDomain } from "@/lib/navigationDomainCache";
 import {
   createSeriesCache,
   getOrComputeSeries,
@@ -230,13 +231,15 @@ export function Seekbar() {
 
   // The active navigation domain (#137) for the current video, used to snap
   // seekbar clicks/drag in labeled/imaged mode. `null` (no restriction) is
-  // coerced to `[]`. overlayVersion is in the deps so it refreshes after
-  // labeling edits change the labeled set (labels is mutated in place, so its
-  // reference alone won't trigger a recompute).
+  // coerced to `[]`. Keyed on `rawEditSeq` (the immediate edit counter), NOT
+  // `overlayVersion`: the labeled set only changes on an edit, and snapping is
+  // interactive so it must reflect the latest edit at once (unlike the header
+  // series, which can lag on the debounced `editSeq`). This also drops the
+  // per-drag-tick rescan overlayVersion used to trigger. The cache reuses one
+  // scan across the store's `incrementFrameIdx` and the nav commands.
   const domainIndices = useMemo(
-    () => navigableDomain(labels, video, navigationDomain) ?? [],
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [labels, video, navigationDomain, overlayVersion]
+    () => cachedNavigableDomain(labels, video, navigationDomain, rawEditSeq) ?? [],
+    [labels, video, navigationDomain, rawEditSeq]
   );
   // Confined navigation is active only when a concrete domain exists to visit.
   const isConfined = navigationDomain !== "all" && domainIndices.length > 0;

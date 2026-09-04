@@ -31,11 +31,8 @@ import {
   mergeVideoPrefixSwap,
   type VideoPrefixSwap,
 } from "@/lib/videoPrefixSwaps";
-import {
-  navigableDomain,
-  stepLabeled,
-  type NavigationDomain,
-} from "@/lib/navigableFrames";
+import { stepLabeled, type NavigationDomain } from "@/lib/navigableFrames";
+import { cachedNavigableDomain } from "@/lib/navigationDomainCache";
 export type { NavigationDomain };
 import {
   DEFAULT_PANEL_ORDER,
@@ -961,14 +958,21 @@ export const useAppStore = create<AppState>()(
         }),
 
       incrementFrameIdx: (step) => {
-        const { video, frameIdx, navigationDomain, labels } = get();
+        const { video, frameIdx, navigationDomain, labels, editSeq } = get();
         if (!video) return;
 
         // Confined navigation (#137): in "labeled"/"imaged" mode, step within
         // that domain so arrow keys, prev/next, and playback skip the dead gaps.
         // A null domain ("all", or "imaged" on a full video) or an empty/
         // exhausted one falls through to dense stepping so we never trap.
-        const domain = navigableDomain(labels, video, navigationDomain);
+        // Cached on editSeq so held arrow keys / playback ticks reuse one scan
+        // instead of re-walking every frame each step (Cluster B).
+        const domain = cachedNavigableDomain(
+          labels,
+          video,
+          navigationDomain,
+          editSeq
+        );
         if (domain && domain.length > 0) {
           const target = stepLabeled(domain, frameIdx, step);
           if (target !== null) {
