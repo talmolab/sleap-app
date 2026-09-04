@@ -249,6 +249,12 @@ export interface AppState {
   seekbarHeaderHeight: number;
   /** Which frames stepping/playback/seekbar are confined to (#137). */
   navigationDomain: NavigationDomain;
+  /**
+   * Create local low-res scrub proxies for network (SMB/NAS) videos so
+   * scrubbing stays smooth without re-reading the remote file each frame.
+   * Desktop-only feature; off by default. Persisted.
+   */
+  scrubProxyEnabled: boolean;
 
   // === Image-features suggestions ROI (transient; session-only, NOT persisted) ===
   /**
@@ -501,6 +507,7 @@ export interface AppState {
   incrementFrameIdx: (step: number) => void;
   setNavigationDomain: (mode: NavigationDomain) => void;
   cycleNavigationDomain: () => void;
+  setScrubProxyEnabled: (enabled: boolean) => void;
   setInstanceHidden: (instance: Instance, hidden: boolean) => void;
   setViewOnlyInstance: (instance: Instance | null) => void;
   setInstanceInvisibleOverride: (instance: Instance, value: boolean | undefined) => void;
@@ -642,6 +649,7 @@ export const PERSISTED_KEYS: (keyof AppState)[] = [
   "seekbarHeaderReduction",
   "seekbarHeaderHeight",
   "navigationDomain",
+  "scrubProxyEnabled",
   "qcDisplayMode",
   "updateChannel",
   "updateChannelExplicitlySet",
@@ -751,6 +759,7 @@ export const useAppStore = create<AppState>()(
       seekbarHeaderReduction: "sum" as Reduction,
       seekbarHeaderHeight: SEEKBAR_HEADER_DEFAULT_HEIGHT,
       navigationDomain: "all" as NavigationDomain,
+      scrubProxyEnabled: false,
 
       // Per-instance visibility (transient) + QC display mode (persisted)
       hiddenInstances: new Set<Instance>(),
@@ -992,6 +1001,11 @@ export const useAppStore = create<AppState>()(
       setNavigationDomain: (mode) =>
         set((state) => {
           state.navigationDomain = mode;
+        }),
+
+      setScrubProxyEnabled: (enabled) =>
+        set((state) => {
+          state.scrubProxyEnabled = enabled;
         }),
 
       cycleNavigationDomain: () =>

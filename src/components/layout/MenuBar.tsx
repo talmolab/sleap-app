@@ -686,6 +686,8 @@ function ViewMenu() {
   const sidebarMultiPanel = useAppStore((s) => s.sidebarMultiPanel);
   const setSidebarMultiPanel = useAppStore((s) => s.setSidebarMultiPanel);
   const showCrosshair = useAppStore((s) => s.showCrosshair);
+  const scrubProxyEnabled = useAppStore((s) => s.scrubProxyEnabled);
+  const setScrubProxyEnabled = useAppStore((s) => s.setScrubProxyEnabled);
   const uiScale = useAppStore((s) => s.uiScale);
   const qcDisplayMode = useAppStore((s) => s.qcDisplayMode);
   const setQcDisplayMode = useAppStore((s) => s.setQcDisplayMode);
@@ -926,6 +928,13 @@ function ViewMenu() {
           onCheckedChange={() => toggle("showTrackScore")}
         >
           Show Track Scores
+        </MenubarCheckboxItem>
+        <MenubarSeparator />
+        <MenubarCheckboxItem
+          checked={scrubProxyEnabled}
+          onCheckedChange={(c) => setScrubProxyEnabled(c === true)}
+        >
+          Create Local Scrub Proxies for Network Videos (Desktop)
         </MenubarCheckboxItem>
       </MenubarContent>
     </MenubarMenu>
