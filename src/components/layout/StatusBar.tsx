@@ -27,11 +27,12 @@ export function StatusBar() {
   const video = useAppStore((s) => s.video);
   const videoRevision = useAppStore((s) => s.videoRevision);
   const labels = useAppStore((s) => s.labels);
-  // Re-render on every label edit. Commands that mutate an already-referenced
-  // LabeledFrame in place (e.g. adding a 2nd+ instance to the same frame)
-  // don't swap any subscribed reference, so without this the stats below go
-  // stale until something else happens to force a render.
-  useAppStore((s) => s.editSeq);
+  // Re-render on every label edit, and key the stats memo below on it.
+  // Commands that mutate an already-referenced LabeledFrame in place (e.g.
+  // adding a 2nd+ instance to the same frame) don't swap any subscribed
+  // reference, so `labels` alone can't tell the memo when to refresh — the
+  // edit counter can. It bumps once per edit (and once per drag gesture, #329).
+  const editSeq = useAppStore((s) => s.editSeq);
   const hasChanges = useAppStore((s) => s.hasChanges);
   const instance = useAppStore((s) => s.instance);
   const labeledFrame = useAppStore((s) => s.labeledFrame);
@@ -48,7 +49,18 @@ export function StatusBar() {
     () => video?.shape?.[0] ?? null,
     [video, videoRevision]
   );
-  const stats = computeStatusStats(labels, video, totalFrames);
+  // Memoized so a frame step / playback tick / scrub (which re-renders this
+  // component to update the frame readout, but doesn't change the counts) does
+  // NOT re-scan the whole project. Recomputes only when the counts' real inputs
+  // change: labels content (editSeq), the active video, or the frame total.
+  const stats = useMemo(
+    () => computeStatusStats(labels, video, totalFrames),
+    // editSeq is an intentional invalidation signal (not referenced in the
+    // callback): labels is mutated in place, so its reference alone won't
+    // refresh the counts. Matches the same pattern used across the app.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [labels, video, totalFrames, editSeq]
+  );
   const instanceCount = instancesToShowCount(labeledFrame);
   const hidden = instanceCount > 0 && !showInstances;
   const isNegative = labeledFrame?.isNegative ?? false;
