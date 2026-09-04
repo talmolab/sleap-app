@@ -703,7 +703,10 @@ function ViewMenu() {
   return (
     <MenubarMenu>
       <MenubarTrigger className="px-3 h-8 text-xs rounded-none">View</MenubarTrigger>
-      <MenubarContent>
+      {/* The View menu is the longest — cap it to the viewport and scroll so
+          items near the bottom stay reachable on short screens (mirrors the
+          scrollable Select content). */}
+      <MenubarContent className="max-h-(--radix-menubar-content-available-height) overflow-x-hidden overflow-y-auto">
         <MenubarCheckboxItem
           checked={!sidebarCollapsed}
           onCheckedChange={() => toggle("sidebarCollapsed")}
