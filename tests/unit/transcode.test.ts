@@ -9,6 +9,7 @@ import { buildTranscodeArgs } from "@/lib/transcode/transcodeArgs";
 import {
   computeCacheKey,
   cacheFilename,
+  proxyCacheFilename,
   planCacheEviction,
   type CacheEntry,
 } from "@/lib/transcode/transcodeCache";
@@ -79,6 +80,15 @@ describe("transcodeCache (key + eviction)", () => {
     expect(computeCacheKey("/v.avi", 1000, 222)).not.toBe(a); // mtime changed
     expect(computeCacheKey("/other.avi", 1000, 111)).not.toBe(a); // path changed
     expect(cacheFilename(a)).toBe(`${a}.mp4`);
+  });
+
+  it("proxy cache filename is namespaced by gop and never collides with a legacy transcode", () => {
+    // Scrub proxies live in the same cache key space as legacy transcodes; the
+    // `-proxy-g<gop>` suffix keeps a proxy from clobbering a legacy `.mp4` and
+    // makes a GOP change invalidate the old proxy.
+    expect(proxyCacheFilename("abc", 15).endsWith("-proxy-g15.mp4")).toBe(true);
+    expect(proxyCacheFilename("abc", 15)).not.toBe(cacheFilename("abc"));
+    expect(proxyCacheFilename("abc", 15)).not.toBe(proxyCacheFilename("abc", 30));
   });
 
   it("plans LRU eviction: drops oldest until under the byte cap", () => {
