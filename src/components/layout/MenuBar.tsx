@@ -686,6 +686,8 @@ function ViewMenu() {
   const sidebarMultiPanel = useAppStore((s) => s.sidebarMultiPanel);
   const setSidebarMultiPanel = useAppStore((s) => s.setSidebarMultiPanel);
   const showCrosshair = useAppStore((s) => s.showCrosshair);
+  const scrubProxyEnabled = useAppStore((s) => s.scrubProxyEnabled);
+  const setScrubProxyEnabled = useAppStore((s) => s.setScrubProxyEnabled);
   const uiScale = useAppStore((s) => s.uiScale);
   const qcDisplayMode = useAppStore((s) => s.qcDisplayMode);
   const setQcDisplayMode = useAppStore((s) => s.setQcDisplayMode);
@@ -701,7 +703,10 @@ function ViewMenu() {
   return (
     <MenubarMenu>
       <MenubarTrigger className="px-3 h-8 text-xs rounded-none">View</MenubarTrigger>
-      <MenubarContent>
+      {/* The View menu is the longest — cap it to the viewport and scroll so
+          items near the bottom stay reachable on short screens (mirrors the
+          scrollable Select content). */}
+      <MenubarContent className="max-h-(--radix-menubar-content-available-height) overflow-x-hidden overflow-y-auto">
         <MenubarCheckboxItem
           checked={!sidebarCollapsed}
           onCheckedChange={() => toggle("sidebarCollapsed")}
@@ -926,6 +931,13 @@ function ViewMenu() {
           onCheckedChange={() => toggle("showTrackScore")}
         >
           Show Track Scores
+        </MenubarCheckboxItem>
+        <MenubarSeparator />
+        <MenubarCheckboxItem
+          checked={scrubProxyEnabled}
+          onCheckedChange={(c) => setScrubProxyEnabled(c === true)}
+        >
+          Create Local Scrub Proxies for Network Videos (Desktop)
         </MenubarCheckboxItem>
       </MenubarContent>
     </MenubarMenu>

@@ -15,6 +15,7 @@
 
 import { buildTranscodeArgs } from "./transcodeArgs.js";
 import { TRANSCODE_EXT, cacheFilename, computeCacheKey } from "./transcodeCache.js";
+import { PROXY_SUBDIR } from "./scrubProxy.js";
 import { codecNeedsTranscode } from "./videoCodecSupport.js";
 import {
   parseEncoderList,
@@ -311,16 +312,27 @@ export interface TranscodeCacheInfo {
   bytes: number;
 }
 
-/** Resolve the transcode cache directory (`<cacheDir>/transcodes`). */
-async function transcodeCacheDir(deps: TranscodeDeps): Promise<string> {
-  return deps.join(await deps.cacheDir(), TRANSCODE_SUBDIR);
+/**
+ * Cache subdirs a "clear transcode cache" action covers: legacy transcodes and
+ * scrub proxies. Both hold regenerable `.mp4`s (plus stray `.part` temps) and can
+ * each grow to GBs, so info/clear account for them together.
+ */
+const CACHE_SUBDIRS = [TRANSCODE_SUBDIR, PROXY_SUBDIR] as const;
+
+/** Resolve the absolute cache subdirs (`<cacheDir>/transcodes`, `<cacheDir>/proxies`). */
+async function cacheSubdirs(deps: TranscodeDeps): Promise<string[]> {
+  const base = await deps.cacheDir();
+  return Promise.all(CACHE_SUBDIRS.map((sub) => deps.join(base, sub)));
 }
 
-/** Summarize the transcode cache (count + total bytes). Empty if the dir is absent. */
-export async function getTranscodeCacheInfo(
+/**
+ * Summarize one cache subdir (finished `.mp4` count + total bytes). Empty if the
+ * dir is absent (`readDir` rejects) — the missing-dir case is tolerated.
+ */
+async function scanCacheDir(
+  dir: string,
   deps: TranscodeDeps
 ): Promise<TranscodeCacheInfo> {
-  const dir = await transcodeCacheDir(deps);
   let names: string[];
   try {
     names = await deps.readDir(dir);
@@ -342,13 +354,14 @@ export async function getTranscodeCacheInfo(
 }
 
 /**
- * Delete every cached transcode (`.mp4`) plus any stray `.part` temps, and
- * return what was freed. Safe: entries are regenerable from the originals.
+ * Delete every `.mp4` (plus stray `.part` temps) from one cache subdir and return
+ * what was freed (count is `.mp4` only; bytes are total). Empty/no-op if the dir
+ * is absent (`readDir` rejects).
  */
-export async function clearTranscodeCache(
+async function clearCacheDir(
+  dir: string,
   deps: TranscodeDeps
 ): Promise<TranscodeCacheInfo> {
-  const dir = await transcodeCacheDir(deps);
   let names: string[];
   try {
     names = await deps.readDir(dir);
@@ -368,6 +381,41 @@ export async function clearTranscodeCache(
     }
     await deps.remove(path);
     if (isMp4) count++;
+  }
+  return { count, bytes };
+}
+
+/**
+ * Summarize the video cache — finished transcodes AND scrub proxies — as a
+ * combined count + total bytes. Absent subdirs contribute nothing (no throw).
+ */
+export async function getTranscodeCacheInfo(
+  deps: TranscodeDeps
+): Promise<TranscodeCacheInfo> {
+  let count = 0;
+  let bytes = 0;
+  for (const dir of await cacheSubdirs(deps)) {
+    const info = await scanCacheDir(dir, deps);
+    count += info.count;
+    bytes += info.bytes;
+  }
+  return { count, bytes };
+}
+
+/**
+ * Delete every cached transcode AND scrub proxy (`.mp4`) plus any stray `.part`
+ * temps across both subdirs, returning the combined totals freed. Safe: every
+ * entry is regenerable from the originals.
+ */
+export async function clearTranscodeCache(
+  deps: TranscodeDeps
+): Promise<TranscodeCacheInfo> {
+  let count = 0;
+  let bytes = 0;
+  for (const dir of await cacheSubdirs(deps)) {
+    const freed = await clearCacheDir(dir, deps);
+    count += freed.count;
+    bytes += freed.bytes;
   }
   return { count, bytes };
 }

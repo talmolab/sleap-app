@@ -7,12 +7,13 @@
  * live E2E rather than a synthetic unit test.
  */
 
-import { describe, it, expect } from "../bun-test";
+import { describe, it, expect, afterEach } from "../bun-test";
 import {
   Labels,
   Video,
   setImageBytesReader,
   GrayscaleVideoBackend,
+  type VideoBackend,
 } from "@talmolab/sleap-io.js";
 import {
   buildStandaloneVideo,
@@ -35,8 +36,14 @@ import {
   isImageSequenceVideo,
   relocateMissingImageFrames,
   isSupportedVideoUrl,
+  resolveScrubProxyOpenPath,
+  openViaProxyOrNull,
+  type ScrubProxyDeps,
+  type ProxyOpenDeps,
 } from "@/lib/resolveVideos";
 import { useAppStore } from "@/stores/appStore";
+import { useTranscodeStore } from "@/stores/transcodeStore";
+import { shouldBuildScrubProxy } from "@/lib/transcode/proxyPolicy";
 
 // Minimal mock File System Access handle tree for the folder-scan tests.
 type MockHandle =
@@ -1045,5 +1052,253 @@ describe("drag-and-drop video filtering (dropzone, #138)", () => {
   it("returns [] when nothing dropped is a supported video", () => {
     expect(pickedFromFiles([new File([], "x.slp")])).toEqual([]);
     expect(pickedFromPaths(["/a/y.json"])).toEqual([]);
+  });
+});
+
+describe("resolveScrubProxyOpenPath (scrub proxy on decodable video open)", () => {
+  // A network-mounted, big, decodable video: the exact case the real gate accepts.
+  const ORIGINAL = "/Volumes/nas/session/clip.avi";
+  const NAME = "clip.avi";
+  const BIG = 500 * 1024 * 1024;
+
+  // Stat-only fake TranscodeDeps: the helper only calls .stat(); the rest of the
+  // deps (ffmpeg/ffprobe) is never reached because ensureProxy itself is faked.
+  function statDeps(size: number): ReturnType<ScrubProxyDeps["transcodeDeps"]> {
+    return { stat: async () => ({ size, mtimeMs: 0 }) } as unknown as ReturnType<
+      ScrubProxyDeps["transcodeDeps"]
+    >;
+  }
+
+  function makeDeps(overrides: Partial<ScrubProxyDeps>): ScrubProxyDeps {
+    return {
+      isEnabled: () => true,
+      transcodeDeps: () => statDeps(BIG),
+      shouldBuild: shouldBuildScrubProxy, // exercise the REAL worthiness gate
+      ensureProxy: async () => ({ path: ORIGINAL, isProxy: false }),
+      ...overrides,
+    };
+  }
+
+  afterEach(() => {
+    // Never leak a stuck job between tests.
+    useTranscodeStore.getState().endJob();
+  });
+
+  it("disabled: never builds a proxy and opens the original (no job)", async () => {
+    let called = false;
+    const deps = makeDeps({
+      isEnabled: () => false,
+      ensureProxy: async () => {
+        called = true;
+        return { path: "/should-not-open.mp4", isProxy: true };
+      },
+    });
+    const store = useTranscodeStore.getState();
+    const res = await resolveScrubProxyOpenPath(
+      ORIGINAL,
+      NAME,
+      store,
+      new AbortController(),
+      deps
+    );
+    expect(called).toBe(false);
+    expect(res).toEqual({ path: ORIGINAL, isProxy: false });
+    expect(useTranscodeStore.getState().job).toBeNull();
+  });
+
+  it("enabled + gate passes: opens the PROXY, built from the ORIGINAL path; job runs then clears", async () => {
+    const PROXY = "/cache/proxies/abc-proxy-g15.mp4";
+    const seen: { path?: string; hasSignal?: boolean } = {};
+    const deps = makeDeps({
+      ensureProxy: async (p, _d, opts) => {
+        seen.path = p; // ensureProxy is given the ORIGINAL source path
+        seen.hasSignal = !!opts?.signal;
+        opts?.onStart?.({}); // mirror the real build starting the job UI
+        opts?.onProgress?.({ frame: 12, done: false });
+        return { path: PROXY, isProxy: true };
+      },
+    });
+    const store = useTranscodeStore.getState();
+    const controller = new AbortController();
+
+    let res: Awaited<ReturnType<typeof resolveScrubProxyOpenPath>>;
+    try {
+      // Mirror the caller's try/finally around the proxy step.
+      res = await resolveScrubProxyOpenPath(ORIGINAL, NAME, store, controller, deps);
+      // Mid-open (before the caller's finally) the store shows an active job,
+      // proving onStart wired startJob into the SAME transcode UI.
+      expect(useTranscodeStore.getState().job?.name).toBe(NAME);
+    } finally {
+      store.endJob(); // caller's finally clears it (build OR fallback)
+    }
+
+    // Opens the proxy path...
+    expect(res).toEqual({ path: PROXY, isProxy: true });
+    // ...but that proxy was built FROM the original source (which the .slp records);
+    // the open path is deliberately distinct from the recorded original path.
+    expect(seen.path).toBe(ORIGINAL);
+    expect(res.path).not.toBe(ORIGINAL);
+    expect(seen.hasSignal).toBe(true); // shares the caller's AbortController
+    expect(useTranscodeStore.getState().job).toBeNull(); // cleared
+  });
+
+  it("proxy falls back (frame-check mismatch, isProxy:false): opens the ORIGINAL; job cleared", async () => {
+    let called = false;
+    const deps = makeDeps({
+      ensureProxy: async (p, _d, opts) => {
+        called = true;
+        opts?.onStart?.({}); // ensureScrubProxyPath fires onStart even on fallback
+        return { path: p, isProxy: false }; // its documented fallback contract
+      },
+    });
+    const store = useTranscodeStore.getState();
+    let res: Awaited<ReturnType<typeof resolveScrubProxyOpenPath>>;
+    try {
+      res = await resolveScrubProxyOpenPath(ORIGINAL, NAME, store, new AbortController(), deps);
+    } finally {
+      store.endJob();
+    }
+    expect(called).toBe(true);
+    expect(res).toEqual({ path: ORIGINAL, isProxy: false });
+    expect(useTranscodeStore.getState().job).toBeNull();
+  });
+
+  it("build throws (e.g. canceled/ffmpeg error): swallows and opens the ORIGINAL", async () => {
+    const deps = makeDeps({
+      ensureProxy: async (_p, _d, opts) => {
+        opts?.onStart?.({});
+        throw new Error("ffmpeg exploded");
+      },
+    });
+    const store = useTranscodeStore.getState();
+    let res: Awaited<ReturnType<typeof resolveScrubProxyOpenPath>>;
+    try {
+      res = await resolveScrubProxyOpenPath(ORIGINAL, NAME, store, new AbortController(), deps);
+    } finally {
+      store.endJob();
+    }
+    expect(res).toEqual({ path: ORIGINAL, isProxy: false });
+    expect(useTranscodeStore.getState().job).toBeNull();
+  });
+
+  it("gate passes for a decodable mp4 AND mov on a network mount (the target case)", async () => {
+    // The proxy exists for decodable mp4/mov on NFS — the gate is extension-
+    // agnostic (network + big + decodable), so both reach the build.
+    for (const src of ["/Volumes/nas/als2h.mp4", "/Volumes/nas/session/clip.mov"]) {
+      let seen: string | undefined;
+      const deps = makeDeps({
+        ensureProxy: async (p) => {
+          seen = p;
+          return { path: "/cache/proxies/x-proxy-g15.mp4", isProxy: true };
+        },
+      });
+      const store = useTranscodeStore.getState();
+      try {
+        const res = await resolveScrubProxyOpenPath(
+          src,
+          src.split("/").pop()!,
+          store,
+          new AbortController(),
+          deps
+        );
+        expect(res.isProxy).toBe(true);
+        expect(res.path).toBe("/cache/proxies/x-proxy-g15.mp4");
+        expect(seen).toBe(src); // proxy built FROM the original mp4/mov source
+      } finally {
+        store.endJob();
+      }
+    }
+  });
+});
+
+describe("openViaProxyOrNull (DRY proxy step for decodable open branches)", () => {
+  afterEach(() => {
+    useTranscodeStore.getState().endJob();
+  });
+
+  function baseDeps(overrides: Partial<ProxyOpenDeps>): ProxyOpenDeps {
+    return {
+      isTauri: async () => true,
+      getStore: () => useTranscodeStore.getState(),
+      resolveProxy: async (p) => ({ path: p, isProxy: false }),
+      openProxyBackend: async () => ({}) as VideoBackend,
+      ...overrides,
+    };
+  }
+
+  it("desktop + proxy built: opens an Mp4Box backend on the PROXY (decided from the ORIGINAL); job cleared", async () => {
+    const sentinel = { getFrame: async () => null } as unknown as VideoBackend;
+    let decidedFrom: string | undefined;
+    let openedFrom: string | undefined;
+    const deps = baseDeps({
+      resolveProxy: async (p) => {
+        decidedFrom = p;
+        return { path: "/cache/proxies/als2h-proxy-g15.mp4", isProxy: true };
+      },
+      openProxyBackend: async (proxyPath) => {
+        openedFrom = proxyPath;
+        return sentinel;
+      },
+    });
+    const backend = await openViaProxyOrNull(
+      "/Volumes/nas/als2h.mp4",
+      "als2h.mp4",
+      deps
+    );
+    expect(backend).toBe(sentinel); // opened via the proxy backend
+    expect(decidedFrom).toBe("/Volumes/nas/als2h.mp4"); // decision uses ORIGINAL
+    expect(openedFrom).toBe("/cache/proxies/als2h-proxy-g15.mp4"); // opens PROXY
+    expect(useTranscodeStore.getState().job).toBeNull(); // cleared
+  });
+
+  it("desktop + proxy fell back (isProxy:false): returns null so the caller opens the source; never builds a backend", async () => {
+    let opened = false;
+    const deps = baseDeps({
+      resolveProxy: async (p) => ({ path: p, isProxy: false }),
+      openProxyBackend: async () => {
+        opened = true;
+        return {} as VideoBackend;
+      },
+    });
+    const backend = await openViaProxyOrNull(
+      "/Volumes/nas/session/clip.mov",
+      "clip.mov",
+      deps
+    );
+    expect(backend).toBeNull();
+    expect(opened).toBe(false);
+    expect(useTranscodeStore.getState().job).toBeNull();
+  });
+
+  it("browser (not Tauri): returns null without attempting a proxy", async () => {
+    let attempted = false;
+    const deps = baseDeps({
+      isTauri: async () => false,
+      resolveProxy: async (p) => {
+        attempted = true;
+        return { path: p, isProxy: true };
+      },
+    });
+    expect(
+      await openViaProxyOrNull("/Volumes/nas/als2h.mp4", "als2h.mp4", deps)
+    ).toBeNull();
+    expect(attempted).toBe(false);
+    expect(useTranscodeStore.getState().job).toBeNull();
+  });
+
+  it("proxy backend construction throws: swallows and returns null (open source normally); job cleared", async () => {
+    const deps = baseDeps({
+      resolveProxy: async () => ({
+        path: "/cache/proxies/x-proxy-g15.mp4",
+        isProxy: true,
+      }),
+      openProxyBackend: async () => {
+        throw new Error("mp4box boom");
+      },
+    });
+    expect(
+      await openViaProxyOrNull("/Volumes/nas/als2h.mp4", "als2h.mp4", deps)
+    ).toBeNull();
+    expect(useTranscodeStore.getState().job).toBeNull();
   });
 });
