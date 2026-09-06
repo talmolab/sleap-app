@@ -219,6 +219,63 @@ describe("appStore", () => {
     });
   });
 
+  describe("playback state + seek-pauses-playback (rule #3)", () => {
+    it("isPlaying defaults to false", () => {
+      expect(useAppStore.getState().isPlaying).toBe(false);
+    });
+
+    it("setIsPlaying sets the flag", () => {
+      useAppStore.getState().setIsPlaying(true);
+      expect(useAppStore.getState().isPlaying).toBe(true);
+      useAppStore.getState().setIsPlaying(false);
+      expect(useAppStore.getState().isPlaying).toBe(false);
+    });
+
+    it("togglePlay flips the flag", () => {
+      expect(useAppStore.getState().isPlaying).toBe(false);
+      useAppStore.getState().togglePlay();
+      expect(useAppStore.getState().isPlaying).toBe(true);
+      useAppStore.getState().togglePlay();
+      expect(useAppStore.getState().isPlaying).toBe(false);
+    });
+
+    it("a user setFrameIdx pauses playback", () => {
+      const video = mockVideo({ shape: [100, 480, 640, 3] });
+      useAppStore.setState({ video, isPlaying: true });
+      useAppStore.getState().setFrameIdx(50);
+
+      expect(useAppStore.getState().frameIdx).toBe(50);
+      expect(useAppStore.getState().isPlaying).toBe(false);
+    });
+
+    it("setFrameIdx with keepPlaying does NOT pause (the playback loop's advance)", () => {
+      const video = mockVideo({ shape: [100, 480, 640, 3] });
+      useAppStore.setState({ video, isPlaying: true });
+      useAppStore.getState().setFrameIdx(50, { keepPlaying: true });
+
+      expect(useAppStore.getState().frameIdx).toBe(50);
+      expect(useAppStore.getState().isPlaying).toBe(true);
+    });
+
+    it("a user incrementFrameIdx pauses playback", () => {
+      const video = mockVideo({ shape: [100, 480, 640, 3] });
+      useAppStore.setState({ video, frameIdx: 10, isPlaying: true });
+      useAppStore.getState().incrementFrameIdx(1);
+
+      expect(useAppStore.getState().frameIdx).toBe(11);
+      expect(useAppStore.getState().isPlaying).toBe(false);
+    });
+
+    it("incrementFrameIdx with keepPlaying keeps playing (playback advance)", () => {
+      const video = mockVideo({ shape: [100, 480, 640, 3] });
+      useAppStore.setState({ video, frameIdx: 10, isPlaying: true });
+      useAppStore.getState().incrementFrameIdx(1, { keepPlaying: true });
+
+      expect(useAppStore.getState().frameIdx).toBe(11);
+      expect(useAppStore.getState().isPlaying).toBe(true);
+    });
+  });
+
   describe("setInstance", () => {
     it("sets the selected instance", () => {
       const instance = { points: [] } as unknown as Instance;

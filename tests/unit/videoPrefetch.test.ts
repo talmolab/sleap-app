@@ -12,6 +12,7 @@
 import { describe, it, expect } from "../bun-test";
 import {
   shouldPrefetch,
+  shouldDecodeAhead,
   PREFETCH_JUMP_THRESHOLD,
 } from "@/lib/videoPrefetch";
 
@@ -107,5 +108,27 @@ describe("shouldPrefetch", () => {
   it("defaults the threshold to a small value (a few frames)", () => {
     expect(PREFETCH_JUMP_THRESHOLD).toBeGreaterThanOrEqual(1);
     expect(PREFETCH_JUMP_THRESHOLD).toBeLessThanOrEqual(8);
+  });
+});
+
+describe("shouldDecodeAhead", () => {
+  it("decodes ahead while playing and not scrubbing", () => {
+    expect(shouldDecodeAhead({ isPlaying: true, isScrubbing: false })).toBe(
+      true,
+    );
+  });
+
+  it("does not decode ahead when paused (playback-only helper)", () => {
+    expect(shouldDecodeAhead({ isPlaying: false, isScrubbing: false })).toBe(
+      false,
+    );
+  });
+
+  it("does not decode ahead while scrubbing, even if isPlaying is somehow set", () => {
+    // A seek pauses playback (rule #3), so this shouldn't co-occur — but
+    // decode-ahead must never fight a scrub if it ever does.
+    expect(shouldDecodeAhead({ isPlaying: true, isScrubbing: true })).toBe(
+      false,
+    );
   });
 });

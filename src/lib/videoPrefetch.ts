@@ -52,3 +52,27 @@ export function shouldPrefetch({
   if (prev === null) return true;
   return Math.abs(next - prev) <= threshold;
 }
+
+/**
+ * Whether VideoPlayer should trigger the backend's proactive decode-ahead after
+ * painting a frame (scrub-proxy v2, Thread A).
+ *
+ * Decode-ahead is a PLAYBACK-only helper: it keeps the decode queue running
+ * ahead of the playhead so the awaited `getFrame` is a cache hit instead of
+ * blocking on a keyframe→+lookahead decode (the periodic play-freeze). It must
+ * be OFF when paused (nothing to run ahead of) and OFF while scrubbing (a drag
+ * wants the newest frame now, not speculative forward work — and rule #3 already
+ * pauses playback on any seek, so the two shouldn't co-occur; this is a guard).
+ *
+ * Pure so VideoPlayer's frame-load effect can be reasoned about and this gate
+ * unit-tested in isolation (mirrors {@link shouldPrefetch}).
+ */
+export function shouldDecodeAhead({
+  isPlaying,
+  isScrubbing,
+}: {
+  isPlaying: boolean;
+  isScrubbing: boolean;
+}): boolean {
+  return isPlaying && !isScrubbing;
+}

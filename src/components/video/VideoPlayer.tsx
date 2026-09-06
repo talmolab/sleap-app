@@ -71,7 +71,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { toImageCoords, toSourceCoords } from "@/lib/cropTransform";
-import { shouldPrefetch } from "@/lib/videoPrefetch";
+import { shouldPrefetch, shouldDecodeAhead } from "@/lib/videoPrefetch";
 import { expandFrameBytesToRGBA, inferFrameChannels } from "@/lib/videoExport";
 import {
   isVideoMissing,
@@ -820,6 +820,26 @@ export function VideoPlayer() {
         setFrameDims((prev) => (prev[0] === bmp.width && prev[1] === bmp.height ? prev : [bmp.width, bmp.height]));
         setBitmapVersion((v) => v + 1);
         if (debugFlags.logSeeking) console.debug(`[seek] frame ${frameIdx} rendered (${bmp.width}x${bmp.height}) total ${(performance.now() - t0).toFixed(1)}ms`);
+
+        // Proactive decode-ahead (scrub-proxy v2, Thread A): while playing, keep
+        // the backend decoding ahead of the playhead so the next getFrame is a
+        // cache hit instead of a blocking keyframe→+lookahead decode (the ~2 s
+        // periodic play-freeze). Fire-and-forget; the backend coalesces repeat
+        // calls and a demand read/seek preempts it. Feature-detected so it's a
+        // no-op on backends (or an older sleap-io pin) without the method — the
+        // cast keeps typecheck green against the currently-pinned 0.5.12 types.
+        if (
+          shouldDecodeAhead({
+            isPlaying: useAppStore.getState().isPlaying,
+            isScrubbing: useAppStore.getState().isScrubbing,
+          })
+        ) {
+          (
+            video.backend as {
+              decodeAhead?: (fromFrame: number) => void;
+            } | null
+          )?.decodeAhead?.(frameIdx);
+        }
       } catch (err) {
         console.error("Failed to render frame:", err);
         // A resolved backend whose individual frame file can't be read (e.g. one

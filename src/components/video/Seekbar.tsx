@@ -197,8 +197,11 @@ export function Seekbar() {
   const navigationDomain = useAppStore((s) => s.navigationDomain);
   const cycleNavigationDomain = useAppStore((s) => s.cycleNavigationDomain);
 
-  // Playback state
-  const [isPlaying, setIsPlaying] = useState(false);
+  // Playback state — lifted into the store so any seek source (keyboard nav,
+  // transport buttons) can pause playback (rule #3) and VideoPlayer can gate
+  // decode-ahead on it. Speed stays local (UI-only).
+  const isPlaying = useAppStore((s) => s.isPlaying);
+  const togglePlay = useAppStore((s) => s.togglePlay);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
   const animFrameRef = useRef<number>(0);
   const lastTimeRef = useRef<number>(0);
@@ -915,7 +918,9 @@ export function Seekbar() {
       const elapsed = now - lastTimeRef.current;
       if (elapsed >= interval) {
         lastTimeRef.current = now - (elapsed % interval);
-        useAppStore.getState().incrementFrameIdx(1);
+        // keepPlaying: this is the playback advance itself, not a user seek, so
+        // it must not trip rule #3 (seek-pauses-playback) and stop the loop.
+        useAppStore.getState().incrementFrameIdx(1, { keepPlaying: true });
       }
       animFrameRef.current = requestAnimationFrame(tick);
     };
@@ -1136,7 +1141,7 @@ export function Seekbar() {
               <Button
                 variant={isPlaying ? "default" : "subtle"}
                 size="icon-xs"
-                onClick={() => setIsPlaying(!isPlaying)}
+                onClick={() => togglePlay()}
               >
                 {isPlaying ? <Pause /> : <Play />}
               </Button>
