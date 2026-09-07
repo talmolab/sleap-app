@@ -14,6 +14,8 @@ import {
   GrayscaleVideoBackend,
   Video,
   createVideoBackend,
+  WorkerMp4BoxBackend,
+  isWorkerDecodeAvailable,
   type VideoBackend,
   type VideoBackendError,
   type RangeSource,
@@ -38,6 +40,10 @@ import {
   type ScrubProxyResult,
 } from "./transcode/scrubProxy";
 import { runBackgroundProxySwap } from "./transcode/backgroundProxySwap";
+import {
+  buildTauriByteSourceDescriptor,
+  runWorkerDecodeUpgrade,
+} from "./workerDecodeUpgrade";
 import { useTranscodeStore } from "@/stores/transcodeStore";
 import { useTranscodePromptStore } from "@/stores/transcodePromptStore";
 
@@ -1514,6 +1520,44 @@ export async function scheduleBackgroundProxyBuild(
 }
 
 /**
+ * Upgrade a freshly-opened MP4's on-main backend to io's off-main
+ * {@link WorkerMp4BoxBackend} (decode in a Web Worker) so seeks never freeze the
+ * GUI (off-main-thread decode, scrub-proxy v2 follow-up). Fire-and-forget: the
+ * video already opened on its on-main backend, so this never delays the open, and
+ * any failure / unsupported environment simply keeps that backend (a pure
+ * optimization). Guards against clobbering a Thread-C proxy that swaps in — the
+ * upgrade only applies if the video still has the exact backend it started from.
+ * Desktop-only for now (the byte source is the Tauri IPC `read_range`); browser
+ * wiring is a follow-up (the worker is the ONLY main-thread unblock there — no
+ * proxies in the browser).
+ */
+export async function scheduleWorkerDecodeUpgrade(
+  video: Video,
+  path: string
+): Promise<void> {
+  if (!isWorkerDecodeAvailable()) return;
+  const name = getBasename(path);
+  if (backendKindForFilename(name) !== "mp4box") return;
+  const platform = await getPlatform();
+  if (!platform.isTauri) return; // desktop wiring; browser is a follow-up
+  const original = video.backend;
+  if (!original) return;
+  await runWorkerDecodeUpgrade(original, path, name, {
+    isAvailable: isWorkerDecodeAvailable,
+    buildDescriptor: buildTauriByteSourceDescriptor,
+    createWorkerBackend: (params) => WorkerMp4BoxBackend.create(params),
+    isStillActive: () => useAppStore.getState().video === video,
+    currentBackend: () => video.backend,
+    swap: (backend) => {
+      video.backend = backend;
+    },
+    triggerReread: () => useAppStore.getState().bumpBackendSwapNonce(),
+    onUpgraded: () =>
+      console.info(`[offmain] worker decode active for "${name}"`),
+  });
+}
+
+/**
  * Build a backend that reads a native video path lazily by byte range, so a
  * multi-GB external video is never read whole into memory (the desktop
  * freeze/crash). MP4 → Mp4Box, the MediaBunny formats → MediaBunny, both via a
@@ -1763,7 +1807,13 @@ export async function assignVideoBackendFromPath(
   // The video is open on its original (or cached-proxy) backend; if a first-build
   // proxy is warranted, build it in the background and hot-swap when ready — never
   // blocks the open (scrub-proxy v2 Thread C). Fire-and-forget.
-  if (ok) void scheduleBackgroundProxyBuild(video, path);
+  if (ok) {
+    void scheduleBackgroundProxyBuild(video, path);
+    // Also upgrade the ON-MAIN backend to off-main worker decode so seeks never
+    // freeze the GUI. Guarded (matches the exact backend + file size) so it never
+    // fights the proxy swap or corrupts a cached-proxy backend. Fire-and-forget.
+    void scheduleWorkerDecodeUpgrade(video, path);
+  }
   return ok;
 }
 
