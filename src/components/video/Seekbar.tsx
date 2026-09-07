@@ -39,6 +39,7 @@ import {
 } from "@/lib/headerSeriesRender";
 import { resizeHeaderHeight } from "@/lib/seekbarHeaderHeight";
 import { inferFrameCount } from "@/lib/inferFrameCount";
+import { isFastScrub, FAST_SCRUB_FRAMES_PER_TICK } from "@/lib/videoPrefetch";
 import { isUserLabeledFrame } from "@/lib/frameLabeling";
 import { frameHoverInfo } from "@/lib/seekbarHoverInfo";
 import { nearestFrameInDomain } from "@/lib/navigableFrames";
@@ -656,9 +657,23 @@ export function Seekbar() {
     // foreground reads under the 6-wide prefetch concurrency on a slow mount.
     useAppStore.getState().set("isScrubbing", true);
 
+    // Abort-preempt "chase-newest" scrub (scrub-proxy v2, Thread B) applies only
+    // to the mp4 backend: a signal-aware getFrame + drop-stale queue let a newer
+    // cursor position abort the in-flight decode. ImageVideo/HDF5 ignore the
+    // signal, so they keep the one-read frameLoading gate that #187 relies on.
+    // Detected via decodeAhead presence — only the mp4 backend has it. The
+    // backend is stable for the life of a drag, so compute once.
+    const scrubBackend = useAppStore.getState().video?.backend as {
+      decodeAhead?: unknown;
+      nearestKeyframe?: (frameIndex: number) => number;
+    } | null;
+    const chaseNewest = typeof scrubBackend?.decodeAhead === "function";
+
     let pendingX: number | null = null; // latest cursor position (coalesced)
     let lastIssuedX: number | null = null; // position we last issued a read for
+    let lastIssuedFrame: number | null = null; // frame we last issued (chase-newest)
     let lastScrubFrame: number | null = null; // last frame the bar glided to
+    let prevCursorFrame: number | null = null; // cursor frame last tick (velocity)
     let rafId = 0;
     const tick = () => {
       if (pendingX !== null) {
@@ -670,17 +685,51 @@ export function Seekbar() {
           lastScrubFrame = cursorFrame;
           setScrubFrame(cursorFrame);
         }
-        // Gated image load: at most one read in flight, always the latest frame.
-        if (pendingX !== lastIssuedX && !useAppStore.getState().frameLoading) {
-          lastIssuedX = pendingX;
-          // Only claim the gate + issue when the frame actually changes — issuing
-          // the frame already showing wouldn't trigger a read to clear the gate,
-          // jamming the loop.
-          if (cursorFrame !== useAppStore.getState().frameIdx) {
-            useAppStore.getState().set("frameLoading", true); // claim the slot now
-            setFrameIdx(cursorFrame);
+        if (chaseNewest) {
+          // mp4 chase-newest: issue the latest frame as soon as it changes; no
+          // gate. A newer position supersedes and aborts the in-flight decode
+          // (VideoPlayer cleanup) and the backend drops stale queued reads, so
+          // only the newest actually decodes — the preview tracks the cursor into
+          // cold frames instead of finishing decodes it already dragged past.
+          //
+          // Keyframe preview: on a FAST fling (cursor outrunning exact decode),
+          // snap the issued frame to the nearest keyframe — a lone I-frame decode
+          // that's ~instant, so the preview keeps up instead of stalling until you
+          // pause. Slow/precise drags keep exact frames. The bar (scrubFrame)
+          // still glides to the true cursor; release settles on the exact frame.
+          const fast =
+            isFastScrub({
+              cursorFrame,
+              prevCursorFrame,
+              threshold: FAST_SCRUB_FRAMES_PER_TICK,
+            }) && typeof scrubBackend?.nearestKeyframe === "function";
+          const target = fast
+            ? (scrubBackend as { nearestKeyframe: (n: number) => number })
+                .nearestKeyframe(cursorFrame)
+            : cursorFrame;
+          if (
+            target !== lastIssuedFrame &&
+            target !== useAppStore.getState().frameIdx
+          ) {
+            lastIssuedFrame = target;
+            setFrameIdx(target);
+          }
+        } else {
+          // Gated image load (ImageVideo/HDF5): at most one read in flight,
+          // always the latest frame.
+          if (pendingX !== lastIssuedX && !useAppStore.getState().frameLoading) {
+            lastIssuedX = pendingX;
+            // Only claim the gate + issue when the frame actually changes —
+            // issuing the frame already showing wouldn't trigger a read to clear
+            // the gate, jamming the loop.
+            if (cursorFrame !== useAppStore.getState().frameIdx) {
+              useAppStore.getState().set("frameLoading", true); // claim the slot
+              setFrameIdx(cursorFrame);
+            }
           }
         }
+        // Velocity baseline for the next tick's fast/slow decision.
+        prevCursorFrame = cursorFrame;
       }
       rafId = requestAnimationFrame(tick);
     };

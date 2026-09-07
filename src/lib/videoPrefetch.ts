@@ -76,3 +76,32 @@ export function shouldDecodeAhead({
 }): boolean {
   return isPlaying && !isScrubbing;
 }
+
+/**
+ * Per-tick cursor velocity (frames moved between consecutive scrub rAF ticks)
+ * above which the scrub is "fast" and should snap to keyframe previews instead
+ * of decoding exact frames (scrub-proxy v2 keyframe-preview). Tunable: lower =
+ * switch to keyframes sooner (coarser but keeps up); higher = hold exact frames
+ * longer (finer but can lag on fast flings). A drag this quick outruns exact
+ * decode, and precision isn't needed mid-fling — it settles to exact on release.
+ */
+export const FAST_SCRUB_FRAMES_PER_TICK = 8;
+
+/**
+ * Whether the current scrub tick is moving fast enough to snap to a keyframe
+ * preview rather than decode the exact cursor frame. Pure so the scrub loop's
+ * fast/slow decision is unit-testable. The first tick (no previous position)
+ * is never "fast" — we can't measure velocity yet, so start with an exact read.
+ */
+export function isFastScrub({
+  cursorFrame,
+  prevCursorFrame,
+  threshold = FAST_SCRUB_FRAMES_PER_TICK,
+}: {
+  cursorFrame: number;
+  prevCursorFrame: number | null;
+  threshold?: number;
+}): boolean {
+  if (prevCursorFrame === null) return false;
+  return Math.abs(cursorFrame - prevCursorFrame) > threshold;
+}

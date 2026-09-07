@@ -666,6 +666,15 @@ export function VideoPlayer() {
     }
 
     let cancelled = false;
+    // Abort-preempt (scrub-proxy v2, Thread B): a SCRUB read aborts its in-flight
+    // backend decode when a newer cursor position supersedes it, so the decode
+    // chases the cursor instead of finishing frames the user already dragged past.
+    // Scoped to scrub reads (captured here) — playback/stepping keep today's
+    // run-to-completion behavior (usually a cache hit anyway). Backends that
+    // ignore the signal (ImageVideo/HDF5) are unaffected; only the mp4 backend
+    // acts on it, in concert with the Seekbar's chase-newest scrub loop.
+    const abortController = new AbortController();
+    const abortOnSupersede = useAppStore.getState().isScrubbing;
     const t0 = performance.now();
     if (debugFlags.logSeeking) console.debug(`[seek] requesting frame ${frameIdx}`);
 
@@ -727,7 +736,17 @@ export function VideoPlayer() {
             return;
           }
         }
-        const frame = await video.getFrame(frameIdx, { prefetch });
+        // scrub: skip the backend's forward lookahead for scrub reads (decode
+        // only keyframe→target) — the dragged-past lookahead is never seen. Built
+        // as a variable (extra `scrub` field) so it stays assignable to whatever
+        // GetFrameOptions the pinned sleap-io exposes (structural, no excess-prop
+        // check on a variable) — works before/after the pin bump, no cast.
+        const getFrameOpts: {
+          prefetch: boolean;
+          signal: AbortSignal;
+          scrub?: boolean;
+        } = { prefetch, signal: abortController.signal, scrub: abortOnSupersede };
+        const frame = await video.getFrame(frameIdx, getFrameOpts);
         // The frame count can become known here two ways: a deferred embedded
         // backend corrects video.shape[0] on this first getFrame, or a lazy/
         // transcoded backend set it during ensureVideoBackend above. Either way,
@@ -868,6 +887,9 @@ export function VideoPlayer() {
 
     return () => {
       cancelled = true;
+      // Superseded by a newer frame: for a scrub read, abort the in-flight decode
+      // so the newer position decodes now instead of behind stale work.
+      if (abortOnSupersede) abortController.abort();
     };
   }, [video, frameIdx, readNonce]);
 
