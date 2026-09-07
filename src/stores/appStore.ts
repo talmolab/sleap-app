@@ -497,6 +497,11 @@ export interface AppState {
   // `video.shape[0]` (true source frame count vs. the JSON-seeded stand-in).
   videoRevision: number;
 
+  // Bumped when a background scrub-proxy build hot-swaps `video.backend`
+  // (scrub-proxy v2 Thread C). VideoPlayer's frame-load effect depends on it so
+  // it re-reads the current frame from the freshly-swapped (frame-exact) proxy.
+  backendSwapNonce: number;
+
   // === Actions ===
   setLabels: (
     labels: Labels,
@@ -507,6 +512,7 @@ export interface AppState {
   ) => void;
   setVideo: (video: Video) => void;
   markVideoUpdated: () => void;
+  bumpBackendSwapNonce: () => void;
   setFrameIdx: (idx: number, opts?: { keepPlaying?: boolean }) => void;
   incrementFrameIdx: (step: number, opts?: { keepPlaying?: boolean }) => void;
   setIsPlaying: (playing: boolean) => void;
@@ -863,6 +869,7 @@ export const useAppStore = create<AppState>()(
       // Overlay version (bumped to force re-render)
       overlayVersion: 0,
       videoRevision: 0,
+      backendSwapNonce: 0,
 
       // Actions
       setLabels: (labels, filename, projectPath, projectFile, projectFileHandle) =>
@@ -945,6 +952,11 @@ export const useAppStore = create<AppState>()(
       markVideoUpdated: () =>
         set((state) => {
           state.videoRevision += 1;
+        }),
+
+      bumpBackendSwapNonce: () =>
+        set((state) => {
+          state.backendSwapNonce += 1;
         }),
 
       setFrameIdx: (idx, opts) =>

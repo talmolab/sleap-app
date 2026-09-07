@@ -116,6 +116,10 @@ export function VideoPlayer() {
   // State from store
   const video = useAppStore((s) => s.video);
   const frameIdx = useAppStore((s) => s.frameIdx);
+  // Re-read the current frame when a background scrub-proxy build hot-swaps the
+  // backend (scrub-proxy v2 Thread C); frame-exact so the same frameIdx repaints
+  // seamlessly from the proxy.
+  const backendSwapNonce = useAppStore((s) => s.backendSwapNonce);
   const labels = useAppStore((s) => s.labels);
   const selectedInstance = useAppStore((s) => s.instance);
   const showInstances = useAppStore((s) => s.showInstances);
@@ -891,7 +895,7 @@ export function VideoPlayer() {
       // so the newer position decodes now instead of behind stale work.
       if (abortOnSupersede) abortController.abort();
     };
-  }, [video, frameIdx, readNonce]);
+  }, [video, frameIdx, readNonce, backendSwapNonce]);
 
   // Frame histogram, computed OFF the seek path. A full-frame getImageData is a
   // GPU->CPU readback (~200-340ms in WKWebView) — doing it inline blocked every
