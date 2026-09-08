@@ -71,7 +71,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { toImageCoords, toSourceCoords } from "@/lib/cropTransform";
-import { shouldPrefetch } from "@/lib/videoPrefetch";
+import { shouldPrefetch, shouldDecodeAhead } from "@/lib/videoPrefetch";
 import { expandFrameBytesToRGBA, inferFrameChannels } from "@/lib/videoExport";
 import {
   isVideoMissing,
@@ -116,6 +116,10 @@ export function VideoPlayer() {
   // State from store
   const video = useAppStore((s) => s.video);
   const frameIdx = useAppStore((s) => s.frameIdx);
+  // Re-read the current frame when a background scrub-proxy build hot-swaps the
+  // backend (scrub-proxy v2 Thread C); frame-exact so the same frameIdx repaints
+  // seamlessly from the proxy.
+  const backendSwapNonce = useAppStore((s) => s.backendSwapNonce);
   const labels = useAppStore((s) => s.labels);
   const selectedInstance = useAppStore((s) => s.instance);
   const showInstances = useAppStore((s) => s.showInstances);
@@ -666,6 +670,15 @@ export function VideoPlayer() {
     }
 
     let cancelled = false;
+    // Abort-preempt (scrub-proxy v2, Thread B): a SCRUB read aborts its in-flight
+    // backend decode when a newer cursor position supersedes it, so the decode
+    // chases the cursor instead of finishing frames the user already dragged past.
+    // Scoped to scrub reads (captured here) — playback/stepping keep today's
+    // run-to-completion behavior (usually a cache hit anyway). Backends that
+    // ignore the signal (ImageVideo/HDF5) are unaffected; only the mp4 backend
+    // acts on it, in concert with the Seekbar's chase-newest scrub loop.
+    const abortController = new AbortController();
+    const abortOnSupersede = useAppStore.getState().isScrubbing;
     const t0 = performance.now();
     if (debugFlags.logSeeking) console.debug(`[seek] requesting frame ${frameIdx}`);
 
@@ -727,7 +740,17 @@ export function VideoPlayer() {
             return;
           }
         }
-        const frame = await video.getFrame(frameIdx, { prefetch });
+        // scrub: skip the backend's forward lookahead for scrub reads (decode
+        // only keyframe→target) — the dragged-past lookahead is never seen. Built
+        // as a variable (extra `scrub` field) so it stays assignable to whatever
+        // GetFrameOptions the pinned sleap-io exposes (structural, no excess-prop
+        // check on a variable) — works before/after the pin bump, no cast.
+        const getFrameOpts: {
+          prefetch: boolean;
+          signal: AbortSignal;
+          scrub?: boolean;
+        } = { prefetch, signal: abortController.signal, scrub: abortOnSupersede };
+        const frame = await video.getFrame(frameIdx, getFrameOpts);
         // The frame count can become known here two ways: a deferred embedded
         // backend corrects video.shape[0] on this first getFrame, or a lazy/
         // transcoded backend set it during ensureVideoBackend above. Either way,
@@ -820,6 +843,26 @@ export function VideoPlayer() {
         setFrameDims((prev) => (prev[0] === bmp.width && prev[1] === bmp.height ? prev : [bmp.width, bmp.height]));
         setBitmapVersion((v) => v + 1);
         if (debugFlags.logSeeking) console.debug(`[seek] frame ${frameIdx} rendered (${bmp.width}x${bmp.height}) total ${(performance.now() - t0).toFixed(1)}ms`);
+
+        // Proactive decode-ahead (scrub-proxy v2, Thread A): while playing, keep
+        // the backend decoding ahead of the playhead so the next getFrame is a
+        // cache hit instead of a blocking keyframe→+lookahead decode (the ~2 s
+        // periodic play-freeze). Fire-and-forget; the backend coalesces repeat
+        // calls and a demand read/seek preempts it. Feature-detected so it's a
+        // no-op on backends (or an older sleap-io pin) without the method — the
+        // cast keeps typecheck green against the currently-pinned 0.5.12 types.
+        if (
+          shouldDecodeAhead({
+            isPlaying: useAppStore.getState().isPlaying,
+            isScrubbing: useAppStore.getState().isScrubbing,
+          })
+        ) {
+          (
+            video.backend as {
+              decodeAhead?: (fromFrame: number) => void;
+            } | null
+          )?.decodeAhead?.(frameIdx);
+        }
       } catch (err) {
         console.error("Failed to render frame:", err);
         // A resolved backend whose individual frame file can't be read (e.g. one
@@ -848,8 +891,11 @@ export function VideoPlayer() {
 
     return () => {
       cancelled = true;
+      // Superseded by a newer frame: for a scrub read, abort the in-flight decode
+      // so the newer position decodes now instead of behind stale work.
+      if (abortOnSupersede) abortController.abort();
     };
-  }, [video, frameIdx, readNonce]);
+  }, [video, frameIdx, readNonce, backendSwapNonce]);
 
   // Frame histogram, computed OFF the seek path. A full-frame getImageData is a
   // GPU->CPU readback (~200-340ms in WKWebView) — doing it inline blocked every

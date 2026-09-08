@@ -235,6 +235,13 @@ export interface AppState {
    * otherwise churn ~10 MB/frame and can OOM-crash the WebView renderer.
    */
   isScrubbing: boolean;
+  /**
+   * True while the video is playing back (the Seekbar's rAF loop advances the
+   * frame). Lifted into the store (from Seekbar-local state) so ANY seek source
+   * — seekbar, keyboard nav, transport buttons — can pause playback (rule #3),
+   * and so VideoPlayer can drive proactive decode-ahead only while playing.
+   */
+  isPlaying: boolean;
   colormap: string;
   rotation: 0 | 90 | 180 | 270;
   seekbarHeaderGraph: StatisticGraphType;
@@ -490,6 +497,11 @@ export interface AppState {
   // `video.shape[0]` (true source frame count vs. the JSON-seeded stand-in).
   videoRevision: number;
 
+  // Bumped when a background scrub-proxy build hot-swaps `video.backend`
+  // (scrub-proxy v2 Thread C). VideoPlayer's frame-load effect depends on it so
+  // it re-reads the current frame from the freshly-swapped (frame-exact) proxy.
+  backendSwapNonce: number;
+
   // === Actions ===
   setLabels: (
     labels: Labels,
@@ -500,8 +512,11 @@ export interface AppState {
   ) => void;
   setVideo: (video: Video) => void;
   markVideoUpdated: () => void;
-  setFrameIdx: (idx: number) => void;
-  incrementFrameIdx: (step: number) => void;
+  bumpBackendSwapNonce: () => void;
+  setFrameIdx: (idx: number, opts?: { keepPlaying?: boolean }) => void;
+  incrementFrameIdx: (step: number, opts?: { keepPlaying?: boolean }) => void;
+  setIsPlaying: (playing: boolean) => void;
+  togglePlay: () => void;
   setNavigationDomain: (mode: NavigationDomain) => void;
   cycleNavigationDomain: () => void;
   setScrubProxyEnabled: (enabled: boolean) => void;
@@ -750,6 +765,7 @@ export const useAppStore = create<AppState>()(
       frameHistogram: null,
       frameLoading: false,
       isScrubbing: false,
+      isPlaying: false,
       colormap: "grayscale",
       rotation: 0 as 0 | 90 | 180 | 270,
       seekbarHeaderGraph: "instance-count" as StatisticGraphType,
@@ -853,6 +869,7 @@ export const useAppStore = create<AppState>()(
       // Overlay version (bumped to force re-render)
       overlayVersion: 0,
       videoRevision: 0,
+      backendSwapNonce: 0,
 
       // Actions
       setLabels: (labels, filename, projectPath, projectFile, projectFileHandle) =>
@@ -937,8 +954,20 @@ export const useAppStore = create<AppState>()(
           state.videoRevision += 1;
         }),
 
-      setFrameIdx: (idx) =>
+      bumpBackendSwapNonce: () =>
         set((state) => {
+          state.backendSwapNonce += 1;
+        }),
+
+      setFrameIdx: (idx, opts) =>
+        set((state) => {
+          // Rule #3 (scrub-proxy v2): a seek pauses playback. Every user-driven
+          // seek funnels through here, so pausing centrally covers the seekbar,
+          // keyboard nav, and transport buttons. The playback loop's own advance
+          // passes { keepPlaying: true } so it doesn't pause itself each frame.
+          if (!opts?.keepPlaying && state.isPlaying) {
+            state.isPlaying = false;
+          }
           const video = state.video;
           let next: number;
           if (video && video.shape) {
@@ -966,7 +995,7 @@ export const useAppStore = create<AppState>()(
           }
         }),
 
-      incrementFrameIdx: (step) => {
+      incrementFrameIdx: (step, opts) => {
         const { video, frameIdx, navigationDomain, labels, editSeq } = get();
         if (!video) return;
 
@@ -985,7 +1014,7 @@ export const useAppStore = create<AppState>()(
         if (domain && domain.length > 0) {
           const target = stepLabeled(domain, frameIdx, step);
           if (target !== null) {
-            get().setFrameIdx(target);
+            get().setFrameIdx(target, opts);
             return;
           }
         }
@@ -999,8 +1028,18 @@ export const useAppStore = create<AppState>()(
         } else {
           if (newIdx < 0) newIdx = 0;
         }
-        get().setFrameIdx(newIdx);
+        get().setFrameIdx(newIdx, opts);
       },
+
+      setIsPlaying: (playing) =>
+        set((state) => {
+          state.isPlaying = playing;
+        }),
+
+      togglePlay: () =>
+        set((state) => {
+          state.isPlaying = !state.isPlaying;
+        }),
 
       setNavigationDomain: (mode) =>
         set((state) => {

@@ -60,6 +60,13 @@ export interface EnsureScrubProxyOptions {
   durationMs?: number;
   /** Keyframe interval override; defaults to {@link PROXY_GOP}. */
   gop?: number;
+  /**
+   * Cache-only: on a cache HIT return the proxy as usual, but on a MISS return
+   * the original (`isProxy:false`) WITHOUT building. Lets the open path use a
+   * ready proxy instantly while deferring a first build to the background
+   * (scrub-proxy v2 Thread C).
+   */
+  cacheOnly?: boolean;
 }
 
 /**
@@ -92,6 +99,10 @@ export async function ensureScrubProxyPath(
 
   // Convert-once: a cached proxy already cleared the frame-exact gate.
   if (await deps.exists(cachePath)) return { path: cachePath, isProxy: true };
+
+  // Cache-only probe (Thread C): a ready proxy is served above; a miss defers the
+  // build to the background instead of blocking here.
+  if (opts.cacheOnly) return { path: sourcePath, isProxy: false };
 
   // Collapse a concurrent miss for the same destination onto the in-flight build.
   const inProgress = inFlightProxies.get(cachePath);

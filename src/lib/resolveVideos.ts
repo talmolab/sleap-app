@@ -14,6 +14,8 @@ import {
   GrayscaleVideoBackend,
   Video,
   createVideoBackend,
+  WorkerMp4BoxBackend,
+  isWorkerDecodeAvailable,
   type VideoBackend,
   type VideoBackendError,
   type RangeSource,
@@ -37,6 +39,14 @@ import {
   ensureScrubProxyPath,
   type ScrubProxyResult,
 } from "./transcode/scrubProxy";
+import { runBackgroundProxySwap } from "./transcode/backgroundProxySwap";
+import {
+  buildTauriByteSourceDescriptor,
+  buildBlobByteSourceDescriptor,
+  buildUrlByteSourceDescriptor,
+  runWorkerDecodeUpgrade,
+} from "./workerDecodeUpgrade";
+import type { ByteSourceDescriptor } from "@talmolab/sleap-io.js";
 import { useTranscodeStore } from "@/stores/transcodeStore";
 import { useTranscodePromptStore } from "@/stores/transcodePromptStore";
 
@@ -1271,7 +1281,8 @@ export async function resolveScrubProxyOpenPath(
   name: string,
   store: ProxyJobUi,
   controller: AbortController,
-  deps: ScrubProxyDeps = defaultScrubProxyDeps
+  deps: ScrubProxyDeps = defaultScrubProxyDeps,
+  cacheOnly = false
 ): Promise<ScrubProxyResult> {
   // The original source is the safe default the caller opens on any fallback.
   const original: ScrubProxyResult = { path, isProxy: false };
@@ -1301,9 +1312,15 @@ export async function resolveScrubProxyOpenPath(
   try {
     return await deps.ensureProxy(path, deps.transcodeDeps(), {
       signal: controller.signal, // share the caller's cancel button
-      onStart: () => store.startJob(name, () => controller.abort()),
+      cacheOnly, // Thread C: cache-hit → proxy now; miss → defer build to background
+      // A cache-only probe never builds, so it shows no job UI (no dialog).
+      onStart: cacheOnly
+        ? undefined
+        : () => store.startJob(name, () => controller.abort()),
       // No known source duration → indeterminate bar; surface the frame counter.
-      onProgress: (p) => store.setProgress(null, p.frame ?? null),
+      onProgress: cacheOnly
+        ? undefined
+        : (p) => store.setProgress(null, p.frame ?? null),
     });
   } catch (err) {
     // A proxy is an optimization: a failed/canceled build must never fail the
@@ -1358,13 +1375,21 @@ const defaultProxyOpenDeps: ProxyOpenDeps = {
 export async function openViaProxyOrNull(
   path: string,
   name: string,
-  deps: ProxyOpenDeps = defaultProxyOpenDeps
+  deps: ProxyOpenDeps = defaultProxyOpenDeps,
+  cacheOnly = false
 ): Promise<VideoBackend | null> {
   if (!(await deps.isTauri())) return null; // proxy needs the ffmpeg sidecar
   const store = deps.getStore();
   const controller = new AbortController();
   try {
-    const proxy = await deps.resolveProxy(path, name, store, controller);
+    const proxy = await deps.resolveProxy(
+      path,
+      name,
+      store,
+      controller,
+      undefined,
+      cacheOnly
+    );
     return proxy.isProxy ? await deps.openProxyBackend(proxy.path, name) : null;
   } catch (err) {
     // Best-effort: a proxy must NEVER fail the open — open the source normally.
@@ -1373,6 +1398,226 @@ export async function openViaProxyOrNull(
   } finally {
     store.endJob(); // clear the shared job UI on build OR fallback
   }
+}
+
+/**
+ * At most one background proxy build at a time. Opening a DIFFERENT video aborts
+ * the previous build (the user isn't waiting on it); a repeat schedule for the
+ * SAME video (e.g. the backend gets assigned twice on open) is a no-op — it must
+ * NOT self-abort the in-flight build, which restarted it and looked like a stray
+ * "new" progress toast.
+ */
+let currentBackgroundProxyBuild: AbortController | null = null;
+let currentBackgroundProxyPath: string | null = null;
+
+/**
+ * Kick off a NON-BLOCKING scrub-proxy build for a freshly-opened decodable video
+ * and hot-swap the backend to the proxy when it's ready (scrub-proxy v2 Thread
+ * C). Fire-and-forget: the video already opened on its ORIGINAL backend, so this
+ * never delays the open. No-op when not on desktop, the kind can't be proxied,
+ * the feature is off, the file isn't worth proxying, or the proxy is already
+ * cached (in which case {@link openViaProxyOrNull} already opened it directly).
+ * Frame-exact → the swap re-reads the current frame with no visible jump.
+ */
+export async function scheduleBackgroundProxyBuild(
+  video: Video,
+  path: string
+): Promise<void> {
+  const name = getBasename(path);
+  const kind = backendKindForFilename(name);
+  if (kind !== "mp4box" && kind !== "mediabunny" && kind !== "avi") return;
+  if (!useAppStore.getState().scrubProxyEnabled) return;
+  if (currentBackgroundProxyPath === path) return; // same video already in flight
+
+  const platform = await getPlatform();
+  if (!platform.isTauri) return; // proxy needs the bundled ffmpeg sidecar
+  if (currentBackgroundProxyPath === path) return; // re-check after the await
+
+  const td = createTauriTranscodeDeps();
+  let sizeBytes: number;
+  try {
+    ({ size: sizeBytes } = await td.stat(path));
+  } catch {
+    return; // can't stat the source → skip
+  }
+  if (
+    !shouldBuildScrubProxy({
+      enabled: true,
+      isTauri: true,
+      path,
+      sizeBytes,
+      isExternalDecodableVideo: true,
+    })
+  ) {
+    return; // local / small / non-network → not worth a proxy
+  }
+  // Already cached? The open path opened the proxy directly — nothing to swap.
+  const cached = await ensureScrubProxyPath(path, td, {
+    cacheOnly: true,
+  }).catch(() => null);
+  if (!cached || cached.isProxy) return;
+
+  // Final dedupe re-check + claim with NO await between, so a concurrent
+  // schedule for the SAME video (e.g. the backend assigned twice on open) can't
+  // also start a build and self-abort this one.
+  if (currentBackgroundProxyPath === path) return;
+  // A DIFFERENT video → cancel its in-flight build, then claim this one.
+  currentBackgroundProxyBuild?.abort();
+  const controller = new AbortController();
+  currentBackgroundProxyBuild = controller;
+  currentBackgroundProxyPath = path;
+
+  const toastId = `scrub-proxy-${path}`;
+  let cancelled = false;
+  void runBackgroundProxySwap(video, name, controller, {
+    ensureProxy: ({ signal }) =>
+      ensureScrubProxyPath(path, td, {
+        signal,
+        // Non-blocking indicator (Kdenlive-style), NOT the modal transcode dialog.
+        onStart: () =>
+          toast.loading("Building scrub proxy…", {
+            id: toastId,
+            description: name,
+            cancel: {
+              label: "Cancel",
+              onClick: () => {
+                cancelled = true;
+                controller.abort();
+              },
+            },
+          }),
+        onProgress: (p) => {
+          // After Cancel, don't re-create the dismissed toast from buffered
+          // progress lines (which made a stray "new" ticking toast reappear).
+          if (cancelled) return;
+          toast.loading(
+            p.frame != null
+              ? `Building scrub proxy… (${p.frame} frames)`
+              : "Building scrub proxy…",
+            { id: toastId, description: name }
+          );
+        },
+      }),
+    openProxyBackend: async (proxyPath, n) =>
+      new Mp4BoxVideoBackend(await makeVideoRangeSource(proxyPath), {
+        filename: n,
+      }),
+    isStillActive: () => useAppStore.getState().video === video,
+    triggerReread: () => useAppStore.getState().bumpBackendSwapNonce(),
+    onBuildEnd: () => {
+      toast.dismiss(toastId);
+      if (currentBackgroundProxyBuild === controller) {
+        currentBackgroundProxyBuild = null;
+        currentBackgroundProxyPath = null;
+      }
+    },
+    onSwapped: () =>
+      toast.success("Faster scrubbing ready", { description: name }),
+  }).then((outcome) => {
+    if (outcome === "aborted" && cancelled) {
+      // One-shot confirmation (a fresh toast, not the dismissed build id).
+      toast("Scrub proxy build cancelled", { description: name });
+      console.info(`[scrub-proxy] build cancelled for "${name}"`);
+    }
+  });
+}
+
+/**
+ * Upgrade a freshly-opened MP4's on-main backend to io's off-main
+ * {@link WorkerMp4BoxBackend} (decode in a Web Worker) so seeks never freeze the
+ * GUI (off-main-thread decode, scrub-proxy v2 follow-up). Fire-and-forget: the
+ * video already opened on its on-main backend, so this never delays the open, and
+ * any failure / unsupported environment simply keeps that backend (a pure
+ * optimization). Guards against clobbering a Thread-C proxy that swaps in — the
+ * upgrade only applies if the video still has the exact backend it started from.
+ * Desktop-only for now (the byte source is the Tauri IPC `read_range`); browser
+ * wiring is a follow-up (the worker is the ONLY main-thread unblock there — no
+ * proxies in the browser).
+ */
+export async function scheduleWorkerDecodeUpgrade(
+  video: Video,
+  path: string
+): Promise<void> {
+  if (!isWorkerDecodeAvailable()) return;
+  const name = getBasename(path);
+  if (backendKindForFilename(name) !== "mp4box") return;
+  const platform = await getPlatform();
+  if (!platform.isTauri) return; // desktop wiring; browser is a follow-up
+  const original = video.backend;
+  if (!original) return;
+  await runWorkerDecodeUpgrade(original, path, name, {
+    isAvailable: isWorkerDecodeAvailable,
+    buildDescriptor: buildTauriByteSourceDescriptor,
+    createWorkerBackend: (params) => WorkerMp4BoxBackend.create(params),
+    isStillActive: () => useAppStore.getState().video === video,
+    currentBackend: () => video.backend,
+    swap: (backend) => {
+      video.backend = backend;
+    },
+    triggerReread: () => useAppStore.getState().bumpBackendSwapNonce(),
+    onUpgraded: () =>
+      console.info(`[offmain] worker decode active for "${name}"`),
+  });
+}
+
+/**
+ * Browser counterpart of {@link scheduleWorkerDecodeUpgrade}: upgrade a
+ * freshly-opened MP4's on-main backend to the off-main {@link WorkerMp4BoxBackend}.
+ * In a browser there are NO proxies, so the worker is the ONLY way to keep the UI
+ * responsive during decode. The worker's byte source is the `Blob` (sliced
+ * directly) or a ranged-URL fetch — no Tauri invoke key needed. No-ops on desktop
+ * (handled by the path-based scheduler) and on non-mp4/unsupported environments.
+ * Fire-and-forget; any failure keeps the on-main backend.
+ */
+export async function scheduleWorkerDecodeUpgradeBrowser(
+  video: Video,
+  source: Blob | string,
+  name: string,
+  headers?: Record<string, string>
+): Promise<void> {
+  if (!isWorkerDecodeAvailable()) return;
+  if (backendKindForFilename(name) !== "mp4box") return;
+  const platform = await getPlatform();
+  if (platform.isTauri) return; // desktop uses the path-based upgrade
+  const original = video.backend;
+  if (!original) return;
+
+  let byteSource: ByteSourceDescriptor | null = null;
+  if (typeof Blob !== "undefined" && source instanceof Blob) {
+    byteSource = buildBlobByteSourceDescriptor(source);
+  } else if (typeof source === "string") {
+    // Remote URL: the size comes from the backend's range-probe/parse so the
+    // worker's ranged reads never run past EOF (and the size-guard matches).
+    try {
+      const parse = await (
+        original as { getParseResult?: () => Promise<{ fileSize: number }> }
+      ).getParseResult?.();
+      if (!parse) return;
+      byteSource = buildUrlByteSourceDescriptor(
+        source,
+        headers ?? {},
+        parse.fileSize
+      );
+    } catch {
+      return;
+    }
+  }
+  if (!byteSource) return;
+  const descriptor = byteSource;
+
+  await runWorkerDecodeUpgrade(original, name, name, {
+    isAvailable: isWorkerDecodeAvailable,
+    buildDescriptor: async () => descriptor,
+    createWorkerBackend: (params) => WorkerMp4BoxBackend.create(params),
+    isStillActive: () => useAppStore.getState().video === video,
+    currentBackend: () => video.backend,
+    swap: (backend) => {
+      video.backend = backend;
+    },
+    triggerReread: () => useAppStore.getState().bumpBackendSwapNonce(),
+    onUpgraded: () =>
+      console.info(`[offmain] worker decode active (browser) for "${name}"`),
+  });
 }
 
 /**
@@ -1399,7 +1644,7 @@ async function createBackendForPath(
     if (kind === "mediabunny") {
       // Decodable external video (MOV/MKV/WebM/Ogg/TS): on desktop, proxy a big
       // network-mounted file for fast scrubbing, else open the source normally.
-      const proxied = await openViaProxyOrNull(path, name);
+      const proxied = await openViaProxyOrNull(path, name, undefined, true);
       if (proxied) return proxied;
       return MediaBunnyVideoBackend.fromRangeSource(
         await makeVideoRangeSource(path),
@@ -1460,7 +1705,7 @@ async function createBackendForPath(
           // try a local scrub proxy for fast network scrubbing (own job
           // lifecycle). On any fallback, open the decodable original via
           // AviVideoBackend below. The `.slp` keeps the ORIGINAL path.
-          const proxied = await openViaProxyOrNull(path, name);
+          const proxied = await openViaProxyOrNull(path, name, undefined, true);
           if (proxied) return proxied;
         } catch (err) {
           if (controller.signal.aborted) {
@@ -1494,7 +1739,7 @@ async function createBackendForPath(
       // Decodable `.mp4`: on desktop, proxy a big network-mounted file for fast
       // scrubbing (this is the primary target case), else open normally. Unknown
       // / extension-less names skip the proxy — we can't assume they're decodable.
-      const proxied = await openViaProxyOrNull(path, name);
+      const proxied = await openViaProxyOrNull(path, name, undefined, true);
       if (proxied) return proxied;
     }
     return new Mp4BoxVideoBackend(await makeVideoRangeSource(path), {
@@ -1591,12 +1836,16 @@ export async function assignVideoBackend(
     opts?.grayscale !== undefined
       ? opts.grayscale
       : (video.backendMetadata.grayscale as boolean | null | undefined);
-  return probeAndAssignBackend(
+  const ok = await probeAndAssignBackend(
     video,
     () => createBackendForFile(file, grayscale),
     file.name,
     { ...opts, grayscale }
   );
+  // Browser: upgrade to off-main worker decode (the worker slices this Blob
+  // directly). No-ops on desktop / non-mp4. Fire-and-forget.
+  if (ok) void scheduleWorkerDecodeUpgradeBrowser(video, file, file.name);
+  return ok;
 }
 
 /**
@@ -1616,12 +1865,23 @@ export async function assignVideoBackendFromPath(
     opts?.grayscale !== undefined
       ? opts.grayscale
       : (video.backendMetadata.grayscale as boolean | null | undefined);
-  return probeAndAssignBackend(
+  const ok = await probeAndAssignBackend(
     video,
     () => createBackendForPath(path, grayscale),
     getBasename(path),
     { ...opts, grayscale }
   );
+  // The video is open on its original (or cached-proxy) backend; if a first-build
+  // proxy is warranted, build it in the background and hot-swap when ready — never
+  // blocks the open (scrub-proxy v2 Thread C). Fire-and-forget.
+  if (ok) {
+    void scheduleBackgroundProxyBuild(video, path);
+    // Also upgrade the ON-MAIN backend to off-main worker decode so seeks never
+    // freeze the GUI. Guarded (matches the exact backend + file size) so it never
+    // fights the proxy swap or corrupts a cached-proxy backend. Fire-and-forget.
+    void scheduleWorkerDecodeUpgrade(video, path);
+  }
+  return ok;
 }
 
 /**
@@ -1640,12 +1900,16 @@ export async function assignVideoBackendFromUrl(
     opts?.grayscale !== undefined
       ? opts.grayscale
       : (video.backendMetadata.grayscale as boolean | null | undefined);
-  return probeAndAssignBackend(
+  const ok = await probeAndAssignBackend(
     video,
     () => createVideoBackend(url, { grayscale }),
     getBasename(url),
     { ...opts, grayscale }
   );
+  // Browser: upgrade to off-main worker decode (the worker does ranged fetches
+  // against this URL). No-ops on desktop / non-mp4. Fire-and-forget.
+  if (ok) void scheduleWorkerDecodeUpgradeBrowser(video, url, getBasename(url));
+  return ok;
 }
 
 /**
