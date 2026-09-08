@@ -159,9 +159,26 @@ fn read_range_impl(path: &str, offset: u64, length: u32) -> Result<Vec<u8>, Stri
 /// channel and does ZERO decoding. A short read at EOF returns fewer bytes (never
 /// an error), so the last chunk of a file works. Video reads reuse a persistent
 /// handle (see `READ_HANDLES`) instead of re-opening per range.
+///
+/// ASYNC + `spawn_blocking`: this is the video scrubbing hot path, and on macOS
+/// WKWebView the custom-protocol IPC handler runs on the MAIN (UI) thread — so a
+/// SYNC command here blocks the GUI for the whole read. A cold NFS GOP read can be
+/// seconds (measured ~9 s freeze), which no amount of off-main JS decode can hide,
+/// because the read itself was executing on the main thread. Making the command
+/// async lets Tauri run it on the runtime (the blocking `std::fs` read goes to the
+/// blocking pool), so the UI thread stays responsive while the read is in flight.
 #[tauri::command]
-fn read_range(path: String, offset: u64, length: u32) -> Result<tauri::ipc::Response, String> {
-    read_range_impl(&path, offset, length).map(tauri::ipc::Response::new)
+async fn read_range(
+    path: String,
+    offset: u64,
+    length: u32,
+) -> Result<tauri::ipc::Response, String> {
+    let bytes = tauri::async_runtime::spawn_blocking(move || {
+        read_range_impl(&path, offset, length)
+    })
+    .await
+    .map_err(|e| format!("read_range task: {e}"))??;
+    Ok(tauri::ipc::Response::new(bytes))
 }
 
 /// Total size (bytes) of a file — the range reader's declared file length.
