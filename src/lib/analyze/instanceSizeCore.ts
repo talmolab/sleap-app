@@ -242,3 +242,55 @@ export function binIndexOf(hist: SizeHistogram, size: number): number {
   if (idx < 0) idx = 0;
   return idx;
 }
+
+/** Evenly pick `count` items from `arr` (order preserved), always including the
+ * first; returns a copy of `arr` when `count >= arr.length`. */
+function uniformSample<T>(arr: T[], count: number): T[] {
+  if (count >= arr.length) return arr.slice();
+  if (count <= 0) return [];
+  const out: T[] = [];
+  const step = arr.length / count;
+  for (let k = 0; k < count; k += 1) out.push(arr[Math.floor(k * step)]);
+  return out;
+}
+
+/**
+ * Choose which instance indices to draw in the scatter view. The scatter renders
+ * one SVG node per plotted instance, so a project with tens of thousands of
+ * instances (dense inference) would create ~N `<circle>`s and hang/crash the
+ * WebView. When `sizes.length > cap`, this keeps ALL outliers (size > mean + 2*std
+ * — the actionable points a user clicks to inspect) and UNIFORMLY samples the rest
+ * up to `cap`, so the distribution shape and the extremes are both preserved.
+ * Returns ascending indices into `sizes`; returns every index when `<= cap`.
+ *
+ * Non-finite sizes are treated as non-outliers (they still occupy an index so the
+ * y-axis "instance index" stays aligned with the caller's `rotated` array).
+ */
+export function pickScatterIndices(
+  sizes: number[],
+  mean: number,
+  std: number,
+  cap: number,
+): number[] {
+  const n = sizes.length;
+  if (n <= cap) {
+    const all = new Array<number>(n);
+    for (let i = 0; i < n; i += 1) all[i] = i;
+    return all;
+  }
+  const threshold = mean + 2 * std;
+  const outliers: number[] = [];
+  const rest: number[] = [];
+  for (let i = 0; i < n; i += 1) {
+    if (Number.isFinite(sizes[i]) && sizes[i] > threshold) outliers.push(i);
+    else rest.push(i);
+  }
+  // Keep outliers (sampled only if pathologically many), then fill the remaining
+  // budget with a uniform sample of the rest.
+  const keptOutliers =
+    outliers.length <= cap ? outliers : uniformSample(outliers, cap);
+  const budget = Math.max(0, cap - keptOutliers.length);
+  const merged = keptOutliers.concat(uniformSample(rest, budget));
+  merged.sort((a, b) => a - b);
+  return merged;
+}
