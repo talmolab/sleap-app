@@ -28,7 +28,17 @@ import {
   binIndexOf,
   rotatedSize,
   niceTicks,
+  pickScatterIndices,
 } from "@/lib/analyze/instanceSizeCore";
+
+/**
+ * Cap on individually-rendered scatter points. The scatter view draws one SVG
+ * node per instance; a dense-inference project has tens of thousands of instances
+ * (measured 84k on als2h), which hangs/crashes the WebView. Above this cap we plot
+ * all outliers + a uniform sample (see {@link pickScatterIndices}). The histogram
+ * view is always bucketed, so it is unaffected.
+ */
+const MAX_SCATTER_POINTS = 4000;
 
 export interface SizeDistributionDialogProps {
   open: boolean;
@@ -187,26 +197,42 @@ export function SizeDistributionDialog({ open, onOpenChange }: SizeDistributionD
 
   const xTicks = niceTicks(xDomMin, xDomMax, 6).filter((t) => t >= xDomMin - 1e-9 && t <= xDomMax + 1e-9);
 
+  // Which instances to draw in scatter: all when small, else outliers + a uniform
+  // sample capped at MAX_SCATTER_POINTS so a dense project can't spawn ~N SVG
+  // nodes and crash the WebView. `data-idx` stays the REAL index, so click→navigate
+  // still resolves to the correct instance.
+  const scatterIndices = useMemo(
+    () =>
+      view === "scatter" && n > 0
+        ? pickScatterIndices(rotated, MAX_SCATTER_POINTS)
+        : [],
+    [view, rotated, n],
+  );
+  const scatterDownsampled = scatterIndices.length < n;
+
   // Scatter points are memoized independently of `selected` so a click only
-  // re-renders the highlight overlay, not all N points.
+  // re-renders the highlight overlay, not all points.
   const scatterPoints = useMemo(() => {
     if (view !== "scatter" || n === 0) return null;
     const median = summary.median > 0 ? summary.median : 1;
-    return rotated.map((sz, i) => (
-      <circle
-        key={i}
-        data-idx={i}
-        cx={xScale(sz)}
-        cy={yScale(i)}
-        r={3}
-        fill={sizeColor(sz / median)}
-        fillOpacity={0.6}
-        style={{ cursor: "pointer" }}
-      />
-    ));
+    return scatterIndices.map((i) => {
+      const sz = rotated[i];
+      return (
+        <circle
+          key={i}
+          data-idx={i}
+          cx={xScale(sz)}
+          cy={yScale(i)}
+          r={3}
+          fill={sizeColor(sz / median)}
+          fillOpacity={0.6}
+          style={{ cursor: "pointer" }}
+        />
+      );
+    });
     // xScale/yScale are derived from these same deps.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, rotated, summary.median, xDomMin, xDomMax, yDomMax]);
+  }, [view, scatterIndices, rotated, summary.median, xDomMin, xDomMax, yDomMax]);
 
   const selectedIdx = selected ? sized.indexOf(selected) : -1;
   const selectedRotated =
@@ -346,7 +372,11 @@ export function SizeDistributionDialog({ open, onOpenChange }: SizeDistributionD
                 <title>{`Size ${view} (n=${n})`}</title>
                 {/* Title */}
                 <text x={VB_W / 2} y={16} textAnchor="middle" fill={C.title} fontSize={12} fontWeight={600}>
-                  {histMode ? "Size Histogram" : "Size Distribution"} (n={n})
+                  {histMode ? "Size Histogram" : "Size Distribution"} (n={n}
+                  {!histMode && scatterDownsampled
+                    ? `, showing ${scatterIndices.length} — outliers + sample`
+                    : ""}
+                  )
                 </text>
 
                 {/* Y grid + ticks */}
@@ -412,7 +442,6 @@ export function SizeDistributionDialog({ open, onOpenChange }: SizeDistributionD
                       );
                     })
                   : (
-                    // eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events
                     <g onClick={onScatterClick}>{scatterPoints}</g>
                   )}
 

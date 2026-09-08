@@ -242,3 +242,54 @@ export function binIndexOf(hist: SizeHistogram, size: number): number {
   if (idx < 0) idx = 0;
   return idx;
 }
+
+/** Evenly pick `count` items from `arr` (order preserved), always including the
+ * first; returns a copy of `arr` when `count >= arr.length`. */
+function uniformSample<T>(arr: T[], count: number): T[] {
+  if (count >= arr.length) return arr.slice();
+  if (count <= 0) return [];
+  const out: T[] = [];
+  const step = arr.length / count;
+  for (let k = 0; k < count; k += 1) out.push(arr[Math.floor(k * step)]);
+  return out;
+}
+
+/**
+ * Choose which instance indices to draw in the scatter view. The scatter renders
+ * one SVG node per plotted instance, so a project with tens of thousands of
+ * instances (dense inference) would create ~N `<circle>`s and hang/crash the
+ * WebView. When `sizes.length > cap`, this fills MOST of the budget with a UNIFORM
+ * sample of ALL instances — so the bulk of the distribution (the common, small
+ * sizes) is faithfully represented — and RESERVES a slice for the largest-size
+ * instances so the extreme tail stays visible and clickable. Returns ascending
+ * indices into `sizes`; returns every index when `<= cap`.
+ *
+ * (An earlier version kept every >2σ outlier FIRST; when outliers exceeded the cap
+ * that showed ONLY the high-size tail and hid the bulk entirely — a misleading
+ * picture where the median sat in an empty region. Uniform-sampling the whole set
+ * is the fix.)
+ *
+ * Non-finite sizes never rank as "largest" (skipped in the reserve sort) but still
+ * occupy an index, so the y-axis "instance index" stays aligned with `rotated`.
+ */
+export function pickScatterIndices(sizes: number[], cap: number): number[] {
+  const n = sizes.length;
+  const allIdx = new Array<number>(n);
+  for (let i = 0; i < n; i += 1) allIdx[i] = i;
+  if (n <= cap) return allIdx;
+
+  // Reserve up to 15% of the budget for the largest instances (extreme tail),
+  // fill the rest with a uniform sample of everything (distribution shape).
+  const reserve = Math.min(Math.floor(cap * 0.15), n);
+  const bulkQuota = cap - reserve;
+
+  const bulk = uniformSample(allIdx, bulkQuota);
+  const largest = allIdx
+    .filter((i) => Number.isFinite(sizes[i]))
+    .sort((a, b) => sizes[b] - sizes[a])
+    .slice(0, reserve);
+
+  const merged = Array.from(new Set([...bulk, ...largest]));
+  merged.sort((a, b) => a - b);
+  return merged;
+}
