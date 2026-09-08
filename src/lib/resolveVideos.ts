@@ -29,8 +29,14 @@ import {
   ensureDecodablePath,
   getTranscodeCacheInfo,
   clearTranscodeCache,
+  type TranscodeDeps,
 } from "./transcode/transcodeVideo";
 import { createTauriTranscodeDeps } from "./transcode/transcodeDepsTauri";
+import { shouldBuildScrubProxy } from "./transcode/proxyPolicy";
+import {
+  ensureScrubProxyPath,
+  type ScrubProxyResult,
+} from "./transcode/scrubProxy";
 import { useTranscodeStore } from "@/stores/transcodeStore";
 import { useTranscodePromptStore } from "@/stores/transcodePromptStore";
 
@@ -1213,6 +1219,163 @@ function makeVideoRangeSource(path: string): Promise<RangeSource> {
 }
 
 /**
+ * Injected seams for {@link resolveScrubProxyOpenPath}. Default to the real
+ * desktop implementations; unit tests pass fakes (no Tauri/ffmpeg needed).
+ */
+export interface ScrubProxyDeps {
+  /** Whether the user has the scrub-proxy feature enabled. */
+  isEnabled: () => boolean;
+  /** The transcode deps (used for `stat`, and by the proxy build for ffmpeg). */
+  transcodeDeps: () => TranscodeDeps;
+  /** The worthiness gate (network + big + decodable). */
+  shouldBuild: typeof shouldBuildScrubProxy;
+  /** Build/reuse the frame-exact proxy, or fall back to the source. */
+  ensureProxy: typeof ensureScrubProxyPath;
+}
+
+const defaultScrubProxyDeps: ScrubProxyDeps = {
+  isEnabled: () => useAppStore.getState().scrubProxyEnabled,
+  transcodeDeps: createTauriTranscodeDeps,
+  shouldBuild: shouldBuildScrubProxy,
+  ensureProxy: ensureScrubProxyPath,
+};
+
+/** The slice of the transcode-store job UI the proxy step drives (start + progress). */
+interface ProxyJobUi {
+  startJob: (name: string, cancel: () => void) => void;
+  setProgress: (percent: number | null, frame: number | null) => void;
+}
+
+/**
+ * Decide whether to build a local scrub PROXY for an already-decodable external
+ * video (desktop only) and, if so, build/reuse it — returning the path to OPEN
+ * the backend on and whether that path is the proxy.
+ *
+ * A proxy is a best-effort optimization for scrubbing a big file on a slow
+ * network mount: it NEVER blocks the open. Whenever the feature is off, the file
+ * isn't worth proxying, the frame-exact gate fails, or the build errors/cancels,
+ * this resolves to the ORIGINAL `path` (`isProxy: false`) so the caller opens the
+ * source unchanged. The returned path is used ONLY to construct the video backend
+ * — the `.slp`/Video keeps recording the original `path` (this function never
+ * touches the Video).
+ *
+ * It reuses the SAME {@link useTranscodeStore} job UI as the legacy transcode:
+ * `onStart` starts the job, `onProgress` updates it. It deliberately does NOT
+ * clear the job — the caller's `finally` owns `endJob()`, so the dialog stays up
+ * through backend construction and is cleared exactly once (build OR fallback).
+ * Progress is indeterminate (no known duration for a decodable source), so only
+ * the frame counter advances.
+ */
+export async function resolveScrubProxyOpenPath(
+  path: string,
+  name: string,
+  store: ProxyJobUi,
+  controller: AbortController,
+  deps: ScrubProxyDeps = defaultScrubProxyDeps
+): Promise<ScrubProxyResult> {
+  // The original source is the safe default the caller opens on any fallback.
+  const original: ScrubProxyResult = { path, isProxy: false };
+
+  const enabled = deps.isEnabled();
+  if (!enabled) return original; // off → no stat, no build, open the source
+
+  let sizeBytes: number;
+  try {
+    ({ size: sizeBytes } = await deps.transcodeDeps().stat(path));
+  } catch {
+    return original; // can't stat the source → skip the proxy, open the source
+  }
+
+  if (
+    !deps.shouldBuild({
+      enabled,
+      isTauri: true, // this helper is only reached from the Tauri open path
+      path,
+      sizeBytes,
+      isExternalDecodableVideo: true, // caller reached this for a decodable file
+    })
+  ) {
+    return original; // not worth it (local / small / non-network) → open the source
+  }
+
+  try {
+    return await deps.ensureProxy(path, deps.transcodeDeps(), {
+      signal: controller.signal, // share the caller's cancel button
+      onStart: () => store.startJob(name, () => controller.abort()),
+      // No known source duration → indeterminate bar; surface the frame counter.
+      onProgress: (p) => store.setProgress(null, p.frame ?? null),
+    });
+  } catch (err) {
+    // A proxy is an optimization: a failed/canceled build must never fail the
+    // video open. Fall back to the ORIGINAL source.
+    console.warn(`[video] scrub-proxy build failed for "${name}":`, err);
+    return original;
+  }
+}
+
+/** Injected seams for {@link openViaProxyOrNull}; default to the real desktop impls. */
+export interface ProxyOpenDeps {
+  /** True only on desktop (a proxy needs the bundled ffmpeg sidecar). */
+  isTauri: () => Promise<boolean>;
+  /** The transcode-store job UI to start/forward and clear. */
+  getStore: () => ProxyJobUi & { endJob: () => void };
+  /** The proxy decision/build (see {@link resolveScrubProxyOpenPath}). */
+  resolveProxy: typeof resolveScrubProxyOpenPath;
+  /** Open an Mp4Box backend on the (local, frame-exact `.mp4`) proxy path. */
+  openProxyBackend: (proxyPath: string, name: string) => Promise<VideoBackend>;
+}
+
+const defaultProxyOpenDeps: ProxyOpenDeps = {
+  isTauri: async () => (await getPlatform()).isTauri,
+  getStore: () => useTranscodeStore.getState(),
+  resolveProxy: resolveScrubProxyOpenPath,
+  openProxyBackend: async (proxyPath, name) =>
+    new Mp4BoxVideoBackend(await makeVideoRangeSource(proxyPath), {
+      filename: name,
+    }),
+};
+
+/**
+ * DRY entry point for the scrub-proxy step, called at the TOP of each decodable
+ * external-video open branch (mediabunny, mp4box, and the decodable-AVI
+ * fallthrough). On desktop it builds/reuses a local short-GOP scrub proxy for a
+ * big file on a network mount and, if one was produced, returns an Mp4Box backend
+ * opened on that frame-exact `.mp4`. Returns `null` to mean "no proxy — open the
+ * source normally", which is the outcome whenever the feature is off, the file
+ * isn't worth proxying, the frame-exact gate fails, the build errors/cancels, or
+ * we're not on desktop.
+ *
+ * It owns the SAME {@link useTranscodeStore} job UI the legacy transcode uses:
+ * {@link resolveScrubProxyOpenPath} starts + forwards progress, and this
+ * function's `finally` clears it exactly once (build OR fallback) — so mp4/mov
+ * opens, which previously showed no job, now show the shared conversion dialog
+ * while a proxy builds.
+ *
+ * INVARIANT: the `.slp`/Video ALWAYS records the ORIGINAL `path`. The proxy path
+ * is confined to the returned backend's byte source (and the backend keeps the
+ * original `name`); it is never written back to the Video.
+ */
+export async function openViaProxyOrNull(
+  path: string,
+  name: string,
+  deps: ProxyOpenDeps = defaultProxyOpenDeps
+): Promise<VideoBackend | null> {
+  if (!(await deps.isTauri())) return null; // proxy needs the ffmpeg sidecar
+  const store = deps.getStore();
+  const controller = new AbortController();
+  try {
+    const proxy = await deps.resolveProxy(path, name, store, controller);
+    return proxy.isProxy ? await deps.openProxyBackend(proxy.path, name) : null;
+  } catch (err) {
+    // Best-effort: a proxy must NEVER fail the open — open the source normally.
+    console.warn(`[video] scrub-proxy open failed for "${name}":`, err);
+    return null;
+  } finally {
+    store.endJob(); // clear the shared job UI on build OR fallback
+  }
+}
+
+/**
  * Build a backend that reads a native video path lazily by byte range, so a
  * multi-GB external video is never read whole into memory (the desktop
  * freeze/crash). MP4 → Mp4Box, the MediaBunny formats → MediaBunny, both via a
@@ -1220,6 +1383,11 @@ function makeVideoRangeSource(path: string): Promise<RangeSource> {
  * it falls back to a full read. AVI/WMV also read whole for now — web-demuxer
  * 4.x can't stream from a lazy source, so {@link AviVideoBackend.fromRangeSource}
  * materializes the bytes (true AVI byte-range streaming is a follow-up).
+ *
+ * DECODABLE external videos (mediabunny, mp4box, and decodable AVI/WMV) first go
+ * through {@link openViaProxyOrNull}: on desktop a big network-mounted file gets a
+ * local scrub proxy for fast seeking. The proxy path is used ONLY to open the
+ * backend — the Video keeps recording the ORIGINAL `path`.
  */
 async function createBackendForPath(
   path: string,
@@ -1229,6 +1397,10 @@ async function createBackendForPath(
   const kind = backendKindForFilename(name);
   const backend = await (async () => {
     if (kind === "mediabunny") {
+      // Decodable external video (MOV/MKV/WebM/Ogg/TS): on desktop, proxy a big
+      // network-mounted file for fast scrubbing, else open the source normally.
+      const proxied = await openViaProxyOrNull(path, name);
+      if (proxied) return proxied;
       return MediaBunnyVideoBackend.fromRangeSource(
         await makeVideoRangeSource(path),
         name
@@ -1283,7 +1455,13 @@ async function createBackendForPath(
               { filename: name }
             );
           }
-          // Decodable (H.264/MJPEG) → fall through to AviVideoBackend below.
+          // Decodable original (H.264/MJPEG in an AVI/WMV container): only a
+          // legacy transcode above produced a local copy; this file did not, so
+          // try a local scrub proxy for fast network scrubbing (own job
+          // lifecycle). On any fallback, open the decodable original via
+          // AviVideoBackend below. The `.slp` keeps the ORIGINAL path.
+          const proxied = await openViaProxyOrNull(path, name);
+          if (proxied) return proxied;
         } catch (err) {
           if (controller.signal.aborted) {
             // User canceled: don't silently fall back (that re-attempts the whole
@@ -1312,6 +1490,13 @@ async function createBackendForPath(
       );
     }
     // mp4box + unknown/extension-less names (historical mp4box default).
+    if (kind === "mp4box") {
+      // Decodable `.mp4`: on desktop, proxy a big network-mounted file for fast
+      // scrubbing (this is the primary target case), else open normally. Unknown
+      // / extension-less names skip the proxy — we can't assume they're decodable.
+      const proxied = await openViaProxyOrNull(path, name);
+      if (proxied) return proxied;
+    }
     return new Mp4BoxVideoBackend(await makeVideoRangeSource(path), {
       filename: name,
     });

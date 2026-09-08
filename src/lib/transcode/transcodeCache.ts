@@ -33,6 +33,16 @@ export function cacheFilename(key: string): string {
   return `${key}${TRANSCODE_EXT}`;
 }
 
+/**
+ * The cache filename for a scrub PROXY of a source: `<key>-proxy-g<gop>.mp4`.
+ * The `-proxy-g<gop>` suffix keeps a proxy from colliding with a legacy
+ * transcode's `<key>.mp4` (or with a proxy built at a different GOP, so a GOP
+ * change self-invalidates the old one).
+ */
+export function proxyCacheFilename(key: string, gop: number): string {
+  return `${key}-proxy-g${gop}${TRANSCODE_EXT}`;
+}
+
 /** A cached transcode on disk, for eviction planning. */
 export interface CacheEntry {
   /** Absolute path to the cached `.mp4`. */
