@@ -82,7 +82,7 @@ jobs:
             # extra vetting from Apple: ours was Accepted (id 656c1f62), but only
             # after >47 min, so a 60 min job cap killed the runner mid-wait. Later
             # submissions are normally minutes. Generous cap + the notarytool
-            # history check in docs/macos-code-signing.md beats guessing.
+            # history check in docs/internal/macos-code-signing.md beats guessing.
             job-timeout: 120
           - platform: windows-latest
             target: windows
@@ -273,7 +273,7 @@ jobs:
       # runs `codesign -s ""`, which fails the whole build (verified locally).
       # Setting them only once they are known non-empty avoids that.
       #
-      # See docs/macos-code-signing.md for how to produce each value.
+      # See docs/internal/macos-code-signing.md for how to produce each value.
       - name: Configure macOS code signing
         if: matrix.target == 'macos-universal'
         shell: bash
@@ -291,7 +291,7 @@ jobs:
             echo "SLEAP_SIGNING_MODE=adhoc" >> "$GITHUB_ENV"
             echo "::notice::No Apple Developer ID secrets set -- signing ad-hoc." \
                  "The .dmg installs cleanly via scripts/install.sh, but a browser" \
-                 "download will be gated by Gatekeeper. See docs/macos-code-signing.md."
+                 "download will be gated by Gatekeeper. See docs/internal/macos-code-signing.md."
             exit 0
           fi
 

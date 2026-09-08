@@ -1,0 +1,137 @@
+site_name: SLEAP App documentation
+site_url: https://docs.app.sleap.ai/
+site_description: >-
+  Documentation for the SLEAP app -- a browser and desktop interface for
+  labeling, training, and tracking animal pose.
+repo_url: https://github.com/talmolab/sleap-app
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  logo: assets/sleap-logo.png
+  favicon: assets/favicon.ico
+  icon:
+    repo: fontawesome/brands/github
+
+  palette:
+    - scheme: slate
+      primary: deep orange
+      accent: deep orange
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+    - scheme: default
+      primary: deep orange
+      accent: deep orange
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.tracking
+    - toc.follow
+    - navigation.sections
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+    - content.tooltips
+    - content.code.select
+    - content.footnote.tooltips
+
+plugins:
+  - search
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      toc_depth: 3
+  - pymdownx.betterem:
+      smart_enable: all
+  - pymdownx.caret
+  - pymdownx.critic
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+
+extra_css:
+  - stylesheets/extra.css
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/talmolab
+    - icon: fontawesome/brands/x-twitter
+      link: https://twitter.com/talmop
+
+# NOTE: docs/internal/ holds engineering notes, not site content. It is kept out
+# of `nav` below, but Zensical does NOT support mkdocs' `exclude_docs` (the key
+# is silently ignored), so those pages are still *built* -- just unlinked. The
+# only exclusion Zensical honors is a dot-prefixed directory; rename to
+# docs/.internal/ if they must be kept out of the published output entirely.
+
+nav:
+  - Overview: index.md
+  - Installation: installation.md
+  - Getting started:
+      - Quick Start: getting-started/quickstart.md
+      - Your First Labels: getting-started/first-labels.md
+  - Guides:
+      - Overview: guides/overview.md
+      - Labeling:
+          - Labeling Instances: guides/labeling.md
+          - Skeletons: guides/skeletons.md
+          - Navigation: guides/navigation.md
+          - Suggestions: guides/suggestions.md
+          - Tracks: guides/tracks.md
+      - Videos & Display:
+          - Videos: guides/videos.md
+          - View & Display: guides/view.md
+      - Models:
+          - Environment Setup: guides/environment.md
+          - Training: guides/training.md
+          - Inference: guides/inference.md
+          - Remote Compute: guides/remote-compute.md
+      - Data:
+          - Import & Export: guides/import-export.md
+          - Merging Projects: guides/merging.md
+          - Saving & Recovery: guides/saving.md
+      - Analyze:
+          - Instance Size Distribution: guides/instance-size.md
+          - Label Quality Check: guides/label-qc.md
+  - Reference:
+      - Keyboard Shortcuts: reference/shortcuts.md
+      - Menus: reference/menus.md
+      - Panels: reference/panels.md
+      - File Formats: reference/formats.md
+      - Browser vs Desktop: reference/browser-vs-desktop.md
+  - Development: development.md
+  - Help:
+      - FAQ: help/faq.md
+      - Troubleshooting: help/troubleshooting.md
+  - Releases: https://github.com/talmolab/sleap-app/releases
