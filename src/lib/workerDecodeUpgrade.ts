@@ -67,11 +67,26 @@ export async function buildTauriByteSourceDescriptor(
 
 /**
  * Build the browser byte-source descriptor from a `Blob`/`File` (worker slices it
- * directly). For the future browser wiring — the worker path is the ONLY way to
- * unblock the main thread in a browser (no proxies there).
+ * directly). The worker path is the ONLY way to unblock the main thread in a
+ * browser (no proxies there).
  */
 export function buildBlobByteSourceDescriptor(blob: Blob): ByteSourceDescriptor {
   return { kind: "blob", blob, size: blob.size };
+}
+
+/**
+ * Build the browser byte-source descriptor for a remote video (worker does ranged
+ * `fetch` with a `Range` header). `size` is the total file length (from the
+ * backend's range-probe / parse), needed so the worker's reads never run past EOF
+ * and so the upgrade's file-size guard matches. `headers` carries any auth applied
+ * to the video fetches.
+ */
+export function buildUrlByteSourceDescriptor(
+  url: string,
+  headers: Record<string, string>,
+  size: number,
+): ByteSourceDescriptor {
+  return { kind: "url", url, headers, size };
 }
 
 export type WorkerUpgradeOutcome =

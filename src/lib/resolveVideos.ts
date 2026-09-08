@@ -42,8 +42,11 @@ import {
 import { runBackgroundProxySwap } from "./transcode/backgroundProxySwap";
 import {
   buildTauriByteSourceDescriptor,
+  buildBlobByteSourceDescriptor,
+  buildUrlByteSourceDescriptor,
   runWorkerDecodeUpgrade,
 } from "./workerDecodeUpgrade";
+import type { ByteSourceDescriptor } from "@talmolab/sleap-io.js";
 import { useTranscodeStore } from "@/stores/transcodeStore";
 import { useTranscodePromptStore } from "@/stores/transcodePromptStore";
 
@@ -1558,6 +1561,66 @@ export async function scheduleWorkerDecodeUpgrade(
 }
 
 /**
+ * Browser counterpart of {@link scheduleWorkerDecodeUpgrade}: upgrade a
+ * freshly-opened MP4's on-main backend to the off-main {@link WorkerMp4BoxBackend}.
+ * In a browser there are NO proxies, so the worker is the ONLY way to keep the UI
+ * responsive during decode. The worker's byte source is the `Blob` (sliced
+ * directly) or a ranged-URL fetch — no Tauri invoke key needed. No-ops on desktop
+ * (handled by the path-based scheduler) and on non-mp4/unsupported environments.
+ * Fire-and-forget; any failure keeps the on-main backend.
+ */
+export async function scheduleWorkerDecodeUpgradeBrowser(
+  video: Video,
+  source: Blob | string,
+  name: string,
+  headers?: Record<string, string>
+): Promise<void> {
+  if (!isWorkerDecodeAvailable()) return;
+  if (backendKindForFilename(name) !== "mp4box") return;
+  const platform = await getPlatform();
+  if (platform.isTauri) return; // desktop uses the path-based upgrade
+  const original = video.backend;
+  if (!original) return;
+
+  let byteSource: ByteSourceDescriptor | null = null;
+  if (typeof Blob !== "undefined" && source instanceof Blob) {
+    byteSource = buildBlobByteSourceDescriptor(source);
+  } else if (typeof source === "string") {
+    // Remote URL: the size comes from the backend's range-probe/parse so the
+    // worker's ranged reads never run past EOF (and the size-guard matches).
+    try {
+      const parse = await (
+        original as { getParseResult?: () => Promise<{ fileSize: number }> }
+      ).getParseResult?.();
+      if (!parse) return;
+      byteSource = buildUrlByteSourceDescriptor(
+        source,
+        headers ?? {},
+        parse.fileSize
+      );
+    } catch {
+      return;
+    }
+  }
+  if (!byteSource) return;
+  const descriptor = byteSource;
+
+  await runWorkerDecodeUpgrade(original, name, name, {
+    isAvailable: isWorkerDecodeAvailable,
+    buildDescriptor: async () => descriptor,
+    createWorkerBackend: (params) => WorkerMp4BoxBackend.create(params),
+    isStillActive: () => useAppStore.getState().video === video,
+    currentBackend: () => video.backend,
+    swap: (backend) => {
+      video.backend = backend;
+    },
+    triggerReread: () => useAppStore.getState().bumpBackendSwapNonce(),
+    onUpgraded: () =>
+      console.info(`[offmain] worker decode active (browser) for "${name}"`),
+  });
+}
+
+/**
  * Build a backend that reads a native video path lazily by byte range, so a
  * multi-GB external video is never read whole into memory (the desktop
  * freeze/crash). MP4 → Mp4Box, the MediaBunny formats → MediaBunny, both via a
@@ -1773,12 +1836,16 @@ export async function assignVideoBackend(
     opts?.grayscale !== undefined
       ? opts.grayscale
       : (video.backendMetadata.grayscale as boolean | null | undefined);
-  return probeAndAssignBackend(
+  const ok = await probeAndAssignBackend(
     video,
     () => createBackendForFile(file, grayscale),
     file.name,
     { ...opts, grayscale }
   );
+  // Browser: upgrade to off-main worker decode (the worker slices this Blob
+  // directly). No-ops on desktop / non-mp4. Fire-and-forget.
+  if (ok) void scheduleWorkerDecodeUpgradeBrowser(video, file, file.name);
+  return ok;
 }
 
 /**
@@ -1833,12 +1900,16 @@ export async function assignVideoBackendFromUrl(
     opts?.grayscale !== undefined
       ? opts.grayscale
       : (video.backendMetadata.grayscale as boolean | null | undefined);
-  return probeAndAssignBackend(
+  const ok = await probeAndAssignBackend(
     video,
     () => createVideoBackend(url, { grayscale }),
     getBasename(url),
     { ...opts, grayscale }
   );
+  // Browser: upgrade to off-main worker decode (the worker does ranged fetches
+  // against this URL). No-ops on desktop / non-mp4. Fire-and-forget.
+  if (ok) void scheduleWorkerDecodeUpgradeBrowser(video, url, getBasename(url));
+  return ok;
 }
 
 /**

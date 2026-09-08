@@ -6,6 +6,8 @@
 import { describe, it, expect } from "../bun-test";
 import {
   runWorkerDecodeUpgrade,
+  buildBlobByteSourceDescriptor,
+  buildUrlByteSourceDescriptor,
   type WorkerUpgradeDeps,
 } from "@/lib/workerDecodeUpgrade";
 import type {
@@ -83,6 +85,30 @@ function makeDeps(
   };
   return { deps, calls, setBackend: (b: VideoBackend | null) => (backend = b) };
 }
+
+describe("browser byte-source descriptors", () => {
+  it("builds a blob descriptor with the blob's own size", () => {
+    const blob = new Blob([new Uint8Array(1234)]);
+    const d = buildBlobByteSourceDescriptor(blob);
+    expect(d.kind).toBe("blob");
+    expect(d.size).toBe(1234);
+    if (d.kind === "blob") expect(d.blob).toBe(blob);
+  });
+
+  it("builds a url descriptor with headers + explicit size", () => {
+    const d = buildUrlByteSourceDescriptor(
+      "https://x/v.mp4",
+      { Authorization: "Bearer t" },
+      987,
+    );
+    expect(d).toEqual({
+      kind: "url",
+      url: "https://x/v.mp4",
+      headers: { Authorization: "Bearer t" },
+      size: 987,
+    });
+  });
+});
 
 describe("runWorkerDecodeUpgrade", () => {
   it("upgrades: swaps in the worker backend, re-reads, closes the original", async () => {
