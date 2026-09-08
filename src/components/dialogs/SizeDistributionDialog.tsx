@@ -204,9 +204,9 @@ export function SizeDistributionDialog({ open, onOpenChange }: SizeDistributionD
   const scatterIndices = useMemo(
     () =>
       view === "scatter" && n > 0
-        ? pickScatterIndices(rotated, summary.mean, summary.std, MAX_SCATTER_POINTS)
+        ? pickScatterIndices(rotated, MAX_SCATTER_POINTS)
         : [],
-    [view, rotated, summary.mean, summary.std, n],
+    [view, rotated, n],
   );
   const scatterDownsampled = scatterIndices.length < n;
 
