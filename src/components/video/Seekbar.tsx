@@ -17,6 +17,7 @@ import {
   useEffect,
   useLayoutEffect,
   useMemo,
+  useDeferredValue,
 } from "react";
 import { useAppStore } from "../../stores/appStore";
 import { getPaletteColor, rgbToCSS } from "../../lib/colorPalettes";
@@ -37,7 +38,15 @@ import {
   frameTickInterval,
   HEADER_FILL,
 } from "@/lib/headerSeriesRender";
-import { resizeHeaderHeight } from "@/lib/seekbarHeaderHeight";
+import {
+  resizeHeaderHeight,
+  resizeTracksHeight,
+  effectiveTracksHeight,
+  tracksLaneMetrics,
+  TRACKS_LANE_GAP_PX,
+  TRACKS_MIN_HEIGHT,
+  TRACKS_TOP_PAD_PX,
+} from "@/lib/seekbarHeaderHeight";
 import { inferFrameCount } from "@/lib/inferFrameCount";
 import { isFastScrub, FAST_SCRUB_FRAMES_PER_TICK } from "@/lib/videoPrefetch";
 import { isUserLabeledFrame } from "@/lib/frameLabeling";
@@ -155,6 +164,8 @@ export function Seekbar() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const headerCanvasRef = useRef<HTMLCanvasElement>(null);
   const tracksCanvasRef = useRef<HTMLCanvasElement>(null);
+  const tracksContainerRef = useRef<HTMLDivElement>(null);
+  const tracksLaneHeightRef = useRef(0);
   const containerRef = useRef<HTMLDivElement>(null);
   const headerContainerRef = useRef<HTMLDivElement>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
@@ -169,6 +180,7 @@ export function Seekbar() {
   const seekbarHeaderGraph = useAppStore((s) => s.seekbarHeaderGraph);
   const seekbarHeaderReduction = useAppStore((s) => s.seekbarHeaderReduction);
   const seekbarHeaderHeight = useAppStore((s) => s.seekbarHeaderHeight);
+  const seekbarTracksHeight = useAppStore((s) => s.seekbarTracksHeight);
   // When the sidebar is on the left, the transport controls + header graph
   // picker move left too. We reorder via `order` (grid auto-flow) rather than an
   // explicit `col-start`: WebKit (the desktop WKWebView) mis-sizes an `auto`
@@ -444,11 +456,89 @@ export function Seekbar() {
     }
   }, []);
 
+  // --- Tracks band vertical resize (drag handle on the band's top edge) ---
+  // Mirrors the header resize. Writes an explicit height to the store (which
+  // overrides the auto-by-track-count sizing); the render effect below reads a
+  // DEFERRED copy of the height, so a fast drag doesn't repaint the (potentially
+  // huge: tracks × frames) lane set every pointer tick — it catches up on settle.
+  // Double-click resets to 0 = auto-fit.
+  const tracksResizeRef = useRef<{ startY: number; startHeight: number } | null>(
+    null
+  );
+
+  const handleTracksResizePointerDown = useCallback(
+    (e: React.PointerEvent) => {
+      e.preventDefault();
+      const st = useAppStore.getState();
+      // Seed from the CURRENTLY-RENDERED height so a drag from "auto" starts
+      // where the band actually is, not from 0.
+      const current =
+        st.seekbarTracksHeight > 0
+          ? st.seekbarTracksHeight
+          : (e.currentTarget.parentElement?.getBoundingClientRect().height ??
+            st.seekbarTracksHeight);
+      tracksResizeRef.current = { startY: e.clientY, startHeight: current };
+      try {
+        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+      } catch {
+        // ignore
+      }
+    },
+    []
+  );
+
+  const handleTracksResizePointerMove = useCallback((e: React.PointerEvent) => {
+    const st = tracksResizeRef.current;
+    if (!st) return;
+    const next = resizeTracksHeight(st.startHeight, st.startY, e.clientY);
+    useAppStore.getState().set("seekbarTracksHeight", next);
+  }, []);
+
+  const handleTracksResizePointerUp = useCallback((e: React.PointerEvent) => {
+    if (!tracksResizeRef.current) return;
+    tracksResizeRef.current = null;
+    try {
+      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const handleTracksResizeReset = useCallback(() => {
+    useAppStore.getState().set("seekbarTracksHeight", 0); // back to auto-fit
+  }, []);
+
   const [isDragging, setIsDragging] = useState(false);
   const [hoverFrame, setHoverFrame] = useState<number | null>(null);
   // Cursor X within the seekbar container (px), used to position the floating
   // hover-preview tooltip. Set alongside hoverFrame on mouse move; cleared on leave.
   const [hoverX, setHoverX] = useState<number | null>(null);
+  // Tracks band hover: which lane the cursor is over, and the band's scroll
+  // offset (so the side-column name label lines up with the highlighted lane).
+  // Setting these NEVER redraws the lane canvas (it isn't in the canvas effect's
+  // deps) — only the small overlay + label re-render, so hover can't jank.
+  const [hoveredTrackIdx, setHoveredTrackIdx] = useState<number | null>(null);
+  const [tracksScrollTop, setTracksScrollTop] = useState(0);
+
+  const handleTracksHoverMove = useCallback(
+    (e: React.PointerEvent) => {
+      const container = tracksContainerRef.current;
+      if (!container) return;
+      const rect = container.getBoundingClientRect();
+      const yInContent = e.clientY - rect.top + container.scrollTop;
+      const laneH = tracksLaneHeightRef.current;
+      if (laneH <= 0) return;
+      const idx = Math.floor((yInContent - TRACKS_TOP_PAD_PX) / laneH);
+      // Guard: only re-render when the hovered LANE actually changes (crossing a
+      // lane boundary), not on every sub-pixel move.
+      setHoveredTrackIdx((prev) => (prev === idx ? prev : idx));
+    },
+    []
+  );
+  const handleTracksHoverLeave = useCallback(() => setHoveredTrackIdx(null), []);
+  const handleTracksScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    setTracksScrollTop(e.currentTarget.scrollTop);
+  }, []);
   // While dragging, the solid playhead follows the cursor (this value) instead
   // of frameIdx, so it glides smoothly even while the image load lags behind on
   // a slow backend. null when not scrubbing → playhead tracks the loaded frame.
@@ -862,6 +952,48 @@ export function Seekbar() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [labels, video, editSeq]);
 
+  // Per-track occupancy band sizing. It AUTO-heights to the track count (legible
+  // lanes for many-track projects) unless the user has dragged it to an explicit
+  // height. `deferredTracksHeight` lags the crisp canvas redraw behind a fast
+  // resize drag: the DOM element resizes live (cheap CSS), while the potentially
+  // huge lane bitmap (tracks × frames) is only re-rasterized once the drag settles
+  // — so resizing never janks the GUI (the #366 useDeferredValue pattern).
+  const trackLaneCount = headerData?.byTrack.length ?? 0;
+  const hasTrackOccupancy =
+    !!headerData && headerData.byTrack.some((f) => f.length > 0);
+  const tracksBandHeight = effectiveTracksHeight(
+    seekbarTracksHeight,
+    trackLaneCount
+  );
+  // Lanes GROW to fill the band as it's dragged taller, bottoming out at a
+  // minimum height beyond which the (full-height) canvas overflows the viewport
+  // and scrolls. The canvas height only changes with the band height in the
+  // few-track "fill" regime (a cheap redraw); the many-track "scroll" regime
+  // pins the canvas at count×minLane, independent of the band height, so
+  // resizing there is pure CSS with no redraw. `useDeferredValue` makes even the
+  // fill-regime redraw lag behind a fast drag (the #366 pattern) — the viewport
+  // resizes live, the crisp lane bitmap catches up on settle.
+  const deferredBandHeight = useDeferredValue(tracksBandHeight);
+  const tracksMetrics = tracksLaneMetrics(deferredBandHeight, trackLaneCount);
+  const tracksLaneHeight = tracksMetrics.laneHeight;
+  const tracksCanvasHeight = tracksMetrics.canvasHeight;
+  // Latest lane height for the hover hit-test (read from the pointer handler,
+  // which is a stable useCallback and would otherwise close over a stale value).
+  tracksLaneHeightRef.current = tracksLaneHeight;
+  // Richer interactions (hover highlight + name) only when the band is expanded
+  // past its minimum — at the compact strip size it's just the lane bitmap.
+  const tracksExpanded = tracksBandHeight > TRACKS_MIN_HEIGHT;
+  const hoveredTrackValid =
+    hoveredTrackIdx != null &&
+    hoveredTrackIdx >= 0 &&
+    hoveredTrackIdx < trackLaneCount;
+  const hoveredTrackName =
+    hoveredTrackValid && labels
+      ? ((labels.tracks[hoveredTrackIdx as number] as { name?: string })?.name ??
+        `track ${hoveredTrackIdx}`)
+      : null;
+  const showTrackHover = tracksExpanded && hoveredTrackValid;
+
   // Render seekbar
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -948,40 +1080,43 @@ export function Seekbar() {
     }
   }, [frameIdx, scrubFrame, totalFrames, headerData, labels, palette, hoverFrame, video, frameRange, markedFrame]);
 
-  // Render the dedicated per-track occupancy strip below the seekbar. Each track
-  // gets its own full-height lane in its palette color at FULL alpha, so which
-  // frames a track covers is legible — versus the old ≤4px, 60%-alpha lanes
-  // crammed onto the main bar under the marks/playhead/hover. Recomputes only on
-  // data/palette/resize (not per frame), so it's cheap.
+  // Render the dedicated per-track occupancy band. Each track gets its own lane
+  // in its palette color at FULL alpha, so coverage is legible — versus the old
+  // ≤4px, 60%-alpha lanes crammed onto the bar. Recomputes only on
+  // data/palette/height/resize — NEVER per frame — and the height dep is the
+  // DEFERRED value, so a fast resize drag doesn't re-rasterize the (tracks ×
+  // frames) lane set every tick.
   useEffect(() => {
     const canvas = tracksCanvasRef.current;
-    if (!canvas || !headerData) return;
-    const rect = canvas.getBoundingClientRect();
-    if (rect.width === 0) return;
+    const container = tracksContainerRef.current;
+    if (!canvas || !container || !headerData) return;
+    // clientWidth excludes a vertical scrollbar's width, so lanes fill the
+    // scrollable content area exactly.
+    const w = container.clientWidth;
+    const h = tracksCanvasHeight; // FULL height of all lanes (scrolls in the viewport)
+    if (w === 0 || h === 0) return;
     const dpr = window.devicePixelRatio;
-    canvas.width = rect.width * dpr;
-    canvas.height = rect.height * dpr;
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     ctx.scale(dpr, dpr);
-    const w = rect.width;
-    const h = rect.height;
     ctx.fillStyle = "#141418";
     ctx.fillRect(0, 0, w, h);
     if (totalFrames === 0) return;
 
     const frameToX = (f: number) => (f / (totalFrames - 1)) * w;
     const rectW = Math.max(1, w / totalFrames);
-    const laneCount = Math.max(headerData.byTrack.length, 1);
-    const laneH = h / laneCount;
-    // Leave a 1px gutter between lanes when there's room to read them apart.
-    const barH = Math.max(1, laneH >= 3 ? laneH - 1 : laneH);
+    // Lane fills its slot minus a gap; the gap shrinks for thin lanes so the
+    // occupancy stays visible (never a 0-height bar).
+    const gap = Math.min(TRACKS_LANE_GAP_PX, tracksLaneHeight * 0.25);
+    const barH = Math.max(1, tracksLaneHeight - gap);
     headerData.byTrack.forEach((frameIdxs, trackIdx) => {
       ctx.fillStyle = rgbToCSS(getPaletteColor(palette, trackIdx), 1);
-      const y = trackIdx * laneH;
+      const y = TRACKS_TOP_PAD_PX + trackIdx * tracksLaneHeight;
       for (const f of frameIdxs) ctx.fillRect(frameToX(f), y, rectW, barH);
     });
-  }, [headerData, totalFrames, palette, resizeTick]);
+  }, [headerData, totalFrames, palette, tracksLaneHeight, tracksCanvasHeight, resizeTick]);
 
   // Playback animation loop
   useEffect(() => {
@@ -1130,6 +1265,86 @@ export function Seekbar() {
         </div>
       </div>
 
+      {/* Per-track occupancy band — its OWN resizable row (like the header),
+          so it can grow tall for many-track projects without overflowing the
+          fixed-height seekbar row. Auto-heights to the track count; drag the top
+          edge to resize, double-click the handle to auto-fit. Only when tracks
+          have occupancy; display-only (seek/hover stay on the bar). */}
+      {hasTrackOccupancy && (
+        <div
+          className="relative grid grid-cols-subgrid col-span-full items-stretch bg-card border-t border-border px-2 gap-2"
+          style={{ height: tracksBandHeight }}
+        >
+          <div
+            className="group absolute inset-x-0 top-0 z-10 flex h-3 -translate-y-1/2 cursor-ns-resize items-center justify-center"
+            onPointerDown={handleTracksResizePointerDown}
+            onPointerMove={handleTracksResizePointerMove}
+            onPointerUp={handleTracksResizePointerUp}
+            onPointerCancel={handleTracksResizePointerUp}
+            onDoubleClick={handleTracksResizeReset}
+            title="Drag to resize the tracks band · double-click to auto-fit"
+            role="separator"
+            aria-orientation="horizontal"
+            aria-label="Resize tracks band"
+          >
+            <div className="h-1.5 w-full bg-border transition-colors group-hover:bg-primary/50 group-active:bg-primary" />
+          </div>
+          <div
+            ref={tracksContainerRef}
+            className="relative overflow-y-auto overflow-x-hidden min-w-0 h-full rounded-sm"
+            onPointerMove={tracksExpanded ? handleTracksHoverMove : undefined}
+            onPointerLeave={handleTracksHoverLeave}
+            onScroll={handleTracksScroll}
+          >
+            {/* Canvas is the FULL height of every lane; the container above is a
+                shorter viewport, so it scrolls when the lanes overflow. */}
+            <canvas
+              ref={tracksCanvasRef}
+              className="block w-full"
+              style={{ height: tracksCanvasHeight }}
+              aria-hidden="true"
+            />
+            {/* Hover highlight — a single overlay box over the hovered lane (in
+                content coords, so it scrolls with the canvas). NOT a canvas
+                redraw, so hovering can't jank. Slightly taller than the lane to
+                read as a "grow". */}
+            {showTrackHover && (
+              <div
+                className="pointer-events-none absolute inset-x-0 rounded-[1px] bg-white/15 ring-1 ring-white/70"
+                style={{
+                  top:
+                    TRACKS_TOP_PAD_PX +
+                    (hoveredTrackIdx as number) * tracksLaneHeight -
+                    1,
+                  height: tracksLaneHeight + 2,
+                }}
+              />
+            )}
+          </div>
+          {/* Controls-column cell — also the home for the hovered track's name.
+              `controlsOrder` (order-first when the sidebar is on the left) flows
+              it into the narrow `auto` column so the canvas stays in the wide
+              `1fr` column, aligned with the header/seekbar. */}
+          <div className={`relative min-w-0 ${controlsOrder}`}>
+            {showTrackHover && hoveredTrackName && (
+              <div
+                className="pointer-events-none absolute right-0 z-10 max-w-full -translate-y-1/2 truncate rounded bg-popover/95 px-1.5 py-0.5 text-[10px] leading-none text-popover-foreground ring-1 ring-primary/60 shadow-sm"
+                style={{
+                  top:
+                    TRACKS_TOP_PAD_PX +
+                    (hoveredTrackIdx as number) * tracksLaneHeight -
+                    tracksScrollTop +
+                    tracksLaneHeight / 2,
+                }}
+                title={hoveredTrackName}
+              >
+                {hoveredTrackName}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       <div className="grid grid-cols-subgrid col-span-full items-center h-10 bg-card border-t border-border px-2 gap-2">
         {/* Seekbar canvas (relative wrapper hosts the floating hover tooltip) */}
         <div className="relative min-w-0">
@@ -1147,17 +1362,6 @@ export function Seekbar() {
               style={{ display: "block" }}
             />
           </div>
-          {/* Dedicated per-track occupancy strip: full-alpha lanes in each
-              track's color, one row per track, so coverage is legible instead of
-              washed-out lanes crammed onto the bar above. Only when tracks have
-              occupancy; display-only (seek/hover stay on the bar). */}
-          {headerData && headerData.byTrack.some((f) => f.length > 0) && (
-            <canvas
-              ref={tracksCanvasRef}
-              className="mt-0.5 block h-3 w-full rounded-sm"
-              aria-hidden="true"
-            />
-          )}
           {/* Hover-preview tooltip — floats above the bar near the cursor
               (positioned by the layout effect above), suppressed while
               scrubbing/selecting (the solid playhead is there). */}

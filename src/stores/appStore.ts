@@ -251,6 +251,12 @@ export interface AppState {
    * on its top edge. Persisted; clamped to [MIN, MAX] (see seekbarHeaderHeight).
    */
   seekbarHeaderHeight: number;
+  /**
+   * Height (px) of the per-track occupancy band below the header, user-resizable
+   * via its top-edge drag handle. Persisted. `0` means "auto" — size to the track
+   * count (see autoTracksHeight); a manual drag stores an explicit clamped height.
+   */
+  seekbarTracksHeight: number;
   /** Which frames stepping/playback/seekbar are confined to (#137). */
   navigationDomain: NavigationDomain;
   /**
@@ -660,6 +666,7 @@ export const PERSISTED_KEYS: (keyof AppState)[] = [
   "seekbarHeaderGraph",
   "seekbarHeaderReduction",
   "seekbarHeaderHeight",
+  "seekbarTracksHeight",
   "navigationDomain",
   "scrubProxyEnabled",
   "qcDisplayMode",
@@ -771,6 +778,7 @@ export const useAppStore = create<AppState>()(
       seekbarHeaderGraph: "instance-count" as StatisticGraphType,
       seekbarHeaderReduction: "sum" as Reduction,
       seekbarHeaderHeight: SEEKBAR_HEADER_DEFAULT_HEIGHT,
+      seekbarTracksHeight: 0, // 0 = auto-size to track count
       navigationDomain: "all" as NavigationDomain,
       scrubProxyEnabled: false,
 
