@@ -124,16 +124,42 @@ export function predictionScoreFrames(
   lower: number,
   upper: number,
 ): number[] {
+  const frames = [...labels.find({ video })];
   const out: number[] = [];
-  for (const lf of labels.find({ video })) {
+  predictionScoreChunk(frames, 0, frames.length, scoreLimit, lower, upper, out);
+  out.sort((a, b) => a - b);
+  return out;
+}
+
+/** A labeled frame as far as the prediction-score scan cares about it. */
+type ScannableFrame = { frameIdx: number; instances: unknown[] };
+
+/**
+ * Scan `frames[from, to)` and append the qualifying frame indices to `out`
+ * (unsorted — the caller sorts once at the end).
+ *
+ * Shared by the sync {@link predictionScoreFrames} and the chunked async
+ * {@link runSuggestionGeneration}, so both apply IDENTICAL qualification
+ * rules; the only difference is how the range is sliced.
+ */
+function predictionScoreChunk(
+  frames: readonly ScannableFrame[],
+  from: number,
+  to: number,
+  scoreLimit: number,
+  lower: number,
+  upper: number,
+  out: number[],
+): void {
+  for (let i = from; i < to; i++) {
+    const lf = frames[i];
+    if (!lf) continue;
     let nQualified = 0;
     for (const inst of lf.instances) {
       if (isScoredPredicted(inst) && inst.score <= scoreLimit) nQualified++;
     }
     if (nQualified >= lower && nQualified <= upper) out.push(lf.frameIdx);
   }
-  out.sort((a, b) => a - b);
-  return out;
 }
 
 /**
@@ -194,8 +220,31 @@ export function maxDisplacementFrames(
   const arr = labels.numpy({ video });
   if (arr.length < 2) return [];
   const out: number[] = [];
+  maxDisplacementChunk(arr, 1, arr.length, displacementThreshold, out);
+  out.sort((a, b) => a - b);
+  return out;
+}
+
+/** The dense `(frames, tracks, nodes, [x, y])` array `labels.numpy` returns. */
+type DenseFrames = ReturnType<Labels["numpy"]>;
+
+/**
+ * Scan the consecutive frame pairs `f in [from, to)` of a dense `labels.numpy`
+ * array and append each qualifying LATER frame index to `out` (unsorted).
+ *
+ * Shared by the sync {@link maxDisplacementFrames} and the chunked async
+ * {@link runSuggestionGeneration} so both apply the same threshold rule.
+ * `from` must be >= 1 (frame 0 has no predecessor).
+ */
+function maxDisplacementChunk(
+  arr: DenseFrames,
+  from: number,
+  to: number,
+  displacementThreshold: number,
+  out: number[],
+): void {
   const nTracks = arr[0]?.length ?? 0;
-  for (let f = 1; f < arr.length; f++) {
+  for (let f = Math.max(1, from); f < to; f++) {
     let qualifies = false;
     for (let t = 0; t < nTracks; t++) {
       const cur = arr[f]?.[t];
@@ -228,8 +277,6 @@ export function maxDisplacementFrames(
     }
     if (qualifies) out.push(f);
   }
-  out.sort((a, b) => a - b);
-  return out;
 }
 
 /**
@@ -347,24 +394,33 @@ export function applyFrameRangePostFilter(
 }
 
 /**
- * Dispatch a generation method over the target `params.videos` and return a
- * deduped `SuggestionFrame[]`.
- *
- * - frame_chunk / stride / random are EXEMPT from the global frame-range
- *   post-filter (frame_chunk has its own bounds; sampling uses the range as a
- *   candidate window via `candidateRange`).
- * - velocity / prediction_score / max_displacement get the global
- *   frame-range post-filter applied.
- *
- * Frames are deduped per (video, frameIdx).
+ * `params` with every default filled in, plus the derived candidate range.
+ * Resolved ONCE per run so the sync dispatcher and the async orchestrator
+ * cannot drift on defaults.
  */
-export function generateSuggestionFrames(
-  labels: Labels,
-  params: GenerateParams,
-): SuggestionFrame[] {
+interface ResolvedParams {
+  method: GenerationMethod;
+  perVideo: number;
+  sampleRng: () => number;
+  frameFrom: number;
+  frameTo: number;
+  scoreLimit: number;
+  instanceLimitLower: number;
+  instanceLimitUpper: number;
+  nodeIdx: number;
+  threshold: number;
+  displacementThreshold: number;
+  frameRange?: FrameRange;
+  /**
+   * Candidate window for stride/random: when a frame range is enabled it acts
+   * as a SAMPLING WINDOW, not a post-filter.
+   */
+  candidateRange: CandidateRange | null;
+}
+
+function resolveParams(params: GenerateParams): ResolvedParams {
   const {
     method,
-    videos,
     perVideo = 20,
     sampleRng = Math.random,
     frameFrom = 1,
@@ -377,84 +433,275 @@ export function generateSuggestionFrames(
     displacementThreshold = 10,
     frameRange,
   } = params;
+  return {
+    method,
+    perVideo,
+    sampleRng,
+    frameFrom,
+    frameTo,
+    scoreLimit,
+    instanceLimitLower,
+    instanceLimitUpper,
+    nodeIdx,
+    threshold,
+    displacementThreshold,
+    frameRange,
+    candidateRange: frameRange?.enabled
+      ? { frameFrom: frameRange.frameFrom, frameTo: frameRange.frameTo }
+      : null,
+  };
+}
 
+/**
+ * Collects `SuggestionFrame`s, deduping per (video, frameIdx).
+ *
+ * Keyed on video object IDENTITY so distinct videos that aren't (yet) in
+ * `labels.videos` don't collide on a shared index of -1.
+ */
+function createCollector() {
   const out: SuggestionFrame[] = [];
-  // Dedupe per (video, frameIdx). Key on object identity so distinct videos
-  // that aren't (yet) in labels.videos don't collide on a shared index of -1.
   const seen = new Map<Video, Set<number>>();
-  const push = (video: Video, frameIdx: number) => {
-    let frames = seen.get(video);
-    if (!frames) {
-      frames = new Set<number>();
-      seen.set(video, frames);
-    }
-    if (frames.has(frameIdx)) return;
-    frames.add(frameIdx);
-    out.push({ video, frameIdx } as SuggestionFrame);
+  return {
+    out,
+    push(video: Video, frameIdx: number) {
+      let frames = seen.get(video);
+      if (!frames) {
+        frames = new Set<number>();
+        seen.set(video, frames);
+      }
+      if (frames.has(frameIdx)) return;
+      frames.add(frameIdx);
+      out.push({ video, frameIdx } as SuggestionFrame);
+    },
+  };
+}
+
+/** The one video's frame indices for `p.method`, post-filter already applied. */
+function framesForVideo(
+  labels: Labels,
+  video: Video,
+  p: ResolvedParams,
+): number[] {
+  switch (p.method) {
+    case "frame_chunk":
+      // exempt from the global post-filter (it has its own bounds)
+      return frameChunkFrames(video, p.frameFrom, p.frameTo);
+    case "stride":
+    case "random":
+      // exempt from the global post-filter (the range is a candidate window)
+      return sampleFrames(
+        labels,
+        video,
+        p.perVideo,
+        p.method,
+        p.candidateRange,
+        p.sampleRng,
+      );
+    case "prediction_score":
+      return applyFrameRangePostFilter(
+        predictionScoreFrames(
+          labels,
+          video,
+          p.scoreLimit,
+          p.instanceLimitLower,
+          p.instanceLimitUpper,
+        ),
+        p.frameRange,
+      );
+    case "velocity":
+      return applyFrameRangePostFilter(
+        velocityFrames(labels, video, p.nodeIdx, p.threshold),
+        p.frameRange,
+      );
+    case "max_displacement":
+      return applyFrameRangePostFilter(
+        maxDisplacementFrames(labels, video, p.displacementThreshold),
+        p.frameRange,
+      );
+    default:
+      return [];
+  }
+}
+
+/**
+ * Dispatch a generation method over the target `params.videos` and return a
+ * deduped `SuggestionFrame[]`.
+ *
+ * - frame_chunk / stride / random are EXEMPT from the global frame-range
+ *   post-filter (frame_chunk has its own bounds; sampling uses the range as a
+ *   candidate window via `candidateRange`).
+ * - velocity / prediction_score / max_displacement get the global
+ *   frame-range post-filter applied.
+ *
+ * Frames are deduped per (video, frameIdx).
+ *
+ * This is the SYNCHRONOUS form — it blocks until every video is scanned. The
+ * panel drives {@link runSuggestionGeneration} instead so it can show progress
+ * and offer Cancel; this one stays for callers (and tests) that just want the
+ * answer.
+ */
+export function generateSuggestionFrames(
+  labels: Labels,
+  params: GenerateParams,
+): SuggestionFrame[] {
+  const p = resolveParams(params);
+  const collector = createCollector();
+  for (const video of params.videos) {
+    for (const f of framesForVideo(labels, video, p)) collector.push(video, f);
+  }
+  return collector.out;
+}
+
+/** Overall progress of one {@link runSuggestionGeneration} pass. */
+export interface GenerationProgress {
+  /** 0-based index of the video being scanned. */
+  videoIdx: number;
+  /** Number of target videos (0 when there are none). */
+  videoCount: number;
+  /** Overall completion across all target videos, in [0, 1]. */
+  fraction: number;
+}
+
+export interface RunGenerationOptions {
+  /** Called on every scan tick — at least once per video, more when chunked. */
+  onProgress?: (progress: GenerationProgress) => void;
+  /** Aborts between videos and between chunks; rejects with an `AbortError`. */
+  signal?: AbortSignal;
+  /** Yield to the event loop (injected in tests so they don't wait on timers). */
+  yieldToEventLoop?: () => Promise<void>;
+  /**
+   * Max ms of uninterrupted scanning before yielding. Bounds only the loops
+   * this module owns (prediction_score / max_displacement); the other methods
+   * are single opaque calls and run to completion.
+   */
+  chunkBudgetMs?: number;
+}
+
+/** A macrotask yield — long enough for the browser to actually repaint. */
+const macrotaskYield = () => new Promise<void>((r) => setTimeout(r, 0));
+
+const now = () =>
+  typeof performance !== "undefined" ? performance.now() : Date.now();
+
+/** How many items to scan between clock reads (the clock isn't free). */
+const CLOCK_CHECK_INTERVAL = 512;
+
+/**
+ * Asynchronous form of {@link generateSuggestionFrames}: identical results,
+ * but it reports progress, yields to the event loop, and honors an
+ * `AbortSignal`.
+ *
+ * The scans themselves are still main-thread work (they read the in-memory
+ * data model, so a Worker would mean copying the whole project). Yielding
+ * between videos — and, for the two frame-by-frame scans, between time-bounded
+ * chunks — is what keeps the progress bar repainting and Cancel clickable on a
+ * large project.
+ *
+ * @throws `AbortError` (DOMException) when `opts.signal` aborts.
+ */
+export async function runSuggestionGeneration(
+  labels: Labels,
+  params: GenerateParams,
+  opts: RunGenerationOptions = {},
+): Promise<SuggestionFrame[]> {
+  const {
+    onProgress,
+    signal,
+    yieldToEventLoop = macrotaskYield,
+    chunkBudgetMs = 24,
+  } = opts;
+
+  const p = resolveParams(params);
+  const videos = params.videos;
+  const videoCount = videos.length;
+  const collector = createCollector();
+
+  const throwIfAborted = () => {
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+  };
+  /** Report overall progress; `sub` is the CURRENT video's completion in [0, 1]. */
+  const report = (videoIdx: number, sub: number) => {
+    onProgress?.({
+      videoIdx,
+      videoCount,
+      fraction: videoCount === 0 ? 1 : (videoIdx + sub) / videoCount,
+    });
+  };
+  /** Yield + abort-check between chunks. */
+  const breathe = async () => {
+    throwIfAborted();
+    await yieldToEventLoop();
+    throwIfAborted();
   };
 
-  // Candidate range for stride/random: the frame range acts as a sampling
-  // window (NOT a post-filter) when enabled.
-  const candidateRange: CandidateRange | null =
-    frameRange?.enabled
-      ? { frameFrom: frameRange.frameFrom, frameTo: frameRange.frameTo }
-      : null;
-
-  for (const video of videos) {
-    let frameIndices: number[];
-    switch (method) {
-      case "frame_chunk":
-        frameIndices = frameChunkFrames(video, frameFrom, frameTo);
-        break; // exempt from global post-filter
-      case "stride":
-        frameIndices = sampleFrames(
-          labels,
-          video,
-          perVideo,
-          "stride",
-          candidateRange,
-          sampleRng,
-        );
-        break; // exempt from global post-filter
-      case "random":
-        frameIndices = sampleFrames(
-          labels,
-          video,
-          perVideo,
-          "random",
-          candidateRange,
-          sampleRng,
-        );
-        break; // exempt from global post-filter
-      case "prediction_score":
-        frameIndices = applyFrameRangePostFilter(
-          predictionScoreFrames(
-            labels,
-            video,
-            scoreLimit,
-            instanceLimitLower,
-            instanceLimitUpper,
-          ),
-          frameRange,
-        );
-        break;
-      case "velocity":
-        frameIndices = applyFrameRangePostFilter(
-          velocityFrames(labels, video, nodeIdx, threshold),
-          frameRange,
-        );
-        break;
-      case "max_displacement":
-        frameIndices = applyFrameRangePostFilter(
-          maxDisplacementFrames(labels, video, displacementThreshold),
-          frameRange,
-        );
-        break;
-      default:
-        frameIndices = [];
+  /**
+   * Scan `[start, length)` in time-bounded slices, reporting sub-progress and
+   * yielding between them. `step(from, to)` does the actual work.
+   */
+  const scanChunked = async (
+    videoIdx: number,
+    start: number,
+    length: number,
+    step: (from: number, to: number) => void,
+  ) => {
+    let i = start;
+    while (i < length) {
+      const t0 = now();
+      while (i < length) {
+        const to = Math.min(length, i + CLOCK_CHECK_INTERVAL);
+        step(i, to);
+        i = to;
+        if (now() - t0 >= chunkBudgetMs) break;
+      }
+      report(videoIdx, i / length);
+      if (i < length) await breathe();
     }
-    for (const f of frameIndices) push(video, f);
+  };
+
+  throwIfAborted();
+  report(0, 0);
+
+  for (let i = 0; i < videoCount; i++) {
+    const video = videos[i];
+    // Yield BEFORE the blocking scan so the bar paints its current value first.
+    await breathe();
+
+    let frames: number[];
+    if (p.method === "prediction_score") {
+      const labeled = [...labels.find({ video })] as ScannableFrame[];
+      const raw: number[] = [];
+      await scanChunked(i, 0, labeled.length, (from, to) =>
+        predictionScoreChunk(
+          labeled,
+          from,
+          to,
+          p.scoreLimit,
+          p.instanceLimitLower,
+          p.instanceLimitUpper,
+          raw,
+        ),
+      );
+      raw.sort((a, b) => a - b);
+      frames = applyFrameRangePostFilter(raw, p.frameRange);
+    } else if (p.method === "max_displacement") {
+      // `labels.numpy` is one opaque bulk call; only the diff loop is chunked.
+      const arr = labels.numpy({ video });
+      const raw: number[] = [];
+      if (arr.length >= 2) {
+        await scanChunked(i, 1, arr.length, (from, to) =>
+          maxDisplacementChunk(arr, from, to, p.displacementThreshold, raw),
+        );
+      }
+      raw.sort((a, b) => a - b);
+      frames = applyFrameRangePostFilter(raw, p.frameRange);
+    } else {
+      // Index math or a single opaque series build — no useful sub-progress.
+      frames = framesForVideo(labels, video, p);
+    }
+
+    for (const f of frames) collector.push(video, f);
+    report(i, 1);
   }
 
-  return out;
+  return collector.out;
 }

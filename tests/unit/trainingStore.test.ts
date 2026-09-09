@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "../bun-test";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import yaml from "js-yaml";
 import { Skeleton, Video, Labels, LabeledFrame, Instance, PredictedInstance } from "@talmolab/sleap-io.js";
@@ -429,6 +429,104 @@ trainer_config: {}
       const result = applyHyperparamsToYaml(input, hp);
       const doc = yaml.load(result) as Record<string, any>;
       expect(doc.data_config.use_same_data_for_val).toBe(true);
+    });
+  });
+
+  describe("applyHyperparamsToYaml - ZMQ is always enabled for GUI training", () => {
+    // sleap-nn's ZMQConfig has NO on/off boolean: controller_port and
+    // publish_port are Optional[int] = None, and a None port means the channel
+    // is never attached. Setting the ports IS enabling ZMQ. A GUI-launched run
+    // without them has no Stop Early and no live loss curve, so this gate
+    // forces them regardless of what the profile (or an imported config)
+    // carries.
+    const PROFILE_DIR = join(import.meta.dir, "../../src/assets/training_profiles");
+
+    /** The `trainer_config.zmq` block of a config, or undefined if it has none. */
+    function zmqOf(yamlText: string): Record<string, unknown> | undefined {
+      const doc = yaml.load(yamlText) as {
+        trainer_config?: { zmq?: Record<string, unknown> };
+      } | null;
+      return doc?.trainer_config?.zmq;
+    }
+
+    /** Run a raw config through the gate with stock hyperparams. */
+    const gate = (input: string) =>
+      applyHyperparamsToYaml(input, { ...defaultHyperparams });
+
+    it("materializes a zmq block when the config has none at all", () => {
+      // The dangerous case: `buildTrainingArgs` always appends
+      // `trainer_config.zmq.controller_port=...`, and Hydra refuses an override
+      // for a key missing from a struct config — an imported config with no
+      // `zmq:` key would abort training at parse time, not merely lose
+      // telemetry. The gate must create the block, not just fill it in.
+      expect(zmqOf(gate("trainer_config:\n  max_epochs: 5\n"))).toEqual({
+        controller_port: 9000,
+        publish_port: 9001,
+        controller_polling_timeout: 10,
+      });
+    });
+
+    it("replaces null ports left by an imported config", () => {
+      const input = [
+        "trainer_config:",
+        "  zmq:",
+        "    controller_port:",
+        "    publish_port:",
+        "    controller_polling_timeout: 10",
+        "",
+      ].join("\n");
+      const zmq = zmqOf(gate(input));
+      expect(zmq?.controller_port).toBe(9000);
+      expect(zmq?.publish_port).toBe(9001);
+    });
+
+    it("preserves a profile's own controller_polling_timeout", () => {
+      const input = [
+        "trainer_config:",
+        "  zmq:",
+        "    controller_port: 1",
+        "    publish_port: 2",
+        "    controller_polling_timeout: 250",
+        "",
+      ].join("\n");
+      const zmq = zmqOf(gate(input));
+      // Ports are forced to the app's; the timeout is the profile's business.
+      expect(zmq?.controller_port).toBe(9000);
+      expect(zmq?.publish_port).toBe(9001);
+      expect(zmq?.controller_polling_timeout).toBe(250);
+    });
+
+    it("uses the ports buildTrainingArgs overrides with (no YAML/CLI drift)", async () => {
+      const { buildTrainingArgs } = await import("@/platform/trainingArgs");
+      const args = buildTrainingArgs({
+        configFileName: "c.yaml",
+        configDir: "/tmp",
+        labelsPath: "/tmp/l.slp",
+        runName: "r",
+        ckptDir: "/tmp/m",
+      });
+      const zmq = zmqOf(gate("trainer_config: {}\n"));
+      expect(args).toContain(
+        `trainer_config.zmq.controller_port=${zmq?.controller_port}`,
+      );
+      expect(args).toContain(
+        `trainer_config.zmq.publish_port=${zmq?.publish_port}`,
+      );
+    });
+
+    it("every shipped baseline profile enables both ZMQ channels", () => {
+      // Guards the asset inconsistency this test was written for: the two
+      // multi_class profiles shipped with NULL ports while the other eight
+      // hardcoded 9000/9001, so running them outside the app got no progress
+      // and no stop channel.
+      const profiles = readdirSync(PROFILE_DIR).filter((f) => f.endsWith(".yaml"));
+      expect(profiles.length).toBeGreaterThan(0);
+      for (const name of profiles) {
+        const zmq = zmqOf(readFileSync(join(PROFILE_DIR, name), "utf8"));
+        expect(zmq, `${name} has no trainer_config.zmq block`).toBeDefined();
+        expect(zmq?.controller_port, `${name} controller_port`).toBe(9000);
+        expect(zmq?.publish_port, `${name} publish_port`).toBe(9001);
+      }
     });
   });
 

@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import yaml from "js-yaml";
 import { cancelCommand } from "@/platform/backend";
+import { ZMQ_CONTROLLER_PORT, ZMQ_PUBLISH_PORT } from "@/platform/trainingArgs";
 import { isTauri } from "@/platform";
 import { computeRuntimeMetrics } from "@/lib/trainingMetrics";
 import { lastErrorLine } from "@/lib/processLog";
@@ -835,6 +836,34 @@ export function applyHyperparamsToYaml(
   int.brightness_min = hp.brightnessMin;
   int.brightness_max = hp.brightnessMax;
   int.brightness_p = hp.brightnessEnabled ? 1.0 : 0;
+
+  // ZMQ — always on for GUI-launched training, unconditionally.
+  //
+  // sleap-nn has no boolean for this: `ZMQConfig` is just two Optional ports
+  // (+ a polling timeout), each defaulting to None, and a None port means that
+  // channel is never attached. So writing the ports IS enabling ZMQ — without
+  // them the run has no Stop Early channel and no live loss telemetry, which
+  // from the GUI is always a bug, never a choice.
+  //
+  // Forced here rather than trusted from the profile because this function is
+  // the last gate before sleep-nn runs and it also handles USER-IMPORTED
+  // configs (TrainingPanel's "load config" → parseYamlConfig), which may carry
+  // null ports, or no `zmq:` key at all. The latter is worse than losing
+  // telemetry: `buildTrainingArgs` always appends
+  // `trainer_config.zmq.controller_port=...` overrides, and Hydra rejects an
+  // override for a key missing from a struct config, so an imported config
+  // without a `zmq:` block would abort training at parse time. Materializing
+  // the block here means the override always has something to land on.
+  //
+  // Ports come from platform/trainingArgs so the YAML and the CLI overrides
+  // (and the Tauri relays that bind them) cannot drift apart.
+  const zmq = (trainer.zmq ?? {}) as Record<string, unknown>;
+  zmq.controller_port = ZMQ_CONTROLLER_PORT;
+  zmq.publish_port = ZMQ_PUBLISH_PORT;
+  // Preserve a profile's own polling timeout; supply sleap-nn's default when
+  // the key is absent or was left null.
+  if (zmq.controller_polling_timeout == null) zmq.controller_polling_timeout = 10;
+  trainer.zmq = zmq;
 
   return yaml.dump(doc, { lineWidth: -1 });
 }

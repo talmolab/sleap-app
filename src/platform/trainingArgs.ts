@@ -30,6 +30,24 @@ export function hydraQuote(value: string): string {
   return `'${value.replace(/'/g, "\\'")}'`;
 }
 
+/**
+ * ZMQ ports the app uses for GUI-launched training.
+ *
+ * sleap-nn has NO boolean to turn ZMQ on: its `ZMQConfig` is
+ * `{controller_port: Optional[int] = None, controller_polling_timeout: int,
+ * publish_port: Optional[int] = None}`, and a `None` port means that channel
+ * is simply never attached. The PORT IS THE SWITCH — setting these is what
+ * "enable ZMQ" means, and training launched without them has no stop channel
+ * and no live loss telemetry.
+ *
+ * They must match the ports the Tauri relays BIND (see `start_zmq_relay` /
+ * `start_progress_relay` in src-tauri/src/environment.rs), and they are also
+ * written into the config YAML by `applyHyperparamsToYaml` so the two can't
+ * drift. Same defaults as the PyQt GUI.
+ */
+export const ZMQ_CONTROLLER_PORT = 9000;
+export const ZMQ_PUBLISH_PORT = 9001;
+
 export interface BuildTrainingArgsOptions {
   /** Config filename (relative to `configDir`), passed via `--config-name`. */
   configFileName: string;
@@ -44,9 +62,9 @@ export interface BuildTrainingArgsOptions {
   runName: string;
   /** Checkpoint output directory (the run folder is `ckptDir/runName`). */
   ckptDir: string;
-  /** ZMQ controller port (stop commands). Defaults to 9000. */
+  /** ZMQ controller port (stop commands). Defaults to {@link ZMQ_CONTROLLER_PORT}. */
   controllerPort?: number;
-  /** ZMQ publish port (progress). Defaults to 9001. */
+  /** ZMQ publish port (progress). Defaults to {@link ZMQ_PUBLISH_PORT}. */
   publishPort?: number;
 }
 
@@ -61,8 +79,8 @@ export function buildTrainingArgs({
   labelsPath,
   runName,
   ckptDir,
-  controllerPort = 9000,
-  publishPort = 9001,
+  controllerPort = ZMQ_CONTROLLER_PORT,
+  publishPort = ZMQ_PUBLISH_PORT,
 }: BuildTrainingArgsOptions): string[] {
   return [
     "train",

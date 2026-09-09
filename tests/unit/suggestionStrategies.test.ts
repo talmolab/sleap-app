@@ -24,6 +24,7 @@ import {
 } from "@talmolab/sleap-io.js";
 import {
   generateSuggestionFrames,
+  runSuggestionGeneration,
   frameChunkFrames,
   predictionScoreFrames,
   velocityFrames,
@@ -628,5 +629,185 @@ describe("generateSuggestionFrames", () => {
       perVideo: 0,
     });
     expect(out).toEqual([]);
+  });
+});
+
+/**
+ * The async orchestrator behind the panel's progress bar. The contract that
+ * matters is that it is a DROP-IN for the sync dispatcher — same frames, same
+ * order — and that it reports progress and honors an AbortSignal on the way.
+ *
+ * `yieldToEventLoop` is injected as an immediate resolve so these never wait on
+ * real timers.
+ */
+describe("runSuggestionGeneration (async, progress + abort)", () => {
+  const immediateYield = () => Promise.resolve();
+
+  /** Labels with predicted frames whose qualifying counts vary per frame. */
+  function predictionScoreFixture(nFrames: number) {
+    const skel = makeSkeleton();
+    const video = makeVideo(nFrames, "v1.mp4");
+    const frames: LabeledFrame[] = [];
+    for (let f = 0; f < nFrames; f++) {
+      const lf = new LabeledFrame({ video, frameIdx: f });
+      // Every 3rd frame gets ONE low-score prediction (qualifies for [1, 2]);
+      // the rest get three (3 > upper=2 -> excluded).
+      const n = f % 3 === 0 ? 1 : 3;
+      for (let i = 0; i < n; i++) lf.instances.push(predictedInstance(skel, 1));
+      frames.push(lf);
+    }
+    return { labels: makeLabels(video, skel, frames), video };
+  }
+
+  it("returns exactly what the sync dispatcher returns, for every method", async () => {
+    // > CLOCK_CHECK_INTERVAL (512) frames so the chunked paths really do split.
+    const { labels, video } = predictionScoreFixture(600);
+    const skel = labels.skeletons[0];
+    const track = new Track("t0");
+    // A second video with tracked user instances so velocity/max_displacement
+    // have a real series to work on.
+    const v2 = makeVideo(30, "v2.mp4");
+    labels.videos.push(v2);
+    for (let f = 0; f < 20; f++) {
+      const lf = new LabeledFrame({ video: v2, frameIdx: f });
+      lf.instances.push(
+        userInstance(
+          skel,
+          [
+            [f * 3, f * 3],
+            [f * 3 + 1, f * 3 + 1],
+          ],
+          track,
+        ),
+      );
+      labels.labeledFrames.push(lf);
+    }
+    labels.tracks.push(track);
+
+    const methods = [
+      "stride",
+      "random",
+      "frame_chunk",
+      "prediction_score",
+      "velocity",
+      "max_displacement",
+    ] as const;
+
+    for (const method of methods) {
+      // A fixed-sequence rng so the "random" comparison is deterministic across
+      // the two calls.
+      const seededRng = () => {
+        let i = 0;
+        const seq = [0.1, 0.9, 0.3, 0.7, 0.5, 0.2, 0.8, 0.4, 0.6, 0.05];
+        return () => seq[i++ % seq.length];
+      };
+      const params = {
+        method,
+        videos: [video, v2],
+        perVideo: 5,
+        frameFrom: 2,
+        frameTo: 9,
+        displacementThreshold: 1,
+      };
+
+      const sync = generateSuggestionFrames(labels, {
+        ...params,
+        sampleRng: seededRng(),
+      });
+      const async_ = await runSuggestionGeneration(
+        labels,
+        { ...params, sampleRng: seededRng() },
+        { yieldToEventLoop: immediateYield, chunkBudgetMs: 0 },
+      );
+      expect(
+        async_.map((s) => [s.video === video ? 0 : 1, s.frameIdx]),
+        `method ${method}`,
+      ).toEqual(sync.map((s) => [s.video === video ? 0 : 1, s.frameIdx]));
+    }
+  });
+
+  it("reports monotonically increasing progress that ends at 1", async () => {
+    const { labels, video } = predictionScoreFixture(1200);
+    const v2 = makeVideo(1200, "v2.mp4");
+    labels.videos.push(v2);
+
+    const ticks: number[] = [];
+    await runSuggestionGeneration(
+      labels,
+      {
+        method: "prediction_score",
+        videos: [video, v2],
+      },
+      {
+        yieldToEventLoop: immediateYield,
+        chunkBudgetMs: 0, // yield every chunk -> several sub-video ticks
+        onProgress: (p) => {
+          expect(p.videoCount).toBe(2);
+          ticks.push(p.fraction);
+        },
+      },
+    );
+
+    // Sub-video granularity: at least one tick lands strictly inside the first
+    // video's [0, 0.5) share, i.e. the scan really is chunked, not per-video.
+    expect(ticks.some((f) => f > 0 && f < 0.5)).toBe(true);
+    expect(ticks[0]).toBe(0);
+    expect(ticks[ticks.length - 1]).toBe(1);
+    for (let i = 1; i < ticks.length; i++) {
+      expect(ticks[i]).toBeGreaterThanOrEqual(ticks[i - 1]);
+    }
+    for (const f of ticks) {
+      expect(f).toBeGreaterThanOrEqual(0);
+      expect(f).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it("rejects with an AbortError once the signal aborts mid-run", async () => {
+    const { labels, video } = predictionScoreFixture(30);
+    const v2 = makeVideo(30, "v2.mp4");
+    labels.videos.push(v2);
+
+    const controller = new AbortController();
+    let ticks = 0;
+    const run = runSuggestionGeneration(
+      labels,
+      { method: "prediction_score", videos: [video, v2] },
+      {
+        signal: controller.signal,
+        yieldToEventLoop: immediateYield,
+        chunkBudgetMs: 0,
+        // Abort after the run is genuinely under way (not before the first tick).
+        onProgress: () => {
+          if (++ticks === 2) controller.abort();
+        },
+      },
+    );
+    await expect(run).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("aborts before doing any work when the signal is already aborted", async () => {
+    const { labels, video } = predictionScoreFixture(5);
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      runSuggestionGeneration(
+        labels,
+        { method: "stride", videos: [video] },
+        { signal: controller.signal, yieldToEventLoop: immediateYield },
+      ),
+    ).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("reports a completed pass for an empty video list", async () => {
+    const { labels } = predictionScoreFixture(5);
+    const ticks: number[] = [];
+    const out = await runSuggestionGeneration(
+      labels,
+      { method: "stride", videos: [] },
+      { yieldToEventLoop: immediateYield, onProgress: (p) => ticks.push(p.fraction) },
+    );
+    expect(out).toEqual([]);
+    // videoCount 0 must not produce NaN/Infinity in the bar's width.
+    expect(ticks).toEqual([1]);
   });
 });

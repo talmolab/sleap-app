@@ -23,7 +23,13 @@
  */
 
 import { describe, it, expect, beforeEach, beforeAll, vi } from "../bun-test";
-import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import {
+  render,
+  screen,
+  fireEvent,
+  cleanup,
+  waitFor,
+} from "@testing-library/react";
 import { useAppStore } from "@/stores/appStore";
 import {
   Labels,
@@ -228,9 +234,14 @@ describe("SuggestionsPanel generation methods (#162)", () => {
     fireEvent.click(screen.getByRole("button", { name: /generate suggestions/i }));
 
     // Default Add: existing [99] kept, then 1-based 3..6 -> 0-based 2,3,4,5 appended.
-    const result = useAppStore.getState().labels?.suggestions ?? [];
-    expect(result.map((s) => s.frameIdx)).toEqual([99, 2, 3, 4, 5]);
-    for (const s of result) expect(s.video).toBe(video);
+    // Generation is async now (it yields to keep the progress bar live), so wait.
+    await waitFor(() =>
+      expect(
+        (useAppStore.getState().labels?.suggestions ?? []).map((s) => s.frameIdx),
+      ).toEqual([99, 2, 3, 4, 5]),
+    );
+    for (const s of useAppStore.getState().labels?.suggestions ?? [])
+      expect(s.video).toBe(video);
   });
 
   it("frame_chunk + Generate in Replace mode swaps the list wholesale (#327)", async () => {
@@ -256,8 +267,11 @@ describe("SuggestionsPanel generation methods (#162)", () => {
     fireEvent.click(screen.getByRole("button", { name: /^replace$/i }));
     fireEvent.click(screen.getByRole("button", { name: /generate suggestions/i }));
 
-    const result = useAppStore.getState().labels?.suggestions ?? [];
-    expect(result.map((s) => s.frameIdx)).toEqual([2, 3, 4, 5]);
+    await waitFor(() =>
+      expect(
+        (useAppStore.getState().labels?.suggestions ?? []).map((s) => s.frameIdx),
+      ).toEqual([2, 3, 4, 5]),
+    );
   });
 
   it("prediction_score + Generate selects only the qualifying predicted frames", async () => {
@@ -285,8 +299,11 @@ describe("SuggestionsPanel generation methods (#162)", () => {
     fireEvent.click(screen.getByRole("button", { name: /generate suggestions/i }));
 
     // Defaults scoreLimit=3, lower=1, upper=2 -> only frame 0 qualifies.
-    const result = useAppStore.getState().labels?.suggestions ?? [];
-    expect(result.map((s) => s.frameIdx)).toEqual([0]);
+    await waitFor(() =>
+      expect(
+        (useAppStore.getState().labels?.suggestions ?? []).map((s) => s.frameIdx),
+      ).toEqual([0]),
+    );
   });
 
   it("Mean Score column shows the mean instance score (not the min, not the point-mean)", async () => {
@@ -332,10 +349,15 @@ describe("SuggestionsPanel generation methods (#162)", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /generate suggestions/i }));
 
-    const result = useAppStore.getState().labels?.suggestions ?? [];
     // Default perVideo (20) strided over 100 frames, current video (v1) only.
-    expect(result.length).toBe(20);
-    expect(result.every((s) => s.video === v1)).toBe(true);
+    await waitFor(() =>
+      expect((useAppStore.getState().labels?.suggestions ?? []).length).toBe(20),
+    );
+    expect(
+      (useAppStore.getState().labels?.suggestions ?? []).every(
+        (s) => s.video === v1,
+      ),
+    ).toBe(true);
   });
 
   it("Target defaults to All videos and spans every video (#324)", async () => {
@@ -355,9 +377,11 @@ describe("SuggestionsPanel generation methods (#162)", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /generate suggestions/i }));
 
-    const result = useAppStore.getState().labels?.suggestions ?? [];
     // 20 strided frames per video, spanning both videos.
-    expect(result.length).toBe(40);
+    await waitFor(() =>
+      expect((useAppStore.getState().labels?.suggestions ?? []).length).toBe(40),
+    );
+    const result = useAppStore.getState().labels?.suggestions ?? [];
     expect(result.some((s) => s.video === v1)).toBe(true);
     expect(result.some((s) => s.video === v2)).toBe(true);
   });
@@ -427,6 +451,73 @@ describe("SuggestionsPanel generation methods (#162)", () => {
 
     const result = useAppStore.getState().labels?.suggestions ?? [];
     expect(result.map((s) => s.frameIdx)).toEqual([10]);
+  });
+
+  it("shows the progress bar + Cancel while a non-decoding strategy scans", async () => {
+    const skel = makeSkeleton();
+    const video = makeVideo(100);
+    const labels = new Labels({ videos: [video], skeletons: [skel] });
+    labels.suggestions = [];
+    useAppStore.getState().setLabels(labels, "test.slp");
+
+    const { SuggestionsPanel } = await import(
+      "@/components/panels/SuggestionsPanel"
+    );
+    render(<SuggestionsPanel initialMethod="stride" />);
+
+    // Nothing generating -> no bar, and the primary action is Generate.
+    expect(screen.queryByTestId("generation-progress")).not.toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /generate suggestions/i }),
+    );
+
+    // The run yields before its first scan, so the bar (and Cancel in place of
+    // Generate) is on screen as soon as the click handler returns.
+    expect(screen.getByTestId("generation-progress")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^cancel$/i })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /generate suggestions/i }),
+    ).not.toBeInTheDocument();
+
+    // ...and it tears down once the run settles. Wait on the STORE, not the
+    // DOM: the run's final state updates land when waitFor's act wrapper
+    // closes, so a DOM-polling waitFor would spin forever waiting for a
+    // re-render that only happens after it returns.
+    await waitFor(() =>
+      expect(useAppStore.getState().labels?.suggestions.length).toBe(20),
+    );
+    expect(screen.queryByTestId("generation-progress")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /generate suggestions/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("Cancel during a scan leaves the existing suggestions untouched", async () => {
+    const skel = makeSkeleton();
+    const video = makeVideo(100);
+    const labels = new Labels({ videos: [video], skeletons: [skel] });
+    labels.suggestions = [{ video, frameIdx: 42 } as SuggestionFrame];
+    useAppStore.getState().setLabels(labels, "test.slp");
+
+    const { SuggestionsPanel } = await import(
+      "@/components/panels/SuggestionsPanel"
+    );
+    const { toast } = await import("@/lib/notify");
+    render(<SuggestionsPanel initialMethod="stride" />);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /generate suggestions/i }),
+    );
+    // Abort before the run's first yield resolves.
+    fireEvent.click(screen.getByRole("button", { name: /^cancel$/i }));
+
+    await waitFor(() => expect(toast.info).toHaveBeenCalledWith("Generation canceled"));
+    // The pre-existing list survives an aborted run.
+    expect(
+      (useAppStore.getState().labels?.suggestions ?? []).map((s) => s.frameIdx),
+    ).toEqual([42]);
+    expect(screen.queryByTestId("generation-progress")).not.toBeInTheDocument();
   });
 
   it("Generate with an empty Per video box toasts and generates nothing (#327)", async () => {

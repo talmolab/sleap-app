@@ -54,9 +54,9 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { PredictedInstance } from "@talmolab/sleap-io.js";
-import type { SuggestionFrame, Video } from "../../types";
+import type { Labels, SuggestionFrame, Video } from "../../types";
 import {
-  generateSuggestionFrames,
+  runSuggestionGeneration,
   type GenerationMethod,
   type GenerateParams,
 } from "../../lib/suggestionStrategies";
@@ -75,6 +75,32 @@ function basename(path: string | string[]): string {
 
 type SortColumn = "index" | "video" | "frame" | "score";
 type SortDir = "asc" | "desc";
+
+/**
+ * What the generation progress bar renders. Both generation paths normalize
+ * into this shape so there is ONE bar, not one per strategy family.
+ *
+ * `pct` is null for a phase with no measurable total (image_features
+ * clustering, which is a single opaque worker call) — the bar then sits full
+ * and relies on the shimmer to show it's still working.
+ */
+interface GenProgress {
+  pct: number | null;
+  label: string;
+}
+
+/** Normalize an image_features tick into {@link GenProgress}. */
+function decodeProgress(
+  phase: ProgressPhase,
+  done: number,
+  total: number,
+): GenProgress {
+  if (phase === "clustering") return { pct: null, label: "Clustering…" };
+  return {
+    pct: total > 0 ? (done / total) * 100 : 0,
+    label: `Decoding ${done}/${total}`,
+  };
+}
 
 /**
  * Per-frame prediction-score summary shown in the Score column.
@@ -235,13 +261,10 @@ export function SuggestionsPanel({
   const [ifAdvancedOpen, setIfAdvancedOpen] = useState(false);
   // Generate mode: append to the existing list ("add", default) or replace it.
   const [genMode, setGenMode] = useState<"add" | "replace">("add");
-  // image_features async generation state (decode + worker).
+  // Async generation state, shared by BOTH generation paths (the decode+worker
+  // image_features run and the main-thread scans).
   const [isGenerating, setIsGenerating] = useState(false);
-  const [ifProgress, setIfProgress] = useState<{
-    phase: ProgressPhase;
-    done: number;
-    total: number;
-  } | null>(null);
+  const [genProgress, setGenProgress] = useState<GenProgress | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   // Target (all videos vs current) + optional global frame-range restriction.
   // Default to the CURRENT video: least-surprising for a labeling workflow and,
@@ -436,7 +459,7 @@ export function SuggestionsPanel({
     const controller = new AbortController();
     abortRef.current = controller;
     setIsGenerating(true);
-    setIfProgress({ phase: "decoding", done: 0, total: 0 });
+    setGenProgress(decodeProgress("decoding", 0, 0));
     try {
       const params: ImageFeaturesParams = {
         perVideo: ifSampleCount,
@@ -450,7 +473,8 @@ export function SuggestionsPanel({
       };
       const next = await runImageFeatureSuggestions(labels, videos, params, {
         signal: controller.signal,
-        onProgress: (phase, done, total) => setIfProgress({ phase, done, total }),
+        onProgress: (phase, done, total) =>
+          setGenProgress(decodeProgress(phase, done, total)),
       });
       commitGenerated(next);
       setSelectedIdx(null);
@@ -464,9 +488,55 @@ export function SuggestionsPanel({
       }
     } finally {
       setIsGenerating(false);
-      setIfProgress(null);
+      setGenProgress(null);
       abortRef.current = null;
       setRoiDrawActive(false);
+    }
+  };
+
+  /**
+   * Every non-decoding strategy: run through the async orchestrator so these
+   * get the same live progress bar + Cancel as image_features.
+   *
+   * The scan is still main-thread work (it reads the in-memory data model), but
+   * it yields between videos and between time-bounded chunks, so on a big
+   * project the bar actually moves instead of the UI simply freezing until the
+   * toast appears.
+   */
+  const handleGenerateScan = async (
+    activeLabels: Labels,
+    params: GenerateParams,
+  ) => {
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setIsGenerating(true);
+    setGenProgress({ pct: 0, label: "Scanning…" });
+    try {
+      const next = await runSuggestionGeneration(activeLabels, params, {
+        signal: controller.signal,
+        onProgress: ({ videoIdx, videoCount, fraction }) =>
+          setGenProgress({
+            pct: fraction * 100,
+            label:
+              videoCount > 1
+                ? `Scanning video ${Math.min(videoIdx + 1, videoCount)}/${videoCount}`
+                : "Scanning frames…",
+          }),
+      });
+      commitGenerated(next);
+      setSelectedIdx(null);
+      toast.success(`Generated ${next.length} suggestion(s)`);
+    } catch (err) {
+      if ((err as Error)?.name === "AbortError") {
+        toast.info("Generation canceled");
+      } else {
+        console.error("Suggestion generation failed:", err);
+        toast.error("Suggestion generation failed");
+      }
+    } finally {
+      setIsGenerating(false);
+      setGenProgress(null);
+      abortRef.current = null;
     }
   };
 
@@ -533,10 +603,7 @@ export function SuggestionsPanel({
         frameTo: asInt(rangeTo),
       },
     };
-    const next = generateSuggestionFrames(labels, params);
-    commitGenerated(next);
-    setSelectedIdx(null);
-    toast.success(`Generated ${next.length} suggestion(s)`);
+    void handleGenerateScan(labels, params);
   };
 
   // % labeled across the (filtered/sorted) suggestion list.
@@ -1087,24 +1154,27 @@ export function SuggestionsPanel({
           </Button>
         )}
         <Separator />
-        {/* Image-features generation progress (2-phase: decoding then clustering). */}
+        {/* Generation progress — one bar for every method: image_features
+            reports decode/cluster phases, the scanning strategies report
+            per-video (and, where the loop is ours, per-chunk) completion. The
+            shimmer sweep signals live work between ticks, and carries the
+            phases that have no measurable total (pct === null). */}
         {isGenerating && (
-          <div className="space-y-1">
-            <div className="h-1.5 w-full overflow-hidden rounded bg-muted">
+          <div className="space-y-1" data-testid="generation-progress">
+            <div className="relative h-1.5 w-full overflow-hidden rounded bg-muted">
               <div
                 className="h-full bg-primary transition-all"
                 style={{
                   width:
-                    ifProgress && ifProgress.total > 0
-                      ? `${(ifProgress.done / ifProgress.total) * 100}%`
-                      : "100%",
+                    genProgress?.pct == null ? "100%" : `${genProgress.pct}%`,
                 }}
               />
+              <div className="pointer-events-none absolute inset-0 overflow-hidden rounded">
+                <div className="progress-shimmer h-full w-1/3 bg-gradient-to-r from-transparent via-white/25 to-transparent" />
+              </div>
             </div>
             <p className="text-xs text-muted-foreground">
-              {ifProgress?.phase === "clustering"
-                ? "Clustering…"
-                : `Decoding ${ifProgress?.done ?? 0}/${ifProgress?.total ?? 0}`}
+              {genProgress?.label ?? "Starting…"}
             </p>
           </div>
         )}
