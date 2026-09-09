@@ -140,8 +140,14 @@ export function ExportModelDialog() {
               <SelectTrigger className="h-8 w-40 text-sm"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="onnx">ONNX</SelectItem>
-                {trtAvailable && <SelectItem value="tensorrt">TensorRT</SelectItem>}
-                {trtAvailable && <SelectItem value="both">Both</SelectItem>}
+                {/* Shown even off CUDA so the formats are discoverable; disabled items get
+                    pointer-events-none, so the reason goes in the label, not a hover tooltip. */}
+                <SelectItem value="tensorrt" disabled={!trtAvailable}>
+                  {trtAvailable ? "TensorRT" : "TensorRT (requires NVIDIA GPU)"}
+                </SelectItem>
+                <SelectItem value="both" disabled={!trtAvailable}>
+                  {trtAvailable ? "Both" : "Both (requires NVIDIA GPU)"}
+                </SelectItem>
               </SelectContent>
             </Select>
           </div>
