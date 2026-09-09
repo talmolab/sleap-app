@@ -21,9 +21,40 @@ export function quantile(sorted: number[], q: number): number {
 }
 
 /**
+ * Clamp a y-scale [min,max] into a finite, uPlot-safe window.
+ *
+ * uPlot's axis-split loops (numAxisSplits / logAxisSplits, uPlot 1.6.32) are
+ * UNCAPPED — `for (val = min; val <= max; val += incr)` and
+ * `do { splits.push(split) } while (split <= max)`. A non-finite (or
+ * astronomically large) endpoint makes them push into `splits` forever, the
+ * array flips to JSC sparse storage, and the main thread pegs = the Training
+ * Monitor freeze. A diverged loss can drive computeYRange's `10 ** (log ± pad)`
+ * past Double.MAX (→ ±Infinity), so every returned endpoint is clamped here.
+ * `1e300` sits comfortably below overflow yet preserves any realistic loss
+ * range; log axes floor at `1e-300` so the min stays strictly positive.
+ */
+const Y_RANGE_LIMIT = 1e300;
+function clampYRange(
+  min: number,
+  max: number,
+  logScale: boolean,
+): [number, number] | null {
+  const floor = logScale ? 1e-300 : -Y_RANGE_LIMIT;
+  const clamp = (v: number) =>
+    v < floor ? floor : v > Y_RANGE_LIMIT ? Y_RANGE_LIMIT : v;
+  const lo = clamp(min);
+  const hi = clamp(max);
+  // NaN passes the comparisons above unchanged → caught here; reject a range we
+  // can't fit so the caller falls back to its safe default.
+  if (!Number.isFinite(lo) || !Number.isFinite(hi) || lo > hi) return null;
+  return [lo, hi];
+}
+
+/**
  * y-axis [min,max] for the loss chart. Parity with monitor.py:_calculate_ylim
  * (log-space padding + optional IQR outlier rejection). Returns null when there
- * is no finite data to fit (caller falls back to a default range).
+ * is no finite data to fit (caller falls back to a default range). Output is
+ * always finite and uPlot-safe (see {@link clampYRange}).
  */
 export function computeYRange(
   values: number[],
@@ -46,7 +77,7 @@ export function computeYRange(
       logMax = Math.min(q3 + 1.5 * iqr, logY[logY.length - 1]);
     }
     const pad = logMax > logMin ? (logMax - logMin) * 0.02 : 0.05;
-    return [10 ** (logMin - pad), 10 ** (logMax + pad)];
+    return clampYRange(10 ** (logMin - pad), 10 ** (logMax + pad), true);
   }
 
   const sorted = [...finite].sort((a, b) => a - b);
@@ -57,9 +88,13 @@ export function computeYRange(
     const q1 = quantile(sorted, 0.25);
     const q3 = quantile(sorted, 0.75);
     const iqr = q3 - q1;
-    return [Math.max(q1 - iqr * 1.5, min - dy), Math.min(q3 + iqr * 1.5, max + dy)];
+    return clampYRange(
+      Math.max(q1 - iqr * 1.5, min - dy),
+      Math.min(q3 + iqr * 1.5, max + dy),
+      false,
+    );
   }
-  return [min - dy, max + dy];
+  return clampYRange(min - dy, max + dy, false);
 }
 
 /**
@@ -279,7 +314,13 @@ export function buildLossPlotDataBatched(
   const xset = new Set<number>();
   for (const b of drawnBatches) xset.add(b.globalBatch);
   for (const e of epochSamples) xset.add((e.epoch + 1) * epochSize);
-  const xs = Array.from(xset).sort((a, b) => a - b);
+  // Drop any non-finite x (a corrupt progress message can make globalBatch or a
+  // (epoch+1)*epochSize boundary Infinity/NaN). uPlot auto-ranges the x-scale
+  // from this array, and its uncapped tick-split loop hangs on an infinite max
+  // (see clampYRange) — so x must be finite before it ever reaches the chart.
+  const xs = Array.from(xset)
+    .filter((x) => Number.isFinite(x))
+    .sort((a, b) => a - b);
 
   const batch: (number | null)[] = [];
   const train: (number | null)[] = [];

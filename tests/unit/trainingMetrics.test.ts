@@ -274,3 +274,90 @@ describe("buildLossPlotDataBatched downsampling (uPlot render cap)", () => {
     expect(d.val.filter((v) => v != null)).toEqual([0.6, 0.5]);
   });
 });
+
+// --- Freeze guards (see fix/training-monitor-freeze) --------------------------
+// uPlot's axis-split loops (numAxisSplits / logAxisSplits, uPlot 1.6.32) are
+// UNCAPPED: `for (val = min; val <= max; val += incr)` and
+// `do { push } while (split <= max)`. A non-finite (or astronomically large)
+// scale endpoint makes them push into `splits` forever → the array goes to JSC
+// sparse storage → main-thread peg = the Training Monitor freeze. These two
+// boundary functions are the only place degenerate values can enter uPlot's
+// scale, so they must guarantee finite, sane output.
+
+describe("computeYRange — never yields a non-finite y-scale (freeze guard)", () => {
+  it("clamps an overflowing log max to a finite value", () => {
+    // A diverged loss can pass through ~Double.MAX; then 10 ** (log10(max) + pad)
+    // overflows to +Infinity, and uPlot's log-axis split loop hangs on max=∞.
+    const r = computeYRange([1e-10, Number.MAX_VALUE], {
+      logScale: true,
+      ignoreOutliers: false,
+    });
+    expect(r).not.toBeNull();
+    expect(Number.isFinite(r![0])).toBe(true);
+    expect(Number.isFinite(r![1])).toBe(true);
+    expect(r![1]).toBeGreaterThan(r![0]);
+  });
+
+  it("clamps an overflowing linear max to a finite value", () => {
+    const r = computeYRange([0, Number.MAX_VALUE], {
+      logScale: false,
+      ignoreOutliers: false,
+    });
+    expect(r).not.toBeNull();
+    expect(Number.isFinite(r![0])).toBe(true);
+    expect(Number.isFinite(r![1])).toBe(true);
+  });
+
+  it("leaves a normal range untouched", () => {
+    const r = computeYRange([0.1, 1, 10], { logScale: true, ignoreOutliers: false });
+    expect(r![0]).toBeGreaterThan(0);
+    expect(r![1]).toBeLessThan(1e300);
+    expect(r![1]).toBeGreaterThan(r![0]);
+  });
+});
+
+describe("buildLossPlotDataBatched — never emits a non-finite x (freeze guard)", () => {
+  it("drops batch points whose globalBatch is non-finite", () => {
+    const d = buildLossPlotDataBatched(
+      [
+        { globalBatch: 0, loss: 1 },
+        { globalBatch: Infinity, loss: 0.9 },
+        { globalBatch: NaN, loss: 0.8 },
+      ],
+      [],
+      1,
+      null,
+      null,
+    );
+    expect(d.x.every(Number.isFinite)).toBe(true);
+    expect(d.x).toEqual([0]);
+    expect(d.batch).toEqual([1]);
+  });
+
+  it("drops epoch boundaries when epochSize is non-finite (corrupt progress)", () => {
+    const d = buildLossPlotDataBatched(
+      [],
+      [{ epoch: 0, trainLoss: 0.5, valLoss: 0.4 }],
+      Infinity, // corrupt epochSize → (epoch+1)*epochSize = Infinity
+      0,
+      0.4,
+    );
+    expect(d.x.every(Number.isFinite)).toBe(true);
+    expect(d.x).toEqual([]);
+  });
+
+  it("keeps finite points when only some are corrupt", () => {
+    const d = buildLossPlotDataBatched(
+      [
+        { globalBatch: 5, loss: 0.7 },
+        { globalBatch: Infinity, loss: 0.6 },
+      ],
+      [{ epoch: 0, trainLoss: 0.5, valLoss: 0.4 }],
+      10, // finite epoch boundary at x=10
+      0,
+      0.4,
+    );
+    expect(d.x.every(Number.isFinite)).toBe(true);
+    expect(d.x).toEqual([5, 10]);
+  });
+});
