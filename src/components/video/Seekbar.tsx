@@ -154,6 +154,7 @@ function drawHeaderYScale(
 export function Seekbar() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const headerCanvasRef = useRef<HTMLCanvasElement>(null);
+  const tracksCanvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const headerContainerRef = useRef<HTMLDivElement>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
@@ -894,18 +895,9 @@ export function Seekbar() {
       ctx.fillRect(x1, 0, x2 - x1, h);
     }
 
-    // Draw track occupancy bars (occupied frames precomputed per track).
-    if (headerData) {
-      const trackBarHeight = Math.min(4, (h - 20) / Math.max(headerData.byTrack.length, 1));
-      const rectW = Math.max(1, w / totalFrames);
-      headerData.byTrack.forEach((frameIdxs, trackIdx) => {
-        ctx.fillStyle = rgbToCSS(getPaletteColor(palette, trackIdx), 0.6);
-        const y = trackIdx * trackBarHeight;
-        for (const f of frameIdxs) {
-          ctx.fillRect(frameToX(f), y, rectW, trackBarHeight - 1);
-        }
-      });
-    }
+    // Track occupancy is drawn on its OWN dedicated strip below the bar (full
+    // alpha, taller lanes — see the tracks-strip render effect) instead of being
+    // crammed into ≤4px 60%-alpha lanes here, fighting the marks/playhead/hover.
 
     // Draw suggestion frame marks (yellow ticks at top of seekbar)
     if (labels) {
@@ -955,6 +947,41 @@ export function Seekbar() {
       ctx.fillRect(hx - 0.5, 0, 1, h);
     }
   }, [frameIdx, scrubFrame, totalFrames, headerData, labels, palette, hoverFrame, video, frameRange, markedFrame]);
+
+  // Render the dedicated per-track occupancy strip below the seekbar. Each track
+  // gets its own full-height lane in its palette color at FULL alpha, so which
+  // frames a track covers is legible — versus the old ≤4px, 60%-alpha lanes
+  // crammed onto the main bar under the marks/playhead/hover. Recomputes only on
+  // data/palette/resize (not per frame), so it's cheap.
+  useEffect(() => {
+    const canvas = tracksCanvasRef.current;
+    if (!canvas || !headerData) return;
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width === 0) return;
+    const dpr = window.devicePixelRatio;
+    canvas.width = rect.width * dpr;
+    canvas.height = rect.height * dpr;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.scale(dpr, dpr);
+    const w = rect.width;
+    const h = rect.height;
+    ctx.fillStyle = "#141418";
+    ctx.fillRect(0, 0, w, h);
+    if (totalFrames === 0) return;
+
+    const frameToX = (f: number) => (f / (totalFrames - 1)) * w;
+    const rectW = Math.max(1, w / totalFrames);
+    const laneCount = Math.max(headerData.byTrack.length, 1);
+    const laneH = h / laneCount;
+    // Leave a 1px gutter between lanes when there's room to read them apart.
+    const barH = Math.max(1, laneH >= 3 ? laneH - 1 : laneH);
+    headerData.byTrack.forEach((frameIdxs, trackIdx) => {
+      ctx.fillStyle = rgbToCSS(getPaletteColor(palette, trackIdx), 1);
+      const y = trackIdx * laneH;
+      for (const f of frameIdxs) ctx.fillRect(frameToX(f), y, rectW, barH);
+    });
+  }, [headerData, totalFrames, palette, resizeTick]);
 
   // Playback animation loop
   useEffect(() => {
@@ -1120,6 +1147,17 @@ export function Seekbar() {
               style={{ display: "block" }}
             />
           </div>
+          {/* Dedicated per-track occupancy strip: full-alpha lanes in each
+              track's color, one row per track, so coverage is legible instead of
+              washed-out lanes crammed onto the bar above. Only when tracks have
+              occupancy; display-only (seek/hover stay on the bar). */}
+          {headerData && headerData.byTrack.some((f) => f.length > 0) && (
+            <canvas
+              ref={tracksCanvasRef}
+              className="mt-0.5 block h-3 w-full rounded-sm"
+              aria-hidden="true"
+            />
+          )}
           {/* Hover-preview tooltip — floats above the bar near the cursor
               (positioned by the layout effect above), suppressed while
               scrubbing/selecting (the solid playhead is there). */}
