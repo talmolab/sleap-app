@@ -31,8 +31,11 @@ import {
   ensureDecodablePath,
   getTranscodeCacheInfo,
   clearTranscodeCache,
+  enforceCacheCap,
+  DEFAULT_VIDEO_CACHE_CAP_BYTES,
   type TranscodeDeps,
 } from "./transcode/transcodeVideo";
+import { computeCacheKey } from "./transcode/transcodeCache";
 import { createTauriTranscodeDeps } from "./transcode/transcodeDepsTauri";
 import { shouldBuildScrubProxy } from "./transcode/proxyPolicy";
 import {
@@ -1880,6 +1883,9 @@ export async function assignVideoBackendFromPath(
     // freeze the GUI. Guarded (matches the exact backend + file size) so it never
     // fights the proxy swap or corrupts a cached-proxy backend. Fire-and-forget.
     void scheduleWorkerDecodeUpgrade(video, path);
+    // Keep the on-disk transcode/proxy cache under its hard cap (evicting old,
+    // never-in-use entries). Fire-and-forget; runs after every desktop open.
+    void enforceVideoCacheCap();
   }
   return ok;
 }
@@ -2193,4 +2199,45 @@ export function videoTranscodeCacheInfo() {
  */
 export function clearVideoTranscodeCache() {
   return clearTranscodeCache(createTauriTranscodeDeps());
+}
+
+/**
+ * Cache keys of the currently-open videos, so cap-enforcement never evicts a
+ * transcode/proxy an open video is decoding from. A video's cache files are all
+ * named `<key>…`, so passing keys (not full paths) covers both its transcode
+ * (`<key>.mp4`) and its proxy (`<key>-proxy-g<gop>.mp4`) regardless of GOP.
+ */
+async function openVideoCacheKeys(deps: TranscodeDeps): Promise<Set<string>> {
+  const keys = new Set<string>();
+  const videos = useAppStore.getState().labels?.videos ?? [];
+  for (const v of videos) {
+    const name = Array.isArray(v.filename) ? v.filename[0] ?? "" : v.filename;
+    if (!name) continue;
+    try {
+      const { size, mtimeMs } = await deps.stat(name);
+      keys.add(computeCacheKey(name, size, mtimeMs));
+    } catch {
+      /* unresolved/remote path — no local cache file to protect */
+    }
+  }
+  return keys;
+}
+
+/**
+ * Desktop-only, best-effort: bound the on-disk video cache (transcodes + scrub
+ * proxies) to {@link DEFAULT_VIDEO_CACHE_CAP_BYTES}, auto-evicting the
+ * least-recently-built entries — but never one an open video is using. Called
+ * fire-and-forget after a video opens, so the cache stays bounded across sessions
+ * without the user ever having to hit "Clear video transcode cache".
+ */
+export async function enforceVideoCacheCap(): Promise<void> {
+  const platform = await getPlatform();
+  if (!platform.isTauri) return; // no on-disk cache in the browser
+  const deps = createTauriTranscodeDeps();
+  try {
+    const protectedKeys = await openVideoCacheKeys(deps);
+    await enforceCacheCap(deps, DEFAULT_VIDEO_CACHE_CAP_BYTES, protectedKeys);
+  } catch {
+    /* cache maintenance is best-effort — never surface to the user */
+  }
 }

@@ -59,10 +59,16 @@ export interface CacheEntry {
  * below `capBytes`. Pure — the caller performs the deletes. Never evicts below
  * the cap; returns `[]` when already within budget or when `capBytes <= 0`
  * disables the cap.
+ *
+ * `protectedPaths` are never deleted (a cache file an open video is actively
+ * decoding from). They still count toward the total, so if the protected files
+ * alone exceed the cap the plan stops short rather than break an open video —
+ * the cap is a best-effort bound, never a correctness hazard.
  */
 export function planCacheEviction(
   entries: CacheEntry[],
-  capBytes: number
+  capBytes: number,
+  protectedPaths?: ReadonlySet<string>
 ): string[] {
   if (capBytes <= 0) return [];
   const total = entries.reduce((sum, e) => sum + e.sizeBytes, 0);
@@ -74,9 +80,10 @@ export function planCacheEviction(
   );
 
   const toDelete: string[] = [];
-  let running = total;
+  let running = total; // grand total; protected files count but are never deleted
   for (const entry of oldestFirst) {
     if (running <= capBytes) break;
+    if (protectedPaths?.has(entry.path)) continue; // in-use — never evict
     toDelete.push(entry.path);
     running -= entry.sizeBytes;
   }

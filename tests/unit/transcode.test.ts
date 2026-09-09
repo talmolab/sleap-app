@@ -20,6 +20,7 @@ import {
   createProgressAssembler,
   getTranscodeCacheInfo,
   clearTranscodeCache,
+  enforceCacheCap,
   __resetEncoderCache,
   TRANSCODE_SUBDIR,
   type TranscodeDeps,
@@ -121,6 +122,23 @@ describe("transcodeCache (key + eviction)", () => {
     expect(planCacheEviction(entries, 300)).toEqual([]);
     // cap <= 0 disables eviction
     expect(planCacheEviction(entries, 0)).toEqual([]);
+  });
+
+  it("never evicts a protected (in-use) entry, even when it's the oldest", () => {
+    const entries: CacheEntry[] = [
+      { path: "/a.mp4", sizeBytes: 100, atimeMs: 1 }, // oldest, but PROTECTED
+      { path: "/b.mp4", sizeBytes: 100, atimeMs: 2 },
+      { path: "/c.mp4", sizeBytes: 100, atimeMs: 3 }, // newest
+    ];
+    // total 300, cap 150 → normally drops a+b; protecting /a.mp4 spares it and
+    // drops the next-oldest evictable (b, then c) to get under 150.
+    expect(
+      planCacheEviction(entries, 150, new Set(["/a.mp4"]))
+    ).toEqual(["/b.mp4", "/c.mp4"]);
+    // If the protected files ALONE exceed the cap, stop short (never break them).
+    expect(
+      planCacheEviction(entries, 50, new Set(["/a.mp4", "/b.mp4", "/c.mp4"]))
+    ).toEqual([]);
   });
 });
 
@@ -580,5 +598,73 @@ describe("transcode cache maintenance", () => {
     const freed = await clearTranscodeCache(deps);
     expect(freed).toEqual({ count: 1, bytes: 100 }); // transcodes only
     expect(removed).toEqual(["/cache/transcodes/a.mp4"]);
+  });
+});
+
+describe("enforceCacheCap (auto-eviction with in-use protection)", () => {
+  type FakeFile = {
+    dir: typeof TRANSCODE_SUBDIR | typeof PROXY_SUBDIR;
+    name: string;
+    size: number;
+    mtime: number;
+  };
+  function capDeps(files: FakeFile[]) {
+    const removed: string[] = [];
+    const present = new Set(files.map((f) => `${f.dir}/${f.name}`));
+    const meta = new Map(files.map((f) => [f.name, { size: f.size, mtimeMs: f.mtime }]));
+    const deps = {
+      cacheDir: async () => "/cache",
+      join: async (...p: string[]) => p.join("/"),
+      stat: async (path: string) => meta.get(path.split("/").pop() ?? "") ?? { size: 0, mtimeMs: 0 },
+      exists: async () => false,
+      mkdir: async () => {},
+      rename: async () => {},
+      remove: async (p: string) => {
+        removed.push(p);
+        const parts = p.split("/");
+        present.delete(`${parts[parts.length - 2]}/${parts[parts.length - 1]}`);
+      },
+      readDir: async (dir: string) => {
+        const sub = dir.split("/").pop() ?? "";
+        return [...present].filter((k) => k.startsWith(`${sub}/`)).map((k) => k.split("/")[1]);
+      },
+      exec: async () => ({ stdout: "", stderr: "", code: 0 }),
+      runTranscode: async () => {},
+    } as TranscodeDeps;
+    return { deps, removed };
+  }
+
+  it("evicts the oldest cache files (across both subdirs) until under the cap", async () => {
+    const { deps, removed } = capDeps([
+      { dir: TRANSCODE_SUBDIR, name: "aaaa.mp4", size: 4, mtime: 1 }, // oldest
+      { dir: PROXY_SUBDIR, name: "bbbb-proxy-g15.mp4", size: 4, mtime: 2 },
+      { dir: PROXY_SUBDIR, name: "cccc-proxy-g15.mp4", size: 4, mtime: 3 }, // newest
+    ]);
+    // total 12, cap 10 → drop the single oldest (aaaa, 4B) → 8 ≤ 10.
+    const freed = await enforceCacheCap(deps, 10);
+    expect(freed).toEqual({ count: 1, bytes: 4 });
+    expect(removed).toEqual(["/cache/transcodes/aaaa.mp4"]);
+  });
+
+  it("never evicts a protected key's files (protects both `.mp4` and `-proxy-`)", async () => {
+    const { deps, removed } = capDeps([
+      { dir: TRANSCODE_SUBDIR, name: "aaaa.mp4", size: 4, mtime: 1 }, // oldest, NOT protected
+      { dir: PROXY_SUBDIR, name: "bbbb-proxy-g15.mp4", size: 4, mtime: 2 }, // PROTECTED by key "bbbb"
+      { dir: PROXY_SUBDIR, name: "cccc-proxy-g15.mp4", size: 4, mtime: 3 },
+    ]);
+    // Protecting "bbbb" spares its proxy even though we need to free space;
+    // eviction falls to the oldest UNprotected entry (aaaa).
+    const freed = await enforceCacheCap(deps, 10, new Set(["bbbb"]));
+    expect(freed).toEqual({ count: 1, bytes: 4 });
+    expect(removed).toEqual(["/cache/transcodes/aaaa.mp4"]);
+  });
+
+  it("is a no-op under the cap and when the cap is disabled (<= 0)", async () => {
+    const { deps, removed } = capDeps([
+      { dir: PROXY_SUBDIR, name: "aaaa-proxy-g15.mp4", size: 4, mtime: 1 },
+    ]);
+    expect(await enforceCacheCap(deps, 100)).toEqual({ count: 0, bytes: 0 });
+    expect(await enforceCacheCap(deps, 0)).toEqual({ count: 0, bytes: 0 });
+    expect(removed).toEqual([]);
   });
 });

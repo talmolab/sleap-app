@@ -14,7 +14,13 @@
  */
 
 import { buildTranscodeArgs } from "./transcodeArgs.js";
-import { TRANSCODE_EXT, cacheFilename, computeCacheKey } from "./transcodeCache.js";
+import {
+  TRANSCODE_EXT,
+  type CacheEntry,
+  cacheFilename,
+  computeCacheKey,
+  planCacheEviction,
+} from "./transcodeCache.js";
 import { PROXY_SUBDIR } from "./scrubProxy.js";
 import { codecNeedsTranscode } from "./videoCodecSupport.js";
 import {
@@ -416,6 +422,101 @@ export async function clearTranscodeCache(
     const freed = await clearCacheDir(dir, deps);
     count += freed.count;
     bytes += freed.bytes;
+  }
+  return { count, bytes };
+}
+
+// ── Cache size cap (auto-eviction) ───────────────────────────────────────────
+
+/**
+ * Default hard cap for the on-disk video cache (transcodes + scrub proxies):
+ * 10 GiB. When the combined size exceeds this after a build, the least-recently-
+ * built entries are auto-evicted down to the cap — never one an open video is
+ * decoding from (see {@link enforceCacheCap}). Every entry is regenerable, so a
+ * miss just costs a re-transcode/re-build. (Kdenlive only *warns* at a threshold
+ * and PyQt SLEAP had no disk cache, so there's no external norm to match; a hard
+ * auto-evicting cap keeps a laptop's disk bounded without user intervention.)
+ */
+export const DEFAULT_VIDEO_CACHE_CAP_BYTES = 10 * 1024 ** 3;
+
+/**
+ * Scan both cache subdirs (transcodes + proxies) into eviction entries — one per
+ * finished `.mp4`. `mtime` is the recency signal (the fs seam exposes mtime, not
+ * atime, so this is least-recently-*built*, a close-enough LRU for a
+ * write-once/reuse cache). Absent subdirs contribute nothing (no throw).
+ */
+export async function scanCacheEntries(
+  deps: TranscodeDeps
+): Promise<CacheEntry[]> {
+  const entries: CacheEntry[] = [];
+  for (const dir of await cacheSubdirs(deps)) {
+    let names: string[];
+    try {
+      names = await deps.readDir(dir);
+    } catch {
+      continue; // subdir absent — nothing cached there yet
+    }
+    for (const name of names) {
+      if (!name.endsWith(TRANSCODE_EXT)) continue; // skip stray `.part` temps
+      const path = await deps.join(dir, name);
+      try {
+        const { size, mtimeMs } = await deps.stat(path);
+        entries.push({ path, sizeBytes: size, atimeMs: mtimeMs });
+      } catch {
+        /* raced deletion — ignore */
+      }
+    }
+  }
+  return entries;
+}
+
+/** What an {@link enforceCacheCap} pass freed. */
+export interface EnforceCacheCapResult {
+  /** Number of cache files deleted. */
+  count: number;
+  /** Bytes reclaimed. */
+  bytes: number;
+}
+
+/**
+ * Bound the on-disk video cache (transcodes + scrub proxies) to `capBytes` by
+ * evicting the least-recently-built entries. A cache file whose name begins with
+ * a `protectedKey` — the cache key of a currently-open video — is NEVER deleted,
+ * so auto-eviction can't pull a transcode/proxy out from under an open video
+ * (both `<key>.mp4` and `<key>-proxy-g<gop>.mp4` start with the key). Best-effort:
+ * if the protected files alone exceed the cap, it stops short rather than break
+ * anything. `capBytes <= 0` disables the cap.
+ */
+export async function enforceCacheCap(
+  deps: TranscodeDeps,
+  capBytes: number,
+  protectedKeys?: ReadonlySet<string>
+): Promise<EnforceCacheCapResult> {
+  if (capBytes <= 0) return { count: 0, bytes: 0 };
+  const entries = await scanCacheEntries(deps);
+
+  let protectedPaths: Set<string> | undefined;
+  if (protectedKeys && protectedKeys.size > 0) {
+    protectedPaths = new Set<string>();
+    for (const entry of entries) {
+      const base = entry.path.split(/[/\\]/).pop() ?? entry.path;
+      for (const key of protectedKeys) {
+        if (base.startsWith(key)) {
+          protectedPaths.add(entry.path);
+          break;
+        }
+      }
+    }
+  }
+
+  const toDelete = planCacheEviction(entries, capBytes, protectedPaths);
+  const sizeByPath = new Map(entries.map((e) => [e.path, e.sizeBytes]));
+  let count = 0;
+  let bytes = 0;
+  for (const path of toDelete) {
+    await deps.remove(path);
+    count++;
+    bytes += sizeByPath.get(path) ?? 0;
   }
   return { count, bytes };
 }
