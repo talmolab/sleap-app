@@ -314,12 +314,16 @@ export function buildLossPlotDataBatched(
   const xset = new Set<number>();
   for (const b of drawnBatches) xset.add(b.globalBatch);
   for (const e of epochSamples) xset.add((e.epoch + 1) * epochSize);
-  // Drop any non-finite x (a corrupt progress message can make globalBatch or a
-  // (epoch+1)*epochSize boundary Infinity/NaN). uPlot auto-ranges the x-scale
-  // from this array, and its uncapped tick-split loop hangs on an infinite max
-  // (see clampYRange) — so x must be finite before it ever reaches the chart.
+  // Drop any x uPlot can't tick safely. uPlot auto-ranges the x-scale from this
+  // array and its tick-split loop is uncapped (see clampYRange), so x must be:
+  //  - finite: a corrupt progress message can make globalBatch or a
+  //    (epoch+1)*epochSize boundary Infinity/NaN → an infinite scale max hangs
+  //    the loop outright; and
+  //  - within MAX_SAFE_INTEGER: past 2**53 the float64 gap exceeds a linear
+  //    tick step, so `val + incr === val` and numAxisSplits never advances. No
+  //    real run reaches 9e15 batches; this only trips on a corrupt epochSize.
   const xs = Array.from(xset)
-    .filter((x) => Number.isFinite(x))
+    .filter((x) => Number.isFinite(x) && Math.abs(x) <= Number.MAX_SAFE_INTEGER)
     .sort((a, b) => a - b);
 
   const batch: (number | null)[] = [];

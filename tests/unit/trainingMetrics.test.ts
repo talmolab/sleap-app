@@ -360,4 +360,20 @@ describe("buildLossPlotDataBatched — never emits a non-finite x (freeze guard)
     expect(d.x.every(Number.isFinite)).toBe(true);
     expect(d.x).toEqual([5, 10]);
   });
+
+  it("drops finite x beyond MAX_SAFE_INTEGER (corrupt epochSize)", () => {
+    // A corrupt batch index can inflate epochSize so globalBatch lands past 2**53
+    // where a linear tick step underflows the float64 gap and numAxisSplits stalls.
+    const d = buildLossPlotDataBatched(
+      [
+        { globalBatch: 5, loss: 0.7 },
+        { globalBatch: 1e17, loss: 0.6 },
+      ],
+      [],
+      1,
+      null,
+      null,
+    );
+    expect(d.x).toEqual([5]);
+  });
 });
