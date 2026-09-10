@@ -93,6 +93,15 @@ export interface AppState {
    */
   editSeq: number;
   /**
+   * Per-track color overrides, a LOCAL per-project viewing preference (persisted,
+   * never written into the `.slp`). Shape: `projectKey → (trackName → hexColor)`,
+   * where projectKey = {@link resolveProjectKey}(projectPath, filename). Resolved
+   * to the active project's map via {@link getActiveTrackOverrides} and applied
+   * through {@link getTrackColor}. Empty by default → colors fall back to the
+   * positional palette, i.e. no behavior change until a color is set.
+   */
+  trackColorOverrides: Record<string, Record<string, string>>;
+  /**
    * OPFS path of the browser large-pkg fast-save's labels DRAFT (a bare-bones
    * imageless .slp), or null. Set once a large embedded pkg has been ⌘S/auto-
    * saved this session; the labels live here durably while the images stay in
@@ -685,6 +694,7 @@ export const PERSISTED_KEYS: (keyof AppState)[] = [
   "sidebarMultiPanel",
   "uiScale",
   "propagateTrackLabels",
+  "trackColorOverrides",
 ];
 
 /**
@@ -716,6 +726,7 @@ export const useAppStore = create<AppState>()(
       projectFileHandle: null,
       hasChanges: false,
       editSeq: 0,
+      trackColorOverrides: {},
       labelsDraftPath: null,
       pendingExport: false,
       projectLoaded: false,

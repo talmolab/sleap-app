@@ -9,12 +9,16 @@
 
 import { useEffect, useState } from "react";
 import { useAppStore } from "../../stores/appStore";
-import { getPaletteColor, rgbToCSS } from "../../lib/colorPalettes";
+import { getTrackColor, rgbToCSS } from "../../lib/colorPalettes";
+import { getActiveTrackOverrides } from "../../lib/trackColorOverrides";
 
 export function TracksLegend() {
   const [ctrlHeld, setCtrlHeld] = useState(false);
   const labels = useAppStore((s) => s.labels);
   const palette = useAppStore((s) => s.palette);
+  const overrides = useAppStore((s) =>
+    getActiveTrackOverrides(s.trackColorOverrides, s.projectPath, s.filename),
+  );
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -45,7 +49,7 @@ export function TracksLegend() {
     >
       <div className="mb-1 font-semibold text-white/70">Tracks</div>
       {labels.tracks.map((track, i) => {
-        const color = getPaletteColor(palette, i);
+        const color = getTrackColor(palette, i, track.name, overrides);
         return (
           <div key={i} className="flex items-center gap-2 py-0.5">
             <span className="w-4 text-right font-mono text-white/60">

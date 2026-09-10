@@ -6,7 +6,7 @@
  * Crossing trails indicate identity swaps that need correction.
  */
 
-import { rgbToCSS, getPaletteColor, type RGB } from "../lib/colorPalettes";
+import { rgbToCSS, getTrackColor, type RGB } from "../lib/colorPalettes";
 import type { Labels, Video, Track } from "../types";
 
 /**
@@ -45,6 +45,7 @@ function computeCentroid(
  * @param tracks - All tracks in the project
  * @param palette - Name of the color palette to use
  * @param zoom - Current zoom level for line width scaling
+ * @param trackColorOverrides - Active per-track color overrides (name → hex)
  */
 export function renderTrails(
   ctx: CanvasRenderingContext2D,
@@ -54,7 +55,8 @@ export function renderTrails(
   trailLength: number,
   tracks: Track[],
   palette: string,
-  zoom: number
+  zoom: number,
+  trackColorOverrides?: Record<string, string> | null
 ): void {
   if (trailLength <= 0 || tracks.length === 0) return;
 
@@ -82,7 +84,12 @@ export function renderTrails(
     const trackIdx = tracks.indexOf(instance.track);
     if (trackIdx === -1) continue;
 
-    const color: RGB = getPaletteColor(palette, trackIdx);
+    const color: RGB = getTrackColor(
+      palette,
+      trackIdx,
+      instance.track.name,
+      trackColorOverrides
+    );
 
     // Collect centroids going back trailLength frames
     const trailPoints: Array<{ x: number; y: number; age: number }> = [];

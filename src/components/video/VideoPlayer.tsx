@@ -49,6 +49,7 @@ import {
   hasAssignedTracks,
   resolveColorTarget,
 } from "../../lib/colorPalettes";
+import { getActiveTrackOverrides } from "../../lib/trackColorOverrides";
 import { COLORMAPS } from "../../lib/colormaps";
 import { renderTrails } from "../../canvas/TrailRenderer";
 import {
@@ -136,6 +137,9 @@ export function VideoPlayer() {
   const markerSize = useAppStore((s) => s.markerSize);
   const nodeLabelSize = useAppStore((s) => s.nodeLabelSize);
   const palette = useAppStore((s) => s.palette);
+  const trackColorOverrides = useAppStore((s) =>
+    getActiveTrackOverrides(s.trackColorOverrides, s.projectPath, s.filename),
+  );
   const overlayVersion = useAppStore((s) => s.overlayVersion);
   const editSeq = useAppStore((s) => s.editSeq);
   const distinctlyColor = useAppStore((s) => s.distinctlyColor);
@@ -1189,7 +1193,7 @@ export function VideoPlayer() {
       const isPredicted = inst instanceof PredictedInstance;
       const skeleton = inst.skeleton;
       const color = getInstanceColor(
-        palette, distinctlyColor, idx, inst.track, tracks, isPredicted, colorPredicted, projectHasTracks, frameInstanceTracks
+        palette, distinctlyColor, idx, inst.track, tracks, isPredicted, colorPredicted, projectHasTracks, frameInstanceTracks, trackColorOverrides
       );
 
       // Per-node colors when (resolved) distinctlyColor === "node"
@@ -1244,6 +1248,7 @@ export function VideoPlayer() {
     distinctlyColor,
     projectHasTracks,
     palette,
+    trackColorOverrides,
     colorPredicted,
     selectedInstance,
     hiddenInstances,
@@ -1390,7 +1395,8 @@ export function VideoPlayer() {
         trailLength,
         labels.tracks,
         palette,
-        zoom
+        zoom,
+        trackColorOverrides
       );
     }
 
@@ -1510,6 +1516,7 @@ export function VideoPlayer() {
     markerSize,
     nodeLabelSize,
     palette,
+    trackColorOverrides,
     distinctlyColor,
     projectHasTracks,
     trailLength,

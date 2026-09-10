@@ -5,9 +5,11 @@
 import { describe, it, expect } from "../bun-test";
 import {
   getPaletteColor,
+  getTrackColor,
   getInstanceColor,
   getUntrackedGray,
   hasAssignedTracks,
+  hexToRgb,
   resolveColorTarget,
   rgbToCSS,
   rgbToHex,
@@ -299,5 +301,51 @@ describe("colorPalettes", () => {
       );
       expect(color).toEqual(getPaletteColor("standard", 0));
     });
+  });
+});
+
+describe("hexToRgb", () => {
+  it("parses #RRGGBB into an RGB tuple", () => {
+    expect(hexToRgb("#22c55e")).toEqual([34, 197, 94]);
+  });
+  it("parses shorthand #RGB", () => {
+    expect(hexToRgb("#0f0")).toEqual([0, 255, 0]);
+  });
+  it("is case-insensitive and tolerates surrounding whitespace", () => {
+    expect(hexToRgb("  #FFFFFF ")).toEqual([255, 255, 255]);
+  });
+  it("returns null for invalid input", () => {
+    expect(hexToRgb("nope")).toBeNull();
+    expect(hexToRgb("#12")).toBeNull();
+    expect(hexToRgb("")).toBeNull();
+  });
+  it("round-trips with rgbToHex", () => {
+    expect(hexToRgb(rgbToHex([12, 200, 5]))).toEqual([12, 200, 5]);
+  });
+});
+
+describe("getTrackColor", () => {
+  it("returns the palette color when there is no override", () => {
+    expect(getTrackColor("standard", 0, "track_0", {})).toEqual(
+      getPaletteColor("standard", 0),
+    );
+    expect(getTrackColor("standard", 3, "track_3", undefined)).toEqual(
+      getPaletteColor("standard", 3),
+    );
+  });
+  it("returns the override color (as RGB) when set for the track name", () => {
+    expect(getTrackColor("standard", 0, "track_0", { track_0: "#22c55e" })).toEqual([
+      34, 197, 94,
+    ]);
+  });
+  it("falls back to the palette for a null/absent track name", () => {
+    expect(getTrackColor("standard", 2, null, { track_0: "#22c55e" })).toEqual(
+      getPaletteColor("standard", 2),
+    );
+  });
+  it("falls back to the palette when the override hex is invalid", () => {
+    expect(getTrackColor("standard", 1, "track_1", { track_1: "bogus" })).toEqual(
+      getPaletteColor("standard", 1),
+    );
   });
 });

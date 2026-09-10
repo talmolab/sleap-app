@@ -12,6 +12,7 @@ import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { Clipboard, Check, Search } from "lucide-react";
 import { useAppStore } from "../../stores/appStore";
 import { rgbToCSS, getInstanceColor, hasAssignedTracks } from "../../lib/colorPalettes";
+import { getActiveTrackOverrides } from "../../lib/trackColorOverrides";
 import { instanceShowsNonVisible } from "@/lib/instanceVisibility";
 import {
   commandContext,
@@ -119,6 +120,7 @@ function InstanceRow({
   isSelected,
   onSelect,
   palette,
+  trackColorOverrides,
   labels,
   distinctlyColor,
   colorPredicted,
@@ -138,6 +140,7 @@ function InstanceRow({
   isSelected: boolean;
   onSelect: (e: React.MouseEvent) => void;
   palette: string;
+  trackColorOverrides: Record<string, string>;
   labels: Labels | null;
   distinctlyColor: string;
   colorPredicted: boolean;
@@ -162,6 +165,7 @@ function InstanceRow({
     colorPredicted,
     projectHasTracks,
     frameInstanceTracks,
+    trackColorOverrides,
   );
   const trackName = instance.track?.name ?? "[no track]";
   const visibleNodes = instance.nVisible;
@@ -385,6 +389,9 @@ export function InstancesPanel() {
   const palette = useAppStore((s) => s.palette);
   const distinctlyColor = useAppStore((s) => s.distinctlyColor);
   const colorPredicted = useAppStore((s) => s.colorPredicted);
+  const trackColorOverrides = useAppStore((s) =>
+    getActiveTrackOverrides(s.trackColorOverrides, s.projectPath, s.filename),
+  );
   const projectHasTracks = useMemo(
     () => hasAssignedTracks(labels),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -594,6 +601,7 @@ export function InstancesPanel() {
                     isSelected={selectedIndices.has(i)}
                     onSelect={(e) => handleSelect(i, e)}
                     palette={palette}
+                    trackColorOverrides={trackColorOverrides}
                     labels={labels}
                     distinctlyColor={distinctlyColor}
                     colorPredicted={colorPredicted}
