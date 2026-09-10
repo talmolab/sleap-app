@@ -1898,7 +1898,12 @@ export function TrainingConfigDialog({
                           <SelectContent>
                             <SelectItem value="none">Don't export</SelectItem>
                             <SelectItem value="onnx">ONNX</SelectItem>
-                            {trtAvailable && <SelectItem value="tensorrt">TensorRT</SelectItem>}
+                            {/* Shown even off CUDA so users know the format exists; disabled
+                                items get pointer-events-none, so the reason goes in the label
+                                (a hover tooltip wouldn't fire). */}
+                            <SelectItem value="tensorrt" disabled={!trtAvailable}>
+                              {trtAvailable ? "TensorRT" : "TensorRT (requires NVIDIA GPU)"}
+                            </SelectItem>
                           </SelectContent>
                         </Select>
                       </div>
