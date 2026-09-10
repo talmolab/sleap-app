@@ -25,6 +25,11 @@ import type {
 } from "../types";
 import type { StatisticGraphType, Reduction } from "@/lib/statisticSeries";
 import { SEEKBAR_HEADER_DEFAULT_HEIGHT } from "@/lib/seekbarHeaderHeight";
+import {
+  resolveProjectKey,
+  setTrackColorOverride,
+  resetTrackColorOverride,
+} from "@/lib/trackColorOverrides";
 import type { QcMode } from "@/lib/instanceVisibility";
 import type { CropRect } from "@/lib/imageFeaturesCore";
 import {
@@ -553,6 +558,11 @@ export interface AppState {
   markChanged: () => void;
   touchFrame: () => void;
   clearChanges: () => void;
+  /** Set a per-track color override (hex) for the active project. Local viewing
+   * preference — persisted, never written into the `.slp`. */
+  setTrackColor: (trackName: string, hex: string) => void;
+  /** Clear a track's color override → it reverts to the positional palette color. */
+  resetTrackColor: (trackName: string) => void;
   setLoading: (loading: boolean, message?: string, progress?: number) => void;
   setInferenceDialogOpen: (open: boolean) => void;
   setNewProjectDialogOpen: (open: boolean) => void;
@@ -1185,6 +1195,26 @@ export const useAppStore = create<AppState>()(
         set((state) => {
           state.hasChanges = false;
         }),
+
+      setTrackColor: (trackName, hex) => {
+        // `get()` returns committed (plain, non-draft) state, so the pure
+        // reducer operates on plain data; the result is assigned to the draft.
+        const s = get();
+        const key = resolveProjectKey(s.projectPath, s.filename);
+        const next = setTrackColorOverride(s.trackColorOverrides, key, trackName, hex);
+        set((state) => {
+          state.trackColorOverrides = next;
+        });
+      },
+
+      resetTrackColor: (trackName) => {
+        const s = get();
+        const key = resolveProjectKey(s.projectPath, s.filename);
+        const next = resetTrackColorOverride(s.trackColorOverrides, key, trackName);
+        set((state) => {
+          state.trackColorOverrides = next;
+        });
+      },
 
       setLoading: (loading, message, progress) =>
         set((state) => {

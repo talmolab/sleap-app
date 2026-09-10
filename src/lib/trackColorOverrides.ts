@@ -35,3 +35,39 @@ export function getActiveTrackOverrides(
   if (!overrides) return EMPTY_TRACK_OVERRIDES;
   return overrides[resolveProjectKey(projectPath, filename)] ?? EMPTY_TRACK_OVERRIDES;
 }
+
+/** Immutably set `trackName`'s override to `hex` under `projectKey`. */
+export function setTrackColorOverride(
+  overrides: Record<string, Record<string, string>>,
+  projectKey: string,
+  trackName: string,
+  hex: string,
+): Record<string, Record<string, string>> {
+  return {
+    ...overrides,
+    [projectKey]: { ...(overrides[projectKey] ?? {}), [trackName]: hex },
+  };
+}
+
+/**
+ * Immutably remove `trackName`'s override under `projectKey`. Drops the project
+ * entry entirely once its last override is removed. No-op (returns the same
+ * reference) when the entry is absent.
+ */
+export function resetTrackColorOverride(
+  overrides: Record<string, Record<string, string>>,
+  projectKey: string,
+  trackName: string,
+): Record<string, Record<string, string>> {
+  const submap = overrides[projectKey];
+  if (!submap || !(trackName in submap)) return overrides;
+  const nextSub = { ...submap };
+  delete nextSub[trackName];
+  const next = { ...overrides };
+  if (Object.keys(nextSub).length === 0) {
+    delete next[projectKey];
+  } else {
+    next[projectKey] = nextSub;
+  }
+  return next;
+}

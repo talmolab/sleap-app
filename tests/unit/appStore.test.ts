@@ -1106,3 +1106,35 @@ describe("tutorial step navigation", () => {
     });
   });
 });
+
+describe("track color overrides", () => {
+  beforeEach(() => resetStore());
+
+  it("is included in the persist whitelist (local per-project persistence)", () => {
+    expect(PERSISTED_KEYS).toContain("trackColorOverrides");
+  });
+
+  it("setTrackColor stores the color under the active project key (desktop path)", () => {
+    useAppStore.setState({ projectPath: "/proj/a.slp", filename: "a.slp" });
+    useAppStore.getState().setTrackColor("track_0", "#22c55e");
+    expect(useAppStore.getState().trackColorOverrides).toEqual({
+      "/proj/a.slp": { track_0: "#22c55e" },
+    });
+  });
+
+  it("keys by filename when there is no path (browser)", () => {
+    useAppStore.setState({ projectPath: null, filename: "b.slp" });
+    useAppStore.getState().setTrackColor("track_1", "#ff0000");
+    expect(useAppStore.getState().trackColorOverrides).toEqual({
+      "b.slp": { track_1: "#ff0000" },
+    });
+  });
+
+  it("resetTrackColor removes the override and drops the empty project entry", () => {
+    useAppStore.setState({ projectPath: "/proj/a.slp", filename: "a.slp" });
+    const store = useAppStore.getState();
+    store.setTrackColor("track_0", "#22c55e");
+    store.resetTrackColor("track_0");
+    expect(useAppStore.getState().trackColorOverrides).toEqual({});
+  });
+});
