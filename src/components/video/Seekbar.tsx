@@ -20,7 +20,8 @@ import {
   useDeferredValue,
 } from "react";
 import { useAppStore } from "../../stores/appStore";
-import { getPaletteColor, rgbToCSS } from "../../lib/colorPalettes";
+import { getTrackColor, rgbToCSS } from "../../lib/colorPalettes";
+import { getActiveTrackOverrides } from "../../lib/trackColorOverrides";
 import {
   computeStatisticSeries,
   getGraphSpec,
@@ -174,6 +175,9 @@ export function Seekbar() {
   const frameIdx = useAppStore((s) => s.frameIdx);
   const labels = useAppStore((s) => s.labels);
   const palette = useAppStore((s) => s.palette);
+  const trackColorOverrides = useAppStore((s) =>
+    getActiveTrackOverrides(s.trackColorOverrides, s.projectPath, s.filename),
+  );
   const setFrameIdx = useAppStore((s) => s.setFrameIdx);
   const frameRange = useAppStore((s) => s.frameRange);
   const markedFrame = useAppStore((s) => s.markedFrame);
@@ -1111,12 +1115,14 @@ export function Seekbar() {
     // occupancy stays visible (never a 0-height bar).
     const gap = Math.min(TRACKS_LANE_GAP_PX, tracksLaneHeight * 0.25);
     const barH = Math.max(1, tracksLaneHeight - gap);
+    const trackList = labels?.tracks;
     headerData.byTrack.forEach((frameIdxs, trackIdx) => {
-      ctx.fillStyle = rgbToCSS(getPaletteColor(palette, trackIdx), 1);
+      const trackName = (trackList?.[trackIdx] as { name?: string } | undefined)?.name ?? null;
+      ctx.fillStyle = rgbToCSS(getTrackColor(palette, trackIdx, trackName, trackColorOverrides), 1);
       const y = TRACKS_TOP_PAD_PX + trackIdx * tracksLaneHeight;
       for (const f of frameIdxs) ctx.fillRect(frameToX(f), y, rectW, barH);
     });
-  }, [headerData, totalFrames, palette, tracksLaneHeight, tracksCanvasHeight, resizeTick]);
+  }, [headerData, totalFrames, palette, trackColorOverrides, labels, tracksLaneHeight, tracksCanvasHeight, resizeTick]);
 
   // Playback animation loop
   useEffect(() => {

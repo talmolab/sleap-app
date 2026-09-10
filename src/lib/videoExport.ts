@@ -541,6 +541,9 @@ export interface BuildOverlayOptions {
   /** Whether any instance in the project has an assigned track — resolves
    * distinctlyColor === "auto" to "track" vs "node". */
   projectHasTracks?: boolean;
+  /** Active per-track color overrides (track name → hex) so exported clips match
+   * the on-screen colors. Omitted → positional palette colors. */
+  trackColorOverrides?: Record<string, string> | null;
 }
 
 /**
@@ -571,7 +574,8 @@ export function buildExportRenderedInstances(
       isPredicted,
       opts.colorPredicted,
       opts.projectHasTracks ?? false,
-      frameInstanceTracks
+      frameInstanceTracks,
+      opts.trackColorOverrides
     );
 
     const paint = !(isPredicted && !opts.colorPredicted);

@@ -11,7 +11,20 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { Clipboard, Check, Search } from "lucide-react";
 import { useAppStore } from "../../stores/appStore";
-import { rgbToCSS, getInstanceColor, hasAssignedTracks } from "../../lib/colorPalettes";
+import {
+  rgbToCSS,
+  rgbToHex,
+  getInstanceColor,
+  hasAssignedTracks,
+  PALETTES,
+  type RGB,
+} from "../../lib/colorPalettes";
+import { getActiveTrackOverrides } from "../../lib/trackColorOverrides";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { instanceShowsNonVisible } from "@/lib/instanceVisibility";
 import {
   commandContext,
@@ -112,6 +125,89 @@ function VisibilityToggle({
   );
 }
 
+/**
+ * The per-row color swatch. For a tracked, editable instance it becomes a
+ * popover to override that TRACK's color (applied everywhere the track is drawn,
+ * persisted locally per project). For `[no track]` / read-only rows it's a plain
+ * static swatch. The override is a viewing preference, not a label edit → it
+ * goes through a store action, not the undoable command stack.
+ */
+export function TrackColorSwatch({
+  color,
+  palette,
+  trackName,
+  editable,
+}: {
+  color: RGB;
+  palette: string;
+  trackName: string | null;
+  editable: boolean;
+}) {
+  const setTrackColor = useAppStore((s) => s.setTrackColor);
+  const resetTrackColor = useAppStore((s) => s.resetTrackColor);
+
+  if (!editable || !trackName) {
+    return (
+      <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: rgbToCSS(color) }} />
+    );
+  }
+
+  const presets = PALETTES[palette] ?? PALETTES.standard;
+  return (
+    <Popover>
+      <PopoverTrigger asChild onClick={(e) => e.stopPropagation()}>
+        <button
+          type="button"
+          className="w-3 h-3 rounded-sm cursor-pointer ring-offset-1 ring-offset-background hover:ring-2 hover:ring-ring"
+          style={{ backgroundColor: rgbToCSS(color) }}
+          title="Click to set track color"
+          aria-label={`Set color for track ${trackName}`}
+        />
+      </PopoverTrigger>
+      <PopoverContent
+        className="w-48 p-2"
+        align="start"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-1.5 truncate text-[11px] font-medium text-muted-foreground">
+          Track: {trackName}
+        </div>
+        <div className="mb-2 grid grid-cols-8 gap-1">
+          {presets.map((c, i) => (
+            <button
+              key={i}
+              type="button"
+              className="h-4 w-4 rounded-sm border border-black/10"
+              style={{ backgroundColor: rgbToCSS(c) }}
+              title={rgbToHex(c)}
+              aria-label={`Set track color ${rgbToHex(c)}`}
+              onClick={() => setTrackColor(trackName, rgbToHex(c))}
+            />
+          ))}
+        </div>
+        <div className="flex items-center justify-between gap-2">
+          <label className="flex cursor-pointer items-center gap-1 text-[11px]">
+            <input
+              type="color"
+              value={rgbToHex(color)}
+              onChange={(e) => setTrackColor(trackName, e.target.value)}
+              className="h-5 w-6 cursor-pointer bg-transparent p-0"
+            />
+            Custom
+          </label>
+          <button
+            type="button"
+            className="text-[11px] text-muted-foreground underline hover:text-foreground"
+            onClick={() => resetTrackColor(trackName)}
+          >
+            Reset to auto
+          </button>
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 function InstanceRow({
   instance,
   index,
@@ -119,6 +215,7 @@ function InstanceRow({
   isSelected,
   onSelect,
   palette,
+  trackColorOverrides,
   labels,
   distinctlyColor,
   colorPredicted,
@@ -138,6 +235,7 @@ function InstanceRow({
   isSelected: boolean;
   onSelect: (e: React.MouseEvent) => void;
   palette: string;
+  trackColorOverrides: Record<string, string>;
   labels: Labels | null;
   distinctlyColor: string;
   colorPredicted: boolean;
@@ -162,6 +260,7 @@ function InstanceRow({
     colorPredicted,
     projectHasTracks,
     frameInstanceTracks,
+    trackColorOverrides,
   );
   const trackName = instance.track?.name ?? "[no track]";
   const visibleNodes = instance.nVisible;
@@ -193,9 +292,11 @@ function InstanceRow({
       )}
     >
       <TableCell className="py-0.5 px-2">
-        <div
-          className="w-3 h-3 rounded-sm"
-          style={{ backgroundColor: rgbToCSS(color) }}
+        <TrackColorSwatch
+          color={color}
+          palette={palette}
+          trackName={instance.track?.name ?? null}
+          editable={!!instance.track && !readOnly}
         />
       </TableCell>
       <TableCell className="py-0.5 px-2 text-xs">
@@ -385,6 +486,9 @@ export function InstancesPanel() {
   const palette = useAppStore((s) => s.palette);
   const distinctlyColor = useAppStore((s) => s.distinctlyColor);
   const colorPredicted = useAppStore((s) => s.colorPredicted);
+  const trackColorOverrides = useAppStore((s) =>
+    getActiveTrackOverrides(s.trackColorOverrides, s.projectPath, s.filename),
+  );
   const projectHasTracks = useMemo(
     () => hasAssignedTracks(labels),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -594,6 +698,7 @@ export function InstancesPanel() {
                     isSelected={selectedIndices.has(i)}
                     onSelect={(e) => handleSelect(i, e)}
                     palette={palette}
+                    trackColorOverrides={trackColorOverrides}
                     labels={labels}
                     distinctlyColor={distinctlyColor}
                     colorPredicted={colorPredicted}
