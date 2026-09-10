@@ -11,7 +11,14 @@
  * Pure math lives in instanceSizeCore.ts; the Labels walk in instanceSize.ts —
  * this component is the thin view.
  */
-import { useEffect, useMemo, useState, type MouseEvent } from "react";
+import {
+  useEffect,
+  useMemo,
+  useState,
+  useRef,
+  useCallback,
+  type MouseEvent,
+} from "react";
 import {
   Dialog,
   DialogContent,
@@ -28,17 +35,17 @@ import {
   binIndexOf,
   rotatedSize,
   niceTicks,
-  pickScatterIndices,
 } from "@/lib/analyze/instanceSizeCore";
 
 /**
- * Cap on individually-rendered scatter points. The scatter view draws one SVG
- * node per instance; a dense-inference project has tens of thousands of instances
- * (measured 84k on als2h), which hangs/crashes the WebView. Above this cap we plot
- * all outliers + a uniform sample (see {@link pickScatterIndices}). The histogram
- * view is always bucketed, so it is unaffected.
+ * The scatter view draws EVERY instance on a single <canvas> overlaid on the plot
+ * SVG — one `fillRect` per point — instead of one SVG node per instance. That
+ * handles a dense-inference project (measured 84k instances on als2h) in a single
+ * cheap raster with no per-node WebView cost, so no downsampling is needed. Click
+ * hit-testing finds the nearest point. (The histogram view stays bucketed SVG.)
  */
-const MAX_SCATTER_POINTS = 4000;
+const SCATTER_POINT_RADIUS = 1.6; // half-size of each point's square, in canvas px
+const SCATTER_HIT_RADIUS_PX = 7; // click tolerance to the nearest point, in canvas px
 
 export interface SizeDistributionDialogProps {
   open: boolean;
@@ -120,6 +127,7 @@ export function SizeDistributionDialog({ open, onOpenChange }: SizeDistributionD
   const [xMinInput, setXMinInput] = useState("");
   const [xMaxInput, setXMaxInput] = useState("");
   const [selected, setSelected] = useState<SizedInstance | null>(null);
+  const scatterCanvasRef = useRef<HTMLCanvasElement>(null);
 
   const angle = presetAngle(preset, customAngle);
 
@@ -172,11 +180,6 @@ export function SizeDistributionDialog({ open, onOpenChange }: SizeDistributionD
     if (i >= 0) navigate(sized[i]);
   };
 
-  const onScatterClick = (e: MouseEvent<SVGGElement>) => {
-    const idx = (e.target as SVGElement).getAttribute?.("data-idx");
-    if (idx != null) navigate(sized[Number(idx)]);
-  };
-
   // ---- X domain -------------------------------------------------------------
   const [xDomMin, xDomMax] =
     view === "histogram"
@@ -197,42 +200,80 @@ export function SizeDistributionDialog({ open, onOpenChange }: SizeDistributionD
 
   const xTicks = niceTicks(xDomMin, xDomMax, 6).filter((t) => t >= xDomMin - 1e-9 && t <= xDomMax + 1e-9);
 
-  // Which instances to draw in scatter: all when small, else outliers + a uniform
-  // sample capped at MAX_SCATTER_POINTS so a dense project can't spawn ~N SVG
-  // nodes and crash the WebView. `data-idx` stays the REAL index, so click→navigate
-  // still resolves to the correct instance.
-  const scatterIndices = useMemo(
-    () =>
-      view === "scatter" && n > 0
-        ? pickScatterIndices(rotated, MAX_SCATTER_POINTS)
-        : [],
-    [view, rotated, n],
-  );
-  const scatterDownsampled = scatterIndices.length < n;
-
-  // Scatter points are memoized independently of `selected` so a click only
-  // re-renders the highlight overlay, not all points.
-  const scatterPoints = useMemo(() => {
-    if (view !== "scatter" || n === 0) return null;
-    const median = summary.median > 0 ? summary.median : 1;
-    return scatterIndices.map((i) => {
-      const sz = rotated[i];
-      return (
-        <circle
-          key={i}
-          data-idx={i}
-          cx={xScale(sz)}
-          cy={yScale(i)}
-          r={3}
-          fill={sizeColor(sz / median)}
-          fillOpacity={0.6}
-          style={{ cursor: "pointer" }}
-        />
-      );
-    });
-    // xScale/yScale are derived from these same deps.
+  // Draw EVERY scatter point on a <canvas> overlaid on the plot SVG (one small
+  // fillRect per instance). A single raster handles tens of thousands of points
+  // with no per-node WebView cost, so no downsampling — all instances are shown.
+  // Redraws on data / rotation / domain / resize; never per selection (the
+  // selected ring is a separate SVG element on top).
+  useEffect(() => {
+    if (view !== "scatter") return;
+    const canvas = scatterCanvasRef.current;
+    if (!canvas) return;
+    const draw = () => {
+      const rect = canvas.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return;
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.round(rect.width * dpr);
+      canvas.height = Math.round(rect.height * dpr);
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, rect.width, rect.height);
+      if (n === 0) return;
+      // The canvas covers the same box the SVG viewBox scales into, so map
+      // viewBox units → canvas px by the box ratio.
+      const sx = rect.width / VB_W;
+      const sy = rect.height / VB_H;
+      const median = summary.median > 0 ? summary.median : 1;
+      const r = SCATTER_POINT_RADIUS;
+      const d = r * 2;
+      ctx.globalAlpha = 0.6;
+      for (let i = 0; i < n; i++) {
+        const sz = rotated[i];
+        if (!Number.isFinite(sz)) continue;
+        ctx.fillStyle = sizeColor(sz / median);
+        ctx.fillRect(xScale(sz) * sx - r, yScale(i) * sy - r, d, d);
+      }
+      ctx.globalAlpha = 1;
+    };
+    draw();
+    const ro = new ResizeObserver(draw);
+    ro.observe(canvas);
+    return () => ro.disconnect();
+    // xScale/yScale derive from the scalar domain deps listed here.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, scatterIndices, rotated, summary.median, xDomMin, xDomMax, yDomMax]);
+  }, [view, open, n, rotated, summary.median, xDomMin, xSpan, yDomMax]);
+
+  // Click hit-test: the nearest point within a small pixel radius → navigate.
+  // O(n) over all points, one-time per click — cheap even at 84k.
+  const onScatterCanvasClick = useCallback(
+    (e: MouseEvent<HTMLCanvasElement>) => {
+      const canvas = scatterCanvasRef.current;
+      if (!canvas || n === 0) return;
+      const rect = canvas.getBoundingClientRect();
+      const cx = e.clientX - rect.left;
+      const cy = e.clientY - rect.top;
+      const sx = rect.width / VB_W;
+      const sy = rect.height / VB_H;
+      let best = -1;
+      let bestD = SCATTER_HIT_RADIUS_PX * SCATTER_HIT_RADIUS_PX;
+      for (let i = 0; i < n; i++) {
+        const sz = rotated[i];
+        if (!Number.isFinite(sz)) continue;
+        const dx = xScale(sz) * sx - cx;
+        const dy = yScale(i) * sy - cy;
+        const dd = dx * dx + dy * dy;
+        if (dd <= bestD) {
+          bestD = dd;
+          best = i;
+        }
+      }
+      if (best >= 0) navigate(sized[best]);
+    },
+    // xScale/yScale derive from these scalar deps; navigate/sized captured.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [n, rotated, sized, xDomMin, xSpan, yDomMax],
+  );
 
   const selectedIdx = selected ? sized.indexOf(selected) : -1;
   const selectedRotated =
@@ -362,7 +403,7 @@ export function SizeDistributionDialog({ open, onOpenChange }: SizeDistributionD
             </div>
 
             {/* Plot (white background, like the training config window) */}
-            <div className="rounded border border-border/60 bg-white">
+            <div className="relative rounded border border-border/60 bg-white">
               <svg
                 viewBox={`0 0 ${VB_W} ${VB_H}`}
                 className="w-full"
@@ -372,11 +413,7 @@ export function SizeDistributionDialog({ open, onOpenChange }: SizeDistributionD
                 <title>{`Size ${view} (n=${n})`}</title>
                 {/* Title */}
                 <text x={VB_W / 2} y={16} textAnchor="middle" fill={C.title} fontSize={12} fontWeight={600}>
-                  {histMode ? "Size Histogram" : "Size Distribution"} (n={n}
-                  {!histMode && scatterDownsampled
-                    ? `, showing ${scatterIndices.length} — outliers + sample`
-                    : ""}
-                  )
+                  {histMode ? "Size Histogram" : "Size Distribution"} (n={n})
                 </text>
 
                 {/* Y grid + ticks */}
@@ -441,9 +478,8 @@ export function SizeDistributionDialog({ open, onOpenChange }: SizeDistributionD
                         </rect>
                       );
                     })
-                  : (
-                    <g onClick={onScatterClick}>{scatterPoints}</g>
-                  )}
+                  : /* Scatter points are drawn on the overlay <canvas> below. */
+                    null}
 
                 {/* Selected-point highlight (scatter only) */}
                 {!histMode && selectedIdx >= 0 && (
@@ -495,6 +531,18 @@ export function SizeDistributionDialog({ open, onOpenChange }: SizeDistributionD
                   );
                 })}
               </svg>
+              {/* All scatter points, drawn on a canvas overlaid on the SVG plot
+                  (same box → same coordinates). Only in scatter mode; it captures
+                  the clicks (nearest-point → navigate). Axes/labels/ref-lines show
+                  through the transparent areas. */}
+              {view === "scatter" && (
+                <canvas
+                  ref={scatterCanvasRef}
+                  className="absolute inset-0 h-full w-full cursor-pointer"
+                  onClick={onScatterCanvasClick}
+                  aria-label="Instance size scatter points"
+                />
+              )}
             </div>
 
             {/* Selected instance + statistics */}
