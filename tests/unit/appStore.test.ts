@@ -4,6 +4,7 @@
 
 import { describe, it, expect, beforeEach } from "../bun-test";
 import { useAppStore, PERSISTED_KEYS } from "@/stores/appStore";
+import { MAX_TRACK_COLOR_PROJECTS } from "@/lib/trackColorOverrides";
 import { DEFAULT_PANEL_ORDER, DEFAULT_OPEN_PANELS } from "@/lib/panelLayout";
 import type { Labels, Video, Skeleton, Instance } from "@/types";
 
@@ -1136,5 +1137,45 @@ describe("track color overrides", () => {
     store.setTrackColor("track_0", "#22c55e");
     store.resetTrackColor("track_0");
     expect(useAppStore.getState().trackColorOverrides).toEqual({});
+  });
+});
+
+describe("track color overrides — §3 edge cases", () => {
+  beforeEach(() => resetStore());
+
+  it("renameTrackColor migrates the override to the new name", () => {
+    useAppStore.setState({
+      projectPath: "/p.slp",
+      filename: "p.slp",
+      trackColorOverrides: { "/p.slp": { old: "#abcdef" } },
+    });
+    useAppStore.getState().renameTrackColor("old", "new");
+    expect(useAppStore.getState().trackColorOverrides["/p.slp"]).toEqual({ new: "#abcdef" });
+  });
+
+  it("setLabels prunes overrides for tracks missing from the loaded project", () => {
+    useAppStore.setState({
+      projectPath: "/p.slp",
+      filename: "p.slp",
+      trackColorOverrides: { "/p.slp": { keep: "#111111", gone: "#222222" } },
+    });
+    const labels = mockLabels({ tracks: [{ name: "keep" }] as unknown as Labels["tracks"] });
+    useAppStore.getState().setLabels(labels, "p.slp", "/p.slp");
+    expect(useAppStore.getState().trackColorOverrides["/p.slp"]).toEqual({ keep: "#111111" });
+  });
+
+  it("caps retained projects (LRU) when a new project pushes past the limit", () => {
+    const seed: Record<string, Record<string, string>> = {};
+    for (let i = 0; i < MAX_TRACK_COLOR_PROJECTS; i++) seed[`p${i}`] = { t: "#000000" };
+    useAppStore.setState({
+      projectPath: "/new.slp",
+      filename: "new.slp",
+      trackColorOverrides: seed,
+    });
+    useAppStore.getState().setTrackColor("t", "#ffffff");
+    const ov = useAppStore.getState().trackColorOverrides;
+    expect(Object.keys(ov).length).toBe(MAX_TRACK_COLOR_PROJECTS);
+    expect(ov["/new.slp"]).toBeDefined();
+    expect(ov["p0"]).toBeUndefined(); // oldest evicted
   });
 });

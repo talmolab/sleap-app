@@ -5,6 +5,9 @@ import {
   EMPTY_TRACK_OVERRIDES,
   setTrackColorOverride,
   resetTrackColorOverride,
+  renameTrackColorOverride,
+  pruneTrackColorOverrides,
+  capTrackColorOverrides,
 } from "@/lib/trackColorOverrides";
 
 describe("resolveProjectKey", () => {
@@ -103,5 +106,73 @@ describe("resetTrackColorOverride", () => {
     expect(resetTrackColorOverride(prev, "a.slp", "nope")).toEqual(prev);
     expect(resetTrackColorOverride(prev, "zzz.slp", "track_0")).toEqual(prev);
     expect(prev).toEqual(snapshot);
+  });
+});
+
+describe("renameTrackColorOverride", () => {
+  it("moves an override from the old name to the new name", () => {
+    expect(renameTrackColorOverride({ "a.slp": { t0: "#111111" } }, "a.slp", "t0", "t1")).toEqual({
+      "a.slp": { t1: "#111111" },
+    });
+  });
+
+  it("lets the renamed track's color win if the new name already had one", () => {
+    expect(
+      renameTrackColorOverride({ "a.slp": { t0: "#111111", t1: "#222222" } }, "a.slp", "t0", "t1"),
+    ).toEqual({ "a.slp": { t1: "#111111" } });
+  });
+
+  it("is a no-op (same ref) when the old name has no override", () => {
+    const prev = { "a.slp": { t0: "#111111" } };
+    expect(renameTrackColorOverride(prev, "a.slp", "tX", "tY")).toBe(prev);
+    expect(renameTrackColorOverride(prev, "zzz", "t0", "t1")).toBe(prev);
+  });
+});
+
+describe("pruneTrackColorOverrides", () => {
+  it("drops overrides whose track name is no longer valid", () => {
+    expect(
+      pruneTrackColorOverrides({ "a.slp": { t0: "#111111", gone: "#222222" } }, "a.slp", ["t0", "t1"]),
+    ).toEqual({ "a.slp": { t0: "#111111" } });
+  });
+
+  it("drops the project entry when everything is pruned", () => {
+    expect(
+      pruneTrackColorOverrides({ "a.slp": { gone: "#222222" }, "b.slp": { t0: "#333333" } }, "a.slp", []),
+    ).toEqual({ "b.slp": { t0: "#333333" } });
+  });
+
+  it("is a no-op (same ref) when nothing needs pruning or the project is absent", () => {
+    const prev = { "a.slp": { t0: "#111111" } };
+    expect(pruneTrackColorOverrides(prev, "a.slp", ["t0"])).toBe(prev);
+    expect(pruneTrackColorOverrides(prev, "zzz", [])).toBe(prev);
+  });
+});
+
+describe("capTrackColorOverrides", () => {
+  it("returns the same map when under the cap", () => {
+    const prev = { p1: { t0: "#111111" }, p2: { t0: "#222222" } };
+    expect(capTrackColorOverrides(prev, 5)).toBe(prev);
+  });
+
+  it("keeps the most-recent N projects (by key insertion order), evicting oldest", () => {
+    const prev = {
+      p1: { t: "#111111" },
+      p2: { t: "#222222" },
+      p3: { t: "#333333" },
+      p4: { t: "#444444" },
+    };
+    expect(capTrackColorOverrides(prev, 2)).toEqual({
+      p3: { t: "#333333" },
+      p4: { t: "#444444" },
+    });
+  });
+});
+
+describe("setTrackColorOverride recency", () => {
+  it("bumps the touched project to most-recent (last key)", () => {
+    const prev = { p1: { t0: "#111111" }, p2: { t0: "#222222" } };
+    const next = setTrackColorOverride(prev, "p1", "t1", "#333333");
+    expect(Object.keys(next)).toEqual(["p2", "p1"]);
   });
 });

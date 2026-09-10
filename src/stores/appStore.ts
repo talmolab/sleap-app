@@ -29,6 +29,9 @@ import {
   resolveProjectKey,
   setTrackColorOverride,
   resetTrackColorOverride,
+  renameTrackColorOverride,
+  pruneTrackColorOverrides,
+  capTrackColorOverrides,
 } from "@/lib/trackColorOverrides";
 import type { QcMode } from "@/lib/instanceVisibility";
 import type { CropRect } from "@/lib/imageFeaturesCore";
@@ -563,6 +566,8 @@ export interface AppState {
   setTrackColor: (trackName: string, hex: string) => void;
   /** Clear a track's color override → it reverts to the positional palette color. */
   resetTrackColor: (trackName: string) => void;
+  /** Migrate a track's color override across a rename (called by SetTrackName). */
+  renameTrackColor: (oldName: string, newName: string) => void;
   setLoading: (loading: boolean, message?: string, progress?: number) => void;
   setInferenceDialogOpen: (open: boolean) => void;
   setNewProjectDialogOpen: (open: boolean) => void;
@@ -901,7 +906,7 @@ export const useAppStore = create<AppState>()(
       backendSwapNonce: 0,
 
       // Actions
-      setLabels: (labels, filename, projectPath, projectFile, projectFileHandle) =>
+      setLabels: (labels, filename, projectPath, projectFile, projectFileHandle) => {
         set((state) => {
           state.labels = labels;
           state.filename = filename ?? null;
@@ -928,7 +933,20 @@ export const useAppStore = create<AppState>()(
           // setLabels sets video/frame directly (not via setVideo), so drop any
           // stale identity-keyed transients from the previous project.
           clearTransientVisibility(state);
-        }),
+        });
+        // Prune this project's color overrides for tracks that no longer exist
+        // (e.g. deleted between sessions). Uses committed (plain) state; no-op
+        // when nothing is stale.
+        const s = get();
+        const key = resolveProjectKey(s.projectPath, s.filename);
+        const validNames = (labels.tracks ?? []).map((t) => t.name);
+        const pruned = pruneTrackColorOverrides(s.trackColorOverrides, key, validNames);
+        if (pruned !== s.trackColorOverrides) {
+          set((state) => {
+            state.trackColorOverrides = pruned;
+          });
+        }
+      },
 
       setVideo: (video) =>
         set((state) => {
@@ -1199,9 +1217,13 @@ export const useAppStore = create<AppState>()(
       setTrackColor: (trackName, hex) => {
         // `get()` returns committed (plain, non-draft) state, so the pure
         // reducer operates on plain data; the result is assigned to the draft.
+        // Cap the retained projects (LRU) so the persisted blob can't grow
+        // unbounded (the browser has no "close project" signal).
         const s = get();
         const key = resolveProjectKey(s.projectPath, s.filename);
-        const next = setTrackColorOverride(s.trackColorOverrides, key, trackName, hex);
+        const next = capTrackColorOverrides(
+          setTrackColorOverride(s.trackColorOverrides, key, trackName, hex),
+        );
         set((state) => {
           state.trackColorOverrides = next;
         });
@@ -1211,6 +1233,18 @@ export const useAppStore = create<AppState>()(
         const s = get();
         const key = resolveProjectKey(s.projectPath, s.filename);
         const next = resetTrackColorOverride(s.trackColorOverrides, key, trackName);
+        set((state) => {
+          state.trackColorOverrides = next;
+        });
+      },
+
+      renameTrackColor: (oldName, newName) => {
+        // Keep a track's color override attached across a rename (overrides are
+        // keyed by track name). Called from the SetTrackName command.
+        const s = get();
+        const key = resolveProjectKey(s.projectPath, s.filename);
+        const next = renameTrackColorOverride(s.trackColorOverrides, key, oldName, newName);
+        if (next === s.trackColorOverrides) return;
         set((state) => {
           state.trackColorOverrides = next;
         });

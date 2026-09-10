@@ -36,17 +36,88 @@ export function getActiveTrackOverrides(
   return overrides[resolveProjectKey(projectPath, filename)] ?? EMPTY_TRACK_OVERRIDES;
 }
 
-/** Immutably set `trackName`'s override to `hex` under `projectKey`. */
+/** Max number of projects whose overrides are retained (LRU by recency). */
+export const MAX_TRACK_COLOR_PROJECTS = 50;
+
+/**
+ * Immutably set `trackName`'s override to `hex` under `projectKey`, bumping that
+ * project to most-recent (last key) so the LRU cap evicts genuinely stale
+ * projects first. See {@link capTrackColorOverrides}.
+ */
 export function setTrackColorOverride(
   overrides: Record<string, Record<string, string>>,
   projectKey: string,
   trackName: string,
   hex: string,
 ): Record<string, Record<string, string>> {
+  const { [projectKey]: existing, ...rest } = overrides;
   return {
-    ...overrides,
-    [projectKey]: { ...(overrides[projectKey] ?? {}), [trackName]: hex },
+    ...rest,
+    [projectKey]: { ...(existing ?? {}), [trackName]: hex },
   };
+}
+
+/**
+ * Immutably move a track's override from `oldName` to `newName` (used when a
+ * track is renamed, so its color follows). The renamed track's color wins if
+ * `newName` already had one. No-op (same reference) when `oldName` has none.
+ */
+export function renameTrackColorOverride(
+  overrides: Record<string, Record<string, string>>,
+  projectKey: string,
+  oldName: string,
+  newName: string,
+): Record<string, Record<string, string>> {
+  const submap = overrides[projectKey];
+  if (!submap || !(oldName in submap)) return overrides;
+  const nextSub = { ...submap };
+  const val = nextSub[oldName];
+  delete nextSub[oldName];
+  nextSub[newName] = val;
+  return { ...overrides, [projectKey]: nextSub };
+}
+
+/**
+ * Immutably drop overrides for track names not in `validNames` (used on project
+ * load to clear entries for deleted tracks). Drops the project entry when empty.
+ * No-op (same reference) when nothing needs pruning or the project is absent.
+ */
+export function pruneTrackColorOverrides(
+  overrides: Record<string, Record<string, string>>,
+  projectKey: string,
+  validNames: readonly string[],
+): Record<string, Record<string, string>> {
+  const submap = overrides[projectKey];
+  if (!submap) return overrides;
+  const valid = new Set(validNames);
+  const kept: Record<string, string> = {};
+  let removed = false;
+  for (const [name, hex] of Object.entries(submap)) {
+    if (valid.has(name)) kept[name] = hex;
+    else removed = true;
+  }
+  if (!removed) return overrides;
+  const next = { ...overrides };
+  if (Object.keys(kept).length === 0) delete next[projectKey];
+  else next[projectKey] = kept;
+  return next;
+}
+
+/**
+ * Immutably keep only the most-recent `cap` projects (by key order, which
+ * {@link setTrackColorOverride} maintains as recency), evicting the oldest.
+ * No-op (same reference) when under the cap.
+ */
+export function capTrackColorOverrides(
+  overrides: Record<string, Record<string, string>>,
+  cap: number = MAX_TRACK_COLOR_PROJECTS,
+): Record<string, Record<string, string>> {
+  const keys = Object.keys(overrides);
+  if (keys.length <= cap) return overrides;
+  const keep = keys.slice(keys.length - cap);
+  const next: Record<string, Record<string, string>> = {};
+  for (const k of keep) next[k] = overrides[k];
+  return next;
 }
 
 /**
