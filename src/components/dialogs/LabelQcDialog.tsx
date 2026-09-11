@@ -27,6 +27,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useAppStore } from "@/stores/appStore";
+import { dirtyFrameTracker } from "@/lib/autosaveDirty";
 import { runLabelQc, type QcFinding, type QcIssueKind } from "@/lib/analyze/labelQc";
 import { mergeSuggestions } from "@/lib/suggestionEdits";
 import type { SuggestionFrame } from "@/types";
@@ -84,6 +85,8 @@ export function LabelQcDialog({ open, onOpenChange }: LabelQcDialogProps) {
     }
     labels.suggestions = mergeSuggestions(labels.suggestions, incoming);
     useAppStore.getState().markChanged();
+    // Changed project-level suggestions (not a frame's instances) → structural.
+    dirtyFrameTracker.markStructural();
     toast.success(`Added ${incoming.length} flagged frame(s) to Suggestions`);
   };
 

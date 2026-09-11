@@ -47,17 +47,15 @@ const INCREMENTAL_APPEND_DEBOUNCE_MS = 1500;
 /** The draft path we've written a full BASE snapshot for this session. A delta
  *  append is only valid once its base exists (see runIncrementalAutosave). */
 let baseDraftWrittenPath: string | null = null;
-/** Store editSeq + tracker observations at the last incremental write, so the
- *  next tick can detect edits that bypassed the command layer (untracked). */
-let lastWriteEditSeq = 0;
-let lastWriteObservations = 0;
 
 /**
  * Run one incremental (delta-journal) autosave for the current draft, behind the
- * feature flag's caller gate. Drains the dirty-frame tracker, guards against
- * untracked edits (editSeq advanced more than the tracker observed → the dirty
- * set may be incomplete → force a full base rewrite), and drives the journal
- * store. Returns the action taken. `writeBase` performs today's full draft save.
+ * feature flag's caller gate. Drains the dirty-frame tracker and drives the
+ * journal store. The dirty set is trusted to be complete: `markChanged` records
+ * the active frame for EVERY edit (including ones that bypass the command layer,
+ * like a drag commit), and edits that change project structure mark the tracker
+ * structural — so a drain of nothing-structural with frames is a safe append.
+ * Returns the action taken. `writeBase` performs today's full draft save.
  */
 async function runIncrementalTick(
   labels: Labels,
@@ -65,16 +63,7 @@ async function runIncrementalTick(
   store: JournalStore,
   writeBase: () => Promise<void>,
 ): Promise<FireAction> {
-  const editSeqNow = useAppStore.getState().editSeq;
-  const obsNow = dirtyFrameTracker.observations;
   const drained = dirtyFrameTracker.drain();
-  const rawSince = editSeqNow - lastWriteEditSeq;
-  const obsSince = obsNow - lastWriteObservations;
-  if (rawSince !== obsSince) {
-    // An edit bumped editSeq without a matching command-layer observation (a
-    // dialog / direct markChanged) — the dirty set may be incomplete, so be safe.
-    drained.needsFullSnapshot = true;
-  }
   const action = await runIncrementalAutosave({
     labels,
     drained,
@@ -83,10 +72,6 @@ async function runIncrementalTick(
     hasBase: baseDraftWrittenPath === draftPath,
     journalBytes: await store.size(),
   });
-  // Advance the baseline to this tick (edits during the async write are counted
-  // next tick). On a full write, this draft now has a base.
-  lastWriteEditSeq = editSeqNow;
-  lastWriteObservations = obsNow;
   if (action === "full") baseDraftWrittenPath = draftPath;
   return action;
 }
