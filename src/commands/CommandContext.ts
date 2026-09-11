@@ -13,6 +13,7 @@ import type { Skeleton, SuggestionFrame, Track, Video } from "../types";
 import type { Command } from "./types";
 import { toast } from "@/lib/notify";
 import { humanizeCommandName } from "@/lib/humanizeCommand";
+import { dirtyFrameTracker } from "@/lib/autosaveDirty";
 
 /** Record of an executed command for change tracking. */
 export interface ChangeRecord {
@@ -275,6 +276,9 @@ export class CommandContext {
       this.undoStack.shift();
     }
     this.redoStack.length = 0;
+    // Record which frames a skip-auto-snapshot command dirtied (incremental
+    // autosave). Reads only frame identity off the snapshot — no re-serialize.
+    dirtyFrameTracker.markFromSnapshot(snapshot);
   }
 
   /** Restore state from a snapshot. Returns a snapshot of the state being replaced. */
@@ -443,6 +447,10 @@ export class CommandContext {
     labels.reindex();
 
     this.state.markChanged();
+    // Undo/redo bypass execute()'s dirty hook, so mark the restored frames dirty
+    // here — otherwise an undone/redone edit would be missed by the incremental
+    // autosave. The snapshot's scope IS the set of frames the restore rewrote.
+    dirtyFrameTracker.markFromSnapshot(snapshot);
     return before;
   }
 
@@ -458,9 +466,10 @@ export class CommandContext {
   ): Promise<void> {
     // Snapshot before mutating commands for undo
     // (commands with skipAutoSnapshot handle their own snapshots)
+    let autoSnapshot: UndoSnapshot | null = null;
     if (this.isMutating(command) && !command.skipAutoSnapshot) {
-      const snapshot = this.takeSnapshot(command.name);
-      this.undoStack.push(snapshot);
+      autoSnapshot = this.takeSnapshot(command.name);
+      this.undoStack.push(autoSnapshot);
       if (this.undoStack.length > MAX_UNDO_STACK) {
         this.undoStack.shift();
       }
@@ -469,6 +478,11 @@ export class CommandContext {
     }
 
     await command.execute(this, params);
+
+    // Record which frames this edit dirtied for the incremental autosave. The
+    // auto-snapshot (taken above) already carries the affected-frame identity;
+    // skip-auto-snapshot commands mark via their own pushUndoSnapshot instead.
+    if (autoSnapshot) dirtyFrameTracker.markFromSnapshot(autoSnapshot);
 
     // Track the change
     this.changeStack.push({
