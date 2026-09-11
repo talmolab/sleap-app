@@ -15,14 +15,81 @@
  *    lingering draft means unsaved work when the app last stopped → recover prompt
  *    (see draftRestoreTauri.ts).
  */
+import type { Labels } from "@talmolab/sleap-io.js";
 import { useAppStore } from "@/stores/appStore";
 import { isTauri } from "@/lib/platform";
 import { decideBrowserSaveAction } from "@/lib/saveRouting";
 import { isOpfsSaveSupported } from "@/lib/saveEmbeddedPkgOpfs";
-import { newDraftPath, isLabelsDraftSupported } from "@/lib/labelsDraft";
+import {
+  newDraftPath,
+  isLabelsDraftSupported,
+  makeOpfsJournalStore,
+} from "@/lib/labelsDraft";
 import { recordDraftSave } from "@/lib/draftManifest";
-import { newTauriDraftPath, recordTauriDraftSave } from "@/lib/tauriDraft";
+import {
+  newTauriDraftPath,
+  recordTauriDraftSave,
+  makeTauriJournalStore,
+} from "@/lib/tauriDraft";
 import { computeAutosaveDebounceMs } from "@/lib/autosaveDebounce";
+import { isIncrementalAutosaveEnabled } from "@/lib/autosaveFlags";
+import { dirtyFrameTracker } from "@/lib/autosaveDirty";
+import {
+  runIncrementalAutosave,
+  type FireAction,
+  type JournalStore,
+} from "@/lib/incrementalAutosave";
+
+/** Debounce for cheap delta appends — far shorter than a full-snapshot write,
+ *  so incremental autosave can persist finer (better crash recovery). */
+const INCREMENTAL_APPEND_DEBOUNCE_MS = 1500;
+
+/** The draft path we've written a full BASE snapshot for this session. A delta
+ *  append is only valid once its base exists (see runIncrementalAutosave). */
+let baseDraftWrittenPath: string | null = null;
+/** Store editSeq + tracker observations at the last incremental write, so the
+ *  next tick can detect edits that bypassed the command layer (untracked). */
+let lastWriteEditSeq = 0;
+let lastWriteObservations = 0;
+
+/**
+ * Run one incremental (delta-journal) autosave for the current draft, behind the
+ * feature flag's caller gate. Drains the dirty-frame tracker, guards against
+ * untracked edits (editSeq advanced more than the tracker observed → the dirty
+ * set may be incomplete → force a full base rewrite), and drives the journal
+ * store. Returns the action taken. `writeBase` performs today's full draft save.
+ */
+async function runIncrementalTick(
+  labels: Labels,
+  draftPath: string,
+  store: JournalStore,
+  writeBase: () => Promise<void>,
+): Promise<FireAction> {
+  const editSeqNow = useAppStore.getState().editSeq;
+  const obsNow = dirtyFrameTracker.observations;
+  const drained = dirtyFrameTracker.drain();
+  const rawSince = editSeqNow - lastWriteEditSeq;
+  const obsSince = obsNow - lastWriteObservations;
+  if (rawSince !== obsSince) {
+    // An edit bumped editSeq without a matching command-layer observation (a
+    // dialog / direct markChanged) — the dirty set may be incomplete, so be safe.
+    drained.needsFullSnapshot = true;
+  }
+  const action = await runIncrementalAutosave({
+    labels,
+    drained,
+    store,
+    writeBase,
+    hasBase: baseDraftWrittenPath === draftPath,
+    journalBytes: await store.size(),
+  });
+  // Advance the baseline to this tick (edits during the async write are counted
+  // next tick). On a full write, this draft now has a base.
+  lastWriteEditSeq = editSeqNow;
+  lastWriteObservations = obsNow;
+  if (action === "full") baseDraftWrittenPath = draftPath;
+  return action;
+}
 
 /** Duration (ms) of the most recent draft write, measured around the actual
  *  save. Seeds the adaptive debounce so a slow (large-project) write backs off
@@ -103,26 +170,47 @@ export async function maybeAutosaveLabelsDraft(
     const draftPath =
       store.labelsDraftPath ?? newDraftPath(store.filename ?? undefined);
     store.set("labelsDraftPath", draftPath);
-    const writeT0 = performance.now();
-    await recordDraftSave(labels, {
-      draftPath,
-      sourceHandle: store.projectFileHandle,
-      displayName: store.filename ?? "project",
-      savedAt: Date.now(),
-      // Identity snapshot of the source we based this draft on, so restore can
-      // detect if the on-disk file diverges before a later in-place ⌘S.
-      sourceSize: store.projectFile?.size,
-      sourceLastModified: store.projectFile?.lastModified,
-    });
-    lastAutosaveWriteMs = performance.now() - writeT0;
-    store.set("pendingExport", true);
-    // Mark clean only when the draft is the primary save target AND no edit
-    // landed mid-write. A mid-write edit already re-armed via the editSeq
-    // subscription; a small file stays dirty until ⌘S writes disk.
-    if (targetIsDraft && useAppStore.getState().editSeq === seqAtStart) {
-      store.clearChanges();
+    const writeBase = async (): Promise<void> => {
+      const writeT0 = performance.now();
+      await recordDraftSave(labels, {
+        draftPath,
+        sourceHandle: store.projectFileHandle,
+        displayName: store.filename ?? "project",
+        savedAt: Date.now(),
+        // Identity snapshot of the source we based this draft on, so restore can
+        // detect if the on-disk file diverges before a later in-place ⌘S.
+        sourceSize: store.projectFile?.size,
+        sourceLastModified: store.projectFile?.lastModified,
+      });
+      lastAutosaveWriteMs = performance.now() - writeT0;
+    };
+
+    let persisted = false;
+    if (isIncrementalAutosaveEnabled()) {
+      const action = await runIncrementalTick(
+        labels,
+        draftPath,
+        makeOpfsJournalStore(draftPath),
+        writeBase,
+      );
+      persisted = action !== "noop";
+      console.log(`[autosave] incremental ${action} ->`, draftPath);
+    } else {
+      await writeBase();
+      persisted = true;
+      console.log("[autosave] labels draft saved ->", draftPath);
     }
-    console.log("[autosave] labels draft saved ->", draftPath);
+
+    if (persisted) {
+      store.set("pendingExport", true);
+      // Mark clean only when the draft is the primary save target AND no edit
+      // landed mid-write. A mid-write edit already re-armed via the editSeq
+      // subscription; a small file stays dirty until ⌘S writes disk. Applies to
+      // a full OR a delta write (both persist the current labels for a large pkg).
+      if (targetIsDraft && useAppStore.getState().editSeq === seqAtStart) {
+        store.clearChanges();
+      }
+    }
   } catch (err) {
     // Keep hasChanges set + re-arm so a later tick retries.
     console.warn("[autosave] failed:", err);
@@ -178,19 +266,32 @@ async function maybeAutosaveTauriDraft(reArm?: () => void): Promise<void> {
       }
     }
 
-    const writeT0 = performance.now();
-    await recordTauriDraftSave(labels, {
-      draftPath,
-      projectPath: store.projectPath,
-      displayName: store.filename ?? "project",
-      savedAt: Date.now(),
-      sourceSize,
-      sourceLastModified,
-    });
-    lastAutosaveWriteMs = performance.now() - writeT0;
+    const writeBase = async (): Promise<void> => {
+      const writeT0 = performance.now();
+      await recordTauriDraftSave(labels, {
+        draftPath,
+        projectPath: store.projectPath,
+        displayName: store.filename ?? "project",
+        savedAt: Date.now(),
+        sourceSize,
+        sourceLastModified,
+      });
+      lastAutosaveWriteMs = performance.now() - writeT0;
+    };
     // NOTE: intentionally NO store.clearChanges() — desktop ⌘S owns the disk
     // file; the draft is only a net, so the project stays dirty until ⌘S.
-    console.log("[autosave] Tauri labels draft saved ->", draftPath);
+    if (isIncrementalAutosaveEnabled()) {
+      const action = await runIncrementalTick(
+        labels,
+        draftPath,
+        makeTauriJournalStore(draftPath),
+        writeBase,
+      );
+      console.log(`[autosave] Tauri incremental ${action} ->`, draftPath);
+    } else {
+      await writeBase();
+      console.log("[autosave] Tauri labels draft saved ->", draftPath);
+    }
   } catch (err) {
     console.warn("[autosave] Tauri draft failed:", err);
     if (reArm) reArm();
@@ -224,7 +325,14 @@ export function setupLabelsAutosave(): () => void {
     // interaction (the "freeze on click"). Estimated from the labeled-frame
     // count, refined by the last measured write.
     const frameCount = useAppStore.getState().labels?.labeledFrames.length ?? 0;
-    const delay = computeAutosaveDebounceMs(frameCount, lastAutosaveWriteMs);
+    // Incremental appends are cheap → a short fixed debounce (finer recovery); a
+    // full snapshot (flag off, or a pending structural change) keeps the adaptive
+    // backoff so a large re-serialize doesn't fire right after an edit-pause.
+    const willAppend =
+      isIncrementalAutosaveEnabled() && !dirtyFrameTracker.needsFullSnapshot;
+    const delay = willAppend
+      ? INCREMENTAL_APPEND_DEBOUNCE_MS
+      : computeAutosaveDebounceMs(frameCount, lastAutosaveWriteMs);
     timer = setTimeout(() => {
       if (autosaveInteracting) {
         arm(); // defer: never serialize mid node-drag gesture (#329)
