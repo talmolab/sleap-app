@@ -10,6 +10,7 @@
 import { describe, it, expect } from "../bun-test";
 import { loadSlp } from "@talmolab/sleap-io.js";
 import { scoreLabelsAnomaly } from "@/lib/analyze/qc/anomaly";
+import { makeQCConfig } from "@/lib/analyze/qc/config";
 import type { Labels } from "@/types";
 
 const loadFixture = async () =>
@@ -49,6 +50,20 @@ describe("scoreLabelsAnomaly", () => {
     });
     expect(r.instances).toHaveLength(0);
     expect(r.featureNames).toHaveLength(18);
+  });
+
+  it("caps the fit reference on large files but still scores ALL instances", async () => {
+    // maxReferenceSize 10 << 140 instances -> the fit set is sampled, every
+    // instance is still scored and gets a valid [0,1] score.
+    const r = scoreLabelsAnomaly(await loadFixture(), {
+      config: makeQCConfig({ maxReferenceSize: 10 }),
+    });
+    expect(r.instances).toHaveLength(140);
+    expect(r.featureNames).toHaveLength(18);
+    for (const inst of r.instances) {
+      expect(inst.score).toBeGreaterThanOrEqual(0);
+      expect(inst.score).toBeLessThanOrEqual(1);
+    }
   });
 
   it("throws when the labels have no skeleton", () => {

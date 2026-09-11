@@ -47,6 +47,14 @@ export interface AnomalyOptions {
   getInstances?: (lf: LabeledFrame) => Instance[];
 }
 
+/** Evenly-spaced boolean mask selecting exactly `max` of `n` instances. */
+function capReference(n: number, max: number): boolean[] {
+  const out = new Array<boolean>(n).fill(false);
+  const stride = n / max;
+  for (let k = 0; k < max; k++) out[Math.floor(k * stride)] = true;
+  return out;
+}
+
 /** Fit the QC detector over `labels` and score every (selected) instance. */
 export function scoreLabelsAnomaly(
   labels: Labels,
@@ -70,7 +78,19 @@ export function scoreLabelsAnomaly(
     }
   });
 
-  const det = new LabelQCDetector(config).fit({ instances: allPoses, analyzer });
+  // Large files: the baseline stats / NN reference only need a representative
+  // SAMPLE, and the NN reference is O(ref²). Cap the fit set so huge files stay
+  // feasible — ALL instances are still scored against this reference (mirrors
+  // the reference's ensureFeatures/capReference).
+  const max = config.maxReferenceSize ?? 4000;
+  const fitMask =
+    allPoses.length > max ? capReference(allPoses.length, max) : null;
+
+  const det = new LabelQCDetector(config).fit({
+    instances: allPoses,
+    analyzer,
+    fitMask,
+  });
   const scorer = det.detector; // set by fit()
   const { featureNames, rawMatrix, cleanMatrix } = det;
 
