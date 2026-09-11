@@ -26,6 +26,7 @@ import {
   serializeLabelsDraft,
 } from "@/lib/labelsDraft";
 import { videoSignature } from "@/lib/videoGraft";
+import type { JournalStore } from "@/lib/incrementalAutosave";
 import {
   type TauriDraftFs,
   type TauriDraftManifestEntry,
@@ -150,15 +151,18 @@ export async function recordTauriDraftSave(
   );
 }
 
-/** Best-effort removal of a draft: delete its `.slp` AND drop its manifest entry
- *  (a missing file / entry is not an error, so this is idempotent). Called on a
- *  successful real disk save, project replace/discard, and decline-restore. */
+/** Best-effort removal of a draft: delete its `.slp`, its incremental journal
+ *  sibling, AND drop its manifest entry (a missing file / entry is not an error,
+ *  so this is idempotent). Called on a successful real disk save, project
+ *  replace/discard, and decline-restore. */
 export async function removeTauriDraft(draftPath: string): Promise<void> {
   try {
     const fs = await tauriDraftFs();
     const dir = await draftsDir();
     const mpath = await manifestPath();
     if (await fs.exists(draftPath)) await fs.remove(draftPath);
+    const jp = tauriJournalPath(draftPath);
+    if (await fs.exists(jp)) await fs.remove(jp);
     const entries = await readManifestWithFs(fs, mpath);
     await writeManifestWithFs(
       fs,
@@ -169,6 +173,55 @@ export async function removeTauriDraft(draftPath: string): Promise<void> {
   } catch (err) {
     console.warn("[tauriDraft] failed to remove draft:", err);
   }
+}
+
+// --- Incremental-autosave journal (Tauri) ------------------------------------
+
+/** Disk path of the delta journal beside a base draft. Pure. */
+export function tauriJournalPath(draftPath: string): string {
+  return `${draftPath}.journal`;
+}
+
+/**
+ * A {@link JournalStore} backed by `@tauri-apps/plugin-fs` for the base draft at
+ * `draftPath`. Append uses `writeFile(..., { append: true })`; read/size/truncate
+ * use readFile / stat / remove. Real-fs leaves → manual/tauri-pilot-verified,
+ * like the other desktop draft leaves.
+ */
+export function makeTauriJournalStore(draftPath: string): JournalStore {
+  const jp = tauriJournalPath(draftPath);
+  return {
+    async size(): Promise<number> {
+      try {
+        const { stat } = await import("@tauri-apps/plugin-fs");
+        return (await stat(jp)).size ?? 0;
+      } catch {
+        return 0;
+      }
+    },
+    async appendRecords(records: Uint8Array[]): Promise<void> {
+      if (records.length === 0) return;
+      const { writeFile } = await import("@tauri-apps/plugin-fs");
+      for (const r of records) await writeFile(jp, r, { append: true });
+    },
+    async readAll(): Promise<Uint8Array> {
+      try {
+        const { readFile, exists } = await import("@tauri-apps/plugin-fs");
+        if (!(await exists(jp))) return new Uint8Array(0);
+        return await readFile(jp);
+      } catch {
+        return new Uint8Array(0);
+      }
+    },
+    async truncate(): Promise<void> {
+      try {
+        const { remove, exists } = await import("@tauri-apps/plugin-fs");
+        if (await exists(jp)) await remove(jp);
+      } catch {
+        // best-effort (journal may not exist)
+      }
+    },
+  };
 }
 
 /** All recoverable desktop drafts, newest-saved first. */

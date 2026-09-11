@@ -12,6 +12,7 @@ import { useState, useCallback } from "react";
 import { Labels, Skeleton } from "@talmolab/sleap-io.js";
 import { useAppStore } from "../../stores/appStore";
 import { commandContext } from "../../commands/CommandContext";
+import { dirtyFrameTracker } from "@/lib/autosaveDirty";
 import { LoadSkeletonTemplateCommand } from "../../commands/skeletonCommands";
 import { addVideoFileToLabels } from "../../lib/resolveVideos";
 import {
@@ -99,6 +100,8 @@ export function NewProjectDialog() {
       // A from-scratch project with content is unsaved work; prompt to save it.
       if (templateId !== EMPTY || addedAny) {
         useAppStore.getState().markChanged();
+        // Brand-new project (videos/skeleton/tracks all replaced) → structural.
+        dirtyFrameTracker.markStructural();
       }
 
       setOpen(false);
