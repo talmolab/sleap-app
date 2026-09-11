@@ -32,6 +32,7 @@ import {
   type VideoPrefixSwap,
 } from "@/lib/videoPrefixSwaps";
 import { stepLabeled, type NavigationDomain } from "@/lib/navigableFrames";
+import { dirtyFrameTracker } from "@/lib/autosaveDirty";
 import { cachedNavigableDomain } from "@/lib/navigationDomainCache";
 export type { NavigationDomain };
 import {
@@ -1153,12 +1154,22 @@ export const useAppStore = create<AppState>()(
           state.resetViewNonce += 1;
         }),
 
-      markChanged: () =>
+      markChanged: () => {
+        // Record the active frame as dirty for the incremental autosave BEFORE
+        // the set() — a plain Map write on the NON-reactive tracker (no render).
+        // Commands add precise scope via CommandContext; this is the baseline
+        // that guarantees an edit bypassing the command layer (a drag commit, a
+        // context-menu point toggle) is never missed by the delta journal. An
+        // edit that instead changes project structure (videos/tracks/skeletons/
+        // suggestions) must call dirtyFrameTracker.markStructural() itself.
+        const { video, frameIdx } = get();
+        if (video) dirtyFrameTracker.markFrame(video, frameIdx);
         set((state) => {
           state.hasChanges = true;
           state.editSeq += 1;
           state.lastInteractedFrame = state.frameIdx;
-        }),
+        });
+      },
 
       touchFrame: () =>
         set((state) => {
@@ -1413,6 +1424,9 @@ export const useAppStore = create<AppState>()(
           skeleton.nodes = [...prompt.nodes];
           skeleton.edges = [...prompt.edges];
           skeleton.rebuildCache(skeleton.nodes);
+          // Skeleton structure changed → the compact frame delta can't express
+          // it; force a full base snapshot on the next incremental autosave.
+          dirtyFrameTracker.markStructural();
         }
         set((state) => {
           if (discarding) {

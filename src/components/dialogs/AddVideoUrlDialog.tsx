@@ -11,6 +11,7 @@
 
 import { useState } from "react";
 import { useAppStore } from "@/stores/appStore";
+import { dirtyFrameTracker } from "@/lib/autosaveDirty";
 import {
   Dialog,
   DialogContent,
@@ -46,6 +47,8 @@ export function AddVideoUrlDialog() {
       labels.reindex();
       const s = useAppStore.getState();
       s.markChanged();
+      // Added a video → structural; the incremental autosave must rewrite the base.
+      dirtyFrameTracker.markStructural();
       s.bumpOverlayVersion();
       s.setVideo(video);
       s.setFrameIdx(0);
