@@ -45,6 +45,8 @@ import { installTauriFsResolver } from "@/lib/fsResolver";
 import { fileSize, readRange } from "@/lib/nativeRange";
 import { videoSignature, buildBackendGraftPlan } from "@/lib/videoGraft";
 import { isSourceChanged } from "@/lib/draftStaleness";
+import { makeTauriJournalStore } from "@/lib/tauriDraft";
+import { replayJournal } from "@/lib/incrementalAutosave";
 import type { TauriDraftManifestEntry } from "@/lib/tauriDraftManifest";
 
 // Same threshold + h5wasm URL as loadProject.ts: files over ~1 GB open via the
@@ -204,6 +206,9 @@ export async function restoreTauriDraft(
         h5wasmUrl: H5WASM_URL,
       },
     });
+    // Replay any incremental delta journal appended after this base was written
+    // (imageless frame deltas). No-op if none exists / the write path was off.
+    await replayJournal(makeTauriJournalStore(entry.draftPath), draftLabels);
 
     if (entry.embedded) {
       // An embedded (pkg.slp) draft is imageless — its frames live ONLY in the

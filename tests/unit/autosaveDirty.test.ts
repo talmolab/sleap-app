@@ -233,6 +233,17 @@ describe("DirtyFrameTracker", () => {
     expect(tracker.peekFrames()).toEqual([]);
   });
 
+  it("counts one observation per markFromSnapshot; drain/clear never reset it", () => {
+    const v = fakeVideo("a");
+    expect(tracker.observations).toBe(0);
+    tracker.markFromSnapshot(view({ commandName: "AddInstance", frame: { videoRef: v, frameIdx: 1 } }));
+    tracker.markFromSnapshot(view({ commandName: "AddTrack", frame: { videoRef: v, frameIdx: 1 } }));
+    expect(tracker.observations).toBe(2);
+    tracker.drain();
+    tracker.clear();
+    expect(tracker.observations).toBe(2); // monotonic
+  });
+
   it("never throws on a malformed snapshot; fails safe to structural", () => {
     // A snapshot missing every field must not throw inside a command's execute.
     expect(() => tracker.markFromSnapshot({} as DirtySnapshotView)).not.toThrow();

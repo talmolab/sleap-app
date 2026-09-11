@@ -13,7 +13,8 @@ import { loadSlp, type Labels } from "@talmolab/sleap-io.js";
 import { useAppStore } from "@/stores/appStore";
 import { reportParseProgress } from "@/lib/loadProject";
 import { resolveExternalVideos } from "@/lib/resolveVideos";
-import { removeLabelsDraft } from "@/lib/labelsDraft";
+import { removeLabelsDraft, makeOpfsJournalStore } from "@/lib/labelsDraft";
+import { replayJournal } from "@/lib/incrementalAutosave";
 import { deleteDraftEntry, type DraftManifestEntry } from "@/lib/draftManifest";
 import { videoSignature, buildBackendGraftPlan } from "@/lib/videoGraft";
 import { isDraftStaleVsDisk, isSourceChanged } from "@/lib/draftStaleness";
@@ -184,6 +185,9 @@ export async function restoreDraft(entry: DraftManifestEntry): Promise<boolean> 
         openVideos: false,
         h5: { h5wasmUrl: H5WASM_URL },
       });
+      // Replay any incremental delta journal appended after this base (imageless
+      // frame deltas). No-op if none exists / the write path was off.
+      await replayJournal(makeOpfsJournalStore(entry.draftPath), draftLabels);
       store.setLoading(true, "Re-opening the original for images...");
       const originalFile = await sourceHandle.getFile();
       const originalLabels = await loadSlp(originalFile, {
@@ -238,6 +242,9 @@ export async function restoreDraft(entry: DraftManifestEntry): Promise<boolean> 
         h5: { h5wasmUrl: H5WASM_URL },
         onProgress: reportParseProgress,
       });
+      // Replay any incremental delta journal appended after this base (imageless
+      // frame deltas). No-op if none exists / the write path was off.
+      await replayJournal(makeOpfsJournalStore(entry.draftPath), draftLabels);
       store.setLoading(true, "Locating videos...");
       await resolveExternalVideos(draftLabels);
       // Re-link the original .slp handle so a later ⌘S can write back in place —

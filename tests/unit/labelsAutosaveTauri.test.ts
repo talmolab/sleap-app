@@ -26,6 +26,14 @@ vi.mock("@/lib/platform", () => ({
 vi.mock("@/lib/tauriDraft", () => ({
   newTauriDraftPath: newTauriDraftPathMock,
   recordTauriDraftSave: recordTauriDraftSaveMock,
+  // Imported by labelsAutosave for the incremental path (flag off here → never
+  // called); the export must exist for the module binding.
+  makeTauriJournalStore: vi.fn(() => ({
+    appendRecords: vi.fn(async () => {}),
+    readAll: vi.fn(async () => new Uint8Array(0)),
+    size: vi.fn(async () => 0),
+    truncate: vi.fn(async () => {}),
+  })),
 }));
 // Defensive: keep any transitive toast importer off the real toaster.
 vi.mock("sonner", () => ({

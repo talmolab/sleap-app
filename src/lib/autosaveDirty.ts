@@ -139,10 +139,23 @@ export function classifyDirty(snapshot: DirtySnapshotView): DirtyClassification 
 export class DirtyFrameTracker {
   private dirty = new Map<Video, Set<number>>();
   private needsFull = false;
+  private observationCount = 0;
 
   /** Whether the next autosave must rewrite the whole base snapshot. */
   get needsFullSnapshot(): boolean {
     return this.needsFull;
+  }
+
+  /**
+   * Monotonic count of edits the tracker has OBSERVED (one per markFromSnapshot,
+   * i.e. per command). The autosave tick compares its advance against the store's
+   * editSeq advance: if editSeq moved more, an edit dirtied the project WITHOUT
+   * going through the command layer (e.g. a dialog's direct markChanged), so the
+   * tracker's frame set may be incomplete and the tick must fall back to a full
+   * snapshot. Never reset by clear()/drain() (the tick tracks deltas).
+   */
+  get observations(): number {
+    return this.observationCount;
   }
 
   /** Whether there is anything to persist (dirty frames or a structural change). */
@@ -172,6 +185,9 @@ export class DirtyFrameTracker {
    * classification) fails safe to a full snapshot rather than dropping the edit.
    */
   markFromSnapshot(snapshot: DirtySnapshotView): void {
+    // Count every observed command edit (even a malformed one, which fails safe
+    // to structural below) so the tick can detect untracked edits by comparison.
+    this.observationCount += 1;
     try {
       const result = classifyDirty(snapshot);
       if (result.kind === "structural") {
