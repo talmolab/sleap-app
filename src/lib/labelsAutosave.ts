@@ -38,6 +38,7 @@ import { isIncrementalAutosaveEnabled } from "@/lib/autosaveFlags";
 import { dirtyFrameTracker } from "@/lib/autosaveDirty";
 import {
   runIncrementalAutosave,
+  structuralSignature,
   type FireAction,
   type JournalStore,
 } from "@/lib/incrementalAutosave";
@@ -49,6 +50,12 @@ const INCREMENTAL_APPEND_DEBOUNCE_MS = 1500;
 /** The draft path we've written a full BASE snapshot for this session. A delta
  *  append is only valid once its base exists (see runIncrementalAutosave). */
 let baseDraftWrittenPath: string | null = null;
+
+/** Structural signature ({@link structuralSignature}) the current base was
+ *  written with — a change since then forces a full (catches structural edits
+ *  made outside the command pipeline). Reset implicitly when a new base path is
+ *  written (keyed with baseDraftWrittenPath). */
+let baseStructuralSig: string | null = null;
 
 /**
  * Run one incremental (delta-journal) autosave for the current draft, behind the
@@ -67,6 +74,7 @@ async function runIncrementalTick(
   backupBase: () => Promise<void>,
 ): Promise<FireAction> {
   const drained = dirtyFrameTracker.drain();
+  const sig = structuralSignature(labels);
   const action = await runIncrementalAutosave({
     labels,
     drained,
@@ -75,8 +83,13 @@ async function runIncrementalTick(
     backupBase,
     hasBase: baseDraftWrittenPath === draftPath,
     journalBytes: await store.size(),
+    structuralSig: sig,
+    baseStructuralSig,
   });
-  if (action === "full") baseDraftWrittenPath = draftPath;
+  if (action === "full") {
+    baseDraftWrittenPath = draftPath;
+    baseStructuralSig = sig;
+  }
   return action;
 }
 

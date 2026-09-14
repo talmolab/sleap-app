@@ -16,6 +16,7 @@ import { openNewInstance } from "../lib/newInstance";
 import { dismiss, toast } from "../lib/notify";
 import { hintIfPredictionsRemain } from "../lib/labelingHints";
 import { spacePanState } from "../lib/spacePanTracking";
+import { dirtyFrameTracker } from "@/lib/autosaveDirty";
 import {
   commandContext,
   OpenProjectCommand,
@@ -274,6 +275,12 @@ export function useKeyboardShortcuts() {
                 const trackNumber = labels.tracks.length + 1;
                 labels.tracks.push(new Track(`Track ${trackNumber}`));
               }
+              // These new tracks are pushed directly (not via the AddTrack
+              // command), so the autosave classifier never sees them — mark
+              // structural so the next tick rewrites the base (the delta can't
+              // encode a track absent from the base). Belt-and-suspenders with
+              // the tick-time structural-signature backstop.
+              dirtyFrameTracker.markStructural();
             }
             commandContext.execute(SetInstanceTrack, { trackIdx });
           },

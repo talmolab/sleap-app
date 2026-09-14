@@ -14,6 +14,7 @@ import {
   frameHasAdvancedInstanceFields,
   runIncrementalAutosave,
   baseBakPath,
+  structuralSignature,
   replayJournal,
   InMemoryJournalStore,
   DEFAULT_JOURNAL_MAX_BYTES,
@@ -197,6 +198,70 @@ describe("runIncrementalAutosave", () => {
     );
     expect(action).toBe("full");
     expect(d.baseWrites).toBe(1);
+  });
+});
+
+describe("structuralSignature", () => {
+  const L = (tracks: number, videos: number, sk: [number, number][]) =>
+    ({
+      tracks: Array(tracks).fill(0),
+      videos: Array(videos).fill(0),
+      skeletons: sk.map(([n, e]) => ({
+        nodeNames: Array(n).fill("x"),
+        edgeIndices: Array(e).fill([0, 0]),
+      })),
+    }) as unknown as Parameters<typeof structuralSignature>[0];
+
+  it("captures track / video / skeleton shape", () => {
+    expect(structuralSignature(L(2, 1, [[5, 4]]))).toBe("t2|v1|s5:4");
+  });
+  it("changes when a track is added", () => {
+    expect(structuralSignature(L(1, 1, [[5, 4]]))).not.toBe(
+      structuralSignature(L(2, 1, [[5, 4]])),
+    );
+  });
+  it("changes when a skeleton node is added", () => {
+    expect(structuralSignature(L(2, 1, [[5, 4]]))).not.toBe(
+      structuralSignature(L(2, 1, [[6, 5]])),
+    );
+  });
+});
+
+describe("runIncrementalAutosave — structural-signature safety net", () => {
+  it("forces a full when the signature changed since the base (untracked structural mutation)", async () => {
+    const b = makeBase();
+    const store = new InMemoryJournalStore();
+    let baseWrites = 0;
+    const action = await runIncrementalAutosave({
+      labels: b.labels,
+      drained: { needsFullSnapshot: false, frames: [{ video: b.video, frameIdx: 1 }] },
+      store,
+      writeBase: async () => {
+        baseWrites += 1;
+      },
+      hasBase: true,
+      journalBytes: 0,
+      baseStructuralSig: "t1|v1|s5:4",
+      structuralSig: "t2|v1|s5:4", // a track was added since the base was written
+    });
+    expect(action).toBe("full");
+    expect(baseWrites).toBe(1);
+  });
+
+  it("stays an append when the signature is unchanged", async () => {
+    const b = makeBase();
+    const store = new InMemoryJournalStore();
+    const action = await runIncrementalAutosave({
+      labels: b.labels,
+      drained: { needsFullSnapshot: false, frames: [{ video: b.video, frameIdx: 1 }] },
+      store,
+      writeBase: async () => {},
+      hasBase: true,
+      journalBytes: 0,
+      baseStructuralSig: "t1|v1|s5:4",
+      structuralSig: "t1|v1|s5:4",
+    });
+    expect(action).toBe("append");
   });
 });
 

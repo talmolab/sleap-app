@@ -39,6 +39,25 @@ export const DEFAULT_JOURNAL_MAX_BYTES = 2 * 1024 * 1024;
  */
 export const baseBakPath = (basePath: string): string => `${basePath}.bak`;
 
+/**
+ * A cheap signature of the labels' *structural* shape — track count, video
+ * count, and per-skeleton (node count : edge count). If this changes between the
+ * base write and a later tick, something structural happened (a new track,
+ * skeleton node, video, …) that a frame delta can't represent — so the tick must
+ * rewrite the base rather than append. This is a belt-and-suspenders backstop to
+ * the per-command `markStructural()` calls: it catches structural mutations made
+ * OUTSIDE the command pipeline (e.g. a direct `labels.tracks.push`) that never
+ * marked the tracker. Pure. Does not detect renames (same counts) — those don't
+ * break delta replay (a delta references entries by index).
+ */
+export function structuralSignature(labels: Labels): string {
+  // Defensive (never throws — runs in the autosave path): tolerate missing arrays.
+  const sk = (labels.skeletons ?? [])
+    .map((s) => `${s.nodeNames?.length ?? 0}:${s.edgeIndices?.length ?? 0}`)
+    .join(",");
+  return `t${labels.tracks?.length ?? 0}|v${labels.videos?.length ?? 0}|s${sk}`;
+}
+
 export type FireAction = "full" | "append" | "noop";
 
 export interface FireInput {
@@ -138,6 +157,10 @@ export interface RunIncrementalAutosaveDeps {
   hasBase: boolean;
   journalBytes: number;
   journalMaxBytes?: number;
+  /** {@link structuralSignature} of `labels` now (for the change backstop). */
+  structuralSig?: string;
+  /** Signature the current base was written with; a change forces a full. */
+  baseStructuralSig?: string | null;
 }
 
 /**
@@ -153,6 +176,18 @@ export async function runIncrementalAutosave(
   const journalMaxBytes = deps.journalMaxBytes ?? DEFAULT_JOURNAL_MAX_BYTES;
 
   let needsFull = drained.needsFullSnapshot;
+  // Backstop: if the labels' structural shape changed since the base was written
+  // (a track/skeleton-node/video added outside the command pipeline, so nothing
+  // called markStructural), a frame delta can't represent it — force a full.
+  if (
+    !needsFull &&
+    deps.hasBase &&
+    deps.baseStructuralSig != null &&
+    deps.structuralSig != null &&
+    deps.structuralSig !== deps.baseStructuralSig
+  ) {
+    needsFull = true;
+  }
   // Escalate to a full snapshot if any dirty frame carries advanced fields the
   // delta can't round-trip (identity/category) — no fidelity loss vs full save.
   if (!needsFull) {
