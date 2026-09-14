@@ -17,7 +17,7 @@
  * read/write leaves are manual-E2E-verified (happy-dom has no OPFS).
  */
 import { saveSlpStructureToBytes, type Labels } from "@talmolab/sleap-io.js";
-import type { JournalStore } from "@/lib/incrementalAutosave";
+import { type JournalStore, baseBakPath } from "@/lib/incrementalAutosave";
 
 /**
  * Derive a deterministic OPFS filename for a labels draft of `projectName`,
@@ -100,20 +100,37 @@ export async function saveLabelsDraft(
   return bytes.byteLength;
 }
 
-/** Best-effort removal of a draft OPFS file AND its incremental journal sibling
- *  (missing files are not errors). */
-export async function removeLabelsDraft(opfsPath: string): Promise<void> {
+/**
+ * Copy the current base draft to its {@link baseBakPath} before a full rewrite
+ * overwrites it — Safeguard A (previous-base retention). Best-effort: no base
+ * yet, or a copy failure, is swallowed (the .bak is a recovery net, not a hard
+ * requirement). The imageless draft is small, and full rewrites are infrequent
+ * (structural / compaction / first write), so the extra copy is negligible.
+ */
+export async function backupOpfsBase(opfsPath: string): Promise<void> {
   try {
     const root = await navigator.storage.getDirectory();
-    await root.removeEntry(opfsPath);
+    const prev = await root.getFileHandle(opfsPath, { create: false });
+    const bytes = new Uint8Array(await (await prev.getFile()).arrayBuffer());
+    const bakFh = await root.getFileHandle(baseBakPath(opfsPath), { create: true });
+    const w = await bakFh.createWritable();
+    await w.write(bytes);
+    await w.close();
   } catch {
-    // best-effort cleanup
+    // best-effort (no prior base, or copy unsupported/failed)
   }
-  try {
-    const root = await navigator.storage.getDirectory();
-    await root.removeEntry(journalOpfsPath(opfsPath));
-  } catch {
-    // best-effort cleanup (journal may not exist)
+}
+
+/** Best-effort removal of a draft OPFS file, its incremental journal sibling,
+ *  AND its retained `.bak` base (missing files are not errors). */
+export async function removeLabelsDraft(opfsPath: string): Promise<void> {
+  for (const p of [opfsPath, journalOpfsPath(opfsPath), baseBakPath(opfsPath)]) {
+    try {
+      const root = await navigator.storage.getDirectory();
+      await root.removeEntry(p);
+    } catch {
+      // best-effort cleanup (file may not exist)
+    }
   }
 }
 

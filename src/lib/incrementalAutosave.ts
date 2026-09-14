@@ -30,6 +30,15 @@ import {
 /** Rewrite the base once the journal passes this size (keeps recovery bounded). */
 export const DEFAULT_JOURNAL_MAX_BYTES = 2 * 1024 * 1024;
 
+/**
+ * Path of the retained *previous* base draft, kept beside the live base as a
+ * recovery fallback (Safeguard A: previous-base retention). Before a full
+ * rewrite replaces the base, the current base is copied here; if the new base is
+ * ever unreadable, recovery falls back to this one (plus the — on a torn write,
+ * un-truncated — journal, which together reconstruct the current state). Pure.
+ */
+export const baseBakPath = (basePath: string): string => `${basePath}.bak`;
+
 export type FireAction = "full" | "append" | "noop";
 
 export interface FireInput {
@@ -120,6 +129,12 @@ export interface RunIncrementalAutosaveDeps {
   store: JournalStore;
   /** Write the full base draft (the existing recordDraftSave/recordTauriDraftSave). */
   writeBase: () => Promise<void>;
+  /**
+   * Copy the current base draft to its {@link baseBakPath} before it is
+   * overwritten (Safeguard A). Called only on a full rewrite, before writeBase.
+   * Best-effort: a failure here is logged and never blocks the actual save.
+   */
+  backupBase?: () => Promise<void>;
   hasBase: boolean;
   journalBytes: number;
   journalMaxBytes?: number;
@@ -160,6 +175,16 @@ export async function runIncrementalAutosave(
 
   if (action === "noop") return "noop";
   if (action === "full") {
+    // Retain the current base as .bak BEFORE overwriting it, so a torn/failed
+    // base write always leaves a valid fallback (Safeguard A). Best-effort — a
+    // backup failure must never block the real save.
+    if (deps.backupBase) {
+      try {
+        await deps.backupBase();
+      } catch (err) {
+        console.warn("[autosave] base backup failed (continuing):", err);
+      }
+    }
     await writeBase();
     await store.truncate();
     return "full";

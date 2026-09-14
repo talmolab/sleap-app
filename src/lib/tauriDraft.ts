@@ -26,7 +26,7 @@ import {
   serializeLabelsDraft,
 } from "@/lib/labelsDraft";
 import { videoSignature } from "@/lib/videoGraft";
-import type { JournalStore } from "@/lib/incrementalAutosave";
+import { type JournalStore, baseBakPath } from "@/lib/incrementalAutosave";
 import {
   type TauriDraftFs,
   type TauriDraftManifestEntry,
@@ -151,10 +151,25 @@ export async function recordTauriDraftSave(
   );
 }
 
+/**
+ * Copy the current base draft to its {@link baseBakPath} before a full rewrite
+ * overwrites it — Safeguard A (previous-base retention). Best-effort: no base
+ * yet, or a copy failure, is swallowed (the retained .bak is a recovery net, not
+ * a hard requirement, and must never block the real save).
+ */
+export async function backupTauriBase(draftPath: string): Promise<void> {
+  try {
+    const { exists, copyFile } = await import("@tauri-apps/plugin-fs");
+    if (await exists(draftPath)) await copyFile(draftPath, baseBakPath(draftPath));
+  } catch (err) {
+    console.warn("[tauriDraft] base backup failed:", err);
+  }
+}
+
 /** Best-effort removal of a draft: delete its `.slp`, its incremental journal
- *  sibling, AND drop its manifest entry (a missing file / entry is not an error,
- *  so this is idempotent). Called on a successful real disk save, project
- *  replace/discard, and decline-restore. */
+ *  sibling, its retained `.bak` base, AND drop its manifest entry (a missing
+ *  file / entry is not an error, so this is idempotent). Called on a successful
+ *  real disk save, project replace/discard, and decline-restore. */
 export async function removeTauriDraft(draftPath: string): Promise<void> {
   try {
     const fs = await tauriDraftFs();
@@ -163,6 +178,8 @@ export async function removeTauriDraft(draftPath: string): Promise<void> {
     if (await fs.exists(draftPath)) await fs.remove(draftPath);
     const jp = tauriJournalPath(draftPath);
     if (await fs.exists(jp)) await fs.remove(jp);
+    const bak = baseBakPath(draftPath);
+    if (await fs.exists(bak)) await fs.remove(bak);
     const entries = await readManifestWithFs(fs, mpath);
     await writeManifestWithFs(
       fs,

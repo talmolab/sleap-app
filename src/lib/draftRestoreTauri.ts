@@ -46,7 +46,7 @@ import { fileSize, readRange } from "@/lib/nativeRange";
 import { videoSignature, buildBackendGraftPlan } from "@/lib/videoGraft";
 import { isSourceChanged } from "@/lib/draftStaleness";
 import { makeTauriJournalStore } from "@/lib/tauriDraft";
-import { replayJournal } from "@/lib/incrementalAutosave";
+import { replayJournal, baseBakPath } from "@/lib/incrementalAutosave";
 import type { TauriDraftManifestEntry } from "@/lib/tauriDraftManifest";
 
 // Same threshold + h5wasm URL as loadProject.ts: files over ~1 GB open via the
@@ -197,15 +197,31 @@ export async function restoreTauriDraft(
     await installTauriImageReader();
 
     // The draft itself is always imageless (small) → an eager read is fine.
-    const draftBytes = await readFile(entry.draftPath);
-    const draftLabels = await loadSlp(draftBytes, {
-      // Embedded pkg: skip opening (imageless) — we graft the original's backends.
-      openVideos: !entry.embedded,
-      h5: {
-        filenameHint: entry.projectPath ?? entry.draftPath,
-        h5wasmUrl: H5WASM_URL,
-      },
-    });
+    // Load the base, falling back to the retained previous base (.bak) if the
+    // primary is torn/unreadable (Safeguard B). Since the journal is only
+    // truncated AFTER a successful base write, a torn base leaves the .bak plus
+    // an intact journal, which together reconstruct the current state on replay.
+    const loadBase = (bytes: Uint8Array): Promise<Labels> =>
+      loadSlp(bytes, {
+        // Embedded pkg: skip opening (imageless) — we graft the original's backends.
+        openVideos: !entry.embedded,
+        h5: {
+          filenameHint: entry.projectPath ?? entry.draftPath,
+          h5wasmUrl: H5WASM_URL,
+        },
+      });
+    let draftLabels: Labels;
+    try {
+      draftLabels = await loadBase(await readFile(entry.draftPath));
+    } catch (primaryErr) {
+      const bak = baseBakPath(entry.draftPath);
+      if (!(await exists(bak))) throw primaryErr;
+      console.warn(
+        "[autosave] primary draft base unreadable — falling back to .bak:",
+        primaryErr,
+      );
+      draftLabels = await loadBase(await readFile(bak));
+    }
     // Replay any incremental delta journal appended after this base was written
     // (imageless frame deltas). No-op if none exists / the write path was off.
     await replayJournal(makeTauriJournalStore(entry.draftPath), draftLabels);

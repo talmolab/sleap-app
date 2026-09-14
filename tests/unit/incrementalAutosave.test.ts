@@ -13,6 +13,7 @@ import {
   decideAutosaveWrite,
   frameHasAdvancedInstanceFields,
   runIncrementalAutosave,
+  baseBakPath,
   replayJournal,
   InMemoryJournalStore,
   DEFAULT_JOURNAL_MAX_BYTES,
@@ -196,6 +197,77 @@ describe("runIncrementalAutosave", () => {
     );
     expect(action).toBe("full");
     expect(d.baseWrites).toBe(1);
+  });
+});
+
+describe("baseBakPath", () => {
+  it("appends .bak to the base path", () => {
+    expect(baseBakPath("/drafts/foo.slp")).toBe("/drafts/foo.slp.bak");
+    expect(baseBakPath("proj-123.slp")).toBe("proj-123.slp.bak");
+  });
+});
+
+describe("runIncrementalAutosave — previous-base retention", () => {
+  it("backs up the current base BEFORE rewriting it on a full write", async () => {
+    const order: string[] = [];
+    const store = new InMemoryJournalStore();
+    const b = makeBase();
+    const action = await runIncrementalAutosave({
+      labels: b.labels,
+      drained: { needsFullSnapshot: true, frames: [] },
+      store,
+      backupBase: async () => {
+        order.push("backup");
+      },
+      writeBase: async () => {
+        order.push("write");
+      },
+      hasBase: true,
+      journalBytes: 0,
+    });
+    expect(action).toBe("full");
+    expect(order).toEqual(["backup", "write"]); // backup must precede the overwrite
+  });
+
+  it("does NOT back up on an append (the base is not replaced)", async () => {
+    const order: string[] = [];
+    const store = new InMemoryJournalStore();
+    const b = makeBase();
+    await runIncrementalAutosave({
+      labels: b.labels,
+      drained: { needsFullSnapshot: false, frames: [{ video: b.video, frameIdx: 1 }] },
+      store,
+      backupBase: async () => {
+        order.push("backup");
+      },
+      writeBase: async () => {
+        order.push("write");
+      },
+      hasBase: true,
+      journalBytes: 0,
+    });
+    expect(order).toEqual([]);
+  });
+
+  it("a backup failure never blocks the base write (best-effort)", async () => {
+    let wrote = false;
+    const store = new InMemoryJournalStore();
+    const b = makeBase();
+    const action = await runIncrementalAutosave({
+      labels: b.labels,
+      drained: { needsFullSnapshot: true, frames: [] },
+      store,
+      backupBase: async () => {
+        throw new Error("copy failed");
+      },
+      writeBase: async () => {
+        wrote = true;
+      },
+      hasBase: true,
+      journalBytes: 0,
+    });
+    expect(action).toBe("full");
+    expect(wrote).toBe(true); // write still happened despite backup throwing
   });
 });
 

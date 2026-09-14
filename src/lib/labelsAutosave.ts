@@ -24,12 +24,14 @@ import {
   newDraftPath,
   isLabelsDraftSupported,
   makeOpfsJournalStore,
+  backupOpfsBase,
 } from "@/lib/labelsDraft";
 import { recordDraftSave } from "@/lib/draftManifest";
 import {
   newTauriDraftPath,
   recordTauriDraftSave,
   makeTauriJournalStore,
+  backupTauriBase,
 } from "@/lib/tauriDraft";
 import { computeAutosaveDebounceMs } from "@/lib/autosaveDebounce";
 import { isIncrementalAutosaveEnabled } from "@/lib/autosaveFlags";
@@ -62,6 +64,7 @@ async function runIncrementalTick(
   draftPath: string,
   store: JournalStore,
   writeBase: () => Promise<void>,
+  backupBase: () => Promise<void>,
 ): Promise<FireAction> {
   const drained = dirtyFrameTracker.drain();
   const action = await runIncrementalAutosave({
@@ -69,6 +72,7 @@ async function runIncrementalTick(
     drained,
     store,
     writeBase,
+    backupBase,
     hasBase: baseDraftWrittenPath === draftPath,
     journalBytes: await store.size(),
   });
@@ -177,6 +181,7 @@ export async function maybeAutosaveLabelsDraft(
         draftPath,
         makeOpfsJournalStore(draftPath),
         writeBase,
+        () => backupOpfsBase(draftPath),
       );
       persisted = action !== "noop";
       console.log(`[autosave] incremental ${action} ->`, draftPath);
@@ -271,6 +276,7 @@ async function maybeAutosaveTauriDraft(reArm?: () => void): Promise<void> {
         draftPath,
         makeTauriJournalStore(draftPath),
         writeBase,
+        () => backupTauriBase(draftPath),
       );
       console.log(`[autosave] Tauri incremental ${action} ->`, draftPath);
     } else {
