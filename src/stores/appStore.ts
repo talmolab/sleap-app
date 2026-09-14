@@ -25,6 +25,14 @@ import type {
 } from "../types";
 import type { StatisticGraphType, Reduction } from "@/lib/statisticSeries";
 import { SEEKBAR_HEADER_DEFAULT_HEIGHT } from "@/lib/seekbarHeaderHeight";
+import {
+  resolveProjectKey,
+  setTrackColorOverride,
+  resetTrackColorOverride,
+  renameTrackColorOverride,
+  pruneTrackColorOverrides,
+  capTrackColorOverrides,
+} from "@/lib/trackColorOverrides";
 import type { QcMode } from "@/lib/instanceVisibility";
 import type { CropRect } from "@/lib/imageFeaturesCore";
 import {
@@ -92,6 +100,15 @@ export interface AppState {
    * debounce, and so an edit landing mid-save is detected and not dropped.
    */
   editSeq: number;
+  /**
+   * Per-track color overrides, a LOCAL per-project viewing preference (persisted,
+   * never written into the `.slp`). Shape: `projectKey → (trackName → hexColor)`,
+   * where projectKey = {@link resolveProjectKey}(projectPath, filename). Resolved
+   * to the active project's map via {@link getActiveTrackOverrides} and applied
+   * through {@link getTrackColor}. Empty by default → colors fall back to the
+   * positional palette, i.e. no behavior change until a color is set.
+   */
+  trackColorOverrides: Record<string, Record<string, string>>;
   /**
    * OPFS path of the browser large-pkg fast-save's labels DRAFT (a bare-bones
    * imageless .slp), or null. Set once a large embedded pkg has been ⌘S/auto-
@@ -544,6 +561,13 @@ export interface AppState {
   markChanged: () => void;
   touchFrame: () => void;
   clearChanges: () => void;
+  /** Set a per-track color override (hex) for the active project. Local viewing
+   * preference — persisted, never written into the `.slp`. */
+  setTrackColor: (trackName: string, hex: string) => void;
+  /** Clear a track's color override → it reverts to the positional palette color. */
+  resetTrackColor: (trackName: string) => void;
+  /** Migrate a track's color override across a rename (called by SetTrackName). */
+  renameTrackColor: (oldName: string, newName: string) => void;
   setLoading: (loading: boolean, message?: string, progress?: number) => void;
   setInferenceDialogOpen: (open: boolean) => void;
   setNewProjectDialogOpen: (open: boolean) => void;
@@ -685,6 +709,7 @@ export const PERSISTED_KEYS: (keyof AppState)[] = [
   "sidebarMultiPanel",
   "uiScale",
   "propagateTrackLabels",
+  "trackColorOverrides",
 ];
 
 /**
@@ -716,6 +741,7 @@ export const useAppStore = create<AppState>()(
       projectFileHandle: null,
       hasChanges: false,
       editSeq: 0,
+      trackColorOverrides: {},
       labelsDraftPath: null,
       pendingExport: false,
       projectLoaded: false,
@@ -880,7 +906,7 @@ export const useAppStore = create<AppState>()(
       backendSwapNonce: 0,
 
       // Actions
-      setLabels: (labels, filename, projectPath, projectFile, projectFileHandle) =>
+      setLabels: (labels, filename, projectPath, projectFile, projectFileHandle) => {
         set((state) => {
           state.labels = labels;
           state.filename = filename ?? null;
@@ -907,7 +933,20 @@ export const useAppStore = create<AppState>()(
           // setLabels sets video/frame directly (not via setVideo), so drop any
           // stale identity-keyed transients from the previous project.
           clearTransientVisibility(state);
-        }),
+        });
+        // Prune this project's color overrides for tracks that no longer exist
+        // (e.g. deleted between sessions). Uses committed (plain) state; no-op
+        // when nothing is stale.
+        const s = get();
+        const key = resolveProjectKey(s.projectPath, s.filename);
+        const validNames = (labels.tracks ?? []).map((t) => t.name);
+        const pruned = pruneTrackColorOverrides(s.trackColorOverrides, key, validNames);
+        if (pruned !== s.trackColorOverrides) {
+          set((state) => {
+            state.trackColorOverrides = pruned;
+          });
+        }
+      },
 
       setVideo: (video) =>
         set((state) => {
@@ -1174,6 +1213,42 @@ export const useAppStore = create<AppState>()(
         set((state) => {
           state.hasChanges = false;
         }),
+
+      setTrackColor: (trackName, hex) => {
+        // `get()` returns committed (plain, non-draft) state, so the pure
+        // reducer operates on plain data; the result is assigned to the draft.
+        // Cap the retained projects (LRU) so the persisted blob can't grow
+        // unbounded (the browser has no "close project" signal).
+        const s = get();
+        const key = resolveProjectKey(s.projectPath, s.filename);
+        const next = capTrackColorOverrides(
+          setTrackColorOverride(s.trackColorOverrides, key, trackName, hex),
+        );
+        set((state) => {
+          state.trackColorOverrides = next;
+        });
+      },
+
+      resetTrackColor: (trackName) => {
+        const s = get();
+        const key = resolveProjectKey(s.projectPath, s.filename);
+        const next = resetTrackColorOverride(s.trackColorOverrides, key, trackName);
+        set((state) => {
+          state.trackColorOverrides = next;
+        });
+      },
+
+      renameTrackColor: (oldName, newName) => {
+        // Keep a track's color override attached across a rename (overrides are
+        // keyed by track name). Called from the SetTrackName command.
+        const s = get();
+        const key = resolveProjectKey(s.projectPath, s.filename);
+        const next = renameTrackColorOverride(s.trackColorOverrides, key, oldName, newName);
+        if (next === s.trackColorOverrides) return;
+        set((state) => {
+          state.trackColorOverrides = next;
+        });
+      },
 
       setLoading: (loading, message, progress) =>
         set((state) => {

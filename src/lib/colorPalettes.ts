@@ -145,13 +145,20 @@ export function getInstanceColor(
   colorPredicted: boolean,
   projectHasTracks: boolean = false,
   frameInstanceTracks: unknown[] = [],
+  trackColorOverrides?: Record<string, string> | null,
 ): RGB {
   if (isPredicted && !colorPredicted) return [128, 128, 128];
   switch (resolveColorTarget(colorTarget, projectHasTracks)) {
     case "track":
       if (track) {
         const idx = tracks.indexOf(track);
-        return getPaletteColor(palette, idx >= 0 ? idx : instanceIndex);
+        const trackName = (track as { name?: string | null }).name ?? null;
+        return getTrackColor(
+          palette,
+          idx >= 0 ? idx : instanceIndex,
+          trackName,
+          trackColorOverrides,
+        );
       }
       // Untracked instance: evenly-spaced gray by rank among untracked
       // frame-mates -- was previously getPaletteColor(palette, instanceIndex),
@@ -180,4 +187,54 @@ export function getInstanceColor(
 /** Convert RGB to hex string. */
 export function rgbToHex(color: RGB): string {
   return `#${color.map((c) => c.toString(16).padStart(2, "0")).join("")}`;
+}
+
+/**
+ * Parse a hex color (`#RRGGBB` or shorthand `#RGB`, case-insensitive, tolerant
+ * of surrounding whitespace) into an RGB tuple. Returns null for anything that
+ * isn't a valid hex color — callers fall back to the palette color.
+ */
+export function hexToRgb(hex: string): RGB | null {
+  const s = hex.trim().replace(/^#/, "");
+  if (/^[0-9a-fA-F]{3}$/.test(s)) {
+    return [
+      parseInt(s[0] + s[0], 16),
+      parseInt(s[1] + s[1], 16),
+      parseInt(s[2] + s[2], 16),
+    ];
+  }
+  if (/^[0-9a-fA-F]{6}$/.test(s)) {
+    return [
+      parseInt(s.slice(0, 2), 16),
+      parseInt(s.slice(2, 4), 16),
+      parseInt(s.slice(4, 6), 16),
+    ];
+  }
+  return null;
+}
+
+/**
+ * Color for a track, honoring an optional per-track override map.
+ *
+ * The single chokepoint for track coloring across the canvas, Instances
+ * sidebar, seekbar tracks band, Ctrl-hold legend, trails, and clip export.
+ * Returns the override color (parsed from hex) when `trackName` has a valid
+ * entry in `overrides`; otherwise the positional palette color — identical to
+ * the previous `getPaletteColor(palette, trackIdx)` behavior. Overrides are a
+ * local per-project viewing preference; see the appStore `trackColorOverrides`.
+ */
+export function getTrackColor(
+  palette: string,
+  trackIdx: number,
+  trackName: string | null | undefined,
+  overrides?: Record<string, string> | null,
+): RGB {
+  if (trackName && overrides) {
+    const hex = overrides[trackName];
+    if (hex) {
+      const rgb = hexToRgb(hex);
+      if (rgb) return rgb;
+    }
+  }
+  return getPaletteColor(palette, trackIdx);
 }

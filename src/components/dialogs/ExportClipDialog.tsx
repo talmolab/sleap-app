@@ -30,6 +30,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { hasAssignedTracks } from "@/lib/colorPalettes";
+import { getActiveTrackOverrides } from "@/lib/trackColorOverrides";
 import {
   resolveClipFrameRange,
   computeClipOutputDimensions,
@@ -80,6 +81,9 @@ export function ExportClipDialog() {
   // View settings that shape the overlay (captured at export time).
   const palette = useAppStore((s) => s.palette);
   const distinctlyColor = useAppStore((s) => s.distinctlyColor);
+  const trackColorOverrides = useAppStore((s) =>
+    getActiveTrackOverrides(s.trackColorOverrides, s.projectPath, s.filename),
+  );
   const colorPredicted = useAppStore((s) => s.colorPredicted);
   const showNonVisibleNodes = useAppStore((s) => s.showNonVisibleNodes);
   const showInstances = useAppStore((s) => s.showInstances);
@@ -210,6 +214,7 @@ export function ExportClipDialog() {
           tracks,
           video: fvideo,
           projectHasTracks,
+          trackColorOverrides,
         });
       };
 

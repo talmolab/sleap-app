@@ -466,7 +466,11 @@ export const SetTrackName: Command = {
     if (!track || name === undefined) return;
     const trimmed = name.trim();
     if (!trimmed || trimmed === track.name) return;
+    const oldName = track.name;
     track.name = trimmed;
+    // Keep any per-track color override attached across the rename (overrides
+    // are keyed by track name). Local viewing preference, not a label edit.
+    ctx.state.renameTrackColor(oldName, trimmed);
     ctx.state.markChanged();
   },
 };
