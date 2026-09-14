@@ -159,8 +159,12 @@ export async function recordTauriDraftSave(
  */
 export async function backupTauriBase(draftPath: string): Promise<void> {
   try {
-    const { exists, copyFile } = await import("@tauri-apps/plugin-fs");
-    if (await exists(draftPath)) await copyFile(draftPath, baseBakPath(draftPath));
+    const { exists, readFile, writeFile } = await import("@tauri-apps/plugin-fs");
+    if (!(await exists(draftPath))) return;
+    // Copy via read+write rather than `copyFile`: the fs plugin's `copy-file`
+    // permission is NOT in the app's capability allowlist, but read/write to the
+    // app-local-data drafts dir already are (the base + journal writes prove it).
+    await writeFile(baseBakPath(draftPath), await readFile(draftPath));
   } catch (err) {
     console.warn("[tauriDraft] base backup failed:", err);
   }
