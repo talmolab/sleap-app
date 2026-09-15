@@ -164,7 +164,8 @@ export function LabelQcDialog({ open, onOpenChange }: LabelQcDialogProps) {
     setFrameIdx(f.frameIdx);
     if (f.instanceIdx !== undefined && labels) {
       const lf = labels.find({ video: f.video }).find((x) => x.frameIdx === f.frameIdx);
-      setInstance(lf?.instances[f.instanceIdx] ?? null);
+      // Indices are relative to userInstances (QC scores labels, not predictions).
+      setInstance(lf?.userInstances[f.instanceIdx] ?? null);
     } else {
       setInstance(null);
     }
@@ -178,7 +179,8 @@ export function LabelQcDialog({ open, onOpenChange }: LabelQcDialogProps) {
     setVideo(video);
     setFrameIdx(a.frameIdx);
     const lf = labels.find({ video }).find((x) => x.frameIdx === a.frameIdx);
-    setInstance(lf?.instances[a.instIdx] ?? null);
+    // instIdx is relative to userInstances (QC scores labels, not predictions).
+    setInstance(lf?.userInstances[a.instIdx] ?? null);
     onOpenChange(false);
   };
 

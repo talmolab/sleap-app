@@ -12,7 +12,8 @@ const skel = {
 const inst = (points: number[][]) => ({ numpy: () => points, skeleton: skel });
 const correct = [[0, 0], [2, 0], [1, 1], [1, -1], [1.5, 1], [1.5, -1]];
 const flipped = [[0, 0], [2, 0], [1, -1], [1, 1], [1.5, -1], [1.5, 1]];
-const frame = (frameIdx: number, instances: unknown[]) => ({ frameIdx, instances, isNegative: false });
+// runLabelQc checks user instances only; these mocks have no predictions.
+const frame = (frameIdx: number, instances: unknown[]) => ({ frameIdx, instances, userInstances: instances, isNegative: false });
 const mockLabels = (frames: unknown[]) => ({ videos: [{ shape: null }], find: () => frames }) as never;
 
 describe("runLabelQc chirality (Tier 3)", () => {
