@@ -8,7 +8,15 @@
  * github.com/alexwu-z/sleap-qc-webapp, a lab JS port of Python `sleap.qc`.
  */
 import { describe, it, expect } from "../bun-test";
-import { loadSlp } from "@talmolab/sleap-io.js";
+import {
+  loadSlp,
+  Skeleton,
+  Video,
+  Instance,
+  PredictedInstance,
+  LabeledFrame,
+  Labels as IoLabels,
+} from "@talmolab/sleap-io.js";
 import {
   scoreLabelsAnomaly,
   scoreLabelsAnomalyAsync,
@@ -20,6 +28,34 @@ const loadFixture = async () =>
   loadSlp(await Bun.file("tests/fixtures/centered_pair.slp").arrayBuffer(), {
     openVideos: false,
   });
+
+/** In-memory Labels whose frames each hold one USER + one PREDICTED instance. */
+function mixedUserPredictedLabels(nFrames = 6): Labels {
+  const skeleton = new Skeleton({ nodes: ["a", "b"], name: "s" });
+  skeleton.addEdge(skeleton.nodes[0], skeleton.nodes[1]);
+  const video = new Video({
+    filename: "/v/test.mp4",
+    backendMetadata: { shape: [nFrames, 480, 640, 3] },
+    openBackend: false,
+  });
+  const labeledFrames: LabeledFrame[] = [];
+  for (let f = 0; f < nFrames; f++) {
+    const user = Instance.fromArray([[10 + f, 10], [20 + f, 20]], skeleton);
+    const pred = PredictedInstance.fromArray(
+      [[100 + f, 100], [140 + f, 300]], // deliberately different shape
+      skeleton,
+      0.9,
+    );
+    labeledFrames.push(
+      new LabeledFrame({ video, frameIdx: f, instances: [user, pred] }),
+    );
+  }
+  return new IoLabels({
+    labeledFrames,
+    skeletons: [skeleton],
+    videos: [video],
+  }) as unknown as Labels;
+}
 
 describe("scoreLabelsAnomaly", () => {
   it("scores every instance of a real .slp in [0,1] with 18 features", async () => {
@@ -53,6 +89,22 @@ describe("scoreLabelsAnomaly", () => {
     });
     expect(r.instances).toHaveLength(0);
     expect(r.featureNames).toHaveLength(18);
+  });
+
+  it("scores only user instances, not predictions (PyQt parity)", () => {
+    // 6 frames × (1 user + 1 predicted) = 12 instances, 6 of them user-labeled.
+    // QC scores labels only (like PyQt's user_instances), so exactly 6 scored.
+    const r = scoreLabelsAnomaly(mixedUserPredictedLabels(6));
+    expect(r.instances).toHaveLength(6);
+    // Every scored instance is the user one at instIdx 0 of its frame.
+    for (const inst of r.instances) expect(inst.instIdx).toBe(0);
+  });
+
+  it("async path also scores only user instances", async () => {
+    const r = await scoreLabelsAnomalyAsync(mixedUserPredictedLabels(6), {
+      batchSize: 4,
+    });
+    expect(r.instances).toHaveLength(6);
   });
 
   it("caps the fit reference on large files but still scores ALL instances", async () => {

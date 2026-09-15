@@ -47,7 +47,11 @@ export interface AnomalyResult {
 
 export interface AnomalyOptions {
   config?: QcConfig;
-  /** Which instances of a frame to score (default: all). */
+  /**
+   * Which instances of a frame to score. Default: user (human-labeled)
+   * instances only — QC targets labels, not predictions, matching PyQt's
+   * `user_instances`. Pass a selector to override (e.g. to QC predictions).
+   */
   getInstances?: (lf: LabeledFrame) => Instance[];
 }
 
@@ -124,7 +128,7 @@ export function scoreLabelsAnomaly(
   if (!labels.skeletons?.length)
     throw new Error("Labels must have at least one skeleton");
   const analyzer = analyzerFromSkeleton(labels.skeletons[0]);
-  const pick = getInstances ?? ((lf: LabeledFrame) => lf.instances);
+  const pick = getInstances ?? ((lf: LabeledFrame) => lf.userInstances);
   const { frames, allPoses } = gather(labels, pick);
 
   const det = new LabelQCDetector(config).fit({
@@ -163,7 +167,7 @@ export async function scoreLabelsAnomalyAsync(
   if (!labels.skeletons?.length)
     throw new Error("Labels must have at least one skeleton");
   const analyzer = analyzerFromSkeleton(labels.skeletons[0]);
-  const pick = getInstances ?? ((lf: LabeledFrame) => lf.instances);
+  const pick = getInstances ?? ((lf: LabeledFrame) => lf.userInstances);
   const { frames, allPoses } = gather(labels, pick);
   onProgress?.(0.05);
 

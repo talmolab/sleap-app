@@ -4,7 +4,8 @@ import { runLabelQc } from "@/lib/analyze/labelQc";
 // A 4-node linear skeleton so the derived chain length is >= 4 (the auto gate).
 const skel = { edgeIndices: [[0, 1], [1, 2], [2, 3]], nodes: [{}, {}, {}, {}] };
 const instS = (points: number[][]) => ({ numpy: () => points, skeleton: skel });
-const frame = (frameIdx: number, instances: unknown[]) => ({ frameIdx, instances, isNegative: false });
+// runLabelQc checks user instances only; these mocks have no predictions.
+const frame = (frameIdx: number, instances: unknown[]) => ({ frameIdx, instances, userInstances: instances, isNegative: false });
 const mockLabels = (frames: unknown[]) => ({ videos: [{ shape: null }], find: () => frames }) as never;
 
 describe("runLabelQc chain-order (Tier 3)", () => {

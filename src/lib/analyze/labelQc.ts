@@ -91,12 +91,17 @@ export function runLabelQc(labels: Labels, opts: QcOptions = {}): QcFinding[] {
     return c;
   };
 
-  // Chirality needs a per-skeleton fit over ALL instances of that skeleton, so
-  // gather them first, then learn the canonical side per symmetric pair.
+  // QC targets LABELS, not predictions: every check runs over user (human-
+  // labeled) instances only, matching PyQt's `user_instances`. Predicted
+  // instances (inference output) are ignored. Reported instance indices are
+  // therefore relative to `userInstances`.
+
+  // Chirality needs a per-skeleton fit over ALL user instances of that skeleton,
+  // so gather them first, then learn the canonical side per symmetric pair.
   const pointsBySkel = new Map<object, number[][][]>();
   for (const video of videos) {
     for (const lf of labels.find({ video })) {
-      for (const inst of lf.instances) {
+      for (const inst of lf.userInstances) {
         const skel = (inst as unknown as { skeleton?: object }).skeleton;
         if (!skel) continue;
         let arr = pointsBySkel.get(skel);
@@ -122,8 +127,8 @@ export function runLabelQc(labels: Labels, opts: QcOptions = {}): QcFinding[] {
     const video = videos[v];
     const frames = [...labels.find({ video })];
 
-    // Per-video expected instance count = median over labeled frames.
-    const expected = medianCount(frames.map((f) => f.instances.length));
+    // Per-video expected instance count = median over labeled frames (user only).
+    const expected = medianCount(frames.map((f) => f.userInstances.length));
 
     // Frame bounds for out-of-range (video.shape = [frames, height, width, channels]).
     const shape = (video as unknown as { shape: number[] | null }).shape;
@@ -131,7 +136,7 @@ export function runLabelQc(labels: Labels, opts: QcOptions = {}): QcFinding[] {
     const width = shape ? shape[2] : null;
 
     for (const lf of frames) {
-      const insts = lf.instances;
+      const insts = lf.userInstances;
       const count = insts.length;
       const isNegative = Boolean((lf as unknown as { isNegative?: boolean }).isNegative);
 

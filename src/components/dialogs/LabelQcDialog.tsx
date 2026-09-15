@@ -34,6 +34,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Slider } from "@/components/ui/slider";
 import { useAppStore } from "@/stores/appStore";
 import { dirtyFrameTracker } from "@/lib/autosaveDirty";
 import { runLabelQc, type QcFinding, type QcIssueKind } from "@/lib/analyze/labelQc";
@@ -92,6 +93,9 @@ export function LabelQcDialog({ open, onOpenChange }: LabelQcDialogProps) {
   const [anomState, setAnomState] = useState<RunState>("idle");
   const [anomProgress, setAnomProgress] = useState(0);
   const [anomResult, setAnomResult] = useState<AnomalyResult | null>(null);
+  // Live flag threshold on the [0,1] anomaly score (PyQt exposes the same knob).
+  // Lower it to flag more (more sensitive), raise it to flag only the worst.
+  const [anomThreshold, setAnomThreshold] = useState(ANOMALY_THRESHOLD);
   const anomAbort = useRef<AbortController | null>(null);
 
   // Reset when the dialog closes or the project changes (stale results must not
@@ -113,9 +117,9 @@ export function LabelQcDialog({ open, onOpenChange }: LabelQcDialogProps) {
   const flagged = useMemo(
     () =>
       (anomResult?.instances ?? [])
-        .filter((i) => i.score >= ANOMALY_THRESHOLD)
+        .filter((i) => i.score >= anomThreshold)
         .sort((a, b) => b.score - a.score),
-    [anomResult],
+    [anomResult, anomThreshold],
   );
 
   const multiVideo = (labels?.videos.length ?? 0) > 1;
@@ -164,7 +168,8 @@ export function LabelQcDialog({ open, onOpenChange }: LabelQcDialogProps) {
     setFrameIdx(f.frameIdx);
     if (f.instanceIdx !== undefined && labels) {
       const lf = labels.find({ video: f.video }).find((x) => x.frameIdx === f.frameIdx);
-      setInstance(lf?.instances[f.instanceIdx] ?? null);
+      // Indices are relative to userInstances (QC scores labels, not predictions).
+      setInstance(lf?.userInstances[f.instanceIdx] ?? null);
     } else {
       setInstance(null);
     }
@@ -178,7 +183,8 @@ export function LabelQcDialog({ open, onOpenChange }: LabelQcDialogProps) {
     setVideo(video);
     setFrameIdx(a.frameIdx);
     const lf = labels.find({ video }).find((x) => x.frameIdx === a.frameIdx);
-    setInstance(lf?.instances[a.instIdx] ?? null);
+    // instIdx is relative to userInstances (QC scores labels, not predictions).
+    setInstance(lf?.userInstances[a.instIdx] ?? null);
     onOpenChange(false);
   };
 
@@ -311,46 +317,72 @@ export function LabelQcDialog({ open, onOpenChange }: LabelQcDialogProps) {
                   Cancel
                 </Button>
               </div>
-            ) : flagged.length === 0 ? (
-              <p className="py-8 text-center text-sm text-muted-foreground">
-                {(anomResult?.instances.length ?? 0) > 0
-                  ? `No instances above the anomaly threshold (${anomResult?.instances.length} scored). Export CSV for all scores.`
-                  : "No instances to score."}
-              </p>
             ) : (
-              <div className="max-h-[50vh] overflow-auto rounded-md border border-border/40">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead className="text-[11px]">Score</TableHead>
-                      <TableHead className="text-[11px]">Confidence</TableHead>
-                      <TableHead className="text-[11px]">Top issue</TableHead>
-                      <TableHead className="text-[11px]">Frame</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {flagged.map((a) => (
-                      <TableRow
-                        key={`${a.videoIdx}:${a.frameIdx}:${a.instIdx}`}
-                        className="cursor-pointer text-[11px]"
-                        onClick={() => navigateAnomaly(a)}
-                      >
-                        <TableCell className="whitespace-nowrap font-mono tabular-nums font-medium">
-                          {a.score.toFixed(2)}
-                        </TableCell>
-                        <TableCell
-                          className={`whitespace-nowrap font-medium ${CONF_CLASS[a.confidence]}`}
-                        >
-                          {a.confidence}
-                        </TableCell>
-                        <TableCell className="text-muted-foreground">{a.topIssue}</TableCell>
-                        <TableCell className="whitespace-nowrap font-mono tabular-nums">
-                          {frameCell(a.videoIdx, a.frameIdx, a.instIdx)}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
+              // done — a live threshold slider (when there are scored instances)
+              // over the flagged list; lowering it flags more (PyQt's knob).
+              <div className="flex flex-col gap-3">
+                {(anomResult?.instances.length ?? 0) > 0 && (
+                  <div className="flex items-center gap-3 px-1 pt-1">
+                    <span className="whitespace-nowrap text-[11px] text-muted-foreground">
+                      Threshold
+                    </span>
+                    <Slider
+                      min={0}
+                      max={1}
+                      step={0.01}
+                      value={[anomThreshold]}
+                      onValueChange={([v]) => setAnomThreshold(v)}
+                      className="flex-1"
+                      aria-label="Anomaly flag threshold"
+                    />
+                    <span className="whitespace-nowrap font-mono text-[11px] tabular-nums text-muted-foreground">
+                      ≥ {anomThreshold.toFixed(2)} · {flagged.length}/
+                      {anomResult?.instances.length ?? 0}
+                    </span>
+                  </div>
+                )}
+                {flagged.length === 0 ? (
+                  <p className="py-8 text-center text-sm text-muted-foreground">
+                    {(anomResult?.instances.length ?? 0) > 0
+                      ? "No instances at or above this threshold — lower it to flag more. Export CSV for all scores."
+                      : "No instances to score."}
+                  </p>
+                ) : (
+                  <div className="max-h-[50vh] overflow-auto rounded-md border border-border/40">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="text-[11px]">Score</TableHead>
+                          <TableHead className="text-[11px]">Confidence</TableHead>
+                          <TableHead className="text-[11px]">Top issue</TableHead>
+                          <TableHead className="text-[11px]">Frame</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {flagged.map((a) => (
+                          <TableRow
+                            key={`${a.videoIdx}:${a.frameIdx}:${a.instIdx}`}
+                            className="cursor-pointer text-[11px]"
+                            onClick={() => navigateAnomaly(a)}
+                          >
+                            <TableCell className="whitespace-nowrap font-mono tabular-nums font-medium">
+                              {a.score.toFixed(2)}
+                            </TableCell>
+                            <TableCell
+                              className={`whitespace-nowrap font-medium ${CONF_CLASS[a.confidence]}`}
+                            >
+                              {a.confidence}
+                            </TableCell>
+                            <TableCell className="text-muted-foreground">{a.topIssue}</TableCell>
+                            <TableCell className="whitespace-nowrap font-mono tabular-nums">
+                              {frameCell(a.videoIdx, a.frameIdx, a.instIdx)}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                )}
               </div>
             )}
           </TabsContent>

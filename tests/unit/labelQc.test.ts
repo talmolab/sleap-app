@@ -3,9 +3,13 @@ import { runLabelQc, type QcFinding } from "@/lib/analyze/labelQc";
 
 const inst = (points: number[][]) => ({ numpy: () => points });
 const clean = (ox: number, oy: number) => inst([[ox, oy], [ox + 5, oy + 5]]);
+/** A predicted (non-user) instance — excluded from `userInstances`, as in io. */
+const predInst = (points: number[][]) => ({ numpy: () => points, predicted: true });
 const frame = (frameIdx: number, instances: unknown[], isNegative = false) => ({
   frameIdx,
   instances,
+  // Mirror io's LabeledFrame.userInstances: user (non-predicted) instances only.
+  userInstances: (instances as { predicted?: boolean }[]).filter((i) => !i?.predicted),
   isNegative,
 });
 
@@ -60,6 +64,29 @@ describe("runLabelQc", () => {
   it("flags out-of-range points using the video's shape [_, h, w, _]", () => {
     const fs = runLabelQc(mockLabels([10, 100, 100, 1], [frame(0, [inst([[5, 5], [200, 5]])])]));
     expect(fs.find((f) => f.kind === "out_of_range")).toMatchObject({ frameIdx: 0, instanceIdx: 0 });
+  });
+
+  it("checks only user (labeled) instances, ignoring predictions", () => {
+    // A frame with one clean USER instance plus a PREDICTED instance that would
+    // otherwise be flagged (sparse: a single visible node). QC targets labels,
+    // not predictions (matching PyQt's user_instances), so nothing is flagged.
+    const fs = runLabelQc(
+      mockLabels(null, [frame(0, [clean(0, 0), predInst([[1, 1]])])]),
+    );
+    expect(kinds(fs)).not.toContain("sparse_instance");
+    expect(fs).toEqual([]);
+  });
+
+  it("instanceIdx is relative to userInstances (predictions don't shift it)", () => {
+    // Predicted instance FIRST, then a sparse user instance: the user instance
+    // is index 0 among userInstances even though it's index 1 in `instances`.
+    const fs = runLabelQc(
+      mockLabels(null, [frame(0, [predInst([[9, 9], [9, 9]]), inst([[1, 1]])])]),
+    );
+    expect(fs.find((f) => f.kind === "sparse_instance")).toMatchObject({
+      frameIdx: 0,
+      instanceIdx: 0,
+    });
   });
 
   it("returns nothing for a clean project", () => {
