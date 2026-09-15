@@ -16,7 +16,11 @@
  * pose-split are Phase 2.
  */
 import type { Labels, LabeledFrame, Instance } from "@/types";
-import { LabelQCDetector } from "./detector";
+import {
+  LabelQCDetector,
+  yieldToEvent,
+  type AsyncComputeOptions,
+} from "./detector";
 import { analyzerFromSkeleton } from "./skeletonIo";
 import { makeQCConfig, type QcConfig } from "./config";
 import { topIssue, confidence } from "./explain";
@@ -55,7 +59,64 @@ function capReference(n: number, max: number): boolean[] {
   return out;
 }
 
-/** Fit the QC detector over `labels` and score every (selected) instance. */
+interface FrameRef {
+  videoIdx: number;
+  frameIdx: number;
+  count: number;
+}
+
+/** Walk the labels once: frames (in a stable order) + the flat pose list whose
+ *  row order aligns with the feature matrix. Shared by the sync + async paths. */
+function gather(
+  labels: Labels,
+  pick: (lf: LabeledFrame) => Instance[],
+): { frames: FrameRef[]; allPoses: Pose[] } {
+  const frames: FrameRef[] = [];
+  const allPoses: Pose[] = [];
+  labels.videos.forEach((video, videoIdx) => {
+    for (const lf of labels.find({ video })) {
+      const poses = pick(lf).map((inst) => inst.numpy({ invisibleAsNaN: true }));
+      frames.push({ videoIdx, frameIdx: lf.frameIdx, count: poses.length });
+      allPoses.push(...poses);
+    }
+  });
+  return { frames, allPoses };
+}
+
+/** Turn one matrix row into a scored instance. Pure over a fitted detector. */
+function scoreRow(
+  det: LabelQCDetector,
+  row: number,
+  videoIdx: number,
+  frameIdx: number,
+  instIdx: number,
+): AnomalyInstance {
+  const s = det.detector ? det.detector.scoreOne(det.cleanMatrix[row]) : 0;
+  const score = Number.isFinite(s) ? s : 0;
+  const contributions: Record<string, number> = {};
+  det.featureNames.forEach(
+    (n, j) => (contributions[n] = det.rawMatrix[row][j] ?? 0),
+  );
+  return {
+    videoIdx,
+    frameIdx,
+    instIdx,
+    score,
+    confidence: confidence(score),
+    topIssue: topIssue(contributions).issue,
+    contributions,
+  };
+}
+
+/** Cap the fit reference on large files (NN is O(ref²)); null => score all as fit. */
+function fitMaskFor(config: QcConfig, n: number): boolean[] | null {
+  const max = config.maxReferenceSize ?? 4000;
+  return n > max ? capReference(n, max) : null;
+}
+
+/** Fit the QC detector over `labels` and score every (selected) instance.
+ *  Synchronous — fine for small projects and unit tests; large projects should
+ *  use {@link scoreLabelsAnomalyAsync} to keep the UI responsive. */
 export function scoreLabelsAnomaly(
   labels: Labels,
   { config = makeQCConfig(), getInstances }: AnomalyOptions = {},
@@ -64,55 +125,70 @@ export function scoreLabelsAnomaly(
     throw new Error("Labels must have at least one skeleton");
   const analyzer = analyzerFromSkeleton(labels.skeletons[0]);
   const pick = getInstances ?? ((lf: LabeledFrame) => lf.instances);
-  const toPose = (inst: Instance): Pose => inst.numpy({ invisibleAsNaN: true });
-
-  // Gather frames + a flat pose list in a stable order; the matrix row index
-  // aligns with this flat order.
-  const frames: { videoIdx: number; frameIdx: number; count: number }[] = [];
-  const allPoses: Pose[] = [];
-  labels.videos.forEach((video, videoIdx) => {
-    for (const lf of labels.find({ video })) {
-      const poses = pick(lf).map(toPose);
-      frames.push({ videoIdx, frameIdx: lf.frameIdx, count: poses.length });
-      allPoses.push(...poses);
-    }
-  });
-
-  // Large files: the baseline stats / NN reference only need a representative
-  // SAMPLE, and the NN reference is O(ref²). Cap the fit set so huge files stay
-  // feasible — ALL instances are still scored against this reference (mirrors
-  // the reference's ensureFeatures/capReference).
-  const max = config.maxReferenceSize ?? 4000;
-  const fitMask =
-    allPoses.length > max ? capReference(allPoses.length, max) : null;
+  const { frames, allPoses } = gather(labels, pick);
 
   const det = new LabelQCDetector(config).fit({
     instances: allPoses,
     analyzer,
-    fitMask,
+    fitMask: fitMaskFor(config, allPoses.length),
   });
-  const scorer = det.detector; // set by fit()
-  const { featureNames, rawMatrix, cleanMatrix } = det;
 
   const instances: AnomalyInstance[] = [];
   let row = 0;
+  for (const f of frames)
+    for (let instIdx = 0; instIdx < f.count; instIdx++)
+      instances.push(scoreRow(det, row++, f.videoIdx, f.frameIdx, instIdx));
+  return { instances, featureNames: det.featureNames };
+}
+
+/**
+ * Chunked-async twin of {@link scoreLabelsAnomaly}: builds the feature matrix and
+ * scores in batches that yield to the event loop, so the UI never freezes on a
+ * large project. Reports progress (0..1) and honors an AbortSignal. Produces the
+ * same instances/scores as the sync version.
+ *
+ * Phases (progress): pose gather is a short up-front pass (≈0–5%), the expensive
+ * feature matrix (≈5–90%), then scoring (≈90–100%).
+ */
+export async function scoreLabelsAnomalyAsync(
+  labels: Labels,
+  {
+    config = makeQCConfig(),
+    getInstances,
+    onProgress,
+    signal,
+    batchSize = 256,
+  }: AnomalyOptions & AsyncComputeOptions = {},
+): Promise<AnomalyResult> {
+  if (!labels.skeletons?.length)
+    throw new Error("Labels must have at least one skeleton");
+  const analyzer = analyzerFromSkeleton(labels.skeletons[0]);
+  const pick = getInstances ?? ((lf: LabeledFrame) => lf.instances);
+  const { frames, allPoses } = gather(labels, pick);
+  onProgress?.(0.05);
+
+  const det = new LabelQCDetector(config);
+  await det.fitFeaturesAsync(allPoses, analyzer, fitMaskFor(config, allPoses.length), {
+    signal,
+    batchSize,
+    onProgress: (f) => onProgress?.(0.05 + f * 0.85),
+  });
+  det.fitZScore();
+
+  const instances: AnomalyInstance[] = [];
+  const n = allPoses.length || 1;
+  let row = 0;
   for (const f of frames) {
     for (let instIdx = 0; instIdx < f.count; instIdx++) {
-      const s = scorer ? scorer.scoreOne(cleanMatrix[row]) : 0;
-      const score = Number.isFinite(s) ? s : 0;
-      const contributions: Record<string, number> = {};
-      featureNames.forEach((n, j) => (contributions[n] = rawMatrix[row][j] ?? 0));
-      instances.push({
-        videoIdx: f.videoIdx,
-        frameIdx: f.frameIdx,
-        instIdx,
-        score,
-        confidence: confidence(score),
-        topIssue: topIssue(contributions).issue,
-        contributions,
-      });
-      row++;
+      if (signal?.aborted)
+        throw new DOMException("QC analysis cancelled", "AbortError");
+      instances.push(scoreRow(det, row++, f.videoIdx, f.frameIdx, instIdx));
+      if (row % (batchSize * 8) === 0) {
+        onProgress?.(0.9 + (row / n) * 0.1);
+        await yieldToEvent();
+      }
     }
   }
-  return { instances, featureNames };
+  onProgress?.(1);
+  return { instances, featureNames: det.featureNames };
 }

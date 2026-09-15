@@ -9,7 +9,10 @@
  */
 import { describe, it, expect } from "../bun-test";
 import { loadSlp } from "@talmolab/sleap-io.js";
-import { scoreLabelsAnomaly } from "@/lib/analyze/qc/anomaly";
+import {
+  scoreLabelsAnomaly,
+  scoreLabelsAnomalyAsync,
+} from "@/lib/analyze/qc/anomaly";
 import { makeQCConfig } from "@/lib/analyze/qc/config";
 import type { Labels } from "@/types";
 
@@ -69,5 +72,46 @@ describe("scoreLabelsAnomaly", () => {
   it("throws when the labels have no skeleton", () => {
     const fake = { skeletons: [], videos: [] } as unknown as Labels;
     expect(() => scoreLabelsAnomaly(fake)).toThrow();
+  });
+});
+
+describe("scoreLabelsAnomalyAsync", () => {
+  it("produces the SAME instances/scores as the sync version", async () => {
+    const labels = await loadFixture();
+    const sync = scoreLabelsAnomaly(labels);
+    const async = await scoreLabelsAnomalyAsync(labels, { batchSize: 16 });
+    expect(async.featureNames).toEqual(sync.featureNames);
+    expect(async.instances).toHaveLength(sync.instances.length);
+    for (let i = 0; i < sync.instances.length; i++) {
+      expect(async.instances[i].score).toBe(sync.instances[i].score);
+      expect(async.instances[i].topIssue).toBe(sync.instances[i].topIssue);
+      expect(async.instances[i].frameIdx).toBe(sync.instances[i].frameIdx);
+    }
+  });
+
+  it("reports monotonic progress ending at 1", async () => {
+    const seen: number[] = [];
+    await scoreLabelsAnomalyAsync(await loadFixture(), {
+      batchSize: 16,
+      onProgress: (f) => seen.push(f),
+    });
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen[seen.length - 1]).toBe(1);
+    for (let i = 1; i < seen.length; i++)
+      expect(seen[i]).toBeGreaterThanOrEqual(seen[i - 1]);
+  });
+
+  it("aborts when the signal is already aborted", async () => {
+    const labels = await loadFixture();
+    const ac = new AbortController();
+    ac.abort();
+    let threw = false;
+    try {
+      await scoreLabelsAnomalyAsync(labels, { signal: ac.signal, batchSize: 16 });
+    } catch (e) {
+      threw = true;
+      expect((e as Error).name).toBe("AbortError");
+    }
+    expect(threw).toBe(true);
   });
 });

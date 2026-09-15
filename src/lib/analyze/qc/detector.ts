@@ -42,6 +42,20 @@ export interface InstanceScore {
   contributions: Record<string, number>;
 }
 
+/** Yield a macrotask so the browser can paint / handle input between batches. */
+export const yieldToEvent = (): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, 0));
+
+/** Options for the chunked-async compute variants (keeps the UI responsive). */
+export interface AsyncComputeOptions {
+  /** Called with a 0..1 fraction as batches complete. */
+  onProgress?: (fraction: number) => void;
+  /** Abort the run (throws an AbortError). */
+  signal?: AbortSignal;
+  /** Instances processed between event-loop yields (default 256). */
+  batchSize?: number;
+}
+
 /** Fallback detector: max |z| across features -> sigmoid around a threshold. */
 export class ZScoreDetector {
   threshold: number;
@@ -124,22 +138,28 @@ export class LabelQCDetector {
     fitMask?: boolean[] | null;
   }): this {
     this.fitFeatures(instances, analyzer, fitMask);
+    return this.fitZScore();
+  }
+
+  /** Fit the ZScore detector on the reference (fit) rows. Requires a prior
+   *  fitFeatures / fitFeaturesAsync. */
+  fitZScore(): this {
     this.detector = new ZScoreDetector(3.0).fit(this.fitRawMatrix);
     this.usedGmm = false;
     return this;
   }
 
   /**
-   * Fit the feature extractors + build the per-instance feature matrix (raw +
-   * cleaned). `fitMask` (per-instance, aligned with `instances`) selects the
-   * "normal" REFERENCE subset — the baseline stats / NN reference are fit on it,
-   * but the matrix (for scoring) is built over ALL `instances`. `null` => all.
+   * Fit the extractors + compute the per-instance fit bookkeeping shared by the
+   * sync and async matrix builds. Bounded by the (capped) fit subset, so it stays
+   * a short synchronous step even on huge files. Returns the LOO NN distances
+   * (aligned to the fit subset) and the all→fit index map.
    */
-  fitFeatures(
+  private _prepFit(
     instances: Pose[],
     analyzer: SkeletonAnalyzer,
-    fitMask: boolean[] | null = null,
-  ): this {
+    fitMask: boolean[] | null,
+  ): { looNN: number[]; fitIdxByAll: Map<number, number> } {
     this.analyzer = analyzer;
     const fitPoses = fitMask ? instances.filter((_, i) => fitMask[i]) : instances;
     this.baseline = new BaselineFeatureExtractor(
@@ -171,14 +191,75 @@ export class LabelQCDetector {
     instances.forEach((_, i) => {
       if (!fitMask || fitMask[i]) fitIdxByAll.set(i, fi++);
     });
-    this.rawMatrix = instances.map((p, i) =>
-      this.extractFeatures(
-        p,
-        !fitMask || fitMask[i] ? looNN[fitIdxByAll.get(i) as number] : null,
-      ),
+    return { looNN, fitIdxByAll };
+  }
+
+  /** Raw 18-feature row for instance `i` (a fit row reuses its LOO NN distance). */
+  private _rawRow(
+    instances: Pose[],
+    i: number,
+    fitMask: boolean[] | null,
+    looNN: number[],
+    fitIdxByAll: Map<number, number>,
+  ): number[] {
+    return this.extractFeatures(
+      instances[i],
+      !fitMask || fitMask[i] ? looNN[fitIdxByAll.get(i) as number] : null,
+    );
+  }
+
+  /**
+   * Fit the feature extractors + build the per-instance feature matrix (raw +
+   * cleaned). `fitMask` (per-instance, aligned with `instances`) selects the
+   * "normal" REFERENCE subset — the baseline stats / NN reference are fit on it,
+   * but the matrix (for scoring) is built over ALL `instances`. `null` => all.
+   */
+  fitFeatures(
+    instances: Pose[],
+    analyzer: SkeletonAnalyzer,
+    fitMask: boolean[] | null = null,
+  ): this {
+    const { looNN, fitIdxByAll } = this._prepFit(instances, analyzer, fitMask);
+    this.rawMatrix = instances.map((_, i) =>
+      this._rawRow(instances, i, fitMask, looNN, fitIdxByAll),
     );
     this.cleanMatrix = this.rawMatrix.map((row) => cleanFeatureRow(row));
     this.fitRows = [...fitIdxByAll.keys()];
+    return this;
+  }
+
+  /**
+   * Chunked-async twin of {@link fitFeatures}: builds the (expensive) per-instance
+   * matrix in batches, yielding to the event loop between them so the UI never
+   * freezes; reports progress and honors an AbortSignal. Produces matrices
+   * identical to fitFeatures.
+   */
+  async fitFeaturesAsync(
+    instances: Pose[],
+    analyzer: SkeletonAnalyzer,
+    fitMask: boolean[] | null = null,
+    opts: AsyncComputeOptions = {},
+  ): Promise<this> {
+    const { onProgress, signal, batchSize = 256 } = opts;
+    const { looNN, fitIdxByAll } = this._prepFit(instances, analyzer, fitMask);
+    const n = instances.length;
+    const raw: number[][] = new Array(n);
+    const clean: number[][] = new Array(n);
+    for (let i = 0; i < n; i++) {
+      if (signal?.aborted)
+        throw new DOMException("QC analysis cancelled", "AbortError");
+      const r = this._rawRow(instances, i, fitMask, looNN, fitIdxByAll);
+      raw[i] = r;
+      clean[i] = cleanFeatureRow(r);
+      if (i % batchSize === 0) {
+        onProgress?.(i / n);
+        await yieldToEvent();
+      }
+    }
+    this.rawMatrix = raw;
+    this.cleanMatrix = clean;
+    this.fitRows = [...fitIdxByAll.keys()];
+    onProgress?.(1);
     return this;
   }
 

@@ -8,11 +8,13 @@
  *  - "Anomalies": the statistical QC engine (qc/anomaly.ts) — a per-instance
  *    anomaly score + confidence + dominant issue, worst-first, with CSV export.
  *
- * Pure logic lives in labelQcRules.ts / labelQc.ts and lib/analyze/qc/*; this is
- * the thin view. The rule-based path is unchanged; the anomaly engine is scored
- * lazily, only when its tab is open.
+ * Both analyses are **explicitly triggered** ("Run") and computed off the render
+ * path so opening the dialog is instant even on large projects. The anomaly run
+ * is chunked-async (progress + cancel) so it never freezes the UI; the rule run
+ * yields once to paint a spinner, then runs (it's the lighter check). Pure logic
+ * lives in labelQcRules.ts / labelQc.ts and lib/analyze/qc/*; this is the view.
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   Dialog,
@@ -35,7 +37,12 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { useAppStore } from "@/stores/appStore";
 import { dirtyFrameTracker } from "@/lib/autosaveDirty";
 import { runLabelQc, type QcFinding, type QcIssueKind } from "@/lib/analyze/labelQc";
-import { scoreLabelsAnomaly, type AnomalyInstance } from "@/lib/analyze/qc/anomaly";
+import {
+  scoreLabelsAnomalyAsync,
+  type AnomalyInstance,
+  type AnomalyResult,
+} from "@/lib/analyze/qc/anomaly";
+import { yieldToEvent } from "@/lib/analyze/qc/detector";
 import { makeQCConfig } from "@/lib/analyze/qc/config";
 import { qcResultsCsv } from "@/lib/analyze/qc/csv";
 import { saveQcCsv } from "@/lib/analyze/qc/saveQcCsv";
@@ -67,6 +74,8 @@ const CONF_CLASS: Record<AnomalyInstance["confidence"], string> = {
   low: "text-muted-foreground",
 };
 
+type RunState = "idle" | "running" | "done";
+
 export function LabelQcDialog({ open, onOpenChange }: LabelQcDialogProps) {
   const labels = useAppStore((s) => s.labels);
   const setVideo = useAppStore((s) => s.setVideo);
@@ -75,31 +84,80 @@ export function LabelQcDialog({ open, onOpenChange }: LabelQcDialogProps) {
 
   const [tab, setTab] = useState<"rules" | "anomalies">("rules");
 
-  const findings = useMemo<QcFinding[]>(
-    () => (open && labels ? runLabelQc(labels) : []),
-    [open, labels],
-  );
+  // Rule-based checks (explicit run; lighter, single yield to paint the spinner).
+  const [rulesState, setRulesState] = useState<RunState>("idle");
+  const [findings, setFindings] = useState<QcFinding[]>([]);
 
-  // Scored lazily: only when the Anomalies tab is open (it's heavier than the
-  // rule checks — NN + per-instance feature extraction).
-  const anomaly = useMemo(() => {
-    if (!open || !labels || tab !== "anomalies") return null;
-    try {
-      return scoreLabelsAnomaly(labels);
-    } catch {
-      return { instances: [], featureNames: [] };
-    }
-  }, [open, labels, tab]);
+  // Anomaly analysis (explicit run; chunked-async with progress + cancel).
+  const [anomState, setAnomState] = useState<RunState>("idle");
+  const [anomProgress, setAnomProgress] = useState(0);
+  const [anomResult, setAnomResult] = useState<AnomalyResult | null>(null);
+  const anomAbort = useRef<AbortController | null>(null);
+
+  // Reset when the dialog closes or the project changes (stale results must not
+  // linger); abort any in-flight anomaly run on close/unmount.
+  useEffect(() => {
+    setRulesState("idle");
+    setFindings([]);
+    setAnomState("idle");
+    setAnomProgress(0);
+    setAnomResult(null);
+    anomAbort.current?.abort();
+    anomAbort.current = null;
+    return () => {
+      anomAbort.current?.abort();
+      anomAbort.current = null;
+    };
+  }, [open, labels]);
 
   const flagged = useMemo(
     () =>
-      (anomaly?.instances ?? [])
+      (anomResult?.instances ?? [])
         .filter((i) => i.score >= ANOMALY_THRESHOLD)
         .sort((a, b) => b.score - a.score),
-    [anomaly],
+    [anomResult],
   );
 
   const multiVideo = (labels?.videos.length ?? 0) > 1;
+
+  const runRules = async () => {
+    if (!labels) return;
+    setRulesState("running");
+    await yieldToEvent(); // let the spinner paint before the sync sweep
+    try {
+      setFindings(runLabelQc(labels));
+    } catch {
+      setFindings([]);
+    }
+    setRulesState("done");
+  };
+
+  const runAnomalies = async () => {
+    if (!labels) return;
+    const ac = new AbortController();
+    anomAbort.current = ac;
+    setAnomState("running");
+    setAnomProgress(0);
+    try {
+      const r = await scoreLabelsAnomalyAsync(labels, {
+        onProgress: setAnomProgress,
+        signal: ac.signal,
+      });
+      setAnomResult(r);
+      setAnomState("done");
+    } catch (e) {
+      if ((e as Error).name === "AbortError") {
+        setAnomState("idle"); // cancelled → back to the Run button
+      } else {
+        setAnomResult({ instances: [], featureNames: [] });
+        setAnomState("done");
+      }
+    } finally {
+      anomAbort.current = null;
+    }
+  };
+
+  const cancelAnomalies = () => anomAbort.current?.abort();
 
   const navigate = (f: QcFinding) => {
     setVideo(f.video);
@@ -142,7 +200,7 @@ export function LabelQcDialog({ open, onOpenChange }: LabelQcDialogProps) {
   };
 
   const exportCsv = () => {
-    const scored = anomaly?.instances ?? [];
+    const scored = anomResult?.instances ?? [];
     if (scored.length === 0) return;
     const csv = qcResultsCsv(
       scored.map((i) => ({
@@ -161,6 +219,18 @@ export function LabelQcDialog({ open, onOpenChange }: LabelQcDialogProps) {
       instIdx !== undefined ? ` · inst ${instIdx + 1}` : ""
     }`;
 
+  /** Centered "Run" prompt shown before an analysis has been run. */
+  const runPrompt = (label: string, onRun: () => void) => (
+    <div className="flex flex-col items-center gap-3 py-10">
+      <p className="text-sm text-muted-foreground">
+        Analysis hasn&apos;t been run yet.
+      </p>
+      <Button size="sm" onClick={onRun} disabled={!labels}>
+        {label}
+      </Button>
+    </div>
+  );
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-3xl sm:max-w-3xl">
@@ -168,7 +238,7 @@ export function LabelQcDialog({ open, onOpenChange }: LabelQcDialogProps) {
           <DialogTitle>Label Quality Check</DialogTitle>
           <DialogDescription>
             Rule-based checks and a statistical anomaly score for each instance.
-            Click a row to jump to the frame.
+            Run a check, then click a row to jump to the frame.
           </DialogDescription>
         </DialogHeader>
 
@@ -180,7 +250,13 @@ export function LabelQcDialog({ open, onOpenChange }: LabelQcDialogProps) {
 
           {/* ── Rule-based findings ── */}
           <TabsContent value="rules">
-            {findings.length === 0 ? (
+            {rulesState === "idle" ? (
+              runPrompt("Run checks", runRules)
+            ) : rulesState === "running" ? (
+              <p className="py-10 text-center text-sm text-muted-foreground">
+                Running checks…
+              </p>
+            ) : findings.length === 0 ? (
               <p className="py-8 text-center text-sm text-muted-foreground">
                 No issues found in the current labels.
               </p>
@@ -218,10 +294,27 @@ export function LabelQcDialog({ open, onOpenChange }: LabelQcDialogProps) {
 
           {/* ── Statistical anomaly scores ── */}
           <TabsContent value="anomalies">
-            {flagged.length === 0 ? (
+            {anomState === "idle" ? (
+              runPrompt("Run analysis", runAnomalies)
+            ) : anomState === "running" ? (
+              <div className="flex flex-col items-center gap-3 py-10">
+                <p className="text-sm text-muted-foreground">
+                  Analyzing… {Math.round(anomProgress * 100)}%
+                </p>
+                <div className="h-1.5 w-64 overflow-hidden rounded bg-muted">
+                  <div
+                    className="h-full rounded bg-primary transition-[width]"
+                    style={{ width: `${Math.round(anomProgress * 100)}%` }}
+                  />
+                </div>
+                <Button size="sm" variant="outline" onClick={cancelAnomalies}>
+                  Cancel
+                </Button>
+              </div>
+            ) : flagged.length === 0 ? (
               <p className="py-8 text-center text-sm text-muted-foreground">
-                {anomaly && anomaly.instances.length > 0
-                  ? `No instances above the anomaly threshold (${anomaly.instances.length} scored). Export CSV for all scores.`
+                {(anomResult?.instances.length ?? 0) > 0
+                  ? `No instances above the anomaly threshold (${anomResult?.instances.length} scored). Export CSV for all scores.`
                   : "No instances to score."}
               </p>
             ) : (
@@ -266,30 +359,48 @@ export function LabelQcDialog({ open, onOpenChange }: LabelQcDialogProps) {
         {tab === "rules" ? (
           <DialogFooter className="sm:justify-between" showCloseButton>
             <span className="text-xs text-muted-foreground">
-              {findings.length} issue{findings.length === 1 ? "" : "s"}
+              {rulesState === "done"
+                ? `${findings.length} issue${findings.length === 1 ? "" : "s"}`
+                : ""}
             </span>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={findings.length === 0}
-              onClick={addAllToSuggestions}
-            >
-              Add flagged frames to Suggestions
-            </Button>
+            <div className="flex gap-2">
+              {rulesState === "done" && (
+                <Button variant="ghost" size="sm" onClick={runRules}>
+                  Re-run
+                </Button>
+              )}
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={rulesState !== "done" || findings.length === 0}
+                onClick={addAllToSuggestions}
+              >
+                Add flagged frames to Suggestions
+              </Button>
+            </div>
           </DialogFooter>
         ) : (
           <DialogFooter className="sm:justify-between" showCloseButton>
             <span className="text-xs text-muted-foreground">
-              {flagged.length} flagged · {anomaly?.instances.length ?? 0} scored
+              {anomState === "done"
+                ? `${flagged.length} flagged · ${anomResult?.instances.length ?? 0} scored`
+                : ""}
             </span>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={(anomaly?.instances.length ?? 0) === 0}
-              onClick={exportCsv}
-            >
-              Export CSV
-            </Button>
+            <div className="flex gap-2">
+              {anomState === "done" && (
+                <Button variant="ghost" size="sm" onClick={runAnomalies}>
+                  Re-run
+                </Button>
+              )}
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={anomState !== "done" || (anomResult?.instances.length ?? 0) === 0}
+                onClick={exportCsv}
+              >
+                Export CSV
+              </Button>
+            </div>
           </DialogFooter>
         )}
       </DialogContent>
