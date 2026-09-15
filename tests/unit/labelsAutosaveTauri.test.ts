@@ -26,6 +26,17 @@ vi.mock("@/lib/platform", () => ({
 vi.mock("@/lib/tauriDraft", () => ({
   newTauriDraftPath: newTauriDraftPathMock,
   recordTauriDraftSave: recordTauriDraftSaveMock,
+  // Imported by labelsAutosave for the incremental path (ON by default now). The
+  // dirty tests mark the tracker structural so the first tick does a `full` write
+  // (→ recordTauriDraftSave via writeBase), then truncates the journal + backs up
+  // the base — all mocked here so we exercise wiring, not I/O.
+  makeTauriJournalStore: vi.fn(() => ({
+    appendRecords: vi.fn(async () => {}),
+    readAll: vi.fn(async () => new Uint8Array(0)),
+    size: vi.fn(async () => 0),
+    truncate: vi.fn(async () => {}),
+  })),
+  backupTauriBase: vi.fn(async () => {}),
 }));
 // Defensive: keep any transitive toast importer off the real toaster.
 vi.mock("sonner", () => ({
@@ -34,6 +45,7 @@ vi.mock("sonner", () => ({
 
 const { maybeAutosaveLabelsDraft } = await import("@/lib/labelsAutosave");
 const { useAppStore } = await import("@/stores/appStore");
+const { dirtyFrameTracker } = await import("@/lib/autosaveDirty");
 
 /** Minimal fake Labels — the Tauri autosave only truthy-checks `labels` and
  *  hands it to the (mocked) recorder; `.videos` is read only by the real
@@ -55,6 +67,7 @@ beforeEach(() => {
   draftPathToMint = "/appdata/sleap-drafts/sleap-draft-train-abc.slp";
   newTauriDraftPathMock.mockClear();
   recordTauriDraftSaveMock.mockClear();
+  dirtyFrameTracker.clear();
 });
 
 describe("maybeAutosaveLabelsDraft — desktop (Tauri) branch", () => {
@@ -91,6 +104,7 @@ describe("maybeAutosaveLabelsDraft — desktop (Tauri) branch", () => {
       filename: "train.slp",
       labelsDraftPath: null,
     });
+    dirtyFrameTracker.markStructural(); // a real change → first tick writes a full base
 
     await maybeAutosaveLabelsDraft();
 
@@ -118,6 +132,7 @@ describe("maybeAutosaveLabelsDraft — desktop (Tauri) branch", () => {
       filename: "train.slp",
       labelsDraftPath: existing,
     });
+    dirtyFrameTracker.markStructural(); // a real change → first tick writes a full base
 
     await maybeAutosaveLabelsDraft();
 

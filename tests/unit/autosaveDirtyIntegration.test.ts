@@ -123,13 +123,12 @@ describe("CommandContext → dirtyFrameTracker wiring", () => {
     const { video, trackA, trackB } = setup(5);
     useAppStore.getState().setFrameIdx(1);
     await ctx.execute(PropagateTrackLabels, { oldTrack: trackA, newTrack: trackB });
-    // Propagation runs on frames strictly after the current (1) → 2,3,4.
-    const frames = dirtyFrameTracker.peekFrames().sort((a, b) => a.frameIdx - b.frameIdx);
-    expect(frames).toEqual([
-      { video, frameIdx: 2 },
-      { video, frameIdx: 3 },
-      { video, frameIdx: 4 },
-    ]);
+    // Propagation's scoped snapshot covers frames strictly after the current (1)
+    // → 2,3,4; the command's markChanged also records the active frame (1) as a
+    // baseline (harmless — it just re-persists frame 1's unchanged state).
+    const frames = dirtyFrameTracker.peekFrames().map((f) => f.frameIdx).sort((a, b) => a - b);
+    expect(frames).toEqual([1, 2, 3, 4]);
+    expect(dirtyFrameTracker.peekFrames().every((f) => f.video === video)).toBe(true);
     expect(dirtyFrameTracker.needsFullSnapshot).toBe(false);
   });
 
@@ -140,13 +139,39 @@ describe("CommandContext → dirtyFrameTracker wiring", () => {
 
     dirtyFrameTracker.clear();
     expect(ctx.undo()).toBe(true);
+    // restoreSnapshot marks the scoped frames (2,3,4) + markChanged records the
+    // active frame (1) — every restored/affected frame is caught.
     const afterUndo = dirtyFrameTracker.peekFrames().map((f) => f.frameIdx).sort((a, b) => a - b);
-    expect(afterUndo).toEqual([2, 3, 4]);
+    expect(afterUndo).toEqual([1, 2, 3, 4]);
     expect(dirtyFrameTracker.peekFrames().every((f) => f.video === video)).toBe(true);
 
     dirtyFrameTracker.clear();
     expect(ctx.redo()).toBe(true);
     const afterRedo = dirtyFrameTracker.peekFrames().map((f) => f.frameIdx).sort((a, b) => a - b);
-    expect(afterRedo).toEqual([2, 3, 4]);
+    expect(afterRedo).toEqual([1, 2, 3, 4]);
+  });
+});
+
+describe("store.markChanged → dirtyFrameTracker (untracked-edit coverage)", () => {
+  beforeEach(() => {
+    resetStore();
+    dirtyFrameTracker.clear();
+  });
+
+  it("marks the active frame dirty even for an edit that bypasses the command layer", () => {
+    // A direct store.markChanged() (e.g. a point drag commit, a context-menu
+    // visibility toggle) must still land the active frame in the dirty set, so
+    // the incremental autosave never misses it.
+    const { video } = setup(3);
+    useAppStore.getState().setFrameIdx(2);
+    dirtyFrameTracker.clear();
+    useAppStore.getState().markChanged();
+    expect(dirtyFrameTracker.peekFrames()).toEqual([{ video, frameIdx: 2 }]);
+  });
+
+  it("does not throw / mark when there is no active video", () => {
+    dirtyFrameTracker.clear();
+    useAppStore.getState().markChanged(); // no labels/video loaded
+    expect(dirtyFrameTracker.peekFrames()).toEqual([]);
   });
 });

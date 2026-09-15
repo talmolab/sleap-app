@@ -13,7 +13,8 @@ import { loadSlp, type Labels } from "@talmolab/sleap-io.js";
 import { useAppStore } from "@/stores/appStore";
 import { reportParseProgress } from "@/lib/loadProject";
 import { resolveExternalVideos } from "@/lib/resolveVideos";
-import { removeLabelsDraft } from "@/lib/labelsDraft";
+import { removeLabelsDraft, makeOpfsJournalStore } from "@/lib/labelsDraft";
+import { replayJournal, baseBakPath } from "@/lib/incrementalAutosave";
 import { deleteDraftEntry, type DraftManifestEntry } from "@/lib/draftManifest";
 import { videoSignature, buildBackendGraftPlan } from "@/lib/videoGraft";
 import { isDraftStaleVsDisk, isSourceChanged } from "@/lib/draftStaleness";
@@ -170,7 +171,28 @@ export async function restoreDraft(entry: DraftManifestEntry): Promise<boolean> 
   const store = useAppStore.getState();
   store.setLoading(true, "Restoring unsaved work...");
   try {
-    const draftFile = await readOpfsFile(entry.draftPath);
+    // Load the draft base, falling back to the retained previous base (.bak) if
+    // the primary is torn/unreadable (Safeguard B). The journal is truncated
+    // only after a successful base write, so a torn base + intact journal
+    // reconstruct the state on replay.
+    const loadDraftBase = async (
+      opts: Parameters<typeof loadSlp>[1],
+    ): Promise<Labels> => {
+      try {
+        return await loadSlp(await readOpfsFile(entry.draftPath), opts);
+      } catch (primaryErr) {
+        try {
+          const bakFile = await readOpfsFile(baseBakPath(entry.draftPath));
+          console.warn(
+            "[autosave] primary draft base unreadable — falling back to .bak:",
+            primaryErr,
+          );
+          return await loadSlp(bakFile, opts);
+        } catch {
+          throw primaryErr;
+        }
+      }
+    };
 
     if (entry.embedded) {
       // LARGE embedded pkg: the draft is imageless, so re-attach the ORIGINAL's
@@ -180,10 +202,13 @@ export async function restoreDraft(entry: DraftManifestEntry): Promise<boolean> 
       // grafts the wrong images.
       const sourceHandle = await resolveSourceHandle(entry);
       if (!sourceHandle) return false; // cancelled the re-picker
-      const draftLabels = await loadSlp(draftFile, {
+      const draftLabels = await loadDraftBase({
         openVideos: false,
         h5: { h5wasmUrl: H5WASM_URL },
       });
+      // Replay any incremental delta journal appended after this base (imageless
+      // frame deltas). No-op if none exists / the write path was off.
+      await replayJournal(makeOpfsJournalStore(entry.draftPath), draftLabels);
       store.setLoading(true, "Re-opening the original for images...");
       const originalFile = await sourceHandle.getFile();
       const originalLabels = await loadSlp(originalFile, {
@@ -233,11 +258,14 @@ export async function restoreDraft(entry: DraftManifestEntry): Promise<boolean> 
       // video references. Load it and resolve those videos by path (may prompt).
       // Re-link the original .slp handle (if any) so a later ⌘S can write back in
       // place — permission is (re-)requested on that first write, not here.
-      const draftLabels = await loadSlp(draftFile, {
+      const draftLabels = await loadDraftBase({
         openVideos: true,
         h5: { h5wasmUrl: H5WASM_URL },
         onProgress: reportParseProgress,
       });
+      // Replay any incremental delta journal appended after this base (imageless
+      // frame deltas). No-op if none exists / the write path was off.
+      await replayJournal(makeOpfsJournalStore(entry.draftPath), draftLabels);
       store.setLoading(true, "Locating videos...");
       await resolveExternalVideos(draftLabels);
       // Re-link the original .slp handle so a later ⌘S can write back in place —
