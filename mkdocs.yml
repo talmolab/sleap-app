@@ -1,5 +1,10 @@
 site_name: SLEAP App documentation
-site_url: https://docs.app.sleap.ai/
+# site_url: https://docs.app.sleap.ai/
+#   Commented out until hosting is decided -- nothing deploys these docs yet.
+#   This repo's single GitHub Pages site is already app.sleap.ai (see
+#   deploy.yml), and a repo gets one Pages site with one custom domain, so
+#   docs.app.sleap.ai would need its own repo. Set this once that is settled:
+#   it only feeds the canonical URL and the sitemap base.
 site_description: >-
   Documentation for the SLEAP app -- a browser and desktop interface for
   labeling, training, and tracking animal pose.
