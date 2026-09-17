@@ -334,10 +334,11 @@ export interface LocalTrainingOptions {
   useExportedForInference?: boolean;
 }
 
-// Session guard: whether we've already installed sleap-nn's [export] extra this
-// app session, so a format-selected training run doesn't force a redundant tool
-// reinstall before every run. (No cheap "is it installed?" probe exists; a proper
-// presence check would need a backend command — tracked as a follow-up.) Resets on reload.
+// Session guard: whether we've already confirmed sleap-nn's [export] extra
+// this app session, so a format-selected training run doesn't re-probe before
+// every run. Backed by a real presence check now (detectExtras ->
+// detect_sleap_nn_extras), so a run only pays for a tool reinstall when the
+// extras are genuinely absent. Resets on reload.
 let exportSupportEnsured = { onnx: false, tensorrt: false };
 
 export type TrainingStatus = "idle" | "running" | "completed" | "error" | "stopped";
@@ -1655,20 +1656,34 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
 
       // Ensure sleap-nn's [export] support is installed BEFORE training when the
       // user picked an export format, so a long run isn't wasted on a missing
-      // exporter. Installed once per session; failure is non-fatal (training still
+      // exporter. Confirmed once per session; failure is non-fatal (training still
       // runs; the post-training export just logs a failure).
       if (localOpts?.exportFormat && localOpts.exportFormat !== "none") {
         const needTrt = localOpts.exportFormat === "tensorrt";
         const already = exportSupportEnsured.onnx && (!needTrt || exportSupportEnsured.tensorrt);
         if (!already) {
           const { useEnvironmentStore } = await import("@/stores/environmentStore");
-          set((s) => ({ log: appendLog(s.log, `— Ensuring sleap-nn ${needTrt ? "ONNX + TensorRT" : "ONNX"} export support is installed...`) }));
-          await useEnvironmentStore.getState().installExportExtra(needTrt);
-          if (useEnvironmentStore.getState().installStatus === "done") {
-            exportSupportEnsured = { onnx: true, tensorrt: exportSupportEnsured.tensorrt || needTrt };
-            set((s) => ({ log: appendLog(s.log, "— Export support ready.") }));
+          // Ask what's actually installed first. The probe costs a bare
+          // interpreter start (no torch import), which is nothing next to the
+          // multi-minute tool reinstall it usually lets us skip — previously
+          // every session's first format-selected run paid that reinstall even
+          // with the extras already present.
+          await useEnvironmentStore.getState().detectExtras();
+          const have = useEnvironmentStore.getState().extras;
+          const satisfied =
+            !!have && !have.error && have.onnx && (!needTrt || have.tensorrt);
+          if (satisfied) {
+            exportSupportEnsured = { onnx: true, tensorrt: exportSupportEnsured.tensorrt || have!.tensorrt };
+            set((s) => ({ log: appendLog(s.log, `— sleap-nn ${needTrt ? "ONNX + TensorRT" : "ONNX"} export support already installed.`) }));
           } else {
-            set((s) => ({ log: appendLog(s.log, "— Export support install failed — training will proceed; export may fail.") }));
+            set((s) => ({ log: appendLog(s.log, `— Ensuring sleap-nn ${needTrt ? "ONNX + TensorRT" : "ONNX"} export support is installed...`) }));
+            await useEnvironmentStore.getState().installExportExtra(needTrt);
+            if (useEnvironmentStore.getState().installStatus === "done") {
+              exportSupportEnsured = { onnx: true, tensorrt: exportSupportEnsured.tensorrt || needTrt };
+              set((s) => ({ log: appendLog(s.log, "— Export support ready.") }));
+            } else {
+              set((s) => ({ log: appendLog(s.log, "— Export support install failed — training will proceed; export may fail.") }));
+            }
           }
         }
       }

@@ -151,6 +151,90 @@ export async function detectGpu(): Promise<string> {
   return invokeCmd<string>("detect_gpu", {});
 }
 
+/**
+ * Accelerator + GPU info for the installed sleap-nn, as reported by the torch
+ * inside its own uv-tool venv (sleap-nn's `get_system_info_dict()`, the same
+ * data `sleap-nn system` prints).
+ *
+ * Distinct from `detectGpu()` above, which probes the MACHINE with nvidia-smi
+ * to choose a torch extra at install time. Here the question is whether the
+ * torch that's actually installed can use the GPU — a CUDA box with a CPU-only
+ * wheel reports `accelerator: "cpu"`, which is the "reinstall sleap-nn" signal.
+ */
+export interface AcceleratorInfo {
+  /** `null` only when nothing could be probed (see `error`); no GPU is `"cpu"`. */
+  accelerator: "cuda" | "mps" | "cpu" | null;
+  /**
+   * Devices torch can use: the CUDA device count, or 0 for CPU.
+   *
+   * MPS reports 1 — Lightning's `devices=1` convention, not a real device
+   * count (Metal exposes one unified GPU that isn't enumerable). Don't render
+   * it as "1 GPU" on a Mac; `summarizeAccelerator` shows a count for CUDA only.
+   */
+  gpuCount: number;
+  /** Per-device descriptions, e.g. "NVIDIA RTX 4090 (23.6 GB)". CUDA only. */
+  gpus: string[];
+  torchVersion: string | null;
+  cudaVersion: string | null;
+  /** Present even when CUDA isn't usable — a driver with no CUDA means a CPU-only wheel. */
+  driverVersion: string | null;
+  /** Whether `driverVersion` meets `driverMinRequired`; `null` when undeterminable. */
+  driverCompatible: boolean | null;
+  driverMinRequired: string | null;
+  /** "macos" | "windows" | "linux" — gates which accelerator is even reachable. */
+  os: string;
+  error: string | null;
+}
+
+const NO_ACCELERATOR_INFO: AcceleratorInfo = {
+  accelerator: null,
+  gpuCount: 0,
+  gpus: [],
+  torchVersion: null,
+  cudaVersion: null,
+  driverVersion: null,
+  driverCompatible: null,
+  driverMinRequired: null,
+  os: "",
+  error: "GPU detection is only available in the desktop app.",
+};
+
+export async function detectAccelerator(): Promise<AcceleratorInfo> {
+  if (!isTauri) return NO_ACCELERATOR_INFO;
+  return invokeCmd<AcceleratorInfo>("detect_accelerator", {});
+}
+
+/**
+ * Which optional extras the installed sleap-nn carries, probed by looking for
+ * the modules they bring in — `uv tool list` reports the tool's version but
+ * not which extras it was built with.
+ */
+export interface SleapNnExtras {
+  /** sleap-nn's `[export]` extra: onnx + onnxruntime. */
+  onnx: boolean;
+  /** sleap-nn's `[tensorrt]` extra: tensorrt + torch_tensorrt. */
+  tensorrt: boolean;
+  /**
+   * Whether TensorRT is installable here at all. sleap-nn marks both tensorrt
+   * deps linux/win-only, so on macOS the extra resolves to nothing — asking
+   * for it would install nothing and silently "succeed".
+   */
+  tensorrtSupported: boolean;
+  error: string | null;
+}
+
+export async function detectSleapNnExtras(): Promise<SleapNnExtras> {
+  if (!isTauri) {
+    return {
+      onnx: false,
+      tensorrt: false,
+      tensorrtSupported: false,
+      error: "Extras detection is only available in the desktop app.",
+    };
+  }
+  return invokeCmd<SleapNnExtras>("detect_sleap_nn_extras", {});
+}
+
 /** Point-in-time GPU stats (NVIDIA util/VRAM via nvidia-smi; backend-only on mps/cpu). */
 export interface GpuStats {
   backend: string;

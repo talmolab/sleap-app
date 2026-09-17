@@ -41,6 +41,8 @@ fn main() {
                     // environment (uv / python / training)
                     "detect_uv",
                     "detect_gpu",
+                    "detect_accelerator",
+                    "detect_sleap_nn_extras",
                     "gpu_stats",
                     "check_wandb_auth",
                     "list_uv_tools",

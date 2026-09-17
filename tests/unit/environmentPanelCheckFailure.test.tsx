@@ -85,11 +85,11 @@ describe("EnvironmentPanel update-check failure states", () => {
     });
 
     await waitFor(() =>
-      expect(screen.getByText("Update check failed")).toBeInTheDocument(),
+      expect(screen.getByText("Check failed")).toBeInTheDocument(),
     );
     expect(baseElement.textContent).not.toContain("up to date");
     // The actionable detail is preserved for the user, in the tooltip.
-    expect(screen.getByText("Update check failed")).toHaveAttribute(
+    expect(screen.getByText("Check failed")).toHaveAttribute(
       "title",
       "no full release has a latest.json manifest yet",
     );
@@ -106,7 +106,7 @@ describe("EnvironmentPanel update-check failure states", () => {
     });
 
     await waitFor(() => expect(baseElement.textContent).toContain("up to date"));
-    expect(screen.queryByText("Update check failed")).not.toBeInTheDocument();
+    expect(screen.queryByText("Check failed")).not.toBeInTheDocument();
     expect(baseElement.textContent).not.toContain("Checking...");
   });
 });

@@ -576,6 +576,8 @@ fn sleap_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
             open_preferences_directory,
             environment::detect_uv,
             environment::detect_gpu,
+            environment::detect_accelerator,
+            environment::detect_sleap_nn_extras,
             environment::gpu_stats,
             environment::check_wandb_auth,
             environment::list_uv_tools,
