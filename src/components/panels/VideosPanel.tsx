@@ -493,7 +493,9 @@ export function VideosPanel() {
     if (!labels || !currentVideo) return;
     let files;
     try {
-      files = await pickVideoFiles();
+      // Relinking, not importing: offer the HDF5 containers (`.pkg.slp`/`.h5`)
+      // a project can reference too, with this video's own extension first.
+      files = await pickVideoFiles({ relinking: currentVideo.filename });
     } catch (err) {
       toast.error("Failed to replace video", {
         description: err instanceof Error ? err.message : String(err),

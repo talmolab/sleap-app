@@ -31,6 +31,7 @@ import {
   getVideoPathCandidates,
   computePrefixSwap,
   SUPPORTED_VIDEO_EXTS,
+  locateVideoFilters,
   collectHandlesByBasename,
   resolveAllVideosFromFolder,
   isImageSequenceVideo,
@@ -41,6 +42,7 @@ import {
   type ScrubProxyDeps,
   type ProxyOpenDeps,
 } from "@/lib/resolveVideos";
+import { isHdf5VideoPath } from "@/lib/hdf5VideoSource";
 import { useAppStore } from "@/stores/appStore";
 import { useTranscodeStore } from "@/stores/transcodeStore";
 import { shouldBuildScrubProxy } from "@/lib/transcode/proxyPolicy";
@@ -864,6 +866,127 @@ describe("lazy video backends (defer decoder open, #perf)", () => {
     const ok = await ensureVideoBackend(video);
     expect(ok).toBe(false);
     expect(video.backend).toBeNull();
+  });
+});
+
+describe("external HDF5 video sources (.pkg.slp as the video)", () => {
+  /** A video whose stored source is a package on another machine (sleap-track
+   *  output run against a training package — see hdf5VideoSource.ts). */
+  function packageBackedVideo(filename: string): Video {
+    const video = new Video({
+      filename,
+      openBackend: false,
+      backendMetadata: {
+        type: "HDF5Video",
+        dataset: "video0/video",
+        has_embedded_images: true,
+        shape: [1000, 384, 384, 1],
+      },
+    });
+    video.backend = null; // the WebView could not open the stored path
+    return video;
+  }
+
+  it("counts an unopened package source as missing, not embedded", () => {
+    const video = packageBackedVideo("/old/machine/labels.v001.pkg.slp");
+    // `hasEmbeddedImages` is only true when the `.slp` IS its own container
+    // (stored filename "."); a package referenced BY path is an external file.
+    expect(video.hasEmbeddedImages).toBe(false);
+    expect(isVideoMissing(video)).toBe(true);
+    expect(isImageSequenceVideo(video)).toBe(false);
+  });
+
+  it("auto-locates a moved package the same way it locates a moved video", async () => {
+    const video = packageBackedVideo("/old/machine/labels.v001.pkg.slp");
+    const labels = new Labels();
+    labels.addVideo(video);
+
+    const probed: string[] = [];
+    await resolveExternalVideos(labels, {
+      projectPath: "/data/proj/preds.slp",
+      exists: async (p) => {
+        probed.push(p);
+        return p === "/data/proj/labels.v001.pkg.slp";
+      },
+      readFile: async () => new Uint8Array(),
+      lazy: true,
+    });
+
+    // Found by the same basename-in-project-dir candidate an .mp4 would use.
+    expect((video.backendMetadata as Record<string, unknown>).lazyPath).toBe(
+      "/data/proj/labels.v001.pkg.slp"
+    );
+    expect(isVideoMissing(video)).toBe(false);
+    // The dataset must survive relocation: it is the only record of WHICH
+    // video in the package this is.
+    expect((video.backendMetadata as Record<string, unknown>).dataset).toBe(
+      "video0/video"
+    );
+    expect(probed.length).toBeGreaterThan(0);
+  });
+
+  it("finds a package referenced by a path relative to an ANCESTOR of the .slp", async () => {
+    // The real shape (labels_pr.test.0.slp): the .slp sits two levels below the
+    // directory the relative video path is relative to.
+    const rel = "labels.v006.slp.training_job/labels.v006.test.pkg.slp";
+    const real = "/vol/proj/2026_09_15_ucsd/" + rel;
+    const video = packageBackedVideo(rel);
+    const labels = new Labels();
+    labels.addVideo(video);
+
+    await resolveExternalVideos(labels, {
+      projectPath:
+        "/vol/proj/2026_09_15_ucsd/models/centered_instance_unet_ms64_crop320/labels_pr.test.0.slp",
+      exists: async (p) => p === real,
+      readFile: async () => new Uint8Array(),
+      lazy: true,
+    });
+
+    expect((video.backendMetadata as Record<string, unknown>).lazyPath).toBe(
+      real
+    );
+    expect(isVideoMissing(video)).toBe(false);
+  });
+
+  it("keeps each video's own dataset when several share one package", async () => {
+    // Four Videos, one .pkg.slp, distinguished ONLY by dataset — the test-split
+    // layout sleap-nn emits. Losing the per-video dataset here would show every
+    // video the same frames.
+    const rel = "job/labels.v006.test.pkg.slp";
+    const labels = new Labels();
+    const videos = [0, 1, 2, 3].map((i) => {
+      const v = packageBackedVideo(rel);
+      (v.backendMetadata as Record<string, unknown>).dataset = `video${i}/video`;
+      labels.addVideo(v);
+      return v;
+    });
+
+    await resolveExternalVideos(labels, {
+      projectPath: "/data/proj/preds.slp",
+      exists: async (p) => p === "/data/proj/" + rel,
+      readFile: async () => new Uint8Array(),
+      lazy: true,
+    });
+
+    for (const [i, v] of videos.entries()) {
+      const meta = v.backendMetadata as Record<string, unknown>;
+      expect(meta.lazyPath).toBe("/data/proj/" + rel);
+      expect(meta.dataset).toBe(`video${i}/video`);
+      expect(isVideoMissing(v)).toBe(false);
+    }
+  });
+
+  it("offers a .slp-first picker when locating a missing package source", () => {
+    const video = packageBackedVideo("/old/machine/labels.v001.pkg.slp");
+    const filters = locateVideoFilters(video.filename);
+    expect(filters[0]!.extensions).toEqual(["slp"]);
+  });
+
+  it("accepts a package in the standalone-video gate (Replace Video)", () => {
+    // The media-import table rejects `.slp` on purpose; the relink gate must
+    // not, or Replace Video can never point at a package.
+    expect(backendKindForFilename("labels.v001.pkg.slp")).toBeNull();
+    expect(isHdf5VideoPath("labels.v001.pkg.slp")).toBe(true);
   });
 });
 
