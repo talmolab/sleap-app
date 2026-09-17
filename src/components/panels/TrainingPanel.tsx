@@ -21,7 +21,7 @@ import { ErrorOutput } from "@/components/monitors/ErrorOutput";
 import { useAppStore } from "@/stores/appStore";
 import { isTauri } from "@/platform/index";
 import { getBaselineProfilesForHead, slotToHeadType } from "@/lib/trainingProfiles";
-import { computeInstanceSizeStats, recommendBackboneProfile, recommendCentroidScale, resolveEffectiveCropSize, detectVideoChannels, estimateHeadGpuMemory, estimateHeadCacheMemory, formatBytes, formatParamCount, type GpuMemoryLevel } from "@/lib/modelStats";
+import { computeInstanceSizeStats, hasUserLabeledInstances, recommendBackboneProfile, recommendCentroidScale, resolveEffectiveCropSize, detectVideoChannels, estimateHeadGpuMemory, estimateHeadCacheMemory, formatBytes, formatParamCount, type GpuMemoryLevel } from "@/lib/modelStats";
 import type { DiscoveredModel } from "@/lib/modelDiscovery";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -39,6 +39,7 @@ import {
   CheckCircle2,
   XCircle,
   AlertCircle,
+  AlertTriangle,
   Upload,
   X,
   ChevronDown,
@@ -145,8 +146,10 @@ function getSkeletonCompatibility(
   return { disabledTypes, warnings };
 }
 
-type LabelsLike = {
+export type LabelsLike = {
   labeledFrames: Array<{
+    /** Identity-compared against `videos` to scope suggestions to labeled videos. */
+    video?: unknown;
     userInstances: Array<{
       points: Array<{ xy: [number, number]; visible: boolean }>;
     }>;
@@ -156,7 +159,19 @@ type LabelsLike = {
   tracks: unknown[];
 };
 
-function recommendPipeline(labels: LabelsLike | null): PipelineRecommendation | null {
+/**
+ * Suggest a pipeline from the project's GROUND TRUTH.
+ *
+ * Returns null when there is nothing to go on, which the caller treats as "no
+ * suggestion" (keep the current model type, warn the user) rather than
+ * inventing one. `labels.labeledFrames.length > 0` is NOT enough to go on: a
+ * `labels_pr.*.slp` written by inference has one frame per PREDICTED frame and
+ * zero user instances, so every count below comes out 0 — and 0 instances then
+ * fell through the `maxInstances <= 1` branch and reported "Only one animal per
+ * frame" on a two-animal project. Absence of ground truth is not evidence of a
+ * single animal, so require at least one user instance.
+ */
+export function recommendPipeline(labels: LabelsLike | null): PipelineRecommendation | null {
   if (!labels || labels.labeledFrames.length === 0) return null;
 
   let maxInstances = 0;
@@ -189,9 +204,20 @@ function recommendPipeline(labels: LabelsLike | null): PipelineRecommendation | 
     }
   }
 
+  // No user-labeled instance anywhere: nothing to suggest from (see above).
+  if (maxInstances === 0) return null;
+
   const avgBbox = bboxCount > 0 ? bboxSum / bboxCount : 0;
+  // Frame size from the user-labeled videos only — the animal-size ratio below
+  // is meaningless against a video that was never labeled (mirrors
+  // videosWithUserLabels in modelStats.ts).
+  const labeledVideos = new Set<unknown>();
+  for (const lf of labels.labeledFrames) {
+    if (lf.userInstances.length > 0) labeledVideos.add(lf.video);
+  }
   let maxDim = 0;
   for (const v of labels.videos) {
+    if (labeledVideos.size > 0 && !labeledVideos.has(v)) continue;
     if (v.shape) {
       const d = Math.max(v.shape[1], v.shape[2]);
       if (d > maxDim) maxDim = d;
@@ -925,6 +951,14 @@ export function TrainingPanel() {
   );
   const skeletonCompat = useMemo(() => getSkeletonCompatibility(skeleton), [skeleton]);
   const pipelineRec = useMemo(() => recommendPipeline(labels as LabelsLike | null), [labels]);
+  // No ground truth to train on (or to derive any suggestion from) — e.g. a
+  // `labels_pr.*.slp` from inference, which holds predictions only. Every
+  // suggester returns null in that case and the config falls back to its
+  // baseline preset, so say why rather than letting the defaults look derived.
+  const noLabeledData = useMemo(
+    () => labels != null && !hasUserLabeledInstances(labels),
+    [labels]
+  );
 
   // Auto-select the recommended model type for a freshly-loaded project —
   // mirrors the RF-preset/max_stride auto-select pattern: it only applies
@@ -1093,6 +1127,16 @@ export function TrainingPanel() {
 
   return (
     <div className="flex flex-col gap-0 -m-2">
+      {noLabeledData && (
+        <div className="mx-3 mt-2 flex items-start gap-2 rounded-md border border-yellow-500/50 bg-yellow-500/10 px-2 py-1.5">
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5 text-yellow-500" />
+          <p className="text-xs text-yellow-500">
+            No labeled frames in this project — predicted instances aren&apos;t
+            training data. The settings below are a baseline preset; label some
+            frames to get suggestions tailored to your data.
+          </p>
+        </div>
+      )}
       {/* ── Configuration ──────────────────────────────────────────── */}
       <div className="px-3 py-2 space-y-1">
         {/* ── Model Type & Configs ─────────────────────────────────── */}

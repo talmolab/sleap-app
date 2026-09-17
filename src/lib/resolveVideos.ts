@@ -52,6 +52,17 @@ import {
 import type { ByteSourceDescriptor } from "@talmolab/sleap-io.js";
 import { useTranscodeStore } from "@/stores/transcodeStore";
 import { useTranscodePromptStore } from "@/stores/transcodePromptStore";
+import { choiceDialog } from "@/stores/choiceStore";
+import {
+  HDF5_VIDEO_EXTS,
+  Hdf5DatasetPickCanceled,
+  createHdf5BackendForFile,
+  createHdf5BackendForPath,
+  hdf5HintsForVideo,
+  isHdf5VideoPath,
+  releaseHdf5Containers,
+  type Hdf5VideoHints,
+} from "./hdf5VideoSource";
 
 /** Extract just the basename from a path or filename. */
 export function getBasename(filename: string | string[]): string {
@@ -604,6 +615,13 @@ export async function resolveExternalVideos(
   labels: Labels,
   options?: AutoResolveOptions
 ): Promise<void> {
+  // Drop the HDF5 containers held for the PREVIOUS project's videos. Every
+  // project open reaches here before any container is opened for the new one,
+  // making this the one safe release point (see releaseHdf5Containers). Must be
+  // before the early return below, so switching to a project with no missing
+  // videos still frees the old readers.
+  await releaseHdf5Containers();
+
   // Validate existing backends: loadSlp may have created Mp4BoxVideoBackend
   // instances with invalid paths (e.g. Windows paths on Mac). These have
   // backend !== null but their ready promise will reject. Await each and
@@ -845,6 +863,53 @@ async function propagatePrefixSwap(
   return count;
 }
 
+/** A native/browser file-dialog filter entry. */
+interface VideoFileFilter {
+  name: string;
+  extensions: string[];
+}
+
+/**
+ * Every extension that can back an already-existing Video: the media containers
+ * plus the HDF5 containers (`.pkg.slp`/`.h5`), which a `.slp` references
+ * whenever the project was predicted or re-saved against a training package.
+ *
+ * A function, not a module-level const: `SUPPORTED_VIDEO_EXTS` is declared
+ * further down this file, so evaluating it up here would hit its TDZ at import.
+ */
+function relinkableVideoExts(): string[] {
+  return [...SUPPORTED_VIDEO_EXTS, ...HDF5_VIDEO_EXTS];
+}
+
+/**
+ * File-dialog filters for LOCATING or REPLACING an existing video.
+ *
+ * The legacy Qt GUI derives this filter from the MISSING FILE'S OWN extension
+ * — `Missing file type (*.slp)` plus `Any File (*.*)`
+ * (`sleap/gui/dialogs/missingfiles.py:105-115`) — precisely so that relinking is
+ * never narrowed to formats the project doesn't use. A fixed video-only list
+ * does the opposite: it hides the `.pkg.slp` the user has to pick. So put the
+ * current source's own extension first and offer every relinkable source after
+ * it (switching container is legitimate — a package re-exported to MP4, say).
+ *
+ * Distinct from the IMPORT filters ({@link pickVideoFiles} without
+ * `relinking`), which stay media-only: there, a `.slp` means "open this
+ * project", not "import this as a video".
+ */
+export function locateVideoFilters(
+  current?: string | string[] | null
+): VideoFileFilter[] {
+  const exts = relinkableVideoExts();
+  const own = current ? fileExt(getBasename(current)) : "";
+  if (!own || !exts.includes(own)) {
+    return [{ name: "Video files", extensions: exts }];
+  }
+  return [
+    { name: `${own.toUpperCase()} files`, extensions: [own] },
+    { name: "All video sources", extensions: exts },
+  ];
+}
+
 /**
  * Open a file picker for a single video and assign its backend.
  * Returns true if a video was successfully loaded.
@@ -860,10 +925,10 @@ export async function resolveVideoFile(
   const platform = await getPlatform();
   console.log(`[video] Picking video file via ${platform.isTauri ? "Tauri" : "browser"} dialog`);
 
+  // Filter by the missing source's OWN extension first (legacy-GUI parity), so
+  // a missing `.pkg.slp` video source is selectable at all.
   const result = await platform.showOpenDialog({
-    filters: [
-      { name: "Video files", extensions: [...SUPPORTED_VIDEO_EXTS] },
-    ],
+    filters: locateVideoFilters(video.filename),
   });
 
   if (!result) return false;
@@ -877,7 +942,9 @@ export async function resolveVideoFile(
       : video.filename;
     try {
       const name = getBasename(result);
-      const ok = await assignVideoBackendFromPath(video, result);
+      const ok = await assignVideoBackendFromPath(video, result, {
+        pickHdf5Dataset: chooseHdf5Dataset,
+      });
       if (!ok) return false; // assignVideoBackendFromPath already surfaced the reason
       // Update the video's filename to the resolved absolute path
       video.filename = result;
@@ -913,7 +980,9 @@ export async function resolveVideoFile(
   } else if (result instanceof File) {
     // Browser: got a File object
     console.log(`[video] Loading video from File object: ${result.name} (${result.size} bytes)`);
-    const ok = await assignVideoBackend(video, result);
+    const ok = await assignVideoBackend(video, result, {
+      pickHdf5Dataset: chooseHdf5Dataset,
+    });
     if (!ok) return false;
     toast.success(`Loaded video: ${result.name}`);
     return true;
@@ -935,9 +1004,9 @@ export async function resolveAllVideoFiles(
 
   const platform = await getPlatform();
   console.log(`[video] Batch-resolving ${unresolvedVideos.length} video(s) via ${platform.isTauri ? "Tauri" : "browser"} dialog`);
-  const videoFilters = [
-    { name: "Video files", extensions: [...SUPPORTED_VIDEO_EXTS] },
-  ];
+  // One dialog for many missing videos: offer every relinkable source rather
+  // than any single video's extension (see locateVideoFilters).
+  const videoFilters = locateVideoFilters(null);
 
   const result = await platform.showOpenDialog({
     filters: videoFilters,
@@ -1197,8 +1266,16 @@ export async function resolveAllVideosFromFolder(
  */
 async function createBackendForFile(
   file: File,
-  grayscale?: boolean | null
+  grayscale?: boolean | null,
+  hdf5?: Hdf5VideoHints
 ): Promise<VideoBackend> {
+  // An HDF5 container (`.pkg.slp` / `.h5`) used AS a video: its frames live in
+  // an embedded-image dataset, not in a media container, so it never reaches the
+  // extension table below (which is the video-import allowlist). See
+  // `hdf5VideoSource.ts`.
+  if (isHdf5VideoPath(file.name)) {
+    return createHdf5BackendForFile(file, hdf5, grayscale);
+  }
   const backend = await (async () => {
     switch (backendKindForFilename(file.name)) {
       case "mediabunny":
@@ -1639,9 +1716,19 @@ export async function scheduleWorkerDecodeUpgradeBrowser(
  */
 async function createBackendForPath(
   path: string,
-  grayscale?: boolean | null
+  grayscale?: boolean | null,
+  hdf5?: Hdf5VideoHints
 ): Promise<VideoBackend> {
   const name = getBasename(path);
+  // An HDF5 container (`.pkg.slp` / `.h5`) used AS a video. Handled before the
+  // extension table because it isn't in it: `backendKindForFilename` returns
+  // null for `.slp`, which would fall through to the historical Mp4Box default
+  // at the bottom of this function and hand HDF5 bytes to an MP4 demuxer. The
+  // proxy / transcode machinery below is all media-container work that does not
+  // apply. See `hdf5VideoSource.ts`.
+  if (isHdf5VideoPath(name)) {
+    return createHdf5BackendForPath(path, hdf5, grayscale);
+  }
   const kind = backendKindForFilename(name);
   const backend = await (async () => {
     if (kind === "mediabunny") {
@@ -1754,6 +1841,21 @@ async function createBackendForPath(
     : GrayscaleVideoBackend.wrap({ inner: backend, grayscale });
 }
 
+/**
+ * Copy the dataset the freshly-built HDF5 backend settled on back onto
+ * `backendMetadata.dataset`, so a save records WHICH video in the package this
+ * is. Needed when the dataset was auto-detected (Replace Video with a picked
+ * `.pkg.slp`, or an older `.slp` that stored no dataset) — without it the next
+ * load would have to guess again and could pick a different video from a
+ * multi-video package.
+ */
+function persistHdf5Dataset(video: Video): void {
+  const dataset = (video.backend as { dataset?: string | null } | null)?.dataset;
+  if (typeof dataset === "string" && dataset !== "") {
+    (video.backendMetadata as Record<string, unknown>).dataset = dataset;
+  }
+}
+
 /** Shared options for {@link assignVideoBackend} / {@link assignVideoBackendFromPath}. */
 export interface AssignBackendOptions {
   silent?: boolean;
@@ -1765,11 +1867,79 @@ export interface AssignBackendOptions {
    * wins over — and re-persists into — `backendMetadata.grayscale`.
    */
   grayscale?: boolean | null;
+  /**
+   * Chooser used when the target is an HDF5 container (`.pkg.slp`/`.h5`) that
+   * holds SEVERAL videos and nothing recorded which one is wanted. Only the
+   * INTERACTIVE paths pass one (the user just picked the file, so a prompt is
+   * expected); auto-resolution on project load deliberately does not — those
+   * videos already carry a stored `dataset`, and a modal mid-load would stall
+   * the open. See {@link Hdf5VideoHints.pickDataset}.
+   */
+  pickHdf5Dataset?: (datasets: string[]) => Promise<string | null>;
 }
 
 /**
- * Attach a freshly-built backend to a Video, probing frame 0 to validate decode
- * and capture shape/fps. Shared by the File and native-path entry points.
+ * Prompt for which video in a multi-video SLEAP package to read. Beyond
+ * {@link MAX_DATASET_CHOICES} the dialog would be a wall of buttons, so the
+ * first video is taken and the choice is stated instead of asked.
+ */
+export async function chooseHdf5Dataset(
+  datasets: string[]
+): Promise<string | null> {
+  const first = datasets[0] ?? null;
+  if (datasets.length > MAX_DATASET_CHOICES) {
+    toast.info(`Using ${groupLabel(first ?? "")} of this package`, {
+      description: `It holds ${datasets.length} videos; the first one was used.`,
+    });
+    return first;
+  }
+  return choiceDialog({
+    title: "Which video?",
+    message:
+      `This package holds ${datasets.length} videos. ` +
+      `Choose the one to read frames from.`,
+    options: datasets.map((d, i) => ({
+      key: d,
+      label: groupLabel(d),
+      primary: i === 0,
+    })),
+  });
+}
+
+/** How many videos in a package we are willing to render as choice buttons. */
+const MAX_DATASET_CHOICES = 8;
+
+/** `"video3/video"` -> `"video3"`, for display. */
+function groupLabel(dataset: string): string {
+  return dataset.replace(/\/video$/, "") || dataset;
+}
+
+/**
+ * The frame index to validate a freshly-built backend with. Frame 0 for a
+ * continuous video — but an HDF5 package normally embeds only the LABELED
+ * frames, so its first stored image can be at source frame 47,000 and
+ * `getFrame(0)` legitimately returns null. Probing 0 there would reject a
+ * perfectly good backend as undecodable, so probe the first frame the backend
+ * actually stores (its `frameNumbers`, populated by the deferred metadata read).
+ */
+async function firstProbeIndex(backend: VideoBackend): Promise<number> {
+  const b = backend as {
+    ensureLoaded?: () => Promise<void>;
+    frameNumbers?: number[];
+  };
+  if (typeof b.ensureLoaded !== "function") return 0;
+  try {
+    await b.ensureLoaded();
+  } catch {
+    return 0;
+  }
+  return b.frameNumbers?.[0] ?? 0;
+}
+
+/**
+ * Attach a freshly-built backend to a Video, probing a frame to validate decode
+ * and capture shape/fps (see {@link firstProbeIndex} for which frame). Shared by
+ * the File and native-path entry points.
  *
  * The frame-0 probe also guards SeqVideoBackend, which sets `shape` from the
  * header at create(): without a decode check a `.seq` with an undecodable codec
@@ -1793,9 +1963,14 @@ async function probeAndAssignBackend(
   try {
     const backend = await create();
     video.backend = backend;
-    const frame = await backend.getFrame(0);
+    const probeIdx = await firstProbeIndex(backend);
+    const frame = await backend.getFrame(probeIdx);
     if (!frame) {
-      throw new Error("could not decode the first video frame");
+      throw new Error(
+        probeIdx === 0
+          ? "could not decode the first video frame"
+          : `could not decode frame ${probeIdx}`
+      );
     }
     if (opts?.grayscale !== undefined) {
       (video.backendMetadata as Record<string, unknown>).grayscale =
@@ -1812,7 +1987,9 @@ async function probeAndAssignBackend(
     console.error(`Failed to load video backend for ${name}:`, err);
     video.backend = null;
     video.backendError = classifyVideoError(err);
-    if (!opts?.silent) {
+    // Backing out of the "which video in this package?" prompt is a choice, not
+    // a failure — leave the video as it was and say nothing.
+    if (!opts?.silent && !(err instanceof Hdf5DatasetPickCanceled)) {
       toast.error(`Failed to load video: ${name}`, {
         description: err instanceof Error ? err.message : String(err),
       });
@@ -1839,12 +2016,19 @@ export async function assignVideoBackend(
     opts?.grayscale !== undefined
       ? opts.grayscale
       : (video.backendMetadata.grayscale as boolean | null | undefined);
+  const hdf5 = isHdf5VideoPath(file.name)
+    ? { ...hdf5HintsForVideo(video), pickDataset: opts?.pickHdf5Dataset }
+    : undefined;
   const ok = await probeAndAssignBackend(
     video,
-    () => createBackendForFile(file, grayscale),
+    () => createBackendForFile(file, grayscale, hdf5),
     file.name,
     { ...opts, grayscale }
   );
+  if (ok && hdf5) {
+    persistHdf5Dataset(video);
+    return ok; // HDF5 containers have no MP4 stream to hand the decode worker
+  }
   // Browser: upgrade to off-main worker decode (the worker slices this Blob
   // directly). No-ops on desktop / non-mp4. Fire-and-forget.
   if (ok) void scheduleWorkerDecodeUpgradeBrowser(video, file, file.name);
@@ -1868,12 +2052,22 @@ export async function assignVideoBackendFromPath(
     opts?.grayscale !== undefined
       ? opts.grayscale
       : (video.backendMetadata.grayscale as boolean | null | undefined);
+  const hdf5 = isHdf5VideoPath(path)
+    ? { ...hdf5HintsForVideo(video), pickDataset: opts?.pickHdf5Dataset }
+    : undefined;
   const ok = await probeAndAssignBackend(
     video,
-    () => createBackendForPath(path, grayscale),
+    () => createBackendForPath(path, grayscale, hdf5),
     getBasename(path),
     { ...opts, grayscale }
   );
+  if (ok && hdf5) {
+    persistHdf5Dataset(video);
+    // Everything below is media-container work — a scrub proxy, an off-main MP4
+    // decode worker, the transcode cache — none of which applies to embedded
+    // images read straight out of HDF5.
+    return ok;
+  }
   // The video is open on its original (or cached-proxy) backend; if a first-build
   // proxy is warranted, build it in the background and hot-swap when ready — never
   // blocks the open (scrub-proxy v2 Thread C). Fire-and-forget.
@@ -2008,26 +2202,42 @@ export async function buildStandaloneVideo(
   absPath?: string | null,
   grayscale?: boolean
 ): Promise<Video | null> {
-  if (!backendKindForFilename(file.name)) {
+  // `.pkg.slp`/`.h5` are video sources too (their frames are embedded-image
+  // datasets, not a media stream), so they pass the gate even though they are
+  // deliberately absent from the media-import extension table.
+  if (!backendKindForFilename(file.name) && !isHdf5VideoPath(file.name)) {
     const ext = fileExt(file.name);
     toast.error(`${ext ? `.${ext} files are` : "This file is"} not supported`, {
       description:
-        "Supported video formats: MP4, WebM, MKV, MOV, Ogg, MPEG-TS, AVI, WMV, MPEG, and Norpix .seq.",
+        "Supported video formats: MP4, WebM, MKV, MOV, Ogg, MPEG-TS, AVI, WMV, " +
+        "MPEG, Norpix .seq, and SLEAP packages (.pkg.slp) / HDF5 (.h5).",
     });
     return null;
   }
   // Desktop opens by path (canonical filename = the path, so it resolves on
   // reload); browser opens from the File (filename = the bare name).
   const video = new Video({ filename: absPath ?? file.name, openBackend: false });
+  const opts = { grayscale, pickHdf5Dataset: chooseHdf5Dataset };
   if (absPath) {
-    await assignVideoBackendFromPath(video, absPath, { grayscale });
+    await assignVideoBackendFromPath(video, absPath, opts);
   } else {
-    await assignVideoBackend(video, file, { grayscale });
+    await assignVideoBackend(video, file, opts);
   }
-  // The assign helpers set shape only on a successful frame-0 probe (and toast
-  // on failure); a missing shape means the backend never initialized.
+  // The assign helpers set shape only on a successful frame probe (and toast on
+  // failure); a missing shape means the backend never initialized.
   if (!video.shape) return null;
   return video;
+}
+
+/** Options for {@link pickVideoFiles}. */
+export interface PickVideoFilesOptions {
+  /**
+   * The filename of the video being RELINKED (Replace Video / locate), which
+   * widens the dialog filter to every relinkable source and puts that video's
+   * own extension first — see {@link locateVideoFilters}. Omit for a plain
+   * import.
+   */
+  relinking?: string | string[] | null;
 }
 
 /** A picked video file plus its absolute path (Tauri) or null (browser). */
@@ -2041,15 +2251,24 @@ export interface PickedVideoFile {
  * Open a multi-select video file picker and return normalized File objects.
  * Browser yields File(s) directly; Tauri yields path(s), read into File via
  * platform.readFile. Accepts every format in {@link SUPPORTED_VIDEO_EXTS}
- * (MP4/WebM/MKV/MOV/Ogg/MPEG-TS/AVI/WMV/.seq).
+ * (MP4/WebM/MKV/MOV/Ogg/MPEG-TS/AVI/WMV/.seq), plus — when `opts.relinking`
+ * names the video being replaced — the HDF5 containers a `.slp` can point at
+ * ({@link locateVideoFilters}).
  * Returns [] if the user cancels. Shared by the Videos panel
  * ({@link pickAndAddVideos}) and the New Project dialog (#138).
  */
-export async function pickVideoFiles(): Promise<PickedVideoFile[]> {
+export async function pickVideoFiles(
+  opts?: PickVideoFilesOptions
+): Promise<PickedVideoFile[]> {
   const platform = await getPlatform();
   const result = await platform.showOpenDialog({
     multiple: true,
-    filters: [{ name: "Video files", extensions: [...SUPPORTED_VIDEO_EXTS] }],
+    // Relinking an existing video (Replace Video) also offers the HDF5
+    // containers a `.slp` can reference; a plain import stays media-only so a
+    // picked `.slp` keeps meaning "open this project".
+    filters: opts?.relinking
+      ? locateVideoFilters(opts.relinking)
+      : [{ name: "Video files", extensions: [...SUPPORTED_VIDEO_EXTS] }],
   });
   if (!result) return []; // cancelled
 

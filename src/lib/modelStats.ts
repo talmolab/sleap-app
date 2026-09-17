@@ -46,6 +46,66 @@ export interface InstanceSizeStats {
   maxFrameDim: number;
 }
 
+/**
+ * The videos that carry at least one USER-labeled instance.
+ *
+ * Every suggestion in this module describes the data the model will actually
+ * be trained on, and sleap-nn trains on user instances only — a frame holding
+ * nothing but predictions contributes no ground truth. So a project's OTHER
+ * videos must not feed the suggestions: a `.slp` can hold eight videos where
+ * only one was ever labeled (and a predictions `.slp` holds none at all), and
+ * reading frame size / channel count off whichever video happens to come
+ * first describes a video the model may never see.
+ *
+ * Returned as a Set of video references for identity lookups by the callers
+ * below. Empty when nothing is user-labeled — callers fall back to every video
+ * rather than reporting nothing, since a dimension is better than a blank.
+ */
+function videosWithUserLabels(labels: Labels): Set<unknown> {
+  const seen = new Set<unknown>();
+  for (const lf of labels.labeledFrames) {
+    if (lf.userInstances.length > 0) seen.add(lf.video);
+  }
+  return seen;
+}
+
+/**
+ * Whether the project holds any USER-labeled instance — i.e. whether there is
+ * any ground truth to derive a suggestion (or train) from.
+ *
+ * Distinct from `labels.labeledFrames.length > 0`, which counts frames holding
+ * only PREDICTIONS too: a `labels_pr.*.slp` written by inference has a frame
+ * per predicted frame and zero user instances. Treating that as labeled data is
+ * what made the pipeline suggester report "Only one animal per frame" for a
+ * two-animal project — it counted zero user instances as one animal.
+ */
+export function hasUserLabeledInstances(
+  labels: Labels | null | undefined
+): boolean {
+  if (!labels) return false;
+  return labels.labeledFrames.some((lf) => lf.userInstances.length > 0);
+}
+
+/** The largest frame dimension among `videos`, or 0 when none have a shape. */
+function maxDimOf(videos: Labels["videos"]): number {
+  let maxDim = 0;
+  for (const v of videos) {
+    if (v.shape) {
+      const d = Math.max(v.shape[1], v.shape[2]);
+      if (d > maxDim) maxDim = d;
+    }
+  }
+  return maxDim;
+}
+
+/** `labels.videos` restricted to the user-labeled ones, or all of them when
+ *  nothing is user-labeled (see {@link videosWithUserLabels}). */
+function suggestionVideos(labels: Labels): Labels["videos"] {
+  const labeled = videosWithUserLabels(labels);
+  if (labeled.size === 0) return labels.videos;
+  return labels.videos.filter((v) => labeled.has(v));
+}
+
 /** Single shared scan of a project's labeled user instances for size
  *  stats, backing computeCropSize, recommendMaxStride, and
  *  recommendBackboneProfile below. */
@@ -105,13 +165,10 @@ function _computeInstanceSizeStats(labels: Labels | null): InstanceSizeStats | n
 
   if (diagonalCount === 0) return null;
 
-  let maxFrameDim = 0;
-  for (const v of labels.videos) {
-    if (v.shape) {
-      const d = Math.max(v.shape[1], v.shape[2]);
-      if (d > maxFrameDim) maxFrameDim = d;
-    }
-  }
+  // Only the user-labeled videos: `maxFrameDim` feeds the animal-size-relative
+  // ratios (backbone tier, centroid scale), which an unlabeled video of a
+  // different resolution would skew. See videosWithUserLabels.
+  const maxFrameDim = maxDimOf(suggestionVideos(labels));
 
   return {
     avgAnimalSize: diagonalSum / diagonalCount,
@@ -122,21 +179,23 @@ function _computeInstanceSizeStats(labels: Labels | null): InstanceSizeStats | n
 }
 
 /** The channel count of the project's video(s) (e.g. 3 for RGB, 1 for
- *  grayscale), read directly from the first video with a known shape.
- *  `null` if no project/video is loaded yet. */
+ *  grayscale), read from the first USER-LABELED video with a known shape
+ *  (see videosWithUserLabels — an unlabeled video's channel count describes
+ *  data the model never sees). `null` if no project/video is loaded yet. */
 export function detectVideoChannels(labels: Labels | null): number | null {
   if (!labels) return null;
-  for (const v of labels.videos) {
+  for (const v of suggestionVideos(labels)) {
     if (v.shape && v.shape[3] != null) return v.shape[3];
   }
   return null;
 }
 
-/** The frame height/width of the project's video(s), read directly from the
- *  first video with a known shape. `null` if no project/video is loaded. */
+/** The frame height/width of the project's video(s), read from the first
+ *  USER-LABELED video with a known shape (see detectVideoChannels).
+ *  `null` if no project/video is loaded. */
 export function detectVideoDimensions(labels: Labels | null): { height: number; width: number } | null {
   if (!labels) return null;
-  for (const v of labels.videos) {
+  for (const v of suggestionVideos(labels)) {
     if (v.shape) return { height: v.shape[1], width: v.shape[2] };
   }
   return null;
