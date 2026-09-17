@@ -13,7 +13,7 @@
 
 import { formatShortcut } from "@/lib/formatShortcut";
 import { rgbToCSS, type RGB } from "@/lib/colorPalettes";
-import { DOCS_URL } from "@/lib/version";
+import { useDocsUrl } from "@/lib/docsUrl";
 import {
   COMPLETE_COLOR,
   INCOMPLETE_COLOR,
@@ -65,6 +65,7 @@ function Section({
 }
 
 export function LabelingTipsDialog({ open, onOpenChange }: LabelingTipsDialogProps) {
+  const docsUrl = useDocsUrl();
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[560px] max-h-[80vh] overflow-y-auto">
@@ -178,7 +179,7 @@ export function LabelingTipsDialog({ open, onOpenChange }: LabelingTipsDialogPro
             to turn them on or off. For the full guided walkthrough, click{" "}
             <strong>Start Tutorial</strong> in the menu bar, or see{" "}
             <a
-              href={DOCS_URL}
+              href={docsUrl}
               target="_blank"
               rel="noopener noreferrer"
               className="underline hover:text-foreground"

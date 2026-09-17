@@ -59,37 +59,84 @@ export const APP_VERSION_KIND_LABEL = VERSION_KIND_LABEL[APP_VERSION_KIND];
 export const DOCS_BASE_URL = "https://app.sleap.ai/docs";
 
 /**
- * Which published docs version this build should link to.
- *
- * Docs are versioned on their OWN axis, independent of the app's channel paths
- * (/, /main/, /dev/, /latest/, /v<tag>/) -- see deploy.yml. The two only reuse
- * the words "latest" and "dev"; nothing nests one inside the other. The
- * mapping is derived from the running version so a frozen build never points
- * at docs describing features it does not have:
- *
- *   dev build      `0.1.2-2+main.abc1234`  -> /docs/dev/     (tracks main)
- *   pre-release    `0.1.2-2`               -> /docs/latest/  (moving)
- *   stable release `0.1.1`                 -> /docs/v0.1.1/  (pinned, permanent)
- *
- * Stable builds pin to their own permanent folder rather than to /docs/stable/,
- * which keeps a desktop 0.1.1 install reading 0.1.1 docs long after 0.2.0 has
- * moved /docs/stable/ on. Pre-releases are the one case that drifts: their tags
- * carry the -N rebuild suffix (v0.1.2-1, v0.1.2-2, ...) and deliberately get no
- * permanent docs folder, so they share the moving /docs/latest/ and a frozen
- * pre-release build's link follows it. /docs/stable/ still exists for humans --
- * it is what bare app.sleap.ai/docs redirects to, and a row in the version
- * dropdown -- it is just not what any build links to.
+ * The three moving docs pointers deploy.yml publishes. Deliberately the same
+ * three strings as appStore's `UpdateChannel`, so the desktop mapping is the
+ * identity -- duplicated as a local type only to keep this module free of a
+ * store import.
  */
-export function docsUrlForVersion(version: string): string {
+export type DocsChannel = "stable" | "latest" | "dev";
+
+/** A docs folder name: a moving pointer, or a permanent `v<tag>` folder. */
+export type DocsVersion = DocsChannel | (string & {});
+
+/** URL of a published docs folder. */
+export function docsUrlFor(version: DocsVersion): string {
+  return `${DOCS_BASE_URL}/${version}/`;
+}
+
+/**
+ * Docs version for a WEB build, from the channel path it is served under
+ * (Vite's BASE_URL, which deploy.yml sets per target as VITE_BASE_PATH).
+ *
+ * The app channel you are standing in decides the docs you get, so
+ * app.sleap.ai/latest links to /docs/latest/ and app.sleap.ai/dev to
+ * /docs/dev/. Two paths do not map to a like-named docs folder:
+ *
+ *   /main/   -> dev     there is no /docs/main/; /docs/dev/ IS main's docs,
+ *                       rebuilt on the same push that rebuilds /main/.
+ *   /v<pre>/ -> latest   pre-release tags get no permanent docs folder (they
+ *                       carry the -N rebuild suffix), so they share /docs/latest/.
+ *
+ * A permanent stable tag path keeps its own pinned docs, which is the one case
+ * where a frozen app build reads frozen docs: /v0.1.1/ -> /docs/v0.1.1/.
+ */
+export function docsVersionForBasePath(basePath: string): DocsVersion {
+  const segment = basePath.replace(/^\/+/, "").replace(/\/+$/, "");
+  if (segment === "" || segment === "stable") return "stable";
+  if (segment === "main" || segment === "dev") return "dev";
+  if (segment === "latest") return "latest";
+  // Permanent per-release path. Plain tags have a docs folder of the same
+  // name; a -N suffix marks a pre-release, which does not.
+  if (/^v\d+\.\d+\.\d+$/.test(segment)) return segment;
+  if (/^v\d+\.\d+\.\d+-\d+$/.test(segment)) return "latest";
+  return "stable";
+}
+
+/**
+ * The update channel a build belongs to, read off its own version string.
+ *
+ * Mirrors the detection in EnvironmentPanel's AppUpdateSection, which corrects
+ * the store's hardcoded "stable" default on a fresh profile -- but that only
+ * runs once the Environment panel has mounted, and a Help link has to be right
+ * before the user has ever opened it.
+ */
+export function channelForVersion(version: string): DocsChannel {
   switch (classifyVersion(version)) {
     case "dev":
-      return `${DOCS_BASE_URL}/dev/`;
+      return "dev";
     case "prerelease":
-      return `${DOCS_BASE_URL}/latest/`;
+      // Pre-releases are what the "latest" channel ships.
+      return "latest";
     case "stable":
-      return `${DOCS_BASE_URL}/v${version}/`;
+      return "stable";
   }
 }
 
-/** Documentation URL matching the version this bundle was compiled with. */
-export const DOCS_URL = docsUrlForVersion(APP_VERSION);
+/**
+ * Docs version for a DESKTOP build. There is no base path to read -- the
+ * bundle is served from the Tauri webview's own origin -- so the channel comes
+ * from the update channel the app is actually on: whatever the Environment
+ * panel shows, the Help link agrees with.
+ *
+ * An explicit choice always wins, matching how updateChannelExplicitlySet
+ * gates auto-detection everywhere else. Until the user makes one, the running
+ * build's own version decides, so a dev-channel install does not link to
+ * stable docs just because nobody has touched the dropdown.
+ */
+export function docsVersionForDesktop(
+  channel: DocsChannel,
+  channelExplicitlySet: boolean,
+  version: string,
+): DocsVersion {
+  return channelExplicitlySet ? channel : channelForVersion(version);
+}

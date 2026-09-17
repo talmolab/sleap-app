@@ -16,7 +16,7 @@ import { useAppStore } from "../../stores/appStore";
 import { isTauri } from "../../lib/platform";
 import { formatShortcut } from "@/lib/formatShortcut";
 import { openNewInstance } from "@/lib/newInstance";
-import { DOCS_URL } from "@/lib/version";
+import { getDocsUrl } from "@/lib/docsUrl";
 import {
   commandContext,
   OpenProjectCommand,
@@ -170,7 +170,7 @@ function buildActions(): MenuAction[] {
     { group: "Help", label: "Start Tutorial", run: () => store().startTutorial() },
     { group: "Help", label: "Keyboard Shortcuts", run: () => store().setShortcutsDialogOpen(true) },
     { group: "Help", label: "Labeling Tips", run: () => store().setLabelingTipsDialogOpen(true) },
-    { group: "Help", label: "Documentation", run: () => void openExternal(DOCS_URL) },
+    { group: "Help", label: "Documentation", run: () => void openExternal(getDocsUrl()) },
     { group: "Help", label: "Report Issue", run: () => void openExternal("https://github.com/talmolab/sleap-app/issues") },
     { group: "Help", label: "About SLEAP Label", run: () => store().setHelpDialogOpen(true) },
   ];

@@ -13,10 +13,12 @@ import {
   APP_VERSION,
   APP_VERSION_KIND,
   APP_VERSION_KIND_LABEL,
+  channelForVersion,
   classifyVersion,
   DOCS_BASE_URL,
-  DOCS_URL,
-  docsUrlForVersion,
+  docsUrlFor,
+  docsVersionForBasePath,
+  docsVersionForDesktop,
   VERSION_KIND_LABEL,
 } from "@/lib/version";
 
@@ -71,43 +73,89 @@ describe("APP_VERSION", () => {
   });
 });
 
-describe("docsUrlForVersion (docs version axis vs app channel paths)", () => {
-  it("pins a stable release to its own permanent docs folder", () => {
-    // NOT /docs/stable/: that pointer moves on when the next release ships,
-    // and a 0.1.1 install must keep reading 0.1.1 docs after it does.
-    expect(docsUrlForVersion("0.1.1")).toBe(`${DOCS_BASE_URL}/v0.1.1/`);
+describe("docsVersionForBasePath (web: the channel path you are standing in)", () => {
+  it("maps each app channel path to the like-named docs pointer", () => {
+    expect(docsVersionForBasePath("/latest/")).toBe("latest");
+    expect(docsVersionForBasePath("/dev/")).toBe("dev");
+    expect(docsVersionForBasePath("/")).toBe("stable");
   });
 
-  it("sends a pre-release to the moving /docs/latest/", () => {
-    // Pre-release tags are the only ones carrying the -N rebuild suffix, so
-    // deploy.yml gives them no permanent folder to pin to -- they share
-    // /docs/latest/ and overwrite each other there.
-    expect(docsUrlForVersion("0.1.2-2")).toBe(`${DOCS_BASE_URL}/latest/`);
-    expect(docsUrlForVersion("0.1.2-3")).toBe(`${DOCS_BASE_URL}/latest/`);
+  it("sends /main/ to /docs/dev/, which IS main's docs", () => {
+    // There is no /docs/main/: deploy.yml rebuilds /docs/dev/ on the same push
+    // to main that rebuilds the app's /main/ path.
+    expect(docsVersionForBasePath("/main/")).toBe("dev");
   });
 
-  it("sends every dev-metadata build to /docs/dev/", () => {
-    // Both the desktop dev channel and the web /main/ path: there is ONE "dev"
-    // docs version tracking main, not one per app channel.
-    expect(docsUrlForVersion("0.1.2-1+9.c1949e7")).toBe(`${DOCS_BASE_URL}/dev/`);
-    expect(docsUrlForVersion("0.1.2-2+main.5cff4f5")).toBe(`${DOCS_BASE_URL}/dev/`);
+  it("pins a permanent stable release path to its own docs folder", () => {
+    expect(docsVersionForBasePath("/v0.1.1/")).toBe("v0.1.1");
+    expect(docsVersionForBasePath("/v0.2.0/")).toBe("v0.2.0");
+  });
+
+  it("sends a permanent PRE-release path to /docs/latest/", () => {
+    // The -N suffix marks a pre-release, and those get no permanent docs
+    // folder to pin to (deploy.yml), so they share the moving pointer.
+    expect(docsVersionForBasePath("/v0.1.2-1/")).toBe("latest");
+    expect(docsVersionForBasePath("/v0.1.2-2/")).toBe("latest");
+  });
+
+  it("tolerates missing or unusual slashes and unknown paths", () => {
+    expect(docsVersionForBasePath("latest")).toBe("latest");
+    expect(docsVersionForBasePath("/latest")).toBe("latest");
+    expect(docsVersionForBasePath("")).toBe("stable");
+    expect(docsVersionForBasePath("/stable/")).toBe("stable");
+    expect(docsVersionForBasePath("/something-else/")).toBe("stable");
+  });
+});
+
+describe("docsVersionForDesktop (desktop: the update channel you are on)", () => {
+  it("follows an explicitly chosen channel, whatever is installed", () => {
+    // The whole point: pick Dev in the Environment panel and Help goes to
+    // /docs/dev/, even though the running build is still a stable tag.
+    expect(docsVersionForDesktop("dev", true, "0.1.1")).toBe("dev");
+    expect(docsVersionForDesktop("latest", true, "0.1.1")).toBe("latest");
+    expect(docsVersionForDesktop("stable", true, "0.1.2-2+9.abc1234")).toBe("stable");
+  });
+
+  it("falls back to the running build's own channel before any choice", () => {
+    // updateChannel is hardcoded "stable" on a fresh profile and only corrected
+    // once the Environment panel mounts, so the Help link cannot trust it yet.
+    expect(docsVersionForDesktop("stable", false, "0.1.2-2+9.abc1234")).toBe("dev");
+    expect(docsVersionForDesktop("stable", false, "0.1.2-2")).toBe("latest");
+    expect(docsVersionForDesktop("stable", false, "0.1.1")).toBe("stable");
+  });
+});
+
+describe("channelForVersion", () => {
+  it("reads the channel off a version's own shape", () => {
+    expect(channelForVersion("0.1.1")).toBe("stable");
+    expect(channelForVersion("0.1.2-2")).toBe("latest");
+    expect(channelForVersion("0.1.2-2+main.5cff4f5")).toBe("dev");
+  });
+
+  it("agrees with classifyVersion, differing only in what it calls a pre-release", () => {
+    // classifyVersion describes the BUILD ("prerelease"); this names the
+    // CHANNEL that ships it ("latest").
+    expect(classifyVersion("0.1.2-2")).toBe("prerelease");
+    expect(channelForVersion("0.1.2-2")).toBe("latest");
+  });
+});
+
+describe("docsUrlFor", () => {
+  it("builds an absolute URL under the docs base", () => {
+    // Absolute so it resolves from the Tauri webview and `bun run dev`, where
+    // a root-relative "/docs/" would 404 locally.
+    expect(DOCS_BASE_URL).toBe("https://app.sleap.ai/docs");
+    expect(docsUrlFor("dev")).toBe("https://app.sleap.ai/docs/dev/");
+    expect(docsUrlFor("v0.1.1")).toBe("https://app.sleap.ai/docs/v0.1.1/");
   });
 
   it("never nests a docs version under an app channel path", () => {
     // The two version axes are siblings under app.sleap.ai and only reuse the
-    // words "latest"/"dev" -- /latest/docs/ or /docs/latest/docs/ would mean
-    // two different things in one URL.
-    for (const v of ["0.1.1", "0.1.2-2", "0.1.2-2+main.5cff4f5"]) {
-      const url = docsUrlForVersion(v);
+    // words "latest"/"dev" -- /latest/docs/ would mean two different things.
+    for (const v of ["stable", "latest", "dev", "v0.1.1"] as const) {
+      const url = docsUrlFor(v);
       expect(url.startsWith("https://app.sleap.ai/docs/")).toBe(true);
       expect(url.slice("https://app.sleap.ai/docs/".length)).not.toContain("/docs");
     }
-  });
-
-  it("is absolute, so the desktop shell and `bun run dev` resolve it", () => {
-    // A root-relative "/docs/" would 404 against localhost and against the
-    // Tauri webview's own origin.
-    expect(DOCS_BASE_URL).toBe("https://app.sleap.ai/docs");
-    expect(DOCS_URL).toBe(docsUrlForVersion(APP_VERSION));
   });
 });

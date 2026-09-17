@@ -9,7 +9,8 @@ import { useAppStore, type NavigationDomain } from "../../stores/appStore";
 import { useExportStore } from "@/stores/exportStore";
 import { PANELS } from "./panelRegistry";
 import { isTauri } from "../../lib/platform";
-import { APP_VERSION, APP_VERSION_KIND_LABEL, DOCS_URL } from "@/lib/version";
+import { APP_VERSION, APP_VERSION_KIND_LABEL } from "@/lib/version";
+import { getDocsUrl } from "@/lib/docsUrl";
 import { formatShortcut } from "@/lib/formatShortcut";
 
 async function openExternal(url: string) {
@@ -1359,7 +1360,7 @@ function HelpMenu() {
           Labeling Tips...
         </MenubarItem>
         <MenubarItem
-          onClick={() => openExternal(DOCS_URL)}
+          onClick={() => openExternal(getDocsUrl())}
         >
           Documentation
         </MenubarItem>
