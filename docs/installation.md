@@ -29,77 +29,7 @@ and architecture — a universal `.dmg` on macOS, an `.AppImage` on Linux, an NS
 installer on Windows — and puts the app where it belongs.
 
 Prefer to click through a download? Every artifact is on the
-[Releases page](https://github.com/talmolab/sleap-app/releases), and macOS builds
-are signed with a Developer ID and notarized by Apple, so the `.dmg` works on its
-own. The script is a convenience on top of that, not a workaround.
-
-??? tip "What the script does that a manual download doesn't"
-
-    - Skips even the one-time "downloaded from the Internet" prompt, because
-      `curl` never sets `com.apple.quarantine`.
-    - Replaces the app **atomically** — stages alongside, then renames.
-    - Refuses to overwrite a running copy, so you cannot lose unsaved labels.
-
-    Linux also gets a `.deb` and an `.rpm`, and Windows an `.msi`, if you would
-    rather install one of those yourself.
-
-??? warning "Platform caveats"
-
-    **Windows** — SmartScreen may warn, because the installer is not signed with
-    an EV certificate. The warning has a **More info → Run anyway**.
-
-    **Linux** — nothing gates the install. The script prefers the `.AppImage`,
-    because that is the only Linux payload the in-app updater can replace without
-    root. Set `SLEAP_PREFER_DEB=1` if you would rather have the `.deb` in your
-    package manager.
-
-??? example "Install a specific version, or a file you already downloaded"
-
-    Each release channel serves its own copy of the installer and defaults to
-    that channel. `--tag` / `--pre` (or `-Tag` / `-Pre`) always override the
-    default — see [Release channels](#release-channels).
-
-    ```bash
-    # A specific release tag (pre-releases included when named explicitly)
-    curl -fsSL https://app.sleap.ai/install.sh | sh -s -- --tag v0.1.2
-
-    # The newest build even if it is a pre-release
-    curl -fsSL https://app.sleap.ai/install.sh | sh -s -- --pre
-
-    # Read it before you run it
-    curl -fsSL https://app.sleap.ai/install.sh | less
-    ```
-
-    Point the script at a local path to install a `.dmg`, `.deb`, `.AppImage`,
-    `.rpm`, or the `.zip` straight off a GitHub Actions artifact page. This route
-    also strips the quarantine flag.
-
-    === "macOS / Linux"
-
-        ```bash
-        curl -fsSL https://app.sleap.ai/install.sh -o install.sh
-        sh install.sh ~/Downloads/SLEAP_0.1.2_universal.dmg
-        sh install.sh ~/Downloads/sleap-app-macos-universal.zip
-        ```
-
-    === "Windows"
-
-        ```powershell
-        irm https://app.sleap.ai/install.ps1 -OutFile install.ps1
-
-        # Windows clients default to an ExecutionPolicy of Restricted, which refuses
-        # to run ANY .ps1 -- so invoke it explicitly rather than as `.\install.ps1`.
-        # This bypasses the policy for one process only; nothing changes machine-wide.
-        powershell -ExecutionPolicy Bypass -File .\install.ps1 `
-          -Path $HOME\Downloads\sleap-app-windows.zip
-
-        # `| iex` cannot forward parameters, so build a script block for -Tag / -Pre.
-        # (This route is unaffected by ExecutionPolicy -- nothing is written to disk.)
-        & ([scriptblock]::Create((irm https://app.sleap.ai/install.ps1))) -Tag v0.1.2
-        ```
-
-    `install.sh --help` and `Get-Help .\install.ps1` list the rest (`--prefix`,
-    `--force`, `-Interactive`).
+[Releases page](https://github.com/talmolab/sleap-app/releases).
 
 ---
 
@@ -109,17 +39,28 @@ The app is published to several URLs at once. Which one you use decides how new
 and how stable your build is — and the desktop app's in-app updater follows the
 channel it was installed from.
 
-| You are | Use | Web | Desktop installer |
-|---|---|---|---|
-| Doing science with this | **Stable** — and cite the `/<tag>/` URL | [app.sleap.ai](https://app.sleap.ai) | `app.sleap.ai/install.sh` |
-| Wanting new features early | **Latest** — highest version, release *or* pre-release | [/latest/](https://app.sleap.ai/latest/) | `app.sleap.ai/latest/install.sh` |
-| Testing, or asked to reproduce a fix | **Dev** — rolling, refreshed nightly | [/dev/](https://app.sleap.ai/dev/) | `app.sleap.ai/dev/install.sh` |
+| Channel | Web | Desktop installer |
+|---|---|---|
+| **Stable** — full releases only | [app.sleap.ai](https://app.sleap.ai) | `app.sleap.ai/install.sh` |
+| **Latest** — highest version, release *or* pre-release | [/latest/](https://app.sleap.ai/latest/) | `app.sleap.ai/latest/install.sh` |
+| **Dev** — rolling, refreshed nightly | [/dev/](https://app.sleap.ai/dev/) | `app.sleap.ai/dev/install.sh` |
+| **Main** — tip of `main`, rebuilt on every merge | [/main/](https://app.sleap.ai/main/) | — *web only* |
+| **`<tag>`** — one release, never republished; cite this one | [/v0.1.2-2/](https://app.sleap.ai/v0.1.2-2/) | — *web only* |
 
-Two more web-only paths: [/main/](https://app.sleap.ai/main/) tracks the tip of
-`main` on every merge, and `app.sleap.ai/<tag>/` serves one specific release
-permanently — e.g. `/v0.1.2-1/`. Tagged paths are never touched again once
-published, so a link to one in a methods section keeps working *and* keeps
-behaving identically.
+To install a channel other than stable, use the same command from
+[Desktop app](#desktop-app) with that URL swapped in — nothing else changes:
+
+=== "macOS / Linux"
+
+    ```bash
+    curl -fsSL https://app.sleap.ai/dev/install.sh | sh
+    ```
+
+=== "Windows"
+
+    ```powershell
+    irm https://app.sleap.ai/dev/install.ps1 | iex
+    ```
 
 ### Knowing what you're running
 
@@ -138,57 +79,73 @@ The desktop app checks its own release channel for updates and shows an indicato
 in the title bar when one is available. Accepting it downloads and swaps the app
 in place; on Linux this works for the `.AppImage` payload without root.
 
+You are not locked into the channel you installed from. The **Environment**
+panel has a **Channel** dropdown — *Stable*, *Latest*, *Dev (main)* — and
+changing it re-points the updater. If the channel you pick is on an older
+version than the one running, the button reads **Switch** rather than
+**Update**, and takes you down to it.
+
 The browser app has nothing to update — reload the page.
 
 ---
 
-## Python backend (optional)
+## Environment setup
 
-Training and inference need [sleap-nn](https://nn.sleap.ai), which is Python. The
-desktop app can install and manage it for you through the **Environment** panel —
-it uses [`uv`](https://docs.astral.sh/uv/) to provision a Python interpreter and
-install `sleap-nn` and `sleap-rtc` as isolated tools. You do not need a
-pre-existing conda or pip environment.
+Labeling needs nothing installed. **Training and inference** need
+[sleap-nn](https://nn.sleap.ai), which is Python — and the desktop app can set
+that up for you.
 
-See [Environment Setup](guides/environment.md).
+!!! info "Desktop only"
+
+    The **Environment** panel exists only in the desktop app, because it has to
+    run processes on your machine. In the browser, use a
+    [remote worker](guides/remote-compute.md) instead.
+
+### What the Environment panel does
+
+It manages a Python toolchain through [`uv`](https://docs.astral.sh/uv/), so you
+never touch conda, pip, or a shell:
+
+1. **Installs `uv`** if you don't have it, via the official installer.
+2. **Installs `sleap-nn` and `sleap-rtc`** as isolated `uv` tools, so they cannot
+   collide with anything else on your system.
+
+You do not need to pick a Python interpreter — `uv` resolves a suitable one on its own
+and downloads a managed Python if it needs to. Each piece shows as detected /
+not detected, with a button to fix it.
+
+The **Advanced** options are there if you want to override that: choose a
+specific interpreter that `uv` found, or install a particular Python version for
+it to use.
+
+### GPU detection
+
+When installing `sleap-nn`, the app detects your GPU and picks the matching
+PyTorch build automatically — you do not choose a CUDA version by hand.
+
+If you plan to [export models](guides/inference.md#exporting-a-model) to ONNX or
+TensorRT, use the **Advanced** options to reinstall `sleap-nn` with the export
+extras included.
+
+### Keeping sleap-nn up to date
+
+The panel reports the installed `sleap-nn` version, links to its release notes,
+and offers **Update** or **Force reinstall**. `uv` itself can be updated from the
+same place.
 
 !!! tip "No GPU? No problem"
 
-    You can also point the app at a **remote worker** with a GPU and submit
-    training and inference jobs to it over an encrypted peer-to-peer connection,
-    from either the browser or the desktop app. See
-    [Remote Compute](guides/remote-compute.md).
+    **Train on CPU** — fine for a tiny sanity-check run, painful for anything
+    real. Or point the app at a **remote worker** with a GPU and submit training
+    and inference jobs to it over an encrypted peer-to-peer connection, which
+    works from the browser too. See [Remote Compute](guides/remote-compute.md).
+
+### Checking what the app sees
+
+**Help ▸ Collect Diagnostics…** gathers the runtime, versions, detected GPU,
+environment state, and recent session log into a single file you can attach to a
+bug report. Look there first when training refuses to start.
 
 ---
 
-## Troubleshooting the install
-
-??? failure "If macOS refuses to open the app"
-
-    You should not hit this on a release build. If you do — most likely a build
-    from a fork or a PR, which get no signing secrets and fall back to ad-hoc
-    signing — clear the quarantine tag on the **`.dmg`, before opening it**,
-    which stops the tag propagating to the app in the first place:
-
-    ```bash
-    xattr -dr com.apple.quarantine ~/Downloads/SLEAP_*.dmg
-    ```
-
-    If you already tried and got blocked, clear it on the installed app instead:
-
-    ```bash
-    xattr -dr com.apple.quarantine /Applications/SLEAP.app
-    ```
-
-    The GUI route is **System Settings → Privacy & Security → Security → Open
-    Anyway**, which needs your login password and only offers itself for about an
-    hour after a blocked launch. Control-click → Open no longer works — Apple
-    removed that bypass in macOS 15.
-
-    Two dialogs are worth telling apart. "Apple could not verify…" means a valid
-    signature that is not notarized. "**SLEAP is damaged and can't be opened**"
-    means an *invalid* signature, and has no override at all — if you ever see
-    that on a release build, please
-    [report it](https://github.com/talmolab/sleap-app/issues/new).
-
-More in [Troubleshooting](help/troubleshooting.md).
+[Troubleshooting](help/troubleshooting.md)

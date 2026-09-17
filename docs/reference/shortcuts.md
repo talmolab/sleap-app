@@ -96,6 +96,29 @@ over from the legacy GUI.
 | Increase text size | ++cmd+shift+equal++ |
 | Decrease text size | ++cmd+minus++ |
 
+## Canvas gestures
+
+Mouse and trackpad, on the video canvas.
+
+| Gesture | Action |
+|---|---|
+| Scroll / two-finger swipe | **Pan** — not zoom |
+| ++ctrl++ + scroll | Zoom, anchored at the cursor |
+| Trackpad pinch | Zoom |
+| Hold ++space++ + drag | Pan |
+| Double-tap ++space++ | Cycle zoom: free → fit instances → fit frame |
+| ++cmd++ + drag, in pan mode (++p++) | Zoom by dragging |
+
+Scrolling **pans** by default — deliberately, so a mouse wheel and a trackpad
+two-finger swipe behave identically without the app guessing which one you have.
+Hold ++ctrl++ to zoom instead. This is the one case where ++ctrl++ means ++ctrl++
+on macOS as well: ++cmd++ with the scroll wheel does not zoom, though a trackpad
+pinch does.
+
+++space++ does three things without them colliding. A **tap** jumps to the next
+suggestion — it fires on release, and is skipped entirely if you panned while
+holding it. A **hold** pans. A **double-tap** cycles the zoom modes.
+
 ## Models
 
 | Action | Shortcut |

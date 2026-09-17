@@ -61,7 +61,7 @@ the [Quick Start](../getting-started/quickstart.md) instead.
 
 <div class="grid cards" markdown>
 
--   🐍 **[Environment Setup](environment.md)**
+-   🐍 **[Environment setup](../installation.md#environment-setup)**
 
     ---
 

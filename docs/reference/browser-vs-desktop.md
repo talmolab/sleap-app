@@ -11,7 +11,7 @@ files, processes, and GPUs.
 | Labeling, tracks, view, analyze | ✅ | ✅ |
 | Video playback (WebCodecs) | ✅ | ✅ |
 | Transcode legacy codecs | ❌ convert externally | ✅ native ffmpeg sidecar, cached |
-| Local training / inference | ❌ | ✅ via [Environment](../guides/environment.md) |
+| Local training / inference | ❌ | ✅ via [Environment](../installation.md#environment-setup) |
 | Remote training / inference | ✅ | ✅ |
 | Crash-recovery drafts | ✅ OPFS | ✅ app data directory |
 | Reveal file in file manager | ❌ | ✅ |

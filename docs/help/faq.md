@@ -10,7 +10,7 @@ training, or offline use.
 
 Not for labeling. Training and inference need
 [sleap-nn](https://nn.sleap.ai) — either installed locally through the
-[Environment panel](../guides/environment.md) (desktop, no conda required) or
+[Environment panel](../installation.md#environment-setup) (desktop, no conda required) or
 running on a [remote worker](../guides/remote-compute.md) you connect to.
 
 ## Is my data uploaded anywhere?

@@ -6,19 +6,16 @@ A modern rewrite of SLEAP's Qt/Python desktop labeling interface as a web app, w
 
 ## Install the desktop app
 
-Until the first release with attached builds exists, use the `/dev/` URLs below
-(they go live on the next merge to `main`). After that, drop the `/dev/`.
-
 **macOS / Linux:**
 
 ```bash
-curl -fsSL https://app.sleap.ai/dev/install.sh | sh
+curl -fsSL https://app.sleap.ai/install.sh | sh
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
-irm https://app.sleap.ai/dev/install.ps1 | iex
+irm https://app.sleap.ai/install.ps1 | iex
 ```
 
 Or use the app in any browser at [app.sleap.ai](https://app.sleap.ai) -- no install needed.
@@ -32,13 +29,13 @@ installer and an `.msi`.
 
 ```bash
 # A specific release tag (pre-releases included when named explicitly)
-curl -fsSL https://app.sleap.ai/dev/install.sh | sh -s -- --tag v0.1.2
+curl -fsSL https://app.sleap.ai/install.sh | sh -s -- --tag v0.1.2
 
 # The newest build even if it is a pre-release
-curl -fsSL https://app.sleap.ai/dev/install.sh | sh -s -- --pre
+curl -fsSL https://app.sleap.ai/install.sh | sh -s -- --pre
 
 # Read it before you run it
-curl -fsSL https://app.sleap.ai/dev/install.sh | less
+curl -fsSL https://app.sleap.ai/install.sh | less
 ```
 
 To install a file you already have -- a `.dmg`, `.deb`, `.AppImage`, `.rpm`, or
@@ -46,13 +43,13 @@ the `.zip` straight off a GitHub Actions artifact page -- download the script
 first, then pass it the file. This path also strips the quarantine flag:
 
 ```bash
-curl -fsSL https://app.sleap.ai/dev/install.sh -o install.sh
+curl -fsSL https://app.sleap.ai/install.sh -o install.sh
 sh install.sh ~/Downloads/SLEAP_0.1.2_universal.dmg
 sh install.sh ~/Downloads/sleap-app-macos-universal.zip
 ```
 
 ```powershell
-irm https://app.sleap.ai/dev/install.ps1 -OutFile install.ps1
+irm https://app.sleap.ai/install.ps1 -OutFile install.ps1
 
 # Windows clients default to an ExecutionPolicy of Restricted, which refuses to
 # run ANY .ps1 -- so invoke it explicitly rather than as `.\install.ps1`. This
@@ -61,7 +58,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -Path $HOME\Downloads\sle
 
 # `| iex` cannot forward parameters, so build a script block for -Tag / -Pre.
 # (This route is unaffected by ExecutionPolicy -- nothing is ever written to disk.)
-& ([scriptblock]::Create((irm https://app.sleap.ai/dev/install.ps1))) -Tag v0.1.2
+& ([scriptblock]::Create((irm https://app.sleap.ai/install.ps1))) -Tag v0.1.2
 ```
 
 `install.sh --help` and `Get-Help .\install.ps1` list the rest (`--prefix`,

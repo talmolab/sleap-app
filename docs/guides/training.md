@@ -2,7 +2,7 @@
 
 The **Training** panel configures and runs [sleap-nn](https://nn.sleap.ai)
 training without leaving the app. Runs go to a local GPU (desktop, see
-[Environment Setup](environment.md)) or to a [remote worker](remote-compute.md).
+[Environment setup](../installation.md#environment-setup)) or to a [remote worker](remote-compute.md).
 
 You need at least one user-labeled frame. Label a handful first —
 [Your First Labels](../getting-started/first-labels.md) walks the whole loop.

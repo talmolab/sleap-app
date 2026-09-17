@@ -1,128 +1,124 @@
-# SLEAP App
+# Social LEAP Estimates Animal Poses (SLEAP)
 
 <div class="hero" markdown>
 ![SLEAP pose estimation demo](assets/sleap_movie.gif)
 </div>
 
 <div class="badges" markdown>
-[![Release](https://img.shields.io/github/v/release/talmolab/sleap-app?label=Latest)](https://github.com/talmolab/sleap-app/releases/)
+[![Release](https://img.shields.io/github/v/release/talmolab/sleap-app?label=Stable)](https://github.com/talmolab/sleap-app/releases/)
 [![GitHub stars](https://img.shields.io/github/stars/talmolab/sleap-app)](https://github.com/talmolab/sleap-app)
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-blue)](https://github.com/talmolab/sleap-app/blob/main/LICENSE)
 </div>
 
-**SLEAP App** is the labeling, training, and tracking interface for
-[SLEAP](https://sleap.ai) — a modern rewrite of SLEAP's Qt/Python desktop GUI as a
-web app, with an optional desktop shell for native file access.
+**SLEAP** is an open-source deep learning framework for multi-animal pose tracking
+([Pereira et al., Nature Methods, 2022](https://www.nature.com/articles/s41592-022-01426-1)).
+It provides an end-to-end workflow from labeling to trained models, with a
+purpose-built GUI for active learning and proofreading.
 
-It runs **entirely in your browser** — no server, no Python, no install — or as a
-**~5 MB desktop app** when you want native file dialogs, local GPU training, and
-offline use.
+**SLEAP App** is that GUI, rebuilt as a web app. It runs **entirely in your
+browser** — no server, no Python, no install — or as a **Desktop app** when
+you want native file dialogs, local GPU training, and offline use.
 
-<div class="grid cards" markdown>
+!!! note "Using a different version of SLEAP?"
 
--   🌐 **Use it right now**
+    These docs cover **SLEAP App**, the web-based GUI. For the Qt/Python GUI:
 
-    ---
+    - **SLEAP v1.5–1.6** — [docs.sleap.ai](https://docs.sleap.ai)
+    - **SLEAP v1.4.1 or earlier** — [legacy.sleap.ai](https://legacy.sleap.ai)
 
-    Open a `.slp` file and start labeling. Nothing to install.
+## 🚀 Get some SLEAP
 
-    [:octicons-arrow-right-24: app.sleap.ai](https://app.sleap.ai)
+=== "🌐 In the browser"
 
--   💻 **Install the desktop app**
+    Go to **[app.sleap.ai](https://app.sleap.ai)** and drag a `.slp` file onto
+    the window. Nothing to install — that is the whole setup.
 
-    ---
+=== "💻 Desktop app"
 
-    Native file access, local training, and in-app updates.
+    Native file dialogs, local GPU training, in-app updates, and offline use.
+    One command installs it:
 
-    [:octicons-arrow-right-24: Installation](installation.md)
-
-</div>
-
----
-
-## ✨ Features
-
-<div class="grid cards" markdown>
-
--   ✏️ **Label**
-
-    ---
-
-    Click-to-place instances, drag nodes, build skeletons from templates or from
-    scratch, copy/paste instances and tracks, full undo/redo.
-
-    [:octicons-arrow-right-24: Labeling guide](guides/labeling.md)
-
--   🎬 **Play any video**
-
-    ---
-
-    Frame-accurate MP4 playback via WebCodecs, remote videos over `https://`,
-    and transcoding for codecs the browser can't decode.
-
-    [:octicons-arrow-right-24: Videos guide](guides/videos.md)
-
--   🧠 **Train models**
-
-    ---
-
-    Configure and run [sleap-nn](https://nn.sleap.ai) training from the app, with
-    live loss curves, log terminal, and model metrics.
-
-    [:octicons-arrow-right-24: Training guide](guides/training.md)
-
--   ⚡ **Run inference**
-
-    ---
-
-    Predict on new frames locally, or submit jobs to a remote GPU worker over an
-    encrypted peer-to-peer connection.
-
-    [:octicons-arrow-right-24: Inference guide](guides/inference.md)
-
--   🔍 **Analyze labels**
-
-    ---
-
-    Instance size distributions to pick a crop size, plus a geometric quality
-    check that flags duplicates, mislabeled left/right, and swapped chains.
-
-    [:octicons-arrow-right-24: Analyze guides](guides/label-qc.md)
-
--   🔄 **Import & export**
-
-    ---
-
-    SLP, NWB, COCO, DeepLabCut, Analysis HDF5/CSV, labels packages, and rendered
-    labeled clips.
-
-    [:octicons-arrow-right-24: Formats reference](reference/formats.md)
-
-</div>
-
----
-
-## 🚀 Get started
-
-=== "In the browser"
-
-    Go to [app.sleap.ai](https://app.sleap.ai) and drag a `.slp` file onto the
-    window. That's the whole setup.
-
-=== "macOS / Linux"
+    **macOS / Linux**
 
     ```bash
     curl -fsSL https://app.sleap.ai/install.sh | sh
     ```
 
-=== "Windows"
+    **Windows**
 
     ```powershell
     irm https://app.sleap.ai/install.ps1 | iex
     ```
 
-Then follow the [Quick Start](getting-started/quickstart.md) — open a project,
-move through frames, and place your first instance in about five minutes.
+    Prefer a specific release channel? See
+    [Installation](installation.md).
+
+!!! tip "Try the built-in tutorial"
+
+    Click **Start Tutorial** in the menu bar and the app walks you through the
+    whole loop in place — creating a project, building a skeleton, training,
+    correcting predictions, and re-training — advancing only once you have
+    actually done each step. Works in the browser too.
+
+For a written walkthrough, follow the
+[Quick Start](getting-started/quickstart.md) — open a project, move through
+frames, and place your first instance in a few minutes.
+
+---
+
+## 📚 Explore the docs
+
+<div class="grid cards" markdown>
+
+-   :material-pencil:{ .lg .middle } **Labeling**
+
+    ---
+
+    Place instances, build skeletons, correct predictions.
+
+    [:octicons-arrow-right-24: Start Labeling](guides/labeling.md)
+
+-   :material-keyboard:{ .lg .middle } **Keyboard Shortcuts**
+
+    ---
+
+    Every binding, plus canvas pan and zoom gestures.
+
+    [:octicons-arrow-right-24: View Shortcuts](reference/shortcuts.md)
+
+-   :material-brain:{ .lg .middle } **Training**
+
+    ---
+
+    Run [sleap-nn](https://nn.sleap.ai) training with live loss curves.
+
+    [:octicons-arrow-right-24: Train a Model](guides/training.md)
+
+-   :material-flash:{ .lg .middle } **Inference**
+
+    ---
+
+    Predict locally, or on a remote GPU worker.
+
+    [:octicons-arrow-right-24: Run Inference](guides/inference.md)
+
+-   :material-chart-box:{ .lg .middle } **Analysis**
+
+    ---
+
+    Instance size distributions and geometric label quality checks.
+
+    [:octicons-arrow-right-24: Analyze Labels](guides/label-qc.md)
+
+-   :material-swap-horizontal:{ .lg .middle } **Import & Export**
+
+    ---
+
+    SLP, NWB, COCO, DeepLabCut, and analysis files.
+
+    [:octicons-arrow-right-24: File Formats](reference/formats.md)
+
+</div>
 
 ---
 
@@ -138,20 +134,6 @@ move through frames, and place your first instance in about five minutes.
 
 Projects are plain `.slp` files, so you can move between the app, the legacy GUI,
 and the Python API freely.
-
----
-
-## 🔄 Coming from the legacy SLEAP GUI?
-
-The menus, keyboard shortcuts, and command names deliberately mirror SLEAP's
-Qt GUI, so muscle memory carries over. The big differences:
-
-| Legacy SLEAP GUI | SLEAP App |
-|---|---|
-| conda/pip install, Python required | Browser, or a ~5 MB desktop app |
-| TensorFlow training | [sleap-nn](https://nn.sleap.ai) (PyTorch) training |
-| Local GPU only | Local GPU **or** a [remote worker](guides/remote-compute.md) |
-| — | Built-in [label quality checks](guides/label-qc.md) |
 
 ---
 
@@ -172,3 +154,70 @@ Qt GUI, so muscle memory carries over. The big differences:
     Found a bug? [Create an issue](https://github.com/talmolab/sleap-app/issues/new)
 
 </div>
+
+---
+
+## References
+
+SLEAP is the successor to the single-animal pose estimation software
+[LEAP (Pereira et al., Nature Methods, 2019)](https://www.nature.com/articles/s41592-018-0234-5).
+If you use SLEAP in your research, please cite:
+
+> T.D. Pereira, N. Tabris, A. Matsliah, D. M. Turner, J. Li, S. Ravindranath,
+> E. S. Papadoyannis, E. Normand, D. S. Deutsch, Z. Y. Wang, G. C. McKenzie-Smith,
+> C. C. Mitelut, M. D. Castro, J. D'Uva, M. Kislin, D. H. Sanes, S. D. Kocher,
+> S. S-H, A. L. Falkner, J. W. Shaevitz, and M. Murthy. **SLEAP: A deep learning
+> system for multi-animal pose tracking.** *Nature Methods*, 19(4), 2022.
+> [:octicons-link-external-16:](https://www.nature.com/articles/s41592-022-01426-1)
+
+??? note "BibTeX"
+
+    ```bibtex
+    @ARTICLE{Pereira2022sleap,
+       title={SLEAP: A deep learning system for multi-animal pose tracking},
+       author={Pereira, Talmo D and Tabris, Nathaniel and Matsliah, Arie and
+          Turner, David M and Li, Junyu and Ravindranath, Shruthi and
+          Papadoyannis, Eleni S and Normand, Edna and Deutsch, David S and
+          Wang, Z. Yan and McKenzie-Smith, Grace C and Mitelut, Catalin C and
+          Castro, Marielisa Diez and D'Uva, John and Kislin, Mikhail and
+          Sanes, Dan H and Kocher, Sarah D and Samuel S-H and
+          Falkner, Annegret L and Shaevitz, Joshua W and Murthy, Mala},
+       journal={Nature Methods},
+       volume={19},
+       number={4},
+       year={2022},
+       publisher={Nature Publishing Group}
+    }
+    ```
+
+---
+
+## Contributors
+
+SLEAP was created in the [Murthy](https://murthylab.princeton.edu) and
+[Shaevitz](https://shaevitzlab.princeton.edu) labs at the
+[Princeton Neuroscience Institute](https://pni.princeton.edu) at Princeton
+University.
+
+SLEAP is currently being developed and maintained in the
+[Talmo Lab](https://talmolab.org) at the
+[Salk Institute for Biological Studies](https://salk.edu), in collaboration with
+the Murthy and Shaevitz labs at Princeton University.
+
+See the
+[contributors graph](https://github.com/talmolab/sleap-app/graphs/contributors)
+for everyone who has worked on SLEAP App.
+
+??? note "Funding"
+
+    This work was made possible through our funding sources, including:
+
+    - NIH BRAIN Initiative R01 NS104899
+    - Princeton Innovation Accelerator Fund
+
+---
+
+## License
+
+SLEAP App is released under a
+[BSD 3-Clause License](https://github.com/talmolab/sleap-app/blob/main/LICENSE).

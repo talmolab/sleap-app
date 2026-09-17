@@ -63,7 +63,7 @@ You can cancel or stop a remote job from the panel.
 
 | Situation | Route |
 |---|---|
-| Desktop app, local GPU | Local — see [Environment Setup](environment.md) |
+| Desktop app, local GPU | Local — see [Environment setup](../installation.md#environment-setup) |
 | Browser, or no local GPU | Remote worker |
 | Big dataset already sitting on the GPU machine | Remote worker — the data never moves |
 | No network, no shared machine | Local (CPU if you must) |

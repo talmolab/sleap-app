@@ -114,7 +114,7 @@ size for a top-down model.
 Open the **Training** panel.
 
 1. Make sure the Python backend is available — see
-   [Environment Setup](../guides/environment.md), or connect to a
+   [Environment setup](../installation.md#environment-setup), or connect to a
    [remote worker](../guides/remote-compute.md) if you have no local GPU.
 2. Pick a model type. **Top-Down** is a good default for multiple animals: it
    finds an anchor part, crops around it, and predicts the rest of the pose

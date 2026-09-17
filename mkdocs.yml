@@ -113,7 +113,6 @@ nav:
           - Videos: guides/videos.md
           - View & Display: guides/view.md
       - Models:
-          - Environment Setup: guides/environment.md
           - Training: guides/training.md
           - Inference: guides/inference.md
           - Remote Compute: guides/remote-compute.md

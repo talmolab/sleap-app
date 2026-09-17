@@ -101,5 +101,5 @@ You can also bring in predictions produced elsewhere with
 - **TensorRT**, with a precision setting
 
 Both need `sleap-nn` installed with the export extras — the
-[Environment](environment.md) panel can reinstall it with those included, and the
+[Environment](../installation.md#environment-setup) panel can reinstall it with those included, and the
 export dialog offers to do it for you.

@@ -37,7 +37,7 @@ the file.
 - **"Label at least one frame before training"** — training needs user-labeled
   frames. Predictions don't count until you accept them.
 - **sleap-nn not detected** — open the **Environment** panel and install it. See
-  [Environment Setup](../guides/environment.md).
+  [Environment setup](../installation.md#environment-setup).
 - **In the browser** — there is no local training. Connect to a
   [remote worker](../guides/remote-compute.md).
 
@@ -83,8 +83,7 @@ many small operations. Over a network share this is slow. Save locally, then cop
 
 ## macOS refuses to open the app
 
-See [Installation](../installation.md#troubleshooting-the-install). Short version:
-clear the quarantine flag on the `.dmg` **before** opening it, or use the
+Clear the quarantine flag on the `.dmg` **before** opening it, or use the
 installer script, which never sets it.
 
 ## The update won't apply
