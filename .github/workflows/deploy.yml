@@ -129,6 +129,18 @@ jobs:
               '. + [{path: $path, base: $base, label: $label, version: $version}]' <<< "$TARGETS")"
           }
 
+          # Docs deploy on a SEPARATE version axis from the app channels above:
+          # one top-level /docs/ tree of /docs/<version>/ folders, with nothing
+          # nested inside an app channel and nothing app-versioned above it.
+          # The two axes only reuse the words "latest" and "dev". Each entry
+          # here is just the folder name under /docs/ that this run should
+          # (re)write; the docs site is built ONCE and copied to all of them,
+          # because unlike the app it needs no per-target base URL.
+          DOCS_TARGETS='[]'
+          add_docs() {
+            DOCS_TARGETS="$(jq -c --arg path "$1" '. + [$path]' <<< "$DOCS_TARGETS")"
+          }
+
           # Highest published version tag, mirroring build-dev.yml's BASE
           # derivation (non-draft, release OR pre-release, a real release
           # outranking a pre-release of the same base). Used only to LABEL the
@@ -171,6 +183,14 @@ jobs:
 
             if [ "$RELEASE_IS_PRERELEASE" != "true" ]; then
               add_target "" "/" "$RELEASE_TAG (stable)" "$RELEASE_VERSION"
+              # /docs/stable/ moves in lockstep with root (it is what bare
+              # app.sleap.ai/docs redirects to), and the release ALSO gets a
+              # permanent /docs/<tag>/ that is never rewritten. That permanent
+              # folder is what this release's own builds link to in-app --
+              # docsUrlForVersion() in src/lib/version.ts -- so a 0.1.1 install
+              # keeps reading 0.1.1 docs long after 0.2.0 has moved stable on.
+              add_docs "stable"
+              add_docs "$RELEASE_TAG"
             fi
 
             # /latest/ only advances if this release is genuinely the highest
@@ -196,6 +216,14 @@ jobs:
                     | max_by(.sortkey) | if . == null then null else .base end')"
             if [ "$HIGHEST" = "$RELEASE_TAG" ]; then
               add_target "latest" "/latest/" "$RELEASE_TAG (latest)" "$RELEASE_VERSION"
+              # /docs/latest/ is the ONLY docs path a pre-release ever writes.
+              # Pre-release tags are the only ones carrying the -N rebuild
+              # suffix (v0.1.2-1, v0.1.2-2, ...), so giving each its own
+              # permanent folder would pile up near-identical trees for what is
+              # one version rebuilt; they overwrite each other here instead.
+              # A pre-release that is NOT the highest version writes no docs at
+              # all, mirroring how it touches no app channel but its own.
+              add_docs "latest"
             else
               echo "This release ($RELEASE_TAG) is not the highest known version ($HIGHEST) -- leaving /latest/ untouched."
             fi
@@ -222,8 +250,15 @@ jobs:
               echo "::warning::could not read the dev release's latest.json; labelling /dev/ as $DEV_VERSION"
             fi
             add_target "dev" "/dev/" "dev (synced with desktop dev build)" "$DEV_VERSION"
+            # Deliberately no docs target. /docs/dev/ tracks `main` directly and
+            # is rebuilt on every push to it (final else branch below), so it is
+            # always at least as current as this nightly build. There is ONE
+            # "dev" docs version, not one per app channel: both app /dev/ and
+            # app /main/ link to it.
           elif [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$DISPATCH_TARGET" = "prod" ]; then
             add_target "" "/" "manual-prod $REF_NAME" "$(highest_tag)+manual.${HEAD_SHA:0:7}"
+            # Root moved, so keep /docs/stable/ in lockstep with it.
+            add_docs "stable"
           else
             # Plain push to main (or a manual workflow_dispatch with the
             # default "main" target): the bleeding-edge view, rebuilt on
@@ -236,10 +271,13 @@ jobs:
             # build-dev.yml uses, so the title is at least truthful about what
             # it is and traceable to the commit it was built from.
             add_target "main" "/main/" "main" "$(highest_tag)+main.${HEAD_SHA:0:7}"
+            add_docs "dev"
           fi
 
           echo "Deploy targets: $TARGETS"
           echo "targets=$TARGETS" >> "$GITHUB_OUTPUT"
+          echo "Docs targets: $DOCS_TARGETS"
+          echo "docs_targets=$DOCS_TARGETS" >> "$GITHUB_OUTPUT"
 
       - name: Setup bun
         uses: oven-sh/setup-bun@v2
@@ -324,6 +362,47 @@ jobs:
             cp -r dist/* "staging/$SAFE_NAME/"
           done
 
+      # Docs are built ONCE per run and copied to every /docs/<version>/ path
+      # this run writes -- unlike the app, which needs a separate `bun run
+      # build` per target for VITE_BASE_PATH. The built site is fully
+      # path-portable: the theme emits relative asset links and resolves its own
+      # base from the LIVE url at runtime (`new URL(config.base, location)` in
+      # its bundle, where config.base is the relative "." / ".."), so the same
+      # bytes serve correctly at /docs/stable/, /docs/dev/ and /docs/v0.1.1/ --
+      # version selector included. The build takes well under a second.
+      #
+      # Python appears in this otherwise bun-only workflow solely for Zensical,
+      # which is a Python package; there is no pyproject.toml to sync from, so
+      # uvx fetches it standalone. The version is pinned because Zensical is
+      # 0.0.x and pre-1.0 patch releases are free to change output layout --
+      # bump it deliberately, having checked a local `zensical build` first.
+      - name: Setup uv
+        if: steps.targets.outputs.docs_targets != '[]'
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.13"
+
+      - name: Build docs
+        if: steps.targets.outputs.docs_targets != '[]'
+        run: |
+          set -euo pipefail
+          uvx --from zensical==0.0.62 zensical build
+          test -s site/index.html
+
+          # Guards the exclusion that keeps docs/.internal/ (macOS code-signing
+          # notes, the parity checklist, UI prototypes) off a public URL.
+          # Zensical silently IGNORES mkdocs' `exclude_docs`, and leaving a page
+          # out of `nav` still builds it into the output, sitemap.xml and
+          # search.json -- a dot-prefixed directory is the only exclusion it
+          # honors. So a well-meaning rename back to docs/internal/ would
+          # publish all of it, indexable, with nothing failing. Fail here
+          # instead of deploying it. See the NOTE in mkdocs.yml.
+          if [ -e site/internal ] \
+            || grep -rqs 'macos-code-signing\|parity-checklist\|linux-h264' site/; then
+            echo "::error::internal engineering notes leaked into the docs build -- check that docs/.internal/ still starts with a dot"
+            exit 1
+          fi
+
       - name: Deploy to gh-pages
         env:
           # Matches the exact commit the "Checkout source" step used --
@@ -332,8 +411,10 @@ jobs:
           # so the commit message would otherwise cite a slightly different
           # commit than what was actually built and deployed.
           DEPLOY_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+          DOCS_TARGETS_JSON: ${{ steps.targets.outputs.docs_targets }}
         run: |
           set -euo pipefail
+          echo "${DOCS_TARGETS_JSON:-[]}" > /tmp/docs-targets.json
 
           # Set up a fresh clone of just the gh-pages branch
           mkdir gh-pages-dir
@@ -357,12 +438,15 @@ jobs:
 
             if [ -z "$TARGET_PATH" ]; then
               # Root deploy: remove every top-level entry EXCEPT the special
-              # named channels and any permanent per-version folder (v1.2.3,
-              # v1.2.3-1, ...) -- those must survive a stable redeploy, not
-              # just "dev" as before. Everything else is root's own previous
-              # build output (index.html, assets/, etc.) and gets replaced.
+              # named channels, the independent docs tree, and any permanent
+              # per-version folder (v1.2.3, v1.2.3-1, ...) -- those must survive
+              # a stable redeploy, not just "dev" as before. Everything else is
+              # root's own previous build output (index.html, assets/, etc.) and
+              # gets replaced. Sparing 'docs' is load-bearing: without it the
+              # next stable release would wipe every published docs version.
               find . -maxdepth 1 -mindepth 1 \
                 ! -name '.git' \
+                ! -name 'docs' \
                 ! -name 'main' \
                 ! -name 'dev' \
                 ! -name 'latest' \
@@ -383,6 +467,82 @@ jobs:
               cp -r "../staging/$SAFE_NAME" "$TARGET_PATH"
             fi
           done
+
+          # Docs: one independent top-level tree, /docs/<version>/. Nothing
+          # above touches it (non-root app targets only ever rewrite their own
+          # folder, and root's prune spares 'docs') and nothing here touches the
+          # app. The same built site is copied to each path -- see the build
+          # step above for why that is safe.
+          #
+          # The list is iterated straight off jq's output rather than by index,
+          # so an empty one is simply zero iterations. (The `seq 0 $((COUNT-1))`
+          # form the app loop above uses relies on GNU seq printing nothing for
+          # `seq 0 -1`; BSD seq prints "0 -1" instead, which would run the body
+          # once with a null version and create a docs/null folder. Folder names
+          # here are only ever stable/latest/dev/v*, so the unquoted expansion
+          # has nothing to split on.)
+          if [ "$(jq 'length' /tmp/docs-targets.json)" -gt 0 ] \
+            && [ ! -s ../site/index.html ]; then
+            echo "::error::docs targets requested but the docs build is missing"
+            exit 1
+          fi
+          for DOCS_VERSION in $(jq -r '.[]' /tmp/docs-targets.json); do
+            echo "Deploying docs -> docs/$DOCS_VERSION"
+            rm -rf "docs/$DOCS_VERSION"
+            mkdir -p "docs/$DOCS_VERSION"
+            cp -r ../site/. "docs/$DOCS_VERSION/"
+          done
+
+          # Rebuild the version selector's manifest and the /docs/ redirect stub
+          # from whatever is actually on the branch, on EVERY run that has a
+          # docs tree -- not just runs that wrote one. Both are then
+          # self-healing, and stay right if a version folder is added or removed
+          # by hand.
+          #
+          # The theme fetches this from "../versions.json" relative to its own
+          # base -- /docs/versions.json for any page under /docs/<version>/ --
+          # and matches the LAST segment of that base against each entry's
+          # version/aliases to work out which version it is being served as. So
+          # every path a reader can land on needs an entry here, the
+          # unversioned moving pointers included: an unlisted path silently
+          # falls back to extra.version.default (mkdocs.yml) and mislabels
+          # itself in the dropdown. We write the file directly rather than
+          # adding `mike`, which produces this and nothing else we need, and
+          # would be a second writer racing this workflow for gh-pages.
+          if [ -d docs ]; then
+            {
+              # Moving pointers first, in the order they should read in the
+              # dropdown, then permanent per-release folders newest-first. The
+              # current stable legitimately appears twice -- as "stable" and
+              # under its own tag -- because both paths exist and a pinned
+              # in-app Help link lands on the tagged one.
+              for v in stable latest dev; do
+                if [ -d "docs/$v" ]; then echo "$v"; fi
+              done
+              find docs -mindepth 1 -maxdepth 1 -type d -name 'v[0-9]*' \
+                -exec basename {} \; | sort -Vr
+            } | jq -R . | jq -sc 'map({version: ., title: ., aliases: []})' \
+              > docs/versions.json
+            echo "docs/versions.json -> $(cat docs/versions.json)"
+
+            # Bare app.sleap.ai/docs has no site of its own (every page lives a
+            # level down under a version), so it redirects to the first entry
+            # above -- stable whenever stable exists. <meta refresh> plus a real
+            # link, so it works with JS disabled and stays crawlable.
+            DOCS_DEFAULT="$(jq -r '.[0].version // empty' docs/versions.json)"
+            if [ -n "$DOCS_DEFAULT" ]; then
+              printf '%s\n' \
+                '<!doctype html>' \
+                '<html lang="en">' \
+                '<meta charset="utf-8">' \
+                '<title>SLEAP app documentation</title>' \
+                "<link rel=\"canonical\" href=\"https://app.sleap.ai/docs/$DOCS_DEFAULT/\">" \
+                "<meta http-equiv=\"refresh\" content=\"0; url=./$DOCS_DEFAULT/\">" \
+                "<script>location.replace(\"./$DOCS_DEFAULT/\" + location.hash)</script>" \
+                "<p><a href=\"./$DOCS_DEFAULT/\">Continue to the SLEAP app documentation</a>.</p>" \
+                '</html>' > docs/index.html
+            fi
+          fi
 
           # Ensure required files exist
           touch .nojekyll

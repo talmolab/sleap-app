@@ -14,6 +14,9 @@ import {
   APP_VERSION_KIND,
   APP_VERSION_KIND_LABEL,
   classifyVersion,
+  DOCS_BASE_URL,
+  DOCS_URL,
+  docsUrlForVersion,
   VERSION_KIND_LABEL,
 } from "@/lib/version";
 
@@ -65,5 +68,46 @@ describe("APP_VERSION", () => {
     // the CI-stamped version in every real build.
     expect(typeof APP_VERSION).toBe("string");
     expect(APP_VERSION.length).toBeGreaterThan(0);
+  });
+});
+
+describe("docsUrlForVersion (docs version axis vs app channel paths)", () => {
+  it("pins a stable release to its own permanent docs folder", () => {
+    // NOT /docs/stable/: that pointer moves on when the next release ships,
+    // and a 0.1.1 install must keep reading 0.1.1 docs after it does.
+    expect(docsUrlForVersion("0.1.1")).toBe(`${DOCS_BASE_URL}/v0.1.1/`);
+  });
+
+  it("sends a pre-release to the moving /docs/latest/", () => {
+    // Pre-release tags are the only ones carrying the -N rebuild suffix, so
+    // deploy.yml gives them no permanent folder to pin to -- they share
+    // /docs/latest/ and overwrite each other there.
+    expect(docsUrlForVersion("0.1.2-2")).toBe(`${DOCS_BASE_URL}/latest/`);
+    expect(docsUrlForVersion("0.1.2-3")).toBe(`${DOCS_BASE_URL}/latest/`);
+  });
+
+  it("sends every dev-metadata build to /docs/dev/", () => {
+    // Both the desktop dev channel and the web /main/ path: there is ONE "dev"
+    // docs version tracking main, not one per app channel.
+    expect(docsUrlForVersion("0.1.2-1+9.c1949e7")).toBe(`${DOCS_BASE_URL}/dev/`);
+    expect(docsUrlForVersion("0.1.2-2+main.5cff4f5")).toBe(`${DOCS_BASE_URL}/dev/`);
+  });
+
+  it("never nests a docs version under an app channel path", () => {
+    // The two version axes are siblings under app.sleap.ai and only reuse the
+    // words "latest"/"dev" -- /latest/docs/ or /docs/latest/docs/ would mean
+    // two different things in one URL.
+    for (const v of ["0.1.1", "0.1.2-2", "0.1.2-2+main.5cff4f5"]) {
+      const url = docsUrlForVersion(v);
+      expect(url.startsWith("https://app.sleap.ai/docs/")).toBe(true);
+      expect(url.slice("https://app.sleap.ai/docs/".length)).not.toContain("/docs");
+    }
+  });
+
+  it("is absolute, so the desktop shell and `bun run dev` resolve it", () => {
+    // A root-relative "/docs/" would 404 against localhost and against the
+    // Tauri webview's own origin.
+    expect(DOCS_BASE_URL).toBe("https://app.sleap.ai/docs");
+    expect(DOCS_URL).toBe(docsUrlForVersion(APP_VERSION));
   });
 });

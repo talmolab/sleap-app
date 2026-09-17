@@ -1,10 +1,16 @@
 site_name: SLEAP App documentation
-# site_url: https://docs.app.sleap.ai/
-#   Commented out until hosting is decided -- nothing deploys these docs yet.
-#   This repo's single GitHub Pages site is already app.sleap.ai (see
-#   deploy.yml), and a repo gets one Pages site with one custom domain, so
-#   docs.app.sleap.ai would need its own repo. Set this once that is settled:
-#   it only feeds the canonical URL and the sitemap base.
+# Points at the STABLE docs path, not the /docs/ root, and deliberately so.
+# site_url only feeds the canonical URL and the sitemap base, and every
+# versioned copy of this site is the SAME build (see deploy.yml -- the theme
+# resolves its own base from `location` at runtime, so one build is portable
+# across /docs/stable/, /docs/latest/, /docs/dev/ and /docs/v*/). That means
+# whatever goes here is baked into all of them:
+#   - `.../docs/stable/` makes every copy canonicalize onto the stable URL, so
+#     search engines consolidate there instead of indexing dev and every old
+#     version as duplicate content.
+#   - `.../docs/` would emit a sitemap full of URLs that 404: /docs/ itself is
+#     only a redirect stub, the pages live one level down under a version.
+site_url: https://app.sleap.ai/docs/stable/
 site_description: >-
   Documentation for the SLEAP app -- a browser and desktop interface for
   labeling, training, and tracking animal pose.
@@ -88,17 +94,30 @@ extra_css:
   - stylesheets/extra.css
 
 extra:
+  # Turns on the theme's version selector, which is what makes the dropdown in
+  # the header appear. `provider: mike` names the versions.json FORMAT the
+  # theme reads -- it does not require the mike tool, and we do not use it:
+  # deploy.yml writes /docs/versions.json itself. Without this key the built
+  # config carries `"version": null` and the selector never renders.
+  #
+  # `default` is the fallback used when the current path is not listed in
+  # versions.json, and the anchor for the theme's "outdated version" check.
+  version:
+    provider: mike
+    default: stable
   social:
     - icon: fontawesome/brands/github
       link: https://github.com/talmolab
     - icon: fontawesome/brands/x-twitter
       link: https://twitter.com/talmop
 
-# NOTE: docs/internal/ holds engineering notes, not site content. It is kept out
-# of `nav` below, but Zensical does NOT support mkdocs' `exclude_docs` (the key
-# is silently ignored), so those pages are still *built* -- just unlinked. The
-# only exclusion Zensical honors is a dot-prefixed directory; rename to
-# docs/.internal/ if they must be kept out of the published output entirely.
+# NOTE: engineering notes live in docs/.internal/ and are DOT-PREFIXED on
+# purpose -- that is the only exclusion Zensical honors. It silently ignores
+# mkdocs' `exclude_docs`, so merely keeping a page out of `nav` (as this used to
+# do) still *builds* it and still lists it in sitemap.xml and search.json. Since
+# these docs are now published, an un-dotted docs/internal/ would put the
+# code-signing notes, the parity checklist and the training-panel prototype live
+# and indexable at app.sleap.ai. Keep the dot.
 
 nav:
   - Overview: index.md

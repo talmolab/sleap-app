@@ -49,3 +49,47 @@ export const APP_VERSION_KIND: VersionKind = classifyVersion(APP_VERSION);
 
 /** e.g. "Pre-release" -- the channel wording shown next to the version. */
 export const APP_VERSION_KIND_LABEL = VERSION_KIND_LABEL[APP_VERSION_KIND];
+
+/**
+ * Base of the published documentation site. Absolute on purpose: the desktop
+ * shell and `bun run dev` both serve the app from somewhere that is not
+ * app.sleap.ai, so a root-relative "/docs/" would resolve to a local 404 in
+ * exactly the two environments hardest to notice it in.
+ */
+export const DOCS_BASE_URL = "https://app.sleap.ai/docs";
+
+/**
+ * Which published docs version this build should link to.
+ *
+ * Docs are versioned on their OWN axis, independent of the app's channel paths
+ * (/, /main/, /dev/, /latest/, /v<tag>/) -- see deploy.yml. The two only reuse
+ * the words "latest" and "dev"; nothing nests one inside the other. The
+ * mapping is derived from the running version so a frozen build never points
+ * at docs describing features it does not have:
+ *
+ *   dev build      `0.1.2-2+main.abc1234`  -> /docs/dev/     (tracks main)
+ *   pre-release    `0.1.2-2`               -> /docs/latest/  (moving)
+ *   stable release `0.1.1`                 -> /docs/v0.1.1/  (pinned, permanent)
+ *
+ * Stable builds pin to their own permanent folder rather than to /docs/stable/,
+ * which keeps a desktop 0.1.1 install reading 0.1.1 docs long after 0.2.0 has
+ * moved /docs/stable/ on. Pre-releases are the one case that drifts: their tags
+ * carry the -N rebuild suffix (v0.1.2-1, v0.1.2-2, ...) and deliberately get no
+ * permanent docs folder, so they share the moving /docs/latest/ and a frozen
+ * pre-release build's link follows it. /docs/stable/ still exists for humans --
+ * it is what bare app.sleap.ai/docs redirects to, and a row in the version
+ * dropdown -- it is just not what any build links to.
+ */
+export function docsUrlForVersion(version: string): string {
+  switch (classifyVersion(version)) {
+    case "dev":
+      return `${DOCS_BASE_URL}/dev/`;
+    case "prerelease":
+      return `${DOCS_BASE_URL}/latest/`;
+    case "stable":
+      return `${DOCS_BASE_URL}/v${version}/`;
+  }
+}
+
+/** Documentation URL matching the version this bundle was compiled with. */
+export const DOCS_URL = docsUrlForVersion(APP_VERSION);

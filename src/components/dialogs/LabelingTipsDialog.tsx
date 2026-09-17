@@ -13,6 +13,7 @@
 
 import { formatShortcut } from "@/lib/formatShortcut";
 import { rgbToCSS, type RGB } from "@/lib/colorPalettes";
+import { DOCS_URL } from "@/lib/version";
 import {
   COMPLETE_COLOR,
   INCOMPLETE_COLOR,
@@ -177,12 +178,12 @@ export function LabelingTipsDialog({ open, onOpenChange }: LabelingTipsDialogPro
             to turn them on or off. For the full guided walkthrough, click{" "}
             <strong>Start Tutorial</strong> in the menu bar, or see{" "}
             <a
-              href="https://docs.sleap.ai/"
+              href={DOCS_URL}
               target="_blank"
               rel="noopener noreferrer"
               className="underline hover:text-foreground"
             >
-              docs.sleap.ai
+              the documentation
             </a>
             .
           </p>
