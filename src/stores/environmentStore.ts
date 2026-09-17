@@ -10,6 +10,8 @@ import { persist } from "zustand/middleware";
 import {
   detectUv,
   detectGpu,
+  detectAccelerator as detectAcceleratorCmd,
+  detectSleapNnExtras,
   listUvTools,
   listPythonInterpreters,
   listDownloadablePythons,
@@ -19,6 +21,8 @@ import {
   upgradeUvTool as upgradeUvToolCmd,
   updateUv as updateUvCmd,
   installUv as installUvCmd,
+  type AcceleratorInfo,
+  type SleapNnExtras,
   type UvInfo,
   type UvTool,
   type PythonInterpreter,
@@ -48,6 +52,20 @@ export interface EnvironmentState {
   interpreters: PythonInterpreter[];
   downloadable: PythonInterpreter[];
 
+  // Which accelerator the INSTALLED sleap-nn can actually use, straight from
+  // the torch in its own venv. Never persisted: it describes the machine + the
+  // current install, both of which can change between sessions (new driver,
+  // reinstall with a different torch extra). `null` until probed, or while
+  // sleap-nn isn't installed at all.
+  accelerator: AcceleratorInfo | null;
+  acceleratorStatus: DetectionStatus;
+
+  // Which optional extras the installed sleap-nn carries (ONNX / TensorRT
+  // export support). Not persisted, for the same reason as `accelerator`: it
+  // describes the current install, which a reinstall can change.
+  extras: SleapNnExtras | null;
+  extrasStatus: DetectionStatus;
+
   // Selected environment (persisted)
   selectedPythonPath: string | null;
   pythonCheck: PythonInfo | null;
@@ -69,6 +87,8 @@ export interface EnvironmentState {
 
   // Actions
   refresh: () => Promise<void>;
+  detectAccelerator: () => Promise<void>;
+  detectExtras: () => Promise<void>;
   selectPython: (path: string) => Promise<void>;
   clearSelection: () => void;
   doInstallPython: (version: string) => Promise<void>;
@@ -79,6 +99,12 @@ export interface EnvironmentState {
    * the tool env, so this reinstalls the FULL extra set (torch + export[,tensorrt]).
    */
   installExportExtra: (withTensorrt: boolean) => Promise<void>;
+  /**
+   * Reinstall sleap-nn so its extras match `want` exactly. Because
+   * `uv tool install` REPLACES the tool env, this is the only way to change
+   * extras — and it means UNCHECKING one removes it on the next apply.
+   */
+  installExtras: (want: { onnx: boolean; tensorrt: boolean }) => Promise<void>;
   doUpgradeTool: (pkg: string) => Promise<void>;
   doReinstallTool: (pkg: string) => Promise<void>;
   doUpdateUv: () => Promise<void>;
@@ -101,6 +127,10 @@ export const useEnvironmentStore = create<EnvironmentState>()(
       tools: [],
       interpreters: [],
       downloadable: [],
+      accelerator: null,
+      acceleratorStatus: "idle",
+      extras: null,
+      extrasStatus: "idle",
 
       // Selected environment
       selectedPythonPath: null,
@@ -132,6 +162,10 @@ export const useEnvironmentStore = create<EnvironmentState>()(
               tools: [],
               interpreters: [],
               downloadable: [],
+              accelerator: null,
+              acceleratorStatus: "idle",
+              extras: null,
+              extrasStatus: "idle",
               detectionStatus: "done",
             });
             return;
@@ -152,6 +186,21 @@ export const useEnvironmentStore = create<EnvironmentState>()(
             interpreters: pythons,
             downloadable: downloadablePythons,
           });
+
+          // Not awaited: the probe has to import torch in sleap-nn's venv,
+          // which takes seconds, and nothing else in the panel depends on it.
+          // Only meaningful once sleap-nn exists — the probe runs ITS python.
+          if (uvTools.some((t) => t.name === "sleap-nn")) {
+            void get().detectAccelerator();
+            void get().detectExtras();
+          } else {
+            set({
+              accelerator: null,
+              acceleratorStatus: "idle",
+              extras: null,
+              extrasStatus: "idle",
+            });
+          }
 
           // Verify selected Python still exists
           const { selectedPythonPath } = get();
@@ -177,6 +226,56 @@ export const useEnvironmentStore = create<EnvironmentState>()(
           const msg = err instanceof Error ? err.message : String(err);
           console.error("[env] Detection failed:", err);
           set({ detectionStatus: "error", detectionError: msg });
+        }
+      },
+
+      detectAccelerator: async () => {
+        set({ acceleratorStatus: "checking" });
+        try {
+          const info = await detectAcceleratorCmd();
+          console.log("[env] accelerator:", info);
+          set({ accelerator: info, acceleratorStatus: "done" });
+        } catch (err) {
+          // detect_accelerator reports its own failures in `error` rather than
+          // rejecting, so getting here means the IPC call itself failed.
+          const msg = err instanceof Error ? err.message : String(err);
+          console.error("[env] Accelerator detection failed:", err);
+          set({
+            accelerator: {
+              accelerator: null,
+              gpuCount: 0,
+              gpus: [],
+              torchVersion: null,
+              cudaVersion: null,
+              driverVersion: null,
+              driverCompatible: null,
+              driverMinRequired: null,
+              os: "",
+              error: msg,
+            },
+            acceleratorStatus: "done",
+          });
+        }
+      },
+
+      detectExtras: async () => {
+        set({ extrasStatus: "checking" });
+        try {
+          const info = await detectSleapNnExtras();
+          console.log("[env] extras:", info);
+          set({ extras: info, extrasStatus: "done" });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.error("[env] Extras detection failed:", err);
+          set({
+            extras: {
+              onnx: false,
+              tensorrt: false,
+              tensorrtSupported: false,
+              error: msg,
+            },
+            extrasStatus: "done",
+          });
         }
       },
 
@@ -285,12 +384,28 @@ export const useEnvironmentStore = create<EnvironmentState>()(
       },
 
       installExportExtra: async (withTensorrt: boolean) => {
+        // Kept as the name the export dialog + post-training export path call;
+        // "export support" has always meant ONNX, plus TensorRT on request.
+        await get().installExtras({ onnx: true, tensorrt: withTensorrt });
+      },
+
+      installExtras: async ({ onnx, tensorrt }) => {
         const { selectedPythonPath } = get();
+        // TensorRT export is built on top of the ONNX toolchain, so `tensorrt`
+        // always brings `export` with it — selecting TensorRT alone would
+        // produce an env that can't export at all.
+        const wantOnnx = onnx || tensorrt;
+        const extras = [
+          wantOnnx ? "export" : null,
+          tensorrt ? "tensorrt" : null,
+        ].filter(Boolean);
         set({
           installStatus: "installing",
-          installTarget: withTensorrt
+          installTarget: tensorrt
             ? "sleap-nn ONNX + TensorRT support"
-            : "sleap-nn ONNX support",
+            : wantOnnx
+              ? "sleap-nn ONNX support"
+              : "sleap-nn without export extras",
           installLog: [],
         });
 
@@ -307,12 +422,12 @@ export const useEnvironmentStore = create<EnvironmentState>()(
         try {
           const gpu = await detectGpu();
           const torchExtra = gpu === "cuda" ? "torch-cuda130" : "torch-cpu";
-          // `uv tool install` REPLACES the tool env — it can't add an extra
-          // incrementally — so include the full extra set and force a reinstall,
-          // or the existing torch backend / deps would be dropped. TensorRT is
-          // only offered on CUDA hosts (linux/win + NVIDIA).
-          const extras = withTensorrt ? "export,tensorrt" : "export";
-          const installPkg = `sleap-nn[${torchExtra},${extras}]`;
+          // `uv tool install` REPLACES the tool env — it can't add or drop an
+          // extra incrementally — so every apply names the FULL extra set and
+          // forces a reinstall. That's also what makes unchecking work: the
+          // omitted extra simply isn't in the new env. The torch backend has
+          // to be restated for the same reason, or it would be dropped.
+          const installPkg = `sleap-nn[${[torchExtra, ...extras].join(",")}]`;
           set((state) => ({
             installLog: [
               ...state.installLog,

@@ -390,6 +390,17 @@ fn parse_self_update_dry_run(
     (None, None, None)
 }
 
+/// Extract just the semver from `uv --version` output.
+///
+/// uv prints `uv 0.12.8 (68209e5c6 2026-08-31 aarch64-apple-darwin)` -- the
+/// commit, build date and target triple are 40+ characters that used to be
+/// rendered verbatim in a 320px-wide panel row, pushing everything else out.
+fn parse_uv_version(output: &str) -> String {
+    let s = output.trim();
+    let s = s.strip_prefix("uv ").unwrap_or(s).trim();
+    s.split_whitespace().next().unwrap_or(s).to_string()
+}
+
 /// Detect whether `uv` is installed and get its version.
 #[tauri::command]
 pub async fn detect_uv<R: Runtime>(app: AppHandle<R>) -> UvInfo {
@@ -411,9 +422,7 @@ pub async fn detect_uv<R: Runtime>(app: AppHandle<R>) -> UvInfo {
         };
     }
 
-    let version = version_output.map(|v| {
-        v.strip_prefix("uv ").unwrap_or(&v).to_string()
-    });
+    let version = version_output.as_deref().map(parse_uv_version);
 
     // Report the resolved absolute path (None only if we fell back to bare "uv").
     let path = if uv == "uv" { None } else { Some(uv.clone()) };
@@ -520,6 +529,332 @@ pub async fn gpu_stats<R: Runtime>(app: AppHandle<R>) -> GpuStats {
         memory_total_mb: None,
         memory_used_mb: None,
         utilization_pct: None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Accelerator / GPU detection (as sleap-nn itself sees it)
+// ---------------------------------------------------------------------------
+
+/// Accelerator + GPU info for the sleap-nn install, as reported by the torch
+/// inside its own uv-tool venv.
+///
+/// Every field mirrors one from sleap-nn's `get_system_info_dict()` -- see
+/// `ACCELERATOR_PROBE_SCRIPT`.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcceleratorInfo {
+    /// "cuda", "mps" or "cpu". `None` only when the probe couldn't run at all
+    /// (see `error`) -- "no GPU" is reported as `Some("cpu")`, not as `None`.
+    pub accelerator: Option<String>,
+    /// Devices torch can actually use: the CUDA device count, or 0 for CPU.
+    ///
+    /// MPS reports 1, which is Lightning's `devices=1` convention rather than
+    /// a real device count -- Metal exposes one unified GPU that isn't
+    /// enumerable or countable. Passed through as sleap-nn reports it, but do
+    /// NOT show it as "1 GPU" on a Mac: see `summarizeAccelerator`, which
+    /// renders a count only for CUDA.
+    pub gpu_count: u32,
+    /// Per-device descriptions, e.g. "NVIDIA RTX 4090 (24 GB)". CUDA only --
+    /// torch exposes no equivalent device list for MPS.
+    pub gpus: Vec<String>,
+    pub torch_version: Option<String>,
+    pub cuda_version: Option<String>,
+    /// NVIDIA driver version, reported even when CUDA is unavailable: a driver
+    /// present with no usable CUDA is the signature of a CPU-only torch wheel,
+    /// which is exactly the case the UI needs to call out.
+    pub driver_version: Option<String>,
+    /// Whether `driver_version` meets `driver_min_required` for
+    /// `cuda_version`. `None` when it couldn't be determined (no driver, or a
+    /// CUDA version sleap-nn has no requirement table entry for).
+    pub driver_compatible: Option<bool>,
+    pub driver_min_required: Option<String>,
+    /// "macos", "windows" or "linux" -- which accelerator is even reachable
+    /// depends on it (no CUDA on macOS, no MPS anywhere else).
+    pub os: String,
+    /// Why nothing could be reported. Mutually exclusive with the fields above.
+    pub error: Option<String>,
+}
+
+/// Re-emits sleap-nn's own system-info collector as JSON on stdout -- the same
+/// data `sleap-nn system` prints as a table, which is where the driver /
+/// compute-capability knowledge lives (sleap_nn/system_info.py). Failures are
+/// reported in-band as `{"error": ...}` so an old sleap-nn without that module
+/// surfaces as a message rather than an opaque non-zero exit.
+const ACCELERATOR_PROBE_SCRIPT: &str = "\
+import json
+try:
+    from sleap_nn.system_info import get_system_info_dict
+    out = get_system_info_dict()
+except Exception as e:
+    out = {'error': '%s: %s' % (type(e).__name__, e)}
+print(json.dumps(out))
+";
+
+/// Importing torch is slow (seconds; more on a cold filesystem cache, more
+/// again on Windows), so this is generous -- but bounded, so a wedged probe
+/// leaves the UI saying "unknown" instead of spinning forever.
+const ACCELERATOR_PROBE_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// Clamp a subprocess message to something that fits in a tooltip.
+fn short_error(s: &str) -> String {
+    let s = s.trim();
+    if s.chars().count() <= 300 {
+        return s.to_string();
+    }
+    s.chars().take(297).collect::<String>() + "..."
+}
+
+fn str_field(v: &serde_json::Value, key: &str) -> Option<String> {
+    v.get(key).and_then(|x| x.as_str()).map(str::to_string)
+}
+
+/// Pure parser for `ACCELERATOR_PROBE_SCRIPT`'s stdout, so the mapping can be
+/// tested without a real sleap-nn install.
+///
+/// Falls back to the LAST non-empty line when the whole buffer doesn't parse:
+/// anything the venv's own startup chatter (deprecation notices, CUDA init
+/// warnings) writes to stdout lands before our single line of JSON.
+fn parse_accelerator_json(stdout: &str, os: &str) -> AcceleratorInfo {
+    let mut info = AcceleratorInfo {
+        os: os.to_string(),
+        ..Default::default()
+    };
+
+    let Some(text) = stdout.lines().rev().find(|l| !l.trim().is_empty()) else {
+        info.error = Some("sleap-nn's Python reported nothing.".to_string());
+        return info;
+    };
+
+    let parsed = serde_json::from_str::<serde_json::Value>(stdout.trim())
+        .or_else(|_| serde_json::from_str::<serde_json::Value>(text.trim()));
+
+    let Ok(v) = parsed else {
+        info.error = Some(format!("Unexpected output: {}", short_error(text)));
+        return info;
+    };
+
+    if let Some(err) = str_field(&v, "error") {
+        info.error = Some(short_error(&err));
+        return info;
+    }
+
+    info.accelerator = str_field(&v, "accelerator");
+    info.gpu_count = v
+        .get("gpu_count")
+        .and_then(|c| c.as_u64())
+        .unwrap_or(0)
+        .min(u32::MAX as u64) as u32;
+    info.torch_version = str_field(&v, "pytorch_version");
+    info.cuda_version = str_field(&v, "cuda_version");
+    info.driver_version = str_field(&v, "driver_version");
+    info.driver_compatible = v.get("driver_compatible").and_then(|b| b.as_bool());
+    info.driver_min_required = str_field(&v, "driver_min_required");
+    info.gpus = v
+        .get("gpus")
+        .and_then(|g| g.as_array())
+        .map(|gpus| {
+            gpus.iter()
+                .filter_map(|g| {
+                    let name = str_field(g, "name")?;
+                    Some(match g.get("memory_gb").and_then(|m| m.as_f64()) {
+                        Some(mem) => format!("{} ({} GB)", name, mem),
+                        None => name,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    info
+}
+
+/// Report which accelerator sleap-nn will actually train on, and how many GPUs
+/// it can see.
+///
+/// Deliberately asks the torch INSIDE sleap-nn's uv-tool venv -- the same
+/// interpreter training and inference run on, resolved the same way as the ZMQ
+/// relays -- rather than probing the machine with `nvidia-smi` the way
+/// `detect_gpu` above does. The question a user is asking when they check
+/// this ("did my GPU get picked up?") is whether the INSTALLED torch build can
+/// use it: a CUDA machine carrying a CPU-only torch wheel reports "cpu" here,
+/// which is precisely the "reinstall sleap-nn" signal, while `detect_gpu`
+/// would still say "cuda". (`detect_gpu` can't be replaced by this: it runs
+/// BEFORE sleap-nn exists, to choose which torch extra to install.)
+#[tauri::command]
+pub async fn detect_accelerator<R: Runtime>(app: AppHandle<R>) -> AcceleratorInfo {
+    let os = std::env::consts::OS;
+    let fail = |error: String| AcceleratorInfo {
+        os: os.to_string(),
+        error: Some(error),
+        ..Default::default()
+    };
+
+    let python = match resolve_sleap_nn_python(&app).await {
+        Ok(p) => p,
+        Err(e) => return fail(e),
+    };
+
+    let result = tokio::time::timeout(
+        ACCELERATOR_PROBE_TIMEOUT,
+        app.shell()
+            .command(python.to_string_lossy().to_string())
+            .args(["-c", ACCELERATOR_PROBE_SCRIPT])
+            .env_clear()
+            .envs(child_env())
+            .output(),
+    )
+    .await;
+
+    match result {
+        Ok(Ok(output)) => {
+            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+            // The script catches its own exceptions, so a non-zero exit with
+            // no JSON means the interpreter itself failed (broken venv, bad
+            // torch install) -- report its stderr, which says why.
+            if !output.status.success() && stdout.trim().is_empty() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return fail(if stderr.trim().is_empty() {
+                    "sleap-nn's Python exited without output.".to_string()
+                } else {
+                    short_error(&stderr)
+                });
+            }
+            parse_accelerator_json(&stdout, os)
+        }
+        Ok(Err(e)) => fail(format!("Could not run sleap-nn's Python: {}", e)),
+        Err(_) => fail(format!(
+            "Timed out after {}s waiting for sleap-nn to report GPU status.",
+            ACCELERATOR_PROBE_TIMEOUT.as_secs()
+        )),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Optional sleap-nn extras (ONNX / TensorRT export support)
+// ---------------------------------------------------------------------------
+
+/// Which optional sleap-nn extras are present in its uv-tool venv.
+///
+/// Answers the question the Environment panel's extras checkboxes need and
+/// that nothing could answer before: `uv tool list` reports the tool's
+/// version but NOT which extras it was installed with, so the only way to
+/// know is to look for the modules they bring in.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SleapNnExtras {
+    /// sleap-nn's `[export]` extra: `onnx` + `onnxruntime` (+ onnxscript).
+    pub onnx: bool,
+    /// sleap-nn's `[tensorrt]` extra: `tensorrt` + `torch_tensorrt`.
+    pub tensorrt: bool,
+    /// Whether TensorRT is installable on this platform at all. sleap-nn marks
+    /// both tensorrt deps `sys_platform == 'linux' or sys_platform == 'win32'`,
+    /// so on macOS the extra resolves to NOTHING and asking for it would
+    /// silently install nothing -- hence the UI greys it out rather than
+    /// letting it be selected.
+    pub tensorrt_supported: bool,
+    pub error: Option<String>,
+}
+
+/// Reports which extras' modules are importable, WITHOUT importing them:
+/// `find_spec` only resolves the module on disk, so this stays fast (no torch,
+/// no onnxruntime init) and can refresh on its own while the much slower
+/// accelerator probe is still running.
+const EXTRAS_PROBE_SCRIPT: &str = "\
+import json, importlib.util as u
+def has(m):
+    try:
+        return u.find_spec(m) is not None
+    except Exception:
+        return False
+print(json.dumps({
+    'onnx': has('onnx') and has('onnxruntime'),
+    'tensorrt': has('tensorrt') and has('torch_tensorrt'),
+}))
+";
+
+/// No torch import here (see `EXTRAS_PROBE_SCRIPT`), so this only has to cover
+/// interpreter startup.
+const EXTRAS_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// True when sleap-nn's `tensorrt` extra has any installable dependency on
+/// this platform -- see `SleapNnExtras::tensorrt_supported`.
+const fn tensorrt_supported() -> bool {
+    cfg!(any(target_os = "linux", target_os = "windows"))
+}
+
+/// Pure parser for `EXTRAS_PROBE_SCRIPT`'s stdout. Same last-non-empty-line
+/// tolerance as `parse_accelerator_json`, for the same reason.
+fn parse_extras_json(stdout: &str) -> SleapNnExtras {
+    let mut extras = SleapNnExtras {
+        tensorrt_supported: tensorrt_supported(),
+        ..Default::default()
+    };
+
+    let Some(text) = stdout.lines().rev().find(|l| !l.trim().is_empty()) else {
+        extras.error = Some("sleap-nn's Python reported nothing.".to_string());
+        return extras;
+    };
+
+    let parsed = serde_json::from_str::<serde_json::Value>(stdout.trim())
+        .or_else(|_| serde_json::from_str::<serde_json::Value>(text.trim()));
+
+    let Ok(v) = parsed else {
+        extras.error = Some(format!("Unexpected output: {}", short_error(text)));
+        return extras;
+    };
+
+    extras.onnx = v.get("onnx").and_then(|b| b.as_bool()).unwrap_or(false);
+    // A tensorrt module present on a platform sleap-nn can't install it on
+    // would be someone else's install; report what's actually importable and
+    // let the UI decide what to offer.
+    extras.tensorrt = v.get("tensorrt").and_then(|b| b.as_bool()).unwrap_or(false);
+    extras
+}
+
+/// Detect which optional extras the installed sleap-nn carries.
+#[tauri::command]
+pub async fn detect_sleap_nn_extras<R: Runtime>(app: AppHandle<R>) -> SleapNnExtras {
+    let fail = |error: String| SleapNnExtras {
+        tensorrt_supported: tensorrt_supported(),
+        error: Some(error),
+        ..Default::default()
+    };
+
+    let python = match resolve_sleap_nn_python(&app).await {
+        Ok(p) => p,
+        Err(e) => return fail(e),
+    };
+
+    let result = tokio::time::timeout(
+        EXTRAS_PROBE_TIMEOUT,
+        app.shell()
+            .command(python.to_string_lossy().to_string())
+            .args(["-c", EXTRAS_PROBE_SCRIPT])
+            .env_clear()
+            .envs(child_env())
+            .output(),
+    )
+    .await;
+
+    match result {
+        Ok(Ok(output)) => {
+            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+            if !output.status.success() && stdout.trim().is_empty() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return fail(if stderr.trim().is_empty() {
+                    "sleap-nn's Python exited without output.".to_string()
+                } else {
+                    short_error(&stderr)
+                });
+            }
+            parse_extras_json(&stdout)
+        }
+        Ok(Err(e)) => fail(format!("Could not run sleap-nn's Python: {}", e)),
+        Err(_) => fail(format!(
+            "Timed out after {}s checking sleap-nn's extras.",
+            EXTRAS_PROBE_TIMEOUT.as_secs()
+        )),
     }
 }
 
@@ -1877,6 +2212,185 @@ mod tests {
         }
     }
 
+    // -- uv --version parsing --
+
+    #[test]
+    fn test_parse_uv_version_strips_build_metadata() {
+        assert_eq!(
+            parse_uv_version("uv 0.12.8 (68209e5c6 2026-08-31 aarch64-apple-darwin)"),
+            "0.12.8"
+        );
+        assert_eq!(parse_uv_version("uv 0.12.8"), "0.12.8");
+        assert_eq!(parse_uv_version("  uv 0.12.8  "), "0.12.8");
+        // No "uv " prefix (unexpected shape): still yields the first token.
+        assert_eq!(parse_uv_version("0.12.8 (abc)"), "0.12.8");
+        assert_eq!(parse_uv_version(""), "");
+    }
+
+    // -- sleap-nn extras probe parser --
+
+    #[test]
+    fn test_parse_extras_both_present() {
+        let e = parse_extras_json(r#"{"onnx":true,"tensorrt":true}"#);
+        assert!(e.onnx);
+        assert!(e.tensorrt);
+        assert!(e.error.is_none());
+    }
+
+    #[test]
+    fn test_parse_extras_none_present() {
+        let e = parse_extras_json(r#"{"onnx":false,"tensorrt":false}"#);
+        assert!(!e.onnx);
+        assert!(!e.tensorrt);
+        assert!(e.error.is_none());
+    }
+
+    // The common post-`installExportExtra(false)` state: export support only.
+    #[test]
+    fn test_parse_extras_onnx_only() {
+        let e = parse_extras_json(r#"{"onnx":true,"tensorrt":false}"#);
+        assert!(e.onnx);
+        assert!(!e.tensorrt);
+    }
+
+    // tensorrt_supported is a compile-time platform fact, never read from the
+    // probe -- it must be filled in on every path, including the error ones.
+    #[test]
+    fn test_parse_extras_reports_platform_support() {
+        let expected = cfg!(any(target_os = "linux", target_os = "windows"));
+        assert_eq!(
+            parse_extras_json(r#"{"onnx":true,"tensorrt":false}"#).tensorrt_supported,
+            expected
+        );
+        assert_eq!(parse_extras_json("not json").tensorrt_supported, expected);
+        assert_eq!(parse_extras_json("").tensorrt_supported, expected);
+        #[cfg(target_os = "macos")]
+        assert!(!expected, "macOS must not offer TensorRT");
+    }
+
+    #[test]
+    fn test_parse_extras_ignores_stdout_noise() {
+        let e = parse_extras_json("some warning\n{\"onnx\":true,\"tensorrt\":false}\n");
+        assert!(e.onnx);
+        assert!(e.error.is_none());
+    }
+
+    #[test]
+    fn test_parse_extras_missing_keys_default_false() {
+        let e = parse_extras_json("{}");
+        assert!(!e.onnx);
+        assert!(!e.tensorrt);
+        assert!(e.error.is_none());
+    }
+
+    #[test]
+    fn test_parse_extras_non_json_and_empty() {
+        let e = parse_extras_json("Traceback (most recent call last):\n");
+        assert!(!e.onnx);
+        assert!(e.error.unwrap().contains("Unexpected output"));
+
+        let e = parse_extras_json("   \n");
+        assert!(e.error.is_some());
+    }
+
+    // -- accelerator probe parser (sleap-nn system_info -> AcceleratorInfo) --
+
+    // Shape taken from sleap_nn/system_info.py's get_system_info_dict(); only
+    // the fields parse_accelerator_json reads are kept.
+    #[test]
+    fn test_parse_accelerator_cuda() {
+        let json = r#"{"accelerator":"cuda","gpu_count":2,"pytorch_version":"2.9.0+cu130",
+            "cuda_version":"13.0","cudnn_version":"91002","driver_version":"580.65.06",
+            "driver_compatible":true,"driver_min_required":"580.65.06",
+            "gpus":[{"id":0,"name":"NVIDIA RTX 4090","compute_capability":"8.9","memory_gb":23.6},
+                    {"id":1,"name":"NVIDIA RTX 4090","compute_capability":"8.9","memory_gb":23.6}]}"#;
+        let info = parse_accelerator_json(json, "linux");
+        assert_eq!(info.accelerator.as_deref(), Some("cuda"));
+        assert_eq!(info.gpu_count, 2);
+        assert_eq!(
+            info.gpus,
+            vec![
+                "NVIDIA RTX 4090 (23.6 GB)".to_string(),
+                "NVIDIA RTX 4090 (23.6 GB)".to_string()
+            ]
+        );
+        assert_eq!(info.cuda_version.as_deref(), Some("13.0"));
+        assert_eq!(info.driver_version.as_deref(), Some("580.65.06"));
+        assert_eq!(info.driver_compatible, Some(true));
+        assert_eq!(info.torch_version.as_deref(), Some("2.9.0+cu130"));
+        assert_eq!(info.os, "linux");
+        assert!(info.error.is_none());
+    }
+
+    #[test]
+    fn test_parse_accelerator_mps() {
+        let json = r#"{"accelerator":"mps","gpu_count":1,"gpus":[],"mps_available":true,
+            "pytorch_version":"2.9.0","cuda_version":null,"driver_version":null,
+            "driver_compatible":null,"driver_min_required":null}"#;
+        let info = parse_accelerator_json(json, "macos");
+        assert_eq!(info.accelerator.as_deref(), Some("mps"));
+        assert_eq!(info.gpu_count, 1);
+        assert!(info.gpus.is_empty());
+        // JSON nulls must come through as None, not Some("null").
+        assert!(info.cuda_version.is_none());
+        assert!(info.driver_version.is_none());
+        assert!(info.driver_compatible.is_none());
+        assert!(info.error.is_none());
+    }
+
+    // The case the green light exists for: a driver is present, so the machine
+    // HAS an NVIDIA GPU, but the installed torch can't use it (CPU-only wheel).
+    #[test]
+    fn test_parse_accelerator_cpu_with_driver() {
+        let json = r#"{"accelerator":"cpu","gpu_count":0,"gpus":[],
+            "pytorch_version":"2.9.0+cpu","cuda_version":null,"driver_version":"580.65.06"}"#;
+        let info = parse_accelerator_json(json, "windows");
+        assert_eq!(info.accelerator.as_deref(), Some("cpu"));
+        assert_eq!(info.gpu_count, 0);
+        assert_eq!(info.driver_version.as_deref(), Some("580.65.06"));
+        assert!(info.error.is_none());
+    }
+
+    #[test]
+    fn test_parse_accelerator_in_band_error() {
+        let json = r#"{"error":"ModuleNotFoundError: No module named 'sleap_nn.system_info'"}"#;
+        let info = parse_accelerator_json(json, "linux");
+        assert!(info.accelerator.is_none());
+        assert_eq!(info.gpu_count, 0);
+        assert!(info.error.unwrap().contains("No module named"));
+    }
+
+    // Venv startup chatter on stdout must not shadow the JSON line.
+    #[test]
+    fn test_parse_accelerator_ignores_leading_stdout_noise() {
+        let stdout = "UserWarning: something deprecated\n\
+                      {\"accelerator\":\"mps\",\"gpu_count\":1}\n";
+        let info = parse_accelerator_json(stdout, "macos");
+        assert_eq!(info.accelerator.as_deref(), Some("mps"));
+        assert_eq!(info.gpu_count, 1);
+        assert!(info.error.is_none());
+    }
+
+    #[test]
+    fn test_parse_accelerator_non_json_and_empty() {
+        let info = parse_accelerator_json("Traceback (most recent call last):\n", "linux");
+        assert!(info.accelerator.is_none());
+        assert!(info.error.unwrap().contains("Unexpected output"));
+
+        let info = parse_accelerator_json("  \n\n", "linux");
+        assert!(info.accelerator.is_none());
+        assert!(info.error.is_some());
+        assert_eq!(info.os, "linux");
+    }
+
+    #[test]
+    fn test_short_error_truncates() {
+        assert_eq!(short_error("  boom  "), "boom");
+        let long = "x".repeat(400);
+        let out = short_error(&long);
+        assert_eq!(out.chars().count(), 300);
+        assert!(out.ends_with("..."));
+    }
     // -- sleap-nn venv python path (relay interpreter, #121) --
 
     #[test]
