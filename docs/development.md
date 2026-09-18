@@ -138,4 +138,12 @@ uvx --from zensical zensical serve   # live preview
 uvx --from zensical zensical build   # static output in site/
 ```
 
-`docs/internal/` holds engineering notes and is excluded from the published site.
+`docs/.internal/` holds engineering notes and is excluded from the published
+site. The leading dot is what excludes it -- Zensical ignores mkdocs'
+`exclude_docs`, and simply leaving a page out of `nav` still builds it into
+`site/`, `sitemap.xml` and `search.json`. Keep the dot.
+
+The site is published to `app.sleap.ai/docs/<version>/` by `deploy.yml`, which
+pins the Zensical version it installs. The unpinned `uvx` commands above are
+fine for local preview, but if a build behaves differently in CI than it does
+locally, compare against that pin first.
