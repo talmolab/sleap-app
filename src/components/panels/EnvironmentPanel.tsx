@@ -852,20 +852,38 @@ export function AppUpdateSection() {
 
       {/* Surfacing the failure beats silently showing nothing: the full
           message can be actionable (e.g. "no full release has a latest.json
-          manifest yet"), so it goes in the tooltip, with a retry alongside. */}
+          manifest yet"), so it goes in the tooltip, with a retry alongside.
+
+          A local build is the exception, and gets the same treatment as the
+          arrow and the Update button below: there is no installer for
+          download_and_install() to swap, so nothing the check could report is
+          actionable here. Amber "Check failed" next to the "local build" badge
+          above read as a broken app rather than as "this shell cannot
+          self-update" -- so state that plainly, muted, and keep the underlying
+          reason in the tooltip for whoever is actually debugging the checker.
+          No Retry either: retrying cannot produce anything usable. */}
       {!checking && checkError && (
         <Field label="Update">
-          <span className="flex min-w-0 items-center gap-1.5 text-amber-500">
-            <span className="truncate" title={checkError}>
-              Check failed
-            </span>
-            <button
-              onClick={() => void runCheck(channel, true)}
-              className="shrink-0 text-[10px] underline underline-offset-2 transition-colors hover:text-foreground"
+          {isLocalBuild ? (
+            <span
+              className="truncate text-muted-foreground"
+              title={`Running via \`tauri:dev\` (unpackaged) — there is no installer to apply an update to, so this check is informational only. It did not complete: ${checkError}`}
             >
-              Retry
-            </button>
-          </span>
+              not applicable
+            </span>
+          ) : (
+            <span className="flex min-w-0 items-center gap-1.5 text-amber-500">
+              <span className="truncate" title={checkError}>
+                Check failed
+              </span>
+              <button
+                onClick={() => void runCheck(channel, true)}
+                className="shrink-0 text-[10px] underline underline-offset-2 transition-colors hover:text-foreground"
+              >
+                Retry
+              </button>
+            </span>
+          )}
         </Field>
       )}
 
