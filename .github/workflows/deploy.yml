@@ -185,10 +185,14 @@ jobs:
               add_target "" "/" "$RELEASE_TAG (stable)" "$RELEASE_VERSION"
               # /docs/stable/ moves in lockstep with root (it is what bare
               # app.sleap.ai/docs redirects to), and the release ALSO gets a
-              # permanent /docs/<tag>/ that is never rewritten. That permanent
-              # folder is what this release's own builds link to in-app --
-              # docsUrlForVersion() in src/lib/version.ts -- so a 0.1.1 install
-              # keeps reading 0.1.1 docs long after 0.2.0 has moved stable on.
+              # permanent /docs/<tag>/ that is never rewritten. That pinned
+              # folder is what the web bundle served from app.sleap.ai/v<tag>/
+              # links to in-app (docsVersionForBasePath in src/lib/version.ts),
+              # so someone on /v0.1.1/ keeps reading 0.1.1 docs long after
+              # 0.2.0 has moved stable on. A stable DESKTOP build follows its
+              # update channel instead, so it reads /docs/stable/ and moves
+              # with it -- deliberate: an installed app that auto-updates
+              # should not be pinned to the docs of the version it shipped at.
               add_docs "stable"
               add_docs "$RELEASE_TAG"
             fi
@@ -250,11 +254,26 @@ jobs:
               echo "::warning::could not read the dev release's latest.json; labelling /dev/ as $DEV_VERSION"
             fi
             add_target "dev" "/dev/" "dev (synced with desktop dev build)" "$DEV_VERSION"
-            # Deliberately no docs target. /docs/dev/ tracks `main` directly and
-            # is rebuilt on every push to it (final else branch below), so it is
-            # always at least as current as this nightly build. There is ONE
-            # "dev" docs version, not one per app channel: both app /dev/ and
-            # app /main/ link to it.
+            # /docs/dev/ rides the SAME cadence as the app it documents, for
+            # the same reason /dev/ itself does: this run is pinned to the
+            # exact commit the desktop dev release was built from (the
+            # job-level checkout uses workflow_run.head_sha), so writing docs
+            # here means a dev-channel user's docs describe the build they are
+            # actually running -- not whatever landed on `main` since.
+            #
+            # Docs deliberately do NOT deploy on a plain push to `main` (final
+            # else branch below). Doing so would refresh /docs/dev/ on every
+            # commit while /dev/ stayed frozen until the next nightly, so the
+            # two would disagree for most of any given day.
+            #
+            # There is still ONE "dev" docs version, not one per app channel,
+            # so app /main/ also reads it: the one path where docs can now lag
+            # its app by up to a nightly cycle. /main/ is the deliberately
+            # bleeding-edge view with no desktop counterpart, and giving it a
+            # /docs/main/ of its own would mean a second full copy of the site
+            # per run plus another version-dropdown entry, for a path only
+            # developers land on.
+            add_docs "dev"
           elif [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$DISPATCH_TARGET" = "prod" ]; then
             add_target "" "/" "manual-prod $REF_NAME" "$(highest_tag)+manual.${HEAD_SHA:0:7}"
             # Root moved, so keep /docs/stable/ in lockstep with it.
@@ -271,7 +290,13 @@ jobs:
             # build-dev.yml uses, so the title is at least truthful about what
             # it is and traceable to the commit it was built from.
             add_target "main" "/main/" "main" "$(highest_tag)+main.${HEAD_SHA:0:7}"
-            add_docs "dev"
+            # /main/ gets its OWN docs folder rather than borrowing /docs/dev/.
+            # Both are "the docs for main", but on different cadences: /main/
+            # rebuilds per commit while /dev/ only moves with the nightly, so
+            # one shared folder had to lag one of them. Giving each the folder
+            # its own run writes is what keeps every app path reading docs
+            # built from the very commit it was built from.
+            add_docs "main"
           fi
 
           echo "Deploy targets: $TARGETS"
@@ -394,12 +419,57 @@ jobs:
           # Zensical silently IGNORES mkdocs' `exclude_docs`, and leaving a page
           # out of `nav` still builds it into the output, sitemap.xml and
           # search.json -- a dot-prefixed directory is the only exclusion it
-          # honors. So a well-meaning rename back to docs/internal/ would
-          # publish all of it, indexable, with nothing failing. Fail here
-          # instead of deploying it. See the NOTE in mkdocs.yml.
-          if [ -e site/internal ] \
-            || grep -rqs 'macos-code-signing\|parity-checklist\|linux-h264' site/; then
-            echo "::error::internal engineering notes leaked into the docs build -- check that docs/.internal/ still starts with a dot"
+          # honors. So a well-meaning rename back to docs/internal/, or moving
+          # one note out on its own, would publish it indexable with nothing
+          # failing. Fail here instead of deploying it. See the NOTE in
+          # mkdocs.yml.
+          #
+          # Hardcoded rather than derived from docs/.internal, because the leak
+          # being guarded against is a file moving OUT of that directory: a
+          # derived list would stop containing exactly the name that escaped.
+          # Check 2 below is what keeps this list honest.
+          INTERNAL_NOTES="macos-code-signing parity-checklist linux-h264-fallback-test training-panel-prototype"
+
+          # 1. The directory must still be dot-prefixed.
+          if [ ! -d docs/.internal ]; then
+            echo "::error::docs/.internal/ is missing or no longer dot-prefixed -- that leading dot is the only thing keeping internal engineering notes off a public URL"
+            exit 1
+          fi
+
+          # 2. Everything still in there must be covered by the list above, so
+          #    adding a note without extending it fails here rather than
+          #    shipping unguarded.
+          UNLISTED=""
+          while IFS= read -r note; do
+            stem="$(basename "$note")"
+            stem="${stem%.*}"
+            case " $INTERNAL_NOTES " in
+              *" $stem "*) ;;
+              *) UNLISTED="$UNLISTED $stem" ;;
+            esac
+          done < <(find docs/.internal -type f)
+          if [ -n "$UNLISTED" ]; then
+            echo "::error::file(s) in docs/.internal/ are not covered by this step's leak check:$UNLISTED -- add them to INTERNAL_NOTES in .github/workflows/deploy.yml"
+            exit 1
+          fi
+
+          # 3. None of them may reach the output, by NAME or by reference.
+          #    The name check matters on its own: the training-panel prototype
+          #    is a raw .html asset copied through verbatim, so its name
+          #    appears nowhere inside any built file and a content-only `grep
+          #    -r` reports clean while site/prototypes/ is being published.
+          #    `-print -quit` rather than a pipe into `grep -q`, which would
+          #    exit on the first match and SIGPIPE find -- pipefail then turns
+          #    a found leak into a failed condition, i.e. reads as clean.
+          LEAKED=""
+          for stem in $INTERNAL_NOTES; do
+            if [ -n "$(find site -name "$stem*" -print -quit)" ] \
+              || grep -rqs -- "$stem" site/; then
+              LEAKED="$LEAKED $stem"
+            fi
+          done
+          if [ -e site/internal ] || [ -n "$LEAKED" ]; then
+            echo "::error::internal engineering notes leaked into the docs build:$LEAKED"
             exit 1
           fi
 
@@ -512,11 +582,15 @@ jobs:
           if [ -d docs ]; then
             {
               # Moving pointers first, in the order they should read in the
-              # dropdown, then permanent per-release folders newest-first. The
+              # dropdown -- stable down to the most bleeding-edge -- then
+              # permanent per-release folders newest-first. Listing `main` is
+              # load-bearing, not cosmetic: an unlisted path falls back to
+              # extra.version.default (mkdocs.yml) and would render in the
+              # dropdown as "stable" while serving main's docs. The
               # current stable legitimately appears twice -- as "stable" and
               # under its own tag -- because both paths exist and a pinned
               # in-app Help link lands on the tagged one.
-              for v in stable latest dev; do
+              for v in stable latest dev main; do
                 if [ -d "docs/$v" ]; then echo "$v"; fi
               done
               find docs -mindepth 1 -maxdepth 1 -type d -name 'v[0-9]*' \

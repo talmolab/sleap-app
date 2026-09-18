@@ -2,11 +2,13 @@
  * Resolves the documentation URL for the build that is actually running.
  *
  * Docs are published on their own version axis (`/docs/stable/`,
- * `/docs/latest/`, `/docs/dev/`, `/docs/v<tag>/` -- see deploy.yml), and the
+ * `/docs/latest/`, `/docs/dev/`, `/docs/main/`, `/docs/v<tag>/` -- see
+ * deploy.yml), and the
  * rule is that **a Help link lands on the docs for the channel the app is on**:
  *
  *   web      the channel path the bundle is served under -- app.sleap.ai/latest
- *            links to /docs/latest/, /dev/ to /docs/dev/, root to /docs/stable/
+ *            links to /docs/latest/, /dev/ to /docs/dev/, /main/ to
+ *            /docs/main/, root to /docs/stable/
  *   desktop  the update channel the app is on, i.e. whatever the Environment
  *            panel shows -- switch to Dev there and Help follows to /docs/dev/
  *
@@ -34,14 +36,16 @@ import {
 export function resolveDocsVersion(): DocsVersion {
   // Running from source (`bun run dev` / `bun run tauri:dev`) means working off
   // main, whatever the committed package.json version happens to say -- and it
-  // drifts, since nothing on main bumps it. /docs/dev/ tracks main, so that is
-  // the honest target for both shells in dev mode.
+  // drifts, since nothing on main bumps it. /docs/main/ is rebuilt on every
+  // push to main, so it is both the honest target for both shells in dev mode
+  // and the closest published docs to the tree you are editing. (/docs/dev/
+  // would be up to a nightly cycle behind it.)
   //
   // Compared strictly against `true`: Vite replaces DEV with a real boolean
   // (`true` in dev, `false` in a production build), but `bun test` puts the
   // STRING "true" there, which would otherwise short-circuit every test of the
   // branches below.
-  if (import.meta.env?.DEV === true) return "dev";
+  if (import.meta.env?.DEV === true) return "main";
 
   if (isTauri) {
     const { updateChannel, updateChannelExplicitlySet } = useAppStore.getState();

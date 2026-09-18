@@ -38,8 +38,9 @@ describe("getDocsUrl on the web (follows the channel path it is served under)", 
       ["/", "https://app.sleap.ai/docs/stable/"],
       ["/latest/", "https://app.sleap.ai/docs/latest/"],
       ["/dev/", "https://app.sleap.ai/docs/dev/"],
-      // No /docs/main/ exists; /docs/dev/ IS main's docs.
-      ["/main/", "https://app.sleap.ai/docs/dev/"],
+      // Its own folder, not /docs/dev/: /main/ rebuilds per commit while
+      // /dev/ moves only with the nightly desktop dev build.
+      ["/main/", "https://app.sleap.ai/docs/main/"],
       // Permanent stable tag: pinned docs of the same name.
       ["/v0.1.1/", "https://app.sleap.ai/docs/v0.1.1/"],
       // Permanent PRE-release tag: no pinned docs folder, shares the pointer.

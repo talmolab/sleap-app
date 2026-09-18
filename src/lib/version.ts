@@ -66,7 +66,13 @@ export const DOCS_BASE_URL = "https://app.sleap.ai/docs";
  */
 export type DocsChannel = "stable" | "latest" | "dev";
 
-/** A docs folder name: a moving pointer, or a permanent `v<tag>` folder. */
+/**
+ * A docs folder name: a moving pointer, or a permanent `v<tag>` folder.
+ *
+ * Wider than {@link DocsChannel} on purpose -- `main` is a docs folder (the
+ * web /main/ path reads it) but not an update channel, so it must stay out of
+ * DocsChannel, which the desktop maps onto identically.
+ */
 export type DocsVersion = DocsChannel | (string & {});
 
 /** URL of a published docs folder. */
@@ -78,13 +84,17 @@ export function docsUrlFor(version: DocsVersion): string {
  * Docs version for a WEB build, from the channel path it is served under
  * (Vite's BASE_URL, which deploy.yml sets per target as VITE_BASE_PATH).
  *
- * The app channel you are standing in decides the docs you get, so
- * app.sleap.ai/latest links to /docs/latest/ and app.sleap.ai/dev to
- * /docs/dev/. Two paths do not map to a like-named docs folder:
+ * The app channel you are standing in decides the docs you get, and every
+ * channel has a like-named docs folder written by the same deploy run that
+ * built the app you are looking at: /latest/ -> /docs/latest/, /dev/ ->
+ * /docs/dev/, /main/ -> /docs/main/, root -> /docs/stable/. /main/ and /dev/
+ * are separate folders precisely because they move on different cadences --
+ * /main/ per commit, /dev/ with the nightly desktop dev build -- so sharing
+ * one would force whichever of them it tracked to lag the other.
  *
- *   /main/   -> dev     there is no /docs/main/; /docs/dev/ IS main's docs,
- *                       rebuilt on the same push that rebuilds /main/.
- *   /v<pre>/ -> latest   pre-release tags get no permanent docs folder (they
+ * One path does NOT map to a like-named folder:
+ *
+ *   /v<pre>/ -> latest  pre-release tags get no permanent docs folder (they
  *                       carry the -N rebuild suffix), so they share /docs/latest/.
  *
  * A permanent stable tag path keeps its own pinned docs, which is the one case
@@ -93,7 +103,8 @@ export function docsUrlFor(version: DocsVersion): string {
 export function docsVersionForBasePath(basePath: string): DocsVersion {
   const segment = basePath.replace(/^\/+/, "").replace(/\/+$/, "");
   if (segment === "" || segment === "stable") return "stable";
-  if (segment === "main" || segment === "dev") return "dev";
+  if (segment === "main") return "main";
+  if (segment === "dev") return "dev";
   if (segment === "latest") return "latest";
   // Permanent per-release path. Plain tags have a docs folder of the same
   // name; a -N suffix marks a pre-release, which does not.

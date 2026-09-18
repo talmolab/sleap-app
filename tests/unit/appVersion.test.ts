@@ -77,13 +77,16 @@ describe("docsVersionForBasePath (web: the channel path you are standing in)", (
   it("maps each app channel path to the like-named docs pointer", () => {
     expect(docsVersionForBasePath("/latest/")).toBe("latest");
     expect(docsVersionForBasePath("/dev/")).toBe("dev");
+    expect(docsVersionForBasePath("/main/")).toBe("main");
     expect(docsVersionForBasePath("/")).toBe("stable");
   });
 
-  it("sends /main/ to /docs/dev/, which IS main's docs", () => {
-    // There is no /docs/main/: deploy.yml rebuilds /docs/dev/ on the same push
-    // to main that rebuilds the app's /main/ path.
-    expect(docsVersionForBasePath("/main/")).toBe("dev");
+  it("keeps /main/ and /dev/ on separate docs folders", () => {
+    // Both document `main`, but on different cadences -- deploy.yml writes
+    // /docs/main/ on every push and /docs/dev/ only with the nightly desktop
+    // dev build -- so sharing one folder would make it lag one of the two.
+    expect(docsVersionForBasePath("/main/")).toBe("main");
+    expect(docsVersionForBasePath("/dev/")).toBe("dev");
   });
 
   it("pins a permanent stable release path to its own docs folder", () => {
