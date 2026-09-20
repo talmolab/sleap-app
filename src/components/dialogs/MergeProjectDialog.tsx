@@ -183,12 +183,21 @@ export function MergeProjectDialog() {
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex items-center gap-2 py-1">
-          <Button variant="outline" size="sm" onClick={pickAndPreview} disabled={busy !== null}>
+        <div className="flex min-w-0 items-center gap-2 py-1">
+          <Button
+            variant="outline"
+            size="sm"
+            className="shrink-0"
+            onClick={pickAndPreview}
+            disabled={busy !== null}
+          >
             {donorName ? "Choose a different file…" : "Choose .slp…"}
           </Button>
           {donorName && (
-            <span className="truncate text-sm text-muted-foreground" title={donorName}>
+            <span
+              className="min-w-0 flex-1 truncate text-sm text-muted-foreground"
+              title={donorName}
+            >
               {donorName}
             </span>
           )}
@@ -203,7 +212,7 @@ export function MergeProjectDialog() {
         {preview && (
           <>
             <Separator />
-            <div className="space-y-1 text-sm">
+            <div className="min-w-0 space-y-1 text-sm">
               <div className="font-medium text-muted-foreground">
                 Preview (nothing changed yet)
               </div>
@@ -302,7 +311,7 @@ function PreviewRow({
       <span className="w-20 shrink-0 text-muted-foreground">{label}</span>
       <span className={warn ? "text-red-600 dark:text-red-400" : undefined}>{text}</span>
       {detail && (
-        <span className="truncate text-xs text-muted-foreground" title={detail}>
+        <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={detail}>
           {detail}
         </span>
       )}
