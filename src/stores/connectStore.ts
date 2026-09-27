@@ -64,16 +64,38 @@ export interface PairingTicket {
   expires_at?: string;
 }
 
+/**
+ * The most recent job this device submitted to a specific worker — the
+ * `(node_id, job_id)` pair spec §3.4 says the app persists for reattach.
+ * Only one is tracked at a time (this UI only ever talks to one worker),
+ * but it's tagged with `workerId` so reconnecting to a *different* paired
+ * worker never mistakenly checks its status against the wrong one.
+ */
+export interface TrackedJob {
+  workerId: string;
+  jobId: string;
+}
+
+/** A job found still active on a worker from a previous session (spec §3.4). */
+export interface ReattachableJob {
+  jobId: string;
+  state: string;
+}
+
+const TERMINAL_JOB_STATES = new Set(["completed", "failed", "canceled"]);
+
 interface ConnectState {
   // ── Persisted ──────────────────────────────────────────────────
   pairedWorkers: PairedWorker[];
   selectedWorkerId: string | null;
-  currentJobId: string | null;
+  currentJob: TrackedJob | null;
 
   // ── Runtime (not persisted) ─────────────────────────────────────
   connectionStatus: ConnectionStatus;
   connectionError: string | null;
   workerMounts: Mount[];
+  /** Set once per connect if `currentJob` belongs to the worker just connected to. */
+  reattachableJob: ReattachableJob | null;
   _client: WorkerClient | null;
 
   // ── Actions ──────────────────────────────────────────────────────
@@ -121,6 +143,27 @@ async function makeClient(url: string): Promise<WorkerClient> {
 }
 
 /**
+ * If `trackedJob` belongs to `workerId` (the worker we just connected to)
+ * and is still active there, returns it as a `ReattachableJob`; otherwise
+ * `null` (nothing to reattach to — wrong worker, already finished, or the
+ * worker no longer recognizes the job at all).
+ */
+async function checkReattach(
+  client: WorkerClient,
+  workerId: string,
+  trackedJob: TrackedJob | null,
+): Promise<ReattachableJob | null> {
+  if (!trackedJob || trackedJob.workerId !== workerId) return null;
+  try {
+    const status = await client.jobsStatus(trackedJob.jobId);
+    if (TERMINAL_JOB_STATES.has(status.state)) return null;
+    return { jobId: trackedJob.jobId, state: status.state };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Submits one job and resolves once it reaches a terminal state, forwarding
  * `job.log` lines to `onProgress` as they arrive. `since_seq: 0` (full
  * history) is safe here since this always subscribes right after submitting
@@ -128,12 +171,13 @@ async function makeClient(url: string): Promise<WorkerClient> {
  */
 async function submitSingleJob(
   client: WorkerClient,
+  workerId: string,
   spec: JobSpec,
   onProgress: (line: string, isCarriageReturn?: boolean) => void,
   set: (partial: Partial<ConnectState>) => void,
 ): Promise<JobResult> {
   const { jobId } = await client.jobsSubmit(spec as unknown as Record<string, unknown>);
-  set({ currentJobId: jobId });
+  set({ currentJob: { workerId, jobId } });
 
   return new Promise<JobResult>((resolve, reject) => {
     let unsubscribe: (() => void) | null = null;
@@ -181,11 +225,12 @@ export const useConnectStore = create<ConnectState>()(
     (set, get) => ({
       pairedWorkers: [],
       selectedWorkerId: null,
-      currentJobId: null,
+      currentJob: null,
 
       connectionStatus: "disconnected",
       connectionError: null,
       workerMounts: [],
+      reattachableJob: null,
       _client: null,
 
       pairWithTicket: async (ticketJson, addrOverride) => {
@@ -208,11 +253,13 @@ export const useConnectStore = create<ConnectState>()(
         get()._client?.close();
         set({ connectionStatus: "connecting", connectionError: null });
 
+        let client: WorkerClient | null = null;
         try {
-          const client = await makeClient(addr);
+          client = await makeClient(addr);
           await client.connect();
           await client.pairClaim(ticket.secret);
           const mounts = await client.fsMounts();
+          const reattachableJob = await checkReattach(client, ticket.node_id, get().currentJob);
 
           const paired: PairedWorker = {
             nodeId: ticket.node_id,
@@ -227,10 +274,14 @@ export const useConnectStore = create<ConnectState>()(
             connectionStatus: "connected",
             connectionError: null,
             workerMounts: mounts,
-            currentJobId: null,
+            reattachableJob,
             _client: client,
           }));
         } catch (err) {
+          // client.connect() may have already opened a real socket even
+          // though a later step (pairClaim/fsMounts) failed — close it so
+          // it isn't leaked, unreachable from store state but still live.
+          client?.close();
           set({
             connectionStatus: "error",
             connectionError: err instanceof Error ? err.message : String(err),
@@ -253,20 +304,24 @@ export const useConnectStore = create<ConnectState>()(
         get()._client?.close();
         set({ selectedWorkerId: nodeId, connectionStatus: "connecting", connectionError: null });
 
+        let client: WorkerClient | null = null;
         try {
-          const client = await makeClient(addr);
+          client = await makeClient(addr);
           await client.connect();
           await client.authProve();
           const mounts = await client.fsMounts();
+          const reattachableJob = await checkReattach(client, nodeId, get().currentJob);
 
           set({
             connectionStatus: "connected",
             connectionError: null,
             workerMounts: mounts,
-            currentJobId: null,
+            reattachableJob,
             _client: client,
           });
         } catch (err) {
+          // See the matching comment in pairWithTicket — same leak risk.
+          client?.close();
           set({
             connectionStatus: "error",
             connectionError: err instanceof Error ? err.message : String(err),
@@ -290,7 +345,7 @@ export const useConnectStore = create<ConnectState>()(
           connectionStatus: "disconnected",
           connectionError: null,
           workerMounts: [],
-          currentJobId: null,
+          reattachableJob: null,
           _client: null,
         });
       },
@@ -302,6 +357,7 @@ export const useConnectStore = create<ConnectState>()(
         set((state) => ({
           pairedWorkers: state.pairedWorkers.filter((w) => w.nodeId !== nodeId),
           selectedWorkerId: state.selectedWorkerId === nodeId ? null : state.selectedWorkerId,
+          currentJob: state.currentJob?.workerId === nodeId ? null : state.currentJob,
         }));
       },
 
@@ -330,8 +386,8 @@ export const useConnectStore = create<ConnectState>()(
       },
 
       submitJob: async (spec, onProgress, options) => {
-        const { _client } = get();
-        if (!_client || !_client.authenticated) {
+        const { _client, selectedWorkerId } = get();
+        if (!_client || !_client.authenticated || !selectedWorkerId) {
           throw new Error("Not connected to a worker");
         }
 
@@ -345,7 +401,13 @@ export const useConnectStore = create<ConnectState>()(
               config_contents: [spec.config_contents[i]],
               model_types: modelTypes[i] ? [modelTypes[i]] : [],
             };
-            finalResult = await submitSingleJob(_client, perModelSpec, onProgress, set);
+            finalResult = await submitSingleJob(
+              _client,
+              selectedWorkerId,
+              perModelSpec,
+              onProgress,
+              set,
+            );
             if (!finalResult.success) return finalResult;
             // Only intermediate models fire onModelComplete — matching the
             // old JOB_COMPLETE-per-model semantics, the LAST model's
@@ -355,25 +417,27 @@ export const useConnectStore = create<ConnectState>()(
           return finalResult;
         }
 
-        return submitSingleJob(_client, spec, onProgress, set);
+        return submitSingleJob(_client, selectedWorkerId, spec, onProgress, set);
       },
 
       cancelJob: () => {
-        const { _client, currentJobId } = get();
-        if (_client && currentJobId) {
+        const { _client, currentJob } = get();
+        if (_client && currentJob) {
           _client
-            .jobsCancel(currentJobId, "cancel")
+            .jobsCancel(currentJob.jobId, "cancel")
             .catch((err: unknown) => console.warn("[connect] jobsCancel failed:", err));
         }
+        set({ reattachableJob: null });
       },
 
       stopJob: () => {
-        const { _client, currentJobId } = get();
-        if (_client && currentJobId) {
+        const { _client, currentJob } = get();
+        if (_client && currentJob) {
           _client
-            .jobsCancel(currentJobId, "stop")
+            .jobsCancel(currentJob.jobId, "stop")
             .catch((err: unknown) => console.warn("[connect] jobsCancel(stop) failed:", err));
         }
+        set({ reattachableJob: null });
       },
     }),
     {
@@ -381,7 +445,7 @@ export const useConnectStore = create<ConnectState>()(
       partialize: (state) => ({
         pairedWorkers: state.pairedWorkers,
         selectedWorkerId: state.selectedWorkerId,
-        currentJobId: state.currentJobId,
+        currentJob: state.currentJob,
       }),
     },
   ),

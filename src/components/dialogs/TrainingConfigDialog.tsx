@@ -21,7 +21,7 @@ import { Search, HelpCircle, RefreshCw, Check, RotateCcw } from "lucide-react";
 import type { ConfigFile, ConfigHyperparams, Backbone, ModelType, DataPipeline, ColorMode } from "@/stores/trainingStore";
 import { getSlotLabel, getConfigSlots, useTrainingStore } from "@/stores/trainingStore";
 import { checkWandbAuth, detectGpu, type WandbAuth } from "@/platform/backend";
-import { useConnectStore } from "@/stores/connectStore";
+import { BackendPicker } from "@/components/common/BackendPicker";
 import { useAppStore } from "@/stores/appStore";
 import { ModelStatsPreview } from "@/components/dialogs/ModelStatsPreview";
 import { getBaselineProfilesForHead, getRecommendedProfileForHead, slotToHeadType } from "@/lib/trainingProfiles";
@@ -173,7 +173,6 @@ const PIPELINE_FIELD_DEFS = {
   exportFormat: { id: "field-export-format", label: "Export Model", hint: "Convert the trained model to a portable runtime after training completes, for faster inference. ONNX runs everywhere; TensorRT is NVIDIA-only (CUDA). The sleap-nn [export] support is installed automatically before training if you pick a format.", keywords: "export onnx tensorrt model convert runtime" },
   useExportedForInference: { id: "field-use-exported-inference", label: "Use exported for inference", hint: "Run the post-training inference on the exported model instead of the PyTorch checkpoint. Falls back to the checkpoint automatically if the exported model fails to load or run.", keywords: "export onnx tensorrt inference runtime fallback" },
   secRemote: { id: "pipeline-remote", label: "Remote Training" },
-  remoteEnable: { id: "field-remoteenable", label: "Enable Remote Training", hint: "Send training jobs to a remote worker via sleap-connect instead of running locally.", keywords: "remote worker sleap-connect" },
 } satisfies Record<string, SearchField>;
 
 const HEAD_FIELD_DEFS = {
@@ -1198,12 +1197,6 @@ export function TrainingConfigDialog({
     return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
   });
 
-  // Connect store for remote training section
-  const connectionStatus = useConnectStore((s) => s.connectionStatus);
-  const pairedWorkers = useConnectStore((s) => s.pairedWorkers);
-  const selectedWorkerId = useConnectStore((s) => s.selectedWorkerId);
-  const selectWorker = useConnectStore((s) => s.selectWorker);
-
   const scrollTo = useCallback((id: string) => {
     const activeRef = activeTab === "pipeline"
       ? pipelineScrollRef.current
@@ -1928,51 +1921,12 @@ export function TrainingConfigDialog({
 
                 {/* 8. Remote Training */}
                 <SectionHeading {...PIPELINE_FIELD_DEFS.secRemote} />
-                <div className="space-y-3">
-                  <Toggle {...PIPELINE_FIELD_DEFS.remoteEnable} checked={remoteEnabled} onChange={onRemoteEnabledChange} />
-                  {remoteEnabled && pairedWorkers.length === 0 && (
-                    <div className="bg-orange-500/10 border border-orange-500/30 rounded-md px-3 py-2 text-sm text-orange-400">
-                      No paired workers. Go to the Connect tab to pair with one before enabling remote training.
-                    </div>
-                  )}
-                  {remoteEnabled && pairedWorkers.length > 0 && (
-                    <>
-                      <div className="flex items-center gap-2">
-                        <span
-                          className={`w-1.5 h-1.5 rounded-full ${
-                            connectionStatus === "connected" ? "bg-green-500" : "bg-zinc-500"
-                          }`}
-                        />
-                        <span
-                          className={`text-sm ${
-                            connectionStatus === "connected" ? "text-green-400" : "text-muted-foreground"
-                          }`}
-                        >
-                          {connectionStatus === "connected"
-                            ? "Connected"
-                            : connectionStatus === "connecting"
-                              ? "Connecting…"
-                              : connectionStatus === "error"
-                                ? "Connection failed"
-                                : "Not connected"}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm text-muted-foreground flex items-center gap-1.5">
-                          Worker:
-                          <HintBubble text="Which paired sleap-connect worker will run this training job. Selecting one connects to it." />
-                        </span>
-                        <Select value={selectedWorkerId || ""} onValueChange={selectWorker}>
-                          <SelectTrigger className="h-8 text-sm w-64"><SelectValue placeholder="Select a worker" /></SelectTrigger>
-                          <SelectContent>
-                            {pairedWorkers.map((w) => (
-                              <SelectItem key={w.nodeId} value={w.nodeId}>{w.label}</SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                    </>
-                  )}
+                <div className="max-w-64">
+                  <BackendPicker
+                    jobLabel="training job"
+                    remoteEnabled={remoteEnabled}
+                    onRemoteEnabledChange={onRemoteEnabledChange}
+                  />
                 </div>
               </div>
             </TabsContent>
