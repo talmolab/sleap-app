@@ -1,986 +1,387 @@
+/**
+ * Connection to a sleap-connect worker (protocol v1, pairing model).
+ *
+ * Replaces the old room/WebRTC/GitHub-OAuth model — see
+ * docs/plans/2026-09-26-sleap-connect-protocol-v1-spec.md §3. There is no
+ * signaling server and no account: the app persists a small list of workers
+ * it has paired with (keyed by `node_id`, Syncthing/Plex-style), and talks
+ * to at most one of them at a time via `WorkerClient` (src/lib/protocolV1).
+ *
+ * **Known interim gaps** (both already accepted/deferred at the worker
+ * side — see talmolab/sleap-connect PRs #84-#88 — not new limitations
+ * introduced here):
+ * - The worker doesn't wire `job.metric` (structured epoch/loss ZMQ events)
+ *   yet — only raw `job.log` lines. Anything relying on the old
+ *   `__PROGRESS_REPORT__` sentinel (wandb URL, epoch/loss charts) only
+ *   works for remote jobs to the extent it can be scraped back out of raw
+ *   log text (same regex/JSON fallbacks `trainingStore.ts`'s `onProgress`
+ *   already has for local jobs). Also, `job.log` can't distinguish a `\r`
+ *   (tqdm in-place update) from a `\n` (a new line) the way the old
+ *   `CR::`-tagged messages could — every `job.log` line is forwarded as a
+ *   normal appended line here.
+ * - The worker's `CommandBuilder.build_command` only ever runs
+ *   `config_contents[0]` — it doesn't support a multi-model pipeline
+ *   (top-down centroid + centered-instance) as a single job. This store
+ *   reproduces the old one-`JOB_COMPLETE`-per-model UX by submitting one
+ *   job per model sequentially instead (see `submitJob`/`submitSingleJob`).
+ * - `job.result` only ever carries `{ blobs: {} }` — the worker doesn't
+ *   implement `blobs.*` yet (that's stage 1.10). A submitted job's
+ *   `JobResult.outputPath` is therefore always `undefined` for now; there
+ *   is no way yet to fetch a remote job's output/predictions back to this
+ *   client. Submission, live log, and cancel/stop all work today.
+ */
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import type {
-  WorkerInfo,
-  Credentials,
-  FileEntry,
-  JobSpec,
-  JobResult,
-} from "@/lib/sleapConnect";
-import {
-  buildMessage,
-  parseMessage,
-  generateJobId,
-  MSG_JOB_SUBMIT,
-  MSG_JOB_CANCEL,
-  MSG_JOB_STOP,
-  MSG_JOB_LOG,
-  MSG_CONTROL_COMMAND,
-  MSG_JOB_ACCEPTED,
-  MSG_JOB_REJECTED,
-  MSG_JOB_PROGRESS,
-  MSG_JOB_COMPLETE,
-  MSG_JOB_FAILED,
-  MSG_AUTH_CHALLENGE,
-  MSG_AUTH_RESPONSE,
-  MSG_AUTH_SUCCESS,
-  MSG_AUTH_FAILURE,
-  MSG_FS_GET_MOUNTS,
-  MSG_FS_MOUNTS_RESPONSE,
-  MSG_FS_LIST_DIR,
-  MSG_FS_LIST_RESPONSE,
-  MSG_FS_ERROR,
-  MSG_SEPARATOR,
-} from "@/lib/sleapConnect";
+import type { FileEntry, JobResult, JobSpec, TrainJobSpec } from "@/lib/sleapConnect";
+import { APP_VERSION } from "@/lib/version";
 import { isTauri } from "@/platform/index";
-import type { Transport } from "@/lib/transport";
-import { WebRTCTransport, RelayTransport } from "@/lib/transport";
+import type { AgentInfo } from "@/lib/protocolV1/envelope";
+import type { Mount, WorkerClient, WorkerEvent } from "@/lib/protocolV1/client";
 
-// ── Signaling server config ──────────────────────────────────────
-const SIGNALING_WS =
-  import.meta.env?.VITE_SIGNALING_WS || "wss://signaling.sleap.ai/ws";
-
-const SIGNALING_HTTP =
-  import.meta.env?.VITE_SIGNALING_HTTP || "https://signaling.sleap.ai";
+const AGENT_INFO: AgentInfo = {
+  name: "sleap-app",
+  version: APP_VERSION,
+  platform: isTauri ? "tauri" : "web",
+};
 
 // ── Types ─────────────────────────────────────────────────────────
 
-export type ConnectionStatus =
-  | "disconnected"
-  | "connecting"
-  | "connected"
-  | "error";
+export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "error";
 
-export interface RoomInfo {
-  roomId: string;
-  name: string | null;
-  role: string;
-  workerCount?: number;
+/** A worker this device has paired with — persisted, Syncthing/Plex-style. */
+export interface PairedWorker {
+  nodeId: string;
+  label: string;
+  addrs: string[];
+  pairedAt: string;
 }
 
-interface PendingFsRequest {
-  resolve: (result: { entries: FileEntry[]; hasMore: boolean }) => void;
-  reject: (err: Error) => void;
-}
-
-interface PendingJobCallbacks {
-  onProgress: (line: string, isCarriageReturn?: boolean) => void;
-  onComplete: (result: JobResult) => void;
-  onModelComplete?: (result: JobResult) => void; // per-model completion for multi-model pipelines
-  remainingCompletions: number; // resolve only when this reaches 0
+/** The JSON a worker's `sleap-rtc pair` command prints (spec §3.2). */
+export interface PairingTicket {
+  node_id: string;
+  addrs: string[];
+  secret: string;
+  expires_at?: string;
 }
 
 interface ConnectState {
-  // Auth
-  credentials: Credentials | null;
+  // ── Persisted ──────────────────────────────────────────────────
+  pairedWorkers: PairedWorker[];
+  selectedWorkerId: string | null;
+  currentJobId: string | null;
 
-  // Connection
+  // ── Runtime (not persisted) ─────────────────────────────────────
   connectionStatus: ConnectionStatus;
   connectionError: string | null;
-  roomId: string | null;
-  availableRooms: RoomInfo[];
+  workerMounts: Mount[];
+  _client: WorkerClient | null;
 
-  // Workers
-  workers: WorkerInfo[];
-  selectedWorkerId: string | null;
-
-  // Transport
-  transportMode: "direct" | "relay" | null;
-
-  // Internal (not persisted)
-  _ws: WebSocket | null;
-  _pc: RTCPeerConnection | null;
-  _transport: Transport | null;
-  _connectGeneration: number;
-  _iceServers: RTCIceServer[];
-  _pendingFs: Map<string, PendingFsRequest>;
-  _pendingJobs: Map<string, PendingJobCallbacks>;
-
-  // Actions
-  setCredentials: (creds: Credentials | null) => void;
-  connect: (roomId: string) => Promise<void>;
+  // ── Actions ──────────────────────────────────────────────────────
+  /** Claim a fresh pairing ticket (JSON from `sleap-rtc pair`) and connect. */
+  pairWithTicket: (ticketJson: string, addrOverride?: string) => Promise<void>;
+  /** Reconnect to an already-paired worker by node_id. */
+  connectToWorker: (nodeId: string) => Promise<void>;
+  /** Select (and connect to) a paired worker, or `null` to disconnect. */
+  selectWorker: (nodeId: string | null) => Promise<void>;
   disconnect: () => void;
-  selectWorker: (workerId: string | null) => void;
-  connectToWorker: (workerId: string) => Promise<void>;
+  forgetWorker: (nodeId: string) => void;
   browseRemoteDir: (path: string) => Promise<FileEntry[]>;
   submitJob: (
     spec: JobSpec,
     onProgress: (line: string, isCarriageReturn?: boolean) => void,
-    options?: { expectedCompletions?: number; onModelComplete?: (result: JobResult) => void },
+    options?: { onModelComplete?: (result: JobResult) => void },
   ) => Promise<JobResult>;
-  cancelJob: (jobId: string) => void;
+  /** Hard-cancel the current job. */
+  cancelJob: () => void;
+  /** Gracefully early-stop the current job (checkpoint + finish). */
   stopJob: () => void;
-  sendControlCommand: (command: string) => void;
-  loadCredentialsFromDisk: () => Promise<void>;
-  fetchRooms: () => Promise<void>;
-
-  // Internal handlers
-  _handleSignalingMessage: (msg: Record<string, unknown>) => void;
-  _handleDataChannelMessage: (data: string) => void;
 }
+
+// ── Helpers ───────────────────────────────────────────────────────
+
+function upsertWorker(existing: PairedWorker[], next: PairedWorker): PairedWorker[] {
+  return [...existing.filter((w) => w.nodeId !== next.nodeId), next];
+}
+
+function isMultiModelTrainSpec(
+  spec: JobSpec,
+): spec is TrainJobSpec & { config_contents: string[] } {
+  return (
+    spec.type === "train" &&
+    Array.isArray(spec.config_contents) &&
+    spec.config_contents.length > 1
+  );
+}
+
+async function makeClient(url: string): Promise<WorkerClient> {
+  const { getClientIdentity } = await import("@/lib/protocolV1/identity");
+  const { WorkerClient: WorkerClientCtor } = await import("@/lib/protocolV1/client");
+  const identity = await getClientIdentity();
+  return new WorkerClientCtor({ url, identity, agent: AGENT_INFO });
+}
+
+/**
+ * Submits one job and resolves once it reaches a terminal state, forwarding
+ * `job.log` lines to `onProgress` as they arrive. `since_seq: 0` (full
+ * history) is safe here since this always subscribes right after submitting
+ * a brand-new job — there's no backlog to miss.
+ */
+async function submitSingleJob(
+  client: WorkerClient,
+  spec: JobSpec,
+  onProgress: (line: string, isCarriageReturn?: boolean) => void,
+  set: (partial: Partial<ConnectState>) => void,
+): Promise<JobResult> {
+  const { jobId } = await client.jobsSubmit(spec as unknown as Record<string, unknown>);
+  set({ currentJobId: jobId });
+
+  return new Promise<JobResult>((resolve, reject) => {
+    let unsubscribe: (() => void) | null = null;
+    let settled = false;
+
+    const finish = (result: JobResult) => {
+      if (settled) return;
+      settled = true;
+      unsubscribe?.();
+      resolve(result);
+    };
+
+    const handleEvent = (event: WorkerEvent) => {
+      if (event.topic === "job.log") {
+        onProgress((event.data.line as string) ?? "", false);
+      } else if (event.topic === "job.status") {
+        const state = event.data.state as string;
+        if (state === "completed") {
+          finish({ jobId, success: true });
+        } else if (state === "failed" || state === "canceled") {
+          finish({ jobId, success: false, error: (event.data.detail as string) ?? `Job ${state}` });
+        }
+      }
+    };
+
+    client
+      .jobsSubscribe(jobId, 0, handleEvent)
+      .then((unsub) => {
+        if (settled) unsub();
+        else unsubscribe = unsub;
+      })
+      .catch((err: unknown) => {
+        if (!settled) {
+          settled = true;
+          reject(err instanceof Error ? err : new Error(String(err)));
+        }
+      });
+  });
+}
+
+// ── Store ─────────────────────────────────────────────────────────
 
 export const useConnectStore = create<ConnectState>()(
   persist(
     (set, get) => ({
-      // ── Initial state ────────────────────────────────────────
-      credentials: null,
+      pairedWorkers: [],
+      selectedWorkerId: null,
+      currentJobId: null,
+
       connectionStatus: "disconnected",
       connectionError: null,
-      roomId: null,
-      availableRooms: [],
-      workers: [],
-      selectedWorkerId: null,
-      transportMode: null,
-      _ws: null,
-      _pc: null,
-      _transport: null,
-      _connectGeneration: 0,
-      _iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
-      _pendingFs: new Map(),
-      _pendingJobs: new Map(),
+      workerMounts: [],
+      _client: null,
 
-      // ── Auth ─────────────────────────────────────────────────
-      setCredentials: (creds) => set({ credentials: creds }),
-
-      loadCredentialsFromDisk: async () => {
-        if (!isTauri) return;
+      pairWithTicket: async (ticketJson, addrOverride) => {
+        let ticket: PairingTicket;
         try {
-          const { readTextFile, exists } = await import(
-            "@tauri-apps/plugin-fs"
-          );
-          const { homeDir } = await import("@tauri-apps/api/path");
-          const home = await homeDir();
-          const credPath = `${home}/.sleap-rtc/credentials.json`;
-          const fileExists = await exists(credPath);
-          if (!fileExists) return;
-          const text = await readTextFile(credPath);
-          const data = JSON.parse(text);
-          if (data.jwt && data.user?.username) {
-            set({
-              credentials: {
-                jwt: data.jwt,
-                username: data.user.username,
-                avatarUrl: data.user.avatar_url,
-                defaultRoom: data.default_room,
-                accountKey: data.account_key,
-                privateKey: data.private_key,
-              },
-            });
-
-            if (data.private_key) {
-              try {
-                const { importPrivateKey, storeSigningKey } = await import("@/lib/auth");
-                const cryptoKey = await importPrivateKey(data.private_key);
-                await storeSigningKey(cryptoKey);
-                console.log("[connect] Private key imported into IndexedDB");
-              } catch (err) {
-                console.warn("[connect] Failed to import private key:", err);
-              }
-            }
-          }
-        } catch (err) {
-          console.warn("[connect] Failed to load credentials:", err);
+          ticket = JSON.parse(ticketJson);
+        } catch {
+          throw new Error("That doesn't look like a valid pairing ticket (invalid JSON).");
         }
-      },
+        if (!ticket.node_id || !ticket.secret) {
+          throw new Error("Pairing ticket is missing node_id or secret.");
+        }
+        const addr = addrOverride || ticket.addrs?.[0];
+        if (!addr) {
+          throw new Error(
+            "This ticket has no worker address — enter one (e.g. ws://192.168.1.42:9631).",
+          );
+        }
 
-      fetchRooms: async () => {
-        const { credentials } = get();
-        if (!credentials) return;
+        get()._client?.close();
+        set({ connectionStatus: "connecting", connectionError: null });
+
         try {
-          const res = await fetch(`${SIGNALING_HTTP}/api/auth/rooms`, {
-            headers: { Authorization: `Bearer ${credentials.jwt}` },
-          });
-          if (!res.ok) {
-            console.warn("[connect] Failed to fetch rooms:", res.status);
-            return;
-          }
-          const data = await res.json();
-          const now = Date.now() / 1000;
-          const activeRooms = (data.rooms as Array<Record<string, unknown>>).filter((r) => {
-            const expiresAt = r.expires_at as number | null;
-            return !expiresAt || expiresAt > now;
-          });
-          const rooms: RoomInfo[] = await Promise.all(
-            activeRooms.map(async (r) => {
-              const roomId = r.room_id as string;
-              // Fetch worker count for each room
-              let workerCount = 0;
-              try {
-                const wRes = await fetch(
-                  `${SIGNALING_HTTP}/api/rooms/${roomId}/workers`,
-                  { headers: { Authorization: `Bearer ${credentials.jwt}` } },
-                );
-                if (wRes.ok) {
-                  const wData = await wRes.json();
-                  workerCount = wData.count ?? 0;
-                }
-              } catch {
-                // Worker count fetch failed — non-critical
-              }
-              return {
-                roomId,
-                name: (r.name as string) || null,
-                role: r.role as string,
-                workerCount,
-              };
-            }),
-          );
-          set({ availableRooms: rooms });
-        } catch (err) {
-          console.warn("[connect] Failed to fetch rooms:", err);
-        }
-      },
+          const client = await makeClient(addr);
+          await client.connect();
+          await client.pairClaim(ticket.secret);
+          const mounts = await client.fsMounts();
 
-      // ── Connection ───────────────────────────────────────────
-      connect: async (roomId: string) => {
-        const { credentials } = get();
-        if (!credentials) {
+          const paired: PairedWorker = {
+            nodeId: ticket.node_id,
+            label: `Worker ${ticket.node_id.slice(0, 8)}`,
+            addrs: [addr, ...(ticket.addrs ?? []).filter((a) => a !== addr)],
+            pairedAt: new Date().toISOString(),
+          };
+
+          set((state) => ({
+            pairedWorkers: upsertWorker(state.pairedWorkers, paired),
+            selectedWorkerId: paired.nodeId,
+            connectionStatus: "connected",
+            connectionError: null,
+            workerMounts: mounts,
+            currentJobId: null,
+            _client: client,
+          }));
+        } catch (err) {
           set({
             connectionStatus: "error",
-            connectionError: "Not logged in",
+            connectionError: err instanceof Error ? err.message : String(err),
+            _client: null,
           });
+          throw err;
+        }
+      },
+
+      connectToWorker: async (nodeId) => {
+        const worker = get().pairedWorkers.find((w) => w.nodeId === nodeId);
+        if (!worker) {
+          throw new Error("Unknown worker — pair with it first.");
+        }
+        const addr = worker.addrs[0];
+        if (!addr) {
+          throw new Error(`No known address for ${worker.label}.`);
+        }
+
+        get()._client?.close();
+        set({ selectedWorkerId: nodeId, connectionStatus: "connecting", connectionError: null });
+
+        try {
+          const client = await makeClient(addr);
+          await client.connect();
+          await client.authProve();
+          const mounts = await client.fsMounts();
+
+          set({
+            connectionStatus: "connected",
+            connectionError: null,
+            workerMounts: mounts,
+            currentJobId: null,
+            _client: client,
+          });
+        } catch (err) {
+          set({
+            connectionStatus: "error",
+            connectionError: err instanceof Error ? err.message : String(err),
+            _client: null,
+          });
+          throw err;
+        }
+      },
+
+      selectWorker: async (nodeId) => {
+        if (nodeId === null) {
+          get().disconnect();
           return;
         }
-
-        set({ connectionStatus: "connecting", connectionError: null, roomId });
-
-        // ── Tauri: delegate to Rust backend ─────────────────────
-        if (isTauri) {
-          try {
-            const { rtcJoinRoom } = await import("@/platform/backend");
-            const rtcWorkers = await rtcJoinRoom(roomId);
-            const workers: WorkerInfo[] = rtcWorkers.map((w) => ({
-              peerId: w.peerId,
-              name: w.name,
-              status: w.status as WorkerInfo["status"],
-              gpu: w.gpu
-                ? {
-                    model: w.gpu.model,
-                    memoryMb: w.gpu.memoryMb,
-                    cudaVersion: w.gpu.cudaVersion,
-                  }
-                : undefined,
-              mounts: w.mounts,
-            }));
-            set({ connectionStatus: "connected", workers });
-            console.log("[connect] Joined room via Rust backend, workers:", workers.length);
-            return;
-          } catch (err) {
-            console.error("[connect] Rust rtc_join_room failed:", err);
-            set({
-              connectionStatus: "error",
-              connectionError: err instanceof Error ? err.message : String(err),
-            });
-            return;
-          }
-        }
-
-        try {
-          // Connect WebSocket to signaling server
-          const wsUrl = `${SIGNALING_WS}?token=${encodeURIComponent(credentials.jwt)}`;
-          const ws = new WebSocket(wsUrl);
-
-          ws.onopen = () => {
-            console.log("[connect] WebSocket connected");
-            // Register as client
-            ws.send(
-              JSON.stringify({
-                type: "register",
-                peer_id: credentials.username,
-                room_id: roomId,
-                role: "app",
-                jwt: credentials.jwt,
-                metadata: {
-                  tags: ["sleap-app"],
-                  properties: {
-                    platform: "sleap-app",
-                  },
-                },
-              }),
-            );
-          };
-
-          ws.onmessage = (event) => {
-            try {
-              const msg = JSON.parse(event.data);
-              get()._handleSignalingMessage(msg);
-            } catch {
-              console.warn("[connect] Non-JSON signaling message:", event.data);
-            }
-          };
-
-          ws.onerror = (err) => {
-            console.error("[connect] WebSocket error:", err);
-            set({
-              connectionStatus: "error",
-              connectionError: "WebSocket connection failed",
-            });
-          };
-
-          ws.onclose = () => {
-            console.log("[connect] WebSocket closed");
-            const { connectionStatus } = get();
-            if (connectionStatus !== "disconnected") {
-              set({
-                connectionStatus: "disconnected",
-                workers: [],
-                selectedWorkerId: null,
-              });
-            }
-          };
-
-          set({ _ws: ws });
-        } catch (err) {
-          set({
-            connectionStatus: "error",
-            connectionError:
-              err instanceof Error ? err.message : String(err),
-          });
-        }
+        await get().connectToWorker(nodeId);
       },
 
       disconnect: () => {
-        const { _ws, _pc, _transport, _connectGeneration } = get();
-        // Tauri: leave room via Rust backend
-        if (isTauri) {
-          import("@/platform/backend").then(({ rtcLeaveRoom }) => {
-            rtcLeaveRoom().catch(() => {});
-          });
-        }
-        if (_transport) _transport.close();
-        if (_pc) _pc.close();
-        if (_ws) _ws.close();
+        get()._client?.close();
         set({
           connectionStatus: "disconnected",
           connectionError: null,
-          roomId: null,
-          workers: [],
-          selectedWorkerId: null,
-          transportMode: null,
-          _ws: null,
-          _pc: null,
-          _transport: null,
-          _connectGeneration: _connectGeneration + 1, // invalidate pending timeouts
+          workerMounts: [],
+          currentJobId: null,
+          _client: null,
         });
       },
 
-      selectWorker: (workerId) => set({ selectedWorkerId: workerId }),
-
-      connectToWorker: async (workerId: string) => {
-        const { _ws, credentials, roomId, _connectGeneration } = get();
-        if (!credentials || !roomId) return;
-
-        // Increment generation to invalidate any previous connectToWorker attempt
-        const gen = _connectGeneration + 1;
-        set({ selectedWorkerId: workerId, _connectGeneration: gen });
-
-        // ── Tauri: use Rust WebRTC backend ─────────────────────
-        if (isTauri) {
-          try {
-            const { rtcConnectWorker } = await import("@/platform/backend");
-            const { RustTransport } = await import("@/lib/transport");
-            const transport = new RustTransport();
-            transport.onMessage((data) => get()._handleDataChannelMessage(data));
-
-            await rtcConnectWorker(workerId, (msg: string) => {
-              transport._dispatchMessage(msg);
-            });
-
-            transport._setReady();
-            transport.send("FS_GET_MOUNTS");
-            set({ _transport: transport, transportMode: "direct", connectionStatus: "connected" });
-            console.log(`[connect] Connected to ${workerId} via Rust WebRTC`);
-            return;
-          } catch (err) {
-            console.warn("[connect] Rust WebRTC failed, falling back to relay:", err);
-            // Fall through to existing WebRTC/relay logic below
-          }
+      forgetWorker: (nodeId) => {
+        if (get().selectedWorkerId === nodeId) {
+          get().disconnect();
         }
-
-        if (!_ws) return;
-
-        console.log("[connect] Attempting WebRTC connection to worker:", workerId);
-
-        // ── Helper to finalize connection with a transport ─────
-        let settled = false;
-        const finalize = (transport: Transport, mode: "direct" | "relay") => {
-          if (settled) return;
-          if (gen !== get()._connectGeneration) {
-            console.log("[connect] Stale connection attempt (gen mismatch), ignoring");
-            transport.close();
-            return;
-          }
-          settled = true;
-          transport.onMessage((data) => get()._handleDataChannelMessage(data));
-
-          // For relay mode, the signaling server doesn't forward fs_mounts_res
-          // to the relay. Use mounts from worker metadata (already in state
-          // from peer_list). For WebRTC, request mounts as before.
-          if (mode === "relay") {
-            const worker = get().workers.find((w) => w.peerId === workerId);
-            if (worker && worker.mounts.length > 0) {
-              console.log("[connect] Using mounts from worker metadata:", worker.mounts);
-            } else {
-              // Fallback: try FS_GET_MOUNTS via relay (may not get a response)
-              transport.send(MSG_FS_GET_MOUNTS);
-            }
-          } else {
-            transport.send(MSG_FS_GET_MOUNTS);
-          }
-
-          set({ _transport: transport, transportMode: mode, connectionStatus: "connected" });
-          console.log(`[connect] Connected to ${workerId} via ${mode} transport`);
-        };
-
-        // ── Create RTCPeerConnection ──────────────────────────
-        const { _iceServers } = get();
-        console.log("[connect] Using ICE servers:", _iceServers.length);
-        const pc = new RTCPeerConnection({
-          iceServers: _iceServers,
-        });
-
-        // Create data channel
-        const dc = pc.createDataChannel("my-data-channel");
-        dc.onopen = () => {
-          console.log("[connect] Data channel open → performing auth handshake");
-          const transport = new WebRTCTransport(dc);
-
-          // Set a temporary message handler for the auth handshake
-          const authTimeout = setTimeout(() => {
-            // No AUTH_CHALLENGE after 10s → assume older worker without auth
-            console.log("[connect] Auth timeout (10s) → assuming pre-auth worker, proceeding");
-            finalize(transport, "direct");
-          }, 10000);
-
-          transport.onMessage(async (data: string) => {
-            const parts = parseMessage(data);
-            const msgType = parts[0];
-
-            if (msgType === MSG_AUTH_CHALLENGE) {
-              const nonce = parts[1];
-              console.log("[connect] Received AUTH_CHALLENGE, signing nonce...");
-              try {
-                const { loadSigningKey, signNonce } = await import("@/lib/auth");
-                const key = await loadSigningKey();
-                if (!key) {
-                  throw new Error("No signing key in IndexedDB");
-                }
-                const signature = await signNonce(key, nonce);
-                transport.send(buildMessage(MSG_AUTH_RESPONSE, signature));
-                console.log("[connect] Sent AUTH_RESPONSE");
-              } catch (err) {
-                clearTimeout(authTimeout);
-                console.error("[connect] Auth handshake failed:", err);
-                transport.close();
-                set({
-                  connectionStatus: "error",
-                  connectionError: `Auth failed: ${err instanceof Error ? err.message : String(err)}`,
-                });
-              }
-            } else if (msgType === MSG_AUTH_SUCCESS) {
-              clearTimeout(authTimeout);
-              console.log("[connect] AUTH_SUCCESS → connection authenticated");
-              finalize(transport, "direct");
-            } else if (msgType === MSG_AUTH_FAILURE) {
-              clearTimeout(authTimeout);
-              const reason = parts.slice(1).join(MSG_SEPARATOR) || "Authentication rejected";
-              console.error("[connect] AUTH_FAILURE:", reason);
-              transport.close();
-              set({
-                connectionStatus: "error",
-                connectionError: `Auth rejected: ${reason}`,
-              });
-            }
-          });
-        };
-        dc.onclose = () => {
-          console.log("[connect] Data channel closed");
-        };
-
-        // Handle ICE candidates — send to worker via signaling
-        pc.onicecandidate = (event) => {
-          if (event.candidate && _ws.readyState === WebSocket.OPEN) {
-            _ws.send(
-              JSON.stringify({
-                type: "candidate",
-                sender: credentials.username,
-                target: workerId,
-                candidate: event.candidate,
-              }),
-            );
-          }
-        };
-
-        pc.oniceconnectionstatechange = () => {
-          console.log("[connect] ICE state:", pc.iceConnectionState);
-          if (pc.iceConnectionState === "failed") {
-            console.warn("[connect] ICE connection failed");
-          }
-        };
-
-        set({ _pc: pc });
-
-        // Create and send SDP offer
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-
-        _ws.send(
-          JSON.stringify({
-            type: "offer",
-            sender: credentials.username,
-            target: workerId,
-            sdp: offer.sdp,
-            role: "app",
-          }),
-        );
-
-        console.log("[connect] SDP offer sent to worker:", workerId);
-
-        // ── 10s ICE timeout → relay fallback ──────────────────
-        setTimeout(async () => {
-          if (settled) return;
-          if (gen !== get()._connectGeneration) {
-            console.log("[connect] Stale ICE timeout (gen mismatch), ignoring");
-            try { pc.close(); } catch { /* ignore */ }
-            return;
-          }
-          console.log("[connect] ICE timeout after 10s → falling back to relay transport");
-          // Clean up failed WebRTC attempt
-          try { pc.close(); } catch { /* ignore */ }
-          set({ _pc: null });
-
-          const relay = new RelayTransport({
-            jwt: credentials.jwt,
-            roomId,
-            peerId: workerId,
-          });
-          try {
-            await relay.open();
-            finalize(relay, "relay");
-          } catch (err) {
-            console.error("[connect] Relay E2E key exchange failed:", err);
-            set({ connectionStatus: "error" });
-          }
-        }, 10000);
+        set((state) => ({
+          pairedWorkers: state.pairedWorkers.filter((w) => w.nodeId !== nodeId),
+          selectedWorkerId: state.selectedWorkerId === nodeId ? null : state.selectedWorkerId,
+        }));
       },
 
-      // ── Remote filesystem ────────────────────────────────────
-      browseRemoteDir: async (path: string): Promise<FileEntry[]> => {
-        const { _transport } = get();
-        if (!_transport || !_transport.ready) {
-          throw new Error("Not connected to worker");
-        }
-
-        // Auto-paginate: keep requesting more pages until has_more is false.
-        // Worker paginates fs_list responses (~25 entries per page by default).
+      browseRemoteDir: async (path) => {
         const allEntries: FileEntry[] = [];
         let offset = 0;
         const MAX_PAGES = 200; // safety cap (200 pages * ~25 = ~5000 entries)
 
         for (let page = 0; page < MAX_PAGES; page++) {
-          const result = await new Promise<{
-            entries: FileEntry[];
-            hasMore: boolean;
-          }>((resolve, reject) => {
-            const { _pendingFs, _transport: t } = get();
-            if (!t || !t.ready) {
-              reject(new Error("Transport disconnected mid-request"));
-              return;
-            }
-            _pendingFs.set("_current", { resolve, reject });
-
-            t.send(buildMessage(MSG_FS_LIST_DIR, path, String(offset)));
-
-            // Timeout after 10s per page
-            setTimeout(() => {
-              if (_pendingFs.has("_current")) {
-                _pendingFs.delete("_current");
-                reject(new Error("Filesystem request timed out"));
-              }
-            }, 10000);
-          });
-
-          allEntries.push(...result.entries);
-          if (!result.hasMore || result.entries.length === 0) break;
-          offset += result.entries.length;
+          const { _client } = get();
+          if (!_client || !_client.authenticated) {
+            throw new Error("Not connected to worker");
+          }
+          const result = await _client.fsList(path, offset);
+          const entries: FileEntry[] = result.entries.map((e) => ({
+            name: e.name,
+            isDir: e.type === "directory",
+            size: e.size,
+          }));
+          allEntries.push(...entries);
+          if (!result.hasMore || entries.length === 0) break;
+          offset += entries.length;
         }
 
         return allEntries;
       },
 
-      // ── Job submission ───────────────────────────────────────
-      submitJob: async (
-        spec: JobSpec,
-        onProgress: (line: string, isCarriageReturn?: boolean) => void,
-        options?: { expectedCompletions?: number; onModelComplete?: (result: JobResult) => void },
-      ): Promise<JobResult> => {
-        const { _transport } = get();
-        if (!_transport || !_transport.ready) {
-          throw new Error("Not connected to worker");
+      submitJob: async (spec, onProgress, options) => {
+        const { _client } = get();
+        if (!_client || !_client.authenticated) {
+          throw new Error("Not connected to a worker");
         }
 
-        const jobId = generateJobId();
+        if (isMultiModelTrainSpec(spec)) {
+          const modelTypes = spec.model_types ?? [];
+          const n = spec.config_contents.length;
+          let finalResult: JobResult = { jobId: "", success: true };
+          for (let i = 0; i < n; i++) {
+            const perModelSpec: TrainJobSpec = {
+              ...spec,
+              config_contents: [spec.config_contents[i]],
+              model_types: modelTypes[i] ? [modelTypes[i]] : [],
+            };
+            finalResult = await submitSingleJob(_client, perModelSpec, onProgress, set);
+            if (!finalResult.success) return finalResult;
+            // Only intermediate models fire onModelComplete — matching the
+            // old JOB_COMPLETE-per-model semantics, the LAST model's
+            // completion is just the resolved return value.
+            if (i < n - 1) options?.onModelComplete?.(finalResult);
+          }
+          return finalResult;
+        }
 
-        return new Promise((resolve) => {
-          const { _pendingJobs } = get();
-          _pendingJobs.set(jobId, {
-            onProgress,
-            onComplete: resolve,
-            onModelComplete: options?.onModelComplete,
-            remainingCompletions: options?.expectedCompletions ?? 1,
-          });
-
-          _transport.send(buildMessage(MSG_JOB_SUBMIT, jobId, JSON.stringify(spec)));
-        });
+        return submitSingleJob(_client, spec, onProgress, set);
       },
 
-      cancelJob: (jobId: string) => {
-        const { _transport } = get();
-        if (_transport && _transport.ready) {
-          _transport.send(buildMessage(MSG_JOB_CANCEL, jobId));
+      cancelJob: () => {
+        const { _client, currentJobId } = get();
+        if (_client && currentJobId) {
+          _client
+            .jobsCancel(currentJobId, "cancel")
+            .catch((err: unknown) => console.warn("[connect] jobsCancel failed:", err));
         }
       },
 
       stopJob: () => {
-        const { _transport } = get();
-        if (_transport && _transport.ready) {
-          _transport.send(buildMessage(MSG_JOB_STOP));
-        }
-      },
-
-      sendControlCommand: (command: string) => {
-        const { _transport } = get();
-        if (_transport && _transport.ready) {
-          const payload = JSON.stringify({ command });
-          _transport.send(buildMessage(MSG_CONTROL_COMMAND, payload));
-        }
-      },
-
-      // ── Internal: signaling message handler ──────────────────
-      _handleSignalingMessage: (msg: Record<string, unknown>) => {
-        const type = msg.type as string;
-
-        switch (type) {
-          case "registered_auth": {
-            console.log("[connect] Registered in room:", msg.room_id);
-
-            // Store ICE servers from signaling server (may include TURN credentials)
-            const iceServers = msg.ice_servers as RTCIceServer[] | undefined;
-            if (iceServers && iceServers.length > 0) {
-              console.log(`[connect] Received ${iceServers.length} ICE server(s) from signaling`);
-              set({ _iceServers: iceServers });
-            }
-
-            set({ connectionStatus: "connected" });
-
-            // Request peer list to find workers
-            const { _ws, credentials } = get();
-            if (_ws && credentials) {
-              _ws.send(
-                JSON.stringify({
-                  type: "discover_peers",
-                  from_peer_id: credentials.username,
-                  filters: { role: "worker" },
-                }),
-              );
-            }
-            break;
-          }
-
-          case "peer_list": {
-            const peers = msg.peers as Array<Record<string, unknown>>;
-            const workers: WorkerInfo[] = peers.map((p) => {
-              const meta = (p.metadata as Record<string, unknown>) || {};
-              const props =
-                (meta.properties as Record<string, unknown>) || {};
-              return {
-                peerId: p.peer_id as string,
-                name:
-                  (props.worker_name as string) ||
-                  (p.peer_id as string),
-                status: (props.status as WorkerInfo["status"]) || "available",
-                gpu: props.gpu_model
-                  ? {
-                      model: props.gpu_model as string,
-                      memoryMb: (props.gpu_memory_mb as number) || 0,
-                      cudaVersion: (props.cuda_version as string) || "",
-                    }
-                  : undefined,
-                mounts: Array.isArray(props.mounts)
-                  ? (props.mounts as Array<unknown>).map((m) =>
-                      typeof m === "string" ? m : (m as Record<string, unknown>)?.path as string ?? "",
-                    ).filter(Boolean)
-                  : [],
-              };
-            });
-            set({ workers });
-            console.log("[connect] Workers discovered:", workers.length);
-            break;
-          }
-
-          case "answer": {
-            // WebRTC answer from worker
-            const { _pc } = get();
-            if (_pc && msg.sdp) {
-              _pc.setRemoteDescription(
-                new RTCSessionDescription({
-                  type: "answer",
-                  sdp: msg.sdp as string,
-                }),
-              );
-            }
-            break;
-          }
-
-          case "candidate":
-          case "ice_candidate": {
-            const { _pc } = get();
-            if (_pc && msg.candidate) {
-              _pc.addIceCandidate(
-                new RTCIceCandidate(
-                  msg.candidate as RTCIceCandidateInit,
-                ),
-              );
-            }
-            break;
-          }
-
-          default:
-            console.log("[connect] Unhandled signaling message:", type);
-        }
-      },
-
-      // ── Internal: data channel message handler ───────────────
-      _handleDataChannelMessage: (data: string) => {
-        const parts = parseMessage(data);
-        const msgType = parts[0];
-
-        switch (msgType) {
-          case MSG_FS_LIST_RESPONSE: {
-            // Worker sends: FS_LIST_RESPONSE::{json}
-            // JSON: {path, entries: [{name, is_dir, size}], total_count, has_more}
-            const responseJson = parts.slice(1).join(MSG_SEPARATOR);
-            const { _pendingFs } = get();
-            const pending = _pendingFs.get("_current");
-            if (pending) {
-              _pendingFs.delete("_current");
-              try {
-                const result = JSON.parse(responseJson);
-                const entries: FileEntry[] = (result.entries || []).map(
-                  (e: Record<string, unknown>) => ({
-                    name: e.name as string,
-                    isDir: e.type === "directory",
-                    size: e.size as number | undefined,
-                  }),
-                );
-                pending.resolve({ entries, hasMore: !!result.has_more });
-              } catch {
-                pending.reject(new Error("Invalid filesystem response"));
-              }
-            }
-            break;
-          }
-
-          case MSG_FS_MOUNTS_RESPONSE: {
-            // Worker sends: FS_MOUNTS_RESPONSE::{json}
-            // JSON: [{path, label}, ...]
-            const mountsJson = parts.slice(1).join(MSG_SEPARATOR);
-            try {
-              const mounts = JSON.parse(mountsJson) as Array<{ path: string; label?: string }>;
-              const mountPaths = mounts.map((m) => m.path);
-              console.log("[connect] Worker mounts:", mountPaths);
-              // Update the selected worker's mounts
-              const { workers, selectedWorkerId } = get();
-              set({
-                workers: workers.map((w) =>
-                  w.peerId === selectedWorkerId
-                    ? { ...w, mounts: mountPaths }
-                    : w,
-                ),
-              });
-            } catch {
-              console.warn("[connect] Failed to parse mounts response");
-            }
-            break;
-          }
-
-          case MSG_FS_ERROR: {
-            // Worker sends: FS_ERROR::error_code::message
-            const errorCode = parts[1];
-            const errorMsg = parts.slice(2).join(MSG_SEPARATOR);
-            console.warn("[connect] FS error:", errorCode, errorMsg);
-            const { _pendingFs } = get();
-            const pendingFs = _pendingFs.get("_current");
-            if (pendingFs) {
-              _pendingFs.delete("_current");
-              pendingFs.reject(new Error(`${errorCode}: ${errorMsg}`));
-            }
-            break;
-          }
-
-          case MSG_JOB_ACCEPTED: {
-            const jobId = parts[1];
-            console.log("[connect] Job accepted:", jobId);
-            break;
-          }
-
-          case "CR": {
-            // Worker sends \r-terminated tqdm lines as CR::{text}
-            // These should overwrite the previous line (carriage return behavior)
-            const line = parts.slice(1).join(MSG_SEPARATOR);
-            const { _pendingJobs } = get();
-            const crEntry = Array.from(_pendingJobs.entries())[0];
-            if (crEntry) {
-              const [, pending] = crEntry;
-              pending.onProgress(line, true);
-            }
-            break;
-          }
-
-          case MSG_JOB_REJECTED: {
-            const jobId = parts[1];
-            const errorJson = parts[2];
-            const { _pendingJobs } = get();
-            const pending = _pendingJobs.get(jobId);
-            if (pending) {
-              _pendingJobs.delete(jobId);
-              pending.onComplete({
-                jobId,
-                success: false,
-                error: errorJson,
-              });
-            }
-            break;
-          }
-
-          case MSG_JOB_PROGRESS: {
-            // Intentionally ignored — matches PyQt client behavior.
-            // Terminal output is handled via CR:: (tqdm) and regular log
-            // lines. JOB_PROGRESS fires once per batch, which spams the
-            // terminal with ~100 formatted lines per epoch.
-            break;
-          }
-
-          case MSG_JOB_COMPLETE: {
-            // Worker sends: JOB_COMPLETE::{json} per model in multi-model pipelines.
-            // Only resolve the promise after all expected completions.
-            const completePayload = parts.slice(1).join(MSG_SEPARATOR);
-            const { _pendingJobs } = get();
-            const completeEntry = Array.from(_pendingJobs.entries())[0];
-            if (completeEntry) {
-              const [jobId, pending] = completeEntry;
-              let result: JobResult;
-              try {
-                const parsed = JSON.parse(completePayload);
-                result = { jobId, success: true, outputPath: parsed.output_path };
-              } catch {
-                result = { jobId, success: true };
-              }
-
-              pending.remainingCompletions--;
-
-              if (pending.remainingCompletions <= 0) {
-                // All models done — resolve the promise
-                _pendingJobs.delete(jobId);
-                pending.onComplete(result);
-              } else {
-                // More models to go — notify per-model callback, keep listening
-                pending.onModelComplete?.(result);
-              }
-            }
-            break;
-          }
-
-          case MSG_JOB_FAILED: {
-            // Worker sends: JOB_FAILED::{json} (no job ID prefix)
-            const failPayload = parts.slice(1).join(MSG_SEPARATOR);
-            const { _pendingJobs } = get();
-            const failEntry = Array.from(_pendingJobs.entries())[0];
-            if (failEntry) {
-              const [jobId, pending] = failEntry;
-              _pendingJobs.delete(jobId);
-              let errorMsg = "Job failed";
-              try {
-                const parsed = JSON.parse(failPayload);
-                errorMsg = parsed.error || errorMsg;
-              } catch { /* use default */ }
-              pending.onComplete({
-                jobId,
-                success: false,
-                error: errorMsg,
-              });
-            }
-            break;
-          }
-
-          case MSG_JOB_LOG: {
-            // Worker sends: JOB_LOG::{job_id}::{text}
-            const logJobId = parts[1];
-            const text = parts.slice(2).join(MSG_SEPARATOR);
-            const { _pendingJobs: logJobs } = get();
-            const pending = logJobs.get(logJobId);
-            if (pending) {
-              pending.onProgress(text);
-            }
-            break;
-          }
-
-          case MSG_AUTH_CHALLENGE:
-          case MSG_AUTH_SUCCESS:
-          case MSG_AUTH_FAILURE:
-            // Handled during auth handshake in connectToWorker — ignore here
-            break;
-
-          case "PROGRESS_REPORT": {
-            // Worker sends: PROGRESS_REPORT::{jsonpickle payload}
-            // Contains structured progress events (epoch_begin, epoch_end,
-            // train_begin, train_end) from sleap-nn's ZMQ progress reporter.
-            // NOT printed to terminal — silently updates progress state.
-            // Matches PyQt behavior: LossViewer._check_messages() consumes
-            // these for loss curves, not terminal output.
-            const prPayload = parts.slice(1).join(MSG_SEPARATOR);
-            const { _pendingJobs: prJobs } = get();
-            const prEntry = Array.from(prJobs.entries())[0];
-            if (prEntry) {
-              const [, pending] = prEntry;
-              // Tag as progress report so trainingStore handles it differently
-              pending.onProgress(`__PROGRESS_REPORT__${prPayload}`);
-            }
-            break;
-          }
-
-          case "__FILE_RECEIVED__": {
-            // Rust backend received a predictions file and wrote it to a temp path.
-            // Load the .slp and merge predictions into the current project.
-            const filePath = parts.slice(1).join(MSG_SEPARATOR);
-            console.log("[connect] Received predictions file:", filePath);
-            import("@/stores/inferenceStore").then(({ useInferenceStore }) => {
-              useInferenceStore.setState({ outputPath: filePath });
-              useInferenceStore.getState().loadAndMergeResults();
-            });
-            break;
-          }
-
-          default: {
-            // Unrecognized message — raw log line from worker (e.g. wandb
-            // output, error messages, training summaries). Forward to
-            // onProgress, matching the PyQt client's on_log() behavior.
-            const { _pendingJobs } = get();
-            const defaultEntry = Array.from(_pendingJobs.entries())[0];
-            if (defaultEntry) {
-              const [, pending] = defaultEntry;
-              pending.onProgress(data);
-            }
-            break;
-          }
+        const { _client, currentJobId } = get();
+        if (_client && currentJobId) {
+          _client
+            .jobsCancel(currentJobId, "stop")
+            .catch((err: unknown) => console.warn("[connect] jobsCancel(stop) failed:", err));
         }
       },
     }),
     {
       name: "sleap-app-connect",
       partialize: (state) => ({
-        credentials: state.credentials,
-        roomId: state.roomId,
+        pairedWorkers: state.pairedWorkers,
+        selectedWorkerId: state.selectedWorkerId,
+        currentJobId: state.currentJobId,
       }),
     },
   ),

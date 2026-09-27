@@ -481,13 +481,13 @@ export function InferencePanel() {
   const [fileBrowserCallback, setFileBrowserCallback] = useState<((path: string) => void) | null>(null);
 
   const connectionStatus = useConnectStore((s) => s.connectionStatus);
-  const workers = useConnectStore((s) => s.workers);
+  const pairedWorkers = useConnectStore((s) => s.pairedWorkers);
   const selectedWorkerId = useConnectStore((s) => s.selectedWorkerId);
   const selectWorker = useConnectStore((s) => s.selectWorker);
+  const connectedMounts = useConnectStore((s) => s.workerMounts);
 
-  const availableWorkers = workers.filter((w) => w.status === "available");
-  const selectedWorker = workers.find((w) => w.peerId === selectedWorkerId);
-  const workerMounts = selectedWorker?.mounts || ["/"];
+  const workerMounts =
+    connectionStatus === "connected" ? connectedMounts.map((m) => m.path) : ["/"];
 
   // Track-only needs a temporally CONTIGUOUS run of frames to track across —
   // a single frame or a scattered subset (suggestions/user-labeled/predicted/
@@ -560,7 +560,7 @@ export function InferencePanel() {
     isNaN(Number(frameEnd))
   );
 
-  const canRun = (remoteEnabled ? (!!selectedWorkerId && !!remoteDataPath) : sleapNnAvailable) && !isRunning && !isDone && (trackOnly || activeModelPaths.length > 0) && !customRangeInvalid;
+  const canRun = (remoteEnabled ? (!!selectedWorkerId && connectionStatus === "connected" && !!remoteDataPath) : sleapNnAvailable) && !isRunning && !isDone && (trackOnly || activeModelPaths.length > 0) && !customRangeInvalid;
   const isTopDown = pipeline === "top-down" || pipeline === "top-down-id";
 
   if (!isTauri && connectionStatus !== "connected") {
@@ -1101,7 +1101,7 @@ export function InferencePanel() {
                     remoteEnabled ? "bg-primary" : "bg-zinc-700"
                   }`}
                   onClick={() => setRemoteEnabled(!remoteEnabled)}
-                  disabled={connectionStatus !== "connected"}
+                  disabled={pairedWorkers.length === 0}
                 >
                   <span
                     className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
@@ -1111,62 +1111,53 @@ export function InferencePanel() {
                 </button>
               </div>
 
-              {connectionStatus !== "connected" && !remoteEnabled && (
+              {pairedWorkers.length === 0 && (
                 <p className="text-[10px] text-muted-foreground">
-                  Connect to a room in the Connect tab to enable remote inference.
+                  Pair with a worker in the Connect tab to enable remote inference.
                 </p>
               )}
 
-              {remoteEnabled && connectionStatus === "connected" && (
-                <>
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
-                      Room
-                    </label>
-                    <div className="flex items-center gap-1.5 text-[11px]">
-                      <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
-                      {(() => {
-                        const state = useConnectStore.getState();
-                        const room = state.availableRooms.find((r) => r.roomId === state.roomId);
-                        return room?.name || state.roomId;
-                      })()}
-                    </div>
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
-                      Worker
-                    </label>
-                    <Select
-                      value={selectedWorkerId || ""}
-                      onValueChange={(v) => selectWorker(v)}
-                    >
-                      <SelectTrigger className="h-7 text-xs">
-                        <SelectValue placeholder="Select a worker" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {workers.map((w) => (
-                          <SelectItem
-                            key={w.peerId}
-                            value={w.peerId}
-                            disabled={w.status !== "available"}
-                          >
-                            {w.name}
-                            {w.gpu ? ` (${w.gpu.model})` : ""}
-                            {w.status !== "available" ? ` — ${w.status}` : ""}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  {availableWorkers.length === 0 && (
-                    <div className="bg-orange-500/8 border border-orange-500/20 rounded-md p-2 text-[11px] text-orange-400">
-                      <b>All workers are busy.</b> Wait for a worker to become
-                      available, or disable remote inference.
+              {remoteEnabled && pairedWorkers.length > 0 && (
+                <div className="space-y-1">
+                  <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+                    Worker
+                  </label>
+                  <Select
+                    value={selectedWorkerId || ""}
+                    onValueChange={(v) => selectWorker(v)}
+                  >
+                    <SelectTrigger className="h-7 text-xs">
+                      <SelectValue placeholder="Select a worker" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {pairedWorkers.map((w) => (
+                        <SelectItem key={w.nodeId} value={w.nodeId}>
+                          {w.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {selectedWorkerId && (
+                    <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                      <span
+                        className={`w-1.5 h-1.5 rounded-full ${
+                          connectionStatus === "connected"
+                            ? "bg-green-500"
+                            : connectionStatus === "connecting"
+                              ? "bg-yellow-500"
+                              : "bg-zinc-500"
+                        }`}
+                      />
+                      {connectionStatus === "connected"
+                        ? "Connected"
+                        : connectionStatus === "connecting"
+                          ? "Connecting…"
+                          : connectionStatus === "error"
+                            ? "Connection failed"
+                            : "Not connected"}
                     </div>
                   )}
-                </>
+                </div>
               )}
             </Section>
           </>

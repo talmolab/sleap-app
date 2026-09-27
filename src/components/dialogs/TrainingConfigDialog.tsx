@@ -1200,11 +1200,9 @@ export function TrainingConfigDialog({
 
   // Connect store for remote training section
   const connectionStatus = useConnectStore((s) => s.connectionStatus);
-  const workers = useConnectStore((s) => s.workers);
+  const pairedWorkers = useConnectStore((s) => s.pairedWorkers);
   const selectedWorkerId = useConnectStore((s) => s.selectedWorkerId);
   const selectWorker = useConnectStore((s) => s.selectWorker);
-  const availableRooms = useConnectStore((s) => s.availableRooms);
-  const roomId = useConnectStore((s) => s.roomId);
 
   const scrollTo = useCallback((id: string) => {
     const activeRef = activeTab === "pipeline"
@@ -1932,45 +1930,43 @@ export function TrainingConfigDialog({
                 <SectionHeading {...PIPELINE_FIELD_DEFS.secRemote} />
                 <div className="space-y-3">
                   <Toggle {...PIPELINE_FIELD_DEFS.remoteEnable} checked={remoteEnabled} onChange={onRemoteEnabledChange} />
-                  {remoteEnabled && connectionStatus !== "connected" && (
+                  {remoteEnabled && pairedWorkers.length === 0 && (
                     <div className="bg-orange-500/10 border border-orange-500/30 rounded-md px-3 py-2 text-sm text-orange-400">
-                      Not connected. Go to the Connect tab to join a room before enabling remote training.
+                      No paired workers. Go to the Connect tab to pair with one before enabling remote training.
                     </div>
                   )}
-                  {remoteEnabled && connectionStatus === "connected" && (
+                  {remoteEnabled && pairedWorkers.length > 0 && (
                     <>
                       <div className="flex items-center gap-2">
-                        <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
-                        <span className="text-sm text-green-400">
-                          Connected ({workers.filter((w) => w.status === "available").length} worker{workers.filter((w) => w.status === "available").length !== 1 ? "s" : ""} available)
+                        <span
+                          className={`w-1.5 h-1.5 rounded-full ${
+                            connectionStatus === "connected" ? "bg-green-500" : "bg-zinc-500"
+                          }`}
+                        />
+                        <span
+                          className={`text-sm ${
+                            connectionStatus === "connected" ? "text-green-400" : "text-muted-foreground"
+                          }`}
+                        >
+                          {connectionStatus === "connected"
+                            ? "Connected"
+                            : connectionStatus === "connecting"
+                              ? "Connecting…"
+                              : connectionStatus === "error"
+                                ? "Connection failed"
+                                : "Not connected"}
                         </span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm text-muted-foreground flex items-center gap-1.5">
-                          Room:
-                          <HintBubble text="The sleap-connect room to use for remote training. Rooms group workers and clients together." />
-                        </span>
-                        <Select value={roomId || ""} disabled>
-                          <SelectTrigger className="h-8 text-sm w-64"><SelectValue placeholder="Select a room" /></SelectTrigger>
-                          <SelectContent>
-                            {availableRooms.map((r) => (
-                              <SelectItem key={r.roomId} value={r.roomId}>{r.name || r.roomId}</SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
                       </div>
                       <div className="flex items-center gap-2">
                         <span className="text-sm text-muted-foreground flex items-center gap-1.5">
                           Worker:
-                          <HintBubble text="Select which worker will run the training job. Workers with GPUs are preferred for faster training." />
+                          <HintBubble text="Which paired sleap-connect worker will run this training job. Selecting one connects to it." />
                         </span>
                         <Select value={selectedWorkerId || ""} onValueChange={selectWorker}>
                           <SelectTrigger className="h-8 text-sm w-64"><SelectValue placeholder="Select a worker" /></SelectTrigger>
                           <SelectContent>
-                            {workers.map((w) => (
-                              <SelectItem key={w.peerId} value={w.peerId} disabled={w.status !== "available"}>
-                                {w.name}{w.gpu ? ` (${w.gpu.model})` : ""}{w.status !== "available" ? ` — ${w.status}` : ""}
-                              </SelectItem>
+                            {pairedWorkers.map((w) => (
+                              <SelectItem key={w.nodeId} value={w.nodeId}>{w.label}</SelectItem>
                             ))}
                           </SelectContent>
                         </Select>
