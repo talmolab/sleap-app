@@ -1,0 +1,61 @@
+/**
+ * Error code taxonomy for the sleap-connect protocol v1 (spec §8).
+ *
+ * Mirrors `sleap_rtc/protocol_v1/errors.py`'s worker-side codes exactly, plus
+ * a `client.*` namespace for conditions this client detects locally (never
+ * sent by the worker) — a request timeout, the socket closing, or a
+ * protocol-version mismatch found during the `hello` handshake.
+ */
+
+// auth.*
+export const AUTH_REQUIRED = "auth.required";
+export const AUTH_UNTRUSTED = "auth.untrusted";
+export const AUTH_BAD_SIGNATURE = "auth.bad_signature";
+export const AUTH_PAIRING_EXPIRED = "auth.pairing_expired";
+
+// proto.*
+export const PROTO_MISMATCH = "proto.mismatch";
+export const PROTO_UNKNOWN_METHOD = "proto.unknown_method";
+
+// fs.*
+export const FS_NOT_FOUND = "fs.not_found";
+export const FS_FORBIDDEN = "fs.forbidden";
+export const FS_IO_ERROR = "fs.io_error";
+
+// blob.*
+export const BLOB_UNKNOWN = "blob.unknown";
+export const BLOB_INCOMPLETE = "blob.incomplete";
+export const BLOB_HASH_MISMATCH = "blob.hash_mismatch";
+
+// job.*
+export const JOB_NOT_FOUND = "job.not_found";
+export const JOB_ALREADY_TERMINAL = "job.already_terminal";
+export const JOB_SPEC_INVALID = "job.spec_invalid";
+
+// Catch-all for an unexpected worker-side fault.
+export const INTERNAL = "internal";
+
+// client.* — detected locally, never sent by the worker.
+export const CLIENT_TIMEOUT = "client.timeout";
+export const CLIENT_CLOSED = "client.closed";
+export const CLIENT_PROTO_MISMATCH = "client.proto_mismatch";
+
+/**
+ * An error from (or about) a protocol v1 connection.
+ *
+ * Constructed either from a worker's `res.error` frame (code/msg/data
+ * carried over verbatim) or locally, for a `client.*` condition. Callers
+ * branch on `.code`, matching the namespaced-string convention above
+ * instead of pattern-matching `.message` text.
+ */
+export class WorkerProtocolError extends Error {
+  readonly code: string;
+  readonly data?: unknown;
+
+  constructor(code: string, msg: string, data?: unknown) {
+    super(msg);
+    this.name = "WorkerProtocolError";
+    this.code = code;
+    this.data = data;
+  }
+}
