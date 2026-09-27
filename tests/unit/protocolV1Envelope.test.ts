@@ -69,6 +69,24 @@ describe("protocolV1 envelope", () => {
         expect(frame.node_id).toBe("worker-node-id");
         expect(frame.nonce).toBe("worker-nonce");
         expect(frame.proto).toEqual({ min: 1, max: 1 });
+        expect(frame.blob_port).toBeUndefined();
+      }
+    });
+
+    it("parses blob_port when present on a hello frame", () => {
+      const raw = JSON.stringify({
+        v: 1,
+        type: "hello",
+        proto: { min: 1, max: 1 },
+        agent: AGENT,
+        node_id: "worker-node-id",
+        nonce: "worker-nonce",
+        blob_port: 9632,
+      });
+      const frame = parseEnvelope(raw);
+      expect(frame.type).toBe("hello");
+      if (frame.type === "hello") {
+        expect(frame.blob_port).toBe(9632);
       }
     });
 

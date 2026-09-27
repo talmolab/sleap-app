@@ -1,7 +1,15 @@
 import { describe, it, expect } from "../bun-test";
 import "fake-indexeddb/auto";
 import { WorkerClient, type WorkerClientOptions, type WorkerEvent } from "@/lib/protocolV1/client";
-import { CLIENT_CLOSED, CLIENT_PROTO_MISMATCH, CLIENT_TIMEOUT, WorkerProtocolError } from "@/lib/protocolV1/errors";
+import {
+  BLOB_HASH_MISMATCH,
+  BLOB_INCOMPLETE,
+  BLOB_UNKNOWN,
+  CLIENT_CLOSED,
+  CLIENT_PROTO_MISMATCH,
+  CLIENT_TIMEOUT,
+  WorkerProtocolError,
+} from "@/lib/protocolV1/errors";
 import {
   getClientIdentity,
   clearClientIdentity,
@@ -437,5 +445,130 @@ describe("protocolV1 WorkerClient", () => {
 
       expect(() => socket.emitEvent("job.log", "some-other-job", 1, {})).not.toThrow();
     });
+  });
+
+  describe("peerBlobPort", () => {
+    it("is null when the worker doesn't announce a blob port", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket();
+      const client = await connected(identity, socket);
+
+      expect(client.peerBlobPort).toBeNull();
+    });
+
+    it("is set once the worker announces one in its hello", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({ blobPort: 9632 });
+      const client = await connected(identity, socket);
+
+      expect(client.peerBlobPort).toBe(9632);
+    });
+  });
+
+  describe("fetchBlob", () => {
+    async function sha256Hex(bytes: Uint8Array): Promise<string> {
+      const digest = await crypto.subtle.digest("SHA-256", bytes);
+      return Array.from(new Uint8Array(digest))
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("");
+    }
+
+    it("throws blob.unknown if the worker never announced a blob port", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket(); // no blobPort
+      const client = await connected(identity, socket);
+
+      const err = await rejection(client.fetchBlob("abc123", 3));
+      expect(err.code).toBe(BLOB_UNKNOWN);
+    });
+
+    it("fetches from http://<dialed host>:<blob_port>/blobs/<sha256>", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({ blobPort: 9632 });
+      const content = new TextEncoder().encode("hello blob");
+      const hash = await sha256Hex(content);
+      let requestedUrl: string | undefined;
+      const fetchImpl = (async (input: RequestInfo | URL) => {
+        requestedUrl = String(input);
+        return new Response(content, { status: 200 });
+      }) as unknown as typeof fetch;
+      const client = await connected(identity, socket, { fetchImpl });
+
+      const bytes = await client.fetchBlob(hash, content.byteLength);
+
+      expect(requestedUrl).toBe(`http://fake-worker:9632/blobs/${hash}`);
+      expect(bytes).toEqual(content);
+    });
+
+    it("derives https for a wss:// dial URL", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({ blobPort: 9632 });
+      const content = new TextEncoder().encode("secure blob");
+      const hash = await sha256Hex(content);
+      let requestedUrl: string | undefined;
+      const fetchImpl = (async (input: RequestInfo | URL) => {
+        requestedUrl = String(input);
+        return new Response(content, { status: 200 });
+      }) as unknown as typeof fetch;
+      const client = new WorkerClient({
+        url: "wss://fake-worker",
+        identity,
+        createSocket: () => socket,
+        fetchImpl,
+      });
+      const connectPromise = client.connect();
+      socket.simulateOpen();
+      await connectPromise;
+
+      await client.fetchBlob(hash, content.byteLength);
+
+      expect(requestedUrl).toBe(`https://fake-worker:9632/blobs/${hash}`);
+    });
+
+    it("throws blob.unknown on a non-ok HTTP response", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({ blobPort: 9632 });
+      const fetchImpl = (async () => new Response(null, { status: 404 })) as unknown as typeof fetch;
+      const client = await connected(identity, socket, { fetchImpl });
+
+      const err = await rejection(client.fetchBlob("abc123"));
+      expect(err.code).toBe(BLOB_UNKNOWN);
+    });
+
+    it("throws blob.unknown if the fetch itself fails", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({ blobPort: 9632 });
+      const fetchImpl = (async () => {
+        throw new Error("network down");
+      }) as unknown as typeof fetch;
+      const client = await connected(identity, socket, { fetchImpl });
+
+      const err = await rejection(client.fetchBlob("abc123"));
+      expect(err.code).toBe(BLOB_UNKNOWN);
+    });
+
+    it("throws blob.incomplete when the response size doesn't match", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({ blobPort: 9632 });
+      const content = new TextEncoder().encode("short");
+      const hash = await sha256Hex(content);
+      const fetchImpl = (async () => new Response(content, { status: 200 })) as unknown as typeof fetch;
+      const client = await connected(identity, socket, { fetchImpl });
+
+      const err = await rejection(client.fetchBlob(hash, content.byteLength + 100));
+      expect(err.code).toBe(BLOB_INCOMPLETE);
+    });
+
+    it("throws blob.hash_mismatch when the content doesn't match the claimed hash", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({ blobPort: 9632 });
+      const content = new TextEncoder().encode("tampered content");
+      const fetchImpl = (async () => new Response(content, { status: 200 })) as unknown as typeof fetch;
+      const client = await connected(identity, socket, { fetchImpl });
+
+      const err = await rejection(client.fetchBlob("not-the-real-hash", content.byteLength));
+      expect(err.code).toBe(BLOB_HASH_MISMATCH);
+    });
+
   });
 });

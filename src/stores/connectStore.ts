@@ -32,7 +32,13 @@
  */
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import type { FileEntry, JobResult, JobSpec, TrainJobSpec } from "@/lib/sleapConnect";
+import type {
+  FileEntry,
+  JobResult,
+  JobResultBlobRef,
+  JobSpec,
+  TrainJobSpec,
+} from "@/lib/sleapConnect";
 import { APP_VERSION } from "@/lib/version";
 import { isTauri } from "@/platform/index";
 import type { AgentInfo } from "@/lib/protocolV1/envelope";
@@ -117,6 +123,8 @@ interface ConnectState {
   cancelJob: () => void;
   /** Gracefully early-stop the current job (checkpoint + finish). */
   stopJob: () => void;
+  /** Fetch a result blob's bytes (e.g. `JobResult.resultBlobs.predictions`). */
+  fetchResultBlob: (ref: JobResultBlobRef) => Promise<Uint8Array>;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────
@@ -182,6 +190,10 @@ async function submitSingleJob(
   return new Promise<JobResult>((resolve, reject) => {
     let unsubscribe: (() => void) | null = null;
     let settled = false;
+    // job.result arrives before job.status: completed (the worker emits
+    // them in that order specifically so this is never missed) — captured
+    // here so it's already in hand by the time `finish` resolves.
+    let resultBlobs: JobResult["resultBlobs"];
 
     const finish = (result: JobResult) => {
       if (settled) return;
@@ -193,10 +205,13 @@ async function submitSingleJob(
     const handleEvent = (event: WorkerEvent) => {
       if (event.topic === "job.log") {
         onProgress((event.data.line as string) ?? "", false);
+      } else if (event.topic === "job.result") {
+        const blobs = event.data.blobs as Record<string, JobResultBlobRef> | undefined;
+        if (blobs && Object.keys(blobs).length > 0) resultBlobs = blobs;
       } else if (event.topic === "job.status") {
         const state = event.data.state as string;
         if (state === "completed") {
-          finish({ jobId, success: true });
+          finish({ jobId, success: true, resultBlobs });
         } else if (state === "failed" || state === "canceled") {
           finish({ jobId, success: false, error: (event.data.detail as string) ?? `Job ${state}` });
         }
@@ -438,6 +453,14 @@ export const useConnectStore = create<ConnectState>()(
             .catch((err: unknown) => console.warn("[connect] jobsCancel(stop) failed:", err));
         }
         set({ reattachableJob: null });
+      },
+
+      fetchResultBlob: async (ref) => {
+        const { _client } = get();
+        if (!_client || !_client.authenticated) {
+          throw new Error("Not connected to a worker");
+        }
+        return _client.fetchBlob(ref.sha256, ref.size);
       },
     }),
     {

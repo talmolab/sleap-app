@@ -49,6 +49,9 @@ class FakeWorkerClient {
   jobsSubmitResult = { jobId: "job_1" };
   /** What jobsStatus() resolves to; `null` makes it reject (job.not_found). */
   jobsStatusResult: { state: string } | null = null;
+  fetchBlobCalls: Array<[string, number | undefined]> = [];
+  fetchBlobResult = new Uint8Array([1, 2, 3]);
+  fetchBlobShouldThrow: Error | null = null;
 
   private _subscribers = new Map<string, Set<(e: FakeWorkerEvent) => void>>();
 
@@ -96,6 +99,12 @@ class FakeWorkerClient {
     this.jobsStatusCalls.push(jobId);
     if (this.jobsStatusResult === null) throw new Error("job.not_found");
     return this.jobsStatusResult;
+  }
+
+  async fetchBlob(sha256: string, expectedSize?: number) {
+    this.fetchBlobCalls.push([sha256, expectedSize]);
+    if (this.fetchBlobShouldThrow) throw this.fetchBlobShouldThrow;
+    return this.fetchBlobResult;
   }
 
   async jobsSubscribe(jobId: string, _sinceSeq: number, cb: (e: FakeWorkerEvent) => void) {
@@ -486,6 +495,38 @@ describe("connectStore", () => {
       expect(result).toEqual({ jobId: "job_1", success: false, error: "exit code 1" });
     });
 
+    it("captures job.result's blobs (which arrive before job.status: completed)", async () => {
+      const spec: JobSpec = { type: "track", data_path: "/x.slp", model_paths: ["m1"] };
+      const promise = useConnectStore.getState().submitJob(spec, () => {});
+      await flushAsync();
+      const client = lastClient();
+      // Mirrors the real worker's order (job.result before the terminal
+      // job.status) — see talmolab/sleap-connect's job_methods.py.
+      client.emit("job_1", "job.result", {
+        blobs: { predictions: { sha256: "abc123", size: 4096 } },
+      });
+      client.emit("job_1", "job.status", { state: "completed" });
+
+      const result = await promise;
+      expect(result).toEqual({
+        jobId: "job_1",
+        success: true,
+        resultBlobs: { predictions: { sha256: "abc123", size: 4096 } },
+      });
+    });
+
+    it("leaves resultBlobs undefined when job.result carries no blobs", async () => {
+      const spec: JobSpec = { type: "track", data_path: "/x.slp", model_paths: ["m1"] };
+      const promise = useConnectStore.getState().submitJob(spec, () => {});
+      await flushAsync();
+      const client = lastClient();
+      client.emit("job_1", "job.result", { blobs: {} });
+      client.emit("job_1", "job.status", { state: "completed" });
+
+      const result = await promise;
+      expect(result.resultBlobs).toBeUndefined();
+    });
+
     it("splits a multi-model TrainJobSpec into sequential single-model jobs", async () => {
       const modelCompletions: unknown[] = [];
       const spec: JobSpec = {
@@ -565,6 +606,28 @@ describe("connectStore", () => {
       useConnectStore.getState().stopJob();
       await flushAsync();
       expect(lastClient().jobsCancelCalls).toEqual([["job_1", "stop"]]);
+    });
+  });
+
+  describe("fetchResultBlob", () => {
+    it("throws if not connected to a worker", async () => {
+      await expect(
+        useConnectStore.getState().fetchResultBlob({ sha256: "abc123", size: 4 }),
+      ).rejects.toThrow(/Not connected/);
+    });
+
+    it("delegates to the client's fetchBlob with the ref's sha256 and size", async () => {
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
+      await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
+      const client = lastClient();
+      client.fetchBlobResult = new Uint8Array([9, 9, 9]);
+
+      const bytes = await useConnectStore
+        .getState()
+        .fetchResultBlob({ sha256: "abc123", size: 4096 });
+
+      expect(client.fetchBlobCalls).toEqual([["abc123", 4096]]);
+      expect(bytes).toEqual(new Uint8Array([9, 9, 9]));
     });
   });
 
