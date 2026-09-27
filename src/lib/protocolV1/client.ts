@@ -29,6 +29,9 @@ import {
   type ResFrame,
 } from "./envelope";
 import {
+  BLOB_HASH_MISMATCH,
+  BLOB_INCOMPLETE,
+  BLOB_UNKNOWN,
   CLIENT_CLOSED,
   CLIENT_PROTO_MISMATCH,
   CLIENT_TIMEOUT,
@@ -105,6 +108,8 @@ export interface WorkerClientOptions {
   requestTimeoutMs?: number;
   /** Overridable for tests; defaults to `(url) => new WebSocket(url)`. */
   createSocket?: (url: string) => WebSocketLike;
+  /** Overridable for tests; defaults to the global `fetch`. */
+  fetchImpl?: typeof fetch;
 }
 
 interface PendingRequest {
@@ -121,6 +126,7 @@ export class WorkerClient {
   private readonly _protoMax: number;
   private readonly _requestTimeoutMs: number;
   private readonly _createSocket: (url: string) => WebSocketLike;
+  private readonly _fetch: typeof fetch;
 
   private _socket: WebSocketLike | null = null;
   private _state: ConnectionState = "closed";
@@ -132,6 +138,9 @@ export class WorkerClient {
   // The nonce the WORKER sent us in its hello — what auth.prove signs
   // (spec §3.3: each side signs the *other* side's nonce).
   private _peerNonce: string | null = null;
+  // The worker's blob-serving HTTP port, if it announced one — see
+  // fetchBlob(). null on a worker not running the blob HTTP server.
+  private _peerBlobPort: number | null = null;
 
   private _connectWaiter: { resolve: () => void; reject: (e: Error) => void } | null = null;
 
@@ -144,6 +153,7 @@ export class WorkerClient {
     this._requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     this._createSocket =
       options.createSocket ?? ((url) => new WebSocket(url) as unknown as WebSocketLike);
+    this._fetch = options.fetchImpl ?? fetch;
   }
 
   get state(): ConnectionState {
@@ -157,6 +167,11 @@ export class WorkerClient {
   /** The worker's node_id, known once the `hello` handshake completes. */
   get peerNodeId(): string | null {
     return this._peerNodeId;
+  }
+
+  /** The worker's blob-serving HTTP port, if it announced one (spec §6.3). */
+  get peerBlobPort(): number | null {
+    return this._peerBlobPort;
   }
 
   /**
@@ -311,6 +326,67 @@ export class WorkerClient {
     };
   }
 
+  /**
+   * Fetch a result blob's bytes from the worker's blob HTTP endpoint (spec
+   * §6.3), on the same host this client dialed for the WS connection.
+   * Verifies both size and content hash before returning — this is bulk
+   * data crossing a network boundary, worth checking rather than trusting
+   * blindly. Only meaningful once `hello` has completed and the worker
+   * announced a `blob_port` (a worker not running the blob HTTP server has
+   * nothing to serve).
+   */
+  async fetchBlob(sha256: string, expectedSize?: number): Promise<Uint8Array> {
+    if (this._peerBlobPort === null) {
+      throw new WorkerProtocolError(
+        BLOB_UNKNOWN,
+        "Worker did not announce a blob port — it isn't running the blob HTTP server",
+      );
+    }
+    const url = `${this._blobHttpOrigin()}/blobs/${sha256}`;
+
+    let response: Response;
+    try {
+      response = await this._fetch(url);
+    } catch (err) {
+      throw new WorkerProtocolError(
+        BLOB_UNKNOWN,
+        `Failed to reach the blob server at ${url}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    if (!response.ok) {
+      throw new WorkerProtocolError(
+        BLOB_UNKNOWN,
+        `Blob ${sha256} not found (HTTP ${response.status})`,
+      );
+    }
+
+    const buffer = new Uint8Array(await response.arrayBuffer());
+    if (expectedSize !== undefined && buffer.byteLength !== expectedSize) {
+      throw new WorkerProtocolError(
+        BLOB_INCOMPLETE,
+        `Blob ${sha256}: expected ${expectedSize} bytes, got ${buffer.byteLength}`,
+      );
+    }
+
+    const actualHash = await sha256Hex(buffer);
+    if (actualHash !== sha256) {
+      throw new WorkerProtocolError(
+        BLOB_HASH_MISMATCH,
+        `Blob content does not match its hash (expected ${sha256}, got ${actualHash})`,
+      );
+    }
+
+    return buffer;
+  }
+
+  private _blobHttpOrigin(): string {
+    // "ws://host:port" -> "http://host:<blob_port>"; "wss://" -> "https://"
+    // (the regex only replaces the leading "ws", so wss's trailing "s"
+    // combines with "http" to form "https" on its own).
+    const dialUrl = new URL(this._url.replace(/^ws/, "http"));
+    return `${dialUrl.protocol}//${dialUrl.hostname}:${this._peerBlobPort}`;
+  }
+
   // ── internals ──────────────────────────────────────────────────────
 
   private _request(
@@ -379,6 +455,7 @@ export class WorkerClient {
     }
     this._peerNodeId = hello.node_id;
     this._peerNonce = hello.nonce;
+    this._peerBlobPort = hello.blob_port ?? null;
     this._state = "unauthenticated";
     this._connectWaiter?.resolve();
     this._connectWaiter = null;
@@ -428,4 +505,11 @@ function randomNonce(): string {
   let binary = "";
   for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
 }

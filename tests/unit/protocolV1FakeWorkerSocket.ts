@@ -27,6 +27,8 @@ export interface FakeWorkerOptions {
   workerNonce?: string;
   protoMin?: number;
   protoMax?: number;
+  /** Announced as `hello.blob_port`; omit to leave it unset (like a worker not running the blob HTTP server). */
+  blobPort?: number;
   handleRequest?: FakeRequestHandler;
 }
 
@@ -50,6 +52,7 @@ export class FakeWorkerSocket implements WebSocketLike {
   readonly workerNonce: string;
   readonly protoMin: number;
   readonly protoMax: number;
+  readonly blobPort: number | undefined;
   private readonly _handleRequest: FakeRequestHandler;
 
   constructor(opts: FakeWorkerOptions = {}) {
@@ -57,6 +60,7 @@ export class FakeWorkerSocket implements WebSocketLike {
     this.workerNonce = opts.workerNonce ?? "worker-nonce";
     this.protoMin = opts.protoMin ?? 1;
     this.protoMax = opts.protoMax ?? 1;
+    this.blobPort = opts.blobPort;
     this._handleRequest = opts.handleRequest ?? defaultHandleRequest;
   }
 
@@ -95,6 +99,7 @@ export class FakeWorkerSocket implements WebSocketLike {
           agent: { name: "sleap-connect-worker", version: "0.0.0", platform: "test" },
           node_id: this.workerNodeId,
           nonce: this.workerNonce,
+          ...(this.blobPort !== undefined ? { blob_port: this.blobPort } : {}),
         }),
       });
       return;

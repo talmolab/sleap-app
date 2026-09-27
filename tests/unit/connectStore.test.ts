@@ -28,7 +28,10 @@ class FakeWorkerClient {
   static instances: FakeWorkerClient[] = [];
   /** What the next-constructed instance's fsMounts() will resolve to. */
   static nextMounts: FakeMount[] = [];
+  /** What the next-constructed instance's peerNodeId will report post-connect(). */
+  static nextPeerNodeId: string | null = "worker-node-id";
 
+  peerNodeId: string | null;
   authenticated = false;
   closed = false;
   connectCalls = 0;
@@ -49,11 +52,15 @@ class FakeWorkerClient {
   jobsSubmitResult = { jobId: "job_1" };
   /** What jobsStatus() resolves to; `null` makes it reject (job.not_found). */
   jobsStatusResult: { state: string } | null = null;
+  fetchBlobCalls: Array<[string, number | undefined]> = [];
+  fetchBlobResult = new Uint8Array([1, 2, 3]);
+  fetchBlobShouldThrow: Error | null = null;
 
   private _subscribers = new Map<string, Set<(e: FakeWorkerEvent) => void>>();
 
   constructor(public opts: { url: string }) {
     this.mountsResult = FakeWorkerClient.nextMounts;
+    this.peerNodeId = FakeWorkerClient.nextPeerNodeId;
     FakeWorkerClient.instances.push(this);
   }
 
@@ -96,6 +103,12 @@ class FakeWorkerClient {
     this.jobsStatusCalls.push(jobId);
     if (this.jobsStatusResult === null) throw new Error("job.not_found");
     return this.jobsStatusResult;
+  }
+
+  async fetchBlob(sha256: string, expectedSize?: number) {
+    this.fetchBlobCalls.push([sha256, expectedSize]);
+    if (this.fetchBlobShouldThrow) throw this.fetchBlobShouldThrow;
+    return this.fetchBlobResult;
   }
 
   async jobsSubscribe(jobId: string, _sinceSeq: number, cb: (e: FakeWorkerEvent) => void) {
@@ -159,6 +172,7 @@ describe("connectStore", () => {
   beforeEach(() => {
     FakeWorkerClient.instances.length = 0;
     FakeWorkerClient.nextMounts = [];
+    FakeWorkerClient.nextPeerNodeId = "worker-node-id";
     useConnectStore.setState({
       pairedWorkers: [],
       selectedWorkerId: null,
@@ -248,6 +262,21 @@ describe("connectStore", () => {
         FakeWorkerClient.prototype.pairClaim = original;
       }
     });
+
+    it("rejects and closes the socket if the worker's hello reports a different node_id than the ticket claims", async () => {
+      FakeWorkerClient.nextPeerNodeId = "some-other-worker";
+
+      await expect(useConnectStore.getState().pairWithTicket(TICKET)).rejects.toThrow(
+        /different node/,
+      );
+
+      const client = lastClient();
+      expect(client.pairClaimArgs).toEqual([]); // never got to pairClaim
+      expect(client.closed).toBe(true);
+      const state = useConnectStore.getState();
+      expect(state.connectionStatus).toBe("error");
+      expect(state.pairedWorkers).toEqual([]);
+    });
   });
 
   describe("connectToWorker", () => {
@@ -317,6 +346,20 @@ describe("connectStore", () => {
       } finally {
         FakeWorkerClient.prototype.authProve = original;
       }
+    });
+
+    it("rejects and closes the socket if the address now answers as a different node_id", async () => {
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
+      FakeWorkerClient.nextPeerNodeId = "some-other-worker";
+
+      await expect(
+        useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId),
+      ).rejects.toThrow(/different node/);
+
+      const client = lastClient();
+      expect(client.authProveCalls).toBe(0); // never got to authProve
+      expect(client.closed).toBe(true);
+      expect(useConnectStore.getState().connectionStatus).toBe("error");
     });
   });
 
@@ -470,10 +513,10 @@ describe("connectStore", () => {
 
       expect(result).toEqual({ jobId: "job_1", success: true });
       expect(lines).toEqual(["epoch 1"]);
-      expect(useConnectStore.getState().currentJob).toEqual({
-        workerId: PAIRED_WORKER.nodeId,
-        jobId: "job_1",
-      });
+      // Terminal: nothing left to reattach to, so the tracked pointer is
+      // cleared rather than being re-checked via a live network round trip
+      // on every future connect to this worker.
+      expect(useConnectStore.getState().currentJob).toBeNull();
     });
 
     it("resolves with success:false and the worker's detail on job.status: failed", async () => {
@@ -484,6 +527,39 @@ describe("connectStore", () => {
 
       const result = await promise;
       expect(result).toEqual({ jobId: "job_1", success: false, error: "exit code 1" });
+      expect(useConnectStore.getState().currentJob).toBeNull();
+    });
+
+    it("captures job.result's blobs (which arrive before job.status: completed)", async () => {
+      const spec: JobSpec = { type: "track", data_path: "/x.slp", model_paths: ["m1"] };
+      const promise = useConnectStore.getState().submitJob(spec, () => {});
+      await flushAsync();
+      const client = lastClient();
+      // Mirrors the real worker's order (job.result before the terminal
+      // job.status) — see talmolab/sleap-connect's job_methods.py.
+      client.emit("job_1", "job.result", {
+        blobs: { predictions: { sha256: "abc123", size: 4096 } },
+      });
+      client.emit("job_1", "job.status", { state: "completed" });
+
+      const result = await promise;
+      expect(result).toEqual({
+        jobId: "job_1",
+        success: true,
+        resultBlobs: { predictions: { sha256: "abc123", size: 4096 } },
+      });
+    });
+
+    it("leaves resultBlobs undefined when job.result carries no blobs", async () => {
+      const spec: JobSpec = { type: "track", data_path: "/x.slp", model_paths: ["m1"] };
+      const promise = useConnectStore.getState().submitJob(spec, () => {});
+      await flushAsync();
+      const client = lastClient();
+      client.emit("job_1", "job.result", { blobs: {} });
+      client.emit("job_1", "job.status", { state: "completed" });
+
+      const result = await promise;
+      expect(result.resultBlobs).toBeUndefined();
     });
 
     it("splits a multi-model TrainJobSpec into sequential single-model jobs", async () => {
@@ -565,6 +641,28 @@ describe("connectStore", () => {
       useConnectStore.getState().stopJob();
       await flushAsync();
       expect(lastClient().jobsCancelCalls).toEqual([["job_1", "stop"]]);
+    });
+  });
+
+  describe("fetchResultBlob", () => {
+    it("throws if not connected to a worker", async () => {
+      await expect(
+        useConnectStore.getState().fetchResultBlob({ sha256: "abc123", size: 4 }),
+      ).rejects.toThrow(/Not connected/);
+    });
+
+    it("delegates to the client's fetchBlob with the ref's sha256 and size", async () => {
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
+      await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
+      const client = lastClient();
+      client.fetchBlobResult = new Uint8Array([9, 9, 9]);
+
+      const bytes = await useConnectStore
+        .getState()
+        .fetchResultBlob({ sha256: "abc123", size: 4096 });
+
+      expect(client.fetchBlobCalls).toEqual([["abc123", 4096]]);
+      expect(bytes).toEqual(new Uint8Array([9, 9, 9]));
     });
   });
 

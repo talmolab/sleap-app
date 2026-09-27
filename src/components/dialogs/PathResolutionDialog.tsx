@@ -63,8 +63,11 @@ export function PathResolutionDialog({
   // without this guard this dialog would silently offer stale mounts.
   const connectionStatus = useConnectStore((s) => s.connectionStatus);
   const connectedMounts = useConnectStore((s) => s.workerMounts);
+  // Empty (not ["/"]) while disconnected: RemoteFileBrowser treats a single
+  // mount as "browse it directly", which would immediately hit connectStore's
+  // "Not connected to worker" error instead of showing an empty/disabled state.
   const workerMounts =
-    connectionStatus === "connected" ? connectedMounts.map((m) => m.path) : ["/"];
+    connectionStatus === "connected" ? connectedMounts.map((m) => m.path) : [];
 
   // Reset state when dialog opens with new paths
   useEffect(() => {

@@ -23,6 +23,13 @@ export interface HelloFrame {
   agent: AgentInfo;
   node_id: string;
   nonce: string;
+  /**
+   * The worker's blob-serving HTTP port (spec §6.3), on the same host the
+   * client dialed for this WS connection. Additive per §2.4; only ever
+   * present on a worker's own hello (never the client's, and never on a
+   * worker not running the blob HTTP server).
+   */
+  blob_port?: number;
 }
 
 export interface ReqFrame {
@@ -126,6 +133,7 @@ export function parseEnvelope(raw: string): Envelope {
         agent: frame.agent as AgentInfo,
         node_id: frame.node_id as string,
         nonce: frame.nonce as string,
+        blob_port: frame.blob_port as number | undefined,
       };
 
     case "req":

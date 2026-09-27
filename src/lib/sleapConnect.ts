@@ -129,11 +129,27 @@ export interface Credentials {
   privateKey?: string; // Ed25519 private key (URL-safe base64, raw 32 bytes)
 }
 
+/** A content-addressed result blob ref (protocol v1 spec §6.4). */
+export interface JobResultBlobRef {
+  sha256: string;
+  size: number;
+}
+
 export interface JobResult {
   jobId: string;
   success: boolean;
   outputPath?: string;
   error?: string;
+  /**
+   * Result blobs a protocol-v1 worker reported on `job.result` (e.g.
+   * `resultBlobs.predictions`) — fetch with `connectStore`'s
+   * `fetchResultBlob`. `outputPath` above is the desktop-only, local-file
+   * concept this replaces for the remote-worker case; empty/undefined
+   * until the worker actually registers something (stage 1.10's
+   * `talmolab/sleap-connect` side — a worker not running the blob HTTP
+   * server, or a training job, never populates this).
+   */
+  resultBlobs?: Record<string, JobResultBlobRef>;
 }
 
 // ── Message helpers ───────────────────────────────────────────────
