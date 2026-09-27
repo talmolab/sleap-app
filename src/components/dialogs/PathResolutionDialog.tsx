@@ -58,10 +58,8 @@ export function PathResolutionDialog({
   const [folderBrowseMode, setFolderBrowseMode] = useState(false);
 
   // Get worker mounts from the connect store
-  const workers = useConnectStore((s) => s.workers);
-  const selectedWorkerId = useConnectStore((s) => s.selectedWorkerId);
-  const selectedWorker = workers.find((w) => w.peerId === selectedWorkerId);
-  const workerMounts = selectedWorker?.mounts ?? [];
+  const connectedMounts = useConnectStore((s) => s.workerMounts);
+  const workerMounts = connectedMounts.map((m) => m.path);
 
   // Reset state when dialog opens with new paths
   useEffect(() => {

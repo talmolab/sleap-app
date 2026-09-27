@@ -1350,9 +1350,9 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
     });
 
     if (remoteOpts?.remote) {
-      // ── Remote training via WebRTC ────────────────────────
+      // ── Remote training via sleap-connect worker ──────────
       const { useConnectStore } = await import("@/stores/connectStore");
-      const { submitJob, workers, selectedWorkerId } = useConnectStore.getState();
+      const { submitJob, workerMounts: mounts } = useConnectStore.getState();
 
       // Collect video paths from the loaded project
       const { useAppStore } = await import("@/stores/appStore");
@@ -1375,8 +1375,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       const { loadSavedMappings, resolveProjectPaths, buildPathMappings } =
         await import("@/lib/pathMappings");
       const savedMappings = await loadSavedMappings();
-      const worker = workers.find((w) => w.peerId === selectedWorkerId);
-      const workerMounts = worker?.mounts ?? [];
+      const workerMounts = mounts.map((m) => m.path);
 
       // Resolve paths using saved prefix mappings
       const resolvedPaths = resolveProjectPaths(allLocalPaths, savedMappings, workerMounts);
@@ -1463,8 +1462,6 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
           i === 0 ? { ...m, status: "running" as const } : m,
         ),
       }));
-
-      const numModels = slots.length;
 
       try {
         const result = await submitJob(spec, (line: string, isCarriageReturn?: boolean) => {
@@ -1587,7 +1584,6 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
           // ── Regular log line — append to shared log ───────────
           set((s) => ({ log: appendLog(s.log, line) }));
         }, {
-          expectedCompletions: numModels,
           onModelComplete: () => {
             // A model finished — advance to the next one
             set((s) => {
@@ -2166,10 +2162,10 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
 
   stopTraining: async () => {
     if (get()._isRemote) {
-      // Remote: send CONTROL_COMMAND for graceful early stop
+      // Remote: jobs.cancel(mode: "stop") for graceful early stop
       const { useConnectStore } = await import("@/stores/connectStore");
-      const { sendControlCommand } = useConnectStore.getState();
-      sendControlCommand("stop");
+      const { stopJob } = useConnectStore.getState();
+      stopJob();
       set((s) => ({
         log: appendLog(s.log, "— Stop Early requested, saving checkpoint..."),
       }));
@@ -2193,10 +2189,10 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
 
   cancelTraining: async () => {
     if (get()._isRemote) {
-      // Remote: send JOB_CANCEL
+      // Remote: jobs.cancel(mode: "cancel")
       const { useConnectStore } = await import("@/stores/connectStore");
       const { cancelJob } = useConnectStore.getState();
-      cancelJob("current");
+      cancelJob();
     } else {
       // Local: kill subprocess
       await cancelCommand();

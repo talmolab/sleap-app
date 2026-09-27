@@ -1,172 +1,518 @@
-import { describe, it, expect, beforeEach } from "../bun-test";
-import { useConnectStore } from "@/stores/connectStore";
+import { describe, it, expect, beforeEach, vi } from "../bun-test";
+import { useConnectStore, type PairedWorker } from "@/stores/connectStore";
+import type { JobSpec } from "@/lib/sleapConnect";
+
+// connectStore's own actions (pairing flow, browse pagination, job
+// submission/multi-model splitting, cancel/stop) are what's under test here.
+// WorkerClient's wire behavior (hello, auth, envelope framing, event
+// ordering) is already covered by tests/unit/protocolV1Client.test.ts — this
+// fake stands in for it as a trusted dependency, matching this repo's
+// "class tests + thin integration" default for wiring code.
+interface FakeMount {
+  path: string;
+  label?: string;
+}
+interface FakeFsEntry {
+  name: string;
+  type: "file" | "directory";
+  size?: number;
+}
+interface FakeWorkerEvent {
+  topic: string;
+  jobId: string;
+  seq: number;
+  data: Record<string, unknown>;
+}
+
+class FakeWorkerClient {
+  static instances: FakeWorkerClient[] = [];
+  /** What the next-constructed instance's fsMounts() will resolve to. */
+  static nextMounts: FakeMount[] = [];
+
+  authenticated = false;
+  closed = false;
+  connectCalls = 0;
+  connectShouldThrow: Error | null = null;
+  pairClaimArgs: string[] = [];
+  pairClaimShouldThrow: Error | null = null;
+  authProveCalls = 0;
+  authProveShouldThrow: Error | null = null;
+  jobsSubmitCalls: Record<string, unknown>[] = [];
+  jobsCancelCalls: Array<[string, string]> = [];
+  fsListCalls: Array<[string, number]> = [];
+
+  mountsResult: FakeMount[] = [];
+  fsListResults: Array<{ entries: FakeFsEntry[]; totalCount: number; hasMore: boolean }> = [
+    { entries: [], totalCount: 0, hasMore: false },
+  ];
+  jobsSubmitResult = { jobId: "job_1" };
+
+  private _subscribers = new Map<string, Set<(e: FakeWorkerEvent) => void>>();
+
+  constructor(public opts: { url: string }) {
+    this.mountsResult = FakeWorkerClient.nextMounts;
+    FakeWorkerClient.instances.push(this);
+  }
+
+  async connect() {
+    this.connectCalls++;
+    if (this.connectShouldThrow) throw this.connectShouldThrow;
+  }
+
+  async pairClaim(secret: string) {
+    this.pairClaimArgs.push(secret);
+    if (this.pairClaimShouldThrow) throw this.pairClaimShouldThrow;
+    this.authenticated = true;
+  }
+
+  async authProve() {
+    this.authProveCalls++;
+    if (this.authProveShouldThrow) throw this.authProveShouldThrow;
+    this.authenticated = true;
+  }
+
+  async fsMounts() {
+    return this.mountsResult;
+  }
+
+  async fsList(path: string, offset = 0) {
+    this.fsListCalls.push([path, offset]);
+    return this.fsListResults[this.fsListCalls.length - 1] ?? { entries: [], totalCount: 0, hasMore: false };
+  }
+
+  async jobsSubmit(spec: Record<string, unknown>) {
+    this.jobsSubmitCalls.push(spec);
+    return this.jobsSubmitResult;
+  }
+
+  async jobsCancel(jobId: string, mode: string) {
+    this.jobsCancelCalls.push([jobId, mode]);
+  }
+
+  async jobsSubscribe(jobId: string, _sinceSeq: number, cb: (e: FakeWorkerEvent) => void) {
+    let set = this._subscribers.get(jobId);
+    if (!set) {
+      set = new Set();
+      this._subscribers.set(jobId, set);
+    }
+    set.add(cb);
+    return () => {
+      set?.delete(cb);
+    };
+  }
+
+  close() {
+    this.closed = true;
+  }
+
+  /** Test helper: simulate the worker pushing an event to subscribers. */
+  emit(jobId: string, topic: string, data: Record<string, unknown>) {
+    for (const cb of this._subscribers.get(jobId) ?? []) cb({ topic, jobId, seq: 1, data });
+  }
+}
+
+function lastClient(): FakeWorkerClient {
+  const c = FakeWorkerClient.instances[FakeWorkerClient.instances.length - 1];
+  if (!c) throw new Error("no FakeWorkerClient constructed yet");
+  return c;
+}
+
+/** Lets a `submitJob` in flight advance to the point it's registered its subscription. */
+function flushAsync(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+vi.mock("@/lib/protocolV1/identity", () => ({
+  getClientIdentity: async () => ({
+    nodeId: "client-node-id",
+    sign: async (nonce: string) => `sig(${nonce})`,
+  }),
+}));
+vi.mock("@/lib/protocolV1/client", () => ({
+  WorkerClient: FakeWorkerClient,
+}));
+
+const TICKET = JSON.stringify({
+  node_id: "worker-node-id",
+  addrs: ["ws://192.168.1.42:9631"],
+  secret: "one-time-secret",
+  expires_at: "2026-09-27T18:00:00Z",
+});
+
+const PAIRED_WORKER: PairedWorker = {
+  nodeId: "worker-node-id",
+  label: "Worker worker-n",
+  addrs: ["ws://192.168.1.42:9631"],
+  pairedAt: "2026-09-27T00:00:00Z",
+};
 
 describe("connectStore", () => {
   beforeEach(() => {
-    // Reset store between tests
+    FakeWorkerClient.instances.length = 0;
+    FakeWorkerClient.nextMounts = [];
     useConnectStore.setState({
-      credentials: null,
+      pairedWorkers: [],
+      selectedWorkerId: null,
+      currentJobId: null,
       connectionStatus: "disconnected",
       connectionError: null,
-      roomId: null,
-      workers: [],
-      selectedWorkerId: null,
-      _ws: null,
-      _pc: null,
-      _pendingFs: new Map(),
-      _pendingJobs: new Map(),
+      workerMounts: [],
+      _client: null,
     });
   });
 
-  describe("setCredentials", () => {
-    it("stores credentials", () => {
-      const creds = {
-        jwt: "test-jwt",
-        username: "testuser",
-        avatarUrl: "https://example.com/avatar.png",
-        defaultRoom: "test-room",
-      };
-      useConnectStore.getState().setCredentials(creds);
-      expect(useConnectStore.getState().credentials).toEqual(creds);
+  describe("pairWithTicket", () => {
+    it("connects, claims the ticket, fetches mounts, and records the paired worker", async () => {
+      FakeWorkerClient.nextMounts = [{ path: "/mnt/data", label: "Lab data" }];
+
+      await useConnectStore.getState().pairWithTicket(TICKET);
+
+      const client = lastClient();
+      expect(client.opts.url).toBe("ws://192.168.1.42:9631");
+      expect(client.connectCalls).toBe(1);
+      expect(client.pairClaimArgs).toEqual(["one-time-secret"]);
+
+      const state = useConnectStore.getState();
+      expect(state.connectionStatus).toBe("connected");
+      expect(state.selectedWorkerId).toBe("worker-node-id");
+      expect(state.workerMounts).toEqual([{ path: "/mnt/data", label: "Lab data" }]);
+      expect(state.pairedWorkers).toHaveLength(1);
+      expect(state.pairedWorkers[0].nodeId).toBe("worker-node-id");
+      expect(state.pairedWorkers[0].addrs[0]).toBe("ws://192.168.1.42:9631");
     });
 
-    it("clears credentials with null", () => {
-      useConnectStore.getState().setCredentials({
-        jwt: "test",
-        username: "user",
-      });
-      useConnectStore.getState().setCredentials(null);
-      expect(useConnectStore.getState().credentials).toBeNull();
+    it("rejects invalid ticket JSON without touching connection state", async () => {
+      await expect(useConnectStore.getState().pairWithTicket("not json")).rejects.toThrow();
+      expect(useConnectStore.getState().connectionStatus).toBe("disconnected");
+    });
+
+    it("rejects a ticket missing node_id or secret", async () => {
+      await expect(
+        useConnectStore.getState().pairWithTicket(JSON.stringify({ addrs: ["ws://x"] })),
+      ).rejects.toThrow(/node_id or secret/);
+    });
+
+    it("rejects when there's no address (ticket and no override)", async () => {
+      const noAddr = JSON.stringify({ node_id: "n", secret: "s", addrs: [] });
+      await expect(useConnectStore.getState().pairWithTicket(noAddr)).rejects.toThrow(/address/);
+    });
+
+    it("uses an explicit address override even if the ticket has one", async () => {
+      await useConnectStore.getState().pairWithTicket(TICKET, "ws://override:1234");
+      expect(lastClient().opts.url).toBe("ws://override:1234");
+    });
+
+    it("sets connectionStatus to 'error' if the worker can't be reached", async () => {
+      // Prime a client that will throw on connect() — done by pairing once
+      // successfully is not an option, so patch the class default instead.
+      const originalConnect = FakeWorkerClient.prototype.connect;
+      FakeWorkerClient.prototype.connect = async function (this: FakeWorkerClient) {
+        throw new Error("connection refused");
+      };
+      try {
+        await expect(useConnectStore.getState().pairWithTicket(TICKET)).rejects.toThrow(
+          "connection refused",
+        );
+        const state = useConnectStore.getState();
+        expect(state.connectionStatus).toBe("error");
+        expect(state.connectionError).toBe("connection refused");
+      } finally {
+        FakeWorkerClient.prototype.connect = originalConnect;
+      }
+    });
+  });
+
+  describe("connectToWorker", () => {
+    it("throws for an unpaired node_id", async () => {
+      await expect(useConnectStore.getState().connectToWorker("unknown")).rejects.toThrow(
+        /pair with it first/,
+      );
+    });
+
+    it("throws if the paired worker has no known address", async () => {
+      useConnectStore.setState({ pairedWorkers: [{ ...PAIRED_WORKER, addrs: [] }] });
+      await expect(
+        useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId),
+      ).rejects.toThrow(/No known address/);
+    });
+
+    it("reconnects via authProve (not pairClaim) and marks connected", async () => {
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
+
+      await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
+
+      const client = lastClient();
+      expect(client.connectCalls).toBe(1);
+      expect(client.authProveCalls).toBe(1);
+      expect(client.pairClaimArgs).toEqual([]);
+      expect(useConnectStore.getState().connectionStatus).toBe("connected");
+    });
+
+    it("closes any previous client before dialing the new one", async () => {
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
+      await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
+      const first = lastClient();
+
+      await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
+
+      expect(first.closed).toBe(true);
+    });
+
+    it("sets connectionStatus to 'error' if authProve is rejected", async () => {
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
+      const original = FakeWorkerClient.prototype.authProve;
+      FakeWorkerClient.prototype.authProve = async function () {
+        throw new Error("auth.untrusted");
+      };
+      try {
+        await expect(
+          useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId),
+        ).rejects.toThrow("auth.untrusted");
+        expect(useConnectStore.getState().connectionStatus).toBe("error");
+      } finally {
+        FakeWorkerClient.prototype.authProve = original;
+      }
     });
   });
 
   describe("selectWorker", () => {
-    it("sets selectedWorkerId", () => {
-      useConnectStore.getState().selectWorker("worker-1");
-      expect(useConnectStore.getState().selectedWorkerId).toBe("worker-1");
+    it("null disconnects", async () => {
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
+      await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
+      const client = lastClient();
+
+      await useConnectStore.getState().selectWorker(null);
+
+      expect(client.closed).toBe(true);
+      expect(useConnectStore.getState().connectionStatus).toBe("disconnected");
     });
 
-    it("clears with null", () => {
-      useConnectStore.getState().selectWorker("worker-1");
-      useConnectStore.getState().selectWorker(null);
-      expect(useConnectStore.getState().selectedWorkerId).toBeNull();
+    it("a node_id connects to that worker", async () => {
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
+      await useConnectStore.getState().selectWorker(PAIRED_WORKER.nodeId);
+      expect(useConnectStore.getState().connectionStatus).toBe("connected");
     });
   });
 
   describe("disconnect", () => {
-    it("resets connection state", () => {
-      useConnectStore.setState({
-        connectionStatus: "connected",
-        roomId: "test-room",
-        workers: [
-          {
-            peerId: "w1",
-            name: "worker-1",
-            status: "available",
-            mounts: [],
-          },
-        ],
-        selectedWorkerId: "w1",
-      });
+    it("closes the client and resets runtime state but keeps pairing/selection", async () => {
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
+      await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
+      const client = lastClient();
 
       useConnectStore.getState().disconnect();
 
+      expect(client.closed).toBe(true);
       const state = useConnectStore.getState();
       expect(state.connectionStatus).toBe("disconnected");
-      expect(state.roomId).toBeNull();
-      expect(state.workers).toEqual([]);
+      expect(state.workerMounts).toEqual([]);
+      expect(state.pairedWorkers).toEqual([PAIRED_WORKER]);
+      expect(state.selectedWorkerId).toBe(PAIRED_WORKER.nodeId);
+    });
+  });
+
+  describe("forgetWorker", () => {
+    it("removes the worker from the paired list", () => {
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
+      useConnectStore.getState().forgetWorker(PAIRED_WORKER.nodeId);
+      expect(useConnectStore.getState().pairedWorkers).toEqual([]);
+    });
+
+    it("disconnects and clears selection if forgetting the currently-selected worker", async () => {
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
+      await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
+      const client = lastClient();
+
+      useConnectStore.getState().forgetWorker(PAIRED_WORKER.nodeId);
+
+      expect(client.closed).toBe(true);
+      const state = useConnectStore.getState();
       expect(state.selectedWorkerId).toBeNull();
-    });
-  });
-
-  describe("initial state", () => {
-    it("starts disconnected with no credentials", () => {
-      const state = useConnectStore.getState();
       expect(state.connectionStatus).toBe("disconnected");
-      expect(state.credentials).toBeNull();
-      expect(state.workers).toEqual([]);
+    });
+
+    it("leaves an unrelated connection untouched", async () => {
+      const other: PairedWorker = { ...PAIRED_WORKER, nodeId: "other", addrs: ["ws://other:1"] };
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER, other] });
+      await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
+
+      useConnectStore.getState().forgetWorker("other");
+
+      const state = useConnectStore.getState();
+      expect(state.selectedWorkerId).toBe(PAIRED_WORKER.nodeId);
+      expect(state.connectionStatus).toBe("connected");
+      expect(state.pairedWorkers.map((w) => w.nodeId)).toEqual([PAIRED_WORKER.nodeId]);
     });
   });
 
-  describe("_handleDataChannelMessage — JOB_LOG", () => {
-    it("strips JOB_LOG prefix and routes text to pending job by ID", () => {
-      const lines: string[] = [];
-      const pendingJobs = new Map();
-      pendingJobs.set("job_abc", {
-        onProgress: (line: string) => lines.push(line),
-        onComplete: () => {},
-        remainingCompletions: 1,
-      });
-      useConnectStore.setState({ _pendingJobs: pendingJobs });
-      useConnectStore.getState()._handleDataChannelMessage("JOB_LOG::job_abc::Training epoch 1");
-      expect(lines).toEqual(["Training epoch 1"]);
+  describe("browseRemoteDir", () => {
+    beforeEach(async () => {
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
+      await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
     });
 
-    it("handles JOB_LOG with :: in the text body", () => {
-      const lines: string[] = [];
-      const pendingJobs = new Map();
-      pendingJobs.set("job_abc", {
-        onProgress: (line: string) => lines.push(line),
-        onComplete: () => {},
-        remainingCompletions: 1,
-      });
-      useConnectStore.setState({ _pendingJobs: pendingJobs });
-      useConnectStore.getState()._handleDataChannelMessage("JOB_LOG::job_abc::loss: 0.5 :: val: 0.3");
-      expect(lines).toEqual(["loss: 0.5 :: val: 0.3"]);
+    it("throws if not connected", async () => {
+      useConnectStore.getState().disconnect();
+      await expect(useConnectStore.getState().browseRemoteDir("/mnt")).rejects.toThrow(
+        /Not connected/,
+      );
     });
 
-    it("ignores JOB_LOG for unknown job ID", () => {
-      const lines: string[] = [];
-      const pendingJobs = new Map();
-      pendingJobs.set("job_abc", {
-        onProgress: (line: string) => lines.push(line),
-        onComplete: () => {},
-        remainingCompletions: 1,
-      });
-      useConnectStore.setState({ _pendingJobs: pendingJobs });
-      useConnectStore.getState()._handleDataChannelMessage("JOB_LOG::job_xyz::Unknown job");
-      expect(lines).toEqual([]);
+    it("maps a single page of entries and stops when hasMore is false", async () => {
+      const client = lastClient();
+      client.fsListResults = [
+        {
+          entries: [
+            { name: "a.slp", type: "file", size: 10 },
+            { name: "sub", type: "directory" },
+          ],
+          totalCount: 2,
+          hasMore: false,
+        },
+      ];
+
+      const entries = await useConnectStore.getState().browseRemoteDir("/mnt");
+
+      expect(entries).toEqual([
+        { name: "a.slp", isDir: false, size: 10 },
+        { name: "sub", isDir: true, size: undefined },
+      ]);
+      expect(client.fsListCalls).toEqual([["/mnt", 0]]);
+    });
+
+    it("auto-paginates until hasMore is false", async () => {
+      const client = lastClient();
+      client.fsListResults = [
+        { entries: [{ name: "a.slp", type: "file" }], totalCount: 3, hasMore: true },
+        { entries: [{ name: "b.slp", type: "file" }], totalCount: 3, hasMore: false },
+      ];
+
+      const entries = await useConnectStore.getState().browseRemoteDir("/mnt");
+
+      expect(entries.map((e) => e.name)).toEqual(["a.slp", "b.slp"]);
+      expect(client.fsListCalls).toEqual([
+        ["/mnt", 0],
+        ["/mnt", 1],
+      ]);
     });
   });
 
-  describe("_handleDataChannelMessage — AUTH messages not forwarded", () => {
-    it("does not forward AUTH_CHALLENGE to pending jobs", () => {
-      const lines: string[] = [];
-      const pendingJobs = new Map();
-      pendingJobs.set("job_abc", {
-        onProgress: (line: string) => lines.push(line),
-        onComplete: () => {},
-        remainingCompletions: 1,
-      });
-      useConnectStore.setState({ _pendingJobs: pendingJobs });
-      useConnectStore.getState()._handleDataChannelMessage("AUTH_CHALLENGE::test-nonce");
-      expect(lines).toEqual([]);
+  describe("submitJob", () => {
+    beforeEach(async () => {
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
+      await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
     });
 
-    it("does not forward AUTH_SUCCESS to pending jobs", () => {
-      const lines: string[] = [];
-      const pendingJobs = new Map();
-      pendingJobs.set("job_abc", {
-        onProgress: (line: string) => lines.push(line),
-        onComplete: () => {},
-        remainingCompletions: 1,
-      });
-      useConnectStore.setState({ _pendingJobs: pendingJobs });
-      useConnectStore.getState()._handleDataChannelMessage("AUTH_SUCCESS");
-      expect(lines).toEqual([]);
+    it("throws if not connected to a worker", async () => {
+      useConnectStore.getState().disconnect();
+      const spec: JobSpec = { type: "track", data_path: "/x.slp", model_paths: [] };
+      await expect(useConnectStore.getState().submitJob(spec, () => {})).rejects.toThrow(
+        /Not connected/,
+      );
     });
 
-    it("does not forward AUTH_FAILURE to pending jobs", () => {
+    it("submits a single-model spec, forwards job.log, and resolves on completion", async () => {
       const lines: string[] = [];
-      const pendingJobs = new Map();
-      pendingJobs.set("job_abc", {
-        onProgress: (line: string) => lines.push(line),
-        onComplete: () => {},
-        remainingCompletions: 1,
+      const spec: JobSpec = { type: "track", data_path: "/x.slp", model_paths: ["m1"] };
+
+      const promise = useConnectStore.getState().submitJob(spec, (line) => lines.push(line));
+      await flushAsync();
+      const client = lastClient();
+      client.emit("job_1", "job.log", { line: "epoch 1" });
+      client.emit("job_1", "job.status", { state: "completed" });
+
+      const result = await promise;
+
+      expect(result).toEqual({ jobId: "job_1", success: true });
+      expect(lines).toEqual(["epoch 1"]);
+      expect(useConnectStore.getState().currentJobId).toBe("job_1");
+    });
+
+    it("resolves with success:false and the worker's detail on job.status: failed", async () => {
+      const spec: JobSpec = { type: "track", data_path: "/x.slp", model_paths: ["m1"] };
+      const promise = useConnectStore.getState().submitJob(spec, () => {});
+      await flushAsync();
+      lastClient().emit("job_1", "job.status", { state: "failed", detail: "exit code 1" });
+
+      const result = await promise;
+      expect(result).toEqual({ jobId: "job_1", success: false, error: "exit code 1" });
+    });
+
+    it("splits a multi-model TrainJobSpec into sequential single-model jobs", async () => {
+      const modelCompletions: unknown[] = [];
+      const spec: JobSpec = {
+        type: "train",
+        config_contents: ["centroid yaml", "centered_instance yaml"],
+        model_types: ["centroid", "centered_instance"],
+        labels_path: "/labels.slp",
+      };
+
+      const promise = useConnectStore
+        .getState()
+        .submitJob(spec, () => {}, { onModelComplete: (r) => modelCompletions.push(r) });
+
+      for (let i = 0; i < 2; i++) {
+        await flushAsync();
+        lastClient().emit("job_1", "job.status", { state: "completed" });
+      }
+      const result = await promise;
+
+      const client = lastClient();
+      expect(client.jobsSubmitCalls).toHaveLength(2);
+      expect(client.jobsSubmitCalls[0]).toMatchObject({
+        config_contents: ["centroid yaml"],
+        model_types: ["centroid"],
       });
-      useConnectStore.setState({ _pendingJobs: pendingJobs });
-      useConnectStore.getState()._handleDataChannelMessage("AUTH_FAILURE::invalid");
-      expect(lines).toEqual([]);
+      expect(client.jobsSubmitCalls[1]).toMatchObject({
+        config_contents: ["centered_instance yaml"],
+        model_types: ["centered_instance"],
+      });
+      // Only the intermediate (non-final) model fires onModelComplete.
+      expect(modelCompletions).toEqual([{ jobId: "job_1", success: true }]);
+      expect(result).toEqual({ jobId: "job_1", success: true });
+    });
+
+    it("aborts the multi-model sequence on the first failure", async () => {
+      const spec: JobSpec = {
+        type: "train",
+        config_contents: ["centroid yaml", "centered_instance yaml"],
+        model_types: ["centroid", "centered_instance"],
+        labels_path: "/labels.slp",
+      };
+
+      const promise = useConnectStore.getState().submitJob(spec, () => {});
+      await flushAsync();
+      lastClient().emit("job_1", "job.status", { state: "failed", detail: "boom" });
+
+      const result = await promise;
+      expect(result).toEqual({ jobId: "job_1", success: false, error: "boom" });
+      expect(lastClient().jobsSubmitCalls).toHaveLength(1);
+    });
+  });
+
+  describe("cancelJob / stopJob", () => {
+    beforeEach(async () => {
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
+      await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
+    });
+
+    it("is a no-op with no current job", () => {
+      expect(() => useConnectStore.getState().cancelJob()).not.toThrow();
+      expect(lastClient().jobsCancelCalls).toEqual([]);
+    });
+
+    it("cancelJob sends mode: 'cancel' for the current job", async () => {
+      useConnectStore.setState({ currentJobId: "job_1" });
+      useConnectStore.getState().cancelJob();
+      await flushAsync();
+      expect(lastClient().jobsCancelCalls).toEqual([["job_1", "cancel"]]);
+    });
+
+    it("stopJob sends mode: 'stop' for the current job", async () => {
+      useConnectStore.setState({ currentJobId: "job_1" });
+      useConnectStore.getState().stopJob();
+      await flushAsync();
+      expect(lastClient().jobsCancelCalls).toEqual([["job_1", "stop"]]);
     });
   });
 });

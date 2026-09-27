@@ -233,9 +233,9 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
     });
 
     if (remoteOpts?.remote) {
-      // ── Remote inference via WebRTC ────────────────────────
+      // ── Remote inference via sleap-connect worker ─────────
       const { useConnectStore } = await import("@/stores/connectStore");
-      const { submitJob, workers, selectedWorkerId } = useConnectStore.getState();
+      const { submitJob, workerMounts: mounts } = useConnectStore.getState();
       const { handleProcessEvent } = useInferenceStore.getState();
 
       // Collect video paths from the loaded project
@@ -258,8 +258,7 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
       const { loadSavedMappings, resolveProjectPaths, buildPathMappings } =
         await import("@/lib/pathMappings");
       const savedMappings = await loadSavedMappings();
-      const worker = workers.find((w) => w.peerId === selectedWorkerId);
-      const workerMounts = worker?.mounts ?? [];
+      const workerMounts = mounts.map((m) => m.path);
 
       // Resolve paths using saved prefix mappings
       const resolvedPaths = resolveProjectPaths(allLocalPaths, savedMappings, workerMounts);

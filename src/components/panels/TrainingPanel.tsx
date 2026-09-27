@@ -936,12 +936,13 @@ export function TrainingPanel() {
   >(null);
 
   const connectionStatus = useConnectStore((s) => s.connectionStatus);
-  const workers = useConnectStore((s) => s.workers);
+  const pairedWorkers = useConnectStore((s) => s.pairedWorkers);
   const selectedWorkerId = useConnectStore((s) => s.selectedWorkerId);
   const selectWorker = useConnectStore((s) => s.selectWorker);
+  const connectedMounts = useConnectStore((s) => s.workerMounts);
 
-  const selectedWorker = workers.find((w) => w.peerId === selectedWorkerId);
-  const workerMounts = selectedWorker?.mounts || ["/"];
+  const workerMounts =
+    connectionStatus === "connected" ? connectedMounts.map((m) => m.path) : ["/"];
 
   // App state
   const skeleton = useAppStore((s) => s.skeleton);
@@ -1048,7 +1049,7 @@ export function TrainingPanel() {
     hasValidCheckpointSelection &&
     !isModelTypeIncompatible &&
     status === "idle" &&
-    (remoteEnabled ? !!selectedWorkerId : true);
+    (remoteEnabled ? !!selectedWorkerId && connectionStatus === "connected" : true);
 
   // Config upload via file dialog
   const handleConfigBrowse = (slot: string) => {
@@ -1411,7 +1412,7 @@ export function TrainingPanel() {
                     remoteEnabled ? "bg-primary" : "bg-zinc-700"
                   }`}
                   onClick={() => setRemoteEnabled(!remoteEnabled)}
-                  disabled={connectionStatus !== "connected"}
+                  disabled={pairedWorkers.length === 0}
                 >
                   <span
                     className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
@@ -1421,35 +1422,18 @@ export function TrainingPanel() {
                 </button>
               </div>
 
-              {connectionStatus !== "connected" && !remoteEnabled && (
+              {pairedWorkers.length === 0 && (
                 <p className="text-[10px] text-muted-foreground">
-                  Connect to a room in the Connect tab to enable remote training.
+                  Pair with a worker in the Connect tab to enable remote training.
                 </p>
               )}
 
-              {remoteEnabled && connectionStatus === "connected" && (
+              {remoteEnabled && pairedWorkers.length > 0 && (
                 <>
                   <div className="space-y-1">
                     <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-1">
-                      Room
-                      <HelpTooltip text="The sleap-connect room this app is currently connected to. Workers must join the same room to be selectable below." />
-                    </label>
-                    <div className="flex items-center gap-1.5 text-[11px]">
-                      <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
-                      {(() => {
-                        const state = useConnectStore.getState();
-                        const room = state.availableRooms.find(
-                          (r) => r.roomId === state.roomId,
-                        );
-                        return room?.name || state.roomId;
-                      })()}
-                    </div>
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-1">
                       Worker
-                      <HelpTooltip text="Which connected machine in the room will actually run training. Only workers with status 'available' can be selected." />
+                      <HelpTooltip text="Which paired sleap-connect worker will run this training job. Selecting one connects to it." />
                     </label>
                     <Select
                       value={selectedWorkerId || ""}
@@ -1459,27 +1443,34 @@ export function TrainingPanel() {
                         <SelectValue placeholder="Select a worker" />
                       </SelectTrigger>
                       <SelectContent>
-                        {workers.map((w) => (
-                          <SelectItem
-                            key={w.peerId}
-                            value={w.peerId}
-                            disabled={w.status !== "available"}
-                          >
-                            {w.name}
-                            {w.gpu ? ` (${w.gpu.model})` : ""}
-                            {w.status !== "available" ? ` — ${w.status}` : ""}
+                        {pairedWorkers.map((w) => (
+                          <SelectItem key={w.nodeId} value={w.nodeId}>
+                            {w.label}
                           </SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
+                    {selectedWorkerId && (
+                      <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                        <span
+                          className={`w-1.5 h-1.5 rounded-full ${
+                            connectionStatus === "connected"
+                              ? "bg-green-500"
+                              : connectionStatus === "connecting"
+                                ? "bg-yellow-500"
+                                : "bg-zinc-500"
+                          }`}
+                        />
+                        {connectionStatus === "connected"
+                          ? "Connected"
+                          : connectionStatus === "connecting"
+                            ? "Connecting…"
+                            : connectionStatus === "error"
+                              ? "Connection failed"
+                              : "Not connected"}
+                      </div>
+                    )}
                   </div>
-
-                  {workers.filter((w) => w.status === "available").length === 0 && (
-                    <div className="bg-orange-500/8 border border-orange-500/20 rounded-md p-2 text-[11px] text-orange-400">
-                      <b>All workers are busy.</b> Wait for a worker to become
-                      available, or disable remote training.
-                    </div>
-                  )}
                 </>
               )}
             </Section>
