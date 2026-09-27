@@ -34,9 +34,12 @@ export function RemoteFileBrowser({
   fileFilter,
 }: RemoteFileBrowserProps) {
   const browseRemoteDir = useConnectStore((s) => s.browseRemoteDir);
-  // Use last browsed path if available, else mount picker / first mount / root
+  // Use last browsed path if available, else mount picker / the single mount.
+  // Zero mounts (e.g. not actually connected) routes to the mount picker too
+  // — it renders its existing "No mounts available" empty state instead of
+  // attempting to browse a path with no live connection behind it.
   const initialPath = lastBrowsedPath
-    ?? (mounts.length > 1 ? MOUNT_PICKER : mounts[0] || "/");
+    ?? (mounts.length === 1 ? mounts[0] : MOUNT_PICKER);
   const [currentPath, setCurrentPath] = useState(initialPath);
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(false);

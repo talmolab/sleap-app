@@ -940,8 +940,11 @@ export function TrainingPanel() {
   const selectedWorkerId = useConnectStore((s) => s.selectedWorkerId);
   const connectedMounts = useConnectStore((s) => s.workerMounts);
 
+  // Empty (not ["/"]) while disconnected: RemoteFileBrowser treats a single
+  // mount as "browse it directly", which would immediately hit connectStore's
+  // "Not connected to worker" error instead of showing an empty/disabled state.
   const workerMounts =
-    connectionStatus === "connected" ? connectedMounts.map((m) => m.path) : ["/"];
+    connectionStatus === "connected" ? connectedMounts.map((m) => m.path) : [];
 
   // App state
   const skeleton = useAppStore((s) => s.skeleton);

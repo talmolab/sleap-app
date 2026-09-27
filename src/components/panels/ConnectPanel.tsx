@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Loader2, Plug, Trash2, Unplug } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useConnectStore } from "@/stores/connectStore";
@@ -20,6 +20,20 @@ export function ConnectPanel() {
   const [pairing, setPairing] = useState(false);
   const [pairError, setPairError] = useState<string | null>(null);
   const [connectingId, setConnectingId] = useState<string | null>(null);
+
+  // zustand's persist middleware hydrates asynchronously (a microtask) even
+  // with synchronous localStorage — this component's very first render can
+  // still see `pairedWorkers: []` before that resolves. Correct the initial
+  // guess exactly once so a genuinely non-empty persisted list doesn't get
+  // stuck showing the pair form; a `false` ref guards against re-closing a
+  // form the user re-opened later via the "Add" button.
+  const autoClosedPairFormRef = useRef(false);
+  useEffect(() => {
+    if (!autoClosedPairFormRef.current && pairedWorkers.length > 0) {
+      autoClosedPairFormRef.current = true;
+      setShowPairForm(false);
+    }
+  }, [pairedWorkers.length]);
 
   // This device's own identity — shown for transparency/debugging, never
   // needs to be typed in manually (pairClaim sends it automatically).

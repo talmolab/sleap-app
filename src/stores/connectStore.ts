@@ -183,6 +183,7 @@ async function submitSingleJob(
   spec: JobSpec,
   onProgress: (line: string, isCarriageReturn?: boolean) => void,
   set: (partial: Partial<ConnectState>) => void,
+  get: () => ConnectState,
 ): Promise<JobResult> {
   const { jobId } = await client.jobsSubmit(spec as unknown as Record<string, unknown>);
   set({ currentJob: { workerId, jobId } });
@@ -199,6 +200,10 @@ async function submitSingleJob(
       if (settled) return;
       settled = true;
       unsubscribe?.();
+      // Terminal job: nothing left to reattach to, so clear the tracked
+      // pointer instead of leaving it to be re-checked (a live jobsStatus
+      // round trip) on every future connect to this worker.
+      if (get().currentJob?.jobId === jobId) set({ currentJob: null });
       resolve(result);
     };
 
@@ -272,6 +277,13 @@ export const useConnectStore = create<ConnectState>()(
         try {
           client = await makeClient(addr);
           await client.connect();
+          if (client.peerNodeId !== ticket.node_id) {
+            throw new Error(
+              `Worker at ${addr} identified itself as a different node than this ticket ` +
+                `claims (expected ${ticket.node_id}, got ${client.peerNodeId}) — check the ` +
+                "address, or get a fresh ticket from the worker you meant to pair with.",
+            );
+          }
           await client.pairClaim(ticket.secret);
           const mounts = await client.fsMounts();
           const reattachableJob = await checkReattach(client, ticket.node_id, get().currentJob);
@@ -323,6 +335,13 @@ export const useConnectStore = create<ConnectState>()(
         try {
           client = await makeClient(addr);
           await client.connect();
+          if (client.peerNodeId !== nodeId) {
+            throw new Error(
+              `Worker at ${addr} identified itself as a different node than expected ` +
+                `(expected ${nodeId}, got ${client.peerNodeId}) — the address may now point ` +
+                "at a different worker. Forget and re-pair if this persists.",
+            );
+          }
           await client.authProve();
           const mounts = await client.fsMounts();
           const reattachableJob = await checkReattach(client, nodeId, get().currentJob);
@@ -422,6 +441,7 @@ export const useConnectStore = create<ConnectState>()(
               perModelSpec,
               onProgress,
               set,
+              get,
             );
             if (!finalResult.success) return finalResult;
             // Only intermediate models fire onModelComplete — matching the
@@ -432,7 +452,7 @@ export const useConnectStore = create<ConnectState>()(
           return finalResult;
         }
 
-        return submitSingleJob(_client, selectedWorkerId, spec, onProgress, set);
+        return submitSingleJob(_client, selectedWorkerId, spec, onProgress, set, get);
       },
 
       cancelJob: () => {
