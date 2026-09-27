@@ -57,9 +57,14 @@ export function PathResolutionDialog({
   const [browsingIndex, setBrowsingIndex] = useState<number | null>(null);
   const [folderBrowseMode, setFolderBrowseMode] = useState(false);
 
-  // Get worker mounts from the connect store
+  // Get worker mounts from the connect store — gated on connectionStatus,
+  // matching TrainingPanel.tsx/InferencePanel.tsx: a failed reconnect leaves
+  // workerMounts holding the previous (now-disconnected) worker's paths, so
+  // without this guard this dialog would silently offer stale mounts.
+  const connectionStatus = useConnectStore((s) => s.connectionStatus);
   const connectedMounts = useConnectStore((s) => s.workerMounts);
-  const workerMounts = connectedMounts.map((m) => m.path);
+  const workerMounts =
+    connectionStatus === "connected" ? connectedMounts.map((m) => m.path) : ["/"];
 
   // Reset state when dialog opens with new paths
   useEffect(() => {

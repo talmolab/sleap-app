@@ -230,6 +230,24 @@ describe("connectStore", () => {
         FakeWorkerClient.prototype.connect = originalConnect;
       }
     });
+
+    it("closes the socket if pairClaim fails after connect() already succeeded", async () => {
+      const original = FakeWorkerClient.prototype.pairClaim;
+      FakeWorkerClient.prototype.pairClaim = async function () {
+        throw new Error("auth.pairing_expired");
+      };
+      try {
+        await expect(useConnectStore.getState().pairWithTicket(TICKET)).rejects.toThrow(
+          "auth.pairing_expired",
+        );
+        // The socket opened successfully before the later step failed — it
+        // must still be closed, not leaked as an unreachable open connection.
+        expect(lastClient().connectCalls).toBe(1);
+        expect(lastClient().closed).toBe(true);
+      } finally {
+        FakeWorkerClient.prototype.pairClaim = original;
+      }
+    });
   });
 
   describe("connectToWorker", () => {
@@ -279,6 +297,23 @@ describe("connectStore", () => {
           useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId),
         ).rejects.toThrow("auth.untrusted");
         expect(useConnectStore.getState().connectionStatus).toBe("error");
+      } finally {
+        FakeWorkerClient.prototype.authProve = original;
+      }
+    });
+
+    it("closes the socket if authProve fails after connect() already succeeded", async () => {
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
+      const original = FakeWorkerClient.prototype.authProve;
+      FakeWorkerClient.prototype.authProve = async function () {
+        throw new Error("auth.untrusted");
+      };
+      try {
+        await expect(
+          useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId),
+        ).rejects.toThrow("auth.untrusted");
+        expect(lastClient().connectCalls).toBe(1);
+        expect(lastClient().closed).toBe(true);
       } finally {
         FakeWorkerClient.prototype.authProve = original;
       }

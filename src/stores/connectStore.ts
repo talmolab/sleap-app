@@ -253,8 +253,9 @@ export const useConnectStore = create<ConnectState>()(
         get()._client?.close();
         set({ connectionStatus: "connecting", connectionError: null });
 
+        let client: WorkerClient | null = null;
         try {
-          const client = await makeClient(addr);
+          client = await makeClient(addr);
           await client.connect();
           await client.pairClaim(ticket.secret);
           const mounts = await client.fsMounts();
@@ -277,6 +278,10 @@ export const useConnectStore = create<ConnectState>()(
             _client: client,
           }));
         } catch (err) {
+          // client.connect() may have already opened a real socket even
+          // though a later step (pairClaim/fsMounts) failed — close it so
+          // it isn't leaked, unreachable from store state but still live.
+          client?.close();
           set({
             connectionStatus: "error",
             connectionError: err instanceof Error ? err.message : String(err),
@@ -299,8 +304,9 @@ export const useConnectStore = create<ConnectState>()(
         get()._client?.close();
         set({ selectedWorkerId: nodeId, connectionStatus: "connecting", connectionError: null });
 
+        let client: WorkerClient | null = null;
         try {
-          const client = await makeClient(addr);
+          client = await makeClient(addr);
           await client.connect();
           await client.authProve();
           const mounts = await client.fsMounts();
@@ -314,6 +320,8 @@ export const useConnectStore = create<ConnectState>()(
             _client: client,
           });
         } catch (err) {
+          // See the matching comment in pairWithTicket — same leak risk.
+          client?.close();
           set({
             connectionStatus: "error",
             connectionError: err instanceof Error ? err.message : String(err),
