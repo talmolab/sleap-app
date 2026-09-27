@@ -13,6 +13,7 @@ import { useEnvironmentStore } from "../../stores/environmentStore";
 import { useInferenceStore } from "../../stores/inferenceStore";
 import type { InferenceConfig, PipelineType } from "@/stores/inferenceStore";
 import { useConnectStore } from "@/stores/connectStore";
+import { BackendPicker } from "@/components/common/BackendPicker";
 import { RemoteFileBrowser } from "@/components/dialogs/RemoteFileBrowser";
 import { isTauri } from "../../platform/index";
 import { detectGpu } from "../../platform/backend";
@@ -481,9 +482,7 @@ export function InferencePanel() {
   const [fileBrowserCallback, setFileBrowserCallback] = useState<((path: string) => void) | null>(null);
 
   const connectionStatus = useConnectStore((s) => s.connectionStatus);
-  const pairedWorkers = useConnectStore((s) => s.pairedWorkers);
   const selectedWorkerId = useConnectStore((s) => s.selectedWorkerId);
-  const selectWorker = useConnectStore((s) => s.selectWorker);
   const connectedMounts = useConnectStore((s) => s.workerMounts);
 
   const workerMounts =
@@ -1094,71 +1093,11 @@ export function InferencePanel() {
 
             {/* ── Remote (desktop only — web is always remote) ──────── */}
             <Section title="Remote" defaultOpen={false}>
-              <div className="flex items-center justify-between py-1">
-                <span className="text-xs">Remote Inference</span>
-                <button
-                  className={`w-9 h-5 rounded-full relative transition-colors ${
-                    remoteEnabled ? "bg-primary" : "bg-zinc-700"
-                  }`}
-                  onClick={() => setRemoteEnabled(!remoteEnabled)}
-                  disabled={pairedWorkers.length === 0}
-                >
-                  <span
-                    className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
-                      remoteEnabled ? "translate-x-4" : ""
-                    }`}
-                  />
-                </button>
-              </div>
-
-              {pairedWorkers.length === 0 && (
-                <p className="text-[10px] text-muted-foreground">
-                  Pair with a worker in the Connect tab to enable remote inference.
-                </p>
-              )}
-
-              {remoteEnabled && pairedWorkers.length > 0 && (
-                <div className="space-y-1">
-                  <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
-                    Worker
-                  </label>
-                  <Select
-                    value={selectedWorkerId || ""}
-                    onValueChange={(v) => selectWorker(v)}
-                  >
-                    <SelectTrigger className="h-7 text-xs">
-                      <SelectValue placeholder="Select a worker" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {pairedWorkers.map((w) => (
-                        <SelectItem key={w.nodeId} value={w.nodeId}>
-                          {w.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  {selectedWorkerId && (
-                    <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-                      <span
-                        className={`w-1.5 h-1.5 rounded-full ${
-                          connectionStatus === "connected"
-                            ? "bg-green-500"
-                            : connectionStatus === "connecting"
-                              ? "bg-yellow-500"
-                              : "bg-zinc-500"
-                        }`}
-                      />
-                      {connectionStatus === "connected"
-                        ? "Connected"
-                        : connectionStatus === "connecting"
-                          ? "Connecting…"
-                          : connectionStatus === "error"
-                            ? "Connection failed"
-                            : "Not connected"}
-                    </div>
-                  )}
-                </div>
-              )}
+              <BackendPicker
+                jobLabel="inference job"
+                remoteEnabled={remoteEnabled}
+                onRemoteEnabledChange={setRemoteEnabled}
+              />
             </Section>
           </>
         )}

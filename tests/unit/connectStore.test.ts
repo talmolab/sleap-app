@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "../bun-test";
+import { describe, it, expect, beforeEach, afterEach, vi } from "../bun-test";
 import { useConnectStore, type PairedWorker } from "@/stores/connectStore";
 import type { JobSpec } from "@/lib/sleapConnect";
 
@@ -39,6 +39,7 @@ class FakeWorkerClient {
   authProveShouldThrow: Error | null = null;
   jobsSubmitCalls: Record<string, unknown>[] = [];
   jobsCancelCalls: Array<[string, string]> = [];
+  jobsStatusCalls: string[] = [];
   fsListCalls: Array<[string, number]> = [];
 
   mountsResult: FakeMount[] = [];
@@ -46,6 +47,8 @@ class FakeWorkerClient {
     { entries: [], totalCount: 0, hasMore: false },
   ];
   jobsSubmitResult = { jobId: "job_1" };
+  /** What jobsStatus() resolves to; `null` makes it reject (job.not_found). */
+  jobsStatusResult: { state: string } | null = null;
 
   private _subscribers = new Map<string, Set<(e: FakeWorkerEvent) => void>>();
 
@@ -87,6 +90,12 @@ class FakeWorkerClient {
 
   async jobsCancel(jobId: string, mode: string) {
     this.jobsCancelCalls.push([jobId, mode]);
+  }
+
+  async jobsStatus(jobId: string) {
+    this.jobsStatusCalls.push(jobId);
+    if (this.jobsStatusResult === null) throw new Error("job.not_found");
+    return this.jobsStatusResult;
   }
 
   async jobsSubscribe(jobId: string, _sinceSeq: number, cb: (e: FakeWorkerEvent) => void) {
@@ -153,10 +162,11 @@ describe("connectStore", () => {
     useConnectStore.setState({
       pairedWorkers: [],
       selectedWorkerId: null,
-      currentJobId: null,
+      currentJob: null,
       connectionStatus: "disconnected",
       connectionError: null,
       workerMounts: [],
+      reattachableJob: null,
       _client: null,
     });
   });
@@ -425,7 +435,10 @@ describe("connectStore", () => {
 
       expect(result).toEqual({ jobId: "job_1", success: true });
       expect(lines).toEqual(["epoch 1"]);
-      expect(useConnectStore.getState().currentJobId).toBe("job_1");
+      expect(useConnectStore.getState().currentJob).toEqual({
+        workerId: PAIRED_WORKER.nodeId,
+        jobId: "job_1",
+      });
     });
 
     it("resolves with success:false and the worker's detail on job.status: failed", async () => {
@@ -501,18 +514,100 @@ describe("connectStore", () => {
       expect(lastClient().jobsCancelCalls).toEqual([]);
     });
 
-    it("cancelJob sends mode: 'cancel' for the current job", async () => {
-      useConnectStore.setState({ currentJobId: "job_1" });
+    it("cancelJob sends mode: 'cancel' for the current job and clears the reattach banner", async () => {
+      useConnectStore.setState({
+        currentJob: { workerId: PAIRED_WORKER.nodeId, jobId: "job_1" },
+        reattachableJob: { jobId: "job_1", state: "running" },
+      });
       useConnectStore.getState().cancelJob();
       await flushAsync();
       expect(lastClient().jobsCancelCalls).toEqual([["job_1", "cancel"]]);
+      expect(useConnectStore.getState().reattachableJob).toBeNull();
     });
 
     it("stopJob sends mode: 'stop' for the current job", async () => {
-      useConnectStore.setState({ currentJobId: "job_1" });
+      useConnectStore.setState({ currentJob: { workerId: PAIRED_WORKER.nodeId, jobId: "job_1" } });
       useConnectStore.getState().stopJob();
       await flushAsync();
       expect(lastClient().jobsCancelCalls).toEqual([["job_1", "stop"]]);
+    });
+  });
+
+  describe("reattach detection", () => {
+    const originalJobsStatus = FakeWorkerClient.prototype.jobsStatus;
+    afterEach(() => {
+      FakeWorkerClient.prototype.jobsStatus = originalJobsStatus;
+    });
+
+    it("surfaces a reattachableJob when the tracked job on this worker is still active", async () => {
+      useConnectStore.setState({
+        pairedWorkers: [PAIRED_WORKER],
+        currentJob: { workerId: PAIRED_WORKER.nodeId, jobId: "job_1" },
+      });
+      FakeWorkerClient.prototype.jobsStatus = async function (this: FakeWorkerClient, jobId: string) {
+        this.jobsStatusCalls.push(jobId);
+        return { state: "running" };
+      };
+
+      await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
+
+      expect(lastClient().jobsStatusCalls).toEqual(["job_1"]);
+      expect(useConnectStore.getState().reattachableJob).toEqual({
+        jobId: "job_1",
+        state: "running",
+      });
+    });
+
+    it("does not reattach a job that already reached a terminal state", async () => {
+      useConnectStore.setState({
+        pairedWorkers: [PAIRED_WORKER],
+        currentJob: { workerId: PAIRED_WORKER.nodeId, jobId: "job_1" },
+      });
+      FakeWorkerClient.prototype.jobsStatus = async function () {
+        return { state: "completed" };
+      };
+
+      await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
+
+      expect(useConnectStore.getState().reattachableJob).toBeNull();
+    });
+
+    it("does not reattach a job tracked against a different worker", async () => {
+      const other: PairedWorker = { ...PAIRED_WORKER, nodeId: "other", addrs: ["ws://other:1"] };
+      useConnectStore.setState({
+        pairedWorkers: [PAIRED_WORKER, other],
+        currentJob: { workerId: "other", jobId: "job_1" },
+      });
+
+      await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
+
+      expect(lastClient().jobsStatusCalls).toEqual([]);
+      expect(useConnectStore.getState().reattachableJob).toBeNull();
+    });
+
+    it("does not reattach if the worker no longer recognizes the job", async () => {
+      useConnectStore.setState({
+        pairedWorkers: [PAIRED_WORKER],
+        currentJob: { workerId: PAIRED_WORKER.nodeId, jobId: "job_1" },
+      });
+      FakeWorkerClient.prototype.jobsStatus = async function () {
+        throw new Error("job.not_found");
+      };
+
+      await expect(
+        useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId),
+      ).resolves.toBeUndefined();
+
+      expect(useConnectStore.getState().reattachableJob).toBeNull();
+    });
+
+    it("no tracked job at all means no reattach check", async () => {
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER], currentJob: null });
+
+      await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
+
+      expect(lastClient().jobsStatusCalls).toEqual([]);
+      expect(useConnectStore.getState().reattachableJob).toBeNull();
     });
   });
 });
