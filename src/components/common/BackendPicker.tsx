@@ -21,6 +21,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { transportLabel } from "@/lib/protocolV1/transport";
 import { useConnectStore } from "@/stores/connectStore";
 
 export const LOCAL_VALUE = "__local__";
@@ -63,6 +64,7 @@ export function BackendPicker({
   const selectWorker = useConnectStore((s) => s.selectWorker);
   const connectionStatus = useConnectStore((s) => s.connectionStatus);
   const connectionError = useConnectStore((s) => s.connectionError);
+  const activeTransport = useConnectStore((s) => s.activeTransport);
   const reattachableJob = useConnectStore((s) => s.reattachableJob);
   const cancelJob = useConnectStore((s) => s.cancelJob);
 
@@ -122,6 +124,11 @@ export function BackendPicker({
                   ? `Connection failed${connectionError ? `: ${connectionError}` : ""}`
                   : "Not connected"}
           </span>
+          {activeTransport && (connectionStatus === "connected" || connectionStatus === "connecting") && (
+            <span className="shrink-0 text-muted-foreground/70" data-testid="backend-transport">
+              via {transportLabel(activeTransport)}
+            </span>
+          )}
         </div>
       )}
 

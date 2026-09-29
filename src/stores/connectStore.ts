@@ -43,6 +43,14 @@ import { APP_VERSION } from "@/lib/version";
 import { isTauri } from "@/platform/index";
 import type { AgentInfo } from "@/lib/protocolV1/envelope";
 import type { Mount, WorkerClient, WorkerEvent } from "@/lib/protocolV1/client";
+import {
+  irohTransportAvailable,
+  parseTicketIroh,
+  toIrohDialTarget,
+  transportLabel,
+  type IrohEndpointInfo,
+  type TransportKind,
+} from "@/lib/protocolV1/transport";
 
 const AGENT_INFO: AgentInfo = {
   name: "sleap-app",
@@ -60,6 +68,10 @@ export interface PairedWorker {
   label: string;
   addrs: string[];
   pairedAt: string;
+  /** Direct-connect (iroh) reachability from the pairing ticket, if it had any (stage 2.1). */
+  iroh?: IrohEndpointInfo;
+  /** The transport last connected over, reused by one-click reconnects. Absent = "ws". */
+  transport?: TransportKind;
 }
 
 /** The JSON a worker's `sleap-rtc pair` command prints (spec §3.2). */
@@ -68,6 +80,8 @@ export interface PairingTicket {
   addrs: string[];
   secret: string;
   expires_at?: string;
+  /** Optional direct-connect info (stage 2.1): `{ node_id?, relay_url?, direct_addrs? }`. */
+  iroh?: unknown;
 }
 
 /**
@@ -88,6 +102,10 @@ export interface ReattachableJob {
   state: string;
 }
 
+export interface ConnectOptions {
+  transport?: TransportKind;
+}
+
 const TERMINAL_JOB_STATES = new Set(["completed", "failed", "canceled"]);
 
 interface ConnectState {
@@ -102,15 +120,29 @@ interface ConnectState {
   workerMounts: Mount[];
   /** Set once per connect if `currentJob` belongs to the worker just connected to. */
   reattachableJob: ReattachableJob | null;
+  /** Transport of the current/most recent connection attempt; `null` when disconnected. */
+  activeTransport: TransportKind | null;
   _client: WorkerClient | null;
 
   // ── Actions ──────────────────────────────────────────────────────
-  /** Claim a fresh pairing ticket (JSON from `sleap-rtc pair`) and connect. */
-  pairWithTicket: (ticketJson: string, addrOverride?: string) => Promise<void>;
-  /** Reconnect to an already-paired worker by node_id. */
-  connectToWorker: (nodeId: string) => Promise<void>;
+  /**
+   * Claim a fresh pairing ticket (JSON from `sleap-rtc pair`) and connect.
+   * `options.transport` picks the dial explicitly (default `"ws"`); `"iroh"`
+   * needs the desktop app and an `iroh` section in the ticket.
+   */
+  pairWithTicket: (
+    ticketJson: string,
+    addrOverride?: string,
+    options?: ConnectOptions,
+  ) => Promise<void>;
+  /**
+   * Reconnect to an already-paired worker by node_id. Without an explicit
+   * `options.transport`, reuses the transport last connected over (`"ws"`
+   * if none, or if iroh is remembered but unavailable here).
+   */
+  connectToWorker: (nodeId: string, options?: ConnectOptions) => Promise<void>;
   /** Select (and connect to) a paired worker, or `null` to disconnect. */
-  selectWorker: (nodeId: string | null) => Promise<void>;
+  selectWorker: (nodeId: string | null, options?: ConnectOptions) => Promise<void>;
   disconnect: () => void;
   forgetWorker: (nodeId: string) => void;
   browseRemoteDir: (path: string) => Promise<FileEntry[]>;
@@ -143,11 +175,50 @@ function isMultiModelTrainSpec(
   );
 }
 
-async function makeClient(url: string): Promise<WorkerClient> {
+/** What to dial: `url` is a ws address, or the encoded iroh target for `"iroh"`. */
+interface DialSpec {
+  transport: TransportKind;
+  url: string;
+  /** Human-readable address for error messages. */
+  display: string;
+}
+
+/** ws is the implicit default, so only a non-default choice is persisted on the worker. */
+function rememberedTransport(t: TransportKind): TransportKind | undefined {
+  return t === "iroh" ? "iroh" : undefined;
+}
+
+const IROH_DESKTOP_ONLY =
+  "Direct (iroh) connections are only available in the desktop app — use the WebSocket address instead.";
+
+async function irohDial(info: IrohEndpointInfo | undefined, nodeId: string): Promise<DialSpec> {
+  if (!irohTransportAvailable()) throw new Error(IROH_DESKTOP_ONLY);
+  if (!info) {
+    throw new Error("This worker has no direct (iroh) connection info — use its WebSocket address.");
+  }
+  const { encodeIrohDialUrl } = await import("@/lib/protocolV1/tauriIrohSocket");
+  const target = toIrohDialTarget(info, nodeId);
+  return {
+    transport: "iroh",
+    url: encodeIrohDialUrl(target),
+    display: `iroh endpoint ${target.nodeId.slice(0, 8)}…`,
+  };
+}
+
+async function makeClient(dial: DialSpec): Promise<WorkerClient> {
   const { getClientIdentity } = await import("@/lib/protocolV1/identity");
   const { WorkerClient: WorkerClientCtor } = await import("@/lib/protocolV1/client");
   const identity = await getClientIdentity();
-  return new WorkerClientCtor({ url, identity, agent: AGENT_INFO });
+  if (dial.transport === "iroh") {
+    const { createTauriIrohSocket } = await import("@/lib/protocolV1/tauriIrohSocket");
+    return new WorkerClientCtor({
+      url: dial.url,
+      identity,
+      agent: AGENT_INFO,
+      createSocket: createTauriIrohSocket(),
+    });
+  }
+  return new WorkerClientCtor({ url: dial.url, identity, agent: AGENT_INFO });
 }
 
 /**
@@ -251,9 +322,10 @@ export const useConnectStore = create<ConnectState>()(
       connectionError: null,
       workerMounts: [],
       reattachableJob: null,
+      activeTransport: null,
       _client: null,
 
-      pairWithTicket: async (ticketJson, addrOverride) => {
+      pairWithTicket: async (ticketJson, addrOverride, options) => {
         let ticket: PairingTicket;
         try {
           ticket = JSON.parse(ticketJson);
@@ -263,23 +335,32 @@ export const useConnectStore = create<ConnectState>()(
         if (!ticket.node_id || !ticket.secret) {
           throw new Error("Pairing ticket is missing node_id or secret.");
         }
-        const addr = addrOverride || ticket.addrs?.[0];
-        if (!addr) {
-          throw new Error(
-            "This ticket has no worker address — enter one (e.g. ws://192.168.1.42:9631).",
-          );
+        const irohInfo = parseTicketIroh(ticket.iroh);
+        const transport = options?.transport ?? "ws";
+        let dial: DialSpec;
+        let addr: string | undefined;
+        if (transport === "iroh") {
+          dial = await irohDial(irohInfo, ticket.node_id);
+        } else {
+          addr = addrOverride || ticket.addrs?.[0];
+          if (!addr) {
+            throw new Error(
+              "This ticket has no worker address — enter one (e.g. ws://192.168.1.42:9631).",
+            );
+          }
+          dial = { transport: "ws", url: addr, display: addr };
         }
 
         get()._client?.close();
-        set({ connectionStatus: "connecting", connectionError: null });
+        set({ connectionStatus: "connecting", connectionError: null, activeTransport: transport });
 
         let client: WorkerClient | null = null;
         try {
-          client = await makeClient(addr);
+          client = await makeClient(dial);
           await client.connect();
           if (client.peerNodeId !== ticket.node_id) {
             throw new Error(
-              `Worker at ${addr} identified itself as a different node than this ticket ` +
+              `Worker at ${dial.display} identified itself as a different node than this ticket ` +
                 `claims (expected ${ticket.node_id}, got ${client.peerNodeId}) — check the ` +
                 "address, or get a fresh ticket from the worker you meant to pair with.",
             );
@@ -291,8 +372,12 @@ export const useConnectStore = create<ConnectState>()(
           const paired: PairedWorker = {
             nodeId: ticket.node_id,
             label: `Worker ${ticket.node_id.slice(0, 8)}`,
-            addrs: [addr, ...(ticket.addrs ?? []).filter((a) => a !== addr)],
+            addrs: addr
+              ? [addr, ...(ticket.addrs ?? []).filter((a) => a !== addr)]
+              : [...(ticket.addrs ?? [])],
             pairedAt: new Date().toISOString(),
+            iroh: irohInfo,
+            transport: rememberedTransport(transport),
           };
 
           set((state) => ({
@@ -302,6 +387,7 @@ export const useConnectStore = create<ConnectState>()(
             connectionError: null,
             workerMounts: mounts,
             reattachableJob,
+            activeTransport: transport,
             _client: client,
           }));
         } catch (err) {
@@ -318,26 +404,40 @@ export const useConnectStore = create<ConnectState>()(
         }
       },
 
-      connectToWorker: async (nodeId) => {
+      connectToWorker: async (nodeId, options) => {
         const worker = get().pairedWorkers.find((w) => w.nodeId === nodeId);
         if (!worker) {
           throw new Error("Unknown worker — pair with it first.");
         }
-        const addr = worker.addrs[0];
-        if (!addr) {
-          throw new Error(`No known address for ${worker.label}.`);
+        const transport: TransportKind =
+          options?.transport ??
+          (worker.transport === "iroh" && worker.iroh && irohTransportAvailable() ? "iroh" : "ws");
+        let dial: DialSpec;
+        if (transport === "iroh") {
+          dial = await irohDial(worker.iroh, nodeId);
+        } else {
+          const addr = worker.addrs[0];
+          if (!addr) {
+            throw new Error(`No known address for ${worker.label}.`);
+          }
+          dial = { transport: "ws", url: addr, display: addr };
         }
 
         get()._client?.close();
-        set({ selectedWorkerId: nodeId, connectionStatus: "connecting", connectionError: null });
+        set({
+          selectedWorkerId: nodeId,
+          connectionStatus: "connecting",
+          connectionError: null,
+          activeTransport: transport,
+        });
 
         let client: WorkerClient | null = null;
         try {
-          client = await makeClient(addr);
+          client = await makeClient(dial);
           await client.connect();
           if (client.peerNodeId !== nodeId) {
             throw new Error(
-              `Worker at ${addr} identified itself as a different node than expected ` +
+              `Worker at ${dial.display} identified itself as a different node than expected ` +
                 `(expected ${nodeId}, got ${client.peerNodeId}) — the address may now point ` +
                 "at a different worker. Forget and re-pair if this persists.",
             );
@@ -346,13 +446,17 @@ export const useConnectStore = create<ConnectState>()(
           const mounts = await client.fsMounts();
           const reattachableJob = await checkReattach(client, nodeId, get().currentJob);
 
-          set({
+          set((state) => ({
+            pairedWorkers: state.pairedWorkers.map((w) =>
+              w.nodeId === nodeId ? { ...w, transport: rememberedTransport(transport) } : w,
+            ),
             connectionStatus: "connected",
             connectionError: null,
             workerMounts: mounts,
             reattachableJob,
+            activeTransport: transport,
             _client: client,
-          });
+          }));
         } catch (err) {
           // See the matching comment in pairWithTicket — same leak risk.
           client?.close();
@@ -365,12 +469,12 @@ export const useConnectStore = create<ConnectState>()(
         }
       },
 
-      selectWorker: async (nodeId) => {
+      selectWorker: async (nodeId, options) => {
         if (nodeId === null) {
           get().disconnect();
           return;
         }
-        await get().connectToWorker(nodeId);
+        await get().connectToWorker(nodeId, options);
       },
 
       disconnect: () => {
@@ -380,6 +484,7 @@ export const useConnectStore = create<ConnectState>()(
           connectionError: null,
           workerMounts: [],
           reattachableJob: null,
+          activeTransport: null,
           _client: null,
         });
       },
@@ -476,9 +581,18 @@ export const useConnectStore = create<ConnectState>()(
       },
 
       fetchResultBlob: async (ref) => {
-        const { _client } = get();
+        const { _client, activeTransport } = get();
         if (!_client || !_client.authenticated) {
           throw new Error("Not connected to a worker");
+        }
+        if (activeTransport === "iroh") {
+          // Blob downloads dial the worker's HTTP blob port derived from a
+          // ws:// URL, which a direct iroh connection doesn't have (stage 2.4
+          // decides how blobs travel over iroh).
+          throw new Error(
+            `Result files can't be downloaded over a ${transportLabel("iroh")} connection yet — ` +
+              "reconnect over the WebSocket address to fetch them.",
+          );
         }
         return _client.fetchBlob(ref.sha256, ref.size);
       },

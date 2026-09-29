@@ -51,6 +51,7 @@ function resetConnectStore() {
     connectionError: null,
     workerMounts: [],
     reattachableJob: null,
+    activeTransport: null,
     _client: null,
   });
 }
@@ -139,6 +140,33 @@ describe("BackendPicker rendering", () => {
     });
     await renderPicker({ remoteEnabled: true });
     expect(screen.getByText(expectedText)).toBeInTheDocument();
+  });
+
+  it.each([
+    ["ws" as const, "via WebSocket"],
+    ["iroh" as const, "via iroh (direct)"],
+  ])("shows the %s transport while connected", async (transport, expectedText) => {
+    useConnectStore.setState({
+      pairedWorkers: [WORKER_A],
+      selectedWorkerId: WORKER_A.nodeId,
+      connectionStatus: "connected",
+      activeTransport: transport,
+    });
+    await renderPicker({ remoteEnabled: true });
+    expect(screen.getByText("Connected")).toBeInTheDocument();
+    expect(screen.getByText(expectedText)).toBeInTheDocument();
+  });
+
+  it("shows no transport when the connection failed or is down", async () => {
+    useConnectStore.setState({
+      pairedWorkers: [WORKER_A],
+      selectedWorkerId: WORKER_A.nodeId,
+      connectionStatus: "error",
+      connectionError: "boom",
+      activeTransport: "iroh",
+    });
+    await renderPicker({ remoteEnabled: true });
+    expect(screen.queryByTestId("backend-transport")).not.toBeInTheDocument();
   });
 
   it("includes the connection error in the status line on failure", async () => {
