@@ -58,7 +58,7 @@ class FakeWorkerClient {
 
   private _subscribers = new Map<string, Set<(e: FakeWorkerEvent) => void>>();
 
-  constructor(public opts: { url: string }) {
+  constructor(public opts: { url: string; createSocket?: (url: string) => unknown }) {
     this.mountsResult = FakeWorkerClient.nextMounts;
     this.peerNodeId = FakeWorkerClient.nextPeerNodeId;
     FakeWorkerClient.instances.push(this);
@@ -181,7 +181,54 @@ describe("connectStore", () => {
       connectionError: null,
       workerMounts: [],
       reattachableJob: null,
+      activeTransport: null,
       _client: null,
+    });
+  });
+
+  describe("transport (ws default)", () => {
+    const TICKET_WITH_IROH = JSON.stringify({
+      node_id: "worker-node-id",
+      addrs: ["ws://192.168.1.42:9631"],
+      secret: "one-time-secret",
+      iroh: { node_id: "iroh-id", relay_url: "https://relay.example", direct_addrs: ["1.2.3.4:5"] },
+    });
+
+    it("a ticket without an iroh section connects over ws and records activeTransport 'ws'", async () => {
+      await useConnectStore.getState().pairWithTicket(TICKET);
+      const state = useConnectStore.getState();
+      expect(lastClient().opts.createSocket).toBeUndefined();
+      expect(state.activeTransport).toBe("ws");
+      expect(state.pairedWorkers[0].iroh).toBeUndefined();
+      expect(state.pairedWorkers[0].transport).toBeUndefined();
+    });
+
+    it("keeps ws behavior for a ticket with an iroh section unless iroh is asked for, and remembers the section", async () => {
+      await useConnectStore.getState().pairWithTicket(TICKET_WITH_IROH);
+      const state = useConnectStore.getState();
+      expect(lastClient().opts.url).toBe("ws://192.168.1.42:9631");
+      expect(state.activeTransport).toBe("ws");
+      expect(state.pairedWorkers[0].iroh).toEqual({
+        nodeId: "iroh-id",
+        relayUrl: "https://relay.example",
+        directAddrs: ["1.2.3.4:5"],
+      });
+    });
+
+    it("rejects an explicit iroh connect outside the desktop app, before touching connection state", async () => {
+      await expect(
+        useConnectStore.getState().pairWithTicket(TICKET_WITH_IROH, undefined, { transport: "iroh" }),
+      ).rejects.toThrow(/desktop app/);
+      const state = useConnectStore.getState();
+      expect(state.connectionStatus).toBe("disconnected");
+      expect(state.activeTransport).toBeNull();
+      expect(FakeWorkerClient.instances).toHaveLength(0);
+    });
+
+    it("disconnect clears activeTransport", async () => {
+      await useConnectStore.getState().pairWithTicket(TICKET);
+      useConnectStore.getState().disconnect();
+      expect(useConnectStore.getState().activeTransport).toBeNull();
     });
   });
 

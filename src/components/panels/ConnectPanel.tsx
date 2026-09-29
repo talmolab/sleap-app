@@ -1,13 +1,29 @@
-import { useEffect, useRef, useState } from "react";
-import { Loader2, Plug, Trash2, Unplug } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Loader2, Plug, Trash2, Unplug, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  irohTransportAvailable,
+  parseTicketIroh,
+  transportLabel,
+  type TransportKind,
+} from "@/lib/protocolV1/transport";
 import { useConnectStore } from "@/stores/connectStore";
+
+/** Whether pasted ticket text has a usable `iroh` section. Never throws on partial/invalid JSON. */
+function ticketOffersIroh(ticketText: string): boolean {
+  try {
+    return parseTicketIroh((JSON.parse(ticketText) as { iroh?: unknown }).iroh) !== undefined;
+  } catch {
+    return false;
+  }
+}
 
 export function ConnectPanel() {
   const pairedWorkers = useConnectStore((s) => s.pairedWorkers);
   const selectedWorkerId = useConnectStore((s) => s.selectedWorkerId);
   const connectionStatus = useConnectStore((s) => s.connectionStatus);
   const connectionError = useConnectStore((s) => s.connectionError);
+  const activeTransport = useConnectStore((s) => s.activeTransport);
   const pairWithTicket = useConnectStore((s) => s.pairWithTicket);
   const connectToWorker = useConnectStore((s) => s.connectToWorker);
   const disconnect = useConnectStore((s) => s.disconnect);
@@ -20,6 +36,13 @@ export function ConnectPanel() {
   const [pairing, setPairing] = useState(false);
   const [pairError, setPairError] = useState<string | null>(null);
   const [connectingId, setConnectingId] = useState<string | null>(null);
+  const [pairViaIroh, setPairViaIroh] = useState(false);
+
+  const irohAvailable = irohTransportAvailable();
+  const ticketHasIroh = useMemo(() => irohAvailable && ticketOffersIroh(ticketText), [
+    irohAvailable,
+    ticketText,
+  ]);
 
   // zustand's persist middleware hydrates asynchronously (a microtask) even
   // with synchronous localStorage — this component's very first render can
@@ -47,9 +70,14 @@ export function ConnectPanel() {
     setPairing(true);
     setPairError(null);
     try {
-      await pairWithTicket(ticketText.trim(), addrText.trim() || undefined);
+      await pairWithTicket(
+        ticketText.trim(),
+        addrText.trim() || undefined,
+        ticketHasIroh && pairViaIroh ? { transport: "iroh" } : undefined,
+      );
       setTicketText("");
       setAddrText("");
+      setPairViaIroh(false);
       setShowPairForm(false);
     } catch (err) {
       setPairError(err instanceof Error ? err.message : "Failed to pair with worker");
@@ -58,10 +86,10 @@ export function ConnectPanel() {
     }
   };
 
-  const handleConnect = async (nodeId: string) => {
+  const handleConnect = async (nodeId: string, transport?: TransportKind) => {
     setConnectingId(nodeId);
     try {
-      await connectToWorker(nodeId);
+      await connectToWorker(nodeId, transport ? { transport } : undefined);
     } catch {
       // connectionError already reflects the failure
     } finally {
@@ -87,6 +115,7 @@ export function ConnectPanel() {
             const isConnected = isSelected && connectionStatus === "connected";
             const isConnecting =
               connectingId === w.nodeId || (isSelected && connectionStatus === "connecting");
+            const offersIroh = irohAvailable && w.iroh !== undefined;
             return (
               <div
                 key={w.nodeId}
@@ -114,7 +143,12 @@ export function ConnectPanel() {
                 <div className="text-[10px] text-muted-foreground font-mono mt-0.5 truncate">
                   {w.nodeId.slice(0, 16)}… · {w.addrs[0] ?? "no known address"}
                 </div>
-                <div className="mt-1.5">
+                {isConnected && activeTransport && (
+                  <div className="text-[10px] text-muted-foreground mt-0.5">
+                    Connected via {transportLabel(activeTransport)}
+                  </div>
+                )}
+                <div className="mt-1.5 space-y-1">
                   {isConnected ? (
                     <Button
                       size="sm"
@@ -126,19 +160,33 @@ export function ConnectPanel() {
                       Disconnect
                     </Button>
                   ) : (
-                    <Button
-                      size="sm"
-                      className="w-full h-7 text-xs"
-                      disabled={isConnecting || !w.addrs[0]}
-                      onClick={() => handleConnect(w.nodeId)}
-                    >
-                      {isConnecting ? (
-                        <Loader2 className="h-3 w-3 mr-1.5 animate-spin" />
-                      ) : (
-                        <Plug className="h-3 w-3 mr-1.5" />
+                    <>
+                      <Button
+                        size="sm"
+                        className="w-full h-7 text-xs"
+                        disabled={isConnecting || !w.addrs[0]}
+                        onClick={() => handleConnect(w.nodeId, offersIroh ? "ws" : undefined)}
+                      >
+                        {isConnecting ? (
+                          <Loader2 className="h-3 w-3 mr-1.5 animate-spin" />
+                        ) : (
+                          <Plug className="h-3 w-3 mr-1.5" />
+                        )}
+                        {isConnecting ? "Connecting…" : offersIroh ? "Connect (WebSocket)" : "Connect"}
+                      </Button>
+                      {offersIroh && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="w-full h-7 text-xs"
+                          disabled={isConnecting}
+                          onClick={() => handleConnect(w.nodeId, "iroh")}
+                        >
+                          <Zap className="h-3 w-3 mr-1.5" />
+                          Connect directly (iroh)
+                        </Button>
                       )}
-                      {isConnecting ? "Connecting…" : "Connect"}
-                    </Button>
+                    </>
                   )}
                 </div>
               </div>
@@ -191,6 +239,17 @@ export function ConnectPanel() {
               className="w-full h-7 px-2 text-xs bg-zinc-900 border border-border rounded-md font-mono"
             />
           </div>
+          {ticketHasIroh && (
+            <label className="flex items-start gap-1.5 text-[10px] text-muted-foreground cursor-pointer">
+              <input
+                type="checkbox"
+                checked={pairViaIroh}
+                onChange={(e) => setPairViaIroh(e.target.checked)}
+                className="mt-0.5"
+              />
+              <span>Connect directly (iroh) — this ticket includes a direct address</span>
+            </label>
+          )}
           {pairError && <p className="text-[10px] text-red-400">{pairError}</p>}
           <div className="flex gap-1.5">
             <Button
