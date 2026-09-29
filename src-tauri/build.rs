@@ -70,6 +70,10 @@ fn main() {
                     "rtc_send",
                     "rtc_disconnect_worker",
                     "rtc_leave_room",
+                    // iroh (remote inference, protocol-v1 transport)
+                    "iroh_connect",
+                    "iroh_send",
+                    "iroh_disconnect",
                     // self-update channels
                     "check_update",
                     "install_update",
