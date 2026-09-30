@@ -99,6 +99,32 @@ impl IrohClientState {
     }
 }
 
+/// State for the blob-reading stream (item 2.4), kept **separate** from
+/// [`IrohClientState`] behind its own `tokio::sync::Mutex` — a blob read in
+/// progress (which can take a while over a slow/relayed path) must never
+/// block `iroh_send`/`iroh_disconnect`, or vice versa. Only one blob stream
+/// is tracked at a time: today's remote-merge flow fetches one job result at
+/// a time, sequentially, so a single slot matches actual usage. A second
+/// `iroh_blob_open` before `iroh_blob_close` replaces this slot outright,
+/// dropping whatever stream was open before.
+#[derive(Debug)]
+pub struct IrohBlobState {
+    #[allow(dead_code)] // kept for debugging/future multi-slot support, not read today
+    sha256: Option<String>,
+    send: Option<SendStream>,
+    recv: Option<RecvStream>,
+}
+
+impl IrohBlobState {
+    pub fn new() -> Self {
+        Self {
+            sha256: None,
+            send: None,
+            recv: None,
+        }
+    }
+}
+
 fn decode_node_id(node_id: &str) -> Result<PublicKey, String> {
     let bytes = URL_SAFE_NO_PAD
         .decode(node_id)
@@ -275,6 +301,166 @@ pub async fn iroh_disconnect(
     Ok(())
 }
 
+// ── Blob Commands (item 2.4) ────────────────────────────────────────
+//
+// A blob is a job-result file (today, only a track job's `predictions.slp`)
+// fetched by range — never the whole thing at once, see
+// `docs/plans/2026-09-30-item-2-4-blob-over-iroh-design.md`. This module
+// stays a dumb byte pipe here too: chunk-alignment and hash verification
+// belong to the TypeScript caller (`tauriIrohBlob.ts`), which knows about
+// `VERIFY_CHUNK_SIZE`/`chunkHashes` — these commands don't.
+
+/// Shape of every `{ok, ...}` / `{ok:false, error}` JSON header the worker
+/// sends on the blob stream (open response and each read response) — see
+/// the design doc §6.1. Fields not present in a given response are `None`.
+#[derive(Deserialize)]
+struct BlobHeader {
+    ok: bool,
+    size: Option<u64>,
+    error: Option<String>,
+    #[serde(rename = "chunkSize")]
+    chunk_size: Option<u64>,
+    #[serde(rename = "chunkHashes")]
+    chunk_hashes: Option<Vec<String>>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct IrohBlobOpenResult {
+    size: u64,
+    #[serde(rename = "chunkSize")]
+    chunk_size: u64,
+    #[serde(rename = "chunkHashes")]
+    chunk_hashes: Vec<String>,
+}
+
+/// Core of `iroh_blob_open`, taking a plain `Connection` handle instead of
+/// `tauri::State` — directly testable (mirrors [`dial`]'s role for
+/// `iroh_connect`).
+async fn open_blob_stream(
+    connection: Connection,
+    sha256: String,
+) -> Result<(IrohBlobOpenResult, IrohBlobState), String> {
+    let (mut send, mut recv) = connection
+        .open_bi()
+        .await
+        .map_err(|e| format!("Failed to open blob stream: {e}"))?;
+
+    write_frame(&mut send, &serde_json::json!({ "sha256": sha256 }).to_string()).await?;
+    let header_text = read_frame(&mut recv)
+        .await?
+        .ok_or("Worker closed the blob stream before replying")?;
+    let header: BlobHeader = serde_json::from_str(&header_text)
+        .map_err(|e| format!("Malformed blob response header: {e}"))?;
+    if !header.ok {
+        return Err(header.error.unwrap_or_else(|| "blob open failed".into()));
+    }
+    let size = header.size.ok_or("Response missing size")?;
+    let chunk_size = header.chunk_size.ok_or("Response missing chunkSize")?;
+    let chunk_hashes = header.chunk_hashes.ok_or("Response missing chunkHashes")?;
+
+    let result = IrohBlobOpenResult {
+        size,
+        chunk_size,
+        chunk_hashes,
+    };
+    let state = IrohBlobState {
+        sha256: Some(sha256),
+        send: Some(send),
+        recv: Some(recv),
+    };
+    Ok((result, state))
+}
+
+/// Opens a fresh stream on the existing control connection dedicated to
+/// reading one blob, and replaces whatever blob stream was previously open
+/// (§1/§5 of the design doc scope this to one blob stream at a time).
+#[tauri::command]
+pub async fn iroh_blob_open(
+    sha256: String,
+    control: tauri::State<'_, tokio::sync::Mutex<IrohClientState>>,
+    blob: tauri::State<'_, tokio::sync::Mutex<IrohBlobState>>,
+) -> Result<IrohBlobOpenResult, String> {
+    // Briefly borrow the control connection just to clone its handle —
+    // opening the new stream and the read/write that follows must not hold
+    // this lock, or a concurrent iroh_send/iroh_disconnect would stall for
+    // the whole blob-open round trip.
+    let connection = {
+        let c = control.lock().await;
+        c.connection.clone().ok_or("Not connected to a worker over iroh")?
+    };
+    let (result, state) = open_blob_stream(connection, sha256).await?;
+    *blob.lock().await = state;
+    Ok(result)
+}
+
+/// Core of `iroh_blob_read_range`, taking a plain `&mut IrohBlobState`
+/// instead of `tauri::State` — directly testable.
+async fn read_blob_range(
+    state: &mut IrohBlobState,
+    offset: u64,
+    length: u64,
+) -> Result<Vec<u8>, String> {
+    // Destructure both fields out of the same `&mut IrohBlobState` at once —
+    // taking two sequential `.as_mut()` calls on a field borrows the whole
+    // struct twice, which the borrow checker rejects even though the two
+    // underlying fields never alias.
+    let IrohBlobState { send, recv, .. } = state;
+    let send = send
+        .as_mut()
+        .ok_or("No blob stream open — call iroh_blob_open first")?;
+    let recv = recv.as_mut().ok_or("No blob stream open — call iroh_blob_open first")?;
+
+    write_frame(
+        send,
+        &serde_json::json!({ "offset": offset, "length": length }).to_string(),
+    )
+    .await?;
+    let header_text = read_frame(recv)
+        .await?
+        .ok_or("Worker closed the blob stream mid-read")?;
+    let header: BlobHeader = serde_json::from_str(&header_text)
+        .map_err(|e| format!("Malformed blob response header: {e}"))?;
+    if !header.ok {
+        return Err(header.error.unwrap_or_else(|| "blob read failed".into()));
+    }
+    let mut buf = vec![0u8; header.size.ok_or("Response missing size")? as usize];
+    recv.read_exact(&mut buf)
+        .await
+        .map_err(|e| format!("Failed to read blob body: {e}"))?;
+    Ok(buf)
+}
+
+/// Reads exactly `[offset, offset + length)` off the currently-open blob
+/// stream — a dumb pipe, same as [`iroh_send`]: it forwards whatever
+/// `offset`/`length` it's given verbatim and does no chunk-alignment or
+/// hash verification itself (see this section's own header comment). The
+/// caller is responsible for having called [`iroh_blob_open`] first.
+#[tauri::command]
+pub async fn iroh_blob_read_range(
+    offset: u64,
+    length: u64,
+    blob: tauri::State<'_, tokio::sync::Mutex<IrohBlobState>>,
+) -> Result<Vec<u8>, String> {
+    let mut b = blob.lock().await;
+    read_blob_range(&mut b, offset, length).await
+}
+
+/// Ends the currently-open blob stream, if any. A no-op (not an error) if
+/// nothing was open — mirrors `dispose()`'s no-op-when-never-opened contract
+/// on the TypeScript side.
+#[tauri::command]
+pub async fn iroh_blob_close(
+    blob: tauri::State<'_, tokio::sync::Mutex<IrohBlobState>>,
+) -> Result<(), String> {
+    let mut b = blob.lock().await;
+    if let Some(mut send) = b.send.take() {
+        let _ = send.finish();
+    }
+    b.recv = None;
+    b.sha256 = None;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     //! Real iroh endpoints, real QUIC streams, `presets::Minimal` (relay
@@ -392,5 +578,171 @@ mod tests {
 
         assert_eq!(addr.ip_addrs().count(), 1);
         assert_eq!(addr.relay_urls().count(), 1);
+    }
+
+    // ── Blob commands (item 2.4) ─────────────────────────────────────
+    //
+    // A fake worker that serves each incoming `BiStream` as one blob-fetch
+    // session (open frame, then read frames until the client finishes its
+    // send side) against a single known file's bytes — enough to hands-on
+    // verify this module's own open/read logic without needing a real
+    // Python worker (that cross-language proof is a separate step, item
+    // 2.4's §11).
+
+    const TEST_CHUNK_SIZE: u64 = 4; // tiny on purpose, to exercise multiple chunks
+
+    // A real sha256 isn't needed here — this module never verifies
+    // `chunkHashes` itself (that's TS-side, §8/§9 of the design doc); this
+    // test only needs a deterministic, chunk-unique stand-in to prove the
+    // field round-trips from the fake worker's open response through to the
+    // caller unchanged, without adding a new crate dependency just for that.
+    fn test_chunk_hashes(bytes: &[u8]) -> Vec<String> {
+        bytes
+            .chunks(TEST_CHUNK_SIZE as usize)
+            .map(|c| c.iter().map(|b| format!("{b:02x}")).collect())
+            .collect()
+    }
+
+    async fn spawn_fake_blob_worker(bytes: &'static [u8]) -> EndpointAddr {
+        let endpoint = Endpoint::builder(Minimal)
+            .alpns(vec![ALPN.to_vec()])
+            .bind()
+            .await
+            .expect("fake worker endpoint bind");
+        let addr = timeout(Duration::from_secs(5), wait_for_direct_address(&endpoint))
+            .await
+            .expect("fake worker never reported a direct address");
+
+        tokio::spawn(async move {
+            let incoming = endpoint.accept().await.expect("no incoming connection");
+            let connecting = incoming.accept().expect("incoming.accept()");
+            let conn = connecting.await.expect("connection handshake");
+
+            loop {
+                let (mut send, mut recv) = match conn.accept_bi().await {
+                    Ok(streams) => streams,
+                    Err(_) => break, // connection closed
+                };
+                let bytes = bytes;
+                tokio::spawn(async move {
+                    let open_req = match read_frame(&mut recv).await {
+                        Ok(Some(t)) => t,
+                        _ => return,
+                    };
+                    let sha256 = serde_json::from_str::<serde_json::Value>(&open_req)
+                        .ok()
+                        .and_then(|v| v.get("sha256").and_then(|s| s.as_str().map(String::from)))
+                        .unwrap_or_default();
+                    if sha256 != "knownblob" {
+                        let _ = write_frame(
+                            &mut send,
+                            &serde_json::json!({"ok": false, "error": "not_found"}).to_string(),
+                        )
+                        .await;
+                        let _ = send.finish();
+                        return;
+                    }
+                    let _ = write_frame(
+                        &mut send,
+                        &serde_json::json!({
+                            "ok": true,
+                            "size": bytes.len(),
+                            "chunkSize": TEST_CHUNK_SIZE,
+                            "chunkHashes": test_chunk_hashes(bytes),
+                        })
+                        .to_string(),
+                    )
+                    .await;
+
+                    loop {
+                        let req = match read_frame(&mut recv).await {
+                            Ok(Some(t)) => t,
+                            _ => break, // client finished its send side
+                        };
+                        let r: serde_json::Value = serde_json::from_str(&req).expect("valid request json");
+                        let offset = r["offset"].as_u64().unwrap() as usize;
+                        let length = r["length"].as_u64().unwrap() as usize;
+                        let end = (offset + length).min(bytes.len());
+                        let slice = &bytes[offset..end];
+                        let _ = write_frame(
+                            &mut send,
+                            &serde_json::json!({"ok": true, "size": slice.len()}).to_string(),
+                        )
+                        .await;
+                        let _ = send.write_all(slice).await;
+                    }
+                    let _ = send.finish();
+                });
+            }
+            sleep(Duration::from_millis(500)).await;
+            endpoint.close().await;
+        });
+
+        addr
+    }
+
+    const TEST_BLOB_BYTES: &[u8] = b"0123456789abcdefghij"; // 20 bytes = 5 chunks of 4
+
+    #[tokio::test]
+    async fn iroh_blob_open_and_multiple_range_reads_on_the_same_stream() {
+        let worker_addr = spawn_fake_blob_worker(TEST_BLOB_BYTES).await;
+        let (client_endpoint, connection, _send, _recv) = dial(worker_addr, Minimal).await.expect("dial");
+
+        let (opened, mut state) = open_blob_stream(connection, "knownblob".to_string())
+            .await
+            .expect("open_blob_stream");
+        assert_eq!(opened.size, TEST_BLOB_BYTES.len() as u64);
+        assert_eq!(opened.chunk_size, TEST_CHUNK_SIZE);
+        assert_eq!(opened.chunk_hashes, test_chunk_hashes(TEST_BLOB_BYTES));
+
+        // First read: entirely inside chunk 0.
+        let a = read_blob_range(&mut state, 0, 4).await.expect("read a");
+        assert_eq!(a, TEST_BLOB_BYTES[0..4]);
+
+        // Second read on the SAME stream/state, starting mid-file, spanning
+        // a chunk boundary — proves session reuse, not just one request.
+        let b = read_blob_range(&mut state, 6, 8).await.expect("read b");
+        assert_eq!(b, TEST_BLOB_BYTES[6..14]);
+
+        // Third read reaching past EOF — clamped, not an error.
+        let c = read_blob_range(&mut state, 18, 10).await.expect("read c");
+        assert_eq!(c, TEST_BLOB_BYTES[18..20]);
+
+        client_endpoint.close().await;
+    }
+
+    #[tokio::test]
+    async fn iroh_blob_open_reports_not_found_for_an_unknown_sha256() {
+        let worker_addr = spawn_fake_blob_worker(TEST_BLOB_BYTES).await;
+        let (client_endpoint, connection, _send, _recv) = dial(worker_addr, Minimal).await.expect("dial");
+
+        let err = open_blob_stream(connection, "nope".to_string())
+            .await
+            .expect_err("should fail for unknown sha256");
+        assert!(err.contains("not_found"), "unexpected error: {err}");
+
+        client_endpoint.close().await;
+    }
+
+    #[tokio::test]
+    async fn iroh_blob_open_replaces_a_previously_open_stream() {
+        let worker_addr = spawn_fake_blob_worker(TEST_BLOB_BYTES).await;
+        let (client_endpoint, connection, _send, _recv) = dial(worker_addr, Minimal).await.expect("dial");
+
+        let (_opened1, state1) = open_blob_stream(connection.clone(), "knownblob".to_string())
+            .await
+            .expect("first open_blob_stream");
+        // Re-open on the SAME connection before closing the first — this is
+        // exactly what the `iroh_blob_open` command does (assigns a fresh
+        // `IrohBlobState` into the same slot, dropping the old one).
+        let (_opened2, mut state) = open_blob_stream(connection, "knownblob".to_string())
+            .await
+            .expect("second open_blob_stream");
+        drop(state1); // the slot this represented has been replaced
+
+        let bytes = read_blob_range(&mut state, 0, 5).await.expect("read after replace");
+        assert_eq!(bytes, TEST_BLOB_BYTES[0..5]);
+
+        client_endpoint.close().await;
     }
 }
