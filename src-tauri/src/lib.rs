@@ -608,6 +608,9 @@ fn sleap_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
             iroh_client::iroh_connect,
             iroh_client::iroh_send,
             iroh_client::iroh_disconnect,
+            iroh_client::iroh_blob_open,
+            iroh_client::iroh_blob_read_range,
+            iroh_client::iroh_blob_close,
             update_channels::check_update,
             update_channels::install_update,
         ])
@@ -807,6 +810,7 @@ pub fn run() {
     .manage(WindowFiles(Mutex::new(HashMap::new())))
     .manage(tokio::sync::Mutex::new(rtc::RtcState::new()))
     .manage(tokio::sync::Mutex::new(iroh_client::IrohClientState::new()))
+    .manage(tokio::sync::Mutex::new(iroh_client::IrohBlobState::new()))
     // Self-heal the open-file registry: when a window is destroyed (closed or
     // crashed) drop its claim so a later open can't be mis-routed to a dead
     // window. The frontend keeps the map otherwise (window_set_file).
