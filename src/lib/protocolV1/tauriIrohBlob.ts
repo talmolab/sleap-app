@@ -91,10 +91,14 @@ export function createTauriIrohBlobRangeSource(
         const alignedOffset = firstChunk * chunkSize;
         const alignedLength = Math.min(size, (lastChunk + 1) * chunkSize) - alignedOffset;
 
-        const window = (await ipc.invoke(sleapCmd("iroh_blob_read_range"), {
+        const raw = await ipc.invoke(sleapCmd("iroh_blob_read_range"), {
           offset: alignedOffset,
           length: alignedLength,
-        })) as Uint8Array;
+        });
+        // Tauri's default JSON IPC serializes a Rust `Vec<u8>` as a plain
+        // array of numbers, not a real Uint8Array — `.subarray()` and
+        // `crypto.subtle.digest()` both need an actual typed array.
+        const window = Uint8Array.from(raw as ArrayLike<number>);
 
         for (let c = firstChunk; c <= lastChunk; c++) {
           const start = (c - firstChunk) * chunkSize;
