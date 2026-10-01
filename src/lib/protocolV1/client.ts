@@ -39,6 +39,7 @@ import {
   WorkerProtocolError,
 } from "./errors";
 import type { ClientIdentity } from "./identity";
+import type { RangeSource } from "@talmolab/sleap-io.js";
 
 /**
  * The subset of the `WebSocket` interface this client needs. Lets tests
@@ -57,6 +58,12 @@ export interface WebSocketLike {
 
 const WS_OPEN = 1;
 const DEFAULT_REQUEST_TIMEOUT_MS = 15000;
+// Window size each `createBlobRangeSource` read is rounded up to, purely to
+// bound round-trips for the small/overlapping reads an HDF5 parser tends to
+// make — matches the granularity item 2.4b's iroh chunking used, for no
+// reason beyond consistency (unlike iroh's chunk size, this one isn't tied
+// to a server-side hash manifest; see `createBlobRangeSource`'s own comment).
+const HTTP_BLOB_RANGE_CHUNK_SIZE = 256 * 1024;
 
 export type ConnectionState = "connecting" | "unauthenticated" | "authenticated" | "closed";
 
@@ -377,6 +384,83 @@ export class WorkerClient {
     }
 
     return buffer;
+  }
+
+  /**
+   * Build a sleap-io.js `RangeSource` (`{size, readRange(offset, length)}`)
+   * over this same blob HTTP endpoint (spec §6.3), for callers like
+   * `readSlpStreaming` that only need specific byte ranges rather than the
+   * whole file — the HTTP-transport counterpart to item 2.4's
+   * `createTauriIrohBlobRangeSource` (`tauriIrohBlob.ts`), which does the
+   * same thing over an iroh QUIC stream.
+   *
+   * Each `readRange` call issues its own `Range: bytes=...` GET, rounded up
+   * to a `HTTP_BLOB_RANGE_CHUNK_SIZE`-aligned window (cheap, since unlike a
+   * stateful iroh stream there's no session to reuse — every request is
+   * already a fresh HTTP round trip either way). Deliberately does NOT do
+   * the iroh path's per-chunk sha256 verification: that relies on
+   * `chunkHashes` the worker precomputes and hands back from
+   * `iroh_blob_open`, and the plain HTTP blob server
+   * (`sleap_rtc/protocol_v1/blob_http.py`) has no equivalent manifest
+   * endpoint — adding one is worker-side scope this task deliberately left
+   * out. This instead checks each response's actual length against the
+   * requested window (`BLOB_INCOMPLETE` on a short read) and leaves byte
+   * integrity to the transport, same as any other Range-GET HTTP client.
+   */
+  createBlobRangeSource(sha256: string, size: number): RangeSource {
+    if (this._peerBlobPort === null) {
+      throw new WorkerProtocolError(
+        BLOB_UNKNOWN,
+        "Worker did not announce a blob port — it isn't running the blob HTTP server",
+      );
+    }
+    const url = `${this._blobHttpOrigin()}/blobs/${sha256}`;
+
+    return {
+      size,
+      readRange: async (offset: number, length: number): Promise<Uint8Array> => {
+        const firstChunk = Math.floor(offset / HTTP_BLOB_RANGE_CHUNK_SIZE);
+        const lastChunk = Math.floor((offset + length - 1) / HTTP_BLOB_RANGE_CHUNK_SIZE);
+        const alignedOffset = firstChunk * HTTP_BLOB_RANGE_CHUNK_SIZE;
+        const alignedEnd = Math.min(size, (lastChunk + 1) * HTTP_BLOB_RANGE_CHUNK_SIZE) - 1;
+
+        let response: Response;
+        try {
+          response = await this._fetch(url, {
+            headers: { Range: `bytes=${alignedOffset}-${alignedEnd}` },
+          });
+        } catch (err) {
+          throw new WorkerProtocolError(
+            BLOB_UNKNOWN,
+            `Failed to reach the blob server at ${url}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+        if (!response.ok) {
+          throw new WorkerProtocolError(
+            BLOB_UNKNOWN,
+            `Blob ${sha256} not found (HTTP ${response.status})`,
+          );
+        }
+
+        const body = new Uint8Array(await response.arrayBuffer());
+        const expectedLength = alignedEnd - alignedOffset + 1;
+        // A 200 (rather than 206) means the server ignored the Range header
+        // and sent the whole file — reslice from `alignedOffset` instead of
+        // misreading the file's start as the requested window. `blob_http.py`
+        // always honors Range, but this keeps the client correct against any
+        // Range-GET server, not just that specific implementation.
+        const windowStart = response.status === 206 ? 0 : alignedOffset;
+        if (body.length - windowStart < expectedLength) {
+          throw new WorkerProtocolError(
+            BLOB_INCOMPLETE,
+            `Blob ${sha256}: expected ${expectedLength} bytes at offset ${alignedOffset}, got ${Math.max(0, body.length - windowStart)}`,
+          );
+        }
+
+        const sliceStart = windowStart + (offset - alignedOffset);
+        return body.subarray(sliceStart, sliceStart + length);
+      },
+    };
   }
 
   private _blobHttpOrigin(): string {

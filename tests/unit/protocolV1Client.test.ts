@@ -571,4 +571,178 @@ describe("protocolV1 WorkerClient", () => {
     });
 
   });
+
+  describe("createBlobRangeSource", () => {
+    // HTTP_BLOB_RANGE_CHUNK_SIZE (256 KiB) isn't overridable from tests, so
+    // this blob is small enough that every read aligns to the single chunk
+    // covering the whole thing — `bytes=0-(BLOB_BYTES.length - 1)` throughout.
+    const BLOB_BYTES = new TextEncoder().encode("0123456789abcdefghij"); // 20 bytes
+
+    interface RecordedRequest {
+      url: string;
+      range: string | null;
+    }
+
+    /** A fake blob server: serves whatever byte range is asked of BLOB_BYTES,
+     * honoring `Range` with a real 206/Content-Range, same as `blob_http.py`. */
+    function makeFakeFetch(overrides: {
+      onRequest?: (offset: number, end: number) => Response | null;
+    } = {}) {
+      const calls: RecordedRequest[] = [];
+      const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const range = (init?.headers as Record<string, string> | undefined)?.Range ?? null;
+        calls.push({ url: String(input), range });
+        const match = /^bytes=(\d+)-(\d+)$/.exec(range ?? "");
+        if (!match) throw new Error(`expected a Range header, got ${range}`);
+        const start = Number(match[1]);
+        const end = Number(match[2]);
+
+        if (overrides.onRequest) {
+          const custom = overrides.onRequest(start, end);
+          if (custom) return custom;
+        }
+
+        const body = BLOB_BYTES.subarray(start, Math.min(end + 1, BLOB_BYTES.length));
+        return new Response(body, {
+          status: 206,
+          headers: { "Content-Range": `bytes ${start}-${start + body.length - 1}/${BLOB_BYTES.length}` },
+        });
+      }) as unknown as typeof fetch;
+      return { fetchImpl, calls };
+    }
+
+    async function clientWithBlobPort(fetchImpl: typeof fetch): Promise<WorkerClient> {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({ blobPort: 9632 });
+      return connected(identity, socket, { fetchImpl });
+    }
+
+    it("throws blob.unknown if the worker never announced a blob port", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket(); // no blobPort
+      const client = await connected(identity, socket);
+
+      let error: unknown;
+      try {
+        client.createBlobRangeSource("abc123", BLOB_BYTES.length);
+      } catch (e) {
+        error = e;
+      }
+      expect(error).toBeInstanceOf(WorkerProtocolError);
+      expect((error as WorkerProtocolError).code).toBe(BLOB_UNKNOWN);
+    });
+
+    it("exposes the given size unchanged", async () => {
+      const { fetchImpl } = makeFakeFetch();
+      const client = await clientWithBlobPort(fetchImpl);
+
+      const source = client.createBlobRangeSource("abc123", BLOB_BYTES.length);
+
+      expect(source.size).toBe(BLOB_BYTES.length);
+    });
+
+    it("fetches from http://<dialed host>:<blob_port>/blobs/<sha256> with a Range header", async () => {
+      const { fetchImpl, calls } = makeFakeFetch();
+      const client = await clientWithBlobPort(fetchImpl);
+      const source = client.createBlobRangeSource("abc123", BLOB_BYTES.length);
+
+      const bytes = await source.readRange(0, 5);
+
+      expect(new TextDecoder().decode(bytes)).toBe("01234");
+      expect(calls[0].url).toBe("http://fake-worker:9632/blobs/abc123");
+      expect(calls[0].range).toBe(`bytes=0-${BLOB_BYTES.length - 1}`); // aligned to the one 256 KiB chunk covering this 20-byte blob
+    });
+
+    it("returns exactly the requested bytes, not the whole aligned window", async () => {
+      const { fetchImpl } = makeFakeFetch();
+      const client = await clientWithBlobPort(fetchImpl);
+      const source = client.createBlobRangeSource("abc123", BLOB_BYTES.length);
+
+      const bytes = await source.readRange(6, 4);
+
+      expect(new TextDecoder().decode(bytes)).toBe("6789");
+    });
+
+    it("handles a short last read at end-of-file (last-chunk-shorter case)", async () => {
+      const { fetchImpl, calls } = makeFakeFetch();
+      const client = await clientWithBlobPort(fetchImpl);
+      const source = client.createBlobRangeSource("abc123", BLOB_BYTES.length);
+
+      const bytes = await source.readRange(BLOB_BYTES.length - 3, 3);
+
+      expect(new TextDecoder().decode(bytes)).toBe("hij");
+      expect(calls[0].range).toBe(`bytes=0-${BLOB_BYTES.length - 1}`);
+    });
+
+    it("reslices from the aligned offset if the server ignores Range and returns 200", async () => {
+      const { calls } = makeFakeFetch();
+      const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const range = (init?.headers as Record<string, string> | undefined)?.Range ?? null;
+        calls.push({ url: String(input), range });
+        return new Response(BLOB_BYTES, { status: 200 }); // whole file, ignoring Range
+      }) as unknown as typeof fetch;
+      const client = await clientWithBlobPort(fetchImpl);
+      const source = client.createBlobRangeSource("abc123", BLOB_BYTES.length);
+
+      const bytes = await source.readRange(6, 4);
+
+      expect(new TextDecoder().decode(bytes)).toBe("6789");
+    });
+
+    it("throws blob.unknown on a non-ok HTTP response", async () => {
+      const fetchImpl = (async () => new Response(null, { status: 404 })) as unknown as typeof fetch;
+      const client = await clientWithBlobPort(fetchImpl);
+      const source = client.createBlobRangeSource("abc123", BLOB_BYTES.length);
+
+      const err = await rejection(source.readRange(0, 4));
+      expect(err.code).toBe(BLOB_UNKNOWN);
+    });
+
+    it("throws blob.unknown if the fetch itself fails", async () => {
+      const fetchImpl = (async () => {
+        throw new Error("network down");
+      }) as unknown as typeof fetch;
+      const client = await clientWithBlobPort(fetchImpl);
+      const source = client.createBlobRangeSource("abc123", BLOB_BYTES.length);
+
+      const err = await rejection(source.readRange(0, 4));
+      expect(err.code).toBe(BLOB_UNKNOWN);
+    });
+
+    it("throws blob.incomplete when the response is shorter than the requested window", async () => {
+      const { fetchImpl } = makeFakeFetch({
+        onRequest: (start, end) =>
+          new Response(BLOB_BYTES.subarray(start, start + 1), {
+            // Claims to cover [start, end] but the body is truncated to 1 byte.
+            status: 206,
+            headers: { "Content-Range": `bytes ${start}-${end}/${BLOB_BYTES.length}` },
+          }),
+      });
+      const client = await clientWithBlobPort(fetchImpl);
+      const source = client.createBlobRangeSource("abc123", BLOB_BYTES.length);
+
+      const err = await rejection(source.readRange(0, 4));
+      expect(err.code).toBe(BLOB_INCOMPLETE);
+    });
+
+    it("derives https for a wss:// dial URL", async () => {
+      const { fetchImpl, calls } = makeFakeFetch();
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({ blobPort: 9632 });
+      const client = new WorkerClient({
+        url: "wss://fake-worker",
+        identity,
+        createSocket: () => socket,
+        fetchImpl,
+      });
+      const connectPromise = client.connect();
+      socket.simulateOpen();
+      await connectPromise;
+      const source = client.createBlobRangeSource("abc123", BLOB_BYTES.length);
+
+      await source.readRange(0, 4);
+
+      expect(calls[0].url).toBe("https://fake-worker:9632/blobs/abc123");
+    });
+  });
 });
