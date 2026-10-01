@@ -103,6 +103,17 @@ export interface TrainJobSpec {
   config_contents: string[];
   model_types: string[];
   labels_path: string;
+  /**
+   * Base64-encoded, structure-only (no embedded video frames) .slp bytes for
+   * the training labels, sent in place of a worker filesystem path when
+   * `labels_path` isn't resolvable on the worker (see trainingStore.ts's
+   * remote-submission path). `null`/absent means use `labels_path` as-is —
+   * mirrors `config_contents`'s own always-inline materialization pattern,
+   * just singular (one labels file per job) and opt-in rather than
+   * unconditional. Exact cross-repo wire contract with sleap-connect's worker
+   * materialization — do not rename.
+   */
+  labels_content?: string | null;
   val_labels_path?: string;
   max_epochs?: number;
   batch_size?: number;

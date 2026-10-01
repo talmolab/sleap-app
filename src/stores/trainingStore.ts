@@ -17,6 +17,18 @@ function appendLog(prev: string[], ...lines: string[]): string[] {
   return next.length > MAX_LOG_LINES ? next.slice(next.length - MAX_LOG_LINES) : next;
 }
 
+/** Chunked bytes→base64 (matches collectDiagnostics.ts's own `toBase64`) —
+ * avoids a single `String.fromCharCode(...bytes)` call blowing the call stack
+ * on anything but tiny arrays. */
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
 // A tqdm/Lightning progress-bar line contains a "<pct>%|" segment, e.g.
 // "Epoch 0:  85%|████▌ | 17/20 [00:03<00:00, 5.4it/s, loss=0.012]". tqdm rewrites
 // these in place via carriage return many times/sec.
@@ -1368,40 +1380,78 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         }
       }
 
-      // All paths to resolve: labels path + video paths
-      const allLocalPaths = [remoteOpts.labelsPath, ...videoPaths];
-
       // Load saved mappings and get worker mounts
       const { loadSavedMappings, resolveProjectPaths, buildPathMappings } =
         await import("@/lib/pathMappings");
       const savedMappings = await loadSavedMappings();
       const workerMounts = mounts.map((m) => m.path);
 
-      // Resolve paths using saved prefix mappings
-      const resolvedPaths = resolveProjectPaths(allLocalPaths, savedMappings, workerMounts);
+      // Decide path-vs-inline for the labels file using PathResolutionDialog's
+      // OWN resolvability heuristic (resolveProjectPaths: already a worker
+      // mount, or translatable via a saved mapping) rather than inventing a
+      // new one. When the labels file can't be resolved to a worker path at
+      // all — e.g. a browser session with no worker-visible filesystem for
+      // it — there's nothing for the user to pick in the dialog, so send the
+      // labels content inline instead (the labels-inline wire contract; see
+      // `TrainJobSpec.labels_content`) and only send video paths through the
+      // dialog.
+      const [labelsResolution] = resolveProjectPaths(
+        [remoteOpts.labelsPath],
+        savedMappings,
+        workerMounts,
+      );
+      const sendLabelsInline = labelsResolution.status === "unresolved";
 
-      // Show PathResolutionDialog for user confirmation
-      const confirmedPaths = await new Promise<
-        Array<{ local: string; worker: string }> | null
-      >((resolve) => {
-        window.dispatchEvent(
-          new CustomEvent("sleap:path-resolution", {
-            detail: { paths: resolvedPaths, resolve },
-          }),
-        );
-      });
+      const pathsToResolve = sendLabelsInline
+        ? videoPaths
+        : [remoteOpts.labelsPath, ...videoPaths];
 
-      if (!confirmedPaths) {
-        // User cancelled path resolution
-        set({ status: "idle" });
-        return;
+      let confirmedPaths: Array<{ local: string; worker: string }> = [];
+      if (pathsToResolve.length > 0) {
+        const resolvedPaths = resolveProjectPaths(pathsToResolve, savedMappings, workerMounts);
+
+        // Show PathResolutionDialog for user confirmation
+        const dialogResult = await new Promise<
+          Array<{ local: string; worker: string }> | null
+        >((resolve) => {
+          window.dispatchEvent(
+            new CustomEvent("sleap:path-resolution", {
+              detail: { paths: resolvedPaths, resolve },
+            }),
+          );
+        });
+
+        if (!dialogResult) {
+          // User cancelled path resolution
+          set({ status: "idle" });
+          return;
+        }
+        confirmedPaths = dialogResult;
       }
 
       // Build path_mappings dict from confirmed resolutions
       const pathMappings = buildPathMappings(confirmedPaths);
 
-      // Use the resolved labels path (first entry is always the labels/data path)
-      const resolvedLabelsPath = confirmedPaths[0]?.worker ?? remoteOpts.labelsPath;
+      // Resolve labels_path/labels_content per the inline-vs-path decision
+      // above. Inline: serialize the currently-loaded project to an imageless
+      // .slp (same structure-only bytes as the diagnostics/crash-recovery
+      // draft — skeletons/tracks/points, no embedded video frames) and send it
+      // base64-encoded; labels_path is kept as the original local path purely
+      // for worker-side logging/traceability — the worker is expected to
+      // materialize labels_content and ignore labels_path when content is
+      // present (mirrors config_contents's own always-inline materialization).
+      let resolvedLabelsPath = remoteOpts.labelsPath;
+      let labelsContent: string | null = null;
+      if (sendLabelsInline) {
+        if (labels) {
+          const { serializeLabelsDraft } = await import("@/lib/labelsDraft");
+          const bytes = await serializeLabelsDraft(labels);
+          labelsContent = bytesToBase64(bytes);
+        }
+      } else {
+        // First entry is always the labels/data path when it went through the dialog.
+        resolvedLabelsPath = confirmedPaths[0]?.worker ?? remoteOpts.labelsPath;
+      }
 
       // Build TrainJobSpec with path_mappings — apply hyperparam overrides to YAML.
       // Unlike local training, there's no Hydra CLI-override safety net here
@@ -1452,6 +1502,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         ),
         model_types: config.configs.map((c) => c.modelType),
         labels_path: resolvedLabelsPath,
+        labels_content: labelsContent,
         val_labels_path: remoteOpts.valLabelsPath || undefined,
         path_mappings: Object.keys(pathMappings).length > 0 ? pathMappings : undefined,
         inference_target: remoteOpts.inferenceTarget ?? "suggested",
