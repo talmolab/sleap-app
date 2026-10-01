@@ -197,11 +197,12 @@ describe("mergePendingRemoteResults", () => {
     expect(useInferenceStore.getState().pendingRemoteMerge).toBeNull();
   });
 
-  it("surfaces a failure as a store error and clears pendingRemoteMerge", async () => {
+  it("surfaces a failure as a store error but KEEPS pendingRemoteMerge (and status) so the retry button stays usable (#44)", async () => {
     fetchResultBlobMock.mockImplementationOnce(async () => {
       throw new Error("worker unreachable");
     });
     useInferenceStore.setState({
+      status: "completed",
       pendingRemoteMerge: {
         results: [{ jobId: "job_1", success: true, resultBlobs: { predictions: { sha256: "a", size: 1 } } }],
         mode: "replace",
@@ -212,8 +213,14 @@ describe("mergePendingRemoteResults", () => {
     await useInferenceStore.getState().mergePendingRemoteResults();
 
     const state = useInferenceStore.getState();
-    expect(state.status).toBe("error");
+    // The job itself already completed successfully on the worker — only the
+    // local blob fetch failed, which is retriable. Clearing `status` to
+    // "error" or `pendingRemoteMerge` to null here would lose the
+    // InferencePanel "Fetch & Load Results" button (gated on both staying as
+    // they were), forcing a full job resubmit to recover from what's often
+    // just a flaky fetch.
+    expect(state.status).toBe("completed");
     expect(state.error).toContain("worker unreachable");
-    expect(state.pendingRemoteMerge).toBeNull();
+    expect(state.pendingRemoteMerge).not.toBeNull();
   });
 });

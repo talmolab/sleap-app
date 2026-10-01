@@ -807,10 +807,15 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
         }
       }, 1500);
     } catch (e) {
+      // A failed fetch/merge is transient and retriable — the underlying job
+      // already completed successfully on the worker, only pulling its
+      // result blob(s) failed (e.g. a dropped connection). Keep `status:
+      // "completed"` and `pendingRemoteMerge` as-is so the "Fetch & Load
+      // Results" button (gated on both) stays usable; clearing either here
+      // used to force a full job resubmit to recover from what's often just
+      // a flaky fetch.
       set({
-        status: "error",
         error: `Failed to fetch/merge remote result: ${e instanceof Error ? e.message : String(e)}`,
-        pendingRemoteMerge: null,
       });
     }
   },
