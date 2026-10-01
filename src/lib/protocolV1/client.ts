@@ -35,6 +35,9 @@ import {
   CLIENT_CLOSED,
   CLIENT_PROTO_MISMATCH,
   CLIENT_TIMEOUT,
+  FS_FORBIDDEN,
+  FS_IO_ERROR,
+  FS_NOT_FOUND,
   INTERNAL,
   WorkerProtocolError,
 } from "./errors";
@@ -154,16 +157,55 @@ export function parseJobMetric(data: Record<string, unknown>): JobMetric {
   };
 }
 
-/** Parses a `job.curve` event's raw `data` into a typed `JobCurve`. */
+/**
+ * Parses a `job.curve` event's raw `data` into a typed `JobCurve`.
+ *
+ * Silently drops any point that isn't a well-formed `{x, y}` pair of finite
+ * numbers, rather than throwing (would abort delivery to every other event
+ * listener, since `_handleEvent` dispatches without a try/catch per
+ * listener) or passing through `NaN` (the same class of bug previously
+ * fixed for the training monitor — #379, uPlot freeze on non-finite scale).
+ */
 export function parseJobCurve(data: Record<string, unknown>): JobCurve {
-  const rawPoints = Array.isArray(data.points) ? (data.points as Array<Record<string, unknown>>) : [];
-  return {
-    points: rawPoints.map((p) => ({ x: Number(p.x), y: Number(p.y) })),
-  };
+  const rawPoints = Array.isArray(data.points) ? data.points : [];
+  const points: JobCurvePoint[] = [];
+  for (const raw of rawPoints) {
+    if (typeof raw !== "object" || raw === null) continue;
+    const p = raw as Record<string, unknown>;
+    const x = Number(p.x);
+    const y = Number(p.y);
+    if (Number.isFinite(x) && Number.isFinite(y)) points.push({ x, y });
+  }
+  return { points };
 }
 
 function toNullableNumber(value: unknown): number | null {
   return typeof value === "number" ? value : null;
+}
+
+/** Maps the worker's `file_manager.py` `error_code` strings to this client's `fs.*` codes. */
+function _fsErrorCode(workerCode: unknown): string {
+  switch (workerCode) {
+    case "PATH_NOT_FOUND":
+      return FS_NOT_FOUND;
+    case "ACCESS_DENIED":
+      return FS_FORBIDDEN;
+    default:
+      return FS_IO_ERROR;
+  }
+}
+
+/**
+ * `fs.stat`/`fs.read` report failure as an `{error, error_code}` pair
+ * embedded in an otherwise-normal `res` (not an envelope-level `res.error`)
+ * — see `file_manager.py`'s `stat_path`/`read_file`. Left unchecked, every
+ * caller silently gets a bogus zero-valued "success" instead of a thrown
+ * error.
+ */
+function _throwIfFsError(result: Record<string, unknown>, context: string): void {
+  if (typeof result.error === "string") {
+    throw new WorkerProtocolError(_fsErrorCode(result.error_code), `${context}: ${result.error}`);
+  }
 }
 
 export interface WorkerEvent {
@@ -400,9 +442,19 @@ export class WorkerClient {
     };
   }
 
-  /** Metadata for one path within the worker's configured mounts. */
+  /**
+   * Metadata for one path within the worker's configured mounts.
+   *
+   * @throws {WorkerProtocolError} with an `fs.*` code if the worker's
+   * `fs.stat` handler reports failure (path missing, outside configured
+   * mounts, etc.) — these arrive as an `{error, error_code}` pair embedded
+   * in an otherwise-successful `res`, not as an envelope-level `res.error`
+   * (see `file_manager.py`'s `stat_path`/`read_file` docstrings), so they
+   * must be checked explicitly rather than assumed absent.
+   */
   async fsStat(path: string): Promise<FsStatResult> {
     const result = await this._request("fs.stat", { path });
+    _throwIfFsError(result, `fs.stat('${path}')`);
     return {
       path: result.path as string,
       type: result.type as "file" | "directory",
@@ -422,6 +474,7 @@ export class WorkerClient {
     const params: Record<string, unknown> = { path, offset };
     if (length !== undefined) params.length = length;
     const result = await this._request("fs.read", params);
+    _throwIfFsError(result, `fs.read('${path}')`);
     return {
       path: result.path as string,
       content: base64ToBytes((result.content_base64 as string) ?? ""),

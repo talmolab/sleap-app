@@ -14,6 +14,8 @@ import {
   CLIENT_CLOSED,
   CLIENT_PROTO_MISMATCH,
   CLIENT_TIMEOUT,
+  FS_FORBIDDEN,
+  FS_NOT_FOUND,
   WorkerProtocolError,
 } from "@/lib/protocolV1/errors";
 import {
@@ -454,6 +456,44 @@ describe("protocolV1 WorkerClient", () => {
       const readReq = socket.sent.find((f) => f.method === "fs.read");
       expect(readReq?.params).toEqual({ path: "/x", offset: 0 });
     });
+
+    it("fsStat throws a WorkerProtocolError when the worker reports a not-found error embedded in the result", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({
+        handleRequest: (method) => {
+          if (method === "pair.claim") return { result: {} };
+          if (method === "fs.stat") {
+            return { result: { error: "Path does not exist", error_code: "PATH_NOT_FOUND" } };
+          }
+          return { error: { code: "proto.unknown_method", msg: "?" } };
+        },
+      });
+      const client = await pairedClient(identity, socket);
+
+      await expect(client.fsStat("/missing")).rejects.toMatchObject({
+        code: FS_NOT_FOUND,
+      });
+    });
+
+    it("fsRead throws a WorkerProtocolError when the worker reports access-denied embedded in the result", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({
+        handleRequest: (method) => {
+          if (method === "pair.claim") return { result: {} };
+          if (method === "fs.read") {
+            return {
+              result: { error: "Access denied: path is outside configured mounts", error_code: "ACCESS_DENIED" },
+            };
+          }
+          return { error: { code: "proto.unknown_method", msg: "?" } };
+        },
+      });
+      const client = await pairedClient(identity, socket);
+
+      await expect(client.fsRead("/etc/shadow")).rejects.toMatchObject({
+        code: FS_FORBIDDEN,
+      });
+    });
   });
 
   describe("jobsSubscribe / events", () => {
@@ -708,6 +748,25 @@ describe("protocolV1 WorkerClient", () => {
     it("parseJobCurve returns an empty points array when points is missing or malformed", () => {
       expect(parseJobCurve({})).toEqual({ points: [] });
       expect(parseJobCurve({ points: "not an array" })).toEqual({ points: [] });
+    });
+
+    it("parseJobCurve drops malformed individual points instead of throwing or producing NaN", () => {
+      expect(
+        parseJobCurve({
+          points: [
+            { x: 1, y: 0.5 },
+            null,
+            { y: 0.4 },
+            "not a point",
+            { x: 2, y: 0.3 },
+          ],
+        }),
+      ).toEqual({
+        points: [
+          { x: 1, y: 0.5 },
+          { x: 2, y: 0.3 },
+        ],
+      });
     });
   });
 });
