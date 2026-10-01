@@ -35,6 +35,9 @@ import {
   CLIENT_CLOSED,
   CLIENT_PROTO_MISMATCH,
   CLIENT_TIMEOUT,
+  FS_FORBIDDEN,
+  FS_IO_ERROR,
+  FS_NOT_FOUND,
   INTERNAL,
   WorkerProtocolError,
 } from "./errors";
@@ -90,6 +93,119 @@ export interface FsListResult {
   entries: FsEntry[];
   totalCount: number;
   hasMore: boolean;
+}
+
+export interface FsStatResult {
+  path: string;
+  type: "file" | "directory";
+  size: number;
+  modified: number;
+}
+
+export interface FsReadResult {
+  path: string;
+  /** Raw bytes, already base64-decoded. */
+  content: Uint8Array;
+  offset: number;
+  size: number;
+  totalSize: number;
+  /** True if this read reached the end of the file. */
+  eof: boolean;
+}
+
+/**
+ * A training job's periodic status summary (`job.metric` event data — see
+ * `sleap_rtc/protocol_v1/metrics.py`'s `JobMetricsConsumer`). Rate-capped to
+ * ~1 Hz on the worker side; fields are `null` until the worker has seen
+ * enough of sleap-nn's ZMQ stream to know them (e.g. `etaSeconds` needs at
+ * least one completed epoch).
+ */
+export interface JobMetric {
+  epoch: number | null;
+  totalEpochs: number | null;
+  latestTrainLoss: number | null;
+  latestValLoss: number | null;
+  bestLoss: number | null;
+  wandbUrl: string | null;
+  etaSeconds: number | null;
+}
+
+export interface JobCurvePoint {
+  x: number;
+  y: number;
+}
+
+/**
+ * A training job's loss curve (`job.curve` event data), M4-downsampled on
+ * the worker to ~1000 points — see `downsample_m4` in `metrics.py` for why
+ * M4 over naive decimation (a real loss spike always survives).
+ */
+export interface JobCurve {
+  points: JobCurvePoint[];
+}
+
+/** Parses a `job.metric` event's raw `data` into a typed `JobMetric`. */
+export function parseJobMetric(data: Record<string, unknown>): JobMetric {
+  return {
+    epoch: toNullableNumber(data.epoch),
+    totalEpochs: toNullableNumber(data.total_epochs),
+    latestTrainLoss: toNullableNumber(data.latest_train_loss),
+    latestValLoss: toNullableNumber(data.latest_val_loss),
+    bestLoss: toNullableNumber(data.best_loss),
+    wandbUrl: typeof data.wandb_url === "string" ? data.wandb_url : null,
+    etaSeconds: toNullableNumber(data.eta_seconds),
+  };
+}
+
+/**
+ * Parses a `job.curve` event's raw `data` into a typed `JobCurve`.
+ *
+ * Silently drops any point that isn't a well-formed `{x, y}` pair of finite
+ * numbers, rather than throwing (would abort delivery to every other event
+ * listener, since `_handleEvent` dispatches without a try/catch per
+ * listener) or passing through `NaN` (the same class of bug previously
+ * fixed for the training monitor — #379, uPlot freeze on non-finite scale).
+ */
+export function parseJobCurve(data: Record<string, unknown>): JobCurve {
+  const rawPoints = Array.isArray(data.points) ? data.points : [];
+  const points: JobCurvePoint[] = [];
+  for (const raw of rawPoints) {
+    if (typeof raw !== "object" || raw === null) continue;
+    const p = raw as Record<string, unknown>;
+    const x = Number(p.x);
+    const y = Number(p.y);
+    if (Number.isFinite(x) && Number.isFinite(y)) points.push({ x, y });
+  }
+  return { points };
+}
+
+function toNullableNumber(value: unknown): number | null {
+  return typeof value === "number" ? value : null;
+}
+
+/** Maps the worker's `file_manager.py` `error_code` strings to this client's `fs.*` codes. */
+function _fsErrorCode(workerCode: unknown): string {
+  switch (workerCode) {
+    case "PATH_NOT_FOUND":
+      return FS_NOT_FOUND;
+    case "ACCESS_DENIED":
+      return FS_FORBIDDEN;
+    default:
+      return FS_IO_ERROR;
+  }
+}
+
+/**
+ * `fs.stat`/`fs.read` report failure as an `{error, error_code}` pair
+ * embedded in an otherwise-normal `res` (not an envelope-level `res.error`)
+ * — see `file_manager.py`'s `stat_path`/`read_file`. Left unchecked, every
+ * caller silently gets a bogus zero-valued "success" instead of a thrown
+ * error.
+ */
+function _throwIfFsError(result: Record<string, unknown>, context: string): void {
+  if (typeof result.error === "string") {
+    throw new WorkerProtocolError(_fsErrorCode(result.error_code), `${context}: ${result.error}`);
+  }
 }
 
 export interface WorkerEvent {
@@ -327,6 +443,49 @@ export class WorkerClient {
   }
 
   /**
+   * Metadata for one path within the worker's configured mounts.
+   *
+   * @throws {WorkerProtocolError} with an `fs.*` code if the worker's
+   * `fs.stat` handler reports failure (path missing, outside configured
+   * mounts, etc.) — these arrive as an `{error, error_code}` pair embedded
+   * in an otherwise-successful `res`, not as an envelope-level `res.error`
+   * (see `file_manager.py`'s `stat_path`/`read_file` docstrings), so they
+   * must be checked explicitly rather than assumed absent.
+   */
+  async fsStat(path: string): Promise<FsStatResult> {
+    const result = await this._request("fs.stat", { path });
+    _throwIfFsError(result, `fs.stat('${path}')`);
+    return {
+      path: result.path as string,
+      type: result.type as "file" | "directory",
+      size: (result.size as number) ?? 0,
+      modified: (result.modified as number) ?? 0,
+    };
+  }
+
+  /**
+   * A small direct byte-range read within the worker's configured mounts —
+   * for inspecting a config/log/text file, NOT bulk transfer (see
+   * `fetchBlob`/the blob API for that). The worker caps `length` server-side
+   * (4 MiB per call as of `file_manager.py`'s `MAX_READ_BYTES`); page through
+   * a larger file with repeated, offset-advancing calls.
+   */
+  async fsRead(path: string, offset = 0, length?: number): Promise<FsReadResult> {
+    const params: Record<string, unknown> = { path, offset };
+    if (length !== undefined) params.length = length;
+    const result = await this._request("fs.read", params);
+    _throwIfFsError(result, `fs.read('${path}')`);
+    return {
+      path: result.path as string,
+      content: base64ToBytes((result.content_base64 as string) ?? ""),
+      offset: (result.offset as number) ?? offset,
+      size: (result.size as number) ?? 0,
+      totalSize: (result.total_size as number) ?? 0,
+      eof: !!result.eof,
+    };
+  }
+
+  /**
    * Fetch a result blob's bytes from the worker's blob HTTP endpoint (spec
    * §6.3), on the same host this client dialed for the WS connection.
    * Verifies both size and content hash before returning — this is bulk
@@ -505,6 +664,13 @@ function randomNonce(): string {
   let binary = "";
   for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function base64ToBytes(b64: string): Uint8Array {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
 }
 
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
