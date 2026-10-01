@@ -1,6 +1,12 @@
 import { describe, it, expect } from "../bun-test";
 import "fake-indexeddb/auto";
-import { WorkerClient, type WorkerClientOptions, type WorkerEvent } from "@/lib/protocolV1/client";
+import {
+  WorkerClient,
+  parseJobCurve,
+  parseJobMetric,
+  type WorkerClientOptions,
+  type WorkerEvent,
+} from "@/lib/protocolV1/client";
 import {
   BLOB_HASH_MISMATCH,
   BLOB_INCOMPLETE,
@@ -373,6 +379,81 @@ describe("protocolV1 WorkerClient", () => {
       const listReq = socket.sent.find((f) => f.method === "fs.list");
       expect(listReq?.params).toEqual({ path: "/mnt/data", offset: 10 });
     });
+
+    it("fsStat maps path/type/size/modified", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({
+        handleRequest: (method) => {
+          if (method === "pair.claim") return { result: {} };
+          if (method === "fs.stat") {
+            return {
+              result: { path: "/mnt/data/a.slp", type: "file", size: 123, modified: 1700000000 },
+            };
+          }
+          return { error: { code: "proto.unknown_method", msg: "?" } };
+        },
+      });
+      const client = await pairedClient(identity, socket);
+
+      const result = await client.fsStat("/mnt/data/a.slp");
+      expect(result).toEqual({
+        path: "/mnt/data/a.slp",
+        type: "file",
+        size: 123,
+        modified: 1700000000,
+      });
+    });
+
+    it("fsRead sends path/offset/length and base64-decodes the content", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({
+        handleRequest: (method) => {
+          if (method === "pair.claim") return { result: {} };
+          if (method === "fs.read") {
+            return {
+              result: {
+                path: "/mnt/data/a.yaml",
+                content_base64: btoa("hello"),
+                offset: 0,
+                size: 5,
+                total_size: 5,
+                eof: true,
+              },
+            };
+          }
+          return { error: { code: "proto.unknown_method", msg: "?" } };
+        },
+      });
+      const client = await pairedClient(identity, socket);
+
+      const result = await client.fsRead("/mnt/data/a.yaml", 0, 10);
+
+      expect(new TextDecoder().decode(result.content)).toBe("hello");
+      expect(result).toMatchObject({ path: "/mnt/data/a.yaml", offset: 0, size: 5, totalSize: 5, eof: true });
+      const readReq = socket.sent.find((f) => f.method === "fs.read");
+      expect(readReq?.params).toEqual({ path: "/mnt/data/a.yaml", offset: 0, length: 10 });
+    });
+
+    it("fsRead omits length from params when not given", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({
+        handleRequest: (method) => {
+          if (method === "pair.claim") return { result: {} };
+          if (method === "fs.read") {
+            return {
+              result: { path: "/x", content_base64: "", offset: 0, size: 0, total_size: 0, eof: true },
+            };
+          }
+          return { error: { code: "proto.unknown_method", msg: "?" } };
+        },
+      });
+      const client = await pairedClient(identity, socket);
+
+      await client.fsRead("/x");
+
+      const readReq = socket.sent.find((f) => f.method === "fs.read");
+      expect(readReq?.params).toEqual({ path: "/x", offset: 0 });
+    });
   });
 
   describe("jobsSubscribe / events", () => {
@@ -436,6 +517,42 @@ describe("protocolV1 WorkerClient", () => {
       socket.emitEvent("job.log", "job_abc", 2, { line: "world" });
       expect(a.length).toBe(1);
       expect(b.length).toBe(2);
+    });
+
+    it("delivers job.metric/job.curve events parseable by parseJobMetric/parseJobCurve", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({ handleRequest: () => ({ result: {} }) });
+      const client = await pairedClient(identity, socket);
+
+      const received: WorkerEvent[] = [];
+      await client.jobsSubscribe("job_abc", 0, (e) => received.push(e));
+
+      socket.emitEvent("job.metric", "job_abc", 1, {
+        epoch: 3,
+        total_epochs: 10,
+        latest_train_loss: 0.42,
+        latest_val_loss: 0.5,
+        best_loss: 0.4,
+        wandb_url: "https://wandb.ai/x/y",
+        eta_seconds: 120.5,
+      });
+      socket.emitEvent("job.curve", "job_abc", 2, {
+        points: [{ x: 1, y: 0.9 }, { x: 2, y: 0.4 }],
+      });
+
+      expect(received).toHaveLength(2);
+      expect(parseJobMetric(received[0].data)).toEqual({
+        epoch: 3,
+        totalEpochs: 10,
+        latestTrainLoss: 0.42,
+        latestValLoss: 0.5,
+        bestLoss: 0.4,
+        wandbUrl: "https://wandb.ai/x/y",
+        etaSeconds: 120.5,
+      });
+      expect(parseJobCurve(received[1].data)).toEqual({
+        points: [{ x: 1, y: 0.9 }, { x: 2, y: 0.4 }],
+      });
     });
 
     it("ignores events for jobs nothing has subscribed to", async () => {
@@ -570,5 +687,27 @@ describe("protocolV1 WorkerClient", () => {
       expect(err.code).toBe(BLOB_HASH_MISMATCH);
     });
 
+  });
+
+  describe("parseJobMetric / parseJobCurve", () => {
+    it("parseJobMetric defaults missing/wrong-typed fields to null", () => {
+      expect(parseJobMetric({})).toEqual({
+        epoch: null,
+        totalEpochs: null,
+        latestTrainLoss: null,
+        latestValLoss: null,
+        bestLoss: null,
+        wandbUrl: null,
+        etaSeconds: null,
+      });
+      expect(parseJobMetric({ epoch: "not a number", wandb_url: 42 })).toEqual(
+        expect.objectContaining({ epoch: null, wandbUrl: null }),
+      );
+    });
+
+    it("parseJobCurve returns an empty points array when points is missing or malformed", () => {
+      expect(parseJobCurve({})).toEqual({ points: [] });
+      expect(parseJobCurve({ points: "not an array" })).toEqual({ points: [] });
+    });
   });
 });

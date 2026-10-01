@@ -92,6 +92,80 @@ export interface FsListResult {
   hasMore: boolean;
 }
 
+export interface FsStatResult {
+  path: string;
+  type: "file" | "directory";
+  size: number;
+  modified: number;
+}
+
+export interface FsReadResult {
+  path: string;
+  /** Raw bytes, already base64-decoded. */
+  content: Uint8Array;
+  offset: number;
+  size: number;
+  totalSize: number;
+  /** True if this read reached the end of the file. */
+  eof: boolean;
+}
+
+/**
+ * A training job's periodic status summary (`job.metric` event data — see
+ * `sleap_rtc/protocol_v1/metrics.py`'s `JobMetricsConsumer`). Rate-capped to
+ * ~1 Hz on the worker side; fields are `null` until the worker has seen
+ * enough of sleap-nn's ZMQ stream to know them (e.g. `etaSeconds` needs at
+ * least one completed epoch).
+ */
+export interface JobMetric {
+  epoch: number | null;
+  totalEpochs: number | null;
+  latestTrainLoss: number | null;
+  latestValLoss: number | null;
+  bestLoss: number | null;
+  wandbUrl: string | null;
+  etaSeconds: number | null;
+}
+
+export interface JobCurvePoint {
+  x: number;
+  y: number;
+}
+
+/**
+ * A training job's loss curve (`job.curve` event data), M4-downsampled on
+ * the worker to ~1000 points — see `downsample_m4` in `metrics.py` for why
+ * M4 over naive decimation (a real loss spike always survives).
+ */
+export interface JobCurve {
+  points: JobCurvePoint[];
+}
+
+/** Parses a `job.metric` event's raw `data` into a typed `JobMetric`. */
+export function parseJobMetric(data: Record<string, unknown>): JobMetric {
+  return {
+    epoch: toNullableNumber(data.epoch),
+    totalEpochs: toNullableNumber(data.total_epochs),
+    latestTrainLoss: toNullableNumber(data.latest_train_loss),
+    latestValLoss: toNullableNumber(data.latest_val_loss),
+    bestLoss: toNullableNumber(data.best_loss),
+    wandbUrl: typeof data.wandb_url === "string" ? data.wandb_url : null,
+    etaSeconds: toNullableNumber(data.eta_seconds),
+  };
+}
+
+/** Parses a `job.curve` event's raw `data` into a typed `JobCurve`. */
+export function parseJobCurve(data: Record<string, unknown>): JobCurve {
+  const rawPoints = Array.isArray(data.points) ? (data.points as Array<Record<string, unknown>>) : [];
+  return {
+    points: rawPoints.map((p) => ({ x: Number(p.x), y: Number(p.y) })),
+  };
+}
+
+function toNullableNumber(value: unknown): number | null {
+  return typeof value === "number" ? value : null;
+}
+
 export interface WorkerEvent {
   topic: string;
   seq: number;
@@ -326,6 +400,38 @@ export class WorkerClient {
     };
   }
 
+  /** Metadata for one path within the worker's configured mounts. */
+  async fsStat(path: string): Promise<FsStatResult> {
+    const result = await this._request("fs.stat", { path });
+    return {
+      path: result.path as string,
+      type: result.type as "file" | "directory",
+      size: (result.size as number) ?? 0,
+      modified: (result.modified as number) ?? 0,
+    };
+  }
+
+  /**
+   * A small direct byte-range read within the worker's configured mounts —
+   * for inspecting a config/log/text file, NOT bulk transfer (see
+   * `fetchBlob`/the blob API for that). The worker caps `length` server-side
+   * (4 MiB per call as of `file_manager.py`'s `MAX_READ_BYTES`); page through
+   * a larger file with repeated, offset-advancing calls.
+   */
+  async fsRead(path: string, offset = 0, length?: number): Promise<FsReadResult> {
+    const params: Record<string, unknown> = { path, offset };
+    if (length !== undefined) params.length = length;
+    const result = await this._request("fs.read", params);
+    return {
+      path: result.path as string,
+      content: base64ToBytes((result.content_base64 as string) ?? ""),
+      offset: (result.offset as number) ?? offset,
+      size: (result.size as number) ?? 0,
+      totalSize: (result.total_size as number) ?? 0,
+      eof: !!result.eof,
+    };
+  }
+
   /**
    * Fetch a result blob's bytes from the worker's blob HTTP endpoint (spec
    * §6.3), on the same host this client dialed for the WS connection.
@@ -505,6 +611,13 @@ function randomNonce(): string {
   let binary = "";
   for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function base64ToBytes(b64: string): Uint8Array {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
 }
 
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
