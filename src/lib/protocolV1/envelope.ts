@@ -30,6 +30,16 @@ export interface HelloFrame {
    * worker not running the blob HTTP server).
    */
   blob_port?: number;
+  /**
+   * Symmetric auth: the WORKER's signature over the CLIENT's own `nonce`
+   * (the one THIS side just sent in its own hello), proving the worker
+   * genuinely holds the private key for the `node_id` it claimed in this
+   * same frame. Verified in `WorkerClient._handleHello` before the
+   * connection is trusted with anything else. Only ever present on a
+   * worker's own hello (never the client's — see `client.ts`'s verification
+   * for why the reverse direction doesn't need this).
+   */
+  proof?: string;
 }
 
 export interface ReqFrame {
@@ -134,6 +144,7 @@ export function parseEnvelope(raw: string): Envelope {
         node_id: frame.node_id as string,
         nonce: frame.nonce as string,
         blob_port: frame.blob_port as number | undefined,
+        proof: frame.proof as string | undefined,
       };
 
     case "req":

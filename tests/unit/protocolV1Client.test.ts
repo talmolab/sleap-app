@@ -8,6 +8,7 @@ import {
   CLIENT_CLOSED,
   CLIENT_PROTO_MISMATCH,
   CLIENT_TIMEOUT,
+  CLIENT_WORKER_UNVERIFIED,
   WorkerProtocolError,
 } from "@/lib/protocolV1/errors";
 import {
@@ -85,6 +86,66 @@ describe("protocolV1 WorkerClient", () => {
       expect(err).toBeInstanceOf(WorkerProtocolError);
       expect(err.code).toBe(CLIENT_PROTO_MISMATCH);
       expect(client.state).toBe("closed");
+    });
+
+    it("connects successfully with a worker's real hello.proof (symmetric auth, happy path)", async () => {
+      // No special setup -- FakeWorkerSocket signs a real proof by default,
+      // and `connected()` (used throughout this whole file) already relies
+      // on that succeeding. This test just makes the assertion explicit.
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket();
+      const client = await connected(identity, socket);
+      expect(client.state).toBe("unauthenticated");
+    });
+
+    it("rejects with client.worker_unverified when hello.proof is missing", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({ proofOverride: null });
+      const client = makeClient(identity, socket);
+
+      const connectPromise = client.connect();
+      socket.simulateOpen();
+      const err = await rejection(connectPromise);
+
+      expect(err.code).toBe(CLIENT_WORKER_UNVERIFIED);
+      expect(client.state).toBe("closed");
+    });
+
+    it("rejects with client.worker_unverified when hello.proof is forged/garbage", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({ proofOverride: "not-a-real-signature" });
+      const client = makeClient(identity, socket);
+
+      const connectPromise = client.connect();
+      socket.simulateOpen();
+      const err = await rejection(connectPromise);
+
+      expect(err.code).toBe(CLIENT_WORKER_UNVERIFIED);
+      expect(client.state).toBe("closed");
+    });
+
+    it("rejects with client.worker_unverified when hello.proof signs a different nonce", async () => {
+      // A valid signature -- just not over the nonce THIS client actually
+      // sent (e.g. a replayed proof from a different handshake).
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({
+        handleRequest: () => ({ result: {} }),
+      });
+      // Force the socket to sign a nonce we control, independent of
+      // whatever the client sends as its own nonce.
+      const originalSend = socket.send.bind(socket);
+      socket.send = (data: string) => {
+        const frame = JSON.parse(data) as Record<string, unknown>;
+        if (frame.type === "hello") frame.nonce = "a-different-nonce-than-the-real-one";
+        originalSend(JSON.stringify(frame));
+      };
+      const client = makeClient(identity, socket);
+
+      const connectPromise = client.connect();
+      socket.simulateOpen();
+      const err = await rejection(connectPromise);
+
+      expect(err.code).toBe(CLIENT_WORKER_UNVERIFIED);
     });
 
     it("throws if connect() is called on an already-open client", async () => {
