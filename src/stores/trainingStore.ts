@@ -6,11 +6,25 @@ import { isTauri } from "@/platform";
 import { computeRuntimeMetrics } from "@/lib/trainingMetrics";
 import { lastErrorLine } from "@/lib/processLog";
 import { formatRunTimestamp } from "@/lib/timestamp";
-import { computeInstanceSizeStats, recommendMaxStride, detectVideoChannels, resolveInputChannels } from "@/lib/modelStats";
+import { computeInstanceSizeStats, recommendMaxStride, detectVideoChannels, resolveInputChannels, formatBytes } from "@/lib/modelStats";
+import { confirmDialog } from "@/stores/confirmStore";
 import type { Labels } from "@/types";
 
 const MAX_BATCH_SAMPLES = 20000; // bound batchSamples; drop oldest beyond this
 const MAX_LOG_LINES = 1000; // bound the training log so it doesn't grow unbounded during long runs
+
+// Warn/block thresholds for inline-embedded `labels_content` (labeled frames'
+// pixel data, sent when the worker can't see the original video). Sized off
+// real measured embedded-frame costs (~250-450 KB/frame at current PNG
+// encoding — see the io PNG-bloat finding, item 0.7, still unfixed) against a
+// typical 100-200-frame labeled session (SLEAP's own recommended range):
+// that lands around 30-70 MB, so WARN stays silent for ordinary sessions and
+// only nags on genuinely large ones. HARD_CAP is kept comfortably under the
+// worker's websockets `max_size` (256 MiB, `sleap_rtc/protocol_v1/server.py`)
+// after base64's ~4/3 inflation — if these two ever need to change, change
+// them together.
+const LABELS_EMBED_WARN_BYTES = 10 * 1024 * 1024; // 10 MB
+const LABELS_EMBED_HARD_CAP_BYTES = 150 * 1024 * 1024; // 150 MB
 
 function appendLog(prev: string[], ...lines: string[]): string[] {
   const next = [...prev, ...lines];
@@ -1433,19 +1447,72 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       const pathMappings = buildPathMappings(confirmedPaths);
 
       // Resolve labels_path/labels_content per the inline-vs-path decision
-      // above. Inline: serialize the currently-loaded project to an imageless
-      // .slp (same structure-only bytes as the diagnostics/crash-recovery
-      // draft — skeletons/tracks/points, no embedded video frames) and send it
-      // base64-encoded; labels_path is kept as the original local path purely
-      // for worker-side logging/traceability — the worker is expected to
-      // materialize labels_content and ignore labels_path when content is
-      // present (mirrors config_contents's own always-inline materialization).
+      // above. Inline: the worker can't see the original video either (same
+      // unresolved path that made the labels themselves unresolvable), so a
+      // structure-only .slp would leave training with no pixels to learn
+      // from. Embed the LABELED frames' pixel data instead — reuses the
+      // existing, already-shipped pkg.slp embed path (`saveSlpToBytes` with
+      // `embed: true`, the same mechanism "Save As > Package" already uses),
+      // which scopes to `labels.labeledFrames` only, never the full video
+      // (confirmed in sleap-io.js's `collectEncodedFrames`). labels_path is
+      // kept as the original local path purely for worker-side
+      // logging/traceability — the worker is expected to materialize
+      // labels_content and ignore labels_path when content is present
+      // (mirrors config_contents's own always-inline materialization).
       let resolvedLabelsPath = remoteOpts.labelsPath;
       let labelsContent: string | null = null;
       if (sendLabelsInline) {
         if (labels) {
-          const { serializeLabelsDraft } = await import("@/lib/labelsDraft");
-          const bytes = await serializeLabelsDraft(labels);
+          let bytes: Uint8Array;
+          try {
+            const { serializeLabelsEmbedded } = await import("@/lib/labelsEmbed");
+            bytes = await serializeLabelsEmbedded(labels);
+          } catch (err) {
+            // Unlike the old structure-only serializer, this is a real
+            // decode+encode path (one getFrame+PNG-encode per labeled
+            // frame — see collectEncodedFrames) with real failure modes
+            // (an unreadable video backend, a corrupt frame). Left
+            // uncaught, `status` would stay stuck at "running" forever
+            // (set above, before this block) with nothing downstream to
+            // reset it — the UI would show an endless in-progress spinner
+            // for a failure that never even reached the worker.
+            set({
+              status: "error",
+              error: `Failed to prepare labeled frames for the worker: ${err instanceof Error ? err.message : String(err)}`,
+            });
+            return;
+          }
+
+          if (bytes.byteLength > LABELS_EMBED_HARD_CAP_BYTES) {
+            set({
+              status: "error",
+              error:
+                `This project's labeled frames are too large to send inline ` +
+                `(${formatBytes(bytes.byteLength)}, over the ${formatBytes(LABELS_EMBED_HARD_CAP_BYTES)} cap) ` +
+                `since the worker can't see the original video directly. Place the video on storage the ` +
+                `worker can access, or configure a path mapping for it, then try again.`,
+            });
+            return;
+          }
+
+          if (bytes.byteLength > LABELS_EMBED_WARN_BYTES) {
+            const frameCount = countUserLabeledFrames(labels);
+            const proceed = await confirmDialog({
+              title: "Large upload",
+              message:
+                `Sending ${frameCount ?? "all"} labeled frames inline (~${formatBytes(bytes.byteLength)}), ` +
+                `since the worker can't see the original video directly. This may take a while.\n\n` +
+                `If the worker can reach this video on shared storage instead, cancel and resolve its ` +
+                `path there for a faster, lighter submission.`,
+              confirmLabel: "Send anyway",
+              cancelLabel: "Cancel",
+            });
+            if (!proceed) {
+              set({ status: "idle" });
+              return;
+            }
+          }
+
           labelsContent = bytesToBase64(bytes);
         }
       } else {
