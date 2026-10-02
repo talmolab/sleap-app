@@ -1463,8 +1463,25 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       let labelsContent: string | null = null;
       if (sendLabelsInline) {
         if (labels) {
-          const { serializeLabelsEmbedded } = await import("@/lib/labelsEmbed");
-          const bytes = await serializeLabelsEmbedded(labels);
+          let bytes: Uint8Array;
+          try {
+            const { serializeLabelsEmbedded } = await import("@/lib/labelsEmbed");
+            bytes = await serializeLabelsEmbedded(labels);
+          } catch (err) {
+            // Unlike the old structure-only serializer, this is a real
+            // decode+encode path (one getFrame+PNG-encode per labeled
+            // frame — see collectEncodedFrames) with real failure modes
+            // (an unreadable video backend, a corrupt frame). Left
+            // uncaught, `status` would stay stuck at "running" forever
+            // (set above, before this block) with nothing downstream to
+            // reset it — the UI would show an endless in-progress spinner
+            // for a failure that never even reached the worker.
+            set({
+              status: "error",
+              error: `Failed to prepare labeled frames for the worker: ${err instanceof Error ? err.message : String(err)}`,
+            });
+            return;
+          }
 
           if (bytes.byteLength > LABELS_EMBED_HARD_CAP_BYTES) {
             set({
@@ -1473,7 +1490,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
                 `This project's labeled frames are too large to send inline ` +
                 `(${formatBytes(bytes.byteLength)}, over the ${formatBytes(LABELS_EMBED_HARD_CAP_BYTES)} cap) ` +
                 `since the worker can't see the original video directly. Place the video on storage the ` +
-                `worker can access (or remap its path in the dialog) and try again.`,
+                `worker can access, or configure a path mapping for it, then try again.`,
             });
             return;
           }

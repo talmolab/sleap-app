@@ -2393,4 +2393,22 @@ describe("startTraining (remote) — labels-inline vs path decision", () => {
     expect(useTrainingStore.getState().status).toBe("error");
     expect(useTrainingStore.getState().error).toContain("too large");
   });
+
+  it("surfaces a clear error (not a stuck 'running' status) when embedding the labeled frames fails", async () => {
+    fakeWorkerMounts = [];
+    serializeLabelsEmbeddedMock.mockImplementation(async () => {
+      throw new Error("simulated video backend decode failure");
+    });
+
+    await useTrainingStore.getState().startTraining({
+      remote: true,
+      workerId: "worker-1",
+      labelsPath: "/local/unmounted/labels.slp",
+    });
+
+    expect(confirmDialogMock).not.toHaveBeenCalled();
+    expect(submitJobMock).not.toHaveBeenCalled();
+    expect(useTrainingStore.getState().status).toBe("error");
+    expect(useTrainingStore.getState().error).toContain("simulated video backend decode failure");
+  });
 });
