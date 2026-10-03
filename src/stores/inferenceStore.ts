@@ -8,6 +8,7 @@ import { commandContext } from "@/commands";
 import { MergePredictions, MergeTracks, type ExistingPredictionsMode } from "@/commands/editCommands";
 import { useAppStore } from "@/stores/appStore";
 import { appendLogLine, subprocessFailureMessage } from "@/lib/processLog";
+import { buildRemoteTrackSpecs } from "@/lib/remoteTrackSpec";
 
 export interface InferenceProgress {
   nProcessed: number;
@@ -157,7 +158,7 @@ interface InferenceState {
   mergePendingRemoteResults: () => Promise<void>;
 }
 
-interface PendingRemoteMerge {
+export interface PendingRemoteMerge {
   results: JobResult[];
   mode: ExistingPredictionsMode;
   trackOnly: boolean;
@@ -268,6 +269,18 @@ export async function fetchAndMergeRemoteResult(
     mode,
     trackOnly,
   );
+}
+
+/**
+ * Fetch and merge every result of a pending remote merge, in order — the
+ * body of the "Fetch & Load Results" action, shared by standalone remote
+ * inference and remote post-training inference. Throws on the first
+ * failure; the caller keeps its pending state so the action stays retriable.
+ */
+export async function mergeRemoteResults(pending: PendingRemoteMerge): Promise<void> {
+  for (const result of pending.results) {
+    await fetchAndMergeRemoteResult(result, pending.mode, pending.trackOnly);
+  }
 }
 
 export const useInferenceStore = create<InferenceState>()((set) => ({
@@ -404,136 +417,19 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
       // Use the resolved data path (first entry)
       const resolvedDataPath = confirmedPaths[0]?.worker ?? remoteOpts.dataPath;
 
-      // Build TrackJobSpec from inference target
-      // Map UI target keys to TrackJobSpec fields, matching the PyQt GUI's
-      // _track_target_to_spec_fields mapper in dialog.py.
-      const target = typeof config.frameRange === "string" ? config.frameRange : null;
-      const currentVideoIdx = config.videoIndex !== "all" ? config.videoIndex : undefined;
+      // Build the TrackJobSpec(s) from the inference target — shared with
+      // remote post-training inference (see lib/remoteTrackSpec.ts).
+      const { frameIdx, video: activeVideo } = useAppStore.getState();
+      const specs = buildRemoteTrackSpecs(config, {
+        dataPath: resolvedDataPath,
+        pathMappings,
+        videoFrameCounts: (labels?.videos ?? []).map((v) => v.shape?.[0] ?? 0),
+        currentFrameIdx: frameIdx,
+        activeVideoFrameCount: activeVideo?.shape?.[0] ?? 0,
+      });
 
-      // Helper: sample N random indices from [0, totalFrames)
-      const sampleRandom = (totalFrames: number, count: number): number[] => {
-        const n = Math.min(count, totalFrames);
-        const indices = Array.from({ length: totalFrames }, (_, i) => i);
-        // Fisher-Yates shuffle, take first n
-        for (let i = indices.length - 1; i > 0 && i >= indices.length - n; i--) {
-          const j = Math.floor(Math.random() * (i + 1));
-          [indices[i], indices[j]] = [indices[j], indices[i]];
-        }
-        return indices.slice(indices.length - n).sort((a, b) => a - b);
-      };
-
-      // frame_filter: only for filter-based targets (worker-side filtering)
-      const FILTER_MAP: Record<string, string> = {
-        suggestions: "suggested",
-        user_labeled: "user",
-        predicted: "predicted",
-      };
-      const frameFilter = target && target in FILTER_MAP ? FILTER_MAP[target] : undefined;
-
-      // frames + video_index: depends on target type
-      let frames: string | undefined;
-      let videoIndex: number | undefined;
-
-      if (typeof config.frameRange === "object") {
-        // custom range
-        frames = `${config.frameRange.start}-${config.frameRange.end}`;
-        videoIndex = currentVideoIdx;
-      } else if (target === "frame") {
-        const { frameIdx } = useAppStore.getState();
-        frames = String(frameIdx);
-        videoIndex = currentVideoIdx;
-      } else if (target === "video") {
-        videoIndex = currentVideoIdx;
-      } else if (target === "random_video") {
-        // Client-side random sampling: pick N frames from current video
-        const { video: activeVideo } = useAppStore.getState();
-        const nFrames = activeVideo?.shape?.[0] ?? 0;
-        if (nFrames > 0) {
-          const sampled = sampleRandom(nFrames, config.sampleCount);
-          frames = sampled.join(",");
-        }
-        videoIndex = currentVideoIdx;
-      } else if (target === "random") {
-        // Random sample (all videos): submit one spec per video sequentially
-        // Each spec samples N frames from that video
-        const allVideos = labels?.videos ?? [];
-        const specs = allVideos.map((v, i) => {
-          const nFrames = v.shape?.[0] ?? 0;
-          if (nFrames === 0) return null;
-          const sampled = sampleRandom(nFrames, config.sampleCount);
-          return {
-            type: "track" as const,
-            data_path: resolvedDataPath,
-            model_paths: config.modelPaths,
-            batch_size: config.batchSize,
-            peak_threshold: config.peakThreshold,
-            video_index: i,
-            exclude_user_labeled: config.excludeUserLabeled || undefined,
-            frames: sampled.join(","),
-            path_mappings: Object.keys(pathMappings).length > 0 ? pathMappings : undefined,
-            robust: config.tracking ? config.robust : undefined,
-            ensure_channels: config.ensureChannels !== "auto" ? config.ensureChannels : undefined,
-            tracker: config.tracking ? config.trackerMethod : undefined,
-            similarity: config.tracking ? config.similarityMethod : undefined,
-            match: config.tracking ? config.matchingMethod : undefined,
-            track_window: config.tracking ? config.trackingWindowSize : undefined,
-            max_tracks: config.tracking && config.maxTracks != null ? config.maxTracks : undefined,
-            connect_single_breaks: config.tracking && config.connectSingleBreaks ? true : undefined,
-            min_match_points: config.tracking ? config.minMatchPoints : undefined,
-            min_new_track_points: config.tracking ? config.minNewTrackPoints : undefined,
-            scoring_reduction: config.tracking ? config.scoringReduction : undefined,
-            tracking_target_instance_count:
-              config.tracking && config.trackingTargetInstanceCount != null
-                ? config.trackingTargetInstanceCount
-                : undefined,
-            tracking_pre_cull_to_target:
-              config.tracking && config.trackingPreCullToTarget ? true : undefined,
-            tracking_pre_cull_iou_threshold:
-              config.tracking && config.trackingPreCullToTarget
-                ? config.trackingPreCullIouThreshold
-                : undefined,
-            tracking_clean_instance_count:
-              config.tracking && config.trackingCleanInstanceCount != null
-                ? config.trackingCleanInstanceCount
-                : undefined,
-            tracking_clean_iou_threshold:
-              config.tracking && config.trackingCleanInstanceCount != null
-                ? config.trackingCleanIouThreshold
-                : undefined,
-            of_img_scale:
-              config.tracking && config.trackerMethod === "flow" ? config.flowImgScale : undefined,
-            of_window_size:
-              config.tracking && config.trackerMethod === "flow" ? config.flowWindowSize : undefined,
-            of_max_levels:
-              config.tracking && config.trackerMethod === "flow" ? config.flowMaxLevels : undefined,
-            use_kalman: config.tracking && config.trackerMethod === "kalman" ? true : undefined,
-            kf_track_features:
-              config.tracking && config.trackerMethod === "kalman"
-                ? config.kfTrackFeatures
-                : undefined,
-            kf_init_frame_count:
-              config.tracking && config.trackerMethod === "kalman"
-                ? config.kfInitFrameCount
-                : undefined,
-            kf_node_indices:
-              config.tracking && config.trackerMethod === "kalman" && config.kfNodeIndices.length > 0
-                ? config.kfNodeIndices.join(",")
-                : undefined,
-            kf_reset_gap_size:
-              config.tracking && config.trackerMethod === "kalman"
-                ? config.kfResetGapSize
-                : undefined,
-            filter_overlapping: config.filterOverlapping || undefined,
-            filter_overlapping_method: config.filterOverlapping ? config.filterMethod : undefined,
-            filter_overlapping_threshold: config.filterOverlapping ? config.filterThreshold : undefined,
-            filter_min_visible_nodes: config.filterMinVisibleNodes ?? undefined,
-            filter_min_visible_node_fraction: config.filterMinVisibleNodeFraction ?? undefined,
-            filter_min_mean_node_score: config.filterMinMeanNodeScore ?? undefined,
-            filter_min_instance_score: config.filterMinInstanceScore ?? undefined,
-            filter_min_centroid_distance: config.filterMinCentroidDistance ?? undefined,
-          };
-        }).filter(Boolean);
-
+      if (config.frameRange === "random") {
+        // Random sample (all videos): one spec per video, submitted sequentially.
         set((state) => ({
           log: [`$ Remote (${specs.length} videos): ${JSON.stringify(specs, null, 2)}`, ...state.log],
         }));
@@ -570,73 +466,8 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
         }
         return;
       }
-      // all_videos, suggestions, user_labeled, predicted: no frames/videoIndex needed
 
-      const spec = {
-        type: "track" as const,
-        data_path: resolvedDataPath,
-        model_paths: config.modelPaths,
-        batch_size: config.batchSize,
-        peak_threshold: config.peakThreshold,
-        frame_filter: frameFilter,
-        video_index: videoIndex,
-        exclude_user_labeled: config.excludeUserLabeled || undefined,
-        frames,
-        path_mappings: Object.keys(pathMappings).length > 0 ? pathMappings : undefined,
-        robust: config.tracking ? config.robust : undefined,
-        ensure_channels: config.ensureChannels !== "auto" ? config.ensureChannels : undefined,
-        tracker: config.tracking ? config.trackerMethod : undefined,
-        similarity: config.tracking ? config.similarityMethod : undefined,
-        match: config.tracking ? config.matchingMethod : undefined,
-        track_window: config.tracking ? config.trackingWindowSize : undefined,
-        max_tracks: config.tracking && config.maxTracks != null ? config.maxTracks : undefined,
-        connect_single_breaks: config.tracking && config.connectSingleBreaks ? true : undefined,
-        min_match_points: config.tracking ? config.minMatchPoints : undefined,
-        min_new_track_points: config.tracking ? config.minNewTrackPoints : undefined,
-        scoring_reduction: config.tracking ? config.scoringReduction : undefined,
-        tracking_target_instance_count:
-          config.tracking && config.trackingTargetInstanceCount != null
-            ? config.trackingTargetInstanceCount
-            : undefined,
-        tracking_pre_cull_to_target:
-          config.tracking && config.trackingPreCullToTarget ? true : undefined,
-        tracking_pre_cull_iou_threshold:
-          config.tracking && config.trackingPreCullToTarget
-            ? config.trackingPreCullIouThreshold
-            : undefined,
-        tracking_clean_instance_count:
-          config.tracking && config.trackingCleanInstanceCount != null
-            ? config.trackingCleanInstanceCount
-            : undefined,
-        tracking_clean_iou_threshold:
-          config.tracking && config.trackingCleanInstanceCount != null
-            ? config.trackingCleanIouThreshold
-            : undefined,
-        of_img_scale: config.tracking && config.trackerMethod === "flow" ? config.flowImgScale : undefined,
-        of_window_size:
-          config.tracking && config.trackerMethod === "flow" ? config.flowWindowSize : undefined,
-        of_max_levels:
-          config.tracking && config.trackerMethod === "flow" ? config.flowMaxLevels : undefined,
-        use_kalman: config.tracking && config.trackerMethod === "kalman" ? true : undefined,
-        kf_track_features:
-          config.tracking && config.trackerMethod === "kalman" ? config.kfTrackFeatures : undefined,
-        kf_init_frame_count:
-          config.tracking && config.trackerMethod === "kalman" ? config.kfInitFrameCount : undefined,
-        kf_node_indices:
-          config.tracking && config.trackerMethod === "kalman" && config.kfNodeIndices.length > 0
-            ? config.kfNodeIndices.join(",")
-            : undefined,
-        kf_reset_gap_size:
-          config.tracking && config.trackerMethod === "kalman" ? config.kfResetGapSize : undefined,
-        filter_overlapping: config.filterOverlapping || undefined,
-        filter_overlapping_method: config.filterOverlapping ? config.filterMethod : undefined,
-        filter_overlapping_threshold: config.filterOverlapping ? config.filterThreshold : undefined,
-        filter_min_visible_nodes: config.filterMinVisibleNodes ?? undefined,
-        filter_min_visible_node_fraction: config.filterMinVisibleNodeFraction ?? undefined,
-        filter_min_mean_node_score: config.filterMinMeanNodeScore ?? undefined,
-        filter_min_instance_score: config.filterMinInstanceScore ?? undefined,
-        filter_min_centroid_distance: config.filterMinCentroidDistance ?? undefined,
-      };
+      const spec = specs[0];
 
       // Log the spec
       set((state) => ({
@@ -792,12 +623,8 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
   mergePendingRemoteResults: async () => {
     const { pendingRemoteMerge } = useInferenceStore.getState();
     if (!pendingRemoteMerge) return;
-    const { results, mode, trackOnly } = pendingRemoteMerge;
-
     try {
-      for (const result of results) {
-        await fetchAndMergeRemoteResult(result, mode, trackOnly);
-      }
+      await mergeRemoteResults(pendingRemoteMerge);
       set({ pendingRemoteMerge: null, status: "completed" });
       // Same cosmetic settle-before-idle delay as loadAndMergeResults above —
       // only reset if nothing else started a new run in the meantime.

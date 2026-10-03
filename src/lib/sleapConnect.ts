@@ -120,7 +120,9 @@ export interface TrainJobSpec {
   learning_rate?: number;
   run_name?: string;
   path_mappings?: Record<string, string>;
-  inference_target?: string;
+  // No `inference_target`: the worker never ran inference as part of a train
+  // job. Post-training inference is a separate track job the app submits
+  // once every model has trained (see trainingStore's remote branch).
 }
 
 export type JobSpec = TrackJobSpec | TrainJobSpec;
@@ -161,6 +163,10 @@ export interface JobResult {
    * server, or a training job, never populates this).
    */
   resultBlobs?: Record<string, JobResultBlobRef>;
+  /** Train jobs only: worker-side path of the trained model folder (a `model_paths` entry for a track job). */
+  modelDir?: string;
+  /** Train jobs only: worker-side path of the labels file the job trained on (materialized when sent inline). */
+  labelsPath?: string;
 }
 
 // ── Message helpers ───────────────────────────────────────────────

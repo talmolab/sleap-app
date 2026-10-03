@@ -9,6 +9,10 @@ import { formatRunTimestamp } from "@/lib/timestamp";
 import { computeInstanceSizeStats, recommendMaxStride, detectVideoChannels, resolveInputChannels, formatBytes } from "@/lib/modelStats";
 import { confirmDialog } from "@/stores/confirmStore";
 import type { Labels } from "@/types";
+import type { JobResult, TrainJobSpec } from "@/lib/sleapConnect";
+import { buildRemoteTrackSpecs } from "@/lib/remoteTrackSpec";
+import type { JobTelemetry } from "@/lib/protocolV1/jobTelemetry";
+import type { InferenceConfig, PendingRemoteMerge } from "@/stores/inferenceStore";
 
 const MAX_BATCH_SAMPLES = 20000; // bound batchSamples; drop oldest beyond this
 const MAX_LOG_LINES = 1000; // bound the training log so it doesn't grow unbounded during long runs
@@ -48,29 +52,138 @@ function bytesToBase64(bytes: Uint8Array): string {
 // these in place via carriage return many times/sec.
 const PROGRESS_LINE_RE = /\d+%\|/;
 
+/** One buffered log line; `progress` marks an in-place progress-bar redraw. */
+export interface LogLine {
+  line: string;
+  progress: boolean;
+}
+
 /**
- * Merge a batch of raw stdout/stderr lines into the bounded training log. Strips
- * ANSI codes, drops blanks, and — to emulate a terminal carriage return — REPLACES
- * the trailing log line (instead of appending) when both it and the incoming line
- * are progress bars, so a tqdm bar shows as ONE in-place-updating line rather than
- * thousands. Pure + synchronous so it is unit-testable. Bounded to MAX_LOG_LINES.
+ * Normalize one raw output line before buffering. A line with embedded `\r`
+ * (an old worker forwarding tqdm's raw carriage-return redraws) is treated
+ * as its last non-empty `\r` segment — what a terminal would show — and
+ * flagged as progress, same as an explicit `progress: true` line.
  */
-export function mergeStdoutIntoLog(prev: string[], rawLines: string[]): string[] {
+export function normalizeLogLine(raw: string, progress = false): LogLine {
+  if (!raw.includes("\r")) return { line: raw, progress };
+  const segments = raw.split("\r").filter((seg) => seg.trim());
+  return { line: segments[segments.length - 1] ?? "", progress: true };
+}
+
+/**
+ * Merge a batch of raw output lines into the bounded training log. Strips
+ * ANSI codes, drops blanks, and — to emulate a terminal carriage return —
+ * REPLACES the trailing log line (instead of appending) when both it and the
+ * incoming line are progress bars, so a tqdm bar shows as ONE in-place-
+ * updating line rather than thousands. A line counts as a progress bar when
+ * it looks like one (`PROGRESS_LINE_RE`) or was explicitly flagged
+ * (`LogLine.progress`); `progressTail` carries the last flagged line across
+ * calls, since the log itself is plain strings. Pure + synchronous so it is
+ * unit-testable. Bounded to MAX_LOG_LINES.
+ */
+export function mergeLogLines(
+  prev: string[],
+  rawLines: Array<string | LogLine>,
+  progressTail: string | null = null,
+): { log: string[]; progressTail: string | null } {
   const next = prev.slice();
+  let tail = progressTail;
   for (const raw of rawLines) {
-    const clean = raw.replace(/\x1b\[[0-9;]*m/g, "").trim();
+    const { line, progress } = typeof raw === "string" ? { line: raw, progress: false } : raw;
+    const clean = line.replace(/\x1b\[[0-9;]*m/g, "").trim();
     if (!clean) continue;
-    if (
-      PROGRESS_LINE_RE.test(clean) &&
-      next.length > 0 &&
-      PROGRESS_LINE_RE.test(next[next.length - 1])
-    ) {
+    const isProgress = progress || PROGRESS_LINE_RE.test(clean);
+    const last = next[next.length - 1];
+    const lastIsProgress =
+      last !== undefined && ((tail !== null && last === tail) || PROGRESS_LINE_RE.test(last));
+    if (isProgress && lastIsProgress) {
       next[next.length - 1] = clean; // coalesce in place (carriage-return behavior)
     } else {
       next.push(clean);
     }
+    tail = progress ? clean : null;
   }
-  return next.length > MAX_LOG_LINES ? next.slice(next.length - MAX_LOG_LINES) : next;
+  return {
+    log: next.length > MAX_LOG_LINES ? next.slice(next.length - MAX_LOG_LINES) : next,
+    progressTail: tail,
+  };
+}
+
+/** `mergeLogLines` for plain (unflagged) lines — the local stdout path. */
+export function mergeStdoutIntoLog(prev: string[], rawLines: string[]): string[] {
+  return mergeLogLines(prev, rawLines).log;
+}
+
+const TQDM_EPOCH_LOSS_RE = /Epoch (\d+):\s+(\d+)%\|.*?loss=([\d.]+)/;
+
+export interface LogFlusher {
+  /** Buffer one raw line; never touches the store. */
+  push: (raw: string, progress?: boolean) => void;
+  /** Apply everything buffered as ONE store update, attributing tqdm epoch/loss to `modelIndex` (default: current model). */
+  flush: (modelIndex?: number) => void;
+  /** Stop the timer and drain whatever is left. */
+  stop: () => void;
+}
+
+type TrainingSet = (fn: (s: TrainingState) => Partial<TrainingState>) => void;
+type TrainingGet = () => TrainingState;
+
+/**
+ * Buffered, throttled training-log writer shared by local and remote
+ * training. Output lines (tqdm repaints many times/sec) must NEVER be
+ * applied per line — that was an unthrottled re-render storm that froze the
+ * UI (#128 follow-up). Lines are buffered and flushed every `intervalMs`
+ * through `mergeLogLines`, and the latest tqdm epoch/loss in the batch drives
+ * the live per-model progress — all in a single `set` per flush.
+ */
+export function createLogFlusher(set: TrainingSet, get: TrainingGet, intervalMs = 250): LogFlusher {
+  const buffer: LogLine[] = [];
+  let progressTail: string | null = null;
+  const flush = (modelIndex?: number) => {
+    if (buffer.length === 0) return;
+    const lines = buffer.splice(0, buffer.length);
+    const idx = modelIndex ?? get().currentModelIndex;
+    let tqdmEpoch: number | null = null;
+    let tqdmLoss: number | null = null;
+    for (const l of lines) {
+      const m = l.line.match(TQDM_EPOCH_LOSS_RE);
+      if (m) { tqdmEpoch = parseInt(m[1]); tqdmLoss = parseFloat(m[3]); }
+    }
+    set((s) => {
+      const merged = mergeLogLines(s.log, lines, progressTail);
+      progressTail = merged.progressTail;
+      return {
+        log: merged.log,
+        models:
+          tqdmEpoch !== null
+            ? s.models.map((m, j) =>
+                j === idx
+                  ? {
+                      ...m,
+                      // tqdm's epoch is 0-based and a flush can land AFTER
+                      // recordEpoch's 1-based completed count — Math.max
+                      // keeps it from dragging the final "5/5" back to "4/5".
+                      epoch: Math.max(m.epoch, tqdmEpoch as number),
+                      loss: tqdmLoss ?? m.loss,
+                    }
+                  : m,
+              )
+            : s.models,
+      };
+    });
+  };
+  const timer = setInterval(() => flush(), intervalMs);
+  return {
+    push: (raw, progress = false) => {
+      const l = normalizeLogLine(raw, progress);
+      if (l.line.trim()) buffer.push(l);
+    },
+    flush,
+    stop: () => {
+      clearInterval(timer);
+      flush();
+    },
+  };
 }
 
 // ── Types ─────────────────────────────────────────────────────────
@@ -346,7 +459,26 @@ export interface RemoteTrainingOptions {
   workerId: string;
   labelsPath: string; // path on worker
   valLabelsPath?: string;
+  /** Post-training inference target ("nothing"/absent = skip). Run as a separate track job once all models train. */
   inferenceTarget?: string;
+  sampleCount?: number;
+  skipUserLabeled?: boolean;
+  existingPredictions?: "clear_all" | "replace" | "keep";
+}
+
+/**
+ * Remote post-training inference: the track job the app submits after every
+ * model of a remote run trains. Its predictions are NOT merged automatically
+ * — `pendingMerge` holds the finished job's result(s) until the user clicks
+ * "Fetch & Load" (same rationale as inferenceStore's `pendingRemoteMerge`).
+ */
+export interface PostTrainingInference {
+  status: "running" | "completed" | "error" | "skipped";
+  /** Error / skip reason, or the last fetch failure while `pendingMerge` is kept for retry. */
+  message: string | null;
+  pendingMerge: PendingRemoteMerge | null;
+  /** True once the predictions were fetched and merged into the project. */
+  merged: boolean;
 }
 
 export interface LocalTrainingOptions {
@@ -439,6 +571,8 @@ interface TrainingState {
   wandbUrl: string | null;
   modelOutputDirs: string[];
   log: string[]; // single shared log for all models
+  /** Remote runs only; `null` when not requested / not reached. */
+  postTrainingInference: PostTrainingInference | null;
 
   /**
    * Bumped on every `reset()`. `TrainingPanel`'s baseline-autoload effect keys
@@ -466,6 +600,10 @@ interface TrainingState {
   recordBatch: (modelIndex: number, sample: BatchInput) => void;
   recordBatches: (modelIndex: number, samples: BatchInput[]) => void;
   markEpochBegin: (modelIndex: number, epoch: number) => void;
+  /** Route one remote job's structured telemetry into model `modelIndex`'s monitor state. */
+  applyRemoteTelemetry: (modelIndex: number, telemetry: JobTelemetry) => void;
+  /** Fetch & merge the remote post-training inference predictions (explicit user action). */
+  fetchAndLoadPostTrainingPredictions: () => Promise<void>;
 }
 
 // ── Config slot helpers ───────────────────────────────────────────
@@ -511,6 +649,86 @@ export function countUserLabeledFrames(labels: Labels | null): number | null {
   ).length;
   _userLabeledFramesCache = { labels, result };
   return result;
+}
+
+/**
+ * The `InferenceConfig` for post-training inference — shared by local runs
+ * (run directly) and remote runs (turned into a track job spec). Only the
+ * target/model/merge choices come from the training panel; every other
+ * inference option is the fixed default post-training inference has always
+ * used.
+ */
+export function buildPostTrainingInferenceConfig(opts: {
+  modelType: ModelType;
+  modelPaths: string[];
+  inferenceTarget: string;
+  videoIndex: number | "all";
+  sampleCount?: number;
+  skipUserLabeled?: boolean;
+  existingPredictions?: "clear_all" | "replace" | "keep";
+  device?: InferenceConfig["device"];
+  runtime?: InferenceConfig["runtime"];
+}): InferenceConfig {
+  const pipelineMap: Record<string, InferenceConfig["pipeline"]> = {
+    single_animal: "single-animal",
+    top_down: "top-down",
+    bottom_up: "bottom-up",
+    top_down_id: "top-down-id",
+    bottom_up_id: "bottom-up-id",
+  };
+  return {
+    pipeline: pipelineMap[opts.modelType] || "top-down",
+    trackOnly: false,
+    modelPaths: opts.modelPaths,
+    videoIndex: opts.videoIndex,
+    frameRange: opts.inferenceTarget as InferenceConfig["frameRange"],
+    sampleCount: opts.sampleCount ?? 20,
+    excludeUserLabeled: opts.skipUserLabeled ?? false,
+    existingPredictions: opts.existingPredictions ?? "replace",
+    batchSize: 4,
+    device: opts.device ?? "auto",
+    runtime: opts.runtime ?? "auto",
+    maxInstances: null,
+    peakThreshold: 0.2,
+    integralRefinement: true,
+    integralPatchSize: 5,
+    nPoints: 10,
+    maxEdgeLengthRatio: 0.25,
+    distPenaltyWeight: 1.0,
+    minLineScores: 0.25,
+    tracking: false,
+    trackerMethod: "simple",
+    similarityMethod: "oks",
+    matchingMethod: "hungarian",
+    trackingWindowSize: 5,
+    maxTracks: null,
+    connectSingleBreaks: false,
+    robust: 0.95,
+    minMatchPoints: 0,
+    minNewTrackPoints: 0,
+    scoringReduction: "mean",
+    trackingTargetInstanceCount: null,
+    trackingPreCullToTarget: false,
+    trackingPreCullIouThreshold: 0,
+    trackingCleanInstanceCount: null,
+    trackingCleanIouThreshold: 0,
+    flowImgScale: 1.0,
+    flowWindowSize: 21,
+    flowMaxLevels: 3,
+    kfTrackFeatures: "centroid",
+    kfInitFrameCount: 10,
+    kfNodeIndices: [],
+    kfResetGapSize: 5,
+    ensureChannels: "auto",
+    filterOverlapping: false,
+    filterMethod: "iou",
+    filterThreshold: 0.8,
+    filterMinVisibleNodes: null,
+    filterMinVisibleNodeFraction: null,
+    filterMinMeanNodeScore: null,
+    filterMinInstanceScore: null,
+    filterMinCentroidDistance: null,
+  };
 }
 
 // ── YAML override helper ─────────────────────────────────────────
@@ -917,6 +1135,7 @@ const initialState = {
   wandbUrl: null as string | null,
   modelOutputDirs: [] as string[],
   log: [] as string[],
+  postTrainingInference: null as PostTrainingInference | null,
   resetSeq: 0,
 };
 
@@ -1373,6 +1592,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       wandbUrl: null,
       modelOutputDirs: [],
       log: [],
+      postTrainingInference: null,
     });
 
     if (remoteOpts?.remote) {
@@ -1553,9 +1773,18 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       };
       const remoteDetectedChannels = detectVideoChannels(labels);
 
-      const spec = {
-        type: "train" as const,
-        config_contents: config.configs.map((c) =>
+      // Jobs are submitted (and, for a multi-model pipeline, split) in
+      // `config_contents` order, so build it in slot order: job i then
+      // trains model i (`models[i]`), and its worker-side model dir lands at
+      // position i of the post-training track job's `model_paths` — the
+      // pipeline order sleap-nn expects (centroid before centered_instance).
+      const orderedConfigs = slots
+        .map((slot) => config.configs.find((c) => c.slot === slot))
+        .filter((c): c is ConfigFile => !!c);
+
+      const spec: TrainJobSpec = {
+        type: "train",
+        config_contents: orderedConfigs.map((c) =>
           applyHyperparamsToYaml(
             c.content,
             {
@@ -1567,12 +1796,11 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
             resolveInputChannels(c.hyperparams.colorMode, remoteDetectedChannels),
           ),
         ),
-        model_types: config.configs.map((c) => c.modelType),
+        model_types: orderedConfigs.map((c) => c.modelType),
         labels_path: resolvedLabelsPath,
         labels_content: labelsContent,
         val_labels_path: remoteOpts.valLabelsPath || undefined,
         path_mappings: Object.keys(pathMappings).length > 0 ? pathMappings : undefined,
-        inference_target: remoteOpts.inferenceTarget ?? "suggested",
       };
 
       set((state) => ({
@@ -1581,129 +1809,26 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         ),
       }));
 
+      // Worker job.log lines take the same buffered, coalesced path as local
+      // stdout (one store update per flush, never per line).
+      const logFlusher = createLogFlusher(set, get);
+      const onLogLine = (line: string, isProgress?: boolean) => {
+        if (line.includes("wandb.ai/")) {
+          const urlMatch = line.match(/(https:\/\/wandb\.ai\/[^\s"}\]>)]+)/);
+          if (urlMatch && get().wandbUrl !== urlMatch[1]) set({ wandbUrl: urlMatch[1] });
+        }
+        logFlusher.push(line, isProgress);
+      };
+
       try {
-        const result = await submitJob(spec, (line: string, isCarriageReturn?: boolean) => {
-          // Parse progress from worker — single shared log
-          const state = get();
-          const idx = state.currentModelIndex;
-
-          // ── PROGRESS_REPORT (structured ZMQ events) ───────────
-          // Silently updates progress state — NOT printed to terminal.
-          if (line.startsWith("__PROGRESS_REPORT__")) {
-            const payload = line.slice("__PROGRESS_REPORT__".length);
-            try {
-              const data = JSON.parse(payload);
-              const event = data.event ?? data.py_dict?.event;
-
-              if (event === "train_begin" || data.wandb_url) {
-                const url = data.wandb_url ?? data.py_dict?.wandb_url;
-                if (url) set({ wandbUrl: url });
-              }
-
-              if (event === "epoch_end") {
-                const logs = data.logs ?? data.py_dict?.logs ?? {};
-                const trainLoss = logs["train/loss"] ?? logs["loss"] ?? null;
-                const valLoss = logs["val/loss"] ?? null;
-                const epoch = data.epoch ?? data.py_dict?.epoch;
-                // OQ-5: remote epoch is 0-based — pass through, no normalization.
-                if (typeof epoch === "number") {
-                  get().recordEpoch(idx, { epoch, trainLoss, valLoss });
-                }
-              }
-
-              if (event === "epoch_begin") {
-                const epoch = data.epoch ?? data.py_dict?.epoch;
-                if (typeof epoch === "number") get().markEpochBegin(idx, epoch);
-              }
-            } catch {
-              // Malformed progress report — ignore
-            }
-            return;
-          }
-
-          // ── CR:: lines (tqdm progress bars) ───────────────────
-          // Replace the last log line to emulate in-place overwriting.
-          if (isCarriageReturn) {
-            // Parse epoch/loss from tqdm line for progress bar updates
-            const tqdmMatch = line.match(
-              /Epoch (\d+):\s+(\d+)%\|.*?loss=([\d.]+)/,
-            );
-            if (tqdmMatch) {
-              const epoch = parseInt(tqdmMatch[1]);
-              const loss = parseFloat(tqdmMatch[3]);
-              set((s) => ({
-                models: s.models.map((m, i) =>
-                  // Math.max: never let the 0-based tqdm epoch regress the
-                  // 1-based completed count (see the flushStdout path).
-                  i === idx ? { ...m, epoch: Math.max(m.epoch, epoch), loss } : m,
-                ),
-              }));
-            }
-
-            // Strip ANSI escape codes for clean display
-            const clean = line.replace(/\x1b\[[0-9;]*m/g, "").trim();
-            if (!clean) return;
-
-            // Replace last log line (carriage return behavior)
-            set((s) => ({
-              log: s.log.length > 0
-                ? appendLog(s.log.slice(0, -1), clean)
-                : [clean],
-            }));
-            return;
-          }
-
-          // ── JSON progress (e.g. from --gui flag) ──────────────
-          try {
-            const data = JSON.parse(line);
-            if ("epoch" in data) {
-              set((s) => ({
-                models: s.models.map((m, i) =>
-                  i === idx
-                    ? {
-                        ...m,
-                        epoch: data.epoch ?? m.epoch,
-                        loss: data.loss ?? m.loss,
-                        valLoss: data.val_loss ?? m.valLoss,
-                        bestValLoss:
-                          data.val_loss != null &&
-                          (m.bestValLoss === null || data.val_loss < m.bestValLoss)
-                            ? data.val_loss
-                            : m.bestValLoss,
-                      }
-                    : m,
-                ),
-                log: appendLog(
-                  s.log,
-                  `[Epoch ${data.epoch}/${s.models[idx]?.maxEpochs}] loss: ${data.loss?.toFixed(4) ?? "?"} | val_loss: ${data.val_loss?.toFixed(4) ?? "?"}${
-                    data.val_loss != null &&
-                    (s.models[idx]?.bestValLoss === null || data.val_loss < (s.models[idx]?.bestValLoss ?? Infinity))
-                      ? " *** best ***"
-                      : ""
-                  }`,
-                ),
-              }));
-              return;
-            }
-          } catch {
-            // Not JSON — continue
-          }
-
-          // ── Filter empty lines ────────────────────────────────
-          if (!line.trim()) return;
-
-          // ── wandb URL detection (from regular log lines) ──────
-          if (line.includes("wandb.ai/")) {
-            // Strip trailing punctuation that may be captured from JSON context
-            const urlMatch = line.match(/(https:\/\/wandb\.ai\/[^\s"}\]>)]+)/);
-            if (urlMatch) set({ wandbUrl: urlMatch[1] });
-          }
-
-          // ── Regular log line — append to shared log ───────────
-          set((s) => ({ log: appendLog(s.log, line) }));
-        }, {
-          onModelComplete: () => {
-            // A model finished — advance to the next one
+        const trainResults: JobResult[] = [];
+        const result = await submitJob(spec, onLogLine, {
+          onTelemetry: (telemetry, jobIndex) => get().applyRemoteTelemetry(jobIndex, telemetry),
+          onModelComplete: (modelResult) => {
+            trainResults.push(modelResult);
+            // Attribute lines still buffered from the finished model to it,
+            // before the current model advances.
+            logFlusher.flush(get().currentModelIndex);
             set((s) => {
               const idx = s.currentModelIndex;
               const nextIdx = idx + 1;
@@ -1721,19 +1846,9 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
             });
           },
         });
+        logFlusher.flush();
 
-        if (result.success) {
-          set((s) => ({
-            status: "completed",
-            // Only mark models that actually ran as completed;
-            // leave pending models as-is (e.g. after stop early)
-            models: s.models.map((m) =>
-              m.status === "running"
-                ? { ...m, status: "completed" as const }
-                : m,
-            ),
-          }));
-        } else {
+        if (!result.success) {
           set((s) => ({
             status: "error",
             error: result.error || "Training failed",
@@ -1743,12 +1858,103 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
                 : m,
             ),
           }));
+          return;
         }
+        trainResults.push(result);
+
+        // Only mark models that actually ran as completed; leave pending
+        // models as-is (e.g. after stop early).
+        set((s) => ({
+          models: s.models.map((m) =>
+            m.status === "running"
+              ? { ...m, status: "completed" as const }
+              : m,
+          ),
+        }));
+
+        // ── Post-training inference (separate track job) ──────
+        // The worker never runs inference inside a train job. Once every
+        // model has trained, submit one track job against the labels file
+        // the worker trained on, with every trained model in pipeline order.
+        const inferenceTarget = remoteOpts.inferenceTarget;
+        if (inferenceTarget && inferenceTarget !== "nothing") {
+          const modelDirs = trainResults.map((r) => r.modelDir);
+          const dataPath = trainResults.find((r) => r.labelsPath)?.labelsPath;
+          if (modelDirs.some((d) => !d) || !dataPath) {
+            const message =
+              "Post-training inference skipped: the worker didn't report the trained model " +
+              "location (it may need updating). Run inference from the Inference panel instead.";
+            set((s) => ({
+              postTrainingInference: { status: "skipped", message, pendingMerge: null, merged: false },
+              log: appendLog(s.log, `— ${message}`),
+            }));
+          } else {
+            const { video, frameIdx } = useAppStore.getState();
+            const inferenceConfig = buildPostTrainingInferenceConfig({
+              modelType: config.modelType,
+              modelPaths: modelDirs as string[],
+              inferenceTarget,
+              videoIndex:
+                inferenceTarget === "video" || inferenceTarget === "random_video"
+                  ? labels && video ? Math.max(0, labels.videos.indexOf(video)) : 0
+                  : "all",
+              sampleCount: remoteOpts.sampleCount,
+              skipUserLabeled: remoteOpts.skipUserLabeled,
+              existingPredictions: remoteOpts.existingPredictions,
+            });
+            const trackSpecs = buildRemoteTrackSpecs(inferenceConfig, {
+              dataPath,
+              pathMappings,
+              videoFrameCounts: (labels?.videos ?? []).map((v) => v.shape?.[0] ?? 0),
+              currentFrameIdx: frameIdx ?? 0,
+              activeVideoFrameCount: video?.shape?.[0] ?? 0,
+            });
+            set((s) => ({
+              postTrainingInference: { status: "running", message: null, pendingMerge: null, merged: false },
+              log: appendLog(s.log, `— Running inference (${inferenceTarget}) on the worker with models: ${modelDirs.join(", ")}...`),
+            }));
+            try {
+              const inferResults: JobResult[] = [];
+              for (const trackSpec of trackSpecs) {
+                const r = await submitJob(trackSpec, onLogLine);
+                if (!r.success) throw new Error(r.error || "inference job failed");
+                inferResults.push(r);
+              }
+              logFlusher.flush();
+              set((s) => ({
+                postTrainingInference: {
+                  status: "completed",
+                  message: null,
+                  // Not merged automatically — see PostTrainingInference.
+                  pendingMerge: {
+                    results: inferResults,
+                    mode: inferenceConfig.existingPredictions,
+                    trackOnly: false,
+                  },
+                  merged: false,
+                },
+                log: appendLog(s.log, "— Inference complete. Use Fetch & Load to merge the predictions into the project."),
+              }));
+            } catch (e) {
+              logFlusher.flush();
+              const message = `Post-training inference failed: ${e instanceof Error ? e.message : String(e)}`;
+              set((s) => ({
+                postTrainingInference: { status: "error", message, pendingMerge: null, merged: false },
+                log: appendLog(s.log, `— ${message}`),
+              }));
+            }
+          }
+        }
+
+        // A cancel during the inference job already set the terminal status.
+        if (get().status === "running") set({ status: "completed" });
       } catch (e) {
         set({
           status: "error",
           error: `Remote training error: ${e instanceof Error ? e.message : String(e)}`,
         });
+      } finally {
+        logFlusher.stop();
       }
     } else {
       // ── Local training via subprocess ─────────────────────
@@ -1808,45 +2014,11 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       let batchFlushTimer: ReturnType<typeof setInterval> | null = null;
 
       // sleap-nn's tqdm progress bar repaints via carriage return many times/sec, and
-      // Tauri splits stdout on \r, so each repaint arrives as its own line event.
-      // Applying them per-line previously caused an unthrottled re-render storm that
-      // froze the UI (#128 follow-up). Buffer raw lines and flush ~4x/sec, coalescing
-      // consecutive tqdm progress lines into a single in-place-updating log line.
-      const stdoutBuffer: string[] = [];
+      // Tauri splits stdout on \r, so each repaint arrives as its own line event —
+      // buffered and coalesced by the shared log flusher, never set() per line.
+      const logFlusher = createLogFlusher(set, get);
       // Recent stderr lines only, to surface the real cause in the error banner.
       const stderrTail: string[] = [];
-      let stdoutFlushTimer: ReturnType<typeof setInterval> | null = null;
-      const flushStdout = () => {
-        if (stdoutBuffer.length === 0) return;
-        const lines = stdoutBuffer.splice(0, stdoutBuffer.length);
-        const idx = get().currentModelIndex;
-        // Latest tqdm epoch/loss in this batch drives the live per-model progress.
-        let tqdmEpoch: number | null = null;
-        let tqdmLoss: number | null = null;
-        for (const l of lines) {
-          const m = l.match(/Epoch (\d+):\s+(\d+)%\|.*?loss=([\d.]+)/);
-          if (m) { tqdmEpoch = parseInt(m[1]); tqdmLoss = parseFloat(m[3]); }
-        }
-        set((s) => ({
-          log: mergeStdoutIntoLog(s.log, lines),
-          models:
-            tqdmEpoch !== null
-              ? s.models.map((m, j) =>
-                  j === idx
-                    ? {
-                        ...m,
-                        // tqdm's epoch is 0-based and its ~250ms flush can land
-                        // AFTER recordEpoch's 1-based completed count — Math.max
-                        // keeps it from dragging the final "5/5" back to "4/5".
-                        epoch: Math.max(m.epoch, tqdmEpoch as number),
-                        loss: tqdmLoss ?? m.loss,
-                      }
-                    : m,
-                )
-              : s.models,
-        }));
-      };
-      stdoutFlushTimer = setInterval(flushStdout, 250);
 
       // Start ZMQ relay so sleap-nn can receive stop commands
       try {
@@ -2022,8 +2194,8 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
               }
 
               // tqdm progress + all other lines: buffer for the throttled, coalesced
-              // flush (flushStdout). NEVER set() per line — that is the freeze.
-              if (line.trim()) stdoutBuffer.push(line);
+              // flush (logFlusher). NEVER set() per line — that is the freeze.
+              logFlusher.push(line);
             }
           }, modelDir);
 
@@ -2121,71 +2293,22 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
           const { MergePredictions } = await import("@/commands/editCommands");
           const getPlatform = (await import("@/platform")).getPlatform;
 
-          const pipelineMap: Record<string, import("@/stores/inferenceStore").PipelineType> = {
-            single_animal: "single-animal",
-            top_down: "top-down",
-            bottom_up: "bottom-up",
-            top_down_id: "top-down-id",
-            bottom_up_id: "bottom-up-id",
-          };
-          const inferenceConfig: import("@/stores/inferenceStore").InferenceConfig = {
-            pipeline: pipelineMap[config.modelType] || "top-down",
-            trackOnly: false,
+          const inferenceConfig = buildPostTrainingInferenceConfig({
+            modelType: config.modelType,
             modelPaths: useExported ? [exportDir!] : trainedModelPaths,
+            inferenceTarget,
             videoIndex: (inferenceTarget === "video" || inferenceTarget === "random_video")
               ? (() => {
                   const { labels, video } = useAppStore.getState();
                   return labels && video ? labels.videos.indexOf(video) : 0;
                 })()
               : "all",
-            frameRange: inferenceTarget as import("@/stores/inferenceStore").InferenceConfig["frameRange"],
-            sampleCount: localOpts?.sampleCount ?? 20,
-            excludeUserLabeled: localOpts?.skipUserLabeled ?? false,
-            existingPredictions: localOpts?.existingPredictions ?? "replace",
-            batchSize: 4,
+            sampleCount: localOpts?.sampleCount,
+            skipUserLabeled: localOpts?.skipUserLabeled,
+            existingPredictions: localOpts?.existingPredictions,
             device: useExported ? exportDevice : "auto",
             runtime: useExported ? exportRuntime : "auto",
-            maxInstances: null,
-            peakThreshold: 0.2,
-            integralRefinement: true,
-            integralPatchSize: 5,
-            nPoints: 10,
-            maxEdgeLengthRatio: 0.25,
-            distPenaltyWeight: 1.0,
-            minLineScores: 0.25,
-            tracking: false,
-            trackerMethod: "simple",
-            similarityMethod: "oks",
-            matchingMethod: "hungarian",
-            trackingWindowSize: 5,
-            maxTracks: null,
-            connectSingleBreaks: false,
-            robust: 0.95,
-            minMatchPoints: 0,
-            minNewTrackPoints: 0,
-            scoringReduction: "mean",
-            trackingTargetInstanceCount: null,
-            trackingPreCullToTarget: false,
-            trackingPreCullIouThreshold: 0,
-            trackingCleanInstanceCount: null,
-            trackingCleanIouThreshold: 0,
-            flowImgScale: 1.0,
-            flowWindowSize: 21,
-            flowMaxLevels: 3,
-            kfTrackFeatures: "centroid",
-            kfInitFrameCount: 10,
-            kfNodeIndices: [],
-            kfResetGapSize: 5,
-            ensureChannels: "auto",
-            filterOverlapping: false,
-            filterMethod: "iou",
-            filterThreshold: 0.8,
-            filterMinVisibleNodes: null,
-            filterMinVisibleNodeFraction: null,
-            filterMinMeanNodeScore: null,
-            filterMinInstanceScore: null,
-            filterMinCentroidDistance: null,
-          };
+          });
 
           try {
             const { projectPath, labels: currentLabels } = useAppStore.getState();
@@ -2269,8 +2392,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         if (batchBuffer.length > 0) {
           get().recordBatches(get().currentModelIndex, batchBuffer.splice(0, batchBuffer.length));
         }
-        if (stdoutFlushTimer) { clearInterval(stdoutFlushTimer); stdoutFlushTimer = null; }
-        flushStdout(); // drain any remaining buffered stdout into the log
+        logFlusher.stop(); // drain any remaining buffered stdout into the log
         if (unlistenProgress) { unlistenProgress(); unlistenProgress = null; }
         try { await stopProgressRelay(); } catch { /* ignore */ }
         try { await stopZmqRelay(); } catch { /* ignore */ }
@@ -2395,4 +2517,86 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         ),
       };
     }),
+
+  applyRemoteTelemetry: (modelIndex, telemetry) => {
+    const model = get().models[modelIndex];
+    if (!model) return;
+    const patch = (fn: (m: ModelProgress) => ModelProgress) =>
+      set((s) => ({ models: s.models.map((m, i) => (i === modelIndex ? fn(m) : m)) }));
+
+    if (telemetry.kind === "epoch") {
+      // Local learns batches-per-epoch from batch_end's batch index; remote
+      // only has the curve, whose x is the global batch step — so infer it
+      // from how far the curve has advanced by the end of this epoch.
+      // recordEpoch needs it to place epoch points on the batch axis.
+      const lastX = model.batchSamples[model.batchSamples.length - 1]?.globalBatch;
+      if (lastX !== undefined) {
+        const estimate = Math.round((lastX + 1) / (telemetry.epoch + 1));
+        if (estimate > model.epochSize) patch((m) => ({ ...m, epochSize: estimate }));
+      }
+      get().recordEpoch(modelIndex, {
+        epoch: telemetry.epoch,
+        trainLoss: telemetry.trainLoss,
+        valLoss: telemetry.valLoss,
+      });
+      // No remote epoch_begin event: the epoch is over until the next
+      // curve/metric shows training has moved on (see below).
+      patch((m) => ({ ...m, epochStartedAt: null }));
+      return;
+    }
+
+    // Curve/metric are emitted only while training is running, so the
+    // first one after a job start or a completed epoch stands in for
+    // local's epoch_begin (drives the monitor's "Epoch Runtime").
+    if (model.epochStartedAt === null) get().markEpochBegin(modelIndex, model.epoch);
+
+    if (telemetry.kind === "curve") {
+      const samples = telemetry.points.map((p) => ({ globalBatch: p.x, loss: p.y }));
+      patch((m) => ({
+        ...m,
+        // The whole curve every time: replace, never append.
+        batchSamples:
+          samples.length > MAX_BATCH_SAMPLES ? samples.slice(samples.length - MAX_BATCH_SAMPLES) : samples,
+      }));
+      return;
+    }
+
+    // job.metric: only the fields the local monitor has a home for.
+    if (telemetry.wandbUrl && telemetry.wandbUrl !== get().wandbUrl) {
+      set({ wandbUrl: telemetry.wandbUrl });
+    }
+    patch((m) => ({
+      ...m,
+      maxEpochs: telemetry.totalEpochs != null && telemetry.totalEpochs > 0 ? telemetry.totalEpochs : m.maxEpochs,
+      loss: telemetry.latestTrainLoss ?? m.loss,
+    }));
+  },
+
+  fetchAndLoadPostTrainingPredictions: async () => {
+    const pending = get().postTrainingInference?.pendingMerge;
+    if (!pending) return;
+    const { mergeRemoteResults } = await import("@/stores/inferenceStore");
+    try {
+      await mergeRemoteResults(pending);
+      set((s) => ({
+        postTrainingInference: s.postTrainingInference && {
+          ...s.postTrainingInference,
+          pendingMerge: null,
+          merged: true,
+          message: null,
+        },
+        log: appendLog(s.log, "— Predictions merged into project."),
+      }));
+    } catch (e) {
+      // Retriable: the job itself succeeded, only the fetch failed — keep
+      // pendingMerge so Fetch & Load stays available (mirrors
+      // inferenceStore.mergePendingRemoteResults).
+      set((s) => ({
+        postTrainingInference: s.postTrainingInference && {
+          ...s.postTrainingInference,
+          message: `Failed to fetch/merge predictions: ${e instanceof Error ? e.message : String(e)}`,
+        },
+      }));
+    }
+  },
 }));

@@ -7,28 +7,19 @@
  * it has paired with (keyed by `node_id`, Syncthing/Plex-style), and talks
  * to at most one of them at a time via `WorkerClient` (src/lib/protocolV1).
  *
- * **Known interim gaps** (both already accepted/deferred at the worker
- * side — see talmolab/sleap-connect PRs #84-#88 — not new limitations
- * introduced here):
- * - The worker doesn't wire `job.metric` (structured epoch/loss ZMQ events)
- *   yet — only raw `job.log` lines. Anything relying on the old
- *   `__PROGRESS_REPORT__` sentinel (wandb URL, epoch/loss charts) only
- *   works for remote jobs to the extent it can be scraped back out of raw
- *   log text (same regex/JSON fallbacks `trainingStore.ts`'s `onProgress`
- *   already has for local jobs). Also, `job.log` can't distinguish a `\r`
- *   (tqdm in-place update) from a `\n` (a new line) the way the old
- *   `CR::`-tagged messages could — every `job.log` line is forwarded as a
- *   normal appended line here.
+ * **Known interim gap** (already accepted/deferred at the worker side — see
+ * talmolab/sleap-connect PRs #84-#88 — not a new limitation introduced here):
  * - The worker's `CommandBuilder.build_command` only ever runs
  *   `config_contents[0]` — it doesn't support a multi-model pipeline
  *   (top-down centroid + centered-instance) as a single job. This store
  *   reproduces the old one-`JOB_COMPLETE`-per-model UX by submitting one
  *   job per model sequentially instead (see `submitJob`/`submitSingleJob`).
- * - `job.result` only ever carries `{ blobs: {} }` — the worker doesn't
- *   implement `blobs.*` yet (that's stage 1.10). A submitted job's
- *   `JobResult.outputPath` is therefore always `undefined` for now; there
- *   is no way yet to fetch a remote job's output/predictions back to this
- *   client. Submission, live log, and cancel/stop all work today.
+ *
+ * Training telemetry (`job.epoch`/`job.curve`/`job.metric`) is parsed by
+ * `parseJobTelemetry` and handed to `submitJob`'s `onTelemetry` tagged with
+ * the per-model job index, so the caller can route it to the right model.
+ * `job.log`'s optional `progress: true` flag (an in-place tqdm redraw) is
+ * forwarded as `onProgress`'s second argument.
  */
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
@@ -43,6 +34,7 @@ import { APP_VERSION } from "@/lib/version";
 import { isTauri } from "@/platform/index";
 import type { AgentInfo } from "@/lib/protocolV1/envelope";
 import type { Mount, WorkerClient, WorkerEvent } from "@/lib/protocolV1/client";
+import { parseJobTelemetry, type JobTelemetry } from "@/lib/protocolV1/jobTelemetry";
 import {
   irohTransportAvailable,
   parseTicketIroh,
@@ -102,6 +94,24 @@ export interface ReattachableJob {
   state: string;
 }
 
+/**
+ * A `job.log` line. `isProgress` is the worker's `progress: true` flag: the
+ * line is the current state of an in-place progress bar and should REPLACE
+ * the previous progress line rather than append.
+ */
+export type JobLogHandler = (line: string, isProgress?: boolean) => void;
+
+export interface SubmitJobOptions {
+  /** Fires for every model's job of a split multi-model train spec except the last (whose result is the return value). */
+  onModelComplete?: (result: JobResult) => void;
+  /**
+   * Structured training telemetry. `jobIndex` is the job's position in a
+   * split multi-model train spec (= its `config_contents` index), 0 for a
+   * single job.
+   */
+  onTelemetry?: (telemetry: JobTelemetry, jobIndex: number) => void;
+}
+
 export interface ConnectOptions {
   transport?: TransportKind;
 }
@@ -148,8 +158,8 @@ interface ConnectState {
   browseRemoteDir: (path: string) => Promise<FileEntry[]>;
   submitJob: (
     spec: JobSpec,
-    onProgress: (line: string, isCarriageReturn?: boolean) => void,
-    options?: { onModelComplete?: (result: JobResult) => void },
+    onProgress: JobLogHandler,
+    options?: SubmitJobOptions,
   ) => Promise<JobResult>;
   /** Hard-cancel the current job. */
   cancelJob: () => void;
@@ -252,9 +262,10 @@ async function submitSingleJob(
   client: WorkerClient,
   workerId: string,
   spec: JobSpec,
-  onProgress: (line: string, isCarriageReturn?: boolean) => void,
+  onProgress: JobLogHandler,
   set: (partial: Partial<ConnectState>) => void,
   get: () => ConnectState,
+  onTelemetry?: (telemetry: JobTelemetry) => void,
 ): Promise<JobResult> {
   const { jobId } = await client.jobsSubmit(spec as unknown as Record<string, unknown>);
   set({ currentJob: { workerId, jobId } });
@@ -266,6 +277,8 @@ async function submitSingleJob(
     // them in that order specifically so this is never missed) — captured
     // here so it's already in hand by the time `finish` resolves.
     let resultBlobs: JobResult["resultBlobs"];
+    let modelDir: string | undefined;
+    let labelsPath: string | undefined;
 
     const finish = (result: JobResult) => {
       if (settled) return;
@@ -280,17 +293,27 @@ async function submitSingleJob(
 
     const handleEvent = (event: WorkerEvent) => {
       if (event.topic === "job.log") {
-        onProgress((event.data.line as string) ?? "", false);
+        onProgress((event.data.line as string) ?? "", event.data.progress === true);
       } else if (event.topic === "job.result") {
         const blobs = event.data.blobs as Record<string, JobResultBlobRef> | undefined;
         if (blobs && Object.keys(blobs).length > 0) resultBlobs = blobs;
+        // Train jobs only: the trained model folder + the labels file it
+        // trained on, both worker-side paths (inputs to a follow-up track job).
+        if (typeof event.data.model_dir === "string") modelDir = event.data.model_dir;
+        if (typeof event.data.labels_path === "string") labelsPath = event.data.labels_path;
       } else if (event.topic === "job.status") {
         const state = event.data.state as string;
         if (state === "completed") {
-          finish({ jobId, success: true, resultBlobs });
+          const result: JobResult = { jobId, success: true, resultBlobs };
+          if (modelDir !== undefined) result.modelDir = modelDir;
+          if (labelsPath !== undefined) result.labelsPath = labelsPath;
+          finish(result);
         } else if (state === "failed" || state === "canceled") {
           finish({ jobId, success: false, error: (event.data.detail as string) ?? `Job ${state}` });
         }
+      } else if (onTelemetry) {
+        const telemetry = parseJobTelemetry(event);
+        if (telemetry) onTelemetry(telemetry);
       }
     };
 
@@ -547,6 +570,7 @@ export const useConnectStore = create<ConnectState>()(
               onProgress,
               set,
               get,
+              options?.onTelemetry && ((t) => options.onTelemetry!(t, i)),
             );
             if (!finalResult.success) return finalResult;
             // Only intermediate models fire onModelComplete — matching the
@@ -557,7 +581,15 @@ export const useConnectStore = create<ConnectState>()(
           return finalResult;
         }
 
-        return submitSingleJob(_client, selectedWorkerId, spec, onProgress, set, get);
+        return submitSingleJob(
+          _client,
+          selectedWorkerId,
+          spec,
+          onProgress,
+          set,
+          get,
+          options?.onTelemetry && ((t) => options.onTelemetry!(t, 0)),
+        );
       },
 
       cancelJob: () => {
