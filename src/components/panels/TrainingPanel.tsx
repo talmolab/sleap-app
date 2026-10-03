@@ -57,6 +57,7 @@ import {
   HelpCircle,
   Eye,
   EyeOff,
+  Download,
 } from "lucide-react";
 import { computeNodeVisibility, visibilityTier } from "@/lib/anchorVisibility";
 import { TUTORIAL_FIRST_TRAINING_STEP_IDS } from "@/lib/tutorial/steps";
@@ -725,6 +726,9 @@ export function TrainingPanel() {
   const currentModelIndex = useTrainingStore((s) => s.currentModelIndex);
   const wandbUrl = useTrainingStore((s) => s.wandbUrl);
   const modelOutputDirs = useTrainingStore((s) => s.modelOutputDirs);
+  const postTrainingInference = useTrainingStore((s) => s.postTrainingInference);
+  const fetchAndLoadPostTrainingPredictions = useTrainingStore((s) => s.fetchAndLoadPostTrainingPredictions);
+  const [fetchingPredictions, setFetchingPredictions] = useState(false);
   const openExport = useExportStore((s) => s.openExport);
   const log = useTrainingStore((s) => s.log);
   // Memoize the rendered log lines so we only re-map when `log` actually changes,
@@ -1105,6 +1109,9 @@ export function TrainingPanel() {
         labelsPath: remoteLabelsPath,
         valLabelsPath: remoteValLabelsPath || undefined,
         inferenceTarget,
+        sampleCount,
+        skipUserLabeled,
+        existingPredictions,
       });
     } else {
       await startTraining({
@@ -1546,6 +1553,55 @@ export function TrainingPanel() {
             {modelOutputDirs.map((dir, i) => (
               <div key={i} className="font-mono text-[10px] text-green-300 break-all">{dir}</div>
             ))}
+          </div>
+        )}
+        {/* Remote post-training inference runs as its own track job; its
+            predictions are fetched only on this explicit click (same
+            rationale as the Inference panel's Fetch & Load — see
+            PostTrainingInference in trainingStore.ts). */}
+        {postTrainingInference && (
+          <div
+            className={`rounded-md border p-2 text-[11px] space-y-1.5 ${
+              postTrainingInference.status === "error"
+                ? "bg-destructive/8 border-destructive/30 text-destructive"
+                : "bg-muted/40 border-border text-muted-foreground"
+            }`}
+          >
+            <div className="flex items-center gap-1.5">
+              {postTrainingInference.status === "running" && <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />}
+              {postTrainingInference.status === "completed" && <CheckCircle2 className="h-3.5 w-3.5 text-green-500" />}
+              {postTrainingInference.status === "error" && <XCircle className="h-3.5 w-3.5" />}
+              {postTrainingInference.status === "skipped" && <AlertCircle className="h-3.5 w-3.5 text-yellow-500" />}
+              <span className="font-medium">
+                {postTrainingInference.status === "running"
+                  ? "Running post-training inference on the worker..."
+                  : postTrainingInference.status === "completed"
+                    ? postTrainingInference.merged
+                      ? "Predictions merged into the project."
+                      : "Post-training inference complete."
+                    : postTrainingInference.status === "error"
+                      ? "Post-training inference failed."
+                      : "Post-training inference skipped."}
+              </span>
+            </div>
+            {postTrainingInference.message && (
+              <div className="text-[10px] break-words">{postTrainingInference.message}</div>
+            )}
+            {postTrainingInference.pendingMerge && (
+              <Button
+                size="sm"
+                className="w-full h-7 text-xs"
+                disabled={fetchingPredictions}
+                onClick={async () => {
+                  setFetchingPredictions(true);
+                  await fetchAndLoadPostTrainingPredictions();
+                  setFetchingPredictions(false);
+                }}
+              >
+                {fetchingPredictions ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Download className="h-3.5 w-3.5 mr-1" />}
+                {fetchingPredictions ? "Fetching..." : "Fetch & Load Predictions"}
+              </Button>
+            )}
           </div>
         )}
         {status === "completed" && (
