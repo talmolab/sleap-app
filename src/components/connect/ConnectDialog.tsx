@@ -21,9 +21,10 @@ import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } fr
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useConnectStore } from "@/stores/connectStore";
 import { WorkerList } from "./WorkerList";
+import { WorkerJobs } from "./WorkerJobs";
 
-// WorkerJobs (§4b.4) and WorkerDataAccess (§4b.5) land in their own
-// follow-up commits — the tab bodies are placeholders until then.
+// WorkerDataAccess (§4b.5) lands in its own follow-up commit — the Data
+// access tab body is a placeholder until then.
 
 export interface ConnectDialogProps {
   open: boolean;
@@ -112,8 +113,12 @@ export function ConnectDialog({ open, onOpenChange }: ConnectDialogProps) {
                     </TabsList>
                   </Tabs>
                 </div>
-                <div className="flex-1 min-h-0 overflow-y-auto p-4 text-xs text-muted-foreground">
-                  {tab === "jobs" ? "Jobs — coming in §4b.4." : "Data access — coming in §4b.5."}
+                <div className="flex-1 min-h-0 overflow-y-auto p-4">
+                  {tab === "jobs" ? (
+                    <WorkerJobs workerId={pickedWorker.nodeId} />
+                  ) : (
+                    <p className="text-xs text-muted-foreground">Data access — coming in §4b.5.</p>
+                  )}
                 </div>
               </>
             ) : (

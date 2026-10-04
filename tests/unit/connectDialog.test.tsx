@@ -31,6 +31,9 @@ function resetConnectStore() {
     workerInfo: {},
     refreshWorkerInfo: async () => {},
     releaseIdleConnections: () => {},
+    // The picked worker mounts WorkerJobs (§4b.4), which calls listJobs —
+    // stub it so these shell-only tests never attempt a real dial.
+    listJobs: async () => [],
   });
 }
 
