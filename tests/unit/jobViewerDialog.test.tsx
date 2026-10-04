@@ -42,6 +42,7 @@ describe("JobViewerDialog", () => {
         jobId="job_1"
         label="Train centroid"
         initialView="monitor"
+        canStop
         onClose={() => {}}
       />,
     );
@@ -58,6 +59,7 @@ describe("JobViewerDialog", () => {
         jobId="job_1"
         label="Inference"
         initialView="logs"
+        canStop
         onClose={() => {}}
       />,
     );
@@ -73,6 +75,7 @@ describe("JobViewerDialog", () => {
         jobId="job_1"
         label="Train centroid"
         initialView="monitor"
+        canStop
         onClose={() => {}}
       />,
     );
@@ -95,6 +98,7 @@ describe("JobViewerDialog", () => {
         jobId="job_1"
         label="Train centroid"
         initialView="monitor"
+        canStop
         onClose={() => {}}
       />,
     );
@@ -112,6 +116,22 @@ describe("JobViewerDialog", () => {
         jobId="job_1"
         label="Train centroid"
         initialView="monitor"
+        canStop
+        onClose={() => {}}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: "Stop" })).not.toBeInTheDocument();
+  });
+
+  it("never offers Stop for a view-only job (another project's), even while running", () => {
+    mockStream = { ...initialJobStream("Train centroid"), status: "running" };
+    render(
+      <JobViewerDialog
+        workerId="w1"
+        jobId="job_1"
+        label="Train centroid"
+        initialView="monitor"
+        canStop={false}
         onClose={() => {}}
       />,
     );
@@ -126,6 +146,7 @@ describe("JobViewerDialog", () => {
         jobId="job_1"
         label="Train centroid"
         initialView="monitor"
+        canStop
         onClose={() => {}}
       />,
     );
@@ -141,6 +162,7 @@ describe("JobViewerDialog", () => {
         jobId="job_1"
         label="Train centroid"
         initialView="monitor"
+        canStop
         onClose={() => calls.push(true)}
       />,
     );

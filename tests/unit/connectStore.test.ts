@@ -1296,6 +1296,13 @@ describe("connectStore", () => {
       expect(useConnectStore.getState().workerInfo[PAIRED_WORKER.nodeId]).toBeUndefined();
     });
 
+    it("a later successful refreshWorkerInfo clears a stale workerErrors entry", async () => {
+      await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
+      useConnectStore.setState({ workerErrors: { [PAIRED_WORKER.nodeId]: "old failure" } });
+      await useConnectStore.getState().refreshWorkerInfo(PAIRED_WORKER.nodeId);
+      expect(useConnectStore.getState().workerErrors[PAIRED_WORKER.nodeId]).toBeNull();
+    });
+
     it("listJobs returns the worker's jobs.list", async () => {
       await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
       lastClient().jobsListResult = [{ jobId: "job_1", state: "running", createdAt: "t1" }];

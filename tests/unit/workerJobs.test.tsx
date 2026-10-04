@@ -200,18 +200,26 @@ describe("WorkerJobs rendering", () => {
     expect(screen.getAllByText("Train centroid").length).toBeGreaterThan(0);
   });
 
-  it("a job from another project shows no action buttons at all", async () => {
+  it("a job from another project is view-only: watch/logs, but no stop or fetch", async () => {
     useConnectStore.setState({
       listJobs: async () => [
         job({ state: "running", project: { id: "other", name: "mice.slp" } }),
+        job({
+          jobId: "other-track",
+          kind: "track",
+          state: "completed",
+          project: { id: "other", name: "mice.slp" },
+        }),
       ],
     });
     render(
       <WorkerJobs workerId={WORKER_ID} setIntervalImpl={noopSetInterval} clearIntervalImpl={noopClearInterval} />,
     );
     await waitFor(() => expect(screen.getByText("Train centroid")).toBeInTheDocument());
-    expect(screen.queryByRole("button", { name: "Watch live" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Logs" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Watch live" })).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Logs" })).toHaveLength(2);
+    expect(screen.queryByRole("button", { name: "Stop" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Fetch & Load" })).not.toBeInTheDocument();
   });
 
   it("Cancel confirms, then calls cancelJobOn and refreshes the list", async () => {

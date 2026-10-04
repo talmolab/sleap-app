@@ -30,6 +30,8 @@ export interface JobViewerDialogProps {
   jobId: string;
   label: string;
   initialView: "monitor" | "logs";
+  /** Whether Stop is offered — false for another project's job, which is view-only. */
+  canStop: boolean;
   onClose: () => void;
 }
 
@@ -49,7 +51,14 @@ function toTrainingStatus(status: JobStreamStatus): TrainingStatus {
   }
 }
 
-export function JobViewerDialog({ workerId, jobId, label, initialView, onClose }: JobViewerDialogProps) {
+export function JobViewerDialog({
+  workerId,
+  jobId,
+  label,
+  initialView,
+  canStop,
+  onClose,
+}: JobViewerDialogProps) {
   const [view, setView] = useState<"monitor" | "logs">(initialView);
   const [errorsOnly, setErrorsOnly] = useState(false);
   const [wrap, setWrap] = useState(true);
@@ -118,7 +127,7 @@ export function JobViewerDialog({ workerId, jobId, label, initialView, onClose }
           >
             Logs
           </Button>
-          {stream.status === "running" && (
+          {canStop && stream.status === "running" && (
             <Button
               size="xs"
               variant="outline"

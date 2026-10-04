@@ -855,7 +855,10 @@ export const useConnectStore = create<ConnectState>()(
         try {
           const client = await get().clientFor(workerId);
           const info = await client.workerInfo();
-          set((state) => ({ workerInfo: { ...state.workerInfo, [workerId]: info } }));
+          set((state) => ({
+            workerInfo: { ...state.workerInfo, [workerId]: info },
+            workerErrors: { ...state.workerErrors, [workerId]: null },
+          }));
         } catch (err) {
           set((state) => ({
             workerErrors: {

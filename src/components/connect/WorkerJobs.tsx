@@ -99,6 +99,7 @@ interface ViewerTarget {
   jobId: string;
   label: string;
   initialView: "monitor" | "logs";
+  canStop: boolean;
 }
 
 export function WorkerJobs({
@@ -147,8 +148,14 @@ export function WorkerJobs({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workerId, pollIntervalMs]);
 
+  // An inference job has no loss curve to monitor — its viewer opens on logs.
   const openViewer = (job: JobSummary, initialView: "monitor" | "logs") =>
-    setViewer({ jobId: job.jobId, label: jobTitle(job), initialView });
+    setViewer({
+      jobId: job.jobId,
+      label: jobTitle(job),
+      initialView: job.kind === "track" ? "logs" : initialView,
+      canStop: isMineJob(job, myProjectId),
+    });
 
   const handleCancelOrStop = async (job: JobSummary) => {
     const mode: "cancel" | "stop" = job.state === "running" ? "stop" : "cancel";
@@ -221,8 +228,9 @@ export function WorkerJobs({
             const chip = jobStatusChip(job);
             const labelsName = basename(job.labelsPath);
             const runTag = job.run && job.run.count > 1 ? `run ${job.run.index + 1}/${job.run.count}` : null;
-            const canWatch = mine && job.state === "running";
-            const canView = mine && (job.state === "completed" || job.state === "failed" || job.state === "canceled");
+            // Other projects' jobs are view-only: watch/view/logs, never cancel or load.
+            const canWatch = job.state === "running";
+            const canView = job.state === "completed" || job.state === "failed" || job.state === "canceled";
             const canCancel = mine && (job.state === "queued" || job.state === "running");
             const canFetch = mine && job.kind === "track" && job.state === "completed";
             return (
@@ -255,58 +263,56 @@ export function WorkerJobs({
                   </pre>
                 )}
 
-                {mine && (
-                  <div className="flex gap-1.5 flex-wrap">
-                    {canWatch && (
-                      <Button
-                        size="xs"
-                        variant="outline"
-                        className="h-6 text-[10px]"
-                        onClick={() => openViewer(job, "monitor")}
-                      >
-                        Watch live
-                      </Button>
-                    )}
-                    {canView && (
-                      <Button
-                        size="xs"
-                        variant="outline"
-                        className="h-6 text-[10px]"
-                        onClick={() => openViewer(job, "monitor")}
-                      >
-                        View
-                      </Button>
-                    )}
+                <div className="flex gap-1.5 flex-wrap">
+                  {canWatch && (
                     <Button
                       size="xs"
                       variant="outline"
                       className="h-6 text-[10px]"
-                      onClick={() => openViewer(job, "logs")}
+                      onClick={() => openViewer(job, "monitor")}
                     >
-                      Logs
+                      Watch live
                     </Button>
-                    {canCancel && (
-                      <Button
-                        size="xs"
-                        variant="outline"
-                        className="h-6 text-[10px]"
-                        onClick={() => handleCancelOrStop(job)}
-                      >
-                        {job.state === "running" ? "Stop" : "Cancel"}
-                      </Button>
-                    )}
-                    {canFetch && (
-                      <Button
-                        size="xs"
-                        className="h-6 text-[10px]"
-                        disabled={busyJobId === job.jobId}
-                        onClick={() => handleFetchLoad(job)}
-                      >
-                        {busyJobId === job.jobId ? "Fetching…" : "Fetch & Load"}
-                      </Button>
-                    )}
-                  </div>
-                )}
+                  )}
+                  {canView && (
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      className="h-6 text-[10px]"
+                      onClick={() => openViewer(job, "monitor")}
+                    >
+                      View
+                    </Button>
+                  )}
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    className="h-6 text-[10px]"
+                    onClick={() => openViewer(job, "logs")}
+                  >
+                    Logs
+                  </Button>
+                  {canCancel && (
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      className="h-6 text-[10px]"
+                      onClick={() => handleCancelOrStop(job)}
+                    >
+                      {job.state === "running" ? "Stop" : "Cancel"}
+                    </Button>
+                  )}
+                  {canFetch && (
+                    <Button
+                      size="xs"
+                      className="h-6 text-[10px]"
+                      disabled={busyJobId === job.jobId}
+                      onClick={() => handleFetchLoad(job)}
+                    >
+                      {busyJobId === job.jobId ? "Fetching…" : "Fetch & Load"}
+                    </Button>
+                  )}
+                </div>
               </div>
             );
           })}
@@ -319,6 +325,7 @@ export function WorkerJobs({
           jobId={viewer.jobId}
           label={viewer.label}
           initialView={viewer.initialView}
+          canStop={viewer.canStop}
           onClose={() => setViewer(null)}
         />
       )}
