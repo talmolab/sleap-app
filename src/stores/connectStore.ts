@@ -120,6 +120,8 @@ export interface TrackedJob {
   label: string;
   source: "window" | "worker-file";
   state: "active" | "completed" | "failed" | "canceled";
+  /** The worker's failure/cancel detail — set alongside a terminal `state` other than "completed"; the Connect window's Jobs tab (PR4b) shows this as the row's error text. */
+  error?: string;
   /** Whether the user has seen this job reach a terminal state (gates resume-on-launch toasts). */
   seen: boolean;
   submittedAt: number;
@@ -624,8 +626,10 @@ const notifiedJobIds = new Set<string>();
  * `makeClient`'s dynamic imports above: this module is statically imported
  * by connectStore's own tests, so a static import here would bind the real
  * `toast` before a test's `vi.mock("@/lib/notify", ...)` ever got a chance
- * to replace it. `toast.success`/`toast.error` already feed the sidebar's
- * notification bell (see `src/lib/notify.tsx`) — no separate call needed.
+ * to replace it. `toast.success`/`toast.error`/`toast.info` already feed the
+ * sidebar's notification bell (see `src/lib/notify.tsx`) — no separate call
+ * needed. A canceled job is the user's own action, not a failure — it gets
+ * the neutral `info` toast, never `error`.
  */
 async function notifyJobFinished(
   job: TrackedJob,
@@ -637,6 +641,8 @@ async function notifyJobFinished(
   const { toast } = await import("@/lib/notify");
   if (job.state === "completed") {
     toast.success(`${job.label} on ${workerLabel} finished`);
+  } else if (job.state === "canceled") {
+    toast.info(`${job.label} on ${workerLabel} was canceled`);
   } else {
     toast.error(`${job.label} on ${workerLabel} failed`, {
       description: errorDetail ?? undefined,
@@ -706,7 +712,12 @@ async function submitSingleJob(
       // old single-slot `currentJob` did. `seen: true` here because this
       // window is live and watching it finish; resume-on-launch's toast
       // (§2b.5) only fires for a job that reaches terminal while unwatched.
-      updateTrackedJob(set, jobId, { state: trackedState, seen: true, lastSeq });
+      updateTrackedJob(set, jobId, {
+        state: trackedState,
+        seen: true,
+        lastSeq,
+        ...(trackedState !== "completed" ? { error: result.error } : {}),
+      });
       resolve(result);
     };
 
@@ -1295,7 +1306,10 @@ export const useConnectStore = create<ConnectState>()(
 
             if (TERMINAL_JOB_STATES.has(status.state)) {
               const trackedState = status.state as TrackedJob["state"];
-              updateTrackedJob(set, job.jobId, { state: trackedState });
+              updateTrackedJob(set, job.jobId, {
+                state: trackedState,
+                ...(trackedState !== "completed" ? { error: status.error ?? undefined } : {}),
+              });
               await notifyJobFinished({ ...job, state: trackedState }, worker.label, status.error);
               continue;
             }
@@ -1317,12 +1331,12 @@ export const useConnectStore = create<ConnectState>()(
                 watcher.unsubscribe?.();
                 activeSubscriptions.delete(job.jobId);
                 const trackedState = state as TrackedJob["state"];
-                updateTrackedJob(set, job.jobId, { state: trackedState });
-                void notifyJobFinished(
-                  { ...job, state: trackedState },
-                  worker.label,
-                  (event.data.detail as string) ?? null,
-                );
+                const detail = (event.data.detail as string) ?? null;
+                updateTrackedJob(set, job.jobId, {
+                  state: trackedState,
+                  ...(trackedState !== "completed" ? { error: detail ?? undefined } : {}),
+                });
+                void notifyJobFinished({ ...job, state: trackedState }, worker.label, detail);
               },
             };
             activeSubscriptions.set(job.jobId, watcher);

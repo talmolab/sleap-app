@@ -245,7 +245,7 @@ vi.mock("@/lib/protocolV1/client", () => ({
   WorkerClient: FakeWorkerClient,
 }));
 vi.mock("@/lib/notify", () => ({
-  toast: { success: vi.fn(), error: vi.fn() },
+  toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
 }));
 /** What the next `loadSavedMappings()` call resolves to (the one-time import on first connect). */
 let nextSavedMappings: PathMapping[] = [];
@@ -300,6 +300,7 @@ describe("connectStore", () => {
     const { toast } = await import("@/lib/notify");
     (toast.success as unknown as ReturnType<typeof vi.fn>).mockClear();
     (toast.error as unknown as ReturnType<typeof vi.fn>).mockClear();
+    (toast.info as unknown as ReturnType<typeof vi.fn>).mockClear();
     useConnectStore.setState({
       pairedWorkers: [],
       selectedWorkerId: null,
@@ -893,8 +894,19 @@ describe("connectStore", () => {
       const result = await promise;
       expect(result).toEqual({ jobId: "job_1", success: false, error: "exit code 1" });
       expect(useConnectStore.getState().trackedJobs).toEqual([
-        expect.objectContaining({ jobId: "job_1", state: "failed", seen: true }),
+        expect.objectContaining({ jobId: "job_1", state: "failed", seen: true, error: "exit code 1" }),
       ]);
+    });
+
+    it("keeps a completed job's tracked entry free of a stale error field", async () => {
+      const spec: JobSpec = { type: "track", data_path: "/x.slp", model_paths: ["m1"] };
+      const promise = useConnectStore.getState().submitJob(spec, () => {});
+      await flushAsync();
+      lastClient().emit("job_1", "job.status", { state: "completed" });
+      await promise;
+      expect(
+        useConnectStore.getState().trackedJobs.find((j) => j.jobId === "job_1")?.error,
+      ).toBeUndefined();
     });
 
     it("captures job.result's blobs (which arrive before job.status: completed)", async () => {
@@ -1526,6 +1538,33 @@ describe("connectStore", () => {
       }
 
       expect(toast.success).toHaveBeenCalledTimes(1);
+    });
+
+    it("toasts info (not error) and records the detail when a job was canceled while unwatched", async () => {
+      const { toast } = await import("@/lib/notify");
+      useConnectStore.setState({
+        pairedWorkers: [PAIRED_WORKER],
+        trackedJobs: [makeTracked({ jobId: "job_resume_4" })],
+      });
+      const originalJobsStatus = FakeWorkerClient.prototype.jobsStatus;
+      FakeWorkerClient.prototype.jobsStatus = async function (this: FakeWorkerClient, jobId: string) {
+        this.jobsStatusCalls.push(jobId);
+        return { state: "canceled", error: "canceled by user" };
+      };
+      try {
+        await useConnectStore.getState().resumeTrackedJobs();
+      } finally {
+        FakeWorkerClient.prototype.jobsStatus = originalJobsStatus;
+      }
+
+      expect(toast.info).toHaveBeenCalledTimes(1);
+      expect(toast.info).toHaveBeenCalledWith(expect.stringContaining("was canceled"));
+      expect(toast.error).not.toHaveBeenCalled();
+      const job = useConnectStore
+        .getState()
+        .trackedJobs.find((j) => j.jobId === "job_resume_4");
+      expect(job?.state).toBe("canceled");
+      expect(job?.error).toBe("canceled by user");
     });
   });
 });
