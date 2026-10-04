@@ -146,6 +146,17 @@ export interface WorkerEvent {
   data: Record<string, unknown>;
 }
 
+/**
+ * Reported to `onClose` listeners once per close: `intentional: true` for a
+ * caller-initiated `close()`, `false` for anything else (a dropped socket, a
+ * failed handshake, a protocol error) — `error` carries the cause in that
+ * case.
+ */
+export interface CloseInfo {
+  intentional: boolean;
+  error?: WorkerProtocolError;
+}
+
 export interface WorkerClientOptions {
   url: string;
   identity: ClientIdentity;
@@ -180,6 +191,8 @@ export class WorkerClient {
   private _nextRequestId = 1;
   private readonly _pending = new Map<number, PendingRequest>();
   private readonly _jobListeners = new Map<string, Set<(event: WorkerEvent) => void>>();
+  private readonly _closeListeners = new Set<(info: CloseInfo) => void>();
+  private _closeNotified = false;
 
   private _peerNodeId: string | null = null;
   // The nonce the WORKER sent us in its hello — what auth.prove signs
@@ -262,7 +275,7 @@ export class WorkerClient {
 
       socket.onclose = () => {
         if (this._state !== "closed") {
-          this._fail(new WorkerProtocolError(CLIENT_CLOSED, "Connection closed"));
+          this._failNonIntentional(new WorkerProtocolError(CLIENT_CLOSED, "Connection closed"));
         }
       };
     });
@@ -273,6 +286,45 @@ export class WorkerClient {
     if (this._state === "closed") return;
     this._fail(new WorkerProtocolError(CLIENT_CLOSED, "Client closed"));
     this._jobListeners.clear();
+    this._notifyClose({ intentional: true });
+  }
+
+  /**
+   * Subscribe to this client closing, exactly once — a dropped socket, a
+   * failed handshake/protocol error, or a caller-initiated `close()` (see
+   * `CloseInfo`). Returns an unsubscribe function.
+   */
+  onClose(cb: (info: CloseInfo) => void): () => void {
+    this._closeListeners.add(cb);
+    return () => this._closeListeners.delete(cb);
+  }
+
+  private _notifyClose(info: CloseInfo): void {
+    if (this._closeNotified) return;
+    this._closeNotified = true;
+    for (const cb of [...this._closeListeners]) {
+      try {
+        cb(info);
+      } catch (e) {
+        console.warn("[protocolV1] onClose listener threw", e);
+      }
+    }
+  }
+
+  /**
+   * `_fail` plus an `onClose` notification for a condition this client
+   * detected itself (dropped socket, protocol mismatch, failed peer
+   * verification) rather than a caller-initiated `close()` — including one
+   * raised while still inside `connect()` (a failed dial), so a caller
+   * managing reconnection (e.g. `ManagedConnection`) can learn about that
+   * failure the same way it learns about a later drop.
+   */
+  private _failNonIntentional(err: Error): void {
+    this._fail(err);
+    this._notifyClose({
+      intentional: false,
+      error: err instanceof WorkerProtocolError ? err : undefined,
+    });
   }
 
   /** First-contact trust via a pairing ticket's one-time secret (spec §3.2). */
@@ -541,7 +593,7 @@ export class WorkerClient {
       return;
     }
     if (hello.proto.max < this._protoMin || hello.proto.min > this._protoMax) {
-      this._fail(
+      this._failNonIntentional(
         new WorkerProtocolError(
           CLIENT_PROTO_MISMATCH,
           `Worker's protocol range [${hello.proto.min},${hello.proto.max}] does not overlap ` +
@@ -559,7 +611,7 @@ export class WorkerClient {
       (verified) => {
         if (this._state !== "connecting") return; // closed/failed while this was pending
         if (!verified) {
-          this._fail(
+          this._failNonIntentional(
             new WorkerProtocolError(
               CLIENT_WORKER_UNVERIFIED,
               "Worker's hello.proof did not verify against the public key it claimed as its node_id",
@@ -574,7 +626,7 @@ export class WorkerClient {
         this._connectWaiter?.resolve();
         this._connectWaiter = null;
       },
-      (err) => this._fail(err instanceof Error ? err : new Error(String(err))),
+      (err) => this._failNonIntentional(err instanceof Error ? err : new Error(String(err))),
     );
   }
 

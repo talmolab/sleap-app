@@ -1,6 +1,11 @@
 import { describe, it, expect } from "../bun-test";
 import "fake-indexeddb/auto";
-import { WorkerClient, type WorkerClientOptions, type WorkerEvent } from "@/lib/protocolV1/client";
+import {
+  WorkerClient,
+  type CloseInfo,
+  type WorkerClientOptions,
+  type WorkerEvent,
+} from "@/lib/protocolV1/client";
 import {
   BLOB_HASH_MISMATCH,
   BLOB_INCOMPLETE,
@@ -274,6 +279,75 @@ describe("protocolV1 WorkerClient", () => {
       const err = await rejection(pending);
       expect(err.code).toBe(CLIENT_CLOSED);
       expect(client.state).toBe("closed");
+    });
+  });
+
+  describe("onClose", () => {
+    it("a remote close notifies listeners once with {intentional: false} and a client.closed error", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket();
+      const client = await connected(identity, socket);
+
+      const notifications: CloseInfo[] = [];
+      client.onClose((info) => notifications.push(info));
+      socket.close();
+
+      expect(notifications).toHaveLength(1);
+      expect(notifications[0].intentional).toBe(false);
+      expect(notifications[0].error?.code).toBe(CLIENT_CLOSED);
+    });
+
+    it("client.close() notifies listeners once with {intentional: true}", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket();
+      const client = await connected(identity, socket);
+
+      const notifications: CloseInfo[] = [];
+      client.onClose((info) => notifications.push(info));
+      client.close();
+
+      expect(notifications).toEqual([{ intentional: true }]);
+    });
+
+    it("closing twice only notifies once", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket();
+      const client = await connected(identity, socket);
+
+      const notifications: CloseInfo[] = [];
+      client.onClose((info) => notifications.push(info));
+      client.close();
+      client.close();
+
+      expect(notifications).toHaveLength(1);
+    });
+
+    it("unsubscribing stops further notifications", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket();
+      const client = await connected(identity, socket);
+
+      const notifications: CloseInfo[] = [];
+      const unsubscribe = client.onClose((info) => notifications.push(info));
+      unsubscribe();
+      client.close();
+
+      expect(notifications).toHaveLength(0);
+    });
+
+    it("a throwing listener doesn't stop other listeners from being notified", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket();
+      const client = await connected(identity, socket);
+
+      const notifications: CloseInfo[] = [];
+      client.onClose(() => {
+        throw new Error("listener boom");
+      });
+      client.onClose((info) => notifications.push(info));
+      client.close();
+
+      expect(notifications).toHaveLength(1);
     });
   });
 
