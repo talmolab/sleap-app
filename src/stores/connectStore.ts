@@ -643,13 +643,21 @@ async function notifyJobFinished(
   if (notifiedJobIds.has(job.jobId)) return;
   notifiedJobIds.add(job.jobId);
   const { toast } = await import("@/lib/notify");
+  const { useAppStore } = await import("@/stores/appStore");
+  // Replaces the toast's usual hover copy-button (`@/lib/notify`'s default
+  // `action`) with a one-click path to the Connect window (PR4b §4b.2).
+  const action = {
+    label: "Open",
+    onClick: () => useAppStore.getState().setConnectWindowOpen(true),
+  };
   if (job.state === "completed") {
-    toast.success(`${job.label} on ${workerLabel} finished`);
+    toast.success(`${job.label} on ${workerLabel} finished`, { action });
   } else if (job.state === "canceled") {
-    toast.info(`${job.label} on ${workerLabel} was canceled`);
+    toast.info(`${job.label} on ${workerLabel} was canceled`, { action });
   } else {
     toast.error(`${job.label} on ${workerLabel} failed`, {
       description: errorDetail ?? undefined,
+      action,
     });
   }
 }

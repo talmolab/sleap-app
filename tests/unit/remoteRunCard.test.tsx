@@ -45,6 +45,7 @@ describe("RemoteRunCard", () => {
         currentModelIndex={0}
         postTrainingInference={null}
         onWatchLive={() => {}}
+        onOpenConnect={() => {}}
       />,
     );
     expect(screen.getByText("GPU Box")).toBeInTheDocument();
@@ -62,6 +63,7 @@ describe("RemoteRunCard", () => {
         currentModelIndex={0}
         postTrainingInference={null}
         onWatchLive={() => {}}
+        onOpenConnect={() => {}}
       />,
     );
     expect(screen.getByText(/Reconnecting…/)).toBeInTheDocument();
@@ -81,6 +83,7 @@ describe("RemoteRunCard", () => {
         currentModelIndex={1}
         postTrainingInference={null}
         onWatchLive={() => {}}
+        onOpenConnect={() => {}}
       />,
     );
     expect(screen.getByText("Centroid")).toBeInTheDocument();
@@ -107,6 +110,7 @@ describe("RemoteRunCard", () => {
         currentModelIndex={1}
         postTrainingInference={pti}
         onWatchLive={() => {}}
+        onOpenConnect={() => {}}
       />,
     );
     expect(screen.getByText(/Running inference on the worker/)).toBeInTheDocument();
@@ -123,6 +127,7 @@ describe("RemoteRunCard", () => {
         currentModelIndex={0}
         postTrainingInference={null}
         onWatchLive={() => {}}
+        onOpenConnect={() => {}}
       />,
     );
     expect(screen.getByText(/Runs on GPU Box/)).toBeInTheDocument();
@@ -141,9 +146,29 @@ describe("RemoteRunCard", () => {
         currentModelIndex={0}
         postTrainingInference={null}
         onWatchLive={onWatchLive}
+        onOpenConnect={() => {}}
       />,
     );
     fireEvent.click(screen.getByRole("button", { name: /Watch Live/ }));
     expect(onWatchLive).toHaveBeenCalledTimes(1);
+  });
+
+  it("Open in Connect calls onOpenConnect", () => {
+    const onOpenConnect = vi.fn();
+    render(
+      <RemoteRunCard
+        workerLabel="GPU Box"
+        connectionStatus="connected"
+        activeTransport="ws"
+        startedAt={Date.now()}
+        models={[model()]}
+        currentModelIndex={0}
+        postTrainingInference={null}
+        onWatchLive={() => {}}
+        onOpenConnect={onOpenConnect}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Open in Connect/ }));
+    expect(onOpenConnect).toHaveBeenCalledTimes(1);
   });
 });

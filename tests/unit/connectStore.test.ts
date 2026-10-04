@@ -1499,7 +1499,10 @@ describe("connectStore", () => {
       }
 
       expect(toast.success).toHaveBeenCalledTimes(1);
-      expect(toast.success).toHaveBeenCalledWith(expect.stringContaining("finished"));
+      expect(toast.success).toHaveBeenCalledWith(
+        expect.stringContaining("finished"),
+        expect.objectContaining({ action: expect.objectContaining({ label: "Open" }) }),
+      );
       const job = useConnectStore
         .getState()
         .trackedJobs.find((j) => j.jobId === "job_resume_1");
@@ -1568,7 +1571,10 @@ describe("connectStore", () => {
       }
 
       expect(toast.info).toHaveBeenCalledTimes(1);
-      expect(toast.info).toHaveBeenCalledWith(expect.stringContaining("was canceled"));
+      expect(toast.info).toHaveBeenCalledWith(
+        expect.stringContaining("was canceled"),
+        expect.objectContaining({ action: expect.objectContaining({ label: "Open" }) }),
+      );
       expect(toast.error).not.toHaveBeenCalled();
       const job = useConnectStore
         .getState()

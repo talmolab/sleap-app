@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from "react";
-import { Loader2, Plug, Trash2, Unplug, Zap } from "lucide-react";
+import { ExternalLink, Loader2, Plug, Trash2, Unplug, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { irohTransportAvailable, transportLabel, type TransportKind } from "@/lib/protocolV1/transport";
 import { useConnectStore } from "@/stores/connectStore";
+import { useAppStore } from "@/stores/appStore";
 import { PairWorkerForm } from "@/components/connect/PairWorkerForm";
 
 export function ConnectPanel() {
+  const setConnectWindowOpen = useAppStore((s) => s.setConnectWindowOpen);
   const pairedWorkers = useConnectStore((s) => s.pairedWorkers);
   const selectedWorkerId = useConnectStore((s) => s.selectedWorkerId);
   const connectionStatus = useConnectStore((s) => s.connectionStatus);
@@ -56,6 +58,16 @@ export function ConnectPanel() {
 
   return (
     <div className="p-2 space-y-3">
+      <Button
+        size="sm"
+        variant="outline"
+        className="w-full h-7 text-xs"
+        onClick={() => setConnectWindowOpen(true)}
+      >
+        <ExternalLink className="h-3 w-3 mr-1.5" />
+        Open Connect window
+      </Button>
+
       {connectionStatus === "error" && connectionError && (
         <div className="bg-red-500/8 border border-red-500/20 rounded-md p-2 text-[11px] text-red-400">
           {connectionError}
