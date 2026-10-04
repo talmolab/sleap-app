@@ -33,7 +33,14 @@ import type {
 import { APP_VERSION } from "@/lib/version";
 import { isTauri } from "@/platform/index";
 import type { AgentInfo } from "@/lib/protocolV1/envelope";
-import type { Mount, WorkerClient, WorkerEvent } from "@/lib/protocolV1/client";
+import type {
+  JobStatus,
+  JobSummary,
+  Mount,
+  WorkerClient,
+  WorkerEvent,
+  WorkerInfo,
+} from "@/lib/protocolV1/client";
 import { parseJobTelemetry, type JobTelemetry } from "@/lib/protocolV1/jobTelemetry";
 import { ManagedConnection, type LinkStatus } from "@/lib/protocolV1/managedConnection";
 import { WorkerProtocolError, FS_NOT_FOUND, FS_FORBIDDEN } from "@/lib/protocolV1/errors";
@@ -178,6 +185,8 @@ interface ConnectState {
    * doesn't reach. Cleared on that worker's next successful connect.
    */
   workerErrors: Record<string, string | null>;
+  /** Last-fetched `worker.info` snapshot per worker (sleap-connect #98), keyed by `nodeId`. */
+  workerInfo: Record<string, WorkerInfo>;
   _client: WorkerClient | null;
 
   // ── Actions ──────────────────────────────────────────────────────
@@ -198,6 +207,13 @@ interface ConnectState {
    * connections open indefinitely afterward.
    */
   releaseIdleConnections: () => void;
+  /** Fetches `worker.info` for `workerId` into `workerInfo`; a failure lands in `workerErrors` instead of throwing. */
+  refreshWorkerInfo: (workerId: string) => Promise<void>;
+  /** Every job on `workerId` (not just ones this window tracks) — the Connect window's Jobs tab. */
+  listJobs: (workerId: string) => Promise<JobSummary[]>;
+  jobDetail: (workerId: string, jobId: string) => Promise<JobStatus>;
+  /** Cancel/stop a job on ANY paired worker, not just the selected one. */
+  cancelJobOn: (workerId: string, jobId: string, mode: "cancel" | "stop") => Promise<void>;
   /**
    * Claim a fresh pairing ticket (JSON from `sleap-rtc pair`) and connect.
    * `options.transport` picks the dial explicitly (default `"ws"`); `"iroh"`
@@ -762,6 +778,7 @@ export const useConnectStore = create<ConnectState>()(
       activeTransport: null,
       connections: {},
       workerErrors: {},
+      workerInfo: {},
       _client: null,
 
       clientFor: async (workerId) => {
@@ -791,6 +808,36 @@ export const useConnectStore = create<ConnectState>()(
           mc.stop();
           managed.delete(workerId);
         }
+      },
+
+      refreshWorkerInfo: async (workerId) => {
+        try {
+          const client = await get().clientFor(workerId);
+          const info = await client.workerInfo();
+          set((state) => ({ workerInfo: { ...state.workerInfo, [workerId]: info } }));
+        } catch (err) {
+          set((state) => ({
+            workerErrors: {
+              ...state.workerErrors,
+              [workerId]: err instanceof Error ? err.message : String(err),
+            },
+          }));
+        }
+      },
+
+      listJobs: async (workerId) => {
+        const client = await get().clientFor(workerId);
+        return client.jobsList();
+      },
+
+      jobDetail: async (workerId, jobId) => {
+        const client = await get().clientFor(workerId);
+        return client.jobsStatus(jobId);
+      },
+
+      cancelJobOn: async (workerId, jobId, mode) => {
+        const client = await get().clientFor(workerId);
+        await client.jobsCancel(jobId, mode);
       },
 
       pairWithTicket: async (ticketJson, addrOverride, options) => {
@@ -1169,9 +1216,9 @@ export const useConnectStore = create<ConnectState>()(
       cancelJob: () => {
         const { _client, selectedWorkerId, trackedJobs } = get();
         const job = selectedWorkerId ? latestActiveJobFor(selectedWorkerId, trackedJobs) : null;
-        if (_client && job) {
-          _client
-            .jobsCancel(job.jobId, "cancel")
+        if (_client && selectedWorkerId && job) {
+          get()
+            .cancelJobOn(selectedWorkerId, job.jobId, "cancel")
             .catch((err: unknown) => console.warn("[connect] jobsCancel failed:", err));
         }
         set({ reattachableJob: null });
@@ -1180,9 +1227,9 @@ export const useConnectStore = create<ConnectState>()(
       stopJob: () => {
         const { _client, selectedWorkerId, trackedJobs } = get();
         const job = selectedWorkerId ? latestActiveJobFor(selectedWorkerId, trackedJobs) : null;
-        if (_client && job) {
-          _client
-            .jobsCancel(job.jobId, "stop")
+        if (_client && selectedWorkerId && job) {
+          get()
+            .cancelJobOn(selectedWorkerId, job.jobId, "stop")
             .catch((err: unknown) => console.warn("[connect] jobsCancel(stop) failed:", err));
         }
         set({ reattachableJob: null });

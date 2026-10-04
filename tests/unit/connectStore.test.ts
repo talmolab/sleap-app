@@ -311,6 +311,7 @@ describe("connectStore", () => {
       activeTransport: null,
       connections: {},
       workerErrors: {},
+      workerInfo: {},
       _client: null,
     });
   });
@@ -1201,6 +1202,64 @@ describe("connectStore", () => {
       useConnectStore.getState().releaseIdleConnections();
 
       expect(otherClient.closed).toBe(false);
+    });
+  });
+
+  describe("per-worker job actions + worker info", () => {
+    beforeEach(() => {
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
+    });
+
+    it("refreshWorkerInfo fetches worker.info into workerInfo", async () => {
+      FakeWorkerClient.nextMounts = [];
+      await useConnectStore.getState().refreshWorkerInfo(PAIRED_WORKER.nodeId);
+      lastClient().workerInfoResult = {
+        gpuModel: "A100",
+        gpuMemoryMb: 81920,
+        gpuCount: 2,
+        cudaVersion: "12.4",
+        sleapNnVersion: "0.2.0",
+        busy: true,
+      };
+      await useConnectStore.getState().refreshWorkerInfo(PAIRED_WORKER.nodeId);
+      expect(useConnectStore.getState().workerInfo[PAIRED_WORKER.nodeId]).toEqual({
+        gpuModel: "A100",
+        gpuMemoryMb: 81920,
+        gpuCount: 2,
+        cudaVersion: "12.4",
+        sleapNnVersion: "0.2.0",
+        busy: true,
+      });
+    });
+
+    it("refreshWorkerInfo records a failure in workerErrors instead of throwing", async () => {
+      FakeWorkerClient.nextConnectShouldThrow = new Error("unreachable");
+      await useConnectStore.getState().refreshWorkerInfo(PAIRED_WORKER.nodeId);
+      expect(useConnectStore.getState().workerErrors[PAIRED_WORKER.nodeId]).toBe("unreachable");
+      expect(useConnectStore.getState().workerInfo[PAIRED_WORKER.nodeId]).toBeUndefined();
+    });
+
+    it("listJobs returns the worker's jobs.list", async () => {
+      await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
+      lastClient().jobsListResult = [{ jobId: "job_1", state: "running", createdAt: "t1" }];
+      const jobs = await useConnectStore.getState().listJobs(PAIRED_WORKER.nodeId);
+      expect(jobs).toEqual([
+        expect.objectContaining({ jobId: "job_1", state: "running" }),
+      ]);
+    });
+
+    it("jobDetail returns the worker's jobs.status", async () => {
+      await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
+      lastClient().jobsStatusResult = { state: "completed" };
+      const status = await useConnectStore.getState().jobDetail(PAIRED_WORKER.nodeId, "job_1");
+      expect(status.state).toBe("completed");
+      expect(lastClient().jobsStatusCalls).toEqual(["job_1"]);
+    });
+
+    it("cancelJobOn calls jobsCancel on the given worker's client with the given mode", async () => {
+      await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
+      await useConnectStore.getState().cancelJobOn(PAIRED_WORKER.nodeId, "job_1", "stop");
+      expect(lastClient().jobsCancelCalls).toEqual([["job_1", "stop"]]);
     });
   });
 
