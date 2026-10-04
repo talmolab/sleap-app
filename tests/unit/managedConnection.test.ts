@@ -396,3 +396,64 @@ describe("ManagedConnection", () => {
     mc.stop();
   });
 });
+
+describe("route choice after the fallback window", () => {
+  /** A dial whose per-route availability the test flips; each success returns a fresh client. */
+  function routeDial(up: Record<TransportKind, boolean>) {
+    const calls: TransportKind[] = [];
+    const made: Array<{ route: TransportKind; client: FakeClient }> = [];
+    return {
+      calls,
+      made,
+      dial: async (route: TransportKind): Promise<WorkerClient> => {
+        calls.push(route);
+        if (!up[route]) throw new Error(`${route} down`);
+        const client = new FakeClient();
+        made.push({ route, client });
+        return client as unknown as WorkerClient;
+      },
+    };
+  }
+
+  it("keeps trying the LAN while iroh is also down, and reconnects when the LAN returns", async () => {
+    const up: Record<TransportKind, boolean> = { ws: true, iroh: false };
+    const { calls, made, dial } = routeDial(up);
+    const conn = new ManagedConnection({
+      dial, preferredRoute: "ws", canFallBackToIroh: true,
+      onStatus: () => {}, onConnected: () => {}, ...makeClock(),
+    });
+    await conn.start();
+
+    up.ws = false;
+    made[0].client.simulateDrop();
+    await waitUntil(() => calls.includes("iroh"));
+    up.ws = true;
+    await waitUntil(() => made.length === 2);
+
+    expect(conn.route).toBe("ws");
+    expect(conn.client).toBe(made[1].client as unknown as WorkerClient);
+    conn.stop();
+  });
+
+  it("dropped while on iroh also retries the preferred route", async () => {
+    const up: Record<TransportKind, boolean> = { ws: true, iroh: true };
+    const { made, dial } = routeDial(up);
+    const conn = new ManagedConnection({
+      dial, preferredRoute: "ws", canFallBackToIroh: true,
+      onStatus: () => {}, onConnected: () => {}, ...makeClock(),
+    });
+    await conn.start();
+
+    up.ws = false; // LAN drops -> falls back to iroh after the window
+    made[0].client.simulateDrop();
+    await waitUntil(() => conn.route === "iroh");
+
+    up.iroh = false; // iroh drops too, while the LAN has come back
+    up.ws = true;
+    made[made.length - 1].client.simulateDrop();
+    await waitUntil(() => conn.route === "ws" && conn.client !== null);
+
+    expect(conn.route).toBe("ws");
+    conn.stop();
+  });
+});

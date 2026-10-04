@@ -124,18 +124,26 @@ export class ManagedConnection {
     const droppedAt = this._now();
     let attempt = 0;
     let announcedOffline = false;
+    let altIndex = 0;
+    const routes: TransportKind[] =
+      this._canFallBackToIroh && this._preferredRoute !== "iroh"
+        ? [this._preferredRoute, "iroh"]
+        : [this._preferredRoute];
 
     while (!this._stopped && generation === this._generation) {
       const elapsed = this._now() - droppedAt;
-      const onPreferred = this._route === this._preferredRoute;
-      const fallbackDue = this._canFallBackToIroh && onPreferred && elapsed >= FALLBACK_AFTER_MS;
+      const windowPassed = elapsed >= FALLBACK_AFTER_MS;
 
-      if (!this._canFallBackToIroh && onPreferred && elapsed >= FALLBACK_AFTER_MS && !announcedOffline) {
-        announcedOffline = true;
-        this._onStatus("offline", this._route);
+      // Within the window, retry the route we were on. After it, alternate
+      // between every usable route, starting with the one we weren't on, so
+      // neither a blocked relay nor a still-down LAN can pin us to a route
+      // that never comes back (and a drop while on iroh also retries the
+      // preferred route).
+      let dialRoute: TransportKind = this._route;
+      if (windowPassed && routes.length > 1) {
+        dialRoute = routes[(routes.indexOf(this._route) + 1 + altIndex) % routes.length];
+        altIndex++;
       }
-
-      const dialRoute: TransportKind = fallbackDue ? "iroh" : this._route;
 
       try {
         const client = await this._dial(dialRoute);
@@ -154,6 +162,12 @@ export class ManagedConnection {
       }
 
       if (this._stopped || generation !== this._generation) return;
+      // Unreachable on every route we tried past the window: say so (once),
+      // and keep retrying.
+      if (windowPassed && !announcedOffline) {
+        announcedOffline = true;
+        this._onStatus("offline", this._route);
+      }
       const backoff = RECONNECT_BACKOFF_MS[Math.min(attempt, RECONNECT_BACKOFF_MS.length - 1)];
       attempt++;
       await this._sleep(backoff);
