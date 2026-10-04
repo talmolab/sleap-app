@@ -319,10 +319,11 @@ describe("connectStore", () => {
 
       await useConnectStore.getState().pairWithTicket(TICKET);
 
-      const client = lastClient();
-      expect(client.opts.url).toBe("ws://192.168.1.42:9631");
-      expect(client.connectCalls).toBe(1);
-      expect(client.pairClaimArgs).toEqual(["one-time-secret"]);
+      // The pairing client claims the ticket...
+      const pairingClient = FakeWorkerClient.instances[0];
+      expect(pairingClient.opts.url).toBe("ws://192.168.1.42:9631");
+      expect(pairingClient.connectCalls).toBe(1);
+      expect(pairingClient.pairClaimArgs).toEqual(["one-time-secret"]);
 
       const state = useConnectStore.getState();
       expect(state.connectionStatus).toBe("connected");
@@ -1016,6 +1017,32 @@ describe("connectStore", () => {
   });
 
   describe("managed reconnection", () => {
+    it("a freshly paired worker is reconnect-managed too", async () => {
+      let t = 0;
+      __setManagedDeps({
+        now: () => t,
+        sleep: (ms: number) => {
+          t += ms;
+          return Promise.resolve();
+        },
+      });
+      await useConnectStore.getState().pairWithTicket(TICKET);
+
+      // ...then pairing hands off to a managed connection (auth.prove, now
+      // that this client is trusted), and the pairing client is closed.
+      const pairingClient = FakeWorkerClient.instances[0];
+      const managedClient = lastClient();
+      expect(pairingClient.closed).toBe(true);
+      expect(managedClient).not.toBe(pairingClient);
+      expect(managedClient.authProveCalls).toBe(1);
+      expect(useConnectStore.getState()._client).toBe(managedClient as unknown as WorkerClient);
+
+      managedClient.simulateDrop();
+      await waitUntil(() => useConnectStore.getState().connectionStatus === "connected"
+        && useConnectStore.getState()._client !== (managedClient as unknown as WorkerClient));
+      expect(FakeWorkerClient.instances.length).toBe(3);
+    });
+
     it("an unintentional drop goes through 'reconnecting' and redials to a new _client", async () => {
       let t = 0;
       __setManagedDeps({

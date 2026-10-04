@@ -798,6 +798,18 @@ export const useConnectStore = create<ConnectState>()(
           });
           throw err;
         }
+
+        // Paired. Hand the worker to a managed connection (now via
+        // auth.prove, since this client is trusted) so a drop right after
+        // pairing — e.g. pair, start training, VPN blips — reconnects like
+        // any other. connectToWorker closes the pairing client. If this
+        // re-dial fails, the pairing itself still stands; connectToWorker
+        // has already put the error in connectionStatus/connectionError.
+        try {
+          await get().connectToWorker(ticket.node_id, { transport });
+        } catch {
+          // Surfaced via connectionError; the worker stays paired.
+        }
       },
 
       connectToWorker: async (nodeId, options) => {
