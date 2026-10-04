@@ -16,6 +16,7 @@ import { useConnectStore } from "@/stores/connectStore";
 import { BackendPicker } from "@/components/common/BackendPicker";
 import { RemoteFileBrowser } from "@/components/dialogs/RemoteFileBrowser";
 import { TrainingConfigDialog } from "@/components/dialogs/TrainingConfigDialog";
+import { RemoteDataSummary } from "@/components/connect/RemoteDataSummary";
 import { LossViewerDialog } from "@/components/monitors/LossViewerDialog";
 import { LogTerminalDialog } from "@/components/monitors/LogTerminalDialog";
 import { ErrorOutput } from "@/components/monitors/ErrorOutput";
@@ -27,6 +28,7 @@ import type { DiscoveredModel } from "@/lib/modelDiscovery";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   Select,
@@ -61,6 +63,8 @@ import {
 } from "lucide-react";
 import { computeNodeVisibility, visibilityTier } from "@/lib/anchorVisibility";
 import { TUTORIAL_FIRST_TRAINING_STEP_IDS } from "@/lib/tutorial/steps";
+import { projectTag } from "@/lib/projectTag";
+import type { VideoVisibility } from "@/lib/remoteVisibility";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -915,8 +919,15 @@ export function TrainingPanel() {
 
   // Remote state
   const [remoteEnabled, setRemoteEnabled] = useState(!isTauri);
+  // Default "this window" (unsaved edits included) — the worker-file picker
+  // (pre-PR3's only option) stays as the alternative. See remoteVisibility.ts
+  // / remoteLabelsPayload.ts for how "window" gets turned into a payload.
+  const [labelsSource, setLabelsSource] = useState<"window" | "worker-file">("window");
   const [remoteLabelsPath, setRemoteLabelsPath] = useState("");
   const [remoteValLabelsPath, setRemoteValLabelsPath] = useState("");
+  // Latest visibility check from RemoteDataSummary, lifted here so Start (and
+  // the pre-submit hidden-videos dialog) can use it without recomputing.
+  const [visibility, setVisibility] = useState<VideoVisibility[] | null>(null);
   const [inferenceTarget, setInferenceTarget] = useState<string>("suggestions");
   const [sampleCount, setSampleCount] = useState(20);
   const [skipUserLabeled, setSkipUserLabeled] = useState(false);
@@ -942,6 +953,7 @@ export function TrainingPanel() {
 
   const connectionStatus = useConnectStore((s) => s.connectionStatus);
   const selectedWorkerId = useConnectStore((s) => s.selectedWorkerId);
+  const pairedWorkers = useConnectStore((s) => s.pairedWorkers);
   const connectedMounts = useConnectStore((s) => s.workerMounts);
 
   // Empty (not ["/"]) while disconnected: RemoteFileBrowser treats a single
@@ -1022,7 +1034,9 @@ export function TrainingPanel() {
     config.configs.some((c) => c.slot === slot),
   );
   const hasData = remoteEnabled
-    ? !!remoteLabelsPath
+    ? labelsSource === "window"
+      ? (labels?.labeledFrames.length ?? 0) > 0
+      : !!remoteLabelsPath
     : !!config.trainingLabelsPath || !!projectPath;
   // Remote training points at a path on the worker's filesystem, which this
   // client can't read to count frames — only guard the local-project path,
@@ -1106,10 +1120,11 @@ export function TrainingPanel() {
       await startTraining({
         remote: true,
         workerId: selectedWorkerId!,
-        // Still the only labels source the panel offers — PR3b adds the
-        // "this window" picker and switches the default.
-        labelsSource: "worker-file",
-        workerLabelsPath: remoteLabelsPath,
+        labelsSource,
+        workerLabelsPath: labelsSource === "worker-file" ? remoteLabelsPath : undefined,
+        // Pass along whatever RemoteDataSummary has found so far — trainingStore
+        // recomputes it itself (via checkVideoVisibility) if still unknown.
+        visibility: labelsSource === "window" ? (visibility ?? undefined) : undefined,
         valLabelsPath: remoteValLabelsPath || undefined,
         inferenceTarget,
         sampleCount,
@@ -1230,44 +1245,81 @@ export function TrainingPanel() {
         <Section title="Data" defaultOpen={true}>
           <div className="space-y-1">
             <span className="text-[10px] text-muted-foreground flex items-center gap-1">
-              {remoteEnabled
-                ? "Training Labels (on worker)"
-                : "Training Labels"}
+              Training Labels
               <HelpTooltip text="The .slp file whose labeled frames are used to train the model. Defaults to the currently open project." />
             </span>
-            <div className="flex gap-1">
-              <Input
-                value={
-                  remoteEnabled
-                    ? remoteLabelsPath
-                    : config.trainingLabelsPath || projectPath || ""
-                }
-                readOnly
-                className="h-7 text-xs font-mono flex-1"
-                placeholder="No file selected"
-              />
-              <Button
-                variant="outline"
-                size="xs"
-                className="px-2"
-                disabled={isRunning}
-                onClick={() => {
-                  if (remoteEnabled) {
-                    setFileBrowserCallback(
-                      () => (path: string) => setRemoteLabelsPath(path),
-                    );
-                    setFileBrowserOpen(true);
-                  } else {
+            {remoteEnabled ? (
+              <div className="space-y-1.5">
+                <RadioGroup
+                  value={labelsSource}
+                  onValueChange={(v) => setLabelsSource(v as "window" | "worker-file")}
+                  className="gap-1"
+                >
+                  <label className="flex items-center gap-1.5 text-xs cursor-pointer">
+                    <RadioGroupItem value="window" id="labels-source-window" disabled={isRunning} />
+                    This window ({projectTag(projectPath).name})
+                  </label>
+                  <label className="flex items-center gap-1.5 text-xs cursor-pointer">
+                    <RadioGroupItem value="worker-file" id="labels-source-worker-file" disabled={isRunning} />
+                    A file on {pairedWorkers.find((w) => w.nodeId === selectedWorkerId)?.label ?? "worker"}
+                  </label>
+                </RadioGroup>
+                {labelsSource === "worker-file" && (
+                  <div className="flex gap-1 pl-5">
+                    <Input
+                      value={remoteLabelsPath}
+                      readOnly
+                      className="h-7 text-xs font-mono flex-1"
+                      placeholder="No file selected"
+                    />
+                    <Button
+                      variant="outline"
+                      size="xs"
+                      className="px-2"
+                      disabled={isRunning}
+                      onClick={() => {
+                        setFileBrowserCallback(
+                          () => (path: string) => setRemoteLabelsPath(path),
+                        );
+                        setFileBrowserOpen(true);
+                      }}
+                    >
+                      <Folder className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                )}
+                {labelsSource === "window" && (
+                  <RemoteDataSummary
+                    workerId={selectedWorkerId}
+                    labels={labels}
+                    onResult={setVisibility}
+                  />
+                )}
+              </div>
+            ) : (
+              <div className="flex gap-1">
+                <Input
+                  value={config.trainingLabelsPath || projectPath || ""}
+                  readOnly
+                  className="h-7 text-xs font-mono flex-1"
+                  placeholder="No file selected"
+                />
+                <Button
+                  variant="outline"
+                  size="xs"
+                  className="px-2"
+                  disabled={isRunning}
+                  onClick={() =>
                     handleBrowseLocalData(
                       (p) => setConfig("trainingLabelsPath", p),
                       "trainingLabelsPath",
-                    );
+                    )
                   }
-                }}
-              >
-                <Folder className="h-3.5 w-3.5" />
-              </Button>
-            </div>
+                >
+                  <Folder className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            )}
           </div>
           <div className="space-y-1">
             <span className="text-[10px] text-muted-foreground flex items-center gap-1">
