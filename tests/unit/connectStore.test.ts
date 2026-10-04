@@ -1206,6 +1206,16 @@ describe("connectStore", () => {
       expect(FakeWorkerClient.instances).toHaveLength(1);
     });
 
+    it("concurrent calls for one worker share a single dial", async () => {
+      FakeWorkerClient.nextPeerNodeId = OTHER_WORKER.nodeId;
+      const [a, b] = await Promise.all([
+        useConnectStore.getState().clientFor(OTHER_WORKER.nodeId),
+        useConnectStore.getState().clientFor(OTHER_WORKER.nodeId),
+      ]);
+      expect(b).toBe(a);
+      expect(FakeWorkerClient.instances).toHaveLength(1);
+    });
+
     it("records a failed dial in workerErrors and rethrows", async () => {
       FakeWorkerClient.nextConnectShouldThrow = new Error("unreachable");
       await expect(useConnectStore.getState().clientFor(OTHER_WORKER.nodeId)).rejects.toThrow(

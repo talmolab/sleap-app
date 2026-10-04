@@ -459,6 +459,9 @@ function mapLinkStatus(status: LinkStatus): ConnectionStatus {
 /** One `ManagedConnection` per worker that's selected or has an active tracked job. */
 const managed = new Map<string, ManagedConnection>();
 
+/** `clientFor`'s in-flight initial dials, so concurrent calls for one worker share a single `start()`. */
+const clientForStarts = new Map<string, Promise<WorkerClient>>();
+
 interface ManagedConnectionTestDeps {
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -481,6 +484,7 @@ export function __setManagedDeps(deps: ManagedConnectionTestDeps): void {
 export function __resetManagedConnections(): void {
   for (const mc of managed.values()) mc.stop();
   managed.clear();
+  clientForStarts.clear();
 }
 
 /**
@@ -793,22 +797,40 @@ export const useConnectStore = create<ConnectState>()(
       _client: null,
 
       clientFor: async (workerId) => {
-        const mc = managed.get(workerId) ?? ensureConnection(workerId);
-        if (mc.client) return mc.client;
-        try {
-          const client = await mc.start();
-          set((state) => ({ workerErrors: { ...state.workerErrors, [workerId]: null } }));
-          return client;
-        } catch (err) {
-          managed.delete(workerId);
-          set((state) => ({
-            workerErrors: {
-              ...state.workerErrors,
-              [workerId]: err instanceof Error ? err.message : String(err),
-            },
-          }));
-          throw err;
-        }
+        const existing = managed.get(workerId);
+        if (existing?.client) return existing.client;
+        // Concurrent callers (the Connect window fires info + jobs at once)
+        // share one dial — `start()` isn't idempotent and a second call would
+        // adopt a second client, leaking the first.
+        const pending = clientForStarts.get(workerId);
+        if (pending) return pending;
+        // A managed connection with no client and no start of ours in flight
+        // is either mid-reconnect (its own retry loop owns the redial) or
+        // mid-`connectToWorker`/`resumeTrackedJobs` start — dialing here too
+        // would race it. `connections[workerId]` already shows the status.
+        if (existing) throw new Error("Worker is reconnecting — try again shortly.");
+
+        const mc = ensureConnection(workerId);
+        const start = (async () => {
+          try {
+            const client = await mc.start();
+            set((state) => ({ workerErrors: { ...state.workerErrors, [workerId]: null } }));
+            return client;
+          } catch (err) {
+            if (managed.get(workerId) === mc) managed.delete(workerId);
+            set((state) => ({
+              workerErrors: {
+                ...state.workerErrors,
+                [workerId]: err instanceof Error ? err.message : String(err),
+              },
+            }));
+            throw err;
+          } finally {
+            clientForStarts.delete(workerId);
+          }
+        })();
+        clientForStarts.set(workerId, start);
+        return start;
       },
 
       releaseIdleConnections: () => {
