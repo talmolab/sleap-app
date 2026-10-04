@@ -20,10 +20,10 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useConnectStore } from "@/stores/connectStore";
+import { WorkerList } from "./WorkerList";
 
-// WorkerList (§4b.3), WorkerJobs (§4b.4) and WorkerDataAccess (§4b.5) land in
-// their own follow-up commits — this shell has a minimal inline worker list
-// and tab placeholders that each of those replaces in turn.
+// WorkerJobs (§4b.4) and WorkerDataAccess (§4b.5) land in their own
+// follow-up commits — the tab bodies are placeholders until then.
 
 export interface ConnectDialogProps {
   open: boolean;
@@ -92,25 +92,8 @@ export function ConnectDialog({ open, onOpenChange }: ConnectDialogProps) {
         </div>
 
         <div className="flex flex-1 min-h-0">
-          <div className="w-[320px] shrink-0 border-r overflow-y-auto p-2 space-y-1">
-            {pairedWorkers.length === 0 ? (
-              <p className="text-xs text-muted-foreground p-2">No paired workers yet.</p>
-            ) : (
-              pairedWorkers.map((w) => (
-                <button
-                  key={w.nodeId}
-                  type="button"
-                  onClick={() => setPickedWorkerId(w.nodeId)}
-                  className={`w-full text-left rounded-md p-2 text-xs transition-colors ${
-                    pickedWorkerId === w.nodeId
-                      ? "bg-primary/10 border border-primary"
-                      : "border border-border bg-zinc-800/50"
-                  }`}
-                >
-                  {w.label}
-                </button>
-              ))
-            )}
+          <div className="w-[320px] shrink-0 border-r overflow-y-auto">
+            <WorkerList selectedId={pickedWorkerId} onSelect={setPickedWorkerId} />
           </div>
 
           <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
