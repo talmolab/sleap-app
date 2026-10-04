@@ -1,5 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "../bun-test";
-import { useConnectStore, type PairedWorker } from "@/stores/connectStore";
+import {
+  useConnectStore,
+  type PairedWorker,
+  type TrackedJob,
+  capTrackedJobs,
+  migrateConnectPersisted,
+} from "@/stores/connectStore";
 import type { JobSpec } from "@/lib/sleapConnect";
 
 // connectStore's own actions (pairing flow, browse pagination, job
@@ -168,6 +174,21 @@ const PAIRED_WORKER: PairedWorker = {
   pairedAt: "2026-09-27T00:00:00Z",
 };
 
+function makeTracked(overrides: Partial<TrackedJob> = {}): TrackedJob {
+  return {
+    workerId: PAIRED_WORKER.nodeId,
+    jobId: "job_1",
+    lastSeq: 0,
+    kind: "track",
+    label: "Inference",
+    source: "window",
+    state: "active",
+    seen: false,
+    submittedAt: Date.now(),
+    ...overrides,
+  };
+}
+
 describe("connectStore", () => {
   beforeEach(() => {
     FakeWorkerClient.instances.length = 0;
@@ -176,7 +197,7 @@ describe("connectStore", () => {
     useConnectStore.setState({
       pairedWorkers: [],
       selectedWorkerId: null,
-      currentJob: null,
+      trackedJobs: [],
       connectionStatus: "disconnected",
       connectionError: null,
       workerMounts: [],
@@ -560,10 +581,11 @@ describe("connectStore", () => {
 
       expect(result).toEqual({ jobId: "job_1", success: true });
       expect(lines).toEqual(["epoch 1"]);
-      // Terminal: nothing left to reattach to, so the tracked pointer is
-      // cleared rather than being re-checked via a live network round trip
-      // on every future connect to this worker.
-      expect(useConnectStore.getState().currentJob).toBeNull();
+      // Terminal: the tracked entry is kept (it's the Connect window's job
+      // history) with its state updated, not cleared.
+      expect(useConnectStore.getState().trackedJobs).toEqual([
+        expect.objectContaining({ jobId: "job_1", state: "completed", seen: true }),
+      ]);
     });
 
     it("resolves with success:false and the worker's detail on job.status: failed", async () => {
@@ -574,7 +596,9 @@ describe("connectStore", () => {
 
       const result = await promise;
       expect(result).toEqual({ jobId: "job_1", success: false, error: "exit code 1" });
-      expect(useConnectStore.getState().currentJob).toBeNull();
+      expect(useConnectStore.getState().trackedJobs).toEqual([
+        expect.objectContaining({ jobId: "job_1", state: "failed", seen: true }),
+      ]);
     });
 
     it("captures job.result's blobs (which arrive before job.status: completed)", async () => {
@@ -739,7 +763,7 @@ describe("connectStore", () => {
 
     it("cancelJob sends mode: 'cancel' for the current job and clears the reattach banner", async () => {
       useConnectStore.setState({
-        currentJob: { workerId: PAIRED_WORKER.nodeId, jobId: "job_1" },
+        trackedJobs: [makeTracked()],
         reattachableJob: { jobId: "job_1", state: "running" },
       });
       useConnectStore.getState().cancelJob();
@@ -749,10 +773,19 @@ describe("connectStore", () => {
     });
 
     it("stopJob sends mode: 'stop' for the current job", async () => {
-      useConnectStore.setState({ currentJob: { workerId: PAIRED_WORKER.nodeId, jobId: "job_1" } });
+      useConnectStore.setState({ trackedJobs: [makeTracked()] });
       useConnectStore.getState().stopJob();
       await flushAsync();
       expect(lastClient().jobsCancelCalls).toEqual([["job_1", "stop"]]);
+    });
+
+    it("only cancels a job tracked against the currently-selected worker", async () => {
+      useConnectStore.setState({
+        trackedJobs: [makeTracked({ workerId: "other-worker", jobId: "job_other" })],
+      });
+      useConnectStore.getState().cancelJob();
+      await flushAsync();
+      expect(lastClient().jobsCancelCalls).toEqual([]);
     });
   });
 
@@ -787,7 +820,7 @@ describe("connectStore", () => {
     it("surfaces a reattachableJob when the tracked job on this worker is still active", async () => {
       useConnectStore.setState({
         pairedWorkers: [PAIRED_WORKER],
-        currentJob: { workerId: PAIRED_WORKER.nodeId, jobId: "job_1" },
+        trackedJobs: [makeTracked()],
       });
       FakeWorkerClient.prototype.jobsStatus = async function (this: FakeWorkerClient, jobId: string) {
         this.jobsStatusCalls.push(jobId);
@@ -806,7 +839,7 @@ describe("connectStore", () => {
     it("does not reattach a job that already reached a terminal state", async () => {
       useConnectStore.setState({
         pairedWorkers: [PAIRED_WORKER],
-        currentJob: { workerId: PAIRED_WORKER.nodeId, jobId: "job_1" },
+        trackedJobs: [makeTracked()],
       });
       FakeWorkerClient.prototype.jobsStatus = async function () {
         return { state: "completed" };
@@ -821,7 +854,7 @@ describe("connectStore", () => {
       const other: PairedWorker = { ...PAIRED_WORKER, nodeId: "other", addrs: ["ws://other:1"] };
       useConnectStore.setState({
         pairedWorkers: [PAIRED_WORKER, other],
-        currentJob: { workerId: "other", jobId: "job_1" },
+        trackedJobs: [makeTracked({ workerId: "other" })],
       });
 
       await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
@@ -833,7 +866,7 @@ describe("connectStore", () => {
     it("does not reattach if the worker no longer recognizes the job", async () => {
       useConnectStore.setState({
         pairedWorkers: [PAIRED_WORKER],
-        currentJob: { workerId: PAIRED_WORKER.nodeId, jobId: "job_1" },
+        trackedJobs: [makeTracked()],
       });
       FakeWorkerClient.prototype.jobsStatus = async function () {
         throw new Error("job.not_found");
@@ -847,12 +880,79 @@ describe("connectStore", () => {
     });
 
     it("no tracked job at all means no reattach check", async () => {
-      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER], currentJob: null });
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER], trackedJobs: [] });
 
       await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
 
       expect(lastClient().jobsStatusCalls).toEqual([]);
       expect(useConnectStore.getState().reattachableJob).toBeNull();
     });
+  });
+});
+
+describe("trackedJobs persisted migration (v1 -> v2)", () => {
+  it("migrates an existing currentJob into a single active TrackedJob", () => {
+    const migrated = migrateConnectPersisted(
+      {
+        pairedWorkers: [],
+        selectedWorkerId: "worker-node-id",
+        currentJob: { workerId: "worker-node-id", jobId: "job_1" },
+      },
+      1,
+    ) as { trackedJobs: TrackedJob[]; currentJob?: unknown };
+
+    expect(migrated.currentJob).toBeUndefined();
+    expect(migrated.trackedJobs).toEqual([
+      expect.objectContaining({
+        workerId: "worker-node-id",
+        jobId: "job_1",
+        lastSeq: 0,
+        state: "active",
+        seen: false,
+        source: "window",
+      }),
+    ]);
+  });
+
+  it("migrates a null currentJob into an empty trackedJobs list", () => {
+    const migrated = migrateConnectPersisted(
+      { pairedWorkers: [], selectedWorkerId: null, currentJob: null },
+      1,
+    ) as { trackedJobs: TrackedJob[] };
+
+    expect(migrated.trackedJobs).toEqual([]);
+  });
+
+  it("leaves already-v2 persisted state untouched", () => {
+    const existing = { pairedWorkers: [], selectedWorkerId: null, trackedJobs: [makeTracked()] };
+    const migrated = migrateConnectPersisted(existing, 2) as typeof existing;
+    expect(migrated.trackedJobs).toEqual([makeTracked()]);
+  });
+});
+
+describe("capTrackedJobs", () => {
+  it("keeps active jobs and drops the oldest non-active ones beyond the cap", () => {
+    const active = Array.from({ length: 5 }, (_, i) =>
+      makeTracked({ jobId: `active_${i}`, submittedAt: i }),
+    );
+    const nonActive = Array.from({ length: 50 }, (_, i) =>
+      makeTracked({ jobId: `done_${i}`, state: "completed", submittedAt: 1000 + i }),
+    );
+
+    const capped = capTrackedJobs([...nonActive, ...active]);
+
+    expect(capped).toHaveLength(50);
+    expect(capped.filter((j) => j.state === "active")).toHaveLength(5);
+    // The 5 oldest non-active jobs (done_0..done_4) were dropped first.
+    expect(capped.some((j) => j.jobId === "done_0")).toBe(false);
+    expect(capped.some((j) => j.jobId === "done_49")).toBe(true);
+  });
+
+  it("never evicts an active job even if active jobs alone exceed the cap", () => {
+    const active = Array.from({ length: 51 }, (_, i) =>
+      makeTracked({ jobId: `active_${i}`, submittedAt: i }),
+    );
+
+    expect(capTrackedJobs(active)).toHaveLength(51);
   });
 });

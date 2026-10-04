@@ -66,7 +66,7 @@ describe("connectStore iroh transport (desktop)", () => {
     (await store()).setState({
       pairedWorkers: [],
       selectedWorkerId: null,
-      currentJob: null,
+      trackedJobs: [],
       connectionStatus: "disconnected",
       connectionError: null,
       workerMounts: [],

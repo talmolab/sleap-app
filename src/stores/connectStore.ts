@@ -52,7 +52,12 @@ const AGENT_INFO: AgentInfo = {
 
 // ── Types ─────────────────────────────────────────────────────────
 
-export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "error";
+export type ConnectionStatus =
+  | "disconnected"
+  | "connecting"
+  | "connected"
+  | "reconnecting"
+  | "error";
 
 /** A worker this device has paired with — persisted, Syncthing/Plex-style. */
 export interface PairedWorker {
@@ -77,15 +82,29 @@ export interface PairingTicket {
 }
 
 /**
- * The most recent job this device submitted to a specific worker — the
- * `(node_id, job_id)` pair spec §3.4 says the app persists for reattach.
- * Only one is tracked at a time (this UI only ever talks to one worker),
- * but it's tagged with `workerId` so reconnecting to a *different* paired
- * worker never mistakenly checks its status against the wrong one.
+ * A remote job this device is tracking against a specific paired worker.
+ * Superseded the old single-slot `(node_id, job_id)` pair (spec §3.4) once
+ * the Connect window (PR2-5) needed to show several jobs at once — across
+ * workers, across a sequential multi-model training run, and across app
+ * restarts. `workerId` guards against checking a job's status against the
+ * wrong worker after switching which one is selected; `source` distinguishes
+ * a job this window submitted ("window", all PR2b ever produces) from one
+ * discovered already running on a worker by PR5's job-file scan
+ * ("worker-file").
  */
 export interface TrackedJob {
   workerId: string;
   jobId: string;
+  /** Highest event `seq` already applied — lets a reconnect catch up without reprocessing. */
+  lastSeq: number;
+  kind: "train" | "track";
+  /** Human-readable summary, e.g. "Train centroid", "Inference". */
+  label: string;
+  source: "window" | "worker-file";
+  state: "active" | "completed" | "failed" | "canceled";
+  /** Whether the user has seen this job reach a terminal state (gates resume-on-launch toasts). */
+  seen: boolean;
+  submittedAt: number;
 }
 
 /** A job found still active on a worker from a previous session (spec §3.4). */
@@ -122,13 +141,13 @@ interface ConnectState {
   // ── Persisted ──────────────────────────────────────────────────
   pairedWorkers: PairedWorker[];
   selectedWorkerId: string | null;
-  currentJob: TrackedJob | null;
+  trackedJobs: TrackedJob[];
 
   // ── Runtime (not persisted) ─────────────────────────────────────
   connectionStatus: ConnectionStatus;
   connectionError: string | null;
   workerMounts: Mount[];
-  /** Set once per connect if `currentJob` belongs to the worker just connected to. */
+  /** Set once per connect if the worker just connected to has an active tracked job. */
   reattachableJob: ReattachableJob | null;
   /** Transport of the current/most recent connection attempt; `null` when disconnected. */
   activeTransport: TransportKind | null;
@@ -173,6 +192,74 @@ interface ConnectState {
 
 function upsertWorker(existing: PairedWorker[], next: PairedWorker): PairedWorker[] {
   return [...existing.filter((w) => w.nodeId !== next.nodeId), next];
+}
+
+function activeJobsFor(workerId: string, jobs: TrackedJob[]): TrackedJob[] {
+  return jobs.filter((j) => j.workerId === workerId && j.state === "active");
+}
+
+/** The most recently submitted still-active job on a worker, or `null`. */
+function latestActiveJobFor(workerId: string, jobs: TrackedJob[]): TrackedJob | null {
+  const active = activeJobsFor(workerId, jobs);
+  return active.length > 0 ? active[active.length - 1] : null;
+}
+
+const MAX_TRACKED_JOBS = 50;
+
+/**
+ * Caps the list at `MAX_TRACKED_JOBS`, oldest-first among non-active jobs
+ * only — an active job is never evicted just to make room (if active jobs
+ * alone exceed the cap, the list is left over-length rather than dropping
+ * something still running). Exported for direct unit testing.
+ */
+export function capTrackedJobs(jobs: TrackedJob[]): TrackedJob[] {
+  let excess = jobs.length - MAX_TRACKED_JOBS;
+  if (excess <= 0) return jobs;
+  const dropIdx = new Set<number>();
+  const byAge = jobs
+    .map((j, i) => ({ j, i }))
+    .filter(({ j }) => j.state !== "active")
+    .sort((a, b) => a.j.submittedAt - b.j.submittedAt);
+  for (const { i } of byAge) {
+    if (excess <= 0) break;
+    dropIdx.add(i);
+    excess--;
+  }
+  return jobs.filter((_, i) => !dropIdx.has(i));
+}
+
+/** A tracked job's display label, derived from the spec that submitted it. */
+function trackedJobLabel(spec: JobSpec): string {
+  return spec.type === "track" ? "Inference" : `Train ${spec.model_types?.[0] ?? "model"}`;
+}
+
+/**
+ * Migrates persisted state from before `trackedJobs` existed (v1, a single
+ * `currentJob: {workerId, jobId} | null`) to v2's `TrackedJob[]`. Exported
+ * for direct unit testing — the real `migrate` persist option below just
+ * calls this.
+ */
+export function migrateConnectPersisted(persisted: unknown, version: number): unknown {
+  const p = { ...(persisted as Record<string, unknown>) };
+  if (version < 2) {
+    const cj = p.currentJob as { workerId: string; jobId: string } | null | undefined;
+    p.trackedJobs = cj
+      ? [
+          {
+            ...cj,
+            lastSeq: 0,
+            kind: "train" as const,
+            label: "Remote job",
+            source: "window" as const,
+            state: "active" as const,
+            seen: false,
+            submittedAt: Date.now(),
+          },
+        ]
+      : [];
+    delete p.currentJob;
+  }
+  return p;
 }
 
 function isMultiModelTrainSpec(
@@ -263,12 +350,22 @@ async function submitSingleJob(
   workerId: string,
   spec: JobSpec,
   onProgress: JobLogHandler,
-  set: (partial: Partial<ConnectState>) => void,
-  get: () => ConnectState,
+  set: (partial: Partial<ConnectState> | ((state: ConnectState) => Partial<ConnectState>)) => void,
   onTelemetry?: (telemetry: JobTelemetry) => void,
 ): Promise<JobResult> {
   const { jobId } = await client.jobsSubmit(spec as unknown as Record<string, unknown>);
-  set({ currentJob: { workerId, jobId } });
+  const tracked: TrackedJob = {
+    workerId,
+    jobId,
+    lastSeq: 0,
+    kind: spec.type,
+    label: trackedJobLabel(spec),
+    source: "window",
+    state: "active",
+    seen: false,
+    submittedAt: Date.now(),
+  };
+  set((state) => ({ trackedJobs: capTrackedJobs([...state.trackedJobs, tracked]) }));
 
   return new Promise<JobResult>((resolve, reject) => {
     let unsubscribe: (() => void) | null = null;
@@ -280,14 +377,20 @@ async function submitSingleJob(
     let modelDir: string | undefined;
     let labelsPath: string | undefined;
 
-    const finish = (result: JobResult) => {
+    const finish = (result: JobResult, trackedState: TrackedJob["state"]) => {
       if (settled) return;
       settled = true;
       unsubscribe?.();
-      // Terminal job: nothing left to reattach to, so clear the tracked
-      // pointer instead of leaving it to be re-checked (a live jobsStatus
-      // round trip) on every future connect to this worker.
-      if (get().currentJob?.jobId === jobId) set({ currentJob: null });
+      // Keep the tracked entry (it's the Connect window's job history) and
+      // just record its terminal state, rather than clearing it the way the
+      // old single-slot `currentJob` did. `seen: true` here because this
+      // window is live and watching it finish; resume-on-launch's toast
+      // (§2b.5) only fires for a job that reaches terminal while unwatched.
+      set((state) => ({
+        trackedJobs: state.trackedJobs.map((j) =>
+          j.jobId === jobId ? { ...j, state: trackedState, seen: true } : j,
+        ),
+      }));
       resolve(result);
     };
 
@@ -307,9 +410,12 @@ async function submitSingleJob(
           const result: JobResult = { jobId, success: true, resultBlobs };
           if (modelDir !== undefined) result.modelDir = modelDir;
           if (labelsPath !== undefined) result.labelsPath = labelsPath;
-          finish(result);
+          finish(result, "completed");
         } else if (state === "failed" || state === "canceled") {
-          finish({ jobId, success: false, error: (event.data.detail as string) ?? `Job ${state}` });
+          finish(
+            { jobId, success: false, error: (event.data.detail as string) ?? `Job ${state}` },
+            state,
+          );
         }
       } else if (onTelemetry) {
         const telemetry = parseJobTelemetry(event);
@@ -339,7 +445,7 @@ export const useConnectStore = create<ConnectState>()(
     (set, get) => ({
       pairedWorkers: [],
       selectedWorkerId: null,
-      currentJob: null,
+      trackedJobs: [],
 
       connectionStatus: "disconnected",
       connectionError: null,
@@ -390,7 +496,11 @@ export const useConnectStore = create<ConnectState>()(
           }
           await client.pairClaim(ticket.secret);
           const mounts = await client.fsMounts();
-          const reattachableJob = await checkReattach(client, ticket.node_id, get().currentJob);
+          const reattachableJob = await checkReattach(
+            client,
+            ticket.node_id,
+            latestActiveJobFor(ticket.node_id, get().trackedJobs),
+          );
 
           const paired: PairedWorker = {
             nodeId: ticket.node_id,
@@ -467,7 +577,11 @@ export const useConnectStore = create<ConnectState>()(
           }
           await client.authProve();
           const mounts = await client.fsMounts();
-          const reattachableJob = await checkReattach(client, nodeId, get().currentJob);
+          const reattachableJob = await checkReattach(
+            client,
+            nodeId,
+            latestActiveJobFor(nodeId, get().trackedJobs),
+          );
 
           set((state) => ({
             pairedWorkers: state.pairedWorkers.map((w) =>
@@ -519,7 +633,7 @@ export const useConnectStore = create<ConnectState>()(
         set((state) => ({
           pairedWorkers: state.pairedWorkers.filter((w) => w.nodeId !== nodeId),
           selectedWorkerId: state.selectedWorkerId === nodeId ? null : state.selectedWorkerId,
-          currentJob: state.currentJob?.workerId === nodeId ? null : state.currentJob,
+          trackedJobs: state.trackedJobs.filter((j) => j.workerId !== nodeId),
         }));
       },
 
@@ -569,7 +683,6 @@ export const useConnectStore = create<ConnectState>()(
               perModelSpec,
               onProgress,
               set,
-              get,
               options?.onTelemetry && ((t) => options.onTelemetry!(t, i)),
             );
             if (!finalResult.success) return finalResult;
@@ -587,26 +700,27 @@ export const useConnectStore = create<ConnectState>()(
           spec,
           onProgress,
           set,
-          get,
           options?.onTelemetry && ((t) => options.onTelemetry!(t, 0)),
         );
       },
 
       cancelJob: () => {
-        const { _client, currentJob } = get();
-        if (_client && currentJob) {
+        const { _client, selectedWorkerId, trackedJobs } = get();
+        const job = selectedWorkerId ? latestActiveJobFor(selectedWorkerId, trackedJobs) : null;
+        if (_client && job) {
           _client
-            .jobsCancel(currentJob.jobId, "cancel")
+            .jobsCancel(job.jobId, "cancel")
             .catch((err: unknown) => console.warn("[connect] jobsCancel failed:", err));
         }
         set({ reattachableJob: null });
       },
 
       stopJob: () => {
-        const { _client, currentJob } = get();
-        if (_client && currentJob) {
+        const { _client, selectedWorkerId, trackedJobs } = get();
+        const job = selectedWorkerId ? latestActiveJobFor(selectedWorkerId, trackedJobs) : null;
+        if (_client && job) {
           _client
-            .jobsCancel(currentJob.jobId, "stop")
+            .jobsCancel(job.jobId, "stop")
             .catch((err: unknown) => console.warn("[connect] jobsCancel(stop) failed:", err));
         }
         set({ reattachableJob: null });
@@ -631,11 +745,13 @@ export const useConnectStore = create<ConnectState>()(
     }),
     {
       name: "sleap-app-connect",
+      version: 2,
       partialize: (state) => ({
         pairedWorkers: state.pairedWorkers,
         selectedWorkerId: state.selectedWorkerId,
-        currentJob: state.currentJob,
+        trackedJobs: state.trackedJobs,
       }),
+      migrate: migrateConnectPersisted as (persisted: unknown, version: number) => ConnectState,
     },
   ),
 );

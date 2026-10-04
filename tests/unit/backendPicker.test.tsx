@@ -11,7 +11,7 @@
  */
 import { describe, it, expect, beforeEach, beforeAll, vi } from "../bun-test";
 import { render, screen, fireEvent } from "@testing-library/react";
-import { useConnectStore, type PairedWorker } from "@/stores/connectStore";
+import { useConnectStore, type PairedWorker, type TrackedJob } from "@/stores/connectStore";
 import { backendSelectValue, resolveBackendChange, LOCAL_VALUE } from "@/components/common/BackendPicker";
 
 // Radix Select needs a ResizeObserver in happy-dom.
@@ -46,7 +46,7 @@ function resetConnectStore() {
   useConnectStore.setState({
     pairedWorkers: [],
     selectedWorkerId: null,
-    currentJob: null,
+    trackedJobs: [],
     connectionStatus: "disconnected",
     connectionError: null,
     workerMounts: [],
@@ -54,6 +54,21 @@ function resetConnectStore() {
     activeTransport: null,
     _client: null,
   });
+}
+
+function makeTracked(overrides: Partial<TrackedJob> = {}): TrackedJob {
+  return {
+    workerId: WORKER_A.nodeId,
+    jobId: "job_1",
+    lastSeq: 0,
+    kind: "track",
+    label: "Inference",
+    source: "window",
+    state: "active",
+    seen: false,
+    submittedAt: Date.now(),
+    ...overrides,
+  };
 }
 
 describe("backendSelectValue / resolveBackendChange (pure logic)", () => {
@@ -185,7 +200,7 @@ describe("BackendPicker rendering", () => {
       pairedWorkers: [WORKER_A],
       selectedWorkerId: WORKER_A.nodeId,
       connectionStatus: "connected",
-      currentJob: { workerId: WORKER_A.nodeId, jobId: "job_abc" },
+      trackedJobs: [makeTracked({ jobId: "job_abc" })],
       reattachableJob: { jobId: "job_abc", state: "running" },
       cancelJob: vi.fn(),
     });
