@@ -10,7 +10,7 @@
  * it isn't assignable to a strictly-typed prop like `typeof checkVideoVisibility`.
  */
 import { describe, it, expect, afterEach } from "../bun-test";
-import { render, screen, cleanup, waitFor } from "@testing-library/react";
+import { render, screen, cleanup, waitFor, fireEvent } from "@testing-library/react";
 import { Labels, Video } from "@talmolab/sleap-io.js";
 import { useConnectStore } from "@/stores/connectStore";
 import type { VideoVisibility } from "@/lib/remoteVisibility";
@@ -202,5 +202,47 @@ describe("RemoteDataSummary", () => {
     resolvers[0](staleResult);
     await new Promise((r) => setTimeout(r, 10));
     expect(onResultCalls.at(-1)).toEqual(freshResult);
+  });
+
+  it("Locate on worker adds the inferred path rule and triggers a re-check", async () => {
+    seedWorker("w1");
+    useConnectStore.setState({
+      browseRemoteDir: async () => [{ name: "a.mp4", isDir: false }],
+    });
+    const labels = labelsWithVideos(["/local/videos/a.mp4"]);
+    let visible = false;
+    const calls: string[][] = [];
+    const checkFn = async (videoPaths: string[]): Promise<VideoVisibility[]> => {
+      calls.push(videoPaths);
+      return [
+        visible
+          ? { index: 0, local: "/local/videos/a.mp4", worker: "/mnt/data/a.mp4", visible: true }
+          : { index: 0, local: "/local/videos/a.mp4", worker: null, visible: false, reason: "no-location" as const },
+      ];
+    };
+    render(
+      <RemoteDataSummary
+        workerId="w1"
+        labels={labels}
+        onResult={() => {}}
+        checkFn={checkFn}
+        debounceMs={0}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText("Locate on worker…")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("Locate on worker…"));
+
+    // Two "a.mp4"s on screen once the browser opens: the hidden-video label
+    // in the summary, and the file entry in the RemoteFileBrowser dialog.
+    await waitFor(() => expect(screen.getAllByText("a.mp4")).toHaveLength(2));
+    fireEvent.click(screen.getAllByText("a.mp4")[1]);
+    visible = true; // the re-check after Locate should report it resolved
+    fireEvent.click(screen.getByText("Select File"));
+
+    await waitFor(() => {
+      const rules = useConnectStore.getState().pairedWorkers.find((w) => w.nodeId === "w1")?.pathRules ?? [];
+      expect(rules).toContainEqual({ local: "/local/videos/a.mp4", worker: "/mnt/data/a.mp4" });
+    });
+    await waitFor(() => expect(calls.length).toBeGreaterThanOrEqual(2));
   });
 });

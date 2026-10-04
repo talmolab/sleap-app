@@ -17,6 +17,7 @@ import { useConnectStore } from "@/stores/connectStore";
 import {
   checkVideoVisibility,
   classifyVisibility,
+  inferRuleFromLocate,
   projectVideoPaths,
   type VideoVisibility,
 } from "@/lib/remoteVisibility";
@@ -72,6 +73,7 @@ export function RemoteDataSummary({
   const connectionStatus = useConnectStore((s) => s.connectionStatus);
   const connectedMounts = useConnectStore((s) => s.workerMounts);
   const statWorkerPath = useConnectStore((s) => s.statWorkerPath);
+  const addPathRule = useConnectStore((s) => s.addPathRule);
 
   const worker = workerId ? pairedWorkers.find((w) => w.nodeId === workerId) : undefined;
   const rules = worker?.pathRules ?? EMPTY_RULES;
@@ -158,7 +160,15 @@ export function RemoteDataSummary({
       <RemoteFileBrowser
         open={locateFor !== null}
         onClose={() => setLocateFor(null)}
-        onSelect={() => setLocateFor(null)}
+        onSelect={(workerPath) => {
+          // Re-checking happens automatically: adding the rule changes
+          // `rules`, a dependency of the debounced check effect above — any
+          // sibling video under the same located prefix resolves too.
+          if (locateFor && workerId) {
+            addPathRule(workerId, inferRuleFromLocate(locateFor.local, workerPath));
+          }
+          setLocateFor(null);
+        }}
         mounts={mounts}
         mode="file"
         fileFilter={locateFor ? extOf(locateFor.local) : undefined}
