@@ -196,6 +196,12 @@ interface ConnectState {
   stopJob: () => void;
   /** Fetch a result blob's bytes (e.g. `JobResult.resultBlobs.predictions`). */
   fetchResultBlob: (ref: JobResultBlobRef) => Promise<Uint8Array>;
+  /**
+   * Called once on launch (`AppShell`): reconnects to every worker with an
+   * `active` tracked job, catches up on jobs that finished while unwatched
+   * (toasting + marking terminal), and re-watches ones still running.
+   */
+  resumeTrackedJobs: () => Promise<void>;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────
@@ -532,6 +538,50 @@ export function resubscribeWorker(workerId: string, client: WorkerClient): void 
   }
 }
 
+type ConnectSet = (
+  partial: Partial<ConnectState> | ((state: ConnectState) => Partial<ConnectState>),
+) => void;
+
+/** Merges `patch` into one tracked job by `jobId`, leaving every other job untouched. */
+function updateTrackedJob(set: ConnectSet, jobId: string, patch: Partial<TrackedJob>): void {
+  set((state) => ({
+    trackedJobs: state.trackedJobs.map((j) => (j.jobId === jobId ? { ...j, ...patch } : j)),
+  }));
+}
+
+/**
+ * Jobs already toasted this session — `resumeTrackedJobs` (§2b.5) can run
+ * more than once (e.g. called again before a prior run's awaits settle) and
+ * must never show the same "finished"/"failed" toast twice for one job.
+ */
+const notifiedJobIds = new Set<string>();
+
+/**
+ * Toasts that `job` reached a terminal state, once per job ever. Dynamically
+ * imports `@/lib/notify` rather than a static import — same reason as
+ * `makeClient`'s dynamic imports above: this module is statically imported
+ * by connectStore's own tests, so a static import here would bind the real
+ * `toast` before a test's `vi.mock("@/lib/notify", ...)` ever got a chance
+ * to replace it. `toast.success`/`toast.error` already feed the sidebar's
+ * notification bell (see `src/lib/notify.tsx`) — no separate call needed.
+ */
+async function notifyJobFinished(
+  job: TrackedJob,
+  workerLabel: string,
+  errorDetail?: string | null,
+): Promise<void> {
+  if (notifiedJobIds.has(job.jobId)) return;
+  notifiedJobIds.add(job.jobId);
+  const { toast } = await import("@/lib/notify");
+  if (job.state === "completed") {
+    toast.success(`${job.label} on ${workerLabel} finished`);
+  } else {
+    toast.error(`${job.label} on ${workerLabel} failed`, {
+      description: errorDetail ?? undefined,
+    });
+  }
+}
+
 const LAST_SEQ_PERSIST_THROTTLE_MS = 2000;
 
 /**
@@ -547,7 +597,7 @@ async function submitSingleJob(
   workerId: string,
   spec: JobSpec,
   onProgress: JobLogHandler,
-  set: (partial: Partial<ConnectState> | ((state: ConnectState) => Partial<ConnectState>)) => void,
+  set: ConnectSet,
   onTelemetry?: (telemetry: JobTelemetry) => void,
 ): Promise<JobResult> {
   const { jobId } = await client.jobsSubmit(spec as unknown as Record<string, unknown>);
@@ -581,9 +631,7 @@ async function submitSingleJob(
       const now = Date.now();
       if (now - lastPersistedAt < LAST_SEQ_PERSIST_THROTTLE_MS) return;
       lastPersistedAt = now;
-      set((state) => ({
-        trackedJobs: state.trackedJobs.map((j) => (j.jobId === jobId ? { ...j, lastSeq } : j)),
-      }));
+      updateTrackedJob(set, jobId, { lastSeq });
     };
 
     const finish = (result: JobResult, trackedState: TrackedJob["state"]) => {
@@ -596,11 +644,7 @@ async function submitSingleJob(
       // old single-slot `currentJob` did. `seen: true` here because this
       // window is live and watching it finish; resume-on-launch's toast
       // (§2b.5) only fires for a job that reaches terminal while unwatched.
-      set((state) => ({
-        trackedJobs: state.trackedJobs.map((j) =>
-          j.jobId === jobId ? { ...j, state: trackedState, seen: true, lastSeq } : j,
-        ),
-      }));
+      updateTrackedJob(set, jobId, { state: trackedState, seen: true, lastSeq });
       resolve(result);
     };
 
@@ -1015,6 +1059,83 @@ export const useConnectStore = create<ConnectState>()(
           );
         }
         return _client.fetchBlob(ref.sha256, ref.size);
+      },
+
+      resumeTrackedJobs: async () => {
+        const jobsByWorker = new Map<string, TrackedJob[]>();
+        for (const job of get().trackedJobs) {
+          if (job.state !== "active") continue;
+          const list = jobsByWorker.get(job.workerId);
+          if (list) list.push(job);
+          else jobsByWorker.set(job.workerId, [job]);
+        }
+
+        for (const [workerId, jobs] of jobsByWorker) {
+          const worker = get().pairedWorkers.find((w) => w.nodeId === workerId);
+          if (!worker) continue; // forgotten since the job was tracked — nothing to resume
+
+          let client: WorkerClient;
+          try {
+            client = await ensureConnection(workerId).start();
+          } catch (err) {
+            // No retry here: per ManagedConnection's own contract, a failed
+            // start() never starts a retry loop on its own. The jobs stay
+            // "active" — a later explicit connect, or the next launch's
+            // resumeTrackedJobs, tries again.
+            console.warn(`[connect] resumeTrackedJobs: couldn't reconnect to ${worker.label}:`, err);
+            managed.delete(workerId);
+            continue;
+          }
+
+          for (const job of jobs) {
+            let status: Awaited<ReturnType<WorkerClient["jobsStatus"]>>;
+            try {
+              status = await client.jobsStatus(job.jobId);
+            } catch {
+              continue; // worker no longer recognizes the job — leave as-is
+            }
+
+            if (TERMINAL_JOB_STATES.has(status.state)) {
+              const trackedState = status.state as TrackedJob["state"];
+              updateTrackedJob(set, job.jobId, { state: trackedState });
+              await notifyJobFinished({ ...job, state: trackedState }, worker.label, status.error);
+              continue;
+            }
+
+            if (activeSubscriptions.has(job.jobId)) continue; // already being watched
+
+            let watcherLastSeq = job.lastSeq;
+            const watcher: ActiveSubscription = {
+              workerId,
+              jobId: job.jobId,
+              unsubscribe: null,
+              handle: (event) => {
+                if (event.seq <= watcherLastSeq) return;
+                watcherLastSeq = event.seq;
+                updateTrackedJob(set, job.jobId, { lastSeq: watcherLastSeq });
+                if (event.topic !== "job.status") return;
+                const state = event.data.state as string;
+                if (!TERMINAL_JOB_STATES.has(state)) return;
+                watcher.unsubscribe?.();
+                activeSubscriptions.delete(job.jobId);
+                const trackedState = state as TrackedJob["state"];
+                updateTrackedJob(set, job.jobId, { state: trackedState });
+                void notifyJobFinished(
+                  { ...job, state: trackedState },
+                  worker.label,
+                  (event.data.detail as string) ?? null,
+                );
+              },
+            };
+            activeSubscriptions.set(job.jobId, watcher);
+            try {
+              await attachSubscription(client, watcher, job.lastSeq);
+            } catch (err) {
+              activeSubscriptions.delete(job.jobId);
+              console.warn(`[connect] resumeTrackedJobs: failed to watch job ${job.jobId}:`, err);
+            }
+          }
+        }
       },
     }),
     {

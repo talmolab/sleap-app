@@ -203,6 +203,9 @@ vi.mock("@/lib/protocolV1/identity", () => ({
 vi.mock("@/lib/protocolV1/client", () => ({
   WorkerClient: FakeWorkerClient,
 }));
+vi.mock("@/lib/notify", () => ({
+  toast: { success: vi.fn(), error: vi.fn() },
+}));
 
 const TICKET = JSON.stringify({
   node_id: "worker-node-id",
@@ -234,7 +237,7 @@ function makeTracked(overrides: Partial<TrackedJob> = {}): TrackedJob {
 }
 
 describe("connectStore", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     FakeWorkerClient.instances.length = 0;
     FakeWorkerClient.nextMounts = [];
     FakeWorkerClient.nextPeerNodeId = "worker-node-id";
@@ -245,6 +248,11 @@ describe("connectStore", () => {
     // background would keep retrying/probing into this one.
     __resetManagedConnections();
     __setManagedDeps({});
+    // Same reasoning for the toast mock's call history (resumeTrackedJobs
+    // tests) and the module-level notifiedJobIds de-dupe set.
+    const { toast } = await import("@/lib/notify");
+    (toast.success as unknown as ReturnType<typeof vi.fn>).mockClear();
+    (toast.error as unknown as ReturnType<typeof vi.fn>).mockClear();
     useConnectStore.setState({
       pairedWorkers: [],
       selectedWorkerId: null,
@@ -1038,6 +1046,77 @@ describe("connectStore", () => {
       expect(state._client).not.toBe(firstAsClient);
       expect(state._client).not.toBeNull();
       expect(FakeWorkerClient.instances.length).toBeGreaterThan(1);
+    });
+  });
+
+  describe("resumeTrackedJobs", () => {
+    it("toasts success and marks the job completed when the worker reports it finished while unwatched", async () => {
+      const { toast } = await import("@/lib/notify");
+      useConnectStore.setState({
+        pairedWorkers: [PAIRED_WORKER],
+        trackedJobs: [makeTracked({ jobId: "job_resume_1" })],
+      });
+      const originalJobsStatus = FakeWorkerClient.prototype.jobsStatus;
+      FakeWorkerClient.prototype.jobsStatus = async function (this: FakeWorkerClient, jobId: string) {
+        this.jobsStatusCalls.push(jobId);
+        return { state: "completed" };
+      };
+      try {
+        await useConnectStore.getState().resumeTrackedJobs();
+      } finally {
+        FakeWorkerClient.prototype.jobsStatus = originalJobsStatus;
+      }
+
+      expect(toast.success).toHaveBeenCalledTimes(1);
+      expect(toast.success).toHaveBeenCalledWith(expect.stringContaining("finished"));
+      const job = useConnectStore
+        .getState()
+        .trackedJobs.find((j) => j.jobId === "job_resume_1");
+      expect(job?.state).toBe("completed");
+    });
+
+    it("subscribes a watcher for a still-running job, resuming from its persisted lastSeq", async () => {
+      useConnectStore.setState({
+        pairedWorkers: [PAIRED_WORKER],
+        trackedJobs: [makeTracked({ jobId: "job_resume_2", lastSeq: 7 })],
+      });
+      const originalJobsStatus = FakeWorkerClient.prototype.jobsStatus;
+      FakeWorkerClient.prototype.jobsStatus = async function (this: FakeWorkerClient, jobId: string) {
+        this.jobsStatusCalls.push(jobId);
+        return { state: "running" };
+      };
+      try {
+        await useConnectStore.getState().resumeTrackedJobs();
+      } finally {
+        FakeWorkerClient.prototype.jobsStatus = originalJobsStatus;
+      }
+
+      expect(lastClient().jobsSubscribeCalls).toEqual([["job_resume_2", 7]]);
+      const job = useConnectStore
+        .getState()
+        .trackedJobs.find((j) => j.jobId === "job_resume_2");
+      expect(job?.state).toBe("active"); // still running — no notification yet
+    });
+
+    it("calling resumeTrackedJobs twice does not double-notify", async () => {
+      const { toast } = await import("@/lib/notify");
+      useConnectStore.setState({
+        pairedWorkers: [PAIRED_WORKER],
+        trackedJobs: [makeTracked({ jobId: "job_resume_3" })],
+      });
+      const originalJobsStatus = FakeWorkerClient.prototype.jobsStatus;
+      FakeWorkerClient.prototype.jobsStatus = async function (this: FakeWorkerClient, jobId: string) {
+        this.jobsStatusCalls.push(jobId);
+        return { state: "completed" };
+      };
+      try {
+        await useConnectStore.getState().resumeTrackedJobs();
+        await useConnectStore.getState().resumeTrackedJobs();
+      } finally {
+        FakeWorkerClient.prototype.jobsStatus = originalJobsStatus;
+      }
+
+      expect(toast.success).toHaveBeenCalledTimes(1);
     });
   });
 });
