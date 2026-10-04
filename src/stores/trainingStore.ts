@@ -1603,16 +1603,8 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       // Collect video paths from the loaded project
       const { useAppStore } = await import("@/stores/appStore");
       const { labels } = useAppStore.getState();
-      const videoPaths: string[] = [];
-      if (labels) {
-        for (const video of labels.videos) {
-          if (typeof video.filename === "string") {
-            videoPaths.push(video.filename);
-          } else if (Array.isArray(video.filename)) {
-            videoPaths.push(video.filename[0]);
-          }
-        }
-      }
+      const { projectVideoPaths } = await import("@/lib/remoteVisibility");
+      const videoPaths: string[] = labels ? projectVideoPaths(labels) : [];
 
       // Load saved mappings and get worker mounts
       const { loadSavedMappings, resolveProjectPaths, buildPathMappings } =
