@@ -1176,6 +1176,12 @@ export const useConnectStore = create<ConnectState>()(
           throw new Error("Not connected to a worker");
         }
 
+        // One id per call, links every job this submission produces — a
+        // single-job submission still gets one (index 0, count 1) so a job's
+        // `run` field is never a special case to check for; the Connect
+        // window (PR4b) only shows the "run i/n" tag once `count > 1`.
+        const runId = crypto.randomUUID();
+
         if (isMultiModelTrainSpec(spec)) {
           const modelTypes = spec.model_types ?? [];
           const n = spec.config_contents.length;
@@ -1185,6 +1191,7 @@ export const useConnectStore = create<ConnectState>()(
               ...spec,
               config_contents: [spec.config_contents[i]],
               model_types: modelTypes[i] ? [modelTypes[i]] : [],
+              run: { id: runId, index: i, count: n },
             };
             finalResult = await submitSingleJob(
               _client,
@@ -1206,7 +1213,7 @@ export const useConnectStore = create<ConnectState>()(
         return submitSingleJob(
           _client,
           selectedWorkerId,
-          spec,
+          { ...spec, run: { id: runId, index: 0, count: 1 } },
           onProgress,
           set,
           options?.onTelemetry && ((t) => options.onTelemetry!(t, 0)),

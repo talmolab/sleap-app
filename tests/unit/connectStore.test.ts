@@ -963,6 +963,41 @@ describe("connectStore", () => {
       expect(result).toEqual({ jobId: "job_1", success: true });
     });
 
+    it("tags a split multi-model run: both jobs share run.id, indices 0/1, count 2", async () => {
+      const spec: JobSpec = {
+        type: "train",
+        config_contents: ["centroid yaml", "centered_instance yaml"],
+        model_types: ["centroid", "centered_instance"],
+        labels_path: "/labels.slp",
+      };
+
+      const promise = useConnectStore.getState().submitJob(spec, () => {});
+      for (let i = 0; i < 2; i++) {
+        await flushAsync();
+        lastClient().emit("job_1", "job.status", { state: "completed" });
+      }
+      await promise;
+
+      const client = lastClient();
+      const [first, second] = client.jobsSubmitCalls;
+      expect(first.run).toEqual(expect.objectContaining({ index: 0, count: 2 }));
+      expect(second.run).toEqual(expect.objectContaining({ index: 1, count: 2 }));
+      expect((first.run as { id: string }).id).toBe((second.run as { id: string }).id);
+    });
+
+    it("tags a single-job spec with run {index: 0, count: 1}", async () => {
+      const spec: JobSpec = { type: "track", data_path: "/x.slp", model_paths: ["m1"] };
+      const promise = useConnectStore.getState().submitJob(spec, () => {});
+      await flushAsync();
+      const client = lastClient();
+      client.emit("job_1", "job.status", { state: "completed" });
+      await promise;
+
+      expect(client.jobsSubmitCalls[0].run).toEqual(
+        expect.objectContaining({ index: 0, count: 1 }),
+      );
+    });
+
     it("forwards job.log's progress flag (absent = false)", async () => {
       const lines: Array<[string, boolean | undefined]> = [];
       const spec: JobSpec = { type: "track", data_path: "/x.slp", model_paths: ["m1"] };

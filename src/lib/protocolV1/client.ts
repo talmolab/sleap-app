@@ -79,6 +79,20 @@ export interface JobProject {
   id: string;
 }
 
+/**
+ * Links a job to its siblings in one top-down-style submission that's split
+ * into several worker jobs (sleap-connect `feat/connect-run-id`) — opaque to
+ * the worker, round-tripped as-is. `index`/`count` are 0-based/total, e.g.
+ * `{index: 0, count: 2}` then `{index: 1, count: 2}` for a centroid +
+ * centered-instance run; the Connect window (PR4b) shows "run i/n" when
+ * `count > 1`.
+ */
+export interface JobRun {
+  id: string;
+  index: number;
+  count: number;
+}
+
 export interface JobSummary {
   jobId: string;
   state: string;
@@ -92,6 +106,8 @@ export interface JobSummary {
   modelTypes: string[];
   labelsPath?: string;
   project?: JobProject | null;
+  /** Absent on a job submitted before `run` existed, or by an older worker. */
+  run?: JobRun | null;
 }
 
 export interface JobStatus {
@@ -189,6 +205,7 @@ function _mapJobSummary(j: Record<string, unknown>): JobSummary {
     modelTypes: (j.model_types as string[] | undefined) ?? [],
     labelsPath: j.labels_path as string | undefined,
     project: j.project as JobProject | null | undefined,
+    run: j.run as JobRun | null | undefined,
   };
 }
 
