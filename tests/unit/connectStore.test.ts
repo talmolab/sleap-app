@@ -5,6 +5,7 @@ import {
   type TrackedJob,
   capTrackedJobs,
   migrateConnectPersisted,
+  resubscribeWorker,
 } from "@/stores/connectStore";
 import type { JobSpec } from "@/lib/sleapConnect";
 
@@ -49,6 +50,7 @@ class FakeWorkerClient {
   jobsSubmitCalls: Record<string, unknown>[] = [];
   jobsCancelCalls: Array<[string, string]> = [];
   jobsStatusCalls: string[] = [];
+  jobsSubscribeCalls: Array<[string, number]> = [];
   fsListCalls: Array<[string, number]> = [];
 
   mountsResult: FakeMount[] = [];
@@ -63,6 +65,7 @@ class FakeWorkerClient {
   fetchBlobShouldThrow: Error | null = null;
 
   private _subscribers = new Map<string, Set<(e: FakeWorkerEvent) => void>>();
+  private _seq = 0;
 
   constructor(public opts: { url: string; createSocket?: (url: string) => unknown }) {
     this.mountsResult = FakeWorkerClient.nextMounts;
@@ -117,7 +120,8 @@ class FakeWorkerClient {
     return this.fetchBlobResult;
   }
 
-  async jobsSubscribe(jobId: string, _sinceSeq: number, cb: (e: FakeWorkerEvent) => void) {
+  async jobsSubscribe(jobId: string, sinceSeq: number, cb: (e: FakeWorkerEvent) => void) {
+    this.jobsSubscribeCalls.push([jobId, sinceSeq]);
     let set = this._subscribers.get(jobId);
     if (!set) {
       set = new Set();
@@ -133,9 +137,15 @@ class FakeWorkerClient {
     this.closed = true;
   }
 
-  /** Test helper: simulate the worker pushing an event to subscribers. */
-  emit(jobId: string, topic: string, data: Record<string, unknown>) {
-    for (const cb of this._subscribers.get(jobId) ?? []) cb({ topic, jobId, seq: 1, data });
+  /**
+   * Test helper: simulate the worker pushing an event to subscribers. `seq`
+   * defaults to an auto-incrementing per-instance counter so a sequence of
+   * `emit` calls for the same job gets strictly increasing seqs, the way the
+   * real worker does — connectStore's seq-dedup would otherwise drop every
+   * event after the first if they all arrived with the same hardcoded seq.
+   */
+  emit(jobId: string, topic: string, data: Record<string, unknown>, seq: number = ++this._seq) {
+    for (const cb of this._subscribers.get(jobId) ?? []) cb({ topic, jobId, seq, data });
   }
 }
 
@@ -747,6 +757,48 @@ describe("connectStore", () => {
       const result = await promise;
       expect(result).toEqual({ jobId: "job_1", success: false, error: "boom" });
       expect(lastClient().jobsSubmitCalls).toHaveLength(1);
+    });
+
+    it("ignores a duplicate or out-of-order seq (reconnect backlog overlap)", async () => {
+      const lines: string[] = [];
+      const spec: JobSpec = { type: "track", data_path: "/x.slp", model_paths: ["m1"] };
+      const promise = useConnectStore.getState().submitJob(spec, (line) => lines.push(line));
+      await flushAsync();
+      const client = lastClient();
+
+      client.emit("job_1", "job.log", { line: "epoch 1" }, 5);
+      client.emit("job_1", "job.log", { line: "epoch 1 (replayed)" }, 5); // same seq: dropped
+      client.emit("job_1", "job.log", { line: "stale" }, 3); // older seq: dropped
+      client.emit("job_1", "job.status", { state: "completed" }, 6);
+
+      const result = await promise;
+      expect(result).toEqual({ jobId: "job_1", success: true });
+      expect(lines).toEqual(["epoch 1"]);
+      expect(
+        useConnectStore.getState().trackedJobs.find((j) => j.jobId === "job_1")?.lastSeq,
+      ).toBe(6);
+    });
+
+    it("re-subscribes from the last applied seq after a simulated reconnect, and the original promise resolves on the new client's terminal event", async () => {
+      const spec: JobSpec = { type: "track", data_path: "/x.slp", model_paths: ["m1"] };
+      const promise = useConnectStore.getState().submitJob(spec, () => {});
+      await flushAsync();
+      const firstClient = lastClient();
+      firstClient.emit("job_1", "job.log", { line: "epoch 1" }); // seq 1, persisted immediately
+
+      // Simulate the drop/redial: a brand-new client takes over the subscription.
+      const secondClient = new FakeWorkerClient({ url: firstClient.opts.url });
+      resubscribeWorker(PAIRED_WORKER.nodeId, secondClient as never);
+
+      expect(secondClient.jobsSubscribeCalls).toEqual([["job_1", 1]]);
+
+      // Explicit seq: a real worker's seq numbering is per-job, continuing
+      // across a reconnect — `secondClient`'s own auto-increment counter
+      // starts fresh at 1 and would otherwise collide with the seq already
+      // applied from `firstClient`.
+      secondClient.emit("job_1", "job.status", { state: "completed" }, 2);
+      const result = await promise;
+      expect(result).toEqual({ jobId: "job_1", success: true });
     });
   });
 

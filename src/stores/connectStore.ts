@@ -340,10 +340,57 @@ async function checkReattach(
 }
 
 /**
+ * One job's live event subscription, tracked at module level (NOT persisted
+ * — it's rebuilt fresh every session) so a reconnect can re-attach it to a
+ * new `WorkerClient` without the submitting `submitJob` promise ever
+ * knowing its connection was replaced underneath it. Keyed by `jobId`.
+ */
+interface ActiveSubscription {
+  workerId: string;
+  jobId: string;
+  handle: (event: WorkerEvent) => void;
+  unsubscribe: (() => void) | null;
+}
+const activeSubscriptions = new Map<string, ActiveSubscription>();
+
+/** (Re)subscribes `sub` on `client` starting from `sinceSeq`, dropping any prior subscription first. */
+async function attachSubscription(
+  client: WorkerClient,
+  sub: ActiveSubscription,
+  sinceSeq: number,
+): Promise<void> {
+  sub.unsubscribe?.();
+  sub.unsubscribe = await client.jobsSubscribe(sub.jobId, sinceSeq, sub.handle);
+}
+
+/** The persisted `lastSeq` for one tracked job — the catch-up point after a reconnect. */
+function trackedLastSeq(jobId: string): number {
+  return useConnectStore.getState().trackedJobs.find((j) => j.jobId === jobId)?.lastSeq ?? 0;
+}
+
+/**
+ * Re-attaches every active subscription belonging to `workerId` onto a newly
+ * (re)connected `client`, resuming each from its last-applied seq. Called by
+ * `ManagedConnection`'s `onConnected` (§2b.4) for every reconnect/route
+ * switch, not just the selected worker's — a background job on an
+ * unselected-but-tracked worker still needs to keep receiving events.
+ */
+export function resubscribeWorker(workerId: string, client: WorkerClient): void {
+  for (const sub of activeSubscriptions.values()) {
+    if (sub.workerId !== workerId) continue;
+    void attachSubscription(client, sub, trackedLastSeq(sub.jobId));
+  }
+}
+
+const LAST_SEQ_PERSIST_THROTTLE_MS = 2000;
+
+/**
  * Submits one job and resolves once it reaches a terminal state, forwarding
- * `job.log` lines to `onProgress` as they arrive. `since_seq: 0` (full
- * history) is safe here since this always subscribes right after submitting
- * a brand-new job — there's no backlog to miss.
+ * `job.log` lines to `onProgress` as they arrive. The subscription survives
+ * a reconnect (registered in `activeSubscriptions`, re-attached by
+ * `resubscribeWorker`): `since_seq: 0` is safe for the very first subscribe
+ * since there's no backlog yet, and every event is deduped by seq so a
+ * reconnect's backlog replay can never double-apply one already seen live.
  */
 async function submitSingleJob(
   client: WorkerClient,
@@ -368,7 +415,6 @@ async function submitSingleJob(
   set((state) => ({ trackedJobs: capTrackedJobs([...state.trackedJobs, tracked]) }));
 
   return new Promise<JobResult>((resolve, reject) => {
-    let unsubscribe: (() => void) | null = null;
     let settled = false;
     // job.result arrives before job.status: completed (the worker emits
     // them in that order specifically so this is never missed) — captured
@@ -376,11 +422,25 @@ async function submitSingleJob(
     let resultBlobs: JobResult["resultBlobs"];
     let modelDir: string | undefined;
     let labelsPath: string | undefined;
+    let lastSeq = 0;
+    let lastPersistedAt = 0;
+
+    // Throttled so a fast stream of job.log/telemetry events doesn't write
+    // to the store on every single one; always caught up on terminal below.
+    const persistLastSeq = () => {
+      const now = Date.now();
+      if (now - lastPersistedAt < LAST_SEQ_PERSIST_THROTTLE_MS) return;
+      lastPersistedAt = now;
+      set((state) => ({
+        trackedJobs: state.trackedJobs.map((j) => (j.jobId === jobId ? { ...j, lastSeq } : j)),
+      }));
+    };
 
     const finish = (result: JobResult, trackedState: TrackedJob["state"]) => {
       if (settled) return;
       settled = true;
-      unsubscribe?.();
+      sub.unsubscribe?.();
+      activeSubscriptions.delete(jobId);
       // Keep the tracked entry (it's the Connect window's job history) and
       // just record its terminal state, rather than clearing it the way the
       // old single-slot `currentJob` did. `seen: true` here because this
@@ -388,53 +448,61 @@ async function submitSingleJob(
       // (§2b.5) only fires for a job that reaches terminal while unwatched.
       set((state) => ({
         trackedJobs: state.trackedJobs.map((j) =>
-          j.jobId === jobId ? { ...j, state: trackedState, seen: true } : j,
+          j.jobId === jobId ? { ...j, state: trackedState, seen: true, lastSeq } : j,
         ),
       }));
       resolve(result);
     };
 
-    const handleEvent = (event: WorkerEvent) => {
-      if (event.topic === "job.log") {
-        onProgress((event.data.line as string) ?? "", event.data.progress === true);
-      } else if (event.topic === "job.result") {
-        const blobs = event.data.blobs as Record<string, JobResultBlobRef> | undefined;
-        if (blobs && Object.keys(blobs).length > 0) resultBlobs = blobs;
-        // Train jobs only: the trained model folder + the labels file it
-        // trained on, both worker-side paths (inputs to a follow-up track job).
-        if (typeof event.data.model_dir === "string") modelDir = event.data.model_dir;
-        if (typeof event.data.labels_path === "string") labelsPath = event.data.labels_path;
-      } else if (event.topic === "job.status") {
-        const state = event.data.state as string;
-        if (state === "completed") {
-          const result: JobResult = { jobId, success: true, resultBlobs };
-          if (modelDir !== undefined) result.modelDir = modelDir;
-          if (labelsPath !== undefined) result.labelsPath = labelsPath;
-          finish(result, "completed");
-        } else if (state === "failed" || state === "canceled") {
-          finish(
-            { jobId, success: false, error: (event.data.detail as string) ?? `Job ${state}` },
-            state,
-          );
+    const sub: ActiveSubscription = {
+      workerId,
+      jobId,
+      unsubscribe: null,
+      handle: (event) => {
+        // The worker's `since_seq` is exclusive, but a live event can still
+        // arrive both live (before a drop) and again in a reconnect's
+        // backlog replay — drop anything already applied.
+        if (event.seq <= lastSeq) return;
+        lastSeq = event.seq;
+        persistLastSeq();
+
+        if (event.topic === "job.log") {
+          onProgress((event.data.line as string) ?? "", event.data.progress === true);
+        } else if (event.topic === "job.result") {
+          const blobs = event.data.blobs as Record<string, JobResultBlobRef> | undefined;
+          if (blobs && Object.keys(blobs).length > 0) resultBlobs = blobs;
+          // Train jobs only: the trained model folder + the labels file it
+          // trained on, both worker-side paths (inputs to a follow-up track job).
+          if (typeof event.data.model_dir === "string") modelDir = event.data.model_dir;
+          if (typeof event.data.labels_path === "string") labelsPath = event.data.labels_path;
+        } else if (event.topic === "job.status") {
+          const state = event.data.state as string;
+          if (state === "completed") {
+            const result: JobResult = { jobId, success: true, resultBlobs };
+            if (modelDir !== undefined) result.modelDir = modelDir;
+            if (labelsPath !== undefined) result.labelsPath = labelsPath;
+            finish(result, "completed");
+          } else if (state === "failed" || state === "canceled") {
+            finish(
+              { jobId, success: false, error: (event.data.detail as string) ?? `Job ${state}` },
+              state,
+            );
+          }
+        } else if (onTelemetry) {
+          const telemetry = parseJobTelemetry(event);
+          if (telemetry) onTelemetry(telemetry);
         }
-      } else if (onTelemetry) {
-        const telemetry = parseJobTelemetry(event);
-        if (telemetry) onTelemetry(telemetry);
-      }
+      },
     };
 
-    client
-      .jobsSubscribe(jobId, 0, handleEvent)
-      .then((unsub) => {
-        if (settled) unsub();
-        else unsubscribe = unsub;
-      })
-      .catch((err: unknown) => {
-        if (!settled) {
-          settled = true;
-          reject(err instanceof Error ? err : new Error(String(err)));
-        }
-      });
+    activeSubscriptions.set(jobId, sub);
+    attachSubscription(client, sub, 0).catch((err: unknown) => {
+      activeSubscriptions.delete(jobId);
+      if (!settled) {
+        settled = true;
+        reject(err instanceof Error ? err : new Error(String(err)));
+      }
+    });
   });
 }
 
