@@ -187,6 +187,19 @@ describe("WorkerJobs rendering", () => {
     expect(screen.queryByRole("button", { name: /Fetch & Load/ })).not.toBeInTheDocument();
   });
 
+  it("Logs opens the JobViewerDialog on its log view for that job", async () => {
+    useConnectStore.setState({ listJobs: async () => [job({ state: "running" })] });
+    render(
+      <WorkerJobs workerId={WORKER_ID} setIntervalImpl={noopSetInterval} clearIntervalImpl={noopClearInterval} />,
+    );
+    await waitFor(() => expect(screen.getByRole("button", { name: "Logs" })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Logs" }));
+    // The viewer dialog renders its own "Monitor"/"Logs" toggle and the
+    // job's label as its title — both only appear once the dialog is open.
+    expect(screen.getByRole("button", { name: "Monitor" })).toBeInTheDocument();
+    expect(screen.getAllByText("Train centroid").length).toBeGreaterThan(0);
+  });
+
   it("a job from another project shows no action buttons at all", async () => {
     useConnectStore.setState({
       listJobs: async () => [

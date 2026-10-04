@@ -14,6 +14,7 @@ import { useAppStore } from "@/stores/appStore";
 import { useConnectStore } from "@/stores/connectStore";
 import { confirmDialog } from "@/stores/confirmStore";
 import { mergeRemoteResults } from "@/stores/inferenceStore";
+import { JobViewerDialog } from "./JobViewerDialog";
 
 /** Last path segment of a worker path (handles both `/` and `\`), or `null` if absent. */
 function basename(p: string | undefined): string | null {
@@ -312,16 +313,14 @@ export function WorkerJobs({
         </div>
       )}
 
-      {/* JobViewerDialog (§4b.6) replaces this inline placeholder. */}
       {viewer && (
-        <div className="p-2.5 border border-border rounded-md bg-zinc-800/50 text-[11px] text-muted-foreground flex items-center justify-between gap-2">
-          <span>
-            Job viewer ({viewer.initialView}) for {viewer.label} — coming in §4b.6.
-          </span>
-          <Button size="xs" variant="ghost" className="h-6 text-[10px]" onClick={() => setViewer(null)}>
-            Dismiss
-          </Button>
-        </div>
+        <JobViewerDialog
+          workerId={workerId}
+          jobId={viewer.jobId}
+          label={viewer.label}
+          initialView={viewer.initialView}
+          onClose={() => setViewer(null)}
+        />
       )}
     </div>
   );
