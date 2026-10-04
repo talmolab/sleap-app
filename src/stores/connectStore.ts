@@ -35,6 +35,7 @@ import { isTauri } from "@/platform/index";
 import type { AgentInfo } from "@/lib/protocolV1/envelope";
 import type { Mount, WorkerClient, WorkerEvent } from "@/lib/protocolV1/client";
 import { parseJobTelemetry, type JobTelemetry } from "@/lib/protocolV1/jobTelemetry";
+import { ManagedConnection, type LinkStatus } from "@/lib/protocolV1/managedConnection";
 import {
   irohTransportAvailable,
   parseTicketIroh,
@@ -151,6 +152,15 @@ interface ConnectState {
   reattachableJob: ReattachableJob | null;
   /** Transport of the current/most recent connection attempt; `null` when disconnected. */
   activeTransport: TransportKind | null;
+  /**
+   * Live link status per managed worker (keyed by `nodeId`) — every worker
+   * that's either selected or has an active tracked job has an entry here,
+   * even ones other than the selected worker (a background job's connection
+   * keeps reconnecting after `disconnect()`). `connectionStatus`/
+   * `activeTransport` above are just this map's entry for the selected
+   * worker, projected out for existing single-worker callers.
+   */
+  connections: Record<string, { status: LinkStatus; route: TransportKind }>;
   _client: WorkerClient | null;
 
   // ── Actions ──────────────────────────────────────────────────────
@@ -316,6 +326,146 @@ async function makeClient(dial: DialSpec): Promise<WorkerClient> {
     });
   }
   return new WorkerClientCtor({ url: dial.url, identity, agent: AGENT_INFO });
+}
+
+/**
+ * Dials, verifies, and authenticates against an already-paired worker over
+ * `route` — the `ManagedConnectionDeps.dial` this store hands every
+ * `ManagedConnection` it creates (§2b.4), and what `connectToWorker`'s
+ * initial connect also goes through. Closes the client and re-throws on any
+ * failure after the socket opened, so a caller never has to (a half-open
+ * client is never left dangling, reachable by nothing).
+ */
+async function dialWorker(worker: PairedWorker, route: TransportKind): Promise<WorkerClient> {
+  const dial: DialSpec =
+    route === "iroh"
+      ? await irohDial(worker.iroh, worker.nodeId)
+      : (() => {
+          const addr = worker.addrs[0];
+          if (!addr) throw new Error(`No known address for ${worker.label}.`);
+          return { transport: "ws" as const, url: addr, display: addr };
+        })();
+
+  const client = await makeClient(dial);
+  try {
+    await client.connect();
+    if (client.peerNodeId !== worker.nodeId) {
+      throw new Error(
+        `Worker at ${dial.display} identified itself as a different node than expected ` +
+          `(expected ${worker.nodeId}, got ${client.peerNodeId}) — the address may now point ` +
+          "at a different worker. Forget and re-pair if this persists.",
+      );
+    }
+    await client.authProve();
+    return client;
+  } catch (err) {
+    client.close();
+    throw err;
+  }
+}
+
+/** Explicit if given, else the worker's own remembered preference (never a route arrived at only via an automatic fallback). */
+function resolvePreferredTransport(worker: PairedWorker, options?: ConnectOptions): TransportKind {
+  return (
+    options?.transport ??
+    (worker.transport === "iroh" && worker.iroh && irohTransportAvailable() ? "iroh" : "ws")
+  );
+}
+
+function mapLinkStatus(status: LinkStatus): ConnectionStatus {
+  switch (status) {
+    case "connected":
+      return "connected";
+    case "reconnecting":
+    case "offline":
+      return "reconnecting";
+    case "connecting":
+      return "connecting";
+    case "stopped":
+      return "disconnected";
+  }
+}
+
+/** One `ManagedConnection` per worker that's selected or has an active tracked job. */
+const managed = new Map<string, ManagedConnection>();
+
+interface ManagedConnectionTestDeps {
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+}
+let managedDeps: ManagedConnectionTestDeps = {};
+
+/** Test-only hook: inject a fake clock into every `ManagedConnection` this store creates from here on. */
+export function __setManagedDeps(deps: ManagedConnectionTestDeps): void {
+  managedDeps = deps;
+}
+
+/**
+ * Test-only: stops and drops every managed connection. `managed` is
+ * module-level state that outlives any one test within a file (bun's
+ * `--isolate` resets the module registry per FILE, not per test) — without
+ * this, a connection a test deliberately left running in the background
+ * (e.g. disconnect-with-an-active-job) would keep its retry/probe loop alive
+ * into later tests in the same file.
+ */
+export function __resetManagedConnections(): void {
+  for (const mc of managed.values()) mc.stop();
+  managed.clear();
+}
+
+/**
+ * Gets (or lazily creates) the `ManagedConnection` for `nodeId`, wiring its
+ * status/connected callbacks into the store. Creating one does NOT dial —
+ * the caller still calls `.start()` (or, per `ManagedConnection`'s own
+ * contract, reuses `.client` if already connected).
+ */
+function ensureConnection(nodeId: string, options?: ConnectOptions): ManagedConnection {
+  const existing = managed.get(nodeId);
+  if (existing) return existing;
+
+  const worker = useConnectStore.getState().pairedWorkers.find((w) => w.nodeId === nodeId);
+  if (!worker) {
+    throw new Error("Unknown worker — pair with it first.");
+  }
+
+  const mc = new ManagedConnection({
+    dial: (route) => dialWorker(worker, route),
+    preferredRoute: resolvePreferredTransport(worker, options),
+    canFallBackToIroh: !!worker.iroh && irohTransportAvailable(),
+    onStatus: (status, route) => {
+      useConnectStore.setState((state) => {
+        const patch: Partial<ConnectState> = {
+          connections: { ...state.connections, [nodeId]: { status, route } },
+        };
+        if (nodeId === state.selectedWorkerId) {
+          patch.connectionStatus = mapLinkStatus(status);
+          patch.connectionError = status === "offline" ? "Worker unreachable — retrying" : null;
+          patch.activeTransport = route;
+        }
+        return patch;
+      });
+    },
+    onConnected: (client, route) => {
+      if (nodeId === useConnectStore.getState().selectedWorkerId) {
+        useConnectStore.setState({ _client: client, activeTransport: route });
+        // Best-effort: keeps `workerMounts` current across an automatic
+        // reconnect the selected-worker UI didn't otherwise ask for. The
+        // EXPLICIT connectToWorker flow below does its own awaited fetch for
+        // deterministic UI state right when "connected" first appears.
+        void client
+          .fsMounts()
+          .then((mounts) => useConnectStore.setState({ workerMounts: mounts }))
+          .catch(() => {});
+      }
+      // Always — even for a worker that isn't selected, a background job
+      // still needs its subscription re-attached to the new client.
+      resubscribeWorker(nodeId, client);
+    },
+    now: managedDeps.now,
+    sleep: managedDeps.sleep,
+  });
+  managed.set(nodeId, mc);
+  return mc;
 }
 
 /**
@@ -520,6 +670,7 @@ export const useConnectStore = create<ConnectState>()(
       workerMounts: [],
       reattachableJob: null,
       activeTransport: null,
+      connections: {},
       _client: null,
 
       pairWithTicket: async (ticketJson, addrOverride, options) => {
@@ -610,46 +761,64 @@ export const useConnectStore = create<ConnectState>()(
         if (!worker) {
           throw new Error("Unknown worker — pair with it first.");
         }
-        const transport: TransportKind =
-          options?.transport ??
-          (worker.transport === "iroh" && worker.iroh && irohTransportAvailable() ? "iroh" : "ws");
-        let dial: DialSpec;
-        if (transport === "iroh") {
-          dial = await irohDial(worker.iroh, nodeId);
-        } else {
-          const addr = worker.addrs[0];
-          if (!addr) {
-            throw new Error(`No known address for ${worker.label}.`);
-          }
-          dial = { transport: "ws", url: addr, display: addr };
+
+        const previousSelected = get().selectedWorkerId;
+        if (previousSelected && previousSelected !== nodeId) {
+          // Switching the selected worker: back the old one off the same way
+          // an explicit disconnect() would (kept alive in the background if
+          // it still has an active job, otherwise fully stopped) — rather
+          // than just dropping its client, which would leave ITS managed
+          // connection's bookkeeping pointing at a client that's secretly
+          // already dead.
+          get().disconnect();
         }
 
-        get()._client?.close();
+        // An explicit connect to THIS worker always gets a fresh, verified
+        // connection: tear down any existing managed connection for it (its
+        // own retry loop, if it had one), and close any client left over
+        // from `pairWithTicket` (which doesn't itself register a managed
+        // connection — see its doc comment), which would otherwise leak
+        // here. Closing an already-closed client is a harmless no-op.
+        managed.get(nodeId)?.stop();
+        managed.delete(nodeId);
+        if (get().selectedWorkerId === nodeId) get()._client?.close();
+
         set({
           selectedWorkerId: nodeId,
           connectionStatus: "connecting",
           connectionError: null,
-          activeTransport: transport,
         });
 
-        let client: WorkerClient | null = null;
+        const mc = ensureConnection(nodeId, options);
+        let client: WorkerClient;
         try {
-          client = await makeClient(dial);
-          await client.connect();
-          if (client.peerNodeId !== nodeId) {
-            throw new Error(
-              `Worker at ${dial.display} identified itself as a different node than expected ` +
-                `(expected ${nodeId}, got ${client.peerNodeId}) — the address may now point ` +
-                "at a different worker. Forget and re-pair if this persists.",
-            );
-          }
-          await client.authProve();
+          client = await mc.start();
+        } catch (err) {
+          // start() never adopted a client on failure — nothing to stop()
+          // (no `onClose` was ever wired) — just drop the dead instance so
+          // the next attempt builds a fresh one.
+          managed.delete(nodeId);
+          set({
+            connectionStatus: "error",
+            connectionError: err instanceof Error ? err.message : String(err),
+            _client: null,
+          });
+          throw err;
+        }
+
+        try {
           const mounts = await client.fsMounts();
           const reattachableJob = await checkReattach(
             client,
             nodeId,
             latestActiveJobFor(nodeId, get().trackedJobs),
           );
+          // Remembered here (not in `ensureConnection`'s `onConnected`, which
+          // also fires for every automatic reconnect/fallback) so a route
+          // ManagedConnection falls back to on its own is never persisted as
+          // the user's preference — only an explicit choice (or the worker's
+          // own already-remembered one) is.
+          const transport = resolvePreferredTransport(worker, options);
 
           set((state) => ({
             pairedWorkers: state.pairedWorkers.map((w) =>
@@ -659,12 +828,18 @@ export const useConnectStore = create<ConnectState>()(
             connectionError: null,
             workerMounts: mounts,
             reattachableJob,
-            activeTransport: transport,
+            activeTransport: mc.route,
             _client: client,
           }));
         } catch (err) {
-          // See the matching comment in pairWithTicket — same leak risk.
-          client?.close();
+          // See the matching comment in pairWithTicket — same leak risk:
+          // fsMounts/checkReattach failing after a successful dial still
+          // needs the client closed, so route it through the managed
+          // connection's own stop() rather than closing it directly (which
+          // would leave the ManagedConnection's bookkeeping pointing at a
+          // client that's actually already dead).
+          mc.stop();
+          managed.delete(nodeId);
           set({
             connectionStatus: "error",
             connectionError: err instanceof Error ? err.message : String(err),
@@ -683,7 +858,19 @@ export const useConnectStore = create<ConnectState>()(
       },
 
       disconnect: () => {
-        get()._client?.close();
+        const { selectedWorkerId, trackedJobs } = get();
+        if (selectedWorkerId) {
+          if (activeJobsFor(selectedWorkerId, trackedJobs).length > 0) {
+            // Keep the managed connection running in the background — an
+            // active job still needs it — and only clear the selected-UI
+            // fields below. `selectedWorkerId` itself is left alone too
+            // (matches today: disconnect doesn't forget which worker was
+            // selected, just that it's no longer live).
+          } else {
+            managed.get(selectedWorkerId)?.stop();
+            managed.delete(selectedWorkerId);
+          }
+        }
         set({
           connectionStatus: "disconnected",
           connectionError: null,
@@ -695,14 +882,33 @@ export const useConnectStore = create<ConnectState>()(
       },
 
       forgetWorker: (nodeId) => {
-        if (get().selectedWorkerId === nodeId) {
-          get().disconnect();
-        }
-        set((state) => ({
-          pairedWorkers: state.pairedWorkers.filter((w) => w.nodeId !== nodeId),
-          selectedWorkerId: state.selectedWorkerId === nodeId ? null : state.selectedWorkerId,
-          trackedJobs: state.trackedJobs.filter((j) => j.workerId !== nodeId),
-        }));
+        // Always fully torn down, regardless of any active job — forgetting
+        // means the user doesn't want this worker tracked at all anymore,
+        // unlike a plain disconnect() (which keeps a background job alive).
+        managed.get(nodeId)?.stop();
+        managed.delete(nodeId);
+        const wasSelected = get().selectedWorkerId === nodeId;
+        set((state) => {
+          const connections = Object.fromEntries(
+            Object.entries(state.connections).filter(([id]) => id !== nodeId),
+          );
+          return {
+            pairedWorkers: state.pairedWorkers.filter((w) => w.nodeId !== nodeId),
+            selectedWorkerId: wasSelected ? null : state.selectedWorkerId,
+            trackedJobs: state.trackedJobs.filter((j) => j.workerId !== nodeId),
+            connections,
+            ...(wasSelected
+              ? {
+                  connectionStatus: "disconnected" as ConnectionStatus,
+                  connectionError: null,
+                  workerMounts: [],
+                  reattachableJob: null,
+                  activeTransport: null,
+                  _client: null,
+                }
+              : {}),
+          };
+        });
       },
 
       browseRemoteDir: async (path) => {

@@ -9,13 +9,29 @@ vi.mock("@/platform/index", () => ({ isTauri: true }));
 
 class FakeWorkerClient {
   static instances: FakeWorkerClient[] = [];
+  /**
+   * While set, every WS-routed instance's connect() throws this — simulates
+   * a sustained ws outage so a test can drive ManagedConnection's reconnect
+   * loop into its iroh-fallback path (which needs several consecutive
+   * failures, not just one). Iroh-routed instances (whose `opts.url` is the
+   * JSON-encoded iroh dial target, never a `ws://` string) are unaffected,
+   * so the fallback attempt itself can still succeed.
+   */
+  static failWsConnect: Error | null = null;
   peerNodeId = "worker-node-id";
   authenticated = false;
   fetchBlobCalls = 0;
+  closed = false;
+  private _closeListeners = new Set<(info: { intentional: boolean; error?: unknown }) => void>();
+
   constructor(public opts: { url: string; createSocket?: (url: string) => unknown }) {
     FakeWorkerClient.instances.push(this);
   }
-  async connect() {}
+  async connect() {
+    if (FakeWorkerClient.failWsConnect && this.opts.url.startsWith("ws://")) {
+      throw FakeWorkerClient.failWsConnect;
+    }
+  }
   async pairClaim() {
     this.authenticated = true;
   }
@@ -32,7 +48,19 @@ class FakeWorkerClient {
     this.fetchBlobCalls++;
     return new Uint8Array([1]);
   }
-  close() {}
+  onClose(cb: (info: { intentional: boolean; error?: unknown }) => void): () => void {
+    this._closeListeners.add(cb);
+    return () => this._closeListeners.delete(cb);
+  }
+  /** Test helper: simulate the connection dropping (an unintentional close). */
+  simulateDrop(): void {
+    for (const cb of [...this._closeListeners]) cb({ intentional: false });
+  }
+  close() {
+    if (this.closed) return;
+    this.closed = true;
+    for (const cb of [...this._closeListeners]) cb({ intentional: true });
+  }
 }
 
 vi.mock("@/lib/protocolV1/identity", () => ({
@@ -63,7 +91,14 @@ async function store() {
 describe("connectStore iroh transport (desktop)", () => {
   beforeEach(async () => {
     FakeWorkerClient.instances.length = 0;
-    (await store()).setState({
+    FakeWorkerClient.failWsConnect = null;
+    const s = await store();
+    const { __resetManagedConnections, __setManagedDeps } = await import("@/stores/connectStore");
+    // `managed`/`activeSubscriptions` are module-level state that outlives
+    // any one test in this file (--isolate resets per FILE, not per test).
+    __resetManagedConnections();
+    __setManagedDeps({});
+    s.setState({
       pairedWorkers: [],
       selectedWorkerId: null,
       trackedJobs: [],
@@ -72,6 +107,7 @@ describe("connectStore iroh transport (desktop)", () => {
       workerMounts: [],
       reattachableJob: null,
       activeTransport: null,
+      connections: {},
       _client: null,
     });
   });
@@ -146,6 +182,61 @@ describe("connectStore iroh transport (desktop)", () => {
     expect(s.getState().pairedWorkers[0].addrs).toEqual([]);
     await s.getState().connectToWorker("worker-node-id");
     expect(s.getState().activeTransport).toBe("iroh");
+  });
+
+  it("reconnects over iroh once a ws drop has lasted the fallback threshold", async () => {
+    const s = await store();
+    const { __setManagedDeps, __resetManagedConnections } = await import("@/stores/connectStore");
+    let t = 0;
+    __setManagedDeps({
+      now: () => t,
+      sleep: (ms: number) => {
+        t += ms;
+        return Promise.resolve();
+      },
+    });
+
+    // Paired and connected over ws (the default) — the ticket's iroh section
+    // still makes this worker fallback-eligible once a drop outlasts the
+    // threshold. pairWithTicket's own connection isn't managed (see its doc
+    // comment), so connectToWorker establishes the managed one.
+    await s.getState().pairWithTicket(TICKET_WITH_IROH);
+    await s.getState().connectToWorker("worker-node-id");
+    expect(s.getState().activeTransport).toBe("ws");
+    const wsClient = last();
+
+    // Landing on iroh also starts a probe loop back toward "ws" — and since
+    // `sleep` here resolves instantly and `failWsConnect` stays set for the
+    // rest of this test, an unstopped probe would retry forever with zero
+    // real delay, hanging the whole process. A store subscription fires
+    // SYNCHRONOUSLY inside the `set()` call that first records
+    // `activeTransport: "iroh"` (from ManagedConnection's `onStatus`, which
+    // runs before `onConnected` and before the probe loop even starts) — so
+    // stopping everything in that same synchronous turn is guaranteed to beat
+    // the just-started probe loop's first queued continuation.
+    let resolveFallback!: () => void;
+    const fallbackReached = new Promise<void>((resolve) => {
+      resolveFallback = resolve;
+    });
+    const unsubscribe = s.subscribe((state, prev) => {
+      if (state.activeTransport === "iroh" && prev.activeTransport !== "iroh") resolveFallback();
+    });
+
+    FakeWorkerClient.failWsConnect = new Error("ws unreachable");
+    wsClient.simulateDrop();
+    await fallbackReached;
+    unsubscribe();
+
+    // Assert BEFORE cleanup: stopping the managed connection below fires its
+    // own "stopped" status, which would otherwise overwrite connectionStatus.
+    expect(s.getState().activeTransport).toBe("iroh");
+    expect(s.getState().connectionStatus).toBe("connected");
+    expect(typeof last().opts.createSocket).toBe("function"); // the iroh client
+    // The remembered preference is untouched by this automatic fallback —
+    // only an explicit connect ever persists a transport choice.
+    expect(s.getState().pairedWorkers[0].transport).toBeUndefined();
+
+    __resetManagedConnections();
   });
 
   it("fetchResultBlob gives a clear error over iroh instead of hitting the ws-only blob path", async () => {

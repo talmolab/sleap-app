@@ -6,8 +6,11 @@ import {
   capTrackedJobs,
   migrateConnectPersisted,
   resubscribeWorker,
+  __resetManagedConnections,
+  __setManagedDeps,
 } from "@/stores/connectStore";
 import type { JobSpec } from "@/lib/sleapConnect";
+import type { WorkerClient } from "@/lib/protocolV1/client";
 
 // connectStore's own actions (pairing flow, browse pagination, job
 // submission/multi-model splitting, cancel/stop) are what's under test here.
@@ -37,6 +40,8 @@ class FakeWorkerClient {
   static nextMounts: FakeMount[] = [];
   /** What the next-constructed instance's peerNodeId will report post-connect(). */
   static nextPeerNodeId: string | null = "worker-node-id";
+  /** One-shot: the NEXT-constructed instance's connect() throws this once, then clears — simulates a failed redial. */
+  static nextConnectShouldThrow: Error | null = null;
 
   peerNodeId: string | null;
   authenticated = false;
@@ -66,6 +71,7 @@ class FakeWorkerClient {
 
   private _subscribers = new Map<string, Set<(e: FakeWorkerEvent) => void>>();
   private _seq = 0;
+  private _closeListeners = new Set<(info: { intentional: boolean; error?: unknown }) => void>();
 
   constructor(public opts: { url: string; createSocket?: (url: string) => unknown }) {
     this.mountsResult = FakeWorkerClient.nextMounts;
@@ -76,6 +82,21 @@ class FakeWorkerClient {
   async connect() {
     this.connectCalls++;
     if (this.connectShouldThrow) throw this.connectShouldThrow;
+    if (FakeWorkerClient.nextConnectShouldThrow) {
+      const err = FakeWorkerClient.nextConnectShouldThrow;
+      FakeWorkerClient.nextConnectShouldThrow = null;
+      throw err;
+    }
+  }
+
+  onClose(cb: (info: { intentional: boolean; error?: unknown }) => void): () => void {
+    this._closeListeners.add(cb);
+    return () => this._closeListeners.delete(cb);
+  }
+
+  /** Test helper: simulate the worker connection dropping (an unintentional close). */
+  simulateDrop(): void {
+    for (const cb of [...this._closeListeners]) cb({ intentional: false });
   }
 
   async pairClaim(secret: string) {
@@ -134,7 +155,9 @@ class FakeWorkerClient {
   }
 
   close() {
+    if (this.closed) return;
     this.closed = true;
+    for (const cb of [...this._closeListeners]) cb({ intentional: true });
   }
 
   /**
@@ -158,6 +181,17 @@ function lastClient(): FakeWorkerClient {
 /** Lets a `submitJob` in flight advance to the point it's registered its subscription. */
 function flushAsync(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+/** Polls a predicate across microtask ticks — used with a fake `__setManagedDeps`
+ * clock, where every `ManagedConnection` step resolves via an already-settled
+ * promise rather than real time passing. */
+async function waitUntil(predicate: () => boolean, maxTicks = 500): Promise<void> {
+  for (let i = 0; i < maxTicks; i++) {
+    if (predicate()) return;
+    await Promise.resolve();
+  }
+  throw new Error("waitUntil: condition not met within the tick budget");
 }
 
 vi.mock("@/lib/protocolV1/identity", () => ({
@@ -204,6 +238,13 @@ describe("connectStore", () => {
     FakeWorkerClient.instances.length = 0;
     FakeWorkerClient.nextMounts = [];
     FakeWorkerClient.nextPeerNodeId = "worker-node-id";
+    FakeWorkerClient.nextConnectShouldThrow = null;
+    // `managed`/`activeSubscriptions` are module-level state that outlives
+    // any one test in this file (--isolate resets per FILE, not per test) —
+    // without this, a connection a previous test left running in the
+    // background would keep retrying/probing into this one.
+    __resetManagedConnections();
+    __setManagedDeps({});
     useConnectStore.setState({
       pairedWorkers: [],
       selectedWorkerId: null,
@@ -213,6 +254,7 @@ describe("connectStore", () => {
       workerMounts: [],
       reattachableJob: null,
       activeTransport: null,
+      connections: {},
       _client: null,
     });
   });
@@ -474,6 +516,30 @@ describe("connectStore", () => {
       expect(state.workerMounts).toEqual([]);
       expect(state.pairedWorkers).toEqual([PAIRED_WORKER]);
       expect(state.selectedWorkerId).toBe(PAIRED_WORKER.nodeId);
+    });
+
+    it("keeps the managed connection running in the background when the worker has an active tracked job", async () => {
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
+      await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
+      const client = lastClient();
+      useConnectStore.setState({
+        trackedJobs: [makeTracked({ workerId: PAIRED_WORKER.nodeId })],
+      });
+
+      useConnectStore.getState().disconnect();
+
+      expect(client.closed).toBe(false); // kept alive, not torn down
+      const state = useConnectStore.getState();
+      expect(state.connectionStatus).toBe("disconnected"); // selected-UI fields still clear
+      expect(state._client).toBeNull();
+      expect(state.activeTransport).toBeNull();
+
+      // Prove it's genuinely still managed, not just not-yet-closed: a drop
+      // still triggers a background reconnect even with nothing selected.
+      const instancesBefore = FakeWorkerClient.instances.length;
+      client.simulateDrop();
+      await flushAsync();
+      expect(FakeWorkerClient.instances.length).toBeGreaterThan(instancesBefore);
     });
   });
 
@@ -938,6 +1004,40 @@ describe("connectStore", () => {
 
       expect(lastClient().jobsStatusCalls).toEqual([]);
       expect(useConnectStore.getState().reattachableJob).toBeNull();
+    });
+  });
+
+  describe("managed reconnection", () => {
+    it("an unintentional drop goes through 'reconnecting' and redials to a new _client", async () => {
+      let t = 0;
+      __setManagedDeps({
+        now: () => t,
+        sleep: (ms: number) => {
+          t += ms;
+          return Promise.resolve();
+        },
+      });
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
+      await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
+      const first = lastClient();
+      const firstAsClient = first as unknown as WorkerClient;
+      expect(useConnectStore.getState().connectionStatus).toBe("connected");
+
+      // The first redial attempt fails once; ManagedConnection's own
+      // backoff/retry sequencing is unit-tested in managedConnection.test.ts —
+      // here we only need the wiring: status flips to "reconnecting" while
+      // down, and a LATER successful redial swaps in a new _client.
+      FakeWorkerClient.nextConnectShouldThrow = new Error("still down");
+      first.simulateDrop();
+      await waitUntil(() => useConnectStore.getState().connectionStatus === "reconnecting");
+      expect(useConnectStore.getState()._client).toBe(firstAsClient);
+
+      await waitUntil(() => useConnectStore.getState().connectionStatus === "connected");
+
+      const state = useConnectStore.getState();
+      expect(state._client).not.toBe(firstAsClient);
+      expect(state._client).not.toBeNull();
+      expect(FakeWorkerClient.instances.length).toBeGreaterThan(1);
     });
   });
 });

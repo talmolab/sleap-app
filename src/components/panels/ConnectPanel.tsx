@@ -113,6 +113,7 @@ export function ConnectPanel() {
           {pairedWorkers.map((w) => {
             const isSelected = selectedWorkerId === w.nodeId;
             const isConnected = isSelected && connectionStatus === "connected";
+            const isReconnecting = isSelected && connectionStatus === "reconnecting";
             const isConnecting =
               connectingId === w.nodeId || (isSelected && connectionStatus === "connecting");
             const offersIroh = irohAvailable && w.iroh !== undefined;
@@ -120,13 +121,15 @@ export function ConnectPanel() {
               <div
                 key={w.nodeId}
                 className={`border rounded-md p-2 transition-colors ${
-                  isConnected ? "bg-primary/10 border-primary" : "bg-zinc-800/50 border-border"
+                  isConnected || isReconnecting
+                    ? "bg-primary/10 border-primary"
+                    : "bg-zinc-800/50 border-border"
                 }`}
               >
                 <div className="flex items-center gap-1.5 text-xs font-medium">
                   <span
                     className={`w-1.5 h-1.5 rounded-full ${
-                      isConnected ? "bg-green-500" : "bg-zinc-500"
+                      isConnected ? "bg-green-500" : isReconnecting ? "bg-amber-500" : "bg-zinc-500"
                     }`}
                   />
                   <span className="truncate">{w.label}</span>
@@ -148,8 +151,13 @@ export function ConnectPanel() {
                     Connected via {transportLabel(activeTransport)}
                   </div>
                 )}
+                {isReconnecting && (
+                  <div className="text-[10px] text-amber-400 mt-0.5">
+                    Reconnecting…{activeTransport ? ` via ${transportLabel(activeTransport)}` : ""}
+                  </div>
+                )}
                 <div className="mt-1.5 space-y-1">
-                  {isConnected ? (
+                  {isConnected || isReconnecting ? (
                     <Button
                       size="sm"
                       variant="outline"

@@ -146,6 +146,7 @@ describe("BackendPicker rendering", () => {
   it.each([
     ["connected" as const, "Connected"],
     ["connecting" as const, "Connecting…"],
+    ["reconnecting" as const, "Reconnecting…"],
     ["disconnected" as const, "Not connected"],
   ])("shows '%s' as '%s' when remote and a worker is selected", async (status, expectedText) => {
     useConnectStore.setState({
@@ -170,6 +171,18 @@ describe("BackendPicker rendering", () => {
     await renderPicker({ remoteEnabled: true });
     expect(screen.getByText("Connected")).toBeInTheDocument();
     expect(screen.getByText(expectedText)).toBeInTheDocument();
+  });
+
+  it("shows the transport while reconnecting (e.g. 'via iroh (direct)' for an automatic fallback)", async () => {
+    useConnectStore.setState({
+      pairedWorkers: [WORKER_A],
+      selectedWorkerId: WORKER_A.nodeId,
+      connectionStatus: "reconnecting",
+      activeTransport: "iroh",
+    });
+    await renderPicker({ remoteEnabled: true });
+    expect(screen.getByText("Reconnecting…")).toBeInTheDocument();
+    expect(screen.getByText("via iroh (direct)")).toBeInTheDocument();
   });
 
   it("shows no transport when the connection failed or is down", async () => {
