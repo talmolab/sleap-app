@@ -9,6 +9,8 @@ import {
   CLIENT_PROTO_MISMATCH,
   CLIENT_TIMEOUT,
   CLIENT_WORKER_UNVERIFIED,
+  FS_FORBIDDEN,
+  FS_NOT_FOUND,
   WorkerProtocolError,
 } from "@/lib/protocolV1/errors";
 import {
@@ -433,6 +435,119 @@ describe("protocolV1 WorkerClient", () => {
       });
       const listReq = socket.sent.find((f) => f.method === "fs.list");
       expect(listReq?.params).toEqual({ path: "/mnt/data", offset: 10 });
+    });
+
+    it("fsStat maps path/type/size/modified", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({
+        handleRequest: (method) => {
+          if (method === "pair.claim") return { result: {} };
+          if (method === "fs.stat") {
+            return {
+              result: { path: "/mnt/data/a.slp", type: "file", size: 123, modified: 1700000000 },
+            };
+          }
+          return { error: { code: "proto.unknown_method", msg: "?" } };
+        },
+      });
+      const client = await pairedClient(identity, socket);
+
+      const result = await client.fsStat("/mnt/data/a.slp");
+      expect(result).toEqual({
+        path: "/mnt/data/a.slp",
+        type: "file",
+        size: 123,
+        modified: 1700000000,
+      });
+    });
+
+    it("fsRead sends path/offset/length and base64-decodes the content", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({
+        handleRequest: (method) => {
+          if (method === "pair.claim") return { result: {} };
+          if (method === "fs.read") {
+            return {
+              result: {
+                path: "/mnt/data/a.yaml",
+                content_base64: btoa("hello"),
+                offset: 0,
+                size: 5,
+                total_size: 5,
+                eof: true,
+              },
+            };
+          }
+          return { error: { code: "proto.unknown_method", msg: "?" } };
+        },
+      });
+      const client = await pairedClient(identity, socket);
+
+      const result = await client.fsRead("/mnt/data/a.yaml", 0, 10);
+
+      expect(new TextDecoder().decode(result.content)).toBe("hello");
+      expect(result).toMatchObject({ path: "/mnt/data/a.yaml", offset: 0, size: 5, totalSize: 5, eof: true });
+      const readReq = socket.sent.find((f) => f.method === "fs.read");
+      expect(readReq?.params).toEqual({ path: "/mnt/data/a.yaml", offset: 0, length: 10 });
+    });
+
+    it("fsRead omits length from params when not given", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({
+        handleRequest: (method) => {
+          if (method === "pair.claim") return { result: {} };
+          if (method === "fs.read") {
+            return {
+              result: { path: "/x", content_base64: "", offset: 0, size: 0, total_size: 0, eof: true },
+            };
+          }
+          return { error: { code: "proto.unknown_method", msg: "?" } };
+        },
+      });
+      const client = await pairedClient(identity, socket);
+
+      await client.fsRead("/x");
+
+      const readReq = socket.sent.find((f) => f.method === "fs.read");
+      expect(readReq?.params).toEqual({ path: "/x", offset: 0 });
+    });
+
+    it("fsStat throws a WorkerProtocolError when the worker reports a not-found error embedded in the result", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({
+        handleRequest: (method) => {
+          if (method === "pair.claim") return { result: {} };
+          if (method === "fs.stat") {
+            return { result: { error: "Path does not exist", error_code: "PATH_NOT_FOUND" } };
+          }
+          return { error: { code: "proto.unknown_method", msg: "?" } };
+        },
+      });
+      const client = await pairedClient(identity, socket);
+
+      await expect(client.fsStat("/missing")).rejects.toMatchObject({
+        code: FS_NOT_FOUND,
+      });
+    });
+
+    it("fsRead throws a WorkerProtocolError when the worker reports access-denied embedded in the result", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({
+        handleRequest: (method) => {
+          if (method === "pair.claim") return { result: {} };
+          if (method === "fs.read") {
+            return {
+              result: { error: "Access denied: path is outside configured mounts", error_code: "ACCESS_DENIED" },
+            };
+          }
+          return { error: { code: "proto.unknown_method", msg: "?" } };
+        },
+      });
+      const client = await pairedClient(identity, socket);
+
+      await expect(client.fsRead("/etc/shadow")).rejects.toMatchObject({
+        code: FS_FORBIDDEN,
+      });
     });
   });
 
