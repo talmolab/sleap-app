@@ -22,9 +22,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useConnectStore } from "@/stores/connectStore";
 import { WorkerList } from "./WorkerList";
 import { WorkerJobs } from "./WorkerJobs";
-
-// WorkerDataAccess (§4b.5) lands in its own follow-up commit — the Data
-// access tab body is a placeholder until then.
+import { WorkerDataAccess } from "./WorkerDataAccess";
 
 export interface ConnectDialogProps {
   open: boolean;
@@ -117,7 +115,7 @@ export function ConnectDialog({ open, onOpenChange }: ConnectDialogProps) {
                   {tab === "jobs" ? (
                     <WorkerJobs workerId={pickedWorker.nodeId} />
                   ) : (
-                    <p className="text-xs text-muted-foreground">Data access — coming in §4b.5.</p>
+                    <WorkerDataAccess workerId={pickedWorker.nodeId} />
                   )}
                 </div>
               </>
