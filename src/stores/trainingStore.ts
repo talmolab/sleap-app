@@ -1597,6 +1597,10 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       // ── Remote training via sleap-connect worker ──────────
       const { useConnectStore, pathRulesFor } = await import("@/stores/connectStore");
       const { submitJob, workerMounts: mounts, statWorkerPath } = useConnectStore.getState();
+      const { toast } = await import("@/lib/notify");
+      const workerLabel = () =>
+        (useConnectStore.getState().pairedWorkers ?? []).find((w) => w.nodeId === remoteOpts.workerId)?.label ??
+        remoteOpts.workerId;
 
       const { useAppStore } = await import("@/stores/appStore");
       const { labels, projectPath } = useAppStore.getState();
@@ -1826,15 +1830,17 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         logFlusher.flush();
 
         if (!result.success) {
+          const message = result.error || "Training failed";
           set((s) => ({
             status: "error",
-            error: result.error || "Training failed",
+            error: message,
             models: s.models.map((m) =>
               m.status === "running"
                 ? { ...m, status: "failed" as const }
                 : m,
             ),
           }));
+          toast.error(`Training on ${workerLabel()} failed`, { description: message });
           return;
         }
         trainResults.push(result);
@@ -1938,12 +1944,23 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         }
 
         // A cancel during the inference job already set the terminal status.
-        if (get().status === "running") set({ status: "completed" });
+        if (get().status === "running") {
+          set({ status: "completed" });
+          const pti = get().postTrainingInference;
+          const pending = pti?.pendingMerge ?? null;
+          toast.success(`Training on ${workerLabel()} finished`, {
+            description:
+              pti?.message ??
+              `${trainResults.length} model${trainResults.length === 1 ? "" : "s"} trained.`,
+            action: pending
+              ? { label: "Fetch & Load", onClick: () => { void get().fetchAndLoadPostTrainingPredictions(); } }
+              : undefined,
+          });
+        }
       } catch (e) {
-        set({
-          status: "error",
-          error: `Remote training error: ${e instanceof Error ? e.message : String(e)}`,
-        });
+        const message = `Remote training error: ${e instanceof Error ? e.message : String(e)}`;
+        set({ status: "error", error: message });
+        toast.error(`Training on ${workerLabel()} failed`, { description: message });
       } finally {
         logFlusher.stop();
       }
