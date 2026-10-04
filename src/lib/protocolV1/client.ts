@@ -64,10 +64,34 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 15000;
 
 export type ConnectionState = "connecting" | "unauthenticated" | "authenticated" | "closed";
 
+/** A worker's snapshot of its own hardware/software (`worker.info`, sleap-connect #98). */
+export interface WorkerInfo {
+  gpuModel: string;
+  gpuMemoryMb: number;
+  gpuCount: number;
+  cudaVersion: string;
+  sleapNnVersion: string;
+  busy: boolean;
+}
+
+export interface JobProject {
+  name: string;
+  id: string;
+}
+
 export interface JobSummary {
   jobId: string;
   state: string;
   createdAt: string;
+  // Added by sleap-connect #98; omitted (not defaulted) by an older worker
+  // except where noted, since there's no safe default for "unknown".
+  updatedAt?: string;
+  error?: string | null;
+  queuePosition: number | null;
+  kind?: "train" | "track";
+  modelTypes: string[];
+  labelsPath?: string;
+  project?: JobProject | null;
 }
 
 export interface JobStatus {
@@ -77,6 +101,12 @@ export interface JobStatus {
   updatedAt: string;
   result: Record<string, unknown> | null;
   error: string | null;
+  queuePosition: number | null;
+  kind?: "train" | "track";
+  modelTypes: string[];
+  labelsPath?: string;
+  project?: JobProject | null;
+  spec?: Record<string, unknown>;
 }
 
 export interface Mount {
@@ -137,6 +167,29 @@ function _throwIfFsError(result: Record<string, unknown>, context: string): void
   if (typeof result.error === "string") {
     throw new WorkerProtocolError(_fsErrorCode(result.error_code), `${context}: ${result.error}`);
   }
+}
+
+/**
+ * Maps one raw `jobs.list` entry or `jobs.status` result to the fields they
+ * share (sleap-connect #98). Shared by `jobsList`/`jobsStatus` so the two
+ * methods can't drift. An older worker that predates #98 simply omits these
+ * keys: `queuePosition`/`modelTypes` get a safe empty default since callers
+ * already branch on them (`null`/`[]`), everything else is left `undefined`
+ * rather than guessing a value that isn't knowable.
+ */
+function _mapJobSummary(j: Record<string, unknown>): JobSummary {
+  return {
+    jobId: j.job_id as string,
+    state: j.state as string,
+    createdAt: j.created_at as string,
+    updatedAt: j.updated_at as string | undefined,
+    error: j.error as string | null | undefined,
+    queuePosition: (j.queue_position as number | null | undefined) ?? null,
+    kind: j.kind as "train" | "track" | undefined,
+    modelTypes: (j.model_types as string[] | undefined) ?? [],
+    labelsPath: j.labels_path as string | undefined,
+    project: j.project as JobProject | null | undefined,
+  };
 }
 
 export interface WorkerEvent {
@@ -360,23 +413,31 @@ export class WorkerClient {
   async jobsStatus(jobId: string): Promise<JobStatus> {
     const result = await this._request("jobs.status", { job_id: jobId });
     return {
-      jobId: result.job_id as string,
-      state: result.state as string,
-      createdAt: result.created_at as string,
+      ..._mapJobSummary(result),
       updatedAt: result.updated_at as string,
       result: (result.result as Record<string, unknown>) ?? null,
       error: (result.error as string) ?? null,
+      spec: result.spec as Record<string, unknown> | undefined,
     };
   }
 
   async jobsList(): Promise<JobSummary[]> {
     const result = await this._request("jobs.list", {});
     const jobs = (result.jobs as Array<Record<string, unknown>>) ?? [];
-    return jobs.map((j) => ({
-      jobId: j.job_id as string,
-      state: j.state as string,
-      createdAt: j.created_at as string,
-    }));
+    return jobs.map((j) => _mapJobSummary(j));
+  }
+
+  /** A snapshot of the worker's own hardware/software (spec/sleap-connect #98). */
+  async workerInfo(): Promise<WorkerInfo> {
+    const result = await this._request("worker.info", {});
+    return {
+      gpuModel: (result.gpu_model as string) ?? "unknown",
+      gpuMemoryMb: (result.gpu_memory_mb as number) ?? 0,
+      gpuCount: (result.gpu_count as number) ?? 0,
+      cudaVersion: (result.cuda_version as string) ?? "unknown",
+      sleapNnVersion: (result.sleap_nn_version as string) ?? "unknown",
+      busy: !!result.busy,
+    };
   }
 
   /**

@@ -435,6 +435,8 @@ describe("protocolV1 WorkerClient", () => {
         updatedAt: "2026-09-27T01:00:00Z",
         result: { blobs: {} },
         error: null,
+        queuePosition: null,
+        modelTypes: [],
       });
     });
 
@@ -460,8 +462,8 @@ describe("protocolV1 WorkerClient", () => {
 
       const jobs = await client.jobsList();
       expect(jobs).toEqual([
-        { jobId: "job_1", state: "running", createdAt: "t1" },
-        { jobId: "job_2", state: "completed", createdAt: "t2" },
+        { jobId: "job_1", state: "running", createdAt: "t1", queuePosition: null, modelTypes: [] },
+        { jobId: "job_2", state: "completed", createdAt: "t2", queuePosition: null, modelTypes: [] },
       ]);
     });
 
@@ -621,6 +623,183 @@ describe("protocolV1 WorkerClient", () => {
 
       await expect(client.fsRead("/etc/shadow")).rejects.toMatchObject({
         code: FS_FORBIDDEN,
+      });
+    });
+  });
+
+  describe("worker.info / richer job summaries", () => {
+    async function pairedClient(
+      identity: ClientIdentity,
+      socket: FakeWorkerSocket,
+    ): Promise<WorkerClient> {
+      const client = await connected(identity, socket);
+      await client.pairClaim("secret");
+      return client;
+    }
+
+    it("workerInfo maps gpu/cuda/sleap_nn_version fields", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({
+        handleRequest: (method) => {
+          if (method === "pair.claim") return { result: {} };
+          if (method === "worker.info") {
+            return {
+              result: {
+                gpu_model: "NVIDIA RTX 4090",
+                gpu_memory_mb: 24576,
+                gpu_count: 2,
+                cuda_version: "12.4",
+                sleap_nn_version: "0.1.0",
+                busy: true,
+              },
+            };
+          }
+          return { error: { code: "proto.unknown_method", msg: "?" } };
+        },
+      });
+      const client = await pairedClient(identity, socket);
+
+      const info = await client.workerInfo();
+      expect(info).toEqual({
+        gpuModel: "NVIDIA RTX 4090",
+        gpuMemoryMb: 24576,
+        gpuCount: 2,
+        cudaVersion: "12.4",
+        sleapNnVersion: "0.1.0",
+        busy: true,
+      });
+    });
+
+    it("workerInfo defaults missing numeric/string fields and coerces busy", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({
+        handleRequest: (method) => {
+          if (method === "pair.claim") return { result: {} };
+          if (method === "worker.info") return { result: {} };
+          return { error: { code: "proto.unknown_method", msg: "?" } };
+        },
+      });
+      const client = await pairedClient(identity, socket);
+
+      const info = await client.workerInfo();
+      expect(info).toEqual({
+        gpuModel: "unknown",
+        gpuMemoryMb: 0,
+        gpuCount: 0,
+        cudaVersion: "unknown",
+        sleapNnVersion: "unknown",
+        busy: false,
+      });
+    });
+
+    it("jobsList maps the full #98 shape (queuePosition, kind, modelTypes, labelsPath, project)", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({
+        handleRequest: (method) => {
+          if (method === "pair.claim") return { result: {} };
+          if (method === "jobs.list") {
+            return {
+              result: {
+                jobs: [
+                  {
+                    job_id: "job_1",
+                    state: "queued",
+                    created_at: "t1",
+                    updated_at: "t1b",
+                    error: null,
+                    queue_position: 2,
+                    kind: "train",
+                    model_types: ["centroid", "centered_instance"],
+                    labels_path: "/mnt/data/labels.slp",
+                    project: { name: "Flies", id: "proj_1" },
+                  },
+                ],
+              },
+            };
+          }
+          return { error: { code: "proto.unknown_method", msg: "?" } };
+        },
+      });
+      const client = await pairedClient(identity, socket);
+
+      const jobs = await client.jobsList();
+      expect(jobs).toEqual([
+        {
+          jobId: "job_1",
+          state: "queued",
+          createdAt: "t1",
+          updatedAt: "t1b",
+          error: null,
+          queuePosition: 2,
+          kind: "train",
+          modelTypes: ["centroid", "centered_instance"],
+          labelsPath: "/mnt/data/labels.slp",
+          project: { name: "Flies", id: "proj_1" },
+        },
+      ]);
+    });
+
+    it("jobsList still works against the old minimal shape (queuePosition null, modelTypes empty)", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({
+        handleRequest: (method) => {
+          if (method === "pair.claim") return { result: {} };
+          if (method === "jobs.list") {
+            return {
+              result: {
+                jobs: [{ job_id: "job_1", state: "running", created_at: "t1" }],
+              },
+            };
+          }
+          return { error: { code: "proto.unknown_method", msg: "?" } };
+        },
+      });
+      const client = await pairedClient(identity, socket);
+
+      const jobs = await client.jobsList();
+      expect(jobs).toEqual([
+        {
+          jobId: "job_1",
+          state: "running",
+          createdAt: "t1",
+          queuePosition: null,
+          modelTypes: [],
+        },
+      ]);
+    });
+
+    it("jobsStatus includes spec", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({
+        handleRequest: (method) => {
+          if (method === "pair.claim") return { result: {} };
+          if (method === "jobs.status") {
+            return {
+              result: {
+                job_id: "job_1",
+                state: "running",
+                created_at: "t1",
+                updated_at: "t2",
+                result: null,
+                error: null,
+                queue_position: null,
+                kind: "track",
+                model_types: ["centroid"],
+                spec: { type: "track", labels_path: "/x.slp" },
+              },
+            };
+          }
+          return { error: { code: "proto.unknown_method", msg: "?" } };
+        },
+      });
+      const client = await pairedClient(identity, socket);
+
+      const status = await client.jobsStatus("job_1");
+      expect(status).toMatchObject({
+        jobId: "job_1",
+        kind: "track",
+        modelTypes: ["centroid"],
+        spec: { type: "track", labels_path: "/x.slp" },
       });
     });
   });
