@@ -13,6 +13,7 @@ import {
 import type { JobSpec } from "@/lib/sleapConnect";
 import type { WorkerClient } from "@/lib/protocolV1/client";
 import type { PathMapping } from "@/lib/pathMappings";
+import { WorkerProtocolError, FS_NOT_FOUND, FS_FORBIDDEN } from "@/lib/protocolV1/errors";
 
 // connectStore's own actions (pairing flow, browse pagination, job
 // submission/multi-model splitting, cancel/stop) are what's under test here.
@@ -70,6 +71,9 @@ class FakeWorkerClient {
   fetchBlobCalls: Array<[string, number | undefined]> = [];
   fetchBlobResult = new Uint8Array([1, 2, 3]);
   fetchBlobShouldThrow: Error | null = null;
+  fsStatCalls: string[] = [];
+  /** Keyed by path; `undefined` (unconfigured) means "not found". An `Error` value is thrown as-is. */
+  fsStatResults: Record<string, { type: "file" | "directory" } | Error> = {};
 
   private _subscribers = new Map<string, Set<(e: FakeWorkerEvent) => void>>();
   private _seq = 0;
@@ -141,6 +145,16 @@ class FakeWorkerClient {
     this.fetchBlobCalls.push([sha256, expectedSize]);
     if (this.fetchBlobShouldThrow) throw this.fetchBlobShouldThrow;
     return this.fetchBlobResult;
+  }
+
+  async fsStat(path: string) {
+    this.fsStatCalls.push(path);
+    const entry = this.fsStatResults[path];
+    if (entry === undefined) {
+      throw new WorkerProtocolError(FS_NOT_FOUND, `fs.stat('${path}'): not found`);
+    }
+    if (entry instanceof Error) throw entry;
+    return { path, type: entry.type, size: 0, modified: 0 };
   }
 
   async jobsSubscribe(jobId: string, sinceSeq: number, cb: (e: FakeWorkerEvent) => void) {
@@ -600,6 +614,64 @@ describe("connectStore", () => {
       const persisted = partialize!(useConnectStore.getState()) as { pairedWorkers: PairedWorker[] };
 
       expect(persisted.pairedWorkers).toEqual([worker]);
+    });
+  });
+
+  describe("statWorkerPath", () => {
+    beforeEach(async () => {
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
+      await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
+    });
+
+    it("throws if not connected", async () => {
+      useConnectStore.getState().disconnect();
+      await expect(useConnectStore.getState().statWorkerPath("/mnt/a")).rejects.toThrow(
+        /Not connected/,
+      );
+    });
+
+    it("reports an existing file", async () => {
+      const client = lastClient();
+      client.fsStatResults["/mnt/a.slp"] = { type: "file" };
+
+      await expect(useConnectStore.getState().statWorkerPath("/mnt/a.slp")).resolves.toEqual({
+        exists: true,
+        type: "file",
+      });
+    });
+
+    it("reports an existing directory", async () => {
+      const client = lastClient();
+      client.fsStatResults["/mnt/sub"] = { type: "directory" };
+
+      await expect(useConnectStore.getState().statWorkerPath("/mnt/sub")).resolves.toEqual({
+        exists: true,
+        type: "directory",
+      });
+    });
+
+    it("maps FS_NOT_FOUND to {exists: false}", async () => {
+      await expect(useConnectStore.getState().statWorkerPath("/mnt/missing")).resolves.toEqual({
+        exists: false,
+      });
+    });
+
+    it("maps FS_FORBIDDEN to {exists: false}", async () => {
+      const client = lastClient();
+      client.fsStatResults["/mnt/secret"] = new WorkerProtocolError(FS_FORBIDDEN, "forbidden");
+
+      await expect(useConnectStore.getState().statWorkerPath("/mnt/secret")).resolves.toEqual({
+        exists: false,
+      });
+    });
+
+    it("rethrows other errors", async () => {
+      const client = lastClient();
+      client.fsStatResults["/mnt/broken"] = new Error("ECONNRESET");
+
+      await expect(useConnectStore.getState().statWorkerPath("/mnt/broken")).rejects.toThrow(
+        "ECONNRESET",
+      );
     });
   });
 

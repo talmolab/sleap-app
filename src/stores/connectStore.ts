@@ -36,6 +36,7 @@ import type { AgentInfo } from "@/lib/protocolV1/envelope";
 import type { Mount, WorkerClient, WorkerEvent } from "@/lib/protocolV1/client";
 import { parseJobTelemetry, type JobTelemetry } from "@/lib/protocolV1/jobTelemetry";
 import { ManagedConnection, type LinkStatus } from "@/lib/protocolV1/managedConnection";
+import { WorkerProtocolError, FS_NOT_FOUND, FS_FORBIDDEN } from "@/lib/protocolV1/errors";
 import type { PathMapping } from "@/lib/pathMappings";
 import {
   irohTransportAvailable,
@@ -194,6 +195,8 @@ interface ConnectState {
   disconnect: () => void;
   forgetWorker: (nodeId: string) => void;
   browseRemoteDir: (path: string) => Promise<FileEntry[]>;
+  /** Statted via the worker's `fs.stat` — requires an authenticated connection (same precondition as `browseRemoteDir`). */
+  statWorkerPath: (path: string) => Promise<{ exists: boolean; type?: "file" | "directory" }>;
   /** Add (or replace, by `rule.local`) one path rule for `workerId`. */
   addPathRule: (workerId: string, rule: PathMapping) => void;
   /** Remove the rule (if any) whose `local` matches, for `workerId`. */
@@ -1025,6 +1028,25 @@ export const useConnectStore = create<ConnectState>()(
         }
 
         return allEntries;
+      },
+
+      statWorkerPath: async (path) => {
+        const { _client } = get();
+        if (!_client || !_client.authenticated) {
+          throw new Error("Not connected to worker");
+        }
+        try {
+          const result = await _client.fsStat(path);
+          return { exists: true, type: result.type };
+        } catch (err) {
+          if (
+            err instanceof WorkerProtocolError &&
+            (err.code === FS_NOT_FOUND || err.code === FS_FORBIDDEN)
+          ) {
+            return { exists: false };
+          }
+          throw err;
+        }
       },
 
       addPathRule: (workerId, rule) => {
