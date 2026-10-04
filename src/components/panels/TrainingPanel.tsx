@@ -1066,6 +1066,12 @@ export function TrainingPanel() {
     return true;
   });
   const isModelTypeIncompatible = skeletonCompat.disabledTypes.has(config.modelType);
+  // "window" + still-unknown visibility blocks Start: classifyVisibility(null
+  // ?? []) would otherwise read as case "all" (same as "nothing hidden"),
+  // skipping HiddenVideosDialog even if the in-flight check later finds a
+  // hidden video. RemoteDataSummary's debounce is short, so this only ever
+  // gates the brief window right after picking/reconnecting a worker.
+  const visibilityPending = remoteEnabled && labelsSource === "window" && visibility === null;
   const canStart =
     hasAllConfigs &&
     hasData &&
@@ -1073,6 +1079,7 @@ export function TrainingPanel() {
     hasValidLossWeights &&
     hasValidCheckpointSelection &&
     !isModelTypeIncompatible &&
+    !visibilityPending &&
     status === "idle" &&
     (remoteEnabled ? !!selectedWorkerId && connectionStatus === "connected" : true);
 
@@ -1600,7 +1607,9 @@ export function TrainingPanel() {
                         ? "Select a checkpoint file for Resume/Fine-tune"
                         : remoteEnabled && !selectedWorkerId
                           ? "Select a worker"
-                          : ""}
+                          : visibilityPending
+                            ? "Checking video visibility on the worker..."
+                            : ""}
               </p>
             )}
           </>
