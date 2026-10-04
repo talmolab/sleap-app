@@ -14,6 +14,7 @@
  * reference (see the spike note in the plan above).
  */
 import { saveSlpToBytes, type Labels } from "@talmolab/sleap-io.js";
+import { detectPrefixDiff, translatePath } from "@/lib/pathMappings";
 import type { VideoVisibility } from "@/lib/remoteVisibility";
 
 // Warn/block thresholds for inline-embedded `labels_content` (labeled
@@ -55,6 +56,20 @@ export interface LabelsPayload {
  * submission. Never mutates `labels` — everything happens on `labels.copy()`
  * (which itself has no backends; see sleap-io.js's `Labels.copy()`).
  */
+/**
+ * The worker-side filename for a visible video. Visibility is checked on the
+ * first file only, so an image sequence (`string[]`) gets the same location
+ * change applied to every frame file: the prefix rule inferred from its first
+ * file, falling back to swapping the first file's directory.
+ */
+function retargetFilename(original: string | string[], workerFirst: string): string | string[] {
+  if (typeof original === "string") return workerFirst;
+  const first = original[0];
+  const dir = (p: string) => p.slice(0, Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\")));
+  const rule = detectPrefixDiff(first, workerFirst) ?? { local: dir(first), worker: dir(workerFirst) };
+  return original.map((p, i) => (i === 0 ? workerFirst : (translatePath(p, [rule]) ?? p)));
+}
+
 export async function buildRemoteLabelsPayload(
   labels: Labels,
   visibility: VideoVisibility[],
@@ -70,12 +85,12 @@ export async function buildRemoteLabelsPayload(
     if (vis?.visible) {
       // Re-point to the worker-side path and drop the backend so
       // `saveSlpToBytes` treats it as external (never newly embeds it).
-      nv.filename = vis.worker as string;
+      nv.filename = retargetFilename(nv.filename, vis.worker as string);
       nv.backend = null;
       // Gotcha: an existing `backendMetadata.filename` wins over `filename`
       // on write — clear it too, or the stale local path would ride along.
       if (nv.backendMetadata) {
-        (nv.backendMetadata as Record<string, unknown>).filename = vis.worker;
+        (nv.backendMetadata as Record<string, unknown>).filename = nv.filename;
       }
     } else {
       // Hidden: keep the original local filename/backend so the worker

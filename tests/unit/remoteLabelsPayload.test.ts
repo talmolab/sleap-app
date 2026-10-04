@@ -19,7 +19,7 @@ import { describe, it, expect, beforeEach, vi } from "../bun-test";
 import type { Labels } from "@/types";
 
 interface FakeVideo {
-  filename: string;
+  filename: string | string[];
   backend: unknown;
   backendMetadata?: Record<string, unknown>;
 }
@@ -28,6 +28,7 @@ interface FakeVideo {
 function makeLabels(videos: FakeVideo[]): Labels {
   const cloneVideo = (v: FakeVideo): FakeVideo => ({
     ...v,
+    filename: Array.isArray(v.filename) ? [...v.filename] : v.filename,
     backendMetadata: v.backendMetadata ? { ...v.backendMetadata } : undefined,
   });
   const original = videos.map(cloneVideo);
@@ -188,5 +189,23 @@ describe("buildRemoteLabelsPayload", () => {
 
     expect(capturedOptions).toEqual({ embed: "all" });
     expect(result.embeddedVideos).toEqual([0]);
+  });
+});
+
+describe("image-sequence videos", () => {
+  it("re-points every frame file of a visible image sequence, not just the first", async () => {
+    const { buildRemoteLabelsPayload } = await importSut();
+    const frames = ["/Volumes/talmo/exp1/frames/0001.png", "/Volumes/talmo/exp1/frames/0002.png"];
+    const labels = makeLabels([{ filename: frames, backend: { kind: "images" } }]);
+    const visibility = [visible(0, frames[0], "/root/vast/exp1/frames/0001.png")];
+
+    await buildRemoteLabelsPayload(labels, visibility, { embedFramesToPredict: false });
+
+    expect(capturedLabelsArg?.videos[0].filename).toEqual([
+      "/root/vast/exp1/frames/0001.png",
+      "/root/vast/exp1/frames/0002.png",
+    ]);
+    expect(capturedLabelsArg?.videos[0].backend).toBeNull();
+    expect(labels.videos[0].filename).toEqual(frames); // original untouched
   });
 });
