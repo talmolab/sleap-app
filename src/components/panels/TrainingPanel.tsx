@@ -18,6 +18,7 @@ import { RemoteFileBrowser } from "@/components/dialogs/RemoteFileBrowser";
 import { TrainingConfigDialog } from "@/components/dialogs/TrainingConfigDialog";
 import { RemoteDataSummary } from "@/components/connect/RemoteDataSummary";
 import { HiddenVideosDialog } from "@/components/connect/HiddenVideosDialog";
+import { RemoteRunCard } from "@/components/connect/RemoteRunCard";
 import { LossViewerDialog } from "@/components/monitors/LossViewerDialog";
 import { LogTerminalDialog } from "@/components/monitors/LogTerminalDialog";
 import { ErrorOutput } from "@/components/monitors/ErrorOutput";
@@ -65,6 +66,7 @@ import {
 import { computeNodeVisibility, visibilityTier } from "@/lib/anchorVisibility";
 import { TUTORIAL_FIRST_TRAINING_STEP_IDS } from "@/lib/tutorial/steps";
 import { projectTag } from "@/lib/projectTag";
+import { formatDuration } from "@/lib/timestamp";
 import { classifyVisibility, type VideoVisibility } from "@/lib/remoteVisibility";
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -273,16 +275,6 @@ export function recommendPipeline(labels: LabelsLike | null): PipelineRecommenda
     reason: `Larger animals (~${Math.round(ratio * 100)}% of frame) — bottom-up handles occlusions well`,
     alternatives: alts,
   };
-}
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-function formatDuration(ms: number): string {
-  const s = Math.floor(ms / 1000);
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ${s % 60}s`;
-  return `${Math.floor(m / 60)}h ${m % 60}m`;
 }
 
 // ── Reusable widgets ─────────────────────────────────────────────────────────
@@ -724,6 +716,7 @@ function HyperparamsFields({
 export function TrainingPanel() {
   const config = useTrainingStore((s) => s.config);
   const status = useTrainingStore((s) => s.status);
+  const _isRemote = useTrainingStore((s) => s._isRemote);
   const error = useTrainingStore((s) => s.error);
   const stderrTail = useTrainingStore((s) => s.stderrTail);
   const startedAt = useTrainingStore((s) => s.startedAt);
@@ -917,6 +910,15 @@ export function TrainingPanel() {
   // Loss viewer modal: which model's curves are open (null = closed).
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
   const [logDialogOpen, setLogDialogOpen] = useState(false);
+  // Remote runs start as a compact RemoteRunCard, not the live inline monitor
+  // (§3b.4) — "Watch Live" flips this; reset to compact at the start of every
+  // new remote run (not just mount) so a prior "Watch Live" choice doesn't
+  // carry over into the next one.
+  const [watching, setWatching] = useState(false);
+  useEffect(() => {
+    if (_isRemote) setWatching(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [startedAt]);
 
   // Remote state
   const [remoteEnabled, setRemoteEnabled] = useState(!isTauri);
@@ -954,6 +956,7 @@ export function TrainingPanel() {
   >(null);
 
   const connectionStatus = useConnectStore((s) => s.connectionStatus);
+  const activeTransport = useConnectStore((s) => s.activeTransport);
   const selectedWorkerId = useConnectStore((s) => s.selectedWorkerId);
   const pairedWorkers = useConnectStore((s) => s.pairedWorkers);
   const connectedMounts = useConnectStore((s) => s.workerMounts);
@@ -1740,7 +1743,27 @@ export function TrainingPanel() {
       </div>
 
       {/* ── Progress ──────────────────────────────────────────────── */}
-      {(isRunning || isDone) && models.length > 0 && (
+      {_isRemote && status === "running" && !watching ? (
+        <>
+          <Separator />
+          <div className="px-3 py-2">
+            <RemoteRunCard
+              workerLabel={pairedWorkers.find((w) => w.nodeId === selectedWorkerId)?.label ?? "worker"}
+              connectionStatus={connectionStatus}
+              activeTransport={activeTransport}
+              startedAt={startedAt}
+              models={models}
+              currentModelIndex={currentModelIndex}
+              postTrainingInference={postTrainingInference}
+              onWatchLive={() => {
+                setWatching(true);
+                setViewerIndex(currentModelIndex);
+              }}
+            />
+          </div>
+        </>
+      ) : (
+      (isRunning || isDone) && models.length > 0 && (
         <>
           <Separator />
           <div className="px-3 py-2 space-y-2">
@@ -1774,6 +1797,16 @@ export function TrainingPanel() {
                 <span className="text-[10px] text-muted-foreground ml-auto">
                   {formatDuration(isDone ? elapsed : Date.now() - startedAt)}
                 </span>
+              )}
+              {_isRemote && isRunning && watching && (
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  className="h-5 px-1.5 text-[10px]"
+                  onClick={() => setWatching(false)}
+                >
+                  Hide
+                </Button>
               )}
             </div>
 
@@ -1939,6 +1972,7 @@ export function TrainingPanel() {
             )}
           </div>
         </>
+      )
       )}
 
       <LogTerminalDialog
