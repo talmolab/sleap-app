@@ -1106,7 +1106,10 @@ export function TrainingPanel() {
       await startTraining({
         remote: true,
         workerId: selectedWorkerId!,
-        labelsPath: remoteLabelsPath,
+        // Still the only labels source the panel offers — PR3b adds the
+        // "this window" picker and switches the default.
+        labelsSource: "worker-file",
+        workerLabelsPath: remoteLabelsPath,
         valLabelsPath: remoteValLabelsPath || undefined,
         inferenceTarget,
         sampleCount,
