@@ -171,9 +171,33 @@ interface ConnectState {
    * worker, projected out for existing single-worker callers.
    */
   connections: Record<string, { status: LinkStatus; route: TransportKind }>;
+  /**
+   * Most recent `clientFor`/`refreshWorkerInfo` failure per worker, keyed by
+   * `nodeId` — the Connect window (PR4b) shows this per-card for a worker
+   * that isn't the selected backend, where `connectionError` (selected-only)
+   * doesn't reach. Cleared on that worker's next successful connect.
+   */
+  workerErrors: Record<string, string | null>;
   _client: WorkerClient | null;
 
   // ── Actions ──────────────────────────────────────────────────────
+  /**
+   * A connected, authenticated client for ANY paired worker — not just the
+   * selected one (`_client`/`submitJob`/etc. stay selected-worker-only).
+   * Reuses that worker's managed connection if one already exists (selected
+   * or from a prior `clientFor` call); otherwise creates one and dials it.
+   * Records the failure in `workerErrors` and drops the managed connection
+   * on a failed dial, so a later call starts fresh rather than reusing a
+   * dead instance.
+   */
+  clientFor: (workerId: string) => Promise<WorkerClient>;
+  /**
+   * Stops and drops every managed connection that isn't the selected worker
+   * and has no active tracked job — called when the Connect window (PR4b)
+   * closes, so browsing other workers' jobs/info there doesn't leave their
+   * connections open indefinitely afterward.
+   */
+  releaseIdleConnections: () => void;
   /**
    * Claim a fresh pairing ticket (JSON from `sleap-rtc pair`) and connect.
    * `options.transport` picks the dial explicitly (default `"ws"`); `"iroh"`
@@ -737,7 +761,37 @@ export const useConnectStore = create<ConnectState>()(
       reattachableJob: null,
       activeTransport: null,
       connections: {},
+      workerErrors: {},
       _client: null,
+
+      clientFor: async (workerId) => {
+        const mc = managed.get(workerId) ?? ensureConnection(workerId);
+        if (mc.client) return mc.client;
+        try {
+          const client = await mc.start();
+          set((state) => ({ workerErrors: { ...state.workerErrors, [workerId]: null } }));
+          return client;
+        } catch (err) {
+          managed.delete(workerId);
+          set((state) => ({
+            workerErrors: {
+              ...state.workerErrors,
+              [workerId]: err instanceof Error ? err.message : String(err),
+            },
+          }));
+          throw err;
+        }
+      },
+
+      releaseIdleConnections: () => {
+        const { selectedWorkerId, trackedJobs } = get();
+        for (const [workerId, mc] of [...managed]) {
+          if (workerId === selectedWorkerId) continue;
+          if (activeJobsFor(workerId, trackedJobs).length > 0) continue;
+          mc.stop();
+          managed.delete(workerId);
+        }
+      },
 
       pairWithTicket: async (ticketJson, addrOverride, options) => {
         let ticket: PairingTicket;

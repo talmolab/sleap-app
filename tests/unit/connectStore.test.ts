@@ -68,6 +68,19 @@ class FakeWorkerClient {
   jobsSubmitResult = { jobId: "job_1" };
   /** What jobsStatus() resolves to; `null` makes it reject (job.not_found). */
   jobsStatusResult: { state: string } | null = null;
+  jobsListCalls = 0;
+  jobsListResult: Array<Record<string, unknown>> = [];
+  jobsListShouldThrow: Error | null = null;
+  workerInfoCalls = 0;
+  workerInfoResult: Record<string, unknown> = {
+    gpuModel: "RTX 4090",
+    gpuMemoryMb: 24576,
+    gpuCount: 1,
+    cudaVersion: "12.4",
+    sleapNnVersion: "0.1.0",
+    busy: false,
+  };
+  workerInfoShouldThrow: Error | null = null;
   fetchBlobCalls: Array<[string, number | undefined]> = [];
   fetchBlobResult = new Uint8Array([1, 2, 3]);
   fetchBlobShouldThrow: Error | null = null;
@@ -139,6 +152,18 @@ class FakeWorkerClient {
     this.jobsStatusCalls.push(jobId);
     if (this.jobsStatusResult === null) throw new Error("job.not_found");
     return this.jobsStatusResult;
+  }
+
+  async jobsList() {
+    this.jobsListCalls++;
+    if (this.jobsListShouldThrow) throw this.jobsListShouldThrow;
+    return this.jobsListResult;
+  }
+
+  async workerInfo() {
+    this.workerInfoCalls++;
+    if (this.workerInfoShouldThrow) throw this.workerInfoShouldThrow;
+    return this.workerInfoResult;
   }
 
   async fetchBlob(sha256: string, expectedSize?: number) {
@@ -285,6 +310,7 @@ describe("connectStore", () => {
       reattachableJob: null,
       activeTransport: null,
       connections: {},
+      workerErrors: {},
       _client: null,
     });
   });
@@ -1097,6 +1123,84 @@ describe("connectStore", () => {
       useConnectStore.getState().cancelJob();
       await flushAsync();
       expect(lastClient().jobsCancelCalls).toEqual([]);
+    });
+  });
+
+  describe("clientFor / releaseIdleConnections", () => {
+    const OTHER_WORKER: PairedWorker = {
+      nodeId: "other-worker-id",
+      label: "Other worker",
+      addrs: ["ws://10.0.0.5:9631"],
+      pairedAt: "2026-09-27T00:00:00Z",
+    };
+
+    beforeEach(() => {
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER, OTHER_WORKER] });
+    });
+
+    it("connects a non-selected worker without changing the selected client/selection", async () => {
+      await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
+      const selectedClient = lastClient();
+
+      FakeWorkerClient.nextPeerNodeId = OTHER_WORKER.nodeId;
+      const client = await useConnectStore.getState().clientFor(OTHER_WORKER.nodeId);
+
+      expect(client).not.toBe(selectedClient as unknown as WorkerClient);
+      expect(useConnectStore.getState()._client).toBe(selectedClient as unknown as WorkerClient);
+      expect(useConnectStore.getState().selectedWorkerId).toBe(PAIRED_WORKER.nodeId);
+    });
+
+    it("reuses the same client on a second call for the same worker", async () => {
+      FakeWorkerClient.nextPeerNodeId = OTHER_WORKER.nodeId;
+      const first = await useConnectStore.getState().clientFor(OTHER_WORKER.nodeId);
+      const second = await useConnectStore.getState().clientFor(OTHER_WORKER.nodeId);
+      expect(second).toBe(first);
+      expect(FakeWorkerClient.instances).toHaveLength(1);
+    });
+
+    it("records a failed dial in workerErrors and rethrows", async () => {
+      FakeWorkerClient.nextConnectShouldThrow = new Error("unreachable");
+      await expect(useConnectStore.getState().clientFor(OTHER_WORKER.nodeId)).rejects.toThrow(
+        "unreachable",
+      );
+      expect(useConnectStore.getState().workerErrors[OTHER_WORKER.nodeId]).toBe("unreachable");
+    });
+
+    it("clears a worker's recorded error on its next successful dial", async () => {
+      FakeWorkerClient.nextConnectShouldThrow = new Error("unreachable");
+      await expect(
+        useConnectStore.getState().clientFor(OTHER_WORKER.nodeId),
+      ).rejects.toThrow();
+      FakeWorkerClient.nextPeerNodeId = OTHER_WORKER.nodeId;
+      await useConnectStore.getState().clientFor(OTHER_WORKER.nodeId);
+      expect(useConnectStore.getState().workerErrors[OTHER_WORKER.nodeId]).toBeNull();
+    });
+
+    it("releaseIdleConnections stops only idle, non-selected connections", async () => {
+      await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
+      FakeWorkerClient.nextPeerNodeId = OTHER_WORKER.nodeId;
+      await useConnectStore.getState().clientFor(OTHER_WORKER.nodeId);
+      const otherClient = lastClient();
+      const selectedClient = useConnectStore.getState()._client;
+
+      useConnectStore.getState().releaseIdleConnections();
+
+      expect(otherClient.closed).toBe(true);
+      expect(useConnectStore.getState()._client).toBe(selectedClient);
+      // A fresh clientFor() call for the released worker dials again.
+      const reconnected = await useConnectStore.getState().clientFor(OTHER_WORKER.nodeId);
+      expect(reconnected).not.toBe(otherClient as unknown as WorkerClient);
+    });
+
+    it("releaseIdleConnections leaves a worker with an active tracked job running", async () => {
+      FakeWorkerClient.nextPeerNodeId = OTHER_WORKER.nodeId;
+      await useConnectStore.getState().clientFor(OTHER_WORKER.nodeId);
+      const otherClient = lastClient();
+      useConnectStore.setState({ trackedJobs: [makeTracked({ workerId: OTHER_WORKER.nodeId })] });
+
+      useConnectStore.getState().releaseIdleConnections();
+
+      expect(otherClient.closed).toBe(false);
     });
   });
 
