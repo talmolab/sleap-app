@@ -36,6 +36,7 @@ import type { AgentInfo } from "@/lib/protocolV1/envelope";
 import type { Mount, WorkerClient, WorkerEvent } from "@/lib/protocolV1/client";
 import { parseJobTelemetry, type JobTelemetry } from "@/lib/protocolV1/jobTelemetry";
 import { ManagedConnection, type LinkStatus } from "@/lib/protocolV1/managedConnection";
+import type { PathMapping } from "@/lib/pathMappings";
 import {
   irohTransportAvailable,
   parseTicketIroh,
@@ -70,6 +71,14 @@ export interface PairedWorker {
   iroh?: IrohEndpointInfo;
   /** The transport last connected over, reused by one-click reconnects. Absent = "ws". */
   transport?: TransportKind;
+  /**
+   * Per-worker local<->worker path rules (Locate-on-worker overrides, plus a
+   * one-time import of the legacy global `~/.sleap-rtc/config.toml` mappings
+   * on this worker's first-ever connect — see `connectToWorker`). `undefined`
+   * means "never imported yet"; once set (even to `[]`) it's never
+   * re-imported, so a user who deliberately clears every rule stays cleared.
+   */
+  pathRules?: PathMapping[];
 }
 
 /** The JSON a worker's `sleap-rtc pair` command prints (spec §3.2). */
@@ -185,6 +194,10 @@ interface ConnectState {
   disconnect: () => void;
   forgetWorker: (nodeId: string) => void;
   browseRemoteDir: (path: string) => Promise<FileEntry[]>;
+  /** Add (or replace, by `rule.local`) one path rule for `workerId`. */
+  addPathRule: (workerId: string, rule: PathMapping) => void;
+  /** Remove the rule (if any) whose `local` matches, for `workerId`. */
+  clearPathRule: (workerId: string, local: string) => void;
   submitJob: (
     spec: JobSpec,
     onProgress: JobLogHandler,
@@ -242,6 +255,12 @@ export function capTrackedJobs(jobs: TrackedJob[]): TrackedJob[] {
     excess--;
   }
   return jobs.filter((_, i) => !dropIdx.has(i));
+}
+
+/** A paired worker's path rules (Locate-on-worker overrides + the one-time legacy import), or `[]` if unknown/unset. */
+export function pathRulesFor(workerId: string | null): PathMapping[] {
+  if (!workerId) return [];
+  return useConnectStore.getState().pairedWorkers.find((w) => w.nodeId === workerId)?.pathRules ?? [];
 }
 
 /** A tracked job's display label, derived from the spec that submitted it. */
@@ -903,6 +922,23 @@ export const useConnectStore = create<ConnectState>()(
           });
           throw err;
         }
+
+        // One-time import of this worker's legacy global path mappings
+        // (`~/.sleap-rtc/config.toml`, pre-dating per-worker `pathRules`) —
+        // only on a worker that's never had `pathRules` set at all (`[]`
+        // counts as "already handled", not "empty, try again"). Outside the
+        // try/catch above on purpose: `loadSavedMappings` already swallows
+        // its own errors (returns `[]`), so nothing here should ever turn a
+        // successful connect into a reported connection error.
+        if (worker.pathRules === undefined) {
+          const { loadSavedMappings } = await import("@/lib/pathMappings");
+          const pathRules = await loadSavedMappings();
+          set((state) => ({
+            pairedWorkers: state.pairedWorkers.map((w) =>
+              w.nodeId === nodeId ? { ...w, pathRules } : w,
+            ),
+          }));
+        }
       },
 
       selectWorker: async (nodeId, options) => {
@@ -989,6 +1025,26 @@ export const useConnectStore = create<ConnectState>()(
         }
 
         return allEntries;
+      },
+
+      addPathRule: (workerId, rule) => {
+        set((state) => ({
+          pairedWorkers: state.pairedWorkers.map((w) =>
+            w.nodeId === workerId
+              ? { ...w, pathRules: [...(w.pathRules ?? []).filter((r) => r.local !== rule.local), rule] }
+              : w,
+          ),
+        }));
+      },
+
+      clearPathRule: (workerId, local) => {
+        set((state) => ({
+          pairedWorkers: state.pairedWorkers.map((w) =>
+            w.nodeId === workerId
+              ? { ...w, pathRules: (w.pathRules ?? []).filter((r) => r.local !== local) }
+              : w,
+          ),
+        }));
       },
 
       submitJob: async (spec, onProgress, options) => {

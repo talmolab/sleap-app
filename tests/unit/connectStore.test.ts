@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "../bun-test";
 import {
   useConnectStore,
+  pathRulesFor,
   type PairedWorker,
   type TrackedJob,
   capTrackedJobs,
@@ -11,6 +12,7 @@ import {
 } from "@/stores/connectStore";
 import type { JobSpec } from "@/lib/sleapConnect";
 import type { WorkerClient } from "@/lib/protocolV1/client";
+import type { PathMapping } from "@/lib/pathMappings";
 
 // connectStore's own actions (pairing flow, browse pagination, job
 // submission/multi-model splitting, cancel/stop) are what's under test here.
@@ -206,6 +208,11 @@ vi.mock("@/lib/protocolV1/client", () => ({
 vi.mock("@/lib/notify", () => ({
   toast: { success: vi.fn(), error: vi.fn() },
 }));
+/** What the next `loadSavedMappings()` call resolves to (the one-time import on first connect). */
+let nextSavedMappings: PathMapping[] = [];
+vi.mock("@/lib/pathMappings", () => ({
+  loadSavedMappings: async () => nextSavedMappings,
+}));
 
 const TICKET = JSON.stringify({
   node_id: "worker-node-id",
@@ -242,6 +249,7 @@ describe("connectStore", () => {
     FakeWorkerClient.nextMounts = [];
     FakeWorkerClient.nextPeerNodeId = "worker-node-id";
     FakeWorkerClient.nextConnectShouldThrow = null;
+    nextSavedMappings = [];
     // `managed`/`activeSubscriptions` are module-level state that outlives
     // any one test in this file (--isolate resets per FILE, not per test) —
     // without this, a connection a previous test left running in the
@@ -490,6 +498,109 @@ describe("connectStore", () => {
       expect(client.closed).toBe(true);
       expect(useConnectStore.getState().connectionStatus).toBe("error");
     });
+
+    it("imports saved path mappings once, for a worker that's never had pathRules set", async () => {
+      nextSavedMappings = [{ local: "/Users/alice/data", worker: "/mnt/data" }];
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
+
+      await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
+
+      const worker = useConnectStore
+        .getState()
+        .pairedWorkers.find((w) => w.nodeId === PAIRED_WORKER.nodeId);
+      expect(worker?.pathRules).toEqual(nextSavedMappings);
+    });
+
+    it("never re-imports once pathRules is defined, even as an empty array", async () => {
+      nextSavedMappings = [{ local: "/Users/alice/data", worker: "/mnt/data" }];
+      useConnectStore.setState({ pairedWorkers: [{ ...PAIRED_WORKER, pathRules: [] }] });
+
+      await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
+
+      const worker = useConnectStore
+        .getState()
+        .pairedWorkers.find((w) => w.nodeId === PAIRED_WORKER.nodeId);
+      expect(worker?.pathRules).toEqual([]); // untouched, not re-imported
+    });
+
+    it("imports only once across repeated reconnects to the same worker", async () => {
+      nextSavedMappings = [{ local: "/a", worker: "/mnt/a" }];
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
+
+      await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
+      nextSavedMappings = [{ local: "/b", worker: "/mnt/b" }]; // would differ if re-imported
+      await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
+
+      const worker = useConnectStore
+        .getState()
+        .pairedWorkers.find((w) => w.nodeId === PAIRED_WORKER.nodeId);
+      expect(worker?.pathRules).toEqual([{ local: "/a", worker: "/mnt/a" }]);
+    });
+  });
+
+  describe("path rules", () => {
+    it("addPathRule adds a rule for a worker with none yet", () => {
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
+
+      useConnectStore.getState().addPathRule(PAIRED_WORKER.nodeId, { local: "/a", worker: "/mnt/a" });
+
+      expect(pathRulesFor(PAIRED_WORKER.nodeId)).toEqual([{ local: "/a", worker: "/mnt/a" }]);
+    });
+
+    it("addPathRule replaces any existing rule with the same local path", () => {
+      useConnectStore.setState({
+        pairedWorkers: [{ ...PAIRED_WORKER, pathRules: [{ local: "/a", worker: "/mnt/old" }] }],
+      });
+
+      useConnectStore.getState().addPathRule(PAIRED_WORKER.nodeId, { local: "/a", worker: "/mnt/new" });
+
+      expect(pathRulesFor(PAIRED_WORKER.nodeId)).toEqual([{ local: "/a", worker: "/mnt/new" }]);
+    });
+
+    it("addPathRule leaves other workers' rules untouched", () => {
+      const other: PairedWorker = { ...PAIRED_WORKER, nodeId: "other" };
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER, other] });
+
+      useConnectStore.getState().addPathRule(PAIRED_WORKER.nodeId, { local: "/a", worker: "/mnt/a" });
+
+      expect(pathRulesFor("other")).toEqual([]);
+    });
+
+    it("clearPathRule removes only the rule matching that local path", () => {
+      useConnectStore.setState({
+        pairedWorkers: [
+          {
+            ...PAIRED_WORKER,
+            pathRules: [
+              { local: "/a", worker: "/mnt/a" },
+              { local: "/b", worker: "/mnt/b" },
+            ],
+          },
+        ],
+      });
+
+      useConnectStore.getState().clearPathRule(PAIRED_WORKER.nodeId, "/a");
+
+      expect(pathRulesFor(PAIRED_WORKER.nodeId)).toEqual([{ local: "/b", worker: "/mnt/b" }]);
+    });
+
+    it("pathRulesFor returns [] for an unknown worker or one with no rules set", () => {
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
+      expect(pathRulesFor(PAIRED_WORKER.nodeId)).toEqual([]);
+      expect(pathRulesFor("unknown")).toEqual([]);
+      expect(pathRulesFor(null)).toEqual([]);
+    });
+
+    it("persists pathRules via the existing pairedWorkers partialize", () => {
+      const worker: PairedWorker = { ...PAIRED_WORKER, pathRules: [{ local: "/a", worker: "/mnt/a" }] };
+      useConnectStore.setState({ pairedWorkers: [worker] });
+
+      const partialize = useConnectStore.persist.getOptions().partialize;
+      expect(partialize).toBeDefined();
+      const persisted = partialize!(useConnectStore.getState()) as { pairedWorkers: PairedWorker[] };
+
+      expect(persisted.pairedWorkers).toEqual([worker]);
+    });
   });
 
   describe("selectWorker", () => {
@@ -523,7 +634,8 @@ describe("connectStore", () => {
       const state = useConnectStore.getState();
       expect(state.connectionStatus).toBe("disconnected");
       expect(state.workerMounts).toEqual([]);
-      expect(state.pairedWorkers).toEqual([PAIRED_WORKER]);
+      // pathRules: [] now stamped by connectToWorker's one-time legacy-mappings import.
+      expect(state.pairedWorkers).toEqual([{ ...PAIRED_WORKER, pathRules: [] }]);
       expect(state.selectedWorkerId).toBe(PAIRED_WORKER.nodeId);
     });
 
