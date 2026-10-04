@@ -11,40 +11,20 @@ import { confirmDialog } from "@/stores/confirmStore";
 import type { Labels } from "@/types";
 import type { JobResult, TrainJobSpec } from "@/lib/sleapConnect";
 import { buildRemoteTrackSpecs } from "@/lib/remoteTrackSpec";
+import {
+  LABELS_EMBED_WARN_BYTES,
+  LABELS_EMBED_HARD_CAP_BYTES,
+  bytesToBase64,
+} from "@/lib/remoteLabelsPayload";
 import type { JobTelemetry } from "@/lib/protocolV1/jobTelemetry";
 import type { InferenceConfig, PendingRemoteMerge } from "@/stores/inferenceStore";
 
 const MAX_BATCH_SAMPLES = 20000; // bound batchSamples; drop oldest beyond this
 const MAX_LOG_LINES = 1000; // bound the training log so it doesn't grow unbounded during long runs
 
-// Warn/block thresholds for inline-embedded `labels_content` (labeled frames'
-// pixel data, sent when the worker can't see the original video). Sized off
-// real measured embedded-frame costs (~250-450 KB/frame at current PNG
-// encoding — see the io PNG-bloat finding, item 0.7, still unfixed) against a
-// typical 100-200-frame labeled session (SLEAP's own recommended range):
-// that lands around 30-70 MB, so WARN stays silent for ordinary sessions and
-// only nags on genuinely large ones. HARD_CAP is kept comfortably under the
-// worker's websockets `max_size` (256 MiB, `sleap_rtc/protocol_v1/server.py`)
-// after base64's ~4/3 inflation — if these two ever need to change, change
-// them together.
-const LABELS_EMBED_WARN_BYTES = 10 * 1024 * 1024; // 10 MB
-const LABELS_EMBED_HARD_CAP_BYTES = 150 * 1024 * 1024; // 150 MB
-
 function appendLog(prev: string[], ...lines: string[]): string[] {
   const next = [...prev, ...lines];
   return next.length > MAX_LOG_LINES ? next.slice(next.length - MAX_LOG_LINES) : next;
-}
-
-/** Chunked bytes→base64 (matches collectDiagnostics.ts's own `toBase64`) —
- * avoids a single `String.fromCharCode(...bytes)` call blowing the call stack
- * on anything but tiny arrays. */
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = "";
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  }
-  return btoa(binary);
 }
 
 // A tqdm/Lightning progress-bar line contains a "<pct>%|" segment, e.g.
