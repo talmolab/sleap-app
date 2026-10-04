@@ -548,6 +548,34 @@ export interface ModelProgress {
   runDir: string | null;
 }
 
+/**
+ * A freshly-started model's progress state, before any epoch/batch has been
+ * recorded. Shared by `startTraining` (one per config slot, below) and
+ * `jobStream.ts`'s `initialJobStream` (one per watched remote job, for the
+ * Connect window's per-job viewer — PR4a §4a.5) so both start from exactly
+ * the same shape.
+ */
+export function emptyModelProgress(label: string, maxEpochs = 100): ModelProgress {
+  return {
+    label,
+    epoch: 0,
+    maxEpochs,
+    loss: null,
+    valLoss: null,
+    bestValLoss: null,
+    status: "pending",
+    epochSamples: [],
+    batchSamples: [],
+    epochSize: 1,
+    lastBatchNumber: 0,
+    metrics: emptyMetrics(),
+    epochStartedAt: null,
+    plateauPatience: null,
+    plateauMinDelta: null,
+    runDir: null,
+  };
+}
+
 interface TrainingState {
   // Config
   config: TrainingConfig;
@@ -1559,22 +1587,9 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
     const models: ModelProgress[] = slots.map((slot) => {
       const cf = config.configs.find((c) => c.slot === slot);
       return {
-        label: getSlotLabel(slot).replace(" Config", ""),
-        epoch: 0,
-        maxEpochs: cf?.hyperparams.maxEpochs ?? 100,
-        loss: null,
-        valLoss: null,
-        bestValLoss: null,
-        status: "pending" as const,
-        epochSamples: [],
-        batchSamples: [],
-        epochSize: 1,
-        lastBatchNumber: 0,
-        metrics: emptyMetrics(),
-        epochStartedAt: null,
+        ...emptyModelProgress(getSlotLabel(slot).replace(" Config", ""), cf?.hyperparams.maxEpochs ?? 100),
         plateauPatience: cf?.hyperparams.earlyStoppingPatience ?? null,
         plateauMinDelta: cf?.hyperparams.plateauMinDelta ?? null,
-        runDir: null,
       };
     });
 
