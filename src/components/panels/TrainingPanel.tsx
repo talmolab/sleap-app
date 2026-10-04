@@ -17,6 +17,7 @@ import { BackendPicker } from "@/components/common/BackendPicker";
 import { RemoteFileBrowser } from "@/components/dialogs/RemoteFileBrowser";
 import { TrainingConfigDialog } from "@/components/dialogs/TrainingConfigDialog";
 import { RemoteDataSummary } from "@/components/connect/RemoteDataSummary";
+import { HiddenVideosDialog } from "@/components/connect/HiddenVideosDialog";
 import { LossViewerDialog } from "@/components/monitors/LossViewerDialog";
 import { LogTerminalDialog } from "@/components/monitors/LogTerminalDialog";
 import { ErrorOutput } from "@/components/monitors/ErrorOutput";
@@ -64,7 +65,7 @@ import {
 import { computeNodeVisibility, visibilityTier } from "@/lib/anchorVisibility";
 import { TUTORIAL_FIRST_TRAINING_STEP_IDS } from "@/lib/tutorial/steps";
 import { projectTag } from "@/lib/projectTag";
-import type { VideoVisibility } from "@/lib/remoteVisibility";
+import { classifyVisibility, type VideoVisibility } from "@/lib/remoteVisibility";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -928,6 +929,7 @@ export function TrainingPanel() {
   // Latest visibility check from RemoteDataSummary, lifted here so Start (and
   // the pre-submit hidden-videos dialog) can use it without recomputing.
   const [visibility, setVisibility] = useState<VideoVisibility[] | null>(null);
+  const [hiddenDialogOpen, setHiddenDialogOpen] = useState(false);
   const [inferenceTarget, setInferenceTarget] = useState<string>("suggestions");
   const [sampleCount, setSampleCount] = useState(20);
   const [skipUserLabeled, setSkipUserLabeled] = useState(false);
@@ -1115,32 +1117,58 @@ export function TrainingPanel() {
     }
   };
 
+  /** labelsSource "window", visibility case "all" (or re-confirmed via HiddenVideosDialog): actually submit. */
+  const startRemoteWindowTraining = async (embedFramesToPredict: boolean) => {
+    await startTraining({
+      remote: true,
+      workerId: selectedWorkerId!,
+      labelsSource: "window",
+      // Pass along whatever RemoteDataSummary has found so far — trainingStore
+      // recomputes it itself (via checkVideoVisibility) if still unknown.
+      visibility: visibility ?? undefined,
+      embedFramesToPredict,
+      valLabelsPath: remoteValLabelsPath || undefined,
+      inferenceTarget,
+      sampleCount,
+      skipUserLabeled,
+      existingPredictions,
+    });
+  };
+
   const handleStart = async () => {
     if (remoteEnabled) {
-      await startTraining({
-        remote: true,
-        workerId: selectedWorkerId!,
-        labelsSource,
-        workerLabelsPath: labelsSource === "worker-file" ? remoteLabelsPath : undefined,
-        // Pass along whatever RemoteDataSummary has found so far — trainingStore
-        // recomputes it itself (via checkVideoVisibility) if still unknown.
-        visibility: labelsSource === "window" ? (visibility ?? undefined) : undefined,
-        valLabelsPath: remoteValLabelsPath || undefined,
-        inferenceTarget,
-        sampleCount,
-        skipUserLabeled,
-        existingPredictions,
-      });
-    } else {
-      await startTraining({
-        inferenceTarget,
-        sampleCount,
-        skipUserLabeled,
-        existingPredictions,
-        exportFormat,
-        useExportedForInference,
-      });
+      if (labelsSource === "worker-file") {
+        await startTraining({
+          remote: true,
+          workerId: selectedWorkerId!,
+          labelsSource: "worker-file",
+          workerLabelsPath: remoteLabelsPath,
+          valLabelsPath: remoteValLabelsPath || undefined,
+          inferenceTarget,
+          sampleCount,
+          skipUserLabeled,
+          existingPredictions,
+        });
+        return;
+      }
+      // "window": every video visible (or not yet known — trainingStore will
+      // check itself) starts right away; otherwise confirm via the dialog
+      // before possibly embedding pixels and/or narrowing inference coverage.
+      if (classifyVisibility(visibility ?? []) === "all") {
+        await startRemoteWindowTraining(false);
+      } else {
+        setHiddenDialogOpen(true);
+      }
+      return;
     }
+    await startTraining({
+      inferenceTarget,
+      sampleCount,
+      skipUserLabeled,
+      existingPredictions,
+      exportFormat,
+      useExportedForInference,
+    });
   };
 
   if (!isTauri && connectionStatus !== "connected") {
@@ -1949,6 +1977,17 @@ export function TrainingPanel() {
         mode="file"
         fileFilter=".slp"
       />
+
+      {labels && (
+        <HiddenVideosDialog
+          open={hiddenDialogOpen}
+          onClose={() => setHiddenDialogOpen(false)}
+          labels={labels}
+          visibility={visibility ?? []}
+          inferenceTarget={inferenceTarget}
+          onTrain={(opts) => void startRemoteWindowTraining(opts.embedFramesToPredict)}
+        />
+      )}
 
       <TrainingConfigDialog
         open={configDialogOpen}
