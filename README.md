@@ -206,8 +206,14 @@ bun run test:e2e     # Playwright E2E tests
 
 # Production builds
 bun run build        # Browser (dist/)
-bun run tauri:build  # Desktop installer (.msi / .dmg / .deb)
+bun run tauri:build:local  # Desktop installers (.msi / .dmg / .deb), from a fresh clone
 ```
+
+`tauri:build:local` fetches the bundled ffmpeg/ffprobe sidecars on first run
+(see [`src-tauri/binaries/README.md`](src-tauri/binaries/README.md)) and skips
+the signed updater artifacts, which need a release key only CI has. Installers
+land in `src-tauri/target/release/bundle/`. Plain `bun run tauri:build` is what
+CI runs.
 
 ### System Dependencies (Linux, for Tauri)
 
