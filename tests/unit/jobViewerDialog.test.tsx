@@ -67,6 +67,23 @@ describe("JobViewerDialog", () => {
     expect(screen.getByText("line two")).toBeInTheDocument();
   });
 
+  it("an inference job shows only its logs, with no Monitor toggle", () => {
+    mockStream = { ...initialJobStream("Inference"), log: ["predicting"] };
+    render(
+      <JobViewerDialog
+        workerId="w1"
+        jobId="job_1"
+        label="Inference"
+        initialView="monitor"
+        kind="track"
+        canStop
+        onClose={() => {}}
+      />,
+    );
+    expect(screen.getByText("predicting")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Monitor" })).not.toBeInTheDocument();
+  });
+
   it("toggles between Monitor and Logs", () => {
     mockStream = { ...initialJobStream("Train centroid"), log: ["hello"] };
     render(
