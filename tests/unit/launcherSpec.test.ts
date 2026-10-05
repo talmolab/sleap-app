@@ -130,6 +130,35 @@ describe("buildLauncherTrainSpec", () => {
     expect(docs[1]).toContain(".centered_instance");
   });
 
+  it("sets labels_content alongside labels_path when a labelsContent payload is given", () => {
+    const spec = buildLauncherTrainSpec({
+      labels: makeWorkerLabels(),
+      labelsPath: "/mnt/data/labels.slp",
+      labelsContent: "QkFTRTY0", // arbitrary base64 stand-in -- buildLauncherTrainSpec never decodes it
+      modelType: "single_animal",
+      configs: [makeConfigFile({ slot: "config", modelType: "single_instance", content: makeYaml("single_instance") })],
+      postInference: null,
+      project: PROJECT,
+    });
+
+    expect(spec.labels_path).toBe("/mnt/data/labels.slp");
+    expect(spec.labels_content).toBe("QkFTRTY0");
+  });
+
+  it("omits labels_content when given null (no re-pointing was needed)", () => {
+    const spec = buildLauncherTrainSpec({
+      labels: makeWorkerLabels(),
+      labelsPath: "/mnt/data/labels.slp",
+      labelsContent: null,
+      modelType: "single_animal",
+      configs: [makeConfigFile({ slot: "config", modelType: "single_instance", content: makeYaml("single_instance") })],
+      postInference: null,
+      project: PROJECT,
+    });
+
+    expect("labels_content" in spec).toBe(false);
+  });
+
   it("omits post_inference when none is requested", () => {
     const spec = buildLauncherTrainSpec({
       labels: makeWorkerLabels(),

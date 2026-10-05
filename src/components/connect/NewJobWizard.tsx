@@ -33,7 +33,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { toast } from "@/lib/notify";
 import type { Labels } from "@talmolab/sleap-io.js";
 import type { JobStatus, JobSummary, WorkerClient } from "@/lib/protocolV1/client";
-import { useConnectStore } from "@/stores/connectStore";
+import { useConnectStore, pathRulesFor } from "@/stores/connectStore";
 import {
   useTrainingStore,
   getConfigSlots,
@@ -43,7 +43,14 @@ import {
   type ModelType,
 } from "@/stores/trainingStore";
 import { getDefaultProfileForHead, slotToHeadType } from "@/lib/trainingProfiles";
-import { loadWorkerLabels, checkWorkerFileVideos, type WorkerFileVideoCheck } from "@/lib/workerLabels";
+import {
+  loadWorkerLabels,
+  checkWorkerFileVideos,
+  needsLabelsRepoint,
+  videoChecksToVisibility,
+  type WorkerFileVideoCheck,
+} from "@/lib/workerLabels";
+import { inferRuleFromLocate } from "@/lib/remoteVisibility";
 import {
   buildLauncherTrainSpec,
   buildRunInferenceSpecs,
@@ -156,8 +163,30 @@ export interface NewJobWizardProps {
 
 type StartFrom = "past" | "yaml" | "defaults";
 type JobKind = "train" | "inference";
-/** `RemoteFileBrowser` is shared by every browse target this wizard has — a worker-side `.slp` (train or inference), a training YAML, or (Inference's Models step) a model folder. */
-type BrowseTarget = "slp" | "yaml" | "model";
+/** `RemoteFileBrowser` is shared by every browse target this wizard has — a worker-side `.slp` (train or inference), a training YAML, (Inference's Models step) a model folder, or (an unresolved video's "Locate on worker…") a video file. */
+type BrowseTarget = "slp" | "yaml" | "model" | "locate";
+
+/**
+ * Per-video resolution summary lines for videos that needed something other
+ * than their recorded path — "N video(s) found via a remembered location"
+ * (a saved path rule) / "found next to the labels file" (SLEAP's usual
+ * "videos live beside the .slp" layout). A video found at its exact recorded
+ * path, or embedded, says nothing (matches the long-standing silent-when-fine
+ * behavior). Exported for direct testing.
+ */
+export function summarizeVideoCheck(check: WorkerFileVideoCheck[]): string[] {
+  const countVia = (via: WorkerFileVideoCheck["via"]) => check.filter((v) => v.via === via).length;
+  const lines: string[] = [];
+  const ruleCount = countVia("rule");
+  if (ruleCount > 0) {
+    lines.push(`${ruleCount} video${ruleCount === 1 ? "" : "s"} found via a remembered location`);
+  }
+  const nextToCount = countVia("next-to-labels");
+  if (nextToCount > 0) {
+    lines.push(`${nextToCount} video${nextToCount === 1 ? "" : "s"} found next to the labels file`);
+  }
+  return lines;
+}
 
 interface PastRun {
   runId: string;
@@ -225,12 +254,15 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
   const jobDetail = useConnectStore((s) => s.jobDetail);
   const mountsFor = useConnectStore((s) => s.mountsFor);
   const submitJobsOn = useConnectStore((s) => s.submitJobsOn);
+  const addPathRule = useConnectStore((s) => s.addPathRule);
 
   const [jobKind, setJobKind] = useState<JobKind>("train");
 
   const [mounts, setMounts] = useState<string[]>([]);
   const [browserOpen, setBrowserOpen] = useState(false);
   const [browserTarget, setBrowserTarget] = useState<BrowseTarget>("slp");
+  /** Which unresolved video's "Locate on worker…" opened the browser — read by its `onSelect` when `browserTarget === "locate"`. */
+  const [browsingVideoIndex, setBrowsingVideoIndex] = useState<number | null>(null);
 
   const [labelsPath, setLabelsPath] = useState<string | null>(seed?.labelsPath ?? null);
   const [labels, setLabels] = useState<Labels | null>(null);
@@ -328,7 +360,7 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
         const client = await clientFor(workerId);
         const loaded = await loadWorkerLabels(client, path);
         setLabels(loaded);
-        const check = await checkWorkerFileVideos(client, loaded);
+        const check = await checkWorkerFileVideos(client, loaded, path, pathRulesFor(workerId));
         setVideoCheck(check);
       } catch (err) {
         setLabelsError(err instanceof Error ? err.message : String(err));
@@ -344,6 +376,29 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
     if (seed?.labelsPath) void loadLabels(seed.labelsPath);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /**
+   * "Locate on worker…" for one unresolved video (`RemoteFileBrowser`'s
+   * `onSelect` when `browserTarget === "locate"`): saves a path rule from
+   * the recorded path to the one the user just picked (same convention the
+   * Training panel's own Locate flow uses, `remoteVisibility.ts`'s
+   * `inferRuleFromLocate`), then re-runs `checkWorkerFileVideos` against the
+   * already-loaded `labels` — no need to re-fetch the worker's own `.slp`
+   * structure just to pick up one new rule.
+   */
+  const handleLocateVideo = async (index: number, pickedPath: string) => {
+    if (!labels || !labelsPath || !videoCheck) return;
+    const recorded = videoCheck.find((v) => v.index === index)?.path;
+    if (recorded === undefined) return;
+    addPathRule(workerId, inferRuleFromLocate(recorded, pickedPath));
+    try {
+      const client = await clientFor(workerId);
+      const check = await checkWorkerFileVideos(client, labels, labelsPath, pathRulesFor(workerId));
+      setVideoCheck(check);
+    } catch (err) {
+      setLabelsError(err instanceof Error ? err.message : String(err));
+    }
+  };
 
   const handleModelTypeChange = (mt: ModelType) => {
     setModelType(mt);
@@ -458,17 +513,33 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
 
   const missingVideos = videoCheck?.filter((v) => !v.found) ?? [];
   const allVideosFound = videoCheck != null && missingVideos.length === 0;
+  // At least one video only resolved via a remembered rule or next-to-labels
+  // (workerLabels.ts's needsLabelsRepoint) — its .slp-recorded path isn't one
+  // the worker (or sleap-nn running on it) can actually open, so the job
+  // needs re-pointed labels_content instead of a bare labels_path.
+  const needsRepoint = needsLabelsRepoint(videoCheck ?? []);
   const slots = getConfigSlots(modelType);
   const configsReady = slots.every((slot) => configs.some((c) => c.slot === slot));
   const canSubmit = !!labels && !!labelsPath && allVideosFound && configsReady && !submitting;
-  // Inference needs the videos too (it reads them, not just the .slp's metadata) — same allVideosFound gate as Train.
+  // Inference needs the videos too (it reads them, not just the .slp's
+  // metadata) — same allVideosFound gate as Train. Unlike Train, a
+  // TrackJobSpec has no labels_content concept at all (sleap-connect's
+  // `_materialize_labels_content` is a no-op for it), so re-pointed videos
+  // block Inference outright instead of being sent inline.
   const canSubmitInference =
-    !!labels && !!labelsPath && allVideosFound && modelDirs.length > 0 && !submitting;
+    !!labels && !!labelsPath && allVideosFound && !needsRepoint && modelDirs.length > 0 && !submitting;
 
   const handleSubmit = async () => {
     if (!labels || !labelsPath) return;
     setSubmitting(true);
     try {
+      let labelsContent: string | null = null;
+      if (needsRepoint && videoCheck) {
+        const { buildRemoteLabelsPayload } = await import("@/lib/remoteLabelsPayload");
+        const visibility = videoChecksToVisibility(videoCheck);
+        const payload = await buildRemoteLabelsPayload(labels, visibility, { embedFramesToPredict: false });
+        labelsContent = payload.labelsContent;
+      }
       const postInference = postInferenceEnabled
         ? buildPostTrainingInferenceConfig({
             modelType,
@@ -481,6 +552,7 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
       const spec = buildLauncherTrainSpec({
         labels,
         labelsPath,
+        labelsContent,
         modelType,
         configs,
         postInference,
@@ -611,11 +683,49 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
                   {labels.labeledFrames.length === 1 ? "" : "s"}
                 </p>
               )}
-              {videoCheck && missingVideos.length > 0 && (
-                <p className="text-xs text-yellow-400">
-                  {missingVideos.length} of {videoCheck.length} video{videoCheck.length === 1 ? "" : "s"} not found
-                  on {workerLabel}: {missingVideos.map((v) => basename(v.path)).join(", ")}
-                </p>
+              {videoCheck && !loadingLabels && (
+                <>
+                  {summarizeVideoCheck(videoCheck).map((line) => (
+                    <p key={line} className="text-xs text-muted-foreground">
+                      {line}
+                    </p>
+                  ))}
+                  {missingVideos.length > 0 && (
+                    <div className="space-y-1">
+                      <p className="text-xs text-yellow-400">
+                        {missingVideos.length} of {videoCheck.length} video{videoCheck.length === 1 ? "" : "s"} not
+                        found on {workerLabel}:
+                      </p>
+                      {missingVideos.map((v) => (
+                        <div
+                          key={v.index}
+                          className="flex items-center gap-2 h-7 px-2 border border-border rounded-md bg-muted/30 font-mono text-[11px]"
+                        >
+                          <span className="flex-1 truncate">{basename(v.path)}</span>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-6 shrink-0 px-2 text-[11px] font-sans"
+                            onClick={() => {
+                              setBrowsingVideoIndex(v.index);
+                              setBrowserTarget("locate");
+                              setBrowserOpen(true);
+                            }}
+                          >
+                            Locate on worker…
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {jobKind === "inference" && needsRepoint && (
+                    <p className="text-xs text-yellow-400">
+                      Videos in this file point to another computer; inference can&apos;t send re-pointed labels
+                      inline the way training can. Use &quot;Locate on worker…&quot; above to point every video at a
+                      path already on {workerLabel}, or run Train on this file instead.
+                    </p>
+                  )}
+                </>
               )}
             </div>
 
@@ -853,7 +963,9 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
         onSelect={(path) => {
           if (browserTarget === "slp") void loadLabels(path);
           else if (browserTarget === "yaml") void handleYamlPicked(path);
-          else handleModelFolderPicked(path);
+          else if (browserTarget === "locate") {
+            if (browsingVideoIndex !== null) void handleLocateVideo(browsingVideoIndex, path);
+          } else handleModelFolderPicked(path);
         }}
         mounts={mounts}
         workerId={workerId}

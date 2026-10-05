@@ -49,12 +49,26 @@ function toPostInferenceEntry(
 export function buildLauncherTrainSpec(input: {
   labels: Labels;
   labelsPath: string;
+  /**
+   * Base64 `.slp` bytes to send as `labels_content`, alongside `labelsPath`
+   * — set when `workerLabels.ts`'s `checkWorkerFileVideos` found one or more
+   * of `labels`' videos only via a path rule or next to the `.slp` (its
+   * recorded path isn't one the worker can open), via `needsLabelsRepoint`/
+   * `videoChecksToVisibility` + `remoteLabelsPayload.ts`'s
+   * `buildRemoteLabelsPayload`. `labelsPath` is still sent alongside it so
+   * the worker's job list shows this job under the original file's name
+   * while queued; sleap-connect's `_materialize_labels_content` overwrites
+   * `spec.labels_path` to its own materialized temp file once the job
+   * actually starts running, so this only matters pre-run, but costs
+   * nothing to include. Omitted (no `labels_content` key at all) when falsy.
+   */
+  labelsContent?: string | null;
   modelType: ModelType;
   configs: ConfigFile[];
   postInference: InferenceConfig | null;
   project: JobProject;
 }): TrainJobSpec {
-  const { labels, labelsPath, modelType, configs, postInference, project } = input;
+  const { labels, labelsPath, labelsContent, modelType, configs, postInference, project } = input;
   const slots = getConfigSlots(modelType);
   const orderedConfigs = slots
     .map((slot) => configs.find((c) => c.slot === slot))
@@ -84,6 +98,8 @@ export function buildLauncherTrainSpec(input: {
     labels_path: labelsPath,
     project,
   };
+
+  if (labelsContent) spec.labels_content = labelsContent;
 
   if (postInference) {
     const trackSpecs = buildRemoteTrackSpecs(postInference, {

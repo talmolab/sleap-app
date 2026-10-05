@@ -28,7 +28,7 @@ import { describe, it, expect, afterEach, beforeAll, beforeEach, vi } from "../b
 import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { Skeleton, Video, Labels, LabeledFrame, Instance } from "@talmolab/sleap-io.js";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
-import { useConnectStore } from "@/stores/connectStore";
+import { useConnectStore, type PairedWorker } from "@/stores/connectStore";
 import { useTrainingStore, type ConfigFile } from "@/stores/trainingStore";
 import type { WorkerClient, JobStatus, JobSummary } from "@/lib/protocolV1/client";
 import type { WorkerFileVideoCheck } from "@/lib/workerLabels";
@@ -43,6 +43,8 @@ vi.mock("@/components/dialogs/ModelStatsPreview", () => ({
 const SLP_PATH = "/root/vast/exp1/flies.slp";
 const YAML_PATH = "/root/vast/configs/centroid.yaml";
 const MODEL_DIR_PATH = "/root/vast/models/manual";
+/** What the mocked `RemoteFileBrowser` "picks" for a `mode="file"` browse with no extension filter — i.e. an unresolved video's "Locate on worker…" (`browserTarget === "locate"` in NewJobWizard; distinct from the ".slp" target, which filters to that extension). */
+const LOCATED_VIDEO_PATH = "/root/vast/exp1/mice.mp4";
 
 vi.mock("@/components/dialogs/RemoteFileBrowser", () => ({
   // Minimal stand-in: picks a fixed path per fileFilter/mode rather than
@@ -64,8 +66,18 @@ vi.mock("@/components/dialogs/RemoteFileBrowser", () => ({
     if (!props.open) return null;
     const filter = Array.isArray(props.fileFilter) ? props.fileFilter[0] : props.fileFilter;
     const isModelDir = props.mode === "directory";
-    const path = isModelDir ? MODEL_DIR_PATH : filter === ".yaml" ? YAML_PATH : SLP_PATH;
-    const label = isModelDir ? "model folder" : filter;
+    // "locate" (an unresolved video's "Locate on worker…") is mode="file"
+    // with no extension filter, same as "slp" minus the ".slp" filter — the
+    // only way to tell them apart here is that one has a filter and the
+    // other doesn't.
+    const path = isModelDir
+      ? MODEL_DIR_PATH
+      : filter === ".yaml"
+        ? YAML_PATH
+        : filter === ".slp"
+          ? SLP_PATH
+          : LOCATED_VIDEO_PATH;
+    const label = isModelDir ? "model folder" : (filter ?? "file");
     return (
       <Dialog open onOpenChange={(next) => { if (!next) props.onClose(); }}>
         <DialogContent>
@@ -93,9 +105,22 @@ let checkWorkerFileVideosResult: WorkerFileVideoCheck[] = [];
 
 const loadWorkerLabelsMock = vi.fn(async () => loadWorkerLabelsResult as Labels);
 const checkWorkerFileVideosMock = vi.fn(async () => checkWorkerFileVideosResult);
+// `needsLabelsRepoint`/`videoChecksToVisibility` are real-equivalent
+// stand-ins (not the SUT here — `workerLabels.test.ts` covers the real
+// ones directly) rather than imported from the real module: `vi.mock`
+// replaces the whole module namespace, and importing the real module from
+// inside its own mock factory would just re-resolve to this same mock.
 vi.mock("@/lib/workerLabels", () => ({
   loadWorkerLabels: loadWorkerLabelsMock,
   checkWorkerFileVideos: checkWorkerFileVideosMock,
+  needsLabelsRepoint: (checks: WorkerFileVideoCheck[]) =>
+    checks.some((c) => c.via === "rule" || c.via === "next-to-labels"),
+  videoChecksToVisibility: (checks: WorkerFileVideoCheck[]) =>
+    checks.map((c) =>
+      c.embedded
+        ? { index: c.index, local: c.path, worker: null, visible: false }
+        : { index: c.index, local: c.path, worker: c.workerPath, visible: c.workerPath !== null },
+    ),
 }));
 
 const { NewJobWizard } = await import("@/components/connect/NewJobWizard");
@@ -118,10 +143,10 @@ function makeWorkerLabels(videoPath = "/mnt/data/worker-video.mp4"): Labels {
 }
 
 function foundCheck(path: string): WorkerFileVideoCheck[] {
-  return [{ index: 0, path, embedded: false, found: true }];
+  return [{ index: 0, path, embedded: false, found: true, workerPath: path, via: "as-is" }];
 }
 function notFoundCheck(path: string): WorkerFileVideoCheck[] {
-  return [{ index: 0, path, embedded: false, found: false }];
+  return [{ index: 0, path, embedded: false, found: false, workerPath: null, via: null }];
 }
 
 function jobSummary(overrides: Partial<JobSummary> = {}): JobSummary {
@@ -218,6 +243,13 @@ beforeEach(() => {
   checkWorkerFileVideosResult = foundCheck("/mnt/data/worker-video.mp4");
   submitCalls = [];
   fsReadCalls = [];
+  const pairedWorker: PairedWorker = {
+    nodeId: WORKER_ID,
+    label: WORKER_LABEL,
+    addrs: [],
+    pairedAt: "2026-01-01T00:00:00.000Z",
+    pathRules: [],
+  };
   useConnectStore.setState({
     clientFor: async () => fakeClient(),
     listJobs: async () => [],
@@ -226,6 +258,7 @@ beforeEach(() => {
     },
     mountsFor: async () => [],
     submitJobsOn: submitJobsOnMock,
+    pairedWorkers: [pairedWorker],
   });
 });
 
@@ -259,14 +292,14 @@ describe("NewJobWizard — browse -> loadWorkerLabels -> summary", () => {
 });
 
 describe("NewJobWizard — missing videos block Submit", () => {
-  it("shows the not-found warning and disables Add to queue", async () => {
+  it("shows the not-found warning with a per-video Locate button and disables Add to queue", async () => {
     checkWorkerFileVideosResult = notFoundCheck("/mnt/data/worker-video.mp4");
     renderWizard();
     await loadViaBrowse();
 
-    await waitFor(() =>
-      expect(screen.getByText(/1 of 1 video not found on gpu-box: worker-video\.mp4/)).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText(/1 of 1 video not found on gpu-box/)).toBeInTheDocument());
+    expect(screen.getByText("worker-video.mp4")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Locate on worker…/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Add to queue" })).toBeDisabled();
   });
 
@@ -274,6 +307,79 @@ describe("NewJobWizard — missing videos block Submit", () => {
     renderWizard();
     await loadViaBrowse();
     await waitFor(() => expect(screen.getByRole("button", { name: "Add to queue" })).not.toBeDisabled());
+  });
+
+  it("'Locate on worker…' saves a path rule, re-checks, and unblocks submit with labels_content", async () => {
+    const recordedPath = "/Volumes/talmo/amick/exp1/mice.mp4";
+    checkWorkerFileVideosResult = notFoundCheck(recordedPath);
+    renderWizard();
+    await loadViaBrowse();
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /Locate on worker…/ })).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Add to queue" })).toBeDisabled();
+
+    // The re-check (after Locate) reports the video resolved via the new rule.
+    checkWorkerFileVideosMock.mockImplementationOnce(async () => [
+      {
+        index: 0,
+        path: recordedPath,
+        embedded: false,
+        found: true,
+        workerPath: LOCATED_VIDEO_PATH,
+        via: "rule" as const,
+      },
+    ]);
+
+    fireEvent.click(screen.getByRole("button", { name: /Locate on worker…/ }));
+    const pickButton = await screen.findByRole("button", { name: /Pick file/ });
+    fireEvent.click(pickButton);
+
+    await waitFor(() => expect(checkWorkerFileVideosMock).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(screen.getByText(/1 video found via a remembered location/)).toBeInTheDocument(),
+    );
+    expect(screen.getByRole("button", { name: "Add to queue" })).not.toBeDisabled();
+
+    // inferRuleFromLocate finds "exp1/mice.mp4" as the common suffix between
+    // the recorded and picked paths, so the saved rule is the directory
+    // prefix above it.
+    const worker = useConnectStore.getState().pairedWorkers.find((w) => w.nodeId === WORKER_ID);
+    expect(worker?.pathRules).toEqual([{ local: "/Volumes/talmo/amick", worker: "/root/vast" }]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Add to queue" }));
+    await waitFor(() => expect(submitCalls).toHaveLength(1));
+    const spec = submitCalls[0]!.spec as TrainJobSpec;
+    expect(spec.labels_path).toBe(SLP_PATH);
+    expect(typeof spec.labels_content).toBe("string");
+    expect(spec.labels_content!.length).toBeGreaterThan(0);
+  });
+});
+
+describe("NewJobWizard — a video resolved next to the labels file", () => {
+  it("shows the summary and submits with labels_content, keeping labels_path", async () => {
+    checkWorkerFileVideosResult = [
+      {
+        index: 0,
+        path: "/Volumes/talmo/amick/sleap-app-test-files/sleap-app-tutorial-files/mice.mp4",
+        embedded: false,
+        found: true,
+        workerPath: "/root/vast/amick/sleap-app-test-files/sleap-app-tutorial-files/mice.mp4",
+        via: "next-to-labels",
+      },
+    ];
+    renderWizard();
+    await loadViaBrowse();
+
+    await waitFor(() => expect(screen.getByText(/1 video found next to the labels file/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Add to queue" })).not.toBeDisabled());
+
+    fireEvent.click(screen.getByRole("button", { name: "Add to queue" }));
+
+    await waitFor(() => expect(submitCalls).toHaveLength(1));
+    const spec = submitCalls[0]!.spec as TrainJobSpec;
+    expect(spec.labels_path).toBe(SLP_PATH);
+    expect(typeof spec.labels_content).toBe("string");
+    expect(spec.labels_content!.length).toBeGreaterThan(0);
   });
 });
 
@@ -514,6 +620,29 @@ describe("NewJobWizard — Inference: Models step", () => {
 });
 
 describe("NewJobWizard — Inference: Submit", () => {
+  it("blocks submit and explains why when videos need re-pointed labels (no inline-labels support for Inference)", async () => {
+    checkWorkerFileVideosResult = [
+      {
+        index: 0,
+        path: "/Volumes/talmo/amick/exp1/mice.mp4",
+        embedded: false,
+        found: true,
+        workerPath: "/root/vast/exp1/mice.mp4",
+        via: "next-to-labels",
+      },
+    ];
+    renderWizard();
+    switchToInference();
+    await loadViaBrowse();
+
+    fireEvent.click(screen.getByRole("button", { name: /Browse model folder on gpu-box…/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /Pick model folder/ }));
+    await waitFor(() => expect(screen.getByText(MODEL_DIR_PATH)).toBeInTheDocument());
+
+    expect(screen.getByText(/point to another computer/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add to queue" })).toBeDisabled();
+  });
+
   it("blocks submit when a video is missing, even with a model dir already chosen", async () => {
     checkWorkerFileVideosResult = notFoundCheck("/mnt/data/worker-video.mp4");
     renderWizard();
