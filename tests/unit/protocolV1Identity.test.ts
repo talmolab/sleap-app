@@ -91,3 +91,57 @@ describe("protocolV1 identity", () => {
     });
   });
 });
+
+/** Reads/writes the identity record directly, bypassing identity.ts. */
+function rawStore(mode: IDBTransactionMode, fn: (store: IDBObjectStore) => IDBRequest): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const open = indexedDB.open("sleap-app-protocol-v1", 1);
+    open.onupgradeneeded = () => open.result.createObjectStore("identity");
+    open.onsuccess = () => {
+      const db = open.result;
+      const req = fn(db.transaction("identity", mode).objectStore("identity"));
+      req.onsuccess = () => {
+        db.close();
+        resolve(req.result);
+      };
+      req.onerror = () => reject(req.error);
+    };
+    open.onerror = () => reject(open.error);
+  });
+}
+
+describe("protocolV1 identity storage (no CryptoKey objects at rest)", () => {
+  beforeEach(async () => {
+    _resetClientIdentityCache();
+    await clearClientIdentity();
+  });
+
+  it("stores the key as plain bytes, not CryptoKey objects", async () => {
+    await getClientIdentity();
+    const stored = (await rawStore("readonly", (s) => s.get("client-identity"))) as Record<string, unknown>;
+    expect(stored.v).toBe(2);
+    expect(Object.prototype.toString.call(stored.pkcs8)).toBe("[object ArrayBuffer]");
+    expect(Object.prototype.toString.call(stored.publicRaw)).toBe("[object ArrayBuffer]");
+    expect(Object.values(stored).some((v) => v instanceof CryptoKey)).toBe(false);
+  });
+
+  it("migrates a legacy stored CryptoKeyPair to bytes, keeping the same node_id", async () => {
+    const pair = (await crypto.subtle.generateKey("Ed25519", true, ["sign", "verify"])) as CryptoKeyPair;
+    await rawStore("readwrite", (s) => s.put(pair, "client-identity"));
+    const legacyRaw = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
+
+    const identity = await getClientIdentity();
+    let b64 = identity.nodeId.replace(/-/g, "+").replace(/_/g, "/");
+    while (b64.length % 4) b64 += "=";
+    expect(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))).toEqual(legacyRaw);
+
+    const stored = (await rawStore("readonly", (s) => s.get("client-identity"))) as Record<string, unknown>;
+    expect(stored.v).toBe(2);
+  });
+
+  it("concurrent first calls share one load (same identity object)", async () => {
+    const [a, b, c] = await Promise.all([getClientIdentity(), getClientIdentity(), getClientIdentity()]);
+    expect(b).toBe(a);
+    expect(c).toBe(a);
+  });
+});
