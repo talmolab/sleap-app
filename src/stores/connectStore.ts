@@ -1549,6 +1549,18 @@ export const useConnectStore = create<ConnectState>()(
                 ...(trackedState !== "completed" ? { error: status.error ?? undefined } : {}),
               });
               await notifyJobFinished({ ...job, state: trackedState }, worker.label, status.error);
+              // A train job that finished (and chained its post-train
+              // inference, PR5w) while this app was closed never replays its
+              // job.result event to a watcher — pick the chained jobs up from
+              // the stored result instead, so they're tracked and toast too.
+              const chainedIds = (status.result as { chained_job_ids?: unknown } | null)
+                ?.chained_job_ids;
+              if (Array.isArray(chainedIds)) {
+                for (const chainedId of chainedIds) {
+                  if (typeof chainedId !== "string") continue;
+                  trackChainedJob(set, client, workerId, chainedId, job.source, worker.label);
+                }
+              }
               continue;
             }
 

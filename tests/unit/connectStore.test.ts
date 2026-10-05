@@ -1780,6 +1780,35 @@ describe("connectStore", () => {
       expect(job?.state).toBe("completed");
     });
 
+    it("tracks a train job's chained inference jobs when it finished while the app was closed", async () => {
+      useConnectStore.setState({
+        pairedWorkers: [PAIRED_WORKER],
+        trackedJobs: [makeTracked({ jobId: "job_resume_chain", source: "worker-file" })],
+      });
+      const originalJobsStatus = FakeWorkerClient.prototype.jobsStatus;
+      FakeWorkerClient.prototype.jobsStatus = async function (this: FakeWorkerClient, jobId: string) {
+        this.jobsStatusCalls.push(jobId);
+        return jobId === "job_resume_chain"
+          ? { state: "completed", result: { chained_job_ids: ["job_resume_chained"] } }
+          : { state: "running" };
+      };
+      try {
+        await useConnectStore.getState().resumeTrackedJobs();
+      } finally {
+        FakeWorkerClient.prototype.jobsStatus = originalJobsStatus;
+      }
+
+      const chained = useConnectStore
+        .getState()
+        .trackedJobs.find((j) => j.jobId === "job_resume_chained");
+      expect(chained).toMatchObject({ kind: "track", source: "worker-file", state: "active" });
+      await Promise.resolve(); // let the chained job's watcher reach jobsSubscribe
+      expect(lastClient().jobsSubscribeCalls).toContainEqual(["job_resume_chained", 0]);
+      // Finish it so its watcher leaves the module-level subscription registry
+      // (otherwise a later test's reconnect would re-attach it).
+      lastClient().emit("job_resume_chained", "job.status", { state: "completed" });
+    });
+
     it("subscribes a watcher for a still-running job, resuming from its persisted lastSeq", async () => {
       useConnectStore.setState({
         pairedWorkers: [PAIRED_WORKER],
