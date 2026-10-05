@@ -181,16 +181,15 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
   const [submitting, setSubmitting] = useState(false);
   const [justSubmitted, setJustSubmitted] = useState(false);
 
-  // The hyperparameters dialog needs these controlled props regardless of
-  // mode, but post-train inference target/sample-count in worker-file mode
-  // is this wizard's OWN state above (the dialog's full 8-option select
-  // includes "current video"/"current frame", invalid here) — these are
-  // purely cosmetic for the dialog's own UI and never read back into the
-  // submitted spec.
-  const [dlgInferenceTarget, setDlgInferenceTarget] = useState("nothing");
-  const [dlgSampleCount, setDlgSampleCount] = useState(20);
-  const [dlgSkipUserLabeled, setDlgSkipUserLabeled] = useState(false);
-  const [dlgExistingPredictions, setDlgExistingPredictions] = useState<"clear_all" | "replace" | "keep">("replace");
+  // TrainingConfigDialog's own post-training-inference controls (target/
+  // sample-count/skip-user-labeled/existing-predictions) are hidden entirely
+  // in mode="worker-file" (this wizard owns that toggle + its own restricted
+  // target list instead — see the dialog's own doc on why), so the inferenceTarget/
+  // sampleCount/skipUserLabeled/existingPredictions props below are supplied
+  // as plain literals: unreachable, nothing renders that could read or write
+  // them. W&B auto-open and export format/use-for-inference stay visible
+  // regardless of mode (not post-training-inference controls), so those keep
+  // real state.
   const [dlgAutoOpenWandb, setDlgAutoOpenWandb] = useState(false);
   const [dlgExportFormat, setDlgExportFormat] = useState<"none" | "onnx" | "tensorrt">("none");
   const [dlgUseExportedForInference, setDlgUseExportedForInference] = useState(false);
@@ -594,16 +593,20 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
           configActions={configActions}
           labelsOverride={labels}
           mode="worker-file"
-          inferenceTarget={dlgInferenceTarget}
-          onInferenceTargetChange={setDlgInferenceTarget}
+          // Unreachable: TrainingConfigDialog hides its post-training-
+          // inference controls entirely in mode="worker-file" (this wizard's
+          // own toggle below owns that instead), so nothing ever reads or
+          // calls these.
+          inferenceTarget="nothing"
+          onInferenceTargetChange={() => {}}
           remoteEnabled={false}
           onRemoteEnabledChange={() => {}}
-          sampleCount={dlgSampleCount}
-          onSampleCountChange={setDlgSampleCount}
-          skipUserLabeled={dlgSkipUserLabeled}
-          onSkipUserLabeledChange={setDlgSkipUserLabeled}
-          existingPredictions={dlgExistingPredictions}
-          onExistingPredictionsChange={setDlgExistingPredictions}
+          sampleCount={20}
+          onSampleCountChange={() => {}}
+          skipUserLabeled={false}
+          onSkipUserLabeledChange={() => {}}
+          existingPredictions="replace"
+          onExistingPredictionsChange={() => {}}
           autoOpenWandb={dlgAutoOpenWandb}
           onAutoOpenWandbChange={setDlgAutoOpenWandb}
           exportFormat={dlgExportFormat}

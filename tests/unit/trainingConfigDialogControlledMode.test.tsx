@@ -203,4 +203,22 @@ describe("TrainingConfigDialog — mode=\"worker-file\"", () => {
 
     expect(screen.queryByText("Browse for config file...")).toBeNull();
   });
+
+  it("hides its own post-training-inference controls — the launcher wizard owns that toggle instead", async () => {
+    renderDialog({ mode: "worker-file", labelsOverride: makeWorkerLabels() });
+    await waitFor(() => expect(document.getElementById("pipeline-type")).toBeTruthy());
+
+    expect(document.getElementById("pipeline-inference")).toBeNull();
+    expect(screen.queryByText("Post-Training Inference Target")).toBeNull();
+    expect(screen.queryByText("Existing predictions:")).toBeNull();
+  });
+});
+
+describe("TrainingConfigDialog — mode=\"project\" keeps the post-training-inference controls", () => {
+  it("shows the Inference Target section", async () => {
+    renderDialog();
+    await waitFor(() => expect(document.getElementById("pipeline-inference")).toBeTruthy());
+    expect(screen.getByText("Post-Training Inference Target")).toBeInTheDocument();
+    expect(screen.getByText("Existing predictions:")).toBeInTheDocument();
+  });
 });

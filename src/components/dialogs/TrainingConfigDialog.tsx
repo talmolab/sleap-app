@@ -1477,69 +1477,85 @@ export function TrainingConfigDialog({
                   )}
                 </div>
 
-                <Separator className="my-5" />
+                {/*
+                  Post-training inference target/sample-count/existing-
+                  predictions controls are "project" mode only: a worker-file
+                  launch (PR5b's NewJobWizard) owns its own toggle + a
+                  restricted target list with no current-video/current-frame
+                  options (there's no open project to have a "current"
+                  anything), and wires its OWN state into THIS dialog's post-
+                  train inference fields would be meaningless here — showing
+                  controls that silently don't affect the submitted spec is
+                  more confusing than hiding them, same rationale as the
+                  Remote Training section below.
+                */}
+                {mode !== "worker-file" && (
+                  <>
+                    <Separator className="my-5" />
 
-                {/* 2. Inference Target */}
-                <SectionHeading {...PIPELINE_FIELD_DEFS.secInference} />
-                <div className="space-y-3">
-                  <div className="flex items-center gap-4 flex-wrap">
-                    <div id={PIPELINE_FIELD_DEFS.inferenceTarget.id} data-search-field="" className="flex items-center gap-2 flex-1 min-w-0 scroll-mt-4">
-                      <span className="text-sm text-muted-foreground shrink-0 flex items-center gap-1.5">
-                        {PIPELINE_FIELD_DEFS.inferenceTarget.label}
-                        <HintBubble text="Which frames to run inference on after training completes. Predictions will be merged back into the project." />
-                      </span>
-                      <Select value={inferenceTarget} onValueChange={onInferenceTargetChange}>
-                        <SelectTrigger className="h-9 text-sm w-48"><SelectValue /></SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="nothing">Nothing (skip inference)</SelectItem>
-                          <SelectItem value="suggestions">Suggested frames</SelectItem>
-                          <SelectItem value="user_labeled">User labeled frames</SelectItem>
-                          <SelectItem value="predicted">Frames with predictions</SelectItem>
-                          <SelectItem value="video">Entire current video</SelectItem>
-                          <SelectItem value="all_videos">All videos</SelectItem>
-                          <SelectItem value="random_video">Random sample (current video)</SelectItem>
-                          <SelectItem value="random">Random sample (all videos)</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    {inferenceTarget === "suggestions" && (
-                      <span className="text-sm text-muted-foreground">
-                        Frames in the Labeling Suggestions list ({suggestionsCount} frames)
-                      </span>
-                    )}
-                    {(inferenceTarget === "random_video" || inferenceTarget === "random") && (
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm text-muted-foreground">Sample count:</span>
-                        <Input type="number" min={1} value={sampleCount}
-                          onChange={(e) => onSampleCountChange(Math.max(1, Number(e.target.value)))}
-                          className="h-8 text-sm w-24" />
+                    {/* 2. Inference Target */}
+                    <SectionHeading {...PIPELINE_FIELD_DEFS.secInference} />
+                    <div className="space-y-3">
+                      <div className="flex items-center gap-4 flex-wrap">
+                        <div id={PIPELINE_FIELD_DEFS.inferenceTarget.id} data-search-field="" className="flex items-center gap-2 flex-1 min-w-0 scroll-mt-4">
+                          <span className="text-sm text-muted-foreground shrink-0 flex items-center gap-1.5">
+                            {PIPELINE_FIELD_DEFS.inferenceTarget.label}
+                            <HintBubble text="Which frames to run inference on after training completes. Predictions will be merged back into the project." />
+                          </span>
+                          <Select value={inferenceTarget} onValueChange={onInferenceTargetChange}>
+                            <SelectTrigger className="h-9 text-sm w-48"><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="nothing">Nothing (skip inference)</SelectItem>
+                              <SelectItem value="suggestions">Suggested frames</SelectItem>
+                              <SelectItem value="user_labeled">User labeled frames</SelectItem>
+                              <SelectItem value="predicted">Frames with predictions</SelectItem>
+                              <SelectItem value="video">Entire current video</SelectItem>
+                              <SelectItem value="all_videos">All videos</SelectItem>
+                              <SelectItem value="random_video">Random sample (current video)</SelectItem>
+                              <SelectItem value="random">Random sample (all videos)</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        {inferenceTarget === "suggestions" && (
+                          <span className="text-sm text-muted-foreground">
+                            Frames in the Labeling Suggestions list ({suggestionsCount} frames)
+                          </span>
+                        )}
+                        {(inferenceTarget === "random_video" || inferenceTarget === "random") && (
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm text-muted-foreground">Sample count:</span>
+                            <Input type="number" min={1} value={sampleCount}
+                              onChange={(e) => onSampleCountChange(Math.max(1, Number(e.target.value)))}
+                              className="h-8 text-sm w-24" />
+                          </div>
+                        )}
                       </div>
-                    )}
-                  </div>
-                  <Toggle
-                    {...PIPELINE_FIELD_DEFS.skipUserLabeled}
-                    checked={skipUserLabeled}
-                    onChange={onSkipUserLabeledChange}
-                  />
-                  <div id={PIPELINE_FIELD_DEFS.existingPredictions.id} data-search-field="" className="flex items-center gap-4 scroll-mt-4">
-                    <span className="text-sm text-muted-foreground flex items-center gap-1.5">
-                      Existing predictions:
-                      <HintBubble text="What to do with predicted instances already in the project when this run's post-training inference produces new ones. Clear all removes every existing predicted instance first. Replace overwrites predictions on frames the new inference re-runs. Keep leaves existing predictions untouched and only adds new ones." />
-                    </span>
-                    {(["clear_all", "replace", "keep"] as const).map((option) => (
-                      <label key={option} className="flex items-center gap-1.5 cursor-pointer">
-                        <input
-                          type="radio"
-                          name="existing-predictions"
-                          checked={existingPredictions === option}
-                          onChange={() => onExistingPredictionsChange(option)}
-                          className="accent-primary"
-                        />
-                        <span className="text-sm">{option === "clear_all" ? "Clear all" : option === "replace" ? "Replace" : "Keep"}</span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
+                      <Toggle
+                        {...PIPELINE_FIELD_DEFS.skipUserLabeled}
+                        checked={skipUserLabeled}
+                        onChange={onSkipUserLabeledChange}
+                      />
+                      <div id={PIPELINE_FIELD_DEFS.existingPredictions.id} data-search-field="" className="flex items-center gap-4 scroll-mt-4">
+                        <span className="text-sm text-muted-foreground flex items-center gap-1.5">
+                          Existing predictions:
+                          <HintBubble text="What to do with predicted instances already in the project when this run's post-training inference produces new ones. Clear all removes every existing predicted instance first. Replace overwrites predictions on frames the new inference re-runs. Keep leaves existing predictions untouched and only adds new ones." />
+                        </span>
+                        {(["clear_all", "replace", "keep"] as const).map((option) => (
+                          <label key={option} className="flex items-center gap-1.5 cursor-pointer">
+                            <input
+                              type="radio"
+                              name="existing-predictions"
+                              checked={existingPredictions === option}
+                              onChange={() => onExistingPredictionsChange(option)}
+                              className="accent-primary"
+                            />
+                            <span className="text-sm">{option === "clear_all" ? "Clear all" : option === "replace" ? "Replace" : "Keep"}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  </>
+                )}
 
                 <Separator className="my-5" />
 
