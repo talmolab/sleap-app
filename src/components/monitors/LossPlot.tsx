@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import type uPlot from "uplot";
 import type { ModelProgress, TrainingStatus } from "@/stores/trainingStore";
 import { UPlotChart, type UPlotChartHandle } from "@/components/charts/UPlotChart";
-import { boundedLossYValues, buildLossPlotDataBatched, computeYRange, formatRuntimeTitle, lossCsv } from "@/lib/trainingMetrics";
+import { boundedLossYValues, buildLossPlotDataBatched, computeYRange, formatRuntimeTitle, lossCsv, safeLinearSplits, safeLogSplits } from "@/lib/trainingMetrics";
 import { Button } from "@/components/ui/button";
 import { saveBytesFile } from "@/commands/fileCommands";
 
@@ -104,10 +104,14 @@ export function LossPlot({
 
   // Stable axes: X "Batches", Y "Loss" (PyQt parity). Dark strokes for contrast
   // on the white plot background (PyQt's LossViewer is white-always).
+  // `splits` replaces uPlot's own tick loops, which have no iteration cap and
+  // can hang the page on a degenerate scale (see safeLinearSplits).
   const axes = useMemo<uPlot.Axis[]>(() => [
-    { label: "Batches", stroke: "#334155", grid: { stroke: "rgba(15,23,42,0.10)", width: 1 }, ticks: { stroke: "rgba(15,23,42,0.10)" } },
-    { label: "Loss",    stroke: "#334155", grid: { stroke: "rgba(15,23,42,0.10)", width: 1 }, ticks: { stroke: "rgba(15,23,42,0.10)" } },
-  ], []);
+    { label: "Batches", stroke: "#334155", grid: { stroke: "rgba(15,23,42,0.10)", width: 1 }, ticks: { stroke: "rgba(15,23,42,0.10)" },
+      splits: (_u, _i, min, max) => safeLinearSplits(min, max) },
+    { label: "Loss",    stroke: "#334155", grid: { stroke: "rgba(15,23,42,0.10)", width: 1 }, ticks: { stroke: "rgba(15,23,42,0.10)" },
+      splits: (_u, _i, min, max) => (logScale ? safeLogSplits(min, max) : safeLinearSplits(min, max)) },
+  ], [logScale]);
 
   if (model.batchSamples.length === 0 && model.epochSamples.length === 0) {
     return (
