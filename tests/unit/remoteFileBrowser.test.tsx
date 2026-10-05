@@ -18,7 +18,7 @@ import { describe, it, expect, afterEach, beforeEach } from "../bun-test";
 import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { useConnectStore } from "@/stores/connectStore";
 import type { FileEntry } from "@/lib/sleapConnect";
-import { RemoteFileBrowser } from "@/components/dialogs/RemoteFileBrowser";
+import { RemoteFileBrowser, mountRootFor } from "@/components/dialogs/RemoteFileBrowser";
 
 function entries(...names: Array<{ name: string; isDir: boolean }>): FileEntry[] {
   return names;
@@ -194,5 +194,44 @@ describe("RemoteFileBrowser — browsing + selection", () => {
       <RemoteFileBrowser open onClose={() => {}} onSelect={() => {}} mounts={["/mnt/data"]} workerId="node-a" />,
     );
     await waitFor(() => expect(calledWith).toEqual(["node-a", "/mnt/data"]));
+  });
+});
+
+describe("RemoteFileBrowser — stays inside the worker's mounts", () => {
+  it("mountRootFor picks the longest mount containing a path, else null", () => {
+    expect(mountRootFor("/root/vast/amick/data", ["/root/vast/amick"])).toBe("/root/vast/amick");
+    expect(mountRootFor("/root/vast/amick", ["/root/vast/amick/"])).toBe("/root/vast/amick");
+    expect(mountRootFor("/root/vast", ["/root/vast/amick"])).toBeNull();
+    expect(mountRootFor("/root/vast/amickx", ["/root/vast/amick"])).toBeNull();
+    expect(mountRootFor("/a/b/c", ["/a", "/a/b"])).toBe("/a/b");
+  });
+
+  it("breadcrumbs start at the mount root, with nothing above it to click", async () => {
+    const browsed: string[] = [];
+    useConnectStore.setState({
+      browseRemoteDirOn: async (_workerId: string, path: string) => {
+        browsed.push(path);
+        return path === "/root/vast/amick" ? entries({ name: "sub", isDir: true }) : entries();
+      },
+    });
+    render(
+      <RemoteFileBrowser
+        open
+        onClose={() => {}}
+        onSelect={() => {}}
+        mounts={["/root/vast/amick"]}
+        workerId="mount-crumbs-worker"
+      />,
+    );
+    await waitFor(() => expect(screen.getByText("sub")).toBeInTheDocument());
+    fireEvent.doubleClick(screen.getByText("sub"));
+    await waitFor(() => expect(browsed).toContain("/root/vast/amick/sub"));
+
+    // The mount root is one crumb; "root"/"vast" above it aren't offered.
+    expect(screen.queryByText("root")).toBeNull();
+    expect(screen.queryByText("vast")).toBeNull();
+    fireEvent.click(screen.getByText("/root/vast/amick"));
+    await waitFor(() => expect(browsed[browsed.length - 1]).toBe("/root/vast/amick"));
+    expect(browsed.every((p) => p.startsWith("/root/vast/amick"))).toBe(true);
   });
 });

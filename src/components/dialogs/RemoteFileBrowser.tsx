@@ -32,6 +32,21 @@ const MOUNT_PICKER = "//mounts";
 /** `lastBrowsedPath`'s key for the no-`workerId` (selected-worker) case. */
 const SELECTED_WORKER_KEY = "";
 
+/**
+ * The mount `path` lives under (longest match), or null if none does. The
+ * worker only lists inside its mounts, so a mount root is the highest folder
+ * the browser can show: everything above it would list as empty.
+ */
+export function mountRootFor(path: string, mounts: string[]): string | null {
+  let best: string | null = null;
+  for (const m of mounts) {
+    const root = m.length > 1 ? m.replace(/\/+$/, "") : m;
+    const within = path === root || path.startsWith(root === "/" ? "/" : `${root}/`);
+    if (within && (best === null || root.length > best.length)) best = root;
+  }
+  return best;
+}
+
 /** Remember the last browsed directory across dialog opens, per worker (`workerId`, or `SELECTED_WORKER_KEY` when unset) — a launcher wizard for one worker shouldn't resume another's browse position. */
 const lastBrowsedPaths = new Map<string, string>();
 
@@ -51,8 +66,13 @@ export function RemoteFileBrowser({
   // Zero mounts (e.g. not actually connected) routes to the mount picker too
   // — it renders its existing "No mounts available" empty state instead of
   // attempting to browse a path with no live connection behind it.
-  const initialPath = lastBrowsedPaths.get(browseKey)
-    ?? (mounts.length === 1 ? mounts[0] : MOUNT_PICKER);
+  // A remembered path outside every current mount (e.g. the worker's mounts
+  // changed) would list as empty with no way back, so it's dropped.
+  const remembered = lastBrowsedPaths.get(browseKey);
+  const initialPath =
+    (remembered && (mounts.length === 0 || mountRootFor(remembered, mounts) !== null)
+      ? remembered
+      : undefined) ?? (mounts.length === 1 ? mounts[0] : MOUNT_PICKER);
   const [currentPath, setCurrentPath] = useState(initialPath);
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(false);
@@ -126,9 +146,14 @@ export function RemoteFileBrowser({
   if (!open) return null;
 
   const isMountPicker = currentPath === MOUNT_PICKER;
+  // Breadcrumbs start at the mount root (one crumb showing its full path):
+  // the worker won't list anything above it. With no mounts known, fall back
+  // to crumbs from "/".
+  const mountRoot = isMountPicker ? null : mountRootFor(currentPath, mounts);
+  const crumbBase = mountRoot ?? "";
   const pathParts = isMountPicker
     ? []
-    : currentPath.split("/").filter(Boolean);
+    : currentPath.slice(crumbBase.length).split("/").filter(Boolean);
 
   const joinPath = (base: string, name: string) => {
     const cleanBase = base.endsWith("/") ? base.slice(0, -1) : base;
@@ -136,6 +161,8 @@ export function RemoteFileBrowser({
   };
 
   const navigateTo = (path: string) => {
+    // Never leave the mounts: above a mount root the worker lists nothing.
+    if (path !== MOUNT_PICKER && mounts.length > 0 && mountRootFor(path, mounts) === null) return;
     setCurrentPath(path);
     if (path !== MOUNT_PICKER) {
       lastBrowsedPaths.set(browseKey, path);
@@ -228,13 +255,14 @@ export function RemoteFileBrowser({
           {!isMountPicker && (
             <>
               <span
-                className="cursor-pointer hover:text-primary"
-                onClick={() => navigateTo("/")}
+                className={`cursor-pointer ${pathParts.length === 0 ? "text-foreground" : "hover:text-primary"}`}
+                onClick={() => pathParts.length > 0 && navigateTo(mountRoot ?? "/")}
               >
-                /
+                {mountRoot ?? "/"}
               </span>
+              {mountRoot && pathParts.length > 0 && <span className="text-border mx-0.5">/</span>}
               {pathParts.map((part, i) => {
-                const path = "/" + pathParts.slice(0, i + 1).join("/");
+                const path = `${crumbBase}/${pathParts.slice(0, i + 1).join("/")}`;
                 const isLast = i === pathParts.length - 1;
                 return (
                   <span key={path}>
