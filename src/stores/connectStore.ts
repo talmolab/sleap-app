@@ -34,6 +34,7 @@ import { APP_VERSION } from "@/lib/version";
 import { isTauri } from "@/platform/index";
 import type { AgentInfo } from "@/lib/protocolV1/envelope";
 import type {
+  FsListResult,
   JobStatus,
   JobSummary,
   Mount,
@@ -237,6 +238,16 @@ interface ConnectState {
   disconnect: () => void;
   forgetWorker: (nodeId: string) => void;
   browseRemoteDir: (path: string) => Promise<FileEntry[]>;
+  /**
+   * `browseRemoteDir` for ANY paired worker, not just the selected one —
+   * the launcher wizard (PR5b) browses whichever worker it's building a job
+   * for. Dials via `clientFor` (so it connects on demand, unlike
+   * `browseRemoteDir`'s "must already be connected" guard) and paginates
+   * `fs.list` the same way, starting from `offset` (default 0).
+   */
+  browseRemoteDirOn: (workerId: string, path: string, offset?: number) => Promise<FileEntry[]>;
+  /** `fs.mounts` for ANY paired worker, not just the selected one — dials via `clientFor`. */
+  mountsFor: (workerId: string) => Promise<Mount[]>;
   /** Statted via the worker's `fs.stat` — requires an authenticated connection (same precondition as `browseRemoteDir`). */
   statWorkerPath: (path: string) => Promise<{ exists: boolean; type?: "file" | "directory" }>;
   /** Add (or replace, by `rule.local`) one path rule for `workerId`. */
@@ -285,6 +296,39 @@ interface ConnectState {
 
 function upsertWorker(existing: PairedWorker[], next: PairedWorker): PairedWorker[] {
   return [...existing.filter((w) => w.nodeId !== next.nodeId), next];
+}
+
+/**
+ * Fetches every entry in a directory, paginating via `fetchPage` (one
+ * `fs.list(path, offset)` call) until `hasMore` is false (or a safety cap of
+ * ~5000 entries is hit). Shared by `browseRemoteDir` (selected worker —
+ * `fetchPage` re-checks `_client` on every page, exactly as it always did,
+ * so a disconnect mid-pagination still fails the same way) and
+ * `browseRemoteDirOn` (any paired worker, one `client` dialed via
+ * `clientFor` up front) — the two differ only in how a page is fetched,
+ * never in how the pages are walked.
+ */
+async function fetchAllRemoteEntries(
+  fetchPage: (offset: number) => Promise<FsListResult>,
+  offset = 0,
+): Promise<FileEntry[]> {
+  const allEntries: FileEntry[] = [];
+  let currentOffset = offset;
+  const MAX_PAGES = 200; // safety cap (200 pages * ~25 = ~5000 entries)
+
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const result = await fetchPage(currentOffset);
+    const entries: FileEntry[] = result.entries.map((e) => ({
+      name: e.name,
+      isDir: e.type === "directory",
+      size: e.size,
+    }));
+    allEntries.push(...entries);
+    if (!result.hasMore || entries.length === 0) break;
+    currentOffset += entries.length;
+  }
+
+  return allEntries;
 }
 
 function activeJobsFor(workerId: string, jobs: TrackedJob[]): TrackedJob[] {
@@ -1265,27 +1309,23 @@ export const useConnectStore = create<ConnectState>()(
       },
 
       browseRemoteDir: async (path) => {
-        const allEntries: FileEntry[] = [];
-        let offset = 0;
-        const MAX_PAGES = 200; // safety cap (200 pages * ~25 = ~5000 entries)
-
-        for (let page = 0; page < MAX_PAGES; page++) {
+        return fetchAllRemoteEntries((offset) => {
           const { _client } = get();
           if (!_client || !_client.authenticated) {
             throw new Error("Not connected to worker");
           }
-          const result = await _client.fsList(path, offset);
-          const entries: FileEntry[] = result.entries.map((e) => ({
-            name: e.name,
-            isDir: e.type === "directory",
-            size: e.size,
-          }));
-          allEntries.push(...entries);
-          if (!result.hasMore || entries.length === 0) break;
-          offset += entries.length;
-        }
+          return _client.fsList(path, offset);
+        });
+      },
 
-        return allEntries;
+      browseRemoteDirOn: async (workerId, path, offset) => {
+        const client = await get().clientFor(workerId);
+        return fetchAllRemoteEntries((o) => client.fsList(path, o), offset);
+      },
+
+      mountsFor: async (workerId) => {
+        const client = await get().clientFor(workerId);
+        return client.fsMounts();
       },
 
       statWorkerPath: async (path) => {

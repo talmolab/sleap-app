@@ -874,6 +874,75 @@ describe("connectStore", () => {
     });
   });
 
+  describe("browseRemoteDirOn / mountsFor", () => {
+    const OTHER_WORKER: PairedWorker = {
+      nodeId: "other-worker-id",
+      label: "Other worker",
+      addrs: ["ws://10.0.0.5:9631"],
+      pairedAt: "2026-09-27T00:00:00Z",
+    };
+
+    beforeEach(() => {
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER, OTHER_WORKER] });
+    });
+
+    it("dials the given worker on demand (no prior connect/select needed) and paginates its fs.list", async () => {
+      FakeWorkerClient.nextPeerNodeId = OTHER_WORKER.nodeId;
+      // Establish the dial first so `fsListResults` can be set before
+      // `browseRemoteDirOn` issues its first call.
+      await useConnectStore.getState().clientFor(OTHER_WORKER.nodeId);
+      const client = lastClient();
+      client.fsListResults = [
+        { entries: [{ name: "a.slp", type: "file" }], totalCount: 2, hasMore: true },
+        { entries: [{ name: "b.slp", type: "file" }], totalCount: 2, hasMore: false },
+      ];
+
+      const entries = await useConnectStore
+        .getState()
+        .browseRemoteDirOn(OTHER_WORKER.nodeId, "/mnt");
+
+      expect(entries.map((e) => e.name)).toEqual(["a.slp", "b.slp"]);
+      expect(client.fsListCalls).toEqual([
+        ["/mnt", 0],
+        ["/mnt", 1],
+      ]);
+    });
+
+    it("starts pagination from the given offset", async () => {
+      FakeWorkerClient.nextPeerNodeId = OTHER_WORKER.nodeId;
+      await useConnectStore.getState().clientFor(OTHER_WORKER.nodeId);
+      const client = lastClient();
+      client.fsListResults = [{ entries: [{ name: "c.slp", type: "file" }], totalCount: 3, hasMore: false }];
+
+      const entries = await useConnectStore
+        .getState()
+        .browseRemoteDirOn(OTHER_WORKER.nodeId, "/mnt", 2);
+
+      expect(entries.map((e) => e.name)).toEqual(["c.slp"]);
+      expect(client.fsListCalls).toEqual([["/mnt", 2]]);
+    });
+
+    it("never touches the selected worker's connection for a different worker", async () => {
+      await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
+      const selectedClient = lastClient();
+
+      FakeWorkerClient.nextPeerNodeId = OTHER_WORKER.nodeId;
+      await useConnectStore.getState().browseRemoteDirOn(OTHER_WORKER.nodeId, "/mnt");
+
+      expect(selectedClient.fsListCalls).toEqual([]);
+      expect(useConnectStore.getState()._client).toBe(selectedClient as unknown as WorkerClient);
+    });
+
+    it("mountsFor fetches fs.mounts for any paired worker via clientFor", async () => {
+      FakeWorkerClient.nextMounts = [{ path: "/data", label: "Data" }];
+      FakeWorkerClient.nextPeerNodeId = OTHER_WORKER.nodeId;
+
+      const mounts = await useConnectStore.getState().mountsFor(OTHER_WORKER.nodeId);
+
+      expect(mounts).toEqual([{ path: "/data", label: "Data" }]);
+    });
+  });
+
   describe("submitJob", () => {
     beforeEach(async () => {
       useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
