@@ -99,6 +99,27 @@ async function loadStoredValue(): Promise<unknown> {
   });
 }
 
+/**
+ * Whether ANY record exists under `KEY_ID`, without deserializing it.
+ * WebKit can fail to unwrap a legacy keychain-wrapped `CryptoKeyPair` and
+ * hand back nothing, which must not be mistaken for "first run".
+ */
+async function hasStoredRecord(): Promise<boolean> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, "readonly");
+    const request = tx.objectStore(STORE_NAME).count(KEY_ID);
+    request.onsuccess = () => {
+      db.close();
+      resolve(request.result > 0);
+    };
+    request.onerror = () => {
+      db.close();
+      reject(request.error);
+    };
+  });
+}
+
 async function storeIdentity(stored: StoredIdentity): Promise<void> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
@@ -158,6 +179,15 @@ async function loadOrCreateIdentity(): Promise<ClientIdentity> {
     stored = await toStoredIdentity(value as CryptoKeyPair);
     await storeIdentity(stored);
   } else {
+    // A record we couldn't read is this device's real identity (every
+    // worker it paired with knows it); replacing it would silently unpair
+    // them all. Refuse instead.
+    if (await hasStoredRecord()) {
+      throw new Error(
+        "Couldn't read this device's saved pairing key. On macOS, allow the keychain prompt " +
+          "for \"sleap-app WebCrypto Master Key\" and try again.",
+      );
+    }
     const pair = (await crypto.subtle.generateKey("Ed25519", true, ["sign", "verify"])) as CryptoKeyPair;
     stored = await toStoredIdentity(pair);
     await storeIdentity(stored);

@@ -139,6 +139,13 @@ describe("protocolV1 identity storage (no CryptoKey objects at rest)", () => {
     expect(stored.v).toBe(2);
   });
 
+  it("refuses to replace a stored record it can't read (never silently re-keys)", async () => {
+    await rawStore("readwrite", (s) => s.put({ unreadable: true }, "client-identity"));
+    await expect(getClientIdentity()).rejects.toThrow(/Couldn't read this device's saved pairing key/);
+    const stored = (await rawStore("readonly", (s) => s.get("client-identity"))) as Record<string, unknown>;
+    expect(stored).toEqual({ unreadable: true }); // untouched
+  });
+
   it("concurrent first calls share one load (same identity object)", async () => {
     const [a, b, c] = await Promise.all([getClientIdentity(), getClientIdentity(), getClientIdentity()]);
     expect(b).toBe(a);
