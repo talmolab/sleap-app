@@ -17,11 +17,17 @@
  * `seedFromJobSpec`/`buildLauncherTrainSpec` (launcherSpec.ts) are REAL and
  * pure — already unit-tested in launcherSpec.test.ts — so "past job" seeding
  * and the submitted spec's shape are driven by real job-spec data here
- * rather than re-mocked.
+ * rather than re-mocked. The `RemoteFileBrowser` mock renders its stand-in
+ * button through the real shadcn `Dialog` (same as the production component,
+ * post-fix) rather than as a plain, non-portaled sibling — a real nested
+ * `Dialog.Root` registers itself in Radix's own hide-others exception list,
+ * so NewJobWizard's own (real, open) Dialog never marks it `aria-hidden`,
+ * unlike a bare mocked element would.
  */
 import { describe, it, expect, afterEach, beforeAll, beforeEach, vi } from "../bun-test";
 import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { Skeleton, Video, Labels, LabeledFrame, Instance } from "@talmolab/sleap-io.js";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { useConnectStore } from "@/stores/connectStore";
 import { useTrainingStore, type ConfigFile } from "@/stores/trainingStore";
 import type { WorkerClient, JobStatus, JobSummary } from "@/lib/protocolV1/client";
@@ -41,9 +47,14 @@ vi.mock("@/components/dialogs/RemoteFileBrowser", () => ({
   // Minimal stand-in: picks a fixed path per fileFilter rather than driving
   // the real worker-filesystem browser UI (that component's own behavior —
   // including its per-worker browsing added in PR5b.1 — is covered by its
-  // own tests).
+  // own tests, remoteFileBrowser.test.tsx). Rendered through the real
+  // shadcn `Dialog`, matching the production component (post-fix) — a real
+  // nested `Dialog.Root` registers with Radix's own hide-others exceptions,
+  // so NewJobWizard's own (real, open) Dialog never hides it, unlike a bare
+  // mocked element would.
   RemoteFileBrowser: (props: {
     open: boolean;
+    onClose: () => void;
     onSelect: (path: string) => void;
     fileFilter?: string | string[];
   }) => {
@@ -51,7 +62,22 @@ vi.mock("@/components/dialogs/RemoteFileBrowser", () => ({
     const filter = Array.isArray(props.fileFilter) ? props.fileFilter[0] : props.fileFilter;
     const path = filter === ".yaml" ? YAML_PATH : SLP_PATH;
     return (
-      <button onClick={() => props.onSelect(path)}>Pick {filter}</button>
+      <Dialog open onOpenChange={(next) => { if (!next) props.onClose(); }}>
+        <DialogContent>
+          <DialogTitle className="sr-only">Browse Worker Filesystem</DialogTitle>
+          {/* The real RemoteFileBrowser closes itself on selection (its own
+              `handleSelect` calls `onSelect` then `onClose`) — mirror that so
+              the mock doesn't leave a modal open over the rest of the wizard. */}
+          <button
+            onClick={() => {
+              props.onSelect(path);
+              props.onClose();
+            }}
+          >
+            Pick {filter}
+          </button>
+        </DialogContent>
+      </Dialog>
     );
   },
 }));
@@ -123,7 +149,7 @@ function jobStatus(overrides: Partial<JobStatus> = {}): JobStatus {
   };
 }
 
-/** Every path `fakeClient().fsRead` was called for — lets the "YAML on worker" test confirm `readWholeWorkerFile` actually ran, without needing to drive the Model Type `<Select>` (a Radix combobox; this repo has no established pattern for picking a specific option in tests, see RemoteFileBrowser's own `{ hidden: true }` workaround below). */
+/** Every path `fakeClient().fsRead` was called for — lets the "YAML on worker" test confirm `readWholeWorkerFile` actually ran, without needing to drive the Model Type `<Select>` (a Radix combobox; this repo has no established pattern for picking a specific option in tests). */
 let fsReadCalls: string[] = [];
 
 /** A fake WorkerClient whose only real behavior is `fsRead` (for the "YAML on worker" start option) — `loadWorkerLabels`/`checkWorkerFileVideos` are mocked above and never touch it for real. */
@@ -206,12 +232,7 @@ function renderWizard(seed: Parameters<typeof NewJobWizard>[0]["seed"] = null) {
 
 async function loadViaBrowse() {
   fireEvent.click(screen.getByRole("button", { name: "Browse…" }));
-  // { hidden: true }: the mocked RemoteFileBrowser renders as a plain sibling
-  // of NewJobWizard's own (real, open) Radix Dialog rather than inside its
-  // portal, so Radix's own-dialog focus-management marks it aria-hidden —
-  // harmless for a test (fireEvent dispatches regardless), but invisible to
-  // the accessible-role queries testing-library uses by default.
-  const pickButton = await screen.findByRole("button", { name: /Pick \.slp/, hidden: true });
+  const pickButton = await screen.findByRole("button", { name: /Pick \.slp/ });
   fireEvent.click(pickButton);
   await waitFor(() => expect(screen.getByText(SLP_PATH)).toBeInTheDocument());
 }
@@ -279,14 +300,12 @@ describe("NewJobWizard — start config from", () => {
     // the config count) are unaffected. Driving the Model Type `<Select>` to
     // a 1-slot pipeline isn't needed to prove the YAML path works: this repo
     // has no established pattern for selecting a specific Radix Select
-    // option in tests (see RemoteFileBrowser's own `{ hidden: true }`
-    // workaround above for a related portal/focus-trap quirk), so this
-    // asserts the fs.read call happened instead of the resulting config
-    // count, which wouldn't change either way.
+    // option in tests, so this asserts the fs.read call happened instead of
+    // the resulting config count, which wouldn't change either way.
     await waitFor(() => expect(screen.getByText(/Top-Down · 2 configs/)).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole("button", { name: /YAML on gpu-box…/ }));
-    const pickYamlButton = await screen.findByRole("button", { name: /Pick \.yaml/, hidden: true });
+    const pickYamlButton = await screen.findByRole("button", { name: /Pick \.yaml/ });
     fireEvent.click(pickYamlButton);
 
     await waitFor(() => expect(fsReadCalls).toContain(YAML_PATH));

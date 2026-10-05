@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { Folder, File, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useConnectStore } from "@/stores/connectStore";
 import type { FileEntry } from "@/lib/sleapConnect";
 
@@ -197,20 +198,17 @@ export function RemoteFileBrowser({
     : entries;
 
   return (
-    <div
-      className="fixed inset-0 bg-black/70 flex items-center justify-center z-50"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
+    <Dialog
+      open
+      onOpenChange={(next) => {
+        if (!next) onClose();
       }}
     >
-      <div className="bg-card border border-border rounded-lg w-[480px] max-h-[500px] flex flex-col shadow-xl">
+      <DialogContent className="sm:max-w-[480px] max-h-[500px] p-0 gap-0 flex flex-col overflow-hidden">
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-border">
-          <h3 className="text-sm font-medium">Browse Worker Filesystem</h3>
-          <Button variant="ghost" size="xs" onClick={onClose}>
-            &times;
-          </Button>
-        </div>
+        <DialogHeader className="px-4 py-3 border-b border-border space-y-0">
+          <DialogTitle className="text-sm font-medium">Browse Worker Filesystem</DialogTitle>
+        </DialogHeader>
 
         {/* Breadcrumb */}
         <div className="flex items-center gap-1 px-3 py-2 text-[11px] font-mono text-muted-foreground border-b border-border">
@@ -318,8 +316,8 @@ export function RemoteFileBrowser({
                 : "Select File"}
           </Button>
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
