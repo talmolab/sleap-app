@@ -224,6 +224,30 @@ function flushAsync(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+/**
+ * Makes every `FakeWorkerClient`'s `jobsSubmit` return sequential ids
+ * (`${prefix}_1`, `${prefix}_2`, ...) instead of the fixed
+ * `jobsSubmitResult` — needed for `submitJobsOn` tests, which (unlike
+ * `submitJob`'s sequential-await tests) submit several real jobs before any
+ * of them "complete" and so need distinguishable ids to track separately.
+ * `prefix` must be unique per test (see the `submitJobsOn` describe block's
+ * own comment on why). Returns a restore function.
+ */
+function withSequentialJobIds(prefix: string): () => void {
+  let n = 0;
+  const original = FakeWorkerClient.prototype.jobsSubmit;
+  FakeWorkerClient.prototype.jobsSubmit = async function (
+    this: FakeWorkerClient,
+    spec: Record<string, unknown>,
+  ) {
+    this.jobsSubmitCalls.push(spec);
+    return { jobId: `${prefix}_${++n}` };
+  };
+  return () => {
+    FakeWorkerClient.prototype.jobsSubmit = original;
+  };
+}
+
 /** Polls a predicate across microtask ticks — used with a fake `__setManagedDeps`
  * clock, where every `ManagedConnection` step resolves via an already-settled
  * promise rather than real time passing. */
@@ -1132,6 +1156,177 @@ describe("connectStore", () => {
       secondClient.emit("job_1", "job.status", { state: "completed" }, 2);
       const result = await promise;
       expect(result).toEqual({ jobId: "job_1", success: true });
+    });
+  });
+
+  describe("submitJobsOn", () => {
+    // Every test below uses its own unique job-id prefix (never "job_N") and
+    // terminates every job it creates before returning: `notifiedJobIds` and
+    // `activeSubscriptions` are both module-level state this file's
+    // `beforeEach` does NOT reset (see the top `beforeEach`'s own comment) —
+    // a reused id would silently eat another test's toast, and a job left
+    // "active" forever stays subscribed and gets re-attached by
+    // `resubscribeWorker` the next time anything reconnects to this same
+    // worker (e.g. the `resumeTrackedJobs` tests below), corrupting an
+    // unrelated test's `jobsSubscribeCalls` assertions.
+    let restoreJobIds: () => void;
+
+    beforeEach(() => {
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
+    });
+
+    afterEach(() => {
+      restoreJobIds();
+    });
+
+    it("submits every model's job up front, before any of them finishes, sharing one run id", async () => {
+      restoreJobIds = withSequentialJobIds("launchA");
+      const spec: JobSpec = {
+        type: "train",
+        config_contents: ["centroid yaml", "centered_instance yaml"],
+        model_types: ["centroid", "centered_instance"],
+        labels_path: "/data/labels.slp",
+      };
+
+      const jobIds = await useConnectStore
+        .getState()
+        .submitJobsOn(PAIRED_WORKER.nodeId, spec, { source: "worker-file" });
+
+      expect(jobIds).toEqual(["launchA_1", "launchA_2"]);
+      const client = lastClient();
+      expect(client.jobsSubmitCalls).toHaveLength(2);
+      expect(client.jobsSubmitCalls[0]).toMatchObject({
+        config_contents: ["centroid yaml"],
+        model_types: ["centroid"],
+      });
+      expect(client.jobsSubmitCalls[1]).toMatchObject({
+        config_contents: ["centered_instance yaml"],
+        model_types: ["centered_instance"],
+      });
+      const [first, second] = client.jobsSubmitCalls;
+      expect(first.run).toEqual(expect.objectContaining({ index: 0, count: 2 }));
+      expect(second.run).toEqual(expect.objectContaining({ index: 1, count: 2 }));
+      expect((first.run as { id: string }).id).toBe((second.run as { id: string }).id);
+
+      // Neither job has been told it finished — both still active, and
+      // nothing here ever awaited a job.status event the way submitJob does.
+      const tracked = useConnectStore.getState().trackedJobs;
+      expect(tracked).toHaveLength(2);
+      expect(tracked.every((j) => j.state === "active")).toBe(true);
+      expect(tracked.every((j) => j.source === "worker-file")).toBe(true);
+      expect(tracked.map((j) => j.jobId)).toEqual(["launchA_1", "launchA_2"]);
+
+      client.emit("launchA_1", "job.status", { state: "completed" });
+      client.emit("launchA_2", "job.status", { state: "completed" });
+      await flushAsync();
+    });
+
+    it("tags a single-job spec with run {index: 0, count: 1} and tracks it with the given source", async () => {
+      restoreJobIds = withSequentialJobIds("launchB");
+      const spec: JobSpec = { type: "track", data_path: "/x.slp", model_paths: ["m1"] };
+
+      const jobIds = await useConnectStore
+        .getState()
+        .submitJobsOn(PAIRED_WORKER.nodeId, spec, { source: "worker-file" });
+
+      expect(jobIds).toEqual(["launchB_1"]);
+      expect(lastClient().jobsSubmitCalls[0]).toMatchObject({
+        run: expect.objectContaining({ index: 0, count: 1 }),
+      });
+      expect(useConnectStore.getState().trackedJobs).toEqual([
+        expect.objectContaining({
+          jobId: "launchB_1",
+          kind: "track",
+          label: "Inference",
+          source: "worker-file",
+          state: "active",
+        }),
+      ]);
+
+      lastClient().emit("launchB_1", "job.status", { state: "completed" });
+      await flushAsync();
+    });
+
+    it("watches a submitted job in the background: a later job.status updates state and toasts", async () => {
+      restoreJobIds = withSequentialJobIds("launchC");
+      const { toast } = await import("@/lib/notify");
+      const spec: JobSpec = { type: "track", data_path: "/x.slp", model_paths: ["m1"] };
+      await useConnectStore.getState().submitJobsOn(PAIRED_WORKER.nodeId, spec, { source: "window" });
+
+      lastClient().emit("launchC_1", "job.status", { state: "completed" });
+      await flushAsync();
+
+      expect(useConnectStore.getState().trackedJobs).toEqual([
+        expect.objectContaining({ jobId: "launchC_1", state: "completed" }),
+      ]);
+      expect(toast.success).toHaveBeenCalledWith(
+        expect.stringContaining("finished"),
+        expect.objectContaining({ action: expect.objectContaining({ label: "Open" }) }),
+      );
+    });
+
+    it("tracks and watches a train job's chained_job_ids, inheriting the parent's source", async () => {
+      restoreJobIds = withSequentialJobIds("launchD");
+      const { toast } = await import("@/lib/notify");
+      const spec: JobSpec = {
+        type: "train",
+        config_contents: ["centroid yaml"],
+        model_types: ["centroid"],
+        labels_path: "/data/labels.slp",
+      };
+      await useConnectStore.getState().submitJobsOn(PAIRED_WORKER.nodeId, spec, { source: "worker-file" });
+
+      const client = lastClient();
+      client.emit("launchD_1", "job.result", { chained_job_ids: ["launchD_chained"] });
+      await flushAsync();
+
+      expect(useConnectStore.getState().trackedJobs).toEqual([
+        expect.objectContaining({ jobId: "launchD_1", source: "worker-file" }),
+        expect.objectContaining({
+          jobId: "launchD_chained",
+          kind: "track",
+          label: "Inference",
+          source: "worker-file",
+          state: "active",
+        }),
+      ]);
+
+      // The chained job is actually watched, not just recorded: its own
+      // job.status still reaches it and still toasts.
+      client.emit("launchD_chained", "job.status", { state: "completed" });
+      await flushAsync();
+      expect(
+        useConnectStore.getState().trackedJobs.find((j) => j.jobId === "launchD_chained")?.state,
+      ).toBe("completed");
+      expect(toast.success).toHaveBeenCalledWith(
+        expect.stringContaining("Inference"),
+        expect.anything(),
+      );
+
+      client.emit("launchD_1", "job.status", { state: "completed" });
+      await flushAsync();
+    });
+
+    it("never tracks the same chained job id twice", async () => {
+      restoreJobIds = withSequentialJobIds("launchE");
+      const spec: JobSpec = { type: "train", config_contents: ["c"], model_types: ["centroid"] };
+      await useConnectStore.getState().submitJobsOn(PAIRED_WORKER.nodeId, spec, { source: "window" });
+
+      const client = lastClient();
+      client.emit("launchE_1", "job.result", { chained_job_ids: ["launchE_chained"] });
+      await flushAsync();
+      // A second job.result (e.g. a reconnect's backlog replay) repeating
+      // the same chained id must not add a duplicate tracked entry.
+      client.emit("launchE_1", "job.result", { chained_job_ids: ["launchE_chained"] });
+      await flushAsync();
+
+      expect(
+        useConnectStore.getState().trackedJobs.filter((j) => j.jobId === "launchE_chained"),
+      ).toHaveLength(1);
+
+      client.emit("launchE_1", "job.status", { state: "completed" });
+      client.emit("launchE_chained", "job.status", { state: "completed" });
+      await flushAsync();
     });
   });
 

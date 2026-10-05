@@ -248,6 +248,25 @@ interface ConnectState {
     onProgress: JobLogHandler,
     options?: SubmitJobOptions,
   ) => Promise<JobResult>;
+  /**
+   * Submits `spec` to `workerId` WITHOUT waiting for any job to finish — the
+   * launcher wizard's (PR5b) "+ New job" and "Run again"/"Run inference" row
+   * actions, which fire into a worker's queue and move on rather than
+   * blocking on a live progress stream the way `submitJob` does. A
+   * multi-model train spec is split the same way `submitJob` splits one
+   * (`isMultiModelTrainSpec`), but every resulting job is submitted via
+   * `jobsSubmit` up front, sharing one `run` id — not one-at-a-time as each
+   * prior model finishes. Each job is tracked (`opts.source`) and watched in
+   * the background (`watchTrackedJob`), so its own finish toast still fires;
+   * a chained post-train inference job the worker reports via
+   * `chained_job_ids` (PR5w) is tracked and watched the same way. Returns
+   * every job id this submission produced, in run order.
+   */
+  submitJobsOn: (
+    workerId: string,
+    spec: JobSpec,
+    opts: { source: TrackedJob["source"] },
+  ) => Promise<string[]>;
   /** Hard-cancel the current job. */
   cancelJob: () => void;
   /** Gracefully early-stop the current job (checkpoint + finish). */
@@ -660,6 +679,100 @@ async function notifyJobFinished(
       action,
     });
   }
+}
+
+/**
+ * Watches one tracked job to a terminal state without ever resolving a
+ * caller's own promise — unlike `submitSingleJob`, nothing here awaits the
+ * job finishing. Updates `trackedJobs.lastSeq` as events arrive, and once a
+ * terminal `job.status` lands, records the final state and fires
+ * `notifyJobFinished` (deduped there, so re-watching an already-finished job
+ * is harmless). Shared by `resumeTrackedJobs` (a job found still active from
+ * a previous session) and `submitJobsOn` (a job this window just submitted
+ * and isn't waiting on) — extracted from the former so the two never drift.
+ *
+ * `onChainedJobIds` fires when a `job.result` event carries
+ * `chained_job_ids` — only ever set by a train job's own post-train
+ * chaining (sleap-connect PR5w) — letting `submitJobsOn` start tracking and
+ * watching those track jobs too, so their own finish toasts fire even
+ * though this window never submitted them itself.
+ */
+async function watchTrackedJob(
+  set: ConnectSet,
+  client: WorkerClient,
+  job: TrackedJob,
+  workerLabel: string,
+  onChainedJobIds?: (ids: string[]) => void,
+): Promise<void> {
+  if (activeSubscriptions.has(job.jobId)) return; // already being watched
+
+  let watcherLastSeq = job.lastSeq;
+  const watcher: ActiveSubscription = {
+    workerId: job.workerId,
+    jobId: job.jobId,
+    unsubscribe: null,
+    handle: (event) => {
+      if (event.seq <= watcherLastSeq) return;
+      watcherLastSeq = event.seq;
+      updateTrackedJob(set, job.jobId, { lastSeq: watcherLastSeq });
+
+      if (event.topic === "job.result") {
+        const chainedIds = event.data.chained_job_ids as string[] | undefined;
+        if (chainedIds && chainedIds.length > 0) onChainedJobIds?.(chainedIds);
+        return;
+      }
+      if (event.topic !== "job.status") return;
+      const state = event.data.state as string;
+      if (!TERMINAL_JOB_STATES.has(state)) return;
+      watcher.unsubscribe?.();
+      activeSubscriptions.delete(job.jobId);
+      const trackedState = state as TrackedJob["state"];
+      const detail = (event.data.detail as string) ?? null;
+      updateTrackedJob(set, job.jobId, {
+        state: trackedState,
+        ...(trackedState !== "completed" ? { error: detail ?? undefined } : {}),
+      });
+      void notifyJobFinished({ ...job, state: trackedState }, workerLabel, detail);
+    },
+  };
+  activeSubscriptions.set(job.jobId, watcher);
+  try {
+    await attachSubscription(client, watcher, job.lastSeq);
+  } catch (err) {
+    activeSubscriptions.delete(job.jobId);
+    console.warn(`[connect] watchTrackedJob: failed to watch job ${job.jobId}:`, err);
+  }
+}
+
+/**
+ * Starts tracking and watching one job the WORKER produced on its own — a
+ * chained post-train inference job (`chained_job_ids`, PR5w) this window
+ * never called `jobsSubmit` for — so it shows up in the Connect window and
+ * its own finish toast still fires. A no-op if `jobId` is already tracked
+ * (e.g. a worker-file job scan discovers it independently).
+ */
+function trackChainedJob(
+  set: ConnectSet,
+  client: WorkerClient,
+  workerId: string,
+  jobId: string,
+  source: TrackedJob["source"],
+  workerLabel: string,
+): void {
+  if (useConnectStore.getState().trackedJobs.some((j) => j.jobId === jobId)) return;
+  const job: TrackedJob = {
+    workerId,
+    jobId,
+    lastSeq: 0,
+    kind: "track",
+    label: "Inference",
+    source,
+    state: "active",
+    seen: false,
+    submittedAt: Date.now(),
+  };
+  set((state) => ({ trackedJobs: capTrackedJobs([...state.trackedJobs, job]) }));
+  void watchTrackedJob(set, client, job, workerLabel);
 }
 
 const LAST_SEQ_PERSIST_THROTTLE_MS = 2000;
@@ -1264,6 +1377,58 @@ export const useConnectStore = create<ConnectState>()(
         );
       },
 
+      submitJobsOn: async (workerId, spec, opts) => {
+        const client = await get().clientFor(workerId);
+        const workerLabel =
+          get().pairedWorkers.find((w) => w.nodeId === workerId)?.label ?? workerId;
+        const runId = crypto.randomUUID();
+
+        const onChainedJobIds = (chainedIds: string[]) => {
+          for (const chainedId of chainedIds) {
+            trackChainedJob(set, client, workerId, chainedId, opts.source, workerLabel);
+          }
+        };
+
+        const submitTracked = async (oneSpec: JobSpec): Promise<string> => {
+          const { jobId } = await client.jobsSubmit(oneSpec as unknown as Record<string, unknown>);
+          const tracked: TrackedJob = {
+            workerId,
+            jobId,
+            lastSeq: 0,
+            kind: oneSpec.type,
+            label: trackedJobLabel(oneSpec),
+            source: opts.source,
+            state: "active",
+            seen: false,
+            submittedAt: Date.now(),
+          };
+          set((state) => ({ trackedJobs: capTrackedJobs([...state.trackedJobs, tracked]) }));
+          void watchTrackedJob(set, client, tracked, workerLabel, onChainedJobIds);
+          return jobId;
+        };
+
+        if (isMultiModelTrainSpec(spec)) {
+          const modelTypes = spec.model_types ?? [];
+          const n = spec.config_contents.length;
+          const jobIds: string[] = [];
+          // Every model's job is submitted up front — unlike `submitJob`,
+          // nothing here awaits a prior model finishing before queuing the
+          // next one (that's the whole point of a "fire and forget" submit).
+          for (let i = 0; i < n; i++) {
+            const perModelSpec: TrainJobSpec = {
+              ...spec,
+              config_contents: [spec.config_contents[i]],
+              model_types: modelTypes[i] ? [modelTypes[i]] : [],
+              run: { id: runId, index: i, count: n },
+            };
+            jobIds.push(await submitTracked(perModelSpec));
+          }
+          return jobIds;
+        }
+
+        return [await submitTracked({ ...spec, run: { id: runId, index: 0, count: 1 } })];
+      },
+
       cancelJob: () => {
         const { _client, selectedWorkerId, trackedJobs } = get();
         const job = selectedWorkerId ? latestActiveJobFor(selectedWorkerId, trackedJobs) : null;
@@ -1347,38 +1512,15 @@ export const useConnectStore = create<ConnectState>()(
               continue;
             }
 
-            if (activeSubscriptions.has(job.jobId)) continue; // already being watched
-
-            let watcherLastSeq = job.lastSeq;
-            const watcher: ActiveSubscription = {
-              workerId,
-              jobId: job.jobId,
-              unsubscribe: null,
-              handle: (event) => {
-                if (event.seq <= watcherLastSeq) return;
-                watcherLastSeq = event.seq;
-                updateTrackedJob(set, job.jobId, { lastSeq: watcherLastSeq });
-                if (event.topic !== "job.status") return;
-                const state = event.data.state as string;
-                if (!TERMINAL_JOB_STATES.has(state)) return;
-                watcher.unsubscribe?.();
-                activeSubscriptions.delete(job.jobId);
-                const trackedState = state as TrackedJob["state"];
-                const detail = (event.data.detail as string) ?? null;
-                updateTrackedJob(set, job.jobId, {
-                  state: trackedState,
-                  ...(trackedState !== "completed" ? { error: detail ?? undefined } : {}),
-                });
-                void notifyJobFinished({ ...job, state: trackedState }, worker.label, detail);
-              },
-            };
-            activeSubscriptions.set(job.jobId, watcher);
-            try {
-              await attachSubscription(client, watcher, job.lastSeq);
-            } catch (err) {
-              activeSubscriptions.delete(job.jobId);
-              console.warn(`[connect] resumeTrackedJobs: failed to watch job ${job.jobId}:`, err);
-            }
+            // A chained post-train inference job (PR5w) can complete while
+            // this app wasn't running to watch for it live — tracking it
+            // here too means it still shows up and still toasts, the same
+            // as one discovered mid-session via `submitJobsOn`.
+            await watchTrackedJob(set, client, job, worker.label, (chainedIds) => {
+              for (const chainedId of chainedIds) {
+                trackChainedJob(set, client, workerId, chainedId, job.source, worker.label);
+              }
+            });
           }
         }
       },
