@@ -129,9 +129,23 @@ export interface TrainJobSpec {
   project?: JobProject;
   /** Links this job to its siblings in a multi-model training run (sleap-connect `feat/connect-run-id`) — opaque to the worker, round-tripped as-is. */
   run?: JobRun;
-  // No `inference_target`: the worker never ran inference as part of a train
-  // job. Post-training inference is a separate track job the app submits
-  // once every model has trained (see trainingStore's remote branch).
+  /**
+   * Chained post-train inference, submitted by the WORKER itself once every
+   * job sharing this one's `run.id` has completed (sleap-connect PR5w) —
+   * built by the launcher wizard (`launcherSpec.ts`'s `buildLauncherTrainSpec`)
+   * so inference can run even after the app closes. Each entry becomes a
+   * `TrackJobSpec` with `type`/`data_path`/`model_paths`/`project` filled in
+   * by the worker (`data_path` = this run's `labels_path`, `model_paths` =
+   * every sibling's trained model dir in `run.index` order) — hence the
+   * omission here. The resulting job ids land in this job's own result and
+   * `job.result` event as `chained_job_ids` (or `chain_error` on a submit
+   * failure). Omitted entirely when post-train inference wasn't requested.
+   *
+   * `trainingStore.ts`'s OWN remote training branch (Training panel, not the
+   * launcher) never sets this — it still submits its post-training track job
+   * itself, client-orchestrated, once `submitJob` resolves.
+   */
+  post_inference?: Array<Omit<TrackJobSpec, "type" | "data_path" | "model_paths">>;
 }
 
 export type JobSpec = TrackJobSpec | TrainJobSpec;

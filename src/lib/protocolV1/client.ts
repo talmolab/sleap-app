@@ -108,6 +108,8 @@ export interface JobSummary {
   project?: JobProject | null;
   /** Absent on a job submitted before `run` existed, or by an older worker. */
   run?: JobRun | null;
+  /** True when this train job's spec carries `post_inference` entries (sleap-connect PR5w) — the Connect window's "→ inference" tag. Absent on a track job, or a worker predating PR5w. */
+  postInference?: boolean;
 }
 
 export interface JobStatus {
@@ -206,6 +208,7 @@ function _mapJobSummary(j: Record<string, unknown>): JobSummary {
     labelsPath: j.labels_path as string | undefined,
     project: j.project as JobProject | null | undefined,
     run: j.run as JobRun | null | undefined,
+    postInference: j.post_inference as boolean | undefined,
   };
 }
 

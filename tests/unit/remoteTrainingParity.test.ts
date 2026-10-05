@@ -250,6 +250,8 @@ const MOUNT = "/worker-mounts";
 const fakeWorkerMounts: Array<{ path: string }> = [{ path: MOUNT }];
 /** What the next `statWorkerPath()` call resolves to; keyed by the exact path asked for. */
 let fakeWorkerStats: Record<string, { exists: boolean; type?: "file" | "directory" }> = {};
+/** A sentinel `WorkerClient` stand-in — opaque to `loadWorkerLabels`, which is separately mocked below and never actually inspects it. */
+const FAKE_CLIENT = { __fakeWorkerClient: true };
 vi.mock("@/stores/connectStore", () => ({
   useConnectStore: {
     getState: () => ({
@@ -260,6 +262,7 @@ vi.mock("@/stores/connectStore", () => ({
       },
       workerMounts: fakeWorkerMounts,
       statWorkerPath: async (path: string) => fakeWorkerStats[path] ?? { exists: false },
+      clientFor: async (_workerId: string) => FAKE_CLIENT,
     }),
   },
   // Only exercised by "window"-mode tests — "worker-file" never calls it.
@@ -273,6 +276,22 @@ vi.mock("@/stores/appStore", () => ({
   },
 }));
 vi.mock("@/stores/confirmStore", () => ({ confirmDialog: async () => true }));
+
+/**
+ * Defaults to mirroring `fakeLabels` (the open project) so every EXISTING
+ * worker-file test — written before `startTraining`'s post-training
+ * inference read the worker's own labels for frame counts — keeps seeing
+ * the same data it always did without changing a single assertion.
+ * `fakeWorkerLabelsOverride` lets a test prove the two are no longer the
+ * same read by diverging them on purpose.
+ */
+let fakeWorkerLabelsOverride: Labels | null | undefined;
+const loadWorkerLabelsMock = vi.fn(async (_client: unknown, _path: string) =>
+  fakeWorkerLabelsOverride !== undefined ? fakeWorkerLabelsOverride : fakeLabels,
+);
+vi.mock("@/lib/workerLabels", () => ({
+  loadWorkerLabels: loadWorkerLabelsMock,
+}));
 
 const mergeRemoteResultsMock = vi.fn(async (_pending: unknown) => {});
 vi.mock("@/stores/inferenceStore", () => ({
@@ -318,6 +337,8 @@ describe("startTraining (remote) — telemetry + post-training inference", () =>
     submitCalls = [];
     driveJob = defaultDrive;
     fakeLabels = new Labels({ videos: [], skeletons: [], labeledFrames: [] });
+    fakeWorkerLabelsOverride = undefined;
+    loadWorkerLabelsMock.mockClear();
     mergeRemoteResultsMock.mockClear();
   });
   afterEach(() => {
@@ -438,6 +459,33 @@ describe("startTraining (remote) — telemetry + post-training inference", () =>
     expect(tracks.map((t) => t.video_index)).toEqual([0, 1]);
     expect(tracks.every((t) => t.frames!.split(",").length === 5)).toBe(true);
     expect(useTrainingStore.getState().postTrainingInference?.pendingMerge?.results).toHaveLength(2);
+  });
+
+  it("worker-file: post-training inference frame counts come from the WORKER's own labels, not the open project's", async () => {
+    // The open project (if any is even open) has only one, much shorter
+    // video -- a stand-in for "this window's project has nothing to do with
+    // the worker file this run trained on".
+    fakeLabels = new Labels({
+      videos: [new Video({ filename: "unrelated-open-project.mp4", backendMetadata: { shape: [3, 8, 8, 1] }, openBackend: false })],
+      skeletons: [],
+      labeledFrames: [],
+    });
+    fakeWorkerLabelsOverride = new Labels({
+      videos: [
+        new Video({ filename: "a.mp4", backendMetadata: { shape: [100, 8, 8, 1] }, openBackend: false }),
+        new Video({ filename: "b.mp4", backendMetadata: { shape: [50, 8, 8, 1] }, openBackend: false }),
+      ],
+      skeletons: [],
+      labeledFrames: [],
+    });
+
+    await useTrainingStore.getState().startTraining({ ...setUpTopDown("random"), sampleCount: 5 });
+
+    // Two track jobs (one per WORKER video) -- not one, which is what the
+    // bug (reading the open project's single short video instead) produced.
+    const tracks = submitCalls.slice(1).map((c) => c.spec as { video_index?: number; frames?: string });
+    expect(tracks.map((t) => t.video_index)).toEqual([0, 1]);
+    expect(loadWorkerLabelsMock).toHaveBeenCalledWith(FAKE_CLIENT, "/local/labels.slp");
   });
 });
 

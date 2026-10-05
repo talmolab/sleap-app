@@ -678,6 +678,68 @@ export function countUserLabeledFrames(labels: Labels | null): number | null {
 }
 
 /**
+ * Resolves a train job's `run_name` before it's serialized into YAML.
+ * `hyperparams.runName` is always blank on a freshly-imported config (see
+ * `parseYamlConfig`), and `applyHyperparamsToYaml` only writes `run_name`
+ * when it's non-empty — so a remote submission, which has no Hydra
+ * CLI-override safety net (the worker runs whatever's baked into
+ * `config_contents` verbatim), needs a fresh value resolved BEFORE
+ * serializing, or an imported config's stale `run_name` would otherwise
+ * ride straight through into the job. Matches legacy SLEAP's
+ * `get_timestamp()` + base run name scheme
+ * (`sleap/gui/learning/runners.py`). Extracted from `startTraining`'s
+ * remote branch (PR5a) so the launcher wizard's worker-file jobs
+ * (`launcherSpec.ts`) can resolve the same way against a worker-side
+ * `Labels` instead of the open project's.
+ */
+export function resolveRemoteRunName(
+  hp: ConfigHyperparams,
+  modelType: string,
+  labels: Labels | null,
+  opts?: { runTimestamp?: string },
+): string {
+  if (hp.runName) return hp.runName;
+  // A caller building several configs for one submission (a split
+  // multi-model pipeline) passes a shared `runTimestamp` so every model's
+  // run name carries the exact same timestamp, computed only once for the
+  // whole batch — not a fresh one per model (which real time passing
+  // between calls could otherwise let drift by a second). No such override
+  // is needed for the frame count: `countUserLabeledFrames` already caches
+  // its result by `labels` reference.
+  const runTimestamp = opts?.runTimestamp ?? formatRunTimestamp();
+  const userLabeledFrameCount = countUserLabeledFrames(labels);
+  return userLabeledFrameCount !== null
+    ? `${runTimestamp}.${modelType}.n=${userLabeledFrameCount}`
+    : `${runTimestamp}.${modelType}`;
+}
+
+/**
+ * Resolves `max_stride` when a config leaves it at Auto (`null`) —
+ * sleap-nn has no server-side Auto resolution for it (unlike `crop_size`),
+ * so it must be resolved client-side from the data's actual instance sizes
+ * before the config ever leaves this app. `undefined` when already
+ * explicit, or when there's nothing to recommend from (no size stats and
+ * not a pretrained backbone, which always uses stride 32 regardless of
+ * data). Extracted from `startTraining`'s remote branch (PR5a) — see
+ * {@link resolveRemoteRunName}'s doc for why.
+ */
+export function resolveRemoteMaxStride(
+  hp: ConfigHyperparams,
+  labels: Labels | null,
+): number | undefined {
+  if (hp.maxStride != null) return undefined;
+  const isPretrainedBackbone = !!hp.backbone && hp.backbone !== "unet";
+  const sizeStats = computeInstanceSizeStats(labels);
+  if (!sizeStats && !isPretrainedBackbone) return undefined;
+  return recommendMaxStride(
+    sizeStats?.avgAnimalSize ?? 0,
+    sizeStats?.maxBboxDim ?? 0,
+    hp.scale,
+    hp.backbone,
+  );
+}
+
+/**
  * The `InferenceConfig` for post-training inference — shared by local runs
  * (run directly) and remote runs (turned into a track job spec). Only the
  * target/model/merge choices come from the training panel; every other
@@ -1736,37 +1798,12 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         }
       }
 
-      // Build TrainJobSpec — apply hyperparam overrides to YAML.
-      // Unlike local training, there's no Hydra CLI-override safety net here
-      // (the worker runs whatever's baked into config_contents verbatim), so
-      // run_name must be resolved to a fresh value BEFORE serializing — it's
-      // always blank on `hyperparams` post-import (see parseYamlConfig), and
-      // applyHyperparamsToYaml only writes run_name when it's non-empty, so
-      // without this an imported config's stale run_name would otherwise ride
-      // straight through into the remote job.
-      const userLabeledFrameCount = countUserLabeledFrames(labels);
+      // Build TrainJobSpec — apply hyperparam overrides to YAML. See
+      // resolveRemoteRunName/resolveRemoteMaxStride's own docs for why these
+      // must be resolved client-side before serializing. `runTimestamp` is
+      // shared across every model below so a split multi-model pipeline's
+      // run names all carry the exact same timestamp.
       const runTimestamp = formatRunTimestamp();
-      const resolveRunName = (hp: ConfigHyperparams, modelType: string) =>
-        hp.runName ||
-        (userLabeledFrameCount !== null
-          ? `${runTimestamp}.${modelType}.n=${userLabeledFrameCount}`
-          : `${runTimestamp}.${modelType}`);
-
-      // max_stride has no server-side Auto resolution (unlike crop_size) —
-      // resolve it client-side from the project's actual instance sizes
-      // before this config ever leaves the app.
-      const remoteSizeStats = computeInstanceSizeStats(labels);
-      const resolveMaxStride = (hp: ConfigHyperparams) => {
-        if (hp.maxStride != null) return undefined;
-        const isPretrainedBackbone = !!hp.backbone && hp.backbone !== "unet";
-        if (!remoteSizeStats && !isPretrainedBackbone) return undefined;
-        return recommendMaxStride(
-          remoteSizeStats?.avgAnimalSize ?? 0,
-          remoteSizeStats?.maxBboxDim ?? 0,
-          hp.scale,
-          hp.backbone,
-        );
-      };
       const remoteDetectedChannels = detectVideoChannels(labels);
 
       // Jobs are submitted (and, for a multi-model pipeline, split) in
@@ -1785,10 +1822,10 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
             c.content,
             {
               ...c.hyperparams,
-              runName: resolveRunName(c.hyperparams, c.modelType),
+              runName: resolveRemoteRunName(c.hyperparams, c.modelType, labels, { runTimestamp }),
             },
             c.checkpointPath,
-            resolveMaxStride(c.hyperparams),
+            resolveRemoteMaxStride(c.hyperparams, labels),
             resolveInputChannels(c.hyperparams.colorMode, remoteDetectedChannels),
           ),
         ),
@@ -1909,13 +1946,32 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
               skipUserLabeled: remoteOpts.skipUserLabeled,
               existingPredictions: remoteOpts.existingPredictions,
             });
+            // Worker-file training's actual video list/frame counts live
+            // only on the worker — this window may have no project open at
+            // all, or a completely unrelated one — so `videoFrameCounts`
+            // below must come from the worker-side file itself, not
+            // whatever `labels` the open project happens to be. "window"
+            // mode is unaffected: there, `labels` IS the data the worker
+            // trained on.
+            let frameCountLabels = labels;
+            if (remoteOpts.labelsSource === "worker-file" && labelsPathField) {
+              try {
+                const client = await useConnectStore.getState().clientFor(remoteOpts.workerId);
+                const { loadWorkerLabels } = await import("@/lib/workerLabels");
+                frameCountLabels = await loadWorkerLabels(client, labelsPathField);
+              } catch {
+                // Keep whatever `labels` already was (if anything) as a
+                // fallback — an imperfect frame count beats blocking
+                // post-training inference entirely.
+              }
+            }
             // No path_mappings: the train labels payload already carries
             // fully-resolved video references (worker paths, or embedded
             // pixels) — there's nothing left for the worker to translate.
             const trackSpecs = buildRemoteTrackSpecs(inferenceConfig, {
               dataPath,
               pathMappings: {},
-              videoFrameCounts: (labels?.videos ?? []).map((v) => v.shape?.[0] ?? 0),
+              videoFrameCounts: (frameCountLabels?.videos ?? []).map((v) => v.shape?.[0] ?? 0),
               currentFrameIdx: frameIdx ?? 0,
               activeVideoFrameCount: video?.shape?.[0] ?? 0,
               allowedVideoIndices,
