@@ -500,11 +500,14 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
                 variant="outline"
                 size="sm"
                 className="h-8 text-xs"
-                disabled={!configsReady}
+                disabled={!labels || !configsReady}
                 onClick={() => setConfigDialogOpen(true)}
               >
                 Edit hyperparameters…
               </Button>
+              {!labels && (
+                <p className="text-[10px] text-muted-foreground">Pick a labels file first</p>
+              )}
             </div>
 
             <div className="space-y-1.5">

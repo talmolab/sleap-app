@@ -323,6 +323,29 @@ describe("NewJobWizard — start config from", () => {
   });
 });
 
+describe("NewJobWizard — Edit hyperparameters needs a labels file first", () => {
+  it("is disabled with a hint before any labels are loaded, even though defaults already filled every slot", async () => {
+    renderWizard();
+    // defaultConfigsFor runs on mount regardless of whether labels are
+    // loaded, so configsReady is already true here — Edit hyperparameters
+    // must stay disabled on labels alone, or it opens TrainingConfigDialog
+    // in a state with no labels (the dialog only renders when `labels` is
+    // set — see the wizard's own doc on configDialogOpen && labels).
+    expect(screen.getByRole("button", { name: "Edit hyperparameters…" })).toBeDisabled();
+    expect(screen.getByText("Pick a labels file first")).toBeInTheDocument();
+  });
+
+  it("enables once labels load, and opens the real TrainingConfigDialog on top", async () => {
+    renderWizard();
+    await loadViaBrowse();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Edit hyperparameters…" })).not.toBeDisabled());
+    expect(screen.queryByText("Pick a labels file first")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit hyperparameters…" }));
+    await waitFor(() => expect(document.getElementById("pipeline-type")).toBeTruthy());
+  });
+});
+
 describe("NewJobWizard — post-train inference toggle", () => {
   it("adds post_inference to the submitted spec when enabled", async () => {
     renderWizard();
