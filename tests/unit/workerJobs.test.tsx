@@ -1,28 +1,65 @@
 /**
- * PR4b §4b.4 — WorkerJobs: pinning/sorting (this project first, then newest),
- * run tags, queue text, status chips, and action visibility per job state.
- * `mergeRemoteResults` (Fetch & Load) and `sonner` are mocked per this repo's
- * `vi.mock` convention — not hoisted, so the module under test is imported
- * dynamically AFTER the mocks are registered.
+ * PR4b §4b.4 / PR5b §5b.3 — WorkerJobs: pinning/sorting (this project first,
+ * then newest), run tags, queue text, status chips, and action visibility
+ * per job state — now including PR5b's widened Fetch & Load (every
+ * completed track job, not just this project's own), "Run again" (seeds the
+ * launcher wizard from a failed run's own config), and "Run inference" (any
+ * completed train run). `sonner` is mocked per this repo's `vi.mock`
+ * convention — not hoisted, so the module under test is imported dynamically
+ * AFTER the mocks are registered.
+ *
+ * `MergePredictionsDialog` and `NewJobWizard` are mocked out entirely: their
+ * own compatibility-check / wizard-form logic gets its own dedicated test
+ * files (mergePredictionsDialog.test.tsx, newJobWizard.test.tsx) — this file
+ * only verifies WorkerJobs opens them with the right props.
  */
 import { describe, it, expect, afterEach, beforeEach, vi } from "../bun-test";
 import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
+import { Labels } from "@talmolab/sleap-io.js";
 import { useConnectStore } from "@/stores/connectStore";
 import { useAppStore } from "@/stores/appStore";
 import { useConfirmStore } from "@/stores/confirmStore";
 import { projectTag } from "@/lib/projectTag";
-import type { JobSummary, JobStatus } from "@/lib/protocolV1/client";
+import type { JobSummary, JobStatus, WorkerClient } from "@/lib/protocolV1/client";
 
 vi.mock("sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() },
 }));
 
-const mergeRemoteResultsMock = vi.fn(async () => {});
-vi.mock("@/stores/inferenceStore", () => ({
-  mergeRemoteResults: mergeRemoteResultsMock,
+vi.mock("@/components/connect/MergePredictionsDialog", () => ({
+  MergePredictionsDialog: (props: { workerId: string; jobId: string; mine: boolean }) => (
+    <div data-testid="merge-predictions-dialog">
+      {props.workerId}:{props.jobId}:{String(props.mine)}
+    </div>
+  ),
 }));
 
-const { WorkerJobs, isMineJob, sortWorkerJobs, jobTitle, jobStatusChip } = await import(
+const seedWizardFromRunMock = vi.fn(
+  async (): Promise<{ labelsPath: string; modelType: string; configs: unknown[] } | null> => ({
+    labelsPath: "/root/vast/exp1/flies.slp",
+    modelType: "top_down",
+    configs: [],
+  }),
+);
+vi.mock("@/components/connect/NewJobWizard", () => ({
+  NewJobWizard: (props: { workerId: string; seed: unknown }) => (
+    <div data-testid="new-job-wizard">
+      {props.workerId}:{JSON.stringify(props.seed)}
+    </div>
+  ),
+  seedWizardFromRun: seedWizardFromRunMock,
+  WORKER_FILE_INFERENCE_TARGETS: [{ value: "suggestions", label: "Suggested frames" }],
+}));
+
+// RunInferenceDialog (defined inside WorkerJobs.tsx, not exported/mocked)
+// reads a worker-side SLP for real otherwise — stub it out so these tests
+// never touch sleap-io.js's streaming/H5 machinery.
+vi.mock("@/lib/workerLabels", () => ({
+  loadWorkerLabels: async () => new Labels({ videos: [], skeletons: [], labeledFrames: [] }),
+  checkWorkerFileVideos: async () => [],
+}));
+
+const { WorkerJobs, isMineJob, sortWorkerJobs, jobTitle, jobStatusChip, isManagedJob, siblingJobIds } = await import(
   "@/components/connect/WorkerJobs"
 );
 
@@ -51,19 +88,22 @@ const noopClearInterval = () => {};
 
 afterEach(() => {
   cleanup();
-  mergeRemoteResultsMock.mockClear();
+  seedWizardFromRunMock.mockClear();
 });
 
 beforeEach(() => {
   useAppStore.setState({ projectPath: MY_PROJECT_PATH });
   useConnectStore.setState({
     selectedWorkerId: WORKER_ID,
+    trackedJobs: [],
     listJobs: async () => [],
     jobDetail: async () => {
       throw new Error("jobDetail not stubbed for this test");
     },
     cancelJobOn: async () => {},
     connectToWorker: async () => {},
+    clientFor: async () => ({}) as unknown as WorkerClient,
+    submitJobsOn: async () => [],
   });
 });
 
@@ -200,7 +240,7 @@ describe("WorkerJobs rendering", () => {
     expect(screen.getAllByText("Train centroid").length).toBeGreaterThan(0);
   });
 
-  it("a job from another project is view-only: watch/logs, but no stop or fetch", async () => {
+  it("a job from another project is view-only: watch/logs, but no stop or run-again", async () => {
     useConnectStore.setState({
       listJobs: async () => [
         job({ state: "running", project: { id: "other", name: "mice.slp" } }),
@@ -219,7 +259,11 @@ describe("WorkerJobs rendering", () => {
     expect(screen.getByRole("button", { name: "Watch live" })).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: "Logs" })).toHaveLength(2);
     expect(screen.queryByRole("button", { name: "Stop" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Fetch & Load" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Run again" })).not.toBeInTheDocument();
+    // Fetch & Load (PR5b) is offered on ANY completed track job, mine or
+    // not — the compatibility dialog (mocked above) decides what's safe to
+    // merge, not project ownership.
+    expect(screen.getByRole("button", { name: "Fetch & Load" })).toBeInTheDocument();
   });
 
   it("Cancel confirms, then calls cancelJobOn and refreshes the list", async () => {
@@ -244,24 +288,12 @@ describe("WorkerJobs rendering", () => {
     await waitFor(() => expect(cancelCalls).toEqual([[WORKER_ID, "job_1", "cancel"]]));
   });
 
-  it("Fetch & Load connects to the worker first if it isn't the selected backend, then merges", async () => {
+  it("Fetch & Load connects to the worker first if it isn't the selected backend, then opens the merge dialog", async () => {
     useAppStore.setState({ projectPath: MY_PROJECT_PATH });
     const connectCalls: string[] = [];
     useConnectStore.setState({
       selectedWorkerId: "some-other-worker",
       listJobs: async () => [job({ state: "completed", kind: "track" })],
-      jobDetail: async (): Promise<JobStatus> => ({
-        jobId: "job_1",
-        state: "completed",
-        createdAt: "2026-10-01T00:00:00.000Z",
-        updatedAt: "2026-10-01T00:05:00.000Z",
-        result: { blobs: { predictions: { sha256: "abc123", size: 42 } } },
-        error: null,
-        queuePosition: null,
-        kind: "track",
-        modelTypes: [],
-        project: myProject,
-      }),
       connectToWorker: async (id: string) => {
         connectCalls.push(id);
       },
@@ -272,12 +304,150 @@ describe("WorkerJobs rendering", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "Fetch & Load" })).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "Fetch & Load" }));
 
-    await waitFor(() => expect(mergeRemoteResultsMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByTestId("merge-predictions-dialog")).toBeInTheDocument());
     expect(connectCalls).toEqual([WORKER_ID]);
-    expect(mergeRemoteResultsMock).toHaveBeenCalledWith({
-      results: [{ jobId: "job_1", success: true, resultBlobs: { predictions: { sha256: "abc123", size: 42 } } }],
-      mode: "replace",
-      trackOnly: false,
+    // "mine" (myProject) because the job's project id matches the open
+    // project's — the mocked dialog receives it as a prop, same as a real
+    // one would for deciding its own fast path.
+    expect(screen.getByTestId("merge-predictions-dialog")).toHaveTextContent(`${WORKER_ID}:job_1:true`);
+  });
+
+  it("Fetch & Load on another project's completed track job opens the dialog with mine=false", async () => {
+    useConnectStore.setState({
+      listJobs: async () => [job({ state: "completed", kind: "track", project: { id: "other", name: "mice.slp" } })],
     });
+    render(
+      <WorkerJobs workerId={WORKER_ID} setIntervalImpl={noopSetInterval} clearIntervalImpl={noopClearInterval} />,
+    );
+    await waitFor(() => expect(screen.getByRole("button", { name: "Fetch & Load" })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Fetch & Load" }));
+    await waitFor(() => expect(screen.getByTestId("merge-predictions-dialog")).toBeInTheDocument());
+    expect(screen.getByTestId("merge-predictions-dialog")).toHaveTextContent(`${WORKER_ID}:job_1:false`);
+  });
+});
+
+describe("isManagedJob / siblingJobIds (pure logic)", () => {
+  it("is managed when the project id matches, even with no tracked jobs", () => {
+    expect(isManagedJob(job(), myProject.id, new Set())).toBe(true);
+  });
+
+  it("is managed when the job id is tracked, even from a different project", () => {
+    const other = job({ project: { id: "other", name: "x" } });
+    expect(isManagedJob(other, myProject.id, new Set())).toBe(false);
+    expect(isManagedJob(other, myProject.id, new Set(["job_1"]))).toBe(true);
+  });
+
+  it("returns just the job itself when it has no run", () => {
+    expect(siblingJobIds([job()], job())).toEqual(["job_1"]);
+  });
+
+  it("returns every sibling sharing run.id, ordered by run.index", () => {
+    const a = job({ jobId: "a", run: { id: "r1", index: 1, count: 2 } });
+    const b = job({ jobId: "b", run: { id: "r1", index: 0, count: 2 } });
+    const c = job({ jobId: "c", run: { id: "r2", index: 0, count: 1 } });
+    expect(siblingJobIds([a, b, c], a)).toEqual(["b", "a"]);
+  });
+});
+
+describe("WorkerJobs — PR5b row actions", () => {
+  it("+ New job opens the wizard with no seed", async () => {
+    render(
+      <WorkerJobs workerId={WORKER_ID} setIntervalImpl={noopSetInterval} clearIntervalImpl={noopClearInterval} />,
+    );
+    await waitFor(() => expect(screen.getByRole("button", { name: "+ New job" })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "+ New job" }));
+    await waitFor(() => expect(screen.getByTestId("new-job-wizard")).toBeInTheDocument());
+    expect(screen.getByTestId("new-job-wizard")).toHaveTextContent(`${WORKER_ID}:null`);
+  });
+
+  it("Run again is offered only on a failed train job that's mine", async () => {
+    useConnectStore.setState({
+      listJobs: async () => [
+        job({ jobId: "mine-failed", state: "failed", kind: "train" }),
+        job({ jobId: "other-failed", state: "failed", kind: "train", project: { id: "other", name: "x" } }),
+      ],
+    });
+    render(
+      <WorkerJobs workerId={WORKER_ID} setIntervalImpl={noopSetInterval} clearIntervalImpl={noopClearInterval} />,
+    );
+    await waitFor(() => expect(screen.getAllByRole("button", { name: "Run again" })).toHaveLength(1));
+  });
+
+  it("Run again seeds the wizard from the failed run's own config", async () => {
+    useConnectStore.setState({
+      listJobs: async () => [job({ jobId: "mine-failed", state: "failed", kind: "train" })],
+      jobDetail: async (): Promise<JobStatus> => ({
+        jobId: "mine-failed",
+        state: "failed",
+        createdAt: "2026-10-01T00:00:00.000Z",
+        updatedAt: "2026-10-01T00:05:00.000Z",
+        result: null,
+        error: "boom",
+        queuePosition: null,
+        kind: "train",
+        modelTypes: ["centroid"],
+        project: myProject,
+        labelsPath: "/root/vast/exp1/flies.slp",
+        spec: { config_contents: ["a: 1"], model_types: ["centroid"] },
+      }),
+    });
+    render(
+      <WorkerJobs workerId={WORKER_ID} setIntervalImpl={noopSetInterval} clearIntervalImpl={noopClearInterval} />,
+    );
+    await waitFor(() => expect(screen.getByRole("button", { name: "Run again" })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Run again" }));
+    await waitFor(() => expect(seedWizardFromRunMock).toHaveBeenCalledTimes(1));
+    expect(seedWizardFromRunMock).toHaveBeenCalledWith(expect.any(Function), WORKER_ID, ["mine-failed"]);
+    await waitFor(() => expect(screen.getByTestId("new-job-wizard")).toBeInTheDocument());
+    expect(screen.getByTestId("new-job-wizard")).toHaveTextContent("/root/vast/exp1/flies.slp");
+  });
+
+  it("Run inference is offered on a completed train job regardless of project", async () => {
+    useConnectStore.setState({
+      listJobs: async () => [
+        job({ jobId: "mine-done", state: "completed", kind: "train" }),
+        job({ jobId: "other-done", state: "completed", kind: "train", project: { id: "other", name: "x" } }),
+      ],
+    });
+    render(
+      <WorkerJobs workerId={WORKER_ID} setIntervalImpl={noopSetInterval} clearIntervalImpl={noopClearInterval} />,
+    );
+    await waitFor(() => expect(screen.getAllByRole("button", { name: "Run inference" })).toHaveLength(2));
+  });
+
+  it("Run inference opens a dialog that reads the run's trained model(s)", async () => {
+    useConnectStore.setState({
+      listJobs: async () => [job({ jobId: "mine-done", state: "completed", kind: "train" })],
+      jobDetail: async (): Promise<JobStatus> => ({
+        jobId: "mine-done",
+        state: "completed",
+        createdAt: "2026-10-01T00:00:00.000Z",
+        updatedAt: "2026-10-01T00:05:00.000Z",
+        result: { model_dir: "/root/vast/models/centroid" },
+        error: null,
+        queuePosition: null,
+        kind: "train",
+        modelTypes: ["centroid"],
+        project: myProject,
+        labelsPath: "/root/vast/exp1/flies.slp",
+      }),
+    });
+    render(
+      <WorkerJobs workerId={WORKER_ID} setIntervalImpl={noopSetInterval} clearIntervalImpl={noopClearInterval} />,
+    );
+    await waitFor(() => expect(screen.getByRole("button", { name: "Run inference" })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Run inference" }));
+    await waitFor(() => expect(screen.getByText("/root/vast/exp1/flies.slp")).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Add to queue" })).toBeInTheDocument();
+  });
+
+  it("shows a '→ inference' tag on a train job whose spec chains post-train inference", async () => {
+    useConnectStore.setState({
+      listJobs: async () => [job({ postInference: true })],
+    });
+    render(
+      <WorkerJobs workerId={WORKER_ID} setIntervalImpl={noopSetInterval} clearIntervalImpl={noopClearInterval} />,
+    );
+    await waitFor(() => expect(screen.getByText(/→ inference/)).toBeInTheDocument());
   });
 });

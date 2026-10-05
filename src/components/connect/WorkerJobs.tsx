@@ -3,18 +3,42 @@
  * this window is tracking), this project's jobs pinned first (★) and live,
  * others dimmed/view-only. Polls `listJobs` every 10 s while mounted (the
  * tab unmounts with the dialog close / tab switch, which stops the poll).
+ *
+ * PR5b adds "+ New job" (the launcher wizard, design §4.3), "Run again" on a
+ * failed train job (re-seeds the wizard from that run's own config), "Run
+ * inference" on any completed train run, and widens Fetch & Load to every
+ * completed track job (via `MergePredictionsDialog`'s compatibility check,
+ * design §6) rather than just this project's own.
  */
 import { useEffect, useMemo, useState } from "react";
+import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "@/lib/notify";
 import { projectTag } from "@/lib/projectTag";
-import type { JobResultBlobRef } from "@/lib/sleapConnect";
-import type { JobSummary } from "@/lib/protocolV1/client";
+import type { JobSummary, JobStatus } from "@/lib/protocolV1/client";
+import type { Labels } from "@talmolab/sleap-io.js";
 import { useAppStore } from "@/stores/appStore";
 import { useConnectStore } from "@/stores/connectStore";
 import { confirmDialog } from "@/stores/confirmStore";
-import { mergeRemoteResults } from "@/stores/inferenceStore";
+import { buildPostTrainingInferenceConfig, type ModelType } from "@/stores/trainingStore";
+import { loadWorkerLabels } from "@/lib/workerLabels";
+import { buildRunInferenceSpecs } from "@/lib/launcherSpec";
 import { JobViewerDialog } from "./JobViewerDialog";
+import { MergePredictionsDialog } from "./MergePredictionsDialog";
+import {
+  NewJobWizard,
+  seedWizardFromRun,
+  WORKER_FILE_INFERENCE_TARGETS,
+  type NewJobWizardSeed,
+} from "./NewJobWizard";
 
 /** Last path segment of a worker path (handles both `/` and `\`), or `null` if absent. */
 function basename(p: string | undefined): string | null {
@@ -40,6 +64,35 @@ export function sortWorkerJobs(jobs: JobSummary[], myProjectId: string): JobSumm
     if (mineA !== mineB) return mineA ? -1 : 1;
     return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
   });
+}
+
+/**
+ * Whether Cancel/Run again are offered for `job` (PR5b §5b.3) — this
+ * project's own job BY ID (`isMineJob`), OR one this window is actively
+ * tracking (`trackedJobIds`, e.g. a launcher-wizard submission from earlier
+ * this session whose project tag happens to differ, or a job this window
+ * resumed watching after a restart). "Run inference" deliberately does NOT
+ * use this — it's offered on any completed train run (see `WorkerJobs`'
+ * render below), since it operates on that run's own worker-side labels
+ * path, not the open project.
+ */
+export function isManagedJob(job: JobSummary, myProjectId: string, trackedJobIds: Set<string>): boolean {
+  return isMineJob(job, myProjectId) || trackedJobIds.has(job.jobId);
+}
+
+/**
+ * This job's siblings in its training run (`run.id`, in `run.index` order),
+ * or just itself if it was never split (`run` absent/`count === 1`) — shared
+ * by "Run again" (`seedWizardFromRun`) and "Run inference"
+ * (`buildRunInferenceSpecs`'s model dirs), both of which need every model of
+ * a split multi-model run, not just the row the user clicked.
+ */
+export function siblingJobIds(jobs: JobSummary[], job: JobSummary): string[] {
+  if (!job.run) return [job.jobId];
+  return jobs
+    .filter((j) => j.run?.id === job.run!.id)
+    .sort((a, b) => (a.run?.index ?? 0) - (b.run?.index ?? 0))
+    .map((j) => j.jobId);
 }
 
 export function jobTitle(job: JobSummary): string {
@@ -80,8 +133,168 @@ function timeAgo(iso: string): string {
   return `${d} day${d > 1 ? "s" : ""} ago`;
 }
 
+/** Guesses the pipeline `ModelType` from a train run's own `modelTypes` (head types) — only used to satisfy `buildPostTrainingInferenceConfig`'s signature for the "Run inference" row action, whose `pipeline` field `buildRemoteTrackSpecs` never actually reads; getting this slightly wrong is harmless. */
+function guessModelType(headTypes: string[]): ModelType {
+  if (headTypes.includes("centroid") || headTypes.includes("centered_instance")) return "top_down";
+  switch (headTypes[0]) {
+    case "single_instance":
+      return "single_animal";
+    case "bottomup":
+      return "bottom_up";
+    case "multi_class_bottomup":
+      return "bottom_up_id";
+    case "multi_class_topdown":
+      return "top_down_id";
+    default:
+      return "top_down";
+  }
+}
+
+interface RunInferenceDialogProps {
+  workerId: string;
+  workerLabel: string;
+  triggerJob: JobSummary;
+  jobs: JobSummary[];
+  onClose: () => void;
+}
+
+/** PR5b §5b.3 — the small dialog behind "Run inference" on a completed training run: picks a target (same restricted set the launcher wizard offers) and submits a standalone track job against that run's own models. */
+function RunInferenceDialog({ workerId, workerLabel, triggerJob, jobs, onClose }: RunInferenceDialogProps) {
+  const jobDetail = useConnectStore((s) => s.jobDetail);
+  const clientFor = useConnectStore((s) => s.clientFor);
+  const submitJobsOn = useConnectStore((s) => s.submitJobsOn);
+
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [labelsPath, setLabelsPath] = useState<string | null>(null);
+  const [labels, setLabels] = useState<Labels | null>(null);
+  const [modelDirs, setModelDirs] = useState<string[]>([]);
+  const [target, setTarget] = useState("suggestions");
+  const [sampleCount, setSampleCount] = useState(20);
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const ids = siblingJobIds(jobs, triggerJob);
+        const details = await Promise.all(ids.map((id) => jobDetail(workerId, id)));
+        const dirs = details
+          .map((d) => (d.result as { model_dir?: string } | null)?.model_dir)
+          .filter((d): d is string => !!d);
+        const path = details[0]?.labelsPath;
+        if (!path || dirs.length === 0) {
+          if (!cancelled) setError("Couldn't find this run's trained model(s).");
+          return;
+        }
+        const client = await clientFor(workerId);
+        const loaded = await loadWorkerLabels(client, path);
+        if (cancelled) return;
+        setLabelsPath(path);
+        setModelDirs(dirs);
+        setLabels(loaded);
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workerId, triggerJob.jobId]);
+
+  const handleSubmit = async () => {
+    if (!labels || !labelsPath || modelDirs.length === 0) return;
+    setSubmitting(true);
+    try {
+      const config = buildPostTrainingInferenceConfig({
+        modelType: guessModelType(triggerJob.modelTypes),
+        modelPaths: modelDirs,
+        inferenceTarget: target,
+        videoIndex: "all",
+        sampleCount,
+      });
+      const specs = buildRunInferenceSpecs(labelsPath, modelDirs, config, labels);
+      for (const spec of specs) {
+        await submitJobsOn(workerId, spec, { source: "worker-file" });
+      }
+      toast.success(`Added to ${workerLabel} queue`, {
+        description: `Inference on ${basename(labelsPath) ?? labelsPath}`,
+      });
+      onClose();
+    } catch (err) {
+      toast.error("Couldn't submit inference job", {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Dialog
+      open
+      onOpenChange={(next) => {
+        if (!next) onClose();
+      }}
+    >
+      <DialogContent className="sm:max-w-[420px]">
+        <DialogHeader>
+          <DialogTitle className="text-sm">Run inference</DialogTitle>
+        </DialogHeader>
+        {loading && (
+          <div className="flex items-center gap-2 text-xs text-muted-foreground py-4">
+            <Loader2 className="h-4 w-4 animate-spin" /> Loading run…
+          </div>
+        )}
+        {error && <p className="text-xs text-red-400">{error}</p>}
+        {!loading && !error && (
+          <>
+            <p className="text-xs text-muted-foreground font-mono truncate">{labelsPath}</p>
+            <div className="flex items-center gap-2">
+              <Select value={target} onValueChange={setTarget}>
+                <SelectTrigger className="h-8 text-xs flex-1">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {WORKER_FILE_INFERENCE_TARGETS.map((o) => (
+                    <SelectItem key={o.value} value={o.value}>
+                      {o.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {target === "random" && (
+                <Input
+                  type="number"
+                  min={1}
+                  value={sampleCount}
+                  onChange={(e) => setSampleCount(Math.max(1, Number(e.target.value)))}
+                  className="h-8 text-xs w-20"
+                />
+              )}
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={onClose}>
+                Cancel
+              </Button>
+              <Button disabled={submitting} onClick={() => void handleSubmit()}>
+                {submitting ? "Adding…" : "Add to queue"}
+              </Button>
+            </div>
+          </>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export interface WorkerJobsProps {
   workerId: string;
+  /** Display name for this worker — the launcher wizard's title and toasts. Defaults to `workerId` (tests don't need a real label). */
+  workerLabel?: string;
   /** How often jobs are re-fetched while mounted, in ms. Injectable for tests; defaults to 10 s. */
   pollIntervalMs?: number;
   /** Overridable for tests (no fake timers in this repo); defaults to the real `setInterval`. */
@@ -104,6 +317,7 @@ interface ViewerTarget {
 
 export function WorkerJobs({
   workerId,
+  workerLabel,
   pollIntervalMs = DEFAULT_POLL_MS,
   setIntervalImpl = defaultSetInterval,
   clearIntervalImpl = defaultClearInterval,
@@ -113,15 +327,25 @@ export function WorkerJobs({
   const jobDetail = useConnectStore((s) => s.jobDetail);
   const cancelJobOn = useConnectStore((s) => s.cancelJobOn);
   const connectToWorker = useConnectStore((s) => s.connectToWorker);
+  const trackedJobs = useConnectStore((s) => s.trackedJobs);
 
   const [jobs, setJobs] = useState<JobSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busyJobId, setBusyJobId] = useState<string | null>(null);
   const [viewer, setViewer] = useState<ViewerTarget | null>(null);
+  const [mergeTarget, setMergeTarget] = useState<JobSummary | null>(null);
+  const [runInferenceTarget, setRunInferenceTarget] = useState<JobSummary | null>(null);
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const [wizardSeed, setWizardSeed] = useState<NewJobWizardSeed | null>(null);
 
+  const label = workerLabel ?? workerId;
   const myProjectId = useMemo(() => projectTag(projectPath).id, [projectPath]);
   const sorted = useMemo(() => sortWorkerJobs(jobs, myProjectId), [jobs, myProjectId]);
+  const trackedJobIds = useMemo(
+    () => new Set(trackedJobs.filter((j) => j.workerId === workerId).map((j) => j.jobId)),
+    [trackedJobs, workerId],
+  );
 
   const refresh = useMemo(
     () => async () => {
@@ -154,7 +378,7 @@ export function WorkerJobs({
       jobId: job.jobId,
       label: jobTitle(job),
       initialView: job.kind === "track" ? "logs" : initialView,
-      canStop: isMineJob(job, myProjectId),
+      canStop: isManagedJob(job, myProjectId, trackedJobIds),
     });
 
   const handleCancelOrStop = async (job: JobSummary) => {
@@ -180,26 +404,10 @@ export function WorkerJobs({
   const handleFetchLoad = async (job: JobSummary) => {
     setBusyJobId(job.jobId);
     try {
-      const detail = await jobDetail(workerId, job.jobId);
-      const resultData = detail.result as { blobs?: Record<string, JobResultBlobRef> } | null;
-      const predictions = resultData?.blobs?.predictions;
-      if (!predictions) {
-        toast.error("No predictions were found for this job.");
-        return;
-      }
       if (useConnectStore.getState().selectedWorkerId !== workerId) {
         await connectToWorker(workerId);
       }
-      // mode: "replace" is the app's existing default merge mode (see
-      // InferencePanel's initial config / src/stores/inferenceStore.ts:280's
-      // other callers) — there's no open-project InferenceConfig to read a
-      // user choice from when fetching a job straight from this list.
-      await mergeRemoteResults({
-        results: [{ jobId: job.jobId, success: true, resultBlobs: { predictions } }],
-        mode: "replace",
-        trackOnly: false,
-      });
-      toast.success("Loaded. Predictions merged into the project.");
+      setMergeTarget(job);
     } catch (err) {
       toast.error("Fetch & Load failed", {
         description: err instanceof Error ? err.message : String(err),
@@ -209,8 +417,45 @@ export function WorkerJobs({
     }
   };
 
+  const handleRunAgain = async (job: JobSummary) => {
+    setBusyJobId(job.jobId);
+    try {
+      const ids = siblingJobIds(jobs, job);
+      const seeded = await seedWizardFromRun(
+        jobDetail as (workerId: string, jobId: string) => Promise<JobStatus>,
+        workerId,
+        ids,
+      );
+      if (!seeded) {
+        toast.error("Couldn't read that job's configuration.");
+        return;
+      }
+      setWizardSeed(seeded);
+      setWizardOpen(true);
+    } catch (err) {
+      toast.error("Couldn't read that job's configuration.", {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setBusyJobId(null);
+    }
+  };
+
   return (
     <div className="space-y-2">
+      <div className="flex justify-end">
+        <Button
+          size="xs"
+          className="h-7 text-xs"
+          onClick={() => {
+            setWizardSeed(null);
+            setWizardOpen(true);
+          }}
+        >
+          + New job
+        </Button>
+      </div>
+
       {error && (
         <div className="p-2 text-[11px] text-red-400 bg-red-500/8 border border-red-500/20 rounded-md">
           {error}
@@ -225,14 +470,17 @@ export function WorkerJobs({
         <div className="space-y-2">
           {sorted.map((job) => {
             const mine = isMineJob(job, myProjectId);
+            const managed = isManagedJob(job, myProjectId, trackedJobIds);
             const chip = jobStatusChip(job);
             const labelsName = basename(job.labelsPath);
             const runTag = job.run && job.run.count > 1 ? `run ${job.run.index + 1}/${job.run.count}` : null;
-            // Other projects' jobs are view-only: watch/view/logs, never cancel or load.
+            // Other projects' jobs are view-only: watch/view/logs, never cancel.
             const canWatch = job.state === "running";
             const canView = job.state === "completed" || job.state === "failed" || job.state === "canceled";
-            const canCancel = mine && (job.state === "queued" || job.state === "running");
-            const canFetch = mine && job.kind === "track" && job.state === "completed";
+            const canCancel = managed && (job.state === "queued" || job.state === "running");
+            const canFetch = job.kind === "track" && job.state === "completed";
+            const canRunAgain = managed && job.kind === "train" && job.state === "failed";
+            const canRunInference = job.kind === "train" && job.state === "completed";
             return (
               <div
                 key={job.jobId}
@@ -243,7 +491,12 @@ export function WorkerJobs({
                 <div className="flex items-center gap-2 flex-wrap">
                   {mine && <span className="text-orange-400 text-xs shrink-0">★</span>}
                   <div className="min-w-[160px] flex-1">
-                    <div className="text-xs font-medium">{jobTitle(job)}</div>
+                    <div className="text-xs font-medium">
+                      {jobTitle(job)}
+                      {job.postInference && (
+                        <span className="ml-1.5 text-[10px] font-normal text-muted-foreground">→ inference</span>
+                      )}
+                    </div>
                     <div className="text-[10px] text-muted-foreground truncate">
                       {labelsName ?? "—"}
                       {runTag ? ` · ${runTag}` : ""}
@@ -302,6 +555,27 @@ export function WorkerJobs({
                       {job.state === "running" ? "Stop" : "Cancel"}
                     </Button>
                   )}
+                  {canRunAgain && (
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      className="h-6 text-[10px]"
+                      disabled={busyJobId === job.jobId}
+                      onClick={() => void handleRunAgain(job)}
+                    >
+                      Run again
+                    </Button>
+                  )}
+                  {canRunInference && (
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      className="h-6 text-[10px]"
+                      onClick={() => setRunInferenceTarget(job)}
+                    >
+                      Run inference
+                    </Button>
+                  )}
                   {canFetch && (
                     <Button
                       size="xs"
@@ -327,6 +601,35 @@ export function WorkerJobs({
           initialView={viewer.initialView}
           canStop={viewer.canStop}
           onClose={() => setViewer(null)}
+        />
+      )}
+
+      {mergeTarget && (
+        <MergePredictionsDialog
+          workerId={workerId}
+          jobId={mergeTarget.jobId}
+          mine={isMineJob(mergeTarget, myProjectId)}
+          onClose={() => setMergeTarget(null)}
+        />
+      )}
+
+      {runInferenceTarget && (
+        <RunInferenceDialog
+          workerId={workerId}
+          workerLabel={label}
+          triggerJob={runInferenceTarget}
+          jobs={jobs}
+          onClose={() => setRunInferenceTarget(null)}
+        />
+      )}
+
+      {wizardOpen && (
+        <NewJobWizard
+          workerId={workerId}
+          workerLabel={label}
+          seed={wizardSeed}
+          onClose={() => setWizardOpen(false)}
+          onSubmitted={refresh}
         />
       )}
     </div>
