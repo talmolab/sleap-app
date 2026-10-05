@@ -22,6 +22,26 @@ describe("jobStream", () => {
   });
 
   describe("reduceJobEvents", () => {
+    it("infers batches-per-epoch from the curve so epoch points line up with batches", () => {
+      const curveTo = (last: number) =>
+        Array.from({ length: last + 1 }, (_, x) => ({ x, y: 1 / (x + 1) }));
+      const events: WorkerEvent[] = [];
+      let seq = 0;
+      // 5 epochs of 100 batches; the curve is sampled a bit before each epoch ends.
+      for (let epoch = 0; epoch < 5; epoch++) {
+        events.push(ev(++seq, "job.curve", { points: curveTo(epoch * 100 + 95) }));
+        events.push(ev(++seq, "job.epoch", { epoch, train_loss: 0.1, val_loss: 0.1 }));
+      }
+      const mid = reduceJobEvents(initialJobStream("Train"), events);
+      expect(mid.model.epochSize).toBeGreaterThan(90); // live estimate, not the default 1
+
+      const done = reduceJobEvents(mid, [
+        ev(++seq, "job.curve", { points: curveTo(499) }),
+        ev(++seq, "job.status", { state: "completed" }),
+      ]);
+      expect(done.model.epochSize).toBe(100); // exact once the curve is complete
+    });
+
     it("replays a full recorded sequence into the expected final state", () => {
       const events: WorkerEvent[] = [
         ev(1, "job.status", { state: "queued" }),

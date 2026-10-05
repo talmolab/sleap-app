@@ -114,6 +114,22 @@ function applyTelemetry(
   }
 }
 
+/**
+ * Batches per epoch, inferred from the curve: `LossPlot` places epoch points
+ * at `epoch * epochSize` on the batch axis, and remote telemetry carries no
+ * batch index (same inference as `trainingStore.applyRemoteTelemetry`).
+ * `exact` (the job finished, so the curve ends at the last epoch's end)
+ * replaces the running estimate instead of only ever growing it.
+ */
+function withEpochSize(model: ModelProgress, exact = false): ModelProgress {
+  const lastX = model.batchSamples[model.batchSamples.length - 1]?.globalBatch;
+  const lastEpoch = model.epochSamples[model.epochSamples.length - 1]?.epoch;
+  if (lastX === undefined || lastEpoch === undefined) return model;
+  const estimate = Math.max(1, Math.round((lastX + 1) / (lastEpoch + 1)));
+  if (exact) return estimate === model.epochSize ? model : { ...model, epochSize: estimate };
+  return estimate > model.epochSize ? { ...model, epochSize: estimate } : model;
+}
+
 function reduceOne(state: JobStreamState, event: WorkerEvent): JobStreamState {
   if (event.seq <= state.lastSeq) return state; // reconnect backlog overlap / out-of-order
   const lastSeq = event.seq;
@@ -130,14 +146,16 @@ function reduceOne(state: JobStreamState, event: WorkerEvent): JobStreamState {
     case "job.status": {
       const status = parseStatus(event.data.state) ?? state.status;
       const detail = (event.data.detail as string | undefined) ?? null;
-      return { ...state, status, detail: status === "completed" ? null : detail, lastSeq };
+      const model = status === "completed" ? withEpochSize(state.model, true) : state.model;
+      return { ...state, status, model, detail: status === "completed" ? null : detail, lastSeq };
     }
     case "job.result":
       return { ...state, result: event.data, lastSeq };
     default: {
       const telemetry = parseJobTelemetry(event);
       if (!telemetry) return { ...state, lastSeq };
-      return { ...state, model: applyTelemetry(state.model, telemetry), lastSeq };
+      const model = applyTelemetry(state.model, telemetry);
+      return { ...state, model: telemetry.kind === "epoch" ? withEpochSize(model) : model, lastSeq };
     }
   }
 }
