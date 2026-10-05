@@ -42,7 +42,7 @@ vi.mock("@/lib/protocolV1/tauriIrohBlob", () => ({
 }));
 
 import { MergePredictions, MergeTracks } from "@/commands/editCommands";
-import { fetchAndMergeRemoteResult, useInferenceStore } from "@/stores/inferenceStore";
+import { fetchAndMergeRemoteResult, loadRemotePredictions, useInferenceStore } from "@/stores/inferenceStore";
 
 // The bun-test vi.fn shim widens mock.calls elements to `never`, so read
 // them through `unknown` (mirrors inferenceMergeWiring.test.ts).
@@ -222,5 +222,59 @@ describe("mergePendingRemoteResults", () => {
     expect(state.status).toBe("completed");
     expect(state.error).toContain("worker unreachable");
     expect(state.pendingRemoteMerge).not.toBeNull();
+  });
+});
+
+describe("loadRemotePredictions (PR5a: loads without merging)", () => {
+  beforeEach(() => {
+    executeMock.mockClear();
+    loadSlpMock.mockClear();
+    readSlpStreamingMock.mockClear();
+    fetchResultBlobMock.mockClear();
+    createTauriIrohBlobRangeSourceMock.mockClear();
+    disposeMock.mockClear();
+    mockActiveTransport = undefined;
+  });
+
+  it("returns null and touches nothing when the result has no predictions blob ref", async () => {
+    const result: JobResult = { jobId: "job_1", success: true };
+
+    const labels = await loadRemotePredictions(result);
+
+    expect(labels).toBeNull();
+    expect(fetchResultBlobMock).not.toHaveBeenCalled();
+  });
+
+  it("loads via fetchResultBlob + loadSlp over a WebSocket connection, never merging", async () => {
+    const result: JobResult = {
+      jobId: "job_1",
+      success: true,
+      resultBlobs: { predictions: { sha256: "abc123", size: 4096 } },
+    };
+
+    const labels = await loadRemotePredictions(result);
+
+    expect(fetchResultBlobMock).toHaveBeenCalledWith({ sha256: "abc123", size: 4096 });
+    expect(loadSlpMock).toHaveBeenCalledTimes(1);
+    expect(labels).not.toBeNull();
+    // The whole point: nothing merged, unlike fetchAndMergeRemoteResult.
+    expect(executeMock).not.toHaveBeenCalled();
+  });
+
+  it("loads via readSlpStreaming over an iroh connection, disposing the range source, never merging", async () => {
+    mockActiveTransport = "iroh";
+    const result: JobResult = {
+      jobId: "job_1",
+      success: true,
+      resultBlobs: { predictions: { sha256: "abc123", size: 4096 } },
+    };
+
+    const labels = await loadRemotePredictions(result);
+
+    expect(fetchResultBlobMock).not.toHaveBeenCalled();
+    expect(readSlpStreamingMock).toHaveBeenCalledTimes(1);
+    expect(disposeMock).toHaveBeenCalledTimes(1);
+    expect(labels).not.toBeNull();
+    expect(executeMock).not.toHaveBeenCalled();
   });
 });

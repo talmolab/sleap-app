@@ -219,12 +219,13 @@ export async function loadAndMergePredictionBytes(
 }
 
 /**
- * If a remote job's result carries a fetchable predictions blob (stage
- * 1.10 — talmolab/sleap-connect PR #89 and later), fetch it and merge it
- * into the current project. A no-op if the worker didn't report one — a
- * worker not yet running the blob HTTP server is a known interim gap, not
- * an error: remote inference still completes, there's just nothing to
- * merge back automatically yet.
+ * Loads a remote job's predictions .slp into a `Labels` WITHOUT merging it
+ * into anything — extracted from `fetchAndMergeRemoteResult` (PR5a) so the
+ * launcher's Fetch & Load compatibility check (`mergeCompat.ts`'s
+ * `checkMergeCompat`, PR5b's `MergePredictionsDialog`) can inspect the
+ * predictions before deciding how, or whether, to merge them. Returns
+ * `null` if the job carries no fetchable predictions blob — a worker not
+ * yet running the blob HTTP server is a known interim gap, not an error.
  *
  * Two transports, two loading strategies — deliberately not unified into
  * one, because they have genuinely different memory characteristics (item
@@ -236,13 +237,11 @@ export async function loadAndMergePredictionBytes(
  * connection, via `readSlpStreaming`/`RangeSource` — never buffering the
  * whole file anywhere.
  */
-export async function fetchAndMergeRemoteResult(
+export async function loadRemotePredictions(
   result: JobResult,
-  mode: ExistingPredictionsMode,
-  trackOnly: boolean,
-): Promise<void> {
+): Promise<Awaited<ReturnType<typeof loadSlp>> | null> {
   const ref = result.resultBlobs?.predictions;
-  if (!ref) return;
+  if (!ref) return null;
   const { useConnectStore } = await import("@/stores/connectStore");
   const { activeTransport } = useConnectStore.getState();
 
@@ -250,25 +249,36 @@ export async function fetchAndMergeRemoteResult(
     const { createTauriIrohBlobRangeSource } = await import("@/lib/protocolV1/tauriIrohBlob");
     const { source, dispose } = createTauriIrohBlobRangeSource(ref.sha256, ref.size);
     try {
-      const predictions = await readSlpStreaming(source, {
+      return await readSlpStreaming(source, {
         openVideos: false,
         lazy: false,
         filenameHint: `${result.jobId}.predictions.slp`,
       });
-      await mergePredictionsIntoProject(predictions, mode, trackOnly);
     } finally {
       await dispose();
     }
-    return;
   }
 
   const bytes = await useConnectStore.getState().fetchResultBlob(ref);
-  await loadAndMergePredictionBytes(
-    bytes,
-    `${result.jobId}.predictions.slp`,
-    mode,
-    trackOnly,
-  );
+  return loadSlp(bytes, {
+    openVideos: false,
+    h5: { filenameHint: `${result.jobId}.predictions.slp` },
+  });
+}
+
+/**
+ * If a remote job's result carries a fetchable predictions blob, load it
+ * (`loadRemotePredictions`) and merge it into the current project. A no-op
+ * if there's nothing to fetch — see `loadRemotePredictions`'s own doc.
+ */
+export async function fetchAndMergeRemoteResult(
+  result: JobResult,
+  mode: ExistingPredictionsMode,
+  trackOnly: boolean,
+): Promise<void> {
+  const predictions = await loadRemotePredictions(result);
+  if (!predictions) return;
+  await mergePredictionsIntoProject(predictions, mode, trackOnly);
 }
 
 /**
