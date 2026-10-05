@@ -25,11 +25,21 @@
  * here ever touches the Training panel's own config.
  */
 import { useEffect, useMemo, useState } from "react";
-import { Loader2 } from "lucide-react";
+import { CheckIcon, Loader2 } from "lucide-react";
+import { Select as SelectPrimitive } from "radix-ui";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectLabel,
+  SelectSeparator,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { toast } from "@/lib/notify";
 import type { Labels } from "@talmolab/sleap-io.js";
 import type { JobStatus, JobSummary, WorkerClient } from "@/lib/protocolV1/client";
@@ -58,7 +68,7 @@ import {
   seedFromJobSpec,
 } from "@/lib/launcherSpec";
 import { projectTag } from "@/lib/projectTag";
-import { timeAgo } from "@/lib/timestamp";
+import { timeAgo, modelRunTimestamp } from "@/lib/timestamp";
 import { TrainingConfigDialog, type TrainingConfigActions } from "@/components/dialogs/TrainingConfigDialog";
 import { RemoteFileBrowser } from "@/components/dialogs/RemoteFileBrowser";
 
@@ -188,40 +198,36 @@ export function summarizeVideoCheck(check: WorkerFileVideoCheck[]): string[] {
   return lines;
 }
 
-interface PastRun {
-  runId: string;
-  jobIds: string[];
-  label: string;
-}
-
 /**
  * A training run on this worker whose EVERY sibling job (by `run.count`, not
- * just however many happen to be `completed`) has finished — the Inference
- * flow's "Models" step only offers these, since `buildRunInferenceSpecs`
- * needs every sibling's own trained model dir (a split top-down run's
- * centroid + centered_instance) and there's nowhere to get a still-running
- * sibling's dir from. Distinct from `PastRun` (used by "Start config from a
- * past job", Train-only): that one's fine with a lone finished job even when
- * a sibling is still running.
+ * just however many happen to be `completed`) has finished. Shared by the
+ * Inference flow's "Models" step (`buildRunInferenceSpecs` needs every
+ * sibling's own trained model dir — a split top-down run's centroid +
+ * centered_instance — and there's nowhere to get a still-running sibling's
+ * dir from) and the Train flow's "Start config from" dropdown's "Recent
+ * training runs" section (seeding a still-splitting run's config from just
+ * its one finished sibling would silently drop the other head's edits).
  */
-interface CompletedRun {
+export interface CompletedRun {
   runId: string;
   jobIds: string[];
   /** Each sibling's own head type, in `run.index` order — `inferModelType`'s input. */
   modelTypes: string[];
   labelsPath: string;
   createdAt: string;
+  /** Leading `YYMMDD_HHMMSS` shared by this run's model names (`modelRunTimestamp`), or `null` when none of its jobs carry a known one yet (an older worker). */
+  timestamp: string | null;
 }
 
 /**
  * Groups `jobs` (a worker's full `listJobs` result) into {@link CompletedRun}s
- * for the Inference flow's "Models" step — pure so the "every sibling
- * completed" rule is directly unit-testable. A job without `run` is its own
- * one-job run (`run.count` defaults to 1). A run is included only once EVERY
- * sibling `run.count` expects is present in `jobs` AND `completed` — a
- * top-down run with its centered_instance job still `running`/`queued` (or
- * missing from `jobs` entirely) is left out, not offered with a partial
- * model set.
+ * for the Inference flow's "Models" step and the Train flow's "Start config
+ * from" dropdown — pure so the "every sibling completed" rule is directly
+ * unit-testable. A job without `run` is its own one-job run (`run.count`
+ * defaults to 1). A run is included only once EVERY sibling `run.count`
+ * expects is present in `jobs` AND `completed` — a top-down run with its
+ * centered_instance job still `running`/`queued` (or missing from `jobs`
+ * entirely) is left out, not offered with a partial model set.
  */
 export function groupCompletedRuns(jobs: JobSummary[]): CompletedRun[] {
   const byRun = new Map<string, JobSummary[]>();
@@ -243,9 +249,76 @@ export function groupCompletedRuns(jobs: JobSummary[]): CompletedRun[] {
       modelTypes: sorted.map((j) => j.modelTypes[0] ?? "model"),
       labelsPath: sorted[0]?.labelsPath ?? "",
       createdAt: last.createdAt,
+      timestamp: sorted.map((j) => modelRunTimestamp(j.modelName)).find((t): t is string => t != null) ?? null,
     });
   }
   return runs;
+}
+
+/**
+ * Dropdown entry text for one {@link CompletedRun} in "Start config from"'s
+ * "Recent training runs" section (user-approved design, 2026-10): primary
+ * "(<types joined with ' + '>) · <timestamp>" (e.g. "(centroid +
+ * centered_instance) · 260922_015758"), falling back to the run's own short
+ * id when no `model_name` timestamp is known; secondary "<labels basename> ·
+ * <age>". Appends the short run id to the primary line too when two entries
+ * would otherwise read identically (e.g. two runs that both fell back to a
+ * missing timestamp could coincidentally share everything else). Pure and
+ * exported for direct testing — `runs` should already be filtered to one
+ * model type and sorted newest-first (`NewJobWizard`'s own `recentRunsForType`).
+ */
+export function labelPastRuns(
+  runs: CompletedRun[],
+): Array<{ run: CompletedRun; primary: string; secondary: string }> {
+  const base = runs.map((run) => ({
+    run,
+    primary: `(${run.modelTypes.join(" + ")}) · ${run.timestamp ?? run.runId.slice(0, 8)}`,
+    secondary: `${basename(run.labelsPath) || "—"} · ${timeAgo(run.createdAt)}`,
+  }));
+  const primaryCounts = new Map<string, number>();
+  for (const b of base) primaryCounts.set(b.primary, (primaryCounts.get(b.primary) ?? 0) + 1);
+  return base.map((b) =>
+    (primaryCounts.get(b.primary) ?? 0) > 1
+      ? { ...b, primary: `${b.primary} · ${b.run.runId.slice(0, 8)}` }
+      : b,
+  );
+}
+
+/**
+ * One "Recent training runs" dropdown entry (`labelPastRuns`'s shape):
+ * renders two lines (primary · timestamp, secondary · labels/age) in the
+ * OPEN list, but wraps only the primary line in `SelectPrimitive.ItemText`
+ * — the part `@radix-ui/react-select` portals into the closed trigger on
+ * selection, so the trigger stays single-line like every other Select in
+ * this app. The shared shadcn `SelectItem` (`@/components/ui/select`) wraps
+ * ALL of its children in one `ItemText`, which would portal the secondary
+ * line into the trigger too; this uses the underlying Radix primitive
+ * directly for just this item rather than hand-editing the generated
+ * `ui/select.tsx`.
+ */
+function PastRunSelectItem({
+  run,
+  primary,
+  secondary,
+}: {
+  run: CompletedRun;
+  primary: string;
+  secondary: string;
+}) {
+  return (
+    <SelectPrimitive.Item
+      value={`past:${run.runId}`}
+      className="focus:bg-accent focus:text-accent-foreground relative flex w-full cursor-default flex-col items-start gap-0.5 rounded-sm py-1.5 pr-8 pl-2 text-xs outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+    >
+      <span className="absolute top-1.5 right-2 flex size-3.5 items-center justify-center">
+        <SelectPrimitive.ItemIndicator>
+          <CheckIcon className="size-4" />
+        </SelectPrimitive.ItemIndicator>
+      </span>
+      <SelectPrimitive.ItemText>{primary}</SelectPrimitive.ItemText>
+      <span className="text-[10px] text-muted-foreground">{secondary}</span>
+    </SelectPrimitive.Item>
+  );
 }
 
 export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted }: NewJobWizardProps) {
@@ -275,7 +348,12 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
     () => seed?.configs ?? defaultConfigsFor(seed?.modelType ?? "top_down"),
   );
   const [startFrom, setStartFrom] = useState<StartFrom>(seed ? "past" : "defaults");
-  const [pastRuns, setPastRuns] = useState<PastRun[]>([]);
+  // Which `completedRuns` entry "Start config from" last seeded, if any —
+  // `startFrom === "past"` alone doesn't say which (there can be several
+  // runs of the current model type); null for a "Run again" seed (its own
+  // run id isn't threaded through `NewJobWizardSeed`) or before any run is
+  // picked, in which case the dropdown just shows its placeholder.
+  const [selectedPastRunId, setSelectedPastRunId] = useState<string | null>(null);
   const [seedingFromPast, setSeedingFromPast] = useState(false);
   const [configDialogOpen, setConfigDialogOpen] = useState(false);
 
@@ -283,9 +361,11 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
   const [inferenceTarget, setInferenceTarget] = useState("suggestions");
   const [sampleCount, setSampleCount] = useState(20);
 
-  // Inference flow's "Models" step: completed runs to pick from, the
+  // Completed runs on this worker — the Train flow's "Start config from"
+  // dropdown (filtered to the selected model type) and the Inference flow's
+  // "Models" step both read this; the latter also tracks the
   // currently-chosen model dir(s) (from a picked run, manually browsed
-  // folders, or both), and the head types behind them (just for
+  // folders, or both) and the head types behind them (just for
   // inferModelType's cosmetic `pipeline` guess — see its own doc).
   const [completedRuns, setCompletedRuns] = useState<CompletedRun[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
@@ -326,21 +406,6 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
     void listJobs(workerId)
       .then((jobs) => {
         if (cancelled) return;
-        const trains = jobs.filter((j) => j.kind === "train" && j.state === "completed");
-        const byRun = new Map<string, typeof trains>();
-        for (const j of trains) {
-          const key = j.run?.id ?? j.jobId;
-          byRun.set(key, [...(byRun.get(key) ?? []), j]);
-        }
-        const runs: PastRun[] = Array.from(byRun.entries()).map(([runId, runJobs]) => {
-          const sorted = [...runJobs].sort((a, b) => (a.run?.index ?? 0) - (b.run?.index ?? 0));
-          return {
-            runId,
-            jobIds: sorted.map((j) => j.jobId),
-            label: `Train ${sorted.map((j) => j.modelTypes[0] ?? "model").join(" + ")}`,
-          };
-        });
-        setPastRuns(runs);
         setCompletedRuns(groupCompletedRuns(jobs));
       })
       .catch(() => {});
@@ -407,11 +472,13 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
 
   const chooseDefaults = () => {
     setStartFrom("defaults");
+    setSelectedPastRunId(null);
     setConfigs(defaultConfigsFor(modelType));
   };
 
-  const choosePastRun = async (run: PastRun) => {
+  const choosePastRun = async (run: Pick<CompletedRun, "runId" | "jobIds">) => {
     setStartFrom("past");
+    setSelectedPastRunId(run.runId);
     setSeedingFromPast(true);
     try {
       const seeded = await seedWizardFromRun(jobDetail, workerId, run.jobIds);
@@ -433,6 +500,7 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
 
   const chooseYaml = () => {
     setStartFrom("yaml");
+    setSelectedPastRunId(null);
     setBrowserTarget("yaml");
     setBrowserOpen(true);
   };
@@ -510,6 +578,27 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
     }),
     [],
   );
+
+  const modelTypeLabel = MODEL_TYPE_OPTIONS.find((o) => o.value === modelType)?.label ?? modelType;
+  // "Start config from"'s "Recent training runs" section: completed runs
+  // whose own pipeline matches the currently selected Model Type, newest
+  // first — `inferModelType` reverses a run's ordered head types
+  // (`modelTypes`) back to the pipeline `ModelType` it trained (the same
+  // reverse mapping the Inference flow's "Models" step pipeline guess uses).
+  const recentRunsForType = useMemo(
+    () =>
+      completedRuns
+        .filter((r) => inferModelType(r.modelTypes) === modelType)
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
+    [completedRuns, modelType],
+  );
+  // The Select's bound value: a chosen past run (`past:<runId>`), or the
+  // plain `startFrom` token for "yaml"/"defaults". A "Run again" seed starts
+  // `startFrom` at "past" with no known `selectedPastRunId` (its run id
+  // isn't threaded through `NewJobWizardSeed`) — that falls through to ""
+  // here, so the trigger shows its placeholder rather than a wrong entry.
+  const startFromValue =
+    startFrom === "past" ? (selectedPastRunId ? `past:${selectedPastRunId}` : "") : startFrom;
 
   const missingVideos = videoCheck?.filter((v) => !v.found) ?? [];
   const allVideosFound = videoCheck != null && missingVideos.length === 0;
@@ -616,7 +705,7 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
         if (!next) onClose();
       }}
     >
-      <DialogContent className="sm:max-w-[560px] max-h-[85vh] overflow-y-auto">
+      <DialogContent className="sm:max-w-[560px] max-h-[85vh] overflow-y-auto overflow-x-hidden">
         <DialogHeader>
           <DialogTitle className="text-sm">New job on {workerLabel}</DialogTitle>
           <DialogDescription className="text-xs">
@@ -637,7 +726,7 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
             </div>
           </div>
         ) : (
-          <div className="space-y-4">
+          <div className="space-y-4 min-w-0">
             <div className="flex gap-1.5">
               <Button
                 variant="outline"
@@ -661,9 +750,20 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
               <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
                 Labels (on {workerLabel})
               </p>
-              <div className="flex gap-2">
-                <div className="flex-1 flex items-center h-8 px-2.5 border border-border rounded-md bg-muted/30 font-mono text-xs truncate">
-                  {labelsPath ?? "No file selected"}
+              <div className="flex gap-2 min-w-0">
+                <div className="flex-1 min-w-0 flex items-center h-8 px-2.5 border border-border rounded-md bg-muted/30">
+                  {/* A long worker path gets its own horizontally scrollable
+                      line (`overflow-x-auto` + `whitespace-nowrap`) rather
+                      than `truncate` — the user asked to be able to scroll
+                      to read the whole thing. `truncate` on the OUTER `flex`
+                      div alone doesn't stop it widening the dialog either:
+                      that div is itself a flex container (`items-center`),
+                      so its text becomes an anonymous flex child with no
+                      `min-width: 0` of its own, and `min-w-0` here (plus on
+                      the row above) is what actually lets it shrink. */}
+                  <div className="overflow-x-auto whitespace-nowrap font-mono text-xs">
+                    {labelsPath ?? "No file selected"}
+                  </div>
                 </div>
                 <Button
                   size="sm"
@@ -707,7 +807,9 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
                           key={v.index}
                           className="flex items-center gap-2 h-7 px-2 border border-border rounded-md bg-muted/30 font-mono text-[11px]"
                         >
-                          <span className="flex-1 truncate">{basename(v.path)}</span>
+                          <span className="flex-1 min-w-0 truncate" title={v.path}>
+                            {basename(v.path)}
+                          </span>
                           <Button
                             size="sm"
                             variant="outline"
@@ -766,36 +868,45 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
                   <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
                     Start config from
                   </p>
-                  <div className="space-y-1">
-                    {pastRuns.map((run) => (
-                      <Button
-                        key={run.runId}
-                        variant="outline"
-                        size="sm"
-                        className={`w-full justify-start h-8 text-xs ${startFrom === "past" ? "border-primary" : ""}`}
-                        disabled={seedingFromPast}
-                        onClick={() => void choosePastRun(run)}
-                      >
-                        Past job: {run.label}
-                      </Button>
-                    ))}
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className={`w-full justify-start h-8 text-xs ${startFrom === "yaml" ? "border-primary" : ""}`}
-                      onClick={chooseYaml}
-                    >
-                      YAML on {workerLabel}…
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className={`w-full justify-start h-8 text-xs ${startFrom === "defaults" ? "border-primary" : ""}`}
-                      onClick={chooseDefaults}
-                    >
-                      Defaults for {MODEL_TYPE_OPTIONS.find((o) => o.value === modelType)?.label}
-                    </Button>
-                  </div>
+                  <Select
+                    value={startFromValue}
+                    onValueChange={(v) => {
+                      if (v === "yaml") chooseYaml();
+                      else if (v === "defaults") chooseDefaults();
+                      else if (v.startsWith("past:")) {
+                        const run = recentRunsForType.find((r) => r.runId === v.slice("past:".length));
+                        if (run) void choosePastRun(run);
+                      }
+                    }}
+                  >
+                    <SelectTrigger className="h-8 text-xs w-full" disabled={seedingFromPast}>
+                      <SelectValue placeholder="Choose a starting point…" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectGroup>
+                        <SelectLabel>Recent training runs ({modelTypeLabel})</SelectLabel>
+                        {recentRunsForType.length > 0 ? (
+                          labelPastRuns(recentRunsForType).map(({ run, primary, secondary }) => (
+                            <PastRunSelectItem key={run.runId} run={run} primary={primary} secondary={secondary} />
+                          ))
+                        ) : (
+                          <SelectItem value="_none" disabled>
+                            No finished runs for {modelTypeLabel}
+                          </SelectItem>
+                        )}
+                      </SelectGroup>
+                      <SelectSeparator />
+                      <SelectGroup>
+                        <SelectLabel>From a file</SelectLabel>
+                        <SelectItem value="yaml">Config file on {workerLabel}…</SelectItem>
+                      </SelectGroup>
+                      <SelectSeparator />
+                      <SelectGroup>
+                        <SelectLabel>Defaults</SelectLabel>
+                        <SelectItem value="defaults">Baseline profile for {modelTypeLabel} (recommended)</SelectItem>
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
                   <Button
                     variant="outline"
                     size="sm"
@@ -847,12 +958,17 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
                 </div>
 
                 {labels && labelsPath && (
-                  <div className="flex flex-col gap-1 rounded-md border border-border bg-muted/30 p-2.5 text-xs">
+                  <div className="flex flex-col gap-1 min-w-0 rounded-md border border-border bg-muted/30 p-2.5 text-xs">
                     <span>
-                      {MODEL_TYPE_OPTIONS.find((o) => o.value === modelType)?.label} · {configs.length} config
+                      {modelTypeLabel} · {configs.length} config
                       {configs.length === 1 ? "" : "s"}
                     </span>
-                    <span className="text-muted-foreground font-mono truncate">Labels: {labelsPath}</span>
+                    <span
+                      className="min-w-0 truncate text-muted-foreground font-mono"
+                      title={`Labels: ${labelsPath}`}
+                    >
+                      Labels: {labelsPath}
+                    </span>
                     <span className="text-muted-foreground">
                       Then: {postInferenceEnabled
                         ? `inference on ${WORKER_FILE_INFERENCE_TARGETS.find((o) => o.value === inferenceTarget)?.label.toLowerCase()}`
@@ -897,7 +1013,9 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
                           key={dir}
                           className="flex items-center gap-2 h-7 px-2 border border-border rounded-md bg-muted/30 font-mono text-[11px]"
                         >
-                          <span className="flex-1 truncate">{dir}</span>
+                          <span className="flex-1 min-w-0 truncate" title={dir}>
+                            {dir}
+                          </span>
                           <button
                             type="button"
                             aria-label={`Remove ${dir}`}
@@ -942,11 +1060,16 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
                 </div>
 
                 {labels && labelsPath && (
-                  <div className="flex flex-col gap-1 rounded-md border border-border bg-muted/30 p-2.5 text-xs">
+                  <div className="flex flex-col gap-1 min-w-0 rounded-md border border-border bg-muted/30 p-2.5 text-xs">
                     <span>
                       Inference · {modelDirs.length} model dir{modelDirs.length === 1 ? "" : "s"}
                     </span>
-                    <span className="text-muted-foreground font-mono truncate">Labels: {labelsPath}</span>
+                    <span
+                      className="min-w-0 truncate text-muted-foreground font-mono"
+                      title={`Labels: ${labelsPath}`}
+                    >
+                      Labels: {labelsPath}
+                    </span>
                     <span className="text-muted-foreground">
                       On: {WORKER_FILE_INFERENCE_TARGETS.find((o) => o.value === inferenceTarget)?.label.toLowerCase()}
                     </span>

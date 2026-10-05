@@ -25,7 +25,7 @@
  * unlike a bare mocked element would.
  */
 import { describe, it, expect, afterEach, beforeAll, beforeEach, vi } from "../bun-test";
-import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import { Skeleton, Video, Labels, LabeledFrame, Instance } from "@talmolab/sleap-io.js";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { useConnectStore, type PairedWorker } from "@/stores/connectStore";
@@ -280,6 +280,23 @@ function switchToInference() {
   fireEvent.click(screen.getByRole("button", { name: "Inference" }));
 }
 
+/**
+ * Opens the "Start config from" `<Select>` — in Train mode it's the SECOND
+ * combobox (Model type is the first). pointerDown + Enter on the trigger is
+ * this repo's verified pattern for mounting a Radix Select's options
+ * (skeletonEdgeAutofill.test.tsx); picking a specific option afterward works
+ * via a plain `fireEvent.click` on the `role="option"` element — Radix's
+ * `SelectItem` commits on `onPointerUp` only when its own `pointerType` was
+ * most recently "mouse" (tracked per-item from a preceding `pointerDown`/
+ * `pointerMove`), and a bare `click` never sets that, so its `onClick`
+ * handler's `pointerType !== "mouse"` branch fires `handleSelect()` instead.
+ */
+function openStartFromSelect() {
+  const trigger = screen.getAllByRole("combobox")[1]!;
+  fireEvent.pointerDown(trigger, { button: 0 });
+  fireEvent.keyDown(trigger, { key: "Enter" });
+}
+
 describe("NewJobWizard — browse -> loadWorkerLabels -> summary", () => {
   it("shows skeleton/video/frame counts after picking a worker-side .slp", async () => {
     renderWizard();
@@ -288,6 +305,16 @@ describe("NewJobWizard — browse -> loadWorkerLabels -> summary", () => {
     expect(screen.getByText(/worker-skeleton · 1 video · 1 labeled frame/)).toBeInTheDocument();
     expect(loadWorkerLabelsMock).toHaveBeenCalledTimes(1);
     expect(checkWorkerFileVideosMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("gives a long selected labels path its own horizontally scrollable line, not a `truncate` that widens the dialog", async () => {
+    renderWizard();
+    await loadViaBrowse();
+
+    const pathEl = screen.getByText(SLP_PATH);
+    expect(pathEl.className).toContain("overflow-x-auto");
+    expect(pathEl.className).toContain("whitespace-nowrap");
+    expect(pathEl.className).not.toContain("truncate");
   });
 });
 
@@ -384,58 +411,165 @@ describe("NewJobWizard — a video resolved next to the labels file", () => {
 });
 
 describe("NewJobWizard — start config from", () => {
-  it("'a past job on this worker' seeds model type + configs from the run's own spec", async () => {
+  it("'Recent training runs' lists only completed runs of the selected model type, newest first, formatted per design", async () => {
     useConnectStore.setState({
-      listJobs: async () => [jobSummary()],
+      listJobs: async () => [
+        // Matches the default model type (Top-Down) — older run.
+        jobSummary({
+          jobId: "c1",
+          modelTypes: ["centroid"],
+          run: { id: "runOld", index: 0, count: 2 },
+          createdAt: "2026-09-01T00:00:00.000Z",
+        }),
+        jobSummary({
+          jobId: "c2",
+          modelTypes: ["centered_instance"],
+          run: { id: "runOld", index: 1, count: 2 },
+          createdAt: "2026-09-02T00:00:00.000Z",
+        }),
+        // A newer Top-Down run.
+        jobSummary({
+          jobId: "c3",
+          modelTypes: ["centroid"],
+          run: { id: "runNew", index: 0, count: 2 },
+          createdAt: "2026-10-01T00:00:00.000Z",
+        }),
+        jobSummary({
+          jobId: "c4",
+          modelTypes: ["centered_instance"],
+          run: { id: "runNew", index: 1, count: 2 },
+          createdAt: "2026-10-02T00:00:00.000Z",
+        }),
+        // A different model type — hidden while Top-Down is selected.
+        jobSummary({ jobId: "s1", modelTypes: ["single_instance"], run: undefined }),
+        // A split run with a still-running sibling — hidden (incomplete).
+        jobSummary({ jobId: "i1", modelTypes: ["centroid"], run: { id: "runIncomplete", index: 0, count: 2 } }),
+        jobSummary({
+          jobId: "i2",
+          modelTypes: ["centered_instance"],
+          run: { id: "runIncomplete", index: 1, count: 2 },
+          state: "running",
+        }),
+      ],
+    });
+    renderWizard();
+
+    openStartFromSelect();
+    // `completedRuns` loads async (`listJobs`), so the dropdown may first
+    // mount with the disabled placeholder before the worker's run list
+    // arrives — wait for the real 4-item list (2 matching runs + "Config
+    // file on…" + "Baseline profile…") rather than asserting immediately.
+    await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(4));
+    const options = screen.getAllByRole("option");
+    expect(within(options[0]!).getByText(/\(centroid \+ centered_instance\) · runNew/)).toBeInTheDocument();
+    expect(within(options[0]!).getByText(/flies\.slp · .*ago/)).toBeInTheDocument();
+    expect(within(options[1]!).getByText(/\(centroid \+ centered_instance\) · runOld/)).toBeInTheDocument();
+    expect(within(options[2]!).getByText("Config file on gpu-box…")).toBeInTheDocument();
+    expect(within(options[3]!).getByText("Baseline profile for Top-Down (recommended)")).toBeInTheDocument();
+    expect(screen.queryByText(/single_instance/)).not.toBeInTheDocument();
+  });
+
+  it("shows a disabled placeholder item when no finished run matches the selected model type", async () => {
+    useConnectStore.setState({ listJobs: async () => [] });
+    renderWizard();
+
+    openStartFromSelect();
+    const placeholder = screen.getByRole("option", { name: "No finished runs for Top-Down" });
+    expect(placeholder).toHaveAttribute("aria-disabled", "true");
+  });
+
+  it("selecting a 'Recent training runs' entry seeds model type + configs from that run's own spec", async () => {
+    useConnectStore.setState({
+      listJobs: async () => [
+        jobSummary({ jobId: "c1", modelTypes: ["centroid"], run: { id: "runA", index: 0, count: 2 } }),
+        jobSummary({ jobId: "c2", modelTypes: ["centered_instance"], run: { id: "runA", index: 1, count: 2 } }),
+      ],
       jobDetail: async (workerId: string, jobId: string) => {
         expect(workerId).toBe(WORKER_ID);
-        expect(jobId).toBe("past_job_1");
-        return jobStatus();
+        return jobStatus({
+          jobId,
+          modelTypes: [jobId === "c1" ? "centroid" : "centered_instance"],
+          spec: {
+            config_contents: [jobId === "c1" ? "max_epochs: 10\n" : "max_epochs: 20\n"],
+            model_types: [jobId === "c1" ? "centroid" : "centered_instance"],
+          },
+        });
       },
     });
     renderWizard();
 
-    const pastButton = await screen.findByRole("button", { name: "Past job: Train single_instance" });
-    fireEvent.click(pastButton);
+    openStartFromSelect();
+    const option = await screen.findByRole("option", { name: /centroid \+ centered_instance/ });
+    fireEvent.click(option);
 
-    // seedFromJobSpec resolves model_types:["single_instance"] -> "single_animal"
-    // (1 slot) and parses the one config_contents entry -> 1 ConfigFile; the
-    // seeded labelsPath auto-loads via the (mocked) loadWorkerLabels.
+    // The seeded labelsPath (jobStatus()'s default) auto-loads via the
+    // (mocked) loadWorkerLabels, and seedFromJobSpec parses both siblings'
+    // configs into a 2-config Top-Down pipeline.
     await waitFor(() => expect(screen.getByText("/w/past/flies.slp")).toBeInTheDocument());
-    await waitFor(() =>
-      expect(screen.getByText(/Single Animal · 1 config\b/)).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText(/Top-Down · 2 configs/)).toBeInTheDocument());
+    const trigger = screen.getAllByRole("combobox")[1]!;
+    expect(trigger.textContent).toMatch(/centroid \+ centered_instance/);
   });
 
-  it("'YAML on the worker' reads it via fs.read + parseYamlConfig and fills the current model type's first slot", async () => {
+  it("selecting 'Config file on <worker>…' opens the YAML browse flow and fills the current slot", async () => {
     renderWizard();
     await loadViaBrowse();
     // Default model type (Top-Down) auto-seeds both slots with defaults on
     // mount — picking a YAML replaces only the first slot (centroid)'s
     // config; the second slot's default is untouched, so configsReady (and
-    // the config count) are unaffected. Driving the Model Type `<Select>` to
-    // a 1-slot pipeline isn't needed to prove the YAML path works: this repo
-    // has no established pattern for selecting a specific Radix Select
-    // option in tests, so this asserts the fs.read call happened instead of
-    // the resulting config count, which wouldn't change either way.
+    // the config count) are unaffected.
     await waitFor(() => expect(screen.getByText(/Top-Down · 2 configs/)).toBeInTheDocument());
 
-    fireEvent.click(screen.getByRole("button", { name: /YAML on gpu-box…/ }));
+    openStartFromSelect();
+    fireEvent.click(await screen.findByRole("option", { name: "Config file on gpu-box…" }));
     const pickYamlButton = await screen.findByRole("button", { name: /Pick \.yaml/ });
     fireEvent.click(pickYamlButton);
 
     await waitFor(() => expect(fsReadCalls).toContain(YAML_PATH));
     expect(screen.getByText(/Top-Down · 2 configs/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Add to queue" })).not.toBeDisabled();
+    const trigger = screen.getAllByRole("combobox")[1]!;
+    expect(trigger.textContent).toBe("Config file on gpu-box…");
   });
 
-  it("'defaults' auto-populates every slot's baseline config with no user action", async () => {
+  it("'defaults' auto-populates every slot's baseline config with no user action, and the trigger reflects it", async () => {
     renderWizard();
     await loadViaBrowse();
     // Default model type is Top-Down (2 slots: centroid + centered_instance) —
     // defaultConfigsFor seeds both on mount since startFrom starts as "defaults".
     await waitFor(() => expect(screen.getByText(/Top-Down · 2 configs/)).toBeInTheDocument());
     expect(screen.getByRole("button", { name: "Add to queue" })).not.toBeDisabled();
+    const trigger = screen.getAllByRole("combobox")[1]!;
+    expect(trigger.textContent).toBe("Baseline profile for Top-Down (recommended)");
+  });
+
+  it("selecting 'Baseline profile…' after a past run was chosen switches the trigger back to defaults", async () => {
+    useConnectStore.setState({
+      listJobs: async () => [
+        jobSummary({ jobId: "c1", modelTypes: ["centroid"], run: { id: "runA", index: 0, count: 2 } }),
+        jobSummary({ jobId: "c2", modelTypes: ["centered_instance"], run: { id: "runA", index: 1, count: 2 } }),
+      ],
+      jobDetail: async (_workerId: string, jobId: string) =>
+        jobStatus({
+          jobId,
+          modelTypes: [jobId === "c1" ? "centroid" : "centered_instance"],
+          spec: {
+            config_contents: [jobId === "c1" ? "max_epochs: 10\n" : "max_epochs: 20\n"],
+            model_types: [jobId === "c1" ? "centroid" : "centered_instance"],
+          },
+        }),
+    });
+    renderWizard();
+
+    openStartFromSelect();
+    fireEvent.click(await screen.findByRole("option", { name: /centroid \+ centered_instance/ }));
+    await waitFor(() => expect(screen.getByText("/w/past/flies.slp")).toBeInTheDocument());
+
+    openStartFromSelect();
+    fireEvent.click(await screen.findByRole("option", { name: "Baseline profile for Top-Down (recommended)" }));
+
+    const trigger = screen.getAllByRole("combobox")[1]!;
+    await waitFor(() => expect(trigger.textContent).toBe("Baseline profile for Top-Down (recommended)"));
   });
 });
 
