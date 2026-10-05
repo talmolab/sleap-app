@@ -30,6 +30,8 @@ export interface JobViewerDialogProps {
   jobId: string;
   label: string;
   initialView: "monitor" | "logs";
+  /** An inference ("track") job has no loss curve: only its logs are shown. */
+  kind?: "train" | "track";
   /** Whether Stop is offered — false for another project's job, which is view-only. */
   canStop: boolean;
   onClose: () => void;
@@ -56,10 +58,12 @@ export function JobViewerDialog({
   jobId,
   label,
   initialView,
+  kind,
   canStop,
   onClose,
 }: JobViewerDialogProps) {
-  const [view, setView] = useState<"monitor" | "logs">(initialView);
+  const showMonitor = kind !== "track";
+  const [view, setView] = useState<"monitor" | "logs">(showMonitor ? initialView : "logs");
   const [errorsOnly, setErrorsOnly] = useState(false);
   const [wrap, setWrap] = useState(true);
   const cancelJobOn = useConnectStore((s) => s.cancelJobOn);
@@ -105,28 +109,33 @@ export function JobViewerDialog({
             </span>
           </DialogTitle>
           <DialogDescription className="text-[10px]">
-            Replayed from the worker&apos;s history; per-epoch timing for earlier epochs isn&apos;t
-            available.
+            {showMonitor
+              ? "Replayed from the worker's history; per-epoch timing for earlier epochs isn't available."
+              : "Replayed from the worker's history."}
           </DialogDescription>
         </DialogHeader>
 
         <div className="flex items-center gap-1.5">
-          <Button
-            size="xs"
-            variant={view === "monitor" ? "default" : "outline"}
-            className="h-6 text-[10px]"
-            onClick={() => setView("monitor")}
-          >
-            Monitor
-          </Button>
-          <Button
-            size="xs"
-            variant={view === "logs" ? "default" : "outline"}
-            className="h-6 text-[10px]"
-            onClick={() => setView("logs")}
-          >
-            Logs
-          </Button>
+          {showMonitor && (
+            <>
+              <Button
+                size="xs"
+                variant={view === "monitor" ? "default" : "outline"}
+                className="h-6 text-[10px]"
+                onClick={() => setView("monitor")}
+              >
+                Monitor
+              </Button>
+              <Button
+                size="xs"
+                variant={view === "logs" ? "default" : "outline"}
+                className="h-6 text-[10px]"
+                onClick={() => setView("logs")}
+              >
+                Logs
+              </Button>
+            </>
+          )}
           {canStop && stream.status === "running" && (
             <Button
               size="xs"

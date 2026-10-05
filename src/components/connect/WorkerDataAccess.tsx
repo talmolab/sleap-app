@@ -88,14 +88,23 @@ export function WorkerDataAccess({ workerId }: WorkerDataAccessProps) {
           <p className="text-xs text-muted-foreground">None yet.</p>
         ) : (
           <div className="space-y-1">
-            {pathRules.map((rule) => (
+            {pathRules.map((rule, i) => (
               <div
-                key={rule.local}
+                key={`${i}:${rule.local}`}
                 className="flex items-center gap-2 px-2.5 py-1.5 border border-border rounded-md bg-zinc-800/50 text-xs"
               >
-                <span className="font-mono truncate">
-                  {rule.local} → {rule.worker}
-                </span>
+                {/* Both sides on their own wrapping line: a single truncated
+                    "local → worker" line hid the worker side entirely. */}
+                <div className="min-w-0 flex-1 space-y-0.5 font-mono text-[11px]">
+                  <div className="flex gap-2">
+                    <span className="w-16 shrink-0 font-sans text-[10px] text-muted-foreground">This computer</span>
+                    <span className="break-all">{rule.local}</span>
+                  </div>
+                  <div className="flex gap-2">
+                    <span className="w-16 shrink-0 font-sans text-[10px] text-muted-foreground">Worker</span>
+                    <span className="break-all">{rule.worker}</span>
+                  </div>
+                </div>
                 <Button
                   size="xs"
                   variant="outline"
