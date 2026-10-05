@@ -520,7 +520,13 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
   const needsRepoint = needsLabelsRepoint(videoCheck ?? []);
   const slots = getConfigSlots(modelType);
   const configsReady = slots.every((slot) => configs.some((c) => c.slot === slot));
-  const canSubmit = !!labels && !!labelsPath && allVideosFound && configsReady && !submitting;
+  // Re-pointed labels are rebuilt from the structure-only copy read off the
+  // worker (no video backends), so an embedded video in the same file would
+  // lose its frames. Rare (a pkg.slp that also references external videos);
+  // blocked rather than sent broken.
+  const repointLosesEmbedded = needsRepoint && (videoCheck ?? []).some((v) => v.embedded);
+  const canSubmit =
+    !!labels && !!labelsPath && allVideosFound && !repointLosesEmbedded && configsReady && !submitting;
   // Inference needs the videos too (it reads them, not just the .slp's
   // metadata) — same allVideosFound gate as Train. Unlike Train, a
   // TrackJobSpec has no labels_content concept at all (sleap-connect's
@@ -720,9 +726,16 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
                   )}
                   {jobKind === "inference" && needsRepoint && (
                     <p className="text-xs text-yellow-400">
-                      Videos in this file point to another computer; inference can&apos;t send re-pointed labels
-                      inline the way training can. Use &quot;Locate on worker…&quot; above to point every video at a
-                      path already on {workerLabel}, or run Train on this file instead.
+                      This file&apos;s video paths point to another computer, and inference reads them straight
+                      from the file on {workerLabel}. Train on it (the training job saves a corrected copy, and
+                      &quot;Run inference after training&quot; uses that), or fix the paths in the file.
+                    </p>
+                  )}
+                  {jobKind === "train" && repointLosesEmbedded && (
+                    <p className="text-xs text-yellow-400">
+                      This file mixes embedded frames with videos that point to another computer, which
+                      can&apos;t be corrected without losing the embedded frames. Fix the video paths in the
+                      file, or move the videos to where it expects them.
                     </p>
                   )}
                 </>
