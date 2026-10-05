@@ -311,6 +311,7 @@ const defaultClearInterval = (handle: unknown): void =>
 interface ViewerTarget {
   jobId: string;
   label: string;
+  kind?: "train" | "track";
   initialView: "monitor" | "logs";
   canStop: boolean;
 }
@@ -377,6 +378,7 @@ export function WorkerJobs({
     setViewer({
       jobId: job.jobId,
       label: jobTitle(job),
+      kind: job.kind,
       initialView: job.kind === "track" ? "logs" : initialView,
       canStop: isManagedJob(job, myProjectId, trackedJobIds),
     });
@@ -485,7 +487,9 @@ export function WorkerJobs({
               <div
                 key={job.jobId}
                 className={`rounded-md border border-border p-2.5 space-y-1.5 ${
-                  mine ? "bg-zinc-800/50" : "bg-transparent opacity-60"
+                  // Not dimmed with opacity: that greyed out the whole card,
+                  // buttons included, so it read as disabled.
+                  mine ? "bg-zinc-800/50" : "bg-transparent"
                 }`}
               >
                 <div className="flex items-center gap-2 flex-wrap">
@@ -500,6 +504,7 @@ export function WorkerJobs({
                     <div className="text-[10px] text-muted-foreground truncate">
                       {labelsName ?? "—"}
                       {runTag ? ` · ${runTag}` : ""}
+                      {!mine ? ` · ${job.project?.name ? `from ${job.project.name}` : "other project"}` : ""}
                     </div>
                   </div>
                   <span
@@ -600,6 +605,7 @@ export function WorkerJobs({
           label={viewer.label}
           initialView={viewer.initialView}
           canStop={viewer.canStop}
+          kind={viewer.kind}
           onClose={() => setViewer(null)}
         />
       )}

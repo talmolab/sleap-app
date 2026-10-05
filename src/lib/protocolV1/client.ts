@@ -195,12 +195,21 @@ function _throwIfFsError(result: Record<string, unknown>, context: string): void
  * already branch on them (`null`/`[]`), everything else is left `undefined`
  * rather than guessing a value that isn't knowable.
  */
+/**
+ * The worker stores job timestamps as Unix seconds (a SQLite REAL); the app
+ * works in ISO strings. A string passes through unchanged.
+ */
+function _isoTimestamp(v: unknown): string | undefined {
+  if (typeof v === "number") return new Date(v * 1000).toISOString();
+  return typeof v === "string" ? v : undefined;
+}
+
 function _mapJobSummary(j: Record<string, unknown>): JobSummary {
   return {
     jobId: j.job_id as string,
     state: j.state as string,
-    createdAt: j.created_at as string,
-    updatedAt: j.updated_at as string | undefined,
+    createdAt: _isoTimestamp(j.created_at) ?? "",
+    updatedAt: _isoTimestamp(j.updated_at),
     error: j.error as string | null | undefined,
     queuePosition: (j.queue_position as number | null | undefined) ?? null,
     kind: j.kind as "train" | "track" | undefined,
@@ -434,7 +443,7 @@ export class WorkerClient {
     const result = await this._request("jobs.status", { job_id: jobId });
     return {
       ..._mapJobSummary(result),
-      updatedAt: result.updated_at as string,
+      updatedAt: _isoTimestamp(result.updated_at) ?? "",
       result: (result.result as Record<string, unknown>) ?? null,
       error: (result.error as string) ?? null,
       spec: result.spec as Record<string, unknown> | undefined,

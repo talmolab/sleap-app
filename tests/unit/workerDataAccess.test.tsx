@@ -76,7 +76,9 @@ describe("WorkerDataAccess", () => {
     });
     render(<WorkerDataAccess workerId={WORKER_ID} />);
 
-    expect(screen.getByText("/Volumes/talmo → /root/vast")).toBeInTheDocument();
+    // Both sides shown in full, each on its own line.
+    expect(screen.getByText("/Volumes/talmo")).toBeInTheDocument();
+    expect(screen.getAllByText("/root/vast").length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole("button", { name: "Clear" }));
     expect(clearCalls).toEqual([[WORKER_ID, "/Volumes/talmo"]]);
   });
