@@ -692,6 +692,28 @@ describe("protocolV1 WorkerClient", () => {
       });
     });
 
+    it("jobsList converts the worker's Unix-second timestamps to ISO strings", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({
+        handleRequest: (method) => {
+          if (method === "pair.claim") return { result: {} };
+          if (method === "jobs.list") {
+            return {
+              result: {
+                jobs: [{ job_id: "job_1", state: "running", created_at: 1791158400.5, updated_at: 1791158460 }],
+              },
+            };
+          }
+          return { error: { code: "proto.unknown_method", msg: "?" } };
+        },
+      });
+      const client = await pairedClient(identity, socket);
+
+      const [job] = await client.jobsList();
+      expect(job.createdAt).toBe(new Date(1791158400500).toISOString());
+      expect(job.updatedAt).toBe(new Date(1791158460000).toISOString());
+    });
+
     it("jobsList maps the full #98 shape (queuePosition, kind, modelTypes, labelsPath, project)", async () => {
       const identity = await freshIdentity();
       const socket = new FakeWorkerSocket({
