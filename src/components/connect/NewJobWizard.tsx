@@ -5,11 +5,19 @@
  * action, §5b.3, via {@link seedWizardFromRun}).
  *
  * The worker is always pre-selected (step 1 — this wizard is opened already
- * scoped to one worker), so the interactive flow starts on step 2: browse
- * to a worker-side `.slp`, pick where the training config comes from, and
- * optionally chain post-train inference. Step 3 is a read-only summary
- * before submitting via `submitJobsOn` (fire-and-forget — this window
- * doesn't wait for the job).
+ * scoped to one worker), so the interactive flow starts with a Train /
+ * Inference job-type choice (`jobKind`), then step 2:
+ *  - Train: browse to a worker-side `.slp`, pick where the training config
+ *    comes from, and optionally chain post-train inference.
+ *  - Inference: browse to a worker-side `.slp`, pick a completed training
+ *    run on this worker (or browse a model folder manually — needed for a
+ *    split top-down run's two model dirs), and a target. This is the ONLY
+ *    way to start remote inference now — `WorkerJobs` used to offer a
+ *    per-row "Run inference" action on every completed train job, which
+ *    broke for a split multi-model run (centroid + centered_instance = two
+ *    rows, two buttons, neither runnable alone).
+ * Step 3 is a read-only summary before submitting via `submitJobsOn`
+ * (fire-and-forget — this window doesn't wait for the job).
  *
  * The wizard's config state lives entirely here (`configs`/`modelType`), not
  * in `useTrainingStore` — `TrainingConfigDialog`'s `configActions` override
@@ -24,7 +32,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "@/lib/notify";
 import type { Labels } from "@talmolab/sleap-io.js";
-import type { JobStatus, WorkerClient } from "@/lib/protocolV1/client";
+import type { JobStatus, JobSummary, WorkerClient } from "@/lib/protocolV1/client";
 import { useConnectStore } from "@/stores/connectStore";
 import {
   useTrainingStore,
@@ -36,8 +44,14 @@ import {
 } from "@/stores/trainingStore";
 import { getDefaultProfileForHead, slotToHeadType } from "@/lib/trainingProfiles";
 import { loadWorkerLabels, checkWorkerFileVideos, type WorkerFileVideoCheck } from "@/lib/workerLabels";
-import { buildLauncherTrainSpec, seedFromJobSpec } from "@/lib/launcherSpec";
+import {
+  buildLauncherTrainSpec,
+  buildRunInferenceSpecs,
+  inferModelType,
+  seedFromJobSpec,
+} from "@/lib/launcherSpec";
 import { projectTag } from "@/lib/projectTag";
+import { timeAgo } from "@/lib/timestamp";
 import { TrainingConfigDialog, type TrainingConfigActions } from "@/components/dialogs/TrainingConfigDialog";
 import { RemoteFileBrowser } from "@/components/dialogs/RemoteFileBrowser";
 
@@ -141,11 +155,68 @@ export interface NewJobWizardProps {
 }
 
 type StartFrom = "past" | "yaml" | "defaults";
+type JobKind = "train" | "inference";
+/** `RemoteFileBrowser` is shared by every browse target this wizard has — a worker-side `.slp` (train or inference), a training YAML, or (Inference's Models step) a model folder. */
+type BrowseTarget = "slp" | "yaml" | "model";
 
 interface PastRun {
   runId: string;
   jobIds: string[];
   label: string;
+}
+
+/**
+ * A training run on this worker whose EVERY sibling job (by `run.count`, not
+ * just however many happen to be `completed`) has finished — the Inference
+ * flow's "Models" step only offers these, since `buildRunInferenceSpecs`
+ * needs every sibling's own trained model dir (a split top-down run's
+ * centroid + centered_instance) and there's nowhere to get a still-running
+ * sibling's dir from. Distinct from `PastRun` (used by "Start config from a
+ * past job", Train-only): that one's fine with a lone finished job even when
+ * a sibling is still running.
+ */
+interface CompletedRun {
+  runId: string;
+  jobIds: string[];
+  /** Each sibling's own head type, in `run.index` order — `inferModelType`'s input. */
+  modelTypes: string[];
+  labelsPath: string;
+  createdAt: string;
+}
+
+/**
+ * Groups `jobs` (a worker's full `listJobs` result) into {@link CompletedRun}s
+ * for the Inference flow's "Models" step — pure so the "every sibling
+ * completed" rule is directly unit-testable. A job without `run` is its own
+ * one-job run (`run.count` defaults to 1). A run is included only once EVERY
+ * sibling `run.count` expects is present in `jobs` AND `completed` — a
+ * top-down run with its centered_instance job still `running`/`queued` (or
+ * missing from `jobs` entirely) is left out, not offered with a partial
+ * model set.
+ */
+export function groupCompletedRuns(jobs: JobSummary[]): CompletedRun[] {
+  const byRun = new Map<string, JobSummary[]>();
+  for (const j of jobs) {
+    if (j.kind !== "train") continue;
+    const key = j.run?.id ?? j.jobId;
+    byRun.set(key, [...(byRun.get(key) ?? []), j]);
+  }
+  const runs: CompletedRun[] = [];
+  for (const [runId, runJobs] of byRun.entries()) {
+    const expectedCount = runJobs[0]?.run?.count ?? 1;
+    if (runJobs.length < expectedCount) continue;
+    if (!runJobs.every((j) => j.state === "completed")) continue;
+    const sorted = [...runJobs].sort((a, b) => (a.run?.index ?? 0) - (b.run?.index ?? 0));
+    const last = sorted[sorted.length - 1]!;
+    runs.push({
+      runId,
+      jobIds: sorted.map((j) => j.jobId),
+      modelTypes: sorted.map((j) => j.modelTypes[0] ?? "model"),
+      labelsPath: sorted[0]?.labelsPath ?? "",
+      createdAt: last.createdAt,
+    });
+  }
+  return runs;
 }
 
 export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted }: NewJobWizardProps) {
@@ -155,9 +226,11 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
   const mountsFor = useConnectStore((s) => s.mountsFor);
   const submitJobsOn = useConnectStore((s) => s.submitJobsOn);
 
+  const [jobKind, setJobKind] = useState<JobKind>("train");
+
   const [mounts, setMounts] = useState<string[]>([]);
   const [browserOpen, setBrowserOpen] = useState(false);
-  const [browserTarget, setBrowserTarget] = useState<"slp" | "yaml">("slp");
+  const [browserTarget, setBrowserTarget] = useState<BrowseTarget>("slp");
 
   const [labelsPath, setLabelsPath] = useState<string | null>(seed?.labelsPath ?? null);
   const [labels, setLabels] = useState<Labels | null>(null);
@@ -177,6 +250,16 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
   const [postInferenceEnabled, setPostInferenceEnabled] = useState(false);
   const [inferenceTarget, setInferenceTarget] = useState("suggestions");
   const [sampleCount, setSampleCount] = useState(20);
+
+  // Inference flow's "Models" step: completed runs to pick from, the
+  // currently-chosen model dir(s) (from a picked run, manually browsed
+  // folders, or both), and the head types behind them (just for
+  // inferModelType's cosmetic `pipeline` guess — see its own doc).
+  const [completedRuns, setCompletedRuns] = useState<CompletedRun[]>([]);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [loadingRunModels, setLoadingRunModels] = useState(false);
+  const [modelDirs, setModelDirs] = useState<string[]>([]);
+  const [modelHeadTypes, setModelHeadTypes] = useState<string[]>([]);
 
   const [submitting, setSubmitting] = useState(false);
   const [justSubmitted, setJustSubmitted] = useState(false);
@@ -226,6 +309,7 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
           };
         });
         setPastRuns(runs);
+        setCompletedRuns(groupCompletedRuns(jobs));
       })
       .catch(() => {});
     return () => {
@@ -317,6 +401,43 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
     }
   };
 
+  /** Inference flow's "Models" step: fetches each sibling's own trained model dir (`jobDetail(...).result.model_dir`, `run.index` order) and replaces `modelDirs` with the run's own — mirrors the removed `WorkerJobs` row action's `RunInferenceDialog`. */
+  const chooseModelsFromRun = async (run: CompletedRun) => {
+    setSelectedRunId(run.runId);
+    setLoadingRunModels(true);
+    try {
+      const details = await Promise.all(run.jobIds.map((id) => jobDetail(workerId, id)));
+      const dirs = details
+        .map((d) => (d.result as { model_dir?: string } | null)?.model_dir)
+        .filter((d): d is string => !!d);
+      if (dirs.length !== run.jobIds.length) {
+        toast.error("Couldn't find this run's trained model(s).");
+        setSelectedRunId(null);
+        return;
+      }
+      setModelDirs(dirs);
+      setModelHeadTypes(run.modelTypes);
+    } catch (err) {
+      toast.error("Couldn't read that job's configuration.", {
+        description: err instanceof Error ? err.message : String(err),
+      });
+      setSelectedRunId(null);
+    } finally {
+      setLoadingRunModels(false);
+    }
+  };
+
+  /** Manually browsed model folder (directory mode) — appended rather than replacing, since a split top-down run needs two. Deselects any picked run: the list no longer reflects that run's own dirs alone. */
+  const handleModelFolderPicked = (path: string) => {
+    setModelDirs((prev) => (prev.includes(path) ? prev : [...prev, path]));
+    setSelectedRunId(null);
+  };
+
+  const removeModelDir = (path: string) => {
+    setModelDirs((prev) => prev.filter((d) => d !== path));
+    setSelectedRunId(null);
+  };
+
   const onUpdateSlot = (slot: string, updates: Partial<ConfigHyperparams>) =>
     setConfigs((prev) =>
       prev.map((c) => (c.slot === slot ? { ...c, hyperparams: { ...c.hyperparams, ...updates } } : c)),
@@ -340,6 +461,9 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
   const slots = getConfigSlots(modelType);
   const configsReady = slots.every((slot) => configs.some((c) => c.slot === slot));
   const canSubmit = !!labels && !!labelsPath && allVideosFound && configsReady && !submitting;
+  // Inference needs the videos too (it reads them, not just the .slp's metadata) — same allVideosFound gate as Train.
+  const canSubmitInference =
+    !!labels && !!labelsPath && allVideosFound && modelDirs.length > 0 && !submitting;
 
   const handleSubmit = async () => {
     if (!labels || !labelsPath) return;
@@ -377,6 +501,36 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
     }
   };
 
+  /** Submits standalone track job(s) against `modelDirs` — unlike `handleSubmit`'s `post_inference` (chained by the worker once training finishes), these model dirs are already known, so this calls `submitJobsOn` directly per spec `buildRunInferenceSpecs` returns (one, except "random sample", which returns one per video — see its own doc). */
+  const handleSubmitInference = async () => {
+    if (!labels || !labelsPath || modelDirs.length === 0) return;
+    setSubmitting(true);
+    try {
+      const config = buildPostTrainingInferenceConfig({
+        modelType: inferModelType(modelHeadTypes) ?? "top_down",
+        modelPaths: modelDirs,
+        inferenceTarget,
+        videoIndex: "all",
+        sampleCount,
+      });
+      const specs = buildRunInferenceSpecs(labelsPath, modelDirs, config, labels);
+      for (const spec of specs) {
+        await submitJobsOn(workerId, spec, { source: "worker-file" });
+      }
+      toast.success(`Added to ${workerLabel} queue`, {
+        description: `Inference on ${basename(labelsPath)}`,
+      });
+      onSubmitted?.();
+      setJustSubmitted(true);
+    } catch (err) {
+      toast.error("Couldn't submit inference job", {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   return (
     <Dialog
       open
@@ -406,6 +560,25 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
           </div>
         ) : (
           <div className="space-y-4">
+            <div className="flex gap-1.5">
+              <Button
+                variant="outline"
+                size="sm"
+                className={`flex-1 h-7 text-xs ${jobKind === "train" ? "border-primary" : ""}`}
+                onClick={() => setJobKind("train")}
+              >
+                Train
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className={`flex-1 h-7 text-xs ${jobKind === "inference" ? "border-primary" : ""}`}
+                onClick={() => setJobKind("inference")}
+              >
+                Inference
+              </Button>
+            </div>
+
             <div className="space-y-1.5">
               <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
                 Labels (on {workerLabel})
@@ -446,126 +619,227 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
               )}
             </div>
 
-            <div className="space-y-1.5">
-              <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Model type</p>
-              <Select value={modelType} onValueChange={(v) => handleModelTypeChange(v as ModelType)}>
-                <SelectTrigger className="h-8 text-xs">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {MODEL_TYPE_OPTIONS.map((o) => (
-                    <SelectItem key={o.value} value={o.value}>
-                      {o.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="space-y-1.5">
-              <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
-                Start config from
-              </p>
-              <div className="space-y-1">
-                {pastRuns.map((run) => (
-                  <Button
-                    key={run.runId}
-                    variant="outline"
-                    size="sm"
-                    className={`w-full justify-start h-8 text-xs ${startFrom === "past" ? "border-primary" : ""}`}
-                    disabled={seedingFromPast}
-                    onClick={() => void choosePastRun(run)}
-                  >
-                    Past job: {run.label}
-                  </Button>
-                ))}
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className={`w-full justify-start h-8 text-xs ${startFrom === "yaml" ? "border-primary" : ""}`}
-                  onClick={chooseYaml}
-                >
-                  YAML on {workerLabel}…
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className={`w-full justify-start h-8 text-xs ${startFrom === "defaults" ? "border-primary" : ""}`}
-                  onClick={chooseDefaults}
-                >
-                  Defaults for {MODEL_TYPE_OPTIONS.find((o) => o.value === modelType)?.label}
-                </Button>
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-8 text-xs"
-                disabled={!labels || !configsReady}
-                onClick={() => setConfigDialogOpen(true)}
-              >
-                Edit hyperparameters…
-              </Button>
-              {!labels && (
-                <p className="text-[10px] text-muted-foreground">Pick a labels file first</p>
-              )}
-            </div>
-
-            <div className="space-y-1.5">
-              <label className="flex items-center gap-2 text-xs cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={postInferenceEnabled}
-                  onChange={(e) => setPostInferenceEnabled(e.target.checked)}
-                />
-                Run inference after training
-              </label>
-              {postInferenceEnabled && (
-                <div className="flex items-center gap-2 pl-5">
-                  <Select value={inferenceTarget} onValueChange={setInferenceTarget}>
-                    <SelectTrigger className="h-7 text-xs w-56">
+            {jobKind === "train" ? (
+              <>
+                <div className="space-y-1.5">
+                  <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+                    Model type
+                  </p>
+                  <Select value={modelType} onValueChange={(v) => handleModelTypeChange(v as ModelType)}>
+                    <SelectTrigger className="h-8 text-xs">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {WORKER_FILE_INFERENCE_TARGETS.map((o) => (
+                      {MODEL_TYPE_OPTIONS.map((o) => (
                         <SelectItem key={o.value} value={o.value}>
                           {o.label}
                         </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
-                  {inferenceTarget === "random" && (
-                    <Input
-                      type="number"
-                      min={1}
-                      value={sampleCount}
-                      onChange={(e) => setSampleCount(Math.max(1, Number(e.target.value)))}
-                      className="h-7 text-xs w-20"
-                    />
+                </div>
+
+                <div className="space-y-1.5">
+                  <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+                    Start config from
+                  </p>
+                  <div className="space-y-1">
+                    {pastRuns.map((run) => (
+                      <Button
+                        key={run.runId}
+                        variant="outline"
+                        size="sm"
+                        className={`w-full justify-start h-8 text-xs ${startFrom === "past" ? "border-primary" : ""}`}
+                        disabled={seedingFromPast}
+                        onClick={() => void choosePastRun(run)}
+                      >
+                        Past job: {run.label}
+                      </Button>
+                    ))}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className={`w-full justify-start h-8 text-xs ${startFrom === "yaml" ? "border-primary" : ""}`}
+                      onClick={chooseYaml}
+                    >
+                      YAML on {workerLabel}…
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className={`w-full justify-start h-8 text-xs ${startFrom === "defaults" ? "border-primary" : ""}`}
+                      onClick={chooseDefaults}
+                    >
+                      Defaults for {MODEL_TYPE_OPTIONS.find((o) => o.value === modelType)?.label}
+                    </Button>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-8 text-xs"
+                    disabled={!labels || !configsReady}
+                    onClick={() => setConfigDialogOpen(true)}
+                  >
+                    Edit hyperparameters…
+                  </Button>
+                  {!labels && (
+                    <p className="text-[10px] text-muted-foreground">Pick a labels file first</p>
                   )}
                 </div>
-              )}
-            </div>
 
-            {labels && labelsPath && (
-              <div className="flex flex-col gap-1 rounded-md border border-border bg-muted/30 p-2.5 text-xs">
-                <span>
-                  {MODEL_TYPE_OPTIONS.find((o) => o.value === modelType)?.label} · {configs.length} config
-                  {configs.length === 1 ? "" : "s"}
-                </span>
-                <span className="text-muted-foreground font-mono truncate">Labels: {labelsPath}</span>
-                <span className="text-muted-foreground">
-                  Then: {postInferenceEnabled
-                    ? `inference on ${WORKER_FILE_INFERENCE_TARGETS.find((o) => o.value === inferenceTarget)?.label.toLowerCase()}`
-                    : "nothing"}
-                </span>
-              </div>
+                <div className="space-y-1.5">
+                  <label className="flex items-center gap-2 text-xs cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={postInferenceEnabled}
+                      onChange={(e) => setPostInferenceEnabled(e.target.checked)}
+                    />
+                    Run inference after training
+                  </label>
+                  {postInferenceEnabled && (
+                    <div className="flex items-center gap-2 pl-5">
+                      <Select value={inferenceTarget} onValueChange={setInferenceTarget}>
+                        <SelectTrigger className="h-7 text-xs w-56">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {WORKER_FILE_INFERENCE_TARGETS.map((o) => (
+                            <SelectItem key={o.value} value={o.value}>
+                              {o.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      {inferenceTarget === "random" && (
+                        <Input
+                          type="number"
+                          min={1}
+                          value={sampleCount}
+                          onChange={(e) => setSampleCount(Math.max(1, Number(e.target.value)))}
+                          className="h-7 text-xs w-20"
+                        />
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {labels && labelsPath && (
+                  <div className="flex flex-col gap-1 rounded-md border border-border bg-muted/30 p-2.5 text-xs">
+                    <span>
+                      {MODEL_TYPE_OPTIONS.find((o) => o.value === modelType)?.label} · {configs.length} config
+                      {configs.length === 1 ? "" : "s"}
+                    </span>
+                    <span className="text-muted-foreground font-mono truncate">Labels: {labelsPath}</span>
+                    <span className="text-muted-foreground">
+                      Then: {postInferenceEnabled
+                        ? `inference on ${WORKER_FILE_INFERENCE_TARGETS.find((o) => o.value === inferenceTarget)?.label.toLowerCase()}`
+                        : "nothing"}
+                    </span>
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                <div className="space-y-1.5">
+                  <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Models</p>
+                  <div className="space-y-1">
+                    {completedRuns.map((run) => (
+                      <Button
+                        key={run.runId}
+                        variant="outline"
+                        size="sm"
+                        className={`w-full justify-start h-8 text-xs ${selectedRunId === run.runId ? "border-primary" : ""}`}
+                        disabled={loadingRunModels}
+                        onClick={() => void chooseModelsFromRun(run)}
+                      >
+                        {run.modelTypes.join(" + ")} · {basename(run.labelsPath) || "—"} · {timeAgo(run.createdAt)}
+                      </Button>
+                    ))}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-full justify-start h-8 text-xs"
+                      onClick={() => {
+                        setBrowserTarget("model");
+                        setBrowserOpen(true);
+                      }}
+                    >
+                      Browse model folder on {workerLabel}…
+                    </Button>
+                  </div>
+                  {modelDirs.length > 0 && (
+                    <div className="space-y-1">
+                      {modelDirs.map((dir) => (
+                        <div
+                          key={dir}
+                          className="flex items-center gap-2 h-7 px-2 border border-border rounded-md bg-muted/30 font-mono text-[11px]"
+                        >
+                          <span className="flex-1 truncate">{dir}</span>
+                          <button
+                            type="button"
+                            aria-label={`Remove ${dir}`}
+                            className="text-muted-foreground hover:text-foreground shrink-0"
+                            onClick={() => removeModelDir(dir)}
+                          >
+                            &times;
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="space-y-1.5">
+                  <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+                    Inference on
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <Select value={inferenceTarget} onValueChange={setInferenceTarget}>
+                      <SelectTrigger className="h-8 text-xs flex-1">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {WORKER_FILE_INFERENCE_TARGETS.map((o) => (
+                          <SelectItem key={o.value} value={o.value}>
+                            {o.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {inferenceTarget === "random" && (
+                      <Input
+                        type="number"
+                        min={1}
+                        value={sampleCount}
+                        onChange={(e) => setSampleCount(Math.max(1, Number(e.target.value)))}
+                        className="h-8 text-xs w-20"
+                      />
+                    )}
+                  </div>
+                </div>
+
+                {labels && labelsPath && (
+                  <div className="flex flex-col gap-1 rounded-md border border-border bg-muted/30 p-2.5 text-xs">
+                    <span>
+                      Inference · {modelDirs.length} model dir{modelDirs.length === 1 ? "" : "s"}
+                    </span>
+                    <span className="text-muted-foreground font-mono truncate">Labels: {labelsPath}</span>
+                    <span className="text-muted-foreground">
+                      On: {WORKER_FILE_INFERENCE_TARGETS.find((o) => o.value === inferenceTarget)?.label.toLowerCase()}
+                    </span>
+                  </div>
+                )}
+              </>
             )}
 
             <div className="flex justify-end gap-2">
               <Button variant="outline" onClick={onClose}>
                 Cancel
               </Button>
-              <Button disabled={!canSubmit} onClick={() => void handleSubmit()}>
+              <Button
+                disabled={jobKind === "train" ? !canSubmit : !canSubmitInference}
+                onClick={() => void (jobKind === "train" ? handleSubmit() : handleSubmitInference())}
+              >
                 {submitting ? "Adding…" : "Add to queue"}
               </Button>
             </div>
@@ -578,12 +852,13 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
         onClose={() => setBrowserOpen(false)}
         onSelect={(path) => {
           if (browserTarget === "slp") void loadLabels(path);
-          else void handleYamlPicked(path);
+          else if (browserTarget === "yaml") void handleYamlPicked(path);
+          else handleModelFolderPicked(path);
         }}
         mounts={mounts}
         workerId={workerId}
-        mode="file"
-        fileFilter={browserTarget === "slp" ? ".slp" : ".yaml"}
+        mode={browserTarget === "model" ? "directory" : "file"}
+        fileFilter={browserTarget === "slp" ? ".slp" : browserTarget === "yaml" ? ".yaml" : undefined}
       />
 
       {configDialogOpen && labels && (

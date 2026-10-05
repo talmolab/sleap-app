@@ -2,11 +2,12 @@
  * PR4b §4b.4 / PR5b §5b.3 — WorkerJobs: pinning/sorting (this project first,
  * then newest), run tags, queue text, status chips, and action visibility
  * per job state — now including PR5b's widened Fetch & Load (every
- * completed track job, not just this project's own), "Run again" (seeds the
- * launcher wizard from a failed run's own config), and "Run inference" (any
- * completed train run). `sonner` is mocked per this repo's `vi.mock`
- * convention — not hoisted, so the module under test is imported dynamically
- * AFTER the mocks are registered.
+ * completed track job, not just this project's own) and "Run again" (seeds
+ * the launcher wizard from a failed run's own config). Remote inference no
+ * longer has a per-row action here (moved to `NewJobWizard`'s "+ New job" ->
+ * Inference flow — see that file's own tests). `sonner` is mocked per this
+ * repo's `vi.mock` convention — not hoisted, so the module under test is
+ * imported dynamically AFTER the mocks are registered.
  *
  * `MergePredictionsDialog` and `NewJobWizard` are mocked out entirely: their
  * own compatibility-check / wizard-form logic gets its own dedicated test
@@ -15,7 +16,6 @@
  */
 import { describe, it, expect, afterEach, beforeEach, vi } from "../bun-test";
 import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
-import { Labels } from "@talmolab/sleap-io.js";
 import { useConnectStore } from "@/stores/connectStore";
 import { useAppStore } from "@/stores/appStore";
 import { useConfirmStore } from "@/stores/confirmStore";
@@ -48,15 +48,6 @@ vi.mock("@/components/connect/NewJobWizard", () => ({
     </div>
   ),
   seedWizardFromRun: seedWizardFromRunMock,
-  WORKER_FILE_INFERENCE_TARGETS: [{ value: "suggestions", label: "Suggested frames" }],
-}));
-
-// RunInferenceDialog (defined inside WorkerJobs.tsx, not exported/mocked)
-// reads a worker-side SLP for real otherwise — stub it out so these tests
-// never touch sleap-io.js's streaming/H5 machinery.
-vi.mock("@/lib/workerLabels", () => ({
-  loadWorkerLabels: async () => new Labels({ videos: [], skeletons: [], labeledFrames: [] }),
-  checkWorkerFileVideos: async () => [],
 }));
 
 const { WorkerJobs, isMineJob, sortWorkerJobs, jobTitle, jobStatusChip, isManagedJob, siblingJobIds } = await import(
@@ -402,43 +393,15 @@ describe("WorkerJobs — PR5b row actions", () => {
     expect(screen.getByTestId("new-job-wizard")).toHaveTextContent("/root/vast/exp1/flies.slp");
   });
 
-  it("Run inference is offered on a completed train job regardless of project", async () => {
-    useConnectStore.setState({
-      listJobs: async () => [
-        job({ jobId: "mine-done", state: "completed", kind: "train" }),
-        job({ jobId: "other-done", state: "completed", kind: "train", project: { id: "other", name: "x" } }),
-      ],
-    });
-    render(
-      <WorkerJobs workerId={WORKER_ID} setIntervalImpl={noopSetInterval} clearIntervalImpl={noopClearInterval} />,
-    );
-    await waitFor(() => expect(screen.getAllByRole("button", { name: "Run inference" })).toHaveLength(2));
-  });
-
-  it("Run inference opens a dialog that reads the run's trained model(s)", async () => {
+  it("a completed train job shows no per-row inference action — that's a 'Run again' at most", async () => {
     useConnectStore.setState({
       listJobs: async () => [job({ jobId: "mine-done", state: "completed", kind: "train" })],
-      jobDetail: async (): Promise<JobStatus> => ({
-        jobId: "mine-done",
-        state: "completed",
-        createdAt: "2026-10-01T00:00:00.000Z",
-        updatedAt: "2026-10-01T00:05:00.000Z",
-        result: { model_dir: "/root/vast/models/centroid" },
-        error: null,
-        queuePosition: null,
-        kind: "train",
-        modelTypes: ["centroid"],
-        project: myProject,
-        labelsPath: "/root/vast/exp1/flies.slp",
-      }),
     });
     render(
       <WorkerJobs workerId={WORKER_ID} setIntervalImpl={noopSetInterval} clearIntervalImpl={noopClearInterval} />,
     );
-    await waitFor(() => expect(screen.getByRole("button", { name: "Run inference" })).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("button", { name: "Run inference" }));
-    await waitFor(() => expect(screen.getByText("/root/vast/exp1/flies.slp")).toBeInTheDocument());
-    expect(screen.getByRole("button", { name: "Add to queue" })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "View" })).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: "Run inference" })).not.toBeInTheDocument();
   });
 
   it("shows a '→ inference' tag on a train job whose spec chains post-train inference", async () => {

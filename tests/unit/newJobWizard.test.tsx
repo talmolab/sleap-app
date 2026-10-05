@@ -32,7 +32,7 @@ import { useConnectStore } from "@/stores/connectStore";
 import { useTrainingStore, type ConfigFile } from "@/stores/trainingStore";
 import type { WorkerClient, JobStatus, JobSummary } from "@/lib/protocolV1/client";
 import type { WorkerFileVideoCheck } from "@/lib/workerLabels";
-import type { JobSpec, TrainJobSpec } from "@/lib/sleapConnect";
+import type { JobSpec, TrainJobSpec, TrackJobSpec } from "@/lib/sleapConnect";
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() } }));
 vi.mock("@/lib/platform", () => ({ isTauri: false, isMac: false, modKey: "Ctrl" }));
@@ -42,25 +42,30 @@ vi.mock("@/components/dialogs/ModelStatsPreview", () => ({
 
 const SLP_PATH = "/root/vast/exp1/flies.slp";
 const YAML_PATH = "/root/vast/configs/centroid.yaml";
+const MODEL_DIR_PATH = "/root/vast/models/manual";
 
 vi.mock("@/components/dialogs/RemoteFileBrowser", () => ({
-  // Minimal stand-in: picks a fixed path per fileFilter rather than driving
-  // the real worker-filesystem browser UI (that component's own behavior —
-  // including its per-worker browsing added in PR5b.1 — is covered by its
-  // own tests, remoteFileBrowser.test.tsx). Rendered through the real
-  // shadcn `Dialog`, matching the production component (post-fix) — a real
-  // nested `Dialog.Root` registers with Radix's own hide-others exceptions,
-  // so NewJobWizard's own (real, open) Dialog never hides it, unlike a bare
-  // mocked element would.
+  // Minimal stand-in: picks a fixed path per fileFilter/mode rather than
+  // driving the real worker-filesystem browser UI (that component's own
+  // behavior — including its per-worker browsing added in PR5b.1, and
+  // directory mode for the Inference flow's "Browse model folder" — is
+  // covered by its own tests, remoteFileBrowser.test.tsx). Rendered through
+  // the real shadcn `Dialog`, matching the production component (post-fix) —
+  // a real nested `Dialog.Root` registers with Radix's own hide-others
+  // exceptions, so NewJobWizard's own (real, open) Dialog never hides it,
+  // unlike a bare mocked element would.
   RemoteFileBrowser: (props: {
     open: boolean;
     onClose: () => void;
     onSelect: (path: string) => void;
+    mode?: "directory" | "file";
     fileFilter?: string | string[];
   }) => {
     if (!props.open) return null;
     const filter = Array.isArray(props.fileFilter) ? props.fileFilter[0] : props.fileFilter;
-    const path = filter === ".yaml" ? YAML_PATH : SLP_PATH;
+    const isModelDir = props.mode === "directory";
+    const path = isModelDir ? MODEL_DIR_PATH : filter === ".yaml" ? YAML_PATH : SLP_PATH;
+    const label = isModelDir ? "model folder" : filter;
     return (
       <Dialog open onOpenChange={(next) => { if (!next) props.onClose(); }}>
         <DialogContent>
@@ -74,7 +79,7 @@ vi.mock("@/components/dialogs/RemoteFileBrowser", () => ({
               props.onClose();
             }}
           >
-            Pick {filter}
+            Pick {label}
           </button>
         </DialogContent>
       </Dialog>
@@ -235,6 +240,11 @@ async function loadViaBrowse() {
   const pickButton = await screen.findByRole("button", { name: /Pick \.slp/ });
   fireEvent.click(pickButton);
   await waitFor(() => expect(screen.getByText(SLP_PATH)).toBeInTheDocument());
+}
+
+/** The job-type toggle at the top of the wizard — "Labels (on <worker>)" stays the same section either way. */
+function switchToInference() {
+  fireEvent.click(screen.getByRole("button", { name: "Inference" }));
 }
 
 describe("NewJobWizard — browse -> loadWorkerLabels -> summary", () => {
@@ -431,5 +441,110 @@ describe("NewJobWizard — separate-copy guarantee", () => {
     expect(useTrainingStore.getState().config.configs).toBe(sentinelConfigs);
 
     useTrainingStore.setState((s) => ({ config: { ...s.config, configs: [] } }));
+  });
+});
+
+describe("NewJobWizard — Inference: Models step", () => {
+  it("lists a job without `run` as its own one-job run, and excludes a run with a still-running sibling", async () => {
+    useConnectStore.setState({
+      listJobs: async () => [
+        // No `run` at all -> its own run (jobId key) -> offered.
+        jobSummary({ jobId: "a1", modelTypes: ["single_instance"] }),
+        // A split top-down run where one sibling is still running -> excluded
+        // entirely (buildRunInferenceSpecs needs every sibling's model dir).
+        jobSummary({ jobId: "b1", run: { id: "runB", index: 0, count: 2 }, modelTypes: ["centroid"] }),
+        jobSummary({
+          jobId: "b2",
+          run: { id: "runB", index: 1, count: 2 },
+          state: "running",
+          modelTypes: ["centered_instance"],
+        }),
+      ],
+    });
+    renderWizard();
+    switchToInference();
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /^single_instance/ })).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: /centroid/ })).not.toBeInTheDocument();
+  });
+
+  it("fetches a chosen run's model dirs in run.index order and uses them to build the submitted track spec", async () => {
+    useConnectStore.setState({
+      listJobs: async () => [
+        // Listed out of run.index order on purpose — the Models button's
+        // label and the submitted model_paths must still come out b1, b2.
+        jobSummary({ jobId: "b2", run: { id: "runB", index: 1, count: 2 }, modelTypes: ["centered_instance"] }),
+        jobSummary({ jobId: "b1", run: { id: "runB", index: 0, count: 2 }, modelTypes: ["centroid"] }),
+      ],
+      jobDetail: async (_workerId: string, jobId: string) =>
+        jobStatus({
+          jobId,
+          modelTypes: [jobId === "b1" ? "centroid" : "centered_instance"],
+          result: { model_dir: jobId === "b1" ? "/w/models/centroid" : "/w/models/centered_instance" },
+        }),
+    });
+    renderWizard();
+    switchToInference();
+    await loadViaBrowse();
+
+    const runButton = await screen.findByRole("button", { name: /^centroid \+ centered_instance/ });
+    fireEvent.click(runButton);
+    await waitFor(() => expect(screen.getByText("/w/models/centroid")).toBeInTheDocument());
+    expect(screen.getByText("/w/models/centered_instance")).toBeInTheDocument();
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Add to queue" })).not.toBeDisabled());
+    fireEvent.click(screen.getByRole("button", { name: "Add to queue" }));
+
+    await waitFor(() => expect(submitCalls).toHaveLength(1));
+    const spec = submitCalls[0]!.spec as TrackJobSpec;
+    expect(spec.model_paths).toEqual(["/w/models/centroid", "/w/models/centered_instance"]);
+  });
+
+  it("'Browse model folder on <worker>…' adds a manually picked folder to the list", async () => {
+    renderWizard();
+    switchToInference();
+    await loadViaBrowse();
+
+    fireEvent.click(screen.getByRole("button", { name: /Browse model folder on gpu-box…/ }));
+    const pickButton = await screen.findByRole("button", { name: /Pick model folder/ });
+    fireEvent.click(pickButton);
+
+    await waitFor(() => expect(screen.getByText(MODEL_DIR_PATH)).toBeInTheDocument());
+  });
+});
+
+describe("NewJobWizard — Inference: Submit", () => {
+  it("blocks submit when a video is missing, even with a model dir already chosen", async () => {
+    checkWorkerFileVideosResult = notFoundCheck("/mnt/data/worker-video.mp4");
+    renderWizard();
+    switchToInference();
+    await loadViaBrowse();
+
+    fireEvent.click(screen.getByRole("button", { name: /Browse model folder on gpu-box…/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /Pick model folder/ }));
+    await waitFor(() => expect(screen.getByText(MODEL_DIR_PATH)).toBeInTheDocument());
+
+    expect(screen.getByRole("button", { name: "Add to queue" })).toBeDisabled();
+  });
+
+  it("submits a standalone track job from a manually browsed model dir, source worker-file", async () => {
+    renderWizard();
+    switchToInference();
+    await loadViaBrowse();
+
+    fireEvent.click(screen.getByRole("button", { name: /Browse model folder on gpu-box…/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /Pick model folder/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Add to queue" })).not.toBeDisabled());
+
+    fireEvent.click(screen.getByRole("button", { name: "Add to queue" }));
+
+    await waitFor(() => expect(submitCalls).toHaveLength(1));
+    const call = submitCalls[0]!;
+    expect(call.workerId).toBe(WORKER_ID);
+    expect(call.opts).toEqual({ source: "worker-file" });
+    const spec = call.spec as TrackJobSpec;
+    expect(spec.type).toBe("track");
+    expect(spec.data_path).toBe(SLP_PATH);
+    expect(spec.model_paths).toEqual([MODEL_DIR_PATH]);
   });
 });

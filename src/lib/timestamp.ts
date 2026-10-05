@@ -16,3 +16,15 @@ export function formatRunTimestamp(): string {
     `_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
   );
 }
+
+/** Compact "N ago" for an ISO timestamp — mirrors WelcomeScreen's own `timeAgo` (which takes a raw `ms` elapsed instead). Shared by `WorkerJobs` (job age) and `NewJobWizard`'s Inference "Models" list (run age) — a plain import avoids a `WorkerJobs` <-> `NewJobWizard` circular dependency (the two already cross-import each other's exports). */
+export function timeAgo(iso: string): string {
+  const s = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+  if (s < 60) return "just now";
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m} min ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h} hr ago`;
+  const d = Math.round(h / 24);
+  return `${d} day${d > 1 ? "s" : ""} ago`;
+}

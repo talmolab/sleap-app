@@ -89,36 +89,36 @@ describe("RemoteFileBrowser — open/close", () => {
 
 describe("RemoteFileBrowser — browsing + selection", () => {
   it("directory mode: Select Folder selects the current directory and closes", async () => {
-    let selected: string | null = null;
-    let closed = false;
+    // Tracked via arrays, not a single reassigned `let` — a `let x = null`
+    // read back in the SAME scope (not inside another closure) keeps TS's
+    // control-flow type narrowed to `null` even after an intervening
+    // `fireEvent.click` that invokes the onSelect/onClose closures (see
+    // newJobWizard.test.tsx's similar `submitCalls` doc on this repo's
+    // `vi.fn()` typing quirks — same root cause, different corner of it).
+    const selected: string[] = [];
+    const closeCalls: number[] = [];
     render(
       <RemoteFileBrowser
         open
-        onClose={() => {
-          closed = true;
-        }}
-        onSelect={(p) => {
-          selected = p;
-        }}
+        onClose={() => closeCalls.push(1)}
+        onSelect={(p) => selected.push(p)}
         mounts={["/mnt/data"]}
         mode="directory"
       />,
     );
     await waitFor(() => expect(screen.getByRole("button", { name: "Select Folder" })).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "Select Folder" }));
-    expect(selected).toBe("/mnt/data");
-    expect(closed).toBe(true);
+    expect(selected).toEqual(["/mnt/data"]);
+    expect(closeCalls).toHaveLength(1);
   });
 
   it("file mode: Select File is disabled until a file is picked, then selects + closes", async () => {
-    let selected: string | null = null;
+    const selected: string[] = [];
     render(
       <RemoteFileBrowser
         open
         onClose={() => {}}
-        onSelect={(p) => {
-          selected = p;
-        }}
+        onSelect={(p) => selected.push(p)}
         mounts={["/mnt/data"]}
         mode="file"
       />,
@@ -129,7 +129,7 @@ describe("RemoteFileBrowser — browsing + selection", () => {
     fireEvent.click(screen.getByText("a.mp4"));
     await waitFor(() => expect(screen.getByRole("button", { name: "Select File" })).not.toBeDisabled());
     fireEvent.click(screen.getByRole("button", { name: "Select File" }));
-    expect(selected).toBe("/mnt/data/a.mp4");
+    expect(selected).toEqual(["/mnt/data/a.mp4"]);
   });
 
   it("filters file-mode entries by fileFilter, case-insensitively", async () => {

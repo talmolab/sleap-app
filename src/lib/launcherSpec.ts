@@ -138,7 +138,15 @@ const HEAD_TYPES_TO_MODEL_TYPE: Array<{ headTypes: string[]; modelType: ModelTyp
   { headTypes: ["multi_class_topdown"], modelType: "top_down_id" },
 ];
 
-function inferModelType(headTypes: string[]): ModelType | null {
+/**
+ * Reverses `slotToHeadType` from a run's ordered head-type list (one per
+ * sibling job, `run.index` order) to the pipeline `ModelType` — shared by
+ * `seedFromJobSpec` (below) and the launcher wizard's Inference flow, which
+ * uses it only to satisfy `buildPostTrainingInferenceConfig`'s `modelType`
+ * param for its (unread by `buildRemoteTrackSpecs`) `pipeline` field, so a
+ * `null`/fallback guess there is harmless.
+ */
+export function inferModelType(headTypes: string[]): ModelType | null {
   const match = HEAD_TYPES_TO_MODEL_TYPE.find(
     (m) => m.headTypes.length === headTypes.length && m.headTypes.every((h, i) => h === headTypes[i]),
   );
