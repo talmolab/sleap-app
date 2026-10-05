@@ -19,7 +19,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "@/lib/notify";
 import { projectTag } from "@/lib/projectTag";
-import { timeAgo } from "@/lib/timestamp";
+import { timeAgo, modelRunTimestamp } from "@/lib/timestamp";
 import type { JobSummary, JobStatus } from "@/lib/protocolV1/client";
 import { useAppStore } from "@/stores/appStore";
 import { useConnectStore } from "@/stores/connectStore";
@@ -149,10 +149,28 @@ function rollupGroupStatus(jobs: JobSummary[]): string {
   return "canceled";
 }
 
-/** "Top-down training run" for a split multi-model train (the only case `count > 1` jobs ever come from); otherwise named for its one train job's model, or "Inference" for a group with no train job at all. */
+/** The group's shared model-name run timestamp (`modelRunTimestamp`, sleap-connect #98's `model_name`) — the first one found among its jobs, since every sibling of one submission shares the same sleap-nn run timestamp. `null` when none of the group's jobs have a known model name yet (unfinished jobs, track jobs, or an older worker). */
+function groupModelTimestamp(jobs: JobSummary[]): string | null {
+  for (const j of jobs) {
+    const ts = modelRunTimestamp(j.modelName);
+    if (ts) return ts;
+  }
+  return null;
+}
+
+/**
+ * "<model types joined with ' + '> · <timestamp>" once a `model_name` is
+ * known (e.g. "centroid + centered_instance · 260922_015758") — falls back
+ * to the pre-#98 title ("Top-down training run" / "Training run (<type>)" /
+ * "Inference") when no job in the group carries a model name yet.
+ */
 function groupTitle(jobs: JobSummary[]): string {
   const trainJobs = jobs.filter((j) => j.kind !== "track");
   if (trainJobs.length === 0) return "Inference";
+  const timestamp = groupModelTimestamp(jobs);
+  if (timestamp) {
+    return `${trainJobs.map((j) => j.modelTypes[0] ?? "model").join(" + ")} · ${timestamp}`;
+  }
   if (trainJobs.length > 1) return "Top-down training run";
   return `Training run (${trainJobs[0]!.modelTypes[0] ?? "model"})`;
 }
@@ -220,6 +238,7 @@ export function jobMatches(job: JobSummary, query: string): boolean {
     job.jobId,
     job.run?.id,
     job.project?.name,
+    job.modelName ?? undefined,
     ...job.modelTypes,
   ];
   return haystacks.some((h) => h?.toLowerCase().includes(q));
@@ -492,6 +511,10 @@ export function WorkerJobs({
                             {timeAgo(job.createdAt)}
                           </span>
                         </div>
+
+                        {job.modelName && (
+                          <div className="text-[10px] font-mono text-muted-foreground">{job.modelName}</div>
+                        )}
 
                         {job.state === "failed" && job.error && (
                           <pre className="text-[10px] text-red-300 bg-red-950/40 border border-red-900 rounded p-1.5 whitespace-pre-wrap">

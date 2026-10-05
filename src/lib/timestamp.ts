@@ -17,6 +17,21 @@ export function formatRunTimestamp(): string {
   );
 }
 
+/**
+ * Extracts the leading `YYMMDD_HHMMSS` run timestamp from a worker's
+ * `model_name` (the basename of a finished train job's model folder, e.g.
+ * `"260922_015758.centroid.n=1"` — see `JobSummary.modelName`'s doc) —
+ * `null` when absent, or the name doesn't start with one (an older worker
+ * that doesn't send `model_name` in this shape). Shared by `WorkerJobs`
+ * (a training run's group title/row) and `NewJobWizard`'s "Start config
+ * from" dropdown (a past run's dropdown label).
+ */
+export function modelRunTimestamp(modelName: string | null | undefined): string | null {
+  if (!modelName) return null;
+  const m = /^(\d{6}_\d{6})/.exec(modelName);
+  return m ? m[1] : null;
+}
+
 /** Compact "N ago" for an ISO timestamp — mirrors WelcomeScreen's own `timeAgo` (which takes a raw `ms` elapsed instead). Shared by `WorkerJobs` (job age) and `NewJobWizard`'s Inference "Models" list (run age) — a plain import avoids a `WorkerJobs` <-> `NewJobWizard` circular dependency (the two already cross-import each other's exports). */
 export function timeAgo(iso: string): string {
   const s = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));

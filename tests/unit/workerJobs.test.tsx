@@ -210,6 +210,33 @@ describe("groupJobs (pure logic)", () => {
     const groups = groupJobs([mineOld, otherNew, mineNew], myProject.id);
     expect(groups.map((g) => g.key)).toEqual(["mine-new", "mine-old", "other-new"]);
   });
+
+  it("titles a split run '<types joined> · <timestamp>' once a model_name is known (sleap-connect #98)", () => {
+    const centroid = job({
+      jobId: "a",
+      run: { id: "r1", index: 0, count: 2 },
+      modelName: "260922_015758.centroid.n=1",
+    });
+    const centeredInstance = job({
+      jobId: "b",
+      modelTypes: ["centered_instance"],
+      run: { id: "r1", index: 1, count: 2 },
+      modelName: "260922_015758.centered_instance.n=1",
+    });
+    const groups = groupJobs([centroid, centeredInstance], myProject.id);
+    expect(groups[0]!.title).toBe("centroid + centered_instance · 260922_015758");
+  });
+
+  it("falls back to the pre-#98 title when no job in the group has a model name yet", () => {
+    const centroid = job({ jobId: "a", run: { id: "r1", index: 0, count: 2 } });
+    const centeredInstance = job({
+      jobId: "b",
+      modelTypes: ["centered_instance"],
+      run: { id: "r1", index: 1, count: 2 },
+    });
+    const groups = groupJobs([centroid, centeredInstance], myProject.id);
+    expect(groups[0]!.title).toBe("Top-down training run");
+  });
 });
 
 describe("jobMatches (pure logic)", () => {
@@ -233,6 +260,12 @@ describe("jobMatches (pure logic)", () => {
   it("an empty or blank query matches everything", () => {
     expect(jobMatches(job(), "")).toBe(true);
     expect(jobMatches(job(), "   ")).toBe(true);
+  });
+
+  it("matches a job's model name (sleap-connect #98) — case-insensitively", () => {
+    const j = job({ modelName: "260922_015758.centroid.n=1" });
+    expect(jobMatches(j, "260922_015758")).toBe(true);
+    expect(jobMatches(j, "CENTROID.N=1")).toBe(true);
   });
 });
 
@@ -318,6 +351,29 @@ describe("WorkerJobs rendering", () => {
     );
     await waitFor(() => expect(screen.getByRole("button", { name: "View" })).toBeInTheDocument());
     expect(screen.queryByRole("button", { name: /Fetch & Load/ })).not.toBeInTheDocument();
+  });
+
+  it("shows a finished training job's model name (sleap-connect #98), mono and muted", async () => {
+    useConnectStore.setState({
+      listJobs: async () => [
+        job({ state: "completed", kind: "train", modelName: "260922_015758.centroid.n=1" }),
+      ],
+    });
+    render(
+      <WorkerJobs workerId={WORKER_ID} setIntervalImpl={noopSetInterval} clearIntervalImpl={noopClearInterval} />,
+    );
+    const name = await screen.findByText("260922_015758.centroid.n=1");
+    expect(name.className).toContain("font-mono");
+    expect(name.className).toContain("text-muted-foreground");
+  });
+
+  it("omits the model name row for a job with none (unfinished, track, or an older worker)", async () => {
+    useConnectStore.setState({ listJobs: async () => [job({ state: "running" })] });
+    render(
+      <WorkerJobs workerId={WORKER_ID} setIntervalImpl={noopSetInterval} clearIntervalImpl={noopClearInterval} />,
+    );
+    await waitFor(() => expect(screen.getByText("Train centroid")).toBeInTheDocument());
+    expect(screen.queryByText(/n=1/)).not.toBeInTheDocument();
   });
 
   it("Logs opens the JobViewerDialog on its log view for that job", async () => {

@@ -120,6 +120,8 @@ export interface JobSummary {
   run?: JobRun | null;
   /** True when this train job's spec carries `post_inference` entries (sleap-connect PR5w) — the Connect window's "→ inference" tag. Absent on a track job, or a worker predating PR5w. */
   postInference?: boolean;
+  /** The basename of a finished train job's model folder — a sleap-nn run name like `"260922_015758.centroid.n=1"` (wire: `model_name`). `null`/absent on an unfinished job, a track job, or a worker predating this field. */
+  modelName?: string | null;
 }
 
 export interface JobStatus {
@@ -228,6 +230,7 @@ function _mapJobSummary(j: Record<string, unknown>): JobSummary {
     project: j.project as JobProject | null | undefined,
     run: j.run as JobRun | null | undefined,
     postInference: j.post_inference as boolean | undefined,
+    modelName: j.model_name as string | null | undefined,
   };
 }
 

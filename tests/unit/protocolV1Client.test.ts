@@ -761,6 +761,37 @@ describe("protocolV1 WorkerClient", () => {
       ]);
     });
 
+    it("jobsList maps model_name (sleap-connect #98) to modelName, and omits it when absent", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({
+        handleRequest: (method) => {
+          if (method === "pair.claim") return { result: {} };
+          if (method === "jobs.list") {
+            return {
+              result: {
+                jobs: [
+                  {
+                    job_id: "job_1",
+                    state: "completed",
+                    created_at: "t1",
+                    kind: "train",
+                    model_name: "260922_015758.centroid.n=1",
+                  },
+                  { job_id: "job_2", state: "running", created_at: "t2", kind: "train" },
+                ],
+              },
+            };
+          }
+          return { error: { code: "proto.unknown_method", msg: "?" } };
+        },
+      });
+      const client = await pairedClient(identity, socket);
+
+      const jobs = await client.jobsList();
+      expect(jobs[0]!.modelName).toBe("260922_015758.centroid.n=1");
+      expect(jobs[1]!.modelName).toBeUndefined();
+    });
+
     it("jobsList maps a run tag (sleap-connect feat/connect-run-id)", async () => {
       const identity = await freshIdentity();
       const socket = new FakeWorkerSocket({
