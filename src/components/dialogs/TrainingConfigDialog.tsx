@@ -18,6 +18,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Search, HelpCircle, RefreshCw, Check, RotateCcw } from "lucide-react";
+import type { Labels } from "@talmolab/sleap-io.js";
 import type { ConfigFile, ConfigHyperparams, Backbone, ModelType, DataPipeline, ColorMode } from "@/stores/trainingStore";
 import { getSlotLabel, getConfigSlots, useTrainingStore } from "@/stores/trainingStore";
 import { checkWandbAuth, detectGpu, type WandbAuth } from "@/platform/backend";
@@ -38,6 +39,20 @@ const VISIBILITY_COLOR: Record<ReturnType<typeof visibilityTier>, string> = {
 };
 
 // ── Props ──────────────────────────────────────────────────────────
+
+/**
+ * The subset of `useTrainingStore`'s config-mutating actions this dialog
+ * normally writes to directly — overridable so the launcher wizard (PR5b)
+ * can edit a wizard-local config copy instead of the app's real training
+ * config when building a worker-file job. `parseYamlConfig` is never part
+ * of this: it only parses and returns a `ConfigFile`, writing nothing, so
+ * both modes always call the real `useTrainingStore` one.
+ */
+export interface TrainingConfigActions {
+  addConfigFile: (file: ConfigFile) => void;
+  updateConfigCheckpointPath: (slot: string, path: string | null) => void;
+  resetConfigHyperparams: (slot: string) => void;
+}
 
 interface TrainingConfigDialogProps {
   open: boolean;
@@ -65,6 +80,23 @@ interface TrainingConfigDialogProps {
   /** Run post-training inference on the exported model (falls back to the checkpoint on failure). */
   useExportedForInference: boolean;
   onUseExportedForInferenceChange: (v: boolean) => void;
+  /**
+   * Launcher wizard (PR5b worker-file jobs): replaces every open-project
+   * labels/skeleton read (`skeleton = labelsOverride.skeletons[0]`) with a
+   * worker-side `Labels` loaded via `loadWorkerLabels` instead. Absent ->
+   * identical behavior to before (reads the open project).
+   */
+  labelsOverride?: Labels;
+  /** See {@link TrainingConfigActions}. Absent -> identical behavior to before (writes `useTrainingStore` directly). */
+  configActions?: TrainingConfigActions;
+  /**
+   * `"worker-file"` hides the Remote Training section (picking a backend is
+   * meaningless — the worker this job targets is already chosen outside
+   * this dialog) and the local checkpoint/config "Browse..." affordances
+   * (they open a LOCAL file dialog, which can't reach a path on the
+   * worker). Default `"project"`.
+   */
+  mode?: "project" | "worker-file";
 }
 
 // ── Constants ──────────────────────────────────────────────────────
@@ -378,6 +410,9 @@ function HeadTabContent({
   hp,
   onUpdate,
   scrollRefCallback,
+  labelsOverride,
+  configActions,
+  mode = "project",
 }: {
   slot: string;
   modelType: ModelType;
@@ -385,11 +420,15 @@ function HeadTabContent({
   hp: ConfigHyperparams;
   onUpdate: (updates: Partial<ConfigHyperparams>) => void;
   scrollRefCallback: (el: HTMLDivElement | null) => void;
+  labelsOverride?: Labels;
+  configActions?: Pick<TrainingConfigActions, "addConfigFile" | "updateConfigCheckpointPath">;
+  mode?: "project" | "worker-file";
 }) {
   const headType = slotToHeadType(modelType, slot);
   const baselineProfiles = getBaselineProfilesForHead(headType);
   const showCropSize = slot !== "centroid";
-  const labels = useAppStore((s) => s.labels);
+  const storeLabels = useAppStore((s) => s.labels);
+  const labels = labelsOverride ?? storeLabels;
   const sizeStats = useMemo(() => computeInstanceSizeStats(labels), [labels]);
   const isPretrainedBackbone = !!hp.backbone && hp.backbone !== "unet";
   const recommendedMaxStride = isPretrainedBackbone
@@ -420,7 +459,14 @@ function HeadTabContent({
   const trainingMode = hp.trainingMode ?? "reuse_config";
   const modelLocked = trainingMode === "resume" || trainingMode === "finetune";
   const allLocked = trainingMode === "resume";
-  const { parseYamlConfig, addConfigFile, updateConfigCheckpointPath } = useTrainingStore();
+  const {
+    parseYamlConfig,
+    addConfigFile: storeAddConfigFile,
+    updateConfigCheckpointPath: storeUpdateConfigCheckpointPath,
+  } = useTrainingStore();
+  const addConfigFile = configActions?.addConfigFile ?? storeAddConfigFile;
+  const updateConfigCheckpointPath =
+    configActions?.updateConfigCheckpointPath ?? storeUpdateConfigCheckpointPath;
 
   const handleBrowseCheckpoint = async () => {
     try {
@@ -533,9 +579,11 @@ function HeadTabContent({
                 })()}
               </SelectItem>
             )}
-            <SelectItem value="__browse__" className="text-primary font-medium">
-              Browse for config file...
-            </SelectItem>
+            {mode !== "worker-file" && (
+              <SelectItem value="__browse__" className="text-primary font-medium">
+                Browse for config file...
+              </SelectItem>
+            )}
           </SelectContent>
         </Select>
         {(() => {
@@ -583,7 +631,7 @@ function HeadTabContent({
                   placeholder={trainingMode === "finetune" ? "Path to .ckpt or .h5 file" : "Path to .ckpt file"}
                   className="h-9 text-sm font-mono flex-1"
                 />
-                {isTauri && (
+                {isTauri && mode !== "worker-file" && (
                   <button
                     type="button"
                     onClick={handleBrowseCheckpoint}
@@ -606,7 +654,7 @@ function HeadTabContent({
       )}
 
       {/* ── Model Stats Preview (thumbnail + RF + crop size + params) ── */}
-      <ModelStatsPreview hp={hp} maxStride={effectiveMaxStride} filters={hp.filters} filtersRate={hp.filtersRate} outputStride={hp.outputStride} stemStride={hp.stemStride} backbone={hp.backbone || "unet"} inputChannels={effectiveInputChannels} slot={slot} />
+      <ModelStatsPreview hp={hp} maxStride={effectiveMaxStride} filters={hp.filters} filtersRate={hp.filtersRate} outputStride={hp.outputStride} stemStride={hp.stemStride} backbone={hp.backbone || "unet"} inputChannels={effectiveInputChannels} slot={slot} labels={labels} />
 
       {/* ── 1. Data ── */}
       <div className={allLocked ? "opacity-40 pointer-events-none" : ""}>
@@ -1129,6 +1177,9 @@ export function TrainingConfigDialog({
   onExportFormatChange,
   useExportedForInference,
   onUseExportedForInferenceChange,
+  labelsOverride,
+  configActions,
+  mode = "project",
 }: TrainingConfigDialogProps) {
   const pipelineScrollRef = useRef<HTMLDivElement>(null);
   const headScrollRefs = useRef<Record<string, HTMLDivElement | null>>({});
@@ -1155,10 +1206,14 @@ export function TrainingConfigDialog({
     refreshWandbAuth();
   }, [open, refreshWandbAuth]);
 
-  // App store for suggestions count
-  const labels = useAppStore((s) => s.labels);
+  // App store for suggestions count — overridden by `labelsOverride` (and its
+  // one skeleton) in worker-file mode, so every stat below reflects the
+  // worker-side SLP instead of whatever project happens to be open.
+  const storeLabels = useAppStore((s) => s.labels);
+  const labels = labelsOverride ?? storeLabels;
   const suggestionsCount = labels?.suggestions?.length ?? 0;
-  const skeleton = useAppStore((s) => s.skeleton);
+  const storeSkeleton = useAppStore((s) => s.skeleton);
+  const skeleton = labelsOverride ? (labelsOverride.skeletons[0] ?? null) : storeSkeleton;
   const overlayVersion = useAppStore((s) => s.overlayVersion);
   const nodeVisibility = useMemo(
     () => computeNodeVisibility(labels, skeleton),
@@ -1167,7 +1222,13 @@ export function TrainingConfigDialog({
   );
 
   // Auto-load baseline configs for empty slots when dialog opens
-  const { parseYamlConfig, addConfigFile, resetConfigHyperparams } = useTrainingStore();
+  const {
+    parseYamlConfig,
+    addConfigFile: storeAddConfigFile,
+    resetConfigHyperparams: storeResetConfigHyperparams,
+  } = useTrainingStore();
+  const addConfigFile = configActions?.addConfigFile ?? storeAddConfigFile;
+  const resetConfigHyperparams = configActions?.resetConfigHyperparams ?? storeResetConfigHyperparams;
   useEffect(() => {
     if (!open) return;
     const slots = getConfigSlots(modelType);
@@ -1252,7 +1313,12 @@ export function TrainingConfigDialog({
     else resetConfigHyperparams(activeTab);
   };
 
-  const navItems = activeTab === "pipeline" ? PIPELINE_NAV : HEAD_NAV;
+  const navItems =
+    activeTab === "pipeline"
+      ? mode === "worker-file"
+        ? PIPELINE_NAV.filter((item) => item.id !== "pipeline-remote")
+        : PIPELINE_NAV
+      : HEAD_NAV;
   const firstConfig = sortedConfigs[0];
   const firstHp = firstConfig?.hyperparams;
 
@@ -1917,17 +1983,21 @@ export function TrainingConfigDialog({
                   <p className="text-sm text-muted-foreground">Upload config files to configure output.</p>
                 )}
 
-                <Separator className="my-5" />
+                {mode !== "worker-file" && (
+                  <>
+                    <Separator className="my-5" />
 
-                {/* 8. Remote Training */}
-                <SectionHeading {...PIPELINE_FIELD_DEFS.secRemote} />
-                <div className="max-w-64">
-                  <BackendPicker
-                    jobLabel="training job"
-                    remoteEnabled={remoteEnabled}
-                    onRemoteEnabledChange={onRemoteEnabledChange}
-                  />
-                </div>
+                    {/* 8. Remote Training */}
+                    <SectionHeading {...PIPELINE_FIELD_DEFS.secRemote} />
+                    <div className="max-w-64">
+                      <BackendPicker
+                        jobLabel="training job"
+                        remoteEnabled={remoteEnabled}
+                        onRemoteEnabledChange={onRemoteEnabledChange}
+                      />
+                    </div>
+                  </>
+                )}
               </div>
             </TabsContent>
 
@@ -1941,6 +2011,9 @@ export function TrainingConfigDialog({
                   hp={cf.hyperparams}
                   onUpdate={(updates) => onUpdateSlot(cf.slot, updates)}
                   scrollRefCallback={(el) => { headScrollRefs.current[cf.slot] = el; }}
+                  labelsOverride={labelsOverride}
+                  configActions={configActions}
+                  mode={mode}
                 />
               </TabsContent>
             ))}

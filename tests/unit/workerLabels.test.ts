@@ -151,7 +151,9 @@ describe("loadWorkerLabels", () => {
   it("falls back to readSlpStreaming's own error when no readRange failure was recorded", async () => {
     const { client } = makeFakeClient(FILE_BYTES);
     const genericError = new Error("Failed to parse HDF5 file");
-    readSlpStreamingMock.mockRejectedValueOnce(genericError);
+    readSlpStreamingMock.mockImplementationOnce(async () => {
+      throw genericError;
+    });
 
     await expect(loadWorkerLabels(client, "/data/x.slp")).rejects.toBe(genericError);
   });
