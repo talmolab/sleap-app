@@ -1981,9 +1981,17 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
               log: appendLog(s.log, `— Running inference (${inferenceTarget}) on the worker with models: ${modelDirs.join(", ")}...`),
             }));
             try {
+              // Tag this track job with the training run's own id (`result.runId`,
+              // set by `connectStore.submitJob` above) so the Connect window's
+              // Jobs tab groups it under that training run instead of showing
+              // it as an unrelated card — the same grouping the worker's own
+              // `post_inference` chaining (sleap-connect PR5w) gets for free.
+              const inferRunOpts = result.runId
+                ? { run: { id: result.runId, stage: "inference" as const } }
+                : undefined;
               const inferResults: JobResult[] = [];
               for (const trackSpec of trackSpecs) {
-                const r = await submitJob(trackSpec, onLogLine);
+                const r = await submitJob(trackSpec, onLogLine, inferRunOpts);
                 if (!r.success) throw new Error(r.error || "inference job failed");
                 inferResults.push(r);
               }

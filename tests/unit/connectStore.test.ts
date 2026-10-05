@@ -969,7 +969,7 @@ describe("connectStore", () => {
 
       const result = await promise;
 
-      expect(result).toEqual({ jobId: "job_1", success: true });
+      expect(result).toEqual({ jobId: "job_1", success: true, runId: expect.any(String) });
       expect(lines).toEqual(["epoch 1"]);
       // Terminal: the tracked entry is kept (it's the Connect window's job
       // history) with its state updated, not cleared.
@@ -985,7 +985,12 @@ describe("connectStore", () => {
       lastClient().emit("job_1", "job.status", { state: "failed", detail: "exit code 1" });
 
       const result = await promise;
-      expect(result).toEqual({ jobId: "job_1", success: false, error: "exit code 1" });
+      expect(result).toEqual({
+        jobId: "job_1",
+        success: false,
+        error: "exit code 1",
+        runId: expect.any(String),
+      });
       expect(useConnectStore.getState().trackedJobs).toEqual([
         expect.objectContaining({ jobId: "job_1", state: "failed", seen: true, error: "exit code 1" }),
       ]);
@@ -1019,6 +1024,7 @@ describe("connectStore", () => {
         jobId: "job_1",
         success: true,
         resultBlobs: { predictions: { sha256: "abc123", size: 4096 } },
+        runId: expect.any(String),
       });
     });
 
@@ -1064,8 +1070,10 @@ describe("connectStore", () => {
         model_types: ["centered_instance"],
       });
       // Only the intermediate (non-final) model fires onModelComplete.
-      expect(modelCompletions).toEqual([{ jobId: "job_1", success: true }]);
-      expect(result).toEqual({ jobId: "job_1", success: true });
+      expect(modelCompletions).toEqual([
+        { jobId: "job_1", success: true, runId: expect.any(String) },
+      ]);
+      expect(result).toEqual({ jobId: "job_1", success: true, runId: expect.any(String) });
     });
 
     it("tags a split multi-model run: both jobs share run.id, indices 0/1, count 2", async () => {
@@ -1103,6 +1111,45 @@ describe("connectStore", () => {
       );
     });
 
+    it("`options.run` links to an existing run id and tags it with stage, instead of minting a fresh one", async () => {
+      const spec: JobSpec = { type: "track", data_path: "/x.slp", model_paths: ["m1"] };
+      const promise = useConnectStore
+        .getState()
+        .submitJob(spec, () => {}, { run: { id: "train-run-id", stage: "inference" } });
+      await flushAsync();
+      const client = lastClient();
+      client.emit("job_1", "job.status", { state: "completed" });
+      const result = await promise;
+
+      expect(client.jobsSubmitCalls[0].run).toEqual({
+        id: "train-run-id",
+        index: 0,
+        count: 1,
+        stage: "inference",
+      });
+      // The caller can read the (possibly overridden) run id straight off
+      // the result — `trainingStore`'s own post-training inference needs
+      // this to link ITS follow-up track job to the same run.
+      expect(result.runId).toBe("train-run-id");
+    });
+
+    it("every split job of a multi-model run carries the result's runId, generated once per call", async () => {
+      const spec: JobSpec = {
+        type: "train",
+        config_contents: ["centroid yaml", "centered_instance yaml"],
+        model_types: ["centroid", "centered_instance"],
+        labels_path: "/labels.slp",
+      };
+      const promise = useConnectStore.getState().submitJob(spec, () => {});
+      for (let i = 0; i < 2; i++) {
+        await flushAsync();
+        lastClient().emit("job_1", "job.status", { state: "completed" });
+      }
+      const result = await promise;
+      expect(result.runId).toEqual(expect.any(String));
+      expect(result.runId).toBe((lastClient().jobsSubmitCalls[0].run as { id: string }).id);
+    });
+
     it("forwards job.log's progress flag (absent = false)", async () => {
       const lines: Array<[string, boolean | undefined]> = [];
       const spec: JobSpec = { type: "track", data_path: "/x.slp", model_paths: ["m1"] };
@@ -1136,6 +1183,7 @@ describe("connectStore", () => {
         success: true,
         modelDir: "/w/models/run1",
         labelsPath: "/w/labels.slp",
+        runId: expect.any(String),
       });
     });
 
@@ -1181,7 +1229,12 @@ describe("connectStore", () => {
       lastClient().emit("job_1", "job.status", { state: "failed", detail: "boom" });
 
       const result = await promise;
-      expect(result).toEqual({ jobId: "job_1", success: false, error: "boom" });
+      expect(result).toEqual({
+        jobId: "job_1",
+        success: false,
+        error: "boom",
+        runId: expect.any(String),
+      });
       expect(lastClient().jobsSubmitCalls).toHaveLength(1);
     });
 
@@ -1198,7 +1251,7 @@ describe("connectStore", () => {
       client.emit("job_1", "job.status", { state: "completed" }, 6);
 
       const result = await promise;
-      expect(result).toEqual({ jobId: "job_1", success: true });
+      expect(result).toEqual({ jobId: "job_1", success: true, runId: expect.any(String) });
       expect(lines).toEqual(["epoch 1"]);
       expect(
         useConnectStore.getState().trackedJobs.find((j) => j.jobId === "job_1")?.lastSeq,
@@ -1224,7 +1277,7 @@ describe("connectStore", () => {
       // applied from `firstClient`.
       secondClient.emit("job_1", "job.status", { state: "completed" }, 2);
       const result = await promise;
-      expect(result).toEqual({ jobId: "job_1", success: true });
+      expect(result).toEqual({ jobId: "job_1", success: true, runId: expect.any(String) });
     });
   });
 

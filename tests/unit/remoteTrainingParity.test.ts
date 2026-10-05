@@ -387,6 +387,35 @@ describe("startTraining (remote) — telemetry + post-training inference", () =>
     expect(track.frame_filter).toBe("suggested");
   });
 
+  it("tags the post-training inference job with the training run's own run id (stage: inference)", async () => {
+    // `connectStore.submitJob` (mocked wholesale here) is what actually
+    // assigns/returns a run id — simulate it reporting one on the train
+    // job's result, the way the real store's `JobResult.runId` does.
+    driveJob = async (call, n) => {
+      if (call.spec.type === "train") {
+        const opts = call.options!;
+        opts.onModelComplete?.({
+          jobId: "j0",
+          success: true,
+          modelDir: "/w/models/centroid",
+          labelsPath: "/w/jobs/j0/labels.slp",
+        });
+        return {
+          jobId: "j1",
+          success: true,
+          modelDir: "/w/models/centered_instance",
+          labelsPath: "/w/jobs/j1/labels.slp",
+          runId: "train-run-xyz",
+        };
+      }
+      call.onLog("Predicting 5/5", false);
+      return { jobId: `track${n}`, success: true, resultBlobs: { predictions: PREDICTIONS } };
+    };
+    await useTrainingStore.getState().startTraining(setUpTopDown("suggestions"));
+    expect(submitCalls).toHaveLength(2);
+    expect(submitCalls[1].options).toEqual({ run: { id: "train-run-xyz", stage: "inference" } });
+  });
+
   it("maps other inference targets to the track spec's frame filter", async () => {
     await useTrainingStore.getState().startTraining(setUpTopDown("user_labeled"));
     const track = submitCalls[1].spec as { frame_filter?: string };

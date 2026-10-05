@@ -50,9 +50,17 @@ vi.mock("@/components/connect/NewJobWizard", () => ({
   seedWizardFromRun: seedWizardFromRunMock,
 }));
 
-const { WorkerJobs, isMineJob, sortWorkerJobs, jobTitle, jobStatusChip, isManagedJob, siblingJobIds } = await import(
-  "@/components/connect/WorkerJobs"
-);
+const {
+  WorkerJobs,
+  isMineJob,
+  sortWorkerJobs,
+  jobTitle,
+  jobStatusChip,
+  isManagedJob,
+  siblingJobIds,
+  groupJobs,
+  jobMatches,
+} = await import("@/components/connect/WorkerJobs");
 
 const WORKER_ID = "node-a";
 const MY_PROJECT_PATH = "/Users/x/labels.v003.slp";
@@ -131,6 +139,100 @@ describe("jobTitle / jobStatusChip (pure logic)", () => {
 
   it("falls back to the capitalized state otherwise", () => {
     expect(jobStatusChip(job({ state: "completed" })).text).toBe("Completed");
+  });
+});
+
+describe("groupJobs (pure logic)", () => {
+  it("groups a split training run's siblings under one key, ordered by run.index", () => {
+    const centeredInstance = job({
+      jobId: "b",
+      modelTypes: ["centered_instance"],
+      run: { id: "r1", index: 1, count: 2 },
+    });
+    const centroid = job({ jobId: "a", run: { id: "r1", index: 0, count: 2 } });
+    const groups = groupJobs([centeredInstance, centroid], myProject.id);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.key).toBe("r1");
+    expect(groups[0]!.jobs.map((j) => j.jobId)).toEqual(["a", "b"]);
+    expect(groups[0]!.title).toBe("Top-down training run");
+  });
+
+  it("groups a chained inference job (same run.id, run.stage: 'inference') after its training job", () => {
+    const train = job({ jobId: "train1", run: { id: "r1", index: 0, count: 1 } });
+    const infer = job({
+      jobId: "infer1",
+      kind: "track",
+      run: { id: "r1", index: 0, count: 1, stage: "inference" },
+      createdAt: "2026-10-02T00:00:00.000Z",
+    });
+    const groups = groupJobs([infer, train], myProject.id);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.jobs.map((j) => j.jobId)).toEqual(["train1", "infer1"]);
+    expect(groups[0]!.title).toBe("Training run (centroid)");
+  });
+
+  it("groups a job with no run at all alone, keyed by its own jobId", () => {
+    const a = job({ jobId: "a" });
+    const b = job({ jobId: "b", createdAt: "2026-10-02T00:00:00.000Z" });
+    const groups = groupJobs([a, b], myProject.id);
+    expect(groups.map((g) => g.key)).toEqual(["b", "a"]);
+  });
+
+  it("an inference-only group (no train job) titles 'Inference'", () => {
+    const groups = groupJobs([job({ kind: "track" })], myProject.id);
+    expect(groups[0]!.title).toBe("Inference");
+  });
+
+  it("rolls up status: running beats failed beats queued beats completed", () => {
+    const run = (id: string, index: number, count: number, state: string) =>
+      job({ jobId: `${id}-${index}`, run: { id, index, count }, state });
+
+    expect(groupJobs([run("r1", 0, 2, "running"), run("r1", 1, 2, "failed")], myProject.id)[0]!.status).toBe(
+      "running",
+    );
+    expect(groupJobs([run("r2", 0, 2, "queued"), run("r2", 1, 2, "failed")], myProject.id)[0]!.status).toBe(
+      "failed",
+    );
+    expect(groupJobs([run("r3", 0, 2, "completed"), run("r3", 1, 2, "queued")], myProject.id)[0]!.status).toBe(
+      "queued",
+    );
+    expect(groupJobs([run("r4", 0, 1, "completed")], myProject.id)[0]!.status).toBe("completed");
+  });
+
+  it("sorts groups this project first, then newest first — same rule as sortWorkerJobs", () => {
+    const mineOld = job({ jobId: "mine-old", createdAt: "2026-10-01T00:00:00.000Z" });
+    const otherNew = job({
+      jobId: "other-new",
+      createdAt: "2026-10-03T00:00:00.000Z",
+      project: { id: "other", name: "x" },
+    });
+    const mineNew = job({ jobId: "mine-new", createdAt: "2026-10-02T00:00:00.000Z" });
+    const groups = groupJobs([mineOld, otherNew, mineNew], myProject.id);
+    expect(groups.map((g) => g.key)).toEqual(["mine-new", "mine-old", "other-new"]);
+  });
+});
+
+describe("jobMatches (pure logic)", () => {
+  it("matches the labels path, its basename, job id, run id, model type, and project name — case-insensitively", () => {
+    const j = job({
+      jobId: "job_abc123",
+      labelsPath: "/root/vast/exp1/flies.v002.slp",
+      run: { id: "run-xyz", index: 0, count: 1 },
+      modelTypes: ["centered_instance"],
+      project: { id: "p1", name: "FliesProject" },
+    });
+    expect(jobMatches(j, "FLIES.V002")).toBe(true);
+    expect(jobMatches(j, "/root/vast")).toBe(true);
+    expect(jobMatches(j, "job_abc")).toBe(true);
+    expect(jobMatches(j, "run-xyz")).toBe(true);
+    expect(jobMatches(j, "centered_instance")).toBe(true);
+    expect(jobMatches(j, "fliesproject")).toBe(true);
+    expect(jobMatches(j, "nope")).toBe(false);
+  });
+
+  it("an empty or blank query matches everything", () => {
+    expect(jobMatches(job(), "")).toBe(true);
+    expect(jobMatches(job(), "   ")).toBe(true);
   });
 });
 
@@ -412,5 +514,116 @@ describe("WorkerJobs — PR5b row actions", () => {
       <WorkerJobs workerId={WORKER_ID} setIntervalImpl={noopSetInterval} clearIntervalImpl={noopClearInterval} />,
     );
     await waitFor(() => expect(screen.getByText(/→ inference/)).toBeInTheDocument());
+  });
+});
+
+describe("WorkerJobs — grouping + search", () => {
+  it("renders a split training run as one group (one star) with both model rows", async () => {
+    useConnectStore.setState({
+      listJobs: async () => [
+        job({ jobId: "centroid-job", run: { id: "run1", index: 0, count: 2 } }),
+        job({
+          jobId: "ci-job",
+          modelTypes: ["centered_instance"],
+          run: { id: "run1", index: 1, count: 2 },
+        }),
+      ],
+    });
+    render(
+      <WorkerJobs workerId={WORKER_ID} setIntervalImpl={noopSetInterval} clearIntervalImpl={noopClearInterval} />,
+    );
+    await waitFor(() => expect(screen.getByText("Top-down training run")).toBeInTheDocument());
+    expect(screen.getByText("Train centroid")).toBeInTheDocument();
+    expect(screen.getByText("Train centered_instance")).toBeInTheDocument();
+    expect(screen.getAllByText("★")).toHaveLength(1);
+  });
+
+  it("groups a chained post-training inference job under its training run's card", async () => {
+    useConnectStore.setState({
+      listJobs: async () => [
+        job({ jobId: "train1", run: { id: "run1", index: 0, count: 1 } }),
+        job({
+          jobId: "infer1",
+          kind: "track",
+          run: { id: "run1", index: 0, count: 1, stage: "inference" },
+        }),
+      ],
+    });
+    render(
+      <WorkerJobs workerId={WORKER_ID} setIntervalImpl={noopSetInterval} clearIntervalImpl={noopClearInterval} />,
+    );
+    await waitFor(() => expect(screen.getByText("Training run (centroid)")).toBeInTheDocument());
+    expect(screen.getByText("Train centroid")).toBeInTheDocument();
+    expect(screen.getByText("Inference")).toBeInTheDocument();
+    // One run card, not two unrelated ones.
+    expect(screen.getAllByText("★")).toHaveLength(1);
+  });
+
+  it("search filters to groups with a matching job; an unmatched group disappears entirely", async () => {
+    useConnectStore.setState({
+      listJobs: async () => [
+        job({ jobId: "flies-job", labelsPath: "/root/flies.slp" }),
+        job({
+          jobId: "mice-job",
+          labelsPath: "/root/mice.slp",
+          project: { id: "other", name: "mice project" },
+        }),
+      ],
+    });
+    render(
+      <WorkerJobs workerId={WORKER_ID} setIntervalImpl={noopSetInterval} clearIntervalImpl={noopClearInterval} />,
+    );
+    await waitFor(() => expect(screen.getByText(/flies\.slp/)).toBeInTheDocument());
+    expect(screen.getByText(/mice\.slp/)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText(/Search labels file/), { target: { value: "mice" } });
+    await waitFor(() => expect(screen.queryByText(/flies\.slp/)).not.toBeInTheDocument());
+    expect(screen.getByText(/mice\.slp/)).toBeInTheDocument();
+  });
+
+  it("a query matching only the chained inference job still surfaces its whole training run", async () => {
+    useConnectStore.setState({
+      listJobs: async () => [
+        job({ jobId: "train1", run: { id: "run1", index: 0, count: 1 }, labelsPath: "/root/a.slp" }),
+        job({
+          jobId: "infer1",
+          kind: "track",
+          run: { id: "run1", index: 0, count: 1, stage: "inference" },
+          labelsPath: "/root/a.slp",
+        }),
+      ],
+    });
+    render(
+      <WorkerJobs workerId={WORKER_ID} setIntervalImpl={noopSetInterval} clearIntervalImpl={noopClearInterval} />,
+    );
+    await waitFor(() => expect(screen.getByText("Train centroid")).toBeInTheDocument());
+
+    fireEvent.change(screen.getByPlaceholderText(/Search labels file/), { target: { value: "infer1" } });
+    await waitFor(() => expect(screen.getByText("Inference")).toBeInTheDocument());
+    // The training row stays visible too — the whole group surfaces.
+    expect(screen.getByText("Train centroid")).toBeInTheDocument();
+  });
+
+  it("shows 'No jobs match.' when the search query matches nothing", async () => {
+    useConnectStore.setState({ listJobs: async () => [job()] });
+    render(
+      <WorkerJobs workerId={WORKER_ID} setIntervalImpl={noopSetInterval} clearIntervalImpl={noopClearInterval} />,
+    );
+    await waitFor(() => expect(screen.getByText(/flies\.slp/)).toBeInTheDocument());
+    fireEvent.change(screen.getByPlaceholderText(/Search labels file/), { target: { value: "nonexistent" } });
+    await waitFor(() => expect(screen.getByText("No jobs match.")).toBeInTheDocument());
+  });
+
+  it("shows each job's short id in its row (distinct from the group's own short run id)", async () => {
+    useConnectStore.setState({
+      listJobs: async () => [
+        job({ jobId: "job_abcdefgh12345", run: { id: "run_zzzzzzzz9999", index: 0, count: 1 } }),
+      ],
+    });
+    render(
+      <WorkerJobs workerId={WORKER_ID} setIntervalImpl={noopSetInterval} clearIntervalImpl={noopClearInterval} />,
+    );
+    await waitFor(() => expect(screen.getByText("job_abcd")).toBeInTheDocument());
+    expect(screen.getByText("run_zzzz")).toBeInTheDocument();
   });
 });

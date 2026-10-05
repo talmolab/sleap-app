@@ -91,6 +91,16 @@ export interface JobRun {
   id: string;
   index: number;
   count: number;
+  /**
+   * Absent (or omitted) = a training job. Set to `"inference"` on a job
+   * chained onto this run after training — either the worker's own
+   * `post_inference` chaining (sleap-connect PR5w), or `trainingStore`'s own
+   * post-training flow (via `connectStore.submitJob`'s `options.run`
+   * override) — both share the SAME `run.id` as the training jobs they
+   * followed, so the Connect window's Jobs tab (`WorkerJobs.groupJobs`) can
+   * group them under one run instead of showing them as unrelated cards.
+   */
+  stage?: "train" | "inference";
 }
 
 export interface JobSummary {

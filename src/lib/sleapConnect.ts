@@ -177,6 +177,13 @@ export interface JobResult {
   outputPath?: string;
   error?: string;
   /**
+   * The `run.id` `connectStore.submitJob` assigned (or was given via
+   * `options.run`) when it submitted this job — lets a caller (e.g.
+   * `trainingStore`'s post-training inference) link a follow-up job to the
+   * same run without threading its own id through separately.
+   */
+  runId?: string;
+  /**
    * Result blobs a protocol-v1 worker reported on `job.result` (e.g.
    * `resultBlobs.predictions`) — fetch with `connectStore`'s
    * `fetchResultBlob`. `outputPath` above is the desktop-only, local-file

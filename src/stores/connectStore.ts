@@ -35,6 +35,7 @@ import { isTauri } from "@/platform/index";
 import type { AgentInfo } from "@/lib/protocolV1/envelope";
 import type {
   FsListResult,
+  JobRun,
   JobStatus,
   JobSummary,
   Mount,
@@ -150,6 +151,17 @@ export interface SubmitJobOptions {
    * single job.
    */
   onTelemetry?: (telemetry: JobTelemetry, jobIndex: number) => void;
+  /**
+   * Link this submission to an EXISTING run instead of minting a fresh
+   * `run.id` — `trainingStore`'s own post-training inference flow passes its
+   * training run's id here (with `stage: "inference"`) so the follow-up
+   * track job groups under that training run in the Connect window's Jobs
+   * tab (`WorkerJobs.groupJobs`), the same way the worker's own
+   * `post_inference` chaining (sleap-connect PR5w) does. Omitted, `submitJob`
+   * behaves exactly as before: one fresh run id per call, untagged (a plain
+   * training job).
+   */
+  run?: { id: string; stage: "inference" };
 }
 
 export interface ConnectOptions {
@@ -914,13 +926,18 @@ async function submitSingleJob(
         } else if (event.topic === "job.status") {
           const state = event.data.state as string;
           if (state === "completed") {
-            const result: JobResult = { jobId, success: true, resultBlobs };
+            const result: JobResult = { jobId, success: true, resultBlobs, runId: spec.run?.id };
             if (modelDir !== undefined) result.modelDir = modelDir;
             if (labelsPath !== undefined) result.labelsPath = labelsPath;
             finish(result, "completed");
           } else if (state === "failed" || state === "canceled") {
             finish(
-              { jobId, success: false, error: (event.data.detail as string) ?? `Job ${state}` },
+              {
+                jobId,
+                success: false,
+                error: (event.data.detail as string) ?? `Job ${state}`,
+                runId: spec.run?.id,
+              },
               state,
             );
           }
@@ -1377,7 +1394,16 @@ export const useConnectStore = create<ConnectState>()(
         // single-job submission still gets one (index 0, count 1) so a job's
         // `run` field is never a special case to check for; the Connect
         // window (PR4b) only shows the "run i/n" tag once `count > 1`.
-        const runId = crypto.randomUUID();
+        // `options.run` overrides this with an EXISTING run id (and tags
+        // `stage`) instead — see `SubmitJobOptions.run`'s doc.
+        const runId = options?.run?.id ?? crypto.randomUUID();
+        const runStage = options?.run?.stage;
+        const makeRun = (index: number, count: number): JobRun => ({
+          id: runId,
+          index,
+          count,
+          ...(runStage ? { stage: runStage } : {}),
+        });
 
         if (isMultiModelTrainSpec(spec)) {
           const modelTypes = spec.model_types ?? [];
@@ -1388,7 +1414,7 @@ export const useConnectStore = create<ConnectState>()(
               ...spec,
               config_contents: [spec.config_contents[i]],
               model_types: modelTypes[i] ? [modelTypes[i]] : [],
-              run: { id: runId, index: i, count: n },
+              run: makeRun(i, n),
             };
             finalResult = await submitSingleJob(
               _client,
@@ -1410,7 +1436,7 @@ export const useConnectStore = create<ConnectState>()(
         return submitSingleJob(
           _client,
           selectedWorkerId,
-          { ...spec, run: { id: runId, index: 0, count: 1 } },
+          { ...spec, run: makeRun(0, 1) },
           onProgress,
           set,
           options?.onTelemetry && ((t) => options.onTelemetry!(t, 0)),
