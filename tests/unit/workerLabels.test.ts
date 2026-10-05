@@ -18,7 +18,9 @@ vi.mock("@talmolab/sleap-io.js", () => ({
   readSlpStreaming: readSlpStreamingMock,
 }));
 
-const { createWorkerFileRangeSource, loadWorkerLabels } = await import("@/lib/workerLabels");
+const { createWorkerFileRangeSource, loadWorkerLabels, checkWorkerFileVideos } = await import(
+  "@/lib/workerLabels"
+);
 
 const FILE_BYTES = new Uint8Array(10_000);
 for (let i = 0; i < FILE_BYTES.length; i++) FILE_BYTES[i] = i % 256;
@@ -152,5 +154,83 @@ describe("loadWorkerLabels", () => {
     readSlpStreamingMock.mockRejectedValueOnce(genericError);
 
     await expect(loadWorkerLabels(client, "/data/x.slp")).rejects.toBe(genericError);
+  });
+});
+
+/** A minimal stand-in for a sleap-io.js `Video` — `checkWorkerFileVideos` only ever reads these two members. */
+function fakeVideo(filename: string | string[], hasEmbeddedImages: boolean) {
+  return { filename, hasEmbeddedImages };
+}
+
+describe("checkWorkerFileVideos", () => {
+  it("counts an embedded video as found without statting it", async () => {
+    const client = {
+      fsStat: vi.fn(async () => {
+        throw new Error("should never be called for an embedded video");
+      }),
+    } as unknown as WorkerClient;
+    const labels = { videos: [fakeVideo("video0.mp4", true)] } as unknown as Parameters<
+      typeof checkWorkerFileVideos
+    >[1];
+
+    const result = await checkWorkerFileVideos(client, labels);
+
+    expect(result).toEqual([{ index: 0, path: "video0.mp4", embedded: true, found: true }]);
+    expect(client.fsStat).not.toHaveBeenCalled();
+  });
+
+  it("stats every non-embedded video in parallel and reports found/not-found", async () => {
+    const statCalls: string[] = [];
+    const client = {
+      fsStat: vi.fn(async (path: string) => {
+        statCalls.push(path);
+        if (path === "/mnt/data/missing.mp4") {
+          throw new WorkerProtocolError(FS_NOT_FOUND, `fs.stat('${path}'): not found`);
+        }
+        return { path, type: "file" as const, size: 123, modified: 0 };
+      }),
+    } as unknown as WorkerClient;
+    const labels = {
+      videos: [
+        fakeVideo("/mnt/data/a.mp4", false),
+        fakeVideo("/mnt/data/missing.mp4", false),
+        fakeVideo("embedded.mp4", true),
+      ],
+    } as unknown as Parameters<typeof checkWorkerFileVideos>[1];
+
+    const result = await checkWorkerFileVideos(client, labels);
+
+    expect(result).toEqual([
+      { index: 0, path: "/mnt/data/a.mp4", embedded: false, found: true },
+      { index: 1, path: "/mnt/data/missing.mp4", embedded: false, found: false },
+      { index: 2, path: "embedded.mp4", embedded: true, found: true },
+    ]);
+    expect(statCalls.sort()).toEqual(["/mnt/data/a.mp4", "/mnt/data/missing.mp4"]);
+  });
+
+  it("uses the first filename for a multi-file ImageVideo", async () => {
+    const client = {
+      fsStat: vi.fn(async (path: string) => ({ path, type: "file" as const, size: 1, modified: 0 })),
+    } as unknown as WorkerClient;
+    const labels = {
+      videos: [fakeVideo(["/mnt/seq/img0.png", "/mnt/seq/img1.png"], false)],
+    } as unknown as Parameters<typeof checkWorkerFileVideos>[1];
+
+    const result = await checkWorkerFileVideos(client, labels);
+
+    expect(result).toEqual([{ index: 0, path: "/mnt/seq/img0.png", embedded: false, found: true }]);
+  });
+
+  it("propagates a non-not-found fs.stat error instead of treating it as missing", async () => {
+    const client = {
+      fsStat: vi.fn(async () => {
+        throw new Error("fs.stat('x'): forbidden");
+      }),
+    } as unknown as WorkerClient;
+    const labels = { videos: [fakeVideo("/mnt/data/a.mp4", false)] } as unknown as Parameters<
+      typeof checkWorkerFileVideos
+    >[1];
+
+    await expect(checkWorkerFileVideos(client, labels)).rejects.toThrow("forbidden");
   });
 });

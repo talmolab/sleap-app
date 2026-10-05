@@ -19,6 +19,7 @@ import {
   type RangeSource,
 } from "@talmolab/sleap-io.js";
 import type { WorkerClient } from "@/lib/protocolV1/client";
+import { WorkerProtocolError, FS_NOT_FOUND } from "@/lib/protocolV1/errors";
 
 // Serve h5wasm same-origin so the streaming Worker can load it under
 // cross-origin isolation (COOP/COEP) — COEP blocks the default cross-origin
@@ -194,4 +195,46 @@ export async function loadWorkerLabels(client: WorkerClient, path: string): Prom
     // failure the swallowed short read produced.
     throw source.lastError() ?? err;
   }
+}
+
+/** One video's reachability from a worker's point of view, as checked by {@link checkWorkerFileVideos}. */
+export interface WorkerFileVideoCheck {
+  index: number;
+  /** The video's first recorded filename — the only one checked for a multi-file `ImageVideo`. */
+  path: string;
+  /** Pixel data lives inside the `.slp` itself (pkg.slp) — always reachable, never statted. */
+  embedded: boolean;
+  found: boolean;
+}
+
+/**
+ * Checks every video `labels` references against the worker's filesystem —
+ * the launcher wizard's "N of M videos not found on &lt;worker&gt;" check
+ * (design §4.3). An embedded video's pixels live inside the `.slp` itself,
+ * so it's always `found: true` without a round trip; every other video is
+ * `fs.stat`-ed on the worker, in parallel, and `fs.not_found` is the only
+ * error treated as "not found" — anything else (forbidden, I/O error) is a
+ * real failure the caller should surface, not silently a missing video.
+ */
+export async function checkWorkerFileVideos(
+  client: WorkerClient,
+  labels: Labels,
+): Promise<WorkerFileVideoCheck[]> {
+  return Promise.all(
+    labels.videos.map(async (video, index) => {
+      const path = Array.isArray(video.filename) ? video.filename[0] : video.filename;
+      if (video.hasEmbeddedImages) {
+        return { index, path, embedded: true, found: true };
+      }
+      try {
+        await client.fsStat(path);
+        return { index, path, embedded: false, found: true };
+      } catch (err) {
+        if (err instanceof WorkerProtocolError && err.code === FS_NOT_FOUND) {
+          return { index, path, embedded: false, found: false };
+        }
+        throw err;
+      }
+    }),
+  );
 }
