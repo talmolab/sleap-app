@@ -33,12 +33,14 @@ Either pick a template in the New Project dialog, or build one on the frame:
 
 1. Open the **Skeleton** panel and click **Draw skeleton on frame**.
 2. Click to place each node on the animal.
-3. Drag a stroke through the nodes to connect them into edges.
-4. Click **Done**.
+3. Double-click a node to rename it to something meaningful (`head`, `torso`,
+   `tailbase`) — nodes start out named `node_0`, `node_1`, …
+4. Click **Next: Connect edges** and drag a stroke through the nodes to connect
+   them into edges.
+5. Click **Done**.
 
-Nodes start out named `node_0`, `node_1`, … — double-click a name in the
-**Skeleton** panel to rename them to something meaningful (`head`, `torso`,
-`tailbase`).
+Renaming on the frame works while you're placing nodes. After that, double-click
+a node's name in the **Skeleton** panel instead.
 
 !!! note "Symmetric parts"
 
