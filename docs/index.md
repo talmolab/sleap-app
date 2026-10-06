@@ -58,7 +58,8 @@ you want native file dialogs, local GPU training, and offline use.
     Click **Start Tutorial** in the menu bar and the app walks you through the
     whole loop in place — creating a project, building a skeleton, training,
     correcting predictions, and re-training — advancing only once you have
-    actually done each step. Works in the browser too.
+    actually done each step. In the browser, where models can't be trained, it
+    covers everything up to training and stops there.
 
 For a written walkthrough, follow the
 [Quick Start](getting-started/quickstart.md) — open a project, move through

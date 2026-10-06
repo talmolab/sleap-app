@@ -94,6 +94,7 @@ import {
   type StatisticGraphType,
   type Reduction,
 } from "@/lib/statisticSeries";
+import { requestStartTutorial } from "@/lib/tutorial/startTutorial";
 
 export function MenuBar() {
   return (
@@ -144,7 +145,7 @@ export function MenuBar() {
         variant="ghost"
         size="sm"
         className="h-8 rounded-none px-3 text-xs font-normal"
-        onClick={() => useAppStore.getState().startTutorial()}
+        onClick={() => void requestStartTutorial()}
       >
         Start Tutorial
       </Button>

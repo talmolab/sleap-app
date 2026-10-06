@@ -14,36 +14,29 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
-import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, GripVertical, X } from "lucide-react";
+import { AlertTriangle, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, GripVertical, X } from "lucide-react";
 import { toast } from "@/lib/notify";
 import { Button } from "@/components/ui/button";
 import { useAppStore } from "@/stores/appStore";
 import { useTrainingStore } from "@/stores/trainingStore";
 import { useInferenceStore } from "@/stores/inferenceStore";
+import { useEnvironmentStore } from "@/stores/environmentStore";
 import {
+  RUN_TRAINING_STEP,
   snapshotTutorialState,
-  TUTORIAL_FIRST_TRAINING_STEP_IDS,
+  tutorialStepNumber,
   type TutorialSnapshot,
   type TutorialWatchState,
 } from "@/lib/tutorial/steps";
+import { tutorialTrainingUpdates } from "@/lib/tutorial/trainingDefaults";
 import { useTutorialTargetRect } from "./useTutorialTargetRect";
+import { TutorialCompletionCard } from "./TutorialCompletionCard";
 
 /** How often to re-check the active step's `isComplete` against stores this
  * overlay doesn't otherwise subscribe to (training/inference status live in
  * their own stores, not appStore) — a small poll instead of hand-listing every
  * cross-store field as a React dependency. */
 const RECHECK_INTERVAL_MS = 500;
-
-/**
- * The tutorial forces every loaded training config's epoch count down to a
- * small number during `TUTORIAL_FIRST_TRAINING_STEP_IDS` (steps.ts), so a
- * first-time user's training run finishes in the tutorial rather than taking
- * the real (much longer) default. Applied every recheck tick (not just once)
- * because baseline configs for the selected model type load asynchronously in
- * `TrainingPanel` after the panel mounts, so they may not exist yet the
- * instant this step becomes active.
- */
-const TUTORIAL_MAX_EPOCHS = 5;
 
 /**
  * Frame the "Create a skeleton" step jumps to on entry. This tutorial is
@@ -103,14 +96,14 @@ function clampToViewport(
   };
 }
 
-/** Splits `body` around one occurrence of `link.text`, rendering that slice as an `<a>`. */
-function renderBody(body: string, link?: { text: string; href: string }) {
-  if (!link) return body;
-  const idx = body.indexOf(link.text);
-  if (idx === -1) return body;
+/** Splits `text` around one occurrence of `link.text`, rendering that slice as an `<a>`. */
+function withLink(text: string, link?: { text: string; href: string }) {
+  if (!link) return text;
+  const idx = text.indexOf(link.text);
+  if (idx === -1) return text;
   return (
     <>
-      {body.slice(0, idx)}
+      {text.slice(0, idx)}
       <a
         href={link.href}
         target="_blank"
@@ -119,8 +112,41 @@ function renderBody(body: string, link?: { text: string; href: string }) {
       >
         {link.text}
       </a>
-      {body.slice(idx + link.text.length)}
+      {text.slice(idx + link.text.length)}
     </>
+  );
+}
+
+type BodyBlock = { kind: "text"; text: string } | { kind: "list"; items: string[] };
+
+/**
+ * Renders a step's `body`. Text keeps its line breaks (the container is
+ * `whitespace-pre-line`); a run of lines starting with "• " becomes a real
+ * list, so a wrapped bullet indents under its own text instead of the dot.
+ */
+function renderBody(body: string, link?: { text: string; href: string }) {
+  const blocks: BodyBlock[] = [];
+  for (const line of body.split("\n")) {
+    const last = blocks[blocks.length - 1];
+    if (line.startsWith("• ")) {
+      if (last?.kind === "list") last.items.push(line.slice(2));
+      else blocks.push({ kind: "list", items: [line.slice(2)] });
+    } else if (last?.kind === "text") {
+      last.text += "\n" + line;
+    } else {
+      blocks.push({ kind: "text", text: line });
+    }
+  }
+  return blocks.map((b, i) =>
+    b.kind === "list" ? (
+      <ul key={i} className="list-disc pl-4">
+        {b.items.map((item, j) => (
+          <li key={j}>{withLink(item, link)}</li>
+        ))}
+      </ul>
+    ) : (
+      <span key={i}>{withLink(b.text, link)}</span>
+    ),
   );
 }
 
@@ -128,6 +154,7 @@ function currentWatchState(): TutorialWatchState {
   const s = useAppStore.getState();
   const training = useTrainingStore.getState();
   const inference = useInferenceStore.getState();
+  const env = useEnvironmentStore.getState();
   const anchorConfig = training.config.configs.find(
     (c) => c.slot === "centered_instance",
   );
@@ -142,6 +169,11 @@ function currentWatchState(): TutorialWatchState {
     trainingAnchorPart: anchorConfig?.hyperparams.anchorPart ?? null,
     trainingMaxEpochs: anchorConfig?.hyperparams.maxEpochs ?? null,
     inferenceStatus: inference.status,
+    envDetected: env.detectionStatus === "done",
+    uvAvailable: env.uv?.available ?? false,
+    sleapNnInstalled: env.tools.some((t) => t.name === "sleap-nn"),
+    acceleratorDetected: env.acceleratorStatus === "done",
+    accelerator: env.accelerator?.accelerator ?? null,
   };
 }
 
@@ -150,11 +182,13 @@ export function TutorialOverlay() {
   const tutorialStepIndex = useAppStore((s) => s.tutorialStepIndex);
   const tutorialSteps = useAppStore((s) => s.tutorialSteps);
   const tutorialHighestStepIndex = useAppStore((s) => s.tutorialHighestStepIndex);
+  const tutorialCompleted = useAppStore((s) => s.tutorialCompleted);
   const editSeq = useAppStore((s) => s.editSeq);
   const hasChanges = useAppStore((s) => s.hasChanges);
   const skeletonBuildMode = useAppStore((s) => s.skeletonBuildMode);
   const newProjectDialogOpen = useAppStore((s) => s.newProjectDialogOpen);
   const projectLoaded = useAppStore((s) => s.projectLoaded);
+  const cpuOnly = useEnvironmentStore((s) => s.accelerator?.accelerator === "cpu");
 
   const step = tutorialActive ? tutorialSteps[tutorialStepIndex] : undefined;
   // A step below the high-water mark was already cleared in this run — Prev
@@ -209,19 +243,23 @@ export function TutorialOverlay() {
       entrySnapshotRef.current.everInferenceRunning =
         entrySnapshotRef.current.everInferenceRunning ||
         watch.inferenceStatus === "running";
-      if (TUTORIAL_FIRST_TRAINING_STEP_IDS.has(step.id)) {
-        const training = useTrainingStore.getState();
-        for (const cf of training.config.configs) {
-          if (cf.hyperparams.maxEpochs !== TUTORIAL_MAX_EPOCHS) {
-            training.updateConfigHyperparams(cf.slot, {
-              maxEpochs: TUTORIAL_MAX_EPOCHS,
-            });
-          }
-        }
+      const training = useTrainingStore.getState();
+      const configUpdates = tutorialTrainingUpdates(
+        step.id,
+        watch.trainingStatus,
+        watch.skeleton?.nodes.map((n) => n.name) ?? [],
+        training.config.configs.map((c) => ({
+          slot: c.slot,
+          maxEpochs: c.hyperparams.maxEpochs,
+          anchorPart: c.hyperparams.anchorPart,
+        })),
+      );
+      for (const { slot, updates } of configUpdates) {
+        training.updateConfigHyperparams(slot, updates);
       }
       const complete = step.isComplete(entrySnapshotRef.current, watch);
       setStepComplete(complete);
-      if (complete) {
+      if (complete && !step.holdBeforeAdvance?.(watch)) {
         useAppStore.getState().advanceTutorialStep();
       }
     };
@@ -285,9 +323,15 @@ export function TutorialOverlay() {
     dragStateRef.current = null;
   };
 
-  if (!step) return null;
+  if (!step) return tutorialCompleted ? <TutorialCompletionCard /> : null;
 
-  const stepNumber = tutorialStepIndex + 1;
+  const stepNumber = tutorialStepNumber(tutorialSteps, tutorialStepIndex);
+  const lastStepNumber = tutorialStepNumber(tutorialSteps, tutorialSteps.length - 1);
+  const trainingStepIndex = tutorialSteps.findIndex((s) => s.id === RUN_TRAINING_STEP.id);
+  const cpuNote =
+    cpuOnly && step.cpuNote && trainingStepIndex !== -1
+      ? step.cpuNote(tutorialStepNumber(tutorialSteps, trainingStepIndex))
+      : null;
   const autoCardPos = targetRect
     ? computeCardPosition(targetRect, step.placement, cardSize)
     : { top: window.innerHeight / 2 - cardSize.height / 2, left: window.innerWidth / 2 - cardSize.width / 2 };
@@ -328,7 +372,7 @@ export function TutorialOverlay() {
           >
             <GripVertical className="h-3.5 w-3.5 text-muted-foreground" />
             <span className="text-xs font-medium text-muted-foreground">
-              Step {stepNumber} of {tutorialSteps.length}
+              Step {stepNumber} of {lastStepNumber}
             </span>
           </div>
           <button
@@ -341,9 +385,15 @@ export function TutorialOverlay() {
           </button>
         </div>
         <p className="mt-1 font-semibold">{step.title}</p>
-        <p className="mt-1 text-muted-foreground leading-relaxed whitespace-pre-line">
+        <div className="mt-1 text-muted-foreground leading-relaxed whitespace-pre-line">
           {renderBody(step.body, step.bodyLink)}
-        </p>
+        </div>
+        {cpuNote && (
+          <p className="mt-2 flex gap-1.5 rounded border border-amber-500/40 bg-amber-500/10 p-2 text-xs leading-relaxed text-amber-700 dark:text-amber-400">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span>{cpuNote}</span>
+          </p>
+        )}
         {step.tips && (
           <div className="mt-2">
             <button
@@ -366,7 +416,7 @@ export function TutorialOverlay() {
             )}
           </div>
         )}
-        {!targetRect && (
+        {step.targetSelector && !targetRect && (
           <p className="mt-2 text-xs text-muted-foreground italic">
             Looking for the highlighted control…
           </p>

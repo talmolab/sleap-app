@@ -991,6 +991,42 @@ describe("tutorial step navigation", () => {
     }));
   }
 
+  describe("tutorialCompleted (completion card)", () => {
+    it("is set when advancing past the last step", () => {
+      useAppStore.setState({
+        tutorialActive: true,
+        tutorialCompleted: false,
+        tutorialSteps: fakeSteps("videos", "skeleton"),
+        tutorialStepIndex: 1,
+      });
+      useAppStore.getState().advanceTutorialStep();
+      const s = useAppStore.getState();
+      expect(s.tutorialActive).toBe(false);
+      expect(s.tutorialCompleted).toBe(true);
+    });
+
+    it("is not set by exiting partway through", () => {
+      useAppStore.setState({
+        tutorialActive: true,
+        tutorialCompleted: false,
+        tutorialSteps: fakeSteps("videos", "skeleton"),
+        tutorialStepIndex: 0,
+      });
+      useAppStore.getState().exitTutorial();
+      expect(useAppStore.getState().tutorialCompleted).toBe(false);
+    });
+
+    it("is cleared by dismissTutorialCompletion and by startTutorial", () => {
+      useAppStore.setState({ tutorialCompleted: true });
+      useAppStore.getState().dismissTutorialCompletion();
+      expect(useAppStore.getState().tutorialCompleted).toBe(false);
+
+      useAppStore.setState({ tutorialCompleted: true, projectLoaded: false });
+      useAppStore.getState().startTutorial();
+      expect(useAppStore.getState().tutorialCompleted).toBe(false);
+    });
+  });
+
   it("previousTutorialStep is a no-op on the first step", () => {
     useAppStore.setState({
       tutorialActive: true,
@@ -1034,6 +1070,44 @@ describe("tutorial step navigation", () => {
     expect(useAppStore.getState().tutorialStepIndex).toBe(1);
     useAppStore.getState().previousTutorialStep();
     expect(useAppStore.getState().tutorialStepIndex).toBe(0);
+  });
+
+  describe("multi-panel sidebar during the tutorial", () => {
+    it("startTutorial turns multi-panel off and exitTutorial restores it", () => {
+      useAppStore.setState({ sidebarMultiPanel: true, projectLoaded: false });
+      useAppStore.getState().startTutorial();
+      expect(useAppStore.getState().sidebarMultiPanel).toBe(false);
+
+      useAppStore.getState().exitTutorial();
+      const s = useAppStore.getState();
+      expect(s.sidebarMultiPanel).toBe(true);
+      expect(s.tutorialSavedMultiPanel).toBeNull();
+    });
+
+    it("completing the last step restores it", () => {
+      useAppStore.setState({ sidebarMultiPanel: true, projectLoaded: false });
+      useAppStore.getState().startTutorial();
+      useAppStore.setState({ tutorialSteps: fakeSteps("videos"), tutorialStepIndex: 0 });
+      useAppStore.getState().advanceTutorialStep();
+      const s = useAppStore.getState();
+      expect(s.tutorialCompleted).toBe(true);
+      expect(s.sidebarMultiPanel).toBe(true);
+    });
+
+    it("leaves it off afterwards if it was already off", () => {
+      useAppStore.setState({ sidebarMultiPanel: false, projectLoaded: false });
+      useAppStore.getState().startTutorial();
+      useAppStore.getState().exitTutorial();
+      expect(useAppStore.getState().sidebarMultiPanel).toBe(false);
+    });
+
+    it("restarting mid-run keeps the original preference", () => {
+      useAppStore.setState({ sidebarMultiPanel: true, projectLoaded: false });
+      useAppStore.getState().startTutorial();
+      useAppStore.getState().startTutorial();
+      useAppStore.getState().exitTutorial();
+      expect(useAppStore.getState().sidebarMultiPanel).toBe(true);
+    });
   });
 
   describe("tutorialHighestStepIndex (high-water mark)", () => {

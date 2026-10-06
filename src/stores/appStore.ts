@@ -53,6 +53,7 @@ import {
   toggleId,
 } from "@/lib/panelLayout";
 import { buildTutorialSteps, type TutorialStep } from "@/lib/tutorial/steps";
+import { isTauri } from "@/platform/index";
 
 // Required before immer can draft Set/Map fields (hiddenInstances /
 // showNonVisibleOverride). Idempotent global; must run before store creation.
@@ -495,9 +496,8 @@ export interface AppState {
   tutorialActive: boolean;
   tutorialStepIndex: number;
   /**
-   * Resolved once in `startTutorial` (see `buildTutorialSteps`) — whether a
-   * project was already loaded at that moment decides the whole sequence, so
-   * this isn't re-derived mid-run.
+   * Resolved once in `startTutorial` (see `buildTutorialSteps`), so it isn't
+   * re-derived mid-run.
    */
   tutorialSteps: TutorialStep[];
   /**
@@ -508,6 +508,20 @@ export interface AppState {
    * this mark doesn't need its real-world action redone to move forward again.
    */
   tutorialHighestStepIndex: number;
+  /**
+   * Set when the last step completes (not on Exit), so `TutorialOverlay`
+   * shows the completion card; cleared by `dismissTutorialCompletion` or a
+   * new `startTutorial`.
+   */
+  tutorialCompleted: boolean;
+  /**
+   * `sidebarMultiPanel` as it was when the tutorial started, or null when no
+   * tutorial is running. The tutorial runs in single-panel mode — with several
+   * panels stacked, the one it opens for a step can sit far from the highlight
+   * ring, which reads as the ring pointing at the wrong thing. Restored on exit
+   * or completion, since `sidebarMultiPanel` is a persisted user preference.
+   */
+  tutorialSavedMultiPanel: boolean | null;
 
   // === Area delete mode ===
   areaDeleteMode: boolean;
@@ -598,10 +612,14 @@ export interface AppState {
   startTutorial: () => void;
   /** Stop the tutorial at any point (Exit button). */
   exitTutorial: () => void;
-  /** Advance to the next tutorial step, or exit once past the last one. */
+  /** Advance to the next tutorial step; past the last one, end the tutorial and show the completion card. */
   advanceTutorialStep: () => void;
+  /** Put `sidebarMultiPanel` back to what it was before `startTutorial`; a no-op if nothing is saved. */
+  restoreTutorialMultiPanel: () => void;
   /** Go back to the previous tutorial step; a no-op on the first step. */
   previousTutorialStep: () => void;
+  /** Close the "Tutorial complete" card. */
+  dismissTutorialCompletion: () => void;
   enterPlacementMode: () => void;
   exitPlacementMode: () => void;
 
@@ -898,6 +916,8 @@ export const useAppStore = create<AppState>()(
       tutorialStepIndex: 0,
       tutorialSteps: [],
       tutorialHighestStepIndex: 0,
+      tutorialCompleted: false,
+      tutorialSavedMultiPanel: null,
 
       // Area delete mode
       areaDeleteMode: false,
@@ -1384,24 +1404,40 @@ export const useAppStore = create<AppState>()(
         }),
 
       startTutorial: () => {
-        // Whether a project already exists decides the whole sequence (a
-        // fresh app has no Sidebar/panels mounted yet — see AppShell — so it
-        // must go through New Project first); resolved once here, not
-        // re-derived mid-run.
-        const steps = buildTutorialSteps(get().projectLoaded);
+        // Resolved once here, not re-derived mid-run. The desktop app also
+        // gets the environment check up front; the browser build has no local
+        // environment. Expects no project to be open — menu entry points go
+        // through `requestStartTutorial`, which offers a new window otherwise.
+        const steps = buildTutorialSteps(isTauri);
+        // A restart mid-run keeps the preference saved by the first start.
+        const saved = get().tutorialSavedMultiPanel ?? get().sidebarMultiPanel;
+        get().setSidebarMultiPanel(false);
         set((state) => {
+          state.tutorialSavedMultiPanel = saved;
           state.tutorialActive = true;
           state.tutorialStepIndex = 0;
           state.tutorialSteps = steps;
           state.tutorialHighestStepIndex = 0;
+          state.tutorialCompleted = false;
         });
         if (steps[0]?.panelId) get().openPanel(steps[0].panelId);
       },
 
-      exitTutorial: () =>
+      exitTutorial: () => {
         set((state) => {
           state.tutorialActive = false;
-        }),
+        });
+        get().restoreTutorialMultiPanel();
+      },
+
+      restoreTutorialMultiPanel: () => {
+        const saved = get().tutorialSavedMultiPanel;
+        if (saved === null) return;
+        set((state) => {
+          state.tutorialSavedMultiPanel = null;
+        });
+        get().setSidebarMultiPanel(saved);
+      },
 
       advanceTutorialStep: () => {
         const steps = get().tutorialSteps;
@@ -1409,7 +1445,9 @@ export const useAppStore = create<AppState>()(
         if (nextIndex >= steps.length) {
           set((state) => {
             state.tutorialActive = false;
+            state.tutorialCompleted = true;
           });
+          get().restoreTutorialMultiPanel();
           return;
         }
         set((state) => {
@@ -1429,6 +1467,11 @@ export const useAppStore = create<AppState>()(
         const prevStep = get().tutorialSteps[prevIndex];
         if (prevStep?.panelId) get().openPanel(prevStep.panelId);
       },
+
+      dismissTutorialCompletion: () =>
+        set((state) => {
+          state.tutorialCompleted = false;
+        }),
 
       enterPlacementMode: () =>
         set((state) => {

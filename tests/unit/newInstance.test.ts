@@ -89,4 +89,13 @@ describe("openNewInstance", () => {
     // The desktop path must NOT fall through to a browser tab.
     expect(openCalls.length).toBe(0);
   });
+
+  it("passes ?tutorial=1 to the new window when asked to start the tutorial", async () => {
+    platformIsTauri = true;
+    createdWindows.length = 0;
+
+    await openNewInstance({ tutorial: true });
+
+    expect(String(createdWindows[0].opts.url)).toContain("tutorial=1");
+  });
 });

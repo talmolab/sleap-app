@@ -22,6 +22,7 @@ import {
 import { WelcomeEnvironmentsPanel } from "./WelcomeEnvironmentsPanel";
 import { UpdatePingDot, UpdatePill, useEnvironmentUpdateStatus } from "./UpdateIndicator";
 import { cn } from "@/lib/utils";
+import { CHECK_ENVIRONMENT_STEP } from "@/lib/tutorial/steps";
 
 /** Compact "saved N ago" for the restore list. */
 function timeAgo(ms: number): string {
@@ -42,6 +43,13 @@ export function WelcomeScreen() {
   // confirm (keyed by draft path) that replaces the old window.confirm.
   const [confirmingKey, setConfirmingKey] = useState<string | null>(null);
   const [showEnvironments, setShowEnvironments] = useState(false);
+  // The tutorial's environment check runs before any project (and so any
+  // sidebar) exists — this is the only Environment panel there is to point at.
+  const tutorialOnEnvironmentStep = useAppStore(
+    (s) =>
+      s.tutorialActive &&
+      s.tutorialSteps[s.tutorialStepIndex]?.id === CHECK_ENVIRONMENT_STEP.id,
+  );
   const hasSeenLabelingHintsPrompt = useAppStore((s) => s.hasSeenLabelingHintsPrompt);
   const showLabelingHints = useAppStore((s) => s.showLabelingHints);
   const answerLabelingHintsPrompt = useCallback((wantsHints: boolean) => {
@@ -133,7 +141,7 @@ export function WelcomeScreen() {
         )}
       </Button>
 
-      {showEnvironments && (
+      {(showEnvironments || tutorialOnEnvironmentStep) && (
         <WelcomeEnvironmentsPanel onClose={() => setShowEnvironments(false)} />
       )}
 

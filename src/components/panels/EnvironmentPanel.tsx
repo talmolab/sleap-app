@@ -1031,7 +1031,7 @@ export function EnvironmentPanel() {
   const systemInterps = interpreters.filter((i) => i.source === "system");
 
   return (
-    <div className="flex flex-col gap-3 -m-2">
+    <div className="flex flex-col gap-3 -m-2" data-tutorial="environment-panel">
       {/* Header */}
       <div className="flex items-center gap-2 px-2 py-1 border-b border-border shrink-0">
         <Terminal className="h-3.5 w-3.5 text-muted-foreground" />
