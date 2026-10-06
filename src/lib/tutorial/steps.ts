@@ -175,7 +175,7 @@ export interface TutorialStep {
 export const CHECK_ENVIRONMENT_STEP: TutorialStep = {
   id: "check-environment",
   title: "Check your environment",
-  body: 'First, check the SLEAP App section at the top. Stable is the recommended channel. If a newer version is out, it shows in orange with an Update button — update first so your app matches this tutorial (the app restarts; just start the tutorial again).\n\nTraining and inference run on sleap-nn, which the app installs with uv. If uv shows "Not installed", click Install next to it first, then click Install next to sleap-nn. Once both show as installed, click Next.',
+  body: 'First, check the SLEAP App section at the top. Stable is the recommended channel. If a newer version is out, it shows in orange with an Update button — click it to move to the latest version (the app restarts; just start the tutorial again).\n\nTraining and inference run on sleap-nn, which the app installs with uv. If uv shows "Not installed", click Install next to it first, then click Install next to sleap-nn. Once both show as installed, click Next.',
   panelId: "environment",
   targetSelector: '[data-tutorial="environment-panel"]',
   placement: "left",
