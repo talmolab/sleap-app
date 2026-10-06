@@ -737,6 +737,26 @@ fn localhost_capability(port: u16) -> String {
   )
 }
 
+/// Log targets of iroh and the crates under it. Each crate is listed by its
+/// own target: a level for `iroh` doesn't cover `iroh_relay`. `tracing::span`
+/// is where iroh's tracing spans land when they're bridged into `log`.
+const NETWORKING_LOG_TARGETS: &[&str] = &[
+  "iroh",
+  "iroh_base",
+  "iroh_dns",
+  "iroh_metrics",
+  "iroh_relay",
+  "n0_dns_resolver",
+  "n0_future",
+  "n0_watcher",
+  "netwatch",
+  "noq",
+  "noq_proto",
+  "noq_udp",
+  "portmapper",
+  "tracing::span",
+];
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   // reqwest's rustls backend needs a process-wide default `CryptoProvider`
@@ -857,11 +877,20 @@ pub fn run() {
   let builder = builder.setup(move |app| {
     use tauri::Manager; // for add_capability (dynamic-acl)
     if cfg!(debug_assertions) {
-      app.handle().plugin(
-        tauri_plugin_log::Builder::default()
-          .level(log::LevelFilter::Info)
-          .build(),
-      )?;
+      // iroh and its networking stack log every packet path at Info (e.g.
+      // `poll_send; network_path=...` spans), which buried the app's own
+      // logs in the dev terminal. Keep the app at Info and those crates at
+      // Warn; set SLEAP_IROH_LOG=info|debug|trace to bring them back.
+      let iroh_level = std::env::var("SLEAP_IROH_LOG")
+        .ok()
+        .and_then(|v| v.parse::<log::LevelFilter>().ok())
+        .unwrap_or(log::LevelFilter::Warn);
+      let mut log_builder =
+        tauri_plugin_log::Builder::default().level(log::LevelFilter::Info);
+      for target in NETWORKING_LOG_TARGETS {
+        log_builder = log_builder.level_for(*target, iroh_level);
+      }
+      app.handle().plugin(log_builder.build())?;
     }
 
     // macOS: the default app menu ships an Edit ▸ Undo/Redo bound to ⌘Z / ⌘⇧Z.
