@@ -408,7 +408,7 @@ export function TutorialOverlay() {
             )}
           </div>
         )}
-        {!targetRect && (
+        {step.targetSelector && !targetRect && (
           <p className="mt-2 text-xs text-muted-foreground italic">
             Looking for the highlighted control…
           </p>

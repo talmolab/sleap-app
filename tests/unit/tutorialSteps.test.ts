@@ -12,6 +12,8 @@ import {
   RETRAIN_STEP,
   RUN_INFERENCE_STEP,
   CHECK_ENVIRONMENT_STEP,
+  BROWSER_NOTICE_STEP,
+  tutorialIncludesTraining,
   SAMPLE_VIDEO_URL,
   buildTutorialSteps,
   tutorialStepNumber,
@@ -79,27 +81,33 @@ function fakeSkeleton(opts: { nodes?: number; edges?: number } = {}) {
 }
 
 describe("buildTutorialSteps", () => {
-  it("starts from New Project and runs through to whole-video inference", () => {
-    const steps = buildTutorialSteps();
+  const core = [
+    "new-project",
+    "add-video-in-dialog",
+    "confirm-video-and-create",
+    "save-project",
+    "generate-suggestions",
+    "create-skeleton",
+    "label-one-frame",
+  ];
+
+  it("desktop: environment check, then New Project through whole-video inference", () => {
+    const steps = buildTutorialSteps(true);
     expect(steps.map((s) => s.id)).toEqual([
-      "new-project",
-      "add-video-in-dialog",
-      "confirm-video-and-create",
-      "save-project",
-      "generate-suggestions",
-      "create-skeleton",
-      "label-one-frame",
+      "check-environment",
+      ...core,
       "run-training",
       "correct-predictions",
       "retrain",
       "run-inference-video",
     ]);
+    expect(tutorialIncludesTraining(steps)).toBe(true);
   });
 
-  it("prefixes the sequence with the environment check on desktop", () => {
-    const steps = buildTutorialSteps(true);
-    expect(steps[0].id).toBe("check-environment");
-    expect(steps.slice(1)).toEqual(buildTutorialSteps());
+  it("browser: the can't-train notice, then stops after labeling", () => {
+    const steps = buildTutorialSteps(false);
+    expect(steps.map((s) => s.id)).toEqual(["browser-notice", ...core]);
+    expect(tutorialIncludesTraining(steps)).toBe(false);
   });
 });
 
@@ -110,17 +118,40 @@ describe("SAMPLE_VIDEO_URL", () => {
 });
 
 describe("tutorialStepNumber", () => {
-  it("numbers from 1 without the environment check", () => {
-    const steps = buildTutorialSteps();
-    expect(tutorialStepNumber(steps, 0)).toBe(1);
-    expect(tutorialStepNumber(steps, steps.indexOf(RUN_TRAINING_STEP))).toBe(8);
-  });
-
   it("makes the environment check step 0 so the rest keep their numbers", () => {
     const steps = buildTutorialSteps(true);
     expect(tutorialStepNumber(steps, 0)).toBe(0);
     expect(tutorialStepNumber(steps, steps.indexOf(RUN_TRAINING_STEP))).toBe(8);
     expect(tutorialStepNumber(steps, steps.length - 1)).toBe(11);
+  });
+
+  it("numbers the browser run the same way, ending at step 7", () => {
+    const steps = buildTutorialSteps(false);
+    expect(tutorialStepNumber(steps, 0)).toBe(0);
+    expect(tutorialStepNumber(steps, 1)).toBe(1);
+    expect(tutorialStepNumber(steps, steps.length - 1)).toBe(7);
+  });
+
+  it("numbers from 1 when the sequence has no step 0", () => {
+    const steps = buildTutorialSteps(true).slice(1);
+    expect(tutorialStepNumber(steps, 0)).toBe(1);
+  });
+});
+
+describe("browser-notice step", () => {
+  it("has no control to highlight", () => {
+    expect(BROWSER_NOTICE_STEP.targetSelector).toBeNull();
+  });
+
+  it("is complete straight away but waits for Next", () => {
+    const current = watchState();
+    expect(BROWSER_NOTICE_STEP.isComplete(snapshotTutorialState(current), current)).toBe(true);
+    expect(BROWSER_NOTICE_STEP.holdBeforeAdvance?.(current)).toBe(true);
+  });
+
+  it("says training isn't available and that the tutorial ends before it", () => {
+    expect(BROWSER_NOTICE_STEP.body).toContain("can't be trained");
+    expect(BROWSER_NOTICE_STEP.body).toContain("ends there");
   });
 });
 

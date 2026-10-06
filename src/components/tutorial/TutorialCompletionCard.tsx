@@ -10,10 +10,30 @@ import { BookOpen, CheckCircle2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAppStore } from "@/stores/appStore";
 import { useDocsUrl } from "@/lib/docsUrl";
+import { tutorialIncludesTraining } from "@/lib/tutorial/steps";
 import { openExternal } from "@/lib/openExternal";
+
+/** Next steps after the full (desktop) run, which trained and ran a model. */
+function TrainedNextSteps() {
+  return (
+    <>
+      <li>
+        Label more frames — generate more suggestions, correct the predictions
+        on them, and retrain. Each round makes the model better.
+      </li>
+      <li>
+        When you&apos;re happy with it, run inference with Inference Target set
+        to &quot;Entire current video&quot; (or &quot;All videos&quot;).
+      </li>
+    </>
+  );
+}
 
 export function TutorialCompletionCard() {
   const docsUrl = useDocsUrl();
+  // The browser run stops after labeling (it can't train), so it gets its
+  // own wrap-up — the full-loop summary below would describe steps it skipped.
+  const trained = useAppStore((s) => tutorialIncludesTraining(s.tutorialSteps));
   const dismiss = () => useAppStore.getState().dismissTutorialCompletion();
 
   return (
@@ -35,19 +55,32 @@ export function TutorialCompletionCard() {
           <X className="h-3.5 w-3.5" />
         </button>
       </div>
-      <p className="mt-2 text-muted-foreground leading-relaxed">
-        You&apos;ve been through the whole loop: label, train, correct
-        predictions, retrain, and predict. Where to go from here:
-      </p>
+      {trained ? (
+        <p className="mt-2 text-muted-foreground leading-relaxed">
+          You&apos;ve been through the whole loop: label, train, correct
+          predictions, retrain, and predict. Where to go from here:
+        </p>
+      ) : (
+        <p className="mt-2 text-muted-foreground leading-relaxed">
+          You&apos;ve created a project, built a skeleton, and labeled your
+          first frame. Where to go from here:
+        </p>
+      )}
       <ul className="mt-2 list-disc space-y-1 pl-4 text-muted-foreground leading-relaxed">
-        <li>
-          Label more frames — generate more suggestions, correct the predictions
-          on them, and retrain. Each round makes the model better.
-        </li>
-        <li>
-          When you&apos;re happy with it, run inference with Inference Target set
-          to &quot;Entire current video&quot; (or &quot;All videos&quot;).
-        </li>
+        {trained ? (
+          <TrainedNextSteps />
+        ) : (
+          <>
+            <li>
+              Keep labeling suggested frames — the more you label, the better
+              the model you train later.
+            </li>
+            <li>
+              To train a model and run it on your videos, open this project
+              in the SLEAP desktop app.
+            </li>
+          </>
+        )}
         <li>
           Restart this tutorial anytime from Start Tutorial in the menu bar.
         </li>

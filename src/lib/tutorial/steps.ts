@@ -23,10 +23,11 @@
  * matching `data-tutorial` attribute at its target — the engine is generic over
  * whatever list `buildTutorialSteps` returns.
  *
- * On desktop, both sequences are prefixed with `CHECK_ENVIRONMENT_STEP`
- * (numbered "Step 0", see `tutorialStepNumber`): training needs uv + sleap-nn,
- * and a first-time user would otherwise only find that out at the training
- * step. The browser build skips it — it has no local environment to check.
+ * Both builds open with a "Step 0" (see `tutorialStepNumber`). On desktop it's
+ * `CHECK_ENVIRONMENT_STEP`: training needs uv + sleap-nn, and a first-time
+ * user would otherwise only find that out at the training step. The browser
+ * build can't train models at all, so its Step 0 is `BROWSER_NOTICE_STEP`
+ * instead, and its sequence ends at `LABEL_ONE_FRAME_STEP`, before training.
  */
 
 import type { Labels, Skeleton } from "@/types";
@@ -142,8 +143,11 @@ export interface TutorialStep {
   tips?: { label: string; text: string };
   /** Panel to force-open (via the store's `openPanel`) when this step starts. */
   panelId?: string;
-  /** CSS selector for the element to spotlight, e.g. a `data-tutorial` hook. */
-  targetSelector: string;
+  /**
+   * CSS selector for the element to spotlight, e.g. a `data-tutorial` hook.
+   * `null` for a step that isn't about any one control — its card is centered.
+   */
+  targetSelector: string | null;
   placement: "top" | "bottom" | "left" | "right";
   isComplete: (entry: TutorialSnapshot, current: TutorialWatchState) => boolean;
   /**
@@ -183,6 +187,21 @@ export const CHECK_ENVIRONMENT_STEP: TutorialStep = {
   holdBeforeAdvance: () => true,
   cpuNote: (n) =>
     `No GPU is available to sleap-nn, so training (step ${n}) will run on the CPU and be much slower. You can stop the tutorial after step ${n - 1} — everything from step ${n} on needs a trained model — or keep going and expect training to take a while.`,
+};
+
+/**
+ * Browser "Step 0": models can't be trained in the browser, so say up front
+ * that this tutorial ends after labeling, rather than letting the user find
+ * out at the training step. Nothing to do here — just read it and click Next.
+ */
+export const BROWSER_NOTICE_STEP: TutorialStep = {
+  id: "browser-notice",
+  title: "Before you start",
+  body: "You're using SLEAP in the browser, where models can't be trained. This tutorial covers everything up to training — creating a project, adding a video, generating suggestions, building a skeleton, and labeling a frame — and ends there.\n\nTo train a model and run it on your videos, use the SLEAP desktop app.",
+  targetSelector: null,
+  placement: "bottom",
+  isComplete: () => true,
+  holdBeforeAdvance: () => true,
 };
 
 /** Fresh-app step 1: WelcomeScreen has no project yet — start a new one. */
@@ -407,10 +426,12 @@ export const RUN_INFERENCE_STEP: TutorialStep = {
 };
 
 /**
- * The full step sequence. Resolved once, at tutorial start (see
- * `startTutorial` in appStore.ts), so it isn't re-derived mid-run.
+ * The step sequence for the desktop app (`desktop`) or the browser. Resolved
+ * once, at tutorial start (see `startTutorial` in appStore.ts), so it isn't
+ * re-derived mid-run. The browser can't train, so its run stops after
+ * labeling.
  */
-export function buildTutorialSteps(includeEnvironmentCheck = false): TutorialStep[] {
+export function buildTutorialSteps(desktop: boolean): TutorialStep[] {
   const steps = [
     NEW_PROJECT_STEP,
     ADD_VIDEO_IN_DIALOG_STEP,
@@ -424,13 +445,26 @@ export function buildTutorialSteps(includeEnvironmentCheck = false): TutorialSte
     RETRAIN_STEP,
     RUN_INFERENCE_STEP,
   ];
-  return includeEnvironmentCheck ? [CHECK_ENVIRONMENT_STEP, ...steps] : steps;
+  if (!desktop) {
+    return [
+      BROWSER_NOTICE_STEP,
+      ...steps.slice(0, steps.indexOf(LABEL_ONE_FRAME_STEP) + 1),
+    ];
+  }
+  return [CHECK_ENVIRONMENT_STEP, ...steps];
 }
 
+/** True when the sequence includes training (the desktop one). */
+export function tutorialIncludesTraining(steps: TutorialStep[]): boolean {
+  return steps.some((s) => s.id === RUN_TRAINING_STEP.id);
+}
+
+const STEP_ZERO_IDS = new Set([CHECK_ENVIRONMENT_STEP.id, BROWSER_NOTICE_STEP.id]);
+
 /**
- * The number shown for `steps[index]`. The environment check is "Step 0", so
- * the steps after it keep the numbers they have without it.
+ * The number shown for `steps[index]`. The environment check / browser notice
+ * is "Step 0", so the steps after it keep the same numbers in both builds.
  */
 export function tutorialStepNumber(steps: TutorialStep[], index: number): number {
-  return steps[0]?.id === CHECK_ENVIRONMENT_STEP.id ? index : index + 1;
+  return STEP_ZERO_IDS.has(steps[0]?.id ?? "") ? index : index + 1;
 }

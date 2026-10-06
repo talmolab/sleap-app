@@ -129,7 +129,8 @@ training → correction → inference loop.
 The tutorial builds its own project from a sample video. If you already have a
 project open, it offers to run in a new window so your project is left alone. In
 the desktop app it starts with a Step 0 that checks uv and sleap-nn are installed
-and warns you if training will run on the CPU.
+and warns you if training will run on the CPU. In the browser, Step 0 explains
+that models can't be trained there, and the tutorial ends after labeling.
 
 ## Help
 
