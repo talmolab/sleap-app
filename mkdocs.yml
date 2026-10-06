@@ -1,0 +1,160 @@
+site_name: SLEAP App documentation
+# Points at the STABLE docs path, not the /docs/ root, and deliberately so.
+# site_url only feeds the canonical URL and the sitemap base, and every
+# versioned copy of this site is the SAME build (see deploy.yml -- the theme
+# resolves its own base from `location` at runtime, so one build is portable
+# across /docs/stable/, /docs/latest/, /docs/dev/ and /docs/v*/). That means
+# whatever goes here is baked into all of them:
+#   - `.../docs/stable/` makes every copy canonicalize onto the stable URL, so
+#     search engines consolidate there instead of indexing dev and every old
+#     version as duplicate content.
+#   - `.../docs/` would emit a sitemap full of URLs that 404: /docs/ itself is
+#     only a redirect stub, the pages live one level down under a version.
+site_url: https://app.sleap.ai/docs/stable/
+site_description: >-
+  Documentation for the SLEAP app -- a browser and desktop interface for
+  labeling, training, and tracking animal pose.
+repo_url: https://github.com/talmolab/sleap-app
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  logo: assets/sleap-logo.png
+  favicon: assets/favicon.ico
+  icon:
+    repo: fontawesome/brands/github
+
+  palette:
+    - scheme: slate
+      primary: deep orange
+      accent: deep orange
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+    - scheme: default
+      primary: deep orange
+      accent: deep orange
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.tracking
+    - toc.follow
+    - navigation.sections
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+    - content.tooltips
+    - content.code.select
+    - content.footnote.tooltips
+
+plugins:
+  - search
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      toc_depth: 3
+  - pymdownx.betterem:
+      smart_enable: all
+  - pymdownx.caret
+  - pymdownx.critic
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+
+extra_css:
+  - stylesheets/extra.css
+
+extra:
+  # Turns on the theme's version selector, which is what makes the dropdown in
+  # the header appear. `provider: mike` names the versions.json FORMAT the
+  # theme reads -- it does not require the mike tool, and we do not use it:
+  # deploy.yml writes /docs/versions.json itself. Without this key the built
+  # config carries `"version": null` and the selector never renders.
+  #
+  # `default` is the fallback used when the current path is not listed in
+  # versions.json, and the anchor for the theme's "outdated version" check.
+  version:
+    provider: mike
+    default: stable
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/talmolab
+    - icon: fontawesome/brands/x-twitter
+      link: https://twitter.com/talmop
+
+# NOTE: engineering notes live in docs/.internal/ and are DOT-PREFIXED on
+# purpose -- that is the only exclusion Zensical honors. It silently ignores
+# mkdocs' `exclude_docs`, so merely keeping a page out of `nav` (as this used to
+# do) still *builds* it and still lists it in sitemap.xml and search.json. Since
+# these docs are now published, an un-dotted docs/internal/ would put the
+# code-signing notes, the parity checklist and the training-panel prototype live
+# and indexable at app.sleap.ai. Keep the dot.
+
+nav:
+  - Overview: index.md
+  - Installation: installation.md
+  - Getting started:
+      - Quick Start: getting-started/quickstart.md
+      - Your First Labels: getting-started/first-labels.md
+  - Guides:
+      - Overview: guides/overview.md
+      - Labeling:
+          - Labeling Instances: guides/labeling.md
+          - Skeletons: guides/skeletons.md
+          - Navigation: guides/navigation.md
+          - Suggestions: guides/suggestions.md
+          - Tracks: guides/tracks.md
+      - Videos & Display:
+          - Videos: guides/videos.md
+          - View & Display: guides/view.md
+      - Models:
+          - Training: guides/training.md
+          - Inference: guides/inference.md
+          - Remote Compute: guides/remote-compute.md
+      - Data:
+          - Import & Export: guides/import-export.md
+          - Merging Projects: guides/merging.md
+          - Saving & Recovery: guides/saving.md
+      - Analyze:
+          - Instance Size Distribution: guides/instance-size.md
+          - Label Quality Check: guides/label-qc.md
+  - Reference:
+      - Keyboard Shortcuts: reference/shortcuts.md
+      - Menus: reference/menus.md
+      - Panels: reference/panels.md
+      - File Formats: reference/formats.md
+      - Browser vs Desktop: reference/browser-vs-desktop.md
+  - Development: development.md
+  - Help:
+      - FAQ: help/faq.md
+      - Troubleshooting: help/troubleshooting.md
+  - Releases: https://github.com/talmolab/sleap-app/releases

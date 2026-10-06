@@ -7,12 +7,21 @@
  * live E2E rather than a synthetic unit test.
  */
 
-import { describe, it, expect } from "../bun-test";
-import { Labels, Video, setImageBytesReader } from "@talmolab/sleap-io.js";
+import { describe, it, expect, afterEach } from "../bun-test";
+import {
+  Labels,
+  Video,
+  setImageBytesReader,
+  GrayscaleVideoBackend,
+  type VideoBackend,
+} from "@talmolab/sleap-io.js";
 import {
   buildStandaloneVideo,
   addVideoFileToLabels,
+  assignVideoBackend,
   backendKindForFilename,
+  pickedFromFiles,
+  pickedFromPaths,
   resolveImageFramesInFolder,
   resolveExternalVideos,
   ensureVideoBackend,
@@ -22,12 +31,21 @@ import {
   getVideoPathCandidates,
   computePrefixSwap,
   SUPPORTED_VIDEO_EXTS,
+  locateVideoFilters,
   collectHandlesByBasename,
   resolveAllVideosFromFolder,
   isImageSequenceVideo,
   relocateMissingImageFrames,
+  isSupportedVideoUrl,
+  resolveScrubProxyOpenPath,
+  openViaProxyOrNull,
+  type ScrubProxyDeps,
+  type ProxyOpenDeps,
 } from "@/lib/resolveVideos";
+import { isHdf5VideoPath } from "@/lib/hdf5VideoSource";
 import { useAppStore } from "@/stores/appStore";
+import { useTranscodeStore } from "@/stores/transcodeStore";
+import { shouldBuildScrubProxy } from "@/lib/transcode/proxyPolicy";
 
 // Minimal mock File System Access handle tree for the folder-scan tests.
 type MockHandle =
@@ -54,6 +72,73 @@ const asDir = (h: MockHandle) => h as any;
 
 function fakeFile(name: string): File {
   return new File([new Uint8Array([0])], name, { type: "video/mp4" });
+}
+
+// --- Minimal synthetic .seq builder -----------------------------------------
+// `.seq` is the one supported video format that decodes with pure JS parsing
+// (no WebCodecs/Mp4Box), so it's the only real-decode path usable in bun's
+// test runner without an E2E browser. Trimmed from sleap-io.js's own
+// `tests/video/seq.test.ts` fixture builder (uncompressed path only).
+const SEQ_HEADER_SIZE = 1024;
+const SEQ_MAGIC = 0xfeed;
+
+function seqHeader(opts: {
+  width: number;
+  height: number;
+  color: boolean;
+  numFrames: number;
+  imageSizeBytes: number;
+  trueImageSize: number;
+}): Uint8Array {
+  const buf = new Uint8Array(SEQ_HEADER_SIZE);
+  const dv = new DataView(buf.buffer);
+  dv.setUint32(0, SEQ_MAGIC, true);
+  dv.setInt32(28, 4, true); // version
+  dv.setUint32(32, SEQ_HEADER_SIZE, true);
+  dv.setUint32(548, opts.width, true);
+  dv.setUint32(552, opts.height, true);
+  dv.setUint32(556, opts.color ? 24 : 8, true); // bitDepth
+  dv.setUint32(560, 8, true); // bitDepthReal
+  dv.setUint32(564, opts.imageSizeBytes, true);
+  dv.setUint32(568, opts.color ? 200 : 100, true); // imageFormat: raw BGR / monoraw
+  dv.setUint32(572, opts.numFrames, true);
+  dv.setUint32(580, opts.trueImageSize, true);
+  dv.setFloat64(584, 30, true); // fps
+  return buf;
+}
+
+/** One uncompressed frame's raw bytes: BGR (color) or mono, value `v` on every byte. */
+function seqFrameBytes(width: number, height: number, color: boolean, v: number): Uint8Array {
+  const nch = color ? 3 : 1;
+  return new Uint8Array(width * height * nch).fill(v);
+}
+
+/** Build a minimal single-frame uncompressed `.seq` File (version 4 -> 6-byte timestamps). */
+function buildSeqFile(opts: {
+  name: string;
+  width: number;
+  height: number;
+  color: boolean;
+  pixelValue: number;
+}): File {
+  const nch = opts.color ? 3 : 1;
+  const imageSizeBytes = opts.width * opts.height * nch;
+  const tsSize = 6;
+  const header = seqHeader({
+    width: opts.width,
+    height: opts.height,
+    color: opts.color,
+    numFrames: 1,
+    imageSizeBytes,
+    trueImageSize: imageSizeBytes + tsSize,
+  });
+  const frame = seqFrameBytes(opts.width, opts.height, opts.color, opts.pixelValue);
+  const ts = new Uint8Array(tsSize); // all-zero timestamp is fine
+  const buf = new Uint8Array(header.length + frame.length + ts.length);
+  buf.set(header, 0);
+  buf.set(frame, header.length);
+  buf.set(ts, header.length + frame.length);
+  return new File([buf], opts.name);
 }
 
 describe("classifyVideoError + videoIssue (codec failure surfacing)", () => {
@@ -128,7 +213,7 @@ describe("addVideoFileToLabels", () => {
   it("skips an unsupported format: returns null and adds nothing", async () => {
     const labels = new Labels();
     const result = await addVideoFileToLabels(labels, {
-      file: fakeFile("clip.avi"), // .avi has no backend → gate-rejected
+      file: fakeFile("clip.xyz"), // .xyz has no backend → gate-rejected
       absPath: null,
     });
     expect(result).toBeNull();
@@ -136,20 +221,104 @@ describe("addVideoFileToLabels", () => {
   });
 });
 
+describe("import-time grayscale (real .seq decode, no WebCodecs needed)", () => {
+  it("grayscale: true forces the backend to 1 channel and persists the flag", async () => {
+    const file = buildSeqFile({
+      name: "color.seq",
+      width: 4,
+      height: 3,
+      color: true,
+      pixelValue: 42,
+    });
+    const video = await buildStandaloneVideo(file, null, true);
+    expect(video).not.toBeNull();
+    expect(video!.shape).toEqual([1, 3, 4, 1]);
+    expect(video!.backendMetadata.grayscale).toBe(true);
+    expect(video!.backend).toBeInstanceOf(GrayscaleVideoBackend);
+
+    const frame = (await video!.getFrame(0)) as {
+      channels?: number;
+      width?: number;
+      height?: number;
+    };
+    expect(frame.channels).toBe(1);
+  });
+
+  it("grayscale: false preserves the source's native channel count", async () => {
+    const file = buildSeqFile({
+      name: "color2.seq",
+      width: 4,
+      height: 3,
+      color: true,
+      pixelValue: 99,
+    });
+    const video = await buildStandaloneVideo(file, null, false);
+    expect(video).not.toBeNull();
+    expect(video!.shape).toEqual([1, 3, 4, 3]);
+    expect(video!.backendMetadata.grayscale).toBe(false);
+  });
+
+  it("omitting grayscale adds the video unflagged (today's behavior, unchanged)", async () => {
+    const file = buildSeqFile({
+      name: "plain.seq",
+      width: 4,
+      height: 3,
+      color: true,
+      pixelValue: 7,
+    });
+    const video = await buildStandaloneVideo(file);
+    expect(video).not.toBeNull();
+    expect(video!.backend instanceof GrayscaleVideoBackend).toBe(false);
+    expect(Object.hasOwn(video!.backendMetadata, "grayscale")).toBe(false);
+  });
+
+  it(
+    "round-trip: reassigning a backend without an explicit grayscale option " +
+      "re-derives it from the video's already-persisted backendMetadata " +
+      "(the reopen/relink case after a project reload)",
+    async () => {
+      const file = buildSeqFile({
+        name: "roundtrip.seq",
+        width: 4,
+        height: 3,
+        color: true,
+        pixelValue: 55,
+      });
+      const video = await buildStandaloneVideo(file, null, true);
+      expect(video).not.toBeNull();
+      expect(video!.shape).toEqual([1, 3, 4, 1]);
+
+      // Simulate a relink/reopen (e.g. "Locate video" after a project reload):
+      // a fresh assignVideoBackend call with NO explicit grayscale option.
+      const ok = await assignVideoBackend(video!, file);
+      expect(ok).toBe(true);
+      expect(video!.backend).toBeInstanceOf(GrayscaleVideoBackend);
+      expect(video!.shape).toEqual([1, 3, 4, 1]); // still forced to 1 channel.
+      expect(video!.backendMetadata.grayscale).toBe(true); // still persisted.
+    }
+  );
+});
+
 describe("SUPPORTED_VIDEO_EXTS", () => {
-  it("lists every decodable format and excludes .avi", () => {
+  it("lists every decodable format, including .avi/.wmv", () => {
     expect([...SUPPORTED_VIDEO_EXTS].sort()).toEqual([
-      "mkv", "mov", "mp4", "ogg", "ogv", "seq", "ts", "webm",
+      "avi", "mkv", "mov", "mp4", "mpeg", "mpg", "ogg", "ogv", "seq", "ts", "webm", "wmv",
     ]);
-    expect(SUPPORTED_VIDEO_EXTS).not.toContain("avi");
+    // AVI/WMV/MPEG are now selectable + routed via the web-demuxer AviVideoBackend
+    // (desktop transcodes undecodable payloads; browser shows the convert message).
+    expect(SUPPORTED_VIDEO_EXTS).toContain("avi");
+    expect(SUPPORTED_VIDEO_EXTS).toContain("wmv");
+    expect(SUPPORTED_VIDEO_EXTS).toContain("mpeg");
   });
 });
 
 describe("buildStandaloneVideo (gate)", () => {
   // Only UNSUPPORTED extensions here: a supported ext would attempt a real
-  // MediaBunny/Mp4Box decode, which can't run under the bun test runner.
+  // MediaBunny/Mp4Box/AVI decode, which can't run under the bun test runner.
+  // (`.avi`/`.wmv` are no longer gate-rejected — they route to AviVideoBackend
+  // and fail later at the decode probe, which E2E covers.)
   it("rejects unsupported formats and returns null without decoding", async () => {
-    for (const name of ["clip.avi", "clip.xyz", "noextension"]) {
+    for (const name of ["clip.xyz", "noextension"]) {
       expect(await buildStandaloneVideo(fakeFile(name))).toBeNull();
     }
   });
@@ -544,12 +713,18 @@ describe("backendKindForFilename (format → backend dispatch)", () => {
   it("maps Norpix .seq to the Seq backend", () => {
     expect(backendKindForFilename("rec.seq")).toBe("seq");
   });
+  it("maps AVI/WMV/MPEG to the AVI (web-demuxer) backend", () => {
+    for (const name of ["clip.avi", "clip.wmv", "clip.mpeg", "clip.mpg"]) {
+      expect(backendKindForFilename(name)).toBe("avi");
+    }
+  });
   it("is case-insensitive on the extension", () => {
     expect(backendKindForFilename("CLIP.MOV")).toBe("mediabunny");
     expect(backendKindForFilename("CLIP.MP4")).toBe("mp4box");
+    expect(backendKindForFilename("CLIP.AVI")).toBe("avi");
   });
   it("returns null for unsupported or extension-less names", () => {
-    for (const name of ["clip.avi", "clip.xyz", "noextension", ""]) {
+    for (const name of ["clip.mj2", "clip.xyz", "noextension", ""]) {
       expect(backendKindForFilename(name)).toBeNull();
     }
   });
@@ -694,6 +869,127 @@ describe("lazy video backends (defer decoder open, #perf)", () => {
   });
 });
 
+describe("external HDF5 video sources (.pkg.slp as the video)", () => {
+  /** A video whose stored source is a package on another machine (sleap-track
+   *  output run against a training package — see hdf5VideoSource.ts). */
+  function packageBackedVideo(filename: string): Video {
+    const video = new Video({
+      filename,
+      openBackend: false,
+      backendMetadata: {
+        type: "HDF5Video",
+        dataset: "video0/video",
+        has_embedded_images: true,
+        shape: [1000, 384, 384, 1],
+      },
+    });
+    video.backend = null; // the WebView could not open the stored path
+    return video;
+  }
+
+  it("counts an unopened package source as missing, not embedded", () => {
+    const video = packageBackedVideo("/old/machine/labels.v001.pkg.slp");
+    // `hasEmbeddedImages` is only true when the `.slp` IS its own container
+    // (stored filename "."); a package referenced BY path is an external file.
+    expect(video.hasEmbeddedImages).toBe(false);
+    expect(isVideoMissing(video)).toBe(true);
+    expect(isImageSequenceVideo(video)).toBe(false);
+  });
+
+  it("auto-locates a moved package the same way it locates a moved video", async () => {
+    const video = packageBackedVideo("/old/machine/labels.v001.pkg.slp");
+    const labels = new Labels();
+    labels.addVideo(video);
+
+    const probed: string[] = [];
+    await resolveExternalVideos(labels, {
+      projectPath: "/data/proj/preds.slp",
+      exists: async (p) => {
+        probed.push(p);
+        return p === "/data/proj/labels.v001.pkg.slp";
+      },
+      readFile: async () => new Uint8Array(),
+      lazy: true,
+    });
+
+    // Found by the same basename-in-project-dir candidate an .mp4 would use.
+    expect((video.backendMetadata as Record<string, unknown>).lazyPath).toBe(
+      "/data/proj/labels.v001.pkg.slp"
+    );
+    expect(isVideoMissing(video)).toBe(false);
+    // The dataset must survive relocation: it is the only record of WHICH
+    // video in the package this is.
+    expect((video.backendMetadata as Record<string, unknown>).dataset).toBe(
+      "video0/video"
+    );
+    expect(probed.length).toBeGreaterThan(0);
+  });
+
+  it("finds a package referenced by a path relative to an ANCESTOR of the .slp", async () => {
+    // The real shape (labels_pr.test.0.slp): the .slp sits two levels below the
+    // directory the relative video path is relative to.
+    const rel = "labels.v006.slp.training_job/labels.v006.test.pkg.slp";
+    const real = "/vol/proj/2026_09_15_ucsd/" + rel;
+    const video = packageBackedVideo(rel);
+    const labels = new Labels();
+    labels.addVideo(video);
+
+    await resolveExternalVideos(labels, {
+      projectPath:
+        "/vol/proj/2026_09_15_ucsd/models/centered_instance_unet_ms64_crop320/labels_pr.test.0.slp",
+      exists: async (p) => p === real,
+      readFile: async () => new Uint8Array(),
+      lazy: true,
+    });
+
+    expect((video.backendMetadata as Record<string, unknown>).lazyPath).toBe(
+      real
+    );
+    expect(isVideoMissing(video)).toBe(false);
+  });
+
+  it("keeps each video's own dataset when several share one package", async () => {
+    // Four Videos, one .pkg.slp, distinguished ONLY by dataset — the test-split
+    // layout sleap-nn emits. Losing the per-video dataset here would show every
+    // video the same frames.
+    const rel = "job/labels.v006.test.pkg.slp";
+    const labels = new Labels();
+    const videos = [0, 1, 2, 3].map((i) => {
+      const v = packageBackedVideo(rel);
+      (v.backendMetadata as Record<string, unknown>).dataset = `video${i}/video`;
+      labels.addVideo(v);
+      return v;
+    });
+
+    await resolveExternalVideos(labels, {
+      projectPath: "/data/proj/preds.slp",
+      exists: async (p) => p === "/data/proj/" + rel,
+      readFile: async () => new Uint8Array(),
+      lazy: true,
+    });
+
+    for (const [i, v] of videos.entries()) {
+      const meta = v.backendMetadata as Record<string, unknown>;
+      expect(meta.lazyPath).toBe("/data/proj/" + rel);
+      expect(meta.dataset).toBe(`video${i}/video`);
+      expect(isVideoMissing(v)).toBe(false);
+    }
+  });
+
+  it("offers a .slp-first picker when locating a missing package source", () => {
+    const video = packageBackedVideo("/old/machine/labels.v001.pkg.slp");
+    const filters = locateVideoFilters(video.filename);
+    expect(filters[0]!.extensions).toEqual(["slp"]);
+  });
+
+  it("accepts a package in the standalone-video gate (Replace Video)", () => {
+    // The media-import table rejects `.slp` on purpose; the relink gate must
+    // not, or Replace Video can never point at a package.
+    expect(backendKindForFilename("labels.v001.pkg.slp")).toBeNull();
+    expect(isHdf5VideoPath("labels.v001.pkg.slp")).toBe(true);
+  });
+});
+
 describe("resolveExternalVideos (persisted prefix-swap reapply on open)", () => {
   // .slp lives under /Volumes/talmo/elise; the video's stored compute-node path
   // is under a SIBLING subtree /root/vast/mustafa. Tail-grafting onto the .slp
@@ -821,5 +1117,311 @@ describe("resolveAllVideosFromFolder — image-sequence safety", () => {
     expect(count).toBe(0);
     expect(imgSeq.filename).toBe(before);
     expect(imgSeq.backend).toBeNull();
+  });
+});
+
+describe("isSupportedVideoUrl", () => {
+  it("accepts an http(s) URL ending in a supported video extension", () => {
+    expect(isSupportedVideoUrl("https://example.com/clip.mp4")).toBe(true);
+    expect(isSupportedVideoUrl("http://example.com/a/b/clip.avi")).toBe(true);
+    expect(isSupportedVideoUrl("https://example.com/clip.webm")).toBe(true);
+  });
+
+  it("strips query/hash so presigned URLs resolve by extension", () => {
+    expect(
+      isSupportedVideoUrl(
+        "https://bucket.s3.amazonaws.com/clip.mp4?X-Amz-Signature=abc&X-Amz-Expires=900",
+      ),
+    ).toBe(true);
+    expect(isSupportedVideoUrl("https://example.com/clip.mov#t=10")).toBe(true);
+  });
+
+  it("rejects unsupported extensions and extension-less URLs", () => {
+    expect(isSupportedVideoUrl("https://example.com/notes.txt")).toBe(false);
+    expect(isSupportedVideoUrl("https://drive.google.com/file/d/ID")).toBe(
+      false,
+    );
+  });
+
+  it("rejects non-fetchable (non-URL / unsupported scheme) inputs", () => {
+    expect(isSupportedVideoUrl("/local/path/clip.mp4")).toBe(false);
+    expect(isSupportedVideoUrl("ftp://example.com/clip.mp4")).toBe(false);
+    expect(isSupportedVideoUrl("")).toBe(false);
+  });
+});
+
+describe("drag-and-drop video filtering (dropzone, #138)", () => {
+  it("pickedFromFiles keeps supported videos and drops the rest (browser, no absPath)", () => {
+    const picked = pickedFromFiles([
+      new File([], "a.mp4"),
+      new File([], "b.slp"), // project file, not a video
+      new File([], "c.avi"),
+      new File([], "notes.txt"),
+    ]);
+    expect(picked.map((p) => p.file.name)).toEqual(["a.mp4", "c.avi"]);
+    expect(picked.every((p) => p.absPath === null)).toBe(true);
+  });
+
+  it("pickedFromPaths keeps supported videos by path (desktop: absPath set, basename as file name)", () => {
+    const picked = pickedFromPaths([
+      "/data/clip1.mp4",
+      "/data/proj.slp",
+      "/vids/legacy.wmv",
+    ]);
+    expect(picked.map((p) => p.absPath)).toEqual(["/data/clip1.mp4", "/vids/legacy.wmv"]);
+    expect(picked.map((p) => p.file.name)).toEqual(["clip1.mp4", "legacy.wmv"]);
+  });
+
+  it("returns [] when nothing dropped is a supported video", () => {
+    expect(pickedFromFiles([new File([], "x.slp")])).toEqual([]);
+    expect(pickedFromPaths(["/a/y.json"])).toEqual([]);
+  });
+});
+
+describe("resolveScrubProxyOpenPath (scrub proxy on decodable video open)", () => {
+  // A network-mounted, big, decodable video: the exact case the real gate accepts.
+  const ORIGINAL = "/Volumes/nas/session/clip.avi";
+  const NAME = "clip.avi";
+  const BIG = 500 * 1024 * 1024;
+
+  // Stat-only fake TranscodeDeps: the helper only calls .stat(); the rest of the
+  // deps (ffmpeg/ffprobe) is never reached because ensureProxy itself is faked.
+  function statDeps(size: number): ReturnType<ScrubProxyDeps["transcodeDeps"]> {
+    return { stat: async () => ({ size, mtimeMs: 0 }) } as unknown as ReturnType<
+      ScrubProxyDeps["transcodeDeps"]
+    >;
+  }
+
+  function makeDeps(overrides: Partial<ScrubProxyDeps>): ScrubProxyDeps {
+    return {
+      isEnabled: () => true,
+      transcodeDeps: () => statDeps(BIG),
+      shouldBuild: shouldBuildScrubProxy, // exercise the REAL worthiness gate
+      ensureProxy: async () => ({ path: ORIGINAL, isProxy: false }),
+      ...overrides,
+    };
+  }
+
+  afterEach(() => {
+    // Never leak a stuck job between tests.
+    useTranscodeStore.getState().endJob();
+  });
+
+  it("disabled: never builds a proxy and opens the original (no job)", async () => {
+    let called = false;
+    const deps = makeDeps({
+      isEnabled: () => false,
+      ensureProxy: async () => {
+        called = true;
+        return { path: "/should-not-open.mp4", isProxy: true };
+      },
+    });
+    const store = useTranscodeStore.getState();
+    const res = await resolveScrubProxyOpenPath(
+      ORIGINAL,
+      NAME,
+      store,
+      new AbortController(),
+      deps
+    );
+    expect(called).toBe(false);
+    expect(res).toEqual({ path: ORIGINAL, isProxy: false });
+    expect(useTranscodeStore.getState().job).toBeNull();
+  });
+
+  it("enabled + gate passes: opens the PROXY, built from the ORIGINAL path; job runs then clears", async () => {
+    const PROXY = "/cache/proxies/abc-proxy-g15.mp4";
+    const seen: { path?: string; hasSignal?: boolean } = {};
+    const deps = makeDeps({
+      ensureProxy: async (p, _d, opts) => {
+        seen.path = p; // ensureProxy is given the ORIGINAL source path
+        seen.hasSignal = !!opts?.signal;
+        opts?.onStart?.({}); // mirror the real build starting the job UI
+        opts?.onProgress?.({ frame: 12, done: false });
+        return { path: PROXY, isProxy: true };
+      },
+    });
+    const store = useTranscodeStore.getState();
+    const controller = new AbortController();
+
+    let res: Awaited<ReturnType<typeof resolveScrubProxyOpenPath>>;
+    try {
+      // Mirror the caller's try/finally around the proxy step.
+      res = await resolveScrubProxyOpenPath(ORIGINAL, NAME, store, controller, deps);
+      // Mid-open (before the caller's finally) the store shows an active job,
+      // proving onStart wired startJob into the SAME transcode UI.
+      expect(useTranscodeStore.getState().job?.name).toBe(NAME);
+    } finally {
+      store.endJob(); // caller's finally clears it (build OR fallback)
+    }
+
+    // Opens the proxy path...
+    expect(res).toEqual({ path: PROXY, isProxy: true });
+    // ...but that proxy was built FROM the original source (which the .slp records);
+    // the open path is deliberately distinct from the recorded original path.
+    expect(seen.path).toBe(ORIGINAL);
+    expect(res.path).not.toBe(ORIGINAL);
+    expect(seen.hasSignal).toBe(true); // shares the caller's AbortController
+    expect(useTranscodeStore.getState().job).toBeNull(); // cleared
+  });
+
+  it("proxy falls back (frame-check mismatch, isProxy:false): opens the ORIGINAL; job cleared", async () => {
+    let called = false;
+    const deps = makeDeps({
+      ensureProxy: async (p, _d, opts) => {
+        called = true;
+        opts?.onStart?.({}); // ensureScrubProxyPath fires onStart even on fallback
+        return { path: p, isProxy: false }; // its documented fallback contract
+      },
+    });
+    const store = useTranscodeStore.getState();
+    let res: Awaited<ReturnType<typeof resolveScrubProxyOpenPath>>;
+    try {
+      res = await resolveScrubProxyOpenPath(ORIGINAL, NAME, store, new AbortController(), deps);
+    } finally {
+      store.endJob();
+    }
+    expect(called).toBe(true);
+    expect(res).toEqual({ path: ORIGINAL, isProxy: false });
+    expect(useTranscodeStore.getState().job).toBeNull();
+  });
+
+  it("build throws (e.g. canceled/ffmpeg error): swallows and opens the ORIGINAL", async () => {
+    const deps = makeDeps({
+      ensureProxy: async (_p, _d, opts) => {
+        opts?.onStart?.({});
+        throw new Error("ffmpeg exploded");
+      },
+    });
+    const store = useTranscodeStore.getState();
+    let res: Awaited<ReturnType<typeof resolveScrubProxyOpenPath>>;
+    try {
+      res = await resolveScrubProxyOpenPath(ORIGINAL, NAME, store, new AbortController(), deps);
+    } finally {
+      store.endJob();
+    }
+    expect(res).toEqual({ path: ORIGINAL, isProxy: false });
+    expect(useTranscodeStore.getState().job).toBeNull();
+  });
+
+  it("gate passes for a decodable mp4 AND mov on a network mount (the target case)", async () => {
+    // The proxy exists for decodable mp4/mov on NFS — the gate is extension-
+    // agnostic (network + big + decodable), so both reach the build.
+    for (const src of ["/Volumes/nas/als2h.mp4", "/Volumes/nas/session/clip.mov"]) {
+      let seen: string | undefined;
+      const deps = makeDeps({
+        ensureProxy: async (p) => {
+          seen = p;
+          return { path: "/cache/proxies/x-proxy-g15.mp4", isProxy: true };
+        },
+      });
+      const store = useTranscodeStore.getState();
+      try {
+        const res = await resolveScrubProxyOpenPath(
+          src,
+          src.split("/").pop()!,
+          store,
+          new AbortController(),
+          deps
+        );
+        expect(res.isProxy).toBe(true);
+        expect(res.path).toBe("/cache/proxies/x-proxy-g15.mp4");
+        expect(seen).toBe(src); // proxy built FROM the original mp4/mov source
+      } finally {
+        store.endJob();
+      }
+    }
+  });
+});
+
+describe("openViaProxyOrNull (DRY proxy step for decodable open branches)", () => {
+  afterEach(() => {
+    useTranscodeStore.getState().endJob();
+  });
+
+  function baseDeps(overrides: Partial<ProxyOpenDeps>): ProxyOpenDeps {
+    return {
+      isTauri: async () => true,
+      getStore: () => useTranscodeStore.getState(),
+      resolveProxy: async (p) => ({ path: p, isProxy: false }),
+      openProxyBackend: async () => ({}) as VideoBackend,
+      ...overrides,
+    };
+  }
+
+  it("desktop + proxy built: opens an Mp4Box backend on the PROXY (decided from the ORIGINAL); job cleared", async () => {
+    const sentinel = { getFrame: async () => null } as unknown as VideoBackend;
+    let decidedFrom: string | undefined;
+    let openedFrom: string | undefined;
+    const deps = baseDeps({
+      resolveProxy: async (p) => {
+        decidedFrom = p;
+        return { path: "/cache/proxies/als2h-proxy-g15.mp4", isProxy: true };
+      },
+      openProxyBackend: async (proxyPath) => {
+        openedFrom = proxyPath;
+        return sentinel;
+      },
+    });
+    const backend = await openViaProxyOrNull(
+      "/Volumes/nas/als2h.mp4",
+      "als2h.mp4",
+      deps
+    );
+    expect(backend).toBe(sentinel); // opened via the proxy backend
+    expect(decidedFrom).toBe("/Volumes/nas/als2h.mp4"); // decision uses ORIGINAL
+    expect(openedFrom).toBe("/cache/proxies/als2h-proxy-g15.mp4"); // opens PROXY
+    expect(useTranscodeStore.getState().job).toBeNull(); // cleared
+  });
+
+  it("desktop + proxy fell back (isProxy:false): returns null so the caller opens the source; never builds a backend", async () => {
+    let opened = false;
+    const deps = baseDeps({
+      resolveProxy: async (p) => ({ path: p, isProxy: false }),
+      openProxyBackend: async () => {
+        opened = true;
+        return {} as VideoBackend;
+      },
+    });
+    const backend = await openViaProxyOrNull(
+      "/Volumes/nas/session/clip.mov",
+      "clip.mov",
+      deps
+    );
+    expect(backend).toBeNull();
+    expect(opened).toBe(false);
+    expect(useTranscodeStore.getState().job).toBeNull();
+  });
+
+  it("browser (not Tauri): returns null without attempting a proxy", async () => {
+    let attempted = false;
+    const deps = baseDeps({
+      isTauri: async () => false,
+      resolveProxy: async (p) => {
+        attempted = true;
+        return { path: p, isProxy: true };
+      },
+    });
+    expect(
+      await openViaProxyOrNull("/Volumes/nas/als2h.mp4", "als2h.mp4", deps)
+    ).toBeNull();
+    expect(attempted).toBe(false);
+    expect(useTranscodeStore.getState().job).toBeNull();
+  });
+
+  it("proxy backend construction throws: swallows and returns null (open source normally); job cleared", async () => {
+    const deps = baseDeps({
+      resolveProxy: async () => ({
+        path: "/cache/proxies/x-proxy-g15.mp4",
+        isProxy: true,
+      }),
+      openProxyBackend: async () => {
+        throw new Error("mp4box boom");
+      },
+    });
+    expect(
+      await openViaProxyOrNull("/Volumes/nas/als2h.mp4", "als2h.mp4", deps)
+    ).toBeNull();
+    expect(useTranscodeStore.getState().job).toBeNull();
   });
 });

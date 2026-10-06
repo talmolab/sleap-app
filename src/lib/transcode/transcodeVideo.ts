@@ -1,0 +1,596 @@
+/**
+ * Desktop legacy-codec transcode orchestration.
+ *
+ * `transcodeToMp4()` turns a legacy-codec video path into a cached H.264 MP4
+ * path, converting once and reusing thereafter. All platform I/O is injected via
+ * {@link TranscodeDeps} so the orchestration (cache hit/miss, temp→atomic
+ * rename, progress, cancel) is unit-testable with fakes; the real desktop
+ * implementation is {@link createTauriTranscodeDeps}.
+ *
+ * The transcode runs disk→disk in a native ffmpeg sidecar process — the source
+ * bytes never enter the WebView/JS heap — so a multi-GB legacy file converts at
+ * a flat, small memory cost (unlike the direct web-demuxer path, which would
+ * materialize the whole file). See docs for the full design.
+ */
+
+import { buildTranscodeArgs } from "./transcodeArgs.js";
+import {
+  TRANSCODE_EXT,
+  type CacheEntry,
+  cacheFilename,
+  computeCacheKey,
+  planCacheEviction,
+} from "./transcodeCache.js";
+import { PROXY_SUBDIR } from "./scrubProxy.js";
+import { codecNeedsTranscode } from "./videoCodecSupport.js";
+import {
+  parseEncoderList,
+  parseFfprobeCodec,
+  pickH264Encoder,
+} from "./videoProbe.js";
+
+export interface TranscodeProgress {
+  /** Frames processed so far (from ffmpeg `-progress`), if known. */
+  frame?: number;
+  /** Output timestamp reached, in ms, if known. */
+  outTimeMs?: number;
+  /** True on the terminal `progress=end` line. */
+  done: boolean;
+}
+
+/** Injected platform seams (real impls: Tauri fs + shell sidecar). */
+export interface TranscodeDeps {
+  /** Absolute OS cache directory for transcodes (e.g. `appCacheDir()/transcodes`). */
+  cacheDir: () => Promise<string>;
+  /** Join path segments with the platform separator. */
+  join: (...parts: string[]) => Promise<string>;
+  /** `{ size, mtimeMs }` for a file. */
+  stat: (path: string) => Promise<{ size: number; mtimeMs: number }>;
+  /** Whether a path exists. */
+  exists: (path: string) => Promise<boolean>;
+  /** Create a directory (recursive; no-op if present). */
+  mkdir: (path: string) => Promise<void>;
+  /** Atomically move `from`→`to` (same filesystem). */
+  rename: (from: string, to: string) => Promise<void>;
+  /** Best-effort delete (ignore missing). */
+  remove: (path: string) => Promise<void>;
+  /** List entry names (files) in a directory; rejects/empty if absent. */
+  readDir: (dir: string) => Promise<string[]>;
+  /**
+   * One-shot run of a bundled tool, capturing output (for `ffprobe` codec
+   * detection and `ffmpeg -encoders`). Resolves regardless of exit code so the
+   * caller can inspect `code`/`stderr`.
+   */
+  exec: (
+    tool: "ffmpeg" | "ffprobe",
+    args: string[]
+  ) => Promise<{ stdout: string; stderr: string; code: number | null }>;
+  /**
+   * Streaming transcode via the bundled ffmpeg, reporting parsed progress.
+   * Rejects on a nonzero exit or spawn failure; honors `signal` (kills the
+   * child on abort).
+   */
+  runTranscode: (
+    args: string[],
+    onProgress: (p: TranscodeProgress) => void,
+    signal?: AbortSignal
+  ) => Promise<void>;
+}
+
+export interface TranscodeToMp4Options {
+  /** Progress callback for a UI bar. */
+  onProgress?: (p: TranscodeProgress) => void;
+  /**
+   * Fired once a transcode is actually starting (real cache miss) — NOT on a
+   * cache hit or a decodable file. `durationMs` (if the probe knew it) lets the
+   * UI show a real progress %. Use it to open a "converting…" dialog.
+   */
+  onTranscodeStart?: (info: { durationMs?: number }) => void;
+  /** Abort the (running) transcode; a cache hit ignores it. */
+  signal?: AbortSignal;
+  /** Source duration in ms (from the probe) — forwarded to `onTranscodeStart`. */
+  durationMs?: number;
+  /** Encoder/quality overrides forwarded to {@link buildTranscodeArgs}. */
+  encoder?: string;
+  quality?: string[];
+  /**
+   * Used by {@link ensureDecodablePath} only: ask the caller (UI) whether to
+   * transcode a legacy-codec video. Invoked ONLY on a cache miss (an
+   * already-converted video just opens, no prompt). Resolving `false` skips the
+   * transcode and returns the original path so the normal backend surfaces its
+   * unsupported-codec message. Omit → always proceed.
+   */
+  confirmTranscode?: (info: {
+    codec: string;
+    durationMs?: number;
+  }) => Promise<boolean>;
+}
+
+/** Subdirectory under the OS cache dir where transcodes live. */
+export const TRANSCODE_SUBDIR = "transcodes";
+
+/**
+ * In-flight transcodes keyed by destination cache path. A convert-once cache
+ * MUST collapse concurrent misses for the SAME source — otherwise two opens
+ * (dev StrictMode double-invoke, or two `Video`s referencing one legacy file)
+ * both miss, both write the same `<hash>.mp4.part`, and whichever renames second
+ * finds no `.part` and throws ("No such file or directory") — a classic cache
+ * stampede. The second caller shares the first's promise instead of racing.
+ */
+const inFlightTranscodes = new Map<string, Promise<string>>();
+
+/**
+ * Ensure a decodable H.264 MP4 exists for `sourcePath` and return its path.
+ * Cache hit → returns immediately (no reconvert). Cache miss → transcodes to a
+ * `.part` temp then atomically renames into place, so an interrupted/cancelled
+ * run never leaves a half-written file mistaken for a valid cache entry.
+ * Concurrent misses for the same source are de-duplicated (see
+ * {@link inFlightTranscodes}) so the file is converted exactly once.
+ */
+export async function transcodeToMp4(
+  sourcePath: string,
+  deps: TranscodeDeps,
+  options: TranscodeToMp4Options = {}
+): Promise<string> {
+  const { size, mtimeMs } = await deps.stat(sourcePath);
+  const key = computeCacheKey(sourcePath, size, mtimeMs);
+  const dir = await deps.join(await deps.cacheDir(), TRANSCODE_SUBDIR);
+  const cachePath = await deps.join(dir, cacheFilename(key));
+
+  if (await deps.exists(cachePath)) return cachePath; // convert-once: cache hit
+
+  // Collapse a concurrent miss for the same destination onto the in-flight run
+  // (share its result — including its progress/cancel) rather than racing on the
+  // same temp→final path. The follower forgoes its own onTranscodeStart/onProgress
+  // (the leader already drives the dialog) and simply awaits the one conversion.
+  const inProgress = inFlightTranscodes.get(cachePath);
+  if (inProgress) return inProgress;
+
+  const work = convertToCache(sourcePath, dir, cachePath, deps, options);
+  inFlightTranscodes.set(cachePath, work);
+  try {
+    return await work;
+  } finally {
+    inFlightTranscodes.delete(cachePath);
+  }
+}
+
+/** The actual cache-miss conversion: temp → atomic publish. */
+async function convertToCache(
+  sourcePath: string,
+  dir: string,
+  cachePath: string,
+  deps: TranscodeDeps,
+  options: TranscodeToMp4Options
+): Promise<string> {
+  // real cache miss — work is about to happen
+  options.onTranscodeStart?.({ durationMs: options.durationMs });
+  await deps.mkdir(dir);
+  const tempPath = `${cachePath}.part`;
+  await deps.remove(tempPath); // clear any stale partial from a prior crash
+
+  const args = buildTranscodeArgs({
+    input: sourcePath,
+    output: tempPath,
+    encoder: options.encoder,
+    quality: options.quality,
+  });
+
+  try {
+    await deps.runTranscode(
+      args,
+      options.onProgress ?? (() => {}),
+      options.signal
+    );
+  } catch (err) {
+    await deps.remove(tempPath); // don't leave a partial behind
+    throw err;
+  }
+
+  try {
+    await deps.rename(tempPath, cachePath); // atomic publish
+  } catch (err) {
+    // Lost a publish race (a concurrent run — e.g. a second app instance sharing
+    // the cache dir — already renamed `.part`→`.mp4` and moved our temp away)?
+    // If the file we wanted is now present, that's success; else the rename
+    // failed for a real reason, so clean up the temp and rethrow.
+    await deps.remove(tempPath);
+    if (await deps.exists(cachePath)) return cachePath;
+    throw err;
+  }
+  return cachePath;
+}
+
+/** ffprobe args to read the first video stream's codec + pixel format as JSON. */
+function ffprobeCodecArgs(path: string): string[] {
+  return [
+    "-v",
+    "error",
+    "-select_streams",
+    "v:0",
+    "-show_entries",
+    "stream=codec_name,pix_fmt,duration",
+    "-of",
+    "json",
+    path,
+  ];
+}
+
+/** Probe a file's first video stream (codec + pix_fmt) via the ffprobe sidecar. */
+export async function probeVideo(path: string, deps: TranscodeDeps) {
+  const { stdout } = await deps.exec("ffprobe", ffprobeCodecArgs(path));
+  return parseFfprobeCodec(stdout);
+}
+
+// Cache the chosen encoder across calls — `ffmpeg -encoders` is invariant per
+// bundled binary, so probe it at most once per session.
+let cachedEncoder: string | null = null;
+
+/** Pick (and memoize) a permissive H.264 encoder the bundled ffmpeg supports. */
+export async function selectEncoder(deps: TranscodeDeps): Promise<string> {
+  if (cachedEncoder) return cachedEncoder;
+  const { stdout } = await deps.exec("ffmpeg", ["-hide_banner", "-encoders"]);
+  cachedEncoder = pickH264Encoder(parseEncoderList(stdout));
+  return cachedEncoder;
+}
+
+/** Test-only: reset the memoized encoder. */
+export function __resetEncoderCache(): void {
+  cachedEncoder = null;
+}
+
+export interface EnsureDecodableResult {
+  /** The path to open: the original (decodable) or the cached transcode. */
+  path: string;
+  /** True when a transcode happened (so the caller records the original). */
+  transcoded: boolean;
+  /** The probed source codec, if detection succeeded. */
+  codec?: string;
+}
+
+/** Resolve the cache path a transcode of `sourcePath` would use (no I/O beyond stat). */
+async function transcodeCachePath(
+  sourcePath: string,
+  deps: TranscodeDeps
+): Promise<string> {
+  const { size, mtimeMs } = await deps.stat(sourcePath);
+  const key = computeCacheKey(sourcePath, size, mtimeMs);
+  const dir = await deps.join(await deps.cacheDir(), TRANSCODE_SUBDIR);
+  return deps.join(dir, cacheFilename(key));
+}
+
+/** Whether a decodable transcode of `sourcePath` already exists in the cache. */
+export async function isTranscodeCached(
+  sourcePath: string,
+  deps: TranscodeDeps
+): Promise<boolean> {
+  return deps.exists(await transcodeCachePath(sourcePath, deps));
+}
+
+/**
+ * Return a path the WebCodecs/Mp4Box path can decode: the ORIGINAL if its codec
+ * is already decodable (H.264/HEVC/VP8-9/AV1/MJPEG), else a cached H.264 MP4
+ * produced by transcoding. Desktop-only (needs the ffmpeg/ffprobe sidecars).
+ * If probing fails (unknown/odd file), returns the original unchanged so the
+ * existing backend still gets a chance (and can surface its own error).
+ *
+ * When a transcode is needed AND not already cached, `options.confirmTranscode`
+ * (if supplied) gates it — resolving `false` skips conversion and returns the
+ * original (the caller then surfaces the unsupported-codec message). An
+ * already-cached video opens without prompting.
+ */
+export async function ensureDecodablePath(
+  sourcePath: string,
+  deps: TranscodeDeps,
+  options: TranscodeToMp4Options = {}
+): Promise<EnsureDecodableResult> {
+  const probed = await probeVideo(sourcePath, deps);
+  if (!probed) return { path: sourcePath, transcoded: false };
+  if (!codecNeedsTranscode(probed.codec, probed.pixFmt)) {
+    return { path: sourcePath, transcoded: false, codec: probed.codec };
+  }
+  // Legacy codec → transcode needed. Prompt only on a real cache MISS, so an
+  // already-converted video reopens silently.
+  if (options.confirmTranscode && !(await isTranscodeCached(sourcePath, deps))) {
+    const proceed = await options.confirmTranscode({
+      codec: probed.codec,
+      durationMs: probed.durationMs,
+    });
+    if (!proceed) {
+      return { path: sourcePath, transcoded: false, codec: probed.codec };
+    }
+  }
+  const encoder = await selectEncoder(deps);
+  const mp4 = await transcodeToMp4(sourcePath, deps, {
+    ...options,
+    encoder,
+    durationMs: probed.durationMs,
+  });
+  return { path: mp4, transcoded: true, codec: probed.codec };
+}
+
+// ── Cache maintenance (for a "clear transcode cache" UI) ─────────────────────
+
+export interface TranscodeCacheInfo {
+  /** Number of finished transcodes (`.mp4`) in the cache. */
+  count: number;
+  /** Total bytes on disk (finished `.mp4`s; ignores stray `.part`). */
+  bytes: number;
+}
+
+/**
+ * Cache subdirs a "clear transcode cache" action covers: legacy transcodes and
+ * scrub proxies. Both hold regenerable `.mp4`s (plus stray `.part` temps) and can
+ * each grow to GBs, so info/clear account for them together.
+ */
+const CACHE_SUBDIRS = [TRANSCODE_SUBDIR, PROXY_SUBDIR] as const;
+
+/** Resolve the absolute cache subdirs (`<cacheDir>/transcodes`, `<cacheDir>/proxies`). */
+async function cacheSubdirs(deps: TranscodeDeps): Promise<string[]> {
+  const base = await deps.cacheDir();
+  return Promise.all(CACHE_SUBDIRS.map((sub) => deps.join(base, sub)));
+}
+
+/**
+ * Summarize one cache subdir (finished `.mp4` count + total bytes). Empty if the
+ * dir is absent (`readDir` rejects) — the missing-dir case is tolerated.
+ */
+async function scanCacheDir(
+  dir: string,
+  deps: TranscodeDeps
+): Promise<TranscodeCacheInfo> {
+  let names: string[];
+  try {
+    names = await deps.readDir(dir);
+  } catch {
+    return { count: 0, bytes: 0 };
+  }
+  let count = 0;
+  let bytes = 0;
+  for (const name of names) {
+    if (!name.endsWith(TRANSCODE_EXT)) continue;
+    count++;
+    try {
+      bytes += (await deps.stat(await deps.join(dir, name))).size;
+    } catch {
+      /* raced deletion — ignore */
+    }
+  }
+  return { count, bytes };
+}
+
+/**
+ * Delete every `.mp4` (plus stray `.part` temps) from one cache subdir and return
+ * what was freed (count is `.mp4` only; bytes are total). Empty/no-op if the dir
+ * is absent (`readDir` rejects).
+ */
+async function clearCacheDir(
+  dir: string,
+  deps: TranscodeDeps
+): Promise<TranscodeCacheInfo> {
+  let names: string[];
+  try {
+    names = await deps.readDir(dir);
+  } catch {
+    return { count: 0, bytes: 0 };
+  }
+  let count = 0;
+  let bytes = 0;
+  for (const name of names) {
+    const isMp4 = name.endsWith(TRANSCODE_EXT);
+    if (!isMp4 && !name.endsWith(".part")) continue;
+    const path = await deps.join(dir, name);
+    try {
+      bytes += (await deps.stat(path)).size;
+    } catch {
+      /* ignore */
+    }
+    await deps.remove(path);
+    if (isMp4) count++;
+  }
+  return { count, bytes };
+}
+
+/**
+ * Summarize the video cache — finished transcodes AND scrub proxies — as a
+ * combined count + total bytes. Absent subdirs contribute nothing (no throw).
+ */
+export async function getTranscodeCacheInfo(
+  deps: TranscodeDeps
+): Promise<TranscodeCacheInfo> {
+  let count = 0;
+  let bytes = 0;
+  for (const dir of await cacheSubdirs(deps)) {
+    const info = await scanCacheDir(dir, deps);
+    count += info.count;
+    bytes += info.bytes;
+  }
+  return { count, bytes };
+}
+
+/**
+ * Delete every cached transcode AND scrub proxy (`.mp4`) plus any stray `.part`
+ * temps across both subdirs, returning the combined totals freed. Safe: every
+ * entry is regenerable from the originals.
+ */
+export async function clearTranscodeCache(
+  deps: TranscodeDeps
+): Promise<TranscodeCacheInfo> {
+  let count = 0;
+  let bytes = 0;
+  for (const dir of await cacheSubdirs(deps)) {
+    const freed = await clearCacheDir(dir, deps);
+    count += freed.count;
+    bytes += freed.bytes;
+  }
+  return { count, bytes };
+}
+
+// ── Cache size cap (auto-eviction) ───────────────────────────────────────────
+
+/**
+ * Default hard cap for the on-disk video cache (transcodes + scrub proxies):
+ * 10 GiB. When the combined size exceeds this after a build, the least-recently-
+ * built entries are auto-evicted down to the cap — never one an open video is
+ * decoding from (see {@link enforceCacheCap}). Every entry is regenerable, so a
+ * miss just costs a re-transcode/re-build. (Kdenlive only *warns* at a threshold
+ * and PyQt SLEAP had no disk cache, so there's no external norm to match; a hard
+ * auto-evicting cap keeps a laptop's disk bounded without user intervention.)
+ */
+export const DEFAULT_VIDEO_CACHE_CAP_BYTES = 10 * 1024 ** 3;
+
+/**
+ * Scan both cache subdirs (transcodes + proxies) into eviction entries — one per
+ * finished `.mp4`. `mtime` is the recency signal (the fs seam exposes mtime, not
+ * atime, so this is least-recently-*built*, a close-enough LRU for a
+ * write-once/reuse cache). Absent subdirs contribute nothing (no throw).
+ */
+export async function scanCacheEntries(
+  deps: TranscodeDeps
+): Promise<CacheEntry[]> {
+  const entries: CacheEntry[] = [];
+  for (const dir of await cacheSubdirs(deps)) {
+    let names: string[];
+    try {
+      names = await deps.readDir(dir);
+    } catch {
+      continue; // subdir absent — nothing cached there yet
+    }
+    for (const name of names) {
+      if (!name.endsWith(TRANSCODE_EXT)) continue; // skip stray `.part` temps
+      const path = await deps.join(dir, name);
+      try {
+        const { size, mtimeMs } = await deps.stat(path);
+        entries.push({ path, sizeBytes: size, atimeMs: mtimeMs });
+      } catch {
+        /* raced deletion — ignore */
+      }
+    }
+  }
+  return entries;
+}
+
+/** What an {@link enforceCacheCap} pass freed. */
+export interface EnforceCacheCapResult {
+  /** Number of cache files deleted. */
+  count: number;
+  /** Bytes reclaimed. */
+  bytes: number;
+}
+
+/**
+ * Bound the on-disk video cache (transcodes + scrub proxies) to `capBytes` by
+ * evicting the least-recently-built entries. A cache file whose name begins with
+ * a `protectedKey` — the cache key of a currently-open video — is NEVER deleted,
+ * so auto-eviction can't pull a transcode/proxy out from under an open video
+ * (both `<key>.mp4` and `<key>-proxy-g<gop>.mp4` start with the key). Best-effort:
+ * if the protected files alone exceed the cap, it stops short rather than break
+ * anything. `capBytes <= 0` disables the cap.
+ */
+export async function enforceCacheCap(
+  deps: TranscodeDeps,
+  capBytes: number,
+  protectedKeys?: ReadonlySet<string>
+): Promise<EnforceCacheCapResult> {
+  if (capBytes <= 0) return { count: 0, bytes: 0 };
+  const entries = await scanCacheEntries(deps);
+
+  let protectedPaths: Set<string> | undefined;
+  if (protectedKeys && protectedKeys.size > 0) {
+    protectedPaths = new Set<string>();
+    for (const entry of entries) {
+      const base = entry.path.split(/[/\\]/).pop() ?? entry.path;
+      for (const key of protectedKeys) {
+        if (base.startsWith(key)) {
+          protectedPaths.add(entry.path);
+          break;
+        }
+      }
+    }
+  }
+
+  const toDelete = planCacheEviction(entries, capBytes, protectedPaths);
+  const sizeByPath = new Map(entries.map((e) => [e.path, e.sizeBytes]));
+  let count = 0;
+  let bytes = 0;
+  for (const path of toDelete) {
+    await deps.remove(path);
+    count++;
+    bytes += sizeByPath.get(path) ?? 0;
+  }
+  return { count, bytes };
+}
+
+/**
+ * Parse a chunk of ffmpeg `-progress pipe:1` stdout into progress updates.
+ * ffmpeg emits `key=value` lines in blocks terminated by `progress=continue`
+ * (or `progress=end`); a chunk may contain several partial/whole blocks. Pure.
+ */
+export function parseFfmpegProgress(chunk: string): TranscodeProgress[] {
+  const out: TranscodeProgress[] = [];
+  let cur: TranscodeProgress = { done: false };
+  let touched = false;
+
+  for (const raw of chunk.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    const eq = line.indexOf("=");
+    if (eq < 0) continue;
+    const key = line.slice(0, eq);
+    const value = line.slice(eq + 1);
+
+    if (key === "frame") {
+      cur.frame = Number.parseInt(value, 10);
+      touched = true;
+    } else if (key === "out_time_us") {
+      const us = Number.parseInt(value, 10);
+      if (Number.isFinite(us)) cur.outTimeMs = Math.round(us / 1000);
+      touched = true;
+    } else if (key === "out_time_ms") {
+      // Some ffmpeg builds emit out_time_ms (which is actually microseconds).
+      const us = Number.parseInt(value, 10);
+      if (Number.isFinite(us) && cur.outTimeMs === undefined) {
+        cur.outTimeMs = Math.round(us / 1000);
+      }
+      touched = true;
+    } else if (key === "progress") {
+      cur.done = value === "end";
+      out.push(cur);
+      cur = { done: false };
+      touched = false;
+    }
+  }
+  if (touched) out.push(cur); // trailing partial block (no terminator yet)
+  return out;
+}
+
+/**
+ * Assemble ffmpeg `-progress pipe:1` output into COMPLETE blocks before parsing.
+ *
+ * The Tauri shell plugin delivers a child's stdout one line at a time, so feeding
+ * each line straight to {@link parseFfmpegProgress} yields fragmented, single-key
+ * updates (one event has `frame`, the next only `out_time_us`, the next only
+ * `progress=`). A consumer that recomputes a percent per event then keeps
+ * clobbering its last good value back to "unknown" on the frameless events — the
+ * progress bar looks stuck/empty even though data is flowing. Buffer lines until a
+ * `progress=` terminator, then parse the whole block so each `onProgress` carries
+ * a complete `{frame, outTimeMs, done}`. Returns a `feed(chunk)` that tolerates
+ * either line-at-a-time or multi-line delivery.
+ */
+export function createProgressAssembler(
+  onProgress: (p: TranscodeProgress) => void
+): (chunk: string) => void {
+  let block: string[] = [];
+  return (chunk: string) => {
+    for (const raw of chunk.split(/\r?\n/)) {
+      const line = raw.trim();
+      if (!line) continue;
+      block.push(line);
+      if (line.startsWith("progress=")) {
+        const assembled = block.join("\n");
+        block = [];
+        for (const p of parseFfmpegProgress(assembled)) onProgress(p);
+      }
+    }
+  };
+}

@@ -172,6 +172,40 @@
 }
 
 /* ============================================================
+   Text selection — native desktop-app chrome behavior
+   Chrome (buttons, menus, labels, toolbars) isn't text-selectable.
+   Content the user copies (logs, file paths, metrics, coordinates)
+   opts back in with Tailwind's `select-text` utility. `user-select`
+   inherits, so opting a container in makes its subtree selectable.
+   ============================================================ */
+@layer base {
+  html {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  /* Form controls + log/code output stay selectable. */
+  input,
+  textarea,
+  [contenteditable]:not([contenteditable="false"]),
+  pre,
+  code {
+    -webkit-user-select: text;
+    user-select: text;
+  }
+  /* Interactive elements get the pointer cursor (never a text caret). */
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  [role="tab"],
+  a[href] {
+    cursor: pointer;
+  }
+  button:disabled,
+  [aria-disabled="true"] {
+    cursor: not-allowed;
+  }
+}
+
+/* ============================================================
    Information-dense UI overrides
    Scientific data annotation tool — compact, not marketing-site
    ============================================================ */

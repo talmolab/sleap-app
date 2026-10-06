@@ -5,10 +5,45 @@
 import { describe, it, expect } from "../bun-test";
 import {
   getPaletteColor,
+  getTrackColor,
+  getInstanceColor,
+  getUntrackedGray,
+  hasAssignedTracks,
+  hexToRgb,
+  resolveColorTarget,
   rgbToCSS,
   rgbToHex,
   PALETTES,
 } from "@/lib/colorPalettes";
+import {
+  Labels,
+  LabeledFrame,
+  Instance,
+  Skeleton,
+  Track,
+  type Video,
+} from "@talmolab/sleap-io.js";
+
+const video = {} as unknown as Video;
+
+function makeSkeleton(): Skeleton {
+  const s = new Skeleton({ nodes: ["a", "b"], name: "test" });
+  s.addEdge(s.nodes[0], s.nodes[1]);
+  return s;
+}
+const sk = makeSkeleton();
+
+const userInst = (track?: Track) => {
+  const inst = Instance.fromArray(
+    [
+      [1, 1],
+      [2, 2],
+    ],
+    sk,
+  );
+  if (track) inst.track = track;
+  return inst;
+};
 
 describe("colorPalettes", () => {
   describe("getPaletteColor", () => {
@@ -95,5 +130,222 @@ describe("colorPalettes", () => {
       // [0, 114, 189] -> #0072bd
       expect(result).toBe("#0072bd");
     });
+  });
+
+  describe("hasAssignedTracks", () => {
+    it("returns false for null/undefined labels", () => {
+      expect(hasAssignedTracks(null)).toBe(false);
+      expect(hasAssignedTracks(undefined)).toBe(false);
+    });
+
+    it("returns false when no instance has a track", () => {
+      const labels = new Labels({
+        labeledFrames: [
+          new LabeledFrame({ video, frameIdx: 0, instances: [userInst()] }),
+        ],
+        skeletons: [sk],
+        videos: [video],
+      });
+      expect(hasAssignedTracks(labels)).toBe(false);
+    });
+
+    it("returns true once any instance across any frame has a track", () => {
+      const track = new Track("t1");
+      const labels = new Labels({
+        labeledFrames: [
+          new LabeledFrame({ video, frameIdx: 0, instances: [userInst()] }),
+          new LabeledFrame({ video, frameIdx: 1, instances: [userInst(track)] }),
+        ],
+        skeletons: [sk],
+        videos: [video],
+      });
+      expect(hasAssignedTracks(labels)).toBe(true);
+    });
+
+    it("is not fooled by an orphaned track sitting in labels.tracks alone", () => {
+      // A track can exist in labels.tracks without being assigned to any
+      // instance (see DeleteUnusedTracks) — hasAssignedTracks must scan
+      // actual instance assignments, not just track-list presence.
+      const track = new Track("orphan");
+      const labels = new Labels({
+        labeledFrames: [
+          new LabeledFrame({ video, frameIdx: 0, instances: [userInst()] }),
+        ],
+        skeletons: [sk],
+        videos: [video],
+        tracks: [track],
+      });
+      expect(hasAssignedTracks(labels)).toBe(false);
+    });
+
+    it("short-circuits without scanning frames when there are no tracks", () => {
+      // The common no-tracks case must be O(1): an empty track list means no
+      // instance can carry a track (every assignment path adds the track to
+      // labels.tracks first), so we must NOT walk every frame×instance. Without
+      // the fast path this ran a full project scan on every edit (Cluster A).
+      let scanned = false;
+      const fakeLabels = {
+        tracks: [],
+        get labeledFrames() {
+          scanned = true;
+          return [];
+        },
+      };
+      expect(hasAssignedTracks(fakeLabels as unknown as Labels)).toBe(false);
+      expect(scanned).toBe(false);
+    });
+  });
+
+  describe("resolveColorTarget", () => {
+    it("resolves auto to node when the project has no assigned tracks", () => {
+      expect(resolveColorTarget("auto", false)).toBe("node");
+    });
+
+    it("resolves auto to track once the project has assigned tracks", () => {
+      expect(resolveColorTarget("auto", true)).toBe("track");
+    });
+
+    it("passes concrete modes through unchanged regardless of track state", () => {
+      expect(resolveColorTarget("instance", true)).toBe("instance");
+      expect(resolveColorTarget("track", false)).toBe("track");
+      expect(resolveColorTarget("node", true)).toBe("node");
+      expect(resolveColorTarget("edge", false)).toBe("edge");
+    });
+  });
+
+  describe("getInstanceColor with auto mode", () => {
+    it("colors by node (neutral gray) when auto and no tracks are assigned", () => {
+      const color = getInstanceColor("standard", "auto", 0, null, [], false, false, false);
+      expect(color).toEqual([180, 180, 180]);
+    });
+
+    it("colors by track when auto and the project has assigned tracks", () => {
+      const track = new Track("t1");
+      const tracks = [track];
+      const color = getInstanceColor("standard", "auto", 0, track, tracks, false, false, true);
+      expect(color).toEqual(getPaletteColor("standard", 0));
+    });
+
+    it("still shows the flat predicted-instance color regardless of auto resolution", () => {
+      const color = getInstanceColor("standard", "auto", 0, null, [], true, false, true);
+      expect(color).toEqual([128, 128, 128]);
+    });
+  });
+
+  describe("getUntrackedGray", () => {
+    it("gives a lone untracked instance the midpoint gray", () => {
+      expect(getUntrackedGray(0, 1)).toEqual([135, 135, 135]);
+    });
+
+    it("spans exactly [50, 220] for the first and last rank", () => {
+      expect(getUntrackedGray(0, 5)).toEqual([50, 50, 50]);
+      expect(getUntrackedGray(4, 5)).toEqual([220, 220, 220]);
+    });
+
+    it("spaces ranks evenly in between", () => {
+      // linspace(50, 220, 3) = [50, 135, 220]
+      expect(getUntrackedGray(0, 3)).toEqual([50, 50, 50]);
+      expect(getUntrackedGray(1, 3)).toEqual([135, 135, 135]);
+      expect(getUntrackedGray(2, 3)).toEqual([220, 220, 220]);
+    });
+
+    it("treats a zero/negative total the same as a single instance", () => {
+      expect(getUntrackedGray(0, 0)).toEqual([135, 135, 135]);
+    });
+  });
+
+  describe("getInstanceColor in track mode: untracked fallback", () => {
+    it("gives a lone untracked instance the midpoint gray, not a palette color", () => {
+      const color = getInstanceColor(
+        "standard", "track", 0, null, [], false, false, true, [null]
+      );
+      expect(color).toEqual([135, 135, 135]);
+    });
+
+    it("spreads multiple untracked instances across the gray range, distinct from each other", () => {
+      // Three untracked instances at frame positions 0, 1, 2.
+      const frameInstanceTracks = [null, null, null];
+      const colors = [0, 1, 2].map((idx) =>
+        getInstanceColor(
+          "standard", "track", idx, null, [], false, false, true, frameInstanceTracks
+        )
+      );
+      expect(colors).toEqual([
+        [50, 50, 50],
+        [135, 135, 135],
+        [220, 220, 220],
+      ]);
+    });
+
+    it("does not let a tracked sibling consume a slot in the gray spacing", () => {
+      // Frame has 1 tracked + 2 untracked instances (positions 0, 1, 2); the
+      // tracked one at position 1 must not count toward the untracked total.
+      const track = new Track("t1");
+      const frameInstanceTracks = [null, track, null];
+      const untracked0 = getInstanceColor(
+        "standard", "track", 0, null, [], false, false, true, frameInstanceTracks
+      );
+      const untracked2 = getInstanceColor(
+        "standard", "track", 2, null, [], false, false, true, frameInstanceTracks
+      );
+      // Only 2 untracked instances total -> linspace(50, 220, 2) = [50, 220].
+      expect(untracked0).toEqual([50, 50, 50]);
+      expect(untracked2).toEqual([220, 220, 220]);
+    });
+
+    it("still colors a tracked instance by its track, unaffected by untracked siblings", () => {
+      const track = new Track("t1");
+      const tracks = [track];
+      const color = getInstanceColor(
+        "standard", "track", 1, track, tracks, false, false, true, [null, track]
+      );
+      expect(color).toEqual(getPaletteColor("standard", 0));
+    });
+  });
+});
+
+describe("hexToRgb", () => {
+  it("parses #RRGGBB into an RGB tuple", () => {
+    expect(hexToRgb("#22c55e")).toEqual([34, 197, 94]);
+  });
+  it("parses shorthand #RGB", () => {
+    expect(hexToRgb("#0f0")).toEqual([0, 255, 0]);
+  });
+  it("is case-insensitive and tolerates surrounding whitespace", () => {
+    expect(hexToRgb("  #FFFFFF ")).toEqual([255, 255, 255]);
+  });
+  it("returns null for invalid input", () => {
+    expect(hexToRgb("nope")).toBeNull();
+    expect(hexToRgb("#12")).toBeNull();
+    expect(hexToRgb("")).toBeNull();
+  });
+  it("round-trips with rgbToHex", () => {
+    expect(hexToRgb(rgbToHex([12, 200, 5]))).toEqual([12, 200, 5]);
+  });
+});
+
+describe("getTrackColor", () => {
+  it("returns the palette color when there is no override", () => {
+    expect(getTrackColor("standard", 0, "track_0", {})).toEqual(
+      getPaletteColor("standard", 0),
+    );
+    expect(getTrackColor("standard", 3, "track_3", undefined)).toEqual(
+      getPaletteColor("standard", 3),
+    );
+  });
+  it("returns the override color (as RGB) when set for the track name", () => {
+    expect(getTrackColor("standard", 0, "track_0", { track_0: "#22c55e" })).toEqual([
+      34, 197, 94,
+    ]);
+  });
+  it("falls back to the palette for a null/absent track name", () => {
+    expect(getTrackColor("standard", 2, null, { track_0: "#22c55e" })).toEqual(
+      getPaletteColor("standard", 2),
+    );
+  });
+  it("falls back to the palette when the override hex is invalid", () => {
+    expect(getTrackColor("standard", 1, "track_1", { track_1: "bogus" })).toEqual(
+      getPaletteColor("standard", 1),
+    );
   });
 });

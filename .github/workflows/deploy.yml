@@ -3,8 +3,36 @@ name: Deploy to GitHub Pages
 on:
   push:
     branches: [main]
-  release:
-    types: [published]
+  # BOTH desktop build workflows feed this one. Nothing web-facing deploys
+  # directly off `release: published` any more, and dropping that trigger is
+  # the entire point of this wiring:
+  #
+  #  - A release is atomic. If any platform's installer fails to build, the
+  #    tag is not a real release, so app.sleap.ai must not start serving it
+  #    either. Gating the whole release deploy on a SUCCESSFUL build.yml is
+  #    what stops the web app and the desktop app from ever disagreeing about
+  #    what actually shipped.
+  #  - The version each page reports is whatever the desktop build stamped,
+  #    which does not exist until that build has run.
+  #  - /latest/ additionally requires the release to already carry a
+  #    latest.json asset, which build.yml uploads at the very END of its
+  #    release job. Testing for that on `release: published` -- as this
+  #    workflow used to -- could NEVER pass: the asset is produced by the
+  #    build that same event kicks off, tens of minutes later. So /latest/
+  #    was never deployed even once (gh-pages has no `latest/` folder at all).
+  #
+  # A flaky platform leg therefore self-heals: re-running it re-fires this
+  # workflow on success, with no manual deploy step for anyone to remember.
+  #
+  # "Build Dev Channel" keeps its original meaning -- it fires whether that
+  # workflow actually built (main moved) or skipped (quiet night), so
+  # app.sleap.ai/dev/ tracks the SAME cadence and the SAME commit as the
+  # desktop dev release rather than rebuilding on every push like /main/.
+  # Safe to fire on a skip: the final `git diff --cached --quiet` below
+  # no-ops if nothing actually changed.
+  workflow_run:
+    workflows: ["Build Desktop Apps", "Build Dev Channel"]
+    types: [completed]
   # Manual deploy from the Actions tab (or `gh workflow run deploy.yml`).
   # Pick the target; the selected branch/tag in the run's ref is what gets built.
   workflow_dispatch:
@@ -12,9 +40,9 @@ on:
       target:
         description: "Deploy target"
         type: choice
-        default: dev
+        default: main
         options:
-          - dev
+          - main
           - prod
         required: true
 
@@ -29,27 +57,252 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    # A workflow_run event fires for ANY run of either upstream workflow, on
+    # any ref and from any trigger, so qualify both -- and require success in
+    # both cases, because a red build must not reach app.sleap.ai at all:
+    #
+    #  - Build Dev Channel: only its runs on `main` (the schedule /
+    #    workflow_dispatch triggers it reacts to) deploy /dev/.
+    #  - Build Desktop Apps: only its RELEASE runs deploy. That workflow also
+    #    has a workflow_dispatch trigger for test builds off a branch, and
+    #    those have no release to publish. `workflow_run.event` is the
+    #    ORIGINAL event that started the upstream run, which is how the two
+    #    are told apart.
+    #
+    # Every other event type (push, workflow_dispatch on THIS workflow) is
+    # unaffected by this guard.
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       ((github.event.workflow_run.name == 'Build Dev Channel' &&
+         github.event.workflow_run.head_branch == 'main') ||
+        (github.event.workflow_run.name == 'Build Desktop Apps' &&
+         github.event.workflow_run.event == 'release')))
 
     steps:
+      # On a workflow_run trigger, pin to the EXACT commit build-dev.yml just
+      # built (head_sha) rather than whatever main's HEAD happens to be when
+      # THIS step runs -- eliminates any race if something else pushed to
+      # main in the moments between that build finishing and this starting.
       - name: Checkout source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.ref }}
 
-      - name: Determine deploy target
-        id: target
+      # Computes EVERY path this run needs to (re)build, as a JSON array of
+      # {path, base, label, version} -- e.g. a full release deploys to THREE
+      # places in one run: its own permanent version path (so any past version
+      # stays reachable forever, e.g. app.sleap.ai/v0.1.2-1/), root (stable),
+      # and /latest/ IF this is genuinely the highest version known. /main/
+      # (every push) and /dev/ (synced with the desktop dev build) are each
+      # driven by their own distinct trigger -- see the `elif` branches below.
+      #
+      # `version` is what the built page reports as __APP_VERSION__ (the
+      # window/tab title, via vite.config.ts `define` -> useWindowTitle). It
+      # is derived PER TARGET so a web build always agrees with the desktop
+      # build of the same thing. package.json's committed version is only a
+      # local-dev fallback and is deliberately not trusted here -- nothing on
+      # `main` bumps it as part of shipping, so it drifts (build-dev.yml's
+      # BASE derivation documents the same reasoning).
+      #
+      # Upstream event fields are passed via env, NEVER interpolated directly
+      # into this script body -- a `"` or newline in a tag must not be able to
+      # become code (that exact mistake is what made release v0.1.1 ship zero
+      # assets; see build.yml's "Set version from release tag" step).
+      - name: Determine deploy targets
+        id: targets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
+          # For a release-triggered upstream run, head_branch is the TAG name.
+          WORKFLOW_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          DISPATCH_TARGET: ${{ inputs.target }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          if [[ "${{ github.event_name }}" == "release" ]]; then
-            echo "path=" >> "$GITHUB_OUTPUT"
-            echo "base=/" >> "$GITHUB_OUTPUT"
-            echo "label=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
-          elif [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.target }}" == "prod" ]]; then
-            echo "path=" >> "$GITHUB_OUTPUT"
-            echo "base=/" >> "$GITHUB_OUTPUT"
-            echo "label=manual-prod ${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          TARGETS='[]'
+          add_target() {
+            TARGETS="$(jq -c --arg path "$1" --arg base "$2" --arg label "$3" --arg version "$4" \
+              '. + [{path: $path, base: $base, label: $label, version: $version}]' <<< "$TARGETS")"
+          }
+
+          # Docs deploy on a SEPARATE version axis from the app channels above:
+          # one top-level /docs/ tree of /docs/<version>/ folders, with nothing
+          # nested inside an app channel and nothing app-versioned above it.
+          # The two axes only reuse the words "latest" and "dev". Each entry
+          # here is just the folder name under /docs/ that this run should
+          # (re)write; the docs site is built ONCE and copied to all of them,
+          # because unlike the app it needs no per-target base URL.
+          DOCS_TARGETS='[]'
+          add_docs() {
+            DOCS_TARGETS="$(jq -c --arg path "$1" '. + [$path]' <<< "$DOCS_TARGETS")"
+          }
+
+          # Highest published version tag, mirroring build-dev.yml's BASE
+          # derivation (non-draft, release OR pre-release, a real release
+          # outranking a pre-release of the same base). Used only to LABEL the
+          # bleeding-edge paths, so unlike the /latest/ query below it does not
+          # require a latest.json asset -- it is naming a web build, not
+          # deciding what the updater is allowed to point at.
+          highest_tag() {
+            gh api "repos/$REPO/releases?per_page=100" --paginate \
+              --jq '[.[] | select(.draft == false) | .tag_name as $t
+                     | ($t | capture("^v?(?<major>[0-9]+)\\.(?<minor>[0-9]+)\\.(?<patch>[0-9]+)(-(?<pre>[0-9]+))?$"))?
+                     | select(. != null)
+                     | {sortkey: [(.major|tonumber), (.minor|tonumber), (.patch|tonumber),
+                                  (if .pre == null then 1 else 0 end), (.pre // "0" | tonumber)],
+                        base: ($t | ltrimstr("v"))}]
+                    | max_by(.sortkey) | if . == null then "0.0.0" else .base end'
+          }
+
+          if [ "$EVENT_NAME" = "workflow_run" ] && [ "$WORKFLOW_NAME" = "Build Desktop Apps" ]; then
+            # The job guard restricts this to SUCCESSFUL release runs, so every
+            # platform's installer exists and the tag is a real release.
+            RELEASE_TAG="$WORKFLOW_HEAD_BRANCH"
+            # Identical derivation to build.yml's "Set version from release
+            # tag" (VERSION="${RELEASE_TAG#v}"), which is the version the
+            # desktop app reports -- so the web build at /v<tag>/ and the
+            # installers attached to that same release can never disagree.
+            RELEASE_VERSION="${RELEASE_TAG#v}"
+            RELEASE_IS_PRERELEASE="$(gh api "repos/$REPO/releases/tags/$RELEASE_TAG" --jq '.prerelease')"
+            echo "Release $RELEASE_TAG (prerelease=$RELEASE_IS_PRERELEASE) -> version $RELEASE_VERSION"
+            # Every published release (full or pre-release) gets its own
+            # permanent path that's never touched again -- so a specific past
+            # version is always reachable, e.g. app.sleap.ai/v0.1.2-1/. That
+            # alone fully covers a pre-release's visibility -- it deliberately
+            # does NOT also touch /dev/ (which now means "synced with the
+            # desktop dev build," driven solely by the workflow_run
+            # branch below) or /main/ (every-push bleeding edge); overloading
+            # either with an unrelated pre-release publish would reintroduce
+            # exactly the "which commit does this actually reflect" confusion
+            # this whole naming scheme exists to avoid.
+            add_target "$RELEASE_TAG" "/$RELEASE_TAG/" "$RELEASE_TAG (permanent)" "$RELEASE_VERSION"
+
+            if [ "$RELEASE_IS_PRERELEASE" != "true" ]; then
+              add_target "" "/" "$RELEASE_TAG (stable)" "$RELEASE_VERSION"
+              # /docs/stable/ moves in lockstep with root (it is what bare
+              # app.sleap.ai/docs redirects to), and the release ALSO gets a
+              # permanent /docs/<tag>/ that is never rewritten. That pinned
+              # folder is what the web bundle served from app.sleap.ai/v<tag>/
+              # links to in-app (docsVersionForBasePath in src/lib/version.ts),
+              # so someone on /v0.1.1/ keeps reading 0.1.1 docs long after
+              # 0.2.0 has moved stable on. A stable DESKTOP build follows its
+              # update channel instead, so it reads /docs/stable/ and moves
+              # with it -- deliberate: an installed app that auto-updates
+              # should not be pinned to the docs of the version it shipped at.
+              add_docs "stable"
+              add_docs "$RELEASE_TAG"
+            fi
+
+            # /latest/ only advances if this release is genuinely the highest
+            # version known (release OR pre-release, drafts excluded) --
+            # GitHub does not guarantee releases publish in increasing
+            # version order (a backport, or plain human error, could publish
+            # an older version after a newer one already exists), so a naive
+            # "always update /latest/ on publish" would risk silently
+            # downgrading it. Same selection logic as the desktop update
+            # channel's "latest" resolution (update_channels.rs) and the dev
+            # build's version-base derivation (build-dev.yml) -- including
+            # requiring a latest.json asset, so this can never point
+            # app.sleap.ai/latest/ at a release the desktop updater itself
+            # would skip (e.g. one whose manifest-upload step failed).
+            HIGHEST="$(gh api "repos/$REPO/releases?per_page=100" --paginate \
+              --jq '[.[] | select(.draft == false)
+                     | select(.assets | any(.name == "latest.json")) | .tag_name as $t
+                     | ($t | capture("^v?(?<major>[0-9]+)\\.(?<minor>[0-9]+)\\.(?<patch>[0-9]+)(-(?<pre>[0-9]+))?$"))?
+                     | select(. != null)
+                     | {sortkey: [(.major|tonumber), (.minor|tonumber), (.patch|tonumber),
+                                  (if .pre == null then 1 else 0 end), (.pre // "0" | tonumber)],
+                        base: $t}]
+                    | max_by(.sortkey) | if . == null then null else .base end')"
+            if [ "$HIGHEST" = "$RELEASE_TAG" ]; then
+              add_target "latest" "/latest/" "$RELEASE_TAG (latest)" "$RELEASE_VERSION"
+              # /docs/latest/ is the ONLY docs path a pre-release ever writes.
+              # Pre-release tags are the only ones carrying the -N rebuild
+              # suffix (v0.1.2-1, v0.1.2-2, ...), so giving each its own
+              # permanent folder would pile up near-identical trees for what is
+              # one version rebuilt; they overwrite each other here instead.
+              # A pre-release that is NOT the highest version writes no docs at
+              # all, mirroring how it touches no app channel but its own.
+              add_docs "latest"
+            else
+              echo "This release ($RELEASE_TAG) is not the highest known version ($HIGHEST) -- leaving /latest/ untouched."
+            fi
+          elif [ "$EVENT_NAME" = "workflow_run" ]; then
+            # Only reached for a successful build-dev.yml run on `main` (see
+            # the job-level `if:` guard) -- redeploy /dev/ to match, so it
+            # always reflects the exact same commit the desktop dev
+            # release does, refreshed on the exact same cadence (nightly or
+            # manual), never on every plain push.
+            #
+            # The dev version is BASE+<count>.<sha>, computed inside
+            # build-dev.yml from the commits `main` has advanced past its own
+            # BASE tag -- which depends on when that build ran, so recomputing
+            # it here would be guesswork. Read the value
+            # that build actually stamped straight out of the `dev` release's
+            # latest.json instead: that is the same manifest the desktop
+            # updater consumes, so /dev/ and the desktop dev build report
+            # byte-identical versions by construction rather than by two
+            # copies of one formula agreeing.
+            DEV_VERSION="$(curl -fsSL "https://github.com/$REPO/releases/download/dev/latest.json" \
+              | jq -r '.version // empty' || true)"
+            if [ -z "$DEV_VERSION" ]; then
+              DEV_VERSION="$(highest_tag)+dev.${HEAD_SHA:0:7}"
+              echo "::warning::could not read the dev release's latest.json; labelling /dev/ as $DEV_VERSION"
+            fi
+            add_target "dev" "/dev/" "dev (synced with desktop dev build)" "$DEV_VERSION"
+            # /docs/dev/ rides the SAME cadence as the app it documents, for
+            # the same reason /dev/ itself does: this run is pinned to the
+            # exact commit the desktop dev release was built from (the
+            # job-level checkout uses workflow_run.head_sha), so writing docs
+            # here means a dev-channel user's docs describe the build they are
+            # actually running -- not whatever landed on `main` since.
+            #
+            # Docs deliberately do NOT deploy on a plain push to `main` (final
+            # else branch below). Doing so would refresh /docs/dev/ on every
+            # commit while /dev/ stayed frozen until the next nightly, so the
+            # two would disagree for most of any given day.
+            #
+            # There is still ONE "dev" docs version, not one per app channel,
+            # so app /main/ also reads it: the one path where docs can now lag
+            # its app by up to a nightly cycle. /main/ is the deliberately
+            # bleeding-edge view with no desktop counterpart, and giving it a
+            # /docs/main/ of its own would mean a second full copy of the site
+            # per run plus another version-dropdown entry, for a path only
+            # developers land on.
+            add_docs "dev"
+          elif [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$DISPATCH_TARGET" = "prod" ]; then
+            add_target "" "/" "manual-prod $REF_NAME" "$(highest_tag)+manual.${HEAD_SHA:0:7}"
+            # Root moved, so keep /docs/stable/ in lockstep with it.
+            add_docs "stable"
           else
-            echo "path=dev" >> "$GITHUB_OUTPUT"
-            echo "base=/dev/" >> "$GITHUB_OUTPUT"
-            echo "label=dev" >> "$GITHUB_OUTPUT"
+            # Plain push to main (or a manual workflow_dispatch with the
+            # default "main" target): the bleeding-edge view, rebuilt on
+            # every single commit -- what /dev/ used to do before it was
+            # repointed to track the desktop dev channel's cadence instead.
+            #
+            # /main/ is the one path with NO desktop counterpart, so there is
+            # nothing for it to be version-consistent with. Label it with the
+            # highest shipped version plus the commit, in the same shape
+            # build-dev.yml uses, so the title is at least truthful about what
+            # it is and traceable to the commit it was built from.
+            add_target "main" "/main/" "main" "$(highest_tag)+main.${HEAD_SHA:0:7}"
+            # /main/ gets its OWN docs folder rather than borrowing /docs/dev/.
+            # Both are "the docs for main", but on different cadences: /main/
+            # rebuilds per commit while /dev/ only moves with the nightly, so
+            # one shared folder had to lag one of them. Giving each the folder
+            # its own run writes is what keeps every app path reading docs
+            # built from the very commit it was built from.
+            add_docs "main"
           fi
+
+          echo "Deploy targets: $TARGETS"
+          echo "targets=$TARGETS" >> "$GITHUB_OUTPUT"
+          echo "Docs targets: $DOCS_TARGETS"
+          echo "docs_targets=$DOCS_TARGETS" >> "$GITHUB_OUTPUT"
 
       - name: Setup bun
         uses: oven-sh/setup-bun@v2
@@ -57,7 +310,7 @@ jobs:
           bun-version-file: .bun-version
 
       - name: Cache bun dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
@@ -66,14 +319,172 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Build
-        run: bun run build
+      # One `bun run build` PER target (each needs its own VITE_BASE_PATH so
+      # its internal asset links resolve correctly at that path), staged into
+      # its own folder rather than deployed immediately -- so the actual
+      # gh-pages push below happens exactly ONCE per workflow run even when
+      # multiple targets changed, avoiding any multi-push race on that branch.
+      - name: Build every deploy target
         env:
-          VITE_BASE_PATH: ${{ steps.target.outputs.base }}
+          TARGETS_JSON: ${{ steps.targets.outputs.targets }}
+        run: |
+          set -euo pipefail
+          mkdir -p staging
+          echo "$TARGETS_JSON" > /tmp/targets.json
+          COUNT="$(jq 'length' /tmp/targets.json)"
+          for i in $(seq 0 $((COUNT - 1))); do
+            TARGET_PATH="$(jq -r ".[$i].path" /tmp/targets.json)"
+            TARGET_BASE="$(jq -r ".[$i].base" /tmp/targets.json)"
+            TARGET_VERSION="$(jq -r ".[$i].version" /tmp/targets.json)"
+            SAFE_NAME="${TARGET_PATH:-ROOT}"
+            echo "Building target '$SAFE_NAME' (base=$TARGET_BASE, version=$TARGET_VERSION)"
+            # Stamp the version this target must report BEFORE building it:
+            # vite.config.ts reads package.json at config load and injects it
+            # as the __APP_VERSION__ constant (consumed by useWindowTitle), so
+            # it has to be correct on disk at build time. Patched per target in
+            # this ephemeral CI checkout only and never committed -- exactly
+            # what build.yml does when stamping a desktop release. Passed
+            # through the environment rather than interpolated, same reason as
+            # everywhere else in this file.
+            TARGET_VERSION="$TARGET_VERSION" bun -e "
+              const fs = require('fs');
+              const o = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+              o.version = process.env.TARGET_VERSION;
+              fs.writeFileSync('package.json', JSON.stringify(o, null, 2) + '\n');
+            "
+            rm -rf dist
+            VITE_BASE_PATH="$TARGET_BASE" bun run build
+            # Must run AFTER build: `vite build` empties dist/ on entry. These
+            # live in scripts/ rather than public/ on purpose -- public/ is
+            # copied into the frontend bundle embedded in the desktop binary,
+            # so an installer in there would ship a copy of itself inside the app.
+            #
+            # Stamp each deployed copy with the channel it should default to
+            # when no --tag/--pre (or -Tag/-Pre) is given explicitly -- see
+            # CHANNEL_DEFAULT in install.sh / $ChannelDefault in install.ps1.
+            # Everything except /latest/ and /dev/ keeps today's plain-stable
+            # default (root/stable, /main/, and permanent per-tag paths).
+            case "$SAFE_NAME" in
+              latest) CHANNEL=latest ;;
+              dev) CHANNEL=dev ;;
+              *) CHANNEL=stable ;;
+            esac
+            sed "s/^CHANNEL_DEFAULT=.*/CHANNEL_DEFAULT=\"$CHANNEL\"/" scripts/install.sh > dist/install.sh
+            sed "s/^\$ChannelDefault = .*/\$ChannelDefault = '$CHANNEL'/" scripts/install.ps1 > dist/install.ps1
+
+            if [ -z "$TARGET_PATH" ]; then
+              # /stable/ is a convenience alias for root's install scripts
+              # (root IS the stable deployment -- see CLAUDE.md's Deployment
+              # section) so `curl -fsSL https://app.sleap.ai/stable/install.sh
+              # | sh` works too (issue #344). No full app here: root already
+              # serves the actual stable site, so duplicating the whole SPA
+              # under /stable/ as well would just be redundant weight.
+              mkdir -p staging/stable
+              cp dist/install.sh dist/install.ps1 staging/stable/
+            fi
+
+            mkdir -p "staging/$SAFE_NAME"
+            cp -r dist/* "staging/$SAFE_NAME/"
+          done
+
+      # Docs are built ONCE per run and copied to every /docs/<version>/ path
+      # this run writes -- unlike the app, which needs a separate `bun run
+      # build` per target for VITE_BASE_PATH. The built site is fully
+      # path-portable: the theme emits relative asset links and resolves its own
+      # base from the LIVE url at runtime (`new URL(config.base, location)` in
+      # its bundle, where config.base is the relative "." / ".."), so the same
+      # bytes serve correctly at /docs/stable/, /docs/dev/ and /docs/v0.1.1/ --
+      # version selector included. The build takes well under a second.
+      #
+      # Python appears in this otherwise bun-only workflow solely for Zensical,
+      # which is a Python package; there is no pyproject.toml to sync from, so
+      # uvx fetches it standalone. The version is pinned because Zensical is
+      # 0.0.x and pre-1.0 patch releases are free to change output layout --
+      # bump it deliberately, having checked a local `zensical build` first.
+      - name: Setup uv
+        if: steps.targets.outputs.docs_targets != '[]'
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.13"
+
+      - name: Build docs
+        if: steps.targets.outputs.docs_targets != '[]'
+        run: |
+          set -euo pipefail
+          uvx --from zensical==0.0.62 zensical build
+          test -s site/index.html
+
+          # Guards the exclusion that keeps docs/.internal/ (macOS code-signing
+          # notes, the parity checklist, UI prototypes) off a public URL.
+          # Zensical silently IGNORES mkdocs' `exclude_docs`, and leaving a page
+          # out of `nav` still builds it into the output, sitemap.xml and
+          # search.json -- a dot-prefixed directory is the only exclusion it
+          # honors. So a well-meaning rename back to docs/internal/, or moving
+          # one note out on its own, would publish it indexable with nothing
+          # failing. Fail here instead of deploying it. See the NOTE in
+          # mkdocs.yml.
+          #
+          # Hardcoded rather than derived from docs/.internal, because the leak
+          # being guarded against is a file moving OUT of that directory: a
+          # derived list would stop containing exactly the name that escaped.
+          # Check 2 below is what keeps this list honest.
+          INTERNAL_NOTES="macos-code-signing parity-checklist linux-h264-fallback-test training-panel-prototype"
+
+          # 1. The directory must still be dot-prefixed.
+          if [ ! -d docs/.internal ]; then
+            echo "::error::docs/.internal/ is missing or no longer dot-prefixed -- that leading dot is the only thing keeping internal engineering notes off a public URL"
+            exit 1
+          fi
+
+          # 2. Everything still in there must be covered by the list above, so
+          #    adding a note without extending it fails here rather than
+          #    shipping unguarded.
+          UNLISTED=""
+          while IFS= read -r note; do
+            stem="$(basename "$note")"
+            stem="${stem%.*}"
+            case " $INTERNAL_NOTES " in
+              *" $stem "*) ;;
+              *) UNLISTED="$UNLISTED $stem" ;;
+            esac
+          done < <(find docs/.internal -type f)
+          if [ -n "$UNLISTED" ]; then
+            echo "::error::file(s) in docs/.internal/ are not covered by this step's leak check:$UNLISTED -- add them to INTERNAL_NOTES in .github/workflows/deploy.yml"
+            exit 1
+          fi
+
+          # 3. None of them may reach the output, by NAME or by reference.
+          #    The name check matters on its own: the training-panel prototype
+          #    is a raw .html asset copied through verbatim, so its name
+          #    appears nowhere inside any built file and a content-only `grep
+          #    -r` reports clean while site/prototypes/ is being published.
+          #    `-print -quit` rather than a pipe into `grep -q`, which would
+          #    exit on the first match and SIGPIPE find -- pipefail then turns
+          #    a found leak into a failed condition, i.e. reads as clean.
+          LEAKED=""
+          for stem in $INTERNAL_NOTES; do
+            if [ -n "$(find site -name "$stem*" -print -quit)" ] \
+              || grep -rqs -- "$stem" site/; then
+              LEAKED="$LEAKED $stem"
+            fi
+          done
+          if [ -e site/internal ] || [ -n "$LEAKED" ]; then
+            echo "::error::internal engineering notes leaked into the docs build:$LEAKED"
+            exit 1
+          fi
 
       - name: Deploy to gh-pages
+        env:
+          # Matches the exact commit the "Checkout source" step used --
+          # plain $GITHUB_SHA reflects the triggering EVENT, which for a
+          # workflow_run isn't guaranteed to equal build-dev.yml's head_sha,
+          # so the commit message would otherwise cite a slightly different
+          # commit than what was actually built and deployed.
+          DEPLOY_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+          DOCS_TARGETS_JSON: ${{ steps.targets.outputs.docs_targets }}
         run: |
-          DEPLOY_PATH="${{ steps.target.outputs.path }}"
+          set -euo pipefail
+          echo "${DOCS_TARGETS_JSON:-[]}" > /tmp/docs-targets.json
 
           # Set up a fresh clone of just the gh-pages branch
           mkdir gh-pages-dir
@@ -90,24 +501,121 @@ jobs:
             git checkout --orphan gh-pages
           fi
 
-          # Clean target directory
-          if [[ -z "$DEPLOY_PATH" ]]; then
-            # Root deploy: remove everything except dev/
-            find . -maxdepth 1 \
-              ! -name '.' \
-              ! -name '.git' \
-              ! -name 'dev' \
-              -exec rm -rf {} +
-          else
-            # Dev deploy: remove only dev/
-            rm -rf "${DEPLOY_PATH}"
-          fi
+          COUNT="$(jq 'length' /tmp/targets.json)"
+          for i in $(seq 0 $((COUNT - 1))); do
+            TARGET_PATH="$(jq -r ".[$i].path" /tmp/targets.json)"
+            SAFE_NAME="${TARGET_PATH:-ROOT}"
 
-          # Copy build output
-          if [[ -z "$DEPLOY_PATH" ]]; then
-            cp -r ../dist/* .
-          else
-            cp -r ../dist "${DEPLOY_PATH}"
+            if [ -z "$TARGET_PATH" ]; then
+              # Root deploy: remove every top-level entry EXCEPT the special
+              # named channels, the independent docs tree, and any permanent
+              # per-version folder (v1.2.3, v1.2.3-1, ...) -- those must survive
+              # a stable redeploy, not just "dev" as before. Everything else is
+              # root's own previous build output (index.html, assets/, etc.) and
+              # gets replaced. Sparing 'docs' is load-bearing: without it the
+              # next stable release would wipe every published docs version.
+              find . -maxdepth 1 -mindepth 1 \
+                ! -name '.git' \
+                ! -name 'docs' \
+                ! -name 'main' \
+                ! -name 'dev' \
+                ! -name 'latest' \
+                ! -name 'stable' \
+                ! -regex './v[0-9].*' \
+                -exec rm -rf {} +
+              cp -r "../staging/$SAFE_NAME"/* .
+
+              # /stable/install.sh + install.ps1 (issue #344) -- only staged
+              # when root itself deployed this run (see the build step above).
+              if [ -d ../staging/stable ]; then
+                rm -rf stable
+                cp -r ../staging/stable stable
+              fi
+            else
+              # Every other target only ever touches its own folder.
+              rm -rf "$TARGET_PATH"
+              cp -r "../staging/$SAFE_NAME" "$TARGET_PATH"
+            fi
+          done
+
+          # Docs: one independent top-level tree, /docs/<version>/. Nothing
+          # above touches it (non-root app targets only ever rewrite their own
+          # folder, and root's prune spares 'docs') and nothing here touches the
+          # app. The same built site is copied to each path -- see the build
+          # step above for why that is safe.
+          #
+          # The list is iterated straight off jq's output rather than by index,
+          # so an empty one is simply zero iterations. (The `seq 0 $((COUNT-1))`
+          # form the app loop above uses relies on GNU seq printing nothing for
+          # `seq 0 -1`; BSD seq prints "0 -1" instead, which would run the body
+          # once with a null version and create a docs/null folder. Folder names
+          # here are only ever stable/latest/dev/v*, so the unquoted expansion
+          # has nothing to split on.)
+          if [ "$(jq 'length' /tmp/docs-targets.json)" -gt 0 ] \
+            && [ ! -s ../site/index.html ]; then
+            echo "::error::docs targets requested but the docs build is missing"
+            exit 1
+          fi
+          for DOCS_VERSION in $(jq -r '.[]' /tmp/docs-targets.json); do
+            echo "Deploying docs -> docs/$DOCS_VERSION"
+            rm -rf "docs/$DOCS_VERSION"
+            mkdir -p "docs/$DOCS_VERSION"
+            cp -r ../site/. "docs/$DOCS_VERSION/"
+          done
+
+          # Rebuild the version selector's manifest and the /docs/ redirect stub
+          # from whatever is actually on the branch, on EVERY run that has a
+          # docs tree -- not just runs that wrote one. Both are then
+          # self-healing, and stay right if a version folder is added or removed
+          # by hand.
+          #
+          # The theme fetches this from "../versions.json" relative to its own
+          # base -- /docs/versions.json for any page under /docs/<version>/ --
+          # and matches the LAST segment of that base against each entry's
+          # version/aliases to work out which version it is being served as. So
+          # every path a reader can land on needs an entry here, the
+          # unversioned moving pointers included: an unlisted path silently
+          # falls back to extra.version.default (mkdocs.yml) and mislabels
+          # itself in the dropdown. We write the file directly rather than
+          # adding `mike`, which produces this and nothing else we need, and
+          # would be a second writer racing this workflow for gh-pages.
+          if [ -d docs ]; then
+            {
+              # Moving pointers first, in the order they should read in the
+              # dropdown -- stable down to the most bleeding-edge -- then
+              # permanent per-release folders newest-first. Listing `main` is
+              # load-bearing, not cosmetic: an unlisted path falls back to
+              # extra.version.default (mkdocs.yml) and would render in the
+              # dropdown as "stable" while serving main's docs. The
+              # current stable legitimately appears twice -- as "stable" and
+              # under its own tag -- because both paths exist and a pinned
+              # in-app Help link lands on the tagged one.
+              for v in stable latest dev main; do
+                if [ -d "docs/$v" ]; then echo "$v"; fi
+              done
+              find docs -mindepth 1 -maxdepth 1 -type d -name 'v[0-9]*' \
+                -exec basename {} \; | sort -Vr
+            } | jq -R . | jq -sc 'map({version: ., title: ., aliases: []})' \
+              > docs/versions.json
+            echo "docs/versions.json -> $(cat docs/versions.json)"
+
+            # Bare app.sleap.ai/docs has no site of its own (every page lives a
+            # level down under a version), so it redirects to the first entry
+            # above -- stable whenever stable exists. <meta refresh> plus a real
+            # link, so it works with JS disabled and stays crawlable.
+            DOCS_DEFAULT="$(jq -r '.[0].version // empty' docs/versions.json)"
+            if [ -n "$DOCS_DEFAULT" ]; then
+              printf '%s\n' \
+                '<!doctype html>' \
+                '<html lang="en">' \
+                '<meta charset="utf-8">' \
+                '<title>SLEAP app documentation</title>' \
+                "<link rel=\"canonical\" href=\"https://app.sleap.ai/docs/$DOCS_DEFAULT/\">" \
+                "<meta http-equiv=\"refresh\" content=\"0; url=./$DOCS_DEFAULT/\">" \
+                "<script>location.replace(\"./$DOCS_DEFAULT/\" + location.hash)</script>" \
+                "<p><a href=\"./$DOCS_DEFAULT/\">Continue to the SLEAP app documentation</a>.</p>" \
+                '</html>' > docs/index.html
+            fi
           fi
 
           # Ensure required files exist
@@ -117,5 +625,6 @@ jobs:
           # Commit and push
           git add -A
           git diff --cached --quiet && echo "No changes to deploy" && exit 0
-          git commit -m "Deploy ${{ steps.target.outputs.label }} (${GITHUB_SHA::8})"
+          LABELS="$(jq -r '[.[].label] | join(", ")' /tmp/targets.json)"
+          git commit -m "Deploy $LABELS (${DEPLOY_SHA::8})"
           git push origin gh-pages

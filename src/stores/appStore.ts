@@ -25,17 +25,23 @@ import type {
 } from "../types";
 import type { StatisticGraphType, Reduction } from "@/lib/statisticSeries";
 import { SEEKBAR_HEADER_DEFAULT_HEIGHT } from "@/lib/seekbarHeaderHeight";
+import {
+  resolveProjectKey,
+  setTrackColorOverride,
+  resetTrackColorOverride,
+  renameTrackColorOverride,
+  pruneTrackColorOverrides,
+  capTrackColorOverrides,
+} from "@/lib/trackColorOverrides";
 import type { QcMode } from "@/lib/instanceVisibility";
 import type { CropRect } from "@/lib/imageFeaturesCore";
 import {
   mergeVideoPrefixSwap,
   type VideoPrefixSwap,
 } from "@/lib/videoPrefixSwaps";
-import {
-  navigableDomain,
-  stepLabeled,
-  type NavigationDomain,
-} from "@/lib/navigableFrames";
+import { stepLabeled, type NavigationDomain } from "@/lib/navigableFrames";
+import { dirtyFrameTracker } from "@/lib/autosaveDirty";
+import { cachedNavigableDomain } from "@/lib/navigationDomainCache";
 export type { NavigationDomain };
 import {
   DEFAULT_PANEL_ORDER,
@@ -63,6 +69,7 @@ import {
   type ReviewItem,
 } from "@/lib/activeLearning/reviewQueue";
 export type { PassItem, PassCursor, PassDims };
+import { buildTutorialSteps, type TutorialStep } from "@/lib/tutorial/steps";
 
 // Required before immer can draft Set/Map fields (hiddenInstances /
 // showNonVisibleOverride). Idempotent global; must run before store creation.
@@ -78,6 +85,10 @@ function clearTransientVisibility(state: Draft<AppState>) {
   state.viewOnlyInstance = null;
   state.showNonVisibleOverride = new Map<Instance, boolean>();
 }
+
+/** Which desktop self-update channel to check: full releases only, the
+ * newest of {release, pre-release}, or continuous builds off `main`. */
+export type UpdateChannel = "stable" | "latest" | "dev";
 
 export interface AppState {
   // === Project state ===
@@ -107,6 +118,15 @@ export interface AppState {
    * debounce, and so an edit landing mid-save is detected and not dropped.
    */
   editSeq: number;
+  /**
+   * Per-track color overrides, a LOCAL per-project viewing preference (persisted,
+   * never written into the `.slp`). Shape: `projectKey → (trackName → hexColor)`,
+   * where projectKey = {@link resolveProjectKey}(projectPath, filename). Resolved
+   * to the active project's map via {@link getActiveTrackOverrides} and applied
+   * through {@link getTrackColor}. Empty by default → colors fall back to the
+   * positional palette, i.e. no behavior change until a color is set.
+   */
+  trackColorOverrides: Record<string, Record<string, string>>;
   /**
    * OPFS path of the browser large-pkg fast-save's labels DRAFT (a bare-bones
    * imageless .slp), or null. Set once a large embedded pkg has been ⌘S/auto-
@@ -153,10 +173,10 @@ export interface AppState {
    */
   sidebarCollapsedSections: string[];
   /**
-   * When true, clicking a rail icon opens panels ADDITIVELY (multiple stacked
-   * sections). When false (default), the sidebar behaves one-at-a-time: a rail
+   * When true (default), clicking a rail icon opens panels ADDITIVELY (multiple
+   * stacked sections). When false, the sidebar behaves one-at-a-time: a rail
    * click shows exactly that panel. Toggled from View > Allow multiple panels.
-   * Persisted.
+   * Persisted (existing users keep whatever they last had).
    */
   sidebarMultiPanel: boolean;
   panelOrder: string[];
@@ -190,6 +210,37 @@ export interface AppState {
    */
   resetViewNonce: number;
   colorPredicted: boolean;
+  /** Append the ` (0.81)` prediction score to on-canvas track labels. Default off (#316). Persisted. */
+  showTrackScore: boolean;
+  /**
+   * Show contextual "gentle hint" toasts for common novice labeling pitfalls
+   * (e.g. right-clicking to reveal missing nodes, double-clicking predictions
+   * instead of drawing from scratch). Default on; toggled from
+   * Labels > Show Hints During Labeling for expert users who find them
+   * unnecessary. Persisted. See `lib/labelingHints.ts`.
+   */
+  showLabelingHints: boolean;
+  /**
+   * Whether the one-time "New to SLEAP?" welcome-screen prompt (#341) has
+   * been answered (or dismissed) yet — gates showing it again. Answering
+   * sets `showLabelingHints` accordingly; dismissing without answering
+   * leaves the existing default (on) untouched. Persisted.
+   */
+  hasSeenLabelingHintsPrompt: boolean;
+  /**
+   * Overlay a trained model's raw confidence-map output on the current frame
+   * (#model-output-overlays). Desktop-only; computed on-demand per frame via a
+   * warm sleap-nn overlay sidecar. Off by default each session (NOT persisted —
+   * an overlay should never silently resume on reload).
+   */
+  overlayModelOutputs: boolean;
+  /**
+   * Trained model directories used for the model-output overlay (top-down =
+   * centroid + centered-instance, in any order; single-animal = one dir). Empty
+   * until the user picks models via Predict ▸ Set Overlay Models…. NOT persisted
+   * (reset each session); the dialog only writes a complete, valid set.
+   */
+  overlayModelPaths: string[];
   defaultToPan: boolean;
   palette: string;
   distinctlyColor: ColorTarget;
@@ -197,6 +248,8 @@ export interface AppState {
   nodeLabelSize: number;
   insetSize: number;
   insetZoom: number;
+  /** Show the zoomed-in magnifier while dragging/placing a node or holding Shift. Persisted. */
+  showInset: boolean;
   trailLength: number;
   trailShade: string;
   lutMin: number;
@@ -219,6 +272,13 @@ export interface AppState {
    * otherwise churn ~10 MB/frame and can OOM-crash the WebView renderer.
    */
   isScrubbing: boolean;
+  /**
+   * True while the video is playing back (the Seekbar's rAF loop advances the
+   * frame). Lifted into the store (from Seekbar-local state) so ANY seek source
+   * — seekbar, keyboard nav, transport buttons — can pause playback (rule #3),
+   * and so VideoPlayer can drive proactive decode-ahead only while playing.
+   */
+  isPlaying: boolean;
   colormap: string;
   rotation: 0 | 90 | 180 | 270;
   seekbarHeaderGraph: StatisticGraphType;
@@ -228,8 +288,20 @@ export interface AppState {
    * on its top edge. Persisted; clamped to [MIN, MAX] (see seekbarHeaderHeight).
    */
   seekbarHeaderHeight: number;
+  /**
+   * Height (px) of the per-track occupancy band below the header, user-resizable
+   * via its top-edge drag handle. Persisted. `0` means "auto" — size to the track
+   * count (see autoTracksHeight); a manual drag stores an explicit clamped height.
+   */
+  seekbarTracksHeight: number;
   /** Which frames stepping/playback/seekbar are confined to (#137). */
   navigationDomain: NavigationDomain;
+  /**
+   * Create local low-res scrub proxies for network (SMB/NAS) videos so
+   * scrubbing stays smooth without re-reading the remote file each frame.
+   * Desktop-only feature; off by default. Persisted.
+   */
+  scrubProxyEnabled: boolean;
 
   // === Image-features suggestions ROI (transient; session-only, NOT persisted) ===
   /**
@@ -257,6 +329,40 @@ export interface AppState {
   showNonVisibleOverride: Map<Instance, boolean>;
   // Label-QC display mode (persisted app preference)
   qcDisplayMode: QcMode;
+  // Desktop self-update channel (persisted app preference)
+  updateChannel: UpdateChannel;
+  // Whether the user has EVER manually picked a channel (persisted, sticky).
+  // False on a fresh profile — that's the window where AppUpdateSection is
+  // allowed to correct updateChannel's hardcoded "stable" default to match
+  // whatever channel the running build actually is (detected from its own
+  // version string), rather than showing "Stable" on a dev-channel install
+  // that was never told otherwise. Once true, auto-detection never fires
+  // again — an explicit choice always wins.
+  updateChannelExplicitlySet: boolean;
+  // Whether the user has EVER selected the "latest" channel (persisted,
+  // sticky — sees latest's badge even after switching back to "stable").
+  // Gates whether latestUpdateAvailable below contributes to the ambient
+  // Environment badge: by default the badge only reflects "stable", so a
+  // pre-release doesn't nag someone who never asked for anything but stable
+  // releases; opting into "latest" once permanently earns it a say too.
+  hasOptedIntoLatestChannel: boolean;
+  // Whether the user has dismissed the "install packages" Environment badge
+  // (uv missing, or sleap-nn not installed as a uv tool) — persisted, sticky.
+  // Unlike hasOptedIntoLatestChannel this is an opt-OUT: someone who only
+  // labels and never trains/infers genuinely doesn't need uv/sleap-nn, so
+  // dismissing it should mean "never nag me about this again," not just
+  // "not right now" (which the badge reappearing on next launch would imply).
+  packagesSetupNudgeDismissed: boolean;
+  // Whether a newer STABLE / LATEST release exists than the one currently
+  // running — each checked once at startup against its own channel
+  // regardless of updateChannel above, so a user on any channel (or just
+  // behind) still gets nudged. Transient — NOT persisted, re-checked every
+  // launch. Drives the blinking Environment badge (AppShell + WelcomeScreen),
+  // gated by hasOptedIntoLatestChannel above for the "latest" half.
+  stableUpdateAvailable: boolean;
+  stableUpdateVersion: string | null;
+  latestUpdateAvailable: boolean;
+  latestUpdateVersion: string | null;
 
   // === Editing state ===
   instanceInitMethod: InstancePlacementMethod;
@@ -361,6 +467,29 @@ export interface AppState {
   pickingAnchor: boolean;
   pickRequestId: number;
   pickedAnchorNode: { nodeName: string; requestId: number } | null;
+
+  /**
+   * Whether a track swap (TransposeInstances) propagates forward to
+   * subsequent frames instead of only the current one — a persisted
+   * preference mirroring legacy SLEAP's "Propagate Track Labels" checkbox.
+   * When on, the swap extends from the current frame to the end of the
+   * video, or to the active seekbar frame range if one is selected.
+   */
+  propagateTrackLabels: boolean;
+  /**
+   * Multi-instance transpose picker: TransposeInstances can auto-pick the
+   * pair to swap when a frame has exactly 2 instances, but can't guess with
+   * 3+, so the user is asked to click-select exactly 2. `instanceSequencePick`
+   * is non-null while picking is active, accumulating instances as they're
+   * clicked; `instanceSequenceResult` holds the resolved pair once complete.
+   * `instanceSequenceRequestId` disambiguates which pick a result belongs to
+   * (same race-avoidance pattern as `pickRequestId` above) — a requester only
+   * applies a result whose id matches the one `startInstanceSequencePick`
+   * returned it.
+   */
+  instanceSequenceRequestId: number;
+  instanceSequencePick: { requestId: number; seqLen: number; collected: Instance[] } | null;
+  instanceSequenceResult: { instances: Instance[]; requestId: number } | null;
   /**
    * Persistent (not just hover-during-pick) crop preview for the currently
    * configured anchor — toggled from the Training panel to check "what would
@@ -370,6 +499,13 @@ export interface AppState {
    */
   anchorPreviewActive: boolean;
   anchorPreviewNode: string | null;
+  /**
+   * The actual configured/auto-computed crop size (in source-image px) for
+   * the head whose "Preview crop on canvas" toggle is active — see
+   * resolveEffectiveCropSize in lib/modelStats.ts. `null` while inactive, or
+   * if no project is loaded yet to compute an Auto value from.
+   */
+  anchorPreviewCropSize: number | null;
   /**
    * Session-only "template layout": a snapshot of the node positions the user
    * DREW in the visual skeleton builder (IMAGE space, index-aligned to
@@ -403,14 +539,44 @@ export interface AppState {
   selectToFrameDialogOpen: boolean;
   deletePredictionsDialogOpen: boolean;
   mergeProjectDialogOpen: boolean;
+  /** Path to auto-load into the Merge dialog when it opens (seeded by an .slp drop). */
+  mergeProjectSeedPath: string | null;
+  /** A file is being dragged over the app window (drives the drop-catcher overlay). */
+  windowDragActive: boolean;
+  addVideoUrlDialogOpen: boolean;
   exportDialogOpen: boolean;
   exportClipDialogOpen: boolean;
   modelMetricsDialogOpen: boolean;
+  sizeDistributionDialogOpen: boolean;
+  labelQcDialogOpen: boolean;
+  overlayModelsDialogOpen: boolean;
   exportPackageDialogOpen: boolean;
   shortcutsDialogOpen: boolean;
+  labelingTipsDialogOpen: boolean;
   helpDialogOpen: boolean;
   menuSearchDialogOpen: boolean;
+  diagnosticsDialogOpen: boolean;
+  /** The Connect window (PR4b) — paired workers and every job on them. */
+  connectWindowOpen: boolean;
   quitConfirmOpen: boolean;
+
+  // === Getting-started tutorial (transient, not persisted) ===
+  tutorialActive: boolean;
+  tutorialStepIndex: number;
+  /**
+   * Resolved once in `startTutorial` (see `buildTutorialSteps`) — whether a
+   * project was already loaded at that moment decides the whole sequence, so
+   * this isn't re-derived mid-run.
+   */
+  tutorialSteps: TutorialStep[];
+  /**
+   * Furthest `tutorialStepIndex` reached so far this run (only advanced by
+   * `advanceTutorialStep`, never by `previousTutorialStep`). Lets
+   * `TutorialOverlay` tell "stepped back to re-read a step already cleared"
+   * apart from "still working on the current frontier step" — a step below
+   * this mark doesn't need its real-world action redone to move forward again.
+   */
+  tutorialHighestStepIndex: number;
 
   // === Area delete mode ===
   areaDeleteMode: boolean;
@@ -426,6 +592,11 @@ export interface AppState {
   // `video.shape[0]` (true source frame count vs. the JSON-seeded stand-in).
   videoRevision: number;
 
+  // Bumped when a background scrub-proxy build hot-swaps `video.backend`
+  // (scrub-proxy v2 Thread C). VideoPlayer's frame-load effect depends on it so
+  // it re-reads the current frame from the freshly-swapped (frame-exact) proxy.
+  backendSwapNonce: number;
+
   // === Actions ===
   setLabels: (
     labels: Labels,
@@ -436,14 +607,22 @@ export interface AppState {
   ) => void;
   setVideo: (video: Video) => void;
   markVideoUpdated: () => void;
-  setFrameIdx: (idx: number) => void;
-  incrementFrameIdx: (step: number) => void;
+  bumpBackendSwapNonce: () => void;
+  setFrameIdx: (idx: number, opts?: { keepPlaying?: boolean }) => void;
+  incrementFrameIdx: (step: number, opts?: { keepPlaying?: boolean }) => void;
+  setIsPlaying: (playing: boolean) => void;
+  togglePlay: () => void;
   setNavigationDomain: (mode: NavigationDomain) => void;
   cycleNavigationDomain: () => void;
+  setScrubProxyEnabled: (enabled: boolean) => void;
   setInstanceHidden: (instance: Instance, hidden: boolean) => void;
   setViewOnlyInstance: (instance: Instance | null) => void;
   setInstanceInvisibleOverride: (instance: Instance, value: boolean | undefined) => void;
   setQcDisplayMode: (mode: QcMode) => void;
+  setUpdateChannel: (channel: UpdateChannel) => void;
+  dismissPackagesSetupNudge: () => void;
+  setStableUpdateInfo: (available: boolean, version: string | null) => void;
+  setLatestUpdateInfo: (available: boolean, version: string | null) => void;
   /** Remember a learned video path prefix swap (deduped, newest-first, capped). */
   addVideoPrefixSwap: (swap: VideoPrefixSwap) => void;
   resetInstanceVisibility: () => void;
@@ -454,6 +633,13 @@ export interface AppState {
   markChanged: () => void;
   touchFrame: () => void;
   clearChanges: () => void;
+  /** Set a per-track color override (hex) for the active project. Local viewing
+   * preference — persisted, never written into the `.slp`. */
+  setTrackColor: (trackName: string, hex: string) => void;
+  /** Clear a track's color override → it reverts to the positional palette color. */
+  resetTrackColor: (trackName: string) => void;
+  /** Migrate a track's color override across a rename (called by SetTrackName). */
+  renameTrackColor: (oldName: string, newName: string) => void;
   setLoading: (loading: boolean, message?: string, progress?: number) => void;
   setInferenceDialogOpen: (open: boolean) => void;
   setNewProjectDialogOpen: (open: boolean) => void;
@@ -461,13 +647,30 @@ export interface AppState {
   setSelectToFrameDialogOpen: (open: boolean) => void;
   setDeletePredictionsDialogOpen: (open: boolean) => void;
   setMergeProjectDialogOpen: (open: boolean) => void;
+  setMergeProjectSeedPath: (path: string | null) => void;
+  setWindowDragActive: (active: boolean) => void;
+  setAddVideoUrlDialogOpen: (open: boolean) => void;
   setExportDialogOpen: (open: boolean) => void;
   setExportClipDialogOpen: (open: boolean) => void;
   setModelMetricsDialogOpen: (open: boolean) => void;
+  setSizeDistributionDialogOpen: (open: boolean) => void;
+  setLabelQcDialogOpen: (open: boolean) => void;
+  setOverlayModelsDialogOpen: (open: boolean) => void;
   setExportPackageDialogOpen: (open: boolean) => void;
   setShortcutsDialogOpen: (open: boolean) => void;
+  setLabelingTipsDialogOpen: (open: boolean) => void;
   setHelpDialogOpen: (open: boolean) => void;
+  setDiagnosticsDialogOpen: (open: boolean) => void;
+  setConnectWindowOpen: (open: boolean) => void;
   setMenuSearchDialogOpen: (open: boolean) => void;
+  /** Start the getting-started tutorial from its first step. */
+  startTutorial: () => void;
+  /** Stop the tutorial at any point (Exit button). */
+  exitTutorial: () => void;
+  /** Advance to the next tutorial step, or exit once past the last one. */
+  advanceTutorialStep: () => void;
+  /** Go back to the previous tutorial step; a no-op on the first step. */
+  previousTutorialStep: () => void;
   enterPlacementMode: () => void;
   exitPlacementMode: () => void;
   /**
@@ -561,8 +764,17 @@ export interface AppState {
   cancelAnchorPick: () => void;
   resolveAnchorPick: (nodeName: string) => void;
   clearPickedAnchorNode: () => void;
+
+  // Multi-instance transpose picker actions (see field docs above).
+  // `startInstanceSequencePick` returns the new request id so the requester
+  // can match it against `instanceSequenceResult` later.
+  startInstanceSequencePick: (seqLen: number) => number;
+  pushInstanceSequencePick: (instance: Instance) => void;
+  cancelInstanceSequencePick: () => void;
+  clearInstanceSequenceResult: () => void;
+
   /** Show/update the persistent anchor crop preview (see field docs above). */
-  setAnchorPreview: (nodeName: string | null) => void;
+  setAnchorPreview: (nodeName: string | null, cropSize: number | null) => void;
   /** Hide the persistent anchor crop preview. */
   clearAnchorPreview: () => void;
   togglePanelVisibility: (panelId: string) => void;
@@ -596,15 +808,25 @@ export const PERSISTED_KEYS: (keyof AppState)[] = [
   "showCrosshair",
   "colorPredicted",
   "autoContrast",
+  "showTrackScore",
+  "showLabelingHints",
+  "hasSeenLabelingHintsPrompt",
   "trailLength",
   "insetSize",
   "insetZoom",
+  "showInset",
   "defaultToPan",
   "seekbarHeaderGraph",
   "seekbarHeaderReduction",
   "seekbarHeaderHeight",
+  "seekbarTracksHeight",
   "navigationDomain",
+  "scrubProxyEnabled",
   "qcDisplayMode",
+  "updateChannel",
+  "updateChannelExplicitlySet",
+  "hasOptedIntoLatestChannel",
+  "packagesSetupNudgeDismissed",
   "videoPrefixSwaps",
   // Layout + scale persistence (PyQt saveState/restoreState parity).
   "panelOrder",
@@ -615,6 +837,8 @@ export const PERSISTED_KEYS: (keyof AppState)[] = [
   "sidebarCollapsedSections",
   "sidebarMultiPanel",
   "uiScale",
+  "propagateTrackLabels",
+  "trackColorOverrides",
 ];
 
 /**
@@ -646,6 +870,7 @@ export const useAppStore = create<AppState>()(
       projectFileHandle: null,
       hasChanges: false,
       editSeq: 0,
+      trackColorOverrides: {},
       labelsDraftPath: null,
       pendingExport: false,
       projectLoaded: false,
@@ -666,7 +891,7 @@ export const useAppStore = create<AppState>()(
       sidebarSide: "right",
       sidebarOpenPanels: [...DEFAULT_OPEN_PANELS],
       sidebarCollapsedSections: [],
-      sidebarMultiPanel: false,
+      sidebarMultiPanel: true,
       panelOrder: [...DEFAULT_PANEL_ORDER],
       hiddenPanels: [],
 
@@ -682,13 +907,19 @@ export const useAppStore = create<AppState>()(
       fitSelection: false,
       resetViewNonce: 0,
       colorPredicted: false,
+      showTrackScore: false,
+      showLabelingHints: true,
+      hasSeenLabelingHintsPrompt: false,
+      overlayModelOutputs: false,
+      overlayModelPaths: [],
       defaultToPan: false,
       palette: "standard",
-      distinctlyColor: "track" as ColorTarget,
+      distinctlyColor: "auto" as ColorTarget,
       markerSize: 4,
       nodeLabelSize: 12,
       insetSize: 400,
       insetZoom: 2,
+      showInset: true,
       trailLength: 0,
       trailShade: "Normal",
       lutMin: 0,
@@ -697,18 +928,29 @@ export const useAppStore = create<AppState>()(
       frameHistogram: null,
       frameLoading: false,
       isScrubbing: false,
+      isPlaying: false,
       colormap: "grayscale",
       rotation: 0 as 0 | 90 | 180 | 270,
       seekbarHeaderGraph: "instance-count" as StatisticGraphType,
       seekbarHeaderReduction: "sum" as Reduction,
       seekbarHeaderHeight: SEEKBAR_HEADER_DEFAULT_HEIGHT,
+      seekbarTracksHeight: 0, // 0 = auto-size to track count
       navigationDomain: "all" as NavigationDomain,
+      scrubProxyEnabled: false,
 
       // Per-instance visibility (transient) + QC display mode (persisted)
       hiddenInstances: new Set<Instance>(),
       viewOnlyInstance: null,
       showNonVisibleOverride: new Map<Instance, boolean>(),
       qcDisplayMode: "manual",
+      updateChannel: "stable",
+      updateChannelExplicitlySet: false,
+      hasOptedIntoLatestChannel: false,
+      packagesSetupNudgeDismissed: false,
+      stableUpdateAvailable: false,
+      stableUpdateVersion: null,
+      latestUpdateAvailable: false,
+      latestUpdateVersion: null,
 
       // Editing state
       instanceInitMethod: "best" as InstancePlacementMethod,
@@ -752,6 +994,13 @@ export const useAppStore = create<AppState>()(
       pickedAnchorNode: null as { nodeName: string; requestId: number } | null,
       anchorPreviewActive: false,
       anchorPreviewNode: null as string | null,
+      anchorPreviewCropSize: null as number | null,
+
+      // Track-swap propagation preference + multi-instance transpose picker
+      propagateTrackLabels: false,
+      instanceSequenceRequestId: 0,
+      instanceSequencePick: null as { requestId: number; seqLen: number; collected: Instance[] } | null,
+      instanceSequenceResult: null as { instances: Instance[]; requestId: number } | null,
 
       // Frame range
       frameRange: null,
@@ -769,14 +1018,28 @@ export const useAppStore = create<AppState>()(
       selectToFrameDialogOpen: false,
       deletePredictionsDialogOpen: false,
       mergeProjectDialogOpen: false,
+      mergeProjectSeedPath: null,
+      windowDragActive: false,
+      addVideoUrlDialogOpen: false,
       exportDialogOpen: false,
       exportClipDialogOpen: false,
       modelMetricsDialogOpen: false,
+      sizeDistributionDialogOpen: false,
+      labelQcDialogOpen: false,
+      overlayModelsDialogOpen: false,
       exportPackageDialogOpen: false,
       shortcutsDialogOpen: false,
+      labelingTipsDialogOpen: false,
       helpDialogOpen: false,
       menuSearchDialogOpen: false,
+      diagnosticsDialogOpen: false,
+      connectWindowOpen: false,
       quitConfirmOpen: false,
+
+      tutorialActive: false,
+      tutorialStepIndex: 0,
+      tutorialSteps: [],
+      tutorialHighestStepIndex: 0,
 
       // Area delete mode
       areaDeleteMode: false,
@@ -787,6 +1050,7 @@ export const useAppStore = create<AppState>()(
       // Overlay version (bumped to force re-render)
       overlayVersion: 0,
       videoRevision: 0,
+      backendSwapNonce: 0,
 
       // Actions
       setLabels: (labels, filename, projectPath, projectFile, projectFileHandle) => {
@@ -833,6 +1097,18 @@ export const useAppStore = create<AppState>()(
         // provenance. Done after the appStore update, outside the immer producer,
         // since it drives a separate store. Covers every load path + New Project.
         hydrateActiveLearningStore(labels);
+        // Prune this project's color overrides for tracks that no longer exist
+        // (e.g. deleted between sessions). Uses committed (plain) state; no-op
+        // when nothing is stale.
+        const s = get();
+        const key = resolveProjectKey(s.projectPath, s.filename);
+        const validNames = (labels.tracks ?? []).map((t) => t.name);
+        const pruned = pruneTrackColorOverrides(s.trackColorOverrides, key, validNames);
+        if (pruned !== s.trackColorOverrides) {
+          set((state) => {
+            state.trackColorOverrides = pruned;
+          });
+        }
       },
 
       setVideo: (video) =>
@@ -888,8 +1164,20 @@ export const useAppStore = create<AppState>()(
           state.videoRevision += 1;
         }),
 
-      setFrameIdx: (idx) =>
+      bumpBackendSwapNonce: () =>
         set((state) => {
+          state.backendSwapNonce += 1;
+        }),
+
+      setFrameIdx: (idx, opts) =>
+        set((state) => {
+          // Rule #3 (scrub-proxy v2): a seek pauses playback. Every user-driven
+          // seek funnels through here, so pausing centrally covers the seekbar,
+          // keyboard nav, and transport buttons. The playback loop's own advance
+          // passes { keepPlaying: true } so it doesn't pause itself each frame.
+          if (!opts?.keepPlaying && state.isPlaying) {
+            state.isPlaying = false;
+          }
           const video = state.video;
           let next: number;
           if (video && video.shape) {
@@ -917,19 +1205,26 @@ export const useAppStore = create<AppState>()(
           }
         }),
 
-      incrementFrameIdx: (step) => {
-        const { video, frameIdx, navigationDomain, labels } = get();
+      incrementFrameIdx: (step, opts) => {
+        const { video, frameIdx, navigationDomain, labels, editSeq } = get();
         if (!video) return;
 
         // Confined navigation (#137): in "labeled"/"imaged" mode, step within
         // that domain so arrow keys, prev/next, and playback skip the dead gaps.
         // A null domain ("all", or "imaged" on a full video) or an empty/
         // exhausted one falls through to dense stepping so we never trap.
-        const domain = navigableDomain(labels, video, navigationDomain);
+        // Cached on editSeq so held arrow keys / playback ticks reuse one scan
+        // instead of re-walking every frame each step (Cluster B).
+        const domain = cachedNavigableDomain(
+          labels,
+          video,
+          navigationDomain,
+          editSeq
+        );
         if (domain && domain.length > 0) {
           const target = stepLabeled(domain, frameIdx, step);
           if (target !== null) {
-            get().setFrameIdx(target);
+            get().setFrameIdx(target, opts);
             return;
           }
         }
@@ -943,12 +1238,27 @@ export const useAppStore = create<AppState>()(
         } else {
           if (newIdx < 0) newIdx = 0;
         }
-        get().setFrameIdx(newIdx);
+        get().setFrameIdx(newIdx, opts);
       },
+
+      setIsPlaying: (playing) =>
+        set((state) => {
+          state.isPlaying = playing;
+        }),
+
+      togglePlay: () =>
+        set((state) => {
+          state.isPlaying = !state.isPlaying;
+        }),
 
       setNavigationDomain: (mode) =>
         set((state) => {
           state.navigationDomain = mode;
+        }),
+
+      setScrubProxyEnabled: (enabled) =>
+        set((state) => {
+          state.scrubProxyEnabled = enabled;
         }),
 
       cycleNavigationDomain: () =>
@@ -979,6 +1289,34 @@ export const useAppStore = create<AppState>()(
       setQcDisplayMode: (mode) =>
         set((state) => {
           state.qcDisplayMode = mode;
+        }),
+
+      setUpdateChannel: (channel) =>
+        set((state) => {
+          state.updateChannel = channel;
+          // An explicit pick permanently disables the auto-detect default in
+          // AppUpdateSection (see updateChannelExplicitlySet's own comment).
+          state.updateChannelExplicitlySet = true;
+          // Sticky: once earned, "latest" keeps a say in the ambient badge
+          // even if the user later switches back to "stable" — never unset.
+          if (channel === "latest") state.hasOptedIntoLatestChannel = true;
+        }),
+
+      dismissPackagesSetupNudge: () =>
+        set((state) => {
+          state.packagesSetupNudgeDismissed = true;
+        }),
+
+      setStableUpdateInfo: (available, version) =>
+        set((state) => {
+          state.stableUpdateAvailable = available;
+          state.stableUpdateVersion = version;
+        }),
+
+      setLatestUpdateInfo: (available, version) =>
+        set((state) => {
+          state.latestUpdateAvailable = available;
+          state.latestUpdateVersion = version;
         }),
 
       addVideoPrefixSwap: (swap) => {
@@ -1017,12 +1355,22 @@ export const useAppStore = create<AppState>()(
           state.resetViewNonce += 1;
         }),
 
-      markChanged: () =>
+      markChanged: () => {
+        // Record the active frame as dirty for the incremental autosave BEFORE
+        // the set() — a plain Map write on the NON-reactive tracker (no render).
+        // Commands add precise scope via CommandContext; this is the baseline
+        // that guarantees an edit bypassing the command layer (a drag commit, a
+        // context-menu point toggle) is never missed by the delta journal. An
+        // edit that instead changes project structure (videos/tracks/skeletons/
+        // suggestions) must call dirtyFrameTracker.markStructural() itself.
+        const { video, frameIdx } = get();
+        if (video) dirtyFrameTracker.markFrame(video, frameIdx);
         set((state) => {
           state.hasChanges = true;
           state.editSeq += 1;
           state.lastInteractedFrame = state.frameIdx;
-        }),
+        });
+      },
 
       touchFrame: () =>
         set((state) => {
@@ -1038,6 +1386,42 @@ export const useAppStore = create<AppState>()(
         set((state) => {
           state.hasChanges = false;
         }),
+
+      setTrackColor: (trackName, hex) => {
+        // `get()` returns committed (plain, non-draft) state, so the pure
+        // reducer operates on plain data; the result is assigned to the draft.
+        // Cap the retained projects (LRU) so the persisted blob can't grow
+        // unbounded (the browser has no "close project" signal).
+        const s = get();
+        const key = resolveProjectKey(s.projectPath, s.filename);
+        const next = capTrackColorOverrides(
+          setTrackColorOverride(s.trackColorOverrides, key, trackName, hex),
+        );
+        set((state) => {
+          state.trackColorOverrides = next;
+        });
+      },
+
+      resetTrackColor: (trackName) => {
+        const s = get();
+        const key = resolveProjectKey(s.projectPath, s.filename);
+        const next = resetTrackColorOverride(s.trackColorOverrides, key, trackName);
+        set((state) => {
+          state.trackColorOverrides = next;
+        });
+      },
+
+      renameTrackColor: (oldName, newName) => {
+        // Keep a track's color override attached across a rename (overrides are
+        // keyed by track name). Called from the SetTrackName command.
+        const s = get();
+        const key = resolveProjectKey(s.projectPath, s.filename);
+        const next = renameTrackColorOverride(s.trackColorOverrides, key, oldName, newName);
+        if (next === s.trackColorOverrides) return;
+        set((state) => {
+          state.trackColorOverrides = next;
+        });
+      },
 
       setLoading: (loading, message, progress) =>
         set((state) => {
@@ -1078,6 +1462,19 @@ export const useAppStore = create<AppState>()(
         set((state) => {
           state.mergeProjectDialogOpen = open;
         }),
+      setMergeProjectSeedPath: (path) =>
+        set((state) => {
+          state.mergeProjectSeedPath = path;
+        }),
+      setWindowDragActive: (active) =>
+        set((state) => {
+          state.windowDragActive = active;
+        }),
+
+      setAddVideoUrlDialogOpen: (open) =>
+        set((state) => {
+          state.addVideoUrlDialogOpen = open;
+        }),
 
       setExportDialogOpen: (open) =>
         set((state) => {
@@ -1094,6 +1491,21 @@ export const useAppStore = create<AppState>()(
           state.modelMetricsDialogOpen = open;
         }),
 
+      setSizeDistributionDialogOpen: (open) =>
+        set((state) => {
+          state.sizeDistributionDialogOpen = open;
+        }),
+
+      setLabelQcDialogOpen: (open) =>
+        set((state) => {
+          state.labelQcDialogOpen = open;
+        }),
+
+      setOverlayModelsDialogOpen: (open) =>
+        set((state) => {
+          state.overlayModelsDialogOpen = open;
+        }),
+
       setExportPackageDialogOpen: (open) =>
         set((state) => {
           state.exportPackageDialogOpen = open;
@@ -1102,6 +1514,11 @@ export const useAppStore = create<AppState>()(
       setShortcutsDialogOpen: (open) =>
         set((state) => {
           state.shortcutsDialogOpen = open;
+        }),
+
+      setLabelingTipsDialogOpen: (open) =>
+        set((state) => {
+          state.labelingTipsDialogOpen = open;
         }),
 
       setMenuSearchDialogOpen: (open) =>
@@ -1113,6 +1530,63 @@ export const useAppStore = create<AppState>()(
         set((state) => {
           state.helpDialogOpen = open;
         }),
+
+      setDiagnosticsDialogOpen: (open) =>
+        set((state) => {
+          state.diagnosticsDialogOpen = open;
+        }),
+
+      setConnectWindowOpen: (open) =>
+        set((state) => {
+          state.connectWindowOpen = open;
+        }),
+
+      startTutorial: () => {
+        // Whether a project already exists decides the whole sequence (a
+        // fresh app has no Sidebar/panels mounted yet — see AppShell — so it
+        // must go through New Project first); resolved once here, not
+        // re-derived mid-run.
+        const steps = buildTutorialSteps(get().projectLoaded);
+        set((state) => {
+          state.tutorialActive = true;
+          state.tutorialStepIndex = 0;
+          state.tutorialSteps = steps;
+          state.tutorialHighestStepIndex = 0;
+        });
+        if (steps[0]?.panelId) get().openPanel(steps[0].panelId);
+      },
+
+      exitTutorial: () =>
+        set((state) => {
+          state.tutorialActive = false;
+        }),
+
+      advanceTutorialStep: () => {
+        const steps = get().tutorialSteps;
+        const nextIndex = get().tutorialStepIndex + 1;
+        if (nextIndex >= steps.length) {
+          set((state) => {
+            state.tutorialActive = false;
+          });
+          return;
+        }
+        set((state) => {
+          state.tutorialStepIndex = nextIndex;
+          state.tutorialHighestStepIndex = Math.max(state.tutorialHighestStepIndex, nextIndex);
+        });
+        const nextStep = steps[nextIndex];
+        if (nextStep?.panelId) get().openPanel(nextStep.panelId);
+      },
+
+      previousTutorialStep: () => {
+        const prevIndex = get().tutorialStepIndex - 1;
+        if (prevIndex < 0) return;
+        set((state) => {
+          state.tutorialStepIndex = prevIndex;
+        });
+        const prevStep = get().tutorialSteps[prevIndex];
+        if (prevStep?.panelId) get().openPanel(prevStep.panelId);
+      },
 
       enterPlacementMode: () =>
         set((state) => {
@@ -1381,6 +1855,9 @@ export const useAppStore = create<AppState>()(
           skeleton.nodes = [...prompt.nodes];
           skeleton.edges = [...prompt.edges];
           skeleton.rebuildCache(skeleton.nodes);
+          // Skeleton structure changed → the compact frame delta can't express
+          // it; force a full base snapshot on the next incremental autosave.
+          dirtyFrameTracker.markStructural();
         }
         set((state) => {
           if (discarding) {
@@ -1464,16 +1941,64 @@ export const useAppStore = create<AppState>()(
           state.pickedAnchorNode = null;
         }),
 
-      setAnchorPreview: (nodeName) =>
+      // Multi-instance transpose picker. See field docs above for the
+      // request-id race-avoidance rationale.
+      startInstanceSequencePick: (seqLen) => {
+        const id = get().instanceSequenceRequestId + 1;
+        set((state) => {
+          state.instanceSequenceRequestId = id;
+          state.instanceSequencePick = { requestId: id, seqLen, collected: [] };
+          state.instanceSequenceResult = null;
+        });
+        return id;
+      },
+
+      pushInstanceSequencePick: (instance) => {
+        // Read the dedupe/completion check off `get()` (the real, already-
+        // finalized state) rather than the immer draft inside `set()` — Immer
+        // drafts plain-object array elements (unlike class instances, which
+        // it treats as atomic), so `state.instanceSequencePick.collected`
+        // inside a producer can hold draft-wrapped copies that fail a `===`
+        // reference check against the raw `instance` argument.
+        const pick = get().instanceSequencePick;
+        if (!pick) return;
+        // Ignore a re-click on an already-collected instance — otherwise
+        // clicking the same instance twice would "complete" the sequence
+        // with itself.
+        if (pick.collected.includes(instance)) return;
+        const collected = [...pick.collected, instance];
+        set((state) => {
+          if (collected.length >= pick.seqLen) {
+            state.instanceSequenceResult = { instances: collected, requestId: pick.requestId };
+            state.instanceSequencePick = null;
+          } else {
+            state.instanceSequencePick = { ...pick, collected };
+          }
+        });
+      },
+
+      cancelInstanceSequencePick: () =>
+        set((state) => {
+          state.instanceSequencePick = null;
+        }),
+
+      clearInstanceSequenceResult: () =>
+        set((state) => {
+          state.instanceSequenceResult = null;
+        }),
+
+      setAnchorPreview: (nodeName, cropSize) =>
         set((state) => {
           state.anchorPreviewActive = true;
           state.anchorPreviewNode = nodeName;
+          state.anchorPreviewCropSize = cropSize;
         }),
 
       clearAnchorPreview: () =>
         set((state) => {
           state.anchorPreviewActive = false;
           state.anchorPreviewNode = null;
+          state.anchorPreviewCropSize = null;
         }),
 
       // Toggle a sidebar panel's visibility (#135). Hiding the currently-active
@@ -1527,21 +2052,40 @@ export const useAppStore = create<AppState>()(
             }
             return;
           }
-          // Multi-panel mode: stack toggle.
+          // Multi-panel mode: accordion. A rail click focuses the clicked panel
+          // (open + expanded) and minimizes every OTHER open panel to a header
+          // strip. Re-clicking the currently-expanded panel collapses it. The
+          // per-panel chevron (toggleSectionCollapsed), resize, and close (X)
+          // stay independent, so interacting with one open panel never affects
+          // its neighbors. Panels are removed from the stack only via closePanel.
           if (state.sidebarCollapsed) {
             state.sidebarCollapsed = false;
             if (!state.sidebarOpenPanels.includes(panelId)) {
               state.sidebarOpenPanels = [...state.sidebarOpenPanels, panelId];
             }
+            state.sidebarCollapsedSections = state.sidebarOpenPanels.filter(
+              (id) => id !== panelId,
+            );
             return;
           }
-          const wasOpen = state.sidebarOpenPanels.includes(panelId);
-          state.sidebarOpenPanels = toggleId(state.sidebarOpenPanels, panelId);
-          if (wasOpen) {
-            // Closing: drop any collapsed marker so a re-open starts expanded.
-            state.sidebarCollapsedSections =
-              state.sidebarCollapsedSections.filter((id) => id !== panelId);
+          const isOpen = state.sidebarOpenPanels.includes(panelId);
+          const isExpanded =
+            isOpen && !state.sidebarCollapsedSections.includes(panelId);
+          if (isExpanded) {
+            // Re-click the expanded panel → collapse it to a header strip.
+            state.sidebarCollapsedSections = [
+              ...state.sidebarCollapsedSections,
+              panelId,
+            ];
+            return;
           }
+          // Open (if needed) + expand the clicked panel, minimize the rest.
+          if (!isOpen) {
+            state.sidebarOpenPanels = [...state.sidebarOpenPanels, panelId];
+          }
+          state.sidebarCollapsedSections = state.sidebarOpenPanels.filter(
+            (id) => id !== panelId,
+          );
         }),
 
       // Programmatically open + expand a panel and reveal the column. In single
@@ -1634,6 +2178,11 @@ export const useAppStore = create<AppState>()(
         const merged = {
           ...current,
           ...p,
+          // The model-output overlay is a transient action, not a saved pref:
+          // always start OFF + unset. This also clears any value persisted before
+          // these keys were removed from PERSISTED_KEYS.
+          overlayModelOutputs: false,
+          overlayModelPaths: [],
           // Migrate the pre-tri-state #137 boolean to the navigationDomain enum.
           navigationDomain: navigationDomainFromPersisted(p),
           panelOrder: reconcilePanelOrder(p.panelOrder),

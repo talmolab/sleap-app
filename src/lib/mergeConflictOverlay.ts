@@ -32,6 +32,9 @@ export interface ConflictOverlayContext {
   palette?: string;
   distinctlyColor?: string;
   colorPredicted?: boolean;
+  /** Whether any instance in the project has an assigned track — resolves
+   * distinctlyColor === "auto" to "track" vs "node". */
+  projectHasTracks?: boolean;
   /**
    * Frame index of each base instance (from {@link Conflict.baseColorIndices}),
    * used to color the base pose exactly as the main canvas does. Falls back to
@@ -60,7 +63,20 @@ export function buildConflictOverlay(
     showNonVisibleNodes: true,
     tracks: ctx.tracks,
     video: ctx.video,
+    projectHasTracks: ctx.projectHasTracks ?? false,
   };
+
+  // frameInstanceTracks is indexed by FRAME position (not this conflict's
+  // small array position), matching the instanceIndex passed to
+  // getInstanceColor below -- built sparse from just what's known here (the
+  // OTHER, non-conflicting instances in the frame aren't visible to this
+  // function), so an untracked instance's gray rank is only ever computed
+  // among the conflicting instances actually being colored, not the true
+  // full frame. Good enough to keep them visually distinct from each other.
+  const frameInstanceTracks: unknown[] = [];
+  baseInstances.forEach((inst, k) => {
+    frameInstanceTracks[ctx.baseColorIndices?.[k] ?? k] = inst.track;
+  });
 
   // Re-color the base pose using each instance's FRAME index (not its position
   // in this conflict's small array) so instance 0 = palette[0], instance 1 =
@@ -75,7 +91,9 @@ export function buildConflictOverlay(
       baseInstances[k].track,
       opts.tracks,
       false,
-      opts.colorPredicted
+      opts.colorPredicted,
+      opts.projectHasTracks,
+      frameInstanceTracks
     ),
   }));
   const donor = buildExportRenderedInstances(donorInstances, opts).map((ri) => ({

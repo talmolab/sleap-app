@@ -20,6 +20,7 @@ import type { Skeleton, SuggestionFrame, Track, Video } from "../types";
 import type { Command } from "./types";
 import { toast } from "@/lib/notify";
 import { humanizeCommandName } from "@/lib/humanizeCommand";
+import { dirtyFrameTracker } from "@/lib/autosaveDirty";
 
 /** Record of an executed command for change tracking. */
 export interface ChangeRecord {
@@ -46,6 +47,16 @@ interface UndoSnapshot {
   frame: SingleFrameData | null;
   /** Multi-frame data (for bulk operations like DeleteAllPredictions). */
   allFrames: SingleFrameData[] | null;
+  /**
+   * Bounded multi-frame data for a bulk op that can PROVABLY never touch
+   * anything outside this set (e.g. PropagateTrackLabels, which only ever
+   * reassigns `.track` on existing instances in one video from the current
+   * frame onward — never creating/deleting frames or touching other videos).
+   * Unlike `allFrames`, restoring this patches only the listed (video,
+   * frameIdx) frames in place instead of wiping and rebuilding every labeled
+   * frame in the project. Mutually exclusive with `allFrames`/`frame`.
+   */
+  scopedFrames: SingleFrameData[] | null;
   /** Tracks array snapshot (by reference, order matters). */
   tracks: Track[];
   /** Track names captured by value, so a rename (SetTrackName) is undoable. */
@@ -190,6 +201,7 @@ export class CommandContext {
       commandName,
       frame,
       allFrames: null,
+      scopedFrames: null,
       tracks: labels ? [...labels.tracks] : [],
       trackNames: labels ? labels.tracks.map((t) => t.name) : [],
       videos: labels ? [...labels.videos] : [],
@@ -230,6 +242,7 @@ export class CommandContext {
       commandName,
       frame: null,
       allFrames,
+      scopedFrames: null,
       tracks: labels ? [...labels.tracks] : [],
       trackNames: labels ? labels.tracks.map((t) => t.name) : [],
       videos: labels ? [...labels.videos] : [],
@@ -241,6 +254,74 @@ export class CommandContext {
     };
   }
 
+  /**
+   * Take a snapshot of one video's frames strictly after `minFrameIdx` (and,
+   * if given, at or before `maxFrameIdx` — e.g. a user-selected seekbar
+   * range), plus the matching `LabeledFrame[]` (sorted by frameIdx) for that
+   * same range — a single traversal shared by the snapshot AND the caller's
+   * own mutation loop, instead of {@link takeAllFramesSnapshot}'s
+   * full-project clone plus a separate `labels.find({video})` scan (which,
+   * without a `frameIdx`, falls into sleap-io.js's O(total project frames)
+   * linear-scan path).
+   *
+   * Only safe for a bulk op that can PROVABLY never touch any other video or
+   * any frame outside `(minFrameIdx, maxFrameIdx]`, and never creates/deletes
+   * frames (see {@link UndoSnapshot.scopedFrames} — currently
+   * TransposeInstances/PropagateTrackLabels's track-swap propagation).
+   */
+  takeVideoFramesSnapshotFrom(
+    commandName: string,
+    video: Video,
+    minFrameIdx: number,
+    maxFrameIdx?: number,
+  ): { snapshot: UndoSnapshot; frames: LabeledFrame[] } {
+    const { labels, video: activeVideo, frameIdx: activeFrameIdx, instance } = this.state;
+    const scopedFrames: SingleFrameData[] = [];
+    const frames: LabeledFrame[] = [];
+    let selectedIdx = -1;
+
+    if (labels) {
+      for (const lf of labels.labeledFrames) {
+        if (lf.video !== video || lf.frameIdx <= minFrameIdx) continue;
+        if (maxFrameIdx !== undefined && lf.frameIdx > maxFrameIdx) continue;
+        const instances = cloneInstances(lf.instances);
+        scopedFrames.push({
+          videoRef: lf.video,
+          frameIdx: lf.frameIdx,
+          instances,
+          centroids: cloneCentroids(lf.centroids, lf.instances, instances),
+          isNegative: lf.isNegative,
+        });
+        frames.push(lf);
+      }
+      frames.sort((a, b) => a.frameIdx - b.frameIdx);
+
+      if (activeVideo && instance) {
+        const activeFrames = labels.find({ video: activeVideo, frameIdx: activeFrameIdx });
+        if (activeFrames.length > 0) {
+          selectedIdx = activeFrames[0].instances.indexOf(instance);
+        }
+      }
+    }
+
+    const snapshot: UndoSnapshot = {
+      commandName,
+      frame: null,
+      allFrames: null,
+      scopedFrames,
+      tracks: labels ? [...labels.tracks] : [],
+      trackNames: labels ? labels.tracks.map((t) => t.name) : [],
+      videos: labels ? [...labels.videos] : [],
+      skeletons: labels ? [...labels.skeletons] : [],
+      suggestions: labels ? [...labels.suggestions] : [],
+      selectedIdx,
+      activeVideo,
+      activeFrameIdx,
+    };
+
+    return { snapshot, frames };
+  }
+
   /** Push a custom snapshot onto the undo stack. */
   pushUndoSnapshot(snapshot: UndoSnapshot): void {
     this.undoStack.push(snapshot);
@@ -248,6 +329,9 @@ export class CommandContext {
       this.undoStack.shift();
     }
     this.redoStack.length = 0;
+    // Record which frames a skip-auto-snapshot command dirtied (incremental
+    // autosave). Reads only frame identity off the snapshot — no re-serialize.
+    dirtyFrameTracker.markFromSnapshot(snapshot);
   }
 
   /** Restore state from a snapshot. Returns a snapshot of the state being replaced. */
@@ -255,10 +339,25 @@ export class CommandContext {
     const { labels } = this.state;
     if (!labels) return this.takeSnapshot(snapshot.commandName);
 
-    // If this is a multi-frame snapshot, take a multi-frame before-snapshot
-    const before = snapshot.allFrames
-      ? this.takeAllFramesSnapshot(snapshot.commandName)
-      : this.takeSnapshot(snapshot.commandName);
+    // If this is a multi-frame snapshot, take a matching before-snapshot —
+    // scoped to the same (video, frame-range) the original snapshot covered
+    // when possible, so undo/redo of a scoped op (e.g. PropagateTrackLabels)
+    // never pays for a full-project clone/scan.
+    let before: UndoSnapshot;
+    if (snapshot.allFrames) {
+      before = this.takeAllFramesSnapshot(snapshot.commandName);
+    } else if (snapshot.scopedFrames) {
+      const scopedVideo = snapshot.scopedFrames[0]?.videoRef ?? null;
+      const minFrameIdx =
+        snapshot.scopedFrames.length > 0
+          ? Math.min(...snapshot.scopedFrames.map((f) => f.frameIdx)) - 1
+          : -Infinity;
+      before = scopedVideo
+        ? this.takeVideoFramesSnapshotFrom(snapshot.commandName, scopedVideo, minFrameIdx).snapshot
+        : this.takeSnapshot(snapshot.commandName);
+    } else {
+      before = this.takeSnapshot(snapshot.commandName);
+    }
 
     // Restore tracks + the project-level collections a merge can grow (videos,
     // skeletons, suggestions), so undoing a merge that added a video/skeleton
@@ -298,6 +397,42 @@ export class CommandContext {
       labels.reindex();
 
       // Restore view to the active frame
+      if (snapshot.activeVideo) {
+        const currentFrames = labels.find({ video: snapshot.activeVideo!, frameIdx: snapshot.activeFrameIdx });
+        const currentLf = currentFrames.length > 0 ? currentFrames[0] : null;
+        this.state.setLabeledFrame(currentLf);
+
+        if (
+          currentLf &&
+          snapshot.selectedIdx >= 0 &&
+          snapshot.selectedIdx < currentLf.instances.length
+        ) {
+          this.state.setInstance(currentLf.instances[snapshot.selectedIdx]);
+        } else {
+          this.state.setInstance(null);
+        }
+      }
+    } else if (snapshot.scopedFrames) {
+      // Scoped multi-frame restore: patch only the (video, frameIdx) frames
+      // this snapshot covers, in place — every frame outside that scope
+      // (other videos, or this video's frames at/before the original cutoff)
+      // is left untouched, unlike the `allFrames` branch above which wipes
+      // and rebuilds every labeled frame in the project. Safe because a
+      // scoped snapshot is only ever taken for an op that never creates or
+      // deletes frames (see `UndoSnapshot.scopedFrames`), so every entry is
+      // guaranteed to already exist.
+      for (const frameData of snapshot.scopedFrames) {
+        const frames = labels.find({ video: frameData.videoRef, frameIdx: frameData.frameIdx });
+        if (frames.length === 0) continue;
+        const lf = frames[0];
+        lf.instances = cloneInstances(frameData.instances);
+        // Re-point centroid `.instance` links at the fresh instance clones —
+        // replacing `lf.instances` alone would orphan them (see cloneCentroids).
+        lf.centroids = cloneCentroids(frameData.centroids, frameData.instances, lf.instances);
+        lf.isNegative = frameData.isNegative;
+      }
+
+      // Restore view to the active frame (same as the `allFrames` branch).
       if (snapshot.activeVideo) {
         const currentFrames = labels.find({ video: snapshot.activeVideo!, frameIdx: snapshot.activeFrameIdx });
         const currentLf = currentFrames.length > 0 ? currentFrames[0] : null;
@@ -379,6 +514,10 @@ export class CommandContext {
     labels.reindex();
 
     this.state.markChanged();
+    // Undo/redo bypass execute()'s dirty hook, so mark the restored frames dirty
+    // here — otherwise an undone/redone edit would be missed by the incremental
+    // autosave. The snapshot's scope IS the set of frames the restore rewrote.
+    dirtyFrameTracker.markFromSnapshot(snapshot);
     return before;
   }
 
@@ -394,9 +533,10 @@ export class CommandContext {
   ): Promise<void> {
     // Snapshot before mutating commands for undo
     // (commands with skipAutoSnapshot handle their own snapshots)
+    let autoSnapshot: UndoSnapshot | null = null;
     if (this.isMutating(command) && !command.skipAutoSnapshot) {
-      const snapshot = this.takeSnapshot(command.name);
-      this.undoStack.push(snapshot);
+      autoSnapshot = this.takeSnapshot(command.name);
+      this.undoStack.push(autoSnapshot);
       if (this.undoStack.length > MAX_UNDO_STACK) {
         this.undoStack.shift();
       }
@@ -405,6 +545,11 @@ export class CommandContext {
     }
 
     await command.execute(this, params);
+
+    // Record which frames this edit dirtied for the incremental autosave. The
+    // auto-snapshot (taken above) already carries the affected-frame identity;
+    // skip-auto-snapshot commands mark via their own pushUndoSnapshot instead.
+    if (autoSnapshot) dirtyFrameTracker.markFromSnapshot(autoSnapshot);
 
     // Track the change
     this.changeStack.push({

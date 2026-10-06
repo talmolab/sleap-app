@@ -19,6 +19,7 @@ import { Crosshair, Minus, Pencil, Plus } from "lucide-react";
 import { isTauri } from "../../platform/index";
 import { computeStatusStats, instancesToShowCount } from "@/lib/statusStats";
 import { DEFAULT_SHORTCUTS } from "@/lib/shortcuts";
+import { formatShortcut } from "@/lib/formatShortcut";
 
 export function StatusBar() {
   const filename = useAppStore((s) => s.filename);
@@ -26,6 +27,12 @@ export function StatusBar() {
   const video = useAppStore((s) => s.video);
   const videoRevision = useAppStore((s) => s.videoRevision);
   const labels = useAppStore((s) => s.labels);
+  // Re-render on every label edit, and key the stats memo below on it.
+  // Commands that mutate an already-referenced LabeledFrame in place (e.g.
+  // adding a 2nd+ instance to the same frame) don't swap any subscribed
+  // reference, so `labels` alone can't tell the memo when to refresh — the
+  // edit counter can. It bumps once per edit (and once per drag gesture, #329).
+  const editSeq = useAppStore((s) => s.editSeq);
   const hasChanges = useAppStore((s) => s.hasChanges);
   const instance = useAppStore((s) => s.instance);
   const labeledFrame = useAppStore((s) => s.labeledFrame);
@@ -42,7 +49,18 @@ export function StatusBar() {
     () => video?.shape?.[0] ?? null,
     [video, videoRevision]
   );
-  const stats = computeStatusStats(labels, video, totalFrames);
+  // Memoized so a frame step / playback tick / scrub (which re-renders this
+  // component to update the frame readout, but doesn't change the counts) does
+  // NOT re-scan the whole project. Recomputes only when the counts' real inputs
+  // change: labels content (editSeq), the active video, or the frame total.
+  const stats = useMemo(
+    () => computeStatusStats(labels, video, totalFrames),
+    // editSeq is an intentional invalidation signal (not referenced in the
+    // callback): labels is mutated in place, so its reference alone won't
+    // refresh the counts. Matches the same pattern used across the app.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [labels, video, totalFrames, editSeq]
+  );
   const instanceCount = instancesToShowCount(labeledFrame);
   const hidden = instanceCount > 0 && !showInstances;
   const isNegative = labeledFrame?.isNegative ?? false;
@@ -68,7 +86,7 @@ export function StatusBar() {
   return (
     <div className="flex items-center h-7 px-2 text-xs bg-card border-t border-border text-muted-foreground gap-2 shrink-0">
       {/* Left: project info */}
-      <div className="flex items-center gap-2 flex-1 min-w-0">
+      <div className="flex items-center gap-2 flex-1 min-w-0 select-text">
         {filename ? (
           <>
             <span className="text-foreground truncate">
@@ -88,9 +106,9 @@ export function StatusBar() {
             <Separator orientation="vertical" className="h-3.5" />
             <button
               type="button"
-              title="Go to frame (Ctrl+J)"
+              title={`Go to frame (${formatShortcut(DEFAULT_SHORTCUTS["goto frame"])})`}
               onClick={() => useAppStore.getState().setGoToFrameDialogOpen(true)}
-              className="tabular-nums whitespace-nowrap cursor-pointer rounded-sm px-1 -mx-1 hover:text-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="tabular-nums whitespace-nowrap cursor-pointer select-none rounded-sm px-1 -mx-1 hover:text-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
               {/* 0-based frame index (matches the seekbar/overlay convention). */}
               Frame {frameIdx.toLocaleString()}

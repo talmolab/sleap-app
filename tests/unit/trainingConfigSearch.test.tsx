@@ -35,7 +35,9 @@ function makeConfigs(modelType: ModelType): ConfigFile[] {
     modelType: slot,
     slot,
     hyperparams: { ...defaultHyperparams },
+    originalHyperparams: { ...defaultHyperparams },
     hasTrainedModel: false,
+    checkpointPath: null,
   }));
 }
 
@@ -68,6 +70,12 @@ function renderDialog(modelType: ModelType) {
       onSkipUserLabeledChange={noop}
       existingPredictions="clear_all"
       onExistingPredictionsChange={noop}
+      autoOpenWandb={false}
+      onAutoOpenWandbChange={noop}
+      exportFormat="none"
+      onExportFormatChange={noop}
+      useExportedForInference={false}
+      onUseExportedForInferenceChange={noop}
     />
   );
 }

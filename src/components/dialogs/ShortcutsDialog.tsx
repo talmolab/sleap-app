@@ -5,6 +5,7 @@
  */
 
 import { DEFAULT_SHORTCUTS } from "../../lib/shortcuts";
+import { formatShortcut } from "@/lib/formatShortcut";
 import {
   Dialog,
   DialogContent,
@@ -15,24 +16,6 @@ import {
 interface ShortcutsDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-}
-
-/** Map shortcut key codes to human-readable labels. */
-function formatKey(key: string): string {
-  return key
-    .replace(/\$mod/g, navigator.platform.includes("Mac") ? "Cmd" : "Ctrl")
-    .replace(/Key([A-Z])/g, "$1")
-    .replace(/Digit(\d)/g, "$1")
-    .replace(/Arrow(Right|Left|Up|Down)/g, (_, d) =>
-      d === "Right" ? "\u2192" : d === "Left" ? "\u2190" : d === "Up" ? "\u2191" : "\u2193"
-    )
-    .replace(/Backquote/g, "`")
-    .replace(/Backspace/g, "Backspace")
-    .replace(/Escape/g, "Esc")
-    .replace(/Tab/g, "Tab")
-    .replace(/Space/g, "Space")
-    .replace(/Equal/g, "=")
-    .replace(/\+/g, " + ");
 }
 
 /** Shortcut categories and their entries. */
@@ -102,7 +85,7 @@ export function ShortcutsDialog({ open, onOpenChange }: ShortcutsDialogProps) {
                         <td className="py-1 capitalize">{key}</td>
                         <td className="py-1 text-right">
                           <kbd className="px-1.5 py-0.5 text-xs bg-muted rounded font-mono">
-                            {formatKey(binding)}
+                            {formatShortcut(binding)}
                           </kbd>
                         </td>
                       </tr>

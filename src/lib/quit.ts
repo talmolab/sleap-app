@@ -1,6 +1,7 @@
 import { isTauri } from "./platform";
 import { useAppStore } from "../stores/appStore";
 import { hasUnsavedWork } from "./unsavedGuard";
+import { markCleanShutdown } from "./diagnostics/sessionLog";
 
 let pendingQuitResolve: ((confirmed: boolean) => void) | null = null;
 
@@ -27,6 +28,9 @@ async function confirmUnsaved(): Promise<boolean> {
 }
 
 async function forceQuit(): Promise<void> {
+  // Mark the diagnostics session clean BEFORE exiting so the next launch doesn't
+  // mistake this intentional quit for a crash. Awaited so it lands before exit.
+  await markCleanShutdown();
   if (isTauri) {
     const { exit } = await import("@tauri-apps/plugin-process");
     await exit(0);

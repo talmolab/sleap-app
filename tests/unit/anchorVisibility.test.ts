@@ -68,6 +68,56 @@ describe("computeNodeVisibility", () => {
     expect(stats.get("tail")).toEqual({ visible: 1, total: 3, pct: 33 });
   });
 
+  it("reads the allocating points getter once per instance, not O(n) times", () => {
+    // Regression guard for the ~2s freeze on densely-labeled projects: the loop
+    // used `inst.points.length` (condition) AND `inst.points[i]` (body), each
+    // re-invoking the allocating sleap-io proxy getter → ~2n+1 PointView[]
+    // allocations per instance (O(n²) overall). The fix hoists it to one read.
+    const skeleton = new Skeleton({ nodes: ["a", "b", "c", "d", "e"], name: "s" });
+    const video = new Video({
+      filename: "v.mp4",
+      backendMetadata: { shape: [10, 100, 100, 3] },
+      openBackend: false,
+    });
+    const lf = new LabeledFrame({ video, frameIdx: 0 });
+    const inst = makeInstance(skeleton, [true, true, false, true, false]);
+    lf.instances.push(inst);
+
+    let accesses = 0;
+    const realPoints = inst.points;
+    Object.defineProperty(inst, "points", {
+      configurable: true,
+      get() {
+        accesses++;
+        return realPoints;
+      },
+    });
+
+    const labels = new Labels({ videos: [video], skeletons: [skeleton], labeledFrames: [lf] });
+    const stats = computeNodeVisibility(labels, skeleton);
+
+    expect(accesses).toBe(1); // one read per instance (was ~2·5+1 = 11)
+    // behavior unchanged
+    expect(stats.get("a")).toEqual({ visible: 1, total: 1, pct: 100 });
+    expect(stats.get("c")).toEqual({ visible: 0, total: 1, pct: 0 });
+  });
+
+  it("caches by (labels, skeleton) reference so repeated calls reuse one scan", () => {
+    const skeleton = new Skeleton({ nodes: ["a", "b"], name: "s" });
+    const video = new Video({
+      filename: "v.mp4",
+      backendMetadata: { shape: [10, 100, 100, 3] },
+      openBackend: false,
+    });
+    const lf = new LabeledFrame({ video, frameIdx: 0 });
+    lf.instances.push(makeInstance(skeleton, [true, false]));
+    const labels = new Labels({ videos: [video], skeletons: [skeleton], labeledFrames: [lf] });
+
+    const a = computeNodeVisibility(labels, skeleton);
+    const b = computeNodeVisibility(labels, skeleton);
+    expect(b).toBe(a); // same Map object → second call served from cache
+  });
+
   it("excludes predicted instances (not part of the training set)", () => {
     const skeleton = new Skeleton({ nodes: ["head"], name: "s" });
     const video = new Video({

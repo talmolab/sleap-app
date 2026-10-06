@@ -4,6 +4,7 @@
 
 import { describe, it, expect, beforeEach } from "../bun-test";
 import { useAppStore, PERSISTED_KEYS } from "@/stores/appStore";
+import { MAX_TRACK_COLOR_PROJECTS } from "@/lib/trackColorOverrides";
 import { DEFAULT_PANEL_ORDER, DEFAULT_OPEN_PANELS } from "@/lib/panelLayout";
 import type { Labels, Video, Skeleton, Instance } from "@/types";
 
@@ -219,6 +220,63 @@ describe("appStore", () => {
     });
   });
 
+  describe("playback state + seek-pauses-playback (rule #3)", () => {
+    it("isPlaying defaults to false", () => {
+      expect(useAppStore.getState().isPlaying).toBe(false);
+    });
+
+    it("setIsPlaying sets the flag", () => {
+      useAppStore.getState().setIsPlaying(true);
+      expect(useAppStore.getState().isPlaying).toBe(true);
+      useAppStore.getState().setIsPlaying(false);
+      expect(useAppStore.getState().isPlaying).toBe(false);
+    });
+
+    it("togglePlay flips the flag", () => {
+      expect(useAppStore.getState().isPlaying).toBe(false);
+      useAppStore.getState().togglePlay();
+      expect(useAppStore.getState().isPlaying).toBe(true);
+      useAppStore.getState().togglePlay();
+      expect(useAppStore.getState().isPlaying).toBe(false);
+    });
+
+    it("a user setFrameIdx pauses playback", () => {
+      const video = mockVideo({ shape: [100, 480, 640, 3] });
+      useAppStore.setState({ video, isPlaying: true });
+      useAppStore.getState().setFrameIdx(50);
+
+      expect(useAppStore.getState().frameIdx).toBe(50);
+      expect(useAppStore.getState().isPlaying).toBe(false);
+    });
+
+    it("setFrameIdx with keepPlaying does NOT pause (the playback loop's advance)", () => {
+      const video = mockVideo({ shape: [100, 480, 640, 3] });
+      useAppStore.setState({ video, isPlaying: true });
+      useAppStore.getState().setFrameIdx(50, { keepPlaying: true });
+
+      expect(useAppStore.getState().frameIdx).toBe(50);
+      expect(useAppStore.getState().isPlaying).toBe(true);
+    });
+
+    it("a user incrementFrameIdx pauses playback", () => {
+      const video = mockVideo({ shape: [100, 480, 640, 3] });
+      useAppStore.setState({ video, frameIdx: 10, isPlaying: true });
+      useAppStore.getState().incrementFrameIdx(1);
+
+      expect(useAppStore.getState().frameIdx).toBe(11);
+      expect(useAppStore.getState().isPlaying).toBe(false);
+    });
+
+    it("incrementFrameIdx with keepPlaying keeps playing (playback advance)", () => {
+      const video = mockVideo({ shape: [100, 480, 640, 3] });
+      useAppStore.setState({ video, frameIdx: 10, isPlaying: true });
+      useAppStore.getState().incrementFrameIdx(1, { keepPlaying: true });
+
+      expect(useAppStore.getState().frameIdx).toBe(11);
+      expect(useAppStore.getState().isPlaying).toBe(true);
+    });
+  });
+
   describe("setInstance", () => {
     it("sets the selected instance", () => {
       const instance = { points: [] } as unknown as Instance;
@@ -267,6 +325,80 @@ describe("appStore", () => {
       const before = useAppStore.getState().palette;
       useAppStore.getState().toggle("palette" as keyof import("@/stores/appStore").AppState);
       expect(useAppStore.getState().palette).toBe(before);
+    });
+  });
+
+  describe("instance sequence picker (multi-instance transpose)", () => {
+    const instA = { name: "a" } as unknown as Instance;
+    const instB = { name: "b" } as unknown as Instance;
+    const instC = { name: "c" } as unknown as Instance;
+
+    it("starts empty and accumulates clicked instances up to seqLen", () => {
+      const id = useAppStore.getState().startInstanceSequencePick(2);
+      expect(useAppStore.getState().instanceSequencePick).toEqual({
+        requestId: id,
+        seqLen: 2,
+        collected: [],
+      });
+      expect(useAppStore.getState().instanceSequenceResult).toBeNull();
+
+      useAppStore.getState().pushInstanceSequencePick(instA);
+      expect(useAppStore.getState().instanceSequencePick?.collected).toEqual([instA]);
+      expect(useAppStore.getState().instanceSequenceResult).toBeNull(); // not done yet
+    });
+
+    it("resolves into instanceSequenceResult once seqLen instances are collected, and clears the in-progress pick", () => {
+      const id = useAppStore.getState().startInstanceSequencePick(2);
+      useAppStore.getState().pushInstanceSequencePick(instA);
+      useAppStore.getState().pushInstanceSequencePick(instB);
+
+      expect(useAppStore.getState().instanceSequencePick).toBeNull();
+      expect(useAppStore.getState().instanceSequenceResult).toEqual({
+        instances: [instA, instB],
+        requestId: id,
+      });
+    });
+
+    it("ignores a re-click on an already-collected instance instead of completing early", () => {
+      useAppStore.getState().startInstanceSequencePick(2);
+      useAppStore.getState().pushInstanceSequencePick(instA);
+      useAppStore.getState().pushInstanceSequencePick(instA); // re-click — ignored
+      expect(useAppStore.getState().instanceSequencePick?.collected).toEqual([instA]);
+      expect(useAppStore.getState().instanceSequenceResult).toBeNull();
+
+      useAppStore.getState().pushInstanceSequencePick(instB);
+      expect(useAppStore.getState().instanceSequenceResult?.instances).toEqual([instA, instB]);
+    });
+
+    it("a push while no pick is active is a no-op", () => {
+      useAppStore.getState().pushInstanceSequencePick(instC);
+      expect(useAppStore.getState().instanceSequencePick).toBeNull();
+      expect(useAppStore.getState().instanceSequenceResult).toBeNull();
+    });
+
+    it("cancel clears the in-progress pick without producing a result", () => {
+      useAppStore.getState().startInstanceSequencePick(2);
+      useAppStore.getState().pushInstanceSequencePick(instA);
+      useAppStore.getState().cancelInstanceSequencePick();
+      expect(useAppStore.getState().instanceSequencePick).toBeNull();
+      expect(useAppStore.getState().instanceSequenceResult).toBeNull();
+    });
+
+    it("clearInstanceSequenceResult clears a resolved result", () => {
+      useAppStore.getState().startInstanceSequencePick(2);
+      useAppStore.getState().pushInstanceSequencePick(instA);
+      useAppStore.getState().pushInstanceSequencePick(instB);
+      expect(useAppStore.getState().instanceSequenceResult).not.toBeNull();
+
+      useAppStore.getState().clearInstanceSequenceResult();
+      expect(useAppStore.getState().instanceSequenceResult).toBeNull();
+    });
+
+    it("starting a new pick bumps the request id and clears any stale result", () => {
+      const id1 = useAppStore.getState().startInstanceSequencePick(2);
+      const id2 = useAppStore.getState().startInstanceSequencePick(2);
+      expect(id2).toBe(id1 + 1);
+      expect(useAppStore.getState().instanceSequencePick?.requestId).toBe(id2);
     });
   });
 
@@ -378,6 +510,20 @@ describe("appStore", () => {
 
       useAppStore.getState().setHelpDialogOpen(false);
       expect(useAppStore.getState().helpDialogOpen).toBe(false);
+    });
+
+    it("opens and closes the Connect window", () => {
+      expect(useAppStore.getState().connectWindowOpen).toBe(false);
+
+      useAppStore.getState().setConnectWindowOpen(true);
+      expect(useAppStore.getState().connectWindowOpen).toBe(true);
+
+      useAppStore.getState().setConnectWindowOpen(false);
+      expect(useAppStore.getState().connectWindowOpen).toBe(false);
+    });
+
+    it("the Connect window flag is not persisted (not in PERSISTED_KEYS)", () => {
+      expect(PERSISTED_KEYS).not.toContain("connectWindowOpen");
     });
   });
 
@@ -553,15 +699,55 @@ describe("open-panel stack actions (multi-panel sidebar)", () => {
     useAppStore.setState({ sidebarMultiPanel: true });
   });
 
-  it("togglePanelOpen adds a closed panel and removes an open one", () => {
-    useAppStore.setState({ sidebarOpenPanels: ["videos"], sidebarCollapsed: false });
+  it("togglePanelOpen focuses the clicked panel and minimizes the others (accordion)", () => {
+    useAppStore.setState({
+      sidebarOpenPanels: ["videos", "frames"],
+      sidebarCollapsedSections: [],
+      sidebarCollapsed: false,
+    });
     useAppStore.getState().togglePanelOpen("skeleton");
-    expect(useAppStore.getState().sidebarOpenPanels).toEqual([
-      "videos",
-      "skeleton",
-    ]);
+    const s = useAppStore.getState();
+    // Clicked panel is open + expanded; previously-open panels stay open but minimized.
+    expect(s.sidebarOpenPanels).toEqual(["videos", "frames", "skeleton"]);
+    expect([...s.sidebarCollapsedSections].sort()).toEqual(["frames", "videos"]);
+    expect(s.sidebarCollapsedSections).not.toContain("skeleton");
+  });
+
+  it("re-clicking the expanded panel collapses it to a header strip (keeps it open)", () => {
+    useAppStore.setState({
+      sidebarOpenPanels: ["videos", "skeleton"],
+      sidebarCollapsedSections: ["videos"],
+      sidebarCollapsed: false,
+    });
+    // skeleton is the expanded one; clicking its rail icon again collapses it.
+    useAppStore.getState().togglePanelOpen("skeleton");
+    const s = useAppStore.getState();
+    expect(s.sidebarOpenPanels).toContain("skeleton");
+    expect(s.sidebarCollapsedSections).toContain("skeleton");
+  });
+
+  it("clicking a minimized tab re-expands it and minimizes the others", () => {
+    useAppStore.setState({
+      sidebarOpenPanels: ["videos", "skeleton"],
+      sidebarCollapsedSections: ["videos"],
+      sidebarCollapsed: false,
+    });
     useAppStore.getState().togglePanelOpen("videos");
-    expect(useAppStore.getState().sidebarOpenPanels).toEqual(["skeleton"]);
+    const s = useAppStore.getState();
+    expect(s.sidebarOpenPanels).toEqual(["videos", "skeleton"]);
+    expect(s.sidebarCollapsedSections).toEqual(["skeleton"]);
+  });
+
+  it("toggleSectionCollapsed on one panel leaves the other open panels untouched", () => {
+    useAppStore.setState({
+      sidebarOpenPanels: ["videos", "skeleton"],
+      sidebarCollapsedSections: [],
+      sidebarCollapsed: false,
+    });
+    useAppStore.getState().toggleSectionCollapsed("videos");
+    const s = useAppStore.getState();
+    expect(s.sidebarCollapsedSections).toEqual(["videos"]);
+    expect(s.sidebarOpenPanels).toEqual(["videos", "skeleton"]);
   });
 
   it("togglePanelOpen on a collapsed column reveals it and opens the panel", () => {
@@ -617,8 +803,8 @@ describe("single vs multi panel mode", () => {
     resetStore();
   });
 
-  it("defaults to single-panel mode (one at a time)", () => {
-    expect(useAppStore.getState().sidebarMultiPanel).toBe(false);
+  it("defaults to multi-panel mode (several panels open at once)", () => {
+    expect(useAppStore.getState().sidebarMultiPanel).toBe(true);
   });
 
   it("single mode: clicking a rail icon shows exactly that panel (replaces)", () => {
@@ -786,5 +972,224 @@ describe("per-instance visibility state", () => {
     expect(s.hiddenInstances.size).toBe(0);
     expect(s.viewOnlyInstance).toBeNull();
     expect(s.showNonVisibleOverride.size).toBe(0);
+  });
+});
+
+describe("tutorial step navigation", () => {
+  beforeEach(() => resetStore());
+
+  /** Minimal fake steps — only `id`/`panelId` matter for navigation. */
+  function fakeSteps(...panelIds: (string | undefined)[]) {
+    return panelIds.map((panelId, i) => ({
+      id: `step-${i}`,
+      title: `Step ${i}`,
+      body: "",
+      targetSelector: `[data-tutorial="step-${i}"]`,
+      placement: "top" as const,
+      panelId,
+      isComplete: () => false,
+    }));
+  }
+
+  it("previousTutorialStep is a no-op on the first step", () => {
+    useAppStore.setState({
+      tutorialActive: true,
+      tutorialSteps: fakeSteps("videos", "skeleton"),
+      tutorialStepIndex: 0,
+    });
+    useAppStore.getState().previousTutorialStep();
+    expect(useAppStore.getState().tutorialStepIndex).toBe(0);
+  });
+
+  it("previousTutorialStep decrements the index and opens the prior step's panel", () => {
+    useAppStore.setState({
+      tutorialActive: true,
+      tutorialSteps: fakeSteps("videos", "skeleton"),
+      tutorialStepIndex: 1,
+      sidebarOpenPanels: [],
+    });
+    useAppStore.getState().previousTutorialStep();
+    const s = useAppStore.getState();
+    expect(s.tutorialStepIndex).toBe(0);
+    expect(s.sidebarOpenPanels).toContain("videos");
+  });
+
+  it("previousTutorialStep does not error on a step with no panelId", () => {
+    useAppStore.setState({
+      tutorialActive: true,
+      tutorialSteps: fakeSteps(undefined, undefined),
+      tutorialStepIndex: 1,
+    });
+    expect(() => useAppStore.getState().previousTutorialStep()).not.toThrow();
+    expect(useAppStore.getState().tutorialStepIndex).toBe(0);
+  });
+
+  it("advanceTutorialStep and previousTutorialStep round-trip back to the same step", () => {
+    useAppStore.setState({
+      tutorialActive: true,
+      tutorialSteps: fakeSteps("videos", "skeleton", "training"),
+      tutorialStepIndex: 0,
+    });
+    useAppStore.getState().advanceTutorialStep();
+    expect(useAppStore.getState().tutorialStepIndex).toBe(1);
+    useAppStore.getState().previousTutorialStep();
+    expect(useAppStore.getState().tutorialStepIndex).toBe(0);
+  });
+
+  describe("tutorialHighestStepIndex (high-water mark)", () => {
+    it("starts at 0 and is reset to 0 by startTutorial", () => {
+      useAppStore.setState({
+        tutorialSteps: fakeSteps("videos", "skeleton"),
+        tutorialStepIndex: 0,
+        tutorialHighestStepIndex: 3,
+        projectLoaded: false,
+      });
+      useAppStore.getState().startTutorial();
+      expect(useAppStore.getState().tutorialHighestStepIndex).toBe(0);
+    });
+
+    it("advanceTutorialStep raises the mark, previousTutorialStep does not lower it", () => {
+      useAppStore.setState({
+        tutorialActive: true,
+        tutorialSteps: fakeSteps("videos", "skeleton", "training"),
+        tutorialStepIndex: 0,
+        tutorialHighestStepIndex: 0,
+      });
+      useAppStore.getState().advanceTutorialStep();
+      expect(useAppStore.getState().tutorialHighestStepIndex).toBe(1);
+      useAppStore.getState().advanceTutorialStep();
+      expect(useAppStore.getState().tutorialHighestStepIndex).toBe(2);
+
+      useAppStore.getState().previousTutorialStep();
+      useAppStore.getState().previousTutorialStep();
+      const s = useAppStore.getState();
+      expect(s.tutorialStepIndex).toBe(0);
+      // Stepping back doesn't erase progress already made.
+      expect(s.tutorialHighestStepIndex).toBe(2);
+    });
+
+    it("re-advancing from a revisited step doesn't lower the mark below where it already was", () => {
+      useAppStore.setState({
+        tutorialActive: true,
+        tutorialSteps: fakeSteps("videos", "skeleton", "training"),
+        tutorialStepIndex: 0,
+        tutorialHighestStepIndex: 2,
+      });
+      useAppStore.getState().advanceTutorialStep();
+      expect(useAppStore.getState().tutorialStepIndex).toBe(1);
+      expect(useAppStore.getState().tutorialHighestStepIndex).toBe(2);
+    });
+  });
+
+  describe("setUpdateChannel", () => {
+    it("defaults to stable, unset", () => {
+      const s = useAppStore.getState();
+      expect(s.updateChannel).toBe("stable");
+      expect(s.updateChannelExplicitlySet).toBe(false);
+    });
+
+    it("marks updateChannelExplicitlySet on any explicit pick", () => {
+      useAppStore.getState().setUpdateChannel("stable");
+      expect(useAppStore.getState().updateChannelExplicitlySet).toBe(true);
+    });
+
+    it("picking latest also sets the sticky hasOptedIntoLatestChannel flag", () => {
+      useAppStore.getState().setUpdateChannel("latest");
+      const s = useAppStore.getState();
+      expect(s.hasOptedIntoLatestChannel).toBe(true);
+      expect(s.updateChannelExplicitlySet).toBe(true);
+    });
+
+    it("PERSISTED_KEYS includes both updateChannel and updateChannelExplicitlySet", () => {
+      expect(PERSISTED_KEYS).toContain("updateChannel");
+      expect(PERSISTED_KEYS).toContain("updateChannelExplicitlySet");
+    });
+  });
+
+  describe("dismissPackagesSetupNudge", () => {
+    it("defaults to false, unset", () => {
+      expect(useAppStore.getState().packagesSetupNudgeDismissed).toBe(false);
+    });
+
+    it("permanently sets packagesSetupNudgeDismissed", () => {
+      useAppStore.getState().dismissPackagesSetupNudge();
+      expect(useAppStore.getState().packagesSetupNudgeDismissed).toBe(true);
+    });
+
+    it("PERSISTED_KEYS includes packagesSetupNudgeDismissed", () => {
+      expect(PERSISTED_KEYS).toContain("packagesSetupNudgeDismissed");
+    });
+  });
+});
+
+describe("track color overrides", () => {
+  beforeEach(() => resetStore());
+
+  it("is included in the persist whitelist (local per-project persistence)", () => {
+    expect(PERSISTED_KEYS).toContain("trackColorOverrides");
+  });
+
+  it("setTrackColor stores the color under the active project key (desktop path)", () => {
+    useAppStore.setState({ projectPath: "/proj/a.slp", filename: "a.slp" });
+    useAppStore.getState().setTrackColor("track_0", "#22c55e");
+    expect(useAppStore.getState().trackColorOverrides).toEqual({
+      "/proj/a.slp": { track_0: "#22c55e" },
+    });
+  });
+
+  it("keys by filename when there is no path (browser)", () => {
+    useAppStore.setState({ projectPath: null, filename: "b.slp" });
+    useAppStore.getState().setTrackColor("track_1", "#ff0000");
+    expect(useAppStore.getState().trackColorOverrides).toEqual({
+      "b.slp": { track_1: "#ff0000" },
+    });
+  });
+
+  it("resetTrackColor removes the override and drops the empty project entry", () => {
+    useAppStore.setState({ projectPath: "/proj/a.slp", filename: "a.slp" });
+    const store = useAppStore.getState();
+    store.setTrackColor("track_0", "#22c55e");
+    store.resetTrackColor("track_0");
+    expect(useAppStore.getState().trackColorOverrides).toEqual({});
+  });
+});
+
+describe("track color overrides — §3 edge cases", () => {
+  beforeEach(() => resetStore());
+
+  it("renameTrackColor migrates the override to the new name", () => {
+    useAppStore.setState({
+      projectPath: "/p.slp",
+      filename: "p.slp",
+      trackColorOverrides: { "/p.slp": { old: "#abcdef" } },
+    });
+    useAppStore.getState().renameTrackColor("old", "new");
+    expect(useAppStore.getState().trackColorOverrides["/p.slp"]).toEqual({ new: "#abcdef" });
+  });
+
+  it("setLabels prunes overrides for tracks missing from the loaded project", () => {
+    useAppStore.setState({
+      projectPath: "/p.slp",
+      filename: "p.slp",
+      trackColorOverrides: { "/p.slp": { keep: "#111111", gone: "#222222" } },
+    });
+    const labels = mockLabels({ tracks: [{ name: "keep" }] as unknown as Labels["tracks"] });
+    useAppStore.getState().setLabels(labels, "p.slp", "/p.slp");
+    expect(useAppStore.getState().trackColorOverrides["/p.slp"]).toEqual({ keep: "#111111" });
+  });
+
+  it("caps retained projects (LRU) when a new project pushes past the limit", () => {
+    const seed: Record<string, Record<string, string>> = {};
+    for (let i = 0; i < MAX_TRACK_COLOR_PROJECTS; i++) seed[`p${i}`] = { t: "#000000" };
+    useAppStore.setState({
+      projectPath: "/new.slp",
+      filename: "new.slp",
+      trackColorOverrides: seed,
+    });
+    useAppStore.getState().setTrackColor("t", "#ffffff");
+    const ov = useAppStore.getState().trackColorOverrides;
+    expect(Object.keys(ov).length).toBe(MAX_TRACK_COLOR_PROJECTS);
+    expect(ov["/new.slp"]).toBeDefined();
+    expect(ov["p0"]).toBeUndefined(); // oldest evicted
   });
 });

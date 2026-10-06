@@ -32,3 +32,25 @@ export function frameHasUserLabels(
   const frames = labels.find({ video, frameIdx });
   return frames.length > 0 && isUserLabeledFrame(frames[0]);
 }
+
+/** Count of user (non-predicted) instances at (`video`, `frameIdx`); 0 if none. */
+export function frameUserInstanceCount(
+  labels: Pick<Labels, "find"> | null,
+  video: Video,
+  frameIdx: number,
+): number {
+  if (!labels) return 0;
+  const frames = labels.find({ video, frameIdx });
+  return frames.length > 0 ? frames[0].userInstances.length : 0;
+}
+
+/** True if `labels` has an unaccepted predicted instance at (`video`, `frameIdx`). */
+export function frameHasPredictedInstances(
+  labels: Pick<Labels, "find"> | null,
+  video: Video,
+  frameIdx: number,
+): boolean {
+  if (!labels) return false;
+  const frames = labels.find({ video, frameIdx });
+  return frames.length > 0 && frames[0].hasPredictedInstances;
+}

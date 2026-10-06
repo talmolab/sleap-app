@@ -65,6 +65,26 @@ export interface DiscoveredModel {
   headKey: string;
   runName: string | null;
   mtimeMs: number;
+  /**
+   * Filename (not path) of the checkpoint to seed a Resume/Fine-tune from,
+   * preferring `last.ckpt` (most recent epoch) over `best.ckpt` (best by
+   * monitored metric, which sleap-nn's `ModelCheckpoint` always writes when
+   * `save_top_k >= 1`), else the first other `*.ckpt` file found. `null` only
+   * if `readDir` somehow returned no `.ckpt` file despite `hasCheckpoint`
+   * having passed (shouldn't happen in practice).
+   */
+  checkpointFile: string | null;
+}
+
+/** Pick the preferred checkpoint filename from a run directory's entries. */
+function pickCheckpointFile(runEntries: ModelDirEntry[]): string | null {
+  const ckptFiles = runEntries.filter((e) => !e.isDirectory && e.name.endsWith(".ckpt"));
+  return (
+    ckptFiles.find((e) => e.name === "last.ckpt")?.name ??
+    ckptFiles.find((e) => e.name === "best.ckpt")?.name ??
+    ckptFiles[0]?.name ??
+    null
+  );
 }
 
 /**
@@ -99,10 +119,8 @@ export async function findTrainedModels(
     } catch {
       continue;
     }
-    const hasCheckpoint = runEntries.some(
-      (e) => !e.isDirectory && e.name.endsWith(".ckpt")
-    );
-    if (!hasCheckpoint) continue;
+    const checkpointFile = pickCheckpointFile(runEntries);
+    if (!checkpointFile) continue;
 
     let yamlText: string;
     try {
@@ -114,7 +132,7 @@ export async function findTrainedModels(
     if (!cfg.headKey) continue;
 
     const mtimeMs = await fs.mtimeMs(runDir).catch(() => 0);
-    results.push({ path: runDir, headKey: cfg.headKey, runName: cfg.runName, mtimeMs });
+    results.push({ path: runDir, headKey: cfg.headKey, runName: cfg.runName, mtimeMs, checkpointFile });
   }
 
   results.sort((a, b) => b.mtimeMs - a.mtimeMs);

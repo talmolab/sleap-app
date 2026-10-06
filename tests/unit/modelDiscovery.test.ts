@@ -130,6 +130,39 @@ describe("findTrainedModels", () => {
     expect(models[0].headKey).toBe("centroid");
   });
 
+  it("prefers last.ckpt over best.ckpt for checkpointFile", async () => {
+    const fs = makeFs({
+      dirs: {
+        "/proj/models": [{ name: "run1", isDirectory: true }],
+        "/proj/models/run1": [
+          { name: "training_config.yaml", isDirectory: false },
+          { name: "best.ckpt", isDirectory: false },
+          { name: "last.ckpt", isDirectory: false },
+        ],
+      },
+      files: { "/proj/models/run1/training_config.yaml": CENTROID_CFG },
+      mtimes: {},
+    });
+    const models = await findTrainedModels("/proj", fs);
+    expect(models[0].checkpointFile).toBe("last.ckpt");
+  });
+
+  it("falls back to best.ckpt when there's no last.ckpt", async () => {
+    const fs = makeFs({
+      dirs: {
+        "/proj/models": [{ name: "run1", isDirectory: true }],
+        "/proj/models/run1": [
+          { name: "training_config.yaml", isDirectory: false },
+          { name: "best.ckpt", isDirectory: false },
+        ],
+      },
+      files: { "/proj/models/run1/training_config.yaml": CENTROID_CFG },
+      mtimes: {},
+    });
+    const models = await findTrainedModels("/proj", fs);
+    expect(models[0].checkpointFile).toBe("best.ckpt");
+  });
+
   it("extracts the head key for each head type", async () => {
     const fs = makeFs({
       dirs: {
@@ -166,14 +199,15 @@ describe("findTrainedModels", () => {
 
 describe("pickModelsForPipeline", () => {
   const models = [
-    { path: "/proj/models/centroid_run", headKey: "centroid", runName: null, mtimeMs: 2000 },
+    { path: "/proj/models/centroid_run", headKey: "centroid", runName: null, mtimeMs: 2000, checkpointFile: null },
     {
       path: "/proj/models/centered_instance_run",
       headKey: "centered_instance",
       runName: null,
       mtimeMs: 1000,
+      checkpointFile: null,
     },
-    { path: "/proj/models/bottomup_run", headKey: "bottomup", runName: null, mtimeMs: 3000 },
+    { path: "/proj/models/bottomup_run", headKey: "bottomup", runName: null, mtimeMs: 3000, checkpointFile: null },
   ];
 
   it("picks centroid + centered_instance for top-down, in head order", () => {
@@ -194,7 +228,7 @@ describe("pickModelsForPipeline", () => {
 
   it("prefers the most recent match when multiple runs share a head", () => {
     const withDupeCentroid = [
-      { path: "/proj/models/centroid_old", headKey: "centroid", runName: null, mtimeMs: 1000 },
+      { path: "/proj/models/centroid_old", headKey: "centroid", runName: null, mtimeMs: 1000, checkpointFile: null },
       ...models,
     ];
     // findTrainedModels sorts most-recent-first; pickModelsForPipeline takes

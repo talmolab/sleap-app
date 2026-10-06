@@ -75,21 +75,23 @@ describe("buildConflictOverlay", () => {
     expect(b[0].nodes[0].y).toBe(10);
   });
 
-  it("colors the base pose by its frame index (so instances differ)", () => {
+  it("gives multiple untracked base instances distinct evenly-spaced grays", () => {
     const sk = makeSkeleton();
     const video = makeVideo();
-    const at0 = buildConflictOverlay([inst(sk, 10, 10)], [], {
-      video,
-      tracks: [],
-      baseColorIndices: [0],
-    });
-    const at1 = buildConflictOverlay([inst(sk, 10, 10)], [], {
-      video,
-      tracks: [],
-      baseColorIndices: [1],
-    });
-    // Same instance, different FRAME index → different palette color.
-    expect(at0.base[0].color).not.toEqual(at1.base[0].color);
+    const { base } = buildConflictOverlay(
+      [inst(sk, 10, 10), inst(sk, 20, 20), inst(sk, 30, 30)],
+      [],
+      { video, tracks: [] }
+    );
+    expect(base).toHaveLength(3);
+    const colors = base.map((ri) => ri.color);
+    // Grayscale (R === G === B) for every untracked instance...
+    for (const c of colors) {
+      expect(c[0]).toBe(c[1]);
+      expect(c[1]).toBe(c[2]);
+    }
+    // ...but distinct from one another, not all collapsed to one gray.
+    expect(new Set(colors.map((c) => c.join(","))).size).toBe(3);
   });
 
   it("returns empty arrays for empty inputs", () => {

@@ -33,8 +33,9 @@ export enum UpdateTopic {
 /** Edge rendering style. */
 export type EdgeStyle = "Line" | "Wedge";
 
-/** Color application target. */
-export type ColorTarget = "instance" | "track" | "node" | "edge";
+/** Color application target. "auto" resolves to "track" once any instance
+ * has an assigned track, otherwise "node" — see resolveColorTarget(). */
+export type ColorTarget = "instance" | "track" | "node" | "edge" | "auto";
 
 /** Instance placement method when adding new instances. */
 export type InstancePlacementMethod =

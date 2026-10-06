@@ -8,7 +8,9 @@
 
 use crate::RunningProcess;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use tauri::{ipc::Channel, AppHandle, Runtime};
 use tauri_plugin_shell::{process::CommandEvent, ShellExt};
 
@@ -24,6 +26,19 @@ pub struct UvInfo {
     pub version: Option<String>,
     pub path: Option<String>,
     pub python_dir: Option<String>,
+    /// Same meaning as `UvTool::update_available`: `None` = the self-update
+    /// check couldn't run or doesn't apply (offline, timed out, or uv was
+    /// installed via a package manager — see `self_update_supported`);
+    /// `Some(false)` = confirmed already the latest version; `Some(true)` =
+    /// a newer version is available (see `latest_version`).
+    pub update_available: Option<bool>,
+    pub latest_version: Option<String>,
+    /// `uv self update` refuses outright for a uv installed via a package
+    /// manager (brew/pip/etc. — no install receipt to update against), not
+    /// just for this one check but for the real "Update" button too. `None`
+    /// = not determined yet (the check itself failed/timed out, distinct
+    /// from a confirmed refusal); `Some(false)` = confirmed refused.
+    pub self_update_supported: Option<bool>,
 }
 
 /// A tool installed via `uv tool`.
@@ -33,6 +48,11 @@ pub struct UvTool {
     pub name: String,
     pub version: Option<String>,
     pub commands: Vec<String>,
+    /// `None` = the outdated-check couldn't run (offline, timed out, etc.);
+    /// `Some(false)` = confirmed already the latest version;
+    /// `Some(true)` = a newer version is available (see `latest_version`).
+    pub update_available: Option<bool>,
+    pub latest_version: Option<String>,
 }
 
 /// A Python interpreter discovered by `uv python list`.
@@ -219,6 +239,27 @@ async fn shell_output<R: Runtime>(
     }
 }
 
+/// Like `shell_output`, but distinguishes "ran successfully with empty output"
+/// from "failed to run at all" — needed for `uv tool list --outdated`, where
+/// empty-but-success means nothing is outdated (not "unknown").
+async fn shell_status_output<R: Runtime>(
+    app: &AppHandle<R>,
+    program: &str,
+    args: &[&str],
+) -> Option<(bool, String)> {
+    let output = app
+        .shell()
+        .command(program)
+        .args(args)
+        .env_clear()
+        .envs(child_env())
+        .output()
+        .await
+        .ok()?;
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Some((output.status.success(), stdout))
+}
+
 /// Spawn a command and stream its stdout/stderr through a Channel.
 async fn stream_command<R: Runtime>(
     app: &AppHandle<R>,
@@ -265,6 +306,101 @@ async fn stream_command<R: Runtime>(
 // Detection commands
 // ---------------------------------------------------------------------------
 
+/// Best-effort, network-dependent check for whether uv itself is out of
+/// date, via `uv self update --dry-run` (never actually applies an update).
+/// All of uv's dry-run messaging goes to STDERR, not stdout (verified
+/// directly against upstream's crates/uv/src/commands/self_update.rs), and
+/// resolves through one of two different code paths depending on how uv was
+/// installed, with different wording:
+///   - Standalone installer (has an install receipt): "You're already on
+///     version vX.Y.Z of uv (the latest version)." when current, or "Would
+///     update uv from vX.Y.Z to vA.B.C" when outdated — an exact target
+///     version either way.
+///   - Installed via a package manager (pip/brew/etc., no receipt found):
+///     self-update is refused outright with a non-zero exit and a message
+///     pointing at `pip install --upgrade`/`brew upgrade` instead — there is
+///     no dry-run result to report in that case, and the real "Update"
+///     button would fail the exact same way if clicked.
+///
+/// Bounded by a timeout, same reasoning as `list_uv_tools`'s own
+/// `--outdated` check: this is network-dependent (hits GitHub), and a
+/// slow/offline resolution must not stall detect_uv (which now runs at app
+/// startup, not just when the Environment panel opens).
+async fn check_uv_self_update<R: Runtime>(
+    app: &AppHandle<R>,
+    uv: &str,
+) -> (Option<bool>, Option<String>, Option<bool>) {
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        app.shell()
+            .command(uv)
+            .args(["self", "update", "--dry-run"])
+            .env_clear()
+            .envs(child_env())
+            .output(),
+    )
+    .await;
+
+    let Ok(Ok(output)) = result else {
+        return (None, None, None);
+    };
+
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    parse_self_update_dry_run(output.status.success(), &stderr)
+}
+
+/// Pure parser for `check_uv_self_update`'s output, so the two upstream
+/// message shapes can be tested without spawning a real `uv` process. See
+/// `check_uv_self_update`'s doc comment for exactly which wording maps to
+/// which case.
+fn parse_self_update_dry_run(
+    success: bool,
+    stderr: &str,
+) -> (Option<bool>, Option<String>, Option<bool>) {
+    if !success {
+        // Almost always "installed via a package manager, self-update not
+        // supported" (see check_uv_self_update's doc comment). A genuinely
+        // transient failure here is already covered by the timeout/spawn-
+        // failure branch in the caller, so treating any non-zero exit as
+        // "not supported" is strictly better than a wrong up-to-date/
+        // outdated guess.
+        return (None, None, Some(false));
+    }
+
+    if stderr.contains("already on version") || stderr.contains("on the latest version of uv") {
+        return (Some(false), None, Some(true));
+    }
+
+    if let Some(rest) = stderr
+        .lines()
+        .find_map(|l| l.strip_prefix("Would update uv from "))
+    {
+        // "vX.Y.Z to vA.B.C" (standalone installer) or "vX.Y.Z to the latest
+        // version" (custom-updater path with no exact target resolved).
+        let latest_version = rest
+            .split(" to ")
+            .nth(1)
+            .map(str::trim)
+            .and_then(|v| v.strip_prefix('v'))
+            .filter(|v| v.chars().next().is_some_and(|c| c.is_ascii_digit()))
+            .map(str::to_string);
+        return (Some(true), latest_version, Some(true));
+    }
+
+    (None, None, None)
+}
+
+/// Extract just the semver from `uv --version` output.
+///
+/// uv prints `uv 0.12.8 (68209e5c6 2026-08-31 aarch64-apple-darwin)` -- the
+/// commit, build date and target triple are 40+ characters that used to be
+/// rendered verbatim in a 320px-wide panel row, pushing everything else out.
+fn parse_uv_version(output: &str) -> String {
+    let s = output.trim();
+    let s = s.strip_prefix("uv ").unwrap_or(s).trim();
+    s.split_whitespace().next().unwrap_or(s).to_string()
+}
+
 /// Detect whether `uv` is installed and get its version.
 #[tauri::command]
 pub async fn detect_uv<R: Runtime>(app: AppHandle<R>) -> UvInfo {
@@ -280,12 +416,13 @@ pub async fn detect_uv<R: Runtime>(app: AppHandle<R>) -> UvInfo {
             version: None,
             path: None,
             python_dir: None,
+            update_available: None,
+            latest_version: None,
+            self_update_supported: None,
         };
     }
 
-    let version = version_output.map(|v| {
-        v.strip_prefix("uv ").unwrap_or(&v).to_string()
-    });
+    let version = version_output.as_deref().map(parse_uv_version);
 
     // Report the resolved absolute path (None only if we fell back to bare "uv").
     let path = if uv == "uv" { None } else { Some(uv.clone()) };
@@ -293,11 +430,17 @@ pub async fn detect_uv<R: Runtime>(app: AppHandle<R>) -> UvInfo {
     // Get managed Python directory
     let python_dir = shell_output(&app, &uv, &["python", "dir"]).await;
 
+    let (update_available, latest_version, self_update_supported) =
+        check_uv_self_update(&app, &uv).await;
+
     UvInfo {
         available: true,
         version,
         path,
         python_dir,
+        update_available,
+        latest_version,
+        self_update_supported,
     }
 }
 
@@ -324,14 +467,440 @@ pub async fn detect_gpu<R: Runtime>(app: AppHandle<R>) -> String {
     "cpu".to_string()
 }
 
+/// Point-in-time GPU stats for diagnostics. NVIDIA-only for the numeric fields
+/// (via `nvidia-smi`); on mps/cpu only `backend`/`name` are populated. This is a
+/// snapshot at call time, not a peak-during-training measurement.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GpuStats {
+    pub backend: String,
+    pub name: Option<String>,
+    pub memory_total_mb: Option<u64>,
+    pub memory_used_mb: Option<u64>,
+    pub utilization_pct: Option<u32>,
+}
+
+/// Query current GPU stats. Returns NVIDIA util/VRAM via `nvidia-smi` when
+/// present, else identifies the mps/cpu backend with no numeric fields.
+#[tauri::command]
+pub async fn gpu_stats<R: Runtime>(app: AppHandle<R>) -> GpuStats {
+    if let Some(output) = shell_output(
+        &app,
+        "nvidia-smi",
+        &[
+            "--query-gpu=name,memory.total,memory.used,utilization.gpu",
+            "--format=csv,noheader,nounits",
+        ],
+    )
+    .await
+    {
+        let line = output.lines().next().unwrap_or("").trim().to_string();
+        if !line.is_empty() {
+            let parts: Vec<&str> = line.split(',').map(|s| s.trim()).collect();
+            return GpuStats {
+                backend: "cuda".to_string(),
+                name: parts
+                    .first()
+                    .map(|s| s.to_string())
+                    .filter(|s| !s.is_empty()),
+                memory_total_mb: parts.get(1).and_then(|s| s.parse::<u64>().ok()),
+                memory_used_mb: parts.get(2).and_then(|s| s.parse::<u64>().ok()),
+                utilization_pct: parts.get(3).and_then(|s| s.parse::<u32>().ok()),
+            };
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if std::env::consts::ARCH == "aarch64" {
+            return GpuStats {
+                backend: "mps".to_string(),
+                name: Some("Apple Silicon (Metal)".to_string()),
+                memory_total_mb: None,
+                memory_used_mb: None,
+                utilization_pct: None,
+            };
+        }
+    }
+
+    GpuStats {
+        backend: "cpu".to_string(),
+        name: None,
+        memory_total_mb: None,
+        memory_used_mb: None,
+        utilization_pct: None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Accelerator / GPU detection (as sleap-nn itself sees it)
+// ---------------------------------------------------------------------------
+
+/// Accelerator + GPU info for the sleap-nn install, as reported by the torch
+/// inside its own uv-tool venv.
+///
+/// Every field mirrors one from sleap-nn's `get_system_info_dict()` -- see
+/// `ACCELERATOR_PROBE_SCRIPT`.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcceleratorInfo {
+    /// "cuda", "mps" or "cpu". `None` only when the probe couldn't run at all
+    /// (see `error`) -- "no GPU" is reported as `Some("cpu")`, not as `None`.
+    pub accelerator: Option<String>,
+    /// Devices torch can actually use: the CUDA device count, or 0 for CPU.
+    ///
+    /// MPS reports 1, which is Lightning's `devices=1` convention rather than
+    /// a real device count -- Metal exposes one unified GPU that isn't
+    /// enumerable or countable. Passed through as sleap-nn reports it, but do
+    /// NOT show it as "1 GPU" on a Mac: see `summarizeAccelerator`, which
+    /// renders a count only for CUDA.
+    pub gpu_count: u32,
+    /// Per-device descriptions, e.g. "NVIDIA RTX 4090 (24 GB)". CUDA only --
+    /// torch exposes no equivalent device list for MPS.
+    pub gpus: Vec<String>,
+    pub torch_version: Option<String>,
+    pub cuda_version: Option<String>,
+    /// NVIDIA driver version, reported even when CUDA is unavailable: a driver
+    /// present with no usable CUDA is the signature of a CPU-only torch wheel,
+    /// which is exactly the case the UI needs to call out.
+    pub driver_version: Option<String>,
+    /// Whether `driver_version` meets `driver_min_required` for
+    /// `cuda_version`. `None` when it couldn't be determined (no driver, or a
+    /// CUDA version sleap-nn has no requirement table entry for).
+    pub driver_compatible: Option<bool>,
+    pub driver_min_required: Option<String>,
+    /// "macos", "windows" or "linux" -- which accelerator is even reachable
+    /// depends on it (no CUDA on macOS, no MPS anywhere else).
+    pub os: String,
+    /// Why nothing could be reported. Mutually exclusive with the fields above.
+    pub error: Option<String>,
+}
+
+/// Re-emits sleap-nn's own system-info collector as JSON on stdout -- the same
+/// data `sleap-nn system` prints as a table, which is where the driver /
+/// compute-capability knowledge lives (sleap_nn/system_info.py). Failures are
+/// reported in-band as `{"error": ...}` so an old sleap-nn without that module
+/// surfaces as a message rather than an opaque non-zero exit.
+const ACCELERATOR_PROBE_SCRIPT: &str = "\
+import json
+try:
+    from sleap_nn.system_info import get_system_info_dict
+    out = get_system_info_dict()
+except Exception as e:
+    out = {'error': '%s: %s' % (type(e).__name__, e)}
+print(json.dumps(out))
+";
+
+/// Importing torch is slow (seconds; more on a cold filesystem cache, more
+/// again on Windows), so this is generous -- but bounded, so a wedged probe
+/// leaves the UI saying "unknown" instead of spinning forever.
+const ACCELERATOR_PROBE_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// Clamp a subprocess message to something that fits in a tooltip.
+fn short_error(s: &str) -> String {
+    let s = s.trim();
+    if s.chars().count() <= 300 {
+        return s.to_string();
+    }
+    s.chars().take(297).collect::<String>() + "..."
+}
+
+fn str_field(v: &serde_json::Value, key: &str) -> Option<String> {
+    v.get(key).and_then(|x| x.as_str()).map(str::to_string)
+}
+
+/// Pure parser for `ACCELERATOR_PROBE_SCRIPT`'s stdout, so the mapping can be
+/// tested without a real sleap-nn install.
+///
+/// Falls back to the LAST non-empty line when the whole buffer doesn't parse:
+/// anything the venv's own startup chatter (deprecation notices, CUDA init
+/// warnings) writes to stdout lands before our single line of JSON.
+fn parse_accelerator_json(stdout: &str, os: &str) -> AcceleratorInfo {
+    let mut info = AcceleratorInfo {
+        os: os.to_string(),
+        ..Default::default()
+    };
+
+    let Some(text) = stdout.lines().rev().find(|l| !l.trim().is_empty()) else {
+        info.error = Some("sleap-nn's Python reported nothing.".to_string());
+        return info;
+    };
+
+    let parsed = serde_json::from_str::<serde_json::Value>(stdout.trim())
+        .or_else(|_| serde_json::from_str::<serde_json::Value>(text.trim()));
+
+    let Ok(v) = parsed else {
+        info.error = Some(format!("Unexpected output: {}", short_error(text)));
+        return info;
+    };
+
+    if let Some(err) = str_field(&v, "error") {
+        info.error = Some(short_error(&err));
+        return info;
+    }
+
+    info.accelerator = str_field(&v, "accelerator");
+    info.gpu_count = v
+        .get("gpu_count")
+        .and_then(|c| c.as_u64())
+        .unwrap_or(0)
+        .min(u32::MAX as u64) as u32;
+    info.torch_version = str_field(&v, "pytorch_version");
+    info.cuda_version = str_field(&v, "cuda_version");
+    info.driver_version = str_field(&v, "driver_version");
+    info.driver_compatible = v.get("driver_compatible").and_then(|b| b.as_bool());
+    info.driver_min_required = str_field(&v, "driver_min_required");
+    info.gpus = v
+        .get("gpus")
+        .and_then(|g| g.as_array())
+        .map(|gpus| {
+            gpus.iter()
+                .filter_map(|g| {
+                    let name = str_field(g, "name")?;
+                    Some(match g.get("memory_gb").and_then(|m| m.as_f64()) {
+                        Some(mem) => format!("{} ({} GB)", name, mem),
+                        None => name,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    info
+}
+
+/// Report which accelerator sleap-nn will actually train on, and how many GPUs
+/// it can see.
+///
+/// Deliberately asks the torch INSIDE sleap-nn's uv-tool venv -- the same
+/// interpreter training and inference run on, resolved the same way as the ZMQ
+/// relays -- rather than probing the machine with `nvidia-smi` the way
+/// `detect_gpu` above does. The question a user is asking when they check
+/// this ("did my GPU get picked up?") is whether the INSTALLED torch build can
+/// use it: a CUDA machine carrying a CPU-only torch wheel reports "cpu" here,
+/// which is precisely the "reinstall sleap-nn" signal, while `detect_gpu`
+/// would still say "cuda". (`detect_gpu` can't be replaced by this: it runs
+/// BEFORE sleap-nn exists, to choose which torch extra to install.)
+#[tauri::command]
+pub async fn detect_accelerator<R: Runtime>(app: AppHandle<R>) -> AcceleratorInfo {
+    let os = std::env::consts::OS;
+    let fail = |error: String| AcceleratorInfo {
+        os: os.to_string(),
+        error: Some(error),
+        ..Default::default()
+    };
+
+    let python = match resolve_sleap_nn_python(&app).await {
+        Ok(p) => p,
+        Err(e) => return fail(e),
+    };
+
+    let result = tokio::time::timeout(
+        ACCELERATOR_PROBE_TIMEOUT,
+        app.shell()
+            .command(python.to_string_lossy().to_string())
+            .args(["-c", ACCELERATOR_PROBE_SCRIPT])
+            .env_clear()
+            .envs(child_env())
+            .output(),
+    )
+    .await;
+
+    match result {
+        Ok(Ok(output)) => {
+            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+            // The script catches its own exceptions, so a non-zero exit with
+            // no JSON means the interpreter itself failed (broken venv, bad
+            // torch install) -- report its stderr, which says why.
+            if !output.status.success() && stdout.trim().is_empty() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return fail(if stderr.trim().is_empty() {
+                    "sleap-nn's Python exited without output.".to_string()
+                } else {
+                    short_error(&stderr)
+                });
+            }
+            parse_accelerator_json(&stdout, os)
+        }
+        Ok(Err(e)) => fail(format!("Could not run sleap-nn's Python: {}", e)),
+        Err(_) => fail(format!(
+            "Timed out after {}s waiting for sleap-nn to report GPU status.",
+            ACCELERATOR_PROBE_TIMEOUT.as_secs()
+        )),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Optional sleap-nn extras (ONNX / TensorRT export support)
+// ---------------------------------------------------------------------------
+
+/// Which optional sleap-nn extras are present in its uv-tool venv.
+///
+/// Answers the question the Environment panel's extras checkboxes need and
+/// that nothing could answer before: `uv tool list` reports the tool's
+/// version but NOT which extras it was installed with, so the only way to
+/// know is to look for the modules they bring in.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SleapNnExtras {
+    /// sleap-nn's `[export]` extra: `onnx` + `onnxruntime` (+ onnxscript).
+    pub onnx: bool,
+    /// sleap-nn's `[tensorrt]` extra: `tensorrt` + `torch_tensorrt`.
+    pub tensorrt: bool,
+    /// Whether TensorRT is installable on this platform at all. sleap-nn marks
+    /// both tensorrt deps `sys_platform == 'linux' or sys_platform == 'win32'`,
+    /// so on macOS the extra resolves to NOTHING and asking for it would
+    /// silently install nothing -- hence the UI greys it out rather than
+    /// letting it be selected.
+    pub tensorrt_supported: bool,
+    pub error: Option<String>,
+}
+
+/// Reports which extras' modules are importable, WITHOUT importing them:
+/// `find_spec` only resolves the module on disk, so this stays fast (no torch,
+/// no onnxruntime init) and can refresh on its own while the much slower
+/// accelerator probe is still running.
+const EXTRAS_PROBE_SCRIPT: &str = "\
+import json, importlib.util as u
+def has(m):
+    try:
+        return u.find_spec(m) is not None
+    except Exception:
+        return False
+print(json.dumps({
+    'onnx': has('onnx') and has('onnxruntime'),
+    'tensorrt': has('tensorrt') and has('torch_tensorrt'),
+}))
+";
+
+/// No torch import here (see `EXTRAS_PROBE_SCRIPT`), so this only has to cover
+/// interpreter startup.
+const EXTRAS_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// True when sleap-nn's `tensorrt` extra has any installable dependency on
+/// this platform -- see `SleapNnExtras::tensorrt_supported`.
+const fn tensorrt_supported() -> bool {
+    cfg!(any(target_os = "linux", target_os = "windows"))
+}
+
+/// Pure parser for `EXTRAS_PROBE_SCRIPT`'s stdout. Same last-non-empty-line
+/// tolerance as `parse_accelerator_json`, for the same reason.
+fn parse_extras_json(stdout: &str) -> SleapNnExtras {
+    let mut extras = SleapNnExtras {
+        tensorrt_supported: tensorrt_supported(),
+        ..Default::default()
+    };
+
+    let Some(text) = stdout.lines().rev().find(|l| !l.trim().is_empty()) else {
+        extras.error = Some("sleap-nn's Python reported nothing.".to_string());
+        return extras;
+    };
+
+    let parsed = serde_json::from_str::<serde_json::Value>(stdout.trim())
+        .or_else(|_| serde_json::from_str::<serde_json::Value>(text.trim()));
+
+    let Ok(v) = parsed else {
+        extras.error = Some(format!("Unexpected output: {}", short_error(text)));
+        return extras;
+    };
+
+    extras.onnx = v.get("onnx").and_then(|b| b.as_bool()).unwrap_or(false);
+    // A tensorrt module present on a platform sleap-nn can't install it on
+    // would be someone else's install; report what's actually importable and
+    // let the UI decide what to offer.
+    extras.tensorrt = v.get("tensorrt").and_then(|b| b.as_bool()).unwrap_or(false);
+    extras
+}
+
+/// Detect which optional extras the installed sleap-nn carries.
+#[tauri::command]
+pub async fn detect_sleap_nn_extras<R: Runtime>(app: AppHandle<R>) -> SleapNnExtras {
+    let fail = |error: String| SleapNnExtras {
+        tensorrt_supported: tensorrt_supported(),
+        error: Some(error),
+        ..Default::default()
+    };
+
+    let python = match resolve_sleap_nn_python(&app).await {
+        Ok(p) => p,
+        Err(e) => return fail(e),
+    };
+
+    let result = tokio::time::timeout(
+        EXTRAS_PROBE_TIMEOUT,
+        app.shell()
+            .command(python.to_string_lossy().to_string())
+            .args(["-c", EXTRAS_PROBE_SCRIPT])
+            .env_clear()
+            .envs(child_env())
+            .output(),
+    )
+    .await;
+
+    match result {
+        Ok(Ok(output)) => {
+            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+            if !output.status.success() && stdout.trim().is_empty() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return fail(if stderr.trim().is_empty() {
+                    "sleap-nn's Python exited without output.".to_string()
+                } else {
+                    short_error(&stderr)
+                });
+            }
+            parse_extras_json(&stdout)
+        }
+        Ok(Err(e)) => fail(format!("Could not run sleap-nn's Python: {}", e)),
+        Err(_) => fail(format!(
+            "Timed out after {}s checking sleap-nn's extras.",
+            EXTRAS_PROBE_TIMEOUT.as_secs()
+        )),
+    }
+}
+
 /// List tools installed via `uv tool`.
 #[tauri::command]
 pub async fn list_uv_tools<R: Runtime>(app: AppHandle<R>) -> Vec<UvTool> {
     let uv = resolve_uv(&app).await;
-    match shell_output(&app, &uv, &["tool", "list"]).await {
+    let mut tools = match shell_output(&app, &uv, &["tool", "list"]).await {
         Some(output) => parse_uv_tool_list(&output),
         None => vec![],
+    };
+
+    // Best-effort "is a newer version available?" check via `uv tool list
+    // --outdated`, which resolves against the index (network). Bounded by a
+    // timeout so a slow/offline resolution can't stall the whole panel —
+    // `uv tool list` above is local and instant, this is the first
+    // network-dependent step in this command. On any failure/timeout, leave
+    // `update_available` as `None` (unknown) on every tool rather than
+    // disabling their Update buttons.
+    let outdated = tokio::time::timeout(
+        Duration::from_secs(5),
+        shell_status_output(&app, &uv, &["tool", "list", "--outdated"]),
+    )
+    .await
+    .ok()
+    .flatten();
+
+    if let Some((true, output)) = outdated {
+        let latest_by_name = parse_uv_tool_outdated(&output);
+        for tool in &mut tools {
+            match latest_by_name.get(&tool.name) {
+                Some(latest) => {
+                    tool.update_available = Some(true);
+                    tool.latest_version = Some(latest.clone());
+                }
+                None => {
+                    tool.update_available = Some(false);
+                    // Confirmed up to date (absent from `--outdated` output) means
+                    // the installed version IS the latest — no extra query needed.
+                    tool.latest_version = tool.version.clone();
+                }
+            }
+        }
     }
+
+    tools
 }
 
 /// List installed Python interpreters via `uv python list --only-installed`.
@@ -873,6 +1442,164 @@ pub async fn stop_zmq_relay(
     Ok(())
 }
 
+/// Start the warm sleap-nn `overlay-serve` sidecar (model-output overlays).
+///
+/// Resolves the app's sleap-nn venv Python and the bundled `overlay-serve` script,
+/// spawns it with the chosen model dirs (`OVERLAY_MODELS`, os-pathsep-joined) +
+/// device, then reads stdout until the `OVERLAY_SERVE_READY port=<n>` line and
+/// returns the port. The app then fetches confmaps from
+/// `http://127.0.0.1:<port>/infer`. The model loads ONCE in the sidecar (warmed with
+/// a synthetic frame — no video), so per-frame requests are just a forward pass.
+#[tauri::command]
+pub async fn start_overlay_serve<R: Runtime>(
+    app: AppHandle<R>,
+    model_paths: Vec<String>,
+    device: String,
+    overlay: tauri::State<'_, crate::OverlayServe>,
+) -> Result<u16, String> {
+    // Kill any sidecars we already own (previous toggle / racing spawn).
+    {
+        let mut guard = overlay.0.lock().map_err(|e| e.to_string())?;
+        for mut child in guard.drain(..) {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+
+    if model_paths.is_empty() {
+        return Err("No overlay model directories provided".into());
+    }
+
+    // Resolve sleap-nn's venv Python (same env inference uses) + the bundled script.
+    let python = resolve_sleap_nn_python(&app).await?;
+    let script = {
+        use tauri::Manager;
+        match app
+            .path()
+            .resolve("resources/overlay_serve.py", tauri::path::BaseDirectory::Resource)
+        {
+            Ok(p) if p.exists() => p,
+            _ => {
+                // Dev fallback (tauri dev may not stage resources): manifest-relative.
+                let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("resources/overlay_serve.py");
+                if dev.exists() {
+                    dev
+                } else {
+                    return Err("overlay-serve script not found (resource + dev fallback)".into());
+                }
+            }
+        }
+    };
+    let models_joined = std::env::join_paths(model_paths.iter())
+        .map_err(|e| format!("Invalid model path: {}", e))?;
+
+    log::info!(
+        "[overlay-serve] starting: {} {} (models: {:?})",
+        python.display(),
+        script.display(),
+        model_paths
+    );
+    let mut child = std::process::Command::new(&python)
+        .arg("-u")
+        .arg(&script)
+        .env_clear()
+        .envs(child_env())
+        .env("OVERLAY_MODELS", &models_joined)
+        .env("OVERLAY_DEVICE", &device)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to spawn overlay-serve: {}", e))?;
+
+    // Read stdout until the READY handshake. Model load + warmup can take
+    // ~10-20s; earlier lines (load logs / warnings) are skipped.
+    let mut port: Option<u16> = None;
+    let mut device_used: Option<String> = None;
+    if let Some(ref mut stdout) = child.stdout {
+        use std::io::BufRead;
+        let reader = std::io::BufReader::new(stdout);
+        for line in reader.lines() {
+            let line = match line {
+                Ok(l) => l,
+                Err(e) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!("Failed to read overlay-serve stdout: {}", e));
+                }
+            };
+            if let Some(rest) = line.strip_prefix("OVERLAY_SERVE_READY port=") {
+                // rest = "<port> device=<cuda|mps|cpu>" (device optional/older scripts)
+                let mut parts = rest.split_whitespace();
+                port = parts.next().and_then(|p| p.parse::<u16>().ok());
+                device_used = parts.find_map(|t| t.strip_prefix("device=").map(str::to_string));
+                break;
+            }
+        }
+    }
+
+    let port = match port {
+        Some(p) => p,
+        None => {
+            let stderr_msg = child
+                .stderr
+                .as_mut()
+                .map(|se| {
+                    use std::io::Read;
+                    let mut buf = String::new();
+                    let _ = se.read_to_string(&mut buf);
+                    buf
+                })
+                .unwrap_or_default();
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!(
+                "overlay-serve did not report a ready port. {}",
+                stderr_msg.trim()
+            ));
+        }
+    };
+
+    // Detach pipes so the sidecar never blocks on a full stdout/stderr buffer.
+    child.stdout.take();
+    child.stderr.take();
+
+    {
+        let mut guard = overlay.0.lock().map_err(|e| e.to_string())?;
+        // Kill any sidecar a racing spawn stored before tracking this one, so a
+        // dev double-mount leaves exactly one live sidecar (never an orphan).
+        for mut old in guard.drain(..) {
+            let _ = old.kill();
+            let _ = old.wait();
+        }
+        guard.push(child);
+    }
+    log::info!(
+        "[overlay-serve] ready on port {} (device={})",
+        port,
+        device_used.as_deref().unwrap_or("?")
+    );
+    Ok(port)
+}
+
+/// Kill all overlay-serve sidecars we own.
+#[tauri::command]
+pub async fn stop_overlay_serve(
+    overlay: tauri::State<'_, crate::OverlayServe>,
+) -> Result<(), String> {
+    let mut guard = overlay.0.lock().map_err(|e| e.to_string())?;
+    let mut n = 0;
+    for mut child in guard.drain(..) {
+        let _ = child.kill();
+        let _ = child.wait();
+        n += 1;
+    }
+    if n > 0 {
+        log::info!("[overlay-serve] stopped {} sidecar(s)", n);
+    }
+    Ok(())
+}
+
 /// Start a ZMQ SUB relay that BINDS port 9001 and forwards every training-progress
 /// message published by sleap-nn (ProgressReporterZMQ) to the frontend as a
 /// "training-progress" Tauri event. sleap-nn's PUB CONNECTs to 9001, so the SUB binds.
@@ -1058,6 +1785,8 @@ fn parse_uv_tool_list(output: &str) -> Vec<UvTool> {
                 name,
                 version,
                 commands: Vec::new(),
+                update_available: None,
+                latest_version: None,
             });
         }
     }
@@ -1067,6 +1796,49 @@ fn parse_uv_tool_list(output: &str) -> Vec<UvTool> {
     }
 
     tools
+}
+
+/// Parse the output of `uv tool list --outdated`.
+///
+/// Only tools with a newer version available are listed, one entry per
+/// outdated tool. Format:
+/// ```text
+/// package-name v0.1.0 [latest: 0.2.0]
+///     - command1
+/// ```
+/// Returns a map of tool name -> latest version string (no `v` prefix).
+fn parse_uv_tool_outdated(output: &str) -> HashMap<String, String> {
+    let mut latest_by_name = HashMap::new();
+
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with("- ") {
+            continue;
+        }
+
+        let Some(bracket_start) = trimmed.find("[latest:") else {
+            continue;
+        };
+        let name = trimmed[..bracket_start]
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .to_string();
+        if name.is_empty() {
+            continue;
+        }
+
+        let latest = trimmed[bracket_start + "[latest:".len()..]
+            .trim_end_matches(']')
+            .trim()
+            .trim_start_matches('v')
+            .to_string();
+        if !latest.is_empty() {
+            latest_by_name.insert(name, latest);
+        }
+    }
+
+    latest_by_name
 }
 
 /// Parse the output of `uv python list [--only-installed]`.
@@ -1221,6 +1993,94 @@ fn extract_downloadable(output: &str) -> Vec<PythonInterpreter> {
     result
 }
 
+/// WandB authentication status, mirroring legacy SLEAP's
+/// `wandb_utils.check_wandb_login_status`.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WandbAuth {
+    pub authenticated: bool,
+    /// Human-readable description of how the user is authenticated, or `None`.
+    pub source: Option<String>,
+    /// Username from the netrc `login` field, if available.
+    pub username: Option<String>,
+}
+
+/// Scan `.netrc`-format text for an `api.wandb.ai` entry. Returns whether a
+/// password (the API key) is present, and the associated `login`/username if
+/// any. Handles both one-per-line and single-line entries; stops the machine
+/// block at the next `machine`/`default` token.
+fn parse_netrc_wandb(text: &str) -> (bool, Option<String>) {
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    let mut i = 0;
+    while i < tokens.len() {
+        if tokens[i] == "machine" && i + 1 < tokens.len() {
+            if tokens[i + 1] == "api.wandb.ai" {
+                let mut j = i + 2;
+                let mut login: Option<String> = None;
+                let mut has_password = false;
+                while j < tokens.len() && tokens[j] != "machine" && tokens[j] != "default" {
+                    match tokens[j] {
+                        "login" if j + 1 < tokens.len() => {
+                            login = Some(tokens[j + 1].to_string());
+                            j += 2;
+                        }
+                        "password" if j + 1 < tokens.len() => {
+                            has_password = true;
+                            j += 2;
+                        }
+                        "account" if j + 1 < tokens.len() => j += 2,
+                        _ => j += 1,
+                    }
+                }
+                if has_password {
+                    return (true, login);
+                }
+            }
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    (false, None)
+}
+
+/// Detect whether WandB is already authenticated on this machine, WITHOUT
+/// calling `wandb login` (which is slow and prompts). Checks the
+/// `WANDB_API_KEY` env var first, then cached credentials in `~/.netrc` /
+/// `~/_netrc`. Desktop-only; mirrors legacy SLEAP's `check_wandb_login_status`.
+#[tauri::command]
+pub fn check_wandb_auth() -> WandbAuth {
+    if std::env::var("WANDB_API_KEY")
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false)
+    {
+        return WandbAuth {
+            authenticated: true,
+            source: Some("WANDB_API_KEY environment variable".to_string()),
+            username: None,
+        };
+    }
+    if let Some(home) = dirs::home_dir() {
+        for name in [".netrc", "_netrc"] {
+            if let Ok(text) = std::fs::read_to_string(home.join(name)) {
+                let (has_password, username) = parse_netrc_wandb(&text);
+                if has_password {
+                    return WandbAuth {
+                        authenticated: true,
+                        source: Some("cached credentials (~/.netrc)".to_string()),
+                        username,
+                    };
+                }
+            }
+        }
+    }
+    WandbAuth {
+        authenticated: false,
+        source: None,
+        username: None,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1228,6 +2088,39 @@ fn extract_downloadable(output: &str) -> Vec<PythonInterpreter> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- WandB netrc parsing --
+
+    #[test]
+    fn netrc_finds_wandb_credentials_multiline() {
+        let netrc = "machine api.wandb.ai\n  login myuser\n  password abc123def\n";
+        let (found, user) = parse_netrc_wandb(netrc);
+        assert!(found);
+        assert_eq!(user, Some("myuser".to_string()));
+    }
+
+    #[test]
+    fn netrc_finds_wandb_credentials_single_line() {
+        let netrc = "machine api.wandb.ai login u password k\n";
+        let (found, user) = parse_netrc_wandb(netrc);
+        assert!(found);
+        assert_eq!(user, Some("u".to_string()));
+    }
+
+    #[test]
+    fn netrc_ignores_other_machines() {
+        let netrc = "machine github.com login x password y\n";
+        let (found, user) = parse_netrc_wandb(netrc);
+        assert!(!found);
+        assert_eq!(user, None);
+    }
+
+    #[test]
+    fn netrc_wandb_without_password_is_not_authenticated() {
+        let netrc = "machine api.wandb.ai login onlyuser\n";
+        let (found, _) = parse_netrc_wandb(netrc);
+        assert!(!found);
+    }
 
     // -- uv resolution / PATH augmentation --
 
@@ -1319,6 +2212,185 @@ mod tests {
         }
     }
 
+    // -- uv --version parsing --
+
+    #[test]
+    fn test_parse_uv_version_strips_build_metadata() {
+        assert_eq!(
+            parse_uv_version("uv 0.12.8 (68209e5c6 2026-08-31 aarch64-apple-darwin)"),
+            "0.12.8"
+        );
+        assert_eq!(parse_uv_version("uv 0.12.8"), "0.12.8");
+        assert_eq!(parse_uv_version("  uv 0.12.8  "), "0.12.8");
+        // No "uv " prefix (unexpected shape): still yields the first token.
+        assert_eq!(parse_uv_version("0.12.8 (abc)"), "0.12.8");
+        assert_eq!(parse_uv_version(""), "");
+    }
+
+    // -- sleap-nn extras probe parser --
+
+    #[test]
+    fn test_parse_extras_both_present() {
+        let e = parse_extras_json(r#"{"onnx":true,"tensorrt":true}"#);
+        assert!(e.onnx);
+        assert!(e.tensorrt);
+        assert!(e.error.is_none());
+    }
+
+    #[test]
+    fn test_parse_extras_none_present() {
+        let e = parse_extras_json(r#"{"onnx":false,"tensorrt":false}"#);
+        assert!(!e.onnx);
+        assert!(!e.tensorrt);
+        assert!(e.error.is_none());
+    }
+
+    // The common post-`installExportExtra(false)` state: export support only.
+    #[test]
+    fn test_parse_extras_onnx_only() {
+        let e = parse_extras_json(r#"{"onnx":true,"tensorrt":false}"#);
+        assert!(e.onnx);
+        assert!(!e.tensorrt);
+    }
+
+    // tensorrt_supported is a compile-time platform fact, never read from the
+    // probe -- it must be filled in on every path, including the error ones.
+    #[test]
+    fn test_parse_extras_reports_platform_support() {
+        let expected = cfg!(any(target_os = "linux", target_os = "windows"));
+        assert_eq!(
+            parse_extras_json(r#"{"onnx":true,"tensorrt":false}"#).tensorrt_supported,
+            expected
+        );
+        assert_eq!(parse_extras_json("not json").tensorrt_supported, expected);
+        assert_eq!(parse_extras_json("").tensorrt_supported, expected);
+        #[cfg(target_os = "macos")]
+        assert!(!expected, "macOS must not offer TensorRT");
+    }
+
+    #[test]
+    fn test_parse_extras_ignores_stdout_noise() {
+        let e = parse_extras_json("some warning\n{\"onnx\":true,\"tensorrt\":false}\n");
+        assert!(e.onnx);
+        assert!(e.error.is_none());
+    }
+
+    #[test]
+    fn test_parse_extras_missing_keys_default_false() {
+        let e = parse_extras_json("{}");
+        assert!(!e.onnx);
+        assert!(!e.tensorrt);
+        assert!(e.error.is_none());
+    }
+
+    #[test]
+    fn test_parse_extras_non_json_and_empty() {
+        let e = parse_extras_json("Traceback (most recent call last):\n");
+        assert!(!e.onnx);
+        assert!(e.error.unwrap().contains("Unexpected output"));
+
+        let e = parse_extras_json("   \n");
+        assert!(e.error.is_some());
+    }
+
+    // -- accelerator probe parser (sleap-nn system_info -> AcceleratorInfo) --
+
+    // Shape taken from sleap_nn/system_info.py's get_system_info_dict(); only
+    // the fields parse_accelerator_json reads are kept.
+    #[test]
+    fn test_parse_accelerator_cuda() {
+        let json = r#"{"accelerator":"cuda","gpu_count":2,"pytorch_version":"2.9.0+cu130",
+            "cuda_version":"13.0","cudnn_version":"91002","driver_version":"580.65.06",
+            "driver_compatible":true,"driver_min_required":"580.65.06",
+            "gpus":[{"id":0,"name":"NVIDIA RTX 4090","compute_capability":"8.9","memory_gb":23.6},
+                    {"id":1,"name":"NVIDIA RTX 4090","compute_capability":"8.9","memory_gb":23.6}]}"#;
+        let info = parse_accelerator_json(json, "linux");
+        assert_eq!(info.accelerator.as_deref(), Some("cuda"));
+        assert_eq!(info.gpu_count, 2);
+        assert_eq!(
+            info.gpus,
+            vec![
+                "NVIDIA RTX 4090 (23.6 GB)".to_string(),
+                "NVIDIA RTX 4090 (23.6 GB)".to_string()
+            ]
+        );
+        assert_eq!(info.cuda_version.as_deref(), Some("13.0"));
+        assert_eq!(info.driver_version.as_deref(), Some("580.65.06"));
+        assert_eq!(info.driver_compatible, Some(true));
+        assert_eq!(info.torch_version.as_deref(), Some("2.9.0+cu130"));
+        assert_eq!(info.os, "linux");
+        assert!(info.error.is_none());
+    }
+
+    #[test]
+    fn test_parse_accelerator_mps() {
+        let json = r#"{"accelerator":"mps","gpu_count":1,"gpus":[],"mps_available":true,
+            "pytorch_version":"2.9.0","cuda_version":null,"driver_version":null,
+            "driver_compatible":null,"driver_min_required":null}"#;
+        let info = parse_accelerator_json(json, "macos");
+        assert_eq!(info.accelerator.as_deref(), Some("mps"));
+        assert_eq!(info.gpu_count, 1);
+        assert!(info.gpus.is_empty());
+        // JSON nulls must come through as None, not Some("null").
+        assert!(info.cuda_version.is_none());
+        assert!(info.driver_version.is_none());
+        assert!(info.driver_compatible.is_none());
+        assert!(info.error.is_none());
+    }
+
+    // The case the green light exists for: a driver is present, so the machine
+    // HAS an NVIDIA GPU, but the installed torch can't use it (CPU-only wheel).
+    #[test]
+    fn test_parse_accelerator_cpu_with_driver() {
+        let json = r#"{"accelerator":"cpu","gpu_count":0,"gpus":[],
+            "pytorch_version":"2.9.0+cpu","cuda_version":null,"driver_version":"580.65.06"}"#;
+        let info = parse_accelerator_json(json, "windows");
+        assert_eq!(info.accelerator.as_deref(), Some("cpu"));
+        assert_eq!(info.gpu_count, 0);
+        assert_eq!(info.driver_version.as_deref(), Some("580.65.06"));
+        assert!(info.error.is_none());
+    }
+
+    #[test]
+    fn test_parse_accelerator_in_band_error() {
+        let json = r#"{"error":"ModuleNotFoundError: No module named 'sleap_nn.system_info'"}"#;
+        let info = parse_accelerator_json(json, "linux");
+        assert!(info.accelerator.is_none());
+        assert_eq!(info.gpu_count, 0);
+        assert!(info.error.unwrap().contains("No module named"));
+    }
+
+    // Venv startup chatter on stdout must not shadow the JSON line.
+    #[test]
+    fn test_parse_accelerator_ignores_leading_stdout_noise() {
+        let stdout = "UserWarning: something deprecated\n\
+                      {\"accelerator\":\"mps\",\"gpu_count\":1}\n";
+        let info = parse_accelerator_json(stdout, "macos");
+        assert_eq!(info.accelerator.as_deref(), Some("mps"));
+        assert_eq!(info.gpu_count, 1);
+        assert!(info.error.is_none());
+    }
+
+    #[test]
+    fn test_parse_accelerator_non_json_and_empty() {
+        let info = parse_accelerator_json("Traceback (most recent call last):\n", "linux");
+        assert!(info.accelerator.is_none());
+        assert!(info.error.unwrap().contains("Unexpected output"));
+
+        let info = parse_accelerator_json("  \n\n", "linux");
+        assert!(info.accelerator.is_none());
+        assert!(info.error.is_some());
+        assert_eq!(info.os, "linux");
+    }
+
+    #[test]
+    fn test_short_error_truncates() {
+        assert_eq!(short_error("  boom  "), "boom");
+        let long = "x".repeat(400);
+        let out = short_error(&long);
+        assert_eq!(out.chars().count(), 300);
+        assert!(out.ends_with("..."));
+    }
     // -- sleap-nn venv python path (relay interpreter, #121) --
 
     #[test]
@@ -1384,6 +2456,105 @@ jupyter v1.1.1
             tools[0].commands,
             vec!["jupyter", "jupyter-lab", "jupyter-notebook"]
         );
+    }
+
+    // -- parse_uv_tool_outdated tests --
+
+    #[test]
+    fn test_parse_uv_tool_outdated_empty() {
+        assert!(parse_uv_tool_outdated("").is_empty());
+    }
+
+    #[test]
+    fn test_parse_self_update_dry_run_already_latest_standalone() {
+        let stderr = "info: Checking for updates...\nsuccess: You're already on version v0.12.7 of uv (the latest version).\n";
+        let (update_available, latest_version, supported) =
+            parse_self_update_dry_run(true, stderr);
+        assert_eq!(update_available, Some(false));
+        assert_eq!(latest_version, None);
+        assert_eq!(supported, Some(true));
+    }
+
+    #[test]
+    fn test_parse_self_update_dry_run_already_latest_custom_path() {
+        let stderr = "You're on the latest version of uv (v0.12.7)\n";
+        let (update_available, latest_version, supported) =
+            parse_self_update_dry_run(true, stderr);
+        assert_eq!(update_available, Some(false));
+        assert_eq!(latest_version, None);
+        assert_eq!(supported, Some(true));
+    }
+
+    #[test]
+    fn test_parse_self_update_dry_run_outdated_standalone_has_exact_version() {
+        let stderr = "Would update uv from v0.12.7 to v0.13.0\n";
+        let (update_available, latest_version, supported) =
+            parse_self_update_dry_run(true, stderr);
+        assert_eq!(update_available, Some(true));
+        assert_eq!(latest_version, Some("0.13.0".to_string()));
+        assert_eq!(supported, Some(true));
+    }
+
+    #[test]
+    fn test_parse_self_update_dry_run_outdated_custom_path_no_exact_version() {
+        // The custom-updater path (UpdateRequest::Latest) can't resolve an
+        // exact target version in dry-run mode -- literally "the latest
+        // version" instead of a vX.Y.Z string.
+        let stderr = "Would update uv from v0.12.7 to the latest version\n";
+        let (update_available, latest_version, supported) =
+            parse_self_update_dry_run(true, stderr);
+        assert_eq!(update_available, Some(true));
+        assert_eq!(latest_version, None);
+        assert_eq!(supported, Some(true));
+    }
+
+    #[test]
+    fn test_parse_self_update_dry_run_refused_for_package_manager_install() {
+        let stderr = "error: Self-update is only available for uv binaries installed via the standalone installation scripts.\n\nIf you installed uv with pip, brew, or another package manager, update uv with `pip install --upgrade`, `brew upgrade`, or similar.\n";
+        let (update_available, latest_version, supported) =
+            parse_self_update_dry_run(false, stderr);
+        assert_eq!(update_available, None);
+        assert_eq!(latest_version, None);
+        assert_eq!(supported, Some(false));
+    }
+
+    #[test]
+    fn test_parse_self_update_dry_run_unrecognized_output_is_unknown() {
+        let (update_available, latest_version, supported) =
+            parse_self_update_dry_run(true, "some future uv release changed the wording\n");
+        assert_eq!(update_available, None);
+        assert_eq!(latest_version, None);
+        assert_eq!(supported, None);
+    }
+
+    #[test]
+    fn test_parse_uv_tool_outdated_single() {
+        let output = "sleap-nn v0.3.3 [latest: 0.4.0]\n    - sleap-nn\n";
+        let map = parse_uv_tool_outdated(output);
+        assert_eq!(map.get("sleap-nn"), Some(&"0.4.0".to_string()));
+        assert_eq!(map.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_uv_tool_outdated_multiple() {
+        let output = "\
+poethepoet v0.44.0 [latest: 0.45.0]
+    - poe
+sleap-nn v0.3.3 [latest: 0.4.0]
+    - sleap-nn
+";
+        let map = parse_uv_tool_outdated(output);
+        assert_eq!(map.len(), 2);
+        assert_eq!(map.get("poethepoet"), Some(&"0.45.0".to_string()));
+        assert_eq!(map.get("sleap-nn"), Some(&"0.4.0".to_string()));
+    }
+
+    #[test]
+    fn test_parse_uv_tool_outdated_ignores_non_outdated_tools() {
+        // A tool with no `[latest: ...]` marker (shouldn't appear in
+        // `--outdated` output at all, but guard against malformed lines).
+        let output = "sleap-nn v0.3.3\n    - sleap-nn\n";
+        assert!(parse_uv_tool_outdated(output).is_empty());
     }
 
     // -- nwb export error formatting tests --

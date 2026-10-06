@@ -12,6 +12,9 @@
 import { describe, it, expect } from "../bun-test";
 import {
   shouldPrefetch,
+  shouldDecodeAhead,
+  isFastScrub,
+  FAST_SCRUB_FRAMES_PER_TICK,
   PREFETCH_JUMP_THRESHOLD,
 } from "@/lib/videoPrefetch";
 
@@ -107,5 +110,66 @@ describe("shouldPrefetch", () => {
   it("defaults the threshold to a small value (a few frames)", () => {
     expect(PREFETCH_JUMP_THRESHOLD).toBeGreaterThanOrEqual(1);
     expect(PREFETCH_JUMP_THRESHOLD).toBeLessThanOrEqual(8);
+  });
+});
+
+describe("shouldDecodeAhead", () => {
+  it("decodes ahead while playing and not scrubbing", () => {
+    expect(shouldDecodeAhead({ isPlaying: true, isScrubbing: false })).toBe(
+      true,
+    );
+  });
+
+  it("does not decode ahead when paused (playback-only helper)", () => {
+    expect(shouldDecodeAhead({ isPlaying: false, isScrubbing: false })).toBe(
+      false,
+    );
+  });
+
+  it("does not decode ahead while scrubbing, even if isPlaying is somehow set", () => {
+    // A seek pauses playback (rule #3), so this shouldn't co-occur — but
+    // decode-ahead must never fight a scrub if it ever does.
+    expect(shouldDecodeAhead({ isPlaying: true, isScrubbing: true })).toBe(
+      false,
+    );
+  });
+});
+
+describe("isFastScrub", () => {
+  it("is false on the first tick (no previous position to measure velocity)", () => {
+    expect(
+      isFastScrub({ cursorFrame: 100, prevCursorFrame: null, threshold: 8 }),
+    ).toBe(false);
+  });
+
+  it("is false for a slow drag (small per-tick delta)", () => {
+    expect(
+      isFastScrub({ cursorFrame: 103, prevCursorFrame: 100, threshold: 8 }),
+    ).toBe(false);
+  });
+
+  it("is true for a fast fling (large per-tick delta)", () => {
+    expect(
+      isFastScrub({ cursorFrame: 500, prevCursorFrame: 100, threshold: 8 }),
+    ).toBe(true);
+  });
+
+  it("measures velocity symmetrically for a backward drag", () => {
+    expect(
+      isFastScrub({ cursorFrame: 100, prevCursorFrame: 500, threshold: 8 }),
+    ).toBe(true);
+  });
+
+  it("is false exactly at the threshold, true just past it", () => {
+    expect(
+      isFastScrub({ cursorFrame: 108, prevCursorFrame: 100, threshold: 8 }),
+    ).toBe(false);
+    expect(
+      isFastScrub({ cursorFrame: 109, prevCursorFrame: 100, threshold: 8 }),
+    ).toBe(true);
+  });
+
+  it("exposes a sane default threshold", () => {
+    expect(FAST_SCRUB_FRAMES_PER_TICK).toBeGreaterThanOrEqual(1);
   });
 });

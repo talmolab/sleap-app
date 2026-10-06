@@ -14,6 +14,11 @@ import type { CommandContext } from "./CommandContext";
 import { useAppStore } from "../stores/appStore";
 import { toast } from "@/lib/notify";
 import {
+  showLabelingHint,
+  hintIfFirstInstance,
+  hintIfFirstPredictionConversion,
+} from "@/lib/labelingHints";
+import {
   placeInstance,
   findNearestPriorFrame,
   fillMissingPredictedNodes,
@@ -100,6 +105,31 @@ export const AddInstance: Command = {
     );
     if (hasNaNPoints) {
       useAppStore.getState().enterPlacementMode();
+    }
+
+    // #341: exactly one hint per call. The very first user instance in the
+    // whole project is its own milestone (hintIfFirstInstance) and takes
+    // priority over the frame-based ones below — showing both at once would
+    // stack right on top of the node-confirmed-color hint the user is about
+    // to trigger by dragging this instance's (all-red) nodes into place.
+    if (!hintIfFirstInstance(labels)) {
+      // #341: picked by what's actually on the frame — converting a
+      // prediction beats cloning a user instance beats a bare repositioning
+      // tip, since each is progressively less specific to this frame's
+      // contents.
+      if (existingInstances.some((inst) => inst instanceof PredictedInstance)) {
+        // Drawing from scratch when a prediction is already sitting right
+        // there is almost always slower than double-clicking it.
+        showLabelingHint("double-click-to-convert");
+      } else if (existingInstances.length > 0) {
+        // A similarly-posed user instance is already here — cloning it
+        // (Ctrl/Cmd-drag) usually beats placing points from scratch.
+        showLabelingHint("clone-instance-drag");
+      } else {
+        // Nothing to convert or clone (first instance on this frame) — teach
+        // bulk repositioning instead of node-by-node dragging.
+        showLabelingHint("move-rotate-whole-instance");
+      }
     }
   },
 };
@@ -520,6 +550,9 @@ export const ConvertPredictionToInstance: Command = {
       track: predicted.track,
       fromPredicted: predicted,
     });
+    const hadMissingNodes = userInstance.points.some(
+      (p) => isNaN(p.xy[0]) || isNaN(p.xy[1])
+    );
     fillMissingPredictedNodes(userInstance);
 
     // Replace the predicted instance with the user instance, carrying any
@@ -530,6 +563,16 @@ export const ConvertPredictionToInstance: Command = {
     ctx.state.setLabeledFrame(lf);
     ctx.state.setInstance(userInstance);
     ctx.state.markChanged();
+
+    // #341: same one-hint-at-a-time reasoning as AddInstance — the
+    // first-ever-instance milestone takes priority, then the first-ever
+    // conversion of the session (explains why this already-positioned
+    // instance still starts red), then the missing-nodes nudge. Stacking any
+    // two of these would compete with the node-confirmed-color hint the user
+    // is about to trigger by dragging one of this instance's red nodes.
+    if (!hintIfFirstInstance(labels) && !hintIfFirstPredictionConversion() && hadMissingNodes) {
+      showLabelingHint("missing-nodes-right-click");
+    }
   },
 };
 
@@ -594,6 +637,7 @@ export const AddInstancesFromAllPredictions: Command = {
       `Accepted ${predictedCount} prediction${predictedCount > 1 ? "s" : ""} as ` +
         `user instance${predictedCount > 1 ? "s" : ""}`
     );
+    if (!hintIfFirstInstance(labels)) hintIfFirstPredictionConversion();
   },
 };
 
@@ -652,6 +696,7 @@ export const AddInstancesFromAllPredictionsInProject: Command = {
       `Accepted ${totalAccepted} prediction${totalAccepted > 1 ? "s" : ""} across ` +
         `${framesWithPredictions.length} frame${framesWithPredictions.length > 1 ? "s" : ""}`
     );
+    if (!hintIfFirstInstance(labels)) hintIfFirstPredictionConversion();
   },
 };
 
@@ -775,8 +820,24 @@ export const DeleteAllPredictions: Command = {
 };
 
 /**
- * Merge predictions from inference output into current labels.
- * Supports "auto" (default) and "replace_predictions" strategies.
+ * How inference output combines with the project's EXISTING predictions.
+ * Mirrors legacy SLEAP's "Existing predictions" choice
+ * (sleap/gui/widgets/frame_target_selector.py + runners.merge_results):
+ *  - `replace` (default): per-frame, scoped to frames the model produced output
+ *    for — keep user instances, drop that frame's old predictions, add the new
+ *    ones (io `frame:"replace_predictions"`). Frames not re-inferred keep theirs.
+ *  - `clear_all`: delete EVERY predicted instance project-wide first (keep user
+ *    instances, drop now-empty frames), then append the new predictions
+ *    (io `frame:"keep_both"`).
+ *  - `keep`: append new predictions on top of existing ones (io `frame:"keep_both"`);
+ *    may create duplicates.
+ * User-labeled instances are never removed in any mode.
+ */
+export type ExistingPredictionsMode = "clear_all" | "replace" | "keep";
+
+/**
+ * Merge predictions from inference output into the current labels, honoring the
+ * "Existing predictions" mode (clear_all / replace / keep — default replace).
  */
 export const MergePredictions: Command = {
   name: "MergePredictions",
@@ -789,10 +850,28 @@ export const MergePredictions: Command = {
     const predictions = params?.predictions as Labels;
     if (!predictions) return;
 
-    const strategy =
-      (params?.strategy as "auto" | "replace_predictions") ?? "auto";
+    const mode = (params?.mode as ExistingPredictionsMode) ?? "replace";
+    // `replace` swaps predictions only on frames present in the new output;
+    // `keep`/`clear_all` append (the project-wide wipe below handles clear_all).
+    const frame = mode === "replace" ? "replace_predictions" : "keep_both";
 
     const snapshot = ctx.takeAllFramesSnapshot("MergePredictions");
+
+    // clear_all: strip every existing prediction project-wide (keeping user
+    // annotations) BEFORE merging, so stale predictions on frames the new
+    // run didn't cover are removed too — io's Labels.merge only visits frames
+    // present in the output, so a per-frame strategy alone can't reach them.
+    // `removePredictions` also drops predicted frame-level annotations (the
+    // locator's PredictedCentroids), and a frame survives if anything
+    // user-supplied is left on it — a frame holding only user centroids (an
+    // active-learning seed) or a negative flag is labeling, not empty.
+    if (mode === "clear_all") {
+      for (const lf of labels.labeledFrames) lf.removePredictions();
+      labels.labeledFrames = labels.labeledFrames.filter(
+        (lf) => lf.instances.length > 0 || lf.isUserLabeled
+      );
+    }
+
     // Route through sleap-io.js's Labels.merge (issue #226). Match tracks by
     // NAME — io's default is object IDENTITY, which would duplicate every track
     // because the predictions are loaded from a separate file and never share
@@ -804,10 +883,15 @@ export const MergePredictions: Command = {
     const result = await labels.merge(predictions, {
       track: "name",
       video: "basename",
-      frame: strategy,
+      frame,
     });
     ctx.pushUndoSnapshot(snapshot);
     ctx.state.markChanged();
+    // Merge mutates `labels` in place, so overlayVersion-gated consumers (the
+    // seekbar's predicted-frame marks, the canvas overlay) won't recompute
+    // until an unrelated interaction bumps it. Bump now so the light-blue
+    // predicted-frame ticks paint immediately (mirrors ToggleNegativeFrame).
+    ctx.state.bumpOverlayVersion();
 
     const conflicts = result.conflicts.length;
     // A run that merged nothing is not a success worth a green toast — it usually
@@ -825,5 +909,52 @@ export const MergePredictions: Command = {
           "."
       );
     }
+  },
+};
+
+/**
+ * Merge track-only results (a re-track run with no pose model — see
+ * `InferenceConfig.trackOnly`) into the current labels.
+ *
+ * Deliberately does NOT reuse {@link MergePredictions}: a track-only run never
+ * adds, removes, or moves an instance — every instance in the input .slp is
+ * still exactly there, just with `.track` (re)assigned. Routes through
+ * sleap-io.js's `"update_tracks"` frame strategy, which spatially matches
+ * instances between the current project and the retracked output (the output
+ * was round-tripped through a temp file, so its instances are structurally
+ * equal but not object-identical to the project's) and copies over ONLY
+ * `.track` + `.trackingScore`, leaving geometry/scores/everything else
+ * untouched. No `ExistingPredictionsMode` concept applies here — there is
+ * nothing to clear/replace/keep, since no instances are added or removed.
+ */
+export const MergeTracks: Command = {
+  name: "MergeTracks",
+  topics: [UpdateTopic.Labels, UpdateTopic.Frame, UpdateTopic.Instance],
+  skipAutoSnapshot: true,
+  async execute(ctx, params) {
+    const { labels } = ctx.state;
+    if (!labels) return;
+
+    const retracked = params?.retracked as Labels;
+    if (!retracked) return;
+
+    const snapshot = ctx.takeAllFramesSnapshot("MergeTracks");
+
+    // Match tracks by NAME (retracked.tracks are freshly deserialized from a
+    // temp file, so they never share object identity with the project's own
+    // Track objects) and videos by BASENAME (same reasoning as
+    // MergePredictions) — see sleap-io.js's Labels.merge().
+    const result = await labels.merge(retracked, {
+      track: "name",
+      video: "basename",
+      frame: "update_tracks",
+    });
+    ctx.pushUndoSnapshot(snapshot);
+    ctx.state.markChanged();
+    // Merge mutates `labels` in place — bump so overlay-version-gated
+    // consumers (seekbar track ticks, canvas overlay) repaint immediately.
+    ctx.state.bumpOverlayVersion();
+
+    toast.success(`Updated tracks across ${result.framesMerged} frame(s).`);
   },
 };

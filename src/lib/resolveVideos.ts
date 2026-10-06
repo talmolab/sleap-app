@@ -10,8 +10,12 @@ import {
   Mp4BoxVideoBackend,
   MediaBunnyVideoBackend,
   SeqVideoBackend,
+  AviVideoBackend,
+  GrayscaleVideoBackend,
   Video,
   createVideoBackend,
+  WorkerMp4BoxBackend,
+  isWorkerDecodeAvailable,
   type VideoBackend,
   type VideoBackendError,
   type RangeSource,
@@ -23,6 +27,42 @@ import { tailGraftCandidates } from "./pathCandidates";
 import { applyPrefixSwap } from "./videoPrefixSwaps";
 import { fileSize, readRange } from "./nativeRange";
 import { useAppStore } from "@/stores/appStore";
+import {
+  ensureDecodablePath,
+  getTranscodeCacheInfo,
+  clearTranscodeCache,
+  enforceCacheCap,
+  DEFAULT_VIDEO_CACHE_CAP_BYTES,
+  type TranscodeDeps,
+} from "./transcode/transcodeVideo";
+import { computeCacheKey } from "./transcode/transcodeCache";
+import { createTauriTranscodeDeps } from "./transcode/transcodeDepsTauri";
+import { shouldBuildScrubProxy } from "./transcode/proxyPolicy";
+import {
+  ensureScrubProxyPath,
+  type ScrubProxyResult,
+} from "./transcode/scrubProxy";
+import { runBackgroundProxySwap } from "./transcode/backgroundProxySwap";
+import {
+  buildTauriByteSourceDescriptor,
+  buildBlobByteSourceDescriptor,
+  buildUrlByteSourceDescriptor,
+  runWorkerDecodeUpgrade,
+} from "./workerDecodeUpgrade";
+import type { ByteSourceDescriptor } from "@talmolab/sleap-io.js";
+import { useTranscodeStore } from "@/stores/transcodeStore";
+import { useTranscodePromptStore } from "@/stores/transcodePromptStore";
+import { choiceDialog } from "@/stores/choiceStore";
+import {
+  HDF5_VIDEO_EXTS,
+  Hdf5DatasetPickCanceled,
+  createHdf5BackendForFile,
+  createHdf5BackendForPath,
+  hdf5HintsForVideo,
+  isHdf5VideoPath,
+  releaseHdf5Containers,
+  type Hdf5VideoHints,
+} from "./hdf5VideoSource";
 
 /** Extract just the basename from a path or filename. */
 export function getBasename(filename: string | string[]): string {
@@ -404,8 +444,10 @@ export function videoIssue(video: Video): VideoIssue {
  * Classify a thrown backend-open error into a structured {@link VideoBackendError}
  * so the UI can show WHY a video failed rather than a blanket "not found".
  * sleap-io.js throws `UnsupportedVideoFormatError` for whole-container formats it
- * can't read (AVI / MPEG-PS) and "Codec <x> not supported" / decode errors for
- * unplayable codecs. We only call this after a file was located and read, so an
+ * can't read (MPEG program streams — `.avi`/`.wmv` are now demuxed) and
+ * "Codec <x> not supported" / decode errors for unplayable codecs (including an
+ * AVI/WMV whose payload is Xvid/DivX/WMV3/VC-1). We only call this after a file
+ * was located and read, so an
  * open failure here is a codec/decode problem (not a missing file) — hence the
  * default codec kind. Pure + decoder-independent (unit-tested).
  */
@@ -573,6 +615,13 @@ export async function resolveExternalVideos(
   labels: Labels,
   options?: AutoResolveOptions
 ): Promise<void> {
+  // Drop the HDF5 containers held for the PREVIOUS project's videos. Every
+  // project open reaches here before any container is opened for the new one,
+  // making this the one safe release point (see releaseHdf5Containers). Must be
+  // before the early return below, so switching to a project with no missing
+  // videos still frees the old readers.
+  await releaseHdf5Containers();
+
   // Validate existing backends: loadSlp may have created Mp4BoxVideoBackend
   // instances with invalid paths (e.g. Windows paths on Mac). These have
   // backend !== null but their ready promise will reject. Await each and
@@ -814,6 +863,53 @@ async function propagatePrefixSwap(
   return count;
 }
 
+/** A native/browser file-dialog filter entry. */
+interface VideoFileFilter {
+  name: string;
+  extensions: string[];
+}
+
+/**
+ * Every extension that can back an already-existing Video: the media containers
+ * plus the HDF5 containers (`.pkg.slp`/`.h5`), which a `.slp` references
+ * whenever the project was predicted or re-saved against a training package.
+ *
+ * A function, not a module-level const: `SUPPORTED_VIDEO_EXTS` is declared
+ * further down this file, so evaluating it up here would hit its TDZ at import.
+ */
+function relinkableVideoExts(): string[] {
+  return [...SUPPORTED_VIDEO_EXTS, ...HDF5_VIDEO_EXTS];
+}
+
+/**
+ * File-dialog filters for LOCATING or REPLACING an existing video.
+ *
+ * The legacy Qt GUI derives this filter from the MISSING FILE'S OWN extension
+ * — `Missing file type (*.slp)` plus `Any File (*.*)`
+ * (`sleap/gui/dialogs/missingfiles.py:105-115`) — precisely so that relinking is
+ * never narrowed to formats the project doesn't use. A fixed video-only list
+ * does the opposite: it hides the `.pkg.slp` the user has to pick. So put the
+ * current source's own extension first and offer every relinkable source after
+ * it (switching container is legitimate — a package re-exported to MP4, say).
+ *
+ * Distinct from the IMPORT filters ({@link pickVideoFiles} without
+ * `relinking`), which stay media-only: there, a `.slp` means "open this
+ * project", not "import this as a video".
+ */
+export function locateVideoFilters(
+  current?: string | string[] | null
+): VideoFileFilter[] {
+  const exts = relinkableVideoExts();
+  const own = current ? fileExt(getBasename(current)) : "";
+  if (!own || !exts.includes(own)) {
+    return [{ name: "Video files", extensions: exts }];
+  }
+  return [
+    { name: `${own.toUpperCase()} files`, extensions: [own] },
+    { name: "All video sources", extensions: exts },
+  ];
+}
+
 /**
  * Open a file picker for a single video and assign its backend.
  * Returns true if a video was successfully loaded.
@@ -829,10 +925,10 @@ export async function resolveVideoFile(
   const platform = await getPlatform();
   console.log(`[video] Picking video file via ${platform.isTauri ? "Tauri" : "browser"} dialog`);
 
+  // Filter by the missing source's OWN extension first (legacy-GUI parity), so
+  // a missing `.pkg.slp` video source is selectable at all.
   const result = await platform.showOpenDialog({
-    filters: [
-      { name: "Video files", extensions: [...SUPPORTED_VIDEO_EXTS] },
-    ],
+    filters: locateVideoFilters(video.filename),
   });
 
   if (!result) return false;
@@ -846,7 +942,9 @@ export async function resolveVideoFile(
       : video.filename;
     try {
       const name = getBasename(result);
-      const ok = await assignVideoBackendFromPath(video, result);
+      const ok = await assignVideoBackendFromPath(video, result, {
+        pickHdf5Dataset: chooseHdf5Dataset,
+      });
       if (!ok) return false; // assignVideoBackendFromPath already surfaced the reason
       // Update the video's filename to the resolved absolute path
       video.filename = result;
@@ -882,7 +980,9 @@ export async function resolveVideoFile(
   } else if (result instanceof File) {
     // Browser: got a File object
     console.log(`[video] Loading video from File object: ${result.name} (${result.size} bytes)`);
-    const ok = await assignVideoBackend(video, result);
+    const ok = await assignVideoBackend(video, result, {
+      pickHdf5Dataset: chooseHdf5Dataset,
+    });
     if (!ok) return false;
     toast.success(`Loaded video: ${result.name}`);
     return true;
@@ -904,9 +1004,9 @@ export async function resolveAllVideoFiles(
 
   const platform = await getPlatform();
   console.log(`[video] Batch-resolving ${unresolvedVideos.length} video(s) via ${platform.isTauri ? "Tauri" : "browser"} dialog`);
-  const videoFilters = [
-    { name: "Video files", extensions: [...SUPPORTED_VIDEO_EXTS] },
-  ];
+  // One dialog for many missing videos: offer every relinkable source rather
+  // than any single video's extension (see locateVideoFilters).
+  const videoFilters = locateVideoFilters(null);
 
   const result = await platform.showOpenDialog({
     filters: videoFilters,
@@ -1154,20 +1254,44 @@ export async function resolveAllVideosFromFolder(
 
 /**
  * Build the sleap-io.js backend for a user-picked file, dispatching by
- * extension: MP4 → Mp4Box, WebM/MKV/MOV/Ogg/MPEG-TS → MediaBunny, `.seq` → Seq.
- * Unknown / extension-less names fall back to Mp4Box (historical behavior for
- * SLP-referenced external videos with non-standard names).
+ * extension: MP4 → Mp4Box, WebM/MKV/MOV/Ogg/MPEG-TS → MediaBunny, AVI/WMV → the
+ * web-demuxer AviVideoBackend, `.seq` → Seq. Unknown / extension-less names fall
+ * back to Mp4Box (historical behavior for SLP-referenced external videos with
+ * non-standard names).
+ *
+ * When `grayscale` is given (not `undefined`), the backend is wrapped in a
+ * {@link GrayscaleVideoBackend} — `true`/`false` force-collapse/force-preserve
+ * channels immediately (no autodetect decode needed), matching the import
+ * dialog's checkbox, which always yields a definite boolean, never "autodetect".
  */
-async function createBackendForFile(file: File): Promise<VideoBackend> {
-  switch (backendKindForFilename(file.name)) {
-    case "mediabunny":
-      return MediaBunnyVideoBackend.fromBlob(file, file.name);
-    case "seq":
-      return SeqVideoBackend.create(file);
-    case "mp4box":
-    default:
-      return new Mp4BoxVideoBackend(file);
+async function createBackendForFile(
+  file: File,
+  grayscale?: boolean | null,
+  hdf5?: Hdf5VideoHints
+): Promise<VideoBackend> {
+  // An HDF5 container (`.pkg.slp` / `.h5`) used AS a video: its frames live in
+  // an embedded-image dataset, not in a media container, so it never reaches the
+  // extension table below (which is the video-import allowlist). See
+  // `hdf5VideoSource.ts`.
+  if (isHdf5VideoPath(file.name)) {
+    return createHdf5BackendForFile(file, hdf5, grayscale);
   }
+  const backend = await (async () => {
+    switch (backendKindForFilename(file.name)) {
+      case "mediabunny":
+        return MediaBunnyVideoBackend.fromBlob(file, file.name);
+      case "avi":
+        return AviVideoBackend.fromBlob(file, file.name);
+      case "seq":
+        return SeqVideoBackend.create(file);
+      case "mp4box":
+      default:
+        return new Mp4BoxVideoBackend(file);
+    }
+  })();
+  return grayscale === undefined
+    ? backend
+    : GrayscaleVideoBackend.wrap({ inner: backend, grayscale });
 }
 
 /**
@@ -1185,36 +1309,637 @@ function makeVideoRangeSource(path: string): Promise<RangeSource> {
 }
 
 /**
- * Build a backend that reads a native video path lazily by byte range, so a
- * multi-GB external video is never read whole into memory (the desktop
- * freeze/crash). MP4 → Mp4Box, the MediaBunny formats → MediaBunny, both via a
- * {@link RangeSource}. `.seq` has no range backend and its files are small, so
- * it falls back to a full read.
+ * Injected seams for {@link resolveScrubProxyOpenPath}. Default to the real
+ * desktop implementations; unit tests pass fakes (no Tauri/ffmpeg needed).
  */
-async function createBackendForPath(path: string): Promise<VideoBackend> {
+export interface ScrubProxyDeps {
+  /** Whether the user has the scrub-proxy feature enabled. */
+  isEnabled: () => boolean;
+  /** The transcode deps (used for `stat`, and by the proxy build for ffmpeg). */
+  transcodeDeps: () => TranscodeDeps;
+  /** The worthiness gate (network + big + decodable). */
+  shouldBuild: typeof shouldBuildScrubProxy;
+  /** Build/reuse the frame-exact proxy, or fall back to the source. */
+  ensureProxy: typeof ensureScrubProxyPath;
+}
+
+const defaultScrubProxyDeps: ScrubProxyDeps = {
+  isEnabled: () => useAppStore.getState().scrubProxyEnabled,
+  transcodeDeps: createTauriTranscodeDeps,
+  shouldBuild: shouldBuildScrubProxy,
+  ensureProxy: ensureScrubProxyPath,
+};
+
+/** The slice of the transcode-store job UI the proxy step drives (start + progress). */
+interface ProxyJobUi {
+  startJob: (name: string, cancel: () => void) => void;
+  setProgress: (percent: number | null, frame: number | null) => void;
+}
+
+/**
+ * Decide whether to build a local scrub PROXY for an already-decodable external
+ * video (desktop only) and, if so, build/reuse it — returning the path to OPEN
+ * the backend on and whether that path is the proxy.
+ *
+ * A proxy is a best-effort optimization for scrubbing a big file on a slow
+ * network mount: it NEVER blocks the open. Whenever the feature is off, the file
+ * isn't worth proxying, the frame-exact gate fails, or the build errors/cancels,
+ * this resolves to the ORIGINAL `path` (`isProxy: false`) so the caller opens the
+ * source unchanged. The returned path is used ONLY to construct the video backend
+ * — the `.slp`/Video keeps recording the original `path` (this function never
+ * touches the Video).
+ *
+ * It reuses the SAME {@link useTranscodeStore} job UI as the legacy transcode:
+ * `onStart` starts the job, `onProgress` updates it. It deliberately does NOT
+ * clear the job — the caller's `finally` owns `endJob()`, so the dialog stays up
+ * through backend construction and is cleared exactly once (build OR fallback).
+ * Progress is indeterminate (no known duration for a decodable source), so only
+ * the frame counter advances.
+ */
+export async function resolveScrubProxyOpenPath(
+  path: string,
+  name: string,
+  store: ProxyJobUi,
+  controller: AbortController,
+  deps: ScrubProxyDeps = defaultScrubProxyDeps,
+  cacheOnly = false
+): Promise<ScrubProxyResult> {
+  // The original source is the safe default the caller opens on any fallback.
+  const original: ScrubProxyResult = { path, isProxy: false };
+
+  const enabled = deps.isEnabled();
+  if (!enabled) return original; // off → no stat, no build, open the source
+
+  let sizeBytes: number;
+  try {
+    ({ size: sizeBytes } = await deps.transcodeDeps().stat(path));
+  } catch {
+    return original; // can't stat the source → skip the proxy, open the source
+  }
+
+  if (
+    !deps.shouldBuild({
+      enabled,
+      isTauri: true, // this helper is only reached from the Tauri open path
+      path,
+      sizeBytes,
+      isExternalDecodableVideo: true, // caller reached this for a decodable file
+    })
+  ) {
+    return original; // not worth it (local / small / non-network) → open the source
+  }
+
+  try {
+    return await deps.ensureProxy(path, deps.transcodeDeps(), {
+      signal: controller.signal, // share the caller's cancel button
+      cacheOnly, // Thread C: cache-hit → proxy now; miss → defer build to background
+      // A cache-only probe never builds, so it shows no job UI (no dialog).
+      onStart: cacheOnly
+        ? undefined
+        : () => store.startJob(name, () => controller.abort()),
+      // No known source duration → indeterminate bar; surface the frame counter.
+      onProgress: cacheOnly
+        ? undefined
+        : (p) => store.setProgress(null, p.frame ?? null),
+    });
+  } catch (err) {
+    // A proxy is an optimization: a failed/canceled build must never fail the
+    // video open. Fall back to the ORIGINAL source.
+    console.warn(`[video] scrub-proxy build failed for "${name}":`, err);
+    return original;
+  }
+}
+
+/** Injected seams for {@link openViaProxyOrNull}; default to the real desktop impls. */
+export interface ProxyOpenDeps {
+  /** True only on desktop (a proxy needs the bundled ffmpeg sidecar). */
+  isTauri: () => Promise<boolean>;
+  /** The transcode-store job UI to start/forward and clear. */
+  getStore: () => ProxyJobUi & { endJob: () => void };
+  /** The proxy decision/build (see {@link resolveScrubProxyOpenPath}). */
+  resolveProxy: typeof resolveScrubProxyOpenPath;
+  /** Open an Mp4Box backend on the (local, frame-exact `.mp4`) proxy path. */
+  openProxyBackend: (proxyPath: string, name: string) => Promise<VideoBackend>;
+}
+
+const defaultProxyOpenDeps: ProxyOpenDeps = {
+  isTauri: async () => (await getPlatform()).isTauri,
+  getStore: () => useTranscodeStore.getState(),
+  resolveProxy: resolveScrubProxyOpenPath,
+  openProxyBackend: async (proxyPath, name) =>
+    new Mp4BoxVideoBackend(await makeVideoRangeSource(proxyPath), {
+      filename: name,
+    }),
+};
+
+/**
+ * DRY entry point for the scrub-proxy step, called at the TOP of each decodable
+ * external-video open branch (mediabunny, mp4box, and the decodable-AVI
+ * fallthrough). On desktop it builds/reuses a local short-GOP scrub proxy for a
+ * big file on a network mount and, if one was produced, returns an Mp4Box backend
+ * opened on that frame-exact `.mp4`. Returns `null` to mean "no proxy — open the
+ * source normally", which is the outcome whenever the feature is off, the file
+ * isn't worth proxying, the frame-exact gate fails, the build errors/cancels, or
+ * we're not on desktop.
+ *
+ * It owns the SAME {@link useTranscodeStore} job UI the legacy transcode uses:
+ * {@link resolveScrubProxyOpenPath} starts + forwards progress, and this
+ * function's `finally` clears it exactly once (build OR fallback) — so mp4/mov
+ * opens, which previously showed no job, now show the shared conversion dialog
+ * while a proxy builds.
+ *
+ * INVARIANT: the `.slp`/Video ALWAYS records the ORIGINAL `path`. The proxy path
+ * is confined to the returned backend's byte source (and the backend keeps the
+ * original `name`); it is never written back to the Video.
+ */
+export async function openViaProxyOrNull(
+  path: string,
+  name: string,
+  deps: ProxyOpenDeps = defaultProxyOpenDeps,
+  cacheOnly = false
+): Promise<VideoBackend | null> {
+  if (!(await deps.isTauri())) return null; // proxy needs the ffmpeg sidecar
+  const store = deps.getStore();
+  const controller = new AbortController();
+  try {
+    const proxy = await deps.resolveProxy(
+      path,
+      name,
+      store,
+      controller,
+      undefined,
+      cacheOnly
+    );
+    return proxy.isProxy ? await deps.openProxyBackend(proxy.path, name) : null;
+  } catch (err) {
+    // Best-effort: a proxy must NEVER fail the open — open the source normally.
+    console.warn(`[video] scrub-proxy open failed for "${name}":`, err);
+    return null;
+  } finally {
+    store.endJob(); // clear the shared job UI on build OR fallback
+  }
+}
+
+/**
+ * At most one background proxy build at a time. Opening a DIFFERENT video aborts
+ * the previous build (the user isn't waiting on it); a repeat schedule for the
+ * SAME video (e.g. the backend gets assigned twice on open) is a no-op — it must
+ * NOT self-abort the in-flight build, which restarted it and looked like a stray
+ * "new" progress toast.
+ */
+let currentBackgroundProxyBuild: AbortController | null = null;
+let currentBackgroundProxyPath: string | null = null;
+
+/**
+ * Kick off a NON-BLOCKING scrub-proxy build for a freshly-opened decodable video
+ * and hot-swap the backend to the proxy when it's ready (scrub-proxy v2 Thread
+ * C). Fire-and-forget: the video already opened on its ORIGINAL backend, so this
+ * never delays the open. No-op when not on desktop, the kind can't be proxied,
+ * the feature is off, the file isn't worth proxying, or the proxy is already
+ * cached (in which case {@link openViaProxyOrNull} already opened it directly).
+ * Frame-exact → the swap re-reads the current frame with no visible jump.
+ */
+export async function scheduleBackgroundProxyBuild(
+  video: Video,
+  path: string
+): Promise<void> {
   const name = getBasename(path);
   const kind = backendKindForFilename(name);
-  if (kind === "mediabunny") {
-    return MediaBunnyVideoBackend.fromRangeSource(
-      await makeVideoRangeSource(path),
-      name
-    );
+  if (kind !== "mp4box" && kind !== "mediabunny" && kind !== "avi") return;
+  if (!useAppStore.getState().scrubProxyEnabled) return;
+  if (currentBackgroundProxyPath === path) return; // same video already in flight
+
+  const platform = await getPlatform();
+  if (!platform.isTauri) return; // proxy needs the bundled ffmpeg sidecar
+  if (currentBackgroundProxyPath === path) return; // re-check after the await
+
+  const td = createTauriTranscodeDeps();
+  let sizeBytes: number;
+  try {
+    ({ size: sizeBytes } = await td.stat(path));
+  } catch {
+    return; // can't stat the source → skip
   }
-  if (kind === "seq") {
-    const platform = await getPlatform();
-    return SeqVideoBackend.create(
-      new File([await platform.readFile(path)], name)
-    );
+  if (
+    !shouldBuildScrubProxy({
+      enabled: true,
+      isTauri: true,
+      path,
+      sizeBytes,
+      isExternalDecodableVideo: true,
+    })
+  ) {
+    return; // local / small / non-network → not worth a proxy
   }
-  // mp4box + unknown/extension-less names (historical mp4box default).
-  return new Mp4BoxVideoBackend(await makeVideoRangeSource(path), {
-    filename: name,
+  // Already cached? The open path opened the proxy directly — nothing to swap.
+  const cached = await ensureScrubProxyPath(path, td, {
+    cacheOnly: true,
+  }).catch(() => null);
+  if (!cached || cached.isProxy) return;
+
+  // Final dedupe re-check + claim with NO await between, so a concurrent
+  // schedule for the SAME video (e.g. the backend assigned twice on open) can't
+  // also start a build and self-abort this one.
+  if (currentBackgroundProxyPath === path) return;
+  // A DIFFERENT video → cancel its in-flight build, then claim this one.
+  currentBackgroundProxyBuild?.abort();
+  const controller = new AbortController();
+  currentBackgroundProxyBuild = controller;
+  currentBackgroundProxyPath = path;
+
+  const toastId = `scrub-proxy-${path}`;
+  let cancelled = false;
+  void runBackgroundProxySwap(video, name, controller, {
+    ensureProxy: ({ signal }) =>
+      ensureScrubProxyPath(path, td, {
+        signal,
+        // Non-blocking indicator (Kdenlive-style), NOT the modal transcode dialog.
+        onStart: () =>
+          toast.loading("Building scrub proxy…", {
+            id: toastId,
+            description: name,
+            cancel: {
+              label: "Cancel",
+              onClick: () => {
+                cancelled = true;
+                controller.abort();
+              },
+            },
+          }),
+        onProgress: (p) => {
+          // After Cancel, don't re-create the dismissed toast from buffered
+          // progress lines (which made a stray "new" ticking toast reappear).
+          if (cancelled) return;
+          toast.loading(
+            p.frame != null
+              ? `Building scrub proxy… (${p.frame} frames)`
+              : "Building scrub proxy…",
+            { id: toastId, description: name }
+          );
+        },
+      }),
+    openProxyBackend: async (proxyPath, n) =>
+      new Mp4BoxVideoBackend(await makeVideoRangeSource(proxyPath), {
+        filename: n,
+      }),
+    isStillActive: () => useAppStore.getState().video === video,
+    triggerReread: () => useAppStore.getState().bumpBackendSwapNonce(),
+    onBuildEnd: () => {
+      toast.dismiss(toastId);
+      if (currentBackgroundProxyBuild === controller) {
+        currentBackgroundProxyBuild = null;
+        currentBackgroundProxyPath = null;
+      }
+    },
+    onSwapped: () =>
+      toast.success("Faster scrubbing ready", { description: name }),
+  }).then((outcome) => {
+    if (outcome === "aborted" && cancelled) {
+      // One-shot confirmation (a fresh toast, not the dismissed build id).
+      toast("Scrub proxy build cancelled", { description: name });
+      console.info(`[scrub-proxy] build cancelled for "${name}"`);
+    }
   });
 }
 
 /**
- * Attach a freshly-built backend to a Video, probing frame 0 to validate decode
- * and capture shape/fps. Shared by the File and native-path entry points.
+ * Upgrade a freshly-opened MP4's on-main backend to io's off-main
+ * {@link WorkerMp4BoxBackend} (decode in a Web Worker) so seeks never freeze the
+ * GUI (off-main-thread decode, scrub-proxy v2 follow-up). Fire-and-forget: the
+ * video already opened on its on-main backend, so this never delays the open, and
+ * any failure / unsupported environment simply keeps that backend (a pure
+ * optimization). Guards against clobbering a Thread-C proxy that swaps in — the
+ * upgrade only applies if the video still has the exact backend it started from.
+ * Desktop-only for now (the byte source is the Tauri IPC `read_range`); browser
+ * wiring is a follow-up (the worker is the ONLY main-thread unblock there — no
+ * proxies in the browser).
+ */
+export async function scheduleWorkerDecodeUpgrade(
+  video: Video,
+  path: string
+): Promise<void> {
+  if (!isWorkerDecodeAvailable()) return;
+  const name = getBasename(path);
+  if (backendKindForFilename(name) !== "mp4box") return;
+  const platform = await getPlatform();
+  if (!platform.isTauri) return; // desktop wiring; browser is a follow-up
+  const original = video.backend;
+  if (!original) return;
+  await runWorkerDecodeUpgrade(original, path, name, {
+    isAvailable: isWorkerDecodeAvailable,
+    buildDescriptor: buildTauriByteSourceDescriptor,
+    createWorkerBackend: (params) => WorkerMp4BoxBackend.create(params),
+    isStillActive: () => useAppStore.getState().video === video,
+    currentBackend: () => video.backend,
+    swap: (backend) => {
+      video.backend = backend;
+    },
+    triggerReread: () => useAppStore.getState().bumpBackendSwapNonce(),
+    onUpgraded: () =>
+      console.info(`[offmain] worker decode active for "${name}"`),
+  });
+}
+
+/**
+ * Browser counterpart of {@link scheduleWorkerDecodeUpgrade}: upgrade a
+ * freshly-opened MP4's on-main backend to the off-main {@link WorkerMp4BoxBackend}.
+ * In a browser there are NO proxies, so the worker is the ONLY way to keep the UI
+ * responsive during decode. The worker's byte source is the `Blob` (sliced
+ * directly) or a ranged-URL fetch — no Tauri invoke key needed. No-ops on desktop
+ * (handled by the path-based scheduler) and on non-mp4/unsupported environments.
+ * Fire-and-forget; any failure keeps the on-main backend.
+ */
+export async function scheduleWorkerDecodeUpgradeBrowser(
+  video: Video,
+  source: Blob | string,
+  name: string,
+  headers?: Record<string, string>
+): Promise<void> {
+  if (!isWorkerDecodeAvailable()) return;
+  if (backendKindForFilename(name) !== "mp4box") return;
+  const platform = await getPlatform();
+  if (platform.isTauri) return; // desktop uses the path-based upgrade
+  const original = video.backend;
+  if (!original) return;
+
+  let byteSource: ByteSourceDescriptor | null = null;
+  if (typeof Blob !== "undefined" && source instanceof Blob) {
+    byteSource = buildBlobByteSourceDescriptor(source);
+  } else if (typeof source === "string") {
+    // Remote URL: the size comes from the backend's range-probe/parse so the
+    // worker's ranged reads never run past EOF (and the size-guard matches).
+    try {
+      const parse = await (
+        original as { getParseResult?: () => Promise<{ fileSize: number }> }
+      ).getParseResult?.();
+      if (!parse) return;
+      byteSource = buildUrlByteSourceDescriptor(
+        source,
+        headers ?? {},
+        parse.fileSize
+      );
+    } catch {
+      return;
+    }
+  }
+  if (!byteSource) return;
+  const descriptor = byteSource;
+
+  await runWorkerDecodeUpgrade(original, name, name, {
+    isAvailable: isWorkerDecodeAvailable,
+    buildDescriptor: async () => descriptor,
+    createWorkerBackend: (params) => WorkerMp4BoxBackend.create(params),
+    isStillActive: () => useAppStore.getState().video === video,
+    currentBackend: () => video.backend,
+    swap: (backend) => {
+      video.backend = backend;
+    },
+    triggerReread: () => useAppStore.getState().bumpBackendSwapNonce(),
+    onUpgraded: () =>
+      console.info(`[offmain] worker decode active (browser) for "${name}"`),
+  });
+}
+
+/**
+ * Build a backend that reads a native video path lazily by byte range, so a
+ * multi-GB external video is never read whole into memory (the desktop
+ * freeze/crash). MP4 → Mp4Box, the MediaBunny formats → MediaBunny, both via a
+ * {@link RangeSource}. `.seq` has no range backend and its files are small, so
+ * it falls back to a full read. AVI/WMV also read whole for now — web-demuxer
+ * 4.x can't stream from a lazy source, so {@link AviVideoBackend.fromRangeSource}
+ * materializes the bytes (true AVI byte-range streaming is a follow-up).
+ *
+ * DECODABLE external videos (mediabunny, mp4box, and decodable AVI/WMV) first go
+ * through {@link openViaProxyOrNull}: on desktop a big network-mounted file gets a
+ * local scrub proxy for fast seeking. The proxy path is used ONLY to open the
+ * backend — the Video keeps recording the ORIGINAL `path`.
+ */
+async function createBackendForPath(
+  path: string,
+  grayscale?: boolean | null,
+  hdf5?: Hdf5VideoHints
+): Promise<VideoBackend> {
+  const name = getBasename(path);
+  // An HDF5 container (`.pkg.slp` / `.h5`) used AS a video. Handled before the
+  // extension table because it isn't in it: `backendKindForFilename` returns
+  // null for `.slp`, which would fall through to the historical Mp4Box default
+  // at the bottom of this function and hand HDF5 bytes to an MP4 demuxer. The
+  // proxy / transcode machinery below is all media-container work that does not
+  // apply. See `hdf5VideoSource.ts`.
+  if (isHdf5VideoPath(name)) {
+    return createHdf5BackendForPath(path, hdf5, grayscale);
+  }
+  const kind = backendKindForFilename(name);
+  const backend = await (async () => {
+    if (kind === "mediabunny") {
+      // Decodable external video (MOV/MKV/WebM/Ogg/TS): on desktop, proxy a big
+      // network-mounted file for fast scrubbing, else open the source normally.
+      const proxied = await openViaProxyOrNull(path, name, undefined, true);
+      if (proxied) return proxied;
+      return MediaBunnyVideoBackend.fromRangeSource(
+        await makeVideoRangeSource(path),
+        name
+      );
+    }
+    if (kind === "avi") {
+      // Desktop legacy-codec fallback: probe the codec natively (ffprobe sidecar);
+      // if WebCodecs can't decode it (Xvid/DivX, WMV3/VC-1, MPEG-1/2, 10-bit HEVC)
+      // transcode it to a cached, frame-exact H.264 MP4 once and open THAT via the
+      // hardware Mp4Box path — fast seeking, no software-decode lag, and the source
+      // bytes never enter the WebView (native disk→disk). Decodable AVI/WMV
+      // (H.264/MJPEG) probe cheaply and fall through to AviVideoBackend unchanged.
+      // Requires the bundled ffmpeg/ffprobe sidecars (see src-tauri/binaries/); on
+      // ANY failure (no sidecar, undecodable-and-unencodable) we fall back to
+      // AviVideoBackend, which surfaces the graceful "transcode to H.264" message —
+      // the same behavior as the browser. The `.slp` keeps the ORIGINAL path.
+      const platform = await getPlatform();
+      if (platform.isTauri) {
+        const store = useTranscodeStore.getState();
+        const controller = new AbortController();
+        let durationMs: number | undefined;
+        try {
+          const result = await ensureDecodablePath(
+            path,
+            createTauriTranscodeDeps(),
+            {
+              signal: controller.signal,
+              // Opt-in: ask before converting a legacy codec (only on a cache
+              // miss — an already-converted video reopens silently). Declining
+              // falls through to AviVideoBackend's unsupported-codec message.
+              confirmTranscode: (info) =>
+                useTranscodePromptStore
+                  .getState()
+                  .confirm(path, name, info.codec),
+              onTranscodeStart: (info) => {
+                durationMs = info.durationMs;
+                store.startJob(name, () => controller.abort());
+              },
+              onProgress: (p) => {
+                const percent =
+                  durationMs && durationMs > 0 && p.outTimeMs !== undefined
+                    ? Math.min(100, (p.outTimeMs / durationMs) * 100)
+                    : null;
+                store.setProgress(percent, p.frame ?? null);
+              },
+            }
+          );
+          if (result.transcoded) {
+            toast.success(`Converted ${name}`);
+            return new Mp4BoxVideoBackend(
+              await makeVideoRangeSource(result.path),
+              { filename: name }
+            );
+          }
+          // Decodable original (H.264/MJPEG in an AVI/WMV container): only a
+          // legacy transcode above produced a local copy; this file did not, so
+          // try a local scrub proxy for fast network scrubbing (own job
+          // lifecycle). On any fallback, open the decodable original via
+          // AviVideoBackend below. The `.slp` keeps the ORIGINAL path.
+          const proxied = await openViaProxyOrNull(path, name, undefined, true);
+          if (proxied) return proxied;
+        } catch (err) {
+          if (controller.signal.aborted) {
+            // User canceled: don't silently fall back (that re-attempts the whole
+            // undecodable open) — surface a clean cancellation so the video is
+            // simply not added.
+            throw new Error(`Conversion canceled for ${name}`);
+          }
+          console.warn(
+            `[video] transcode fallback failed for "${name}":`,
+            err
+          );
+          // fall through to AviVideoBackend (graceful unsupported-codec message)
+        } finally {
+          store.endJob();
+        }
+      }
+      return AviVideoBackend.fromRangeSource(
+        await makeVideoRangeSource(path),
+        name
+      );
+    }
+    if (kind === "seq") {
+      const platform = await getPlatform();
+      return SeqVideoBackend.create(
+        new File([await platform.readFile(path)], name)
+      );
+    }
+    // mp4box + unknown/extension-less names (historical mp4box default).
+    if (kind === "mp4box") {
+      // Decodable `.mp4`: on desktop, proxy a big network-mounted file for fast
+      // scrubbing (this is the primary target case), else open normally. Unknown
+      // / extension-less names skip the proxy — we can't assume they're decodable.
+      const proxied = await openViaProxyOrNull(path, name, undefined, true);
+      if (proxied) return proxied;
+    }
+    return new Mp4BoxVideoBackend(await makeVideoRangeSource(path), {
+      filename: name,
+    });
+  })();
+  return grayscale === undefined
+    ? backend
+    : GrayscaleVideoBackend.wrap({ inner: backend, grayscale });
+}
+
+/**
+ * Copy the dataset the freshly-built HDF5 backend settled on back onto
+ * `backendMetadata.dataset`, so a save records WHICH video in the package this
+ * is. Needed when the dataset was auto-detected (Replace Video with a picked
+ * `.pkg.slp`, or an older `.slp` that stored no dataset) — without it the next
+ * load would have to guess again and could pick a different video from a
+ * multi-video package.
+ */
+function persistHdf5Dataset(video: Video): void {
+  const dataset = (video.backend as { dataset?: string | null } | null)?.dataset;
+  if (typeof dataset === "string" && dataset !== "") {
+    (video.backendMetadata as Record<string, unknown>).dataset = dataset;
+  }
+}
+
+/** Shared options for {@link assignVideoBackend} / {@link assignVideoBackendFromPath}. */
+export interface AssignBackendOptions {
+  silent?: boolean;
+  /**
+   * Force (`true`/`false`) grayscale on the newly-built backend, or leave it
+   * unset (`undefined`) to inherit whatever `video.backendMetadata.grayscale`
+   * already records (the round-trip case: reopening/relinking a video that
+   * was already flagged at add time). Passing an explicit value here always
+   * wins over — and re-persists into — `backendMetadata.grayscale`.
+   */
+  grayscale?: boolean | null;
+  /**
+   * Chooser used when the target is an HDF5 container (`.pkg.slp`/`.h5`) that
+   * holds SEVERAL videos and nothing recorded which one is wanted. Only the
+   * INTERACTIVE paths pass one (the user just picked the file, so a prompt is
+   * expected); auto-resolution on project load deliberately does not — those
+   * videos already carry a stored `dataset`, and a modal mid-load would stall
+   * the open. See {@link Hdf5VideoHints.pickDataset}.
+   */
+  pickHdf5Dataset?: (datasets: string[]) => Promise<string | null>;
+}
+
+/**
+ * Prompt for which video in a multi-video SLEAP package to read. Beyond
+ * {@link MAX_DATASET_CHOICES} the dialog would be a wall of buttons, so the
+ * first video is taken and the choice is stated instead of asked.
+ */
+export async function chooseHdf5Dataset(
+  datasets: string[]
+): Promise<string | null> {
+  const first = datasets[0] ?? null;
+  if (datasets.length > MAX_DATASET_CHOICES) {
+    toast.info(`Using ${groupLabel(first ?? "")} of this package`, {
+      description: `It holds ${datasets.length} videos; the first one was used.`,
+    });
+    return first;
+  }
+  return choiceDialog({
+    title: "Which video?",
+    message:
+      `This package holds ${datasets.length} videos. ` +
+      `Choose the one to read frames from.`,
+    options: datasets.map((d, i) => ({
+      key: d,
+      label: groupLabel(d),
+      primary: i === 0,
+    })),
+  });
+}
+
+/** How many videos in a package we are willing to render as choice buttons. */
+const MAX_DATASET_CHOICES = 8;
+
+/** `"video3/video"` -> `"video3"`, for display. */
+function groupLabel(dataset: string): string {
+  return dataset.replace(/\/video$/, "") || dataset;
+}
+
+/**
+ * The frame index to validate a freshly-built backend with. Frame 0 for a
+ * continuous video — but an HDF5 package normally embeds only the LABELED
+ * frames, so its first stored image can be at source frame 47,000 and
+ * `getFrame(0)` legitimately returns null. Probing 0 there would reject a
+ * perfectly good backend as undecodable, so probe the first frame the backend
+ * actually stores (its `frameNumbers`, populated by the deferred metadata read).
+ */
+async function firstProbeIndex(backend: VideoBackend): Promise<number> {
+  const b = backend as {
+    ensureLoaded?: () => Promise<void>;
+    frameNumbers?: number[];
+  };
+  if (typeof b.ensureLoaded !== "function") return 0;
+  try {
+    await b.ensureLoaded();
+  } catch {
+    return 0;
+  }
+  return b.frameNumbers?.[0] ?? 0;
+}
+
+/**
+ * Attach a freshly-built backend to a Video, probing a frame to validate decode
+ * and capture shape/fps (see {@link firstProbeIndex} for which frame). Shared by
+ * the File and native-path entry points.
  *
  * The frame-0 probe also guards SeqVideoBackend, which sets `shape` from the
  * header at create(): without a decode check a `.seq` with an undecodable codec
@@ -1222,19 +1947,34 @@ async function createBackendForPath(path: string): Promise<VideoBackend> {
  * black, error-free video. A failed probe nulls the backend and records WHY (so
  * the UI shows "unsupported codec" vs "not found") rather than leaving a
  * half-open backend that isVideoMissing would miscount as resolved.
+ *
+ * When `opts.grayscale` is given, it's persisted into `video.backendMetadata`
+ * on success — BEFORE `video.shape` is captured from the (already
+ * grayscale-wrapped) backend, so the frozen `video.shape` override reflects the
+ * forced channel count from the start (setting grayscale via a later
+ * `Video.grayscale` setter call would NOT correct an already-frozen shape).
  */
 async function probeAndAssignBackend(
   video: Video,
   create: () => Promise<VideoBackend>,
   name: string,
-  opts?: { silent?: boolean }
+  opts?: AssignBackendOptions
 ): Promise<boolean> {
   try {
     const backend = await create();
     video.backend = backend;
-    const frame = await backend.getFrame(0);
+    const probeIdx = await firstProbeIndex(backend);
+    const frame = await backend.getFrame(probeIdx);
     if (!frame) {
-      throw new Error("could not decode the first video frame");
+      throw new Error(
+        probeIdx === 0
+          ? "could not decode the first video frame"
+          : `could not decode frame ${probeIdx}`
+      );
+    }
+    if (opts?.grayscale !== undefined) {
+      (video.backendMetadata as Record<string, unknown>).grayscale =
+        opts.grayscale;
     }
     if (backend.shape) video.shape = backend.shape;
     if (backend.fps) video.fps = backend.fps;
@@ -1247,7 +1987,9 @@ async function probeAndAssignBackend(
     console.error(`Failed to load video backend for ${name}:`, err);
     video.backend = null;
     video.backendError = classifyVideoError(err);
-    if (!opts?.silent) {
+    // Backing out of the "which video in this package?" prompt is a choice, not
+    // a failure — leave the video as it was and say nothing.
+    if (!opts?.silent && !(err instanceof Hdf5DatasetPickCanceled)) {
       toast.error(`Failed to load video: ${name}`, {
         description: err instanceof Error ? err.message : String(err),
       });
@@ -1260,18 +2002,37 @@ async function probeAndAssignBackend(
  * Build the backend for a user-picked File and assign it (probing shape/fps).
  * Dispatches by extension (see {@link createBackendForFile}). Browser Files are
  * disk-backed, so slicing reads lazily — no whole-file copy needed here.
+ *
+ * `opts.grayscale`, when omitted, defaults to this video's already-persisted
+ * `backendMetadata.grayscale` (round-trip: reopening/relinking a video that was
+ * flagged grayscale at add time keeps behaving the same way).
  */
 export async function assignVideoBackend(
   video: Video,
   file: File,
-  opts?: { silent?: boolean }
+  opts?: AssignBackendOptions
 ): Promise<boolean> {
-  return probeAndAssignBackend(
+  const grayscale =
+    opts?.grayscale !== undefined
+      ? opts.grayscale
+      : (video.backendMetadata.grayscale as boolean | null | undefined);
+  const hdf5 = isHdf5VideoPath(file.name)
+    ? { ...hdf5HintsForVideo(video), pickDataset: opts?.pickHdf5Dataset }
+    : undefined;
+  const ok = await probeAndAssignBackend(
     video,
-    () => createBackendForFile(file),
+    () => createBackendForFile(file, grayscale, hdf5),
     file.name,
-    opts
+    { ...opts, grayscale }
   );
+  if (ok && hdf5) {
+    persistHdf5Dataset(video);
+    return ok; // HDF5 containers have no MP4 stream to hand the decode worker
+  }
+  // Browser: upgrade to off-main worker decode (the worker slices this Blob
+  // directly). No-ops on desktop / non-mp4. Fire-and-forget.
+  if (ok) void scheduleWorkerDecodeUpgradeBrowser(video, file, file.name);
+  return ok;
 }
 
 /**
@@ -1279,25 +2040,85 @@ export async function assignVideoBackend(
  * native file PATH via a lazy {@link RangeSource}, so opening a large external
  * video reads only the container index + the viewed frames instead of the whole
  * file. Use this on every Tauri path where the alternative is `readFile(path)`.
+ *
+ * `opts.grayscale` defaults the same way as {@link assignVideoBackend}.
  */
 export async function assignVideoBackendFromPath(
   video: Video,
   path: string,
-  opts?: { silent?: boolean }
+  opts?: AssignBackendOptions
 ): Promise<boolean> {
-  return probeAndAssignBackend(
+  const grayscale =
+    opts?.grayscale !== undefined
+      ? opts.grayscale
+      : (video.backendMetadata.grayscale as boolean | null | undefined);
+  const hdf5 = isHdf5VideoPath(path)
+    ? { ...hdf5HintsForVideo(video), pickDataset: opts?.pickHdf5Dataset }
+    : undefined;
+  const ok = await probeAndAssignBackend(
     video,
-    () => createBackendForPath(path),
+    () => createBackendForPath(path, grayscale, hdf5),
     getBasename(path),
-    opts
+    { ...opts, grayscale }
   );
+  if (ok && hdf5) {
+    persistHdf5Dataset(video);
+    // Everything below is media-container work — a scrub proxy, an off-main MP4
+    // decode worker, the transcode cache — none of which applies to embedded
+    // images read straight out of HDF5.
+    return ok;
+  }
+  // The video is open on its original (or cached-proxy) backend; if a first-build
+  // proxy is warranted, build it in the background and hot-swap when ready — never
+  // blocks the open (scrub-proxy v2 Thread C). Fire-and-forget.
+  if (ok) {
+    void scheduleBackgroundProxyBuild(video, path);
+    // Also upgrade the ON-MAIN backend to off-main worker decode so seeks never
+    // freeze the GUI. Guarded (matches the exact backend + file size) so it never
+    // fights the proxy swap or corrupts a cached-proxy backend. Fire-and-forget.
+    void scheduleWorkerDecodeUpgrade(video, path);
+    // Keep the on-disk transcode/proxy cache under its hard cap (evicting old,
+    // never-in-use entries). Fire-and-forget; runs after every desktop open.
+    void enforceVideoCacheCap();
+  }
+  return ok;
+}
+
+/**
+ * URL counterpart of {@link assignVideoBackendFromPath}: build the backend from
+ * an http(s) URL via io's {@link createVideoBackend}, which lazily HTTP-Range-
+ * streams the remote file (MP4 via Mp4Box, others via MediaBunny.fromUrl) — so
+ * adding a remote video never downloads it whole. The URL is the canonical
+ * filename, so a public/presigned URL re-streams on project reload.
+ */
+export async function assignVideoBackendFromUrl(
+  video: Video,
+  url: string,
+  opts?: AssignBackendOptions
+): Promise<boolean> {
+  const grayscale =
+    opts?.grayscale !== undefined
+      ? opts.grayscale
+      : (video.backendMetadata.grayscale as boolean | null | undefined);
+  const ok = await probeAndAssignBackend(
+    video,
+    () => createVideoBackend(url, { grayscale }),
+    getBasename(url),
+    { ...opts, grayscale }
+  );
+  // Browser: upgrade to off-main worker decode (the worker does ranged fetches
+  // against this URL). No-ops on desktop / non-mp4. Fire-and-forget.
+  if (ok) void scheduleWorkerDecodeUpgradeBrowser(video, url, getBasename(url));
+  return ok;
 }
 
 /**
  * Standalone-video file extensions we can decode, mapped to the sleap-io.js
  * backend that handles each. MP4 → Mp4Box; WebM/MKV/MOV/Ogg/MPEG-TS →
- * MediaBunny; Norpix `.seq` → SeqVideoBackend. `.avi` is intentionally absent
- * (no sleap-io.js backend decodes it).
+ * MediaBunny; AVI/WMV → AviVideoBackend (web-demuxer + WebCodecs/ImageDecoder);
+ * Norpix `.seq` → SeqVideoBackend. `.avi`/`.wmv` decode container-first: their
+ * H.264/MJPEG payloads play, while a codec WebCodecs can't handle (Xvid/DivX,
+ * WMV3/VC-1) surfaces the AviVideoBackend's "transcode to H.264" error later.
  */
 const BACKEND_BY_EXT = {
   mp4: "mp4box",
@@ -1307,8 +2128,16 @@ const BACKEND_BY_EXT = {
   ogg: "mediabunny",
   ogv: "mediabunny",
   ts: "mediabunny",
+  avi: "avi",
+  wmv: "avi",
+  // MPEG program streams: demuxed by the same web-demuxer backend. Their
+  // MPEG-1/2 payload isn't WebCodecs-decodable, so in the browser they surface
+  // the graceful "transcode to H.264" message; on desktop the transcode
+  // fallback (createBackendForPath) converts + plays them.
+  mpeg: "avi",
+  mpg: "avi",
   seq: "seq",
-} as const satisfies Record<string, "mp4box" | "mediabunny" | "seq">;
+} as const satisfies Record<string, "mp4box" | "mediabunny" | "avi" | "seq">;
 
 type StandaloneBackendKind = (typeof BACKEND_BY_EXT)[keyof typeof BACKEND_BY_EXT];
 
@@ -1338,28 +2167,77 @@ export function backendKindForFilename(
 }
 
 /**
- * Build a new standalone Video from a user-picked file, dispatching by
- * extension via {@link assignVideoBackend} (which probes shape/fps). Supports
- * every {@link SUPPORTED_VIDEO_EXTS} format (MP4/WebM/MKV/MOV/Ogg/MPEG-TS/.seq);
- * unsupported formats (e.g. `.avi`) are rejected with a toast and return null.
- * Returns null on decode failure too (assignVideoBackend already surfaces the
- * error).
+ * True when `url` is a fetchable http(s)/blob/data URL pointing at a supported
+ * video format. Strips `?query`/`#hash` first so presigned links
+ * (`…/clip.mp4?X-Amz-Signature=…`) resolve by their real extension. Used to gate
+ * the "Add video from URL" flow. Pure.
  */
-export async function buildStandaloneVideo(file: File): Promise<Video | null> {
-  if (!backendKindForFilename(file.name)) {
+export function isSupportedVideoUrl(url: string): boolean {
+  if (!isFetchableUrl(url)) return false;
+  const path = url.split(/[?#]/)[0];
+  return backendKindForFilename(path) !== null;
+}
+
+/**
+ * Build a new standalone Video from a user-picked file, dispatching by
+ * extension (probing shape/fps). Supports every {@link SUPPORTED_VIDEO_EXTS}
+ * format; unsupported formats are rejected with a toast and return null.
+ *
+ * On desktop pass `absPath` (the file's absolute path): the backend is opened
+ * BY PATH via {@link assignVideoBackendFromPath} — a lazy byte-range read plus
+ * the native codec probe + transcode fallback for legacy codecs
+ * ({@link createBackendForPath}). So a large legacy `.avi`/`.wmv`/`.mpeg` is
+ * never read whole into memory, and Xvid/WMV/MPEG-1/2 convert-and-play instead
+ * of failing. In the browser (no `absPath`) the picked File is opened directly.
+ * Returns null on decode failure too (the assign helpers surface the error).
+ *
+ * `grayscale`, when given, forces (`true`) or preserves (`false`) channels on
+ * this new video and persists the choice into `backendMetadata.grayscale` —
+ * the import dialog's per-file/bulk checkbox (mirroring the legacy Qt GUI's
+ * "Import Videos" dialog). Omit it to add the video unflagged (today's
+ * behavior, unchanged).
+ */
+export async function buildStandaloneVideo(
+  file: File,
+  absPath?: string | null,
+  grayscale?: boolean
+): Promise<Video | null> {
+  // `.pkg.slp`/`.h5` are video sources too (their frames are embedded-image
+  // datasets, not a media stream), so they pass the gate even though they are
+  // deliberately absent from the media-import extension table.
+  if (!backendKindForFilename(file.name) && !isHdf5VideoPath(file.name)) {
     const ext = fileExt(file.name);
     toast.error(`${ext ? `.${ext} files are` : "This file is"} not supported`, {
       description:
-        "Supported video formats: MP4, WebM, MKV, MOV, Ogg, MPEG-TS, and Norpix .seq.",
+        "Supported video formats: MP4, WebM, MKV, MOV, Ogg, MPEG-TS, AVI, WMV, " +
+        "MPEG, Norpix .seq, and SLEAP packages (.pkg.slp) / HDF5 (.h5).",
     });
     return null;
   }
-  const video = new Video({ filename: file.name, openBackend: false });
-  await assignVideoBackend(video, file);
-  // assignVideoBackend sets shape only on a successful probe (and toasts on
+  // Desktop opens by path (canonical filename = the path, so it resolves on
+  // reload); browser opens from the File (filename = the bare name).
+  const video = new Video({ filename: absPath ?? file.name, openBackend: false });
+  const opts = { grayscale, pickHdf5Dataset: chooseHdf5Dataset };
+  if (absPath) {
+    await assignVideoBackendFromPath(video, absPath, opts);
+  } else {
+    await assignVideoBackend(video, file, opts);
+  }
+  // The assign helpers set shape only on a successful frame probe (and toast on
   // failure); a missing shape means the backend never initialized.
   if (!video.shape) return null;
   return video;
+}
+
+/** Options for {@link pickVideoFiles}. */
+export interface PickVideoFilesOptions {
+  /**
+   * The filename of the video being RELINKED (Replace Video / locate), which
+   * widens the dialog filter to every relinkable source and puts that video's
+   * own extension first — see {@link locateVideoFilters}. Omit for a plain
+   * import.
+   */
+  relinking?: string | string[] | null;
 }
 
 /** A picked video file plus its absolute path (Tauri) or null (browser). */
@@ -1373,15 +2251,24 @@ export interface PickedVideoFile {
  * Open a multi-select video file picker and return normalized File objects.
  * Browser yields File(s) directly; Tauri yields path(s), read into File via
  * platform.readFile. Accepts every format in {@link SUPPORTED_VIDEO_EXTS}
- * (MP4/WebM/MKV/MOV/Ogg/MPEG-TS/.seq).
+ * (MP4/WebM/MKV/MOV/Ogg/MPEG-TS/AVI/WMV/.seq), plus — when `opts.relinking`
+ * names the video being replaced — the HDF5 containers a `.slp` can point at
+ * ({@link locateVideoFilters}).
  * Returns [] if the user cancels. Shared by the Videos panel
  * ({@link pickAndAddVideos}) and the New Project dialog (#138).
  */
-export async function pickVideoFiles(): Promise<PickedVideoFile[]> {
+export async function pickVideoFiles(
+  opts?: PickVideoFilesOptions
+): Promise<PickedVideoFile[]> {
   const platform = await getPlatform();
   const result = await platform.showOpenDialog({
     multiple: true,
-    filters: [{ name: "Video files", extensions: [...SUPPORTED_VIDEO_EXTS] }],
+    // Relinking an existing video (Replace Video) also offers the HDF5
+    // containers a `.slp` can reference; a plain import stays media-only so a
+    // picked `.slp` keeps meaning "open this project".
+    filters: opts?.relinking
+      ? locateVideoFilters(opts.relinking)
+      : [{ name: "Video files", extensions: [...SUPPORTED_VIDEO_EXTS] }],
   });
   if (!result) return []; // cancelled
 
@@ -1389,19 +2276,14 @@ export async function pickVideoFiles(): Promise<PickedVideoFile[]> {
   const files: PickedVideoFile[] = [];
   for (const item of picked) {
     if (typeof item === "string") {
-      // Tauri: got a path — read bytes into a File (mirrors resolveVideoFile).
-      try {
-        const bytes = await platform.readFile(item);
-        files.push({
-          file: new File([bytes], getBasename(item), { type: "video/mp4" }),
-          absPath: item,
-        });
-      } catch (err) {
-        console.error(`[video] Failed to read "${item}":`, err);
-        toast.error(`Failed to read ${getBasename(item)}`, {
-          description: err instanceof Error ? err.message : String(err),
-        });
-      }
+      // Tauri: DON'T read the bytes here — the backend opens by PATH (lazy
+      // byte-range + transcode fallback via buildStandaloneVideo/absPath), so a
+      // multi-GB legacy video is never materialized into memory. Carry just the
+      // name (for the format gate) + the absolute path.
+      files.push({
+        file: new File([], getBasename(item), { type: "video/mp4" }),
+        absPath: item,
+      });
     } else {
       files.push({ file: item, absPath: null });
     }
@@ -1410,19 +2292,93 @@ export async function pickVideoFiles(): Promise<PickedVideoFile[]> {
 }
 
 /**
+ * Filter dropped browser `File`s down to supported videos, as PickedVideoFiles
+ * (browser path: no absPath). Used by the drag-and-drop dropzone; `.slp` and
+ * other non-video files are dropped. Pure — the extension table is unit-tested.
+ */
+export function pickedFromFiles(files: File[]): PickedVideoFile[] {
+  return files
+    .filter((f) => backendKindForFilename(f.name))
+    .map((f) => ({ file: f, absPath: null }));
+}
+
+/**
+ * Filter dropped desktop file PATHS down to supported videos, as by-path
+ * PickedVideoFiles (Tauri opens by path — no bytes read here). Non-video paths
+ * (e.g. a dropped `.slp`, handled separately by the welcome-screen opener) are
+ * dropped. Pure.
+ */
+export function pickedFromPaths(paths: string[]): PickedVideoFile[] {
+  return paths
+    .filter((p) => backendKindForFilename(p))
+    .map((p) => ({
+      file: new File([], getBasename(p), { type: "video/mp4" }),
+      absPath: p,
+    }));
+}
+
+/**
  * Build a standalone Video from a picked file and append it to labels (NO
  * reindex — callers batch a single labels.reindex() after adding all videos).
  * On Tauri, the absolute path becomes the canonical filename so the video
  * resolves on reload. Returns the Video, or null if unsupported/decode failed
  * (already toasted). Used by both the Videos panel and the New Project dialog.
+ *
+ * `grayscale` is forwarded to {@link buildStandaloneVideo} — see its doc.
  */
 export async function addVideoFileToLabels(
   labels: Labels,
-  picked: PickedVideoFile
+  picked: PickedVideoFile,
+  grayscale?: boolean
 ): Promise<Video | null> {
-  const video = await buildStandaloneVideo(picked.file);
+  const video = await buildStandaloneVideo(
+    picked.file,
+    picked.absPath,
+    grayscale
+  );
   if (!video) return null;
-  if (picked.absPath) video.filename = picked.absPath;
+  labels.addVideo(video);
+  return video;
+}
+
+/**
+ * Build a standalone Video that streams from an http(s) URL (public or
+ * presigned). Rejects (with a toast) a non-URL or unsupported-format URL via
+ * {@link isSupportedVideoUrl}; returns null on decode failure too (already
+ * toasted). The URL is stored as the Video's canonical filename, so the
+ * reference is portable — the project re-streams it on reload with no path
+ * repointing (for authenticated providers, re-auth-on-open is a later phase).
+ */
+export async function buildStandaloneVideoFromUrl(
+  url: string,
+  grayscale?: boolean
+): Promise<Video | null> {
+  if (!isSupportedVideoUrl(url)) {
+    toast.error("Unsupported or invalid video URL", {
+      description:
+        "Enter an http(s) URL ending in a supported video file (MP4, WebM, MKV, MOV, Ogg, MPEG-TS, AVI, WMV, MPEG). A presigned URL with a ?query is fine.",
+    });
+    return null;
+  }
+  const video = new Video({ filename: url, openBackend: false });
+  await assignVideoBackendFromUrl(video, url, { grayscale });
+  // probeAndAssignBackend sets shape only on a successful frame-0 probe.
+  if (!video.shape) return null;
+  return video;
+}
+
+/**
+ * Build a URL-backed standalone Video and append it to labels (NO reindex —
+ * callers batch a single labels.reindex()). Returns the Video, or null if the
+ * URL is unsupported / failed to open (already toasted).
+ */
+export async function addVideoUrlToLabels(
+  labels: Labels,
+  url: string,
+  grayscale?: boolean
+): Promise<Video | null> {
+  const video = await buildStandaloneVideoFromUrl(url, grayscale);
+  if (!video) return null;
   labels.addVideo(video);
   return video;
 }
@@ -1446,4 +2402,61 @@ export async function pickAndAddVideos(labels: Labels): Promise<Video[]> {
   }
   if (added.length > 0) labels.reindex();
   return added;
+}
+
+/**
+ * Desktop-only: size of the on-disk legacy-codec transcode cache
+ * ({@link getTranscodeCacheInfo}). `{ count: 0, bytes: 0 }` when empty/absent.
+ */
+export function videoTranscodeCacheInfo() {
+  return getTranscodeCacheInfo(createTauriTranscodeDeps());
+}
+
+/**
+ * Desktop-only: delete every cached transcode (regenerable from the originals);
+ * returns what was freed. Powers the "Clear video transcode cache" menu action.
+ */
+export function clearVideoTranscodeCache() {
+  return clearTranscodeCache(createTauriTranscodeDeps());
+}
+
+/**
+ * Cache keys of the currently-open videos, so cap-enforcement never evicts a
+ * transcode/proxy an open video is decoding from. A video's cache files are all
+ * named `<key>…`, so passing keys (not full paths) covers both its transcode
+ * (`<key>.mp4`) and its proxy (`<key>-proxy-g<gop>.mp4`) regardless of GOP.
+ */
+async function openVideoCacheKeys(deps: TranscodeDeps): Promise<Set<string>> {
+  const keys = new Set<string>();
+  const videos = useAppStore.getState().labels?.videos ?? [];
+  for (const v of videos) {
+    const name = Array.isArray(v.filename) ? v.filename[0] ?? "" : v.filename;
+    if (!name) continue;
+    try {
+      const { size, mtimeMs } = await deps.stat(name);
+      keys.add(computeCacheKey(name, size, mtimeMs));
+    } catch {
+      /* unresolved/remote path — no local cache file to protect */
+    }
+  }
+  return keys;
+}
+
+/**
+ * Desktop-only, best-effort: bound the on-disk video cache (transcodes + scrub
+ * proxies) to {@link DEFAULT_VIDEO_CACHE_CAP_BYTES}, auto-evicting the
+ * least-recently-built entries — but never one an open video is using. Called
+ * fire-and-forget after a video opens, so the cache stays bounded across sessions
+ * without the user ever having to hit "Clear video transcode cache".
+ */
+export async function enforceVideoCacheCap(): Promise<void> {
+  const platform = await getPlatform();
+  if (!platform.isTauri) return; // no on-disk cache in the browser
+  const deps = createTauriTranscodeDeps();
+  try {
+    const protectedKeys = await openVideoCacheKeys(deps);
+    await enforceCacheCap(deps, DEFAULT_VIDEO_CACHE_CAP_BYTES, protectedKeys);
+  } catch {
+    /* cache maintenance is best-effort — never surface to the user */
+  }
 }

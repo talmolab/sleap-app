@@ -6,7 +6,7 @@ authors = ["SLEAP"]
 license = "BSD-3-Clause"
 repository = "https://github.com/talmolab/sleap-app"
 edition = "2021"
-rust-version = "1.77.2"
+rust-version = "1.91"
 
 [lib]
 name = "app_lib"
@@ -29,6 +29,36 @@ tauri-plugin-dialog = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+# For update_channels.rs: UpdaterBuilder::endpoints() takes a Vec<url::Url>, so
+# `url` needs to be a direct dependency to name that type (it's already pulled
+# in transitively by tauri-plugin-updater).
+url = "2"
+# For update_channels.rs: the "latest" channel resolves dynamically via the
+# GitHub Releases API (whichever non-draft release/pre-release is newest AND
+# actually has a latest.json asset), rather than a CI-maintained rolling
+# release. reqwest itself is already pulled in transitively (by
+# tauri-plugin-updater and the webrtc stack), so this adds no new CRATE to
+# resolve -- but default-features MUST stay disabled: enabling them here
+# would additionally turn on reqwest's http2/http3 support repo-wide (Cargo
+# unifies features across the whole dependency graph), pulling in the quinn
+# QUIC stack and its aws-lc-sys backend -- which needs `cmake` to build --
+# for a plain JSON GET this module never needed.
+reqwest = { version = "0.13", default-features = false, features = ["json"] }
+# For update_channels.rs: parses/compares release tags as real semver
+# versions (excludes non-version-tagged releases like `dev` from
+# "latest" candidacy, rather than relying on them sorting low by accident).
+# Already pulled in transitively by tauri-plugin-updater.
+semver = "1"
+# For lib.rs's startup rustls::crypto::ring::default_provider().install_default()
+# call: reqwest's rustls backend needs a process-wide default CryptoProvider
+# installed before its first TLS handshake or it panics. Already resolved
+# transitively at 0.23 with the "ring" backend (tauri-plugin-updater's own
+# reqwest usage pulls it in), so naming it directly here adds no new crate to
+# the build -- BUT default-features MUST stay disabled and only "ring"
+# enabled: rustls's own defaults pull in "aws_lc_rs", which (like reqwest's
+# http2/http3 features above) needs cmake to build aws-lc-sys -- a second,
+# unused crypto backend we don't want just to call one install fn.
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 
 # SPIKE (spike/tauri-localhost-origin): serve the frontend over a real
 # http://localhost origin instead of the tauri:// custom scheme. On macOS,
@@ -68,3 +98,4 @@ tokio = { version = "1", features = ["sync", "time", "macros"] }
 futures-util = "0.3"
 urlencoding = "2"
 dirs = "6"
+iroh = "1.3.0"

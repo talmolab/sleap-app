@@ -41,6 +41,10 @@ fn main() {
                     // environment (uv / python / training)
                     "detect_uv",
                     "detect_gpu",
+                    "detect_accelerator",
+                    "detect_sleap_nn_extras",
+                    "gpu_stats",
+                    "check_wandb_auth",
                     "list_uv_tools",
                     "list_python_interpreters",
                     "list_downloadable_pythons",
@@ -53,6 +57,8 @@ fn main() {
                     "run_python_command",
                     "cancel_command",
                     "export_nwb",
+                    "start_overlay_serve",
+                    "stop_overlay_serve",
                     "start_zmq_relay",
                     "send_training_stop",
                     "stop_zmq_relay",
@@ -64,6 +70,17 @@ fn main() {
                     "rtc_send",
                     "rtc_disconnect_worker",
                     "rtc_leave_room",
+                    // iroh (remote inference, protocol-v1 transport)
+                    "iroh_connect",
+                    "iroh_send",
+                    "iroh_disconnect",
+                    // iroh blob range reads (item 2.4, job-result blobs)
+                    "iroh_blob_open",
+                    "iroh_blob_read_range",
+                    "iroh_blob_close",
+                    // self-update channels
+                    "check_update",
+                    "install_update",
                 ])
                 .default_permission(DefaultPermissionRule::AllowAllCommands),
         ),

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
-interface LogEntry {
+export interface LogEntry {
   timestamp: number;
   level: "log" | "warn" | "error" | "info" | "debug";
   args: string;
@@ -11,6 +11,27 @@ const MAX_ENTRIES = 500;
 /** Global log buffer that persists across re-renders. */
 const logBuffer: LogEntry[] = [];
 const listeners = new Set<() => void>();
+
+/**
+ * Optional sinks notified of every intercepted log entry (in addition to the
+ * in-memory ring buffer). The diagnostics session-log uses this to tee the
+ * console trace to a durable on-disk file — see {@link import("@/lib/diagnostics/sessionLog")}.
+ */
+export type LogSink = (entry: LogEntry) => void;
+const sinks = new Set<LogSink>();
+
+/** Register a sink for intercepted log entries. Returns an unsubscribe fn. */
+export function registerLogSink(sink: LogSink): () => void {
+  sinks.add(sink);
+  return () => {
+    sinks.delete(sink);
+  };
+}
+
+/** A snapshot of the in-memory console log buffer (oldest → newest). */
+export function getLogEntries(): readonly LogEntry[] {
+  return logBuffer.slice();
+}
 
 function pushLog(level: LogEntry["level"], args: unknown[]) {
   const entry: LogEntry = {
@@ -30,6 +51,15 @@ function pushLog(level: LogEntry["level"], args: unknown[]) {
   logBuffer.push(entry);
   if (logBuffer.length > MAX_ENTRIES) logBuffer.splice(0, logBuffer.length - MAX_ENTRIES);
   listeners.forEach((fn) => fn());
+  // Tee to durable sinks (e.g. the diagnostics disk log). Never let a sink
+  // failure break logging or re-enter the interceptor.
+  sinks.forEach((sink) => {
+    try {
+      sink(entry);
+    } catch {
+      /* swallow — a broken sink must not break the app's console */
+    }
+  });
 }
 
 /** Install console interceptors once. */

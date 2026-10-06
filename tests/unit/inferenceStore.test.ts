@@ -1,19 +1,21 @@
 import { describe, it, expect, beforeEach } from "../bun-test";
-import { useInferenceStore, mergeStrategyForPipeline } from "@/stores/inferenceStore";
+import { useInferenceStore, existingPredictionsForPipeline } from "@/stores/inferenceStore";
 
 function resetStore() {
   useInferenceStore.setState(useInferenceStore.getInitialState());
 }
 
-describe("mergeStrategyForPipeline", () => {
-  it("replaces predicted centroids for the locator pipeline (refresh, don't accumulate)", () => {
-    expect(mergeStrategyForPipeline("centroid")).toBe("replace_predictions");
+describe("existingPredictionsForPipeline", () => {
+  it("never appends for the locator pipeline (refresh predicted centroids, don't accumulate)", () => {
+    expect(existingPredictionsForPipeline("centroid", "keep")).toBe("replace");
+    expect(existingPredictionsForPipeline("centroid", "replace")).toBe("replace");
+    expect(existingPredictionsForPipeline("centroid", "clear_all")).toBe("clear_all");
   });
 
-  it("keeps io's auto strategy for pose pipelines", () => {
-    expect(mergeStrategyForPipeline("top-down")).toBe("auto");
-    expect(mergeStrategyForPipeline("bottom-up")).toBe("auto");
-    expect(mergeStrategyForPipeline("single-animal")).toBe("auto");
+  it("honors the requested mode for pose pipelines", () => {
+    expect(existingPredictionsForPipeline("top-down", "keep")).toBe("keep");
+    expect(existingPredictionsForPipeline("bottom-up", "replace")).toBe("replace");
+    expect(existingPredictionsForPipeline("single-animal", "clear_all")).toBe("clear_all");
   });
 });
 

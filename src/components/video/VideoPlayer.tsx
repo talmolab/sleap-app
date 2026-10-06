@@ -17,6 +17,7 @@ import { Seekbar } from "./Seekbar";
 import { ContextMenu } from "./ContextMenu";
 import { SkeletonBuildBar } from "./SkeletonBuildBar";
 import { AnchorPickBar } from "./AnchorPickBar";
+import { TransposePickBar } from "./TransposePickBar";
 import {
   renderInstances,
   renderCentroids,
@@ -33,12 +34,23 @@ import {
   nodesInRect,
   makeNodeKey,
   parseNodeKey,
+  COMPLETE_COLOR,
+  INCOMPLETE_COLOR,
+  UNCOLORED_PREDICTED_NODE_COLOR,
   type RenderedInstance,
   type RenderedNode,
 } from "../../canvas/SkeletonRenderer";
 import { instanceVisible, instanceShowsNonVisible } from "@/lib/instanceVisibility";
+import { formatShortcut } from "@/lib/formatShortcut";
 import { useQcVisibility } from "@/hooks/useQcVisibility";
-import { getPaletteColor, getInstanceColor, rgbToCSS } from "../../lib/colorPalettes";
+import {
+  getPaletteColor,
+  getInstanceColor,
+  rgbToCSS,
+  hasAssignedTracks,
+  resolveColorTarget,
+} from "../../lib/colorPalettes";
+import { getActiveTrackOverrides } from "../../lib/trackColorOverrides";
 import { COLORMAPS } from "../../lib/colormaps";
 import { renderTrails } from "../../canvas/TrailRenderer";
 import {
@@ -67,7 +79,8 @@ import { toImageCoords, toSourceCoords } from "@/lib/cropTransform";
 import { suggestionPrefetchTargets } from "@/lib/navigableFrames";
 import { acceptAndAdvanceCorrection } from "@/lib/activeLearning/correctionActions";
 import { relinkCentroids } from "@/lib/activeLearning/centroidPairing";
-import { shouldPrefetch } from "@/lib/videoPrefetch";
+import { shouldPrefetch, shouldDecodeAhead } from "@/lib/videoPrefetch";
+import { expandFrameBytesToRGBA, inferFrameChannels } from "@/lib/videoExport";
 import {
   isVideoMissing,
   resolveVideoFile,
@@ -76,8 +89,11 @@ import {
   relocateMissingImageFrames,
 } from "../../lib/resolveVideos";
 import { toast } from "@/lib/notify";
+import { hintIfPredictionsRemain, hintIfFirstNodeConfirm } from "@/lib/labelingHints";
+import { setLabelsAutosaveInteracting } from "@/lib/labelsAutosave";
 import { spacePanState } from "@/lib/spacePanTracking";
 import { getPlatform, isTauri } from "@/platform/index";
+import { spawnOverlayServe, killOverlayServe, detectGpu } from "@/platform/backend";
 import { Film, Frame, Hand, ImageOff, MousePointer2, Tag } from "lucide-react";
 
 /**
@@ -115,12 +131,19 @@ export function VideoPlayer() {
   const frameCanvasRef = useRef<HTMLCanvasElement>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
   const insetCanvasRef = useRef<HTMLCanvasElement>(null);
+  // Model-output overlay (confidence-map heatmap) layer — above the video image,
+  // below the skeleton overlay. Fed by the warm sleap-nn overlay sidecar.
+  const heatmapCanvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const crosshairRef = useRef<HTMLDivElement>(null);
 
   // State from store
   const video = useAppStore((s) => s.video);
   const frameIdx = useAppStore((s) => s.frameIdx);
+  // Re-read the current frame when a background scrub-proxy build hot-swaps the
+  // backend (scrub-proxy v2 Thread C); frame-exact so the same frameIdx repaints
+  // seamlessly from the proxy.
+  const backendSwapNonce = useAppStore((s) => s.backendSwapNonce);
   const labels = useAppStore((s) => s.labels);
   const selectedInstance = useAppStore((s) => s.instance);
   // Phase-3 correction selectors, declared early so BOTH the render effect's
@@ -138,13 +161,26 @@ export function VideoPlayer() {
   const viewOnlyInstance = useAppStore((s) => s.viewOnlyInstance);
   const showNonVisibleOverride = useAppStore((s) => s.showNonVisibleOverride);
   const colorPredicted = useAppStore((s) => s.colorPredicted);
+  const showTrackScore = useAppStore((s) => s.showTrackScore);
   const fit = useAppStore((s) => s.fit);
   const edgeStyle = useAppStore((s) => s.edgeStyle);
   const markerSize = useAppStore((s) => s.markerSize);
   const nodeLabelSize = useAppStore((s) => s.nodeLabelSize);
   const palette = useAppStore((s) => s.palette);
+  const trackColorOverrides = useAppStore((s) =>
+    getActiveTrackOverrides(s.trackColorOverrides, s.projectPath, s.filename),
+  );
   const overlayVersion = useAppStore((s) => s.overlayVersion);
+  const editSeq = useAppStore((s) => s.editSeq);
   const distinctlyColor = useAppStore((s) => s.distinctlyColor);
+  // Live "auto" color-mode input: recomputed whenever a new project loads
+  // (labels identity change) or any edit lands (editSeq bump, e.g. a track
+  // gets assigned/unassigned) — see resolveColorTarget().
+  const projectHasTracks = useMemo(
+    () => hasAssignedTracks(labels),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [labels, editSeq]
+  );
   const trailLength = useAppStore((s) => s.trailLength);
   const lutMin = useAppStore((s) => s.lutMin);
   const lutMax = useAppStore((s) => s.lutMax);
@@ -185,6 +221,8 @@ export function VideoPlayer() {
     if (hi <= lo) hi = Math.min(255, lo + 1);
     return [lo, hi] as [number, number];
   }, [frameHistogram]);
+  const overlayModelOutputs = useAppStore((s) => s.overlayModelOutputs);
+  const overlayModelPaths = useAppStore((s) => s.overlayModelPaths);
   const defaultToPan = useAppStore((s) => s.defaultToPan);
   const fitSelection = useAppStore((s) => s.fitSelection);
   const resetViewNonce = useAppStore((s) => s.resetViewNonce);
@@ -203,10 +241,13 @@ export function VideoPlayer() {
   const builderPositions = useAppStore((s) => s.builderPositions);
   // Top-down anchor-part picker (Training panel): click a node to select it.
   const pickingAnchor = useAppStore((s) => s.pickingAnchor);
+  // Multi-instance transpose picker: click instances to select the pair to swap.
+  const instanceSequencePick = useAppStore((s) => s.instanceSequencePick);
   // Persistent anchor crop preview (Training panel "Preview" toggle) — shown
   // independently of pick mode/hover, for every instance on the current frame.
   const anchorPreviewActive = useAppStore((s) => s.anchorPreviewActive);
   const anchorPreviewNode = useAppStore((s) => s.anchorPreviewNode);
+  const anchorPreviewCropSize = useAppStore((s) => s.anchorPreviewCropSize);
 
   // Local zoom/pan state
   const [zoom, setZoom] = useState(1);
@@ -254,7 +295,65 @@ export function VideoPlayer() {
     clientX: number;
     clientY: number;
   } | null>(null);
+  /**
+   * Hovering an instance's body (near its centroid) without landing precisely
+   * on one of its nodes (#346) — a lighter-weight sibling to `hoveredNode`'s
+   * detailed per-node tooltip. Only tracked when `hoveredNode` is null; the
+   * caption it drives ("User Instance" / "Predicted Instance") would be
+   * redundant with the "predicted"/"user" line already in that tooltip.
+   */
+  const [hoveredInstanceIdx, setHoveredInstanceIdx] = useState<{
+    idx: number;
+    clientX: number;
+    clientY: number;
+  } | null>(null);
   const shiftHeldOnMouseDown = useRef(false);
+
+  // Skeleton builder (place stage): inline rename overlay for a double-clicked
+  // node. Scene coords (not client) so the input tracks the node across pan/zoom.
+  const [renamingNode, setRenamingNode] = useState<{
+    nodeIdx: number;
+    x: number;
+    y: number;
+  } | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const renameInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (renamingNode) {
+      renameInputRef.current?.focus();
+      renameInputRef.current?.select();
+    }
+    // Only refocus/reselect when the node being renamed changes, not on
+    // every keystroke (renameValue) or pan/zoom (renamingNode.x/y).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [renamingNode?.nodeIdx]);
+
+  const commitNodeRename = useCallback(() => {
+    if (!renamingNode || !skeleton) {
+      setRenamingNode(null);
+      return;
+    }
+    const trimmed = renameValue.trim();
+    const current = skeleton.nodes[renamingNode.nodeIdx]?.name ?? "";
+    const isDuplicate = skeleton.nodes.some(
+      (n, i) => n.name === trimmed && i !== renamingNode.nodeIdx
+    );
+    if (trimmed && !isDuplicate && trimmed !== current) {
+      commandContext.execute(RenameNodeCommand, {
+        nodeIdx: renamingNode.nodeIdx,
+        newName: trimmed,
+      });
+      // Repaint so the renamed label shows immediately (RenameNode does not
+      // bump overlayVersion itself, unlike AddNode/AddEdge).
+      useAppStore.getState().bumpOverlayVersion();
+    }
+    setRenamingNode(null);
+  }, [renamingNode, renameValue, skeleton]);
+
+  const cancelNodeRename = useCallback(() => {
+    setRenamingNode(null);
+  }, []);
 
   // Track the last scene position during drag for delta calculations (alt-drag)
   const lastDragPos = useRef<{ x: number; y: number } | null>(null);
@@ -285,6 +384,14 @@ export function VideoPlayer() {
   const [frameDims, setFrameDims] = useState<[number, number]>([0, 0]);
   // Counter to trigger frame canvas re-render when a new bitmap is loaded (even same dims)
   const [bitmapVersion, setBitmapVersion] = useState(0);
+  // Model-output overlay heatmap: the latest confidence-map bitmap + a version
+  // counter to trigger the draw effect. (Render spike: sidecar URL hardcoded to
+  // the standalone overlay-serve prototype; Phase-1 will get the port from the
+  // Rust-spawned sidecar instead.)
+  const overlayBitmapRef = useRef<ImageBitmap | null>(null);
+  const [overlayHeatmapVersion, setOverlayHeatmapVersion] = useState(0);
+  // Loopback port of the Rust-spawned overlay-serve sidecar (null until ready).
+  const [overlaySidecarPort, setOverlaySidecarPort] = useState<number | null>(null);
   // The current frame's image couldn't be read (resolved backend, but this one
   // frame's file is missing/unreadable). Drives a non-blocking per-frame
   // placeholder; distinct from a wholly-missing video (see isVideoMissing).
@@ -661,6 +768,15 @@ export function VideoPlayer() {
     }
 
     let cancelled = false;
+    // Abort-preempt (scrub-proxy v2, Thread B): a SCRUB read aborts its in-flight
+    // backend decode when a newer cursor position supersedes it, so the decode
+    // chases the cursor instead of finishing frames the user already dragged past.
+    // Scoped to scrub reads (captured here) — playback/stepping keep today's
+    // run-to-completion behavior (usually a cache hit anyway). Backends that
+    // ignore the signal (ImageVideo/HDF5) are unaffected; only the mp4 backend
+    // acts on it, in concert with the Seekbar's chase-newest scrub loop.
+    const abortController = new AbortController();
+    const abortOnSupersede = useAppStore.getState().isScrubbing;
     const t0 = performance.now();
     if (debugFlags.logSeeking) console.debug(`[seek] requesting frame ${frameIdx}`);
 
@@ -695,6 +811,12 @@ export function VideoPlayer() {
         // Lazy video backends: the decoder is deferred at load (open one video,
         // not all N). Open it on first view, then read. ensureVideoBackend clears
         // lazyPath after opening, so this whole block is skipped from then on.
+        // Capture the frame count as the seekbar currently sees it BEFORE opening
+        // the backend: a lazy/transcoded backend sets video.shape[0] during
+        // ensureVideoBackend (not via getFrame), so reading it afterwards would
+        // miss the null→real transition and never markVideoUpdated() — leaving the
+        // Seekbar's memoized totalFrames stuck (e.g. at 0 → hover always "Frame 1").
+        const framesBefore = video.shape?.[0] ?? null;
         if (!video.backend) {
           const meta = video.backendMetadata as
             | Record<string, unknown>
@@ -716,12 +838,22 @@ export function VideoPlayer() {
             return;
           }
         }
-        const framesBefore = video.shape?.[0] ?? null;
-        const frame = await video.getFrame(frameIdx, { prefetch });
-        // A deferred embedded backend (lazyVideoMetadata) reads its per-video
-        // metadata on this first getFrame and corrects video.shape[0] to the true
-        // source frame count — nudge the store so the seekbar/status bar re-read
-        // the real extent instead of the JSON-seeded (labeled-count) stand-in.
+        // scrub: skip the backend's forward lookahead for scrub reads (decode
+        // only keyframe→target) — the dragged-past lookahead is never seen. Built
+        // as a variable (extra `scrub` field) so it stays assignable to whatever
+        // GetFrameOptions the pinned sleap-io exposes (structural, no excess-prop
+        // check on a variable) — works before/after the pin bump, no cast.
+        const getFrameOpts: {
+          prefetch: boolean;
+          signal: AbortSignal;
+          scrub?: boolean;
+        } = { prefetch, signal: abortController.signal, scrub: abortOnSupersede };
+        const frame = await video.getFrame(frameIdx, getFrameOpts);
+        // The frame count can become known here two ways: a deferred embedded
+        // backend corrects video.shape[0] on this first getFrame, or a lazy/
+        // transcoded backend set it during ensureVideoBackend above. Either way,
+        // if it changed from what the seekbar last saw, nudge the store so the
+        // seekbar/status bar re-read the real extent (not the JSON-seeded stand-in).
         if ((video.shape?.[0] ?? null) !== framesBefore) {
           useAppStore.getState().markVideoUpdated();
         }
@@ -763,13 +895,50 @@ export function VideoPlayer() {
           bmp = new OffscreenCanvas(frame.width, frame.height);
           bmp.getContext("2d")?.putImageData(frame, 0, 0);
         } else if (frame instanceof ArrayBuffer || frame instanceof Uint8Array) {
+          // Raw decoder output may be grayscale (1ch), RGB (3ch), or RGBA
+          // (4ch) — infer the real channel count (parity with the export
+          // pipeline's decodeExportFrame) instead of assuming 4, which throws
+          // a RangeError for anything else.
           const bytes =
             frame instanceof ArrayBuffer ? new Uint8Array(frame) : frame;
           const shape = video.shape;
           if (!shape) return;
           const [, h, w] = shape;
-          const imageData = new ImageData(new Uint8ClampedArray(bytes), w, h);
+          const channels = inferFrameChannels(bytes.length, w, h, shape[3]);
+          const rgba = expandFrameBytesToRGBA(bytes, w, h, channels);
+          const imageData = new ImageData(rgba, w, h);
           bmp = new OffscreenCanvas(w, h);
+          bmp.getContext("2d")?.putImageData(imageData, 0, 0);
+        } else if (
+          frame &&
+          typeof frame === "object" &&
+          "data" in frame &&
+          "width" in frame &&
+          "height" in frame
+        ) {
+          // A plain-object RawFrame (sleap-io.js's GrayscaleVideoBackend /
+          // CropVideoBackend can return this for a non-ImageData source):
+          // {data, width, height, channels}. Never 4-channel-tight-packed, so
+          // it must go through the same RGBA expansion as the raw-bytes case
+          // above rather than the final else-branch's silent no-op.
+          const raw = frame as {
+            data: Uint8Array | Uint8ClampedArray;
+            width: number;
+            height: number;
+            channels?: number;
+          };
+          const bytes =
+            raw.data instanceof Uint8ClampedArray
+              ? new Uint8Array(raw.data)
+              : raw.data;
+          const rgba = expandFrameBytesToRGBA(
+            bytes,
+            raw.width,
+            raw.height,
+            raw.channels ?? 1
+          );
+          const imageData = new ImageData(rgba, raw.width, raw.height);
+          bmp = new OffscreenCanvas(raw.width, raw.height);
           bmp.getContext("2d")?.putImageData(imageData, 0, 0);
         } else {
           return;
@@ -788,6 +957,26 @@ export function VideoPlayer() {
         setFrameDims((prev) => (prev[0] === bmp.width && prev[1] === bmp.height ? prev : [bmp.width, bmp.height]));
         setBitmapVersion((v) => v + 1);
         if (debugFlags.logSeeking) console.debug(`[seek] frame ${frameIdx} rendered (${bmp.width}x${bmp.height}) total ${(performance.now() - t0).toFixed(1)}ms`);
+
+        // Proactive decode-ahead (scrub-proxy v2, Thread A): while playing, keep
+        // the backend decoding ahead of the playhead so the next getFrame is a
+        // cache hit instead of a blocking keyframe→+lookahead decode (the ~2 s
+        // periodic play-freeze). Fire-and-forget; the backend coalesces repeat
+        // calls and a demand read/seek preempts it. Feature-detected so it's a
+        // no-op on backends (or an older sleap-io pin) without the method — the
+        // cast keeps typecheck green against the currently-pinned 0.5.12 types.
+        if (
+          shouldDecodeAhead({
+            isPlaying: useAppStore.getState().isPlaying,
+            isScrubbing: useAppStore.getState().isScrubbing,
+          })
+        ) {
+          (
+            video.backend as {
+              decodeAhead?: (fromFrame: number) => void;
+            } | null
+          )?.decodeAhead?.(frameIdx);
+        }
       } catch (err) {
         console.error("Failed to render frame:", err);
         // A resolved backend whose individual frame file can't be read (e.g. one
@@ -816,8 +1005,11 @@ export function VideoPlayer() {
 
     return () => {
       cancelled = true;
+      // Superseded by a newer frame: for a scrub read, abort the in-flight decode
+      // so the newer position decodes now instead of behind stale work.
+      if (abortOnSupersede) abortController.abort();
     };
-  }, [video, frameIdx, readNonce]);
+  }, [video, frameIdx, readNonce, backendSwapNonce]);
 
   // Frame histogram, computed OFF the seek path. A full-frame getImageData is a
   // GPU->CPU readback (~200-340ms in WKWebView) — doing it inline blocked every
@@ -838,6 +1030,138 @@ export function VideoPlayer() {
     }, 150);
     return () => clearTimeout(id);
   }, [bitmapVersion]);
+
+  // Spawn/kill the warm overlay-serve sidecar with the toggle (desktop-only). The
+  // returned loopback port feeds the compute effect below; the model loads once in
+  // the sidecar, so per-frame requests are just a forward pass.
+  useEffect(() => {
+    if (!overlayModelOutputs || !isTauri || overlayModelPaths.length === 0) {
+      setOverlaySidecarPort(null);
+      return;
+    }
+    let cancelled = false;
+    setOverlaySidecarPort(null);
+    (async () => {
+      try {
+        // Detect the accelerator (cuda/mps/cpu) so overlays work beyond Apple
+        // Silicon; the sidecar itself also falls back to cpu if that device
+        // fails to build.
+        const device = await detectGpu().catch(() => "cpu");
+        const port = await spawnOverlayServe(overlayModelPaths, device);
+        if (cancelled) {
+          await killOverlayServe();
+          return;
+        }
+        setOverlaySidecarPort(port);
+      } catch (err) {
+        console.error("[overlay] failed to start overlay-serve sidecar:", err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      void killOverlayServe();
+    };
+  }, [overlayModelOutputs, overlayModelPaths]);
+
+  // Model-output overlay (confidence map). Desktop-only, computed OFF the seek
+  // path like the histogram: on frame-settle (debounced, skipped while scrubbing)
+  // read back the current frame's pixels, POST them to the warm sleap-nn overlay
+  // sidecar, and build a colormapped heatmap bitmap the draw effect composites.
+  // Cleared when the toggle is off or the sidecar isn't ready/reachable.
+  useEffect(() => {
+    if (!overlayModelOutputs || overlaySidecarPort === null) {
+      if (overlayBitmapRef.current) {
+        overlayBitmapRef.current.close?.();
+        overlayBitmapRef.current = null;
+        setOverlayHeatmapVersion((v) => v + 1);
+      }
+      return;
+    }
+    if (useAppStore.getState().isScrubbing) return;
+    let cancelled = false;
+    const id = setTimeout(async () => {
+      const bmp = frameBitmapRef.current;
+      const offCtx = bmp?.getContext("2d");
+      if (!bmp || !offCtx) return;
+      try {
+        const w = bmp.width, h = bmp.height;
+        // Grayscale channel from the RGBA readback (R=G=B for a grayscale video).
+        const rgba = offCtx.getImageData(0, 0, w, h).data;
+        const gray = new Uint8Array(w * h);
+        for (let i = 0, j = 0; j < gray.length; i += 4, j++) gray[j] = rgba[i];
+        const header = new TextEncoder().encode(
+          JSON.stringify({ w, h, ch: 1, dtype: "uint8" }) + "\n",
+        );
+        const body = new Uint8Array(header.length + gray.length);
+        body.set(header, 0);
+        body.set(gray, header.length);
+        const resp = await fetch(`http://127.0.0.1:${overlaySidecarPort}/infer`, {
+          method: "POST",
+          body,
+        });
+        if (!resp.ok || cancelled) return;
+        const [ho, wo] = (resp.headers.get("X-Shape") || "0,0").split(",").map(Number);
+        const cm = new Uint8Array(await resp.arrayBuffer());
+        if (!ho || !wo || cm.length !== ho * wo) return;
+        // Hot ramp; alpha = confidence so low-confidence areas stay transparent.
+        const img = new ImageData(wo, ho);
+        const px = img.data;
+        for (let k = 0, p = 0; k < cm.length; k++, p += 4) {
+          const v = cm[k];
+          px[p] = Math.min(255, v * 3);
+          px[p + 1] = Math.max(0, Math.min(255, v * 3 - 255));
+          px[p + 2] = Math.max(0, Math.min(255, v * 3 - 510));
+          px[p + 3] = v;
+        }
+        const bitmap = await createImageBitmap(img);
+        if (cancelled) { bitmap.close(); return; }
+        overlayBitmapRef.current?.close?.();
+        overlayBitmapRef.current = bitmap;
+        setOverlayHeatmapVersion((v) => v + 1);
+      } catch {
+        // Sidecar down / fetch failed — keep whatever's on screen, try next frame.
+      }
+    }, 200);
+    return () => { cancelled = true; clearTimeout(id); };
+  }, [bitmapVersion, overlayModelOutputs, overlaySidecarPort]);
+
+  // Draw the model-output heatmap: a layer above the video image, below the
+  // skeleton overlay. Same fit + zoom/pan + rotation transform as the frame, so
+  // the confmap (at output stride/scale) upscales to align with the frame pixels.
+  useEffect(() => {
+    const canvas = heatmapCanvasRef.current;
+    if (!canvas) return;
+    const [cw, ch] = containerSize;
+    if (cw === 0 || ch === 0) return;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = cw * dpr;
+    canvas.height = ch * dpr;
+    canvas.style.width = `${cw}px`;
+    canvas.style.height = `${ch}px`;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, cw, ch);
+    const bitmap = overlayBitmapRef.current;
+    if (!overlayModelOutputs || !bitmap || fw === 0 || fh === 0) return;
+    ctx.save();
+    ctx.translate(offsetX + panX, offsetY + panY);
+    ctx.scale(baseScale * zoom, baseScale * zoom);
+    if (rotation === 90) {
+      ctx.translate(fh, 0);
+      ctx.rotate(Math.PI / 2);
+    } else if (rotation === 180) {
+      ctx.translate(fw, fh);
+      ctx.rotate(Math.PI);
+    } else if (rotation === 270) {
+      ctx.translate(0, fw);
+      ctx.rotate((3 * Math.PI) / 2);
+    }
+    ctx.imageSmoothingEnabled = true;
+    ctx.globalAlpha = 0.6;
+    ctx.drawImage(bitmap, 0, 0, fw, fh);
+    ctx.restore();
+  }, [overlayHeatmapVersion, overlayModelOutputs, frameDims, containerSize, zoom, panX, panY, baseScale, offsetX, offsetY, rotation]);
 
   // Render the frame with fit-to-window base transform + user zoom/pan
   useEffect(() => {
@@ -946,6 +1270,7 @@ export function VideoPlayer() {
   useEffect(() => {
     setSelectedNodes(new Set());
     setHoveredNode(null);
+    setHoveredInstanceIdx(null);
     setInteractionMode("idle");
     setMarqueeStart(null);
     setMarqueeEnd(null);
@@ -963,6 +1288,115 @@ export function VideoPlayer() {
       useAppStore.getState().syncBuilderPositions();
     }
   }, [skeletonBuildMode, skeleton, overlayVersion]);
+
+  // Rendered-instance geometry (image-pixel coords + colors). Memoized so a mere
+  // hover / zoom / pan / node-selection change does NOT rebuild it — the build
+  // reads every point through sleap-io's proxy-point getters (a fresh PointView[]
+  // per instance + a new xy array per read), which was the dominant cost of the
+  // per-hover overlay re-run on dense predicted / fromPredicted frames. Recomputes
+  // only when the frame, its instances (overlayVersion), the video crop, colors,
+  // or visibility actually change.
+  const renderedInstances = useMemo<RenderedInstance[]>(() => {
+    if (!labeledFrame || !showInstances) return [];
+    const tracks = labels?.tracks ?? [];
+    const frameInstanceTracks = labeledFrame.instances.map((i) => i.track);
+    const resolvedColorTarget = resolveColorTarget(distinctlyColor, projectHasTracks);
+    const vis = { showInstances, hiddenInstances, viewOnlyInstance, showNonVisibleOverride };
+
+    // Phase-3: which instance on THIS frame is under review, and which of its
+    // keypoints are flagged. Read from the queue snapshot (item.pointScores), so
+    // the rings survive the adopt-on-touch conversion that strips per-point
+    // scores, and stick to the review item rather than wandering with selection.
+    let reviewInstanceIdx = -1;
+    const reviewFlaggedNodes: number[] = [];
+    if (isCorrect) {
+      const item = correctQueue[correctCursor];
+      if (item && item.frameIdx === frameIdx && labels?.videos[item.videoIdx] === video) {
+        reviewInstanceIdx = item.instanceIdx;
+        for (let i = 0; i < item.pointScores.length; i++) {
+          const sc = item.pointScores[i];
+          if (sc !== null && sc <= correctScoreThreshold) reviewFlaggedNodes.push(i);
+        }
+      }
+    }
+
+    return labeledFrame.instances.map((inst, idx) => {
+      const isPredicted = inst instanceof PredictedInstance;
+      const skeleton = inst.skeleton;
+      const color = getInstanceColor(
+        palette, distinctlyColor, idx, inst.track, tracks, isPredicted, colorPredicted, projectHasTracks, frameInstanceTracks, trackColorOverrides
+      );
+
+      // Per-node colors when (resolved) distinctlyColor === "node"
+      const nodeColors = resolvedColorTarget === "node" && !(isPredicted && !colorPredicted)
+        ? skeleton.nodes.map((_, nIdx) => getPaletteColor(palette, nIdx))
+        : undefined;
+
+      // Per-edge colors when (resolved) distinctlyColor === "edge"
+      const edgeIndices = skeleton.edgeIndices;
+      const edgeColors = resolvedColorTarget === "edge" && !(isPredicted && !colorPredicted)
+        ? edgeIndices.map((_, eIdx) => getPaletteColor(palette, eIdx))
+        : undefined;
+
+      const nodes: RenderedNode[] = inst.points.map((point, nIdx) => {
+        // Cropped videos store points in SOURCE coords; translate into the
+        // displayed crop-local image space so they overlay the cropped frame.
+        // Identity for uncropped videos. (cropped pkg.slp / SLP-2.3)
+        const [nx, ny] = toImageCoords(video, point.xy[0], point.xy[1]);
+        return {
+          x: nx,
+          y: ny,
+          visible: point.visible && !isNaN(point.xy[0]),
+          complete: point.complete,
+          name: skeleton.nodes[nIdx]?.name ?? `node_${nIdx}`,
+          score: point.score,
+        };
+      });
+
+      const edges = edgeIndices.map(
+        ([srcIdx, dstIdx]) =>
+          ({ srcIdx, dstIdx }) as { srcIdx: number; dstIdx: number }
+      );
+
+      return {
+        nodes,
+        edges,
+        color,
+        nodeColors,
+        edgeColors,
+        isPredicted,
+        isSelected: inst === selectedInstance,
+        trackName: inst.track?.name ?? null,
+        score: isPredicted ? inst.score : undefined,
+        visible: instanceVisible(vis, inst),
+        showNonVisible: instanceShowsNonVisible(vis, inst, showNonVisibleNodes),
+        // Ring the flagged low-confidence keypoints on the instance under
+        // review (Phase 3), from the queue snapshot so they survive adoption.
+        highlightNodeIdxs: idx === reviewInstanceIdx ? reviewFlaggedNodes : undefined,
+      };
+    });
+  }, [
+    labeledFrame,
+    showInstances,
+    labels,
+    distinctlyColor,
+    projectHasTracks,
+    palette,
+    trackColorOverrides,
+    colorPredicted,
+    selectedInstance,
+    hiddenInstances,
+    viewOnlyInstance,
+    showNonVisibleOverride,
+    showNonVisibleNodes,
+    video,
+    overlayVersion,
+    frameIdx,
+    isCorrect,
+    correctQueue,
+    correctCursor,
+    correctScoreThreshold,
+  ]);
 
   useEffect(() => {
     const canvas = overlayCanvasRef.current;
@@ -1042,6 +1476,7 @@ export function VideoPlayer() {
         showEdges: true,
         showNonVisibleNodes: true,
         colorPredicted: false,
+        showTrackScore: false,
         zoom: baseScale * zoom,
       };
       renderInstances(ctx, [ri], bOpts);
@@ -1069,84 +1504,9 @@ export function VideoPlayer() {
       return;
     }
 
-    // Phase-3: which instance on THIS frame is under review, and which of its
-    // keypoints are flagged. Read from the queue snapshot (item.pointScores), so
-    // the rings survive the adopt-on-touch conversion that strips per-point
-    // scores, and stick to the review item rather than wandering with selection.
-    let reviewInstanceIdx = -1;
-    const reviewFlaggedNodes: number[] = [];
-    if (isCorrect) {
-      const item = correctQueue[correctCursor];
-      if (item && item.frameIdx === frameIdx && labels?.videos[item.videoIdx] === video) {
-        reviewInstanceIdx = item.instanceIdx;
-        for (let i = 0; i < item.pointScores.length; i++) {
-          const sc = item.pointScores[i];
-          if (sc !== null && sc <= correctScoreThreshold) reviewFlaggedNodes.push(i);
-        }
-      }
-    }
-
-    // Build renderable instances
-    const tracks = labels?.tracks ?? [];
-    const vis = { showInstances, hiddenInstances, viewOnlyInstance, showNonVisibleOverride };
-    const instances: RenderedInstance[] = labeledFrame.instances.map(
-      (inst, idx) => {
-        const isPredicted = inst instanceof PredictedInstance;
-        const skeleton = inst.skeleton;
-        const color = getInstanceColor(
-          palette, distinctlyColor, idx, inst.track, tracks, isPredicted, colorPredicted
-        );
-
-        // Per-node colors when distinctlyColor === "node"
-        const nodeColors = distinctlyColor === "node" && !(isPredicted && !colorPredicted)
-          ? skeleton.nodes.map((_, nIdx) => getPaletteColor(palette, nIdx))
-          : undefined;
-
-        // Per-edge colors when distinctlyColor === "edge"
-        const edgeIndices = skeleton.edgeIndices;
-        const edgeColors = distinctlyColor === "edge" && !(isPredicted && !colorPredicted)
-          ? edgeIndices.map((_, eIdx) => getPaletteColor(palette, eIdx))
-          : undefined;
-
-        const nodes: RenderedNode[] = inst.points.map((point, nIdx) => {
-          // Cropped videos store points in SOURCE coords; translate into the
-          // displayed crop-local image space so they overlay the cropped frame.
-          // Identity for uncropped videos. (cropped pkg.slp / SLP-2.3)
-          const [nx, ny] = toImageCoords(video, point.xy[0], point.xy[1]);
-          return {
-            x: nx,
-            y: ny,
-            visible: point.visible && !isNaN(point.xy[0]),
-            complete: point.complete,
-            name: skeleton.nodes[nIdx]?.name ?? `node_${nIdx}`,
-            score: point.score,
-          };
-        });
-
-        const edges = edgeIndices.map(
-          ([srcIdx, dstIdx]) =>
-            ({ srcIdx, dstIdx }) as { srcIdx: number; dstIdx: number }
-        );
-
-        return {
-          nodes,
-          edges,
-          color,
-          nodeColors,
-          edgeColors,
-          isPredicted,
-          isSelected: inst === selectedInstance,
-          trackName: inst.track?.name ?? null,
-          score: isPredicted ? inst.score : undefined,
-          visible: instanceVisible(vis, inst),
-          showNonVisible: instanceShowsNonVisible(vis, inst, showNonVisibleNodes),
-          // Ring the flagged low-confidence keypoints on the instance under
-          // review (Phase 3), from the queue snapshot so they survive adoption.
-          highlightNodeIdxs: idx === reviewInstanceIdx ? reviewFlaggedNodes : undefined,
-        };
-      }
-    );
-
+    // Geometry is memoized (see `renderedInstances` above) — hover/zoom/pan
+    // re-runs of this effect repaint from the cache instead of rebuilding.
+    const instances = renderedInstances;
     renderedInstancesRef.current = instances;
 
     // Apply fit-to-window base transform + user zoom/pan + rotation
@@ -1174,7 +1534,8 @@ export function VideoPlayer() {
         trailLength,
         labels.tracks,
         palette,
-        zoom
+        zoom,
+        trackColorOverrides
       );
     }
 
@@ -1187,6 +1548,7 @@ export function VideoPlayer() {
       showEdges,
       showNonVisibleNodes,
       colorPredicted,
+      showTrackScore,
       zoom: baseScale * zoom,
     };
 
@@ -1262,7 +1624,7 @@ export function VideoPlayer() {
           nodeIdx = findNodeIdxByName(inst, anchorPreviewNode);
           if (nodeIdx === null) continue; // this instance's skeleton lacks the node
         }
-        renderAnchorCropPreview(ctx, instances, i, nodeIdx, instanceBBoxCropSize(inst), renderOpts);
+        renderAnchorCropPreview(ctx, instances, i, nodeIdx, anchorPreviewCropSize ?? instanceBBoxCropSize(inst), renderOpts);
       }
     }
 
@@ -1303,6 +1665,7 @@ export function VideoPlayer() {
 
     ctx.restore();
   }, [
+    renderedInstances,
     labeledFrame,
     selectedInstance,
     showInstances,
@@ -1313,11 +1676,14 @@ export function VideoPlayer() {
     viewOnlyInstance,
     showNonVisibleOverride,
     colorPredicted,
+    showTrackScore,
     edgeStyle,
     markerSize,
     nodeLabelSize,
     palette,
+    trackColorOverrides,
     distinctlyColor,
+    projectHasTracks,
     trailLength,
     zoom,
     panX,
@@ -1333,6 +1699,7 @@ export function VideoPlayer() {
     pickingAnchor,
     anchorPreviewActive,
     anchorPreviewNode,
+    anchorPreviewCropSize,
     marqueeStart,
     marqueeEnd,
     roiStart,
@@ -1371,6 +1738,7 @@ export function VideoPlayer() {
   // Render zoomed inset during node drag or placement mode
   const INSET_SIZE = useAppStore((s) => s.insetSize);
   const INSET_ZOOM = useAppStore((s) => s.insetZoom);
+  const showInset = useAppStore((s) => s.showInset);
   useEffect(() => {
     const inset = insetCanvasRef.current;
     if (!inset) return;
@@ -1381,6 +1749,11 @@ export function VideoPlayer() {
       inset.style.top = "";
       inset.style.right = "";
     };
+
+    if (!showInset) {
+      hideInset();
+      return;
+    }
 
     const isDragInset = interactionMode === "dragging" && !!dragNodeInfo;
     const isPlaceInset = isPlacingNodes && !!cursorScene.current;
@@ -1422,38 +1795,12 @@ export function VideoPlayer() {
 
     inset.style.display = "block";
 
-    // Position: anchor near tooltip for drag, top-right for placement
-    const container = containerRef.current;
-    if (isDragInset && container && dragStartClient.current) {
-      const containerRect = container.getBoundingClientRect();
-      const TOOLTIP_OFFSET_X = 16;
-      const TOOLTIP_OFFSET_Y = -8;
-      const TOOLTIP_HEIGHT_ESTIMATE = 80;
-      const GAP = 6;
-
-      const tipLeft =
-        dragStartClient.current.clientX - containerRect.left + TOOLTIP_OFFSET_X;
-      const tipTop =
-        dragStartClient.current.clientY - containerRect.top + TOOLTIP_OFFSET_Y;
-
-      let insetLeft = tipLeft;
-      let insetTop = tipTop + TOOLTIP_HEIGHT_ESTIMATE + GAP;
-
-      if (insetTop + INSET_SIZE > containerRect.height) {
-        insetTop = tipTop - INSET_SIZE - GAP;
-      }
-
-      insetLeft = Math.max(8, Math.min(insetLeft, containerRect.width - INSET_SIZE - 8));
-      insetTop = Math.max(8, insetTop);
-
-      inset.style.left = `${insetLeft}px`;
-      inset.style.top = `${insetTop}px`;
-      inset.style.right = "auto";
-    } else {
-      inset.style.top = "12px";
-      inset.style.right = "12px";
-      inset.style.left = "auto";
-    }
+    // Pin the loupe to the top-right corner in every mode (drag, placement,
+    // hold-Shift) so it never occludes the point being placed — matches the
+    // hold-Shift magnifier the drag case used to diverge from.
+    inset.style.top = "12px";
+    inset.style.right = "12px";
+    inset.style.left = "auto";
 
     const dpr = window.devicePixelRatio || 1;
     inset.width = INSET_SIZE * dpr;
@@ -1541,7 +1888,61 @@ export function VideoPlayer() {
     ctx.moveTo(cx, 0);
     ctx.lineTo(cx, INSET_SIZE);
     ctx.stroke();
-  }, [interactionMode, dragNodeInfo, overlayVersion, bitmapVersion, isPlacingNodes, isShiftHeld, INSET_SIZE, INSET_ZOOM, zoom]);
+
+    // Node-name label at the top of the loupe, if a specific node is in view.
+    let labelName: string | null = null;
+    if (isDragInset) {
+      labelName = overlayInst?.nodes[skipNodeIdx]?.name ?? `node_${skipNodeIdx}`;
+    } else if (isPlaceInset && placementNodeIdx !== null) {
+      labelName =
+        skeleton?.nodes[placementNodeIdx]?.name ?? `node_${placementNodeIdx}`;
+    } else if (isHoldInset && hoveredNode) {
+      labelName =
+        skeleton?.nodes[hoveredNode.nodeIdx]?.name ??
+        `node_${hoveredNode.nodeIdx}`;
+    }
+
+    if (labelName) {
+      ctx.font = "600 11px system-ui, -apple-system, sans-serif";
+      const paddingX = 6;
+      const boxHeight = 16;
+      const boxWidth = ctx.measureText(labelName).width + paddingX * 2;
+      const boxX = (INSET_SIZE - boxWidth) / 2;
+      const boxY = 6;
+      const radius = 4;
+
+      ctx.beginPath();
+      ctx.moveTo(boxX + radius, boxY);
+      ctx.arcTo(boxX + boxWidth, boxY, boxX + boxWidth, boxY + boxHeight, radius);
+      ctx.arcTo(boxX + boxWidth, boxY + boxHeight, boxX, boxY + boxHeight, radius);
+      ctx.arcTo(boxX, boxY + boxHeight, boxX, boxY, radius);
+      ctx.arcTo(boxX, boxY, boxX + boxWidth, boxY, radius);
+      ctx.closePath();
+      // Highlighted (accent-orange) pill, matching the app's primary accent
+      // color, so the label pops against the video frame behind it.
+      ctx.fillStyle = "#f97316";
+      ctx.fill();
+
+      ctx.fillStyle = "#1c1006";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(labelName, INSET_SIZE / 2, boxY + boxHeight / 2);
+    }
+  }, [
+    interactionMode,
+    dragNodeInfo,
+    overlayVersion,
+    bitmapVersion,
+    isPlacingNodes,
+    isShiftHeld,
+    INSET_SIZE,
+    INSET_ZOOM,
+    zoom,
+    skeleton,
+    placementNodeIdx,
+    hoveredNode,
+    showInset,
+  ]);
 
   // Fit view to instances when 'fit' is enabled and frame/labels change
   // Only re-fit when fit is toggled on or the labeled frame changes,
@@ -1673,6 +2074,30 @@ export function VideoPlayer() {
         sx = fx; sy = fy;
       }
       return { x: sx, y: sy };
+    },
+    [zoom, panX, panY, baseScale, offsetX, offsetY, rotation, fw, fh]
+  );
+
+  // Inverse of canvasToScene: scene (frame) coords -> client (viewport) pixels.
+  const sceneToClient = useCallback(
+    (x: number, y: number) => {
+      const canvas = overlayCanvasRef.current;
+      if (!canvas) return { x: 0, y: 0 };
+      const rect = canvas.getBoundingClientRect();
+      // Apply forward rotation to get rotated-scene coordinates
+      let sx = x, sy = y;
+      if (rotation === 90) {
+        const fx = fh - sy, fy = sx;
+        sx = fx; sy = fy;
+      } else if (rotation === 180) {
+        sx = fw - sx; sy = fh - sy;
+      } else if (rotation === 270) {
+        const fx = sy, fy = fw - sx;
+        sx = fx; sy = fy;
+      }
+      const cx = sx * baseScale * zoom + offsetX + panX;
+      const cy = sy * baseScale * zoom + offsetY + panY;
+      return { x: cx + rect.left, y: cy + rect.top };
     },
     [zoom, panX, panY, baseScale, offsetX, offsetY, rotation, fw, fh]
   );
@@ -1848,6 +2273,22 @@ export function VideoPlayer() {
         return;
       }
 
+      // Multi-instance transpose picker: clicking an instance (by centroid)
+      // advances the pick. A miss is a no-op — stay in pick mode. See
+      // requestTranspose in trackCommands.ts.
+      if (instanceSequencePick) {
+        e.preventDefault();
+        const p = canvasToScene(e.clientX, e.clientY);
+        const instances = renderedInstancesRef.current;
+        const threshold = 30 / (baseScale * zoom);
+        const instHit = hitTestInstance(instances, p.x, p.y, threshold);
+        const lf = useAppStore.getState().labeledFrame;
+        if (instHit !== null && lf) {
+          useAppStore.getState().pushInstanceSequencePick(lf.instances[instHit]);
+        }
+        return;
+      }
+
       // A left-click while Space is held means the user is using this Space
       // press to drag/pan, not to tap for the next-suggestion shortcut --
       // suppress that shortcut's jump when Space is released (see
@@ -2008,6 +2449,7 @@ export function VideoPlayer() {
             y
           );
           currentInstance.points[targetIdx].visible = true;
+          hintIfFirstNodeConfirm(currentInstance.points[targetIdx].complete);
           currentInstance.points[targetIdx].complete = true;
           store.markChanged();
           store.touchFrame();
@@ -2026,7 +2468,7 @@ export function VideoPlayer() {
           if (nextUnplaced !== -1) {
             store.set("placementNodeIdx", nextUnplaced);
           } else {
-            // All nodes placed — exit placement mode
+            // All nodes placed — exit placement mode.
             store.exitPlacementMode();
           }
 
@@ -2059,7 +2501,17 @@ export function VideoPlayer() {
 
         const keys = new Set<string>();
         newInstance.points.forEach((p, pIdx) => {
-          if (!isNaN(p.xy[0]) && !isNaN(p.xy[1])) keys.add(makeNodeKey(newIdx, pIdx));
+          if (!isNaN(p.xy[0]) && !isNaN(p.xy[1])) {
+            keys.add(makeNodeKey(newIdx, pIdx));
+            // Dragging the clone into place is a deliberate confirm of each
+            // point, same as a plain single-node click/drag — previously
+            // these silently kept whatever `complete` they inherited from
+            // the source instance (clonePoints copies it verbatim), so a
+            // clone of an unconfirmed instance stayed red even after being
+            // positioned.
+            hintIfFirstNodeConfirm(p.complete);
+            p.complete = true;
+          }
         });
         setSelectedNodes(keys);
         setDragNodeInfo({ instanceIdx: newIdx, nodeIdx: 0 });
@@ -2144,8 +2596,23 @@ export function VideoPlayer() {
           commandContext.execute(BeginEdit);
           // Clicking a node marks it "complete" (confirmed by the user), same
           // as PyQt SLEAP's QtNode.mousePressEvent -- turns its label green.
-          const targetPoint = lf?.instances[nodeHit.instanceIdx]?.points[nodeHit.nodeIdx];
-          if (targetPoint) targetPoint.complete = true;
+          // When this click is the start of a GROUP drag (e.g. after
+          // double-clicking to select every node in the instance), every
+          // selected node moves together via handleMouseMove's group-drag
+          // branch -- mark all of them confirmed, not just the one clicked,
+          // or the others would keep moving while staying red. `selectedNodes`
+          // (the pre-click set) is the right source here when the clicked key
+          // was already in it; `setSelectedNodes` above hasn't landed yet for
+          // a fresh single-node click, so fall back to just `key` then.
+          const workingKeys = alreadySelected ? selectedNodes : new Set([key]);
+          for (const wKey of workingKeys) {
+            const { instanceIdx: wInstIdx, nodeIdx: wNodeIdx } = parseNodeKey(wKey);
+            const wPoint = lf?.instances[wInstIdx]?.points[wNodeIdx];
+            if (wPoint) {
+              hintIfFirstNodeConfirm(wPoint.complete);
+              wPoint.complete = true;
+            }
+          }
           setDragNodeInfo(nodeHit);
           setIsDragging(true);
           setInteractionMode("dragging");
@@ -2183,13 +2650,27 @@ export function VideoPlayer() {
       // No hit: start marquee or deselect
       if (!e.shiftKey) {
         setSelectedNodes(new Set());
-        useAppStore.getState().setInstance(null);
+        const store = useAppStore.getState();
+        hintIfPredictionsRemain(store.instance, store.labeledFrame);
+        store.setInstance(null);
       }
       setInteractionMode("marquee");
       setMarqueeStart({ x, y });
       setMarqueeEnd({ x, y });
     },
-    [canvasToScene, markerSize, nodeLabelSize, showLabels, panX, panY, zoom, baseScale, shouldPan, isCmdHeld, isSpaceHeld, offsetX, offsetY, selectedNodes, areaDeleteMode, imageFeatureRoiDrawActive, skeletonBuildMode, skeleton, builderRI, pickingAnchor]
+    [canvasToScene, markerSize, nodeLabelSize, showLabels, panX, panY, zoom, baseScale, shouldPan, isCmdHeld, isSpaceHeld, offsetX, offsetY, selectedNodes, areaDeleteMode, imageFeatureRoiDrawActive, skeletonBuildMode, skeleton, builderRI, pickingAnchor, instanceSequencePick]
+  );
+
+  // Node-drag perf (#329): coalesce the overlay redraw to one per frame and
+  // commit the edit once on mouse-up (see handleMouseMove/Up).
+  const dragRafRef = useRef<number | null>(null);
+  const dragMovedRef = useRef(false);
+  useEffect(
+    () => () => {
+      if (dragRafRef.current != null) cancelAnimationFrame(dragRafRef.current);
+      setLabelsAutosaveInteracting(false);
+    },
+    []
   );
 
   const handleMouseMove = useCallback(
@@ -2360,18 +2841,35 @@ export function VideoPlayer() {
           }
         }
 
-        // Update hover tooltip — pin at drag-start position, not cursor
-        setHoveredNode({
-          instanceIdx: dragNodeInfo.instanceIdx,
-          nodeIdx: dragNodeInfo.nodeIdx,
-          clientX: dragStartClient.current?.clientX ?? e.clientX,
-          clientY: dragStartClient.current?.clientY ?? e.clientY,
-        });
+        // Pin the hover tooltip ONCE (at drag-start position). It was set every
+        // move, which re-rendered VideoPlayer and re-ran the overlay effect
+        // (hoveredNode is a dep) on top of the redraw below — pure per-move waste
+        // since the pin never changes during the gesture.
+        if (!dragMovedRef.current) {
+          setHoveredNode({
+            instanceIdx: dragNodeInfo.instanceIdx,
+            nodeIdx: dragNodeInfo.nodeIdx,
+            clientX: dragStartClient.current?.clientX ?? e.clientX,
+            clientY: dragStartClient.current?.clientY ?? e.clientY,
+          });
+          dragMovedRef.current = true;
+          // Suspend autosave for the gesture so a drag longer than the debounce
+          // can't trigger a mid-drag project serialization (#329).
+          setLabelsAutosaveInteracting(true);
+        }
 
         lastDragPos.current = { x, y };
-        useAppStore.getState().markChanged();
-        useAppStore.getState().touchFrame();
-        useAppStore.getState().bumpOverlayVersion();
+        // Coalesce the (potentially O(instances×nodes)) overlay rebuild to at
+        // most one per animation frame — a high-Hz pointer otherwise rebuilds on
+        // every event. markChanged/touchFrame are deferred to mouse-up so the
+        // ~10 editSeq/frame-stack subscribers don't re-render per move and
+        // autosave can't serialize the whole project mid-drag (#329).
+        if (dragRafRef.current == null) {
+          dragRafRef.current = requestAnimationFrame(() => {
+            dragRafRef.current = null;
+            useAppStore.getState().bumpOverlayVersion();
+          });
+        }
         return;
       }
 
@@ -2392,23 +2890,34 @@ export function VideoPlayer() {
       );
 
       if (hit) {
-        const prevIdx = hoveredNode?.instanceIdx;
-        const prevNode = hoveredNode?.nodeIdx;
+        // Hover no longer bumps overlayVersion: that fanned a re-render storm to
+        // ~6 unrelated subscribers (Seekbar/MenuBar/TrainingPanel/…). The overlay
+        // effect already redraws the hover highlight via its `hoveredNode` dep,
+        // and geometry is memoized, so this repaints from cache — no rebuild.
         setHoveredNode({
           instanceIdx: hit.instanceIdx,
           nodeIdx: hit.nodeIdx,
           clientX: e.clientX,
           clientY: e.clientY,
         });
-        if (prevIdx !== hit.instanceIdx || prevNode !== hit.nodeIdx) {
-          useAppStore.getState().bumpOverlayVersion();
+        if (hoveredInstanceIdx) setHoveredInstanceIdx(null);
+      } else {
+        if (hoveredNode) {
+          setHoveredNode(null);
         }
-      } else if (hoveredNode) {
-        setHoveredNode(null);
-        useAppStore.getState().bumpOverlayVersion();
+        // #346: not on a node, but maybe still on the instance's body — same
+        // centroid-distance test used for click-to-select (instanceThreshold
+        // elsewhere in this file).
+        const instanceThreshold = 30 / (baseScale * zoom);
+        const instHit = hitTestInstance(instances, x, y, instanceThreshold);
+        if (instHit !== null) {
+          setHoveredInstanceIdx({ idx: instHit, clientX: e.clientX, clientY: e.clientY });
+        } else if (hoveredInstanceIdx) {
+          setHoveredInstanceIdx(null);
+        }
       }
     },
-    [isDragging, isPanning, isZoomDragging, dragNodeInfo, canvasToScene, panStart, constrainPan, zoom, baseScale, interactionMode, selectedNodes, markerSize, nodeLabelSize, showLabels, hoveredNode, offsetX, offsetY, isPlacingNodes, isShiftHeld, isAreaDeleting, areaDeleteStart, skeletonBuildMode, skeleton, builderRI]
+    [isDragging, isPanning, isZoomDragging, dragNodeInfo, canvasToScene, panStart, constrainPan, zoom, baseScale, interactionMode, selectedNodes, markerSize, nodeLabelSize, showLabels, hoveredNode, hoveredInstanceIdx, offsetX, offsetY, isPlacingNodes, isShiftHeld, isAreaDeleting, areaDeleteStart, skeletonBuildMode, skeleton, builderRI]
   );
 
   const handleMouseUp = useCallback(() => {
@@ -2496,6 +3005,21 @@ export function VideoPlayer() {
       lastDragPos.current = null;
       dragStartClient.current = null;
       setInteractionMode("idle");
+      setLabelsAutosaveInteracting(false);
+      // Flush the coalesced redraw and commit the gesture's edit ONCE (deferred
+      // from per-move). markChanged here arms autosave a single time, after the
+      // gesture — never mid-drag (#329).
+      if (dragRafRef.current != null) {
+        cancelAnimationFrame(dragRafRef.current);
+        dragRafRef.current = null;
+      }
+      if (dragMovedRef.current) {
+        dragMovedRef.current = false;
+        const s = useAppStore.getState();
+        s.markChanged();
+        s.touchFrame();
+        s.bumpOverlayVersion();
+      }
     }
   }, [isDragging, isPanning, isZoomDragging, interactionMode, marqueeStart, marqueeEnd, isAreaDeleting, areaDeleteStart, areaDeleteEnd, roiStart, roiEnd, setImageFeatureRoi]);
 
@@ -2611,9 +3135,9 @@ export function VideoPlayer() {
   // Double-click: convert predicted instance, or reset zoom/pan
   const handleDoubleClick = useCallback(
     (e: React.MouseEvent) => {
-      // Skeleton builder (place stage): double-click a placed node to rename it.
-      // window.prompt keeps this robust without a positioned overlay input; the
-      // rename goes through the undoable RenameNodeCommand.
+      // Skeleton builder (place stage): double-click a placed node to rename
+      // it inline (floating input anchored over the node), via the undoable
+      // RenameNodeCommand.
       if (skeletonBuildMode && skeleton) {
         const store = useAppStore.getState();
         if (store.skeletonBuildStage === "place") {
@@ -2623,17 +3147,9 @@ export function VideoPlayer() {
             builderRI ?? buildBuilderRenderedInstance(skeleton, store.builderPositions);
           const hit = hitTestNode([ri], p.x, p.y, threshold);
           if (hit) {
-            const current = skeleton.nodes[hit.nodeIdx]?.name ?? "";
-            const next = window.prompt("Rename node", current);
-            if (next && next.trim() && next.trim() !== current) {
-              commandContext.execute(RenameNodeCommand, {
-                nodeIdx: hit.nodeIdx,
-                newName: next.trim(),
-              });
-              // Repaint so the renamed label shows immediately (RenameNode does
-              // not bump overlayVersion itself, unlike AddNode/AddEdge).
-              useAppStore.getState().bumpOverlayVersion();
-            }
+            const node = ri.nodes[hit.nodeIdx];
+            setRenameValue(skeleton.nodes[hit.nodeIdx]?.name ?? "");
+            setRenamingNode({ nodeIdx: hit.nodeIdx, x: node.x, y: node.y });
           }
         }
         return;
@@ -2914,7 +3430,7 @@ export function VideoPlayer() {
         ref={containerRef}
         className={cn(
           "flex-1 relative overflow-hidden bg-background min-h-0",
-          pickingAnchor ? "cursor-crosshair" : skeletonBuildMode ? (skeletonBuildStage === "connect" ? "cursor-crosshair" : "cursor-cell") : imageFeatureRoiDrawActive ? "cursor-crosshair" : isPanning ? "cursor-grabbing" : isZoomDragging ? "cursor-zoom-in" : (shouldPan && isCmdHeld) ? "cursor-zoom-in" : shouldPan ? "cursor-grab" : isDragging ? "cursor-grabbing" : areaDeleteMode ? "cursor-crosshair" : interactionMode === "marquee" ? "cursor-crosshair" : labelingMode === "seed" ? "cursor-cell" : isKeypointPass ? "cursor-cell" : isPlacingNodes ? "cursor-cell" : hoveredNode ? "cursor-pointer" : "cursor-default"
+          pickingAnchor ? "cursor-crosshair" : instanceSequencePick ? "cursor-crosshair" : skeletonBuildMode ? (skeletonBuildStage === "connect" ? "cursor-crosshair" : "cursor-cell") : imageFeatureRoiDrawActive ? "cursor-crosshair" : isPanning ? "cursor-grabbing" : isZoomDragging ? "cursor-zoom-in" : (shouldPan && isCmdHeld) ? "cursor-zoom-in" : shouldPan ? "cursor-grab" : isDragging ? "cursor-grabbing" : areaDeleteMode ? "cursor-crosshair" : interactionMode === "marquee" ? "cursor-crosshair" : labelingMode === "seed" ? "cursor-cell" : isKeypointPass ? "cursor-cell" : isPlacingNodes ? "cursor-cell" : hoveredNode ? "cursor-pointer" : "cursor-default"
         )}
         onMouseMove={crosshairActive ? handleCrosshairMove : undefined}
         onMouseLeave={
@@ -2932,6 +3448,11 @@ export function VideoPlayer() {
           ref={frameCanvasRef}
           className="absolute inset-0"
         />
+        {/* Model-output overlay (confidence-map heatmap) — above video, below skeleton */}
+        <canvas
+          ref={heatmapCanvasRef}
+          className="absolute inset-0 pointer-events-none"
+        />
         {/* Skeleton overlay layer */}
         <canvas
           ref={overlayCanvasRef}
@@ -2939,7 +3460,7 @@ export function VideoPlayer() {
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
-          onMouseLeave={() => { handleMouseUp(); setHoveredNode(null); cursorScene.current = null; }}
+          onMouseLeave={() => { handleMouseUp(); setHoveredNode(null); setHoveredInstanceIdx(null); cursorScene.current = null; }}
           onDoubleClick={handleDoubleClick}
           onContextMenu={handleContextMenu}
         />
@@ -2973,6 +3494,60 @@ export function VideoPlayer() {
             />
           </div>
         )}
+        {/* Skeleton builder: inline node-rename input, anchored over the node
+            (tracks pan/zoom since position is recomputed from scene coords). */}
+        {renamingNode && skeleton && (() => {
+          const containerRect = containerRef.current?.getBoundingClientRect();
+          if (!containerRect) return null;
+          const { x: clientX, y: clientY } = sceneToClient(
+            renamingNode.x,
+            renamingNode.y
+          );
+          const isDuplicate =
+            renameValue.trim() !== "" &&
+            skeleton.nodes.some(
+              (n, i) => n.name === renameValue.trim() && i !== renamingNode.nodeIdx
+            );
+          return (
+            <div
+              className="absolute z-30"
+              style={{
+                left: clientX - containerRect.left + 12,
+                top: clientY - containerRect.top - 10,
+              }}
+            >
+              <input
+                ref={renameInputRef}
+                className={cn(
+                  "text-xs px-1 py-0.5 rounded border bg-background shadow-lg outline-none w-32",
+                  isDuplicate
+                    ? "border-destructive text-destructive"
+                    : "border-primary"
+                )}
+                value={renameValue}
+                onChange={(e) => setRenameValue(e.target.value)}
+                onBlur={commitNodeRename}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    commitNodeRename();
+                  } else if (e.key === "Escape") {
+                    e.preventDefault();
+                    cancelNodeRename();
+                  }
+                  e.stopPropagation();
+                }}
+                onClick={(e) => e.stopPropagation()}
+                onDoubleClick={(e) => e.stopPropagation()}
+              />
+              {isDuplicate && (
+                <div className="text-[10px] text-destructive bg-background/90 px-1 rounded-b">
+                  Duplicate name
+                </div>
+              )}
+            </div>
+          );
+        })()}
         {/* Node hover tooltip */}
         {hoveredNode && labeledFrame && (() => {
           const lfInst = labeledFrame.instances[hoveredNode.instanceIdx];
@@ -2988,18 +3563,42 @@ export function VideoPlayer() {
           const instScore = lfInst instanceof PredictedInstance ? lfInst.score : undefined;
           const isPredicted = lfInst instanceof PredictedInstance;
           const isDragActive = interactionMode === "dragging" && selectedNodes.size > 1;
+          // #341: color this line to match the same convention the canvas
+          // node/label itself uses — yellow (predicted), red (unconfirmed),
+          // green (confirmed) — so the tooltip text reads as a direct
+          // translation of what's on screen, not just a separate caption.
+          const statusColor = isPredicted
+            ? UNCOLORED_PREDICTED_NODE_COLOR
+            : point.complete
+              ? COMPLETE_COLOR
+              : INCOMPLETE_COLOR;
           return (
             <div
               className="absolute pointer-events-none bg-black/80 text-white text-xs rounded shadow-lg px-2 py-1.5 z-20 leading-relaxed"
               style={{ left: tipX, top: tipY }}
             >
               <div className="font-medium">{nodeName}</div>
+              <div style={{ color: rgbToCSS(statusColor) }}>
+                <strong>{isPredicted ? "predicted" : "user"}</strong> · {point.visible ? "visible" : "not visible"}
+                {/* #341: translate the red/green node-color convention inline,
+                    here rather than a one-shot toast, so it's discoverable
+                    every time — not just once, and not just if the toast
+                    happened to be caught. Doesn't apply to predicted points,
+                    which are always yellow regardless of `complete`. */}
+                {!isPredicted && ` · ${point.complete ? "confirmed" : "unconfirmed"}`}
+              </div>
               <div className="text-white/70">
                 x: {point.xy[0].toFixed(1)}, y: {point.xy[1].toFixed(1)}
               </div>
-              <div className="text-white/50">
-                {isPredicted ? "predicted" : "user"} · {point.visible ? "visible" : "not visible"}
-              </div>
+              {/* #341: same reasoning as above — teach the right-click-to-toggle
+                  mechanic wherever it's actually relevant (any hidden node on a
+                  user instance, not just ones auto-hidden by converting a
+                  prediction with missing detections). */}
+              {!isPredicted && !point.visible && (
+                <div className="text-white/40 text-[10px] mt-0.5">
+                  right-click to toggle visible
+                </div>
+              )}
               {nodeScore !== undefined && (
                 <div className="text-white/70">conf: {nodeScore.toFixed(3)}</div>
               )}
@@ -3012,6 +3611,29 @@ export function VideoPlayer() {
                   {instScore !== undefined && ` (${instScore.toFixed(2)})`}
                 </div>
               )}
+            </div>
+          );
+        })()}
+
+        {/* Instance hover caption (#346): a subtle "User Instance" / "Predicted
+            Instance" translation of the color coding, shown when hovering an
+            instance's body without landing precisely on one of its nodes (the
+            more detailed node tooltip above already says "predicted"/"user"
+            when it's showing, so this is skipped whenever that one is). */}
+        {!hoveredNode && hoveredInstanceIdx && labeledFrame && (() => {
+          const lfInst = labeledFrame.instances[hoveredInstanceIdx.idx];
+          if (!lfInst) return null;
+          const containerRect = containerRef.current?.getBoundingClientRect();
+          if (!containerRect) return null;
+          const tipX = hoveredInstanceIdx.clientX - containerRect.left + 16;
+          const tipY = hoveredInstanceIdx.clientY - containerRect.top - 8;
+          const isPredicted = lfInst instanceof PredictedInstance;
+          return (
+            <div
+              className="absolute pointer-events-none bg-black/70 text-white/90 text-[11px] rounded shadow px-1.5 py-1 z-20"
+              style={{ left: tipX, top: tipY }}
+            >
+              {isPredicted ? "Predicted Instance" : "User Instance"}
             </div>
           );
         })()}
@@ -3100,7 +3722,7 @@ export function VideoPlayer() {
             }
             {" "}[{placementNodeIdx + 1}/{selectedInstance.points.length}]
             {" "}({selectedInstance.points.filter((p) => !isNaN(p.xy[0])).length} placed)
-            {" · Tab/Shift+Tab to cycle · Esc to exit"}
+            {` · ${formatShortcut("Tab")}/${formatShortcut("Shift+Tab")} to cycle · Esc to exit`}
           </Badge>
         )}
 
@@ -3184,6 +3806,32 @@ export function VideoPlayer() {
                 This frame&apos;s image file couldn&apos;t be read. Other frames
                 are unaffected.
               </p>
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={relocating}
+                  onClick={async () => {
+                    if (!video) return;
+                    // A video-backed frame (e.g. a transcoded AVI whose cached MP4
+                    // was cleared) reads as a missing frame image — but the fix is
+                    // to re-specify the VIDEO, not hunt for one image.
+                    // resolveVideoFile re-points THIS video's backend (re-
+                    // transcoding a legacy codec on desktop), keeping labels aligned
+                    // (same Video, frame-exact). Mirrors "Locate Video" above.
+                    const ok = await resolveVideoFile(video, labels ?? undefined);
+                    useAppStore.getState().bumpOverlayVersion();
+                    if (ok) {
+                      useAppStore.getState().markVideoUpdated();
+                      missingFramesRef.current.clear();
+                      setFrameImageMissing(false);
+                      setReadNonce((n) => n + 1);
+                      useAppStore.getState().setFrameIdx(frameIdx);
+                    }
+                  }}
+                >
+                  Replace Video…
+                </Button>
               {isTauri && (
                 <Button
                   variant="outline"
@@ -3231,6 +3879,7 @@ export function VideoPlayer() {
                   {relocating ? "Locating…" : "Locate Image…"}
                 </Button>
               )}
+              </div>
             </div>
           </div>
         )}
@@ -3239,6 +3888,8 @@ export function VideoPlayer() {
         <SkeletonBuildBar />
         {/* Anchor-part picker prompt (self-guards to pick mode). */}
         <AnchorPickBar />
+        {/* Multi-instance transpose picker prompt (self-guards to pick mode). */}
+        <TransposePickBar />
       </div>
 
       {/* Seekbar */}

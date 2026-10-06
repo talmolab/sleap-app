@@ -1,7 +1,7 @@
 {
   "name": "sleap-app",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.2-2",
   "description": "SLEAP pose estimation and tracking app",
   "type": "module",
   "packageManager": "bun@1.3.14",
@@ -21,10 +21,11 @@
     "test:e2e": "playwright test",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "fetch:ffmpeg": "bash scripts/fetch-ffmpeg.sh"
   },
   "dependencies": {
-    "@talmolab/sleap-io.js": "^0.5.10",
+    "@talmolab/sleap-io.js": "0.5.13",
     "@tanstack/react-table": "^8.21.0",
     "@tauri-apps/api": "^2.11.0",
     "@tauri-apps/plugin-dialog": "^2.7.1",

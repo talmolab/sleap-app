@@ -233,70 +233,76 @@ export function ReplaceSkeletonDialog({
           )}
         </div>
 
+        {/* [&_[data-slot=table-container]]:overflow-visible neutralizes
+            Table's own overflow-x-auto wrapper, which otherwise counts as
+            its own scroll container and steals the sticky thead's "nearest
+            scrolling ancestor" — making sticky a no-op. */}
         {rows.length > 0 && (
-          <Table>
-            <TableHeader>
-              <TableRow className="border-b hover:bg-transparent">
-                <TableHead className="py-1 px-2 text-xs font-normal h-auto">
-                  New
-                </TableHead>
-                <TableHead className="py-1 px-2 text-xs font-normal h-auto">
-                  Old
-                </TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {rows.map((newNode) => {
-                const isKept = renameSet.has(newNode);
-                const selected = selections.get(newNode) ?? "";
-                // Options for THIS row: the unused delete nodes, plus the row's
-                // own current selection (so it stays visible after exclusion).
-                const options = unusedDeleteNodes(diff, selections);
-                const optionNames =
-                  selected && !options.includes(selected)
-                    ? [selected, ...options]
-                    : options;
-                return (
-                  <TableRow
-                    key={newNode}
-                    className="border-b-0 hover:bg-transparent"
-                  >
-                    <TableCell className="py-0.5 px-2 text-xs text-foreground">
-                      {newNode}
-                    </TableCell>
-                    <TableCell className="py-0.5 px-2 text-xs">
-                      {isKept ? (
-                        <span className="text-muted-foreground">
-                          — (kept)
-                        </span>
-                      ) : (
-                        <Select
-                          value={selected === "" ? UNLINKED : selected}
-                          onValueChange={(v) => handleSelect(newNode, v)}
-                        >
-                          <SelectTrigger
-                            className="w-full h-7 text-xs"
-                            size="sm"
-                            aria-label={`Link for ${newNode}`}
+          <div className="max-h-72 overflow-auto rounded-md border border-border/40 [&_[data-slot=table-container]]:overflow-visible">
+            <Table className="border-separate border-spacing-0">
+              <TableHeader className="sticky top-0 z-10 bg-background">
+                <TableRow className="border-b hover:bg-transparent">
+                  <TableHead className="py-1 px-2 text-xs font-normal h-auto border-b">
+                    New
+                  </TableHead>
+                  <TableHead className="py-1 px-2 text-xs font-normal h-auto border-b">
+                    Old
+                  </TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {rows.map((newNode) => {
+                  const isKept = renameSet.has(newNode);
+                  const selected = selections.get(newNode) ?? "";
+                  // Options for THIS row: the unused delete nodes, plus the row's
+                  // own current selection (so it stays visible after exclusion).
+                  const options = unusedDeleteNodes(diff, selections);
+                  const optionNames =
+                    selected && !options.includes(selected)
+                      ? [selected, ...options]
+                      : options;
+                  return (
+                    <TableRow
+                      key={newNode}
+                      className="border-b-0 hover:bg-transparent"
+                    >
+                      <TableCell className="py-0.5 px-2 text-xs text-foreground">
+                        {newNode}
+                      </TableCell>
+                      <TableCell className="py-0.5 px-2 text-xs">
+                        {isKept ? (
+                          <span className="text-muted-foreground">
+                            — (kept)
+                          </span>
+                        ) : (
+                          <Select
+                            value={selected === "" ? UNLINKED : selected}
+                            onValueChange={(v) => handleSelect(newNode, v)}
                           >
-                            <SelectValue placeholder="(unlinked)" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value={UNLINKED}>(unlinked)</SelectItem>
-                            {optionNames.map((name) => (
-                              <SelectItem key={name} value={name}>
-                                {name}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
+                            <SelectTrigger
+                              className="w-full h-7 text-xs"
+                              size="sm"
+                              aria-label={`Link for ${newNode}`}
+                            >
+                              <SelectValue placeholder="(unlinked)" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value={UNLINKED}>(unlinked)</SelectItem>
+                              {optionNames.map((name) => (
+                                <SelectItem key={name} value={name}>
+                                  {name}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </div>
         )}
 
         {error && <p className="text-xs text-destructive">{error}</p>}

@@ -17,7 +17,8 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
+import { VideoDropzone } from "@/components/common/VideoDropzone";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
@@ -40,10 +41,15 @@ import {
   resolveVideoFile,
   resolveAllVideosFromFolder,
   resolveVideoPath,
-  pickAndAddVideos,
   pickVideoFiles,
   buildStandaloneVideo,
+  addVideoFileToLabels,
 } from "../../lib/resolveVideos";
+import {
+  VideoImportList,
+  toVideoImportEntries,
+  type VideoImportEntry,
+} from "@/components/dialogs/VideoImportList";
 import { displayFrameCount } from "@/lib/videoFrameCount";
 import { getPlatform, isTauri } from "../../platform/index";
 import {
@@ -229,7 +235,7 @@ function VideoDetailPanel({ video }: { video: Video }) {
 
       {/* Video stats */}
       {shape && (
-        <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-muted-foreground">
+        <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-muted-foreground select-text">
           {width != null && height != null && (
             <div>
               <span className="font-medium text-foreground">Resolution: </span>
@@ -264,7 +270,7 @@ function VideoDetailPanel({ video }: { video: Video }) {
           <summary className="cursor-pointer text-muted-foreground hover:text-foreground select-none font-medium">
             Metadata
           </summary>
-          <div className="mt-1 space-y-0.5 text-muted-foreground">
+          <div className="mt-1 space-y-0.5 text-muted-foreground select-text">
             {sourceFilename && (
               <div className="break-all">
                 <span className="font-medium text-foreground">
@@ -353,6 +359,15 @@ export function VideosPanel() {
     frameCount: number;
   } | null>(null);
 
+  // Staged videos from the "Add Videos" picker, awaiting the Import Videos
+  // dialog's grayscale choice + confirmation. null = no dialog open. Mirrors
+  // NewProjectDialog's staged list, but as a standalone confirm step here
+  // since this panel adds directly (no larger dialog already open to stage in).
+  const [pendingImport, setPendingImport] = useState<VideoImportEntry[] | null>(
+    null
+  );
+  const [importing, setImporting] = useState(false);
+
   const handleLocateVideo = async (video: Video) => {
     const ok = await resolveVideoFile(video, labels ?? undefined);
     if (ok) {
@@ -423,24 +438,28 @@ export function VideosPanel() {
     }
   };
 
-  const handleAddVideos = async () => {
-    if (!labels) return;
-    let added: Video[];
+  /** Add every staged video from the Import Videos dialog, with its chosen grayscale flag. */
+  const handleConfirmImport = async () => {
+    if (!labels || !pendingImport) return;
+    setImporting(true);
     try {
-      added = await pickAndAddVideos(labels);
-    } catch (err) {
-      toast.error("Failed to add video", {
-        description: err instanceof Error ? err.message : String(err),
-      });
-      return;
+      const added: Video[] = [];
+      for (const pv of pendingImport) {
+        const video = await addVideoFileToLabels(labels, pv, pv.grayscale);
+        if (video) added.push(video);
+      }
+      if (added.length > 0) labels.reindex();
+      setPendingImport(null);
+      if (added.length === 0) return; // unsupported/failed (already toasted)
+      markChanged();
+      bumpOverlayVersion();
+      // Select the first newly-added video and load its first frame.
+      setVideo(added[0]);
+      setFrameIdx(0);
+      toast.success(`Added ${added.length} video${added.length > 1 ? "s" : ""}`);
+    } finally {
+      setImporting(false);
     }
-    if (added.length === 0) return; // cancelled, unsupported, or failed (toasted)
-    markChanged();
-    bumpOverlayVersion();
-    // Select the first newly-added video and load its first frame.
-    setVideo(added[0]);
-    setFrameIdx(0);
-    toast.success(`Added ${added.length} video${added.length > 1 ? "s" : ""}`);
   };
 
   /**
@@ -474,7 +493,9 @@ export function VideosPanel() {
     if (!labels || !currentVideo) return;
     let files;
     try {
-      files = await pickVideoFiles();
+      // Relinking, not importing: offer the HDF5 containers (`.pkg.slp`/`.h5`)
+      // a project can reference too, with this video's own extension first.
+      files = await pickVideoFiles({ relinking: currentVideo.filename });
     } catch (err) {
       toast.error("Failed to replace video", {
         description: err instanceof Error ? err.message : String(err),
@@ -482,9 +503,8 @@ export function VideosPanel() {
       return;
     }
     if (files.length === 0) return; // cancelled
-    const newVideo = await buildStandaloneVideo(files[0].file);
+    const newVideo = await buildStandaloneVideo(files[0].file, files[0].absPath);
     if (!newVideo) return; // unsupported / decode failed (already toasted)
-    if (files[0].absPath) newVideo.filename = files[0].absPath;
 
     const newCount = newVideo.shape?.[0] ?? Infinity;
     const orphans = labeledFramesBeyond(labels, currentVideo, newCount);
@@ -562,7 +582,23 @@ export function VideosPanel() {
           </div>
         </div>
       )}
-      <ScrollArea className="flex-1">
+      {/* min-h instead of min-h-0: keeps the header + a couple of rows visible
+          even when other panels squeeze this section short, instead of
+          shrinking to nothing while the detail panel/buttons below stay put
+          (#339). Sized to comfortably fit inside the section's own min-h-40
+          floor (AppShell) alongside this panel's other fixed chrome — if this
+          floor were bigger than that leaves room for, the panel's natural
+          content would exceed the section box, pushing scrolling up to the
+          section's outer overflow-auto wrapper instead of this one, and the
+          sticky header below only tracks ITS OWN scroll — not the outer
+          one — so it would stop sticking. */}
+      {/* Neutralize Table's own overflow-x-auto wrapper: it silently becomes
+          a second scroll container (overflow-x:auto forces overflow-y:auto
+          too), and a sticky thead sticks to its NEAREST scrolling ancestor —
+          which would be that inert wrapper instead of this actually-scrolling
+          one, making "sticky" a no-op. This ScrollArea's own Viewport already
+          handles both axes (it renders a horizontal ScrollBar below). */}
+      <ScrollArea className="flex-1 min-h-24 [&_[data-slot=table-container]]:overflow-visible">
         {videos.length === 0 ? (
           <p className="text-xs text-muted-foreground p-2">
             No videos in project.
@@ -572,19 +608,19 @@ export function VideosPanel() {
             No videos match “{search}”.
           </p>
         ) : (
-          <Table>
-            <TableHeader>
+          <Table className="w-max min-w-full border-separate border-spacing-0">
+            <TableHeader className="sticky top-0 z-10 bg-background">
               <TableRow className="border-b hover:bg-transparent">
-                <TableHead className="py-1 px-2 text-xs font-normal h-auto">
+                <TableHead className="py-1 px-2 text-xs font-normal h-auto border-b">
                   #
                 </TableHead>
-                <TableHead className="py-1 px-2 text-xs font-normal h-auto">
+                <TableHead className="py-1 px-2 text-xs font-normal h-auto border-b">
                   Filename
                 </TableHead>
-                <TableHead className="py-1 px-2 text-xs font-normal text-right h-auto">
+                <TableHead className="py-1 px-2 text-xs font-normal text-right h-auto border-b">
                   Frames
                 </TableHead>
-                <TableHead className="py-1 px-2 text-xs font-normal text-right h-auto">
+                <TableHead className="py-1 px-2 text-xs font-normal text-right h-auto border-b">
                   Size
                 </TableHead>
               </TableRow>
@@ -611,6 +647,7 @@ export function VideosPanel() {
             </TableBody>
           </Table>
         )}
+        <ScrollBar orientation="horizontal" />
       </ScrollArea>
 
       {currentVideo && (
@@ -621,14 +658,13 @@ export function VideosPanel() {
       )}
 
       <Separator />
+      <div className="px-2 pt-2">
+        <VideoDropzone
+          onFiles={(picked) => setPendingImport(toVideoImportEntries(picked))}
+          data-tutorial="add-videos-button"
+        />
+      </div>
       <div className="flex gap-1 p-2">
-        <Button
-          variant="subtle"
-          size="xs"
-          onClick={handleAddVideos}
-        >
-          Add Videos
-        </Button>
         <Button
           variant="subtle"
           size="xs"
@@ -655,6 +691,52 @@ export function VideosPanel() {
           </Button>
         )}
       </div>
+
+      {/* Import Videos dialog: confirm the picked file(s) and choose grayscale
+          per-file/bulk before actually adding them (legacy Qt GUI parity). */}
+      <Dialog
+        open={pendingImport !== null}
+        onOpenChange={(open) => {
+          if (!open && !importing) setPendingImport(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Import Videos</DialogTitle>
+            <DialogDescription>
+              Choose which video(s) to import as grayscale. This can&apos;t be
+              changed after import.
+            </DialogDescription>
+          </DialogHeader>
+          {pendingImport && (
+            <VideoImportList
+              videos={pendingImport}
+              onChange={setPendingImport}
+              onRemove={(i) =>
+                setPendingImport((v) => v?.filter((_, idx) => idx !== i) ?? null)
+              }
+              disabled={importing}
+            />
+          )}
+          <DialogFooter>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPendingImport(null)}
+              disabled={importing}
+            >
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              onClick={handleConfirmImport}
+              disabled={importing || !pendingImport?.length}
+            >
+              {importing ? "Importing…" : "Import"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Replace Video confirm-trim dialog */}
       <Dialog

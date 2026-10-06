@@ -6,6 +6,7 @@
  * connect to rooms, discover workers, browse remote filesystems,
  * and submit inference jobs.
  */
+import type { JobProject, JobRun } from "@/lib/protocolV1/client";
 
 // ── Protocol constants (match sleap_rtc/protocol.py) ──────────────
 export const MSG_SEPARATOR = "::";
@@ -72,20 +73,79 @@ export interface TrackJobSpec {
   track_window?: number;
   max_tracks?: number;
   connect_single_breaks?: boolean;
+  min_match_points?: number;
+  min_new_track_points?: number;
+  scoring_reduction?: string;
+  tracking_target_instance_count?: number;
+  tracking_pre_cull_to_target?: boolean;
+  tracking_pre_cull_iou_threshold?: number;
+  tracking_clean_instance_count?: number;
+  tracking_clean_iou_threshold?: number;
+  use_kalman?: boolean;
+  kf_track_features?: string;
+  kf_init_frame_count?: number;
+  kf_node_indices?: string;
+  kf_reset_gap_size?: number;
+  of_img_scale?: number;
+  of_window_size?: number;
+  of_max_levels?: number;
+  filter_overlapping?: boolean;
+  filter_overlapping_method?: string;
+  filter_overlapping_threshold?: number;
+  filter_min_visible_nodes?: number;
+  filter_min_visible_node_fraction?: number;
+  filter_min_mean_node_score?: number;
+  filter_min_instance_score?: number;
+  filter_min_centroid_distance?: number;
+  /** Which project submitted this job (`projectTag()`) — shows up in the worker's job list/history (sleap-connect #98). */
+  project?: JobProject;
+  /** Links this job to its siblings in a multi-model training run (sleap-connect `feat/connect-run-id`) — opaque to the worker, round-tripped as-is. */
+  run?: JobRun;
 }
 
 export interface TrainJobSpec {
   type: "train";
   config_contents: string[];
   model_types: string[];
-  labels_path: string;
+  /** `labelsSource: "worker-file"` — a path the worker can already read. Omitted when `labels_content` is sent instead (`labelsSource: "window"`). */
+  labels_path?: string;
+  /**
+   * Base64-encoded `.slp` bytes for the training labels — this window's own
+   * labels (`labelsSource: "window"`), sent in place of a worker filesystem
+   * path (see trainingStore.ts's remote-submission path). Per-video,
+   * selectively embedded: a video the worker can see is referenced by its
+   * worker path; one it can't is embedded (labeled frames only, never the
+   * full video — see remoteLabelsPayload.ts). Exact cross-repo wire contract
+   * with sleap-connect's worker materialization — do not rename.
+   */
+  labels_content?: string | null;
   val_labels_path?: string;
   max_epochs?: number;
   batch_size?: number;
   learning_rate?: number;
   run_name?: string;
   path_mappings?: Record<string, string>;
-  inference_target?: string;
+  /** Which project submitted this job (`projectTag()`) — shows up in the worker's job list/history (sleap-connect #98). */
+  project?: JobProject;
+  /** Links this job to its siblings in a multi-model training run (sleap-connect `feat/connect-run-id`) — opaque to the worker, round-tripped as-is. */
+  run?: JobRun;
+  /**
+   * Chained post-train inference, submitted by the WORKER itself once every
+   * job sharing this one's `run.id` has completed (sleap-connect PR5w) —
+   * built by the launcher wizard (`launcherSpec.ts`'s `buildLauncherTrainSpec`)
+   * so inference can run even after the app closes. Each entry becomes a
+   * `TrackJobSpec` with `type`/`data_path`/`model_paths`/`project` filled in
+   * by the worker (`data_path` = this run's `labels_path`, `model_paths` =
+   * every sibling's trained model dir in `run.index` order) — hence the
+   * omission here. The resulting job ids land in this job's own result and
+   * `job.result` event as `chained_job_ids` (or `chain_error` on a submit
+   * failure). Omitted entirely when post-train inference wasn't requested.
+   *
+   * `trainingStore.ts`'s OWN remote training branch (Training panel, not the
+   * launcher) never sets this — it still submits its post-training track job
+   * itself, client-orchestrated, once `submitJob` resolves.
+   */
+  post_inference?: Array<Omit<TrackJobSpec, "type" | "data_path" | "model_paths">>;
 }
 
 export type JobSpec = TrackJobSpec | TrainJobSpec;
@@ -105,11 +165,38 @@ export interface Credentials {
   privateKey?: string; // Ed25519 private key (URL-safe base64, raw 32 bytes)
 }
 
+/** A content-addressed result blob ref (protocol v1 spec §6.4). */
+export interface JobResultBlobRef {
+  sha256: string;
+  size: number;
+}
+
 export interface JobResult {
   jobId: string;
   success: boolean;
   outputPath?: string;
   error?: string;
+  /**
+   * The `run.id` `connectStore.submitJob` assigned (or was given via
+   * `options.run`) when it submitted this job — lets a caller (e.g.
+   * `trainingStore`'s post-training inference) link a follow-up job to the
+   * same run without threading its own id through separately.
+   */
+  runId?: string;
+  /**
+   * Result blobs a protocol-v1 worker reported on `job.result` (e.g.
+   * `resultBlobs.predictions`) — fetch with `connectStore`'s
+   * `fetchResultBlob`. `outputPath` above is the desktop-only, local-file
+   * concept this replaces for the remote-worker case; empty/undefined
+   * until the worker actually registers something (stage 1.10's
+   * `talmolab/sleap-connect` side — a worker not running the blob HTTP
+   * server, or a training job, never populates this).
+   */
+  resultBlobs?: Record<string, JobResultBlobRef>;
+  /** Train jobs only: worker-side path of the trained model folder (a `model_paths` entry for a track job). */
+  modelDir?: string;
+  /** Train jobs only: worker-side path of the labels file the job trained on (materialized when sent inline). */
+  labelsPath?: string;
 }
 
 // ── Message helpers ───────────────────────────────────────────────

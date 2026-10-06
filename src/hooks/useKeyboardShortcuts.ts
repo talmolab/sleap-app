@@ -15,7 +15,9 @@ import { quitApp } from "../lib/quit";
 import { rejectCurrentPassItem, skipCurrentPassItem } from "../lib/activeLearning/passActions";
 import { openNewInstance } from "../lib/newInstance";
 import { dismiss, toast } from "../lib/notify";
+import { hintIfPredictionsRemain } from "../lib/labelingHints";
 import { spacePanState } from "../lib/spacePanTracking";
+import { dirtyFrameTracker } from "@/lib/autosaveDirty";
 import {
   commandContext,
   OpenProjectCommand,
@@ -37,7 +39,7 @@ import {
   DeleteSelectedInstance,
   CopyInstance,
   PasteInstance,
-  TransposeInstances,
+  requestTranspose,
   AddTrack,
   SetInstanceTrack,
   CopyTrack,
@@ -259,7 +261,7 @@ export function useKeyboardShortcuts() {
       // Track commands
       [DEFAULT_SHORTCUTS.transpose]: (e) => {
         e.preventDefault();
-        commandContext.execute(TransposeInstances);
+        requestTranspose(commandContext);
       },
       [DEFAULT_SHORTCUTS["add track"]]: (e) => {
         e.preventDefault();
@@ -295,6 +297,12 @@ export function useKeyboardShortcuts() {
                 const trackNumber = labels.tracks.length + 1;
                 labels.tracks.push(new Track(`Track ${trackNumber}`));
               }
+              // These new tracks are pushed directly (not via the AddTrack
+              // command), so the autosave classifier never sees them — mark
+              // structural so the next tick rewrites the base (the delta can't
+              // encode a track absent from the base). Belt-and-suspenders with
+              // the tick-time structural-signature backstop.
+              dirtyFrameTracker.markStructural();
             }
             commandContext.execute(SetInstanceTrack, { trackIdx });
           },
@@ -395,6 +403,7 @@ export function useKeyboardShortcuts() {
         } else if (s.labelingMode === "correct") {
           s.exitCorrectMode();
         } else {
+          hintIfPredictionsRemain(s.instance, s.labeledFrame);
           s.setInstance(null);
         }
       },

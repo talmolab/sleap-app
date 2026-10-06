@@ -612,6 +612,7 @@ const baseParams = {
     showEdges: true,
     showNonVisibleNodes: true,
     colorPredicted: false,
+    showTrackScore: false,
   },
 };
 

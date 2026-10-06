@@ -11,7 +11,20 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { Clipboard, Check, Search } from "lucide-react";
 import { useAppStore } from "../../stores/appStore";
-import { rgbToCSS, getInstanceColor } from "../../lib/colorPalettes";
+import {
+  rgbToCSS,
+  rgbToHex,
+  getInstanceColor,
+  hasAssignedTracks,
+  PALETTES,
+  type RGB,
+} from "../../lib/colorPalettes";
+import { getActiveTrackOverrides } from "../../lib/trackColorOverrides";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { instanceShowsNonVisible } from "@/lib/instanceVisibility";
 import {
   commandContext,
@@ -113,15 +126,101 @@ function VisibilityToggle({
   );
 }
 
+/**
+ * The per-row color swatch. For a tracked, editable instance it becomes a
+ * popover to override that TRACK's color (applied everywhere the track is drawn,
+ * persisted locally per project). For `[no track]` / read-only rows it's a plain
+ * static swatch. The override is a viewing preference, not a label edit → it
+ * goes through a store action, not the undoable command stack.
+ */
+export function TrackColorSwatch({
+  color,
+  palette,
+  trackName,
+  editable,
+}: {
+  color: RGB;
+  palette: string;
+  trackName: string | null;
+  editable: boolean;
+}) {
+  const setTrackColor = useAppStore((s) => s.setTrackColor);
+  const resetTrackColor = useAppStore((s) => s.resetTrackColor);
+
+  if (!editable || !trackName) {
+    return (
+      <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: rgbToCSS(color) }} />
+    );
+  }
+
+  const presets = PALETTES[palette] ?? PALETTES.standard;
+  return (
+    <Popover>
+      <PopoverTrigger asChild onClick={(e) => e.stopPropagation()}>
+        <button
+          type="button"
+          className="w-3 h-3 rounded-sm cursor-pointer ring-offset-1 ring-offset-background hover:ring-2 hover:ring-ring"
+          style={{ backgroundColor: rgbToCSS(color) }}
+          title="Click to set track color"
+          aria-label={`Set color for track ${trackName}`}
+        />
+      </PopoverTrigger>
+      <PopoverContent
+        className="w-48 p-2"
+        align="start"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-1.5 truncate text-[11px] font-medium text-muted-foreground">
+          Track: {trackName}
+        </div>
+        <div className="mb-2 grid grid-cols-8 gap-1">
+          {presets.map((c, i) => (
+            <button
+              key={i}
+              type="button"
+              className="h-4 w-4 rounded-sm border border-black/10"
+              style={{ backgroundColor: rgbToCSS(c) }}
+              title={rgbToHex(c)}
+              aria-label={`Set track color ${rgbToHex(c)}`}
+              onClick={() => setTrackColor(trackName, rgbToHex(c))}
+            />
+          ))}
+        </div>
+        <div className="flex items-center justify-between gap-2">
+          <label className="flex cursor-pointer items-center gap-1 text-[11px]">
+            <input
+              type="color"
+              value={rgbToHex(color)}
+              onChange={(e) => setTrackColor(trackName, e.target.value)}
+              className="h-5 w-6 cursor-pointer bg-transparent p-0"
+            />
+            Custom
+          </label>
+          <button
+            type="button"
+            className="text-[11px] text-muted-foreground underline hover:text-foreground"
+            onClick={() => resetTrackColor(trackName)}
+          >
+            Reset to auto
+          </button>
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 function InstanceRow({
   instance,
   index,
+  frameInstanceTracks,
   isSelected,
   onSelect,
   palette,
+  trackColorOverrides,
   labels,
   distinctlyColor,
   colorPredicted,
+  projectHasTracks,
   visibilityChecked,
   viewOnlyChecked,
   invisibleNodesChecked,
@@ -133,12 +232,15 @@ function InstanceRow({
 }: {
   instance: Instance | PredictedInstance;
   index: number;
+  frameInstanceTracks: unknown[];
   isSelected: boolean;
   onSelect: (e: React.MouseEvent) => void;
   palette: string;
+  trackColorOverrides: Record<string, string>;
   labels: Labels | null;
   distinctlyColor: string;
   colorPredicted: boolean;
+  projectHasTracks: boolean;
   visibilityChecked: boolean;
   viewOnlyChecked: boolean;
   invisibleNodesChecked: boolean;
@@ -157,6 +259,9 @@ function InstanceRow({
     labels?.tracks ?? [],
     predicted,
     colorPredicted,
+    projectHasTracks,
+    frameInstanceTracks,
+    trackColorOverrides,
   );
   const trackName = instance.track?.name ?? "[no track]";
   const visibleNodes = instance.nVisible;
@@ -188,9 +293,11 @@ function InstanceRow({
       )}
     >
       <TableCell className="py-0.5 px-2">
-        <div
-          className="w-3 h-3 rounded-sm"
-          style={{ backgroundColor: rgbToCSS(color) }}
+        <TrackColorSwatch
+          color={color}
+          palette={palette}
+          trackName={instance.track?.name ?? null}
+          editable={!!instance.track && !readOnly}
         />
       </TableCell>
       <TableCell className="py-0.5 px-2 text-xs">
@@ -297,7 +404,7 @@ function InstanceDetailPanel({
 
   return (
     <div className="px-2 py-1.5 space-y-1.5">
-      <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
+      <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground select-text">
         <span>
           <span className="text-foreground">{trackName}</span>
         </span>
@@ -326,7 +433,7 @@ function InstanceDetailPanel({
         {/* Readable named list (node name + coords). Must stay inside a
             max-h + overflow-auto box so many-node skeletons scroll here rather
             than pushing the Add/Delete/Accept buttons off-screen. */}
-        <div className="text-[10px] leading-tight font-mono bg-muted/50 rounded p-2 pr-8 max-h-32 overflow-auto">
+        <div className="text-[10px] leading-tight font-mono bg-muted/50 rounded p-2 pr-8 max-h-32 overflow-auto select-text">
           {namedPoints.map((pt, i) => {
             // Green only when actually placed AND visible; a NaN/unset coord
             // (not placed) is red, not green (#278 feedback).
@@ -372,7 +479,7 @@ export function InstancesPanel() {
   // data IN PLACE without swapping a subscribed reference, so without this the
   // panel only updates by luck via some other re-render (and not at all on a
   // frame with no incidental repaint — e.g. a negative frame).
-  useAppStore((s) => s.editSeq);
+  const editSeq = useAppStore((s) => s.editSeq);
   // Instances require a skeleton with at least one node; a node-less skeleton
   // would yield a null instance. Re-evaluates when the node count changes
   // (skeleton commands bump overlayVersion, which notifies this selector).
@@ -380,6 +487,14 @@ export function InstancesPanel() {
   const palette = useAppStore((s) => s.palette);
   const distinctlyColor = useAppStore((s) => s.distinctlyColor);
   const colorPredicted = useAppStore((s) => s.colorPredicted);
+  const trackColorOverrides = useAppStore((s) =>
+    getActiveTrackOverrides(s.trackColorOverrides, s.projectPath, s.filename),
+  );
+  const projectHasTracks = useMemo(
+    () => hasAssignedTracks(labels),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [labels, editSeq]
+  );
 
   // Per-instance visibility state + actions (Task 5). These live in the store
   // keyed by instance object identity and are read/written here; the overlay
@@ -412,6 +527,7 @@ export function InstancesPanel() {
     labels && video ? labels.find({ video, frameIdx }) : [];
   const labeledFrame = labeledFrames.length > 0 ? labeledFrames[0] : null;
   const instances = labeledFrame?.instances ?? [];
+  const frameInstanceTracks = instances.map((inst) => inst.track);
   const hasPredictions = instances.some(isPredicted);
 
   // Only surface the filter when there's enough to filter. When hidden its
@@ -513,8 +629,25 @@ export function InstancesPanel() {
       {/* Plain overflow container (not Radix ScrollArea): its `display:table`
           viewport made the table's `w-full` size to content, so horizontal
           scroll never engaged and the wide Display column clipped (#278). A
-          bounded overflow-auto div scrolls both axes reliably in WKWebView. */}
-      <div className="flex-1 min-h-0 overflow-auto">
+          bounded overflow-auto div scrolls both axes reliably in WKWebView.
+          min-h (not min-h-0): a scroll container's automatic min-height is 0,
+          so without a floor this shrinks away entirely once the selected
+          instance's detail panel (below) has room to grow — hiding the table
+          instead of the panel scrolling as a whole (#339-class bug). Sized to
+          comfortably fit inside the section's own min-h-40 floor (AppShell)
+          alongside this panel's other fixed chrome — if this floor were
+          bigger than that leaves room for, the panel's natural content would
+          exceed the section box, pushing scrolling up to the section's outer
+          overflow-auto wrapper instead of this div, and the sticky header
+          below only tracks ITS OWN scroll — not the outer one — so it would
+          stop sticking. */}
+      {/* [&_[data-slot=table-container]]:overflow-visible neutralizes Table's
+          own overflow-x-auto wrapper, which otherwise counts as its own
+          scroll container (overflow-x:auto forces overflow-y:auto too) and
+          steals the sticky thead's "nearest scrolling ancestor" — making
+          sticky a no-op since that inner wrapper itself never scrolls. This
+          div already handles both axes via overflow-auto. */}
+      <div className="flex-1 min-h-24 overflow-auto [&_[data-slot=table-container]]:overflow-visible">
         {instances.length === 0 ? (
           <p className="text-xs text-muted-foreground p-2">
             No instances on this frame.
@@ -527,23 +660,23 @@ export function InstancesPanel() {
           // min-w-max: grow the table to content width so a narrow sidebar
           // overflows and the panel's overflow-auto container scrolls, instead
           // of clipping the Display toggles (#278).
-          <Table className="min-w-max">
-            <TableHeader>
+          <Table className="min-w-max border-separate border-spacing-0">
+            <TableHeader className="sticky top-0 z-10 bg-background">
               <TableRow className="border-b hover:bg-transparent">
-                <TableHead className="py-1 px-2 text-xs font-normal w-6 h-auto" />
-                <TableHead className="py-1 px-2 text-xs font-normal h-auto">
+                <TableHead className="py-1 px-2 text-xs font-normal w-6 h-auto border-b" />
+                <TableHead className="py-1 px-2 text-xs font-normal h-auto border-b">
                   Track
                 </TableHead>
-                <TableHead className="py-1 px-2 text-xs font-normal h-auto">
+                <TableHead className="py-1 px-2 text-xs font-normal h-auto border-b">
                   Type
                 </TableHead>
-                <TableHead className="py-1 px-2 text-xs font-normal text-right h-auto">
+                <TableHead className="py-1 px-2 text-xs font-normal text-right h-auto border-b">
                   Nodes
                 </TableHead>
-                <TableHead className="py-1 px-2 text-xs font-normal text-right h-auto">
+                <TableHead className="py-1 px-2 text-xs font-normal text-right h-auto border-b">
                   Score
                 </TableHead>
-                <TableHead className="py-1 px-2 text-xs font-normal text-right h-auto">
+                <TableHead className="py-1 px-2 text-xs font-normal text-right h-auto border-b">
                   Display
                 </TableHead>
               </TableRow>
@@ -562,12 +695,15 @@ export function InstancesPanel() {
                     key={i}
                     instance={inst}
                     index={i}
+                    frameInstanceTracks={frameInstanceTracks}
                     isSelected={selectedIndices.has(i)}
                     onSelect={(e) => handleSelect(i, e)}
                     palette={palette}
+                    trackColorOverrides={trackColorOverrides}
                     labels={labels}
                     distinctlyColor={distinctlyColor}
                     colorPredicted={colorPredicted}
+                    projectHasTracks={projectHasTracks}
                     visibilityChecked={visibilityChecked}
                     viewOnlyChecked={viewOnlyInstance === inst}
                     invisibleNodesChecked={instanceShowsNonVisible(

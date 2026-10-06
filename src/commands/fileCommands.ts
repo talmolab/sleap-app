@@ -27,6 +27,7 @@ import {
   loadDlcFromBrowserDir,
 } from "../lib/loadProject";
 import { saveProjectAsSlp } from "../lib/saveProject";
+import { getNewVersionFilename } from "../lib/versionedFilename";
 import { confirmDiscardUnsavedWork } from "../lib/unsavedGuard";
 import { getPlatform } from "../platform/index";
 import {
@@ -171,10 +172,10 @@ export async function pickClipDestination(): Promise<
 export const NewProjectCommand: Command = {
   name: "NewProject",
   topics: [UpdateTopic.Project, UpdateTopic.Labels],
-  execute(ctx: CommandContext) {
+  async execute(ctx: CommandContext) {
     // Confirm discarding unsaved work (in-memory edits OR a not-yet-exported
     // OPFS working copy) before creating a new project.
-    if (!confirmDiscardUnsavedWork("Creating a new project")) return;
+    if (!(await confirmDiscardUnsavedWork("Creating a new project"))) return;
 
     // Seed an empty skeleton so the editor lands in a usable state: the
     // Skeleton panel (and its template dropdown) require a non-null skeleton —
@@ -411,25 +412,42 @@ export const ImportDlcFolderCommand: Command = {
   },
 };
 
-/** Save the project as SLP (HDF5). */
+/**
+ * Seed name for a never-saved project. PyQt SLEAP seeds `labels.v000.slp` and
+ * increments it on first save, so the first proposed name is `labels.v001.slp`.
+ */
+const NEW_PROJECT_VERSION_SEED = "labels.v000.slp";
+
+/**
+ * Save the project as SLP (HDF5).
+ *
+ * A named project overwrites in place (no version bump) — matching PyQt's Save.
+ * An untitled project has never been written, so we propose the seeded first
+ * version (labels.v001.slp) in the save dialog.
+ */
 export const SaveProjectCommand: Command = {
   name: "SaveProject",
   topics: [],
   async execute(ctx: CommandContext) {
     const { labels, filename } = ctx.state;
     if (!labels) return;
-    await saveProjectAsSlp(labels, filename ?? undefined);
+    const hint = filename ?? getNewVersionFilename(NEW_PROJECT_VERSION_SEED);
+    await saveProjectAsSlp(labels, hint);
   },
 };
 
-/** Save the project as SLP, always showing the file picker. */
+/**
+ * Save the project as SLP, always showing the file picker with the NEXT version
+ * pre-filled (PyQt's Save As → get_new_version_filename).
+ */
 export const SaveAsProjectCommand: Command = {
   name: "SaveAsProject",
   topics: [],
   async execute(ctx: CommandContext) {
     const { labels, filename } = ctx.state;
     if (!labels) return;
-    await saveProjectAsSlp(labels, filename ?? undefined, true);
+    const hint = getNewVersionFilename(filename ?? NEW_PROJECT_VERSION_SEED);
+    await saveProjectAsSlp(labels, hint, true);
   },
 };
 

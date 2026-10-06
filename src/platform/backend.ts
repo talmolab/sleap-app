@@ -13,6 +13,7 @@ import { buildInferenceArgs, pickInferenceSubcommand } from "./inferenceArgs";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { formatRunTimestamp as formatPredictionsTimestamp } from "@/lib/timestamp";
 import { buildTrainingArgs } from "./trainingArgs";
+import { buildExportArgs, type BuildExportArgsOptions } from "./exportArgs";
 
 function sampleRandomFrames(totalFrames: number, count: number): number[] {
   const n = Math.min(count, totalFrames);
@@ -31,12 +32,20 @@ export interface UvInfo {
   version: string | null;
   path: string | null;
   pythonDir: string | null;
+  /** `null` = the self-update check couldn't run or doesn't apply (offline, timed out, or see selfUpdateSupported); otherwise whether a newer uv version is available. */
+  updateAvailable: boolean | null;
+  latestVersion: string | null;
+  /** `false` = uv was installed via a package manager (brew/pip/etc.) and refuses to self-update; `null` = not determined yet. */
+  selfUpdateSupported: boolean | null;
 }
 
 export interface UvTool {
   name: string;
   version: string | null;
   commands: string[];
+  /** `null` = update check couldn't run (offline, timed out); otherwise whether a newer version is available. */
+  updateAvailable: boolean | null;
+  latestVersion: string | null;
 }
 
 export interface PythonInterpreter {
@@ -72,7 +81,15 @@ async function invokeCmd<T>(
 /** Detect whether `uv` is installed and get its version. */
 export async function detectUv(): Promise<UvInfo> {
   if (!isTauri) {
-    return { available: false, version: null, path: null, pythonDir: null };
+    return {
+      available: false,
+      version: null,
+      path: null,
+      pythonDir: null,
+      updateAvailable: null,
+      latestVersion: null,
+      selfUpdateSupported: null,
+    };
   }
   return invokeCmd<UvInfo>("detect_uv");
 }
@@ -132,6 +149,121 @@ export async function installPython(
 /** Detect GPU type: "cuda", "mps", or "cpu". */
 export async function detectGpu(): Promise<string> {
   return invokeCmd<string>("detect_gpu", {});
+}
+
+/**
+ * Accelerator + GPU info for the installed sleap-nn, as reported by the torch
+ * inside its own uv-tool venv (sleap-nn's `get_system_info_dict()`, the same
+ * data `sleap-nn system` prints).
+ *
+ * Distinct from `detectGpu()` above, which probes the MACHINE with nvidia-smi
+ * to choose a torch extra at install time. Here the question is whether the
+ * torch that's actually installed can use the GPU — a CUDA box with a CPU-only
+ * wheel reports `accelerator: "cpu"`, which is the "reinstall sleap-nn" signal.
+ */
+export interface AcceleratorInfo {
+  /** `null` only when nothing could be probed (see `error`); no GPU is `"cpu"`. */
+  accelerator: "cuda" | "mps" | "cpu" | null;
+  /**
+   * Devices torch can use: the CUDA device count, or 0 for CPU.
+   *
+   * MPS reports 1 — Lightning's `devices=1` convention, not a real device
+   * count (Metal exposes one unified GPU that isn't enumerable). Don't render
+   * it as "1 GPU" on a Mac; `summarizeAccelerator` shows a count for CUDA only.
+   */
+  gpuCount: number;
+  /** Per-device descriptions, e.g. "NVIDIA RTX 4090 (23.6 GB)". CUDA only. */
+  gpus: string[];
+  torchVersion: string | null;
+  cudaVersion: string | null;
+  /** Present even when CUDA isn't usable — a driver with no CUDA means a CPU-only wheel. */
+  driverVersion: string | null;
+  /** Whether `driverVersion` meets `driverMinRequired`; `null` when undeterminable. */
+  driverCompatible: boolean | null;
+  driverMinRequired: string | null;
+  /** "macos" | "windows" | "linux" — gates which accelerator is even reachable. */
+  os: string;
+  error: string | null;
+}
+
+const NO_ACCELERATOR_INFO: AcceleratorInfo = {
+  accelerator: null,
+  gpuCount: 0,
+  gpus: [],
+  torchVersion: null,
+  cudaVersion: null,
+  driverVersion: null,
+  driverCompatible: null,
+  driverMinRequired: null,
+  os: "",
+  error: "GPU detection is only available in the desktop app.",
+};
+
+export async function detectAccelerator(): Promise<AcceleratorInfo> {
+  if (!isTauri) return NO_ACCELERATOR_INFO;
+  return invokeCmd<AcceleratorInfo>("detect_accelerator", {});
+}
+
+/**
+ * Which optional extras the installed sleap-nn carries, probed by looking for
+ * the modules they bring in — `uv tool list` reports the tool's version but
+ * not which extras it was built with.
+ */
+export interface SleapNnExtras {
+  /** sleap-nn's `[export]` extra: onnx + onnxruntime. */
+  onnx: boolean;
+  /** sleap-nn's `[tensorrt]` extra: tensorrt + torch_tensorrt. */
+  tensorrt: boolean;
+  /**
+   * Whether TensorRT is installable here at all. sleap-nn marks both tensorrt
+   * deps linux/win-only, so on macOS the extra resolves to nothing — asking
+   * for it would install nothing and silently "succeed".
+   */
+  tensorrtSupported: boolean;
+  error: string | null;
+}
+
+export async function detectSleapNnExtras(): Promise<SleapNnExtras> {
+  if (!isTauri) {
+    return {
+      onnx: false,
+      tensorrt: false,
+      tensorrtSupported: false,
+      error: "Extras detection is only available in the desktop app.",
+    };
+  }
+  return invokeCmd<SleapNnExtras>("detect_sleap_nn_extras", {});
+}
+
+/** Point-in-time GPU stats (NVIDIA util/VRAM via nvidia-smi; backend-only on mps/cpu). */
+export interface GpuStats {
+  backend: string;
+  name: string | null;
+  memoryTotalMb: number | null;
+  memoryUsedMb: number | null;
+  utilizationPct: number | null;
+}
+
+export async function gpuStats(): Promise<GpuStats> {
+  return invokeCmd<GpuStats>("gpu_stats", {});
+}
+
+/** WandB auth status detected from the local machine (env var or ~/.netrc). */
+export interface WandbAuth {
+  authenticated: boolean;
+  source: string | null;
+  username: string | null;
+}
+
+/**
+ * Detect whether WandB is already authenticated on this (desktop) machine —
+ * `WANDB_API_KEY` env var or cached `~/.netrc` credentials — so the training
+ * dialog can tell the user the API key is optional. Returns a
+ * not-authenticated result in the browser (the training machine isn't this one).
+ */
+export async function checkWandbAuth(): Promise<WandbAuth> {
+  if (!isTauri) return { authenticated: false, source: null, username: null };
+  return invokeCmd<WandbAuth>("check_wandb_auth", {});
 }
 
 /** Install a uv tool (e.g., sleap-nn). */
@@ -237,6 +369,29 @@ export async function sendTrainingStop(): Promise<void> {
 export async function stopZmqRelay(): Promise<void> {
   if (!isTauri) return;
   return invokeCmd<void>("stop_zmq_relay");
+}
+
+/**
+ * Spawn the warm overlay-serve sidecar (resolving the app's sleap-nn env + bundled
+ * script in Rust) and return its loopback port. The app then fetches confidence maps
+ * from `http://127.0.0.1:<port>/infer`. Desktop-only.
+ *
+ * @param modelPaths Trained model directories (top-down = centroid +
+ *   centered-instance, in any order — the type is detected from each config).
+ * @param device Torch device: "mps" | "cuda" | "cpu".
+ */
+export async function spawnOverlayServe(
+  modelPaths: string[],
+  device: string,
+): Promise<number> {
+  if (!isTauri) throw new Error("Model-output overlays require the desktop app");
+  return invokeCmd<number>("start_overlay_serve", { modelPaths, device });
+}
+
+/** Kill the overlay-serve sidecar. No-op outside Tauri. */
+export async function killOverlayServe(): Promise<void> {
+  if (!isTauri) return;
+  return invokeCmd<void>("stop_overlay_serve");
 }
 
 /**
@@ -370,8 +525,13 @@ export async function runInference(
   // frames via LabelsProvider when --data_path is a .slp (talmolab/sleap#2848).
   // Embedded/image-sequence videos have no file of their own, so they keep the
   // project-file route below.
+  //
+  // NEVER for track-only: sleap-nn's retrack-only path requires --data_path to
+  // be a .slp (it needs the existing instances to retrack; a raw video has
+  // none) — pointing it at the video file errors with "Tracking-only mode
+  // requires --data_path to be a .slp file." Verified against a real run.
   let videoDataPath: string | null = null;
-  if (config.videoIndex !== "all") {
+  if (!config.trackOnly && config.videoIndex !== "all") {
     const { useAppStore } = await import("@/stores/appStore");
     const video = useAppStore.getState().labels?.videos[config.videoIndex] ?? null;
     const filename = video?.filename;
@@ -481,6 +641,29 @@ export async function runInference(
   const success = await runPythonCommand(program, args, onEvent);
   console.log("[inference] Process finished: success=%s, output=%s", success, outputPath);
   return { success, outputPath, command };
+}
+
+/**
+ * Run `sleap-nn export` to convert trained model directory(ies) to ONNX /
+ * TensorRT. `opts.modelPaths` are run directories (a top-down model passes both
+ * the centroid + centered_instance dirs together); the exported model.onnx /
+ * model.trt land in `opts.outputDir`. Streams stdout/stderr like train/predict
+ * via the existing `run_python_command` — no dedicated Rust command needed.
+ */
+export async function runExport(
+  opts: BuildExportArgsOptions,
+  onEvent: (event: ProcessEvent) => void,
+): Promise<{ success: boolean; command: string; outputDir: string }> {
+  if (!isTauri) {
+    console.warn("Model export is only available in Tauri desktop mode");
+    return { success: false, command: "", outputDir: opts.outputDir };
+  }
+  const args = buildExportArgs(opts);
+  const command = `sleap-nn ${args.join(" ")}`;
+  console.log("[export] Running:", command);
+  const success = await runPythonCommand("sleap-nn", args, onEvent);
+  console.log("[export] Process finished: success=%s", success);
+  return { success, command, outputDir: opts.outputDir };
 }
 
 // === RTC commands (native WebRTC via Rust backend) ===

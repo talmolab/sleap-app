@@ -14,6 +14,7 @@ import { isTauri } from "@/lib/platform";
 import { removeLabelsDraft } from "@/lib/labelsDraft";
 import { deleteDraftEntry } from "@/lib/draftManifest";
 import { removeTauriDraft } from "@/lib/tauriDraft";
+import { confirmDialog } from "@/stores/confirmStore";
 
 /** True when replacing the project would lose work: in-memory edits, or a labels
  *  draft saved locally but not yet exported/compiled to disk. Pure. */
@@ -38,18 +39,31 @@ export function discardPromptMessage(opts: {
 
 /**
  * Prompt (only when there is unsaved work) before replacing the current
- * project; returns true to proceed. On a confirmed discard, the local labels
+ * project; resolves true to proceed. On a confirmed discard, the local labels
  * draft is removed best-effort — BOTH its OPFS file and its manifest entry, so
  * it doesn't reappear as a phantom (un-restorable) "Restore unsaved work?" card.
  * `setLabels` only nulls the in-memory path. Reads the live store, so callers
  * need not pass state.
+ *
+ * ASYNC: routes through the in-app {@link confirmDialog} (a styled React modal),
+ * NOT `window.confirm` — which is broken in the Tauri WebView (shimmed to a
+ * missing dialog-plugin command and async, so `if (!window.confirm(...))`
+ * silently bypasses the guard and discards unsaved work). Every caller MUST
+ * `await` this: a bare `if (!confirmDiscardUnsavedWork(...))` tests a Promise
+ * (always truthy) and would never cancel.
  */
-export function confirmDiscardUnsavedWork(verb: string): boolean {
+export async function confirmDiscardUnsavedWork(
+  verb: string,
+): Promise<boolean> {
   const store = useAppStore.getState();
   if (!hasUnsavedWork(store)) return true;
-  const proceed = window.confirm(
-    discardPromptMessage({ pendingExport: store.pendingExport, verb }),
-  );
+  const proceed = await confirmDialog({
+    title: "Discard unsaved changes?",
+    message: discardPromptMessage({ pendingExport: store.pendingExport, verb }),
+    confirmLabel: "Discard",
+    cancelLabel: "Cancel",
+    destructive: true,
+  });
   if (!proceed) return false;
   const draft = store.labelsDraftPath;
   if (draft) {

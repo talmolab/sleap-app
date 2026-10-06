@@ -29,6 +29,8 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
+import { hasAssignedTracks } from "@/lib/colorPalettes";
+import { getActiveTrackOverrides } from "@/lib/trackColorOverrides";
 import {
   resolveClipFrameRange,
   computeClipOutputDimensions,
@@ -79,6 +81,9 @@ export function ExportClipDialog() {
   // View settings that shape the overlay (captured at export time).
   const palette = useAppStore((s) => s.palette);
   const distinctlyColor = useAppStore((s) => s.distinctlyColor);
+  const trackColorOverrides = useAppStore((s) =>
+    getActiveTrackOverrides(s.trackColorOverrides, s.projectPath, s.filename),
+  );
   const colorPredicted = useAppStore((s) => s.colorPredicted);
   const showNonVisibleNodes = useAppStore((s) => s.showNonVisibleNodes);
   const showInstances = useAppStore((s) => s.showInstances);
@@ -197,6 +202,7 @@ export function ExportClipDialog() {
       const frameToLf = new Map<number, LabeledFrame>();
       for (const lf of labels.find({ video: fvideo })) frameToLf.set(lf.frameIdx, lf);
       const tracks = labels.tracks;
+      const projectHasTracks = hasAssignedTracks(labels);
       const overlayForFrame = (frameIdx: number) => {
         const lf = frameToLf.get(frameIdx);
         if (!lf) return [];
@@ -207,6 +213,8 @@ export function ExportClipDialog() {
           showNonVisibleNodes,
           tracks,
           video: fvideo,
+          projectHasTracks,
+          trackColorOverrides,
         });
       };
 
@@ -238,6 +246,7 @@ export function ExportClipDialog() {
             showEdges,
             showNonVisibleNodes,
             colorPredicted,
+            showTrackScore: false,
           },
         },
         deps,

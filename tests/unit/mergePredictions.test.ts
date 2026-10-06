@@ -182,11 +182,11 @@ describe("MergePredictions — centroid survival (active-learning locator fix)",
     expect(merged.centroids[0].xy).toEqual([7, 8]);
   });
 
-  // Locator re-runs merge with strategy "replace_predictions" (see
-  // mergeStrategyForPipeline) so predicted centroids REFRESH rather than
+  // Locator re-runs merge with mode "replace" (io "replace_predictions"; see
+  // existingPredictionsForPipeline) so predicted centroids REFRESH rather than
   // accumulate. This resurrects a case from the retired hand-rolled merge that
   // io's "auto" (keep-unmatched-predictions) would otherwise regress.
-  it("replace_predictions refreshes predicted centroids but keeps user ones", async () => {
+  it("replace mode refreshes predicted centroids but keeps user ones", async () => {
     const skeleton = makeSkeleton();
     const baseVideo = makeVideo();
     const baseFrame = new LabeledFrame({
@@ -209,7 +209,7 @@ describe("MergePredictions — centroid survival (active-learning locator fix)",
     });
     const predictions = new Labels({ labeledFrames: [predFrame], videos: [predVideo] });
 
-    await ctx.execute(MergePredictions, { predictions, strategy: "replace_predictions" });
+    await ctx.execute(MergePredictions, { predictions, mode: "replace" });
 
     const merged = frameAt(currentLabels(), baseVideo, 0);
     const user = merged.centroids.filter((c) => !c.isPredicted);
@@ -265,7 +265,7 @@ describe("MergePredictions — instance resolution", () => {
     ctx = new CommandContext();
   });
 
-  it("keeps the user instance over an overlapping prediction (auto)", async () => {
+  it("replace keeps the user instance AND adds an overlapping prediction (no spatial dedup — PyQt parity)", async () => {
     const skeleton = makeSkeleton();
     const baseVideo = makeVideo();
     const baseFrame = new LabeledFrame({
@@ -288,14 +288,15 @@ describe("MergePredictions — instance resolution", () => {
       skeletons: [predSkel],
     });
 
-    await ctx.execute(MergePredictions, { predictions });
+    await ctx.execute(MergePredictions, { predictions }); // default replace
 
     const merged = frameAt(currentLabels(), baseVideo, 0);
+    // replace_predictions does NO spatial matching: user kept, new prediction added.
     expect(merged.userInstances.length).toBe(1);
-    expect(merged.predictedInstances.length).toBe(0);
+    expect(merged.predictedInstances.length).toBe(1);
   });
 
-  it("adds a non-overlapping prediction (auto)", async () => {
+  it("adds a non-overlapping prediction (replace)", async () => {
     const skeleton = makeSkeleton();
     const baseVideo = makeVideo();
     const baseFrame = new LabeledFrame({
@@ -350,7 +351,7 @@ describe("MergePredictions — instance resolution", () => {
 
     await ctx.execute(MergePredictions, {
       predictions,
-      strategy: "replace_predictions",
+      mode: "replace",
     });
 
     const merged = frameAt(currentLabels(), baseVideo, 0);
@@ -358,6 +359,154 @@ describe("MergePredictions — instance resolution", () => {
     expect(merged.predictedInstances.length).toBe(1);
     // The old (0.5) prediction is gone; the fresh model output remains.
     expect(merged.predictedInstances[0].points[0].xy).toEqual([300, 300]);
+  });
+});
+
+describe("MergePredictions — existing-predictions modes (PyQt parity)", () => {
+  let ctx: CommandContext;
+  beforeEach(() => {
+    resetStore();
+    ctx = new CommandContext();
+  });
+
+  /** Total predicted instances across every frame in the project. */
+  function countPredicted(labels: Labels): number {
+    return labels.labeledFrames.reduce(
+      (n, lf) => n + lf.predictedInstances.length,
+      0
+    );
+  }
+
+  /** Base with a user + a STALE prediction on frame 0, plus fresh output on frame 0. */
+  function setupReplaceScenario() {
+    const skeleton = makeSkeleton();
+    const baseVideo = makeVideo();
+    const baseFrame = new LabeledFrame({
+      video: baseVideo,
+      frameIdx: 0,
+      instances: [userInst(skeleton, 10, 10), predInst(skeleton, 20, 20, 0.5)],
+    });
+    setupBase({ skeleton, video: baseVideo, frames: [baseFrame] });
+
+    const predSkel = makeSkeleton();
+    const predVideo = makeVideo("/compute-node/test.mp4");
+    const predFrame = new LabeledFrame({
+      video: predVideo,
+      frameIdx: 0,
+      instances: [predInst(predSkel, 300, 300, 0.99)],
+    });
+    const predictions = new Labels({
+      labeledFrames: [predFrame],
+      videos: [predVideo],
+      skeletons: [predSkel],
+    });
+    return { baseVideo, predictions };
+  }
+
+  it("defaults to replace: drops the frame's stale predictions, keeps user, adds new", async () => {
+    const { baseVideo, predictions } = setupReplaceScenario();
+
+    await ctx.execute(MergePredictions, { predictions }); // no mode → replace
+
+    const merged = frameAt(currentLabels(), baseVideo, 0);
+    expect(merged.userInstances.length).toBe(1);
+    // Stale (20,20) prediction removed; only the fresh (300,300) one remains.
+    expect(merged.predictedInstances.length).toBe(1);
+    expect(merged.predictedInstances[0].points[0].xy).toEqual([300, 300]);
+  });
+
+  it("keep: appends new predictions on top of existing ones (may duplicate)", async () => {
+    const { baseVideo, predictions } = setupReplaceScenario();
+
+    await ctx.execute(MergePredictions, { predictions, mode: "keep" });
+
+    const merged = frameAt(currentLabels(), baseVideo, 0);
+    expect(merged.userInstances.length).toBe(1);
+    // Stale (20,20) AND fresh (300,300) both present.
+    expect(merged.predictedInstances.length).toBe(2);
+  });
+
+  it("clear_all: removes ALL predictions project-wide (even frames not re-inferred), keeps user, then adds new", async () => {
+    const skeleton = makeSkeleton();
+    const baseVideo = makeVideo();
+    // Frame 0: user + stale prediction (also gets fresh output).
+    const frame0 = new LabeledFrame({
+      video: baseVideo,
+      frameIdx: 0,
+      instances: [userInst(skeleton, 10, 10), predInst(skeleton, 20, 20, 0.5)],
+    });
+    // Frame 10: stale prediction ONLY, and NOT in the new output.
+    const frame10 = new LabeledFrame({
+      video: baseVideo,
+      frameIdx: 10,
+      instances: [predInst(skeleton, 55, 55, 0.4)],
+    });
+    setupBase({ skeleton, video: baseVideo, frames: [frame0, frame10] });
+
+    const predSkel = makeSkeleton();
+    const predVideo = makeVideo("/compute-node/test.mp4");
+    const predFrame = new LabeledFrame({
+      video: predVideo,
+      frameIdx: 0,
+      instances: [predInst(predSkel, 300, 300, 0.99)],
+    });
+    const predictions = new Labels({
+      labeledFrames: [predFrame],
+      videos: [predVideo],
+      skeletons: [predSkel],
+    });
+
+    await ctx.execute(MergePredictions, { predictions, mode: "clear_all" });
+
+    const labels = currentLabels();
+    // Only the single fresh prediction survives, project-wide.
+    expect(countPredicted(labels)).toBe(1);
+    // Frame 10's stale prediction was removed and its now-empty frame dropped.
+    expect(labels.find({ video: baseVideo, frameIdx: 10 }).length).toBe(0);
+    // User instance on frame 0 is untouched.
+    expect(frameAt(labels, baseVideo, 0).userInstances.length).toBe(1);
+  });
+
+  it("clear_all: keeps centroid-only seed frames and clears stale predicted centroids", async () => {
+    const skeleton = makeSkeleton();
+    const baseVideo = makeVideo();
+    // Frame 3: an active-learning seed — a user centroid and NO instances —
+    // plus a stale locator centroid. Not in the new output.
+    const seedFrame = new LabeledFrame({
+      video: baseVideo,
+      frameIdx: 3,
+      centroids: [
+        new UserCentroid({ x: 1, y: 1 }),
+        new PredictedCentroid({ x: 40, y: 40, score: 0.5 }),
+      ],
+    });
+    // Frame 7: stale locator centroid ONLY → nothing user-supplied left.
+    const staleFrame = new LabeledFrame({
+      video: baseVideo,
+      frameIdx: 7,
+      centroids: [new PredictedCentroid({ x: 70, y: 70, score: 0.4 })],
+    });
+    setupBase({ skeleton, video: baseVideo, frames: [seedFrame, staleFrame] });
+
+    const predVideo = makeVideo("/compute-node/test.mp4");
+    const predictions = new Labels({
+      labeledFrames: [
+        new LabeledFrame({
+          video: predVideo,
+          frameIdx: 0,
+          centroids: [new PredictedCentroid({ x: 9, y: 9, score: 0.9 })],
+        }),
+      ],
+      videos: [predVideo],
+    });
+
+    await ctx.execute(MergePredictions, { predictions, mode: "clear_all" });
+
+    const labels = currentLabels();
+    const seed = frameAt(labels, baseVideo, 3);
+    expect(seed.centroids.map((c) => [c.isPredicted, c.xy])).toEqual([[false, [1, 1]]]);
+    expect(labels.find({ video: baseVideo, frameIdx: 7 }).length).toBe(0);
+    expect(frameAt(labels, baseVideo, 0).centroids.map((c) => c.xy)).toEqual([[9, 9]]);
   });
 });
 

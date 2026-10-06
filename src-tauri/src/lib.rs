@@ -1,9 +1,11 @@
 mod environment;
+mod iroh_client;
 mod rtc;
+mod update_channels;
 
 use std::collections::HashMap;
 use std::path::{Component, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, OnceLock};
 use tauri_plugin_shell::process::CommandChild;
 
 pub struct RunningProcess(pub Mutex<Option<CommandChild>>);
@@ -15,6 +17,13 @@ pub struct ZmqRelay(pub Mutex<Option<std::process::Child>>);
 /// ZMQ SUB relay for receiving training progress (loss) from sleap-nn.
 /// Uses std::process::Child (python3 sidecar) like ZmqRelay.
 pub struct ProgressRelay(pub Mutex<Option<std::process::Child>>);
+
+/// Warm sleap-nn overlay-serve sidecar(s) (model-output overlays). A Vec (not a
+/// single slot) so a racing double-spawn — e.g. React StrictMode's dev double-mount
+/// firing two spawns before either stores its child — never orphans a process:
+/// every spawned child is tracked and killed on stop. Spawned when the overlay
+/// toggle turns on, killed on toggle-off, project close, or app quit.
+pub struct OverlayServe(pub Mutex<Vec<std::process::Child>>);
 
 /// Holds a file path passed as a CLI argument, consumed once by the frontend.
 struct InitialFile(Mutex<Option<String>>);
@@ -37,17 +46,103 @@ fn read_image_file(path: String) -> Result<tauri::ipc::Response, String> {
         .map_err(|e| format!("read_image_file({path}): {e}"))
 }
 
-/// Read a byte range `[offset, offset+length)` from a file natively (`std::fs`).
-/// The "dumb byte pipe" for the B-seam range reader: returns raw bytes via the
-/// binary IPC channel and does ZERO decoding. A short read at EOF returns fewer
-/// bytes (never an error), so the last chunk of a file works.
-#[tauri::command]
-fn read_range(path: String, offset: u64, length: u32) -> Result<tauri::ipc::Response, String> {
+/// Persistent read-handle cache: `path -> open File`. `read_range` used to
+/// `File::open` on EVERY range request; on an NFS/SMB mount each `open()` is a
+/// network round-trip, and the video reader issues many range reads per seek, so
+/// re-opening made random-seek/scrubbing pathologically laggy on network mounts
+/// (the same video copied to a local disk scrubs fine). We keep the handle open
+/// and use positioned reads instead. Cached ONLY for video files: they are
+/// read-only for the whole session, so a cached fd can never serve stale bytes.
+/// `.slp` and other files (which a save can rewrite in place) keep the
+/// fresh-open path, so a cached handle never hands back pre-save bytes.
+static READ_HANDLES: OnceLock<Mutex<HashMap<String, Arc<std::fs::File>>>> = OnceLock::new();
+
+/// Bound on cached video handles — a labeling session has ~1-2 videos open; the
+/// cap is a safety valve against unbounded fd growth, not an expected hot path.
+const MAX_CACHED_READ_HANDLES: usize = 16;
+
+fn read_handles() -> &'static Mutex<HashMap<String, Arc<std::fs::File>>> {
+    READ_HANDLES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Whether a path is safe to keep an open read handle for: video files only
+/// (never rewritten mid-session — see `READ_HANDLES`).
+fn is_cacheable_read_path(path: &str) -> bool {
+    matches!(
+        path.rsplit('.').next().map(|e| e.to_ascii_lowercase()).as_deref(),
+        Some("mp4" | "m4v" | "mov" | "avi" | "mkv" | "webm" | "mpeg" | "mpg" | "ts" | "wmv")
+    )
+}
+
+/// Fill `buf` from `file` starting at `offset` using POSITIONED reads, which
+/// don't touch a shared file cursor — so concurrent range requests on one cached
+/// handle can't race. A short read at EOF stops early (not an error).
+fn read_exact_at(file: &std::fs::File, buf: &mut [u8], offset: u64) -> std::io::Result<usize> {
+    let mut filled = 0usize;
+    while filled < buf.len() {
+        #[cfg(unix)]
+        let n = {
+            use std::os::unix::fs::FileExt;
+            file.read_at(&mut buf[filled..], offset + filled as u64)?
+        };
+        #[cfg(windows)]
+        let n = {
+            use std::os::windows::fs::FileExt;
+            file.seek_read(&mut buf[filled..], offset + filled as u64)?
+        };
+        if n == 0 {
+            break; // EOF
+        }
+        filled += n;
+    }
+    Ok(filled)
+}
+
+/// Get a cached read handle for `path`, opening it once on first use.
+fn cached_read_handle(path: &str) -> Result<Arc<std::fs::File>, String> {
+    if let Some(f) = read_handles().lock().unwrap().get(path) {
+        return Ok(Arc::clone(f));
+    }
+    // Open OUTSIDE the lock — `open()` can be a slow network RPC and must not
+    // block other reads. Re-check under the lock in case a racing call opened it.
+    let file =
+        Arc::new(std::fs::File::open(path).map_err(|e| format!("read_range open({path}): {e}"))?);
+    let mut map = read_handles().lock().unwrap();
+    if let Some(f) = map.get(path) {
+        return Ok(Arc::clone(f));
+    }
+    if map.len() >= MAX_CACHED_READ_HANDLES {
+        map.clear();
+    }
+    map.insert(path.to_string(), Arc::clone(&file));
+    Ok(file)
+}
+
+/// Core of `read_range`, extracted so it's testable without a Tauri runtime.
+fn read_range_impl(path: &str, offset: u64, length: u32) -> Result<Vec<u8>, String> {
+    let mut buf = vec![0u8; length as usize];
+
+    if is_cacheable_read_path(path) {
+        let handle = cached_read_handle(path)?;
+        match read_exact_at(&handle, &mut buf, offset) {
+            Ok(filled) => {
+                buf.truncate(filled);
+                return Ok(buf);
+            }
+            // A cached handle can go stale if the file was replaced underneath us.
+            // Drop it and fall through to a fresh open below.
+            Err(_) => {
+                let _ = read_handles().lock().map(|mut m| m.remove(path));
+            }
+        }
+    }
+
+    // Fresh-open path: non-video files, or a retry after a stale cached handle.
     use std::io::{Read, Seek, SeekFrom};
-    let mut f = std::fs::File::open(&path).map_err(|e| format!("read_range open({path}): {e}"))?;
+    let mut f =
+        std::fs::File::open(path).map_err(|e| format!("read_range open({path}): {e}"))?;
     f.seek(SeekFrom::Start(offset))
         .map_err(|e| format!("read_range seek({offset}): {e}"))?;
-    let mut buf = vec![0u8; length as usize];
     let mut filled = 0usize;
     while filled < buf.len() {
         match f.read(&mut buf[filled..]) {
@@ -57,7 +152,34 @@ fn read_range(path: String, offset: u64, length: u32) -> Result<tauri::ipc::Resp
         }
     }
     buf.truncate(filled);
-    Ok(tauri::ipc::Response::new(buf))
+    Ok(buf)
+}
+
+/// Read a byte range `[offset, offset+length)` from a file natively. The "dumb
+/// byte pipe" for the B-seam range reader: returns raw bytes via the binary IPC
+/// channel and does ZERO decoding. A short read at EOF returns fewer bytes (never
+/// an error), so the last chunk of a file works. Video reads reuse a persistent
+/// handle (see `READ_HANDLES`) instead of re-opening per range.
+///
+/// ASYNC + `spawn_blocking`: this is the video scrubbing hot path, and on macOS
+/// WKWebView the custom-protocol IPC handler runs on the MAIN (UI) thread — so a
+/// SYNC command here blocks the GUI for the whole read. A cold NFS GOP read can be
+/// seconds (measured ~9 s freeze), which no amount of off-main JS decode can hide,
+/// because the read itself was executing on the main thread. Making the command
+/// async lets Tauri run it on the runtime (the blocking `std::fs` read goes to the
+/// blocking pool), so the UI thread stays responsive while the read is in flight.
+#[tauri::command]
+async fn read_range(
+    path: String,
+    offset: u64,
+    length: u32,
+) -> Result<tauri::ipc::Response, String> {
+    let bytes = tauri::async_runtime::spawn_blocking(move || {
+        read_range_impl(&path, offset, length)
+    })
+    .await
+    .map_err(|e| format!("read_range task: {e}"))??;
+    Ok(tauri::ipc::Response::new(bytes))
 }
 
 /// Total size (bytes) of a file — the range reader's declared file length.
@@ -455,6 +577,10 @@ fn sleap_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
             open_preferences_directory,
             environment::detect_uv,
             environment::detect_gpu,
+            environment::detect_accelerator,
+            environment::detect_sleap_nn_extras,
+            environment::gpu_stats,
+            environment::check_wandb_auth,
             environment::list_uv_tools,
             environment::list_python_interpreters,
             environment::list_downloadable_pythons,
@@ -470,6 +596,8 @@ fn sleap_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
             environment::start_zmq_relay,
             environment::send_training_stop,
             environment::stop_zmq_relay,
+            environment::start_overlay_serve,
+            environment::stop_overlay_serve,
             environment::start_progress_relay,
             environment::stop_progress_relay,
             rtc::rtc_join_room,
@@ -477,6 +605,14 @@ fn sleap_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
             rtc::rtc_send,
             rtc::rtc_disconnect_worker,
             rtc::rtc_leave_room,
+            iroh_client::iroh_connect,
+            iroh_client::iroh_send,
+            iroh_client::iroh_disconnect,
+            iroh_client::iroh_blob_open,
+            iroh_client::iroh_blob_read_range,
+            iroh_client::iroh_blob_close,
+            update_channels::check_update,
+            update_channels::install_update,
         ])
         .build()
 }
@@ -558,17 +694,34 @@ fn localhost_capability(port: u16) -> String {
     "fs:default",
     "fs:allow-read-file",
     "fs:allow-read-text-file",
+    "fs:allow-read-dir",
     "fs:allow-write-file",
     "fs:allow-write-text-file",
     "fs:allow-mkdir",
     "fs:allow-remove",
     "fs:allow-exists",
     "fs:allow-stat",
+    "fs:allow-rename",
     {{ "identifier": "fs:scope", "allow": [{{ "path": "**" }}, {{ "path": "$HOME/.sleap-rtc/**" }}] }},
     "dialog:default",
     "dialog:allow-open",
     "dialog:allow-save",
+    "dialog:allow-message",
     "shell:allow-open",
+    {{
+      "identifier": "shell:allow-spawn",
+      "allow": [
+        {{ "name": "binaries/ffmpeg", "sidecar": true, "args": true }},
+        {{ "name": "binaries/ffprobe", "sidecar": true, "args": true }}
+      ]
+    }},
+    {{
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {{ "name": "binaries/ffmpeg", "sidecar": true, "args": true }},
+        {{ "name": "binaries/ffprobe", "sidecar": true, "args": true }}
+      ]
+    }},
     "updater:default",
     "process:default",
     "core:window:allow-close",
@@ -584,8 +737,44 @@ fn localhost_capability(port: u16) -> String {
   )
 }
 
+/// Log targets of iroh and the crates under it. Each crate is listed by its
+/// own target: a level for `iroh` doesn't cover `iroh_relay`. `tracing::span`
+/// is where iroh's tracing spans land when they're bridged into `log`.
+const NETWORKING_LOG_TARGETS: &[&str] = &[
+  "iroh",
+  "iroh_base",
+  "iroh_dns",
+  "iroh_metrics",
+  "iroh_relay",
+  "n0_dns_resolver",
+  "n0_future",
+  "n0_watcher",
+  "netwatch",
+  "noq",
+  "noq_proto",
+  "noq_udp",
+  "portmapper",
+  "tracing::span",
+];
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+  // reqwest's rustls backend needs a process-wide default `CryptoProvider`
+  // installed before the first TLS handshake, or it panics with "No provider
+  // set" -- taking the whole app down, not just that one request. Cargo
+  // feature-unifies `reqwest` across the whole dependency graph, so our own
+  // bare client in update_channels.rs's resolve_latest_endpoint() ends up
+  // rustls-backed too even though it never asked for TLS features itself;
+  // tauri-plugin-updater's own client installs this lazily on first use
+  // (gated `if get_default().is_none()`), but that's a race between however
+  // many reqwest clients fire their first request concurrently -- whichever
+  // loses starts its TLS handshake before the winner's install_default()
+  // call completes, and panics. Installing once here, before ANYTHING else
+  // runs (no other thread exists yet to race), removes the race entirely.
+  // install_default() returning Err just means a provider is already set
+  // (impossible this early, but harmless either way) -- never a fatal state.
+  let _ = rustls::crypto::ring::default_provider().install_default();
+
   // Extract the first non-flag argument as a file path to open on launch.
   // Resolve to absolute path so the frontend FS plugin can read it.
   let file_arg = std::env::args()
@@ -636,9 +825,12 @@ pub fn run() {
     .manage(RunningProcess(Mutex::new(None)))
     .manage(ZmqRelay(Mutex::new(None)))
     .manage(ProgressRelay(Mutex::new(None)))
+    .manage(OverlayServe(Mutex::new(Vec::new())))
     .manage(WriteHandle(Mutex::new(None)))
     .manage(WindowFiles(Mutex::new(HashMap::new())))
     .manage(tokio::sync::Mutex::new(rtc::RtcState::new()))
+    .manage(tokio::sync::Mutex::new(iroh_client::IrohClientState::new()))
+    .manage(tokio::sync::Mutex::new(iroh_client::IrohBlobState::new()))
     // Self-heal the open-file registry: when a window is destroyed (closed or
     // crashed) drop its claim so a later open can't be mis-routed to a dead
     // window. The frontend keeps the map otherwise (window_set_file).
@@ -646,6 +838,11 @@ pub fn run() {
       if let tauri::WindowEvent::Destroyed = event {
         use tauri::Manager;
         window.state::<WindowFiles>().0.lock().unwrap().remove(window.label());
+        // The diagnostics "running" sentinel is intentionally NOT cleared here:
+        // with multiple windows (File > New Project spawns a sibling) a per-window
+        // Destroyed would clear the SHARED sentinel while other windows are still
+        // alive. It means "the app is running" and is cleared once, on
+        // RunEvent::Exit (see app.run below) — reliable even for the macOS Cmd+Q.
       }
     })
     // All native commands live in the inlined `sleap` plugin (see sleap_plugin()) so they
@@ -680,11 +877,20 @@ pub fn run() {
   let builder = builder.setup(move |app| {
     use tauri::Manager; // for add_capability (dynamic-acl)
     if cfg!(debug_assertions) {
-      app.handle().plugin(
-        tauri_plugin_log::Builder::default()
-          .level(log::LevelFilter::Info)
-          .build(),
-      )?;
+      // iroh and its networking stack log every packet path at Info (e.g.
+      // `poll_send; network_path=...` spans), which buried the app's own
+      // logs in the dev terminal. Keep the app at Info and those crates at
+      // Warn; set SLEAP_IROH_LOG=info|debug|trace to bring them back.
+      let iroh_level = std::env::var("SLEAP_IROH_LOG")
+        .ok()
+        .and_then(|v| v.parse::<log::LevelFilter>().ok())
+        .unwrap_or(log::LevelFilter::Warn);
+      let mut log_builder =
+        tauri_plugin_log::Builder::default().level(log::LevelFilter::Info);
+      for target in NETWORKING_LOG_TARGETS {
+        log_builder = log_builder.level_for(*target, iroh_level);
+      }
+      app.handle().plugin(log_builder.build())?;
     }
 
     // macOS: the default app menu ships an Edit ▸ Undo/Redo bound to ⌘Z / ⌘⇧Z.
@@ -771,6 +977,17 @@ pub fn run() {
     .expect("error while building tauri application");
 
   app.run(|_app_handle, _event| {
+    use tauri::Manager;
+    // Clear the diagnostics "running" sentinel exactly once, when the app is
+    // actually exiting. RunEvent::Exit fires on every quit path — including the
+    // macOS predefined Cmd+Q, which terminates the process without reliably running
+    // the per-window Destroyed handler — so a clean quit never leaves the sentinel
+    // behind (which would falsely re-trigger the crash-recovery prompt next launch).
+    if matches!(&_event, tauri::RunEvent::Exit) {
+      if let Ok(dir) = _app_handle.path().app_local_data_dir() {
+        let _ = std::fs::remove_file(dir.join("sleap-logs").join("session.running"));
+      }
+    }
     // macOS delivers files opened via Finder / a file association ("Open With",
     // double-click) as an Apple Event, surfaced here as RunEvent::Opened — NOT as
     // a CLI argument. Stash the first path into the same InitialFile slot the CLI
@@ -787,7 +1004,7 @@ pub fn run() {
     // they can't double-load the same file.
     #[cfg(target_os = "macos")]
     {
-      use tauri::{Emitter, Manager};
+      use tauri::Emitter;
       if let tauri::RunEvent::Opened { urls } = _event {
         if let Some(path) = urls
           .iter()
@@ -864,6 +1081,52 @@ mod tests {
         let m: HashMap<String, Option<String>> = HashMap::new();
         let r = resolve_open_impl(&m, "/a.slp", Some("w1"));
         assert_eq!(r.action, "new");
+    }
+
+    // --- read_range persistent-handle cache (NFS/SMB scrubbing perf) ---
+
+    fn read_handle_cached(path: &str) -> bool {
+        read_handles().lock().unwrap().contains_key(path)
+    }
+
+    #[test]
+    fn read_range_reads_correct_bytes_and_short_reads_at_eof() {
+        let file = std::env::temp_dir().join("sleap_rr_bytes.mp4");
+        let data: Vec<u8> = (0u8..250).collect();
+        std::fs::write(&file, &data).unwrap();
+        let p = file.to_string_lossy().into_owned();
+        assert_eq!(read_range_impl(&p, 10, 20).unwrap(), data[10..30].to_vec());
+        // Ask past EOF from offset 240 -> only 10 bytes remain (short read, no error).
+        assert_eq!(read_range_impl(&p, 240, 100).unwrap(), data[240..250].to_vec());
+        read_handles().lock().unwrap().remove(&p);
+        let _ = std::fs::remove_file(&file);
+    }
+
+    #[test]
+    fn read_range_caches_and_reuses_video_handle() {
+        let file = std::env::temp_dir().join("sleap_rr_cache.mp4");
+        std::fs::write(&file, b"abcdefghij").unwrap();
+        let p = file.to_string_lossy().into_owned();
+        assert!(!read_handle_cached(&p));
+        assert_eq!(read_range_impl(&p, 0, 4).unwrap(), b"abcd".to_vec());
+        assert!(read_handle_cached(&p)); // opened once, now cached
+        // A second read at a different offset reuses the cached handle via a
+        // positioned read (no shared cursor) and still returns the right bytes.
+        assert_eq!(read_range_impl(&p, 4, 4).unwrap(), b"efgh".to_vec());
+        assert!(read_handle_cached(&p));
+        read_handles().lock().unwrap().remove(&p);
+        let _ = std::fs::remove_file(&file);
+    }
+
+    #[test]
+    fn read_range_does_not_cache_non_video() {
+        let file = std::env::temp_dir().join("sleap_rr_nonvideo.slp");
+        std::fs::write(&file, b"hello world").unwrap();
+        let p = file.to_string_lossy().into_owned();
+        assert_eq!(read_range_impl(&p, 0, 5).unwrap(), b"hello".to_vec());
+        // .slp can be rewritten by a save -> must NOT keep a cached fd (stale bytes).
+        assert!(!read_handle_cached(&p));
+        let _ = std::fs::remove_file(&file);
     }
 
     #[test]

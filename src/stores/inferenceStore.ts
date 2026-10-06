@@ -1,12 +1,14 @@
 import { create } from "zustand";
-import { loadSlp } from "@talmolab/sleap-io.js";
+import { loadSlp, readSlpStreaming } from "@talmolab/sleap-io.js";
+import type { JobResult } from "@/lib/sleapConnect";
 import type { ProcessEvent } from "@/platform/backend";
 import { cancelCommand, runInference } from "@/platform/backend";
 import { getPlatform } from "@/platform";
 import { commandContext } from "@/commands";
-import { MergePredictions } from "@/commands/editCommands";
+import { MergePredictions, MergeTracks, type ExistingPredictionsMode } from "@/commands/editCommands";
 import { useAppStore } from "@/stores/appStore";
 import { appendLogLine, subprocessFailureMessage } from "@/lib/processLog";
+import { buildRemoteTrackSpecs } from "@/lib/remoteTrackSpec";
 
 export interface InferenceProgress {
   nProcessed: number;
@@ -27,16 +29,35 @@ export interface InferenceConfig {
   // Pipeline
   pipeline: PipelineType;
   modelPaths: string[];
+  /**
+   * Track-only mode: skip pose estimation entirely and just (re)track the
+   * instances already present in the input .slp (user-labeled or predicted).
+   * When true, modelPaths is ignored/empty — sleap-nn's `predict` CLI detects
+   * "--tracking with no --model_paths" and takes its dedicated retrack-only
+   * path (no model forward pass), so no other argv changes are needed. The
+   * merge-back also differs: track-only never adds/removes instances, so it
+   * goes through MergeTracks (sleap-io.js's "update_tracks" strategy: spatial
+   * match + copy .track/.trackingScore only) instead of MergePredictions.
+   */
+  trackOnly: boolean;
 
   // Data
   videoIndex: number | "all";
   frameRange: "all_videos" | "video" | "suggestions" | "user_labeled" | "predicted" | "random_video" | "random" | "frame" | { start: number; end: number };
   sampleCount: number;
   excludeUserLabeled: boolean;
+  /** How new predictions combine with existing ones (see ExistingPredictionsMode). */
+  existingPredictions: ExistingPredictionsMode;
 
   // Inference
   batchSize: number;
   device: "auto" | "cuda" | "cpu" | "mps";
+  /**
+   * Inference runtime for an exported model directory (one containing
+   * model.onnx / model.trt). "auto" lets sleap-nn choose (and is ignored for
+   * plain checkpoints); "onnx"/"tensorrt" force that runtime.
+   */
+  runtime: "auto" | "onnx" | "tensorrt";
   maxInstances: number | null;
   peakThreshold: number;
   /**
@@ -56,18 +77,32 @@ export interface InferenceConfig {
 
   // Tracking
   tracking: boolean;
-  trackerMethod: "simple" | "flow";
+  trackerMethod: "simple" | "flow" | "kalman";
   similarityMethod: "oks" | "iou" | "centroids" | "euclidean_dist";
   matchingMethod: "hungarian" | "greedy";
   trackingWindowSize: number;
   maxTracks: number | null;
   connectSingleBreaks: boolean;
   robust: number;
+  minMatchPoints: number;
+  minNewTrackPoints: number;
+  scoringReduction: "mean" | "max" | "robust_quantile";
+  trackingTargetInstanceCount: number | null;
+  trackingPreCullToTarget: boolean;
+  trackingPreCullIouThreshold: number;
+  trackingCleanInstanceCount: number | null;
+  trackingCleanIouThreshold: number;
 
   // Optical flow
   flowImgScale: number;
   flowWindowSize: number;
   flowMaxLevels: number;
+
+  // Kalman filter tracker
+  kfTrackFeatures: "centroid" | "keypoints";
+  kfInitFrameCount: number;
+  kfNodeIndices: number[];
+  kfResetGapSize: number;
 
   // Preprocessing
   ensureChannels: "auto" | "rgb" | "grayscale";
@@ -76,6 +111,11 @@ export interface InferenceConfig {
   filterOverlapping: boolean;
   filterMethod: "iou" | "oks";
   filterThreshold: number;
+  filterMinVisibleNodes: number | null;
+  filterMinVisibleNodeFraction: number | null;
+  filterMinMeanNodeScore: number | null;
+  filterMinInstanceScore: number | null;
+  filterMinCentroidDistance: number | null;
 }
 
 export interface RemoteInferenceOptions {
@@ -96,13 +136,18 @@ export function centroidInferenceConfig(
 ): InferenceConfig {
   return {
     pipeline: "centroid",
+    trackOnly: false,
     modelPaths,
     videoIndex: "all",
     frameRange: "suggestions",
     sampleCount: 20,
     excludeUserLabeled: true,
+    // Refresh the locator's predicted centroids on re-run (see
+    // existingPredictionsForPipeline).
+    existingPredictions: "replace",
     batchSize: 4,
     device: "auto",
+    runtime: "auto",
     maxInstances: null,
     peakThreshold: 0.2,
     // Defaults suit the separate-annotation mode: first-class PredictedCentroids
@@ -126,33 +171,51 @@ export function centroidInferenceConfig(
     maxTracks: null,
     connectSingleBreaks: false,
     robust: 0.95,
+    minMatchPoints: 0,
+    minNewTrackPoints: 0,
+    scoringReduction: "mean",
+    trackingTargetInstanceCount: null,
+    trackingPreCullToTarget: false,
+    trackingPreCullIouThreshold: 0,
+    trackingCleanInstanceCount: null,
+    trackingCleanIouThreshold: 0,
     flowImgScale: 1.0,
     flowWindowSize: 21,
     flowMaxLevels: 3,
+    kfTrackFeatures: "centroid",
+    kfInitFrameCount: 10,
+    kfNodeIndices: [],
+    kfResetGapSize: 5,
     ensureChannels: "auto",
     filterOverlapping: false,
     filterMethod: "iou",
     filterThreshold: 0.8,
+    filterMinVisibleNodes: null,
+    filterMinVisibleNodeFraction: null,
+    filterMinMeanNodeScore: null,
+    filterMinInstanceScore: null,
+    filterMinCentroidDistance: null,
     ...overrides,
   };
 }
 
-/** Frame-merge strategy passed through to `MergePredictions` (io Labels.merge). */
-export type MergeStrategyOption = "auto" | "replace_predictions";
-
 /**
- * Which frame strategy a pipeline's results should merge back with.
+ * The "Existing predictions" mode a pipeline's results should actually merge
+ * back with.
  *
- * The centroid/locator pipeline REPLACES predictions on matched frames so
+ * The centroid/locator pipeline must REPLACE predictions on matched frames so
  * re-running the locator refreshes its predicted centroids rather than
- * accumulating stale ones — io's "auto" keeps unmatched old predictions, so a
- * centroid that moved more than the match radius between runs would duplicate
- * (two predicted centroids per animal → duplicate Phase-2 work items). This
- * mirrors the retired hand-rolled merge's keep-user/replace-predicted
- * semantics. Every other pipeline keeps io's "auto" default.
+ * accumulating stale ones — appending (`keep`) would leave the old predicted
+ * centroid next to the new one whenever an animal moved between runs (two
+ * predicted centroids per animal → duplicate Phase-2 work items). So `keep` is
+ * promoted to `replace` for that pipeline; `replace`/`clear_all` already drop
+ * the old predictions. Every other pipeline honors the requested mode as-is.
  */
-export function mergeStrategyForPipeline(pipeline: PipelineType): MergeStrategyOption {
-  return pipeline === "centroid" ? "replace_predictions" : "auto";
+export function existingPredictionsForPipeline(
+  pipeline: PipelineType,
+  mode: ExistingPredictionsMode,
+): ExistingPredictionsMode {
+  return pipeline === "centroid" && mode === "keep" ? "replace" : mode;
 }
 
 export type InferenceStatus =
@@ -172,13 +235,34 @@ interface InferenceState {
   minimized: boolean;
   outputPath: string | null;
   startedAt: number | null;
+  /**
+   * A completed remote job's result(s), fetched but deliberately NOT yet
+   * merged — the app only ever learns of remote completion while it's
+   * live and connected (there's no reattach-time discovery of a job that
+   * finished while disconnected, a known, accepted gap — item 2.4), so
+   * merging automatically at that moment used to be safe-looking but
+   * wasn't: closing the app between "job finished" and "merge ran" simply
+   * dropped the merge with no trace, since nothing was persisted. Requiring
+   * an explicit click (mirrors the local job's own "Load Results" button)
+   * means a merge either happens because the user asked for it, or is
+   * visibly still pending — never silently skipped.
+   */
+  pendingRemoteMerge: PendingRemoteMerge | null;
 
   handleProcessEvent: (event: ProcessEvent) => void;
   setMinimized: (minimized: boolean) => void;
   reset: () => void;
   cancelInference: () => Promise<void>;
   startInference: (config: InferenceConfig, remoteOpts?: RemoteInferenceOptions) => Promise<void>;
-  loadAndMergeResults: (strategy?: MergeStrategyOption) => Promise<void>;
+  loadAndMergeResults: (mode?: ExistingPredictionsMode, trackOnly?: boolean) => Promise<void>;
+  /** Explicit trigger for `pendingRemoteMerge` — see its own doc comment. */
+  mergePendingRemoteResults: () => Promise<void>;
+}
+
+export interface PendingRemoteMerge {
+  results: JobResult[];
+  mode: ExistingPredictionsMode;
+  trackOnly: boolean;
 }
 
 const initialState = {
@@ -190,7 +274,125 @@ const initialState = {
   minimized: false,
   outputPath: null as string | null,
   startedAt: null as number | null,
+  pendingRemoteMerge: null as PendingRemoteMerge | null,
 };
+
+/** Shared merge dispatch — a `Labels` already loaded by whichever path
+ * (bytes in memory, or read directly off a remote range-read source) gets
+ * merged into the current project identically either way. */
+async function mergePredictionsIntoProject(
+  predictions: Awaited<ReturnType<typeof loadSlp>>,
+  mode: ExistingPredictionsMode,
+  trackOnly: boolean,
+): Promise<void> {
+  console.log(
+    "[inference] Loaded predictions: %d videos, %d labeled frames, %d tracks",
+    predictions.videos?.length ?? 0,
+    predictions.labeledFrames?.length ?? 0,
+    predictions.tracks?.length ?? 0,
+  );
+  if (trackOnly) {
+    await commandContext.execute(MergeTracks, { retracked: predictions });
+  } else {
+    await commandContext.execute(MergePredictions, { predictions, mode });
+  }
+}
+
+/**
+ * Load a predictions .slp's bytes into a Labels object and merge it into
+ * the current project — shared by the local (read from disk) and remote
+ * WebSocket (fetched over HTTP as a result blob) paths. `filenameHint` only
+ * needs to look like a real filename; sleap-io.js uses it as a parsing
+ * hint, not to actually read anything from disk. A remote connection over
+ * iroh does NOT go through this function — see `fetchAndMergeRemoteResult`.
+ */
+export async function loadAndMergePredictionBytes(
+  bytes: Uint8Array,
+  filenameHint: string,
+  mode: ExistingPredictionsMode,
+  trackOnly: boolean,
+): Promise<void> {
+  const predictions = await loadSlp(bytes, {
+    openVideos: false,
+    h5: { filenameHint },
+  });
+  await mergePredictionsIntoProject(predictions, mode, trackOnly);
+}
+
+/**
+ * Loads a remote job's predictions .slp into a `Labels` WITHOUT merging it
+ * into anything — extracted from `fetchAndMergeRemoteResult` (PR5a) so the
+ * launcher's Fetch & Load compatibility check (`mergeCompat.ts`'s
+ * `checkMergeCompat`, PR5b's `MergePredictionsDialog`) can inspect the
+ * predictions before deciding how, or whether, to merge them. Returns
+ * `null` if the job carries no fetchable predictions blob — a worker not
+ * yet running the blob HTTP server is a known interim gap, not an error.
+ *
+ * Two transports, two loading strategies — deliberately not unified into
+ * one, because they have genuinely different memory characteristics (item
+ * 2.4): a WebSocket connection has no range-read source yet (tracked
+ * separately, task "HTTP blob fetch: switch to RangeSource"), so it still
+ * downloads the whole blob into memory via `fetchResultBlob`/`loadSlp`. An
+ * iroh connection reads only the byte ranges sleap-io.js's SLP/HDF5 parser
+ * actually needs, straight off a dedicated blob stream on the existing
+ * connection, via `readSlpStreaming`/`RangeSource` — never buffering the
+ * whole file anywhere.
+ */
+export async function loadRemotePredictions(
+  result: JobResult,
+): Promise<Awaited<ReturnType<typeof loadSlp>> | null> {
+  const ref = result.resultBlobs?.predictions;
+  if (!ref) return null;
+  const { useConnectStore } = await import("@/stores/connectStore");
+  const { activeTransport } = useConnectStore.getState();
+
+  if (activeTransport === "iroh") {
+    const { createTauriIrohBlobRangeSource } = await import("@/lib/protocolV1/tauriIrohBlob");
+    const { source, dispose } = createTauriIrohBlobRangeSource(ref.sha256, ref.size);
+    try {
+      return await readSlpStreaming(source, {
+        openVideos: false,
+        lazy: false,
+        filenameHint: `${result.jobId}.predictions.slp`,
+      });
+    } finally {
+      await dispose();
+    }
+  }
+
+  const bytes = await useConnectStore.getState().fetchResultBlob(ref);
+  return loadSlp(bytes, {
+    openVideos: false,
+    h5: { filenameHint: `${result.jobId}.predictions.slp` },
+  });
+}
+
+/**
+ * If a remote job's result carries a fetchable predictions blob, load it
+ * (`loadRemotePredictions`) and merge it into the current project. A no-op
+ * if there's nothing to fetch — see `loadRemotePredictions`'s own doc.
+ */
+export async function fetchAndMergeRemoteResult(
+  result: JobResult,
+  mode: ExistingPredictionsMode,
+  trackOnly: boolean,
+): Promise<void> {
+  const predictions = await loadRemotePredictions(result);
+  if (!predictions) return;
+  await mergePredictionsIntoProject(predictions, mode, trackOnly);
+}
+
+/**
+ * Fetch and merge every result of a pending remote merge, in order — the
+ * body of the "Fetch & Load Results" action, shared by standalone remote
+ * inference and remote post-training inference. Throws on the first
+ * failure; the caller keeps its pending state so the action stays retriable.
+ */
+export async function mergeRemoteResults(pending: PendingRemoteMerge): Promise<void> {
+  for (const result of pending.results) {
+    await fetchAndMergeRemoteResult(result, pending.mode, pending.trackOnly);
+  }
+}
 
 export const useInferenceStore = create<InferenceState>()((set) => ({
   ...initialState,
@@ -280,9 +482,9 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
     });
 
     if (remoteOpts?.remote) {
-      // ── Remote inference via WebRTC ────────────────────────
+      // ── Remote inference via sleap-connect worker ─────────
       const { useConnectStore } = await import("@/stores/connectStore");
-      const { submitJob, workers, selectedWorkerId } = useConnectStore.getState();
+      const { submitJob, workerMounts: mounts } = useConnectStore.getState();
       const { handleProcessEvent } = useInferenceStore.getState();
 
       // Collect video paths from the loaded project
@@ -305,8 +507,7 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
       const { loadSavedMappings, resolveProjectPaths, buildPathMappings } =
         await import("@/lib/pathMappings");
       const savedMappings = await loadSavedMappings();
-      const worker = workers.find((w) => w.peerId === selectedWorkerId);
-      const workerMounts = worker?.mounts ?? [];
+      const workerMounts = mounts.map((m) => m.path);
 
       // Resolve paths using saved prefix mappings
       const resolvedPaths = resolveProjectPaths(allLocalPaths, savedMappings, workerMounts);
@@ -334,89 +535,25 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
       // Use the resolved data path (first entry)
       const resolvedDataPath = confirmedPaths[0]?.worker ?? remoteOpts.dataPath;
 
-      // Build TrackJobSpec from inference target
-      // Map UI target keys to TrackJobSpec fields, matching the PyQt GUI's
-      // _track_target_to_spec_fields mapper in dialog.py.
-      const target = typeof config.frameRange === "string" ? config.frameRange : null;
-      const currentVideoIdx = config.videoIndex !== "all" ? config.videoIndex : undefined;
+      // Build the TrackJobSpec(s) from the inference target — shared with
+      // remote post-training inference (see lib/remoteTrackSpec.ts).
+      const { frameIdx, video: activeVideo } = useAppStore.getState();
+      const specs = buildRemoteTrackSpecs(config, {
+        dataPath: resolvedDataPath,
+        pathMappings,
+        videoFrameCounts: (labels?.videos ?? []).map((v) => v.shape?.[0] ?? 0),
+        currentFrameIdx: frameIdx,
+        activeVideoFrameCount: activeVideo?.shape?.[0] ?? 0,
+      });
 
-      // Helper: sample N random indices from [0, totalFrames)
-      const sampleRandom = (totalFrames: number, count: number): number[] => {
-        const n = Math.min(count, totalFrames);
-        const indices = Array.from({ length: totalFrames }, (_, i) => i);
-        // Fisher-Yates shuffle, take first n
-        for (let i = indices.length - 1; i > 0 && i >= indices.length - n; i--) {
-          const j = Math.floor(Math.random() * (i + 1));
-          [indices[i], indices[j]] = [indices[j], indices[i]];
-        }
-        return indices.slice(indices.length - n).sort((a, b) => a - b);
-      };
-
-      // frame_filter: only for filter-based targets (worker-side filtering)
-      const FILTER_MAP: Record<string, string> = {
-        suggestions: "suggested",
-        user_labeled: "user",
-        predicted: "predicted",
-      };
-      const frameFilter = target && target in FILTER_MAP ? FILTER_MAP[target] : undefined;
-
-      // frames + video_index: depends on target type
-      let frames: string | undefined;
-      let videoIndex: number | undefined;
-
-      if (typeof config.frameRange === "object") {
-        // custom range
-        frames = `${config.frameRange.start}-${config.frameRange.end}`;
-        videoIndex = currentVideoIdx;
-      } else if (target === "frame") {
-        const { frameIdx } = useAppStore.getState();
-        frames = String(frameIdx);
-        videoIndex = currentVideoIdx;
-      } else if (target === "video") {
-        videoIndex = currentVideoIdx;
-      } else if (target === "random_video") {
-        // Client-side random sampling: pick N frames from current video
-        const { video: activeVideo } = useAppStore.getState();
-        const nFrames = activeVideo?.shape?.[0] ?? 0;
-        if (nFrames > 0) {
-          const sampled = sampleRandom(nFrames, config.sampleCount);
-          frames = sampled.join(",");
-        }
-        videoIndex = currentVideoIdx;
-      } else if (target === "random") {
-        // Random sample (all videos): submit one spec per video sequentially
-        // Each spec samples N frames from that video
-        const allVideos = labels?.videos ?? [];
-        const specs = allVideos.map((v, i) => {
-          const nFrames = v.shape?.[0] ?? 0;
-          if (nFrames === 0) return null;
-          const sampled = sampleRandom(nFrames, config.sampleCount);
-          return {
-            type: "track" as const,
-            data_path: resolvedDataPath,
-            model_paths: config.modelPaths,
-            batch_size: config.batchSize,
-            peak_threshold: config.peakThreshold,
-            video_index: i,
-            exclude_user_labeled: config.excludeUserLabeled || undefined,
-            frames: sampled.join(","),
-            path_mappings: Object.keys(pathMappings).length > 0 ? pathMappings : undefined,
-            robust: config.tracking ? config.robust : undefined,
-            ensure_channels: config.ensureChannels !== "auto" ? config.ensureChannels : undefined,
-            tracker: config.tracking ? config.trackerMethod : undefined,
-            similarity: config.tracking ? config.similarityMethod : undefined,
-            match: config.tracking ? config.matchingMethod : undefined,
-            track_window: config.tracking ? config.trackingWindowSize : undefined,
-            max_tracks: config.tracking && config.maxTracks != null ? config.maxTracks : undefined,
-            connect_single_breaks: config.tracking && config.connectSingleBreaks ? true : undefined,
-          };
-        }).filter(Boolean);
-
+      if (config.frameRange === "random") {
+        // Random sample (all videos): one spec per video, submitted sequentially.
         set((state) => ({
           log: [`$ Remote (${specs.length} videos): ${JSON.stringify(specs, null, 2)}`, ...state.log],
         }));
 
         try {
+          const collectedResults: JobResult[] = [];
           for (let i = 0; i < specs.length; i++) {
             const spec = specs[i]!;
             set((state) => ({
@@ -429,8 +566,16 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
               set({ status: "error", error: result.error || `Video ${i + 1} failed` });
               return;
             }
+            collectedResults.push(result);
           }
-          set({ status: "completed" });
+          set({
+            status: "completed",
+            pendingRemoteMerge: {
+              results: collectedResults,
+              mode: config.existingPredictions,
+              trackOnly: config.trackOnly,
+            },
+          });
         } catch (e) {
           set({
             status: "error",
@@ -439,28 +584,8 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
         }
         return;
       }
-      // all_videos, suggestions, user_labeled, predicted: no frames/videoIndex needed
 
-      const spec = {
-        type: "track" as const,
-        data_path: resolvedDataPath,
-        model_paths: config.modelPaths,
-        batch_size: config.batchSize,
-        peak_threshold: config.peakThreshold,
-        frame_filter: frameFilter,
-        video_index: videoIndex,
-        exclude_user_labeled: config.excludeUserLabeled || undefined,
-        frames,
-        path_mappings: Object.keys(pathMappings).length > 0 ? pathMappings : undefined,
-        robust: config.tracking ? config.robust : undefined,
-        ensure_channels: config.ensureChannels !== "auto" ? config.ensureChannels : undefined,
-        tracker: config.tracking ? config.trackerMethod : undefined,
-        similarity: config.tracking ? config.similarityMethod : undefined,
-        match: config.tracking ? config.matchingMethod : undefined,
-        track_window: config.tracking ? config.trackingWindowSize : undefined,
-        max_tracks: config.tracking && config.maxTracks != null ? config.maxTracks : undefined,
-        connect_single_breaks: config.tracking && config.connectSingleBreaks ? true : undefined,
-      };
+      const spec = specs[0];
 
       // Log the spec
       set((state) => ({
@@ -476,6 +601,11 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
           set({
             status: "completed",
             outputPath: result.outputPath || null,
+            pendingRemoteMerge: {
+              results: [result],
+              mode: config.existingPredictions,
+              trackOnly: config.trackOnly,
+            },
           });
         } else {
           set({
@@ -537,11 +667,12 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
               set({ outputPath: result.outputPath });
               const platform = await getPlatform();
               const bytes = await platform.readFile(result.outputPath);
-              const predictions = await loadSlp(bytes, { openVideos: false, h5: { filenameHint: result.outputPath } });
-              await commandContext.execute(MergePredictions, {
-                predictions,
-                strategy: mergeStrategyForPipeline(config.pipeline),
-              });
+              await loadAndMergePredictionBytes(
+                bytes,
+                result.outputPath,
+                existingPredictionsForPipeline(config.pipeline, config.existingPredictions),
+                config.trackOnly,
+              );
             }
             if (!result.success) {
               set({ status: "error", error: `Video ${vi + 1} failed` });
@@ -575,7 +706,8 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
           if (result.outputPath) {
             set({ outputPath: result.outputPath });
             await useInferenceStore.getState().loadAndMergeResults(
-              mergeStrategyForPipeline(config.pipeline),
+              existingPredictionsForPipeline(config.pipeline, config.existingPredictions),
+              config.trackOnly,
             );
           } else {
             set({ status: "completed" });
@@ -590,7 +722,7 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
     }
   },
 
-  loadAndMergeResults: async (strategy: MergeStrategyOption = "auto") => {
+  loadAndMergeResults: async (mode: ExistingPredictionsMode = "replace", trackOnly = false) => {
     const { outputPath } = useInferenceStore.getState();
     if (!outputPath) return;
 
@@ -598,22 +730,58 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
       const platform = await getPlatform();
       const bytes = await platform.readFile(outputPath);
       console.log("[inference] Read predictions file: %d bytes from %s", bytes.byteLength, outputPath);
-      const predictions = await loadSlp(bytes, {
-        openVideos: false,
-        h5: { filenameHint: outputPath },
-      });
-      console.log("[inference] Loaded predictions: %d videos, %d labeled frames, %d tracks",
-        predictions.videos?.length ?? 0,
-        predictions.labeledFrames?.length ?? 0,
-        predictions.tracks?.length ?? 0,
-      );
+      await loadAndMergePredictionBytes(bytes, outputPath, mode, trackOnly);
 
-      await commandContext.execute(MergePredictions, { predictions, strategy });
-      set({ status: "idle" });
+      set({ status: "completed" });
+      // Keep the "Complete" banner (checkmark, progress bar, log) on screen
+      // for a beat before resetting to idle, rather than clearing it the
+      // instant the merge finishes. A track-only run in particular can
+      // complete this entire cycle -- spawn, track, save, merge -- in well
+      // under a second, too fast to ever perceive without this pause
+      // (confirmed via a live run: nothing appeared to flash by at all).
+      // Deliberately NOT awaited: this is a purely cosmetic delay before the
+      // NEXT state transition, not part of what "the merge finished" means —
+      // callers (including tests) that await loadAndMergeResults() only care
+      // about the merge itself, not this visual timing.
+      setTimeout(() => {
+        // Only reset if nothing else has started a new run in the meantime —
+        // a fresh startInference() call resets outputPath to null immediately,
+        // so this comparison fails and we correctly leave its state alone.
+        if (useInferenceStore.getState().outputPath === outputPath) {
+          set({ status: "idle" });
+        }
+      }, 1500);
     } catch (e) {
       set({
         status: "error",
         error: `Failed to load results: ${e instanceof Error ? e.message : String(e)}`,
+      });
+    }
+  },
+
+  mergePendingRemoteResults: async () => {
+    const { pendingRemoteMerge } = useInferenceStore.getState();
+    if (!pendingRemoteMerge) return;
+    try {
+      await mergeRemoteResults(pendingRemoteMerge);
+      set({ pendingRemoteMerge: null, status: "completed" });
+      // Same cosmetic settle-before-idle delay as loadAndMergeResults above —
+      // only reset if nothing else started a new run in the meantime.
+      setTimeout(() => {
+        if (useInferenceStore.getState().pendingRemoteMerge === null) {
+          set({ status: "idle" });
+        }
+      }, 1500);
+    } catch (e) {
+      // A failed fetch/merge is transient and retriable — the underlying job
+      // already completed successfully on the worker, only pulling its
+      // result blob(s) failed (e.g. a dropped connection). Keep `status:
+      // "completed"` and `pendingRemoteMerge` as-is so the "Fetch & Load
+      // Results" button (gated on both) stays usable; clearing either here
+      // used to force a full job resubmit to recover from what's often just
+      // a flaky fetch.
+      set({
+        error: `Failed to fetch/merge remote result: ${e instanceof Error ? e.message : String(e)}`,
       });
     }
   },

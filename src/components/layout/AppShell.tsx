@@ -32,21 +32,41 @@ import { CorrectionBar } from "./CorrectionBar";
 import { PANELS } from "./panelRegistry";
 import { reorderById, visibleOpenPanels } from "@/lib/panelLayout";
 import { hasUnsavedWork } from "@/lib/unsavedGuard";
+import { toast } from "@/lib/notify";
+import { ClearAllToastsButton } from "@/components/layout/ClearAllToastsButton";
+import { diagnosticsReady, getPriorCrashInfo } from "@/lib/diagnostics";
 import { setupLabelsAutosave } from "@/lib/labelsAutosave";
 import { WelcomeScreen } from "./WelcomeScreen";
 import { GoToFrameDialog } from "../dialogs/GoToFrameDialog";
 import { NewProjectDialog } from "../dialogs/NewProjectDialog";
+import { TranscodeProgressDialog } from "../dialogs/TranscodeProgressDialog";
+import { TranscodeConfirmDialog } from "../dialogs/TranscodeConfirmDialog";
+import { ConfirmDialog } from "../dialogs/ConfirmDialog";
+import { ChoiceDialog } from "../dialogs/ChoiceDialog";
+import { PromptDialog } from "../dialogs/PromptDialog";
 import { SelectToFrameDialog } from "../dialogs/SelectToFrameDialog";
 import { DeletePredictionsDialog } from "../dialogs/DeletePredictionsDialog";
 import { MergeProjectDialog } from "../dialogs/MergeProjectDialog";
+import { ExportModelDialog } from "../dialogs/ExportModelDialog";
+import { AddVideoUrlDialog } from "../dialogs/AddVideoUrlDialog";
 import { ExportDialog } from "../dialogs/ExportDialog";
 import { ExportClipDialog } from "../dialogs/ExportClipDialog";
 import { ModelMetricsDialog } from "../dialogs/ModelMetricsDialog";
+import { SizeDistributionDialog } from "../dialogs/SizeDistributionDialog";
+import { LabelQcDialog } from "../dialogs/LabelQcDialog";
+import { OverlayModelsDialog } from "../dialogs/OverlayModelsDialog";
 import { ExportPackageDialog } from "../dialogs/ExportPackageDialog";
 import { ShortcutsDialog } from "../dialogs/ShortcutsDialog";
+import { LabelingTipsDialog } from "../dialogs/LabelingTipsDialog";
 import { HelpDialog } from "../dialogs/HelpDialog";
+import { DiagnosticsDialog } from "../dialogs/DiagnosticsDialog";
+import { ConnectDialog } from "../connect/ConnectDialog";
 import { MenuSearchDialog } from "../dialogs/MenuSearchDialog";
+import { TutorialOverlay } from "../tutorial/TutorialOverlay";
 import { useAppStore } from "../../stores/appStore";
+import { useConnectStore } from "@/stores/connectStore";
+import { UpdatePingDot, UpdatePill, useEnvironmentUpdateStatus } from "./UpdateIndicator";
+import { PanelCloseButton } from "./PanelCloseButton";
 import { useTrainingStore } from "../../stores/trainingStore";
 import {
   PanelRightClose,
@@ -56,7 +76,6 @@ import {
   GripVertical,
   ChevronDown,
   ChevronRight,
-  X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Progress } from "@/components/ui/progress";
@@ -124,6 +143,7 @@ function PathResolutionHost() {
 export function AppShell() {
   const projectLoaded = useAppStore((s) => s.projectLoaded);
   const isLoading = useAppStore((s) => s.isLoading);
+  const windowDragActive = useAppStore((s) => s.windowDragActive);
   const loadingMessage = useAppStore((s) => s.loadingMessage);
   const loadingProgress = useAppStore((s) => s.loadingProgress);
   const sidebarSide = useAppStore((s) => s.sidebarSide);
@@ -141,15 +161,35 @@ export function AppShell() {
   const setModelMetricsDialogOpen = useAppStore(
     (s) => s.setModelMetricsDialogOpen
   );
+  const sizeDistributionDialogOpen = useAppStore(
+    (s) => s.sizeDistributionDialogOpen
+  );
+  const setSizeDistributionDialogOpen = useAppStore(
+    (s) => s.setSizeDistributionDialogOpen
+  );
+  const labelQcDialogOpen = useAppStore((s) => s.labelQcDialogOpen);
+  const setLabelQcDialogOpen = useAppStore((s) => s.setLabelQcDialogOpen);
   const modelOutputDirs = useTrainingStore((s) => s.modelOutputDirs);
+  const overlayModelsDialogOpen = useAppStore((s) => s.overlayModelsDialogOpen);
+  const setOverlayModelsDialogOpen = useAppStore(
+    (s) => s.setOverlayModelsDialogOpen
+  );
   const exportPackageDialogOpen = useAppStore((s) => s.exportPackageDialogOpen);
   const setExportPackageDialogOpen = useAppStore(
     (s) => s.setExportPackageDialogOpen
   );
   const shortcutsDialogOpen = useAppStore((s) => s.shortcutsDialogOpen);
   const setShortcutsDialogOpen = useAppStore((s) => s.setShortcutsDialogOpen);
+  const labelingTipsDialogOpen = useAppStore((s) => s.labelingTipsDialogOpen);
+  const setLabelingTipsDialogOpen = useAppStore((s) => s.setLabelingTipsDialogOpen);
   const helpDialogOpen = useAppStore((s) => s.helpDialogOpen);
   const setHelpDialogOpen = useAppStore((s) => s.setHelpDialogOpen);
+  const diagnosticsDialogOpen = useAppStore((s) => s.diagnosticsDialogOpen);
+  const setDiagnosticsDialogOpen = useAppStore(
+    (s) => s.setDiagnosticsDialogOpen,
+  );
+  const connectWindowOpen = useAppStore((s) => s.connectWindowOpen);
+  const setConnectWindowOpen = useAppStore((s) => s.setConnectWindowOpen);
 
   // Unsaved changes protection: warn before closing/refreshing when there are
   // in-memory edits (hasChanges) OR a large-pkg labels draft saved locally but
@@ -166,11 +206,52 @@ export function AppShell() {
     return () => window.removeEventListener("beforeunload", handler);
   }, []);
 
+  // Crash-recovery prompt: if the PREVIOUS session ended without a clean
+  // shutdown (crash / freeze / force-quit), offer to send diagnostics on this
+  // fresh, responsive launch — a frozen UI can't reach the Help menu. Waits for
+  // diagnosticsReady so the sentinel check has run before we read it.
+  useEffect(() => {
+    let cancelled = false;
+    void diagnosticsReady.then(() => {
+      if (cancelled || !getPriorCrashInfo()) return;
+      // Stays until acted on (a crash notice shouldn't silently vanish), but MUST
+      // be dismissable — both actions clear it, plus an explicit Dismiss for users
+      // who don't want to send anything (otherwise the Infinity toast never goes
+      // away).
+      const id = toast("SLEAP didn't close properly last time", {
+        description: "Send diagnostics so we can look into what happened.",
+        duration: Infinity,
+        action: {
+          label: "Send diagnostics",
+          onClick: () => {
+            useAppStore.getState().setDiagnosticsDialogOpen(true);
+            toast.dismiss(id);
+          },
+        },
+        cancel: {
+          label: "Dismiss",
+          onClick: () => toast.dismiss(id),
+        },
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Auto-save the labels draft a beat after edits settle (instant, silent) —
   // a crash-recovery net in BOTH runtimes: browser → OPFS, desktop → an
   // app-local disk draft (see labelsAutosave.ts). setupLabelsAutosave gates on
   // eligibility per runtime.
   useEffect(() => setupLabelsAutosave(), []);
+
+  // Reconnect to any worker with an active remote job from a previous
+  // session: catches up jobs that finished while unwatched (toast + mark
+  // terminal) and re-watches ones still running (see connectStore.ts's
+  // resumeTrackedJobs doc comment).
+  useEffect(() => {
+    void useConnectStore.getState().resumeTrackedJobs();
+  }, []);
 
   // Drag-and-drop to open a project is intentionally limited to the WelcomeScreen
   // (no project loaded) so a stray drop can never silently replace a project the
@@ -231,6 +312,21 @@ export function AppShell() {
               </div>
             </div>
           )}
+
+          {/* Whole-window drag catcher: dashed border + hint while a file is
+              dragged over a loaded project. Drop routing lives in windowDrop.ts
+              (video → Add; .slp → Merge / new window). pointer-events-none so it
+              never eats the drop itself. */}
+          {windowDragActive && projectLoaded && (
+            <div className="pointer-events-none absolute inset-2 z-[60] flex items-center justify-center rounded-lg border-2 border-dashed border-primary/70 bg-background/70 backdrop-blur-sm">
+              <div className="flex flex-col items-center gap-1.5 text-center">
+                <span className="text-lg font-medium">Drop a video or .slp file</span>
+                <span className="text-sm text-muted-foreground">
+                  Add a video to this project, or merge / open a .slp
+                </span>
+              </div>
+            </div>
+          )}
         </div>
       </ErrorBoundary>
 
@@ -239,8 +335,15 @@ export function AppShell() {
       {/* Global dialogs */}
       <NewProjectDialog />
       <GoToFrameDialog />
+      <ConfirmDialog />
+      <ChoiceDialog />
+      <PromptDialog />
+      <TranscodeConfirmDialog />
+      <TranscodeProgressDialog />
       <SelectToFrameDialog />
       <MergeProjectDialog />
+      <AddVideoUrlDialog />
+      <ExportModelDialog />
       <DeletePredictionsDialog
         open={deletePredictionsDialogOpen}
         onOpenChange={setDeletePredictionsDialogOpen}
@@ -255,6 +358,18 @@ export function AppShell() {
         onOpenChange={setModelMetricsDialogOpen}
         runDirs={modelOutputDirs}
       />
+      <SizeDistributionDialog
+        open={sizeDistributionDialogOpen}
+        onOpenChange={setSizeDistributionDialogOpen}
+      />
+      <LabelQcDialog
+        open={labelQcDialogOpen}
+        onOpenChange={setLabelQcDialogOpen}
+      />
+      <OverlayModelsDialog
+        open={overlayModelsDialogOpen}
+        onOpenChange={setOverlayModelsDialogOpen}
+      />
       <ExportPackageDialog
         open={exportPackageDialogOpen}
         onOpenChange={setExportPackageDialogOpen}
@@ -263,11 +378,21 @@ export function AppShell() {
         open={shortcutsDialogOpen}
         onOpenChange={setShortcutsDialogOpen}
       />
+      <LabelingTipsDialog
+        open={labelingTipsDialogOpen}
+        onOpenChange={setLabelingTipsDialogOpen}
+      />
       <HelpDialog
         open={helpDialogOpen}
         onOpenChange={setHelpDialogOpen}
       />
+      <DiagnosticsDialog
+        open={diagnosticsDialogOpen}
+        onOpenChange={setDiagnosticsDialogOpen}
+      />
+      <ConnectDialog open={connectWindowOpen} onOpenChange={setConnectWindowOpen} />
       <MenuSearchDialog />
+      <TutorialOverlay />
       <PathResolutionHost />
 
       {/* Toast notifications. closeButton renders an always-visible X (see the
@@ -277,10 +402,12 @@ export function AppShell() {
         theme="dark"
         position="bottom-right"
         closeButton
+        offset={{ bottom: 56 }}
         toastOptions={{
           className: "bg-card border-border text-foreground",
         }}
       />
+      <ClearAllToastsButton />
     </div>
   );
 }
@@ -297,6 +424,12 @@ function Sidebar() {
   const togglePanelOpenAction = useAppStore((s) => s.togglePanelOpen);
   const toggleSectionCollapsed = useAppStore((s) => s.toggleSectionCollapsed);
   const closePanel = useAppStore((s) => s.closePanel);
+  const {
+    available: environmentUpdateAvailable,
+    title: environmentUpdateTitle,
+    label: environmentUpdateLabel,
+    onDismiss: dismissEnvironmentUpdate,
+  } = useEnvironmentUpdateStatus();
 
   // When docked left, the whole sidebar (rail | panel | resize) mirrors so the
   // icon rail sits on the window edge and the resize handle faces the canvas.
@@ -527,7 +660,7 @@ function Sidebar() {
           share the column height (flex-1); collapsed ones show header only. */}
       {showPanel && (
         <div
-          className="h-full bg-card flex flex-col overflow-hidden"
+          className="h-full bg-card flex flex-col overflow-y-auto"
           style={{ width: panelWidth }}
         >
           {stackPanels.map((panel, idx) => {
@@ -553,8 +686,19 @@ function Sidebar() {
                 <div
                   data-section-id={panel.id}
                   className={cn(
-                    "flex flex-col min-h-0 border-b border-border last:border-b-0",
-                    sectionCollapsed && "shrink-0"
+                    "flex flex-col border-b border-border last:border-b-0",
+                    // Expanded sections get a real floor (not min-h-0) so an
+                    // open panel always has enough room for its header +
+                    // a few table rows, even when several panels are open —
+                    // otherwise the accordion can squeeze a section below what
+                    // its own content needs, which hands scrolling off to this
+                    // outer stack and makes the panel's sticky table header
+                    // stop sticking (it only tracks its own inner scroll).
+                    // The stack above is now overflow-y-auto, so if all the
+                    // open sections' floors together exceed the column's
+                    // height, you scroll the stack to reach the rest instead
+                    // of everything getting clipped or crushed.
+                    sectionCollapsed ? "shrink-0" : "min-h-40"
                   )}
                   style={
                     sectionCollapsed
@@ -581,13 +725,10 @@ function Sidebar() {
                       {panel.label}
                     </span>
                   </button>
-                  <button
+                  <PanelCloseButton
                     onClick={() => closePanel(panel.id)}
-                    aria-label={`Close ${panel.label}`}
-                    className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors shrink-0"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
+                    label={`Close ${panel.label}`}
+                  />
                 </div>
                 {/* Section body */}
                 {!sectionCollapsed && (
@@ -701,15 +842,29 @@ function Sidebar() {
                       {unreadCount > 99 ? "99+" : unreadCount}
                     </span>
                   )}
+                  {/* New-stable-release indicator: a "live" ping dot, visible
+                      even when the rail is collapsed (see the "Update" text
+                      pill below for the expanded/labeled form). */}
+                  {panel.id === "environment" && environmentUpdateAvailable && (
+                    <UpdatePingDot className="top-1 right-1.5" />
+                  )}
                 </span>
                 <span
                   className={cn(
-                    "flex-1 min-w-0 truncate whitespace-nowrap pr-6 text-left text-sm",
+                    "flex-1 min-w-0 flex items-center gap-1.5 whitespace-nowrap pr-6 text-left text-sm",
                     "transition-opacity duration-150",
                     railExpanded ? "opacity-100" : "opacity-0"
                   )}
                 >
-                  {panel.label}
+                  <span className="truncate">{panel.label}</span>
+                  {panel.id === "environment" && environmentUpdateAvailable && (
+                    <UpdatePill
+                      title={environmentUpdateTitle}
+                      onDismiss={dismissEnvironmentUpdate}
+                    >
+                      {environmentUpdateLabel}
+                    </UpdatePill>
+                  )}
                 </span>
                 {/* Drag grip (visible on hover) */}
                 <GripVertical className="absolute right-1 top-1/2 -translate-y-1/2 h-3 w-3 opacity-0 group-hover:opacity-30 transition-opacity" />

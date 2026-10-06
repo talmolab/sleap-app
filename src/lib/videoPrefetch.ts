@@ -52,3 +52,56 @@ export function shouldPrefetch({
   if (prev === null) return true;
   return Math.abs(next - prev) <= threshold;
 }
+
+/**
+ * Whether VideoPlayer should trigger the backend's proactive decode-ahead after
+ * painting a frame (scrub-proxy v2, Thread A).
+ *
+ * Decode-ahead is a PLAYBACK-only helper: it keeps the decode queue running
+ * ahead of the playhead so the awaited `getFrame` is a cache hit instead of
+ * blocking on a keyframe→+lookahead decode (the periodic play-freeze). It must
+ * be OFF when paused (nothing to run ahead of) and OFF while scrubbing (a drag
+ * wants the newest frame now, not speculative forward work — and rule #3 already
+ * pauses playback on any seek, so the two shouldn't co-occur; this is a guard).
+ *
+ * Pure so VideoPlayer's frame-load effect can be reasoned about and this gate
+ * unit-tested in isolation (mirrors {@link shouldPrefetch}).
+ */
+export function shouldDecodeAhead({
+  isPlaying,
+  isScrubbing,
+}: {
+  isPlaying: boolean;
+  isScrubbing: boolean;
+}): boolean {
+  return isPlaying && !isScrubbing;
+}
+
+/**
+ * Per-tick cursor velocity (frames moved between consecutive scrub rAF ticks)
+ * above which the scrub is "fast" and should snap to keyframe previews instead
+ * of decoding exact frames (scrub-proxy v2 keyframe-preview). Tunable: lower =
+ * switch to keyframes sooner (coarser but keeps up); higher = hold exact frames
+ * longer (finer but can lag on fast flings). A drag this quick outruns exact
+ * decode, and precision isn't needed mid-fling — it settles to exact on release.
+ */
+export const FAST_SCRUB_FRAMES_PER_TICK = 8;
+
+/**
+ * Whether the current scrub tick is moving fast enough to snap to a keyframe
+ * preview rather than decode the exact cursor frame. Pure so the scrub loop's
+ * fast/slow decision is unit-testable. The first tick (no previous position)
+ * is never "fast" — we can't measure velocity yet, so start with an exact read.
+ */
+export function isFastScrub({
+  cursorFrame,
+  prevCursorFrame,
+  threshold = FAST_SCRUB_FRAMES_PER_TICK,
+}: {
+  cursorFrame: number;
+  prevCursorFrame: number | null;
+  threshold?: number;
+}): boolean {
+  if (prevCursorFrame === null) return false;
+  return Math.abs(cursorFrame - prevCursorFrame) > threshold;
+}

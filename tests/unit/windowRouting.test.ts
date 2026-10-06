@@ -1,6 +1,7 @@
 import { test, expect, describe } from "bun:test";
 import {
   planOpen,
+  planSlpDrop,
   readOpenFileParam,
   type Resolution,
 } from "@/lib/windowRouting";
@@ -40,6 +41,61 @@ describe("planOpen", () => {
 
   test("malformed reuse (no label) falls back to a new window", () => {
     expect(planOpen(r("reuse", null), "main")).toEqual({ kind: "newWindow" });
+  });
+});
+
+describe("planSlpDrop", () => {
+  const r = (action: Resolution["action"], label: string | null): Resolution => ({
+    action,
+    label,
+  });
+
+  test("no project loaded → open in place (welcome-screen behavior)", () => {
+    // Resolution is irrelevant when the window is empty; it always loads here.
+    expect(planSlpDrop(r("new", null), "main", false)).toEqual({
+      kind: "openHere",
+    });
+    expect(planSlpDrop(r("focus", "main-2"), "main", false)).toEqual({
+      kind: "openHere",
+    });
+  });
+
+  test("same file already open in THIS window → info pop-up (do nothing else)", () => {
+    expect(planSlpDrop(r("focus", "main"), "main", true)).toEqual({
+      kind: "alreadyHere",
+    });
+  });
+
+  test("same file open in ANOTHER window → focus that window", () => {
+    expect(planSlpDrop(r("focus", "main-2"), "main", true)).toEqual({
+      kind: "focusOther",
+      label: "main-2",
+    });
+  });
+
+  test("different file, empty window elsewhere (reuse) → confirm new window", () => {
+    expect(planSlpDrop(r("reuse", "main-3"), "main", true)).toEqual({
+      kind: "confirmNewWindow",
+    });
+  });
+
+  test("different file, no empty window (new) → confirm new window", () => {
+    expect(planSlpDrop(r("new", null), "main", true)).toEqual({
+      kind: "confirmNewWindow",
+    });
+  });
+
+  test("malformed focus (no label) → confirm new window (never clobbers)", () => {
+    expect(planSlpDrop(r("focus", null), "main", true)).toEqual({
+      kind: "confirmNewWindow",
+    });
+  });
+
+  test("inconsistent reuse-of-this-window while loaded → confirm new window (never clobbers)", () => {
+    // Rust says reuse here, but this window has a project — must not load in place.
+    expect(planSlpDrop(r("reuse", "main"), "main", true)).toEqual({
+      kind: "confirmNewWindow",
+    });
   });
 });
 

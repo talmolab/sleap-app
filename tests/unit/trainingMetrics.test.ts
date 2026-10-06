@@ -6,12 +6,45 @@ import {
   formatRuntimeTitle,
   buildLossPlotData,
   buildLossPlotDataBatched,
+  boundedLossYValues,
   lossCsv,
+  safeLinearSplits,
+  safeLogSplits,
 } from "@/lib/trainingMetrics";
-import type { EpochSample } from "@/stores/trainingStore";
+import type { EpochSample, BatchSample } from "@/stores/trainingStore";
 
 const ep = (epoch: number, trainLoss: number, valLoss: number): EpochSample => ({
   epoch, trainLoss, valLoss,
+});
+
+describe("boundedLossYValues", () => {
+  it("caps the batch contribution so per-redraw y-range work stays bounded", () => {
+    // 20k batches (the store cap) with the peak at index 0 and a late dip.
+    const batches: BatchSample[] = Array.from({ length: 20000 }, (_, i) => ({
+      globalBatch: i,
+      loss: i === 0 ? 5 : 1e-4,
+    }));
+    const epochs = [ep(0, 0.01, 0.02)];
+    const ys = boundedLossYValues(batches, epochs);
+    // batch portion ≤ MAX_DRAWN_BATCH_POINTS (2000, +1 for the always-kept last)
+    // plus the 2 epoch losses — NOT the full 20k.
+    expect(ys.length).toBeLessThanOrEqual(2000 + 1 + 2);
+    // The even downsample keeps index 0, so the peak (5) is NOT clipped from the
+    // range, and the sparse epoch losses are included in full.
+    expect(Math.max(...ys)).toBe(5);
+    expect(ys).toContain(0.01);
+    expect(ys).toContain(0.02);
+  });
+
+  it("returns everything unchanged when under the cap", () => {
+    const batches: BatchSample[] = [
+      { globalBatch: 0, loss: 0.3 },
+      { globalBatch: 1, loss: 0.1 },
+    ];
+    expect(boundedLossYValues(batches, [ep(0, 0.2, 0.25)])).toEqual([
+      0.3, 0.1, 0.2, 0.25,
+    ]);
+  });
 });
 
 describe("lossCsv", () => {
@@ -241,5 +274,135 @@ describe("buildLossPlotDataBatched downsampling (uPlot render cap)", () => {
     // both epoch boundaries (x = 2500, 5000) must carry their train/val values
     expect(d.train.filter((v) => v != null)).toEqual([0.4, 0.3]);
     expect(d.val.filter((v) => v != null)).toEqual([0.6, 0.5]);
+  });
+});
+
+// --- Freeze guards (see fix/training-monitor-freeze) --------------------------
+// uPlot's axis-split loops (numAxisSplits / logAxisSplits, uPlot 1.6.32) are
+// UNCAPPED: `for (val = min; val <= max; val += incr)` and
+// `do { push } while (split <= max)`. A non-finite (or astronomically large)
+// scale endpoint makes them push into `splits` forever → the array goes to JSC
+// sparse storage → main-thread peg = the Training Monitor freeze. These two
+// boundary functions are the only place degenerate values can enter uPlot's
+// scale, so they must guarantee finite, sane output.
+
+describe("computeYRange — never yields a non-finite y-scale (freeze guard)", () => {
+  it("clamps an overflowing log max to a finite value", () => {
+    // A diverged loss can pass through ~Double.MAX; then 10 ** (log10(max) + pad)
+    // overflows to +Infinity, and uPlot's log-axis split loop hangs on max=∞.
+    const r = computeYRange([1e-10, Number.MAX_VALUE], {
+      logScale: true,
+      ignoreOutliers: false,
+    });
+    expect(r).not.toBeNull();
+    expect(Number.isFinite(r![0])).toBe(true);
+    expect(Number.isFinite(r![1])).toBe(true);
+    expect(r![1]).toBeGreaterThan(r![0]);
+  });
+
+  it("clamps an overflowing linear max to a finite value", () => {
+    const r = computeYRange([0, Number.MAX_VALUE], {
+      logScale: false,
+      ignoreOutliers: false,
+    });
+    expect(r).not.toBeNull();
+    expect(Number.isFinite(r![0])).toBe(true);
+    expect(Number.isFinite(r![1])).toBe(true);
+  });
+
+  it("leaves a normal range untouched", () => {
+    const r = computeYRange([0.1, 1, 10], { logScale: true, ignoreOutliers: false });
+    expect(r![0]).toBeGreaterThan(0);
+    expect(r![1]).toBeLessThan(1e300);
+    expect(r![1]).toBeGreaterThan(r![0]);
+  });
+});
+
+describe("buildLossPlotDataBatched — never emits a non-finite x (freeze guard)", () => {
+  it("drops batch points whose globalBatch is non-finite", () => {
+    const d = buildLossPlotDataBatched(
+      [
+        { globalBatch: 0, loss: 1 },
+        { globalBatch: Infinity, loss: 0.9 },
+        { globalBatch: NaN, loss: 0.8 },
+      ],
+      [],
+      1,
+      null,
+      null,
+    );
+    expect(d.x.every(Number.isFinite)).toBe(true);
+    expect(d.x).toEqual([0]);
+    expect(d.batch).toEqual([1]);
+  });
+
+  it("drops epoch boundaries when epochSize is non-finite (corrupt progress)", () => {
+    const d = buildLossPlotDataBatched(
+      [],
+      [{ epoch: 0, trainLoss: 0.5, valLoss: 0.4 }],
+      Infinity, // corrupt epochSize → (epoch+1)*epochSize = Infinity
+      0,
+      0.4,
+    );
+    expect(d.x.every(Number.isFinite)).toBe(true);
+    expect(d.x).toEqual([]);
+  });
+
+  it("keeps finite points when only some are corrupt", () => {
+    const d = buildLossPlotDataBatched(
+      [
+        { globalBatch: 5, loss: 0.7 },
+        { globalBatch: Infinity, loss: 0.6 },
+      ],
+      [{ epoch: 0, trainLoss: 0.5, valLoss: 0.4 }],
+      10, // finite epoch boundary at x=10
+      0,
+      0.4,
+    );
+    expect(d.x.every(Number.isFinite)).toBe(true);
+    expect(d.x).toEqual([5, 10]);
+  });
+
+  it("drops finite x beyond MAX_SAFE_INTEGER (corrupt epochSize)", () => {
+    // A corrupt batch index can inflate epochSize so globalBatch lands past 2**53
+    // where a linear tick step underflows the float64 gap and numAxisSplits stalls.
+    const d = buildLossPlotDataBatched(
+      [
+        { globalBatch: 5, loss: 0.7 },
+        { globalBatch: 1e17, loss: 0.6 },
+      ],
+      [],
+      1,
+      null,
+      null,
+    );
+    expect(d.x).toEqual([5]);
+  });
+});
+
+describe("safeLinearSplits / safeLogSplits (bounded uPlot tick generators)", () => {
+  it("gives nice linear ticks inside the range", () => {
+    expect(safeLinearSplits(0, 500)).toEqual([0, 100, 200, 300, 400, 500]);
+    expect(safeLinearSplits(0.1, 0.35)).toEqual([0.1, 0.15, 0.2, 0.25, 0.3, 0.35]);
+  });
+
+  it("never returns more than 40 ticks, even for degenerate ranges", () => {
+    for (const [min, max] of [
+      [0, Number.MAX_SAFE_INTEGER],
+      [1e15, 1e15 + 3],
+      [-1e300, 1e300],
+      [9007199254740990, 9007199254740992],
+    ] as const) {
+      expect(safeLinearSplits(min, max).length).toBeLessThanOrEqual(40);
+    }
+    expect(safeLinearSplits(NaN, 1)).toEqual([]);
+    expect(safeLinearSplits(0, Infinity)).toEqual([]);
+  });
+
+  it("gives 1/2/5 log ticks for short ranges and stays bounded for huge ones", () => {
+    expect(safeLogSplits(0.001, 0.1)).toEqual([0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1]);
+    expect(safeLogSplits(1e-300, 1e300).length).toBeLessThanOrEqual(40);
+    expect(safeLogSplits(1e-20, 1).length).toBeLessThanOrEqual(40);
+    expect(safeLogSplits(0, 1)).toEqual([]);
   });
 });

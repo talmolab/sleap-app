@@ -106,6 +106,7 @@ export {
   AddTrack,
   SetInstanceTrack,
   TransposeInstances,
+  requestTranspose,
   CopyTrack,
   PasteTrack,
   PropagateTrackLabels,

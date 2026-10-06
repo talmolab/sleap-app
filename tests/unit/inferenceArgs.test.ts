@@ -13,13 +13,16 @@ function baseConfig(overrides: Partial<InferenceConfig> = {}): InferenceConfig {
   return {
     pipeline: "top-down",
     centroidOutput: "instance",
+    trackOnly: false,
     modelPaths: ["/models/centroid", "/models/centered_instance"],
     videoIndex: "all",
     frameRange: "video",
     sampleCount: 20,
     excludeUserLabeled: false,
+    existingPredictions: "replace",
     batchSize: 4,
     device: "auto",
+    runtime: "auto",
     maxInstances: null,
     peakThreshold: 0.2,
     integralRefinement: false,
@@ -36,13 +39,30 @@ function baseConfig(overrides: Partial<InferenceConfig> = {}): InferenceConfig {
     maxTracks: null,
     connectSingleBreaks: false,
     robust: 1,
+    minMatchPoints: 0,
+    minNewTrackPoints: 0,
+    scoringReduction: "mean",
+    trackingTargetInstanceCount: null,
+    trackingPreCullToTarget: false,
+    trackingPreCullIouThreshold: 0,
+    trackingCleanInstanceCount: null,
+    trackingCleanIouThreshold: 0,
     flowImgScale: 1,
     flowWindowSize: 21,
     flowMaxLevels: 3,
+    kfTrackFeatures: "centroid",
+    kfInitFrameCount: 10,
+    kfNodeIndices: [],
+    kfResetGapSize: 5,
     ensureChannels: "auto",
     filterOverlapping: false,
     filterMethod: "iou",
     filterThreshold: 0.5,
+    filterMinVisibleNodes: null,
+    filterMinVisibleNodeFraction: null,
+    filterMinMeanNodeScore: null,
+    filterMinInstanceScore: null,
+    filterMinCentroidDistance: null,
     ...overrides,
   };
 }
@@ -64,6 +84,28 @@ function allAfter(args: string[], flag: string): string[] {
   return out;
 }
 
+describe("buildInferenceArgs — runtime (ONNX/TensorRT)", () => {
+  it("omits --runtime when runtime is 'auto' (sleap-nn's own default)", () => {
+    const args = buildInferenceArgs(baseConfig({ runtime: "auto" }), io());
+    expect(args).not.toContain("--runtime");
+  });
+
+  it("emits --runtime onnx when selected", () => {
+    const args = buildInferenceArgs(baseConfig({ runtime: "onnx" }), io());
+    expect(valAfter(args, "--runtime")).toBe("onnx");
+  });
+
+  it("emits --runtime tensorrt when selected", () => {
+    const args = buildInferenceArgs(baseConfig({ runtime: "tensorrt" }), io());
+    expect(valAfter(args, "--runtime")).toBe("tensorrt");
+  });
+
+  it("never emits --runtime on the legacy `track` subcommand (no such flag there)", () => {
+    const args = buildInferenceArgs(baseConfig({ runtime: "onnx" }), { ...io(), subcommand: "track" });
+    expect(args).not.toContain("--runtime");
+  });
+});
+
 describe("buildInferenceArgs — subcommand", () => {
   it("defaults to the `predict` subcommand followed by --gui", () => {
     const args = buildInferenceArgs(baseConfig(), io());
@@ -75,6 +117,34 @@ describe("buildInferenceArgs — subcommand", () => {
     const args = buildInferenceArgs(baseConfig(), { ...io(), subcommand: "track" });
     expect(args[0]).toBe("track");
     expect(args[1]).toBe("--gui");
+  });
+});
+
+describe("buildInferenceArgs — track-only mode", () => {
+  it("omits --model_paths entirely when modelPaths is empty, still emits --tracking", () => {
+    // This is the exact shape sleap-nn's predict CLI detects as its
+    // dedicated retrack-only path: "--tracking with no --model_paths".
+    const args = buildInferenceArgs(
+      baseConfig({ trackOnly: true, modelPaths: [], tracking: true }),
+      io()
+    );
+    expect(args).not.toContain("--model_paths");
+    expect(args).toContain("--tracking");
+    expect(valAfter(args, "--data_path")).toBe("in.slp");
+    expect(valAfter(args, "--output_path")).toBe("out.slp");
+  });
+
+  it("still emits pose-inference flags regardless of trackOnly (the panel hides them, not this builder)", () => {
+    // buildInferenceArgs is a pure function of `config` — it doesn't read
+    // `trackOnly` at all. Track-only-ness is expressed entirely by an empty
+    // modelPaths; batch_size/device/peak_threshold are harmless no-ops to
+    // sleap-nn's retrack-only path when present alongside them.
+    const args = buildInferenceArgs(
+      baseConfig({ trackOnly: true, modelPaths: [], tracking: true }),
+      io()
+    );
+    expect(args).toContain("--batch_size");
+    expect(args).toContain("--peak_threshold");
   });
 });
 
@@ -183,6 +253,90 @@ describe("buildInferenceArgs — tracking / bottom-up / preprocessing / filter",
     expect(valAfter(args, "--scoring_method")).toBe("euclidean_dist");
   });
 
+  it("flow tracker emits --use_flow plus the optical-flow sub-params (regression: these were previously dropped)", () => {
+    const args = buildInferenceArgs(
+      baseConfig({ tracking: true, trackerMethod: "flow", flowImgScale: 0.5, flowWindowSize: 15, flowMaxLevels: 4 }),
+      io()
+    );
+    expect(args).toContain("--use_flow");
+    expect(valAfter(args, "--of_img_scale")).toBe("0.5");
+    expect(valAfter(args, "--of_window_size")).toBe("15");
+    expect(valAfter(args, "--of_max_levels")).toBe("4");
+    expect(args).not.toContain("--use_kalman");
+  });
+
+  it("kalman tracker emits --use_kalman plus kf_* params, and --kf_node_indices only when nodes are selected", () => {
+    const noNodes = buildInferenceArgs(
+      baseConfig({
+        tracking: true,
+        trackerMethod: "kalman",
+        kfTrackFeatures: "keypoints",
+        kfInitFrameCount: 15,
+        kfResetGapSize: 8,
+        kfNodeIndices: [],
+      }),
+      io()
+    );
+    expect(noNodes).toContain("--use_kalman");
+    expect(valAfter(noNodes, "--kf_track_features")).toBe("keypoints");
+    expect(valAfter(noNodes, "--kf_init_frame_count")).toBe("15");
+    expect(valAfter(noNodes, "--kf_reset_gap_size")).toBe("8");
+    expect(noNodes).not.toContain("--kf_node_indices");
+    expect(noNodes).not.toContain("--use_flow");
+
+    const withNodes = buildInferenceArgs(
+      baseConfig({ tracking: true, trackerMethod: "kalman", kfNodeIndices: [0, 2, 3] }),
+      io()
+    );
+    expect(valAfter(withNodes, "--kf_node_indices")).toBe("0,2,3");
+  });
+
+  it("emits the general scoring/matching params unconditionally when tracking is on", () => {
+    const args = buildInferenceArgs(
+      baseConfig({
+        tracking: true,
+        minMatchPoints: 2,
+        minNewTrackPoints: 3,
+        scoringReduction: "robust_quantile",
+      }),
+      io()
+    );
+    expect(valAfter(args, "--min_match_points")).toBe("2");
+    expect(valAfter(args, "--min_new_track_points")).toBe("3");
+    expect(valAfter(args, "--scoring_reduction")).toBe("robust_quantile");
+  });
+
+  it("includes --tracking_target_instance_count only when set", () => {
+    const set = buildInferenceArgs(baseConfig({ tracking: true, trackingTargetInstanceCount: 4 }), io());
+    expect(valAfter(set, "--tracking_target_instance_count")).toBe("4");
+    const unset = buildInferenceArgs(baseConfig({ tracking: true, trackingTargetInstanceCount: null }), io());
+    expect(unset).not.toContain("--tracking_target_instance_count");
+  });
+
+  it("emits pre-cull flags only when enabled", () => {
+    const off = buildInferenceArgs(baseConfig({ tracking: true, trackingPreCullToTarget: false }), io());
+    expect(off).not.toContain("--tracking_pre_cull_to_target");
+    expect(off).not.toContain("--tracking_pre_cull_iou_threshold");
+    const on = buildInferenceArgs(
+      baseConfig({ tracking: true, trackingPreCullToTarget: true, trackingPreCullIouThreshold: 0.6 }),
+      io()
+    );
+    expect(valAfter(on, "--tracking_pre_cull_to_target")).toBe("1");
+    expect(valAfter(on, "--tracking_pre_cull_iou_threshold")).toBe("0.6");
+  });
+
+  it("emits clean-up flags only when an instance count is set", () => {
+    const off = buildInferenceArgs(baseConfig({ tracking: true, trackingCleanInstanceCount: null }), io());
+    expect(off).not.toContain("--tracking_clean_instance_count");
+    expect(off).not.toContain("--tracking_clean_iou_threshold");
+    const on = buildInferenceArgs(
+      baseConfig({ tracking: true, trackingCleanInstanceCount: 2, trackingCleanIouThreshold: 0.7 }),
+      io()
+    );
+    expect(valAfter(on, "--tracking_clean_instance_count")).toBe("2");
+    expect(valAfter(on, "--tracking_clean_iou_threshold")).toBe("0.7");
+  });
+
   it("adds PAF flags for bottom-up pipelines only", () => {
     const bu = buildInferenceArgs(baseConfig({ pipeline: "bottom-up", nPoints: 8 }), io());
     expect(valAfter(bu, "--n_points")).toBe("8");
@@ -206,6 +360,33 @@ describe("buildInferenceArgs — tracking / bottom-up / preprocessing / filter",
     expect(args).toContain("--filter_overlapping");
     expect(valAfter(args, "--filter_overlapping_method")).toBe("oks");
     expect(valAfter(args, "--filter_overlapping_threshold")).toBe("0.3");
+  });
+
+  it("omits every filter_min_* flag when all are unset", () => {
+    const args = buildInferenceArgs(baseConfig(), io());
+    expect(args).not.toContain("--filter_min_visible_nodes");
+    expect(args).not.toContain("--filter_min_visible_node_fraction");
+    expect(args).not.toContain("--filter_min_mean_node_score");
+    expect(args).not.toContain("--filter_min_instance_score");
+    expect(args).not.toContain("--filter_min_centroid_distance");
+  });
+
+  it("emits each filter_min_* flag independently when set", () => {
+    const args = buildInferenceArgs(
+      baseConfig({
+        filterMinVisibleNodes: 3,
+        filterMinVisibleNodeFraction: 0.5,
+        filterMinMeanNodeScore: 0.4,
+        filterMinInstanceScore: 0.2,
+        filterMinCentroidDistance: 10,
+      }),
+      io()
+    );
+    expect(valAfter(args, "--filter_min_visible_nodes")).toBe("3");
+    expect(valAfter(args, "--filter_min_visible_node_fraction")).toBe("0.5");
+    expect(valAfter(args, "--filter_min_mean_node_score")).toBe("0.4");
+    expect(valAfter(args, "--filter_min_instance_score")).toBe("0.2");
+    expect(valAfter(args, "--filter_min_centroid_distance")).toBe("10");
   });
 });
 
@@ -385,12 +566,18 @@ describe("buildInferenceArgs — full-config parity lock", () => {
     "--ensure_rgb",
     "--tracking",
     "--use_flow",
+    "--of_img_scale", "1",
+    "--of_window_size", "21",
+    "--of_max_levels", "3",
     "--scoring_method", "iou",
     "--track_matching_method", "greedy",
     "--tracking_window_size", "9",
     "--max_tracks", "4",
     "--robust_best_instance", "0.95",
     "--post_connect_single_breaks",
+    "--min_match_points", "0",
+    "--min_new_track_points", "0",
+    "--scoring_reduction", "mean",
     "--filter_overlapping",
     "--filter_overlapping_method", "oks",
     "--filter_overlapping_threshold", "0.4",

@@ -15,6 +15,7 @@ import {
   waitFor,
   cleanup,
   act,
+  within,
 } from "@testing-library/react";
 import { useAppStore } from "@/stores/appStore";
 import {
@@ -160,7 +161,7 @@ describe("SuggestionsPanel controls (#159)", () => {
 
     // Generate replaces the list; selection must be cleared so Remove can no
     // longer delete a now-unrelated entry at the stale index.
-    fireEvent.click(screen.getByRole("button", { name: /^generate$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /generate suggestions/i }));
 
     await waitFor(() => {
       expect(screen.getByRole("button", { name: /^remove$/i })).toBeDisabled();
@@ -269,14 +270,19 @@ describe("SuggestionsPanel controls (#159)", () => {
     );
     render(<SuggestionsPanel />);
 
-    fireEvent.click(screen.getByRole("button", { name: /^clear$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /clear all/i }));
 
     // Confirm dialog text appears.
     const confirmText = await screen.findByText(/cannot be undone/i);
     expect(confirmText).toBeInTheDocument();
 
-    // The dialog's destructive confirm button empties the list.
-    fireEvent.click(screen.getByRole("button", { name: /clear all/i }));
+    // The dialog's destructive confirm button empties the list. (Both the panel
+    // trigger and the dialog confirm read "Clear all", so scope to the dialog.)
+    fireEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", {
+        name: /clear all/i,
+      })
+    );
 
     await waitFor(() => {
       expect(useAppStore.getState().labels!.suggestions.length).toBe(0);

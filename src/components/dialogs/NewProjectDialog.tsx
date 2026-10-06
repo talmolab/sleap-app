@@ -12,13 +12,16 @@ import { useState, useCallback } from "react";
 import { Labels, Skeleton } from "@talmolab/sleap-io.js";
 import { useAppStore } from "../../stores/appStore";
 import { commandContext } from "../../commands/CommandContext";
+import { dirtyFrameTracker } from "@/lib/autosaveDirty";
 import { LoadSkeletonTemplateCommand } from "../../commands/skeletonCommands";
+import { addVideoFileToLabels } from "../../lib/resolveVideos";
 import {
-  pickVideoFiles,
-  addVideoFileToLabels,
-  type PickedVideoFile,
-} from "../../lib/resolveVideos";
+  VideoImportList,
+  toVideoImportEntries,
+  type VideoImportEntry,
+} from "./VideoImportList";
 import { SKELETON_TEMPLATES, TEMPLATE_ORDER } from "../../lib/skeletonTemplates";
+import { SAMPLE_VIDEO_URL } from "../../lib/tutorial/steps";
 import {
   Dialog,
   DialogContent,
@@ -35,9 +38,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
+import { VideoDropzone } from "@/components/common/VideoDropzone";
 import { toast } from "@/lib/notify";
 import { confirmDiscardUnsavedWork } from "@/lib/unsavedGuard";
-import { X } from "lucide-react";
 
 /** Sentinel for the "no template, empty skeleton" choice. */
 const EMPTY = "empty";
@@ -45,9 +48,10 @@ const EMPTY = "empty";
 export function NewProjectDialog() {
   const open = useAppStore((s) => s.newProjectDialogOpen);
   const setOpen = useAppStore((s) => s.setNewProjectDialogOpen);
+  const tutorialActive = useAppStore((s) => s.tutorialActive);
 
   const [templateId, setTemplateId] = useState<string>(EMPTY);
-  const [videos, setVideos] = useState<PickedVideoFile[]>([]);
+  const [videos, setVideos] = useState<VideoImportEntry[]>([]);
   const [creating, setCreating] = useState(false);
 
   const reset = useCallback(() => {
@@ -64,11 +68,6 @@ export function NewProjectDialog() {
     [reset, setOpen]
   );
 
-  const handleAddVideos = useCallback(async () => {
-    const picked = await pickVideoFiles();
-    if (picked.length > 0) setVideos((v) => [...v, ...picked]);
-  }, []);
-
   const removeVideo = useCallback((idx: number) => {
     setVideos((v) => v.filter((_, i) => i !== idx));
   }, []);
@@ -76,7 +75,7 @@ export function NewProjectDialog() {
   const handleCreate = useCallback(async () => {
     // Creating discards the current project — confirm if there is unsaved work
     // (in-memory edits OR a not-yet-exported OPFS working copy).
-    if (!confirmDiscardUnsavedWork("Creating a new project")) return;
+    if (!(await confirmDiscardUnsavedWork("Creating a new project"))) return;
 
     setCreating(true);
     try {
@@ -86,7 +85,7 @@ export function NewProjectDialog() {
 
       let addedAny = false;
       for (const pv of videos) {
-        const v = await addVideoFileToLabels(labels, pv);
+        const v = await addVideoFileToLabels(labels, pv, pv.grayscale);
         if (v) addedAny = true;
       }
       if (addedAny) labels.reindex();
@@ -101,6 +100,8 @@ export function NewProjectDialog() {
       // A from-scratch project with content is unsaved work; prompt to save it.
       if (templateId !== EMPTY || addedAny) {
         useAppStore.getState().markChanged();
+        // Brand-new project (videos/skeleton/tracks all replaced) → structural.
+        dirtyFrameTracker.markStructural();
       }
 
       setOpen(false);
@@ -120,7 +121,18 @@ export function NewProjectDialog() {
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="sm:max-w-[420px]">
+      <DialogContent
+        className="sm:max-w-[420px]"
+        onInteractOutside={(e) => {
+          // The tutorial coachmark (TutorialOverlay) renders outside this
+          // dialog's Radix portal, so clicking its download link or dragging
+          // its title bar otherwise reads as an outside interaction and closes
+          // the dialog out from under the tutorial's add-video steps.
+          if ((e.target as HTMLElement | null)?.closest("[data-tutorial-overlay]")) {
+            e.preventDefault();
+          }
+        }}
+      >
         <DialogHeader>
           <DialogTitle>New Project</DialogTitle>
           <DialogDescription>
@@ -128,7 +140,7 @@ export function NewProjectDialog() {
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex flex-col gap-4 py-2">
+        <div className="flex min-w-0 flex-col gap-4 py-2">
           {/* Skeleton template */}
           <div className="flex flex-col gap-1.5">
             <label className="text-sm font-medium">Skeleton</label>
@@ -161,34 +173,29 @@ export function NewProjectDialog() {
                 (optional)
               </span>
             </label>
-            <Button
-              variant="subtle"
-              size="sm"
-              className="self-start"
-              onClick={handleAddVideos}
-              disabled={creating}
-            >
-              + Add video(s)…
-            </Button>
-            {videos.length > 0 && (
-              <ul className="mt-1 flex flex-col gap-1">
-                {videos.map((v, i) => (
-                  <li
-                    key={i}
-                    className="flex items-center justify-between rounded bg-muted/40 px-2 py-1 text-xs"
-                  >
-                    <span className="truncate">{v.file.name}</span>
-                    <button
-                      onClick={() => removeVideo(i)}
-                      className="ml-2 shrink-0 text-muted-foreground hover:text-foreground"
-                      aria-label={`Remove ${v.file.name}`}
-                    >
-                      <X className="h-3.5 w-3.5" />
-                    </button>
-                  </li>
-                ))}
-              </ul>
+            {!tutorialActive && (
+              <a
+                href={SAMPLE_VIDEO_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="self-start text-xs text-muted-foreground underline hover:text-foreground"
+              >
+                No video handy? Download a sample
+              </a>
             )}
+            <VideoDropzone
+              onFiles={(picked) =>
+                setVideos((v) => [...v, ...toVideoImportEntries(picked)])
+              }
+              data-tutorial="new-project-add-video-button"
+            />
+            <VideoImportList
+              videos={videos}
+              onChange={setVideos}
+              onRemove={removeVideo}
+              disabled={creating}
+              data-tutorial="new-project-video-list"
+            />
           </div>
         </div>
 
@@ -200,7 +207,11 @@ export function NewProjectDialog() {
           >
             Cancel
           </Button>
-          <Button onClick={handleCreate} disabled={creating}>
+          <Button
+            onClick={handleCreate}
+            disabled={creating}
+            data-tutorial="new-project-create-button"
+          >
             {creating ? "Creating…" : "Create Project"}
           </Button>
         </DialogFooter>

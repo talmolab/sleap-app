@@ -17,6 +17,7 @@
  * read/write leaves are manual-E2E-verified (happy-dom has no OPFS).
  */
 import { saveSlpStructureToBytes, type Labels } from "@talmolab/sleap-io.js";
+import { type JournalStore, baseBakPath } from "@/lib/incrementalAutosave";
 
 /**
  * Derive a deterministic OPFS filename for a labels draft of `projectName`,
@@ -99,14 +100,100 @@ export async function saveLabelsDraft(
   return bytes.byteLength;
 }
 
-/** Best-effort removal of a draft OPFS file (missing file is not an error). */
-export async function removeLabelsDraft(opfsPath: string): Promise<void> {
+/**
+ * Copy the current base draft to its {@link baseBakPath} before a full rewrite
+ * overwrites it — Safeguard A (previous-base retention). Best-effort: no base
+ * yet, or a copy failure, is swallowed (the .bak is a recovery net, not a hard
+ * requirement). The imageless draft is small, and full rewrites are infrequent
+ * (structural / compaction / first write), so the extra copy is negligible.
+ */
+export async function backupOpfsBase(opfsPath: string): Promise<void> {
   try {
     const root = await navigator.storage.getDirectory();
-    await root.removeEntry(opfsPath);
+    const prev = await root.getFileHandle(opfsPath, { create: false });
+    const bytes = new Uint8Array(await (await prev.getFile()).arrayBuffer());
+    const bakFh = await root.getFileHandle(baseBakPath(opfsPath), { create: true });
+    const w = await bakFh.createWritable();
+    await w.write(bytes);
+    await w.close();
   } catch {
-    // best-effort cleanup
+    // best-effort (no prior base, or copy unsupported/failed)
   }
+}
+
+/** Best-effort removal of a draft OPFS file, its incremental journal sibling,
+ *  AND its retained `.bak` base (missing files are not errors). */
+export async function removeLabelsDraft(opfsPath: string): Promise<void> {
+  for (const p of [opfsPath, journalOpfsPath(opfsPath), baseBakPath(opfsPath)]) {
+    try {
+      const root = await navigator.storage.getDirectory();
+      await root.removeEntry(p);
+    } catch {
+      // best-effort cleanup (file may not exist)
+    }
+  }
+}
+
+// --- Incremental-autosave journal (OPFS) -------------------------------------
+
+/** OPFS filename of the delta journal beside a base draft. Pure. */
+export function journalOpfsPath(opfsPath: string): string {
+  return `${opfsPath}.journal`;
+}
+
+/**
+ * A {@link JournalStore} backed by OPFS for the base draft at `opfsPath`. Append
+ * uses `createWritable({ keepExistingData: true })` + a positional write at the
+ * current end — no worker / SyncAccessHandle needed (Safari, which lacks
+ * createWritable, has the incremental flag effectively off, like the draft
+ * itself). Read/truncate use getFile / removeEntry. All leaves are OPFS, so —
+ * like the other draft leaves — this is manual/E2E-verified, not unit-tested.
+ */
+export function makeOpfsJournalStore(opfsPath: string): JournalStore {
+  const jp = journalOpfsPath(opfsPath);
+  return {
+    async size(): Promise<number> {
+      try {
+        const root = await navigator.storage.getDirectory();
+        const fh = await root.getFileHandle(jp, { create: false });
+        return (await fh.getFile()).size;
+      } catch {
+        return 0;
+      }
+    },
+    async appendRecords(records: Uint8Array[]): Promise<void> {
+      if (records.length === 0) return;
+      const root = await navigator.storage.getDirectory();
+      const fh = await root.getFileHandle(jp, { create: true });
+      let position = (await fh.getFile()).size;
+      const writable = await fh.createWritable({ keepExistingData: true });
+      try {
+        for (const r of records) {
+          await writable.write({ type: "write", position, data: r });
+          position += r.length;
+        }
+      } finally {
+        await writable.close();
+      }
+    },
+    async readAll(): Promise<Uint8Array> {
+      try {
+        const root = await navigator.storage.getDirectory();
+        const fh = await root.getFileHandle(jp, { create: false });
+        return new Uint8Array(await (await fh.getFile()).arrayBuffer());
+      } catch {
+        return new Uint8Array(0);
+      }
+    },
+    async truncate(): Promise<void> {
+      try {
+        const root = await navigator.storage.getDirectory();
+        await root.removeEntry(jp);
+      } catch {
+        // best-effort (journal may not exist)
+      }
+    },
+  };
 }
 
 /**

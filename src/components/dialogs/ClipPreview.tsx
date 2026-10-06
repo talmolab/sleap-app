@@ -18,6 +18,8 @@ import {
   clampHandleDrag,
 } from "@/lib/videoExport";
 import { renderInstances } from "@/canvas/SkeletonRenderer";
+import { hasAssignedTracks } from "@/lib/colorPalettes";
+import { getActiveTrackOverrides } from "@/lib/trackColorOverrides";
 
 interface ClipPreviewProps {
   video: Video;
@@ -36,6 +38,9 @@ export function ClipPreview({ video, start, end, onRangeChange }: ClipPreviewPro
   // View settings that shape the overlay (captured for WYSIWYG parity).
   const palette = useAppStore((s) => s.palette);
   const distinctlyColor = useAppStore((s) => s.distinctlyColor);
+  const trackColorOverrides = useAppStore((s) =>
+    getActiveTrackOverrides(s.trackColorOverrides, s.projectPath, s.filename),
+  );
   const colorPredicted = useAppStore((s) => s.colorPredicted);
   const showNonVisibleNodes = useAppStore((s) => s.showNonVisibleNodes);
   const showInstances = useAppStore((s) => s.showInstances);
@@ -68,6 +73,8 @@ export function ClipPreview({ video, start, end, onRangeChange }: ClipPreviewPro
     if (labels) for (const lf of labels.find({ video })) m.set(lf.frameIdx, lf);
     return m;
   }, [labels, video]);
+
+  const projectHasTracks = useMemo(() => hasAssignedTracks(labels), [labels]);
 
   const drawFrame = useCallback(
     async (frameIdx: number) => {
@@ -103,6 +110,8 @@ export function ClipPreview({ video, start, end, onRangeChange }: ClipPreviewPro
             showNonVisibleNodes,
             tracks: labels.tracks ?? [],
             video,
+            projectHasTracks,
+            trackColorOverrides,
           });
           // Overlay in source space scaled to the display; zoom:s keeps marker
           // sizes visually constant (matches the encoder + the main canvas).
@@ -130,7 +139,7 @@ export function ClipPreview({ video, start, end, onRangeChange }: ClipPreviewPro
     [
       video, srcW, srcH, showOverlay, labels, frameToLf, palette, distinctlyColor,
       colorPredicted, showNonVisibleNodes, showInstances, showLabels, showEdges,
-      markerSize, nodeLabelSize, edgeStyle,
+      markerSize, nodeLabelSize, edgeStyle, projectHasTracks, trackColorOverrides,
     ]
   );
 

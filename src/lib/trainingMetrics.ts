@@ -21,9 +21,91 @@ export function quantile(sorted: number[], q: number): number {
 }
 
 /**
+ * Clamp a y-scale [min,max] into a finite, uPlot-safe window.
+ *
+ * uPlot's axis-split loops (numAxisSplits / logAxisSplits, uPlot 1.6.32) are
+ * UNCAPPED — `for (val = min; val <= max; val += incr)` and
+ * `do { splits.push(split) } while (split <= max)`. A non-finite (or
+ * astronomically large) endpoint makes them push into `splits` forever, the
+ * array flips to JSC sparse storage, and the main thread pegs = the Training
+ * Monitor freeze. A diverged loss can drive computeYRange's `10 ** (log ± pad)`
+ * past Double.MAX (→ ±Infinity), so every returned endpoint is clamped here.
+ * `1e300` sits comfortably below overflow yet preserves any realistic loss
+ * range; log axes floor at `1e-300` so the min stays strictly positive.
+ */
+const Y_RANGE_LIMIT = 1e300;
+function clampYRange(
+  min: number,
+  max: number,
+  logScale: boolean,
+): [number, number] | null {
+  const floor = logScale ? 1e-300 : -Y_RANGE_LIMIT;
+  const clamp = (v: number) =>
+    v < floor ? floor : v > Y_RANGE_LIMIT ? Y_RANGE_LIMIT : v;
+  const lo = clamp(min);
+  const hi = clamp(max);
+  // NaN passes the comparisons above unchanged → caught here; reject a range we
+  // can't fit so the caller falls back to its safe default.
+  if (!Number.isFinite(lo) || !Number.isFinite(hi) || lo > hi) return null;
+  return [lo, hi];
+}
+
+/** Most ticks a bounded split function will ever return. */
+const MAX_AXIS_TICKS = 40;
+
+/**
+ * Bounded replacement for uPlot's linear axis splits. uPlot's own
+ * `numAxisSplits` loops `for (v = min; v <= max; v += incr)` with no cap, so
+ * any scale it can't step through (a huge or float-precision-degenerate
+ * range) pushes into its splits array until the page dies — the
+ * training-monitor freeze class. This picks a "nice" step for ~6 ticks and
+ * never returns more than {@link MAX_AXIS_TICKS} values.
+ */
+export function safeLinearSplits(min: number, max: number, target = 6): number[] {
+  if (!Number.isFinite(min) || !Number.isFinite(max) || max < min) return [];
+  if (min === max) return [min];
+  const raw = (max - min) / Math.max(1, target);
+  const mag = 10 ** Math.floor(Math.log10(raw));
+  const norm = raw / mag;
+  const step = (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10) * mag;
+  if (!(step > 0) || !Number.isFinite(step)) return [min, max];
+  const first = Math.ceil(min / step) * step;
+  const ticks: number[] = [];
+  for (let i = 0; i < MAX_AXIS_TICKS; i++) {
+    const v = first + i * step;
+    if (v > max) break;
+    ticks.push(Number(v.toPrecision(12)));
+  }
+  return ticks;
+}
+
+/**
+ * Bounded replacement for uPlot's log10 axis splits (same uncapped-loop
+ * hazard as {@link safeLinearSplits}): 1/2/5 per decade for short ranges,
+ * one tick per decade (thinned) for long ones, at most {@link MAX_AXIS_TICKS}.
+ */
+export function safeLogSplits(min: number, max: number): number[] {
+  if (!(min > 0) || !Number.isFinite(min) || !Number.isFinite(max) || max < min) return [];
+  const lo = Math.floor(Math.log10(min));
+  const hi = Math.ceil(Math.log10(max));
+  const decades = hi - lo;
+  const mults = decades <= 4 ? [1, 2, 5] : [1];
+  const stride = Math.max(1, Math.ceil((decades + 1) / MAX_AXIS_TICKS));
+  const ticks: number[] = [];
+  for (let d = lo; d <= hi && ticks.length < MAX_AXIS_TICKS; d += stride) {
+    for (const m of mults) {
+      const v = Number((m * 10 ** d).toPrecision(12));
+      if (v >= min && v <= max && ticks.length < MAX_AXIS_TICKS) ticks.push(v);
+    }
+  }
+  return ticks;
+}
+
+/**
  * y-axis [min,max] for the loss chart. Parity with monitor.py:_calculate_ylim
  * (log-space padding + optional IQR outlier rejection). Returns null when there
- * is no finite data to fit (caller falls back to a default range).
+ * is no finite data to fit (caller falls back to a default range). Output is
+ * always finite and uPlot-safe (see {@link clampYRange}).
  */
 export function computeYRange(
   values: number[],
@@ -46,7 +128,7 @@ export function computeYRange(
       logMax = Math.min(q3 + 1.5 * iqr, logY[logY.length - 1]);
     }
     const pad = logMax > logMin ? (logMax - logMin) * 0.02 : 0.05;
-    return [10 ** (logMin - pad), 10 ** (logMax + pad)];
+    return clampYRange(10 ** (logMin - pad), 10 ** (logMax + pad), true);
   }
 
   const sorted = [...finite].sort((a, b) => a - b);
@@ -57,9 +139,13 @@ export function computeYRange(
     const q1 = quantile(sorted, 0.25);
     const q3 = quantile(sorted, 0.75);
     const iqr = q3 - q1;
-    return [Math.max(q1 - iqr * 1.5, min - dy), Math.min(q3 + iqr * 1.5, max + dy)];
+    return clampYRange(
+      Math.max(q1 - iqr * 1.5, min - dy),
+      Math.min(q3 + iqr * 1.5, max + dy),
+      false,
+    );
   }
-  return [min - dy, max + dy];
+  return clampYRange(min - dy, max + dy, false);
 }
 
 /**
@@ -204,6 +290,31 @@ function downsampleEven<T>(arr: T[], target: number): T[] {
 }
 
 /**
+ * Bounded set of y-values for the loss chart's y-range scale.
+ *
+ * uPlot's `range` callback runs on EVERY redraw. Feeding it the full
+ * `batchSamples` buffer (capped at 20k) means an O(n·log n) sort per redraw
+ * that, as training fills the buffer, escalates into a GUI FREEZE while the
+ * Training Monitor is open. Bound the batch contribution to the SAME even
+ * downsample the chart actually draws ({@link MAX_DRAWN_BATCH_POINTS}) — the
+ * drawn points can never exceed this range, so nothing clips — keeping
+ * computeYRange at O(2000·log 2000). Epoch train/val losses are sparse (one per
+ * epoch), so they're kept in full.
+ */
+export function boundedLossYValues(
+  batchSamples: BatchSample[],
+  epochSamples: EpochSample[],
+): number[] {
+  const batch = downsampleEven(batchSamples, MAX_DRAWN_BATCH_POINTS).map(
+    (b) => b.loss,
+  );
+  const epoch = epochSamples.flatMap((s) =>
+    [s.trainLoss, s.valLoss].filter((v): v is number => v != null),
+  );
+  return [...batch, ...epoch];
+}
+
+/**
  * Unified batch-x-axis chart data (PyQt LossViewer parity). x-axis = global batch
  * number. The dense `batch` series is per-batch train loss; `train`/`val` are
  * epoch-averaged losses placed at epoch boundaries (x = (epoch+1)*epochSize);
@@ -254,7 +365,17 @@ export function buildLossPlotDataBatched(
   const xset = new Set<number>();
   for (const b of drawnBatches) xset.add(b.globalBatch);
   for (const e of epochSamples) xset.add((e.epoch + 1) * epochSize);
-  const xs = Array.from(xset).sort((a, b) => a - b);
+  // Drop any x uPlot can't tick safely. uPlot auto-ranges the x-scale from this
+  // array and its tick-split loop is uncapped (see clampYRange), so x must be:
+  //  - finite: a corrupt progress message can make globalBatch or a
+  //    (epoch+1)*epochSize boundary Infinity/NaN → an infinite scale max hangs
+  //    the loop outright; and
+  //  - within MAX_SAFE_INTEGER: past 2**53 the float64 gap exceeds a linear
+  //    tick step, so `val + incr === val` and numAxisSplits never advances. No
+  //    real run reaches 9e15 batches; this only trips on a corrupt epochSize.
+  const xs = Array.from(xset)
+    .filter((x) => Number.isFinite(x) && Math.abs(x) <= Number.MAX_SAFE_INTEGER)
+    .sort((a, b) => a - b);
 
   const batch: (number | null)[] = [];
   const train: (number | null)[] = [];

@@ -1,47 +1,67 @@
+/**
+ * Connection to a sleap-connect worker (protocol v1, pairing model).
+ *
+ * Replaces the old room/WebRTC/GitHub-OAuth model — see
+ * docs/plans/2026-09-26-sleap-connect-protocol-v1-spec.md §3. There is no
+ * signaling server and no account: the app persists a small list of workers
+ * it has paired with (keyed by `node_id`, Syncthing/Plex-style), and talks
+ * to at most one of them at a time via `WorkerClient` (src/lib/protocolV1).
+ *
+ * **Known interim gap** (already accepted/deferred at the worker side — see
+ * talmolab/sleap-connect PRs #84-#88 — not a new limitation introduced here):
+ * - The worker's `CommandBuilder.build_command` only ever runs
+ *   `config_contents[0]` — it doesn't support a multi-model pipeline
+ *   (top-down centroid + centered-instance) as a single job. This store
+ *   reproduces the old one-`JOB_COMPLETE`-per-model UX by submitting one
+ *   job per model sequentially instead (see `submitJob`/`submitSingleJob`).
+ *
+ * Training telemetry (`job.epoch`/`job.curve`/`job.metric`) is parsed by
+ * `parseJobTelemetry` and handed to `submitJob`'s `onTelemetry` tagged with
+ * the per-model job index, so the caller can route it to the right model.
+ * `job.log`'s optional `progress: true` flag (an in-place tqdm redraw) is
+ * forwarded as `onProgress`'s second argument.
+ */
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type {
-  WorkerInfo,
-  Credentials,
   FileEntry,
-  JobSpec,
   JobResult,
+  JobResultBlobRef,
+  JobSpec,
+  TrainJobSpec,
 } from "@/lib/sleapConnect";
-import {
-  buildMessage,
-  parseMessage,
-  generateJobId,
-  MSG_JOB_SUBMIT,
-  MSG_JOB_CANCEL,
-  MSG_JOB_STOP,
-  MSG_JOB_LOG,
-  MSG_CONTROL_COMMAND,
-  MSG_JOB_ACCEPTED,
-  MSG_JOB_REJECTED,
-  MSG_JOB_PROGRESS,
-  MSG_JOB_COMPLETE,
-  MSG_JOB_FAILED,
-  MSG_AUTH_CHALLENGE,
-  MSG_AUTH_RESPONSE,
-  MSG_AUTH_SUCCESS,
-  MSG_AUTH_FAILURE,
-  MSG_FS_GET_MOUNTS,
-  MSG_FS_MOUNTS_RESPONSE,
-  MSG_FS_LIST_DIR,
-  MSG_FS_LIST_RESPONSE,
-  MSG_FS_ERROR,
-  MSG_SEPARATOR,
-} from "@/lib/sleapConnect";
+import { APP_VERSION } from "@/lib/version";
 import { isTauri } from "@/platform/index";
-import type { Transport } from "@/lib/transport";
-import { WebRTCTransport, RelayTransport } from "@/lib/transport";
+import type { AgentInfo } from "@/lib/protocolV1/envelope";
+import type {
+  FsListResult,
+  JobRun,
+  JobStatus,
+  JobSummary,
+  Mount,
+  WorkerClient,
+  WorkerEvent,
+  WorkerInfo,
+} from "@/lib/protocolV1/client";
+import { parseJobTelemetry, type JobTelemetry } from "@/lib/protocolV1/jobTelemetry";
+import { ManagedConnection, type LinkStatus } from "@/lib/protocolV1/managedConnection";
+import { WorkerProtocolError, FS_NOT_FOUND, FS_FORBIDDEN } from "@/lib/protocolV1/errors";
+import { decodePairCode, isPairCode, PairCodeError } from "@/lib/protocolV1/pairCode";
+import type { PathMapping } from "@/lib/pathMappings";
+import {
+  irohTransportAvailable,
+  parseTicketIroh,
+  toIrohDialTarget,
+  transportLabel,
+  type IrohEndpointInfo,
+  type TransportKind,
+} from "@/lib/protocolV1/transport";
 
-// ── Signaling server config ──────────────────────────────────────
-const SIGNALING_WS =
-  import.meta.env?.VITE_SIGNALING_WS || "wss://signaling.sleap.ai/ws";
-
-const SIGNALING_HTTP =
-  import.meta.env?.VITE_SIGNALING_HTTP || "https://signaling.sleap.ai";
+const AGENT_INFO: AgentInfo = {
+  name: "sleap-app",
+  version: APP_VERSION,
+  platform: isTauri ? "tauri" : "web",
+};
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -49,939 +69,1601 @@ export type ConnectionStatus =
   | "disconnected"
   | "connecting"
   | "connected"
+  | "reconnecting"
   | "error";
 
-export interface RoomInfo {
-  roomId: string;
-  name: string | null;
-  role: string;
-  workerCount?: number;
+/** A worker this device has paired with — persisted, Syncthing/Plex-style. */
+export interface PairedWorker {
+  nodeId: string;
+  label: string;
+  addrs: string[];
+  pairedAt: string;
+  /** Direct-connect (iroh) reachability from the pairing ticket, if it had any (stage 2.1). */
+  iroh?: IrohEndpointInfo;
+  /** The transport last connected over, reused by one-click reconnects. Absent = "ws". */
+  transport?: TransportKind;
+  /**
+   * Per-worker local<->worker path rules (Locate-on-worker overrides, plus a
+   * one-time import of the legacy global `~/.sleap-rtc/config.toml` mappings
+   * on this worker's first-ever connect — see `connectToWorker`). `undefined`
+   * means "never imported yet"; once set (even to `[]`) it's never
+   * re-imported, so a user who deliberately clears every rule stays cleared.
+   */
+  pathRules?: PathMapping[];
 }
 
-interface PendingFsRequest {
-  resolve: (result: { entries: FileEntry[]; hasMore: boolean }) => void;
-  reject: (err: Error) => void;
+/**
+ * A worker's pairing ticket (spec §3.2) — either parsed from the legacy
+ * pasted-JSON ticket `sleap-rtc pair` used to print, or decoded from its
+ * one-line replacement (`decodePairCode`, PR6a §a.1), which returns this
+ * exact shape so `pairWithTicket` never needs to branch on which it got.
+ */
+export interface PairingTicket {
+  node_id: string;
+  addrs: string[];
+  secret: string;
+  /** Unix seconds — the worker's own wire format. Always present on a decoded pairing code; only checked for expiry on that path today (see `pairWithTicket`). */
+  expires_at?: number;
+  /** Optional direct-connect info (stage 2.1): `{ node_id?, relay_url?, direct_addrs? }`. */
+  iroh?: unknown;
 }
 
-interface PendingJobCallbacks {
-  onProgress: (line: string, isCarriageReturn?: boolean) => void;
-  onComplete: (result: JobResult) => void;
-  onModelComplete?: (result: JobResult) => void; // per-model completion for multi-model pipelines
-  remainingCompletions: number; // resolve only when this reaches 0
+/**
+ * A remote job this device is tracking against a specific paired worker.
+ * Superseded the old single-slot `(node_id, job_id)` pair (spec §3.4) once
+ * the Connect window (PR2-5) needed to show several jobs at once — across
+ * workers, across a sequential multi-model training run, and across app
+ * restarts. `workerId` guards against checking a job's status against the
+ * wrong worker after switching which one is selected; `source` distinguishes
+ * a job this window submitted ("window", all PR2b ever produces) from one
+ * discovered already running on a worker by PR5's job-file scan
+ * ("worker-file").
+ */
+export interface TrackedJob {
+  workerId: string;
+  jobId: string;
+  /** Highest event `seq` already applied — lets a reconnect catch up without reprocessing. */
+  lastSeq: number;
+  kind: "train" | "track";
+  /** Human-readable summary, e.g. "Train centroid", "Inference". */
+  label: string;
+  source: "window" | "worker-file";
+  state: "active" | "completed" | "failed" | "canceled";
+  /** The worker's failure/cancel detail — set alongside a terminal `state` other than "completed"; the Connect window's Jobs tab (PR4b) shows this as the row's error text. */
+  error?: string;
+  /** Whether the user has seen this job reach a terminal state (gates resume-on-launch toasts). */
+  seen: boolean;
+  submittedAt: number;
 }
+
+/** A job found still active on a worker from a previous session (spec §3.4). */
+export interface ReattachableJob {
+  jobId: string;
+  state: string;
+}
+
+/**
+ * A `job.log` line. `isProgress` is the worker's `progress: true` flag: the
+ * line is the current state of an in-place progress bar and should REPLACE
+ * the previous progress line rather than append.
+ */
+export type JobLogHandler = (line: string, isProgress?: boolean) => void;
+
+export interface SubmitJobOptions {
+  /** Fires for every model's job of a split multi-model train spec except the last (whose result is the return value). */
+  onModelComplete?: (result: JobResult) => void;
+  /**
+   * Structured training telemetry. `jobIndex` is the job's position in a
+   * split multi-model train spec (= its `config_contents` index), 0 for a
+   * single job.
+   */
+  onTelemetry?: (telemetry: JobTelemetry, jobIndex: number) => void;
+  /**
+   * Link this submission to an EXISTING run instead of minting a fresh
+   * `run.id` — `trainingStore`'s own post-training inference flow passes its
+   * training run's id here (with `stage: "inference"`) so the follow-up
+   * track job groups under that training run in the Connect window's Jobs
+   * tab (`WorkerJobs.groupJobs`), the same way the worker's own
+   * `post_inference` chaining (sleap-connect PR5w) does. Omitted, `submitJob`
+   * behaves exactly as before: one fresh run id per call, untagged (a plain
+   * training job).
+   */
+  run?: { id: string; stage: "inference" };
+}
+
+export interface ConnectOptions {
+  transport?: TransportKind;
+}
+
+const TERMINAL_JOB_STATES = new Set(["completed", "failed", "canceled"]);
 
 interface ConnectState {
-  // Auth
-  credentials: Credentials | null;
+  // ── Persisted ──────────────────────────────────────────────────
+  pairedWorkers: PairedWorker[];
+  selectedWorkerId: string | null;
+  trackedJobs: TrackedJob[];
 
-  // Connection
+  // ── Runtime (not persisted) ─────────────────────────────────────
   connectionStatus: ConnectionStatus;
   connectionError: string | null;
-  roomId: string | null;
-  availableRooms: RoomInfo[];
+  workerMounts: Mount[];
+  /** Set once per connect if the worker just connected to has an active tracked job. */
+  reattachableJob: ReattachableJob | null;
+  /** Transport of the current/most recent connection attempt; `null` when disconnected. */
+  activeTransport: TransportKind | null;
+  /**
+   * Live link status per managed worker (keyed by `nodeId`) — every worker
+   * that's either selected or has an active tracked job has an entry here,
+   * even ones other than the selected worker (a background job's connection
+   * keeps reconnecting after `disconnect()`). `connectionStatus`/
+   * `activeTransport` above are just this map's entry for the selected
+   * worker, projected out for existing single-worker callers.
+   */
+  connections: Record<string, { status: LinkStatus; route: TransportKind }>;
+  /**
+   * Most recent `clientFor`/`refreshWorkerInfo` failure per worker, keyed by
+   * `nodeId` — the Connect window (PR4b) shows this per-card for a worker
+   * that isn't the selected backend, where `connectionError` (selected-only)
+   * doesn't reach. Cleared on that worker's next successful connect.
+   */
+  workerErrors: Record<string, string | null>;
+  /** Last-fetched `worker.info` snapshot per worker (sleap-connect #98), keyed by `nodeId`. */
+  workerInfo: Record<string, WorkerInfo>;
+  _client: WorkerClient | null;
 
-  // Workers
-  workers: WorkerInfo[];
-  selectedWorkerId: string | null;
-
-  // Transport
-  transportMode: "direct" | "relay" | null;
-
-  // Internal (not persisted)
-  _ws: WebSocket | null;
-  _pc: RTCPeerConnection | null;
-  _transport: Transport | null;
-  _connectGeneration: number;
-  _iceServers: RTCIceServer[];
-  _pendingFs: Map<string, PendingFsRequest>;
-  _pendingJobs: Map<string, PendingJobCallbacks>;
-
-  // Actions
-  setCredentials: (creds: Credentials | null) => void;
-  connect: (roomId: string) => Promise<void>;
+  // ── Actions ──────────────────────────────────────────────────────
+  /**
+   * A connected, authenticated client for ANY paired worker — not just the
+   * selected one (`_client`/`submitJob`/etc. stay selected-worker-only).
+   * Reuses that worker's managed connection if one already exists (selected
+   * or from a prior `clientFor` call); otherwise creates one and dials it.
+   * Records the failure in `workerErrors` and drops the managed connection
+   * on a failed dial, so a later call starts fresh rather than reusing a
+   * dead instance.
+   */
+  clientFor: (workerId: string) => Promise<WorkerClient>;
+  /**
+   * Stops and drops every managed connection that isn't the selected worker
+   * and has no active tracked job — called when the Connect window (PR4b)
+   * closes, so browsing other workers' jobs/info there doesn't leave their
+   * connections open indefinitely afterward.
+   */
+  releaseIdleConnections: () => void;
+  /** Fetches `worker.info` for `workerId` into `workerInfo`; a failure lands in `workerErrors` instead of throwing. */
+  refreshWorkerInfo: (workerId: string) => Promise<void>;
+  /** Every job on `workerId` (not just ones this window tracks) — the Connect window's Jobs tab. */
+  listJobs: (workerId: string) => Promise<JobSummary[]>;
+  jobDetail: (workerId: string, jobId: string) => Promise<JobStatus>;
+  /** Cancel/stop a job on ANY paired worker, not just the selected one. */
+  cancelJobOn: (workerId: string, jobId: string, mode: "cancel" | "stop") => Promise<void>;
+  /**
+   * Removes `jobIds`' records from `workerId` (PR6a §a.3) — job records
+   * only, nothing on disk (see `WorkerClient.jobsDelete`'s doc). All-or-
+   * nothing: throws `job.active` (and deletes nothing) if any of `jobIds`
+   * is currently running or about to be. On success, prunes those ids from
+   * `trackedJobs`, drops their live event subscriptions, and forgets their
+   * `notifiedJobIds` entry (so a job id the worker ever reuses — it never
+   * does today, but nothing here assumes that — would get its own
+   * finish-toast again rather than being silently deduped against a job
+   * this device no longer has any record of).
+   */
+  deleteJobsOn: (workerId: string, jobIds: string[]) => Promise<void>;
+  /**
+   * Claim a fresh pairing ticket (JSON from `sleap-rtc pair`) and connect.
+   * `options.transport` picks the dial explicitly (default `"ws"`); `"iroh"`
+   * needs the desktop app and an `iroh` section in the ticket.
+   */
+  pairWithTicket: (
+    ticketJson: string,
+    addrOverride?: string,
+    options?: ConnectOptions,
+  ) => Promise<void>;
+  /**
+   * Reconnect to an already-paired worker by node_id. Without an explicit
+   * `options.transport`, reuses the transport last connected over (`"ws"`
+   * if none, or if iroh is remembered but unavailable here).
+   */
+  connectToWorker: (nodeId: string, options?: ConnectOptions) => Promise<void>;
+  /** Select (and connect to) a paired worker, or `null` to disconnect. */
+  selectWorker: (nodeId: string | null, options?: ConnectOptions) => Promise<void>;
   disconnect: () => void;
-  selectWorker: (workerId: string | null) => void;
-  connectToWorker: (workerId: string) => Promise<void>;
+  forgetWorker: (nodeId: string) => void;
   browseRemoteDir: (path: string) => Promise<FileEntry[]>;
+  /**
+   * `browseRemoteDir` for ANY paired worker, not just the selected one —
+   * the launcher wizard (PR5b) browses whichever worker it's building a job
+   * for. Dials via `clientFor` (so it connects on demand, unlike
+   * `browseRemoteDir`'s "must already be connected" guard) and paginates
+   * `fs.list` the same way, starting from `offset` (default 0).
+   */
+  browseRemoteDirOn: (workerId: string, path: string, offset?: number) => Promise<FileEntry[]>;
+  /** `fs.mounts` for ANY paired worker, not just the selected one — dials via `clientFor`. */
+  mountsFor: (workerId: string) => Promise<Mount[]>;
+  /** Statted via the worker's `fs.stat` — requires an authenticated connection (same precondition as `browseRemoteDir`). */
+  statWorkerPath: (path: string) => Promise<{ exists: boolean; type?: "file" | "directory" }>;
+  /** Add (or replace, by `rule.local`) one path rule for `workerId`. */
+  addPathRule: (workerId: string, rule: PathMapping) => void;
+  /** Remove the rule (if any) whose `local` matches, for `workerId`. */
+  clearPathRule: (workerId: string, local: string) => void;
   submitJob: (
     spec: JobSpec,
-    onProgress: (line: string, isCarriageReturn?: boolean) => void,
-    options?: { expectedCompletions?: number; onModelComplete?: (result: JobResult) => void },
+    onProgress: JobLogHandler,
+    options?: SubmitJobOptions,
   ) => Promise<JobResult>;
-  cancelJob: (jobId: string) => void;
+  /**
+   * Submits `spec` to `workerId` WITHOUT waiting for any job to finish — the
+   * launcher wizard's (PR5b) "+ New job" and "Run again"/"Run inference" row
+   * actions, which fire into a worker's queue and move on rather than
+   * blocking on a live progress stream the way `submitJob` does. A
+   * multi-model train spec is split the same way `submitJob` splits one
+   * (`isMultiModelTrainSpec`), but every resulting job is submitted via
+   * `jobsSubmit` up front, sharing one `run` id — not one-at-a-time as each
+   * prior model finishes. Each job is tracked (`opts.source`) and watched in
+   * the background (`watchTrackedJob`), so its own finish toast still fires;
+   * a chained post-train inference job the worker reports via
+   * `chained_job_ids` (PR5w) is tracked and watched the same way. Returns
+   * every job id this submission produced, in run order.
+   */
+  submitJobsOn: (
+    workerId: string,
+    spec: JobSpec,
+    opts: { source: TrackedJob["source"] },
+  ) => Promise<string[]>;
+  /** Hard-cancel the current job. */
+  cancelJob: () => void;
+  /** Gracefully early-stop the current job (checkpoint + finish). */
   stopJob: () => void;
-  sendControlCommand: (command: string) => void;
-  loadCredentialsFromDisk: () => Promise<void>;
-  fetchRooms: () => Promise<void>;
-
-  // Internal handlers
-  _handleSignalingMessage: (msg: Record<string, unknown>) => void;
-  _handleDataChannelMessage: (data: string) => void;
+  /** Fetch a result blob's bytes (e.g. `JobResult.resultBlobs.predictions`). */
+  fetchResultBlob: (ref: JobResultBlobRef) => Promise<Uint8Array>;
+  /**
+   * Called once on launch (`AppShell`): reconnects to every worker with an
+   * `active` tracked job, catches up on jobs that finished while unwatched
+   * (toasting + marking terminal), and re-watches ones still running.
+   */
+  resumeTrackedJobs: () => Promise<void>;
 }
+
+// ── Helpers ───────────────────────────────────────────────────────
+
+function upsertWorker(existing: PairedWorker[], next: PairedWorker): PairedWorker[] {
+  return [...existing.filter((w) => w.nodeId !== next.nodeId), next];
+}
+
+/**
+ * Fetches every entry in a directory, paginating via `fetchPage` (one
+ * `fs.list(path, offset)` call) until `hasMore` is false (or a safety cap of
+ * ~5000 entries is hit). Shared by `browseRemoteDir` (selected worker —
+ * `fetchPage` re-checks `_client` on every page, exactly as it always did,
+ * so a disconnect mid-pagination still fails the same way) and
+ * `browseRemoteDirOn` (any paired worker, one `client` dialed via
+ * `clientFor` up front) — the two differ only in how a page is fetched,
+ * never in how the pages are walked.
+ */
+async function fetchAllRemoteEntries(
+  fetchPage: (offset: number) => Promise<FsListResult>,
+  offset = 0,
+): Promise<FileEntry[]> {
+  const allEntries: FileEntry[] = [];
+  let currentOffset = offset;
+  const MAX_PAGES = 200; // safety cap (200 pages * ~25 = ~5000 entries)
+
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const result = await fetchPage(currentOffset);
+    const entries: FileEntry[] = result.entries.map((e) => ({
+      name: e.name,
+      isDir: e.type === "directory",
+      size: e.size,
+    }));
+    allEntries.push(...entries);
+    if (!result.hasMore || entries.length === 0) break;
+    currentOffset += entries.length;
+  }
+
+  return allEntries;
+}
+
+function activeJobsFor(workerId: string, jobs: TrackedJob[]): TrackedJob[] {
+  return jobs.filter((j) => j.workerId === workerId && j.state === "active");
+}
+
+/** The most recently submitted still-active job on a worker, or `null`. */
+function latestActiveJobFor(workerId: string, jobs: TrackedJob[]): TrackedJob | null {
+  const active = activeJobsFor(workerId, jobs);
+  return active.length > 0 ? active[active.length - 1] : null;
+}
+
+const MAX_TRACKED_JOBS = 50;
+
+/**
+ * Caps the list at `MAX_TRACKED_JOBS`, oldest-first among non-active jobs
+ * only — an active job is never evicted just to make room (if active jobs
+ * alone exceed the cap, the list is left over-length rather than dropping
+ * something still running). Exported for direct unit testing.
+ */
+export function capTrackedJobs(jobs: TrackedJob[]): TrackedJob[] {
+  let excess = jobs.length - MAX_TRACKED_JOBS;
+  if (excess <= 0) return jobs;
+  const dropIdx = new Set<number>();
+  const byAge = jobs
+    .map((j, i) => ({ j, i }))
+    .filter(({ j }) => j.state !== "active")
+    .sort((a, b) => a.j.submittedAt - b.j.submittedAt);
+  for (const { i } of byAge) {
+    if (excess <= 0) break;
+    dropIdx.add(i);
+    excess--;
+  }
+  return jobs.filter((_, i) => !dropIdx.has(i));
+}
+
+/** A paired worker's path rules (Locate-on-worker overrides + the one-time legacy import), or `[]` if unknown/unset. */
+export function pathRulesFor(workerId: string | null): PathMapping[] {
+  if (!workerId) return [];
+  return useConnectStore.getState().pairedWorkers.find((w) => w.nodeId === workerId)?.pathRules ?? [];
+}
+
+/** A tracked job's display label, derived from the spec that submitted it. */
+function trackedJobLabel(spec: JobSpec): string {
+  return spec.type === "track" ? "Inference" : `Train ${spec.model_types?.[0] ?? "model"}`;
+}
+
+/**
+ * Migrates persisted state from before `trackedJobs` existed (v1, a single
+ * `currentJob: {workerId, jobId} | null`) to v2's `TrackedJob[]`. Exported
+ * for direct unit testing — the real `migrate` persist option below just
+ * calls this.
+ */
+export function migrateConnectPersisted(persisted: unknown, version: number): unknown {
+  const p = { ...(persisted as Record<string, unknown>) };
+  if (version < 2) {
+    const cj = p.currentJob as { workerId: string; jobId: string } | null | undefined;
+    p.trackedJobs = cj
+      ? [
+          {
+            ...cj,
+            lastSeq: 0,
+            kind: "train" as const,
+            label: "Remote job",
+            source: "window" as const,
+            state: "active" as const,
+            seen: false,
+            submittedAt: Date.now(),
+          },
+        ]
+      : [];
+    delete p.currentJob;
+  }
+  return p;
+}
+
+function isMultiModelTrainSpec(
+  spec: JobSpec,
+): spec is TrainJobSpec & { config_contents: string[] } {
+  return (
+    spec.type === "train" &&
+    Array.isArray(spec.config_contents) &&
+    spec.config_contents.length > 1
+  );
+}
+
+/** What to dial: `url` is a ws address, or the encoded iroh target for `"iroh"`. */
+interface DialSpec {
+  transport: TransportKind;
+  url: string;
+  /** Human-readable address for error messages. */
+  display: string;
+}
+
+/** ws is the implicit default, so only a non-default choice is persisted on the worker. */
+function rememberedTransport(t: TransportKind): TransportKind | undefined {
+  return t === "iroh" ? "iroh" : undefined;
+}
+
+const IROH_DESKTOP_ONLY =
+  "Direct (iroh) connections are only available in the desktop app — use the WebSocket address instead.";
+
+async function irohDial(info: IrohEndpointInfo | undefined, nodeId: string): Promise<DialSpec> {
+  if (!irohTransportAvailable()) throw new Error(IROH_DESKTOP_ONLY);
+  if (!info) {
+    throw new Error("This worker has no direct (iroh) connection info — use its WebSocket address.");
+  }
+  const { encodeIrohDialUrl } = await import("@/lib/protocolV1/tauriIrohSocket");
+  const target = toIrohDialTarget(info, nodeId);
+  return {
+    transport: "iroh",
+    url: encodeIrohDialUrl(target),
+    display: `iroh endpoint ${target.nodeId.slice(0, 8)}…`,
+  };
+}
+
+async function makeClient(dial: DialSpec): Promise<WorkerClient> {
+  const { getClientIdentity } = await import("@/lib/protocolV1/identity");
+  const { WorkerClient: WorkerClientCtor } = await import("@/lib/protocolV1/client");
+  const identity = await getClientIdentity();
+  if (dial.transport === "iroh") {
+    const { createTauriIrohSocket } = await import("@/lib/protocolV1/tauriIrohSocket");
+    return new WorkerClientCtor({
+      url: dial.url,
+      identity,
+      agent: AGENT_INFO,
+      createSocket: createTauriIrohSocket(),
+    });
+  }
+  return new WorkerClientCtor({ url: dial.url, identity, agent: AGENT_INFO });
+}
+
+/**
+ * Dials, verifies, and authenticates against an already-paired worker over
+ * `route` — the `ManagedConnectionDeps.dial` this store hands every
+ * `ManagedConnection` it creates (§2b.4), and what `connectToWorker`'s
+ * initial connect also goes through. Closes the client and re-throws on any
+ * failure after the socket opened, so a caller never has to (a half-open
+ * client is never left dangling, reachable by nothing).
+ */
+async function dialWorker(worker: PairedWorker, route: TransportKind): Promise<WorkerClient> {
+  const dial: DialSpec =
+    route === "iroh"
+      ? await irohDial(worker.iroh, worker.nodeId)
+      : (() => {
+          const addr = worker.addrs[0];
+          if (!addr) throw new Error(`No known address for ${worker.label}.`);
+          return { transport: "ws" as const, url: addr, display: addr };
+        })();
+
+  const client = await makeClient(dial);
+  try {
+    await client.connect();
+    if (client.peerNodeId !== worker.nodeId) {
+      throw new Error(
+        `Worker at ${dial.display} identified itself as a different node than expected ` +
+          `(expected ${worker.nodeId}, got ${client.peerNodeId}) — the address may now point ` +
+          "at a different worker. Forget and re-pair if this persists.",
+      );
+    }
+    await client.authProve();
+    return client;
+  } catch (err) {
+    client.close();
+    throw err;
+  }
+}
+
+/** Explicit if given, else the worker's own remembered preference (never a route arrived at only via an automatic fallback). */
+function resolvePreferredTransport(worker: PairedWorker, options?: ConnectOptions): TransportKind {
+  return (
+    options?.transport ??
+    (worker.transport === "iroh" && worker.iroh && irohTransportAvailable() ? "iroh" : "ws")
+  );
+}
+
+function mapLinkStatus(status: LinkStatus): ConnectionStatus {
+  switch (status) {
+    case "connected":
+      return "connected";
+    case "reconnecting":
+    case "offline":
+      return "reconnecting";
+    case "connecting":
+      return "connecting";
+    case "stopped":
+      return "disconnected";
+  }
+}
+
+/** One `ManagedConnection` per worker that's selected or has an active tracked job. */
+const managed = new Map<string, ManagedConnection>();
+
+/** `clientFor`'s in-flight initial dials, so concurrent calls for one worker share a single `start()`. */
+const clientForStarts = new Map<string, Promise<WorkerClient>>();
+
+interface ManagedConnectionTestDeps {
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+}
+let managedDeps: ManagedConnectionTestDeps = {};
+
+/** Test-only hook: inject a fake clock into every `ManagedConnection` this store creates from here on. */
+export function __setManagedDeps(deps: ManagedConnectionTestDeps): void {
+  managedDeps = deps;
+}
+
+/**
+ * Test-only: stops and drops every managed connection. `managed` is
+ * module-level state that outlives any one test within a file (bun's
+ * `--isolate` resets the module registry per FILE, not per test) — without
+ * this, a connection a test deliberately left running in the background
+ * (e.g. disconnect-with-an-active-job) would keep its retry/probe loop alive
+ * into later tests in the same file.
+ */
+export function __resetManagedConnections(): void {
+  for (const mc of managed.values()) mc.stop();
+  managed.clear();
+  clientForStarts.clear();
+}
+
+/**
+ * Gets (or lazily creates) the `ManagedConnection` for `nodeId`, wiring its
+ * status/connected callbacks into the store. Creating one does NOT dial —
+ * the caller still calls `.start()` (or, per `ManagedConnection`'s own
+ * contract, reuses `.client` if already connected).
+ */
+function ensureConnection(nodeId: string, options?: ConnectOptions): ManagedConnection {
+  const existing = managed.get(nodeId);
+  if (existing) return existing;
+
+  const worker = useConnectStore.getState().pairedWorkers.find((w) => w.nodeId === nodeId);
+  if (!worker) {
+    throw new Error("Unknown worker — pair with it first.");
+  }
+
+  const mc = new ManagedConnection({
+    dial: (route) => dialWorker(worker, route),
+    preferredRoute: resolvePreferredTransport(worker, options),
+    canFallBackToIroh: !!worker.iroh && irohTransportAvailable(),
+    onStatus: (status, route) => {
+      useConnectStore.setState((state) => {
+        const patch: Partial<ConnectState> = {
+          connections: { ...state.connections, [nodeId]: { status, route } },
+        };
+        if (nodeId === state.selectedWorkerId) {
+          patch.connectionStatus = mapLinkStatus(status);
+          patch.connectionError = status === "offline" ? "Worker unreachable — retrying" : null;
+          patch.activeTransport = route;
+        }
+        return patch;
+      });
+    },
+    onConnected: (client, route) => {
+      if (nodeId === useConnectStore.getState().selectedWorkerId) {
+        useConnectStore.setState({ _client: client, activeTransport: route });
+        // Best-effort: keeps `workerMounts` current across an automatic
+        // reconnect the selected-worker UI didn't otherwise ask for. The
+        // EXPLICIT connectToWorker flow below does its own awaited fetch for
+        // deterministic UI state right when "connected" first appears.
+        void client
+          .fsMounts()
+          .then((mounts) => useConnectStore.setState({ workerMounts: mounts }))
+          .catch(() => {});
+      }
+      // Always — even for a worker that isn't selected, a background job
+      // still needs its subscription re-attached to the new client.
+      resubscribeWorker(nodeId, client);
+    },
+    now: managedDeps.now,
+    sleep: managedDeps.sleep,
+  });
+  managed.set(nodeId, mc);
+  return mc;
+}
+
+/**
+ * If `trackedJob` belongs to `workerId` (the worker we just connected to)
+ * and is still active there, returns it as a `ReattachableJob`; otherwise
+ * `null` (nothing to reattach to — wrong worker, already finished, or the
+ * worker no longer recognizes the job at all).
+ */
+async function checkReattach(
+  client: WorkerClient,
+  workerId: string,
+  trackedJob: TrackedJob | null,
+): Promise<ReattachableJob | null> {
+  if (!trackedJob || trackedJob.workerId !== workerId) return null;
+  try {
+    const status = await client.jobsStatus(trackedJob.jobId);
+    if (TERMINAL_JOB_STATES.has(status.state)) return null;
+    return { jobId: trackedJob.jobId, state: status.state };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * One job's live event subscription, tracked at module level (NOT persisted
+ * — it's rebuilt fresh every session) so a reconnect can re-attach it to a
+ * new `WorkerClient` without the submitting `submitJob` promise ever
+ * knowing its connection was replaced underneath it. Keyed by `jobId`.
+ */
+interface ActiveSubscription {
+  workerId: string;
+  jobId: string;
+  handle: (event: WorkerEvent) => void;
+  unsubscribe: (() => void) | null;
+}
+const activeSubscriptions = new Map<string, ActiveSubscription>();
+
+/** (Re)subscribes `sub` on `client` starting from `sinceSeq`, dropping any prior subscription first. */
+async function attachSubscription(
+  client: WorkerClient,
+  sub: ActiveSubscription,
+  sinceSeq: number,
+): Promise<void> {
+  sub.unsubscribe?.();
+  sub.unsubscribe = await client.jobsSubscribe(sub.jobId, sinceSeq, sub.handle);
+}
+
+/** The persisted `lastSeq` for one tracked job — the catch-up point after a reconnect. */
+function trackedLastSeq(jobId: string): number {
+  return useConnectStore.getState().trackedJobs.find((j) => j.jobId === jobId)?.lastSeq ?? 0;
+}
+
+/**
+ * Re-attaches every active subscription belonging to `workerId` onto a newly
+ * (re)connected `client`, resuming each from its last-applied seq. Called by
+ * `ManagedConnection`'s `onConnected` (§2b.4) for every reconnect/route
+ * switch, not just the selected worker's — a background job on an
+ * unselected-but-tracked worker still needs to keep receiving events.
+ */
+export function resubscribeWorker(workerId: string, client: WorkerClient): void {
+  for (const sub of activeSubscriptions.values()) {
+    if (sub.workerId !== workerId) continue;
+    void attachSubscription(client, sub, trackedLastSeq(sub.jobId));
+  }
+}
+
+type ConnectSet = (
+  partial: Partial<ConnectState> | ((state: ConnectState) => Partial<ConnectState>),
+) => void;
+
+/** Merges `patch` into one tracked job by `jobId`, leaving every other job untouched. */
+function updateTrackedJob(set: ConnectSet, jobId: string, patch: Partial<TrackedJob>): void {
+  set((state) => ({
+    trackedJobs: state.trackedJobs.map((j) => (j.jobId === jobId ? { ...j, ...patch } : j)),
+  }));
+}
+
+/**
+ * Jobs already toasted this session — `resumeTrackedJobs` (§2b.5) can run
+ * more than once (e.g. called again before a prior run's awaits settle) and
+ * must never show the same "finished"/"failed" toast twice for one job.
+ */
+const notifiedJobIds = new Set<string>();
+
+/**
+ * Toasts that `job` reached a terminal state, once per job ever. Dynamically
+ * imports `@/lib/notify` rather than a static import — same reason as
+ * `makeClient`'s dynamic imports above: this module is statically imported
+ * by connectStore's own tests, so a static import here would bind the real
+ * `toast` before a test's `vi.mock("@/lib/notify", ...)` ever got a chance
+ * to replace it. `toast.success`/`toast.error`/`toast.info` already feed the
+ * sidebar's notification bell (see `src/lib/notify.tsx`) — no separate call
+ * needed. A canceled job is the user's own action, not a failure — it gets
+ * the neutral `info` toast, never `error`.
+ */
+async function notifyJobFinished(
+  job: TrackedJob,
+  workerLabel: string,
+  errorDetail?: string | null,
+): Promise<void> {
+  if (notifiedJobIds.has(job.jobId)) return;
+  notifiedJobIds.add(job.jobId);
+  const { toast } = await import("@/lib/notify");
+  const { useAppStore } = await import("@/stores/appStore");
+  // Replaces the toast's usual hover copy-button (`@/lib/notify`'s default
+  // `action`) with a one-click path to the Connect window (PR4b §4b.2).
+  const action = {
+    label: "Open",
+    onClick: () => useAppStore.getState().setConnectWindowOpen(true),
+  };
+  if (job.state === "completed") {
+    toast.success(`${job.label} on ${workerLabel} finished`, { action });
+  } else if (job.state === "canceled") {
+    toast.info(`${job.label} on ${workerLabel} was canceled`, { action });
+  } else {
+    toast.error(`${job.label} on ${workerLabel} failed`, {
+      description: errorDetail ?? undefined,
+      action,
+    });
+  }
+}
+
+/**
+ * Watches one tracked job to a terminal state without ever resolving a
+ * caller's own promise — unlike `submitSingleJob`, nothing here awaits the
+ * job finishing. Updates `trackedJobs.lastSeq` as events arrive, and once a
+ * terminal `job.status` lands, records the final state and fires
+ * `notifyJobFinished` (deduped there, so re-watching an already-finished job
+ * is harmless). Shared by `resumeTrackedJobs` (a job found still active from
+ * a previous session) and `submitJobsOn` (a job this window just submitted
+ * and isn't waiting on) — extracted from the former so the two never drift.
+ *
+ * `onChainedJobIds` fires when a `job.result` event carries
+ * `chained_job_ids` — only ever set by a train job's own post-train
+ * chaining (sleap-connect PR5w) — letting `submitJobsOn` start tracking and
+ * watching those track jobs too, so their own finish toasts fire even
+ * though this window never submitted them itself.
+ */
+async function watchTrackedJob(
+  set: ConnectSet,
+  client: WorkerClient,
+  job: TrackedJob,
+  workerLabel: string,
+  onChainedJobIds?: (ids: string[]) => void,
+): Promise<void> {
+  if (activeSubscriptions.has(job.jobId)) return; // already being watched
+
+  let watcherLastSeq = job.lastSeq;
+  const watcher: ActiveSubscription = {
+    workerId: job.workerId,
+    jobId: job.jobId,
+    unsubscribe: null,
+    handle: (event) => {
+      if (event.seq <= watcherLastSeq) return;
+      watcherLastSeq = event.seq;
+      updateTrackedJob(set, job.jobId, { lastSeq: watcherLastSeq });
+
+      if (event.topic === "job.result") {
+        const chainedIds = event.data.chained_job_ids as string[] | undefined;
+        if (chainedIds && chainedIds.length > 0) onChainedJobIds?.(chainedIds);
+        return;
+      }
+      if (event.topic !== "job.status") return;
+      const state = event.data.state as string;
+      if (!TERMINAL_JOB_STATES.has(state)) return;
+      watcher.unsubscribe?.();
+      activeSubscriptions.delete(job.jobId);
+      const trackedState = state as TrackedJob["state"];
+      const detail = (event.data.detail as string) ?? null;
+      updateTrackedJob(set, job.jobId, {
+        state: trackedState,
+        ...(trackedState !== "completed" ? { error: detail ?? undefined } : {}),
+      });
+      void notifyJobFinished({ ...job, state: trackedState }, workerLabel, detail);
+    },
+  };
+  activeSubscriptions.set(job.jobId, watcher);
+  try {
+    await attachSubscription(client, watcher, job.lastSeq);
+  } catch (err) {
+    activeSubscriptions.delete(job.jobId);
+    console.warn(`[connect] watchTrackedJob: failed to watch job ${job.jobId}:`, err);
+  }
+}
+
+/**
+ * Starts tracking and watching one job the WORKER produced on its own — a
+ * chained post-train inference job (`chained_job_ids`, PR5w) this window
+ * never called `jobsSubmit` for — so it shows up in the Connect window and
+ * its own finish toast still fires. A no-op if `jobId` is already tracked
+ * (e.g. a worker-file job scan discovers it independently).
+ */
+function trackChainedJob(
+  set: ConnectSet,
+  client: WorkerClient,
+  workerId: string,
+  jobId: string,
+  source: TrackedJob["source"],
+  workerLabel: string,
+): void {
+  if (useConnectStore.getState().trackedJobs.some((j) => j.jobId === jobId)) return;
+  const job: TrackedJob = {
+    workerId,
+    jobId,
+    lastSeq: 0,
+    kind: "track",
+    label: "Inference",
+    source,
+    state: "active",
+    seen: false,
+    submittedAt: Date.now(),
+  };
+  set((state) => ({ trackedJobs: capTrackedJobs([...state.trackedJobs, job]) }));
+  void watchTrackedJob(set, client, job, workerLabel);
+}
+
+const LAST_SEQ_PERSIST_THROTTLE_MS = 2000;
+
+/**
+ * Submits one job and resolves once it reaches a terminal state, forwarding
+ * `job.log` lines to `onProgress` as they arrive. The subscription survives
+ * a reconnect (registered in `activeSubscriptions`, re-attached by
+ * `resubscribeWorker`): `since_seq: 0` is safe for the very first subscribe
+ * since there's no backlog yet, and every event is deduped by seq so a
+ * reconnect's backlog replay can never double-apply one already seen live.
+ */
+async function submitSingleJob(
+  client: WorkerClient,
+  workerId: string,
+  spec: JobSpec,
+  onProgress: JobLogHandler,
+  set: ConnectSet,
+  onTelemetry?: (telemetry: JobTelemetry) => void,
+): Promise<JobResult> {
+  const { jobId } = await client.jobsSubmit(spec as unknown as Record<string, unknown>);
+  const tracked: TrackedJob = {
+    workerId,
+    jobId,
+    lastSeq: 0,
+    kind: spec.type,
+    label: trackedJobLabel(spec),
+    source: "window",
+    state: "active",
+    seen: false,
+    submittedAt: Date.now(),
+  };
+  set((state) => ({ trackedJobs: capTrackedJobs([...state.trackedJobs, tracked]) }));
+
+  return new Promise<JobResult>((resolve, reject) => {
+    let settled = false;
+    // job.result arrives before job.status: completed (the worker emits
+    // them in that order specifically so this is never missed) — captured
+    // here so it's already in hand by the time `finish` resolves.
+    let resultBlobs: JobResult["resultBlobs"];
+    let modelDir: string | undefined;
+    let labelsPath: string | undefined;
+    let lastSeq = 0;
+    let lastPersistedAt = 0;
+
+    // Throttled so a fast stream of job.log/telemetry events doesn't write
+    // to the store on every single one; always caught up on terminal below.
+    const persistLastSeq = () => {
+      const now = Date.now();
+      if (now - lastPersistedAt < LAST_SEQ_PERSIST_THROTTLE_MS) return;
+      lastPersistedAt = now;
+      updateTrackedJob(set, jobId, { lastSeq });
+    };
+
+    const finish = (result: JobResult, trackedState: TrackedJob["state"]) => {
+      if (settled) return;
+      settled = true;
+      sub.unsubscribe?.();
+      activeSubscriptions.delete(jobId);
+      // Keep the tracked entry (it's the Connect window's job history) and
+      // just record its terminal state, rather than clearing it the way the
+      // old single-slot `currentJob` did. `seen: true` here because this
+      // window is live and watching it finish; resume-on-launch's toast
+      // (§2b.5) only fires for a job that reaches terminal while unwatched.
+      updateTrackedJob(set, jobId, {
+        state: trackedState,
+        seen: true,
+        lastSeq,
+        ...(trackedState !== "completed" ? { error: result.error } : {}),
+      });
+      resolve(result);
+    };
+
+    const sub: ActiveSubscription = {
+      workerId,
+      jobId,
+      unsubscribe: null,
+      handle: (event) => {
+        // The worker's `since_seq` is exclusive, but a live event can still
+        // arrive both live (before a drop) and again in a reconnect's
+        // backlog replay — drop anything already applied.
+        if (event.seq <= lastSeq) return;
+        lastSeq = event.seq;
+        persistLastSeq();
+
+        if (event.topic === "job.log") {
+          onProgress((event.data.line as string) ?? "", event.data.progress === true);
+        } else if (event.topic === "job.result") {
+          const blobs = event.data.blobs as Record<string, JobResultBlobRef> | undefined;
+          if (blobs && Object.keys(blobs).length > 0) resultBlobs = blobs;
+          // Train jobs only: the trained model folder + the labels file it
+          // trained on, both worker-side paths (inputs to a follow-up track job).
+          if (typeof event.data.model_dir === "string") modelDir = event.data.model_dir;
+          if (typeof event.data.labels_path === "string") labelsPath = event.data.labels_path;
+        } else if (event.topic === "job.status") {
+          const state = event.data.state as string;
+          if (state === "completed") {
+            const result: JobResult = { jobId, success: true, resultBlobs, runId: spec.run?.id };
+            if (modelDir !== undefined) result.modelDir = modelDir;
+            if (labelsPath !== undefined) result.labelsPath = labelsPath;
+            finish(result, "completed");
+          } else if (state === "failed" || state === "canceled") {
+            finish(
+              {
+                jobId,
+                success: false,
+                error: (event.data.detail as string) ?? `Job ${state}`,
+                runId: spec.run?.id,
+              },
+              state,
+            );
+          }
+        } else if (onTelemetry) {
+          const telemetry = parseJobTelemetry(event);
+          if (telemetry) onTelemetry(telemetry);
+        }
+      },
+    };
+
+    activeSubscriptions.set(jobId, sub);
+    attachSubscription(client, sub, 0).catch((err: unknown) => {
+      activeSubscriptions.delete(jobId);
+      if (!settled) {
+        settled = true;
+        reject(err instanceof Error ? err : new Error(String(err)));
+      }
+    });
+  });
+}
+
+// ── Store ─────────────────────────────────────────────────────────
 
 export const useConnectStore = create<ConnectState>()(
   persist(
     (set, get) => ({
-      // ── Initial state ────────────────────────────────────────
-      credentials: null,
+      pairedWorkers: [],
+      selectedWorkerId: null,
+      trackedJobs: [],
+
       connectionStatus: "disconnected",
       connectionError: null,
-      roomId: null,
-      availableRooms: [],
-      workers: [],
-      selectedWorkerId: null,
-      transportMode: null,
-      _ws: null,
-      _pc: null,
-      _transport: null,
-      _connectGeneration: 0,
-      _iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
-      _pendingFs: new Map(),
-      _pendingJobs: new Map(),
+      workerMounts: [],
+      reattachableJob: null,
+      activeTransport: null,
+      connections: {},
+      workerErrors: {},
+      workerInfo: {},
+      _client: null,
 
-      // ── Auth ─────────────────────────────────────────────────
-      setCredentials: (creds) => set({ credentials: creds }),
+      clientFor: async (workerId) => {
+        const existing = managed.get(workerId);
+        if (existing?.client) return existing.client;
+        // Concurrent callers (the Connect window fires info + jobs at once)
+        // share one dial — `start()` isn't idempotent and a second call would
+        // adopt a second client, leaking the first.
+        const pending = clientForStarts.get(workerId);
+        if (pending) return pending;
+        // A managed connection with no client and no start of ours in flight
+        // is either mid-reconnect (its own retry loop owns the redial) or
+        // mid-`connectToWorker`/`resumeTrackedJobs` start — dialing here too
+        // would race it. `connections[workerId]` already shows the status.
+        if (existing) throw new Error("Worker is reconnecting — try again shortly.");
 
-      loadCredentialsFromDisk: async () => {
-        if (!isTauri) return;
-        try {
-          const { readTextFile, exists } = await import(
-            "@tauri-apps/plugin-fs"
-          );
-          const { homeDir } = await import("@tauri-apps/api/path");
-          const home = await homeDir();
-          const credPath = `${home}/.sleap-rtc/credentials.json`;
-          const fileExists = await exists(credPath);
-          if (!fileExists) return;
-          const text = await readTextFile(credPath);
-          const data = JSON.parse(text);
-          if (data.jwt && data.user?.username) {
-            set({
-              credentials: {
-                jwt: data.jwt,
-                username: data.user.username,
-                avatarUrl: data.user.avatar_url,
-                defaultRoom: data.default_room,
-                accountKey: data.account_key,
-                privateKey: data.private_key,
+        const mc = ensureConnection(workerId);
+        const start = (async () => {
+          try {
+            const client = await mc.start();
+            set((state) => ({ workerErrors: { ...state.workerErrors, [workerId]: null } }));
+            return client;
+          } catch (err) {
+            if (managed.get(workerId) === mc) managed.delete(workerId);
+            set((state) => ({
+              workerErrors: {
+                ...state.workerErrors,
+                [workerId]: err instanceof Error ? err.message : String(err),
               },
-            });
-
-            if (data.private_key) {
-              try {
-                const { importPrivateKey, storeSigningKey } = await import("@/lib/auth");
-                const cryptoKey = await importPrivateKey(data.private_key);
-                await storeSigningKey(cryptoKey);
-                console.log("[connect] Private key imported into IndexedDB");
-              } catch (err) {
-                console.warn("[connect] Failed to import private key:", err);
-              }
-            }
+            }));
+            throw err;
+          } finally {
+            clientForStarts.delete(workerId);
           }
-        } catch (err) {
-          console.warn("[connect] Failed to load credentials:", err);
+        })();
+        clientForStarts.set(workerId, start);
+        return start;
+      },
+
+      releaseIdleConnections: () => {
+        const { selectedWorkerId, trackedJobs } = get();
+        for (const [workerId, mc] of [...managed]) {
+          if (workerId === selectedWorkerId) continue;
+          if (activeJobsFor(workerId, trackedJobs).length > 0) continue;
+          mc.stop();
+          managed.delete(workerId);
         }
       },
 
-      fetchRooms: async () => {
-        const { credentials } = get();
-        if (!credentials) return;
+      refreshWorkerInfo: async (workerId) => {
         try {
-          const res = await fetch(`${SIGNALING_HTTP}/api/auth/rooms`, {
-            headers: { Authorization: `Bearer ${credentials.jwt}` },
-          });
-          if (!res.ok) {
-            console.warn("[connect] Failed to fetch rooms:", res.status);
-            return;
-          }
-          const data = await res.json();
-          const now = Date.now() / 1000;
-          const activeRooms = (data.rooms as Array<Record<string, unknown>>).filter((r) => {
-            const expiresAt = r.expires_at as number | null;
-            return !expiresAt || expiresAt > now;
-          });
-          const rooms: RoomInfo[] = await Promise.all(
-            activeRooms.map(async (r) => {
-              const roomId = r.room_id as string;
-              // Fetch worker count for each room
-              let workerCount = 0;
-              try {
-                const wRes = await fetch(
-                  `${SIGNALING_HTTP}/api/rooms/${roomId}/workers`,
-                  { headers: { Authorization: `Bearer ${credentials.jwt}` } },
-                );
-                if (wRes.ok) {
-                  const wData = await wRes.json();
-                  workerCount = wData.count ?? 0;
-                }
-              } catch {
-                // Worker count fetch failed — non-critical
-              }
-              return {
-                roomId,
-                name: (r.name as string) || null,
-                role: r.role as string,
-                workerCount,
-              };
-            }),
-          );
-          set({ availableRooms: rooms });
+          const client = await get().clientFor(workerId);
+          const info = await client.workerInfo();
+          set((state) => ({
+            workerInfo: { ...state.workerInfo, [workerId]: info },
+            workerErrors: { ...state.workerErrors, [workerId]: null },
+          }));
         } catch (err) {
-          console.warn("[connect] Failed to fetch rooms:", err);
+          set((state) => ({
+            workerErrors: {
+              ...state.workerErrors,
+              [workerId]: err instanceof Error ? err.message : String(err),
+            },
+          }));
         }
       },
 
-      // ── Connection ───────────────────────────────────────────
-      connect: async (roomId: string) => {
-        const { credentials } = get();
-        if (!credentials) {
+      listJobs: async (workerId) => {
+        const client = await get().clientFor(workerId);
+        return client.jobsList();
+      },
+
+      jobDetail: async (workerId, jobId) => {
+        const client = await get().clientFor(workerId);
+        return client.jobsStatus(jobId);
+      },
+
+      cancelJobOn: async (workerId, jobId, mode) => {
+        const client = await get().clientFor(workerId);
+        await client.jobsCancel(jobId, mode);
+      },
+
+      deleteJobsOn: async (workerId, jobIds) => {
+        const client = await get().clientFor(workerId);
+        await client.jobsDelete(jobIds);
+
+        const idSet = new Set(jobIds);
+        for (const jobId of jobIds) {
+          activeSubscriptions.get(jobId)?.unsubscribe?.();
+          activeSubscriptions.delete(jobId);
+          notifiedJobIds.delete(jobId);
+        }
+        set((state) => ({
+          trackedJobs: state.trackedJobs.filter((j) => !idSet.has(j.jobId)),
+        }));
+      },
+
+      pairWithTicket: async (ticketJson, addrOverride, options) => {
+        const trimmed = ticketJson.trim();
+        let ticket: PairingTicket;
+        if (isPairCode(trimmed)) {
+          try {
+            ticket = await decodePairCode(trimmed);
+          } catch (err) {
+            // Re-thrown as a plain Error (not PairCodeError) so callers that
+            // branch on `instanceof Error` for the message (PairWorkerForm)
+            // don't need to know about this module's error type.
+            throw new Error(err instanceof PairCodeError ? err.message : String(err));
+          }
+          if (ticket.expires_at !== undefined && ticket.expires_at * 1000 < Date.now()) {
+            throw new Error(
+              `This pairing code expired at ${new Date(ticket.expires_at * 1000).toLocaleString()}; ` +
+                "run `sleap-rtc pair` again.",
+            );
+          }
+        } else {
+          try {
+            ticket = JSON.parse(trimmed);
+          } catch {
+            throw new Error("That doesn't look like a valid pairing ticket (invalid JSON).");
+          }
+        }
+        if (!ticket.node_id || !ticket.secret) {
+          throw new Error("Pairing ticket is missing node_id or secret.");
+        }
+        const irohInfo = parseTicketIroh(ticket.iroh);
+        const transport = options?.transport ?? "ws";
+        let dial: DialSpec;
+        let addr: string | undefined;
+        if (transport === "iroh") {
+          dial = await irohDial(irohInfo, ticket.node_id);
+        } else {
+          addr = addrOverride || ticket.addrs?.[0];
+          if (!addr) {
+            throw new Error(
+              "This ticket has no worker address — enter one (e.g. ws://192.168.1.42:9631).",
+            );
+          }
+          dial = { transport: "ws", url: addr, display: addr };
+        }
+
+        get()._client?.close();
+        set({ connectionStatus: "connecting", connectionError: null, activeTransport: transport });
+
+        let client: WorkerClient | null = null;
+        try {
+          client = await makeClient(dial);
+          await client.connect();
+          if (client.peerNodeId !== ticket.node_id) {
+            throw new Error(
+              `Worker at ${dial.display} identified itself as a different node than this ticket ` +
+                `claims (expected ${ticket.node_id}, got ${client.peerNodeId}) — check the ` +
+                "address, or get a fresh ticket from the worker you meant to pair with.",
+            );
+          }
+          await client.pairClaim(ticket.secret);
+          const mounts = await client.fsMounts();
+          const reattachableJob = await checkReattach(
+            client,
+            ticket.node_id,
+            latestActiveJobFor(ticket.node_id, get().trackedJobs),
+          );
+
+          const paired: PairedWorker = {
+            nodeId: ticket.node_id,
+            label: `Worker ${ticket.node_id.slice(0, 8)}`,
+            addrs: addr
+              ? [addr, ...(ticket.addrs ?? []).filter((a) => a !== addr)]
+              : [...(ticket.addrs ?? [])],
+            pairedAt: new Date().toISOString(),
+            iroh: irohInfo,
+            transport: rememberedTransport(transport),
+          };
+
+          set((state) => ({
+            pairedWorkers: upsertWorker(state.pairedWorkers, paired),
+            selectedWorkerId: paired.nodeId,
+            connectionStatus: "connected",
+            connectionError: null,
+            workerMounts: mounts,
+            reattachableJob,
+            activeTransport: transport,
+            _client: client,
+          }));
+        } catch (err) {
+          // client.connect() may have already opened a real socket even
+          // though a later step (pairClaim/fsMounts) failed — close it so
+          // it isn't leaked, unreachable from store state but still live.
+          client?.close();
           set({
             connectionStatus: "error",
-            connectionError: "Not logged in",
+            connectionError: err instanceof Error ? err.message : String(err),
+            _client: null,
           });
+          throw err;
+        }
+
+        // Paired. Hand the worker to a managed connection (now via
+        // auth.prove, since this client is trusted) so a drop right after
+        // pairing — e.g. pair, start training, VPN blips — reconnects like
+        // any other. connectToWorker closes the pairing client. If this
+        // re-dial fails, the pairing itself still stands; connectToWorker
+        // has already put the error in connectionStatus/connectionError.
+        try {
+          await get().connectToWorker(ticket.node_id, { transport });
+        } catch {
+          // Surfaced via connectionError; the worker stays paired.
+        }
+      },
+
+      connectToWorker: async (nodeId, options) => {
+        const worker = get().pairedWorkers.find((w) => w.nodeId === nodeId);
+        if (!worker) {
+          throw new Error("Unknown worker — pair with it first.");
+        }
+
+        const previousSelected = get().selectedWorkerId;
+        if (previousSelected && previousSelected !== nodeId) {
+          // Switching the selected worker: back the old one off the same way
+          // an explicit disconnect() would (kept alive in the background if
+          // it still has an active job, otherwise fully stopped) — rather
+          // than just dropping its client, which would leave ITS managed
+          // connection's bookkeeping pointing at a client that's secretly
+          // already dead.
+          get().disconnect();
+        }
+
+        // An explicit connect to THIS worker always gets a fresh, verified
+        // connection: tear down any existing managed connection for it (its
+        // own retry loop, if it had one), and close any client left over
+        // from `pairWithTicket` (which doesn't itself register a managed
+        // connection — see its doc comment), which would otherwise leak
+        // here. Closing an already-closed client is a harmless no-op.
+        managed.get(nodeId)?.stop();
+        managed.delete(nodeId);
+        if (get().selectedWorkerId === nodeId) get()._client?.close();
+
+        set({
+          selectedWorkerId: nodeId,
+          connectionStatus: "connecting",
+          connectionError: null,
+        });
+
+        const mc = ensureConnection(nodeId, options);
+        let client: WorkerClient;
+        try {
+          client = await mc.start();
+        } catch (err) {
+          // start() never adopted a client on failure — nothing to stop()
+          // (no `onClose` was ever wired) — just drop the dead instance so
+          // the next attempt builds a fresh one.
+          managed.delete(nodeId);
+          set({
+            connectionStatus: "error",
+            connectionError: err instanceof Error ? err.message : String(err),
+            _client: null,
+          });
+          throw err;
+        }
+
+        try {
+          const mounts = await client.fsMounts();
+          const reattachableJob = await checkReattach(
+            client,
+            nodeId,
+            latestActiveJobFor(nodeId, get().trackedJobs),
+          );
+          // Remembered here (not in `ensureConnection`'s `onConnected`, which
+          // also fires for every automatic reconnect/fallback) so a route
+          // ManagedConnection falls back to on its own is never persisted as
+          // the user's preference — only an explicit choice (or the worker's
+          // own already-remembered one) is.
+          const transport = resolvePreferredTransport(worker, options);
+
+          set((state) => ({
+            pairedWorkers: state.pairedWorkers.map((w) =>
+              w.nodeId === nodeId ? { ...w, transport: rememberedTransport(transport) } : w,
+            ),
+            connectionStatus: "connected",
+            connectionError: null,
+            workerMounts: mounts,
+            reattachableJob,
+            activeTransport: mc.route,
+            _client: client,
+          }));
+        } catch (err) {
+          // See the matching comment in pairWithTicket — same leak risk:
+          // fsMounts/checkReattach failing after a successful dial still
+          // needs the client closed, so route it through the managed
+          // connection's own stop() rather than closing it directly (which
+          // would leave the ManagedConnection's bookkeeping pointing at a
+          // client that's actually already dead).
+          mc.stop();
+          managed.delete(nodeId);
+          set({
+            connectionStatus: "error",
+            connectionError: err instanceof Error ? err.message : String(err),
+            _client: null,
+          });
+          throw err;
+        }
+
+        // One-time import of this worker's legacy global path mappings
+        // (`~/.sleap-rtc/config.toml`, pre-dating per-worker `pathRules`) —
+        // only on a worker that's never had `pathRules` set at all (`[]`
+        // counts as "already handled", not "empty, try again"). Outside the
+        // try/catch above on purpose: `loadSavedMappings` already swallows
+        // its own errors (returns `[]`), so nothing here should ever turn a
+        // successful connect into a reported connection error.
+        if (worker.pathRules === undefined) {
+          const { loadSavedMappings } = await import("@/lib/pathMappings");
+          const pathRules = await loadSavedMappings();
+          set((state) => ({
+            pairedWorkers: state.pairedWorkers.map((w) =>
+              w.nodeId === nodeId ? { ...w, pathRules } : w,
+            ),
+          }));
+        }
+      },
+
+      selectWorker: async (nodeId, options) => {
+        if (nodeId === null) {
+          get().disconnect();
           return;
         }
-
-        set({ connectionStatus: "connecting", connectionError: null, roomId });
-
-        // ── Tauri: delegate to Rust backend ─────────────────────
-        if (isTauri) {
-          try {
-            const { rtcJoinRoom } = await import("@/platform/backend");
-            const rtcWorkers = await rtcJoinRoom(roomId);
-            const workers: WorkerInfo[] = rtcWorkers.map((w) => ({
-              peerId: w.peerId,
-              name: w.name,
-              status: w.status as WorkerInfo["status"],
-              gpu: w.gpu
-                ? {
-                    model: w.gpu.model,
-                    memoryMb: w.gpu.memoryMb,
-                    cudaVersion: w.gpu.cudaVersion,
-                  }
-                : undefined,
-              mounts: w.mounts,
-            }));
-            set({ connectionStatus: "connected", workers });
-            console.log("[connect] Joined room via Rust backend, workers:", workers.length);
-            return;
-          } catch (err) {
-            console.error("[connect] Rust rtc_join_room failed:", err);
-            set({
-              connectionStatus: "error",
-              connectionError: err instanceof Error ? err.message : String(err),
-            });
-            return;
-          }
-        }
-
-        try {
-          // Connect WebSocket to signaling server
-          const wsUrl = `${SIGNALING_WS}?token=${encodeURIComponent(credentials.jwt)}`;
-          const ws = new WebSocket(wsUrl);
-
-          ws.onopen = () => {
-            console.log("[connect] WebSocket connected");
-            // Register as client
-            ws.send(
-              JSON.stringify({
-                type: "register",
-                peer_id: credentials.username,
-                room_id: roomId,
-                role: "app",
-                jwt: credentials.jwt,
-                metadata: {
-                  tags: ["sleap-app"],
-                  properties: {
-                    platform: "sleap-app",
-                  },
-                },
-              }),
-            );
-          };
-
-          ws.onmessage = (event) => {
-            try {
-              const msg = JSON.parse(event.data);
-              get()._handleSignalingMessage(msg);
-            } catch {
-              console.warn("[connect] Non-JSON signaling message:", event.data);
-            }
-          };
-
-          ws.onerror = (err) => {
-            console.error("[connect] WebSocket error:", err);
-            set({
-              connectionStatus: "error",
-              connectionError: "WebSocket connection failed",
-            });
-          };
-
-          ws.onclose = () => {
-            console.log("[connect] WebSocket closed");
-            const { connectionStatus } = get();
-            if (connectionStatus !== "disconnected") {
-              set({
-                connectionStatus: "disconnected",
-                workers: [],
-                selectedWorkerId: null,
-              });
-            }
-          };
-
-          set({ _ws: ws });
-        } catch (err) {
-          set({
-            connectionStatus: "error",
-            connectionError:
-              err instanceof Error ? err.message : String(err),
-          });
-        }
+        await get().connectToWorker(nodeId, options);
       },
 
       disconnect: () => {
-        const { _ws, _pc, _transport, _connectGeneration } = get();
-        // Tauri: leave room via Rust backend
-        if (isTauri) {
-          import("@/platform/backend").then(({ rtcLeaveRoom }) => {
-            rtcLeaveRoom().catch(() => {});
-          });
+        const { selectedWorkerId, trackedJobs } = get();
+        if (selectedWorkerId) {
+          if (activeJobsFor(selectedWorkerId, trackedJobs).length > 0) {
+            // Keep the managed connection running in the background — an
+            // active job still needs it — and only clear the selected-UI
+            // fields below. `selectedWorkerId` itself is left alone too
+            // (matches today: disconnect doesn't forget which worker was
+            // selected, just that it's no longer live).
+          } else {
+            managed.get(selectedWorkerId)?.stop();
+            managed.delete(selectedWorkerId);
+          }
         }
-        if (_transport) _transport.close();
-        if (_pc) _pc.close();
-        if (_ws) _ws.close();
         set({
           connectionStatus: "disconnected",
           connectionError: null,
-          roomId: null,
-          workers: [],
-          selectedWorkerId: null,
-          transportMode: null,
-          _ws: null,
-          _pc: null,
-          _transport: null,
-          _connectGeneration: _connectGeneration + 1, // invalidate pending timeouts
+          workerMounts: [],
+          reattachableJob: null,
+          activeTransport: null,
+          _client: null,
         });
       },
 
-      selectWorker: (workerId) => set({ selectedWorkerId: workerId }),
-
-      connectToWorker: async (workerId: string) => {
-        const { _ws, credentials, roomId, _connectGeneration } = get();
-        if (!credentials || !roomId) return;
-
-        // Increment generation to invalidate any previous connectToWorker attempt
-        const gen = _connectGeneration + 1;
-        set({ selectedWorkerId: workerId, _connectGeneration: gen });
-
-        // ── Tauri: use Rust WebRTC backend ─────────────────────
-        if (isTauri) {
-          try {
-            const { rtcConnectWorker } = await import("@/platform/backend");
-            const { RustTransport } = await import("@/lib/transport");
-            const transport = new RustTransport();
-            transport.onMessage((data) => get()._handleDataChannelMessage(data));
-
-            await rtcConnectWorker(workerId, (msg: string) => {
-              transport._dispatchMessage(msg);
-            });
-
-            transport._setReady();
-            transport.send("FS_GET_MOUNTS");
-            set({ _transport: transport, transportMode: "direct", connectionStatus: "connected" });
-            console.log(`[connect] Connected to ${workerId} via Rust WebRTC`);
-            return;
-          } catch (err) {
-            console.warn("[connect] Rust WebRTC failed, falling back to relay:", err);
-            // Fall through to existing WebRTC/relay logic below
-          }
-        }
-
-        if (!_ws) return;
-
-        console.log("[connect] Attempting WebRTC connection to worker:", workerId);
-
-        // ── Helper to finalize connection with a transport ─────
-        let settled = false;
-        const finalize = (transport: Transport, mode: "direct" | "relay") => {
-          if (settled) return;
-          if (gen !== get()._connectGeneration) {
-            console.log("[connect] Stale connection attempt (gen mismatch), ignoring");
-            transport.close();
-            return;
-          }
-          settled = true;
-          transport.onMessage((data) => get()._handleDataChannelMessage(data));
-
-          // For relay mode, the signaling server doesn't forward fs_mounts_res
-          // to the relay. Use mounts from worker metadata (already in state
-          // from peer_list). For WebRTC, request mounts as before.
-          if (mode === "relay") {
-            const worker = get().workers.find((w) => w.peerId === workerId);
-            if (worker && worker.mounts.length > 0) {
-              console.log("[connect] Using mounts from worker metadata:", worker.mounts);
-            } else {
-              // Fallback: try FS_GET_MOUNTS via relay (may not get a response)
-              transport.send(MSG_FS_GET_MOUNTS);
-            }
-          } else {
-            transport.send(MSG_FS_GET_MOUNTS);
-          }
-
-          set({ _transport: transport, transportMode: mode, connectionStatus: "connected" });
-          console.log(`[connect] Connected to ${workerId} via ${mode} transport`);
-        };
-
-        // ── Create RTCPeerConnection ──────────────────────────
-        const { _iceServers } = get();
-        console.log("[connect] Using ICE servers:", _iceServers.length);
-        const pc = new RTCPeerConnection({
-          iceServers: _iceServers,
-        });
-
-        // Create data channel
-        const dc = pc.createDataChannel("my-data-channel");
-        dc.onopen = () => {
-          console.log("[connect] Data channel open → performing auth handshake");
-          const transport = new WebRTCTransport(dc);
-
-          // Set a temporary message handler for the auth handshake
-          const authTimeout = setTimeout(() => {
-            // No AUTH_CHALLENGE after 10s → assume older worker without auth
-            console.log("[connect] Auth timeout (10s) → assuming pre-auth worker, proceeding");
-            finalize(transport, "direct");
-          }, 10000);
-
-          transport.onMessage(async (data: string) => {
-            const parts = parseMessage(data);
-            const msgType = parts[0];
-
-            if (msgType === MSG_AUTH_CHALLENGE) {
-              const nonce = parts[1];
-              console.log("[connect] Received AUTH_CHALLENGE, signing nonce...");
-              try {
-                const { loadSigningKey, signNonce } = await import("@/lib/auth");
-                const key = await loadSigningKey();
-                if (!key) {
-                  throw new Error("No signing key in IndexedDB");
+      forgetWorker: (nodeId) => {
+        // Always fully torn down, regardless of any active job — forgetting
+        // means the user doesn't want this worker tracked at all anymore,
+        // unlike a plain disconnect() (which keeps a background job alive).
+        managed.get(nodeId)?.stop();
+        managed.delete(nodeId);
+        const wasSelected = get().selectedWorkerId === nodeId;
+        set((state) => {
+          const connections = Object.fromEntries(
+            Object.entries(state.connections).filter(([id]) => id !== nodeId),
+          );
+          return {
+            pairedWorkers: state.pairedWorkers.filter((w) => w.nodeId !== nodeId),
+            selectedWorkerId: wasSelected ? null : state.selectedWorkerId,
+            trackedJobs: state.trackedJobs.filter((j) => j.workerId !== nodeId),
+            connections,
+            ...(wasSelected
+              ? {
+                  connectionStatus: "disconnected" as ConnectionStatus,
+                  connectionError: null,
+                  workerMounts: [],
+                  reattachableJob: null,
+                  activeTransport: null,
+                  _client: null,
                 }
-                const signature = await signNonce(key, nonce);
-                transport.send(buildMessage(MSG_AUTH_RESPONSE, signature));
-                console.log("[connect] Sent AUTH_RESPONSE");
-              } catch (err) {
-                clearTimeout(authTimeout);
-                console.error("[connect] Auth handshake failed:", err);
-                transport.close();
-                set({
-                  connectionStatus: "error",
-                  connectionError: `Auth failed: ${err instanceof Error ? err.message : String(err)}`,
-                });
-              }
-            } else if (msgType === MSG_AUTH_SUCCESS) {
-              clearTimeout(authTimeout);
-              console.log("[connect] AUTH_SUCCESS → connection authenticated");
-              finalize(transport, "direct");
-            } else if (msgType === MSG_AUTH_FAILURE) {
-              clearTimeout(authTimeout);
-              const reason = parts.slice(1).join(MSG_SEPARATOR) || "Authentication rejected";
-              console.error("[connect] AUTH_FAILURE:", reason);
-              transport.close();
-              set({
-                connectionStatus: "error",
-                connectionError: `Auth rejected: ${reason}`,
-              });
-            }
-          });
-        };
-        dc.onclose = () => {
-          console.log("[connect] Data channel closed");
-        };
-
-        // Handle ICE candidates — send to worker via signaling
-        pc.onicecandidate = (event) => {
-          if (event.candidate && _ws.readyState === WebSocket.OPEN) {
-            _ws.send(
-              JSON.stringify({
-                type: "candidate",
-                sender: credentials.username,
-                target: workerId,
-                candidate: event.candidate,
-              }),
-            );
-          }
-        };
-
-        pc.oniceconnectionstatechange = () => {
-          console.log("[connect] ICE state:", pc.iceConnectionState);
-          if (pc.iceConnectionState === "failed") {
-            console.warn("[connect] ICE connection failed");
-          }
-        };
-
-        set({ _pc: pc });
-
-        // Create and send SDP offer
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-
-        _ws.send(
-          JSON.stringify({
-            type: "offer",
-            sender: credentials.username,
-            target: workerId,
-            sdp: offer.sdp,
-            role: "app",
-          }),
-        );
-
-        console.log("[connect] SDP offer sent to worker:", workerId);
-
-        // ── 10s ICE timeout → relay fallback ──────────────────
-        setTimeout(async () => {
-          if (settled) return;
-          if (gen !== get()._connectGeneration) {
-            console.log("[connect] Stale ICE timeout (gen mismatch), ignoring");
-            try { pc.close(); } catch { /* ignore */ }
-            return;
-          }
-          console.log("[connect] ICE timeout after 10s → falling back to relay transport");
-          // Clean up failed WebRTC attempt
-          try { pc.close(); } catch { /* ignore */ }
-          set({ _pc: null });
-
-          const relay = new RelayTransport({
-            jwt: credentials.jwt,
-            roomId,
-            peerId: workerId,
-          });
-          try {
-            await relay.open();
-            finalize(relay, "relay");
-          } catch (err) {
-            console.error("[connect] Relay E2E key exchange failed:", err);
-            set({ connectionStatus: "error" });
-          }
-        }, 10000);
-      },
-
-      // ── Remote filesystem ────────────────────────────────────
-      browseRemoteDir: async (path: string): Promise<FileEntry[]> => {
-        const { _transport } = get();
-        if (!_transport || !_transport.ready) {
-          throw new Error("Not connected to worker");
-        }
-
-        // Auto-paginate: keep requesting more pages until has_more is false.
-        // Worker paginates fs_list responses (~25 entries per page by default).
-        const allEntries: FileEntry[] = [];
-        let offset = 0;
-        const MAX_PAGES = 200; // safety cap (200 pages * ~25 = ~5000 entries)
-
-        for (let page = 0; page < MAX_PAGES; page++) {
-          const result = await new Promise<{
-            entries: FileEntry[];
-            hasMore: boolean;
-          }>((resolve, reject) => {
-            const { _pendingFs, _transport: t } = get();
-            if (!t || !t.ready) {
-              reject(new Error("Transport disconnected mid-request"));
-              return;
-            }
-            _pendingFs.set("_current", { resolve, reject });
-
-            t.send(buildMessage(MSG_FS_LIST_DIR, path, String(offset)));
-
-            // Timeout after 10s per page
-            setTimeout(() => {
-              if (_pendingFs.has("_current")) {
-                _pendingFs.delete("_current");
-                reject(new Error("Filesystem request timed out"));
-              }
-            }, 10000);
-          });
-
-          allEntries.push(...result.entries);
-          if (!result.hasMore || result.entries.length === 0) break;
-          offset += result.entries.length;
-        }
-
-        return allEntries;
-      },
-
-      // ── Job submission ───────────────────────────────────────
-      submitJob: async (
-        spec: JobSpec,
-        onProgress: (line: string, isCarriageReturn?: boolean) => void,
-        options?: { expectedCompletions?: number; onModelComplete?: (result: JobResult) => void },
-      ): Promise<JobResult> => {
-        const { _transport } = get();
-        if (!_transport || !_transport.ready) {
-          throw new Error("Not connected to worker");
-        }
-
-        const jobId = generateJobId();
-
-        return new Promise((resolve) => {
-          const { _pendingJobs } = get();
-          _pendingJobs.set(jobId, {
-            onProgress,
-            onComplete: resolve,
-            onModelComplete: options?.onModelComplete,
-            remainingCompletions: options?.expectedCompletions ?? 1,
-          });
-
-          _transport.send(buildMessage(MSG_JOB_SUBMIT, jobId, JSON.stringify(spec)));
+              : {}),
+          };
         });
       },
 
-      cancelJob: (jobId: string) => {
-        const { _transport } = get();
-        if (_transport && _transport.ready) {
-          _transport.send(buildMessage(MSG_JOB_CANCEL, jobId));
+      browseRemoteDir: async (path) => {
+        return fetchAllRemoteEntries((offset) => {
+          const { _client } = get();
+          if (!_client || !_client.authenticated) {
+            throw new Error("Not connected to worker");
+          }
+          return _client.fsList(path, offset);
+        });
+      },
+
+      browseRemoteDirOn: async (workerId, path, offset) => {
+        const client = await get().clientFor(workerId);
+        return fetchAllRemoteEntries((o) => client.fsList(path, o), offset);
+      },
+
+      mountsFor: async (workerId) => {
+        const client = await get().clientFor(workerId);
+        return client.fsMounts();
+      },
+
+      statWorkerPath: async (path) => {
+        const { _client } = get();
+        if (!_client || !_client.authenticated) {
+          throw new Error("Not connected to worker");
         }
+        try {
+          const result = await _client.fsStat(path);
+          return { exists: true, type: result.type };
+        } catch (err) {
+          if (
+            err instanceof WorkerProtocolError &&
+            (err.code === FS_NOT_FOUND || err.code === FS_FORBIDDEN)
+          ) {
+            return { exists: false };
+          }
+          throw err;
+        }
+      },
+
+      addPathRule: (workerId, rule) => {
+        set((state) => ({
+          pairedWorkers: state.pairedWorkers.map((w) =>
+            w.nodeId === workerId
+              ? { ...w, pathRules: [...(w.pathRules ?? []).filter((r) => r.local !== rule.local), rule] }
+              : w,
+          ),
+        }));
+      },
+
+      clearPathRule: (workerId, local) => {
+        set((state) => ({
+          pairedWorkers: state.pairedWorkers.map((w) =>
+            w.nodeId === workerId
+              ? { ...w, pathRules: (w.pathRules ?? []).filter((r) => r.local !== local) }
+              : w,
+          ),
+        }));
+      },
+
+      submitJob: async (spec, onProgress, options) => {
+        const { _client, selectedWorkerId } = get();
+        if (!_client || !_client.authenticated || !selectedWorkerId) {
+          throw new Error("Not connected to a worker");
+        }
+
+        // One id per call, links every job this submission produces — a
+        // single-job submission still gets one (index 0, count 1) so a job's
+        // `run` field is never a special case to check for; the Connect
+        // window (PR4b) only shows the "run i/n" tag once `count > 1`.
+        // `options.run` overrides this with an EXISTING run id (and tags
+        // `stage`) instead — see `SubmitJobOptions.run`'s doc.
+        const runId = options?.run?.id ?? crypto.randomUUID();
+        const runStage = options?.run?.stage;
+        const makeRun = (index: number, count: number): JobRun => ({
+          id: runId,
+          index,
+          count,
+          ...(runStage ? { stage: runStage } : {}),
+        });
+
+        if (isMultiModelTrainSpec(spec)) {
+          const modelTypes = spec.model_types ?? [];
+          const n = spec.config_contents.length;
+          let finalResult: JobResult = { jobId: "", success: true };
+          for (let i = 0; i < n; i++) {
+            const perModelSpec: TrainJobSpec = {
+              ...spec,
+              config_contents: [spec.config_contents[i]],
+              model_types: modelTypes[i] ? [modelTypes[i]] : [],
+              run: makeRun(i, n),
+            };
+            finalResult = await submitSingleJob(
+              _client,
+              selectedWorkerId,
+              perModelSpec,
+              onProgress,
+              set,
+              options?.onTelemetry && ((t) => options.onTelemetry!(t, i)),
+            );
+            if (!finalResult.success) return finalResult;
+            // Only intermediate models fire onModelComplete — matching the
+            // old JOB_COMPLETE-per-model semantics, the LAST model's
+            // completion is just the resolved return value.
+            if (i < n - 1) options?.onModelComplete?.(finalResult);
+          }
+          return finalResult;
+        }
+
+        return submitSingleJob(
+          _client,
+          selectedWorkerId,
+          { ...spec, run: makeRun(0, 1) },
+          onProgress,
+          set,
+          options?.onTelemetry && ((t) => options.onTelemetry!(t, 0)),
+        );
+      },
+
+      submitJobsOn: async (workerId, spec, opts) => {
+        const client = await get().clientFor(workerId);
+        const workerLabel =
+          get().pairedWorkers.find((w) => w.nodeId === workerId)?.label ?? workerId;
+        const runId = crypto.randomUUID();
+
+        const onChainedJobIds = (chainedIds: string[]) => {
+          for (const chainedId of chainedIds) {
+            trackChainedJob(set, client, workerId, chainedId, opts.source, workerLabel);
+          }
+        };
+
+        const submitTracked = async (oneSpec: JobSpec): Promise<string> => {
+          const { jobId } = await client.jobsSubmit(oneSpec as unknown as Record<string, unknown>);
+          const tracked: TrackedJob = {
+            workerId,
+            jobId,
+            lastSeq: 0,
+            kind: oneSpec.type,
+            label: trackedJobLabel(oneSpec),
+            source: opts.source,
+            state: "active",
+            seen: false,
+            submittedAt: Date.now(),
+          };
+          set((state) => ({ trackedJobs: capTrackedJobs([...state.trackedJobs, tracked]) }));
+          void watchTrackedJob(set, client, tracked, workerLabel, onChainedJobIds);
+          return jobId;
+        };
+
+        if (isMultiModelTrainSpec(spec)) {
+          const modelTypes = spec.model_types ?? [];
+          const n = spec.config_contents.length;
+          const jobIds: string[] = [];
+          // Every model's job is submitted up front — unlike `submitJob`,
+          // nothing here awaits a prior model finishing before queuing the
+          // next one (that's the whole point of a "fire and forget" submit).
+          for (let i = 0; i < n; i++) {
+            const perModelSpec: TrainJobSpec = {
+              ...spec,
+              config_contents: [spec.config_contents[i]],
+              model_types: modelTypes[i] ? [modelTypes[i]] : [],
+              run: { id: runId, index: i, count: n },
+            };
+            jobIds.push(await submitTracked(perModelSpec));
+          }
+          return jobIds;
+        }
+
+        return [await submitTracked({ ...spec, run: { id: runId, index: 0, count: 1 } })];
+      },
+
+      cancelJob: () => {
+        const { _client, selectedWorkerId, trackedJobs } = get();
+        const job = selectedWorkerId ? latestActiveJobFor(selectedWorkerId, trackedJobs) : null;
+        if (_client && selectedWorkerId && job) {
+          get()
+            .cancelJobOn(selectedWorkerId, job.jobId, "cancel")
+            .catch((err: unknown) => console.warn("[connect] jobsCancel failed:", err));
+        }
+        set({ reattachableJob: null });
       },
 
       stopJob: () => {
-        const { _transport } = get();
-        if (_transport && _transport.ready) {
-          _transport.send(buildMessage(MSG_JOB_STOP));
+        const { _client, selectedWorkerId, trackedJobs } = get();
+        const job = selectedWorkerId ? latestActiveJobFor(selectedWorkerId, trackedJobs) : null;
+        if (_client && selectedWorkerId && job) {
+          get()
+            .cancelJobOn(selectedWorkerId, job.jobId, "stop")
+            .catch((err: unknown) => console.warn("[connect] jobsCancel(stop) failed:", err));
         }
+        set({ reattachableJob: null });
       },
 
-      sendControlCommand: (command: string) => {
-        const { _transport } = get();
-        if (_transport && _transport.ready) {
-          const payload = JSON.stringify({ command });
-          _transport.send(buildMessage(MSG_CONTROL_COMMAND, payload));
+      fetchResultBlob: async (ref) => {
+        const { _client, activeTransport } = get();
+        if (!_client || !_client.authenticated) {
+          throw new Error("Not connected to a worker");
         }
+        if (activeTransport === "iroh") {
+          // Blob downloads dial the worker's HTTP blob port derived from a
+          // ws:// URL, which a direct iroh connection doesn't have (stage 2.4
+          // decides how blobs travel over iroh).
+          throw new Error(
+            `Result files can't be downloaded over a ${transportLabel("iroh")} connection yet — ` +
+              "reconnect over the WebSocket address to fetch them.",
+          );
+        }
+        return _client.fetchBlob(ref.sha256, ref.size);
       },
 
-      // ── Internal: signaling message handler ──────────────────
-      _handleSignalingMessage: (msg: Record<string, unknown>) => {
-        const type = msg.type as string;
-
-        switch (type) {
-          case "registered_auth": {
-            console.log("[connect] Registered in room:", msg.room_id);
-
-            // Store ICE servers from signaling server (may include TURN credentials)
-            const iceServers = msg.ice_servers as RTCIceServer[] | undefined;
-            if (iceServers && iceServers.length > 0) {
-              console.log(`[connect] Received ${iceServers.length} ICE server(s) from signaling`);
-              set({ _iceServers: iceServers });
-            }
-
-            set({ connectionStatus: "connected" });
-
-            // Request peer list to find workers
-            const { _ws, credentials } = get();
-            if (_ws && credentials) {
-              _ws.send(
-                JSON.stringify({
-                  type: "discover_peers",
-                  from_peer_id: credentials.username,
-                  filters: { role: "worker" },
-                }),
-              );
-            }
-            break;
-          }
-
-          case "peer_list": {
-            const peers = msg.peers as Array<Record<string, unknown>>;
-            const workers: WorkerInfo[] = peers.map((p) => {
-              const meta = (p.metadata as Record<string, unknown>) || {};
-              const props =
-                (meta.properties as Record<string, unknown>) || {};
-              return {
-                peerId: p.peer_id as string,
-                name:
-                  (props.worker_name as string) ||
-                  (p.peer_id as string),
-                status: (props.status as WorkerInfo["status"]) || "available",
-                gpu: props.gpu_model
-                  ? {
-                      model: props.gpu_model as string,
-                      memoryMb: (props.gpu_memory_mb as number) || 0,
-                      cudaVersion: (props.cuda_version as string) || "",
-                    }
-                  : undefined,
-                mounts: Array.isArray(props.mounts)
-                  ? (props.mounts as Array<unknown>).map((m) =>
-                      typeof m === "string" ? m : (m as Record<string, unknown>)?.path as string ?? "",
-                    ).filter(Boolean)
-                  : [],
-              };
-            });
-            set({ workers });
-            console.log("[connect] Workers discovered:", workers.length);
-            break;
-          }
-
-          case "answer": {
-            // WebRTC answer from worker
-            const { _pc } = get();
-            if (_pc && msg.sdp) {
-              _pc.setRemoteDescription(
-                new RTCSessionDescription({
-                  type: "answer",
-                  sdp: msg.sdp as string,
-                }),
-              );
-            }
-            break;
-          }
-
-          case "candidate":
-          case "ice_candidate": {
-            const { _pc } = get();
-            if (_pc && msg.candidate) {
-              _pc.addIceCandidate(
-                new RTCIceCandidate(
-                  msg.candidate as RTCIceCandidateInit,
-                ),
-              );
-            }
-            break;
-          }
-
-          default:
-            console.log("[connect] Unhandled signaling message:", type);
+      resumeTrackedJobs: async () => {
+        const jobsByWorker = new Map<string, TrackedJob[]>();
+        for (const job of get().trackedJobs) {
+          if (job.state !== "active") continue;
+          const list = jobsByWorker.get(job.workerId);
+          if (list) list.push(job);
+          else jobsByWorker.set(job.workerId, [job]);
         }
-      },
 
-      // ── Internal: data channel message handler ───────────────
-      _handleDataChannelMessage: (data: string) => {
-        const parts = parseMessage(data);
-        const msgType = parts[0];
+        for (const [workerId, jobs] of jobsByWorker) {
+          const worker = get().pairedWorkers.find((w) => w.nodeId === workerId);
+          if (!worker) continue; // forgotten since the job was tracked — nothing to resume
 
-        switch (msgType) {
-          case MSG_FS_LIST_RESPONSE: {
-            // Worker sends: FS_LIST_RESPONSE::{json}
-            // JSON: {path, entries: [{name, is_dir, size}], total_count, has_more}
-            const responseJson = parts.slice(1).join(MSG_SEPARATOR);
-            const { _pendingFs } = get();
-            const pending = _pendingFs.get("_current");
-            if (pending) {
-              _pendingFs.delete("_current");
-              try {
-                const result = JSON.parse(responseJson);
-                const entries: FileEntry[] = (result.entries || []).map(
-                  (e: Record<string, unknown>) => ({
-                    name: e.name as string,
-                    isDir: e.type === "directory",
-                    size: e.size as number | undefined,
-                  }),
-                );
-                pending.resolve({ entries, hasMore: !!result.has_more });
-              } catch {
-                pending.reject(new Error("Invalid filesystem response"));
-              }
-            }
-            break;
+          let client: WorkerClient;
+          try {
+            client = await ensureConnection(workerId).start();
+          } catch (err) {
+            // No retry here: per ManagedConnection's own contract, a failed
+            // start() never starts a retry loop on its own. The jobs stay
+            // "active" — a later explicit connect, or the next launch's
+            // resumeTrackedJobs, tries again.
+            console.warn(`[connect] resumeTrackedJobs: couldn't reconnect to ${worker.label}:`, err);
+            managed.delete(workerId);
+            continue;
           }
 
-          case MSG_FS_MOUNTS_RESPONSE: {
-            // Worker sends: FS_MOUNTS_RESPONSE::{json}
-            // JSON: [{path, label}, ...]
-            const mountsJson = parts.slice(1).join(MSG_SEPARATOR);
+          for (const job of jobs) {
+            let status: Awaited<ReturnType<WorkerClient["jobsStatus"]>>;
             try {
-              const mounts = JSON.parse(mountsJson) as Array<{ path: string; label?: string }>;
-              const mountPaths = mounts.map((m) => m.path);
-              console.log("[connect] Worker mounts:", mountPaths);
-              // Update the selected worker's mounts
-              const { workers, selectedWorkerId } = get();
-              set({
-                workers: workers.map((w) =>
-                  w.peerId === selectedWorkerId
-                    ? { ...w, mounts: mountPaths }
-                    : w,
-                ),
-              });
+              status = await client.jobsStatus(job.jobId);
             } catch {
-              console.warn("[connect] Failed to parse mounts response");
+              continue; // worker no longer recognizes the job — leave as-is
             }
-            break;
-          }
 
-          case MSG_FS_ERROR: {
-            // Worker sends: FS_ERROR::error_code::message
-            const errorCode = parts[1];
-            const errorMsg = parts.slice(2).join(MSG_SEPARATOR);
-            console.warn("[connect] FS error:", errorCode, errorMsg);
-            const { _pendingFs } = get();
-            const pendingFs = _pendingFs.get("_current");
-            if (pendingFs) {
-              _pendingFs.delete("_current");
-              pendingFs.reject(new Error(`${errorCode}: ${errorMsg}`));
-            }
-            break;
-          }
-
-          case MSG_JOB_ACCEPTED: {
-            const jobId = parts[1];
-            console.log("[connect] Job accepted:", jobId);
-            break;
-          }
-
-          case "CR": {
-            // Worker sends \r-terminated tqdm lines as CR::{text}
-            // These should overwrite the previous line (carriage return behavior)
-            const line = parts.slice(1).join(MSG_SEPARATOR);
-            const { _pendingJobs } = get();
-            const crEntry = Array.from(_pendingJobs.entries())[0];
-            if (crEntry) {
-              const [, pending] = crEntry;
-              pending.onProgress(line, true);
-            }
-            break;
-          }
-
-          case MSG_JOB_REJECTED: {
-            const jobId = parts[1];
-            const errorJson = parts[2];
-            const { _pendingJobs } = get();
-            const pending = _pendingJobs.get(jobId);
-            if (pending) {
-              _pendingJobs.delete(jobId);
-              pending.onComplete({
-                jobId,
-                success: false,
-                error: errorJson,
+            if (TERMINAL_JOB_STATES.has(status.state)) {
+              const trackedState = status.state as TrackedJob["state"];
+              updateTrackedJob(set, job.jobId, {
+                state: trackedState,
+                ...(trackedState !== "completed" ? { error: status.error ?? undefined } : {}),
               });
-            }
-            break;
-          }
-
-          case MSG_JOB_PROGRESS: {
-            // Intentionally ignored — matches PyQt client behavior.
-            // Terminal output is handled via CR:: (tqdm) and regular log
-            // lines. JOB_PROGRESS fires once per batch, which spams the
-            // terminal with ~100 formatted lines per epoch.
-            break;
-          }
-
-          case MSG_JOB_COMPLETE: {
-            // Worker sends: JOB_COMPLETE::{json} per model in multi-model pipelines.
-            // Only resolve the promise after all expected completions.
-            const completePayload = parts.slice(1).join(MSG_SEPARATOR);
-            const { _pendingJobs } = get();
-            const completeEntry = Array.from(_pendingJobs.entries())[0];
-            if (completeEntry) {
-              const [jobId, pending] = completeEntry;
-              let result: JobResult;
-              try {
-                const parsed = JSON.parse(completePayload);
-                result = { jobId, success: true, outputPath: parsed.output_path };
-              } catch {
-                result = { jobId, success: true };
+              await notifyJobFinished({ ...job, state: trackedState }, worker.label, status.error);
+              // A train job that finished (and chained its post-train
+              // inference, PR5w) while this app was closed never replays its
+              // job.result event to a watcher — pick the chained jobs up from
+              // the stored result instead, so they're tracked and toast too.
+              const chainedIds = (status.result as { chained_job_ids?: unknown } | null)
+                ?.chained_job_ids;
+              if (Array.isArray(chainedIds)) {
+                for (const chainedId of chainedIds) {
+                  if (typeof chainedId !== "string") continue;
+                  trackChainedJob(set, client, workerId, chainedId, job.source, worker.label);
+                }
               }
+              continue;
+            }
 
-              pending.remainingCompletions--;
-
-              if (pending.remainingCompletions <= 0) {
-                // All models done — resolve the promise
-                _pendingJobs.delete(jobId);
-                pending.onComplete(result);
-              } else {
-                // More models to go — notify per-model callback, keep listening
-                pending.onModelComplete?.(result);
+            // A chained post-train inference job (PR5w) can complete while
+            // this app wasn't running to watch for it live — tracking it
+            // here too means it still shows up and still toasts, the same
+            // as one discovered mid-session via `submitJobsOn`.
+            await watchTrackedJob(set, client, job, worker.label, (chainedIds) => {
+              for (const chainedId of chainedIds) {
+                trackChainedJob(set, client, workerId, chainedId, job.source, worker.label);
               }
-            }
-            break;
-          }
-
-          case MSG_JOB_FAILED: {
-            // Worker sends: JOB_FAILED::{json} (no job ID prefix)
-            const failPayload = parts.slice(1).join(MSG_SEPARATOR);
-            const { _pendingJobs } = get();
-            const failEntry = Array.from(_pendingJobs.entries())[0];
-            if (failEntry) {
-              const [jobId, pending] = failEntry;
-              _pendingJobs.delete(jobId);
-              let errorMsg = "Job failed";
-              try {
-                const parsed = JSON.parse(failPayload);
-                errorMsg = parsed.error || errorMsg;
-              } catch { /* use default */ }
-              pending.onComplete({
-                jobId,
-                success: false,
-                error: errorMsg,
-              });
-            }
-            break;
-          }
-
-          case MSG_JOB_LOG: {
-            // Worker sends: JOB_LOG::{job_id}::{text}
-            const logJobId = parts[1];
-            const text = parts.slice(2).join(MSG_SEPARATOR);
-            const { _pendingJobs: logJobs } = get();
-            const pending = logJobs.get(logJobId);
-            if (pending) {
-              pending.onProgress(text);
-            }
-            break;
-          }
-
-          case MSG_AUTH_CHALLENGE:
-          case MSG_AUTH_SUCCESS:
-          case MSG_AUTH_FAILURE:
-            // Handled during auth handshake in connectToWorker — ignore here
-            break;
-
-          case "PROGRESS_REPORT": {
-            // Worker sends: PROGRESS_REPORT::{jsonpickle payload}
-            // Contains structured progress events (epoch_begin, epoch_end,
-            // train_begin, train_end) from sleap-nn's ZMQ progress reporter.
-            // NOT printed to terminal — silently updates progress state.
-            // Matches PyQt behavior: LossViewer._check_messages() consumes
-            // these for loss curves, not terminal output.
-            const prPayload = parts.slice(1).join(MSG_SEPARATOR);
-            const { _pendingJobs: prJobs } = get();
-            const prEntry = Array.from(prJobs.entries())[0];
-            if (prEntry) {
-              const [, pending] = prEntry;
-              // Tag as progress report so trainingStore handles it differently
-              pending.onProgress(`__PROGRESS_REPORT__${prPayload}`);
-            }
-            break;
-          }
-
-          case "__FILE_RECEIVED__": {
-            // Rust backend received a predictions file and wrote it to a temp path.
-            // Load the .slp and merge predictions into the current project.
-            const filePath = parts.slice(1).join(MSG_SEPARATOR);
-            console.log("[connect] Received predictions file:", filePath);
-            import("@/stores/inferenceStore").then(({ useInferenceStore }) => {
-              useInferenceStore.setState({ outputPath: filePath });
-              useInferenceStore.getState().loadAndMergeResults();
             });
-            break;
-          }
-
-          default: {
-            // Unrecognized message — raw log line from worker (e.g. wandb
-            // output, error messages, training summaries). Forward to
-            // onProgress, matching the PyQt client's on_log() behavior.
-            const { _pendingJobs } = get();
-            const defaultEntry = Array.from(_pendingJobs.entries())[0];
-            if (defaultEntry) {
-              const [, pending] = defaultEntry;
-              pending.onProgress(data);
-            }
-            break;
           }
         }
       },
     }),
     {
       name: "sleap-app-connect",
+      version: 2,
       partialize: (state) => ({
-        credentials: state.credentials,
-        roomId: state.roomId,
+        pairedWorkers: state.pairedWorkers,
+        selectedWorkerId: state.selectedWorkerId,
+        trackedJobs: state.trackedJobs,
       }),
+      migrate: migrateConnectPersisted as (persisted: unknown, version: number) => ConnectState,
     },
   ),
 );

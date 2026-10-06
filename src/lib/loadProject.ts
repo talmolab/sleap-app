@@ -17,12 +17,16 @@ import {
   loadNwb,
   readCoco,
   isCocoData,
+  RemoteIOError,
+  redactUrl,
+  redactedCauseSummary,
   type CocoJson,
   type ReadCocoOptions,
   type Labels,
   type DlcFileSystem,
 } from "@talmolab/sleap-io.js";
 import { useAppStore } from "../stores/appStore";
+import { useEnvironmentStore } from "../stores/environmentStore";
 import {
   buildDlcLabels,
   dlcProjectPathHint,
@@ -37,6 +41,7 @@ import { resolveExternalVideos } from "./resolveVideos";
 import { installTauriFsResolver } from "./fsResolver";
 import { fileSize, readRange } from "./nativeRange";
 import { sleapCmd } from "./sleapPlugin";
+import { basenameFromUrl } from "./urlOpen";
 
 // Files larger than this open via the B-seam native range reader (lazy, on-disk)
 // instead of reading the whole file into WASM memory. Below it, eager is simpler
@@ -159,7 +164,7 @@ export async function loadProjectFromFile(file: File): Promise<boolean> {
 
   // Confirm discarding unsaved work (in-memory edits OR a not-yet-exported OPFS
   // working copy) before replacing the current project.
-  if (!confirmDiscardUnsavedWork("Opening a new project")) return false;
+  if (!(await confirmDiscardUnsavedWork("Opening a new project"))) return false;
 
   store.setLoading(true, `Reading ${file.name}...`);
 
@@ -185,11 +190,73 @@ export async function loadProjectFromFile(file: File): Promise<boolean> {
     toast.success(`Loaded ${file.name}`, {
       description: `${labels.videos.length} video(s), ${labels.labeledFrames.length} labeled frames`,
     });
+    // Fire-and-forget: best-effort, no-ops on browser, must not add latency.
+    // (sleap-app's own update is surfaced via the Environment badge instead
+    // of a toast now — see App.tsx's stable-channel check.)
+    useEnvironmentStore.getState().checkSleapNnUpdateAndNotify();
     return true;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     toast.error("Failed to load project", { description: msg });
     console.error("Failed to load project:", err);
+    return false;
+  } finally {
+    store.setLoading(false);
+  }
+}
+
+/**
+ * Load an SLP project from a remote http(s) URL (browser "Open in SLEAP" deep
+ * link, issue #217). Streams the `.slp` over HTTP range requests via
+ * sleap-io.js — only the needed bytes are fetched, and the URL path needs no
+ * SharedArrayBuffer / cross-origin isolation. A token in the URL query suffix
+ * keeps the efficient header-free range stream (a token in a *header* would force
+ * a full buffered download). The remotely-opened project has no local path/handle,
+ * so it is Save-As only.
+ */
+export async function loadProjectFromUrl(url: string): Promise<boolean> {
+  const store = useAppStore.getState();
+
+  if (!(await confirmDiscardUnsavedWork("Opening a new project"))) return false;
+
+  const name = basenameFromUrl(url);
+  store.setLoading(true, `Streaming ${name}...`);
+
+  try {
+    const labels = await readSlpStreaming(url, {
+      openVideos: !LAZY_VIDEO_METADATA,
+      lazyVideoMetadata: LAZY_VIDEO_METADATA,
+      // Must be a bare basename, NOT the URL: io's streaming worker uses
+      // filenameHint as the in-FS (Emscripten) filename, and a value with
+      // "://" and "/" builds an invalid FS path → ENOENT before any range read.
+      filenameHint: name,
+      h5wasmUrl: H5WASM_URL,
+      onProgress: reportParseProgress,
+    });
+    store.setLoading(true, "Locating videos...");
+    await resolveExternalVideos(labels);
+    // No projectPath/handle → plain Save is disabled; user must Save As.
+    store.setLabels(labels, name);
+    await openFirstLabeledFrame(labels);
+    toast.success(`Loaded ${name}`, {
+      description: `${labels.videos.length} video(s), ${labels.labeledFrames.length} labeled frames`,
+    });
+    return true;
+  } catch (err) {
+    // A RemoteIOError's message is already human-readable AND URL/token-redacted
+    // (expired/invalid token, 404, network/CORS). For any other failure (e.g. a
+    // corrupt/non-SLP file, an h5wasm parse error) fall back to io's
+    // redactedCauseSummary — an accurate, credential-scrubbed one-liner — rather
+    // than mislabelling everything "network/CORS". Never log the raw URL or raw
+    // error: both can carry the access token, so redact on the way out.
+    const msg =
+      err instanceof RemoteIOError ? err.message : redactedCauseSummary(err);
+    toast.error("Failed to open dataset", { description: msg });
+    console.error(
+      "Failed to open dataset from URL:",
+      redactUrl(url),
+      redactedCauseSummary(err)
+    );
     return false;
   } finally {
     store.setLoading(false);
@@ -210,7 +277,7 @@ export async function loadProjectFromPath(
 
   // Confirm discarding unsaved work (in-memory edits OR a not-yet-exported OPFS
   // working copy) before replacing the current project.
-  if (!confirmDiscardUnsavedWork("Opening a new project")) return false;
+  if (!(await confirmDiscardUnsavedWork("Opening a new project"))) return false;
 
   const filename = path.split(/[\\/]/).pop() ?? path;
   store.setLoading(true, `Reading ${filename}...`);
@@ -286,6 +353,10 @@ export async function loadProjectFromPath(
     toast.success(`Loaded ${filename}`, {
       description: `${labels.videos.length} video(s), ${labels.labeledFrames.length} labeled frames`,
     });
+    // Fire-and-forget: best-effort, no-ops on browser, must not add latency.
+    // (sleap-app's own update is surfaced via the Environment badge instead
+    // of a toast now — see App.tsx's stable-channel check.)
+    useEnvironmentStore.getState().checkSleapNnUpdateAndNotify();
 
     // Missing / unsupported-codec videos are summarized (codec-aware) by
     // resolveExternalVideos above — no separate toast here (avoids a duplicate).
@@ -368,7 +439,7 @@ function readAnalysisLabels(source: AnalysisSource): Promise<Labels> {
 export async function loadAnalysisProjectFromFile(file: File): Promise<boolean> {
   const store = useAppStore.getState();
 
-  if (!confirmDiscardUnsavedWork("Importing a file")) return false;
+  if (!(await confirmDiscardUnsavedWork("Importing a file"))) return false;
 
   store.setLoading(true, `Reading ${file.name}...`);
 
@@ -407,7 +478,7 @@ export async function loadAnalysisProjectFromPath(
 ): Promise<boolean> {
   const store = useAppStore.getState();
 
-  if (!confirmDiscardUnsavedWork("Importing a file")) return false;
+  if (!(await confirmDiscardUnsavedWork("Importing a file"))) return false;
 
   const filename = path.split(/[\\/]/).pop() ?? path;
   store.setLoading(true, `Reading ${filename}...`);
@@ -465,7 +536,7 @@ function readNwbLabels(source: AnalysisSource): Promise<Labels> {
 export async function loadNwbProjectFromFile(file: File): Promise<boolean> {
   const store = useAppStore.getState();
 
-  if (!confirmDiscardUnsavedWork("Importing a file")) return false;
+  if (!(await confirmDiscardUnsavedWork("Importing a file"))) return false;
 
   store.setLoading(true, `Reading ${file.name}...`);
 
@@ -504,7 +575,7 @@ export async function loadNwbProjectFromPath(
 ): Promise<boolean> {
   const store = useAppStore.getState();
 
-  if (!confirmDiscardUnsavedWork("Importing a file")) return false;
+  if (!(await confirmDiscardUnsavedWork("Importing a file"))) return false;
 
   const filename = path.split(/[\\/]/).pop() ?? path;
   store.setLoading(true, `Reading ${filename}...`);
@@ -596,7 +667,7 @@ function resolveCocoImageUnderRoot(
 export async function loadCocoProjectFromFile(file: File): Promise<boolean> {
   const store = useAppStore.getState();
 
-  if (!confirmDiscardUnsavedWork("Importing a file")) return false;
+  if (!(await confirmDiscardUnsavedWork("Importing a file"))) return false;
 
   store.setLoading(true, `Reading ${file.name}...`);
 
@@ -637,7 +708,7 @@ export async function loadCocoProjectFromPath(
 ): Promise<boolean> {
   const store = useAppStore.getState();
 
-  if (!confirmDiscardUnsavedWork("Importing a file")) return false;
+  if (!(await confirmDiscardUnsavedWork("Importing a file"))) return false;
 
   const filename = path.split(/[\\/]/).pop() ?? path;
   store.setLoading(true, `Reading ${filename}...`);
@@ -711,7 +782,7 @@ export async function loadDlcFromFileSystem(
 ): Promise<boolean> {
   const store = useAppStore.getState();
 
-  if (!confirmDiscardUnsavedWork("Importing a file")) return false;
+  if (!(await confirmDiscardUnsavedWork("Importing a file"))) return false;
 
   store.setLoading(true, `Reading ${displayName}...`);
 
