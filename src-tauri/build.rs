@@ -70,6 +70,14 @@ fn main() {
                     "rtc_send",
                     "rtc_disconnect_worker",
                     "rtc_leave_room",
+                    // iroh (remote inference, protocol-v1 transport)
+                    "iroh_connect",
+                    "iroh_send",
+                    "iroh_disconnect",
+                    // iroh blob range reads (item 2.4, job-result blobs)
+                    "iroh_blob_open",
+                    "iroh_blob_read_range",
+                    "iroh_blob_close",
                     // self-update channels
                     "check_update",
                     "install_update",

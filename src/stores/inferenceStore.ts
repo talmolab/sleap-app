@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { loadSlp } from "@talmolab/sleap-io.js";
+import { loadSlp, readSlpStreaming } from "@talmolab/sleap-io.js";
 import type { JobResult } from "@/lib/sleapConnect";
 import type { ProcessEvent } from "@/platform/backend";
 import { cancelCommand, runInference } from "@/platform/backend";
@@ -133,6 +133,19 @@ interface InferenceState {
   minimized: boolean;
   outputPath: string | null;
   startedAt: number | null;
+  /**
+   * A completed remote job's result(s), fetched but deliberately NOT yet
+   * merged — the app only ever learns of remote completion while it's
+   * live and connected (there's no reattach-time discovery of a job that
+   * finished while disconnected, a known, accepted gap — item 2.4), so
+   * merging automatically at that moment used to be safe-looking but
+   * wasn't: closing the app between "job finished" and "merge ran" simply
+   * dropped the merge with no trace, since nothing was persisted. Requiring
+   * an explicit click (mirrors the local job's own "Load Results" button)
+   * means a merge either happens because the user asked for it, or is
+   * visibly still pending — never silently skipped.
+   */
+  pendingRemoteMerge: PendingRemoteMerge | null;
 
   handleProcessEvent: (event: ProcessEvent) => void;
   setMinimized: (minimized: boolean) => void;
@@ -140,6 +153,14 @@ interface InferenceState {
   cancelInference: () => Promise<void>;
   startInference: (config: InferenceConfig, remoteOpts?: RemoteInferenceOptions) => Promise<void>;
   loadAndMergeResults: (mode?: ExistingPredictionsMode, trackOnly?: boolean) => Promise<void>;
+  /** Explicit trigger for `pendingRemoteMerge` — see its own doc comment. */
+  mergePendingRemoteResults: () => Promise<void>;
+}
+
+interface PendingRemoteMerge {
+  results: JobResult[];
+  mode: ExistingPredictionsMode;
+  trackOnly: boolean;
 }
 
 const initialState = {
@@ -151,25 +172,17 @@ const initialState = {
   minimized: false,
   outputPath: null as string | null,
   startedAt: null as number | null,
+  pendingRemoteMerge: null as PendingRemoteMerge | null,
 };
 
-/**
- * Load a predictions .slp's bytes into a Labels object and merge it into
- * the current project — shared by the local (read from disk) and remote
- * (fetched over HTTP as a result blob) paths. `filenameHint` only needs to
- * look like a real filename; sleap-io.js uses it as a parsing hint, not to
- * actually read anything from disk.
- */
-export async function loadAndMergePredictionBytes(
-  bytes: Uint8Array,
-  filenameHint: string,
+/** Shared merge dispatch — a `Labels` already loaded by whichever path
+ * (bytes in memory, or read directly off a remote range-read source) gets
+ * merged into the current project identically either way. */
+async function mergePredictionsIntoProject(
+  predictions: Awaited<ReturnType<typeof loadSlp>>,
   mode: ExistingPredictionsMode,
   trackOnly: boolean,
 ): Promise<void> {
-  const predictions = await loadSlp(bytes, {
-    openVideos: false,
-    h5: { filenameHint },
-  });
   console.log(
     "[inference] Loaded predictions: %d videos, %d labeled frames, %d tracks",
     predictions.videos?.length ?? 0,
@@ -184,12 +197,43 @@ export async function loadAndMergePredictionBytes(
 }
 
 /**
+ * Load a predictions .slp's bytes into a Labels object and merge it into
+ * the current project — shared by the local (read from disk) and remote
+ * WebSocket (fetched over HTTP as a result blob) paths. `filenameHint` only
+ * needs to look like a real filename; sleap-io.js uses it as a parsing
+ * hint, not to actually read anything from disk. A remote connection over
+ * iroh does NOT go through this function — see `fetchAndMergeRemoteResult`.
+ */
+export async function loadAndMergePredictionBytes(
+  bytes: Uint8Array,
+  filenameHint: string,
+  mode: ExistingPredictionsMode,
+  trackOnly: boolean,
+): Promise<void> {
+  const predictions = await loadSlp(bytes, {
+    openVideos: false,
+    h5: { filenameHint },
+  });
+  await mergePredictionsIntoProject(predictions, mode, trackOnly);
+}
+
+/**
  * If a remote job's result carries a fetchable predictions blob (stage
  * 1.10 — talmolab/sleap-connect PR #89 and later), fetch it and merge it
  * into the current project. A no-op if the worker didn't report one — a
  * worker not yet running the blob HTTP server is a known interim gap, not
  * an error: remote inference still completes, there's just nothing to
  * merge back automatically yet.
+ *
+ * Two transports, two loading strategies — deliberately not unified into
+ * one, because they have genuinely different memory characteristics (item
+ * 2.4): a WebSocket connection has no range-read source yet (tracked
+ * separately, task "HTTP blob fetch: switch to RangeSource"), so it still
+ * downloads the whole blob into memory via `fetchResultBlob`/`loadSlp`. An
+ * iroh connection reads only the byte ranges sleap-io.js's SLP/HDF5 parser
+ * actually needs, straight off a dedicated blob stream on the existing
+ * connection, via `readSlpStreaming`/`RangeSource` — never buffering the
+ * whole file anywhere.
  */
 export async function fetchAndMergeRemoteResult(
   result: JobResult,
@@ -199,6 +243,24 @@ export async function fetchAndMergeRemoteResult(
   const ref = result.resultBlobs?.predictions;
   if (!ref) return;
   const { useConnectStore } = await import("@/stores/connectStore");
+  const { activeTransport } = useConnectStore.getState();
+
+  if (activeTransport === "iroh") {
+    const { createTauriIrohBlobRangeSource } = await import("@/lib/protocolV1/tauriIrohBlob");
+    const { source, dispose } = createTauriIrohBlobRangeSource(ref.sha256, ref.size);
+    try {
+      const predictions = await readSlpStreaming(source, {
+        openVideos: false,
+        lazy: false,
+        filenameHint: `${result.jobId}.predictions.slp`,
+      });
+      await mergePredictionsIntoProject(predictions, mode, trackOnly);
+    } finally {
+      await dispose();
+    }
+    return;
+  }
+
   const bytes = await useConnectStore.getState().fetchResultBlob(ref);
   await loadAndMergePredictionBytes(
     bytes,
@@ -477,6 +539,7 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
         }));
 
         try {
+          const collectedResults: JobResult[] = [];
           for (let i = 0; i < specs.length; i++) {
             const spec = specs[i]!;
             set((state) => ({
@@ -489,17 +552,16 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
               set({ status: "error", error: result.error || `Video ${i + 1} failed` });
               return;
             }
-            try {
-              await fetchAndMergeRemoteResult(result, config.existingPredictions, config.trackOnly);
-            } catch (mergeErr) {
-              set({
-                status: "error",
-                error: `Video ${i + 1}: failed to fetch/merge remote result: ${mergeErr instanceof Error ? mergeErr.message : String(mergeErr)}`,
-              });
-              return;
-            }
+            collectedResults.push(result);
           }
-          set({ status: "completed" });
+          set({
+            status: "completed",
+            pendingRemoteMerge: {
+              results: collectedResults,
+              mode: config.existingPredictions,
+              trackOnly: config.trackOnly,
+            },
+          });
         } catch (e) {
           set({
             status: "error",
@@ -587,15 +649,15 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
         });
 
         if (result.success) {
-          try {
-            await fetchAndMergeRemoteResult(result, config.existingPredictions, config.trackOnly);
-            set({ status: "completed", outputPath: result.outputPath || null });
-          } catch (mergeErr) {
-            set({
-              status: "error",
-              error: `Failed to fetch/merge remote result: ${mergeErr instanceof Error ? mergeErr.message : String(mergeErr)}`,
-            });
-          }
+          set({
+            status: "completed",
+            outputPath: result.outputPath || null,
+            pendingRemoteMerge: {
+              results: [result],
+              mode: config.existingPredictions,
+              trackOnly: config.trackOnly,
+            },
+          });
         } else {
           set({
             status: "error",
@@ -723,6 +785,32 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
       set({
         status: "error",
         error: `Failed to load results: ${e instanceof Error ? e.message : String(e)}`,
+      });
+    }
+  },
+
+  mergePendingRemoteResults: async () => {
+    const { pendingRemoteMerge } = useInferenceStore.getState();
+    if (!pendingRemoteMerge) return;
+    const { results, mode, trackOnly } = pendingRemoteMerge;
+
+    try {
+      for (const result of results) {
+        await fetchAndMergeRemoteResult(result, mode, trackOnly);
+      }
+      set({ pendingRemoteMerge: null, status: "completed" });
+      // Same cosmetic settle-before-idle delay as loadAndMergeResults above —
+      // only reset if nothing else started a new run in the meantime.
+      setTimeout(() => {
+        if (useInferenceStore.getState().pendingRemoteMerge === null) {
+          set({ status: "idle" });
+        }
+      }, 1500);
+    } catch (e) {
+      set({
+        status: "error",
+        error: `Failed to fetch/merge remote result: ${e instanceof Error ? e.message : String(e)}`,
+        pendingRemoteMerge: null,
       });
     }
   },

@@ -405,6 +405,8 @@ export function InferencePanel() {
   const startInference = useInferenceStore((s) => s.startInference);
   const cancelInference = useInferenceStore((s) => s.cancelInference);
   const loadAndMergeResults = useInferenceStore((s) => s.loadAndMergeResults);
+  const pendingRemoteMerge = useInferenceStore((s) => s.pendingRemoteMerge);
+  const mergePendingRemoteResults = useInferenceStore((s) => s.mergePendingRemoteResults);
   const reset = useInferenceStore((s) => s.reset);
 
   // Config state
@@ -1211,6 +1213,20 @@ export function InferencePanel() {
                   Results saved on worker. Download from the worker filesystem to load.
                 </div>
               )
+            )}
+            {/* A remote job's result is fetched (over WebSocket or, since
+                item 2.4, an iroh connection's range-read RangeSource) only
+                on this explicit click — never automatically on completion,
+                since the app has no way to notice a job finished while it
+                wasn't live and connected (see pendingRemoteMerge's own doc
+                comment in inferenceStore.ts). */}
+            {inferenceStatus === "completed" && pendingRemoteMerge && (
+              <Button size="sm" className="h-7 text-xs"
+                onClick={async () => { setMerging(true); await mergePendingRemoteResults(); setMerging(false); }}
+                disabled={merging}>
+                {merging ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Download className="h-3.5 w-3.5 mr-1" />}
+                {merging ? "Fetching..." : "Fetch & Load Results"}
+              </Button>
             )}
 
             {/* Log */}
