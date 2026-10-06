@@ -17,15 +17,20 @@ import { getPlatform } from "@/platform/index";
  * URL for a new instance that should auto-open `file` on mount. The path rides
  * as an `?openFile=` query param (URL-encoded) — race-free (unlike a shared Rust
  * slot) and works on both the dev origin and the localhost release origin.
+ * `tutorial` adds `?tutorial=1`, which starts the getting-started tutorial in
+ * the new window (see lib/tutorial/startTutorial.ts).
  */
-export function buildInstanceUrl(base: string, file?: string): string {
-  if (!file) return base;
+export function buildInstanceUrl(base: string, file?: string, tutorial = false): string {
+  const params: string[] = [];
+  if (file) params.push(`openFile=${encodeURIComponent(file)}`);
+  if (tutorial) params.push("tutorial=1");
+  if (params.length === 0) return base;
   const sep = base.includes("?") ? "&" : "?";
-  return `${base}${sep}openFile=${encodeURIComponent(file)}`;
+  return `${base}${sep}${params.join("&")}`;
 }
 
 export async function openNewInstance(
-  opts?: { file?: string }
+  opts?: { file?: string; tutorial?: boolean }
 ): Promise<void> {
   const platform = await getPlatform();
 
@@ -35,7 +40,7 @@ export async function openNewInstance(
   // new window would lose isolation. In the browser it's the site origin +
   // Vite base (e.g. app.sleap.ai/dev/).
   const base = `${location.origin}${import.meta.env.BASE_URL}`;
-  const url = buildInstanceUrl(base, opts?.file);
+  const url = buildInstanceUrl(base, opts?.file, opts?.tutorial);
 
   if (platform.isTauri) {
     // Desktop: spawn a second native window. Each WebviewWindow is its own

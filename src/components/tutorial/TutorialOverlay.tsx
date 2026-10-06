@@ -50,6 +50,14 @@ const RECHECK_INTERVAL_MS = 500;
 const TUTORIAL_MAX_EPOCHS = 5;
 
 /**
+ * Default epochs for the retrain step. "Train Again" reloads the last run's
+ * config — the 5-epoch first pass — so any config still at
+ * `TUTORIAL_MAX_EPOCHS` is raised to this while the step is active. A value the
+ * user typed themselves is left alone; completion doesn't depend on it.
+ */
+const TUTORIAL_RETRAIN_EPOCHS = 50;
+
+/**
  * Frame the "Create a skeleton" step jumps to on entry. This tutorial is
  * built around a fixed sample video (mice.mp4) generated with a deterministic
  * Stride/20 suggestion — 1410 is one of the resulting suggestion frames, so
@@ -227,6 +235,16 @@ export function TutorialOverlay() {
           if (cf.hyperparams.maxEpochs !== TUTORIAL_MAX_EPOCHS) {
             training.updateConfigHyperparams(cf.slot, {
               maxEpochs: TUTORIAL_MAX_EPOCHS,
+            });
+          }
+        }
+      }
+      if (step.id === "retrain" && watch.trainingStatus !== "running") {
+        const training = useTrainingStore.getState();
+        for (const cf of training.config.configs) {
+          if (cf.hyperparams.maxEpochs === TUTORIAL_MAX_EPOCHS) {
+            training.updateConfigHyperparams(cf.slot, {
+              maxEpochs: TUTORIAL_RETRAIN_EPOCHS,
             });
           }
         }

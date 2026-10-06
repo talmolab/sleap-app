@@ -22,6 +22,7 @@ import {
 } from "@talmolab/sleap-io.js";
 import { sleapCmd } from "./lib/sleapPlugin";
 import { checkUpdateCached } from "./lib/updateCheckCache";
+import { readTutorialParam, TUTORIAL_PARAM } from "./lib/tutorial/startTutorial";
 
 // Drain (take, once) the pending "initial file" slot in Rust. The slot is
 // populated from a CLI argument on launch OR a macOS file-association open
@@ -149,6 +150,17 @@ export default function App() {
         );
       }
     })();
+  }, []);
+
+  // A window opened by "Start Tutorial" while another project was open
+  // (`?tutorial=1`, see lib/tutorial/startTutorial.ts) starts the tutorial
+  // here. Stripped first so a reload doesn't restart it.
+  useEffect(() => {
+    if (!readTutorialParam(window.location.search)) return;
+    const url = new URL(window.location.href);
+    url.searchParams.delete(TUTORIAL_PARAM);
+    window.history.replaceState(null, "", url.toString());
+    useAppStore.getState().startTutorial();
   }, []);
 
   // Browser "Open in SLEAP" deep link (issue #217): sleap-share navigates the

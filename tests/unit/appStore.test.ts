@@ -1058,6 +1058,44 @@ describe("tutorial step navigation", () => {
     expect(useAppStore.getState().tutorialStepIndex).toBe(0);
   });
 
+  describe("multi-panel sidebar during the tutorial", () => {
+    it("startTutorial turns multi-panel off and exitTutorial restores it", () => {
+      useAppStore.setState({ sidebarMultiPanel: true, projectLoaded: false });
+      useAppStore.getState().startTutorial();
+      expect(useAppStore.getState().sidebarMultiPanel).toBe(false);
+
+      useAppStore.getState().exitTutorial();
+      const s = useAppStore.getState();
+      expect(s.sidebarMultiPanel).toBe(true);
+      expect(s.tutorialSavedMultiPanel).toBeNull();
+    });
+
+    it("completing the last step restores it", () => {
+      useAppStore.setState({ sidebarMultiPanel: true, projectLoaded: false });
+      useAppStore.getState().startTutorial();
+      useAppStore.setState({ tutorialSteps: fakeSteps("videos"), tutorialStepIndex: 0 });
+      useAppStore.getState().advanceTutorialStep();
+      const s = useAppStore.getState();
+      expect(s.tutorialCompleted).toBe(true);
+      expect(s.sidebarMultiPanel).toBe(true);
+    });
+
+    it("leaves it off afterwards if it was already off", () => {
+      useAppStore.setState({ sidebarMultiPanel: false, projectLoaded: false });
+      useAppStore.getState().startTutorial();
+      useAppStore.getState().exitTutorial();
+      expect(useAppStore.getState().sidebarMultiPanel).toBe(false);
+    });
+
+    it("restarting mid-run keeps the original preference", () => {
+      useAppStore.setState({ sidebarMultiPanel: true, projectLoaded: false });
+      useAppStore.getState().startTutorial();
+      useAppStore.getState().startTutorial();
+      useAppStore.getState().exitTutorial();
+      expect(useAppStore.getState().sidebarMultiPanel).toBe(true);
+    });
+  });
+
   describe("tutorialHighestStepIndex (high-water mark)", () => {
     it("starts at 0 and is reset to 0 by startTutorial", () => {
       useAppStore.setState({

@@ -112,6 +112,13 @@ describe("buildInstanceUrl", () => {
     );
   });
 
+  test("tutorial → appends ?tutorial=1, after openFile when both are set", () => {
+    expect(buildInstanceUrl("http://x/", undefined, true)).toBe("http://x/?tutorial=1");
+    expect(buildInstanceUrl("http://x/", "/a.slp", true)).toBe(
+      "http://x/?openFile=%2Fa.slp&tutorial=1"
+    );
+  });
+
   test("base already has a query → appends with &", () => {
     expect(buildInstanceUrl("http://x/?forceLibavH264", "/a.slp")).toBe(
       "http://x/?forceLibavH264&openFile=%2Fa.slp"

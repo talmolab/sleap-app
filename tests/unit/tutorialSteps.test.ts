@@ -3,17 +3,16 @@ import {
   NEW_PROJECT_STEP,
   ADD_VIDEO_IN_DIALOG_STEP,
   CONFIRM_VIDEO_AND_CREATE_STEP,
-  ADD_VIDEO_STEP,
   SAVE_PROJECT_STEP,
   GENERATE_SUGGESTIONS_STEP,
   CREATE_SKELETON_STEP,
   LABEL_ONE_FRAME_STEP,
-  SELECT_ANCHOR_PART_STEP,
   RUN_TRAINING_STEP,
   CORRECT_PREDICTIONS_STEP,
   RETRAIN_STEP,
   RUN_INFERENCE_STEP,
   CHECK_ENVIRONMENT_STEP,
+  SAMPLE_VIDEO_URL,
   buildTutorialSteps,
   tutorialStepNumber,
   snapshotTutorialState,
@@ -80,8 +79,8 @@ function fakeSkeleton(opts: { nodes?: number; edges?: number } = {}) {
 }
 
 describe("buildTutorialSteps", () => {
-  it("starts with New Project + add-video-in-dialog when no project is loaded", () => {
-    const steps = buildTutorialSteps(false);
+  it("starts from New Project and runs through to whole-video inference", () => {
+    const steps = buildTutorialSteps();
     expect(steps.map((s) => s.id)).toEqual([
       "new-project",
       "add-video-in-dialog",
@@ -90,7 +89,6 @@ describe("buildTutorialSteps", () => {
       "generate-suggestions",
       "create-skeleton",
       "label-one-frame",
-      "select-anchor-part",
       "run-training",
       "correct-predictions",
       "retrain",
@@ -98,43 +96,31 @@ describe("buildTutorialSteps", () => {
     ]);
   });
 
-  it("skips straight to the Videos-panel add-video step when a project is already loaded", () => {
+  it("prefixes the sequence with the environment check on desktop", () => {
     const steps = buildTutorialSteps(true);
-    expect(steps.map((s) => s.id)).toEqual([
-      "add-video",
-      "save-project",
-      "generate-suggestions",
-      "create-skeleton",
-      "label-one-frame",
-      "select-anchor-part",
-      "run-training",
-      "correct-predictions",
-      "retrain",
-      "run-inference-video",
-    ]);
+    expect(steps[0].id).toBe("check-environment");
+    expect(steps.slice(1)).toEqual(buildTutorialSteps());
   });
+});
 
-  it("prefixes either sequence with the environment check on desktop", () => {
-    for (const projectLoaded of [false, true]) {
-      const steps = buildTutorialSteps(projectLoaded, true);
-      expect(steps[0].id).toBe("check-environment");
-      expect(steps.slice(1)).toEqual(buildTutorialSteps(projectLoaded));
-    }
+describe("SAMPLE_VIDEO_URL", () => {
+  it("is a direct download, not a preview page", () => {
+    expect(SAMPLE_VIDEO_URL).toContain("drive.google.com/uc?export=download");
   });
 });
 
 describe("tutorialStepNumber", () => {
   it("numbers from 1 without the environment check", () => {
-    const steps = buildTutorialSteps(false);
+    const steps = buildTutorialSteps();
     expect(tutorialStepNumber(steps, 0)).toBe(1);
-    expect(tutorialStepNumber(steps, steps.indexOf(RUN_TRAINING_STEP))).toBe(9);
+    expect(tutorialStepNumber(steps, steps.indexOf(RUN_TRAINING_STEP))).toBe(8);
   });
 
   it("makes the environment check step 0 so the rest keep their numbers", () => {
-    const steps = buildTutorialSteps(false, true);
+    const steps = buildTutorialSteps(true);
     expect(tutorialStepNumber(steps, 0)).toBe(0);
-    expect(tutorialStepNumber(steps, steps.indexOf(RUN_TRAINING_STEP))).toBe(9);
-    expect(tutorialStepNumber(steps, steps.length - 1)).toBe(12);
+    expect(tutorialStepNumber(steps, steps.indexOf(RUN_TRAINING_STEP))).toBe(8);
+    expect(tutorialStepNumber(steps, steps.length - 1)).toBe(11);
   });
 });
 
@@ -178,9 +164,9 @@ describe("check-environment step", () => {
   });
 
   it("names the training step and the last step before it in its CPU warning", () => {
-    const note = CHECK_ENVIRONMENT_STEP.cpuNote?.(9) ?? "";
-    expect(note).toContain("step 9");
+    const note = CHECK_ENVIRONMENT_STEP.cpuNote?.(8) ?? "";
     expect(note).toContain("step 8");
+    expect(note).toContain("step 7");
   });
 });
 
@@ -248,20 +234,6 @@ describe("confirm-video-and-create step", () => {
     const entry = snapshotTutorialState(watchState());
     const current = watchState({ projectLoaded: true, labels: fakeLabels({ videos: 1 }) });
     expect(CONFIRM_VIDEO_AND_CREATE_STEP.isComplete(entry, current)).toBe(true);
-  });
-});
-
-describe("add-video step (existing project)", () => {
-  it("is incomplete when video count hasn't grown", () => {
-    const entry = snapshotTutorialState(watchState({ labels: fakeLabels({ videos: 1 }) }));
-    const current = watchState({ labels: fakeLabels({ videos: 1 }) });
-    expect(ADD_VIDEO_STEP.isComplete(entry, current)).toBe(false);
-  });
-
-  it("completes once the video count increases from the entry snapshot", () => {
-    const entry = snapshotTutorialState(watchState({ labels: fakeLabels({ videos: 0 }) }));
-    const current = watchState({ labels: fakeLabels({ videos: 1 }) });
-    expect(ADD_VIDEO_STEP.isComplete(entry, current)).toBe(true);
   });
 });
 
@@ -371,20 +343,6 @@ describe("label-one-frame step", () => {
   });
 });
 
-describe("select-anchor-part step", () => {
-  it("is incomplete while the anchor part is unset (Auto)", () => {
-    const entry = snapshotTutorialState(watchState());
-    const current = watchState({ trainingAnchorPart: null });
-    expect(SELECT_ANCHOR_PART_STEP.isComplete(entry, current)).toBe(false);
-  });
-
-  it("completes once an explicit anchor part is picked", () => {
-    const entry = snapshotTutorialState(watchState());
-    const current = watchState({ trainingAnchorPart: "thorax" });
-    expect(SELECT_ANCHOR_PART_STEP.isComplete(entry, current)).toBe(true);
-  });
-});
-
 describe("run-training step", () => {
   it("is incomplete if training never ran during this step", () => {
     const entry = snapshotTutorialState(watchState({ trainingStatus: "idle" }));
@@ -446,87 +404,32 @@ describe("correct-predictions step", () => {
 describe("retrain step", () => {
   it("is incomplete until a run seen during this step reaches completed", () => {
     const entry = snapshotTutorialState(watchState({ trainingStatus: "idle" }));
-    const current = watchState({
-      trainingStatus: "completed",
-      trainingAnchorPart: "torso",
-      trainingMaxEpochs: 200,
-    });
+    const current = watchState({ trainingStatus: "completed" });
     expect(RETRAIN_STEP.isComplete(entry, current)).toBe(false);
   });
 
-  it("is incomplete if training finished but Anchor Part isn't torso", () => {
-    const entry = snapshotTutorialState(watchState());
-    entry.everTraining = true;
-    const current = watchState({
-      trainingStatus: "completed",
-      trainingAnchorPart: "thorax",
-      trainingMaxEpochs: 200,
-    });
+  it("is incomplete while training is still running", () => {
+    const entry = snapshotTutorialState(watchState({ trainingStatus: "running" }));
+    const current = watchState({ trainingStatus: "running" });
     expect(RETRAIN_STEP.isComplete(entry, current)).toBe(false);
   });
 
-  it("is incomplete if training finished but Epochs isn't 200", () => {
-    const entry = snapshotTutorialState(watchState());
-    entry.everTraining = true;
-    const current = watchState({
-      trainingStatus: "completed",
-      trainingAnchorPart: "torso",
-      trainingMaxEpochs: 5,
-    });
+  it("is incomplete if the run ended in an error (e.g. Cancel)", () => {
+    const entry = snapshotTutorialState(watchState({ trainingStatus: "running" }));
+    const current = watchState({ trainingStatus: "error" });
     expect(RETRAIN_STEP.isComplete(entry, current)).toBe(false);
   });
 
-  it("is incomplete without a matching Post-Training Inference Target DOM element", () => {
-    // No matching data-tutorial element exists in this DOM-less test env, so
-    // textContent reads back empty — same idiom as generate-suggestions above.
-    const entry = snapshotTutorialState(watchState());
-    entry.everTraining = true;
-    const current = watchState({
-      trainingStatus: "completed",
-      trainingAnchorPart: "torso",
-      trainingMaxEpochs: 200,
-    });
-    expect(RETRAIN_STEP.isComplete(entry, current)).toBe(false);
-  });
-
-  describe("with a Post-Training Inference Target DOM element", () => {
-    let select: HTMLElement;
-
-    afterEach(() => {
-      select.remove();
-    });
-
-    it("is incomplete if Post-Training Inference Target isn't Random sample (current video)", () => {
-      select = document.createElement("div");
-      select.setAttribute("data-tutorial", "post-training-inference-target-select");
-      select.textContent = "Suggested frames";
-      document.body.appendChild(select);
-
-      const entry = snapshotTutorialState(watchState());
-      entry.everTraining = true;
+  it("completes when training finishes, whatever the epochs or anchor (Stop Early included)", () => {
+    const entry = snapshotTutorialState(watchState({ trainingStatus: "running" }));
+    for (const [anchor, epochs] of [["torso", 50], ["head", 12], [null, 5]] as const) {
       const current = watchState({
         trainingStatus: "completed",
-        trainingAnchorPart: "torso",
-        trainingMaxEpochs: 200,
-      });
-      expect(RETRAIN_STEP.isComplete(entry, current)).toBe(false);
-    });
-
-    it("completes once a run seen during this step reaches completed with Anchor Part torso, Epochs 200, and target Random sample (current video)", () => {
-      select = document.createElement("div");
-      select.setAttribute("data-tutorial", "post-training-inference-target-select");
-      select.textContent = "Random sample (current video)";
-      document.body.appendChild(select);
-
-      const entry = snapshotTutorialState(watchState());
-      entry.everTraining = true;
-      const current = watchState({
-        trainingStatus: "completed",
-        trainingAnchorPart: "torso",
-        trainingMaxEpochs: 200,
+        trainingAnchorPart: anchor,
+        trainingMaxEpochs: epochs,
       });
       expect(RETRAIN_STEP.isComplete(entry, current)).toBe(true);
-    });
+    }
   });
 });
 
@@ -550,5 +453,36 @@ describe("run-inference-video step", () => {
     entry.everInferenceRunning = true;
     const current = watchState({ inferenceStatus: "completed" });
     expect(RUN_INFERENCE_STEP.isComplete(entry, current)).toBe(false);
+  });
+
+  describe("with an Inference Target DOM element", () => {
+    let select: HTMLElement;
+
+    afterEach(() => {
+      select.remove();
+    });
+
+    function withTarget(text: string) {
+      select = document.createElement("div");
+      select.setAttribute("data-tutorial", "inference-target-select");
+      select.textContent = text;
+      document.body.appendChild(select);
+    }
+
+    it("is incomplete for a target other than the entire video", () => {
+      withTarget("Random sample (current video)");
+      const entry = snapshotTutorialState(watchState());
+      entry.everInferenceRunning = true;
+      const current = watchState({ inferenceStatus: "completed" });
+      expect(RUN_INFERENCE_STEP.isComplete(entry, current)).toBe(false);
+    });
+
+    it("completes once inference on the entire current video finishes", () => {
+      withTarget("Entire current video");
+      const entry = snapshotTutorialState(watchState());
+      entry.everInferenceRunning = true;
+      const current = watchState({ inferenceStatus: "completed" });
+      expect(RUN_INFERENCE_STEP.isComplete(entry, current)).toBe(true);
+    });
   });
 });

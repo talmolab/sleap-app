@@ -494,9 +494,8 @@ export interface AppState {
   tutorialActive: boolean;
   tutorialStepIndex: number;
   /**
-   * Resolved once in `startTutorial` (see `buildTutorialSteps`) — whether a
-   * project was already loaded at that moment decides the whole sequence, so
-   * this isn't re-derived mid-run.
+   * Resolved once in `startTutorial` (see `buildTutorialSteps`), so it isn't
+   * re-derived mid-run.
    */
   tutorialSteps: TutorialStep[];
   /**
@@ -513,6 +512,14 @@ export interface AppState {
    * new `startTutorial`.
    */
   tutorialCompleted: boolean;
+  /**
+   * `sidebarMultiPanel` as it was when the tutorial started, or null when no
+   * tutorial is running. The tutorial runs in single-panel mode — with several
+   * panels stacked, the one it opens for a step can sit far from the highlight
+   * ring, which reads as the ring pointing at the wrong thing. Restored on exit
+   * or completion, since `sidebarMultiPanel` is a persisted user preference.
+   */
+  tutorialSavedMultiPanel: boolean | null;
 
   // === Area delete mode ===
   areaDeleteMode: boolean;
@@ -604,6 +611,8 @@ export interface AppState {
   exitTutorial: () => void;
   /** Advance to the next tutorial step; past the last one, end the tutorial and show the completion card. */
   advanceTutorialStep: () => void;
+  /** Put `sidebarMultiPanel` back to what it was before `startTutorial`; a no-op if nothing is saved. */
+  restoreTutorialMultiPanel: () => void;
   /** Go back to the previous tutorial step; a no-op on the first step. */
   previousTutorialStep: () => void;
   /** Close the "Tutorial complete" card. */
@@ -904,6 +913,7 @@ export const useAppStore = create<AppState>()(
       tutorialSteps: [],
       tutorialHighestStepIndex: 0,
       tutorialCompleted: false,
+      tutorialSavedMultiPanel: null,
 
       // Area delete mode
       areaDeleteMode: false,
@@ -1385,13 +1395,16 @@ export const useAppStore = create<AppState>()(
         }),
 
       startTutorial: () => {
-        // Whether a project already exists decides the whole sequence (a
-        // fresh app has no Sidebar/panels mounted yet — see AppShell — so it
-        // must go through New Project first); resolved once here, not
-        // re-derived mid-run. The desktop app also gets the environment
-        // check up front; the browser build has no local environment.
-        const steps = buildTutorialSteps(get().projectLoaded, isTauri);
+        // Resolved once here, not re-derived mid-run. The desktop app also
+        // gets the environment check up front; the browser build has no local
+        // environment. Expects no project to be open — menu entry points go
+        // through `requestStartTutorial`, which offers a new window otherwise.
+        const steps = buildTutorialSteps(isTauri);
+        // A restart mid-run keeps the preference saved by the first start.
+        const saved = get().tutorialSavedMultiPanel ?? get().sidebarMultiPanel;
+        get().setSidebarMultiPanel(false);
         set((state) => {
+          state.tutorialSavedMultiPanel = saved;
           state.tutorialActive = true;
           state.tutorialStepIndex = 0;
           state.tutorialSteps = steps;
@@ -1401,10 +1414,21 @@ export const useAppStore = create<AppState>()(
         if (steps[0]?.panelId) get().openPanel(steps[0].panelId);
       },
 
-      exitTutorial: () =>
+      exitTutorial: () => {
         set((state) => {
           state.tutorialActive = false;
-        }),
+        });
+        get().restoreTutorialMultiPanel();
+      },
+
+      restoreTutorialMultiPanel: () => {
+        const saved = get().tutorialSavedMultiPanel;
+        if (saved === null) return;
+        set((state) => {
+          state.tutorialSavedMultiPanel = null;
+        });
+        get().setSidebarMultiPanel(saved);
+      },
 
       advanceTutorialStep: () => {
         const steps = get().tutorialSteps;
@@ -1414,6 +1438,7 @@ export const useAppStore = create<AppState>()(
             state.tutorialActive = false;
             state.tutorialCompleted = true;
           });
+          get().restoreTutorialMultiPanel();
           return;
         }
         set((state) => {

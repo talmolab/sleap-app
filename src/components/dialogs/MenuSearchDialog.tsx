@@ -58,6 +58,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+import { requestStartTutorial } from "@/lib/tutorial/startTutorial";
 
 interface MenuAction {
   group: string;
@@ -167,7 +168,7 @@ function buildActions(): MenuAction[] {
     { group: "Predict", label: "Export Labels Package...", run: () => store().setExportPackageDialogOpen(true) },
 
     // Help
-    { group: "Help", label: "Start Tutorial", run: () => store().startTutorial() },
+    { group: "Help", label: "Start Tutorial", run: () => void requestStartTutorial() },
     { group: "Help", label: "Keyboard Shortcuts", run: () => store().setShortcutsDialogOpen(true) },
     { group: "Help", label: "Labeling Tips", run: () => store().setLabelingTipsDialogOpen(true) },
     { group: "Help", label: "Documentation", run: () => void openExternal(getDocsUrl()) },

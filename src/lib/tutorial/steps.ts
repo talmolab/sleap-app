@@ -16,16 +16,12 @@
  * `TutorialOverlay`'s `isRevisited` — so re-reading a finished step never
  * demands redoing the real action just to move forward again.
  *
- * `buildTutorialSteps` picks the sequence based on whether a project is
- * already loaded when the tutorial starts: a fresh app (WelcomeScreen, no
- * `Sidebar`/panels mounted at all — see `AppShell`) must go through New
- * Project first, since the Videos panel doesn't exist yet to add a video to.
- * If a project is already loaded, that's skipped in favor of the Videos
- * panel's own "Add Videos" button. This file's steps already cover labeling,
- * training, and inference (Phase 2); adding a further step to either sequence
- * is just appending an entry and a matching `data-tutorial` attribute at its
- * target — the engine is generic over whatever list `buildTutorialSteps`
- * returns.
+ * The tutorial always runs from a fresh app (WelcomeScreen) and goes through
+ * New Project first, so it never adds sample data to a project the user
+ * already has open — `requestStartTutorial` (startTutorial.ts) offers a new
+ * window instead when one is. Adding a step is just appending an entry and a
+ * matching `data-tutorial` attribute at its target — the engine is generic over
+ * whatever list `buildTutorialSteps` returns.
  *
  * On desktop, both sequences are prefixed with `CHECK_ENVIRONMENT_STEP`
  * (numbered "Step 0", see `tutorialStepNumber`): training needs uv + sleap-nn,
@@ -199,9 +195,14 @@ export const NEW_PROJECT_STEP: TutorialStep = {
   isComplete: (_entry, current) => current.newProjectDialogOpen === true,
 };
 
-/** GitHub location of the fixed sample video (mice.mp4) this tutorial is built around. */
+/**
+ * Direct download of the fixed sample video (mice.mp4) this tutorial is built
+ * around. Google Drive's `uc?export=download` form starts the download
+ * straight away; the `/file/d/<id>/view` share link would open Drive's preview
+ * page instead.
+ */
 export const SAMPLE_VIDEO_URL =
-  "https://github.com/talmolab/sleap-tutorial-data/blob/main/mice.mp4";
+  "https://drive.google.com/uc?export=download&id=1ncZJlGdBSH0JCYhh_Af3lTsizR2Z8rQQ";
 
 /**
  * Fresh-app step 2: videos picked in the New Project dialog are local
@@ -235,23 +236,10 @@ export const CONFIRM_VIDEO_AND_CREATE_STEP: TutorialStep = {
     current.projectLoaded === true && (current.labels?.videos.length ?? 0) > 0,
 };
 
-/** Already-has-a-project step 1: add a video via the Videos panel directly. */
-export const ADD_VIDEO_STEP: TutorialStep = {
-  id: "add-video",
-  title: "Add a video",
-  body: "This tutorial is built around a short sample video (mice.mp4) — click it to download if you don't have it, then use the video dropzone to import it (drag it in, or click to browse).",
-  bodyLink: { text: "mice.mp4", href: SAMPLE_VIDEO_URL },
-  panelId: "videos",
-  targetSelector: '[data-tutorial="add-videos-button"]',
-  placement: "left",
-  isComplete: (entry, current) =>
-    (current.labels?.videos.length ?? 0) > entry.videoCount,
-};
-
 export const SAVE_PROJECT_STEP: TutorialStep = {
   id: "save-project",
   title: "Save your project",
-  body: "Save your work as a .slp file so it isn't lost — open File ▸ Save, or press ⌘S / Ctrl+S.",
+  body: "Save your work so it isn't lost — open File ▸ Save, or press ⌘S / Ctrl+S.\n\nThis writes your project to a .slp file: SLEAP's project format, which keeps track of your videos, skeleton, and labels. It's the file you'll open to come back to this project.",
   targetSelector: '[data-tutorial="file-menu-trigger"]',
   placement: "bottom",
   isComplete: (_entry, current) => current.hasChanges === false,
@@ -283,7 +271,7 @@ export const GENERATE_SUGGESTIONS_STEP: TutorialStep = {
 export const CREATE_SKELETON_STEP: TutorialStep = {
   id: "create-skeleton",
   title: "Create a skeleton",
-  body: 'Click "Draw skeleton on frame", then follow the instructions in the bar that appears at the top of the frame: click on the frame to place nodes (double-click a node to rename it), click "Next: Connect edges", drag a stroke through the nodes to connect them, and click Done. For this tutorial\'s sample video, create 3 nodes — head, torso, and tailbase — with edges torso → head and torso → tailbase.\n\nDraw the skeleton only once, even if there\'s more than one mouse in the frame — this step just defines the skeleton. You\'ll add an instance for each animal in the next step.',
+  body: 'Click "Draw skeleton on frame", then follow the instructions in the bar that appears at the top of the frame: click on the frame to place nodes (double-click a node to rename it), click "Next: Connect edges", drag a stroke through the nodes to connect them, and click Done. When asked whether to create an instance on this frame, click "Create instance" — this is one of your suggested frames, so it gives you a head start on the next step. For this tutorial\'s sample video, create 3 nodes — head, torso, and tailbase — with edges torso → head and torso → tailbase.\n\nDraw the skeleton only once, even if there\'s more than one mouse in the frame — this step just defines the skeleton. You\'ll add an instance for each animal in the next step.',
   panelId: "skeleton",
   targetSelector: '[data-tutorial="draw-skeleton-button"]',
   placement: "left",
@@ -316,7 +304,7 @@ export const CREATE_SKELETON_STEP: TutorialStep = {
 export const LABEL_ONE_FRAME_STEP: TutorialStep = {
   id: "label-one-frame",
   title: "Label one frame, then save",
-  body: "For fast prototyping, just label ONE suggested frame completely — place every animal's skeleton on it — then save (⌘S / Ctrl+S) before moving to the Training tab. More than one animal in the frame? Ctrl+drag an existing instance to clone it, or right-click ▸ Add Instance ▸ Best.",
+  body: "For fast prototyping, label just ONE suggested frame completely — place a skeleton on every animal in it, with each node on the right body part — then save (⌘S / Ctrl+S).\n\nMore than one animal in the frame? Ctrl+drag an existing instance to clone it, or right-click ▸ Add Instance ▸ Best.",
   panelId: "suggestions",
   targetSelector: '[data-tutorial="suggestions-panel"]',
   placement: "left",
@@ -325,26 +313,7 @@ export const LABEL_ONE_FRAME_STEP: TutorialStep = {
 };
 
 /**
- * Phase 2, step 2: pick a crop anchor for the top-down pipeline. The body
- * text recommends "torso" (this tutorial's fixed 3-node skeleton), but
- * completion only requires an explicit, non-"Auto" pick — not that exact
- * string — so a typo'd or differently-cased node name still counts, same
- * lesson as `LABEL_ONE_FRAME_STEP`'s fix: don't gate on an exact match the
- * user could reasonably satisfy in a way the check doesn't recognize.
- */
-export const SELECT_ANCHOR_PART_STEP: TutorialStep = {
-  id: "select-anchor-part",
-  title: "Choose an anchor part",
-  body: "Top-Down is selected with its default config already loaded. Pick torso as the Anchor Part below — it's the central, reliably-visible node in this tutorial's skeleton, and Top-Down crops around it every frame.",
-  panelId: "training",
-  targetSelector: '[data-tutorial="anchor-part-select"]',
-  placement: "right",
-  isComplete: (_entry, current) => current.trainingAnchorPart !== null,
-};
-
-/**
- * Step ids covering the tutorial's FIRST training pass (choosing the anchor
- * part through the first Start Training click) — shared by `TutorialOverlay`
+ * Step ids covering the tutorial's FIRST training pass — shared by `TutorialOverlay`
  * (forces epochs down to `TUTORIAL_MAX_EPOCHS` here) and `TrainingPanel`'s
  * config-autoload effect (forces the generic baseline profile here, even if a
  * trained run already exists on disk for this head, e.g. from a prior tutorial
@@ -352,15 +321,18 @@ export const SELECT_ANCHOR_PART_STEP: TutorialStep = {
  * baseline workflow). Past this set (e.g. `retrain`), a trained run's exact
  * config is preferred again, same as normal "Train Again" behavior.
  */
-export const TUTORIAL_FIRST_TRAINING_STEP_IDS = new Set([
-  "select-anchor-part",
-  "run-training",
-]);
+export const TUTORIAL_FIRST_TRAINING_STEP_IDS = new Set(["run-training"]);
 
+/**
+ * Choosing the anchor part and starting training happen in the same panel, so
+ * they're one step. Completion only requires training to finish — not a
+ * particular anchor — so a run started with a different pick still moves the
+ * tutorial on rather than stranding the user.
+ */
 export const RUN_TRAINING_STEP: TutorialStep = {
   id: "run-training",
-  title: "Run training",
-  body: 'Epochs is set to 5 for this first pass — just enough to see the workflow work end-to-end; you can raise it for a better model on the next round. Click Start Training. This can take a while — the tutorial will pick back up once it finishes. While it runs, scroll down and click the graph icon next to a model\'s progress to watch its loss curves live.',
+  title: "Choose an anchor part and train",
+  body: 'Top-Down is selected with its default config already loaded. First pick torso as the Anchor Part — it\'s the central, reliably-visible node in this tutorial\'s skeleton, and Top-Down crops around it every frame.\n\nEpochs is set to 5 for this first pass — just enough to see the workflow work end-to-end. Click Start Training. This can take a while — the tutorial will pick back up once it finishes. While it runs, scroll down and click the graph icon next to a model\'s progress to watch its loss curves live.',
   panelId: "training",
   targetSelector: '[data-tutorial="start-training-button"]',
   placement: "top",
@@ -381,7 +353,7 @@ export const RUN_TRAINING_STEP: TutorialStep = {
 export const CORRECT_PREDICTIONS_STEP: TutorialStep = {
   id: "correct-predictions",
   title: "Review and correct predictions",
-  body: "Training is done — now let's review the predictions made on the suggested frames.\n\nOpen a suggested frame that now shows a prediction. Accept it — double-click the predicted instance, or press ⌘⇧A / Ctrl+Shift+A to accept all predictions on the frame — then drag any points that are off. Do this for at least one frame (ideally all of them, for a better retrain).",
+  body: "Training is done — now let's review the predictions made on the suggested frames. Expect them to be rough: the model has seen one labeled frame for 5 epochs. Correcting them is how it gets better.\n\nIn the Suggestions panel, frames with a Score have predictions. Open one and accept it — double-click the predicted instance, or press ⌘⇧A / Ctrl+Shift+A to accept all predictions on the frame — then drag any points that are off. Do this for at least one frame (ideally all of them, for a better retrain).",
   tips: {
     label: "Label tips",
     text: "Predicted nodes are yellow. Once accepted, a node is red until you click or drag it, then it turns green. A hollow gray marker means that node is set non-visible — right-click it and choose \"Mark Node Visible\" (or select several and use \"Toggle Selected Nodes Visibility\") to turn it back on.",
@@ -395,38 +367,28 @@ export const CORRECT_PREDICTIONS_STEP: TutorialStep = {
       entry.suggestionFramesWithPredictionsAtEntry,
 };
 
+/**
+ * Epochs default to `TUTORIAL_RETRAIN_EPOCHS` here (applied by
+ * `TutorialOverlay`), but completion only requires training to finish, not a
+ * particular epoch count or config — the user may change the epochs or click
+ * Stop Early to move on sooner, and Stop Early still ends the run as
+ * "completed".
+ */
 export const RETRAIN_STEP: TutorialStep = {
   id: "retrain",
   title: "Re-train with the corrected labels",
-  body: 'Back in the Training tab, click "Train Again". Before you click Start Training: set Epochs to 200 (up from the tutorial\'s capped 5), confirm Anchor Part is still torso, and set Post-Training Inference Target to "Random sample (current video)" — that field is disabled once training starts, so set it now, not after.',
+  body: 'Back in the Training tab, click "Train Again". Epochs is now set to 50 for a better model, and Anchor Part should still be torso. Click Start Training.\n\nYou don\'t have to wait for every epoch: once you\'ve seen how it works, click Stop Early to finish with what\'s been trained so far. Top-Down trains two models one after the other, so click it once for each.',
   panelId: "training",
   targetSelector: '[data-tutorial="start-training-button"]',
   placement: "top",
-  isComplete: (entry, current) => {
-    if (
-      !entry.everTraining ||
-      current.trainingStatus !== "completed" ||
-      current.trainingAnchorPart !== "torso" ||
-      current.trainingMaxEpochs !== 200
-    ) {
-      return false;
-    }
-    // Post-Training Inference Target is local component state (TrainingPanel),
-    // not part of any store, and is disabled while training runs — so reading
-    // it once training has completed reflects whatever was set before Start
-    // Training was clicked. Same DOM-text-read idiom GENERATE_SUGGESTIONS_STEP
-    // uses for its own local <Select>.
-    const targetSelect = document.querySelector(
-      '[data-tutorial="post-training-inference-target-select"]',
-    );
-    return (targetSelect?.textContent ?? "").includes("Random sample (current video)");
-  },
+  isComplete: (entry, current) =>
+    entry.everTraining && current.trainingStatus === "completed",
 };
 
 export const RUN_INFERENCE_STEP: TutorialStep = {
   id: "run-inference-video",
-  title: "Run inference on a random sample",
-  body: 'Open the Inference tab, set Inference Target to "Random sample (current video)", and click Run Inference.',
+  title: "Run inference on the whole video",
+  body: 'Set Inference Target to "Entire current video" and click Run Inference. When it finishes, play or scrub through the video to see the model\'s predictions on every frame.',
   panelId: "inference",
   targetSelector: '[data-tutorial="run-inference-button"]',
   placement: "top",
@@ -440,38 +402,28 @@ export const RUN_INFERENCE_STEP: TutorialStep = {
     const targetSelect = document.querySelector(
       '[data-tutorial="inference-target-select"]',
     );
-    return (targetSelect?.textContent ?? "").includes("Random sample (current video)");
+    return (targetSelect?.textContent ?? "").includes("Entire current video");
   },
 };
 
 /**
- * Resolves the step sequence once, at tutorial start — not re-evaluated
- * mid-run, so a project created partway through the New Project steps
- * doesn't retroactively change the list out from under the engine.
+ * The full step sequence. Resolved once, at tutorial start (see
+ * `startTutorial` in appStore.ts), so it isn't re-derived mid-run.
  */
-export function buildTutorialSteps(
-  startedWithProjectLoaded: boolean,
-  includeEnvironmentCheck = false,
-): TutorialStep[] {
-  const rest = [
+export function buildTutorialSteps(includeEnvironmentCheck = false): TutorialStep[] {
+  const steps = [
+    NEW_PROJECT_STEP,
+    ADD_VIDEO_IN_DIALOG_STEP,
+    CONFIRM_VIDEO_AND_CREATE_STEP,
     SAVE_PROJECT_STEP,
     GENERATE_SUGGESTIONS_STEP,
     CREATE_SKELETON_STEP,
     LABEL_ONE_FRAME_STEP,
-    SELECT_ANCHOR_PART_STEP,
     RUN_TRAINING_STEP,
     CORRECT_PREDICTIONS_STEP,
     RETRAIN_STEP,
     RUN_INFERENCE_STEP,
   ];
-  const steps = startedWithProjectLoaded
-    ? [ADD_VIDEO_STEP, ...rest]
-    : [
-        NEW_PROJECT_STEP,
-        ADD_VIDEO_IN_DIALOG_STEP,
-        CONFIRM_VIDEO_AND_CREATE_STEP,
-        ...rest,
-      ];
   return includeEnvironmentCheck ? [CHECK_ENVIRONMENT_STEP, ...steps] : steps;
 }
 
