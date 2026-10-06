@@ -168,8 +168,11 @@ host_can_run() {
 if host_can_run; then
   log "asserting encoder + ffprobe run on this host..."
   "$FFPROBE_BIN" -version >/dev/null 2>&1 || fail "ffprobe failed to run: $FFPROBE_BIN"
-  if ! "$FFMPEG_BIN" -hide_banner -encoders 2>/dev/null \
-       | grep -qE '\blibopenh264\b|\bh264_videotoolbox\b'; then
+  # Capture first: piping straight into `grep -q` lets grep exit on the first
+  # match, ffmpeg dies of SIGPIPE (141), and pipefail turns that into a failure.
+  encoders="$("$FFMPEG_BIN" -hide_banner -encoders 2>/dev/null)" \
+    || fail "ffmpeg failed to list encoders: $FFMPEG_BIN"
+  if ! grep -qE '\blibopenh264\b|\bh264_videotoolbox\b' <<<"$encoders"; then
     fail "bundled ffmpeg has no permissive H.264 encoder (need libopenh264 or h264_videotoolbox)"
   fi
   log "ok: permissive H.264 encoder present, ffprobe runs"

@@ -22,6 +22,7 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
+    "tauri:build:local": "bash scripts/tauri-build-local.sh",
     "fetch:ffmpeg": "bash scripts/fetch-ffmpeg.sh"
   },
   "dependencies": {
