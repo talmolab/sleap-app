@@ -30,6 +30,7 @@ import {
   type TutorialWatchState,
 } from "@/lib/tutorial/steps";
 import { useTutorialTargetRect } from "./useTutorialTargetRect";
+import { TutorialCompletionCard } from "./TutorialCompletionCard";
 
 /** How often to re-check the active step's `isComplete` against stores this
  * overlay doesn't otherwise subscribe to (training/inference status live in
@@ -159,6 +160,7 @@ export function TutorialOverlay() {
   const tutorialStepIndex = useAppStore((s) => s.tutorialStepIndex);
   const tutorialSteps = useAppStore((s) => s.tutorialSteps);
   const tutorialHighestStepIndex = useAppStore((s) => s.tutorialHighestStepIndex);
+  const tutorialCompleted = useAppStore((s) => s.tutorialCompleted);
   const editSeq = useAppStore((s) => s.editSeq);
   const hasChanges = useAppStore((s) => s.hasChanges);
   const skeletonBuildMode = useAppStore((s) => s.skeletonBuildMode);
@@ -295,7 +297,7 @@ export function TutorialOverlay() {
     dragStateRef.current = null;
   };
 
-  if (!step) return null;
+  if (!step) return tutorialCompleted ? <TutorialCompletionCard /> : null;
 
   const stepNumber = tutorialStepNumber(tutorialSteps, tutorialStepIndex);
   const lastStepNumber = tutorialStepNumber(tutorialSteps, tutorialSteps.length - 1);

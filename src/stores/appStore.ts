@@ -507,6 +507,12 @@ export interface AppState {
    * this mark doesn't need its real-world action redone to move forward again.
    */
   tutorialHighestStepIndex: number;
+  /**
+   * Set when the last step completes (not on Exit), so `TutorialOverlay`
+   * shows the completion card; cleared by `dismissTutorialCompletion` or a
+   * new `startTutorial`.
+   */
+  tutorialCompleted: boolean;
 
   // === Area delete mode ===
   areaDeleteMode: boolean;
@@ -596,10 +602,12 @@ export interface AppState {
   startTutorial: () => void;
   /** Stop the tutorial at any point (Exit button). */
   exitTutorial: () => void;
-  /** Advance to the next tutorial step, or exit once past the last one. */
+  /** Advance to the next tutorial step; past the last one, end the tutorial and show the completion card. */
   advanceTutorialStep: () => void;
   /** Go back to the previous tutorial step; a no-op on the first step. */
   previousTutorialStep: () => void;
+  /** Close the "Tutorial complete" card. */
+  dismissTutorialCompletion: () => void;
   enterPlacementMode: () => void;
   exitPlacementMode: () => void;
 
@@ -895,6 +903,7 @@ export const useAppStore = create<AppState>()(
       tutorialStepIndex: 0,
       tutorialSteps: [],
       tutorialHighestStepIndex: 0,
+      tutorialCompleted: false,
 
       // Area delete mode
       areaDeleteMode: false,
@@ -1387,6 +1396,7 @@ export const useAppStore = create<AppState>()(
           state.tutorialStepIndex = 0;
           state.tutorialSteps = steps;
           state.tutorialHighestStepIndex = 0;
+          state.tutorialCompleted = false;
         });
         if (steps[0]?.panelId) get().openPanel(steps[0].panelId);
       },
@@ -1402,6 +1412,7 @@ export const useAppStore = create<AppState>()(
         if (nextIndex >= steps.length) {
           set((state) => {
             state.tutorialActive = false;
+            state.tutorialCompleted = true;
           });
           return;
         }
@@ -1422,6 +1433,11 @@ export const useAppStore = create<AppState>()(
         const prevStep = get().tutorialSteps[prevIndex];
         if (prevStep?.panelId) get().openPanel(prevStep.panelId);
       },
+
+      dismissTutorialCompletion: () =>
+        set((state) => {
+          state.tutorialCompleted = false;
+        }),
 
       enterPlacementMode: () =>
         set((state) => {

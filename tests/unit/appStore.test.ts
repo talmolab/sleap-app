@@ -977,6 +977,42 @@ describe("tutorial step navigation", () => {
     }));
   }
 
+  describe("tutorialCompleted (completion card)", () => {
+    it("is set when advancing past the last step", () => {
+      useAppStore.setState({
+        tutorialActive: true,
+        tutorialCompleted: false,
+        tutorialSteps: fakeSteps("videos", "skeleton"),
+        tutorialStepIndex: 1,
+      });
+      useAppStore.getState().advanceTutorialStep();
+      const s = useAppStore.getState();
+      expect(s.tutorialActive).toBe(false);
+      expect(s.tutorialCompleted).toBe(true);
+    });
+
+    it("is not set by exiting partway through", () => {
+      useAppStore.setState({
+        tutorialActive: true,
+        tutorialCompleted: false,
+        tutorialSteps: fakeSteps("videos", "skeleton"),
+        tutorialStepIndex: 0,
+      });
+      useAppStore.getState().exitTutorial();
+      expect(useAppStore.getState().tutorialCompleted).toBe(false);
+    });
+
+    it("is cleared by dismissTutorialCompletion and by startTutorial", () => {
+      useAppStore.setState({ tutorialCompleted: true });
+      useAppStore.getState().dismissTutorialCompletion();
+      expect(useAppStore.getState().tutorialCompleted).toBe(false);
+
+      useAppStore.setState({ tutorialCompleted: true, projectLoaded: false });
+      useAppStore.getState().startTutorial();
+      expect(useAppStore.getState().tutorialCompleted).toBe(false);
+    });
+  });
+
   it("previousTutorialStep is a no-op on the first step", () => {
     useAppStore.setState({
       tutorialActive: true,
