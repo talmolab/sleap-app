@@ -13,6 +13,7 @@ import { useTrainingStore, getConfigSlots, getSlotLabel, countUserLabeledFrames 
 import { useExportStore } from "@/stores/exportStore";
 import type { ModelType, ConfigFile, ConfigHyperparams } from "@/stores/trainingStore";
 import { useConnectStore } from "@/stores/connectStore";
+import { BackendPicker } from "@/components/common/BackendPicker";
 import { RemoteFileBrowser } from "@/components/dialogs/RemoteFileBrowser";
 import { TrainingConfigDialog } from "@/components/dialogs/TrainingConfigDialog";
 import { LossViewerDialog } from "@/components/monitors/LossViewerDialog";
@@ -936,12 +937,14 @@ export function TrainingPanel() {
   >(null);
 
   const connectionStatus = useConnectStore((s) => s.connectionStatus);
-  const workers = useConnectStore((s) => s.workers);
   const selectedWorkerId = useConnectStore((s) => s.selectedWorkerId);
-  const selectWorker = useConnectStore((s) => s.selectWorker);
+  const connectedMounts = useConnectStore((s) => s.workerMounts);
 
-  const selectedWorker = workers.find((w) => w.peerId === selectedWorkerId);
-  const workerMounts = selectedWorker?.mounts || ["/"];
+  // Empty (not ["/"]) while disconnected: RemoteFileBrowser treats a single
+  // mount as "browse it directly", which would immediately hit connectStore's
+  // "Not connected to worker" error instead of showing an empty/disabled state.
+  const workerMounts =
+    connectionStatus === "connected" ? connectedMounts.map((m) => m.path) : [];
 
   // App state
   const skeleton = useAppStore((s) => s.skeleton);
@@ -1048,7 +1051,7 @@ export function TrainingPanel() {
     hasValidCheckpointSelection &&
     !isModelTypeIncompatible &&
     status === "idle" &&
-    (remoteEnabled ? !!selectedWorkerId : true);
+    (remoteEnabled ? !!selectedWorkerId && connectionStatus === "connected" : true);
 
   // Config upload via file dialog
   const handleConfigBrowse = (slot: string) => {
@@ -1401,87 +1404,11 @@ export function TrainingPanel() {
 
             {/* ── Remote (desktop only — web is always remote) ──────── */}
             <Section title="Remote" defaultOpen={false}>
-              <div className="flex items-center justify-between py-1">
-                <span className="text-xs flex items-center gap-1">
-                  Remote Training
-                  <HelpTooltip text="Send this training job to a connected remote worker machine via sleap-connect instead of running it locally." />
-                </span>
-                <button
-                  className={`w-9 h-5 rounded-full relative transition-colors ${
-                    remoteEnabled ? "bg-primary" : "bg-zinc-700"
-                  }`}
-                  onClick={() => setRemoteEnabled(!remoteEnabled)}
-                  disabled={connectionStatus !== "connected"}
-                >
-                  <span
-                    className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
-                      remoteEnabled ? "translate-x-4" : ""
-                    }`}
-                  />
-                </button>
-              </div>
-
-              {connectionStatus !== "connected" && !remoteEnabled && (
-                <p className="text-[10px] text-muted-foreground">
-                  Connect to a room in the Connect tab to enable remote training.
-                </p>
-              )}
-
-              {remoteEnabled && connectionStatus === "connected" && (
-                <>
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-1">
-                      Room
-                      <HelpTooltip text="The sleap-connect room this app is currently connected to. Workers must join the same room to be selectable below." />
-                    </label>
-                    <div className="flex items-center gap-1.5 text-[11px]">
-                      <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
-                      {(() => {
-                        const state = useConnectStore.getState();
-                        const room = state.availableRooms.find(
-                          (r) => r.roomId === state.roomId,
-                        );
-                        return room?.name || state.roomId;
-                      })()}
-                    </div>
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-1">
-                      Worker
-                      <HelpTooltip text="Which connected machine in the room will actually run training. Only workers with status 'available' can be selected." />
-                    </label>
-                    <Select
-                      value={selectedWorkerId || ""}
-                      onValueChange={(v) => selectWorker(v)}
-                    >
-                      <SelectTrigger className="h-7 text-xs">
-                        <SelectValue placeholder="Select a worker" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {workers.map((w) => (
-                          <SelectItem
-                            key={w.peerId}
-                            value={w.peerId}
-                            disabled={w.status !== "available"}
-                          >
-                            {w.name}
-                            {w.gpu ? ` (${w.gpu.model})` : ""}
-                            {w.status !== "available" ? ` — ${w.status}` : ""}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  {workers.filter((w) => w.status === "available").length === 0 && (
-                    <div className="bg-orange-500/8 border border-orange-500/20 rounded-md p-2 text-[11px] text-orange-400">
-                      <b>All workers are busy.</b> Wait for a worker to become
-                      available, or disable remote training.
-                    </div>
-                  )}
-                </>
-              )}
+              <BackendPicker
+                jobLabel="training job"
+                remoteEnabled={remoteEnabled}
+                onRemoteEnabledChange={setRemoteEnabled}
+              />
             </Section>
           </>
         )}

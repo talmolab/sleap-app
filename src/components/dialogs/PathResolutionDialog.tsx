@@ -57,11 +57,17 @@ export function PathResolutionDialog({
   const [browsingIndex, setBrowsingIndex] = useState<number | null>(null);
   const [folderBrowseMode, setFolderBrowseMode] = useState(false);
 
-  // Get worker mounts from the connect store
-  const workers = useConnectStore((s) => s.workers);
-  const selectedWorkerId = useConnectStore((s) => s.selectedWorkerId);
-  const selectedWorker = workers.find((w) => w.peerId === selectedWorkerId);
-  const workerMounts = selectedWorker?.mounts ?? [];
+  // Get worker mounts from the connect store — gated on connectionStatus,
+  // matching TrainingPanel.tsx/InferencePanel.tsx: a failed reconnect leaves
+  // workerMounts holding the previous (now-disconnected) worker's paths, so
+  // without this guard this dialog would silently offer stale mounts.
+  const connectionStatus = useConnectStore((s) => s.connectionStatus);
+  const connectedMounts = useConnectStore((s) => s.workerMounts);
+  // Empty (not ["/"]) while disconnected: RemoteFileBrowser treats a single
+  // mount as "browse it directly", which would immediately hit connectStore's
+  // "Not connected to worker" error instead of showing an empty/disabled state.
+  const workerMounts =
+    connectionStatus === "connected" ? connectedMounts.map((m) => m.path) : [];
 
   // Reset state when dialog opens with new paths
   useEffect(() => {

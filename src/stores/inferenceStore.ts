@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { loadSlp } from "@talmolab/sleap-io.js";
+import type { JobResult } from "@/lib/sleapConnect";
 import type { ProcessEvent } from "@/platform/backend";
 import { cancelCommand, runInference } from "@/platform/backend";
 import { getPlatform } from "@/platform";
@@ -152,6 +153,61 @@ const initialState = {
   startedAt: null as number | null,
 };
 
+/**
+ * Load a predictions .slp's bytes into a Labels object and merge it into
+ * the current project — shared by the local (read from disk) and remote
+ * (fetched over HTTP as a result blob) paths. `filenameHint` only needs to
+ * look like a real filename; sleap-io.js uses it as a parsing hint, not to
+ * actually read anything from disk.
+ */
+export async function loadAndMergePredictionBytes(
+  bytes: Uint8Array,
+  filenameHint: string,
+  mode: ExistingPredictionsMode,
+  trackOnly: boolean,
+): Promise<void> {
+  const predictions = await loadSlp(bytes, {
+    openVideos: false,
+    h5: { filenameHint },
+  });
+  console.log(
+    "[inference] Loaded predictions: %d videos, %d labeled frames, %d tracks",
+    predictions.videos?.length ?? 0,
+    predictions.labeledFrames?.length ?? 0,
+    predictions.tracks?.length ?? 0,
+  );
+  if (trackOnly) {
+    await commandContext.execute(MergeTracks, { retracked: predictions });
+  } else {
+    await commandContext.execute(MergePredictions, { predictions, mode });
+  }
+}
+
+/**
+ * If a remote job's result carries a fetchable predictions blob (stage
+ * 1.10 — talmolab/sleap-connect PR #89 and later), fetch it and merge it
+ * into the current project. A no-op if the worker didn't report one — a
+ * worker not yet running the blob HTTP server is a known interim gap, not
+ * an error: remote inference still completes, there's just nothing to
+ * merge back automatically yet.
+ */
+export async function fetchAndMergeRemoteResult(
+  result: JobResult,
+  mode: ExistingPredictionsMode,
+  trackOnly: boolean,
+): Promise<void> {
+  const ref = result.resultBlobs?.predictions;
+  if (!ref) return;
+  const { useConnectStore } = await import("@/stores/connectStore");
+  const bytes = await useConnectStore.getState().fetchResultBlob(ref);
+  await loadAndMergePredictionBytes(
+    bytes,
+    `${result.jobId}.predictions.slp`,
+    mode,
+    trackOnly,
+  );
+}
+
 export const useInferenceStore = create<InferenceState>()((set) => ({
   ...initialState,
 
@@ -233,9 +289,9 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
     });
 
     if (remoteOpts?.remote) {
-      // ── Remote inference via WebRTC ────────────────────────
+      // ── Remote inference via sleap-connect worker ─────────
       const { useConnectStore } = await import("@/stores/connectStore");
-      const { submitJob, workers, selectedWorkerId } = useConnectStore.getState();
+      const { submitJob, workerMounts: mounts } = useConnectStore.getState();
       const { handleProcessEvent } = useInferenceStore.getState();
 
       // Collect video paths from the loaded project
@@ -258,8 +314,7 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
       const { loadSavedMappings, resolveProjectPaths, buildPathMappings } =
         await import("@/lib/pathMappings");
       const savedMappings = await loadSavedMappings();
-      const worker = workers.find((w) => w.peerId === selectedWorkerId);
-      const workerMounts = worker?.mounts ?? [];
+      const workerMounts = mounts.map((m) => m.path);
 
       // Resolve paths using saved prefix mappings
       const resolvedPaths = resolveProjectPaths(allLocalPaths, savedMappings, workerMounts);
@@ -434,6 +489,15 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
               set({ status: "error", error: result.error || `Video ${i + 1} failed` });
               return;
             }
+            try {
+              await fetchAndMergeRemoteResult(result, config.existingPredictions, config.trackOnly);
+            } catch (mergeErr) {
+              set({
+                status: "error",
+                error: `Video ${i + 1}: failed to fetch/merge remote result: ${mergeErr instanceof Error ? mergeErr.message : String(mergeErr)}`,
+              });
+              return;
+            }
           }
           set({ status: "completed" });
         } catch (e) {
@@ -523,10 +587,15 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
         });
 
         if (result.success) {
-          set({
-            status: "completed",
-            outputPath: result.outputPath || null,
-          });
+          try {
+            await fetchAndMergeRemoteResult(result, config.existingPredictions, config.trackOnly);
+            set({ status: "completed", outputPath: result.outputPath || null });
+          } catch (mergeErr) {
+            set({
+              status: "error",
+              error: `Failed to fetch/merge remote result: ${mergeErr instanceof Error ? mergeErr.message : String(mergeErr)}`,
+            });
+          }
         } else {
           set({
             status: "error",
@@ -587,12 +656,12 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
               set({ outputPath: result.outputPath });
               const platform = await getPlatform();
               const bytes = await platform.readFile(result.outputPath);
-              const predictions = await loadSlp(bytes, { openVideos: false, h5: { filenameHint: result.outputPath } });
-              if (config.trackOnly) {
-                await commandContext.execute(MergeTracks, { retracked: predictions });
-              } else {
-                await commandContext.execute(MergePredictions, { predictions, mode: config.existingPredictions });
-              }
+              await loadAndMergePredictionBytes(
+                bytes,
+                result.outputPath,
+                config.existingPredictions,
+                config.trackOnly,
+              );
             }
             if (!result.success) {
               set({ status: "error", error: `Video ${vi + 1} failed` });
@@ -629,21 +698,7 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
       const platform = await getPlatform();
       const bytes = await platform.readFile(outputPath);
       console.log("[inference] Read predictions file: %d bytes from %s", bytes.byteLength, outputPath);
-      const predictions = await loadSlp(bytes, {
-        openVideos: false,
-        h5: { filenameHint: outputPath },
-      });
-      console.log("[inference] Loaded predictions: %d videos, %d labeled frames, %d tracks",
-        predictions.videos?.length ?? 0,
-        predictions.labeledFrames?.length ?? 0,
-        predictions.tracks?.length ?? 0,
-      );
-
-      if (trackOnly) {
-        await commandContext.execute(MergeTracks, { retracked: predictions });
-      } else {
-        await commandContext.execute(MergePredictions, { predictions, mode });
-      }
+      await loadAndMergePredictionBytes(bytes, outputPath, mode, trackOnly);
 
       set({ status: "completed" });
       // Keep the "Complete" banner (checkmark, progress bar, log) on screen
