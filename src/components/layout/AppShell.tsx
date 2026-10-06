@@ -57,6 +57,7 @@ import { DiagnosticsDialog } from "../dialogs/DiagnosticsDialog";
 import { MenuSearchDialog } from "../dialogs/MenuSearchDialog";
 import { TutorialOverlay } from "../tutorial/TutorialOverlay";
 import { useAppStore } from "../../stores/appStore";
+import { useConnectStore } from "@/stores/connectStore";
 import { UpdatePingDot, UpdatePill, useEnvironmentUpdateStatus } from "./UpdateIndicator";
 import { PanelCloseButton } from "./PanelCloseButton";
 import { useTrainingStore } from "../../stores/trainingStore";
@@ -234,6 +235,14 @@ export function AppShell() {
   // app-local disk draft (see labelsAutosave.ts). setupLabelsAutosave gates on
   // eligibility per runtime.
   useEffect(() => setupLabelsAutosave(), []);
+
+  // Reconnect to any worker with an active remote job from a previous
+  // session: catches up jobs that finished while unwatched (toast + mark
+  // terminal) and re-watches ones still running (see connectStore.ts's
+  // resumeTrackedJobs doc comment).
+  useEffect(() => {
+    void useConnectStore.getState().resumeTrackedJobs();
+  }, []);
 
   // Drag-and-drop to open a project is intentionally limited to the WelcomeScreen
   // (no project loaded) so a stray drop can never silently replace a project the

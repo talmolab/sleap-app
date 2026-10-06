@@ -1,6 +1,19 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "../bun-test";
-import { useConnectStore, type PairedWorker } from "@/stores/connectStore";
+import {
+  useConnectStore,
+  pathRulesFor,
+  type PairedWorker,
+  type TrackedJob,
+  capTrackedJobs,
+  migrateConnectPersisted,
+  resubscribeWorker,
+  __resetManagedConnections,
+  __setManagedDeps,
+} from "@/stores/connectStore";
 import type { JobSpec } from "@/lib/sleapConnect";
+import type { WorkerClient } from "@/lib/protocolV1/client";
+import type { PathMapping } from "@/lib/pathMappings";
+import { WorkerProtocolError, FS_NOT_FOUND, FS_FORBIDDEN } from "@/lib/protocolV1/errors";
 
 // connectStore's own actions (pairing flow, browse pagination, job
 // submission/multi-model splitting, cancel/stop) are what's under test here.
@@ -30,6 +43,8 @@ class FakeWorkerClient {
   static nextMounts: FakeMount[] = [];
   /** What the next-constructed instance's peerNodeId will report post-connect(). */
   static nextPeerNodeId: string | null = "worker-node-id";
+  /** One-shot: the NEXT-constructed instance's connect() throws this once, then clears — simulates a failed redial. */
+  static nextConnectShouldThrow: Error | null = null;
 
   peerNodeId: string | null;
   authenticated = false;
@@ -43,6 +58,7 @@ class FakeWorkerClient {
   jobsSubmitCalls: Record<string, unknown>[] = [];
   jobsCancelCalls: Array<[string, string]> = [];
   jobsStatusCalls: string[] = [];
+  jobsSubscribeCalls: Array<[string, number]> = [];
   fsListCalls: Array<[string, number]> = [];
 
   mountsResult: FakeMount[] = [];
@@ -55,8 +71,13 @@ class FakeWorkerClient {
   fetchBlobCalls: Array<[string, number | undefined]> = [];
   fetchBlobResult = new Uint8Array([1, 2, 3]);
   fetchBlobShouldThrow: Error | null = null;
+  fsStatCalls: string[] = [];
+  /** Keyed by path; `undefined` (unconfigured) means "not found". An `Error` value is thrown as-is. */
+  fsStatResults: Record<string, { type: "file" | "directory" } | Error> = {};
 
   private _subscribers = new Map<string, Set<(e: FakeWorkerEvent) => void>>();
+  private _seq = 0;
+  private _closeListeners = new Set<(info: { intentional: boolean; error?: unknown }) => void>();
 
   constructor(public opts: { url: string; createSocket?: (url: string) => unknown }) {
     this.mountsResult = FakeWorkerClient.nextMounts;
@@ -67,6 +88,21 @@ class FakeWorkerClient {
   async connect() {
     this.connectCalls++;
     if (this.connectShouldThrow) throw this.connectShouldThrow;
+    if (FakeWorkerClient.nextConnectShouldThrow) {
+      const err = FakeWorkerClient.nextConnectShouldThrow;
+      FakeWorkerClient.nextConnectShouldThrow = null;
+      throw err;
+    }
+  }
+
+  onClose(cb: (info: { intentional: boolean; error?: unknown }) => void): () => void {
+    this._closeListeners.add(cb);
+    return () => this._closeListeners.delete(cb);
+  }
+
+  /** Test helper: simulate the worker connection dropping (an unintentional close). */
+  simulateDrop(): void {
+    for (const cb of [...this._closeListeners]) cb({ intentional: false });
   }
 
   async pairClaim(secret: string) {
@@ -111,7 +147,18 @@ class FakeWorkerClient {
     return this.fetchBlobResult;
   }
 
-  async jobsSubscribe(jobId: string, _sinceSeq: number, cb: (e: FakeWorkerEvent) => void) {
+  async fsStat(path: string) {
+    this.fsStatCalls.push(path);
+    const entry = this.fsStatResults[path];
+    if (entry === undefined) {
+      throw new WorkerProtocolError(FS_NOT_FOUND, `fs.stat('${path}'): not found`);
+    }
+    if (entry instanceof Error) throw entry;
+    return { path, type: entry.type, size: 0, modified: 0 };
+  }
+
+  async jobsSubscribe(jobId: string, sinceSeq: number, cb: (e: FakeWorkerEvent) => void) {
+    this.jobsSubscribeCalls.push([jobId, sinceSeq]);
     let set = this._subscribers.get(jobId);
     if (!set) {
       set = new Set();
@@ -124,12 +171,20 @@ class FakeWorkerClient {
   }
 
   close() {
+    if (this.closed) return;
     this.closed = true;
+    for (const cb of [...this._closeListeners]) cb({ intentional: true });
   }
 
-  /** Test helper: simulate the worker pushing an event to subscribers. */
-  emit(jobId: string, topic: string, data: Record<string, unknown>) {
-    for (const cb of this._subscribers.get(jobId) ?? []) cb({ topic, jobId, seq: 1, data });
+  /**
+   * Test helper: simulate the worker pushing an event to subscribers. `seq`
+   * defaults to an auto-incrementing per-instance counter so a sequence of
+   * `emit` calls for the same job gets strictly increasing seqs, the way the
+   * real worker does — connectStore's seq-dedup would otherwise drop every
+   * event after the first if they all arrived with the same hardcoded seq.
+   */
+  emit(jobId: string, topic: string, data: Record<string, unknown>, seq: number = ++this._seq) {
+    for (const cb of this._subscribers.get(jobId) ?? []) cb({ topic, jobId, seq, data });
   }
 }
 
@@ -144,6 +199,17 @@ function flushAsync(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+/** Polls a predicate across microtask ticks — used with a fake `__setManagedDeps`
+ * clock, where every `ManagedConnection` step resolves via an already-settled
+ * promise rather than real time passing. */
+async function waitUntil(predicate: () => boolean, maxTicks = 500): Promise<void> {
+  for (let i = 0; i < maxTicks; i++) {
+    if (predicate()) return;
+    await Promise.resolve();
+  }
+  throw new Error("waitUntil: condition not met within the tick budget");
+}
+
 vi.mock("@/lib/protocolV1/identity", () => ({
   getClientIdentity: async () => ({
     nodeId: "client-node-id",
@@ -152,6 +218,14 @@ vi.mock("@/lib/protocolV1/identity", () => ({
 }));
 vi.mock("@/lib/protocolV1/client", () => ({
   WorkerClient: FakeWorkerClient,
+}));
+vi.mock("@/lib/notify", () => ({
+  toast: { success: vi.fn(), error: vi.fn() },
+}));
+/** What the next `loadSavedMappings()` call resolves to (the one-time import on first connect). */
+let nextSavedMappings: PathMapping[] = [];
+vi.mock("@/lib/pathMappings", () => ({
+  loadSavedMappings: async () => nextSavedMappings,
 }));
 
 const TICKET = JSON.stringify({
@@ -168,20 +242,49 @@ const PAIRED_WORKER: PairedWorker = {
   pairedAt: "2026-09-27T00:00:00Z",
 };
 
+function makeTracked(overrides: Partial<TrackedJob> = {}): TrackedJob {
+  return {
+    workerId: PAIRED_WORKER.nodeId,
+    jobId: "job_1",
+    lastSeq: 0,
+    kind: "track",
+    label: "Inference",
+    source: "window",
+    state: "active",
+    seen: false,
+    submittedAt: Date.now(),
+    ...overrides,
+  };
+}
+
 describe("connectStore", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     FakeWorkerClient.instances.length = 0;
     FakeWorkerClient.nextMounts = [];
     FakeWorkerClient.nextPeerNodeId = "worker-node-id";
+    FakeWorkerClient.nextConnectShouldThrow = null;
+    nextSavedMappings = [];
+    // `managed`/`activeSubscriptions` are module-level state that outlives
+    // any one test in this file (--isolate resets per FILE, not per test) —
+    // without this, a connection a previous test left running in the
+    // background would keep retrying/probing into this one.
+    __resetManagedConnections();
+    __setManagedDeps({});
+    // Same reasoning for the toast mock's call history (resumeTrackedJobs
+    // tests) and the module-level notifiedJobIds de-dupe set.
+    const { toast } = await import("@/lib/notify");
+    (toast.success as unknown as ReturnType<typeof vi.fn>).mockClear();
+    (toast.error as unknown as ReturnType<typeof vi.fn>).mockClear();
     useConnectStore.setState({
       pairedWorkers: [],
       selectedWorkerId: null,
-      currentJob: null,
+      trackedJobs: [],
       connectionStatus: "disconnected",
       connectionError: null,
       workerMounts: [],
       reattachableJob: null,
       activeTransport: null,
+      connections: {},
       _client: null,
     });
   });
@@ -238,10 +341,11 @@ describe("connectStore", () => {
 
       await useConnectStore.getState().pairWithTicket(TICKET);
 
-      const client = lastClient();
-      expect(client.opts.url).toBe("ws://192.168.1.42:9631");
-      expect(client.connectCalls).toBe(1);
-      expect(client.pairClaimArgs).toEqual(["one-time-secret"]);
+      // The pairing client claims the ticket...
+      const pairingClient = FakeWorkerClient.instances[0];
+      expect(pairingClient.opts.url).toBe("ws://192.168.1.42:9631");
+      expect(pairingClient.connectCalls).toBe(1);
+      expect(pairingClient.pairClaimArgs).toEqual(["one-time-secret"]);
 
       const state = useConnectStore.getState();
       expect(state.connectionStatus).toBe("connected");
@@ -408,6 +512,167 @@ describe("connectStore", () => {
       expect(client.closed).toBe(true);
       expect(useConnectStore.getState().connectionStatus).toBe("error");
     });
+
+    it("imports saved path mappings once, for a worker that's never had pathRules set", async () => {
+      nextSavedMappings = [{ local: "/Users/alice/data", worker: "/mnt/data" }];
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
+
+      await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
+
+      const worker = useConnectStore
+        .getState()
+        .pairedWorkers.find((w) => w.nodeId === PAIRED_WORKER.nodeId);
+      expect(worker?.pathRules).toEqual(nextSavedMappings);
+    });
+
+    it("never re-imports once pathRules is defined, even as an empty array", async () => {
+      nextSavedMappings = [{ local: "/Users/alice/data", worker: "/mnt/data" }];
+      useConnectStore.setState({ pairedWorkers: [{ ...PAIRED_WORKER, pathRules: [] }] });
+
+      await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
+
+      const worker = useConnectStore
+        .getState()
+        .pairedWorkers.find((w) => w.nodeId === PAIRED_WORKER.nodeId);
+      expect(worker?.pathRules).toEqual([]); // untouched, not re-imported
+    });
+
+    it("imports only once across repeated reconnects to the same worker", async () => {
+      nextSavedMappings = [{ local: "/a", worker: "/mnt/a" }];
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
+
+      await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
+      nextSavedMappings = [{ local: "/b", worker: "/mnt/b" }]; // would differ if re-imported
+      await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
+
+      const worker = useConnectStore
+        .getState()
+        .pairedWorkers.find((w) => w.nodeId === PAIRED_WORKER.nodeId);
+      expect(worker?.pathRules).toEqual([{ local: "/a", worker: "/mnt/a" }]);
+    });
+  });
+
+  describe("path rules", () => {
+    it("addPathRule adds a rule for a worker with none yet", () => {
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
+
+      useConnectStore.getState().addPathRule(PAIRED_WORKER.nodeId, { local: "/a", worker: "/mnt/a" });
+
+      expect(pathRulesFor(PAIRED_WORKER.nodeId)).toEqual([{ local: "/a", worker: "/mnt/a" }]);
+    });
+
+    it("addPathRule replaces any existing rule with the same local path", () => {
+      useConnectStore.setState({
+        pairedWorkers: [{ ...PAIRED_WORKER, pathRules: [{ local: "/a", worker: "/mnt/old" }] }],
+      });
+
+      useConnectStore.getState().addPathRule(PAIRED_WORKER.nodeId, { local: "/a", worker: "/mnt/new" });
+
+      expect(pathRulesFor(PAIRED_WORKER.nodeId)).toEqual([{ local: "/a", worker: "/mnt/new" }]);
+    });
+
+    it("addPathRule leaves other workers' rules untouched", () => {
+      const other: PairedWorker = { ...PAIRED_WORKER, nodeId: "other" };
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER, other] });
+
+      useConnectStore.getState().addPathRule(PAIRED_WORKER.nodeId, { local: "/a", worker: "/mnt/a" });
+
+      expect(pathRulesFor("other")).toEqual([]);
+    });
+
+    it("clearPathRule removes only the rule matching that local path", () => {
+      useConnectStore.setState({
+        pairedWorkers: [
+          {
+            ...PAIRED_WORKER,
+            pathRules: [
+              { local: "/a", worker: "/mnt/a" },
+              { local: "/b", worker: "/mnt/b" },
+            ],
+          },
+        ],
+      });
+
+      useConnectStore.getState().clearPathRule(PAIRED_WORKER.nodeId, "/a");
+
+      expect(pathRulesFor(PAIRED_WORKER.nodeId)).toEqual([{ local: "/b", worker: "/mnt/b" }]);
+    });
+
+    it("pathRulesFor returns [] for an unknown worker or one with no rules set", () => {
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
+      expect(pathRulesFor(PAIRED_WORKER.nodeId)).toEqual([]);
+      expect(pathRulesFor("unknown")).toEqual([]);
+      expect(pathRulesFor(null)).toEqual([]);
+    });
+
+    it("persists pathRules via the existing pairedWorkers partialize", () => {
+      const worker: PairedWorker = { ...PAIRED_WORKER, pathRules: [{ local: "/a", worker: "/mnt/a" }] };
+      useConnectStore.setState({ pairedWorkers: [worker] });
+
+      const partialize = useConnectStore.persist.getOptions().partialize;
+      expect(partialize).toBeDefined();
+      const persisted = partialize!(useConnectStore.getState()) as { pairedWorkers: PairedWorker[] };
+
+      expect(persisted.pairedWorkers).toEqual([worker]);
+    });
+  });
+
+  describe("statWorkerPath", () => {
+    beforeEach(async () => {
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
+      await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
+    });
+
+    it("throws if not connected", async () => {
+      useConnectStore.getState().disconnect();
+      await expect(useConnectStore.getState().statWorkerPath("/mnt/a")).rejects.toThrow(
+        /Not connected/,
+      );
+    });
+
+    it("reports an existing file", async () => {
+      const client = lastClient();
+      client.fsStatResults["/mnt/a.slp"] = { type: "file" };
+
+      await expect(useConnectStore.getState().statWorkerPath("/mnt/a.slp")).resolves.toEqual({
+        exists: true,
+        type: "file",
+      });
+    });
+
+    it("reports an existing directory", async () => {
+      const client = lastClient();
+      client.fsStatResults["/mnt/sub"] = { type: "directory" };
+
+      await expect(useConnectStore.getState().statWorkerPath("/mnt/sub")).resolves.toEqual({
+        exists: true,
+        type: "directory",
+      });
+    });
+
+    it("maps FS_NOT_FOUND to {exists: false}", async () => {
+      await expect(useConnectStore.getState().statWorkerPath("/mnt/missing")).resolves.toEqual({
+        exists: false,
+      });
+    });
+
+    it("maps FS_FORBIDDEN to {exists: false}", async () => {
+      const client = lastClient();
+      client.fsStatResults["/mnt/secret"] = new WorkerProtocolError(FS_FORBIDDEN, "forbidden");
+
+      await expect(useConnectStore.getState().statWorkerPath("/mnt/secret")).resolves.toEqual({
+        exists: false,
+      });
+    });
+
+    it("rethrows other errors", async () => {
+      const client = lastClient();
+      client.fsStatResults["/mnt/broken"] = new Error("ECONNRESET");
+
+      await expect(useConnectStore.getState().statWorkerPath("/mnt/broken")).rejects.toThrow(
+        "ECONNRESET",
+      );
+    });
   });
 
   describe("selectWorker", () => {
@@ -441,8 +706,33 @@ describe("connectStore", () => {
       const state = useConnectStore.getState();
       expect(state.connectionStatus).toBe("disconnected");
       expect(state.workerMounts).toEqual([]);
-      expect(state.pairedWorkers).toEqual([PAIRED_WORKER]);
+      // pathRules: [] now stamped by connectToWorker's one-time legacy-mappings import.
+      expect(state.pairedWorkers).toEqual([{ ...PAIRED_WORKER, pathRules: [] }]);
       expect(state.selectedWorkerId).toBe(PAIRED_WORKER.nodeId);
+    });
+
+    it("keeps the managed connection running in the background when the worker has an active tracked job", async () => {
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
+      await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
+      const client = lastClient();
+      useConnectStore.setState({
+        trackedJobs: [makeTracked({ workerId: PAIRED_WORKER.nodeId })],
+      });
+
+      useConnectStore.getState().disconnect();
+
+      expect(client.closed).toBe(false); // kept alive, not torn down
+      const state = useConnectStore.getState();
+      expect(state.connectionStatus).toBe("disconnected"); // selected-UI fields still clear
+      expect(state._client).toBeNull();
+      expect(state.activeTransport).toBeNull();
+
+      // Prove it's genuinely still managed, not just not-yet-closed: a drop
+      // still triggers a background reconnect even with nothing selected.
+      const instancesBefore = FakeWorkerClient.instances.length;
+      client.simulateDrop();
+      await flushAsync();
+      expect(FakeWorkerClient.instances.length).toBeGreaterThan(instancesBefore);
     });
   });
 
@@ -560,10 +850,11 @@ describe("connectStore", () => {
 
       expect(result).toEqual({ jobId: "job_1", success: true });
       expect(lines).toEqual(["epoch 1"]);
-      // Terminal: nothing left to reattach to, so the tracked pointer is
-      // cleared rather than being re-checked via a live network round trip
-      // on every future connect to this worker.
-      expect(useConnectStore.getState().currentJob).toBeNull();
+      // Terminal: the tracked entry is kept (it's the Connect window's job
+      // history) with its state updated, not cleared.
+      expect(useConnectStore.getState().trackedJobs).toEqual([
+        expect.objectContaining({ jobId: "job_1", state: "completed", seen: true }),
+      ]);
     });
 
     it("resolves with success:false and the worker's detail on job.status: failed", async () => {
@@ -574,7 +865,9 @@ describe("connectStore", () => {
 
       const result = await promise;
       expect(result).toEqual({ jobId: "job_1", success: false, error: "exit code 1" });
-      expect(useConnectStore.getState().currentJob).toBeNull();
+      expect(useConnectStore.getState().trackedJobs).toEqual([
+        expect.objectContaining({ jobId: "job_1", state: "failed", seen: true }),
+      ]);
     });
 
     it("captures job.result's blobs (which arrive before job.status: completed)", async () => {
@@ -724,6 +1017,48 @@ describe("connectStore", () => {
       expect(result).toEqual({ jobId: "job_1", success: false, error: "boom" });
       expect(lastClient().jobsSubmitCalls).toHaveLength(1);
     });
+
+    it("ignores a duplicate or out-of-order seq (reconnect backlog overlap)", async () => {
+      const lines: string[] = [];
+      const spec: JobSpec = { type: "track", data_path: "/x.slp", model_paths: ["m1"] };
+      const promise = useConnectStore.getState().submitJob(spec, (line) => lines.push(line));
+      await flushAsync();
+      const client = lastClient();
+
+      client.emit("job_1", "job.log", { line: "epoch 1" }, 5);
+      client.emit("job_1", "job.log", { line: "epoch 1 (replayed)" }, 5); // same seq: dropped
+      client.emit("job_1", "job.log", { line: "stale" }, 3); // older seq: dropped
+      client.emit("job_1", "job.status", { state: "completed" }, 6);
+
+      const result = await promise;
+      expect(result).toEqual({ jobId: "job_1", success: true });
+      expect(lines).toEqual(["epoch 1"]);
+      expect(
+        useConnectStore.getState().trackedJobs.find((j) => j.jobId === "job_1")?.lastSeq,
+      ).toBe(6);
+    });
+
+    it("re-subscribes from the last applied seq after a simulated reconnect, and the original promise resolves on the new client's terminal event", async () => {
+      const spec: JobSpec = { type: "track", data_path: "/x.slp", model_paths: ["m1"] };
+      const promise = useConnectStore.getState().submitJob(spec, () => {});
+      await flushAsync();
+      const firstClient = lastClient();
+      firstClient.emit("job_1", "job.log", { line: "epoch 1" }); // seq 1, persisted immediately
+
+      // Simulate the drop/redial: a brand-new client takes over the subscription.
+      const secondClient = new FakeWorkerClient({ url: firstClient.opts.url });
+      resubscribeWorker(PAIRED_WORKER.nodeId, secondClient as never);
+
+      expect(secondClient.jobsSubscribeCalls).toEqual([["job_1", 1]]);
+
+      // Explicit seq: a real worker's seq numbering is per-job, continuing
+      // across a reconnect — `secondClient`'s own auto-increment counter
+      // starts fresh at 1 and would otherwise collide with the seq already
+      // applied from `firstClient`.
+      secondClient.emit("job_1", "job.status", { state: "completed" }, 2);
+      const result = await promise;
+      expect(result).toEqual({ jobId: "job_1", success: true });
+    });
   });
 
   describe("cancelJob / stopJob", () => {
@@ -739,7 +1074,7 @@ describe("connectStore", () => {
 
     it("cancelJob sends mode: 'cancel' for the current job and clears the reattach banner", async () => {
       useConnectStore.setState({
-        currentJob: { workerId: PAIRED_WORKER.nodeId, jobId: "job_1" },
+        trackedJobs: [makeTracked()],
         reattachableJob: { jobId: "job_1", state: "running" },
       });
       useConnectStore.getState().cancelJob();
@@ -749,10 +1084,19 @@ describe("connectStore", () => {
     });
 
     it("stopJob sends mode: 'stop' for the current job", async () => {
-      useConnectStore.setState({ currentJob: { workerId: PAIRED_WORKER.nodeId, jobId: "job_1" } });
+      useConnectStore.setState({ trackedJobs: [makeTracked()] });
       useConnectStore.getState().stopJob();
       await flushAsync();
       expect(lastClient().jobsCancelCalls).toEqual([["job_1", "stop"]]);
+    });
+
+    it("only cancels a job tracked against the currently-selected worker", async () => {
+      useConnectStore.setState({
+        trackedJobs: [makeTracked({ workerId: "other-worker", jobId: "job_other" })],
+      });
+      useConnectStore.getState().cancelJob();
+      await flushAsync();
+      expect(lastClient().jobsCancelCalls).toEqual([]);
     });
   });
 
@@ -787,7 +1131,7 @@ describe("connectStore", () => {
     it("surfaces a reattachableJob when the tracked job on this worker is still active", async () => {
       useConnectStore.setState({
         pairedWorkers: [PAIRED_WORKER],
-        currentJob: { workerId: PAIRED_WORKER.nodeId, jobId: "job_1" },
+        trackedJobs: [makeTracked()],
       });
       FakeWorkerClient.prototype.jobsStatus = async function (this: FakeWorkerClient, jobId: string) {
         this.jobsStatusCalls.push(jobId);
@@ -806,7 +1150,7 @@ describe("connectStore", () => {
     it("does not reattach a job that already reached a terminal state", async () => {
       useConnectStore.setState({
         pairedWorkers: [PAIRED_WORKER],
-        currentJob: { workerId: PAIRED_WORKER.nodeId, jobId: "job_1" },
+        trackedJobs: [makeTracked()],
       });
       FakeWorkerClient.prototype.jobsStatus = async function () {
         return { state: "completed" };
@@ -821,7 +1165,7 @@ describe("connectStore", () => {
       const other: PairedWorker = { ...PAIRED_WORKER, nodeId: "other", addrs: ["ws://other:1"] };
       useConnectStore.setState({
         pairedWorkers: [PAIRED_WORKER, other],
-        currentJob: { workerId: "other", jobId: "job_1" },
+        trackedJobs: [makeTracked({ workerId: "other" })],
       });
 
       await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
@@ -833,7 +1177,7 @@ describe("connectStore", () => {
     it("does not reattach if the worker no longer recognizes the job", async () => {
       useConnectStore.setState({
         pairedWorkers: [PAIRED_WORKER],
-        currentJob: { workerId: PAIRED_WORKER.nodeId, jobId: "job_1" },
+        trackedJobs: [makeTracked()],
       });
       FakeWorkerClient.prototype.jobsStatus = async function () {
         throw new Error("job.not_found");
@@ -847,12 +1191,210 @@ describe("connectStore", () => {
     });
 
     it("no tracked job at all means no reattach check", async () => {
-      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER], currentJob: null });
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER], trackedJobs: [] });
 
       await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
 
       expect(lastClient().jobsStatusCalls).toEqual([]);
       expect(useConnectStore.getState().reattachableJob).toBeNull();
     });
+  });
+
+  describe("managed reconnection", () => {
+    it("a freshly paired worker is reconnect-managed too", async () => {
+      let t = 0;
+      __setManagedDeps({
+        now: () => t,
+        sleep: (ms: number) => {
+          t += ms;
+          return Promise.resolve();
+        },
+      });
+      await useConnectStore.getState().pairWithTicket(TICKET);
+
+      // ...then pairing hands off to a managed connection (auth.prove, now
+      // that this client is trusted), and the pairing client is closed.
+      const pairingClient = FakeWorkerClient.instances[0];
+      const managedClient = lastClient();
+      expect(pairingClient.closed).toBe(true);
+      expect(managedClient).not.toBe(pairingClient);
+      expect(managedClient.authProveCalls).toBe(1);
+      expect(useConnectStore.getState()._client).toBe(managedClient as unknown as WorkerClient);
+
+      managedClient.simulateDrop();
+      await waitUntil(() => useConnectStore.getState().connectionStatus === "connected"
+        && useConnectStore.getState()._client !== (managedClient as unknown as WorkerClient));
+      expect(FakeWorkerClient.instances.length).toBe(3);
+    });
+
+    it("an unintentional drop goes through 'reconnecting' and redials to a new _client", async () => {
+      let t = 0;
+      __setManagedDeps({
+        now: () => t,
+        sleep: (ms: number) => {
+          t += ms;
+          return Promise.resolve();
+        },
+      });
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
+      await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
+      const first = lastClient();
+      const firstAsClient = first as unknown as WorkerClient;
+      expect(useConnectStore.getState().connectionStatus).toBe("connected");
+
+      // The first redial attempt fails once; ManagedConnection's own
+      // backoff/retry sequencing is unit-tested in managedConnection.test.ts —
+      // here we only need the wiring: status flips to "reconnecting" while
+      // down, and a LATER successful redial swaps in a new _client.
+      FakeWorkerClient.nextConnectShouldThrow = new Error("still down");
+      first.simulateDrop();
+      await waitUntil(() => useConnectStore.getState().connectionStatus === "reconnecting");
+      expect(useConnectStore.getState()._client).toBe(firstAsClient);
+
+      await waitUntil(() => useConnectStore.getState().connectionStatus === "connected");
+
+      const state = useConnectStore.getState();
+      expect(state._client).not.toBe(firstAsClient);
+      expect(state._client).not.toBeNull();
+      expect(FakeWorkerClient.instances.length).toBeGreaterThan(1);
+    });
+  });
+
+  describe("resumeTrackedJobs", () => {
+    it("toasts success and marks the job completed when the worker reports it finished while unwatched", async () => {
+      const { toast } = await import("@/lib/notify");
+      useConnectStore.setState({
+        pairedWorkers: [PAIRED_WORKER],
+        trackedJobs: [makeTracked({ jobId: "job_resume_1" })],
+      });
+      const originalJobsStatus = FakeWorkerClient.prototype.jobsStatus;
+      FakeWorkerClient.prototype.jobsStatus = async function (this: FakeWorkerClient, jobId: string) {
+        this.jobsStatusCalls.push(jobId);
+        return { state: "completed" };
+      };
+      try {
+        await useConnectStore.getState().resumeTrackedJobs();
+      } finally {
+        FakeWorkerClient.prototype.jobsStatus = originalJobsStatus;
+      }
+
+      expect(toast.success).toHaveBeenCalledTimes(1);
+      expect(toast.success).toHaveBeenCalledWith(expect.stringContaining("finished"));
+      const job = useConnectStore
+        .getState()
+        .trackedJobs.find((j) => j.jobId === "job_resume_1");
+      expect(job?.state).toBe("completed");
+    });
+
+    it("subscribes a watcher for a still-running job, resuming from its persisted lastSeq", async () => {
+      useConnectStore.setState({
+        pairedWorkers: [PAIRED_WORKER],
+        trackedJobs: [makeTracked({ jobId: "job_resume_2", lastSeq: 7 })],
+      });
+      const originalJobsStatus = FakeWorkerClient.prototype.jobsStatus;
+      FakeWorkerClient.prototype.jobsStatus = async function (this: FakeWorkerClient, jobId: string) {
+        this.jobsStatusCalls.push(jobId);
+        return { state: "running" };
+      };
+      try {
+        await useConnectStore.getState().resumeTrackedJobs();
+      } finally {
+        FakeWorkerClient.prototype.jobsStatus = originalJobsStatus;
+      }
+
+      expect(lastClient().jobsSubscribeCalls).toEqual([["job_resume_2", 7]]);
+      const job = useConnectStore
+        .getState()
+        .trackedJobs.find((j) => j.jobId === "job_resume_2");
+      expect(job?.state).toBe("active"); // still running — no notification yet
+    });
+
+    it("calling resumeTrackedJobs twice does not double-notify", async () => {
+      const { toast } = await import("@/lib/notify");
+      useConnectStore.setState({
+        pairedWorkers: [PAIRED_WORKER],
+        trackedJobs: [makeTracked({ jobId: "job_resume_3" })],
+      });
+      const originalJobsStatus = FakeWorkerClient.prototype.jobsStatus;
+      FakeWorkerClient.prototype.jobsStatus = async function (this: FakeWorkerClient, jobId: string) {
+        this.jobsStatusCalls.push(jobId);
+        return { state: "completed" };
+      };
+      try {
+        await useConnectStore.getState().resumeTrackedJobs();
+        await useConnectStore.getState().resumeTrackedJobs();
+      } finally {
+        FakeWorkerClient.prototype.jobsStatus = originalJobsStatus;
+      }
+
+      expect(toast.success).toHaveBeenCalledTimes(1);
+    });
+  });
+});
+
+describe("trackedJobs persisted migration (v1 -> v2)", () => {
+  it("migrates an existing currentJob into a single active TrackedJob", () => {
+    const migrated = migrateConnectPersisted(
+      {
+        pairedWorkers: [],
+        selectedWorkerId: "worker-node-id",
+        currentJob: { workerId: "worker-node-id", jobId: "job_1" },
+      },
+      1,
+    ) as { trackedJobs: TrackedJob[]; currentJob?: unknown };
+
+    expect(migrated.currentJob).toBeUndefined();
+    expect(migrated.trackedJobs).toEqual([
+      expect.objectContaining({
+        workerId: "worker-node-id",
+        jobId: "job_1",
+        lastSeq: 0,
+        state: "active",
+        seen: false,
+        source: "window",
+      }),
+    ]);
+  });
+
+  it("migrates a null currentJob into an empty trackedJobs list", () => {
+    const migrated = migrateConnectPersisted(
+      { pairedWorkers: [], selectedWorkerId: null, currentJob: null },
+      1,
+    ) as { trackedJobs: TrackedJob[] };
+
+    expect(migrated.trackedJobs).toEqual([]);
+  });
+
+  it("leaves already-v2 persisted state untouched", () => {
+    const existing = { pairedWorkers: [], selectedWorkerId: null, trackedJobs: [makeTracked()] };
+    const migrated = migrateConnectPersisted(existing, 2) as typeof existing;
+    expect(migrated.trackedJobs).toEqual([makeTracked()]);
+  });
+});
+
+describe("capTrackedJobs", () => {
+  it("keeps active jobs and drops the oldest non-active ones beyond the cap", () => {
+    const active = Array.from({ length: 5 }, (_, i) =>
+      makeTracked({ jobId: `active_${i}`, submittedAt: i }),
+    );
+    const nonActive = Array.from({ length: 50 }, (_, i) =>
+      makeTracked({ jobId: `done_${i}`, state: "completed", submittedAt: 1000 + i }),
+    );
+
+    const capped = capTrackedJobs([...nonActive, ...active]);
+
+    expect(capped).toHaveLength(50);
+    expect(capped.filter((j) => j.state === "active")).toHaveLength(5);
+    // The 5 oldest non-active jobs (done_0..done_4) were dropped first.
+    expect(capped.some((j) => j.jobId === "done_0")).toBe(false);
+    expect(capped.some((j) => j.jobId === "done_49")).toBe(true);
+  });
+
+  it("never evicts an active job even if active jobs alone exceed the cap", () => {
+    const active = Array.from({ length: 51 }, (_, i) =>
+      makeTracked({ jobId: `active_${i}`, submittedAt: i }),
+    );
+
+    expect(capTrackedJobs(active)).toHaveLength(51);
   });
 });

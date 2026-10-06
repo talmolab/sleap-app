@@ -11,40 +11,20 @@ import { confirmDialog } from "@/stores/confirmStore";
 import type { Labels } from "@/types";
 import type { JobResult, TrainJobSpec } from "@/lib/sleapConnect";
 import { buildRemoteTrackSpecs } from "@/lib/remoteTrackSpec";
+import {
+  LABELS_EMBED_WARN_BYTES,
+  LABELS_EMBED_HARD_CAP_BYTES,
+} from "@/lib/remoteLabelsPayload";
+import type { VideoVisibility } from "@/lib/remoteVisibility";
 import type { JobTelemetry } from "@/lib/protocolV1/jobTelemetry";
 import type { InferenceConfig, PendingRemoteMerge } from "@/stores/inferenceStore";
 
 const MAX_BATCH_SAMPLES = 20000; // bound batchSamples; drop oldest beyond this
 const MAX_LOG_LINES = 1000; // bound the training log so it doesn't grow unbounded during long runs
 
-// Warn/block thresholds for inline-embedded `labels_content` (labeled frames'
-// pixel data, sent when the worker can't see the original video). Sized off
-// real measured embedded-frame costs (~250-450 KB/frame at current PNG
-// encoding — see the io PNG-bloat finding, item 0.7, still unfixed) against a
-// typical 100-200-frame labeled session (SLEAP's own recommended range):
-// that lands around 30-70 MB, so WARN stays silent for ordinary sessions and
-// only nags on genuinely large ones. HARD_CAP is kept comfortably under the
-// worker's websockets `max_size` (256 MiB, `sleap_rtc/protocol_v1/server.py`)
-// after base64's ~4/3 inflation — if these two ever need to change, change
-// them together.
-const LABELS_EMBED_WARN_BYTES = 10 * 1024 * 1024; // 10 MB
-const LABELS_EMBED_HARD_CAP_BYTES = 150 * 1024 * 1024; // 150 MB
-
 function appendLog(prev: string[], ...lines: string[]): string[] {
   const next = [...prev, ...lines];
   return next.length > MAX_LOG_LINES ? next.slice(next.length - MAX_LOG_LINES) : next;
-}
-
-/** Chunked bytes→base64 (matches collectDiagnostics.ts's own `toBase64`) —
- * avoids a single `String.fromCharCode(...bytes)` call blowing the call stack
- * on anything but tiny arrays. */
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = "";
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  }
-  return btoa(binary);
 }
 
 // A tqdm/Lightning progress-bar line contains a "<pct>%|" segment, e.g.
@@ -457,7 +437,25 @@ export interface ConfigFile {
 export interface RemoteTrainingOptions {
   remote: true;
   workerId: string;
-  labelsPath: string; // path on worker
+  /**
+   * "worker-file" points at a path already on the worker's filesystem (the
+   * original, pre-PR3 behavior — still TrainingPanel's only option until
+   * PR3b adds the "this window" picker). "window" sends this window's own
+   * labels — unsaved edits included — built by `buildRemoteLabelsPayload`,
+   * selectively embedding a hidden video's labeled frames so training still
+   * has pixels to learn from (see remoteVisibility.ts/remoteLabelsPayload.ts).
+   */
+  labelsSource: "window" | "worker-file";
+  /** labelsSource: "worker-file" — the path on the worker. */
+  workerLabelsPath?: string;
+  /**
+   * labelsSource: "window" — precomputed visibility (e.g. already known from
+   * PR3b's data-summary UI). Computed on demand via `checkVideoVisibility`
+   * when omitted.
+   */
+  visibility?: VideoVisibility[];
+  /** labelsSource: "window" — also embed "frames to predict" pixels (suggestions) so post-training inference can cover a hidden video too. */
+  embedFramesToPredict?: boolean;
   valLabelsPath?: string;
   /** Post-training inference target ("nothing"/absent = skip). Run as a separate track job once all models train. */
   inferenceTarget?: string;
@@ -1597,150 +1595,133 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
 
     if (remoteOpts?.remote) {
       // ── Remote training via sleap-connect worker ──────────
-      const { useConnectStore } = await import("@/stores/connectStore");
-      const { submitJob, workerMounts: mounts } = useConnectStore.getState();
+      const { useConnectStore, pathRulesFor } = await import("@/stores/connectStore");
+      const { submitJob, workerMounts: mounts, statWorkerPath } = useConnectStore.getState();
+      const { toast } = await import("@/lib/notify");
+      const workerLabel = () =>
+        (useConnectStore.getState().pairedWorkers ?? []).find((w) => w.nodeId === remoteOpts.workerId)?.label ??
+        remoteOpts.workerId;
 
-      // Collect video paths from the loaded project
       const { useAppStore } = await import("@/stores/appStore");
-      const { labels } = useAppStore.getState();
-      const videoPaths: string[] = [];
-      if (labels) {
-        for (const video of labels.videos) {
-          if (typeof video.filename === "string") {
-            videoPaths.push(video.filename);
-          } else if (Array.isArray(video.filename)) {
-            videoPaths.push(video.filename[0]);
-          }
-        }
-      }
+      const { labels, projectPath } = useAppStore.getState();
 
-      // Load saved mappings and get worker mounts
-      const { loadSavedMappings, resolveProjectPaths, buildPathMappings } =
-        await import("@/lib/pathMappings");
-      const savedMappings = await loadSavedMappings();
-      const workerMounts = mounts.map((m) => m.path);
+      const { projectTag } = await import("@/lib/projectTag");
+      const project = projectTag(projectPath);
 
-      // Decide path-vs-inline for the labels file using PathResolutionDialog's
-      // OWN resolvability heuristic (resolveProjectPaths: already a worker
-      // mount, or translatable via a saved mapping) rather than inventing a
-      // new one. When the labels file can't be resolved to a worker path at
-      // all — e.g. a browser session with no worker-visible filesystem for
-      // it — there's nothing for the user to pick in the dialog, so send the
-      // labels content inline instead (the labels-inline wire contract; see
-      // `TrainJobSpec.labels_content`) and only send video paths through the
-      // dialog.
-      const [labelsResolution] = resolveProjectPaths(
-        [remoteOpts.labelsPath],
-        savedMappings,
-        workerMounts,
-      );
-      const sendLabelsInline = labelsResolution.status === "unresolved";
+      // Which videos get post-training inference. `undefined` = unrestricted
+      // (every video) — the "worker-file" default and most "window" runs;
+      // only narrowed below when sending labels content and the worker can't
+      // see every video.
+      let allowedVideoIndices: number[] | undefined;
+      let labelsPathField: string | undefined;
+      let labelsContentField: string | null | undefined;
 
-      const pathsToResolve = sendLabelsInline
-        ? videoPaths
-        : [remoteOpts.labelsPath, ...videoPaths];
-
-      let confirmedPaths: Array<{ local: string; worker: string }> = [];
-      if (pathsToResolve.length > 0) {
-        const resolvedPaths = resolveProjectPaths(pathsToResolve, savedMappings, workerMounts);
-
-        // Show PathResolutionDialog for user confirmation
-        const dialogResult = await new Promise<
-          Array<{ local: string; worker: string }> | null
-        >((resolve) => {
-          window.dispatchEvent(
-            new CustomEvent("sleap:path-resolution", {
-              detail: { paths: resolvedPaths, resolve },
-            }),
-          );
-        });
-
-        if (!dialogResult) {
-          // User cancelled path resolution
-          set({ status: "idle" });
+      if (remoteOpts.labelsSource === "worker-file") {
+        // Pre-PR3 behavior, unchanged: a path the worker can already read
+        // directly — no visibility check, no embedding, nothing to restrict.
+        labelsPathField = remoteOpts.workerLabelsPath;
+      } else {
+        // "window": send THIS window's own labels (unsaved edits included).
+        // A video the worker can already see is referenced by its worker
+        // path; one it can't is embedded (labeled frames only — never the
+        // full video) so training still has pixels to learn from. See
+        // remoteVisibility.ts / remoteLabelsPayload.ts for the mechanics.
+        if (!labels) {
+          set({ status: "error", error: "No project loaded to train from" });
           return;
         }
-        confirmedPaths = dialogResult;
-      }
 
-      // Build path_mappings dict from confirmed resolutions
-      const pathMappings = buildPathMappings(confirmedPaths);
+        const { projectVideoPaths, checkVideoVisibility } = await import("@/lib/remoteVisibility");
+        const { buildRemoteLabelsPayload } = await import("@/lib/remoteLabelsPayload");
 
-      // Resolve labels_path/labels_content per the inline-vs-path decision
-      // above. Inline: the worker can't see the original video either (same
-      // unresolved path that made the labels themselves unresolvable), so a
-      // structure-only .slp would leave training with no pixels to learn
-      // from. Embed the LABELED frames' pixel data instead — reuses the
-      // existing, already-shipped pkg.slp embed path (`saveSlpToBytes` with
-      // `embed: true`, the same mechanism "Save As > Package" already uses),
-      // which scopes to `labels.labeledFrames` only, never the full video
-      // (confirmed in sleap-io.js's `collectEncodedFrames`). labels_path is
-      // kept as the original local path purely for worker-side
-      // logging/traceability — the worker is expected to materialize
-      // labels_content and ignore labels_path when content is present
-      // (mirrors config_contents's own always-inline materialization).
-      let resolvedLabelsPath = remoteOpts.labelsPath;
-      let labelsContent: string | null = null;
-      if (sendLabelsInline) {
-        if (labels) {
-          let bytes: Uint8Array;
-          try {
-            const { serializeLabelsEmbedded } = await import("@/lib/labelsEmbed");
-            bytes = await serializeLabelsEmbedded(labels);
-          } catch (err) {
-            // Unlike the old structure-only serializer, this is a real
-            // decode+encode path (one getFrame+PNG-encode per labeled
-            // frame — see collectEncodedFrames) with real failure modes
-            // (an unreadable video backend, a corrupt frame). Left
-            // uncaught, `status` would stay stuck at "running" forever
-            // (set above, before this block) with nothing downstream to
-            // reset it — the UI would show an endless in-progress spinner
-            // for a failure that never even reached the worker.
-            set({
-              status: "error",
-              error: `Failed to prepare labeled frames for the worker: ${err instanceof Error ? err.message : String(err)}`,
-            });
-            return;
-          }
-
-          if (bytes.byteLength > LABELS_EMBED_HARD_CAP_BYTES) {
-            set({
-              status: "error",
-              error:
-                `This project's labeled frames are too large to send inline ` +
-                `(${formatBytes(bytes.byteLength)}, over the ${formatBytes(LABELS_EMBED_HARD_CAP_BYTES)} cap) ` +
-                `since the worker can't see the original video directly. Place the video on storage the ` +
-                `worker can access, or configure a path mapping for it, then try again.`,
-            });
-            return;
-          }
-
-          if (bytes.byteLength > LABELS_EMBED_WARN_BYTES) {
-            const frameCount = countUserLabeledFrames(labels);
-            const proceed = await confirmDialog({
-              title: "Large upload",
-              message:
-                `Sending ${frameCount ?? "all"} labeled frames inline (~${formatBytes(bytes.byteLength)}), ` +
-                `since the worker can't see the original video directly. This may take a while.\n\n` +
-                `If the worker can reach this video on shared storage instead, cancel and resolve its ` +
-                `path there for a faster, lighter submission.`,
-              confirmLabel: "Send anyway",
-              cancelLabel: "Cancel",
-            });
-            if (!proceed) {
-              set({ status: "idle" });
-              return;
-            }
-          }
-
-          labelsContent = bytesToBase64(bytes);
+        let visibility = remoteOpts.visibility;
+        if (!visibility) {
+          visibility = await checkVideoVisibility(projectVideoPaths(labels), {
+            rules: pathRulesFor(remoteOpts.workerId),
+            mounts: mounts.map((m) => m.path),
+            stat: (p) => statWorkerPath(p).then((r) => r.exists),
+          });
         }
-      } else {
-        // First entry is always the labels/data path when it went through the dialog.
-        resolvedLabelsPath = confirmedPaths[0]?.worker ?? remoteOpts.labelsPath;
+
+        const embedFramesToPredict = !!remoteOpts.embedFramesToPredict;
+        let payload: Awaited<ReturnType<typeof buildRemoteLabelsPayload>>;
+        try {
+          payload = await buildRemoteLabelsPayload(labels, visibility, { embedFramesToPredict });
+        } catch (err) {
+          // A real decode+encode path (one getFrame+PNG-encode per labeled
+          // frame of a hidden video — see collectEncodedFrames) with real
+          // failure modes (an unreadable video backend, a corrupt frame).
+          // Left uncaught, `status` would stay stuck at "running" forever
+          // (set above, before this block) with nothing downstream to reset
+          // it — the UI would show an endless in-progress spinner for a
+          // failure that never even reached the worker.
+          set({
+            status: "error",
+            error: `Failed to prepare labels for the worker: ${err instanceof Error ? err.message : String(err)}`,
+          });
+          return;
+        }
+
+        if (payload.bytes > LABELS_EMBED_HARD_CAP_BYTES) {
+          set({
+            status: "error",
+            error:
+              `This project's labeled frames are too large to send inline ` +
+              `(${formatBytes(payload.bytes)}, over the ${formatBytes(LABELS_EMBED_HARD_CAP_BYTES)} cap) ` +
+              `since the worker can't see one or more of the videos directly. Place them on storage the ` +
+              `worker can access, or locate them on the worker, then try again.`,
+          });
+          return;
+        }
+
+        if (payload.bytes > LABELS_EMBED_WARN_BYTES) {
+          const frameCount = countUserLabeledFrames(labels);
+          const proceed = await confirmDialog({
+            title: "Large upload",
+            message:
+              `Sending ${frameCount ?? "all"} labeled frames inline (~${formatBytes(payload.bytes)}), ` +
+              `since the worker can't see one or more of the videos directly. This may take a while.\n\n` +
+              `If the worker can reach these videos on shared storage instead, cancel and locate them ` +
+              `there for a faster, lighter submission.`,
+            confirmLabel: "Send anyway",
+            cancelLabel: "Cancel",
+          });
+          if (!proceed) {
+            set({ status: "idle" });
+            return;
+          }
+        }
+
+        if (payload.unavailableVideos.length > 0) {
+          const n = payload.unavailableVideos.length;
+          const proceed = await confirmDialog({
+            title: "Some videos can't be read",
+            message: `${n} video${n === 1 ? "" : "s"} can't be read here or on the worker; their frames will be skipped. Train anyway?`,
+            confirmLabel: "Train anyway",
+            cancelLabel: "Cancel",
+          });
+          if (!proceed) {
+            set({ status: "idle" });
+            return;
+          }
+        }
+
+        labelsContentField = payload.labelsContent;
+
+        // Post-training inference coverage: every video visible, or
+        // embedding "frames to predict" for a suggestions-only run, means
+        // the worker ends up with pixels for every video — nothing to
+        // restrict. Otherwise only the videos the worker can actually see
+        // (not embedded) get inference.
+        const allVisible = visibility.every((v) => v.visible);
+        const embedsEverythingForSuggestions =
+          embedFramesToPredict && remoteOpts.inferenceTarget === "suggestions";
+        if (!allVisible && !embedsEverythingForSuggestions) {
+          allowedVideoIndices = visibility.filter((v) => v.visible).map((v) => v.index);
+        }
       }
 
-      // Build TrainJobSpec with path_mappings — apply hyperparam overrides to YAML.
+      // Build TrainJobSpec — apply hyperparam overrides to YAML.
       // Unlike local training, there's no Hydra CLI-override safety net here
       // (the worker runs whatever's baked into config_contents verbatim), so
       // run_name must be resolved to a fresh value BEFORE serializing — it's
@@ -1797,10 +1778,10 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
           ),
         ),
         model_types: orderedConfigs.map((c) => c.modelType),
-        labels_path: resolvedLabelsPath,
-        labels_content: labelsContent,
+        labels_path: labelsPathField,
+        labels_content: labelsContentField,
         val_labels_path: remoteOpts.valLabelsPath || undefined,
-        path_mappings: Object.keys(pathMappings).length > 0 ? pathMappings : undefined,
+        project,
       };
 
       set((state) => ({
@@ -1849,15 +1830,17 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         logFlusher.flush();
 
         if (!result.success) {
+          const message = result.error || "Training failed";
           set((s) => ({
             status: "error",
-            error: result.error || "Training failed",
+            error: message,
             models: s.models.map((m) =>
               m.status === "running"
                 ? { ...m, status: "failed" as const }
                 : m,
             ),
           }));
+          toast.error(`Training on ${workerLabel()} failed`, { description: message });
           return;
         }
         trainResults.push(result);
@@ -1878,6 +1861,15 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         // the worker trained on, with every trained model in pipeline order.
         const inferenceTarget = remoteOpts.inferenceTarget;
         if (inferenceTarget && inferenceTarget !== "nothing") {
+          if (allowedVideoIndices?.length === 0) {
+            // "window" mode restricted coverage to visible videos, and none
+            // are — no point submitting a track job for nothing.
+            const message = "Videos aren't visible on the worker — inference skipped";
+            set((s) => ({
+              postTrainingInference: { status: "skipped", message, pendingMerge: null, merged: false },
+              log: appendLog(s.log, `— ${message}`),
+            }));
+          } else {
           const modelDirs = trainResults.map((r) => r.modelDir);
           const dataPath = trainResults.find((r) => r.labelsPath)?.labelsPath;
           if (modelDirs.some((d) => !d) || !dataPath) {
@@ -1902,13 +1894,17 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
               skipUserLabeled: remoteOpts.skipUserLabeled,
               existingPredictions: remoteOpts.existingPredictions,
             });
+            // No path_mappings: the train labels payload already carries
+            // fully-resolved video references (worker paths, or embedded
+            // pixels) — there's nothing left for the worker to translate.
             const trackSpecs = buildRemoteTrackSpecs(inferenceConfig, {
               dataPath,
-              pathMappings,
+              pathMappings: {},
               videoFrameCounts: (labels?.videos ?? []).map((v) => v.shape?.[0] ?? 0),
               currentFrameIdx: frameIdx ?? 0,
               activeVideoFrameCount: video?.shape?.[0] ?? 0,
-            });
+              allowedVideoIndices,
+            }).map((trackSpec) => ({ ...trackSpec, project }));
             set((s) => ({
               postTrainingInference: { status: "running", message: null, pendingMerge: null, merged: false },
               log: appendLog(s.log, `— Running inference (${inferenceTarget}) on the worker with models: ${modelDirs.join(", ")}...`),
@@ -1944,15 +1940,27 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
               }));
             }
           }
+          }
         }
 
         // A cancel during the inference job already set the terminal status.
-        if (get().status === "running") set({ status: "completed" });
+        if (get().status === "running") {
+          set({ status: "completed" });
+          const pti = get().postTrainingInference;
+          const pending = pti?.pendingMerge ?? null;
+          toast.success(`Training on ${workerLabel()} finished`, {
+            description:
+              pti?.message ??
+              `${trainResults.length} model${trainResults.length === 1 ? "" : "s"} trained.`,
+            action: pending
+              ? { label: "Fetch & Load", onClick: () => { void get().fetchAndLoadPostTrainingPredictions(); } }
+              : undefined,
+          });
+        }
       } catch (e) {
-        set({
-          status: "error",
-          error: `Remote training error: ${e instanceof Error ? e.message : String(e)}`,
-        });
+        const message = `Remote training error: ${e instanceof Error ? e.message : String(e)}`;
+        set({ status: "error", error: message });
+        toast.error(`Training on ${workerLabel()} failed`, { description: message });
       } finally {
         logFlusher.stop();
       }

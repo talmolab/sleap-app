@@ -1,6 +1,11 @@
 import { describe, it, expect } from "../bun-test";
 import "fake-indexeddb/auto";
-import { WorkerClient, type WorkerClientOptions, type WorkerEvent } from "@/lib/protocolV1/client";
+import {
+  WorkerClient,
+  type CloseInfo,
+  type WorkerClientOptions,
+  type WorkerEvent,
+} from "@/lib/protocolV1/client";
 import {
   BLOB_HASH_MISMATCH,
   BLOB_INCOMPLETE,
@@ -9,6 +14,8 @@ import {
   CLIENT_PROTO_MISMATCH,
   CLIENT_TIMEOUT,
   CLIENT_WORKER_UNVERIFIED,
+  FS_FORBIDDEN,
+  FS_NOT_FOUND,
   WorkerProtocolError,
 } from "@/lib/protocolV1/errors";
 import {
@@ -275,6 +282,75 @@ describe("protocolV1 WorkerClient", () => {
     });
   });
 
+  describe("onClose", () => {
+    it("a remote close notifies listeners once with {intentional: false} and a client.closed error", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket();
+      const client = await connected(identity, socket);
+
+      const notifications: CloseInfo[] = [];
+      client.onClose((info) => notifications.push(info));
+      socket.close();
+
+      expect(notifications).toHaveLength(1);
+      expect(notifications[0].intentional).toBe(false);
+      expect(notifications[0].error?.code).toBe(CLIENT_CLOSED);
+    });
+
+    it("client.close() notifies listeners once with {intentional: true}", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket();
+      const client = await connected(identity, socket);
+
+      const notifications: CloseInfo[] = [];
+      client.onClose((info) => notifications.push(info));
+      client.close();
+
+      expect(notifications).toEqual([{ intentional: true }]);
+    });
+
+    it("closing twice only notifies once", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket();
+      const client = await connected(identity, socket);
+
+      const notifications: CloseInfo[] = [];
+      client.onClose((info) => notifications.push(info));
+      client.close();
+      client.close();
+
+      expect(notifications).toHaveLength(1);
+    });
+
+    it("unsubscribing stops further notifications", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket();
+      const client = await connected(identity, socket);
+
+      const notifications: CloseInfo[] = [];
+      const unsubscribe = client.onClose((info) => notifications.push(info));
+      unsubscribe();
+      client.close();
+
+      expect(notifications).toHaveLength(0);
+    });
+
+    it("a throwing listener doesn't stop other listeners from being notified", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket();
+      const client = await connected(identity, socket);
+
+      const notifications: CloseInfo[] = [];
+      client.onClose(() => {
+        throw new Error("listener boom");
+      });
+      client.onClose((info) => notifications.push(info));
+      client.close();
+
+      expect(notifications).toHaveLength(1);
+    });
+  });
+
   describe("jobs.* / fs.* methods", () => {
     async function pairedClient(
       identity: ClientIdentity,
@@ -359,6 +435,8 @@ describe("protocolV1 WorkerClient", () => {
         updatedAt: "2026-09-27T01:00:00Z",
         result: { blobs: {} },
         error: null,
+        queuePosition: null,
+        modelTypes: [],
       });
     });
 
@@ -384,8 +462,8 @@ describe("protocolV1 WorkerClient", () => {
 
       const jobs = await client.jobsList();
       expect(jobs).toEqual([
-        { jobId: "job_1", state: "running", createdAt: "t1" },
-        { jobId: "job_2", state: "completed", createdAt: "t2" },
+        { jobId: "job_1", state: "running", createdAt: "t1", queuePosition: null, modelTypes: [] },
+        { jobId: "job_2", state: "completed", createdAt: "t2", queuePosition: null, modelTypes: [] },
       ]);
     });
 
@@ -433,6 +511,296 @@ describe("protocolV1 WorkerClient", () => {
       });
       const listReq = socket.sent.find((f) => f.method === "fs.list");
       expect(listReq?.params).toEqual({ path: "/mnt/data", offset: 10 });
+    });
+
+    it("fsStat maps path/type/size/modified", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({
+        handleRequest: (method) => {
+          if (method === "pair.claim") return { result: {} };
+          if (method === "fs.stat") {
+            return {
+              result: { path: "/mnt/data/a.slp", type: "file", size: 123, modified: 1700000000 },
+            };
+          }
+          return { error: { code: "proto.unknown_method", msg: "?" } };
+        },
+      });
+      const client = await pairedClient(identity, socket);
+
+      const result = await client.fsStat("/mnt/data/a.slp");
+      expect(result).toEqual({
+        path: "/mnt/data/a.slp",
+        type: "file",
+        size: 123,
+        modified: 1700000000,
+      });
+    });
+
+    it("fsRead sends path/offset/length and base64-decodes the content", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({
+        handleRequest: (method) => {
+          if (method === "pair.claim") return { result: {} };
+          if (method === "fs.read") {
+            return {
+              result: {
+                path: "/mnt/data/a.yaml",
+                content_base64: btoa("hello"),
+                offset: 0,
+                size: 5,
+                total_size: 5,
+                eof: true,
+              },
+            };
+          }
+          return { error: { code: "proto.unknown_method", msg: "?" } };
+        },
+      });
+      const client = await pairedClient(identity, socket);
+
+      const result = await client.fsRead("/mnt/data/a.yaml", 0, 10);
+
+      expect(new TextDecoder().decode(result.content)).toBe("hello");
+      expect(result).toMatchObject({ path: "/mnt/data/a.yaml", offset: 0, size: 5, totalSize: 5, eof: true });
+      const readReq = socket.sent.find((f) => f.method === "fs.read");
+      expect(readReq?.params).toEqual({ path: "/mnt/data/a.yaml", offset: 0, length: 10 });
+    });
+
+    it("fsRead omits length from params when not given", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({
+        handleRequest: (method) => {
+          if (method === "pair.claim") return { result: {} };
+          if (method === "fs.read") {
+            return {
+              result: { path: "/x", content_base64: "", offset: 0, size: 0, total_size: 0, eof: true },
+            };
+          }
+          return { error: { code: "proto.unknown_method", msg: "?" } };
+        },
+      });
+      const client = await pairedClient(identity, socket);
+
+      await client.fsRead("/x");
+
+      const readReq = socket.sent.find((f) => f.method === "fs.read");
+      expect(readReq?.params).toEqual({ path: "/x", offset: 0 });
+    });
+
+    it("fsStat throws a WorkerProtocolError when the worker reports a not-found error embedded in the result", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({
+        handleRequest: (method) => {
+          if (method === "pair.claim") return { result: {} };
+          if (method === "fs.stat") {
+            return { result: { error: "Path does not exist", error_code: "PATH_NOT_FOUND" } };
+          }
+          return { error: { code: "proto.unknown_method", msg: "?" } };
+        },
+      });
+      const client = await pairedClient(identity, socket);
+
+      await expect(client.fsStat("/missing")).rejects.toMatchObject({
+        code: FS_NOT_FOUND,
+      });
+    });
+
+    it("fsRead throws a WorkerProtocolError when the worker reports access-denied embedded in the result", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({
+        handleRequest: (method) => {
+          if (method === "pair.claim") return { result: {} };
+          if (method === "fs.read") {
+            return {
+              result: { error: "Access denied: path is outside configured mounts", error_code: "ACCESS_DENIED" },
+            };
+          }
+          return { error: { code: "proto.unknown_method", msg: "?" } };
+        },
+      });
+      const client = await pairedClient(identity, socket);
+
+      await expect(client.fsRead("/etc/shadow")).rejects.toMatchObject({
+        code: FS_FORBIDDEN,
+      });
+    });
+  });
+
+  describe("worker.info / richer job summaries", () => {
+    async function pairedClient(
+      identity: ClientIdentity,
+      socket: FakeWorkerSocket,
+    ): Promise<WorkerClient> {
+      const client = await connected(identity, socket);
+      await client.pairClaim("secret");
+      return client;
+    }
+
+    it("workerInfo maps gpu/cuda/sleap_nn_version fields", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({
+        handleRequest: (method) => {
+          if (method === "pair.claim") return { result: {} };
+          if (method === "worker.info") {
+            return {
+              result: {
+                gpu_model: "NVIDIA RTX 4090",
+                gpu_memory_mb: 24576,
+                gpu_count: 2,
+                cuda_version: "12.4",
+                sleap_nn_version: "0.1.0",
+                busy: true,
+              },
+            };
+          }
+          return { error: { code: "proto.unknown_method", msg: "?" } };
+        },
+      });
+      const client = await pairedClient(identity, socket);
+
+      const info = await client.workerInfo();
+      expect(info).toEqual({
+        gpuModel: "NVIDIA RTX 4090",
+        gpuMemoryMb: 24576,
+        gpuCount: 2,
+        cudaVersion: "12.4",
+        sleapNnVersion: "0.1.0",
+        busy: true,
+      });
+    });
+
+    it("workerInfo defaults missing numeric/string fields and coerces busy", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({
+        handleRequest: (method) => {
+          if (method === "pair.claim") return { result: {} };
+          if (method === "worker.info") return { result: {} };
+          return { error: { code: "proto.unknown_method", msg: "?" } };
+        },
+      });
+      const client = await pairedClient(identity, socket);
+
+      const info = await client.workerInfo();
+      expect(info).toEqual({
+        gpuModel: "unknown",
+        gpuMemoryMb: 0,
+        gpuCount: 0,
+        cudaVersion: "unknown",
+        sleapNnVersion: "unknown",
+        busy: false,
+      });
+    });
+
+    it("jobsList maps the full #98 shape (queuePosition, kind, modelTypes, labelsPath, project)", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({
+        handleRequest: (method) => {
+          if (method === "pair.claim") return { result: {} };
+          if (method === "jobs.list") {
+            return {
+              result: {
+                jobs: [
+                  {
+                    job_id: "job_1",
+                    state: "queued",
+                    created_at: "t1",
+                    updated_at: "t1b",
+                    error: null,
+                    queue_position: 2,
+                    kind: "train",
+                    model_types: ["centroid", "centered_instance"],
+                    labels_path: "/mnt/data/labels.slp",
+                    project: { name: "Flies", id: "proj_1" },
+                  },
+                ],
+              },
+            };
+          }
+          return { error: { code: "proto.unknown_method", msg: "?" } };
+        },
+      });
+      const client = await pairedClient(identity, socket);
+
+      const jobs = await client.jobsList();
+      expect(jobs).toEqual([
+        {
+          jobId: "job_1",
+          state: "queued",
+          createdAt: "t1",
+          updatedAt: "t1b",
+          error: null,
+          queuePosition: 2,
+          kind: "train",
+          modelTypes: ["centroid", "centered_instance"],
+          labelsPath: "/mnt/data/labels.slp",
+          project: { name: "Flies", id: "proj_1" },
+        },
+      ]);
+    });
+
+    it("jobsList still works against the old minimal shape (queuePosition null, modelTypes empty)", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({
+        handleRequest: (method) => {
+          if (method === "pair.claim") return { result: {} };
+          if (method === "jobs.list") {
+            return {
+              result: {
+                jobs: [{ job_id: "job_1", state: "running", created_at: "t1" }],
+              },
+            };
+          }
+          return { error: { code: "proto.unknown_method", msg: "?" } };
+        },
+      });
+      const client = await pairedClient(identity, socket);
+
+      const jobs = await client.jobsList();
+      expect(jobs).toEqual([
+        {
+          jobId: "job_1",
+          state: "running",
+          createdAt: "t1",
+          queuePosition: null,
+          modelTypes: [],
+        },
+      ]);
+    });
+
+    it("jobsStatus includes spec", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({
+        handleRequest: (method) => {
+          if (method === "pair.claim") return { result: {} };
+          if (method === "jobs.status") {
+            return {
+              result: {
+                job_id: "job_1",
+                state: "running",
+                created_at: "t1",
+                updated_at: "t2",
+                result: null,
+                error: null,
+                queue_position: null,
+                kind: "track",
+                model_types: ["centroid"],
+                spec: { type: "track", labels_path: "/x.slp" },
+              },
+            };
+          }
+          return { error: { code: "proto.unknown_method", msg: "?" } };
+        },
+      });
+      const client = await pairedClient(identity, socket);
+
+      const status = await client.jobsStatus("job_1");
+      expect(status).toMatchObject({
+        jobId: "job_1",
+        kind: "track",
+        modelTypes: ["centroid"],
+        spec: { type: "track", labels_path: "/x.slp" },
+      });
     });
   });
 

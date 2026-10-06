@@ -19,6 +19,19 @@ export interface RemoteTrackSpecContext {
   activeVideoFrameCount: number;
   /** Injectable RNG for tests; defaults to Math.random. */
   random?: () => number;
+  /**
+   * Restrict track specs to these video indices — post-training inference
+   * when the worker can't see every project video (trainingStore's remote
+   * branch, PR3a). Omitted = unrestricted (every video, the pre-PR3
+   * behavior). A target that implicitly covers every video server-side
+   * (`all_videos`/`suggestions`/`user_labeled`/`predicted`, and `random`,
+   * which already emits one spec per video) instead emits one spec PER
+   * allowed video, each pinned via `video_index` — the worker has no
+   * "every video except these" concept. A target that already names one
+   * specific video (`frame`/`video`/`random_video`, or a frame-range
+   * object) is dropped entirely (`[]`) if that video isn't allowed.
+   */
+  allowedVideoIndices?: number[];
 }
 
 // frame_filter: only for filter-based targets (worker-side filtering).
@@ -117,11 +130,12 @@ export function buildRemoteTrackSpecs(
   const pathMappings = Object.keys(ctx.pathMappings).length > 0 ? ctx.pathMappings : undefined;
   const target = typeof config.frameRange === "string" ? config.frameRange : null;
   const currentVideoIdx = config.videoIndex !== "all" ? config.videoIndex : undefined;
+  const isAllowed = (i: number) => !ctx.allowedVideoIndices || ctx.allowedVideoIndices.includes(i);
 
   if (target === "random") {
     const specs: TrackJobSpec[] = [];
     ctx.videoFrameCounts.forEach((nFrames, i) => {
-      if (nFrames === 0) return;
+      if (nFrames === 0 || !isAllowed(i)) return;
       specs.push({
         type: "track",
         data_path: ctx.dataPath,
@@ -154,15 +168,26 @@ export function buildRemoteTrackSpecs(
     videoIndex = currentVideoIdx;
   }
 
-  return [
-    {
-      type: "track",
-      data_path: ctx.dataPath,
-      ...trackOptionFields(config),
-      frame_filter: target && target in FILTER_MAP ? FILTER_MAP[target] : undefined,
-      video_index: videoIndex,
-      frames,
-      path_mappings: pathMappings,
-    },
-  ];
+  const buildSpec = (vi: number | undefined): TrackJobSpec => ({
+    type: "track",
+    data_path: ctx.dataPath,
+    ...trackOptionFields(config),
+    frame_filter: target && target in FILTER_MAP ? FILTER_MAP[target] : undefined,
+    video_index: vi,
+    frames,
+    path_mappings: pathMappings,
+  });
+
+  // A target that already names one specific video: unchanged if it's
+  // allowed, dropped entirely otherwise (never widened to other videos).
+  if (videoIndex !== undefined) {
+    return isAllowed(videoIndex) ? [buildSpec(videoIndex)] : [];
+  }
+
+  // An implicit "every video" target (all_videos/suggestions/user_labeled/
+  // predicted): one spec covering every video server-side when
+  // unrestricted, else one spec per allowed video (see the doc comment on
+  // `allowedVideoIndices` — there's no "all except these" to ask the worker
+  // for instead).
+  return ctx.allowedVideoIndices ? ctx.allowedVideoIndices.map(buildSpec) : [buildSpec(undefined)];
 }

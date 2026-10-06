@@ -6,6 +6,7 @@
  * connect to rooms, discover workers, browse remote filesystems,
  * and submit inference jobs.
  */
+import type { JobProject } from "@/lib/protocolV1/client";
 
 // ── Protocol constants (match sleap_rtc/protocol.py) ──────────────
 export const MSG_SEPARATOR = "::";
@@ -96,22 +97,24 @@ export interface TrackJobSpec {
   filter_min_mean_node_score?: number;
   filter_min_instance_score?: number;
   filter_min_centroid_distance?: number;
+  /** Which project submitted this job (`projectTag()`) — shows up in the worker's job list/history (sleap-connect #98). */
+  project?: JobProject;
 }
 
 export interface TrainJobSpec {
   type: "train";
   config_contents: string[];
   model_types: string[];
-  labels_path: string;
+  /** `labelsSource: "worker-file"` — a path the worker can already read. Omitted when `labels_content` is sent instead (`labelsSource: "window"`). */
+  labels_path?: string;
   /**
-   * Base64-encoded, structure-only (no embedded video frames) .slp bytes for
-   * the training labels, sent in place of a worker filesystem path when
-   * `labels_path` isn't resolvable on the worker (see trainingStore.ts's
-   * remote-submission path). `null`/absent means use `labels_path` as-is —
-   * mirrors `config_contents`'s own always-inline materialization pattern,
-   * just singular (one labels file per job) and opt-in rather than
-   * unconditional. Exact cross-repo wire contract with sleap-connect's worker
-   * materialization — do not rename.
+   * Base64-encoded `.slp` bytes for the training labels — this window's own
+   * labels (`labelsSource: "window"`), sent in place of a worker filesystem
+   * path (see trainingStore.ts's remote-submission path). Per-video,
+   * selectively embedded: a video the worker can see is referenced by its
+   * worker path; one it can't is embedded (labeled frames only, never the
+   * full video — see remoteLabelsPayload.ts). Exact cross-repo wire contract
+   * with sleap-connect's worker materialization — do not rename.
    */
   labels_content?: string | null;
   val_labels_path?: string;
@@ -120,6 +123,8 @@ export interface TrainJobSpec {
   learning_rate?: number;
   run_name?: string;
   path_mappings?: Record<string, string>;
+  /** Which project submitted this job (`projectTag()`) — shows up in the worker's job list/history (sleap-connect #98). */
+  project?: JobProject;
   // No `inference_target`: the worker never ran inference as part of a train
   // job. Post-training inference is a separate track job the app submits
   // once every model has trained (see trainingStore's remote branch).

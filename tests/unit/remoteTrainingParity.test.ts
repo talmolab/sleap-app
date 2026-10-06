@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "../bun-test";
-import { Labels, Video } from "@talmolab/sleap-io.js";
+import { Labels, Video, loadSlp } from "@talmolab/sleap-io.js";
 import {
   useTrainingStore,
   defaultHyperparams,
@@ -244,6 +244,12 @@ let submitCalls: SubmitCall[] = [];
 /** Drives each submitted job; default plays a successful top-down run. */
 let driveJob: (call: SubmitCall, n: number) => Promise<JobResult>;
 
+/** Only consulted by "window"-mode tests; irrelevant (and left matching the
+ * pre-PR3 empty default) for "worker-file", which never computes visibility. */
+const MOUNT = "/worker-mounts";
+const fakeWorkerMounts: Array<{ path: string }> = [{ path: MOUNT }];
+/** What the next `statWorkerPath()` call resolves to; keyed by the exact path asked for. */
+let fakeWorkerStats: Record<string, { exists: boolean; type?: "file" | "directory" }> = {};
 vi.mock("@/stores/connectStore", () => ({
   useConnectStore: {
     getState: () => ({
@@ -252,19 +258,19 @@ vi.mock("@/stores/connectStore", () => ({
         submitCalls.push(call);
         return driveJob(call, submitCalls.length - 1);
       },
-      workerMounts: [],
+      workerMounts: fakeWorkerMounts,
+      statWorkerPath: async (path: string) => fakeWorkerStats[path] ?? { exists: false },
     }),
   },
+  // Only exercised by "window"-mode tests — "worker-file" never calls it.
+  pathRulesFor: () => [],
 }));
 
 let fakeLabels: Labels | null = null;
 vi.mock("@/stores/appStore", () => ({
   useAppStore: {
-    getState: () => ({ labels: fakeLabels, projectPath: null, video: null, frameIdx: 0 }),
+    getState: () => ({ labels: fakeLabels, projectPath: "/Users/me/project.slp", video: null, frameIdx: 0 }),
   },
-}));
-vi.mock("@/lib/labelsEmbed", () => ({
-  serializeLabelsEmbedded: async () => new Uint8Array([1, 2, 3]),
 }));
 vi.mock("@/stores/confirmStore", () => ({ confirmDialog: async () => true }));
 
@@ -301,7 +307,8 @@ function setUpTopDown(inferenceTarget = "suggestions") {
   return {
     remote: true as const,
     workerId: "worker-1",
-    labelsPath: "/local/labels.slp",
+    labelsSource: "worker-file" as const,
+    workerLabelsPath: "/local/labels.slp",
     inferenceTarget,
   };
 }
@@ -426,21 +433,201 @@ describe("startTraining (remote) — telemetry + post-training inference", () =>
       skeletons: [],
       labeledFrames: [],
     });
-    window.addEventListener(
-      "sleap:path-resolution",
-      (e: Event) => {
-        const d = (e as CustomEvent).detail as {
-          paths: Array<{ local: string }>;
-          resolve: (p: Array<{ local: string; worker: string }>) => void;
-        };
-        d.resolve(d.paths.map((p) => ({ local: p.local, worker: `/w${p.local}` })));
-      },
-      { once: true },
-    );
     await useTrainingStore.getState().startTraining({ ...setUpTopDown("random"), sampleCount: 5 });
     const tracks = submitCalls.slice(1).map((c) => c.spec as { video_index?: number; frames?: string; model_paths: string[] });
     expect(tracks.map((t) => t.video_index)).toEqual([0, 1]);
     expect(tracks.every((t) => t.frames!.split(",").length === 5)).toBe(true);
     expect(useTrainingStore.getState().postTrainingInference?.pendingMerge?.results).toHaveLength(2);
+  });
+});
+
+// ── startTraining (remote): labelsSource "window" vs "worker-file" ───────
+//
+// "window" exercises the REAL checkVideoVisibility/buildRemoteLabelsPayload
+// pipeline (both pure, already unit-tested in remoteVisibility.test.ts /
+// remoteLabelsPayload.test.ts) against real Labels/Video objects — only the
+// transport boundary (connectStore's submitJob/statWorkerPath) is mocked,
+// per this repo's "thin integration" test convention. A video "under the
+// mount" with a configured `fakeWorkerStats` entry stands in for the
+// worker's filesystem; `labeledFrames: []` throughout means an "embedded"
+// hidden video never actually needs a working backend to encode (nothing to
+// embed), so a bare placeholder object is enough to mark one "available".
+
+function setUpSingleModel() {
+  useTrainingStore.getState().reset();
+  useTrainingStore.getState().setConfig("modelType", "single_animal");
+  useTrainingStore.getState().addConfigFile(
+    makeConfigFile({ slot: "config", modelType: "single_animal" }),
+  );
+}
+
+function base64ToBytes(b64: string): Uint8Array {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+/** Train job succeeds trivially; a track job returns one result blob. Single-model (no split), unlike defaultDrive. */
+const singleModelDrive: typeof driveJob = async (call) => {
+  if (call.spec.type === "train") {
+    return { jobId: "j0", success: true, modelDir: "/w/models/m0", labelsPath: "/w/jobs/j0/labels.slp" };
+  }
+  call.onLog("Predicting", false);
+  return { jobId: "track", success: true, resultBlobs: { predictions: PREDICTIONS } };
+};
+
+describe("startTraining (remote) — labelsSource window vs worker-file", () => {
+  beforeEach(() => {
+    submitCalls = [];
+    driveJob = singleModelDrive;
+    fakeWorkerStats = {};
+    setUpSingleModel();
+  });
+  afterEach(() => {
+    useTrainingStore.getState().reset();
+  });
+
+  it("window + all visible: labels_content set, no labels_path/path_mappings, project tag attached", async () => {
+    fakeLabels = new Labels({
+      videos: [new Video({ filename: `${MOUNT}/a.mp4`, openBackend: false })],
+      skeletons: [],
+      labeledFrames: [],
+    });
+    fakeWorkerStats[`${MOUNT}/a.mp4`] = { exists: true, type: "file" };
+
+    await useTrainingStore.getState().startTraining({
+      remote: true,
+      workerId: "worker-1",
+      labelsSource: "window",
+      inferenceTarget: "nothing",
+    });
+
+    expect(submitCalls).toHaveLength(1);
+    const train = submitCalls[0].spec as unknown as Record<string, unknown>;
+    expect(train.labels_content).toEqual(expect.any(String));
+    expect(train.labels_path).toBeUndefined();
+    expect(train.path_mappings).toBeUndefined();
+    expect(train.project).toEqual({ name: "project.slp", id: expect.stringMatching(/^[0-9a-f]{8}$/) });
+
+    // Prove it genuinely went through the "visible" re-pointing path (embed:
+    // false) rather than merely happening to produce a truthy string some
+    // other way — decode the payload and check the video was re-pointed.
+    const reloaded = await loadSlp(base64ToBytes(train.labels_content as string), { openVideos: false });
+    expect(reloaded.videos[0].filename).toBe(`${MOUNT}/a.mp4`);
+  });
+
+  it("some hidden: trains with embedded content, and restricts post-training inference to the visible video only", async () => {
+    const visible = new Video({ filename: `${MOUNT}/visible.mp4`, openBackend: false });
+    const hidden = new Video({ filename: `${MOUNT}/hidden.mp4`, openBackend: false });
+    hidden.backend = {} as unknown as typeof hidden.backend; // has *a* backend — embeddable, not "unavailable"
+    fakeLabels = new Labels({ videos: [visible, hidden], skeletons: [], labeledFrames: [] });
+    fakeWorkerStats[`${MOUNT}/visible.mp4`] = { exists: true, type: "file" };
+    fakeWorkerStats[`${MOUNT}/hidden.mp4`] = { exists: false };
+
+    await useTrainingStore.getState().startTraining({
+      remote: true,
+      workerId: "worker-1",
+      labelsSource: "window",
+      inferenceTarget: "suggestions",
+    });
+
+    expect(submitCalls).toHaveLength(2); // train + one restricted track job
+    const train = submitCalls[0].spec as unknown as Record<string, unknown>;
+    expect(train.labels_content).toEqual(expect.any(String));
+    const track = submitCalls[1].spec;
+    if (track.type !== "track") throw new Error("unreachable");
+    expect(track.video_index).toBe(0); // the visible video only
+    expect(track.project).toEqual(train.project as typeof track.project);
+  });
+
+  it("embedFramesToPredict + suggestions: covers every video, no restriction even with a hidden one", async () => {
+    const visible = new Video({ filename: `${MOUNT}/visible.mp4`, openBackend: false });
+    const hidden = new Video({ filename: `${MOUNT}/hidden.mp4`, openBackend: false });
+    hidden.backend = {} as unknown as typeof hidden.backend;
+    fakeLabels = new Labels({ videos: [visible, hidden], skeletons: [], labeledFrames: [] });
+    fakeWorkerStats[`${MOUNT}/visible.mp4`] = { exists: true, type: "file" };
+    fakeWorkerStats[`${MOUNT}/hidden.mp4`] = { exists: false };
+
+    await useTrainingStore.getState().startTraining({
+      remote: true,
+      workerId: "worker-1",
+      labelsSource: "window",
+      embedFramesToPredict: true,
+      inferenceTarget: "suggestions",
+    });
+
+    expect(submitCalls).toHaveLength(2);
+    const track = submitCalls[1].spec;
+    if (track.type !== "track") throw new Error("unreachable");
+    expect(track.video_index).toBeUndefined(); // unrestricted — covers every video server-side
+  });
+
+  it("none visible, no embed: post-training inference is skipped, no track job submitted", async () => {
+    fakeLabels = new Labels({
+      videos: [new Video({ filename: "/not-under-any-mount/a.mp4", openBackend: false })],
+      skeletons: [],
+      labeledFrames: [],
+    });
+    // No fakeWorkerStats entry needed — this path never even forms a worker candidate ("no-location").
+
+    await useTrainingStore.getState().startTraining({
+      remote: true,
+      workerId: "worker-1",
+      labelsSource: "window",
+      inferenceTarget: "suggestions",
+    });
+
+    expect(submitCalls).toHaveLength(1); // train only — no track job submitted at all
+    const pti = useTrainingStore.getState().postTrainingInference;
+    expect(pti?.status).toBe("skipped");
+    expect(pti?.message).toBe("Videos aren't visible on the worker — inference skipped");
+  });
+
+  it("worker-file: labels_path only, no labels_content, project tag still attached", async () => {
+    fakeLabels = new Labels({ videos: [], skeletons: [], labeledFrames: [] });
+
+    await useTrainingStore.getState().startTraining({
+      remote: true,
+      workerId: "worker-1",
+      labelsSource: "worker-file",
+      workerLabelsPath: "/mnt/data/labels.slp",
+      inferenceTarget: "nothing",
+    });
+
+    const train = submitCalls[0].spec as unknown as Record<string, unknown>;
+    expect(train.labels_path).toBe("/mnt/data/labels.slp");
+    expect(train.labels_content).toBeUndefined();
+    expect(train.project).toEqual({ name: "project.slp", id: expect.stringMatching(/^[0-9a-f]{8}$/) });
+  });
+
+  it("never dispatches sleap:path-resolution (that dialog is gone from the training path)", async () => {
+    fakeLabels = new Labels({
+      videos: [new Video({ filename: `${MOUNT}/a.mp4`, openBackend: false })],
+      skeletons: [],
+      labeledFrames: [],
+    });
+    fakeWorkerStats[`${MOUNT}/a.mp4`] = { exists: true, type: "file" };
+    const handler = vi.fn();
+    const listener = () => handler();
+    window.addEventListener("sleap:path-resolution", listener);
+    try {
+      await useTrainingStore.getState().startTraining({
+        remote: true,
+        workerId: "worker-1",
+        labelsSource: "window",
+        inferenceTarget: "nothing",
+      });
+      await useTrainingStore.getState().startTraining({
+        remote: true,
+        workerId: "worker-1",
+        labelsSource: "worker-file",
+        workerLabelsPath: "/mnt/data/labels.slp",
+        inferenceTarget: "nothing",
+      });
+    } finally {
+      window.removeEventListener("sleap:path-resolution", listener);
+    }
+    expect(handler).not.toHaveBeenCalled();
   });
 });

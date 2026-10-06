@@ -16,6 +16,9 @@ import { useConnectStore } from "@/stores/connectStore";
 import { BackendPicker } from "@/components/common/BackendPicker";
 import { RemoteFileBrowser } from "@/components/dialogs/RemoteFileBrowser";
 import { TrainingConfigDialog } from "@/components/dialogs/TrainingConfigDialog";
+import { RemoteDataSummary } from "@/components/connect/RemoteDataSummary";
+import { HiddenVideosDialog } from "@/components/connect/HiddenVideosDialog";
+import { RemoteRunCard } from "@/components/connect/RemoteRunCard";
 import { LossViewerDialog } from "@/components/monitors/LossViewerDialog";
 import { LogTerminalDialog } from "@/components/monitors/LogTerminalDialog";
 import { ErrorOutput } from "@/components/monitors/ErrorOutput";
@@ -27,6 +30,7 @@ import type { DiscoveredModel } from "@/lib/modelDiscovery";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   Select,
@@ -61,6 +65,9 @@ import {
 } from "lucide-react";
 import { computeNodeVisibility, visibilityTier } from "@/lib/anchorVisibility";
 import { TUTORIAL_FIRST_TRAINING_STEP_IDS } from "@/lib/tutorial/steps";
+import { projectTag } from "@/lib/projectTag";
+import { formatDuration } from "@/lib/timestamp";
+import { classifyVisibility, type VideoVisibility } from "@/lib/remoteVisibility";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -268,16 +275,6 @@ export function recommendPipeline(labels: LabelsLike | null): PipelineRecommenda
     reason: `Larger animals (~${Math.round(ratio * 100)}% of frame) — bottom-up handles occlusions well`,
     alternatives: alts,
   };
-}
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-function formatDuration(ms: number): string {
-  const s = Math.floor(ms / 1000);
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ${s % 60}s`;
-  return `${Math.floor(m / 60)}h ${m % 60}m`;
 }
 
 // ── Reusable widgets ─────────────────────────────────────────────────────────
@@ -719,6 +716,7 @@ function HyperparamsFields({
 export function TrainingPanel() {
   const config = useTrainingStore((s) => s.config);
   const status = useTrainingStore((s) => s.status);
+  const _isRemote = useTrainingStore((s) => s._isRemote);
   const error = useTrainingStore((s) => s.error);
   const stderrTail = useTrainingStore((s) => s.stderrTail);
   const startedAt = useTrainingStore((s) => s.startedAt);
@@ -912,11 +910,28 @@ export function TrainingPanel() {
   // Loss viewer modal: which model's curves are open (null = closed).
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
   const [logDialogOpen, setLogDialogOpen] = useState(false);
+  // Remote runs start as a compact RemoteRunCard, not the live inline monitor
+  // (§3b.4) — "Watch Live" flips this; reset to compact at the start of every
+  // new remote run (not just mount) so a prior "Watch Live" choice doesn't
+  // carry over into the next one.
+  const [watching, setWatching] = useState(false);
+  useEffect(() => {
+    if (_isRemote) setWatching(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [startedAt]);
 
   // Remote state
   const [remoteEnabled, setRemoteEnabled] = useState(!isTauri);
+  // Default "this window" (unsaved edits included) — the worker-file picker
+  // (pre-PR3's only option) stays as the alternative. See remoteVisibility.ts
+  // / remoteLabelsPayload.ts for how "window" gets turned into a payload.
+  const [labelsSource, setLabelsSource] = useState<"window" | "worker-file">("window");
   const [remoteLabelsPath, setRemoteLabelsPath] = useState("");
   const [remoteValLabelsPath, setRemoteValLabelsPath] = useState("");
+  // Latest visibility check from RemoteDataSummary, lifted here so Start (and
+  // the pre-submit hidden-videos dialog) can use it without recomputing.
+  const [visibility, setVisibility] = useState<VideoVisibility[] | null>(null);
+  const [hiddenDialogOpen, setHiddenDialogOpen] = useState(false);
   const [inferenceTarget, setInferenceTarget] = useState<string>("suggestions");
   const [sampleCount, setSampleCount] = useState(20);
   const [skipUserLabeled, setSkipUserLabeled] = useState(false);
@@ -941,7 +956,9 @@ export function TrainingPanel() {
   >(null);
 
   const connectionStatus = useConnectStore((s) => s.connectionStatus);
+  const activeTransport = useConnectStore((s) => s.activeTransport);
   const selectedWorkerId = useConnectStore((s) => s.selectedWorkerId);
+  const pairedWorkers = useConnectStore((s) => s.pairedWorkers);
   const connectedMounts = useConnectStore((s) => s.workerMounts);
 
   // Empty (not ["/"]) while disconnected: RemoteFileBrowser treats a single
@@ -1022,7 +1039,9 @@ export function TrainingPanel() {
     config.configs.some((c) => c.slot === slot),
   );
   const hasData = remoteEnabled
-    ? !!remoteLabelsPath
+    ? labelsSource === "window"
+      ? (labels?.labeledFrames.length ?? 0) > 0
+      : !!remoteLabelsPath
     : !!config.trainingLabelsPath || !!projectPath;
   // Remote training points at a path on the worker's filesystem, which this
   // client can't read to count frames — only guard the local-project path,
@@ -1047,6 +1066,12 @@ export function TrainingPanel() {
     return true;
   });
   const isModelTypeIncompatible = skeletonCompat.disabledTypes.has(config.modelType);
+  // "window" + still-unknown visibility blocks Start: classifyVisibility(null
+  // ?? []) would otherwise read as case "all" (same as "nothing hidden"),
+  // skipping HiddenVideosDialog even if the in-flight check later finds a
+  // hidden video. RemoteDataSummary's debounce is short, so this only ever
+  // gates the brief window right after picking/reconnecting a worker.
+  const visibilityPending = remoteEnabled && labelsSource === "window" && visibility === null;
   const canStart =
     hasAllConfigs &&
     hasData &&
@@ -1054,6 +1079,7 @@ export function TrainingPanel() {
     hasValidLossWeights &&
     hasValidCheckpointSelection &&
     !isModelTypeIncompatible &&
+    !visibilityPending &&
     status === "idle" &&
     (remoteEnabled ? !!selectedWorkerId && connectionStatus === "connected" : true);
 
@@ -1101,28 +1127,58 @@ export function TrainingPanel() {
     }
   };
 
+  /** labelsSource "window", visibility case "all" (or re-confirmed via HiddenVideosDialog): actually submit. */
+  const startRemoteWindowTraining = async (embedFramesToPredict: boolean) => {
+    await startTraining({
+      remote: true,
+      workerId: selectedWorkerId!,
+      labelsSource: "window",
+      // Pass along whatever RemoteDataSummary has found so far — trainingStore
+      // recomputes it itself (via checkVideoVisibility) if still unknown.
+      visibility: visibility ?? undefined,
+      embedFramesToPredict,
+      valLabelsPath: remoteValLabelsPath || undefined,
+      inferenceTarget,
+      sampleCount,
+      skipUserLabeled,
+      existingPredictions,
+    });
+  };
+
   const handleStart = async () => {
     if (remoteEnabled) {
-      await startTraining({
-        remote: true,
-        workerId: selectedWorkerId!,
-        labelsPath: remoteLabelsPath,
-        valLabelsPath: remoteValLabelsPath || undefined,
-        inferenceTarget,
-        sampleCount,
-        skipUserLabeled,
-        existingPredictions,
-      });
-    } else {
-      await startTraining({
-        inferenceTarget,
-        sampleCount,
-        skipUserLabeled,
-        existingPredictions,
-        exportFormat,
-        useExportedForInference,
-      });
+      if (labelsSource === "worker-file") {
+        await startTraining({
+          remote: true,
+          workerId: selectedWorkerId!,
+          labelsSource: "worker-file",
+          workerLabelsPath: remoteLabelsPath,
+          valLabelsPath: remoteValLabelsPath || undefined,
+          inferenceTarget,
+          sampleCount,
+          skipUserLabeled,
+          existingPredictions,
+        });
+        return;
+      }
+      // "window": every video visible (or not yet known — trainingStore will
+      // check itself) starts right away; otherwise confirm via the dialog
+      // before possibly embedding pixels and/or narrowing inference coverage.
+      if (classifyVisibility(visibility ?? []) === "all") {
+        await startRemoteWindowTraining(false);
+      } else {
+        setHiddenDialogOpen(true);
+      }
+      return;
     }
+    await startTraining({
+      inferenceTarget,
+      sampleCount,
+      skipUserLabeled,
+      existingPredictions,
+      exportFormat,
+      useExportedForInference,
+    });
   };
 
   if (!isTauri && connectionStatus !== "connected") {
@@ -1227,44 +1283,81 @@ export function TrainingPanel() {
         <Section title="Data" defaultOpen={true}>
           <div className="space-y-1">
             <span className="text-[10px] text-muted-foreground flex items-center gap-1">
-              {remoteEnabled
-                ? "Training Labels (on worker)"
-                : "Training Labels"}
+              Training Labels
               <HelpTooltip text="The .slp file whose labeled frames are used to train the model. Defaults to the currently open project." />
             </span>
-            <div className="flex gap-1">
-              <Input
-                value={
-                  remoteEnabled
-                    ? remoteLabelsPath
-                    : config.trainingLabelsPath || projectPath || ""
-                }
-                readOnly
-                className="h-7 text-xs font-mono flex-1"
-                placeholder="No file selected"
-              />
-              <Button
-                variant="outline"
-                size="xs"
-                className="px-2"
-                disabled={isRunning}
-                onClick={() => {
-                  if (remoteEnabled) {
-                    setFileBrowserCallback(
-                      () => (path: string) => setRemoteLabelsPath(path),
-                    );
-                    setFileBrowserOpen(true);
-                  } else {
+            {remoteEnabled ? (
+              <div className="space-y-1.5">
+                <RadioGroup
+                  value={labelsSource}
+                  onValueChange={(v) => setLabelsSource(v as "window" | "worker-file")}
+                  className="gap-1"
+                >
+                  <label className="flex items-center gap-1.5 text-xs cursor-pointer">
+                    <RadioGroupItem value="window" id="labels-source-window" disabled={isRunning} />
+                    This window ({projectTag(projectPath).name})
+                  </label>
+                  <label className="flex items-center gap-1.5 text-xs cursor-pointer">
+                    <RadioGroupItem value="worker-file" id="labels-source-worker-file" disabled={isRunning} />
+                    A file on {pairedWorkers.find((w) => w.nodeId === selectedWorkerId)?.label ?? "worker"}
+                  </label>
+                </RadioGroup>
+                {labelsSource === "worker-file" && (
+                  <div className="flex gap-1 pl-5">
+                    <Input
+                      value={remoteLabelsPath}
+                      readOnly
+                      className="h-7 text-xs font-mono flex-1"
+                      placeholder="No file selected"
+                    />
+                    <Button
+                      variant="outline"
+                      size="xs"
+                      className="px-2"
+                      disabled={isRunning}
+                      onClick={() => {
+                        setFileBrowserCallback(
+                          () => (path: string) => setRemoteLabelsPath(path),
+                        );
+                        setFileBrowserOpen(true);
+                      }}
+                    >
+                      <Folder className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                )}
+                {labelsSource === "window" && (
+                  <RemoteDataSummary
+                    workerId={selectedWorkerId}
+                    labels={labels}
+                    onResult={setVisibility}
+                  />
+                )}
+              </div>
+            ) : (
+              <div className="flex gap-1">
+                <Input
+                  value={config.trainingLabelsPath || projectPath || ""}
+                  readOnly
+                  className="h-7 text-xs font-mono flex-1"
+                  placeholder="No file selected"
+                />
+                <Button
+                  variant="outline"
+                  size="xs"
+                  className="px-2"
+                  disabled={isRunning}
+                  onClick={() =>
                     handleBrowseLocalData(
                       (p) => setConfig("trainingLabelsPath", p),
                       "trainingLabelsPath",
-                    );
+                    )
                   }
-                }}
-              >
-                <Folder className="h-3.5 w-3.5" />
-              </Button>
-            </div>
+                >
+                  <Folder className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            )}
           </div>
           <div className="space-y-1">
             <span className="text-[10px] text-muted-foreground flex items-center gap-1">
@@ -1514,7 +1607,9 @@ export function TrainingPanel() {
                         ? "Select a checkpoint file for Resume/Fine-tune"
                         : remoteEnabled && !selectedWorkerId
                           ? "Select a worker"
-                          : ""}
+                          : visibilityPending
+                            ? "Checking video visibility on the worker..."
+                            : ""}
               </p>
             )}
           </>
@@ -1657,7 +1752,27 @@ export function TrainingPanel() {
       </div>
 
       {/* ── Progress ──────────────────────────────────────────────── */}
-      {(isRunning || isDone) && models.length > 0 && (
+      {_isRemote && status === "running" && !watching ? (
+        <>
+          <Separator />
+          <div className="px-3 py-2">
+            <RemoteRunCard
+              workerLabel={pairedWorkers.find((w) => w.nodeId === selectedWorkerId)?.label ?? "worker"}
+              connectionStatus={connectionStatus}
+              activeTransport={activeTransport}
+              startedAt={startedAt}
+              models={models}
+              currentModelIndex={currentModelIndex}
+              postTrainingInference={postTrainingInference}
+              onWatchLive={() => {
+                setWatching(true);
+                setViewerIndex(currentModelIndex);
+              }}
+            />
+          </div>
+        </>
+      ) : (
+      (isRunning || isDone) && models.length > 0 && (
         <>
           <Separator />
           <div className="px-3 py-2 space-y-2">
@@ -1691,6 +1806,16 @@ export function TrainingPanel() {
                 <span className="text-[10px] text-muted-foreground ml-auto">
                   {formatDuration(isDone ? elapsed : Date.now() - startedAt)}
                 </span>
+              )}
+              {_isRemote && isRunning && watching && (
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  className="h-5 px-1.5 text-[10px]"
+                  onClick={() => setWatching(false)}
+                >
+                  Hide
+                </Button>
               )}
             </div>
 
@@ -1856,6 +1981,7 @@ export function TrainingPanel() {
             )}
           </div>
         </>
+      )
       )}
 
       <LogTerminalDialog
@@ -1894,6 +2020,17 @@ export function TrainingPanel() {
         mode="file"
         fileFilter=".slp"
       />
+
+      {labels && (
+        <HiddenVideosDialog
+          open={hiddenDialogOpen}
+          onClose={() => setHiddenDialogOpen(false)}
+          labels={labels}
+          visibility={visibility ?? []}
+          inferenceTarget={inferenceTarget}
+          onTrain={(opts) => void startRemoteWindowTraining(opts.embedFramesToPredict)}
+        />
+      )}
 
       <TrainingConfigDialog
         open={configDialogOpen}

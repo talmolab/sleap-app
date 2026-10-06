@@ -112,7 +112,9 @@ export function BackendPicker({
                 ? "bg-green-500"
                 : connectionStatus === "connecting"
                   ? "bg-yellow-500"
-                  : "bg-zinc-500"
+                  : connectionStatus === "reconnecting"
+                    ? "bg-amber-500"
+                    : "bg-zinc-500"
             }`}
           />
           <span className="truncate">
@@ -120,15 +122,20 @@ export function BackendPicker({
               ? "Connected"
               : connectionStatus === "connecting"
                 ? "Connecting…"
-                : connectionStatus === "error"
-                  ? `Connection failed${connectionError ? `: ${connectionError}` : ""}`
-                  : "Not connected"}
+                : connectionStatus === "reconnecting"
+                  ? "Reconnecting…"
+                  : connectionStatus === "error"
+                    ? `Connection failed${connectionError ? `: ${connectionError}` : ""}`
+                    : "Not connected"}
           </span>
-          {activeTransport && (connectionStatus === "connected" || connectionStatus === "connecting") && (
-            <span className="shrink-0 text-muted-foreground/70" data-testid="backend-transport">
-              via {transportLabel(activeTransport)}
-            </span>
-          )}
+          {activeTransport &&
+            (connectionStatus === "connected" ||
+              connectionStatus === "connecting" ||
+              connectionStatus === "reconnecting") && (
+              <span className="shrink-0 text-muted-foreground/70" data-testid="backend-transport">
+                via {transportLabel(activeTransport)}
+              </span>
+            )}
         </div>
       )}
 

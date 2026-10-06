@@ -36,6 +36,9 @@ import {
   CLIENT_PROTO_MISMATCH,
   CLIENT_TIMEOUT,
   CLIENT_WORKER_UNVERIFIED,
+  FS_FORBIDDEN,
+  FS_IO_ERROR,
+  FS_NOT_FOUND,
   INTERNAL,
   WorkerProtocolError,
 } from "./errors";
@@ -61,10 +64,34 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 15000;
 
 export type ConnectionState = "connecting" | "unauthenticated" | "authenticated" | "closed";
 
+/** A worker's snapshot of its own hardware/software (`worker.info`, sleap-connect #98). */
+export interface WorkerInfo {
+  gpuModel: string;
+  gpuMemoryMb: number;
+  gpuCount: number;
+  cudaVersion: string;
+  sleapNnVersion: string;
+  busy: boolean;
+}
+
+export interface JobProject {
+  name: string;
+  id: string;
+}
+
 export interface JobSummary {
   jobId: string;
   state: string;
   createdAt: string;
+  // Added by sleap-connect #98; omitted (not defaulted) by an older worker
+  // except where noted, since there's no safe default for "unknown".
+  updatedAt?: string;
+  error?: string | null;
+  queuePosition: number | null;
+  kind?: "train" | "track";
+  modelTypes: string[];
+  labelsPath?: string;
+  project?: JobProject | null;
 }
 
 export interface JobStatus {
@@ -74,6 +101,12 @@ export interface JobStatus {
   updatedAt: string;
   result: Record<string, unknown> | null;
   error: string | null;
+  queuePosition: number | null;
+  kind?: "train" | "track";
+  modelTypes: string[];
+  labelsPath?: string;
+  project?: JobProject | null;
+  spec?: Record<string, unknown>;
 }
 
 export interface Mount {
@@ -93,11 +126,88 @@ export interface FsListResult {
   hasMore: boolean;
 }
 
+export interface FsStatResult {
+  path: string;
+  type: "file" | "directory";
+  size: number;
+  modified: number;
+}
+
+export interface FsReadResult {
+  path: string;
+  /** Raw bytes, already base64-decoded. */
+  content: Uint8Array;
+  offset: number;
+  size: number;
+  totalSize: number;
+  /** True if this read reached the end of the file. */
+  eof: boolean;
+}
+
+/** Maps the worker's `file_manager.py` `error_code` strings to this client's `fs.*` codes. */
+function _fsErrorCode(workerCode: unknown): string {
+  switch (workerCode) {
+    case "PATH_NOT_FOUND":
+      return FS_NOT_FOUND;
+    case "ACCESS_DENIED":
+      return FS_FORBIDDEN;
+    default:
+      return FS_IO_ERROR;
+  }
+}
+
+/**
+ * `fs.stat`/`fs.read` report failure as an `{error, error_code}` pair
+ * embedded in an otherwise-normal `res` (not an envelope-level `res.error`)
+ * — see `file_manager.py`'s `stat_path`/`read_file`. Left unchecked, every
+ * caller silently gets a bogus zero-valued "success" instead of a thrown
+ * error.
+ */
+function _throwIfFsError(result: Record<string, unknown>, context: string): void {
+  if (typeof result.error === "string") {
+    throw new WorkerProtocolError(_fsErrorCode(result.error_code), `${context}: ${result.error}`);
+  }
+}
+
+/**
+ * Maps one raw `jobs.list` entry or `jobs.status` result to the fields they
+ * share (sleap-connect #98). Shared by `jobsList`/`jobsStatus` so the two
+ * methods can't drift. An older worker that predates #98 simply omits these
+ * keys: `queuePosition`/`modelTypes` get a safe empty default since callers
+ * already branch on them (`null`/`[]`), everything else is left `undefined`
+ * rather than guessing a value that isn't knowable.
+ */
+function _mapJobSummary(j: Record<string, unknown>): JobSummary {
+  return {
+    jobId: j.job_id as string,
+    state: j.state as string,
+    createdAt: j.created_at as string,
+    updatedAt: j.updated_at as string | undefined,
+    error: j.error as string | null | undefined,
+    queuePosition: (j.queue_position as number | null | undefined) ?? null,
+    kind: j.kind as "train" | "track" | undefined,
+    modelTypes: (j.model_types as string[] | undefined) ?? [],
+    labelsPath: j.labels_path as string | undefined,
+    project: j.project as JobProject | null | undefined,
+  };
+}
+
 export interface WorkerEvent {
   topic: string;
   seq: number;
   jobId?: string;
   data: Record<string, unknown>;
+}
+
+/**
+ * Reported to `onClose` listeners once per close: `intentional: true` for a
+ * caller-initiated `close()`, `false` for anything else (a dropped socket, a
+ * failed handshake, a protocol error) — `error` carries the cause in that
+ * case.
+ */
+export interface CloseInfo {
+  intentional: boolean;
+  error?: WorkerProtocolError;
 }
 
 export interface WorkerClientOptions {
@@ -134,6 +244,8 @@ export class WorkerClient {
   private _nextRequestId = 1;
   private readonly _pending = new Map<number, PendingRequest>();
   private readonly _jobListeners = new Map<string, Set<(event: WorkerEvent) => void>>();
+  private readonly _closeListeners = new Set<(info: CloseInfo) => void>();
+  private _closeNotified = false;
 
   private _peerNodeId: string | null = null;
   // The nonce the WORKER sent us in its hello — what auth.prove signs
@@ -216,7 +328,7 @@ export class WorkerClient {
 
       socket.onclose = () => {
         if (this._state !== "closed") {
-          this._fail(new WorkerProtocolError(CLIENT_CLOSED, "Connection closed"));
+          this._failNonIntentional(new WorkerProtocolError(CLIENT_CLOSED, "Connection closed"));
         }
       };
     });
@@ -227,6 +339,45 @@ export class WorkerClient {
     if (this._state === "closed") return;
     this._fail(new WorkerProtocolError(CLIENT_CLOSED, "Client closed"));
     this._jobListeners.clear();
+    this._notifyClose({ intentional: true });
+  }
+
+  /**
+   * Subscribe to this client closing, exactly once — a dropped socket, a
+   * failed handshake/protocol error, or a caller-initiated `close()` (see
+   * `CloseInfo`). Returns an unsubscribe function.
+   */
+  onClose(cb: (info: CloseInfo) => void): () => void {
+    this._closeListeners.add(cb);
+    return () => this._closeListeners.delete(cb);
+  }
+
+  private _notifyClose(info: CloseInfo): void {
+    if (this._closeNotified) return;
+    this._closeNotified = true;
+    for (const cb of [...this._closeListeners]) {
+      try {
+        cb(info);
+      } catch (e) {
+        console.warn("[protocolV1] onClose listener threw", e);
+      }
+    }
+  }
+
+  /**
+   * `_fail` plus an `onClose` notification for a condition this client
+   * detected itself (dropped socket, protocol mismatch, failed peer
+   * verification) rather than a caller-initiated `close()` — including one
+   * raised while still inside `connect()` (a failed dial), so a caller
+   * managing reconnection (e.g. `ManagedConnection`) can learn about that
+   * failure the same way it learns about a later drop.
+   */
+  private _failNonIntentional(err: Error): void {
+    this._fail(err);
+    this._notifyClose({
+      intentional: false,
+      error: err instanceof WorkerProtocolError ? err : undefined,
+    });
   }
 
   /** First-contact trust via a pairing ticket's one-time secret (spec §3.2). */
@@ -262,23 +413,31 @@ export class WorkerClient {
   async jobsStatus(jobId: string): Promise<JobStatus> {
     const result = await this._request("jobs.status", { job_id: jobId });
     return {
-      jobId: result.job_id as string,
-      state: result.state as string,
-      createdAt: result.created_at as string,
+      ..._mapJobSummary(result),
       updatedAt: result.updated_at as string,
       result: (result.result as Record<string, unknown>) ?? null,
       error: (result.error as string) ?? null,
+      spec: result.spec as Record<string, unknown> | undefined,
     };
   }
 
   async jobsList(): Promise<JobSummary[]> {
     const result = await this._request("jobs.list", {});
     const jobs = (result.jobs as Array<Record<string, unknown>>) ?? [];
-    return jobs.map((j) => ({
-      jobId: j.job_id as string,
-      state: j.state as string,
-      createdAt: j.created_at as string,
-    }));
+    return jobs.map((j) => _mapJobSummary(j));
+  }
+
+  /** A snapshot of the worker's own hardware/software (spec/sleap-connect #98). */
+  async workerInfo(): Promise<WorkerInfo> {
+    const result = await this._request("worker.info", {});
+    return {
+      gpuModel: (result.gpu_model as string) ?? "unknown",
+      gpuMemoryMb: (result.gpu_memory_mb as number) ?? 0,
+      gpuCount: (result.gpu_count as number) ?? 0,
+      cudaVersion: (result.cuda_version as string) ?? "unknown",
+      sleapNnVersion: (result.sleap_nn_version as string) ?? "unknown",
+      busy: !!result.busy,
+    };
   }
 
   /**
@@ -329,6 +488,49 @@ export class WorkerClient {
       entries: (result.entries as FsEntry[]) ?? [],
       totalCount: (result.total_count as number) ?? 0,
       hasMore: !!result.has_more,
+    };
+  }
+
+  /**
+   * Metadata for one path within the worker's configured mounts.
+   *
+   * @throws {WorkerProtocolError} with an `fs.*` code if the worker's
+   * `fs.stat` handler reports failure (path missing, outside configured
+   * mounts, etc.) — these arrive as an `{error, error_code}` pair embedded
+   * in an otherwise-successful `res`, not as an envelope-level `res.error`
+   * (see `file_manager.py`'s `stat_path`/`read_file` docstrings), so they
+   * must be checked explicitly rather than assumed absent.
+   */
+  async fsStat(path: string): Promise<FsStatResult> {
+    const result = await this._request("fs.stat", { path });
+    _throwIfFsError(result, `fs.stat('${path}')`);
+    return {
+      path: result.path as string,
+      type: result.type as "file" | "directory",
+      size: (result.size as number) ?? 0,
+      modified: (result.modified as number) ?? 0,
+    };
+  }
+
+  /**
+   * A small direct byte-range read within the worker's configured mounts —
+   * for inspecting a config/log/text file, NOT bulk transfer (see
+   * `fetchBlob`/the blob API for that). The worker caps `length` server-side
+   * (4 MiB per call as of `file_manager.py`'s `MAX_READ_BYTES`); page through
+   * a larger file with repeated, offset-advancing calls.
+   */
+  async fsRead(path: string, offset = 0, length?: number): Promise<FsReadResult> {
+    const params: Record<string, unknown> = { path, offset };
+    if (length !== undefined) params.length = length;
+    const result = await this._request("fs.read", params);
+    _throwIfFsError(result, `fs.read('${path}')`);
+    return {
+      path: result.path as string,
+      content: base64ToBytes((result.content_base64 as string) ?? ""),
+      offset: (result.offset as number) ?? offset,
+      size: (result.size as number) ?? 0,
+      totalSize: (result.total_size as number) ?? 0,
+      eof: !!result.eof,
     };
   }
 
@@ -452,7 +654,7 @@ export class WorkerClient {
       return;
     }
     if (hello.proto.max < this._protoMin || hello.proto.min > this._protoMax) {
-      this._fail(
+      this._failNonIntentional(
         new WorkerProtocolError(
           CLIENT_PROTO_MISMATCH,
           `Worker's protocol range [${hello.proto.min},${hello.proto.max}] does not overlap ` +
@@ -470,7 +672,7 @@ export class WorkerClient {
       (verified) => {
         if (this._state !== "connecting") return; // closed/failed while this was pending
         if (!verified) {
-          this._fail(
+          this._failNonIntentional(
             new WorkerProtocolError(
               CLIENT_WORKER_UNVERIFIED,
               "Worker's hello.proof did not verify against the public key it claimed as its node_id",
@@ -485,7 +687,7 @@ export class WorkerClient {
         this._connectWaiter?.resolve();
         this._connectWaiter = null;
       },
-      (err) => this._fail(err instanceof Error ? err : new Error(String(err))),
+      (err) => this._failNonIntentional(err instanceof Error ? err : new Error(String(err))),
     );
   }
 
@@ -563,6 +765,13 @@ function randomNonce(): string {
   let binary = "";
   for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function base64ToBytes(b64: string): Uint8Array {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
 }
 
 /** Decodes URL-safe, unpadded base64 (the encoding `sleap_rtc.auth.keypair`
