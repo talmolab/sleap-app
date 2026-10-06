@@ -136,7 +136,8 @@ export function pairCentroidsToPoses(
  * Only MISSING links are filled in: a centroid that already carries a link (a
  * locator prediction, or a project loaded back from disk) keeps it, and the pose
  * it points at is treated as taken so two centroids can never share one
- * instance. Mutates `labels`; returns how many links were newly assigned (0 when
+ * instance. A link to an instance that is no longer in the frame (an object
+ * replaced without a relink, or a stale on-disk index) counts as missing. Mutates `labels`; returns how many links were newly assigned (0 when
  * everything was already linked, which callers use to detect a true no-op).
  */
 export function linkCentroidsToPoses(labels: Labels, poseSkel: Skeleton): number {
@@ -152,7 +153,11 @@ export function linkCentroidsToPoses(labels: Labels, poseSkel: Skeleton): number
     const poseForCentroid = pairCentroidsToPoses(lf, poseSkel);
     for (let ci = 0; ci < poseForCentroid.length; ci++) {
       const c = lf.centroids[ci];
-      if (!c || c.instance) continue;
+      if (!c) continue;
+      if (c.instance) {
+        if (lf.instances.includes(c.instance)) continue;
+        c.instance = null; // dangling — re-pair below
+      }
       const pi = poseForCentroid[ci];
       if (pi < 0 || claimed.has(pi)) continue;
       c.instance = lf.instances[pi];

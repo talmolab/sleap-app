@@ -9,7 +9,7 @@
 
 import { useState, useRef, useEffect, useMemo } from "react";
 import { createPortal } from "react-dom";
-import { useTrainingStore, getConfigSlots, getSlotLabel, countUserLabeledFrames } from "@/stores/trainingStore";
+import { useTrainingStore, getConfigSlots, getSlotLabel, hasTrainingFrames } from "@/stores/trainingStore";
 import { useExportStore } from "@/stores/exportStore";
 import type { ModelType, ConfigFile, ConfigHyperparams } from "@/stores/trainingStore";
 import { useConnectStore } from "@/stores/connectStore";
@@ -25,7 +25,7 @@ import { ErrorOutput } from "@/components/monitors/ErrorOutput";
 import { useAppStore } from "@/stores/appStore";
 import { isTauri } from "@/platform/index";
 import { getBaselineProfilesForHead, slotToHeadType } from "@/lib/trainingProfiles";
-import { computeInstanceSizeStats, hasUserLabeledInstances, recommendBackboneProfile, recommendCentroidScale, resolveEffectiveCropSize, detectVideoChannels, estimateHeadGpuMemory, estimateHeadCacheMemory, formatBytes, formatParamCount, type GpuMemoryLevel } from "@/lib/modelStats";
+import { computeInstanceSizeStats, recommendBackboneProfile, recommendCentroidScale, resolveEffectiveCropSize, detectVideoChannels, estimateHeadGpuMemory, estimateHeadCacheMemory, formatBytes, formatParamCount, type GpuMemoryLevel } from "@/lib/modelStats";
 import type { DiscoveredModel } from "@/lib/modelDiscovery";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -980,9 +980,15 @@ export function TrainingPanel() {
   // `labels_pr.*.slp` from inference, which holds predictions only. Every
   // suggester returns null in that case and the config falls back to its
   // baseline preset, so say why rather than letting the defaults look derived.
-  const noLabeledData = useMemo(
-    () => labels != null && !hasUserLabeledInstances(labels),
-    [labels]
+  // Re-evaluated per edit (editSeq), not once per `labels` object — labels are
+  // mutated in place, so a [labels]-memo never sees the first label land. The
+  // centroid locator trains on user-placed centroids (active-learning seeds),
+  // which a seeded frame holds without any instance.
+  const isCentroidModel = config.modelType === "centroid";
+  const noLabeledData = useAppStore(
+    (s) =>
+      s.labels != null &&
+      !hasTrainingFrames(s.labels, s.editSeq, { includeUserCentroids: isCentroidModel }),
   );
 
   // Auto-select the recommended model type for a freshly-loaded project —
@@ -1065,9 +1071,7 @@ export function TrainingPanel() {
   // Remote training points at a path on the worker's filesystem, which this
   // client can't read to count frames — only guard the local-project path,
   // where an empty project would otherwise start a doomed training run.
-  const hasLabeledFrames = remoteEnabled
-    ? true
-    : (countUserLabeledFrames(labels) ?? 0) > 0;
+  const hasLabeledFrames = remoteEnabled ? true : !noLabeledData;
   const hasValidLossWeights = config.configs.every((cf) =>
     cf.hyperparams.confmapsLossWeight > 0 &&
     cf.hyperparams.pafsLossWeight > 0 &&

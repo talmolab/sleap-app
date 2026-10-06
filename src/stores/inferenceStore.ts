@@ -464,8 +464,9 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
 
   startInference: async (config: InferenceConfig, remoteOpts?: RemoteInferenceOptions) => {
     // Centroid-only prediction uses `sleap-nn predict`, which the remote worker
-    // (track-only job spec) can't run — keep it desktop-local.
-    if (config.pipeline === "centroid" && remoteOpts?.remote) {
+    // (track-only job spec) can't run — keep it desktop-local. (A track-only
+    // run uses no model, so a leftover "centroid" pipeline doesn't apply.)
+    if (config.pipeline === "centroid" && !config.trackOnly && remoteOpts?.remote) {
       set({ status: "error", error: "Centroid prediction is desktop-only for now." });
       return;
     }
@@ -766,9 +767,14 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
       await mergeRemoteResults(pendingRemoteMerge);
       set({ pendingRemoteMerge: null, status: "completed" });
       // Same cosmetic settle-before-idle delay as loadAndMergeResults above —
-      // only reset if nothing else started a new run in the meantime.
+      // only reset if nothing else started a new run in the meantime. A new run
+      // never touches pendingRemoteMerge, so key on its start time + status
+      // too, or e.g. a locator run started within the window would be flipped
+      // to idle mid-run (its progress bar and Stop button would vanish).
+      const { startedAt } = useInferenceStore.getState();
       setTimeout(() => {
-        if (useInferenceStore.getState().pendingRemoteMerge === null) {
+        const s = useInferenceStore.getState();
+        if (s.pendingRemoteMerge === null && s.status === "completed" && s.startedAt === startedAt) {
           set({ status: "idle" });
         }
       }, 1500);

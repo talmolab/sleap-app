@@ -16,6 +16,7 @@ import {
   PredictedInstance,
   LabeledFrame,
   Labels as IoLabels,
+  UserCentroid,
 } from "@talmolab/sleap-io.js";
 import {
   scoreLabelsAnomaly,
@@ -98,6 +99,23 @@ describe("scoreLabelsAnomaly", () => {
     expect(r.instances).toHaveLength(6);
     // Every scored instance is the user one at instIdx 0 of its frame.
     for (const inst of r.instances) expect(inst.instIdx).toBe(0);
+  });
+
+  it("skips active-learning placeholders but keeps indices relative to userInstances", async () => {
+    // Prepend an empty user instance paired to a centroid on every frame — the
+    // Phase-2 placeholder for an animal with no keypoints yet. It holds no pose,
+    // so it must neither be scored nor skew the fit; the real label behind it
+    // keeps its userInstances index (1) so the dialog navigates to it.
+    const labels = mixedUserPredictedLabels(6);
+    for (const lf of labels.labeledFrames) {
+      const placeholder = Instance.empty({ skeleton: labels.skeletons[0] });
+      lf.instances = [placeholder, ...lf.instances];
+      lf.centroids = [new UserCentroid({ x: 1, y: 1, instance: placeholder })];
+    }
+    for (const r of [scoreLabelsAnomaly(labels), await scoreLabelsAnomalyAsync(labels, { batchSize: 4 })]) {
+      expect(r.instances).toHaveLength(6);
+      for (const inst of r.instances) expect(inst.instIdx).toBe(1);
+    }
   });
 
   it("async path also scores only user instances", async () => {

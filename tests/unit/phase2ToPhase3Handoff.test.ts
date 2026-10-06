@@ -134,12 +134,20 @@ describe("setupPoseTraining", () => {
     expect(useTrainingStore.getState().pendingHandoff).toBeNull();
   });
 
-  it("points training at the project and presets the AL inference scope", () => {
+  it("refuses with unsaved edits — they'd be missing from the .slp it trains on", () => {
+    useAppStore.setState({ projectPath: "/proj.slp", hasChanges: true });
+    expect(setupPoseTraining()).toBe(false);
+    expect(useTrainingStore.getState().pendingHandoff).toBeNull();
+  });
+
+  it("follows the live project and presets the AL inference scope", () => {
     useAppStore.setState({ projectPath: "/proj.slp" });
     expect(setupPoseTraining()).toBe(true);
 
     const t = useTrainingStore.getState();
-    expect(t.config.trainingLabelsPath).toBe("/proj.slp");
+    // Not pinned: empty falls back to the live projectPath, so a Save As to an
+    // auto-versioned labels.vNNN.slp before Start trains the new file.
+    expect(t.config.trainingLabelsPath).toBe("");
     // "unlabeled frames of this video" — becomes --exclude_user_labeled.
     expect(t.pendingHandoff?.inferenceTarget).toBe("video");
     expect(t.pendingHandoff?.skipUserLabeled).toBe(true);

@@ -38,9 +38,15 @@ function augmentationOverrides(aug: LocatorAugmentation): Partial<ConfigHyperpar
  */
 export function setupCentroidTraining(alConfig: ActiveLearningConfig): boolean {
   const t = useTrainingStore.getState();
-  const projectPath = useAppStore.getState().projectPath;
+  const { projectPath, hasChanges } = useAppStore.getState();
   if (!projectPath) {
     toast.error("Save the project first, then train the locator.");
+    return false;
+  }
+  // Training reads the .slp from DISK, and autosave only writes a recovery
+  // draft — unsaved seeds would silently be left out of the run.
+  if (hasChanges) {
+    toast.error("Save the project first — training reads the saved .slp, so unsaved seeds would be left out.");
     return false;
   }
   const baseline = getDefaultProfileForHead("centroid");
@@ -50,7 +56,9 @@ export function setupCentroidTraining(alConfig: ActiveLearningConfig): boolean {
   }
 
   t.setConfig("modelType", "centroid");
-  t.setConfig("trainingLabelsPath", projectPath);
+  // Don't pin the path: empty falls back to the LIVE projectPath at start time,
+  // so a Save As in between (auto-versioned labels.vNNN.slp) trains the new file.
+  t.setConfig("trainingLabelsPath", "");
 
   const parsed = t.parseYamlConfig(baseline.content, baseline.filename, "centroid");
   if (!parsed) {

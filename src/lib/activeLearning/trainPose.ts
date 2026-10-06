@@ -42,17 +42,24 @@ const AL_INFERENCE_TARGET = "video";
  * run: the user picks the pipeline and presses Start themselves.
  */
 export function setupPoseTraining(): boolean {
-  const projectPath = useAppStore.getState().projectPath;
+  const { projectPath, hasChanges } = useAppStore.getState();
+  // Training reads the .slp from DISK — `trainingLabelsPath || projectPath`,
+  // with no re-serialize of in-memory labels (autosave only writes a recovery
+  // draft). An unsaved project, or unsaved keypoints/corrections, would train
+  // on a file that predates them.
   if (!projectPath) {
-    // Training reads the .slp from DISK — `trainingLabelsPath || projectPath`,
-    // with no re-serialize of in-memory labels. An unsaved project would train
-    // on a file that predates the whole keypoint sweep.
     toast.error("Save the project first, then train a pose model.");
+    return false;
+  }
+  if (hasChanges) {
+    toast.error("Save the project first — training reads the saved .slp, so unsaved labels would be left out.");
     return false;
   }
 
   const t = useTrainingStore.getState();
-  t.setConfig("trainingLabelsPath", projectPath);
+  // Empty = follow the LIVE projectPath at start time (a Save As in between
+  // moves it to an auto-versioned labels.vNNN.slp); don't pin today's file.
+  t.setConfig("trainingLabelsPath", "");
   t.setPendingHandoff({
     inferenceTarget: AL_INFERENCE_TARGET,
     skipUserLabeled: true,

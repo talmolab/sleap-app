@@ -15,6 +15,7 @@ import {
   startCentroidLocatorTraining,
   setupCentroidTraining,
 } from "@/lib/activeLearning/trainLocator";
+import { countSeededCentroids } from "@/lib/activeLearning/passEngine";
 import { Button } from "@/components/ui/button";
 
 export function TrainPromptBanner() {
@@ -23,14 +24,14 @@ export function TrainPromptBanner() {
   const trainingStatus = useTrainingStore((s) => s.status);
   const [dismissedUpTo, setDismissedUpTo] = useState(0);
 
-  // Total seeded centroids (user instances) across the project.
+  // Seeded FRAMES, counted the way the AL panel counts them against the same
+  // `trainAfter` threshold — config-aware, so the default separate-centroid
+  // mode's seeds (UserCentroids, no instance) count too.
   const seeded = useMemo(() => {
     const labels = useAppStore.getState().labels;
-    let n = 0;
-    if (labels) for (const lf of labels.labeledFrames) n += lf.userInstances.length;
-    return n;
+    return labels ? countSeededCentroids(labels, config).frames : 0;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [overlayVersion]);
+  }, [overlayVersion, config]);
 
   if (!config || !config.localize.enabled) return null;
   const trainAfter = config.localize.trainAfter;
@@ -47,7 +48,8 @@ export function TrainPromptBanner() {
     <div className="fixed bottom-4 right-4 z-50 w-80 rounded-lg border border-border bg-card p-4 shadow-xl">
       <div className="text-sm font-semibold">🎯 {seeded} labels reached</div>
       <p className="mt-1 text-xs text-muted-foreground leading-snug">
-        Enough to train a first centroid locator. It runs in the background while you keep seeding.
+        Enough to train a first centroid locator. Save first (it trains on the saved project), then it
+        runs in the background while you keep seeding.
       </p>
       <div className="mt-3 flex flex-wrap gap-1.5">
         <Button
@@ -64,10 +66,10 @@ export function TrainPromptBanner() {
           variant="outline"
           onClick={() => {
             if (setupCentroidTraining(config)) {
-              // #233 replaced the single `sidebarActivePanel` with an open-panel
-              // stack; `togglePanelOpen` reveals a collapsed column and opens the
-              // panel in both single- and multi-panel modes.
-              useAppStore.getState().togglePanelOpen("training");
+              // `openPanel` is idempotent: it reveals and expands Training in both
+              // single- and multi-panel modes. (`togglePanelOpen` would COLLAPSE
+              // it when it's already open — the common case after a prior run.)
+              useAppStore.getState().openPanel("training");
             }
             setDismissedUpTo(milestone);
           }}

@@ -38,6 +38,18 @@ describe("runLabelQc", () => {
     expect(kinds(fs)).not.toContain("sparse_instance");
   });
 
+  it("does not flag an active-learning placeholder (empty instance paired to a centroid)", () => {
+    // Phase 2 creates an empty pose instance per centroid before any keypoint
+    // is placed — bookkeeping, not a labeling mistake.
+    const placeholder = {
+      numpy: () => [[Number.NaN, Number.NaN]],
+      points: [{ xy: [Number.NaN, Number.NaN], visible: false }],
+    };
+    const lf = { ...frame(2, [placeholder, clean(0, 0)]), centroids: [{ instance: placeholder }] };
+    const fs = runLabelQc(mockLabels(null, [lf]));
+    expect(kinds(fs)).not.toContain("empty_instance");
+  });
+
   it("flags a sparse instance (fewer than minVisible nodes)", () => {
     const fs = runLabelQc(mockLabels(null, [frame(0, [inst([[1, 1]]), clean(50, 50)])]));
     expect(fs.find((f) => f.kind === "sparse_instance")).toMatchObject({ instanceIdx: 0 });

@@ -850,6 +850,20 @@ export const MergePredictions: Command = {
     const predictions = params?.predictions as Labels;
     if (!predictions) return;
 
+    // A keypoint pass / correction queue resolves instances by index; a merge
+    // replaces or appends predictions underneath it, so the next click or Space
+    // would act on the wrong instance. The menu items are disabled mid-sweep,
+    // but main's newer entry points (Connect merge, remote Fetch & Load, a
+    // background post-training merge) all funnel through here — pause first.
+    const app = useAppStore.getState();
+    if (app.labelingMode === "keypointPass" || app.labelingMode === "correct") {
+      if (app.labelingMode === "correct") app.exitCorrectMode();
+      else app.exitKeypointPassMode();
+      toast.info(
+        "Paused the sweep: merging predictions changes the instances it was stepping through. Resume it from the Active Learning panel.",
+      );
+    }
+
     const mode = (params?.mode as ExistingPredictionsMode) ?? "replace";
     // `replace` swaps predictions only on frames present in the new output;
     // `keep`/`clear_all` append (the project-wide wipe below handles clear_all).
@@ -857,20 +871,40 @@ export const MergePredictions: Command = {
 
     const snapshot = ctx.takeAllFramesSnapshot("MergePredictions");
 
+    // A pose run's output never carries centroids (sleap-nn emits them only for
+    // a centroid-only/locator run), so its merge must leave the project's
+    // centroid annotations — active-learning seeds AND the locator's
+    // PredictedCentroids — alone. Otherwise io's "replace_predictions" treats
+    // every predicted centroid on a re-inferred frame as stale and drops it.
+    const preserveCentroids = predictions.labeledFrames.every(
+      (lf) => lf.centroids.length === 0
+    );
+
     // clear_all: strip every existing prediction project-wide (keeping user
     // annotations) BEFORE merging, so stale predictions on frames the new
     // run didn't cover are removed too — io's Labels.merge only visits frames
     // present in the output, so a per-frame strategy alone can't reach them.
-    // `removePredictions` also drops predicted frame-level annotations (the
-    // locator's PredictedCentroids), and a frame survives if anything
-    // user-supplied is left on it — a frame holding only user centroids (an
-    // active-learning seed) or a negative flag is labeling, not empty.
+    // A locator run clears the old PredictedCentroids too (`removePredictions`).
+    // A frame survives if anything is left on it worth keeping — a frame
+    // holding only user centroids (an active-learning seed) or a negative flag
+    // is labeling, not empty.
     if (mode === "clear_all") {
-      for (const lf of labels.labeledFrames) lf.removePredictions();
+      for (const lf of labels.labeledFrames) {
+        if (preserveCentroids) {
+          lf.instances = lf.instances.filter(
+            (inst) => !(inst instanceof PredictedInstance)
+          );
+        } else {
+          lf.removePredictions();
+        }
+      }
       labels.labeledFrames = labels.labeledFrames.filter(
-        (lf) => lf.instances.length > 0 || lf.isUserLabeled
+        (lf) => lf.instances.length > 0 || lf.centroids.length > 0 || lf.isUserLabeled
       );
     }
+    const keptCentroids = preserveCentroids
+      ? new Map(labels.labeledFrames.map((lf) => [lf, lf.centroids] as const))
+      : null;
 
     // Route through sleap-io.js's Labels.merge (issue #226). Match tracks by
     // NAME — io's default is object IDENTITY, which would duplicate every track
@@ -885,6 +919,17 @@ export const MergePredictions: Command = {
       video: "basename",
       frame,
     });
+    if (keptCentroids) {
+      // io merges into the project's own frame objects, so restore by identity.
+      // A centroid paired with a prediction this merge replaced loses its link
+      // (it would dangle); Phase 2's pairing re-links missing ones.
+      for (const [lf, centroids] of keptCentroids) {
+        lf.centroids = centroids;
+        for (const c of centroids) {
+          if (c.instance && !lf.instances.includes(c.instance)) c.instance = null;
+        }
+      }
+    }
     ctx.pushUndoSnapshot(snapshot);
     ctx.state.markChanged();
     // Merge mutates `labels` in place, so overlayVersion-gated consumers (the

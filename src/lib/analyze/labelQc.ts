@@ -22,6 +22,7 @@ import {
   inferSymmetryPairsByName,
   type ChiralityModel,
 } from "@/lib/analyze/labelQcChirality";
+import { isUnlabeledPairedPose } from "@/lib/activeLearning/placeholders";
 
 export type QcIssueKind =
   | "duplicate"
@@ -178,6 +179,9 @@ export function runLabelQc(labels: Labels, opts: QcOptions = {}): QcFinding[] {
       }
 
       pts.forEach((p, i) => {
+        // An active-learning placeholder (paired to a centroid, nothing placed
+        // yet) is empty by design — not a labeling mistake.
+        if (isEmptyInstance(p) && isUnlabeledPairedPose(lf, insts[i])) return;
         if (isEmptyInstance(p)) {
           findings.push({
             kind: "empty_instance",

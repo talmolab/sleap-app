@@ -685,25 +685,64 @@ export function getSlotLabel(slot: string): string {
 }
 
 /**
- * Count of frames with a user instance or marked negative — the JS
- * equivalent of sleap-io's `Labels.user_labeled_frames` (which includes
+ * Whether a frame is training data: a user instance or a negative frame — the
+ * JS equivalent of sleap-io's `Labels.user_labeled_frames` (which includes
  * negative/background frames as trainable data, not just positively-labeled
- * ones). Used for the `n=` suffix in a default run name; `null` with no
- * project loaded.
+ * ones). With `includeUserCentroids`, a user-placed centroid annotation counts
+ * too: that is exactly what the active-learning centroid locator trains on, and
+ * a seeded frame holds no instance at all.
  */
-let _userLabeledFramesCache: { labels: Labels; result: number } | null = null;
+function isTrainingFrame(lf: Labels["labeledFrames"][number], includeUserCentroids: boolean): boolean {
+  return (
+    lf.hasUserInstances ||
+    lf.isNegative ||
+    (includeUserCentroids && lf.centroids.some((c) => !c.isPredicted))
+  );
+}
 
-export function countUserLabeledFrames(labels: Labels | null): number | null {
+/**
+ * Count of training frames (see {@link isTrainingFrame}). Used for the `n=`
+ * suffix in a default run name; `null` with no project loaded. Deliberately
+ * uncached: callers run once per training start, and `labels` is mutated in
+ * place, so a cache keyed by its reference would freeze the first count for the
+ * whole session. The per-render gate uses {@link hasTrainingFrames}.
+ */
+export function countUserLabeledFrames(
+  labels: Labels | null,
+  opts: { includeUserCentroids?: boolean } = {},
+): number | null {
   if (!labels) return null;
-  // Called on every TrainingPanel render; cache by `labels` reference so it
-  // isn't re-scanned (allocating `lf.userInstances` per frame) each time.
-  if (_userLabeledFramesCache && _userLabeledFramesCache.labels === labels) {
-    return _userLabeledFramesCache.result;
+  const withCentroids = opts.includeUserCentroids ?? false;
+  let n = 0;
+  for (const lf of labels.labeledFrames) if (isTrainingFrame(lf, withCentroids)) n++;
+  return n;
+}
+
+let _hasTrainingFramesCache: {
+  labels: Labels;
+  editSeq: number;
+  includeUserCentroids: boolean;
+  result: boolean;
+} | null = null;
+
+/**
+ * Whether the project has ANY training frame — the Training panel's per-render
+ * Start gate. Short-circuits on the first hit and is cached on
+ * (`labels`, the app store's `editSeq`), so it re-scans only after an edit.
+ */
+export function hasTrainingFrames(
+  labels: Labels | null,
+  editSeq: number,
+  opts: { includeUserCentroids?: boolean } = {},
+): boolean {
+  if (!labels) return false;
+  const withCentroids = opts.includeUserCentroids ?? false;
+  const c = _hasTrainingFramesCache;
+  if (c && c.labels === labels && c.editSeq === editSeq && c.includeUserCentroids === withCentroids) {
+    return c.result;
   }
-  const result = labels.labeledFrames.filter(
-    (lf) => lf.userInstances.length > 0 || lf.isNegative,
-  ).length;
-  _userLabeledFramesCache = { labels, result };
+  const result = labels.labeledFrames.some((lf) => isTrainingFrame(lf, withCentroids));
+  _hasTrainingFramesCache = { labels, editSeq, includeUserCentroids: withCentroids, result };
   return result;
 }
 
@@ -733,11 +772,11 @@ export function resolveRemoteRunName(
   // multi-model pipeline) passes a shared `runTimestamp` so every model's
   // run name carries the exact same timestamp, computed only once for the
   // whole batch — not a fresh one per model (which real time passing
-  // between calls could otherwise let drift by a second). No such override
-  // is needed for the frame count: `countUserLabeledFrames` already caches
-  // its result by `labels` reference.
+  // between calls could otherwise let drift by a second).
   const runTimestamp = opts?.runTimestamp ?? formatRunTimestamp();
-  const userLabeledFrameCount = countUserLabeledFrames(labels);
+  const userLabeledFrameCount = countUserLabeledFrames(labels, {
+    includeUserCentroids: modelType === "centroid",
+  });
   return userLabeledFrameCount !== null
     ? `${runTimestamp}.${modelType}.n=${userLabeledFrameCount}`
     : `${runTimestamp}.${modelType}`;
@@ -2282,7 +2321,9 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
           // used how much data" comparisons useful across a project's history.
           let runName = cf.hyperparams.runName;
           if (!runName) {
-            const n = countUserLabeledFrames(localLabels);
+            const n = countUserLabeledFrames(localLabels, {
+              includeUserCentroids: cf.modelType === "centroid",
+            });
             const ts = formatRunTimestamp();
             runName = n !== null ? `${ts}.${cf.modelType}.n=${n}` : `${ts}.${cf.modelType}`;
           }

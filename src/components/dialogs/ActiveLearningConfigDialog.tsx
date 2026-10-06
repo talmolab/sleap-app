@@ -45,6 +45,7 @@ import { useAppStore } from "@/stores/appStore";
 import { getPlatform, isTauri } from "@/platform";
 import { downloadFile } from "@/lib/exportUtils";
 import { ArrowUp, ArrowDown, Download, Plus, Trash2, X } from "lucide-react";
+import { dirtyFrameTracker } from "@/lib/autosaveDirty";
 
 interface Props {
   open: boolean;
@@ -176,7 +177,10 @@ export function ActiveLearningConfigDialog({ open, onOpenChange, nodeNames }: Pr
     const result = useActiveLearningStore.getState().setConfig(draft, nodeNames);
     // Mark the project dirty so the workflow gets written into the .slp on the
     // next save (it's persisted in the project's provenance — see persistence.ts).
+    // Structural too: provenance isn't frame data, so the incremental autosave
+    // only picks it up with a full base rewrite.
     useAppStore.getState().markChanged();
+    dirtyFrameTracker.markStructural();
     // Be explicit that this only stages the workflow — it lands in the .slp when
     // the PROJECT is saved (⌘S). Otherwise "saved" reads as already-on-disk.
     const tail = "— save the project (⌘S) to store it in the .slp";

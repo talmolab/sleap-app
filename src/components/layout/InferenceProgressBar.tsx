@@ -6,7 +6,10 @@
  * frames processed, a progress bar, an expandable log — plus Stop while running
  * and Dismiss on a terminal state. Errors (e.g. a sleap-nn predict crash, or a
  * process that never produced output) surface here rather than the run silently
- * sitting greyed-out forever. Reads inferenceStore; hidden when idle.
+ * sitting greyed-out forever. A finished REMOTE run is not merged until the user
+ * fetches it (`pendingRemoteMerge`), so the bar offers that instead of claiming
+ * completion — and never lets Dismiss silently discard it. Reads
+ * inferenceStore; hidden when idle.
  */
 
 import { useState } from "react";
@@ -18,12 +21,15 @@ export function InferenceProgressBar() {
   const progress = useInferenceStore((s) => s.progress);
   const log = useInferenceStore((s) => s.log);
   const error = useInferenceStore((s) => s.error);
+  const pendingRemoteMerge = useInferenceStore((s) => s.pendingRemoteMerge);
   const [showLog, setShowLog] = useState(false);
+  const [fetching, setFetching] = useState(false);
 
   if (status === "idle") return null;
 
   const running = status === "running";
   const isError = status === "error";
+  const awaitingFetch = status === "completed" && !!pendingRemoteMerge;
   // Determinate only once sleap-nn reports frame counts; until then the run is
   // "starting" (spawning / loading the model) with an indeterminate bar.
   const hasCounts = !!progress && progress.nTotal > 0;
@@ -33,13 +39,15 @@ export function InferenceProgressBar() {
 
   const label = isError
     ? "Inference failed"
-    : status === "completed"
-      ? "Inference complete"
-      : status === "cancelled"
-        ? "Inference cancelled"
-        : hasCounts
-          ? `Predicting — ${progress!.nProcessed}/${progress!.nTotal} frames (${pct}%)`
-          : "Starting inference…";
+    : awaitingFetch
+      ? "Results ready on the worker — not merged yet"
+      : status === "completed"
+        ? "Inference complete"
+        : status === "cancelled"
+          ? "Inference cancelled"
+          : hasCounts
+            ? `Predicting — ${progress!.nProcessed}/${progress!.nTotal} frames (${pct}%)`
+            : "Starting inference…";
 
   return (
     <div className={`border-b border-border ${isError ? "bg-destructive/10" : "bg-muted/40"}`}>
@@ -53,7 +61,7 @@ export function InferenceProgressBar() {
             />
           </div>
         )}
-        {isError && error && (
+        {error && (isError || awaitingFetch) && (
           <span className="truncate text-destructive/90" title={error}>
             {error}
           </span>
@@ -70,6 +78,23 @@ export function InferenceProgressBar() {
               onClick={() => void useInferenceStore.getState().cancelInference()}
             >
               Stop
+            </Button>
+          ) : awaitingFetch ? (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-6"
+              disabled={fetching}
+              onClick={async () => {
+                setFetching(true);
+                try {
+                  await useInferenceStore.getState().mergePendingRemoteResults();
+                } finally {
+                  setFetching(false);
+                }
+              }}
+            >
+              {fetching ? "Fetching…" : "Fetch & Load"}
             </Button>
           ) : (
             <Button

@@ -457,6 +457,8 @@ export function VideoPlayer() {
         // In centroid-seeding mode, Space advances to the next frame instead of
         // pan/zoom (which owns Space elsewhere). Mirrors the top-bar button.
         if (useAppStore.getState().labelingMode === "seed") {
+          // Not behind an open modal (same guard as correct mode below).
+          if ((e.target as HTMLElement)?.closest?.('[role="dialog"]')) return;
           e.preventDefault();
           const s = useAppStore.getState();
           if (s.labels && s.labels.suggestions.length > 0) {
@@ -857,22 +859,6 @@ export function VideoPlayer() {
         if ((video.shape?.[0] ?? null) !== framesBefore) {
           useAppStore.getState().markVideoUpdated();
         }
-        // Warm the next few SUGGESTION frames so the active-learning
-        // Space-through-suggestions workflow isn't blocked on cold reads.
-        // Fire-and-forget; skip while scrubbing. `prefetch:false` so each warmed
-        // frame doesn't recursively kick off the backend's own sequential
-        // read-ahead and fight the concurrency limit.
-        if (!useAppStore.getState().isScrubbing) {
-          const warm = suggestionPrefetchTargets(
-            useAppStore.getState().labels,
-            video,
-            frameIdx,
-            4
-          );
-          for (const t of warm) {
-            if (t !== frameIdx) void video.getFrame(t, { prefetch: false }).catch(() => {});
-          }
-        }
         if (debugFlags.logSeeking) console.debug(`[seek] getFrame(${frameIdx}) returned ${frame?.constructor?.name ?? "null"} in ${(performance.now() - t0).toFixed(1)}ms`);
         if (cancelled || !frame) {
           if (debugFlags.logSeeking && cancelled) console.debug(`[seek] frame ${frameIdx} cancelled`);
@@ -976,6 +962,31 @@ export function VideoPlayer() {
               decodeAhead?: (fromFrame: number) => void;
             } | null
           )?.decodeAhead?.(frameIdx);
+        }
+
+        // Active-learning sweeps step suggestion-to-suggestion (Space), so warm
+        // the NEXT suggestion frame while the user works on this one. Only after
+        // this frame has painted (so `cancelled` is known false): the worker mp4
+        // backend aborts every pending read on a cache miss, so a warm read
+        // issued earlier would cancel the newer frame's own demand read. One
+        // frame only (several would just abort each other), keyframe→target only
+        // (`scrub`), and never while playing/scrubbing, where it would fight
+        // decode-ahead. A later demand read still preempts it, as it should.
+        {
+          const st = useAppStore.getState();
+          if (
+            !st.isPlaying &&
+            !st.isScrubbing &&
+            (st.labelingMode === "seed" ||
+              st.labelingMode === "keypointPass" ||
+              st.labelingMode === "correct")
+          ) {
+            const [next] = suggestionPrefetchTargets(st.labels, video, frameIdx, 1);
+            if (next !== undefined && next !== frameIdx) {
+              const warmOpts: { prefetch: boolean; scrub?: boolean } = { prefetch: false, scrub: true };
+              void video.getFrame(next, warmOpts).catch(() => {});
+            }
+          }
         }
       } catch (err) {
         console.error("Failed to render frame:", err);
@@ -1558,6 +1569,7 @@ export function VideoPlayer() {
     // crosshair rings, distinct from skeleton nodes. Coords go through the same
     // crop transform as instance nodes.
     if (labeledFrame.centroids.length > 0) {
+      const colorTarget = resolveColorTarget(distinctlyColor, projectHasTracks);
       const renderedCentroids = labeledFrame.centroids.map((c, i) => {
         const [cx, cy] = toImageCoords(video, c.x, c.y);
         // Give each centroid the SAME color as the instance it belongs to, so a
@@ -1568,13 +1580,20 @@ export function VideoPlayer() {
         // the pairing as keypoints are placed and the rings would change color
         // mid-labeling. `labeledFrame.instances` is index-aligned with
         // `instances`, whose `.color` already reflects the active palette/track/
-        // predicted settings. An unlinked centroid (e.g. seeded before pairing
-        // ran) falls back to its own stable palette slot.
+        // predicted settings — but only use it when it IS a per-animal color:
+        // "instance" mode, or "track" mode on a tracked instance (honoring
+        // per-track overrides). Under "node"/"edge" — what the default "auto"
+        // resolves to on an untracked project, i.e. every AL project — instance
+        // colors are a uniform gray, and untracked instances in "track" mode are
+        // gray too, so every ring would look alike. Those, and an unlinked
+        // centroid (e.g. seeded before pairing ran), take the centroid's own
+        // stable palette slot, which doesn't move when pairing runs.
         const matchIdx = c.instance ? labeledFrame.instances.indexOf(c.instance) : -1;
-        const color =
-          matchIdx >= 0 && instances[matchIdx]
-            ? instances[matchIdx].color
-            : getPaletteColor(palette, i);
+        const paired = matchIdx >= 0 ? instances[matchIdx] : undefined;
+        const perAnimal =
+          colorTarget === "instance" ||
+          (colorTarget === "track" && !!labeledFrame.instances[matchIdx]?.track);
+        const color = paired && perAnimal ? paired.color : getPaletteColor(palette, i);
         return { x: cx, y: cy, predicted: c.isPredicted, color };
       });
       renderCentroids(ctx, renderedCentroids, renderOpts);

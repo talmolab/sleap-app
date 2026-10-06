@@ -37,11 +37,24 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { ActiveLearningConfigDialog } from "@/components/dialogs/ActiveLearningConfigDialog";
 import { CorrectionPanel } from "@/components/panels/CorrectionPanel";
 import { cn } from "@/lib/utils";
+import { dirtyFrameTracker } from "@/lib/autosaveDirty";
 
 /** Last path segment of a model directory, for a compact display. */
 function modelBasename(path: string): string {
   const parts = path.replace(/[/\\]+$/, "").split(/[/\\]/);
   return parts[parts.length - 1] || path;
+}
+
+/**
+ * The workflow config (persisted in the project's provenance) and the
+ * starter-frame pool (`labels.suggestions`) live outside the command system and
+ * aren't frame data, so an edit to either marks the project changed AND
+ * structural — the incremental autosave only journals dirty frames, so without
+ * the structural flag neither would reach the recovery draft.
+ */
+function markProjectLevelEdit(): void {
+  useAppStore.getState().markChanged();
+  dirtyFrameTracker.markStructural();
 }
 
 export function ActiveLearningPanel() {
@@ -185,6 +198,7 @@ export function ActiveLearningPanel() {
     const result = useActiveLearningStore
       .getState()
       .setConfig(configFromSkeleton(nodeNames), nodeNames);
+    markProjectLevelEdit();
     if (result.ok) {
       toast.success(
         `Started a workflow from ${nodeNames.length} skeleton nodes — split "Keypoints" into ` +
@@ -197,6 +211,7 @@ export function ActiveLearningPanel() {
 
   const adoptDefault = () => {
     const result = useActiveLearningStore.getState().useDefaultConfig(nodeNames);
+    markProjectLevelEdit();
     if (result.ok) toast.success("Adopted the default workflow");
     else toast.warning(`Workflow loaded with ${result.errors.length} issue(s) — see below`);
   };
@@ -230,7 +245,7 @@ export function ActiveLearningPanel() {
         },
         poseSkel.nodes.map((n) => n.name),
       );
-      useAppStore.getState().markChanged();
+      markProjectLevelEdit();
       useAppStore.getState().bumpOverlayVersion();
       return { skeleton: poseSkel, nodeIdx: 0 };
     }
@@ -255,6 +270,7 @@ export function ActiveLearningPanel() {
       },
       names,
     );
+    markProjectLevelEdit();
     useAppStore.getState().bumpOverlayVersion();
     return { skeleton: poseNow, nodeIdx: names.indexOf(ANCHOR) };
   };
@@ -278,6 +294,7 @@ export function ActiveLearningPanel() {
     try {
       const text = await file.text();
       const result = useActiveLearningStore.getState().loadConfigFromYaml(text, nodeNames);
+      markProjectLevelEdit();
       if (result.ok) toast.success(`Loaded workflow "${file.name}"`);
       else toast.warning(`Workflow loaded with ${result.errors.length} issue(s) — see below`);
     } catch (err) {
@@ -307,7 +324,7 @@ export function ActiveLearningPanel() {
       return;
     }
     labels.suggestions = [...(labels.suggestions ?? []), ...added];
-    useAppStore.getState().markChanged();
+    markProjectLevelEdit();
     useAppStore.getState().bumpOverlayVersion();
     const short = added.length < count ? ` (${count} asked for; the rest are already queued)` : "";
     // Report the resulting POOL SIZE, not just the batch: this button adds, and a
@@ -335,7 +352,7 @@ export function ActiveLearningPanel() {
       return;
     }
     labels.suggestions = [];
-    useAppStore.getState().markChanged();
+    markProjectLevelEdit();
     useAppStore.getState().bumpOverlayVersion();
     toast.success(`Cleared the pool — ${previous.length} frame(s) removed.`, {
       action: {
@@ -343,7 +360,7 @@ export function ActiveLearningPanel() {
         onClick: () => {
           if (useAppStore.getState().labels !== labels) return; // different project now
           labels.suggestions = previous;
-          useAppStore.getState().markChanged();
+          markProjectLevelEdit();
           useAppStore.getState().bumpOverlayVersion();
         },
       },

@@ -52,6 +52,17 @@ function isTextInput(e: KeyboardEvent): boolean {
   return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (e.target as HTMLElement)?.isContentEditable === true;
 }
 
+/**
+ * The key was pressed inside an open modal/popover (in-app confirm/prompt
+ * dialogs, the active-learning cheatsheets, …). Those own their keys: Radix
+ * closes itself on Escape but does not stop propagation, so without this the
+ * same Escape would also tear down an active-learning sweep behind it, and the
+ * sweep's step keys would act on work the user can't see.
+ */
+function inOverlay(e: KeyboardEvent): boolean {
+  return !!(e.target as HTMLElement)?.closest?.('[role="dialog"],[role="alertdialog"]');
+}
+
 export function useKeyboardShortcuts() {
   useEffect(() => {
     const store = useAppStore.getState;
@@ -261,6 +272,11 @@ export function useKeyboardShortcuts() {
       // Track commands
       [DEFAULT_SHORTCUTS.transpose]: (e) => {
         e.preventDefault();
+        // The pick mode it can start takes over the next canvas clicks — in a
+        // sweep those are keypoint/centroid placements, so they'd silently swap
+        // two animals' tracks instead.
+        const m = store().labelingMode;
+        if (m === "seed" || m === "keypointPass" || m === "correct") return;
         requestTranspose(commandContext);
       },
       [DEFAULT_SHORTCUTS["add track"]]: (e) => {
@@ -389,9 +405,14 @@ export function useKeyboardShortcuts() {
 
       // Selection / exit placement mode / cancel area-delete
       [DEFAULT_SHORTCUTS["clear selection"]]: (e) => {
-        if (isTextInput(e)) return;
-        e.preventDefault();
+        // defaultPrevented: something (a closing dialog, a pick-mode bar)
+        // already consumed this Escape.
+        if (isTextInput(e) || e.defaultPrevented || inOverlay(e)) return;
         const s = store();
+        // A transpose pick owns Escape (TransposePickBar cancels it); its window
+        // listener registers after this one, so it can't stop us first.
+        if (s.instanceSequencePick) return;
+        e.preventDefault();
         if (s.areaDeleteMode) {
           s.set("areaDeleteMode", false);
         } else if (s.labelingMode === "place") {
@@ -417,7 +438,7 @@ export function useKeyboardShortcuts() {
       // tinykeys matches modifiers exactly, so `KeyS` never fires with Shift held
       // and the two can't both run.
       "Shift+KeyS": (e) => {
-        if (isTextInput(e)) return;
+        if (isTextInput(e) || inOverlay(e)) return;
         if (store().labelingMode !== "keypointPass") return;
         // Repeat-guarded: holding the key would write off a run of animals.
         if (e.repeat) return;
@@ -425,7 +446,7 @@ export function useKeyboardShortcuts() {
         skipCurrentPassItem();
       },
       KeyS: (e) => {
-        if (isTextInput(e)) return;
+        if (isTextInput(e) || inOverlay(e)) return;
         const m = store().labelingMode;
         if (m === "keypointPass") {
           e.preventDefault();
@@ -439,7 +460,7 @@ export function useKeyboardShortcuts() {
         }
       },
       KeyB: (e) => {
-        if (isTextInput(e)) return;
+        if (isTextInput(e) || inOverlay(e)) return;
         const m = store().labelingMode;
         if (m === "keypointPass") {
           e.preventDefault();
@@ -459,14 +480,14 @@ export function useKeyboardShortcuts() {
       // prediction, and when the user turned predictions off the work list holds
       // none — so this rebuild can only ever run for a list that included them.
       KeyX: (e) => {
-        if (isTextInput(e)) return;
+        if (isTextInput(e) || inOverlay(e)) return;
         if (store().labelingMode !== "keypointPass") return;
         if (e.repeat) return;
         e.preventDefault();
         rejectCurrentPassItem({ includePredicted: true });
       },
       Backspace: (e) => {
-        if (isTextInput(e)) return;
+        if (isTextInput(e) || inOverlay(e)) return;
         const m = store().labelingMode;
         if (m === "keypointPass") {
           e.preventDefault();

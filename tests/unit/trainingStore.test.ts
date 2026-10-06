@@ -2,9 +2,9 @@ import { describe, it, expect, beforeEach } from "../bun-test";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import yaml from "js-yaml";
-import { Skeleton, Video, Labels, LabeledFrame, Instance, PredictedInstance } from "@talmolab/sleap-io.js";
+import { Skeleton, Video, Labels, LabeledFrame, Instance, PredictedInstance, UserCentroid, PredictedCentroid } from "@talmolab/sleap-io.js";
 import { useTrainingStore } from "@/stores/trainingStore";
-import { getConfigSlots, getSlotLabel, defaultHyperparams, applyHyperparamsToYaml, mergeStdoutIntoLog, countUserLabeledFrames } from "@/stores/trainingStore";
+import { getConfigSlots, getSlotLabel, defaultHyperparams, applyHyperparamsToYaml, mergeStdoutIntoLog, countUserLabeledFrames, hasTrainingFrames } from "@/stores/trainingStore";
 import type { ConfigFile } from "@/stores/trainingStore";
 
 /** Helper to create a ConfigFile with default hyperparams */
@@ -2242,31 +2242,57 @@ describe("markEpochBegin / epochStartedAt", () => {
       expect(countUserLabeledFrames(labels)).toBe(2);
     });
 
-    it("caches by labels reference so it isn't re-scanned every render", () => {
+    it("never serves a stale count after the project is edited in place", () => {
+      // `labels` is mutated in place, so a cache keyed on its reference would
+      // freeze the first count (0 on a fresh project) for the whole session.
+      const labels = new Labels({ videos: [video], skeletons: [skeleton], labeledFrames: [] });
+      expect(countUserLabeledFrames(labels)).toBe(0);
       const frame = new LabeledFrame({ video, frameIdx: 0 });
       frame.instances.push(Instance.empty({ skeleton }));
-      const labels = new Labels({ videos: [video], skeletons: [skeleton], labeledFrames: [frame] });
+      labels.labeledFrames.push(frame);
+      expect(countUserLabeledFrames(labels)).toBe(1);
+    });
 
-      // Spy the allocating `userInstances` filter: the fn ran on every render;
-      // the cache should serve the second call without re-scanning.
-      const proto = Object.getPrototypeOf(labels.labeledFrames[0]);
-      const orig = Object.getOwnPropertyDescriptor(proto, "userInstances")!;
-      let reads = 0;
-      Object.defineProperty(proto, "userInstances", {
-        configurable: true,
-        get() {
-          reads++;
-          return orig.get!.call(this);
-        },
+    it("counts user-centroid-only frames only for a centroid (locator) run", () => {
+      const seeded = new LabeledFrame({
+        video,
+        frameIdx: 0,
+        centroids: [new UserCentroid({ x: 1, y: 1 })],
       });
-      try {
-        expect(countUserLabeledFrames(labels)).toBe(1);
-        expect(countUserLabeledFrames(labels)).toBe(1);
-      } finally {
-        Object.defineProperty(proto, "userInstances", orig);
-      }
-      expect(reads).toBe(1); // second call served from cache
+      const located = new LabeledFrame({
+        video,
+        frameIdx: 1,
+        centroids: [new PredictedCentroid({ x: 1, y: 1, score: 0.9 })],
+      });
+      const labels = new Labels({ videos: [video], skeletons: [skeleton], labeledFrames: [seeded, located] });
+      expect(countUserLabeledFrames(labels)).toBe(0);
+      expect(countUserLabeledFrames(labels, { includeUserCentroids: true })).toBe(1);
+    });
+  });
+
+  describe("hasTrainingFrames", () => {
+    const skeleton = new Skeleton({ nodes: ["a"], name: "s" });
+    const video = new Video({
+      filename: "v.mp4",
+      backendMetadata: { shape: [10, 100, 100, 3] },
+      openBackend: false,
+    });
+
+    it("re-scans after an edit (editSeq bump), serves the cache otherwise", () => {
+      const labels = new Labels({ videos: [video], skeletons: [skeleton], labeledFrames: [] });
+      expect(hasTrainingFrames(labels, 0)).toBe(false);
+      const frame = new LabeledFrame({ video, frameIdx: 0 });
+      frame.instances.push(Instance.empty({ skeleton }));
+      labels.labeledFrames.push(frame);
+      expect(hasTrainingFrames(labels, 0)).toBe(false); // same editSeq → cached
+      expect(hasTrainingFrames(labels, 1)).toBe(true);
+    });
+
+    it("accepts user centroids only when asked (centroid model type)", () => {
+      const seeded = new LabeledFrame({ video, frameIdx: 0, centroids: [new UserCentroid({ x: 1, y: 1 })] });
+      const labels = new Labels({ videos: [video], skeletons: [skeleton], labeledFrames: [seeded] });
+      expect(hasTrainingFrames(labels, 5)).toBe(false);
+      expect(hasTrainingFrames(labels, 5, { includeUserCentroids: true })).toBe(true);
     });
   });
 });
-

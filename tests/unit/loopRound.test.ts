@@ -140,7 +140,8 @@ describe("startNextRound", () => {
 
     // The hand-off the Training panel drains on arrival.
     const t = useTrainingStore.getState();
-    expect(t.config.trainingLabelsPath).toBe("/proj.slp");
+    // Not pinned — training follows the live projectPath.
+    expect(t.config.trainingLabelsPath).toBe("");
     expect(t.pendingHandoff?.requireModelTypeChoice).toBe(true);
     expect(t.pendingHandoff?.skipUserLabeled).toBe(true);
   });

@@ -17,7 +17,11 @@ export function TrainingProgressBar() {
   const currentModelIndex = useTrainingStore((s) => s.currentModelIndex);
   const log = useTrainingStore((s) => s.log);
   const error = useTrainingStore((s) => s.error);
+  // A remote run's post-training predictions wait on the worker until fetched;
+  // Dismiss (a store reset) would silently discard them, so offer the fetch.
+  const pendingMerge = useTrainingStore((s) => s.postTrainingInference?.pendingMerge ?? null);
   const [showLog, setShowLog] = useState(false);
+  const [fetching, setFetching] = useState(false);
 
   if (status === "idle") return null;
 
@@ -29,15 +33,19 @@ export function TrainingProgressBar() {
   const running = status === "running";
   const isError = status === "error";
 
+  const awaitingFetch = status === "completed" && !!pendingMerge;
+
   const label = isError
     ? "Training failed"
-    : status === "completed"
-      ? "Training complete"
-      : status === "stopped"
-        ? "Training stopped"
-        : model
-          ? `Training ${model.label} — epoch ${model.epoch}/${model.maxEpochs} (${pct}%)`
-          : "Training…";
+    : awaitingFetch
+      ? "Training complete — predictions ready on the worker, not merged yet"
+      : status === "completed"
+        ? "Training complete"
+        : status === "stopped"
+          ? "Training stopped"
+          : model
+            ? `Training ${model.label} — epoch ${model.epoch}/${model.maxEpochs} (${pct}%)`
+            : "Training…";
 
   return (
     <div className={`border-b border-border ${isError ? "bg-destructive/10" : "bg-muted/40"}`}>
@@ -65,6 +73,23 @@ export function TrainingProgressBar() {
               onClick={() => void useTrainingStore.getState().stopTraining()}
             >
               Stop
+            </Button>
+          ) : awaitingFetch ? (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-6"
+              disabled={fetching}
+              onClick={async () => {
+                setFetching(true);
+                try {
+                  await useTrainingStore.getState().fetchAndLoadPostTrainingPredictions();
+                } finally {
+                  setFetching(false);
+                }
+              }}
+            >
+              {fetching ? "Fetching…" : "Fetch & Load"}
             </Button>
           ) : (
             <Button

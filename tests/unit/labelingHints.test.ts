@@ -29,7 +29,8 @@ describe("labelingHints", () => {
     showLabelingHint("missing-nodes-right-click");
     showLabelingHint("missing-nodes-right-click");
 
-    // No dismissal/once tracking left (#341) -- the setting is the only gate.
+    // No dismissal/once tracking left (#341) -- the setting (and an active
+    // active-learning sweep, below) is the only gate.
     expect(infoSpy).toHaveBeenCalledTimes(3);
     infoSpy.mockRestore();
   });
@@ -70,6 +71,18 @@ describe("labelingHints", () => {
 
     expect(infoSpy).toHaveBeenCalledTimes(1);
     infoSpy.mockRestore();
+  });
+
+  it("stays silent during an active-learning sweep without using up the once-per-session slot", () => {
+    const infoSpy = vi.spyOn(toast, "info");
+    for (const mode of ["seed", "keypointPass", "correct"] as const) {
+      useAppStore.getState().set("labelingMode", mode);
+      showLabelingHint("missing-nodes-right-click");
+      expect(hintIfFirstPredictionConversion()).toBe(false);
+    }
+    expect(infoSpy).not.toHaveBeenCalled();
+    infoSpy.mockRestore();
+    useAppStore.getState().set("labelingMode", "select");
   });
 
   it("hintIfFirstPredictionConversion fires once per session and reports whether it fired", () => {

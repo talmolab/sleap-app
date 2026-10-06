@@ -42,6 +42,7 @@ import {
   type FireAction,
   type JournalStore,
 } from "@/lib/incrementalAutosave";
+import { syncActiveLearningProvenance } from "@/lib/activeLearning/persistence";
 
 /** Debounce for cheap delta appends — far shorter than a full-snapshot write,
  *  so incremental autosave can persist finer (better crash recovery). */
@@ -173,6 +174,14 @@ export async function maybeAutosaveLabelsDraft(
       store.labelsDraftPath ?? newDraftPath(store.filename ?? undefined);
     store.set("labelsDraftPath", draftPath);
     const writeBase = async (): Promise<void> => {
+      // The active-learning workflow lives in provenance; ⌘S syncs it there,
+      // so a recovery draft must too or crash recovery restores a stale one.
+      // Best-effort: it must never cost the draft itself.
+      try {
+        syncActiveLearningProvenance(labels);
+      } catch (err) {
+        console.warn("[autosave] could not sync the active-learning workflow:", err);
+      }
       const writeT0 = performance.now();
       await recordDraftSave(labels, {
         draftPath,
@@ -270,6 +279,14 @@ async function maybeAutosaveTauriDraft(reArm?: () => void): Promise<void> {
     }
 
     const writeBase = async (): Promise<void> => {
+      // The active-learning workflow lives in provenance; ⌘S syncs it there,
+      // so a recovery draft must too or crash recovery restores a stale one.
+      // Best-effort: it must never cost the draft itself.
+      try {
+        syncActiveLearningProvenance(labels);
+      } catch (err) {
+        console.warn("[autosave] could not sync the active-learning workflow:", err);
+      }
       const writeT0 = performance.now();
       await recordTauriDraftSave(labels, {
         draftPath,

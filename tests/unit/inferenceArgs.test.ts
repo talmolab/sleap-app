@@ -432,6 +432,36 @@ describe("buildInferenceArgs — centroid pipeline (standalone locator)", () => 
     }
   });
 
+  it("guards out the pose post-processing filters", () => {
+    const args = buildInferenceArgs(
+      centroid({
+        filterMinVisibleNodes: 2,
+        filterMinVisibleNodeFraction: 0.5,
+        filterMinMeanNodeScore: 0.3,
+        filterMinInstanceScore: 0.3,
+        filterMinCentroidDistance: 10,
+      }),
+      io()
+    );
+    expect(args.filter((a) => a.startsWith("--filter_"))).toEqual([]);
+  });
+
+  it("emits --runtime for an exported locator even when the version picked legacy `track`", () => {
+    const args = buildInferenceArgs(centroid({ runtime: "onnx" }), { ...io(), subcommand: "track" });
+    expect(args[0]).toBe("predict");
+    expect(valAfter(args, "--runtime")).toBe("onnx");
+  });
+
+  it("a track-only run with a leftover centroid pipeline is still a retrack, not a centroid predict", () => {
+    const args = buildInferenceArgs(
+      centroid({ trackOnly: true, tracking: true, modelPaths: [] }),
+      io()
+    );
+    expect(args).toContain("--gui");
+    expect(args).toContain("--tracking");
+    expect(args).not.toContain("--centroid_output");
+  });
+
   it("keeps the shared flags (I/O, frame filters, inference settings, preprocessing)", () => {
     const args = buildInferenceArgs(
       centroid({ frameRange: "suggestions", excludeUserLabeled: true, ensureChannels: "grayscale" }),

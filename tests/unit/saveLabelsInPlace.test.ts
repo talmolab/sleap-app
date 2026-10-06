@@ -26,7 +26,7 @@ vi.mock("@/lib/nativeRange", () => ({
   readRange: vi.fn(),
 }));
 
-import { saveLabelsInPlace } from "@/lib/saveLabelsInPlace";
+import { saveLabelsInPlace, frameAnnotationsBlockInPlace } from "@/lib/saveLabelsInPlace";
 
 /** Minimal fake — never dereferenced on the fallback paths (both return before
  *  touching the labels). */
@@ -55,5 +55,37 @@ describe("saveLabelsInPlace — fallback contract", () => {
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.reason).toMatch(/probe/i);
     expect(fileSizeMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("saveLabelsInPlace — frame-level annotations force a full re-save", () => {
+  // io's in-place writer patches only the label tables; it never touches the
+  // /centroids group (or bboxes/masks/rois/label images). An in-place ⌘S of an
+  // active-learning project would otherwise silently drop new seeds.
+  async function labelsWith(withCentroid: boolean): Promise<Labels> {
+    const io = await import("@talmolab/sleap-io.js");
+    const video = new io.Video({ filename: "/v.mp4", openBackend: false });
+    const lf = new io.LabeledFrame({
+      video,
+      frameIdx: 0,
+      centroids: withCentroid ? [new io.UserCentroid({ x: 1, y: 2 })] : [],
+    });
+    return new io.Labels({ labeledFrames: [lf], videos: [video] });
+  }
+
+  it("refuses in-place when the project has centroids", async () => {
+    expect(frameAnnotationsBlockInPlace(await labelsWith(true), { hasCentroids: false })).toMatch(
+      /centroid/,
+    );
+  });
+
+  it("refuses in-place when the file on disk has centroids but memory has none (last one deleted)", async () => {
+    expect(frameAnnotationsBlockInPlace(await labelsWith(false), { hasCentroids: true })).toMatch(
+      /centroid/,
+    );
+  });
+
+  it("allows in-place for a plain pose project", async () => {
+    expect(frameAnnotationsBlockInPlace(await labelsWith(false), { hasCentroids: false })).toBeNull();
   });
 });

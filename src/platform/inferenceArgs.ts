@@ -91,8 +91,10 @@ export function buildInferenceArgs(
   // centered-instance model); it always runs via `sleap-nn predict
   // --centroid_output`, regardless of the version-picked subcommand. Track-only
   // flags (--gui, --tracking, bottom-up, --filter_overlapping, --max_instances,
-  // --anchor_part) are guarded out below.
-  const isCentroid = config.pipeline === "centroid";
+  // --anchor_part) are guarded out below. A track-only run has no model at all,
+  // so a "centroid" pipeline left over from the panel's model detection must
+  // not turn it into a centroid predict (no --tracking, no --gui).
+  const isCentroid = config.pipeline === "centroid" && !config.trackOnly;
   const args = isCentroid ? ["predict"] : [subcommand, "--gui"];
 
   // Core I/O (identical for predict + track; predict accepts a .slp data_path,
@@ -169,7 +171,7 @@ export function buildInferenceArgs(
   // such flag), and "auto" is sleap-nn's own default, so emit only for a
   // non-auto predict run (mirrors the opt-in convention of the predict-only
   // filter flags below).
-  if (subcommand === "predict" && config.runtime && config.runtime !== "auto") {
+  if (args[0] === "predict" && config.runtime && config.runtime !== "auto") {
     args.push("--runtime", config.runtime);
   }
   if (!isCentroid && config.maxInstances != null) {
@@ -250,19 +252,19 @@ export function buildInferenceArgs(
     args.push("--filter_overlapping_method", config.filterMethod);
     args.push("--filter_overlapping_threshold", String(config.filterThreshold));
   }
-  if (config.filterMinVisibleNodes != null) {
+  if (!isCentroid && config.filterMinVisibleNodes != null) {
     args.push("--filter_min_visible_nodes", String(config.filterMinVisibleNodes));
   }
-  if (config.filterMinVisibleNodeFraction != null) {
+  if (!isCentroid && config.filterMinVisibleNodeFraction != null) {
     args.push("--filter_min_visible_node_fraction", String(config.filterMinVisibleNodeFraction));
   }
-  if (config.filterMinMeanNodeScore != null) {
+  if (!isCentroid && config.filterMinMeanNodeScore != null) {
     args.push("--filter_min_mean_node_score", String(config.filterMinMeanNodeScore));
   }
-  if (config.filterMinInstanceScore != null) {
+  if (!isCentroid && config.filterMinInstanceScore != null) {
     args.push("--filter_min_instance_score", String(config.filterMinInstanceScore));
   }
-  if (config.filterMinCentroidDistance != null) {
+  if (!isCentroid && config.filterMinCentroidDistance != null) {
     // predict-only flag (not present in legacy sleap-nn `track`'s flag set) —
     // only emitted when the user explicitly opts in, so old-version `track`
     // fallback runs that never set this are unaffected.
