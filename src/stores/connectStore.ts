@@ -46,6 +46,7 @@ import type {
 import { parseJobTelemetry, type JobTelemetry } from "@/lib/protocolV1/jobTelemetry";
 import { ManagedConnection, type LinkStatus } from "@/lib/protocolV1/managedConnection";
 import { WorkerProtocolError, FS_NOT_FOUND, FS_FORBIDDEN } from "@/lib/protocolV1/errors";
+import { decodePairCode, isPairCode, PairCodeError } from "@/lib/protocolV1/pairCode";
 import type { PathMapping } from "@/lib/pathMappings";
 import {
   irohTransportAvailable,
@@ -91,12 +92,18 @@ export interface PairedWorker {
   pathRules?: PathMapping[];
 }
 
-/** The JSON a worker's `sleap-rtc pair` command prints (spec §3.2). */
+/**
+ * A worker's pairing ticket (spec §3.2) — either parsed from the legacy
+ * pasted-JSON ticket `sleap-rtc pair` used to print, or decoded from its
+ * one-line replacement (`decodePairCode`, PR6a §a.1), which returns this
+ * exact shape so `pairWithTicket` never needs to branch on which it got.
+ */
 export interface PairingTicket {
   node_id: string;
   addrs: string[];
   secret: string;
-  expires_at?: string;
+  /** Unix seconds — the worker's own wire format. Always present on a decoded pairing code; only checked for expiry on that path today (see `pairWithTicket`). */
+  expires_at?: number;
   /** Optional direct-connect info (stage 2.1): `{ node_id?, relay_url?, direct_addrs? }`. */
   iroh?: unknown;
 }
@@ -1059,11 +1066,29 @@ export const useConnectStore = create<ConnectState>()(
       },
 
       pairWithTicket: async (ticketJson, addrOverride, options) => {
+        const trimmed = ticketJson.trim();
         let ticket: PairingTicket;
-        try {
-          ticket = JSON.parse(ticketJson);
-        } catch {
-          throw new Error("That doesn't look like a valid pairing ticket (invalid JSON).");
+        if (isPairCode(trimmed)) {
+          try {
+            ticket = await decodePairCode(trimmed);
+          } catch (err) {
+            // Re-thrown as a plain Error (not PairCodeError) so callers that
+            // branch on `instanceof Error` for the message (PairWorkerForm)
+            // don't need to know about this module's error type.
+            throw new Error(err instanceof PairCodeError ? err.message : String(err));
+          }
+          if (ticket.expires_at !== undefined && ticket.expires_at * 1000 < Date.now()) {
+            throw new Error(
+              `This pairing code expired at ${new Date(ticket.expires_at * 1000).toLocaleString()}; ` +
+                "run `sleap-rtc pair` again.",
+            );
+          }
+        } else {
+          try {
+            ticket = JSON.parse(trimmed);
+          } catch {
+            throw new Error("That doesn't look like a valid pairing ticket (invalid JSON).");
+          }
         }
         if (!ticket.node_id || !ticket.secret) {
           throw new Error("Pairing ticket is missing node_id or secret.");

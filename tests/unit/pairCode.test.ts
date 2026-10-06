@@ -8,6 +8,7 @@
  */
 import { describe, it, expect } from "../bun-test";
 import { decodePairCode, isPairCode, PairCodeError, RELAY_TABLE } from "@/lib/protocolV1/pairCode";
+import { buildPairCode, fakeBytes, mistypeCode } from "./buildPairCode";
 
 interface Vector {
   description: string;
@@ -84,53 +85,19 @@ describe("decodePairCode — errors", () => {
   });
 
   it("rejects a mistyped code (bad checksum)", async () => {
-    const vector = vectors[0]!;
-    // Flip the last base32 character — corrupts the checksum without
-    // changing the code's length.
-    const lastChar = vector.code.at(-1)!;
-    const flipped = lastChar === "a" ? "b" : "a";
-    const mistyped = vector.code.slice(0, -1) + flipped;
+    const mistyped = mistypeCode(vectors[0]!.code);
     await expect(decodePairCode(mistyped)).rejects.toThrow(PairCodeError);
     await expect(decodePairCode(mistyped)).rejects.toThrow(/incomplete or mistyped/);
   });
 
   it("rejects an unsupported format version", async () => {
-    const code = await buildMinimalCodeWithVersion(99);
+    const code = await buildPairCode({
+      nodeId: fakeBytes(32),
+      secret: fakeBytes(16, 101),
+      expiresAt: 1700000000,
+      version: 99,
+    });
     await expect(decodePairCode(code)).rejects.toThrow(PairCodeError);
     await expect(decodePairCode(code)).rejects.toThrow(/Unsupported pairing code version/);
   });
 });
-
-const TEST_BASE32_ALPHABET = "abcdefghijklmnopqrstuvwxyz234567";
-
-/** Local, test-only base32 encoder — `pairCode.ts` only ever decodes (this app never mints codes). */
-function base32EncodeForTest(bytes: Uint8Array): string {
-  let bits = 0;
-  let value = 0;
-  let out = "";
-  for (const byte of bytes) {
-    value = (value << 8) | byte;
-    bits += 8;
-    while (bits >= 5) {
-      out += TEST_BASE32_ALPHABET[(value >>> (bits - 5)) & 31];
-      bits -= 5;
-    }
-  }
-  if (bits > 0) out += TEST_BASE32_ALPHABET[(value << (5 - bits)) & 31];
-  return out;
-}
-
-/**
- * A minimal, well-formed (checksum-correct) pairing code — all-zero
- * node_id/secret/expires_at, no addrs, no relay — with `version` as its
- * format-version byte, for exercising the version check in isolation.
- */
-async function buildMinimalCodeWithVersion(version: number): Promise<string> {
-  const body = new Uint8Array(1 + 32 + 16 + 4 + 1 + 1);
-  body[0] = version;
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", body));
-  const full = new Uint8Array(body.length + 2);
-  full.set(body, 0);
-  full.set(digest.subarray(0, 2), body.length);
-  return "sleap1" + base32EncodeForTest(full);
-}

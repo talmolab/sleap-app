@@ -145,6 +145,7 @@ export function WorkerList({ selectedId, onSelect }: WorkerListProps) {
           <code className="block bg-black/30 px-1.5 py-1 rounded font-mono text-[10px]">
             sleap-rtc pair
           </code>
+          <p>Then paste the one-line code it prints below.</p>
         </div>
       ) : (
         <>
