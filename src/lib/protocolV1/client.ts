@@ -79,6 +79,20 @@ export interface JobProject {
   id: string;
 }
 
+/**
+ * Links a job to its siblings in one top-down-style submission that's split
+ * into several worker jobs (sleap-connect `feat/connect-run-id`) — opaque to
+ * the worker, round-tripped as-is. `index`/`count` are 0-based/total, e.g.
+ * `{index: 0, count: 2}` then `{index: 1, count: 2}` for a centroid +
+ * centered-instance run; the Connect window (PR4b) shows "run i/n" when
+ * `count > 1`.
+ */
+export interface JobRun {
+  id: string;
+  index: number;
+  count: number;
+}
+
 export interface JobSummary {
   jobId: string;
   state: string;
@@ -92,6 +106,8 @@ export interface JobSummary {
   modelTypes: string[];
   labelsPath?: string;
   project?: JobProject | null;
+  /** Absent on a job submitted before `run` existed, or by an older worker. */
+  run?: JobRun | null;
 }
 
 export interface JobStatus {
@@ -177,18 +193,28 @@ function _throwIfFsError(result: Record<string, unknown>, context: string): void
  * already branch on them (`null`/`[]`), everything else is left `undefined`
  * rather than guessing a value that isn't knowable.
  */
+/**
+ * The worker stores job timestamps as Unix seconds (a SQLite REAL); the app
+ * works in ISO strings. A string passes through unchanged.
+ */
+function _isoTimestamp(v: unknown): string | undefined {
+  if (typeof v === "number") return new Date(v * 1000).toISOString();
+  return typeof v === "string" ? v : undefined;
+}
+
 function _mapJobSummary(j: Record<string, unknown>): JobSummary {
   return {
     jobId: j.job_id as string,
     state: j.state as string,
-    createdAt: j.created_at as string,
-    updatedAt: j.updated_at as string | undefined,
+    createdAt: _isoTimestamp(j.created_at) ?? "",
+    updatedAt: _isoTimestamp(j.updated_at),
     error: j.error as string | null | undefined,
     queuePosition: (j.queue_position as number | null | undefined) ?? null,
     kind: j.kind as "train" | "track" | undefined,
     modelTypes: (j.model_types as string[] | undefined) ?? [],
     labelsPath: j.labels_path as string | undefined,
     project: j.project as JobProject | null | undefined,
+    run: j.run as JobRun | null | undefined,
   };
 }
 
@@ -414,7 +440,7 @@ export class WorkerClient {
     const result = await this._request("jobs.status", { job_id: jobId });
     return {
       ..._mapJobSummary(result),
-      updatedAt: result.updated_at as string,
+      updatedAt: _isoTimestamp(result.updated_at) ?? "",
       result: (result.result as Record<string, unknown>) ?? null,
       error: (result.error as string) ?? null,
       spec: result.spec as Record<string, unknown> | undefined,

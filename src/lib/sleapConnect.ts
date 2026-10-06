@@ -6,7 +6,7 @@
  * connect to rooms, discover workers, browse remote filesystems,
  * and submit inference jobs.
  */
-import type { JobProject } from "@/lib/protocolV1/client";
+import type { JobProject, JobRun } from "@/lib/protocolV1/client";
 
 // ── Protocol constants (match sleap_rtc/protocol.py) ──────────────
 export const MSG_SEPARATOR = "::";
@@ -99,6 +99,8 @@ export interface TrackJobSpec {
   filter_min_centroid_distance?: number;
   /** Which project submitted this job (`projectTag()`) — shows up in the worker's job list/history (sleap-connect #98). */
   project?: JobProject;
+  /** Links this job to its siblings in a multi-model training run (sleap-connect `feat/connect-run-id`) — opaque to the worker, round-tripped as-is. */
+  run?: JobRun;
 }
 
 export interface TrainJobSpec {
@@ -125,6 +127,8 @@ export interface TrainJobSpec {
   path_mappings?: Record<string, string>;
   /** Which project submitted this job (`projectTag()`) — shows up in the worker's job list/history (sleap-connect #98). */
   project?: JobProject;
+  /** Links this job to its siblings in a multi-model training run (sleap-connect `feat/connect-run-id`) — opaque to the worker, round-tripped as-is. */
+  run?: JobRun;
   // No `inference_target`: the worker never ran inference as part of a train
   // job. Post-training inference is a separate track job the app submits
   // once every model has trained (see trainingStore's remote branch).

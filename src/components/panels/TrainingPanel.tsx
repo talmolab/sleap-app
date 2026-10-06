@@ -1768,6 +1768,7 @@ export function TrainingPanel() {
                 setWatching(true);
                 setViewerIndex(currentModelIndex);
               }}
+              onOpenConnect={() => useAppStore.getState().setConnectWindowOpen(true)}
             />
           </div>
         </>

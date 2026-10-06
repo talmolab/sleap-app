@@ -33,7 +33,14 @@ import type {
 import { APP_VERSION } from "@/lib/version";
 import { isTauri } from "@/platform/index";
 import type { AgentInfo } from "@/lib/protocolV1/envelope";
-import type { Mount, WorkerClient, WorkerEvent } from "@/lib/protocolV1/client";
+import type {
+  JobStatus,
+  JobSummary,
+  Mount,
+  WorkerClient,
+  WorkerEvent,
+  WorkerInfo,
+} from "@/lib/protocolV1/client";
 import { parseJobTelemetry, type JobTelemetry } from "@/lib/protocolV1/jobTelemetry";
 import { ManagedConnection, type LinkStatus } from "@/lib/protocolV1/managedConnection";
 import { WorkerProtocolError, FS_NOT_FOUND, FS_FORBIDDEN } from "@/lib/protocolV1/errors";
@@ -113,6 +120,8 @@ export interface TrackedJob {
   label: string;
   source: "window" | "worker-file";
   state: "active" | "completed" | "failed" | "canceled";
+  /** The worker's failure/cancel detail — set alongside a terminal `state` other than "completed"; the Connect window's Jobs tab (PR4b) shows this as the row's error text. */
+  error?: string;
   /** Whether the user has seen this job reach a terminal state (gates resume-on-launch toasts). */
   seen: boolean;
   submittedAt: number;
@@ -171,9 +180,42 @@ interface ConnectState {
    * worker, projected out for existing single-worker callers.
    */
   connections: Record<string, { status: LinkStatus; route: TransportKind }>;
+  /**
+   * Most recent `clientFor`/`refreshWorkerInfo` failure per worker, keyed by
+   * `nodeId` — the Connect window (PR4b) shows this per-card for a worker
+   * that isn't the selected backend, where `connectionError` (selected-only)
+   * doesn't reach. Cleared on that worker's next successful connect.
+   */
+  workerErrors: Record<string, string | null>;
+  /** Last-fetched `worker.info` snapshot per worker (sleap-connect #98), keyed by `nodeId`. */
+  workerInfo: Record<string, WorkerInfo>;
   _client: WorkerClient | null;
 
   // ── Actions ──────────────────────────────────────────────────────
+  /**
+   * A connected, authenticated client for ANY paired worker — not just the
+   * selected one (`_client`/`submitJob`/etc. stay selected-worker-only).
+   * Reuses that worker's managed connection if one already exists (selected
+   * or from a prior `clientFor` call); otherwise creates one and dials it.
+   * Records the failure in `workerErrors` and drops the managed connection
+   * on a failed dial, so a later call starts fresh rather than reusing a
+   * dead instance.
+   */
+  clientFor: (workerId: string) => Promise<WorkerClient>;
+  /**
+   * Stops and drops every managed connection that isn't the selected worker
+   * and has no active tracked job — called when the Connect window (PR4b)
+   * closes, so browsing other workers' jobs/info there doesn't leave their
+   * connections open indefinitely afterward.
+   */
+  releaseIdleConnections: () => void;
+  /** Fetches `worker.info` for `workerId` into `workerInfo`; a failure lands in `workerErrors` instead of throwing. */
+  refreshWorkerInfo: (workerId: string) => Promise<void>;
+  /** Every job on `workerId` (not just ones this window tracks) — the Connect window's Jobs tab. */
+  listJobs: (workerId: string) => Promise<JobSummary[]>;
+  jobDetail: (workerId: string, jobId: string) => Promise<JobStatus>;
+  /** Cancel/stop a job on ANY paired worker, not just the selected one. */
+  cancelJobOn: (workerId: string, jobId: string, mode: "cancel" | "stop") => Promise<void>;
   /**
    * Claim a fresh pairing ticket (JSON from `sleap-rtc pair`) and connect.
    * `options.transport` picks the dial explicitly (default `"ws"`); `"iroh"`
@@ -417,6 +459,9 @@ function mapLinkStatus(status: LinkStatus): ConnectionStatus {
 /** One `ManagedConnection` per worker that's selected or has an active tracked job. */
 const managed = new Map<string, ManagedConnection>();
 
+/** `clientFor`'s in-flight initial dials, so concurrent calls for one worker share a single `start()`. */
+const clientForStarts = new Map<string, Promise<WorkerClient>>();
+
 interface ManagedConnectionTestDeps {
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -439,6 +484,7 @@ export function __setManagedDeps(deps: ManagedConnectionTestDeps): void {
 export function __resetManagedConnections(): void {
   for (const mc of managed.values()) mc.stop();
   managed.clear();
+  clientForStarts.clear();
 }
 
 /**
@@ -584,8 +630,10 @@ const notifiedJobIds = new Set<string>();
  * `makeClient`'s dynamic imports above: this module is statically imported
  * by connectStore's own tests, so a static import here would bind the real
  * `toast` before a test's `vi.mock("@/lib/notify", ...)` ever got a chance
- * to replace it. `toast.success`/`toast.error` already feed the sidebar's
- * notification bell (see `src/lib/notify.tsx`) — no separate call needed.
+ * to replace it. `toast.success`/`toast.error`/`toast.info` already feed the
+ * sidebar's notification bell (see `src/lib/notify.tsx`) — no separate call
+ * needed. A canceled job is the user's own action, not a failure — it gets
+ * the neutral `info` toast, never `error`.
  */
 async function notifyJobFinished(
   job: TrackedJob,
@@ -595,11 +643,21 @@ async function notifyJobFinished(
   if (notifiedJobIds.has(job.jobId)) return;
   notifiedJobIds.add(job.jobId);
   const { toast } = await import("@/lib/notify");
+  const { useAppStore } = await import("@/stores/appStore");
+  // Replaces the toast's usual hover copy-button (`@/lib/notify`'s default
+  // `action`) with a one-click path to the Connect window (PR4b §4b.2).
+  const action = {
+    label: "Open",
+    onClick: () => useAppStore.getState().setConnectWindowOpen(true),
+  };
   if (job.state === "completed") {
-    toast.success(`${job.label} on ${workerLabel} finished`);
+    toast.success(`${job.label} on ${workerLabel} finished`, { action });
+  } else if (job.state === "canceled") {
+    toast.info(`${job.label} on ${workerLabel} was canceled`, { action });
   } else {
     toast.error(`${job.label} on ${workerLabel} failed`, {
       description: errorDetail ?? undefined,
+      action,
     });
   }
 }
@@ -666,7 +724,12 @@ async function submitSingleJob(
       // old single-slot `currentJob` did. `seen: true` here because this
       // window is live and watching it finish; resume-on-launch's toast
       // (§2b.5) only fires for a job that reaches terminal while unwatched.
-      updateTrackedJob(set, jobId, { state: trackedState, seen: true, lastSeq });
+      updateTrackedJob(set, jobId, {
+        state: trackedState,
+        seen: true,
+        lastSeq,
+        ...(trackedState !== "completed" ? { error: result.error } : {}),
+      });
       resolve(result);
     };
 
@@ -737,7 +800,89 @@ export const useConnectStore = create<ConnectState>()(
       reattachableJob: null,
       activeTransport: null,
       connections: {},
+      workerErrors: {},
+      workerInfo: {},
       _client: null,
+
+      clientFor: async (workerId) => {
+        const existing = managed.get(workerId);
+        if (existing?.client) return existing.client;
+        // Concurrent callers (the Connect window fires info + jobs at once)
+        // share one dial — `start()` isn't idempotent and a second call would
+        // adopt a second client, leaking the first.
+        const pending = clientForStarts.get(workerId);
+        if (pending) return pending;
+        // A managed connection with no client and no start of ours in flight
+        // is either mid-reconnect (its own retry loop owns the redial) or
+        // mid-`connectToWorker`/`resumeTrackedJobs` start — dialing here too
+        // would race it. `connections[workerId]` already shows the status.
+        if (existing) throw new Error("Worker is reconnecting — try again shortly.");
+
+        const mc = ensureConnection(workerId);
+        const start = (async () => {
+          try {
+            const client = await mc.start();
+            set((state) => ({ workerErrors: { ...state.workerErrors, [workerId]: null } }));
+            return client;
+          } catch (err) {
+            if (managed.get(workerId) === mc) managed.delete(workerId);
+            set((state) => ({
+              workerErrors: {
+                ...state.workerErrors,
+                [workerId]: err instanceof Error ? err.message : String(err),
+              },
+            }));
+            throw err;
+          } finally {
+            clientForStarts.delete(workerId);
+          }
+        })();
+        clientForStarts.set(workerId, start);
+        return start;
+      },
+
+      releaseIdleConnections: () => {
+        const { selectedWorkerId, trackedJobs } = get();
+        for (const [workerId, mc] of [...managed]) {
+          if (workerId === selectedWorkerId) continue;
+          if (activeJobsFor(workerId, trackedJobs).length > 0) continue;
+          mc.stop();
+          managed.delete(workerId);
+        }
+      },
+
+      refreshWorkerInfo: async (workerId) => {
+        try {
+          const client = await get().clientFor(workerId);
+          const info = await client.workerInfo();
+          set((state) => ({
+            workerInfo: { ...state.workerInfo, [workerId]: info },
+            workerErrors: { ...state.workerErrors, [workerId]: null },
+          }));
+        } catch (err) {
+          set((state) => ({
+            workerErrors: {
+              ...state.workerErrors,
+              [workerId]: err instanceof Error ? err.message : String(err),
+            },
+          }));
+        }
+      },
+
+      listJobs: async (workerId) => {
+        const client = await get().clientFor(workerId);
+        return client.jobsList();
+      },
+
+      jobDetail: async (workerId, jobId) => {
+        const client = await get().clientFor(workerId);
+        return client.jobsStatus(jobId);
+      },
+
+      cancelJobOn: async (workerId, jobId, mode) => {
+        const client = await get().clientFor(workerId);
+        await client.jobsCancel(jobId, mode);
+      },
 
       pairWithTicket: async (ticketJson, addrOverride, options) => {
         let ticket: PairingTicket;
@@ -1075,6 +1220,12 @@ export const useConnectStore = create<ConnectState>()(
           throw new Error("Not connected to a worker");
         }
 
+        // One id per call, links every job this submission produces — a
+        // single-job submission still gets one (index 0, count 1) so a job's
+        // `run` field is never a special case to check for; the Connect
+        // window (PR4b) only shows the "run i/n" tag once `count > 1`.
+        const runId = crypto.randomUUID();
+
         if (isMultiModelTrainSpec(spec)) {
           const modelTypes = spec.model_types ?? [];
           const n = spec.config_contents.length;
@@ -1084,6 +1235,7 @@ export const useConnectStore = create<ConnectState>()(
               ...spec,
               config_contents: [spec.config_contents[i]],
               model_types: modelTypes[i] ? [modelTypes[i]] : [],
+              run: { id: runId, index: i, count: n },
             };
             finalResult = await submitSingleJob(
               _client,
@@ -1105,7 +1257,7 @@ export const useConnectStore = create<ConnectState>()(
         return submitSingleJob(
           _client,
           selectedWorkerId,
-          spec,
+          { ...spec, run: { id: runId, index: 0, count: 1 } },
           onProgress,
           set,
           options?.onTelemetry && ((t) => options.onTelemetry!(t, 0)),
@@ -1115,9 +1267,9 @@ export const useConnectStore = create<ConnectState>()(
       cancelJob: () => {
         const { _client, selectedWorkerId, trackedJobs } = get();
         const job = selectedWorkerId ? latestActiveJobFor(selectedWorkerId, trackedJobs) : null;
-        if (_client && job) {
-          _client
-            .jobsCancel(job.jobId, "cancel")
+        if (_client && selectedWorkerId && job) {
+          get()
+            .cancelJobOn(selectedWorkerId, job.jobId, "cancel")
             .catch((err: unknown) => console.warn("[connect] jobsCancel failed:", err));
         }
         set({ reattachableJob: null });
@@ -1126,9 +1278,9 @@ export const useConnectStore = create<ConnectState>()(
       stopJob: () => {
         const { _client, selectedWorkerId, trackedJobs } = get();
         const job = selectedWorkerId ? latestActiveJobFor(selectedWorkerId, trackedJobs) : null;
-        if (_client && job) {
-          _client
-            .jobsCancel(job.jobId, "stop")
+        if (_client && selectedWorkerId && job) {
+          get()
+            .cancelJobOn(selectedWorkerId, job.jobId, "stop")
             .catch((err: unknown) => console.warn("[connect] jobsCancel(stop) failed:", err));
         }
         set({ reattachableJob: null });
@@ -1187,7 +1339,10 @@ export const useConnectStore = create<ConnectState>()(
 
             if (TERMINAL_JOB_STATES.has(status.state)) {
               const trackedState = status.state as TrackedJob["state"];
-              updateTrackedJob(set, job.jobId, { state: trackedState });
+              updateTrackedJob(set, job.jobId, {
+                state: trackedState,
+                ...(trackedState !== "completed" ? { error: status.error ?? undefined } : {}),
+              });
               await notifyJobFinished({ ...job, state: trackedState }, worker.label, status.error);
               continue;
             }
@@ -1209,12 +1364,12 @@ export const useConnectStore = create<ConnectState>()(
                 watcher.unsubscribe?.();
                 activeSubscriptions.delete(job.jobId);
                 const trackedState = state as TrackedJob["state"];
-                updateTrackedJob(set, job.jobId, { state: trackedState });
-                void notifyJobFinished(
-                  { ...job, state: trackedState },
-                  worker.label,
-                  (event.data.detail as string) ?? null,
-                );
+                const detail = (event.data.detail as string) ?? null;
+                updateTrackedJob(set, job.jobId, {
+                  state: trackedState,
+                  ...(trackedState !== "completed" ? { error: detail ?? undefined } : {}),
+                });
+                void notifyJobFinished({ ...job, state: trackedState }, worker.label, detail);
               },
             };
             activeSubscriptions.set(job.jobId, watcher);

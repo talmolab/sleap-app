@@ -54,6 +54,7 @@ import { ShortcutsDialog } from "../dialogs/ShortcutsDialog";
 import { LabelingTipsDialog } from "../dialogs/LabelingTipsDialog";
 import { HelpDialog } from "../dialogs/HelpDialog";
 import { DiagnosticsDialog } from "../dialogs/DiagnosticsDialog";
+import { ConnectDialog } from "../connect/ConnectDialog";
 import { MenuSearchDialog } from "../dialogs/MenuSearchDialog";
 import { TutorialOverlay } from "../tutorial/TutorialOverlay";
 import { useAppStore } from "../../stores/appStore";
@@ -181,6 +182,8 @@ export function AppShell() {
   const setDiagnosticsDialogOpen = useAppStore(
     (s) => s.setDiagnosticsDialogOpen,
   );
+  const connectWindowOpen = useAppStore((s) => s.connectWindowOpen);
+  const setConnectWindowOpen = useAppStore((s) => s.setConnectWindowOpen);
 
   // Unsaved changes protection: warn before closing/refreshing when there are
   // in-memory edits (hasChanges) OR a large-pkg labels draft saved locally but
@@ -373,6 +376,7 @@ export function AppShell() {
         open={diagnosticsDialogOpen}
         onOpenChange={setDiagnosticsDialogOpen}
       />
+      <ConnectDialog open={connectWindowOpen} onOpenChange={setConnectWindowOpen} />
       <MenuSearchDialog />
       <TutorialOverlay />
       <PathResolutionHost />

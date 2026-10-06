@@ -26,6 +26,7 @@ export interface RemoteRunCardProps {
   currentModelIndex: number;
   postTrainingInference: PostTrainingInference | null;
   onWatchLive: () => void;
+  onOpenConnect: () => void;
 }
 
 function connectionDotClass(status: ConnectionStatus): string {
@@ -44,6 +45,7 @@ export function RemoteRunCard({
   currentModelIndex,
   postTrainingInference,
   onWatchLive,
+  onOpenConnect,
 }: RemoteRunCardProps) {
   const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
@@ -121,9 +123,14 @@ export function RemoteRunCard({
         Runs on {workerLabel} — you can close SLEAP; you&apos;ll be notified when it finishes.
       </p>
 
-      <Button variant="outline" size="xs" className="w-full h-6 text-[10px]" onClick={onWatchLive}>
-        Watch Live
-      </Button>
+      <div className="flex gap-1.5">
+        <Button variant="outline" size="xs" className="flex-1 h-6 text-[10px]" onClick={onWatchLive}>
+          Watch Live
+        </Button>
+        <Button variant="outline" size="xs" className="flex-1 h-6 text-[10px]" onClick={onOpenConnect}>
+          Open in Connect
+        </Button>
+      </div>
     </div>
   );
 }

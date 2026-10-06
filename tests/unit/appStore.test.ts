@@ -511,6 +511,20 @@ describe("appStore", () => {
       useAppStore.getState().setHelpDialogOpen(false);
       expect(useAppStore.getState().helpDialogOpen).toBe(false);
     });
+
+    it("opens and closes the Connect window", () => {
+      expect(useAppStore.getState().connectWindowOpen).toBe(false);
+
+      useAppStore.getState().setConnectWindowOpen(true);
+      expect(useAppStore.getState().connectWindowOpen).toBe(true);
+
+      useAppStore.getState().setConnectWindowOpen(false);
+      expect(useAppStore.getState().connectWindowOpen).toBe(false);
+    });
+
+    it("the Connect window flag is not persisted (not in PERSISTED_KEYS)", () => {
+      expect(PERSISTED_KEYS).not.toContain("connectWindowOpen");
+    });
   });
 
   describe("defaultToPan", () => {

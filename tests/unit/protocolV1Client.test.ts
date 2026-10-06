@@ -692,6 +692,28 @@ describe("protocolV1 WorkerClient", () => {
       });
     });
 
+    it("jobsList converts the worker's Unix-second timestamps to ISO strings", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({
+        handleRequest: (method) => {
+          if (method === "pair.claim") return { result: {} };
+          if (method === "jobs.list") {
+            return {
+              result: {
+                jobs: [{ job_id: "job_1", state: "running", created_at: 1791158400.5, updated_at: 1791158460 }],
+              },
+            };
+          }
+          return { error: { code: "proto.unknown_method", msg: "?" } };
+        },
+      });
+      const client = await pairedClient(identity, socket);
+
+      const [job] = await client.jobsList();
+      expect(job.createdAt).toBe(new Date(1791158400500).toISOString());
+      expect(job.updatedAt).toBe(new Date(1791158460000).toISOString());
+    });
+
     it("jobsList maps the full #98 shape (queuePosition, kind, modelTypes, labelsPath, project)", async () => {
       const identity = await freshIdentity();
       const socket = new FakeWorkerSocket({
@@ -737,6 +759,34 @@ describe("protocolV1 WorkerClient", () => {
           project: { name: "Flies", id: "proj_1" },
         },
       ]);
+    });
+
+    it("jobsList maps a run tag (sleap-connect feat/connect-run-id)", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({
+        handleRequest: (method) => {
+          if (method === "pair.claim") return { result: {} };
+          if (method === "jobs.list") {
+            return {
+              result: {
+                jobs: [
+                  {
+                    job_id: "job_1",
+                    state: "running",
+                    created_at: "t1",
+                    run: { id: "run_abc", index: 0, count: 2 },
+                  },
+                ],
+              },
+            };
+          }
+          return { error: { code: "proto.unknown_method", msg: "?" } };
+        },
+      });
+      const client = await pairedClient(identity, socket);
+
+      const jobs = await client.jobsList();
+      expect(jobs[0].run).toEqual({ id: "run_abc", index: 0, count: 2 });
     });
 
     it("jobsList still works against the old minimal shape (queuePosition null, modelTypes empty)", async () => {

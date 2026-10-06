@@ -487,6 +487,8 @@ export interface AppState {
   helpDialogOpen: boolean;
   menuSearchDialogOpen: boolean;
   diagnosticsDialogOpen: boolean;
+  /** The Connect window (PR4b) — paired workers and every job on them. */
+  connectWindowOpen: boolean;
   quitConfirmOpen: boolean;
 
   // === Getting-started tutorial (transient, not persisted) ===
@@ -590,6 +592,7 @@ export interface AppState {
   setLabelingTipsDialogOpen: (open: boolean) => void;
   setHelpDialogOpen: (open: boolean) => void;
   setDiagnosticsDialogOpen: (open: boolean) => void;
+  setConnectWindowOpen: (open: boolean) => void;
   setMenuSearchDialogOpen: (open: boolean) => void;
   /** Start the getting-started tutorial from its first step. */
   startTutorial: () => void;
@@ -888,6 +891,7 @@ export const useAppStore = create<AppState>()(
       helpDialogOpen: false,
       menuSearchDialogOpen: false,
       diagnosticsDialogOpen: false,
+      connectWindowOpen: false,
       quitConfirmOpen: false,
 
       tutorialActive: false,
@@ -1372,6 +1376,11 @@ export const useAppStore = create<AppState>()(
       setDiagnosticsDialogOpen: (open) =>
         set((state) => {
           state.diagnosticsDialogOpen = open;
+        }),
+
+      setConnectWindowOpen: (open) =>
+        set((state) => {
+          state.connectWindowOpen = open;
         }),
 
       startTutorial: () => {
