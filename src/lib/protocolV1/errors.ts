@@ -31,6 +31,8 @@ export const BLOB_HASH_MISMATCH = "blob.hash_mismatch";
 export const JOB_NOT_FOUND = "job.not_found";
 export const JOB_ALREADY_TERMINAL = "job.already_terminal";
 export const JOB_SPEC_INVALID = "job.spec_invalid";
+/** `jobs.delete`: the worker is currently running (or about to run) one of the requested job ids — see `sleap_rtc.protocol_v1.job_methods.JobMethods.delete`. */
+export const JOB_ACTIVE = "job.active";
 
 // Catch-all for an unexpected worker-side fault.
 export const INTERNAL = "internal";

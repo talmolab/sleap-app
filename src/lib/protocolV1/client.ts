@@ -452,6 +452,19 @@ export class WorkerClient {
     await this._request("jobs.cancel", { job_id: jobId, mode });
   }
 
+  /**
+   * Removes `jobIds`' records from the worker (`jobs`/`job_events` rows
+   * only — nothing under `job-runs/<id>` or the job's log file is touched,
+   * so a trained model, logs, and predictions all stay on disk). All-or-
+   * nothing: an unknown id throws `job.not_found`; any id the worker is
+   * currently running (or about to) throws `job.active` and nothing is
+   * deleted.
+   */
+  async jobsDelete(jobIds: string[]): Promise<{ deleted: string[] }> {
+    const result = await this._request("jobs.delete", { job_ids: jobIds });
+    return { deleted: (result.deleted as string[]) ?? [] };
+  }
+
   async jobsStatus(jobId: string): Promise<JobStatus> {
     const result = await this._request("jobs.status", { job_id: jobId });
     return {

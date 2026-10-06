@@ -14,6 +14,7 @@ import type { JobSpec } from "@/lib/sleapConnect";
 import type { WorkerClient } from "@/lib/protocolV1/client";
 import type { PathMapping } from "@/lib/pathMappings";
 import { WorkerProtocolError, FS_NOT_FOUND, FS_FORBIDDEN } from "@/lib/protocolV1/errors";
+import { buildPairCode, base64UrlEncode, fakeBytes, mistypeCode } from "./buildPairCode";
 
 // connectStore's own actions (pairing flow, browse pagination, job
 // submission/multi-model splitting, cancel/stop) are what's under test here.
@@ -57,6 +58,8 @@ class FakeWorkerClient {
   authProveShouldThrow: Error | null = null;
   jobsSubmitCalls: Record<string, unknown>[] = [];
   jobsCancelCalls: Array<[string, string]> = [];
+  jobsDeleteCalls: string[][] = [];
+  jobsDeleteShouldThrow: Error | null = null;
   jobsStatusCalls: string[] = [];
   jobsSubscribeCalls: Array<[string, number]> = [];
   fsListCalls: Array<[string, number]> = [];
@@ -146,6 +149,12 @@ class FakeWorkerClient {
 
   async jobsCancel(jobId: string, mode: string) {
     this.jobsCancelCalls.push([jobId, mode]);
+  }
+
+  async jobsDelete(jobIds: string[]) {
+    this.jobsDeleteCalls.push(jobIds);
+    if (this.jobsDeleteShouldThrow) throw this.jobsDeleteShouldThrow;
+    return { deleted: jobIds };
   }
 
   async jobsStatus(jobId: string) {
@@ -479,6 +488,64 @@ describe("connectStore", () => {
       const state = useConnectStore.getState();
       expect(state.connectionStatus).toBe("error");
       expect(state.pairedWorkers).toEqual([]);
+    });
+  });
+
+  describe("pairWithTicket — one-line pairing code (PR6a §a.2)", () => {
+    const CODE_NODE_ID = fakeBytes(32);
+    const CODE_SECRET = fakeBytes(16, 101);
+
+    it("decodes and pairs over ws, including its relay as the iroh section", async () => {
+      FakeWorkerClient.nextPeerNodeId = base64UrlEncode(CODE_NODE_ID);
+      const code = await buildPairCode({
+        nodeId: CODE_NODE_ID,
+        secret: CODE_SECRET,
+        expiresAt: Math.floor(Date.now() / 1000) + 3600,
+        addrs: [{ ip: [192, 168, 1, 42], port: 9631 }],
+        relay: { index: 3 }, // RELAY_TABLE[2] ("use1-1")
+      });
+
+      await useConnectStore.getState().pairWithTicket(code);
+
+      const pairingClient = FakeWorkerClient.instances[0];
+      expect(pairingClient.opts.url).toBe("ws://192.168.1.42:9631");
+      expect(pairingClient.pairClaimArgs).toEqual([base64UrlEncode(CODE_SECRET)]);
+
+      const state = useConnectStore.getState();
+      expect(state.connectionStatus).toBe("connected");
+      expect(state.pairedWorkers[0].nodeId).toBe(base64UrlEncode(CODE_NODE_ID));
+      expect(state.pairedWorkers[0].iroh?.relayUrl).toBe("https://use1-1.relay.n0.iroh.link./");
+    });
+
+    it("rejects an expired code before dialing the worker", async () => {
+      const code = await buildPairCode({
+        nodeId: CODE_NODE_ID,
+        secret: CODE_SECRET,
+        expiresAt: 1700000000, // long past
+        addrs: [{ ip: [192, 168, 1, 42], port: 9631 }],
+      });
+
+      await expect(useConnectStore.getState().pairWithTicket(code)).rejects.toThrow(
+        /This pairing code expired at .*run `sleap-rtc pair` again/,
+      );
+      // Never got as far as opening a connection.
+      expect(FakeWorkerClient.instances).toHaveLength(0);
+      expect(useConnectStore.getState().connectionStatus).toBe("disconnected");
+    });
+
+    it("rejects a mistyped code (bad checksum) with a clear message", async () => {
+      const code = await buildPairCode({
+        nodeId: CODE_NODE_ID,
+        secret: CODE_SECRET,
+        expiresAt: Math.floor(Date.now() / 1000) + 3600,
+        addrs: [{ ip: [192, 168, 1, 42], port: 9631 }],
+      });
+      const mistyped = mistypeCode(code);
+
+      await expect(useConnectStore.getState().pairWithTicket(mistyped)).rejects.toThrow(
+        /incomplete or mistyped/,
+      );
+      expect(FakeWorkerClient.instances).toHaveLength(0);
     });
   });
 
@@ -1641,6 +1708,67 @@ describe("connectStore", () => {
       await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
       await useConnectStore.getState().cancelJobOn(PAIRED_WORKER.nodeId, "job_1", "stop");
       expect(lastClient().jobsCancelCalls).toEqual([["job_1", "stop"]]);
+    });
+
+    describe("deleteJobsOn (PR6a §a.3)", () => {
+      let restoreJobIds: () => void;
+
+      afterEach(() => {
+        restoreJobIds();
+      });
+
+      it("calls jobsDelete with the given job ids", async () => {
+        restoreJobIds = withSequentialJobIds("del");
+        await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
+        await useConnectStore.getState().deleteJobsOn(PAIRED_WORKER.nodeId, ["job_a", "job_b"]);
+        expect(lastClient().jobsDeleteCalls).toEqual([["job_a", "job_b"]]);
+      });
+
+      it("prunes the deleted ids from trackedJobs, leaving other tracked jobs alone", async () => {
+        restoreJobIds = withSequentialJobIds("del");
+        useConnectStore.setState({
+          trackedJobs: [
+            makeTracked({ jobId: "job_a", workerId: PAIRED_WORKER.nodeId }),
+            makeTracked({ jobId: "job_keep", workerId: PAIRED_WORKER.nodeId }),
+          ],
+        });
+        await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
+        await useConnectStore.getState().deleteJobsOn(PAIRED_WORKER.nodeId, ["job_a"]);
+        expect(useConnectStore.getState().trackedJobs.map((j) => j.jobId)).toEqual(["job_keep"]);
+      });
+
+      it("drops the deleted job's live subscription, so a later reconnect never re-subscribes it", async () => {
+        restoreJobIds = withSequentialJobIds("del");
+        useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
+        const spec: JobSpec = { type: "track", data_path: "/x.slp", model_paths: ["m1"] };
+        const [jobId] = await useConnectStore
+          .getState()
+          .submitJobsOn(PAIRED_WORKER.nodeId, spec, { source: "worker-file" });
+
+        await useConnectStore.getState().deleteJobsOn(PAIRED_WORKER.nodeId, [jobId!]);
+
+        const freshClient = lastClient();
+        freshClient.jobsSubscribeCalls = [];
+        resubscribeWorker(PAIRED_WORKER.nodeId, freshClient as unknown as WorkerClient);
+        expect(freshClient.jobsSubscribeCalls).toEqual([]);
+      });
+
+      it("propagates a job.active error from the worker without deleting anything client-side", async () => {
+        restoreJobIds = withSequentialJobIds("del");
+        useConnectStore.setState({
+          trackedJobs: [makeTracked({ jobId: "job_a", workerId: PAIRED_WORKER.nodeId })],
+        });
+        await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
+        lastClient().jobsDeleteShouldThrow = new WorkerProtocolError(
+          "job.active",
+          "Job job_a is active and can't be deleted",
+        );
+
+        await expect(
+          useConnectStore.getState().deleteJobsOn(PAIRED_WORKER.nodeId, ["job_a"]),
+        ).rejects.toMatchObject({ code: "job.active" });
+        expect(useConnectStore.getState().trackedJobs.map((j) => j.jobId)).toEqual(["job_a"]);
+      });
     });
   });
 

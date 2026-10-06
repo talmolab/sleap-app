@@ -183,7 +183,7 @@ describe("WorkerList rendering", () => {
     render(<WorkerList selectedId={null} onSelect={() => {}} />);
     fireEvent.click(screen.getByRole("button", { name: "Re-pair" }));
 
-    fireEvent.change(screen.getByPlaceholderText(/node_id/), {
+    fireEvent.change(screen.getByPlaceholderText("sleap1…"), {
       target: { value: '{"node_id":"n2","secret":"s"}' },
     });
     fireEvent.click(screen.getByRole("button", { name: /^Pair$/ }));

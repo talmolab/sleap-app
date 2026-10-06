@@ -1,13 +1,34 @@
-import { useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { decodePairCode, isPairCode } from "@/lib/protocolV1/pairCode";
 import { irohTransportAvailable, parseTicketIroh } from "@/lib/protocolV1/transport";
 import { useConnectStore } from "@/stores/connectStore";
 
-/** Whether pasted ticket text has a usable `iroh` section. Never throws on partial/invalid JSON. */
-function ticketOffersIroh(ticketText: string): boolean {
+/**
+ * Whether pasted ticket text (a one-line pairing code OR a legacy JSON
+ * ticket) carries a relay a client can dial over iroh — `undefined`/absent
+ * relay (a code with `iroh: undefined`, or a JSON ticket whose `iroh`
+ * section omits `relay_url`) reads as "no". Never throws on partial/invalid
+ * input (an in-progress paste, a mistyped code, non-JSON text); it's only
+ * ever used to decide whether to show the "connect directly" checkbox, not
+ * to validate the ticket (that's `pairWithTicket`'s job once Pair is
+ * clicked).
+ */
+async function ticketOffersIroh(ticketText: string): Promise<boolean> {
+  const trimmed = ticketText.trim();
+  if (!trimmed) return false;
+  if (isPairCode(trimmed)) {
+    try {
+      return !!(await decodePairCode(trimmed)).iroh;
+    } catch {
+      return false;
+    }
+  }
   try {
-    return parseTicketIroh((JSON.parse(ticketText) as { iroh?: unknown }).iroh) !== undefined;
+    const parsed = JSON.parse(trimmed) as { iroh?: unknown };
+    return !!parseTicketIroh(parsed.iroh)?.relayUrl;
   } catch {
     return false;
   }
@@ -23,10 +44,13 @@ export interface PairWorkerFormProps {
 }
 
 /**
- * The "paste a pairing ticket" form — extracted from `ConnectPanel` (PR4b
+ * The "paste a pairing code" form — extracted from `ConnectPanel` (PR4b
  * §4b.1) so the Connect window's `WorkerList` (§4b.3) can reuse it both for
  * "+ Pair worker" and for re-pairing a worker whose identity changed,
- * without duplicating the ticket-parsing/iroh-checkbox logic.
+ * without duplicating the ticket-parsing/iroh-checkbox logic. Accepts
+ * `sleap-rtc pair`'s one-line pairing code (PR6a §a.1/a.2, the normal path
+ * now) as a single-line paste, or a legacy multi-line JSON ticket (still
+ * accepted — `pairWithTicket` tells the two apart itself).
  */
 export function PairWorkerForm({ onPaired, onCancel, showCancel }: PairWorkerFormProps) {
   const pairWithTicket = useConnectStore((s) => s.pairWithTicket);
@@ -36,12 +60,26 @@ export function PairWorkerForm({ onPaired, onCancel, showCancel }: PairWorkerFor
   const [pairing, setPairing] = useState(false);
   const [pairError, setPairError] = useState<string | null>(null);
   const [pairViaIroh, setPairViaIroh] = useState(false);
+  const [ticketHasIroh, setTicketHasIroh] = useState(false);
 
   const irohAvailable = irohTransportAvailable();
-  const ticketHasIroh = useMemo(() => irohAvailable && ticketOffersIroh(ticketText), [
-    irohAvailable,
-    ticketText,
-  ]);
+
+  // Async (a pairing code's checksum check needs Web Crypto) — recomputed
+  // on every keystroke, so a stale in-flight check for a since-edited value
+  // must never overwrite a newer one.
+  useEffect(() => {
+    if (!irohAvailable) {
+      setTicketHasIroh(false);
+      return;
+    }
+    let cancelled = false;
+    void ticketOffersIroh(ticketText).then((offersIroh) => {
+      if (!cancelled) setTicketHasIroh(offersIroh);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [ticketText, irohAvailable]);
 
   const handlePair = async () => {
     setPairing(true);
@@ -71,22 +109,21 @@ export function PairWorkerForm({ onPaired, onCancel, showCancel }: PairWorkerFor
         <code className="bg-black/30 px-1 py-0.5 rounded text-[10px] font-mono">
           sleap-rtc serve
         </code>
-        , then in another terminal{" "}
+        . Run{" "}
         <code className="bg-black/30 px-1 py-0.5 rounded text-[10px] font-mono">
           sleap-rtc pair
-        </code>
-        . Paste the printed ticket JSON below.
+        </code>{" "}
+        on the worker and paste the code below.
       </p>
-      <textarea
+      <Input
         value={ticketText}
         onChange={(e) => setTicketText(e.target.value)}
-        placeholder='{"node_id": "...", "addrs": [...], "secret": "...", ...}'
-        rows={5}
-        className="w-full px-2 py-1.5 text-[11px] bg-zinc-900 border border-border rounded-md font-mono resize-none"
+        placeholder="sleap1…"
+        className="h-7 text-xs font-mono"
       />
       <div className="space-y-1">
         <label className="text-[10px] text-muted-foreground">
-          Worker address (only needed if the ticket has none)
+          Worker address (only needed if the code has none)
         </label>
         <input
           type="text"
@@ -104,7 +141,7 @@ export function PairWorkerForm({ onPaired, onCancel, showCancel }: PairWorkerFor
             onChange={(e) => setPairViaIroh(e.target.checked)}
             className="mt-0.5"
           />
-          <span>Connect directly (iroh) — this ticket includes a direct address</span>
+          <span>Connect directly (iroh) — this code includes a direct address</span>
         </label>
       )}
       {pairError && <p className="text-[10px] text-red-400">{pairError}</p>}
