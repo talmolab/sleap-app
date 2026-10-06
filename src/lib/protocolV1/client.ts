@@ -35,6 +35,7 @@ import {
   CLIENT_CLOSED,
   CLIENT_PROTO_MISMATCH,
   CLIENT_TIMEOUT,
+  CLIENT_WORKER_UNVERIFIED,
   INTERNAL,
   WorkerProtocolError,
 } from "./errors";
@@ -138,6 +139,10 @@ export class WorkerClient {
   // The nonce the WORKER sent us in its hello — what auth.prove signs
   // (spec §3.3: each side signs the *other* side's nonce).
   private _peerNonce: string | null = null;
+  // The nonce WE sent in our own hello — symmetric auth verifies the
+  // worker's hello.proof against this value (the worker signs it right
+  // back in the SAME hello exchange, no extra round-trip).
+  private _ownNonce: string | null = null;
   // The worker's blob-serving HTTP port, if it announced one — see
   // fetchBlob(). null on a worker not running the blob HTTP server.
   private _peerBlobPort: number | null = null;
@@ -192,9 +197,10 @@ export class WorkerClient {
       this._socket = socket;
 
       socket.onopen = () => {
+        this._ownNonce = randomNonce();
         const hello = buildHello({
           nodeId: this._identity.nodeId,
-          nonce: randomNonce(),
+          nonce: this._ownNonce,
           agent: this._agent,
           protoMin: this._protoMin,
           protoMax: this._protoMax,
@@ -431,8 +437,10 @@ export class WorkerClient {
         this._handleEvent(envelope);
         break;
       case "req":
-        // The worker never issues its own outgoing requests today (spec
-        // §3.3's symmetric-auth option is deferred — see auth.py).
+        // The worker never issues its own outgoing requests — symmetric
+        // auth (worker proves identity to client) is implemented via
+        // hello.proof instead (see _verifyWorkerProof), not a
+        // worker-initiated req/res round-trip.
         console.warn("[protocolV1] Unexpected 'req' frame from worker, ignoring");
         break;
     }
@@ -453,12 +461,62 @@ export class WorkerClient {
       );
       return;
     }
-    this._peerNodeId = hello.node_id;
-    this._peerNonce = hello.nonce;
-    this._peerBlobPort = hello.blob_port ?? null;
-    this._state = "unauthenticated";
-    this._connectWaiter?.resolve();
-    this._connectWaiter = null;
+
+    // Symmetric auth: verify the worker's proof BEFORE trusting anything
+    // else this connection says. Web Crypto is async, so the rest of hello
+    // processing (and resolving _connectWaiter) waits for it — nothing a
+    // caller does with this client can run before that resolves anyway.
+    void this._verifyWorkerProof(hello).then(
+      (verified) => {
+        if (this._state !== "connecting") return; // closed/failed while this was pending
+        if (!verified) {
+          this._fail(
+            new WorkerProtocolError(
+              CLIENT_WORKER_UNVERIFIED,
+              "Worker's hello.proof did not verify against the public key it claimed as its node_id",
+            ),
+          );
+          return;
+        }
+        this._peerNodeId = hello.node_id;
+        this._peerNonce = hello.nonce;
+        this._peerBlobPort = hello.blob_port ?? null;
+        this._state = "unauthenticated";
+        this._connectWaiter?.resolve();
+        this._connectWaiter = null;
+      },
+      (err) => this._fail(err instanceof Error ? err : new Error(String(err))),
+    );
+  }
+
+  /**
+   * Checks `hello.proof` — the worker's signature over OUR OWN nonce
+   * (`_ownNonce`, sent in our hello) — against the public key encoded in
+   * `hello.node_id` from that SAME frame. `false` for a missing proof
+   * (never silently treated as "not applicable" — an unproven peer is an
+   * unverified peer), a malformed node_id/proof, or a genuinely bad
+   * signature; these aren't distinguished further since the caller's only
+   * next move is the same either way (fail the connection).
+   */
+  private async _verifyWorkerProof(hello: HelloFrame): Promise<boolean> {
+    if (!hello.proof || this._ownNonce === null) return false;
+    try {
+      const publicKey = await crypto.subtle.importKey(
+        "raw",
+        base64UrlToBytes(hello.node_id),
+        "Ed25519",
+        false,
+        ["verify"],
+      );
+      return await crypto.subtle.verify(
+        "Ed25519",
+        publicKey,
+        base64UrlToBytes(hello.proof),
+        new TextEncoder().encode(this._ownNonce),
+      );
+    } catch {
+      return false;
+    }
   }
 
   private _handleRes(res: ResFrame): void {
@@ -505,6 +563,17 @@ function randomNonce(): string {
   let binary = "";
   for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+/** Decodes URL-safe, unpadded base64 (the encoding `sleap_rtc.auth.keypair`
+ *  and `identity.ts` both use for node IDs and signatures) to raw bytes. */
+function base64UrlToBytes(b64url: string): Uint8Array {
+  const b64 = b64url.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
+  const binary = atob(padded);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
 }
 
 async function sha256Hex(bytes: Uint8Array): Promise<string> {

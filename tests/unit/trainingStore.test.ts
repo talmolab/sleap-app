@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "../bun-test";
+import { describe, it, expect, beforeEach, vi } from "../bun-test";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import yaml from "js-yaml";
@@ -2215,5 +2215,200 @@ describe("markEpochBegin / epochStartedAt", () => {
       }
       expect(reads).toBe(1); // second call served from cache
     });
+  });
+});
+
+// ── startTraining (remote): labels-inline vs path decision ──────────────
+//
+// `startTraining`'s remote branch dynamically imports connectStore/appStore/
+// labelsDraft at call time (see trainingStore.ts), so these fakes only need
+// to be registered (via vi.mock/mock.module) before a test actually calls
+// `startTraining` — well before that, since module evaluation order already
+// puts this below the static imports above. `@/lib/pathMappings` is
+// deliberately left UNMOCKED: its `resolveProjectPaths` is the actual
+// resolvability heuristic PathResolutionDialog itself uses, already covered
+// by pathMappings.test.ts — these tests trust it and only check trainingStore
+// wires its result into the right spec field (per this repo's "thin
+// integration" test convention for wiring code).
+let submitJobMock = vi.fn(async (_spec: unknown) => ({ jobId: "job_1", success: true }));
+let fakeWorkerMounts: Array<{ path: string }> = [];
+vi.mock("@/stores/connectStore", () => ({
+  useConnectStore: {
+    getState: () => ({
+      submitJob: submitJobMock,
+      workerMounts: fakeWorkerMounts,
+    }),
+  },
+}));
+
+let fakeLabels: Labels | null = null;
+vi.mock("@/stores/appStore", () => ({
+  useAppStore: {
+    getState: () => ({ labels: fakeLabels, projectPath: null }),
+  },
+}));
+
+// Stubbed rather than exercised for real — sleap-io.js's own serialization is
+// already tested there; this only proves trainingStore base64-encodes
+// whatever bytes it gets back and puts them on `labels_content`.
+const serializeLabelsEmbeddedMock = vi.fn(async () => new Uint8Array([9, 9, 9]));
+vi.mock("@/lib/labelsEmbed", () => ({
+  serializeLabelsEmbedded: serializeLabelsEmbeddedMock,
+}));
+
+// confirmDialog pops a real React modal awaiting a user click — stub it so
+// the warn-threshold tests control the answer directly instead of needing a
+// mounted <ConfirmDialog/> + simulated click.
+const confirmDialogMock = vi.fn(async () => true);
+vi.mock("@/stores/confirmStore", () => ({
+  confirmDialog: confirmDialogMock,
+}));
+
+function minimalYamlConfig(): string {
+  return "data_config: {}\nmodel_config: {}\ntrainer_config: {}\n";
+}
+
+describe("startTraining (remote) — labels-inline vs path decision", () => {
+  beforeEach(() => {
+    useTrainingStore.getState().reset();
+    useTrainingStore.getState().setConfig("modelType", "single_animal");
+    useTrainingStore.getState().addConfigFile(
+      makeConfigFile({
+        slot: "config",
+        modelType: "single_animal",
+        content: minimalYamlConfig(),
+      }),
+    );
+    submitJobMock = vi.fn(async (_spec: unknown) => ({ jobId: "job_1", success: true }));
+    fakeWorkerMounts = [];
+    fakeLabels = new Labels({ videos: [], skeletons: [], labeledFrames: [] });
+    serializeLabelsEmbeddedMock.mockClear();
+    serializeLabelsEmbeddedMock.mockImplementation(async () => new Uint8Array([9, 9, 9]));
+    confirmDialogMock.mockClear();
+    confirmDialogMock.mockImplementation(async () => true);
+  });
+
+  it("sends labels_content inline when the labels path isn't resolvable to any worker mount", async () => {
+    fakeWorkerMounts = []; // no worker mounts at all -> unresolved
+    await useTrainingStore.getState().startTraining({
+      remote: true,
+      workerId: "worker-1",
+      labelsPath: "/local/unmounted/labels.slp",
+    });
+
+    expect(submitJobMock).toHaveBeenCalledTimes(1);
+    const spec = submitJobMock.mock.calls[0][0] as Record<string, unknown>;
+    expect(serializeLabelsEmbeddedMock).toHaveBeenCalledTimes(1);
+    // base64 of [9, 9, 9]
+    expect(spec.labels_content).toBe(btoa(String.fromCharCode(9, 9, 9)));
+    // kept for worker-side traceability only — see trainingStore.ts's comment
+    expect(spec.labels_path).toBe("/local/unmounted/labels.slp");
+    // Tiny payload — well under the warn threshold, no nag.
+    expect(confirmDialogMock).not.toHaveBeenCalled();
+  });
+
+  it("sends labels_path only (no inline content) when it's already under a worker mount", async () => {
+    fakeWorkerMounts = [{ path: "/mnt/data" }];
+
+    // The labels path IS resolvable here, so it's still sent through
+    // PathResolutionDialog for user confirmation like any other path (the
+    // dialog itself isn't mounted in a unit test — stand in for the user
+    // confirming the already-resolved row, same as a real click of Submit).
+    const onPathResolution = (e: Event) => {
+      const detail = (e as CustomEvent).detail as {
+        paths: Array<{ local: string; worker: string | null }>;
+        resolve: (paths: Array<{ local: string; worker: string }> | null) => void;
+      };
+      detail.resolve(
+        detail.paths.map((p) => ({ local: p.local, worker: p.worker ?? p.local })),
+      );
+    };
+    window.addEventListener("sleap:path-resolution", onPathResolution, { once: true });
+
+    await useTrainingStore.getState().startTraining({
+      remote: true,
+      workerId: "worker-1",
+      labelsPath: "/mnt/data/labels.slp",
+    });
+
+    expect(submitJobMock).toHaveBeenCalledTimes(1);
+    const spec = submitJobMock.mock.calls[0][0] as Record<string, unknown>;
+    expect(spec.labels_content).toBeNull();
+    expect(spec.labels_path).toBe("/mnt/data/labels.slp");
+    expect(serializeLabelsEmbeddedMock).not.toHaveBeenCalled();
+  });
+
+  it("warns but proceeds when the embedded payload is between the warn and hard-cap thresholds", async () => {
+    fakeWorkerMounts = [];
+    serializeLabelsEmbeddedMock.mockImplementation(
+      async () => new Uint8Array(20 * 1024 * 1024), // 20 MB: above WARN (10 MB), below HARD_CAP (150 MB)
+    );
+    confirmDialogMock.mockImplementation(async () => true);
+
+    await useTrainingStore.getState().startTraining({
+      remote: true,
+      workerId: "worker-1",
+      labelsPath: "/local/unmounted/labels.slp",
+    });
+
+    expect(confirmDialogMock).toHaveBeenCalledTimes(1);
+    expect(submitJobMock).toHaveBeenCalledTimes(1);
+    const spec = submitJobMock.mock.calls[0][0] as Record<string, unknown>;
+    expect(spec.labels_content).not.toBeNull();
+  });
+
+  it("cancels the submission when the user declines the large-upload warning", async () => {
+    fakeWorkerMounts = [];
+    serializeLabelsEmbeddedMock.mockImplementation(
+      async () => new Uint8Array(20 * 1024 * 1024),
+    );
+    confirmDialogMock.mockImplementation(async () => false);
+
+    await useTrainingStore.getState().startTraining({
+      remote: true,
+      workerId: "worker-1",
+      labelsPath: "/local/unmounted/labels.slp",
+    });
+
+    expect(confirmDialogMock).toHaveBeenCalledTimes(1);
+    expect(submitJobMock).not.toHaveBeenCalled();
+    expect(useTrainingStore.getState().status).toBe("idle");
+  });
+
+  it("blocks the submission with a clear error when the embedded payload exceeds the hard cap", async () => {
+    fakeWorkerMounts = [];
+    serializeLabelsEmbeddedMock.mockImplementation(
+      async () => new Uint8Array(200 * 1024 * 1024), // 200 MB: over the 150 MB hard cap
+    );
+
+    await useTrainingStore.getState().startTraining({
+      remote: true,
+      workerId: "worker-1",
+      labelsPath: "/local/unmounted/labels.slp",
+    });
+
+    // Blocked before ever prompting — nothing to confirm, nothing to submit.
+    expect(confirmDialogMock).not.toHaveBeenCalled();
+    expect(submitJobMock).not.toHaveBeenCalled();
+    expect(useTrainingStore.getState().status).toBe("error");
+    expect(useTrainingStore.getState().error).toContain("too large");
+  });
+
+  it("surfaces a clear error (not a stuck 'running' status) when embedding the labeled frames fails", async () => {
+    fakeWorkerMounts = [];
+    serializeLabelsEmbeddedMock.mockImplementation(async () => {
+      throw new Error("simulated video backend decode failure");
+    });
+
+    await useTrainingStore.getState().startTraining({
+      remote: true,
+      workerId: "worker-1",
+      labelsPath: "/local/unmounted/labels.slp",
+    });
+
+    expect(confirmDialogMock).not.toHaveBeenCalled();
+    expect(submitJobMock).not.toHaveBeenCalled();
+    expect(useTrainingStore.getState().status).toBe("error");
+    expect(useTrainingStore.getState().error).toContain("simulated video backend decode failure");
   });
 });

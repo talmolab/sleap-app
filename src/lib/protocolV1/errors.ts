@@ -39,6 +39,11 @@ export const INTERNAL = "internal";
 export const CLIENT_TIMEOUT = "client.timeout";
 export const CLIENT_CLOSED = "client.closed";
 export const CLIENT_PROTO_MISMATCH = "client.proto_mismatch";
+// Symmetric auth: the worker's hello.proof was missing or didn't verify
+// against the public key it claimed as its own node_id — the peer on the
+// other end of this connection hasn't proven it holds that key, so it may
+// not actually be the worker it claims to be.
+export const CLIENT_WORKER_UNVERIFIED = "client.worker_unverified";
 
 /**
  * An error from (or about) a protocol v1 connection.

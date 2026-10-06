@@ -643,6 +643,71 @@ describe("connectStore", () => {
       expect(result).toEqual({ jobId: "job_1", success: true });
     });
 
+    it("forwards job.log's progress flag (absent = false)", async () => {
+      const lines: Array<[string, boolean | undefined]> = [];
+      const spec: JobSpec = { type: "track", data_path: "/x.slp", model_paths: ["m1"] };
+      const promise = useConnectStore.getState().submitJob(spec, (line, p) => lines.push([line, p]));
+      await flushAsync();
+      const client = lastClient();
+      client.emit("job_1", "job.log", { line: "Epoch 0: 40%|####", progress: true });
+      client.emit("job_1", "job.log", { line: "done" });
+      client.emit("job_1", "job.status", { state: "completed" });
+      await promise;
+      expect(lines).toEqual([
+        ["Epoch 0: 40%|####", true],
+        ["done", false],
+      ]);
+    });
+
+    it("captures a train job's model_dir and labels_path from job.result", async () => {
+      const spec: JobSpec = {
+        type: "train",
+        config_contents: ["yaml"],
+        model_types: ["single_instance"],
+        labels_path: "/labels.slp",
+      };
+      const promise = useConnectStore.getState().submitJob(spec, () => {});
+      await flushAsync();
+      const client = lastClient();
+      client.emit("job_1", "job.result", { blobs: {}, model_dir: "/w/models/run1", labels_path: "/w/labels.slp" });
+      client.emit("job_1", "job.status", { state: "completed" });
+      expect(await promise).toEqual({
+        jobId: "job_1",
+        success: true,
+        modelDir: "/w/models/run1",
+        labelsPath: "/w/labels.slp",
+      });
+    });
+
+    it("tags parsed telemetry with each split job's index; ignores malformed events", async () => {
+      const telemetry: Array<[string, number]> = [];
+      const spec: JobSpec = {
+        type: "train",
+        config_contents: ["centroid yaml", "centered_instance yaml"],
+        model_types: ["centroid", "centered_instance"],
+        labels_path: "/labels.slp",
+      };
+      const promise = useConnectStore.getState().submitJob(spec, () => {}, {
+        onTelemetry: (t, jobIndex) => telemetry.push([t.kind, jobIndex]),
+      });
+
+      await flushAsync();
+      lastClient().emit("job_1", "job.epoch", { epoch: 0, train_loss: 1, val_loss: null });
+      lastClient().emit("job_1", "job.epoch", { train_loss: 1 }); // no epoch: dropped
+      lastClient().emit("job_1", "job.status", { state: "completed" });
+      await flushAsync();
+      lastClient().emit("job_1", "job.curve", { points: [{ x: 0, y: 1 }] });
+      lastClient().emit("job_1", "job.metric", { epoch: 1, total_epochs: 10, wandb_url: null });
+      lastClient().emit("job_1", "job.status", { state: "completed" });
+      await promise;
+
+      expect(telemetry).toEqual([
+        ["epoch", 0],
+        ["curve", 1],
+        ["metric", 1],
+      ]);
+    });
+
     it("aborts the multi-model sequence on the first failure", async () => {
       const spec: JobSpec = {
         type: "train",
