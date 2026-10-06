@@ -283,7 +283,7 @@ export const GENERATE_SUGGESTIONS_STEP: TutorialStep = {
 export const CREATE_SKELETON_STEP: TutorialStep = {
   id: "create-skeleton",
   title: "Create a skeleton",
-  body: 'Click "Draw skeleton on frame", then follow the instructions in the bar that appears at the top of the frame: click on the frame to place nodes (double-click a node to rename it), click "Next: Connect edges", drag a stroke through the nodes to connect them, and click Done. For this tutorial\'s sample video, create 3 nodes — head, torso, and tailbase — with edges torso → head and torso → tailbase.',
+  body: 'Click "Draw skeleton on frame", then follow the instructions in the bar that appears at the top of the frame: click on the frame to place nodes (double-click a node to rename it), click "Next: Connect edges", drag a stroke through the nodes to connect them, and click Done. For this tutorial\'s sample video, create 3 nodes — head, torso, and tailbase — with edges torso → head and torso → tailbase.\n\nDraw the skeleton only once, even if there\'s more than one mouse in the frame — this step just defines the skeleton. You\'ll add an instance for each animal in the next step.',
   panelId: "skeleton",
   targetSelector: '[data-tutorial="draw-skeleton-button"]',
   placement: "left",
