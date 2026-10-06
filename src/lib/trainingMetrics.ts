@@ -50,6 +50,57 @@ function clampYRange(
   return [lo, hi];
 }
 
+/** Most ticks a bounded split function will ever return. */
+const MAX_AXIS_TICKS = 40;
+
+/**
+ * Bounded replacement for uPlot's linear axis splits. uPlot's own
+ * `numAxisSplits` loops `for (v = min; v <= max; v += incr)` with no cap, so
+ * any scale it can't step through (a huge or float-precision-degenerate
+ * range) pushes into its splits array until the page dies — the
+ * training-monitor freeze class. This picks a "nice" step for ~6 ticks and
+ * never returns more than {@link MAX_AXIS_TICKS} values.
+ */
+export function safeLinearSplits(min: number, max: number, target = 6): number[] {
+  if (!Number.isFinite(min) || !Number.isFinite(max) || max < min) return [];
+  if (min === max) return [min];
+  const raw = (max - min) / Math.max(1, target);
+  const mag = 10 ** Math.floor(Math.log10(raw));
+  const norm = raw / mag;
+  const step = (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10) * mag;
+  if (!(step > 0) || !Number.isFinite(step)) return [min, max];
+  const first = Math.ceil(min / step) * step;
+  const ticks: number[] = [];
+  for (let i = 0; i < MAX_AXIS_TICKS; i++) {
+    const v = first + i * step;
+    if (v > max) break;
+    ticks.push(Number(v.toPrecision(12)));
+  }
+  return ticks;
+}
+
+/**
+ * Bounded replacement for uPlot's log10 axis splits (same uncapped-loop
+ * hazard as {@link safeLinearSplits}): 1/2/5 per decade for short ranges,
+ * one tick per decade (thinned) for long ones, at most {@link MAX_AXIS_TICKS}.
+ */
+export function safeLogSplits(min: number, max: number): number[] {
+  if (!(min > 0) || !Number.isFinite(min) || !Number.isFinite(max) || max < min) return [];
+  const lo = Math.floor(Math.log10(min));
+  const hi = Math.ceil(Math.log10(max));
+  const decades = hi - lo;
+  const mults = decades <= 4 ? [1, 2, 5] : [1];
+  const stride = Math.max(1, Math.ceil((decades + 1) / MAX_AXIS_TICKS));
+  const ticks: number[] = [];
+  for (let d = lo; d <= hi && ticks.length < MAX_AXIS_TICKS; d += stride) {
+    for (const m of mults) {
+      const v = Number((m * 10 ** d).toPrecision(12));
+      if (v >= min && v <= max && ticks.length < MAX_AXIS_TICKS) ticks.push(v);
+    }
+  }
+  return ticks;
+}
+
 /**
  * y-axis [min,max] for the loss chart. Parity with monitor.py:_calculate_ylim
  * (log-space padding + optional IQR outlier rejection). Returns null when there

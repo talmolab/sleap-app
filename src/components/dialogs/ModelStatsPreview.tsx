@@ -11,6 +11,7 @@ import {
 } from "@/lib/modelStats";
 import { expandFrameBytesToRGBA, inferFrameChannels } from "@/lib/videoExport";
 import type { ConfigHyperparams } from "@/stores/trainingStore";
+import type { Labels } from "@talmolab/sleap-io.js";
 
 interface ModelStatsPreviewProps {
   hp: ConfigHyperparams;
@@ -22,13 +23,16 @@ interface ModelStatsPreviewProps {
   backbone: string;
   inputChannels?: number;
   slot?: string;
+  /** Overrides the open project's labels — the launcher wizard (worker-file mode, TrainingConfigDialog's own `labelsOverride`) passes a worker-side `Labels` here instead. Absent -> reads the open project, as before. */
+  labels?: Labels | null;
 }
 
 const THUMBNAIL_SIZE = 200;
 const DPR = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
 
-export function ModelStatsPreview({ hp, maxStride, filters, filtersRate, outputStride, stemStride, backbone, inputChannels = 1, slot }: ModelStatsPreviewProps) {
-  const labels = useAppStore((s) => s.labels);
+export function ModelStatsPreview({ hp, maxStride, filters, filtersRate, outputStride, stemStride, backbone, inputChannels = 1, slot, labels: labelsProp }: ModelStatsPreviewProps) {
+  const storeLabels = useAppStore((s) => s.labels);
+  const labels = labelsProp !== undefined ? labelsProp : storeLabels;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [thumbnail, setThumbnail] = useState<ImageBitmap | null>(null);
   const [zoom, setZoom] = useState(1);

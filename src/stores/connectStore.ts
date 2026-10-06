@@ -34,6 +34,8 @@ import { APP_VERSION } from "@/lib/version";
 import { isTauri } from "@/platform/index";
 import type { AgentInfo } from "@/lib/protocolV1/envelope";
 import type {
+  FsListResult,
+  JobRun,
   JobStatus,
   JobSummary,
   Mount,
@@ -149,6 +151,17 @@ export interface SubmitJobOptions {
    * single job.
    */
   onTelemetry?: (telemetry: JobTelemetry, jobIndex: number) => void;
+  /**
+   * Link this submission to an EXISTING run instead of minting a fresh
+   * `run.id` — `trainingStore`'s own post-training inference flow passes its
+   * training run's id here (with `stage: "inference"`) so the follow-up
+   * track job groups under that training run in the Connect window's Jobs
+   * tab (`WorkerJobs.groupJobs`), the same way the worker's own
+   * `post_inference` chaining (sleap-connect PR5w) does. Omitted, `submitJob`
+   * behaves exactly as before: one fresh run id per call, untagged (a plain
+   * training job).
+   */
+  run?: { id: string; stage: "inference" };
 }
 
 export interface ConnectOptions {
@@ -237,6 +250,16 @@ interface ConnectState {
   disconnect: () => void;
   forgetWorker: (nodeId: string) => void;
   browseRemoteDir: (path: string) => Promise<FileEntry[]>;
+  /**
+   * `browseRemoteDir` for ANY paired worker, not just the selected one —
+   * the launcher wizard (PR5b) browses whichever worker it's building a job
+   * for. Dials via `clientFor` (so it connects on demand, unlike
+   * `browseRemoteDir`'s "must already be connected" guard) and paginates
+   * `fs.list` the same way, starting from `offset` (default 0).
+   */
+  browseRemoteDirOn: (workerId: string, path: string, offset?: number) => Promise<FileEntry[]>;
+  /** `fs.mounts` for ANY paired worker, not just the selected one — dials via `clientFor`. */
+  mountsFor: (workerId: string) => Promise<Mount[]>;
   /** Statted via the worker's `fs.stat` — requires an authenticated connection (same precondition as `browseRemoteDir`). */
   statWorkerPath: (path: string) => Promise<{ exists: boolean; type?: "file" | "directory" }>;
   /** Add (or replace, by `rule.local`) one path rule for `workerId`. */
@@ -248,6 +271,25 @@ interface ConnectState {
     onProgress: JobLogHandler,
     options?: SubmitJobOptions,
   ) => Promise<JobResult>;
+  /**
+   * Submits `spec` to `workerId` WITHOUT waiting for any job to finish — the
+   * launcher wizard's (PR5b) "+ New job" and "Run again"/"Run inference" row
+   * actions, which fire into a worker's queue and move on rather than
+   * blocking on a live progress stream the way `submitJob` does. A
+   * multi-model train spec is split the same way `submitJob` splits one
+   * (`isMultiModelTrainSpec`), but every resulting job is submitted via
+   * `jobsSubmit` up front, sharing one `run` id — not one-at-a-time as each
+   * prior model finishes. Each job is tracked (`opts.source`) and watched in
+   * the background (`watchTrackedJob`), so its own finish toast still fires;
+   * a chained post-train inference job the worker reports via
+   * `chained_job_ids` (PR5w) is tracked and watched the same way. Returns
+   * every job id this submission produced, in run order.
+   */
+  submitJobsOn: (
+    workerId: string,
+    spec: JobSpec,
+    opts: { source: TrackedJob["source"] },
+  ) => Promise<string[]>;
   /** Hard-cancel the current job. */
   cancelJob: () => void;
   /** Gracefully early-stop the current job (checkpoint + finish). */
@@ -266,6 +308,39 @@ interface ConnectState {
 
 function upsertWorker(existing: PairedWorker[], next: PairedWorker): PairedWorker[] {
   return [...existing.filter((w) => w.nodeId !== next.nodeId), next];
+}
+
+/**
+ * Fetches every entry in a directory, paginating via `fetchPage` (one
+ * `fs.list(path, offset)` call) until `hasMore` is false (or a safety cap of
+ * ~5000 entries is hit). Shared by `browseRemoteDir` (selected worker —
+ * `fetchPage` re-checks `_client` on every page, exactly as it always did,
+ * so a disconnect mid-pagination still fails the same way) and
+ * `browseRemoteDirOn` (any paired worker, one `client` dialed via
+ * `clientFor` up front) — the two differ only in how a page is fetched,
+ * never in how the pages are walked.
+ */
+async function fetchAllRemoteEntries(
+  fetchPage: (offset: number) => Promise<FsListResult>,
+  offset = 0,
+): Promise<FileEntry[]> {
+  const allEntries: FileEntry[] = [];
+  let currentOffset = offset;
+  const MAX_PAGES = 200; // safety cap (200 pages * ~25 = ~5000 entries)
+
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const result = await fetchPage(currentOffset);
+    const entries: FileEntry[] = result.entries.map((e) => ({
+      name: e.name,
+      isDir: e.type === "directory",
+      size: e.size,
+    }));
+    allEntries.push(...entries);
+    if (!result.hasMore || entries.length === 0) break;
+    currentOffset += entries.length;
+  }
+
+  return allEntries;
 }
 
 function activeJobsFor(workerId: string, jobs: TrackedJob[]): TrackedJob[] {
@@ -662,6 +737,100 @@ async function notifyJobFinished(
   }
 }
 
+/**
+ * Watches one tracked job to a terminal state without ever resolving a
+ * caller's own promise — unlike `submitSingleJob`, nothing here awaits the
+ * job finishing. Updates `trackedJobs.lastSeq` as events arrive, and once a
+ * terminal `job.status` lands, records the final state and fires
+ * `notifyJobFinished` (deduped there, so re-watching an already-finished job
+ * is harmless). Shared by `resumeTrackedJobs` (a job found still active from
+ * a previous session) and `submitJobsOn` (a job this window just submitted
+ * and isn't waiting on) — extracted from the former so the two never drift.
+ *
+ * `onChainedJobIds` fires when a `job.result` event carries
+ * `chained_job_ids` — only ever set by a train job's own post-train
+ * chaining (sleap-connect PR5w) — letting `submitJobsOn` start tracking and
+ * watching those track jobs too, so their own finish toasts fire even
+ * though this window never submitted them itself.
+ */
+async function watchTrackedJob(
+  set: ConnectSet,
+  client: WorkerClient,
+  job: TrackedJob,
+  workerLabel: string,
+  onChainedJobIds?: (ids: string[]) => void,
+): Promise<void> {
+  if (activeSubscriptions.has(job.jobId)) return; // already being watched
+
+  let watcherLastSeq = job.lastSeq;
+  const watcher: ActiveSubscription = {
+    workerId: job.workerId,
+    jobId: job.jobId,
+    unsubscribe: null,
+    handle: (event) => {
+      if (event.seq <= watcherLastSeq) return;
+      watcherLastSeq = event.seq;
+      updateTrackedJob(set, job.jobId, { lastSeq: watcherLastSeq });
+
+      if (event.topic === "job.result") {
+        const chainedIds = event.data.chained_job_ids as string[] | undefined;
+        if (chainedIds && chainedIds.length > 0) onChainedJobIds?.(chainedIds);
+        return;
+      }
+      if (event.topic !== "job.status") return;
+      const state = event.data.state as string;
+      if (!TERMINAL_JOB_STATES.has(state)) return;
+      watcher.unsubscribe?.();
+      activeSubscriptions.delete(job.jobId);
+      const trackedState = state as TrackedJob["state"];
+      const detail = (event.data.detail as string) ?? null;
+      updateTrackedJob(set, job.jobId, {
+        state: trackedState,
+        ...(trackedState !== "completed" ? { error: detail ?? undefined } : {}),
+      });
+      void notifyJobFinished({ ...job, state: trackedState }, workerLabel, detail);
+    },
+  };
+  activeSubscriptions.set(job.jobId, watcher);
+  try {
+    await attachSubscription(client, watcher, job.lastSeq);
+  } catch (err) {
+    activeSubscriptions.delete(job.jobId);
+    console.warn(`[connect] watchTrackedJob: failed to watch job ${job.jobId}:`, err);
+  }
+}
+
+/**
+ * Starts tracking and watching one job the WORKER produced on its own — a
+ * chained post-train inference job (`chained_job_ids`, PR5w) this window
+ * never called `jobsSubmit` for — so it shows up in the Connect window and
+ * its own finish toast still fires. A no-op if `jobId` is already tracked
+ * (e.g. a worker-file job scan discovers it independently).
+ */
+function trackChainedJob(
+  set: ConnectSet,
+  client: WorkerClient,
+  workerId: string,
+  jobId: string,
+  source: TrackedJob["source"],
+  workerLabel: string,
+): void {
+  if (useConnectStore.getState().trackedJobs.some((j) => j.jobId === jobId)) return;
+  const job: TrackedJob = {
+    workerId,
+    jobId,
+    lastSeq: 0,
+    kind: "track",
+    label: "Inference",
+    source,
+    state: "active",
+    seen: false,
+    submittedAt: Date.now(),
+  };
+  set((state) => ({ trackedJobs: capTrackedJobs([...state.trackedJobs, job]) }));
+  void watchTrackedJob(set, client, job, workerLabel);
+}
+
 const LAST_SEQ_PERSIST_THROTTLE_MS = 2000;
 
 /**
@@ -757,13 +926,18 @@ async function submitSingleJob(
         } else if (event.topic === "job.status") {
           const state = event.data.state as string;
           if (state === "completed") {
-            const result: JobResult = { jobId, success: true, resultBlobs };
+            const result: JobResult = { jobId, success: true, resultBlobs, runId: spec.run?.id };
             if (modelDir !== undefined) result.modelDir = modelDir;
             if (labelsPath !== undefined) result.labelsPath = labelsPath;
             finish(result, "completed");
           } else if (state === "failed" || state === "canceled") {
             finish(
-              { jobId, success: false, error: (event.data.detail as string) ?? `Job ${state}` },
+              {
+                jobId,
+                success: false,
+                error: (event.data.detail as string) ?? `Job ${state}`,
+                runId: spec.run?.id,
+              },
               state,
             );
           }
@@ -1152,27 +1326,23 @@ export const useConnectStore = create<ConnectState>()(
       },
 
       browseRemoteDir: async (path) => {
-        const allEntries: FileEntry[] = [];
-        let offset = 0;
-        const MAX_PAGES = 200; // safety cap (200 pages * ~25 = ~5000 entries)
-
-        for (let page = 0; page < MAX_PAGES; page++) {
+        return fetchAllRemoteEntries((offset) => {
           const { _client } = get();
           if (!_client || !_client.authenticated) {
             throw new Error("Not connected to worker");
           }
-          const result = await _client.fsList(path, offset);
-          const entries: FileEntry[] = result.entries.map((e) => ({
-            name: e.name,
-            isDir: e.type === "directory",
-            size: e.size,
-          }));
-          allEntries.push(...entries);
-          if (!result.hasMore || entries.length === 0) break;
-          offset += entries.length;
-        }
+          return _client.fsList(path, offset);
+        });
+      },
 
-        return allEntries;
+      browseRemoteDirOn: async (workerId, path, offset) => {
+        const client = await get().clientFor(workerId);
+        return fetchAllRemoteEntries((o) => client.fsList(path, o), offset);
+      },
+
+      mountsFor: async (workerId) => {
+        const client = await get().clientFor(workerId);
+        return client.fsMounts();
       },
 
       statWorkerPath: async (path) => {
@@ -1224,7 +1394,16 @@ export const useConnectStore = create<ConnectState>()(
         // single-job submission still gets one (index 0, count 1) so a job's
         // `run` field is never a special case to check for; the Connect
         // window (PR4b) only shows the "run i/n" tag once `count > 1`.
-        const runId = crypto.randomUUID();
+        // `options.run` overrides this with an EXISTING run id (and tags
+        // `stage`) instead — see `SubmitJobOptions.run`'s doc.
+        const runId = options?.run?.id ?? crypto.randomUUID();
+        const runStage = options?.run?.stage;
+        const makeRun = (index: number, count: number): JobRun => ({
+          id: runId,
+          index,
+          count,
+          ...(runStage ? { stage: runStage } : {}),
+        });
 
         if (isMultiModelTrainSpec(spec)) {
           const modelTypes = spec.model_types ?? [];
@@ -1235,7 +1414,7 @@ export const useConnectStore = create<ConnectState>()(
               ...spec,
               config_contents: [spec.config_contents[i]],
               model_types: modelTypes[i] ? [modelTypes[i]] : [],
-              run: { id: runId, index: i, count: n },
+              run: makeRun(i, n),
             };
             finalResult = await submitSingleJob(
               _client,
@@ -1257,11 +1436,63 @@ export const useConnectStore = create<ConnectState>()(
         return submitSingleJob(
           _client,
           selectedWorkerId,
-          { ...spec, run: { id: runId, index: 0, count: 1 } },
+          { ...spec, run: makeRun(0, 1) },
           onProgress,
           set,
           options?.onTelemetry && ((t) => options.onTelemetry!(t, 0)),
         );
+      },
+
+      submitJobsOn: async (workerId, spec, opts) => {
+        const client = await get().clientFor(workerId);
+        const workerLabel =
+          get().pairedWorkers.find((w) => w.nodeId === workerId)?.label ?? workerId;
+        const runId = crypto.randomUUID();
+
+        const onChainedJobIds = (chainedIds: string[]) => {
+          for (const chainedId of chainedIds) {
+            trackChainedJob(set, client, workerId, chainedId, opts.source, workerLabel);
+          }
+        };
+
+        const submitTracked = async (oneSpec: JobSpec): Promise<string> => {
+          const { jobId } = await client.jobsSubmit(oneSpec as unknown as Record<string, unknown>);
+          const tracked: TrackedJob = {
+            workerId,
+            jobId,
+            lastSeq: 0,
+            kind: oneSpec.type,
+            label: trackedJobLabel(oneSpec),
+            source: opts.source,
+            state: "active",
+            seen: false,
+            submittedAt: Date.now(),
+          };
+          set((state) => ({ trackedJobs: capTrackedJobs([...state.trackedJobs, tracked]) }));
+          void watchTrackedJob(set, client, tracked, workerLabel, onChainedJobIds);
+          return jobId;
+        };
+
+        if (isMultiModelTrainSpec(spec)) {
+          const modelTypes = spec.model_types ?? [];
+          const n = spec.config_contents.length;
+          const jobIds: string[] = [];
+          // Every model's job is submitted up front — unlike `submitJob`,
+          // nothing here awaits a prior model finishing before queuing the
+          // next one (that's the whole point of a "fire and forget" submit).
+          for (let i = 0; i < n; i++) {
+            const perModelSpec: TrainJobSpec = {
+              ...spec,
+              config_contents: [spec.config_contents[i]],
+              model_types: modelTypes[i] ? [modelTypes[i]] : [],
+              run: { id: runId, index: i, count: n },
+            };
+            jobIds.push(await submitTracked(perModelSpec));
+          }
+          return jobIds;
+        }
+
+        return [await submitTracked({ ...spec, run: { id: runId, index: 0, count: 1 } })];
       },
 
       cancelJob: () => {
@@ -1344,41 +1575,30 @@ export const useConnectStore = create<ConnectState>()(
                 ...(trackedState !== "completed" ? { error: status.error ?? undefined } : {}),
               });
               await notifyJobFinished({ ...job, state: trackedState }, worker.label, status.error);
+              // A train job that finished (and chained its post-train
+              // inference, PR5w) while this app was closed never replays its
+              // job.result event to a watcher — pick the chained jobs up from
+              // the stored result instead, so they're tracked and toast too.
+              const chainedIds = (status.result as { chained_job_ids?: unknown } | null)
+                ?.chained_job_ids;
+              if (Array.isArray(chainedIds)) {
+                for (const chainedId of chainedIds) {
+                  if (typeof chainedId !== "string") continue;
+                  trackChainedJob(set, client, workerId, chainedId, job.source, worker.label);
+                }
+              }
               continue;
             }
 
-            if (activeSubscriptions.has(job.jobId)) continue; // already being watched
-
-            let watcherLastSeq = job.lastSeq;
-            const watcher: ActiveSubscription = {
-              workerId,
-              jobId: job.jobId,
-              unsubscribe: null,
-              handle: (event) => {
-                if (event.seq <= watcherLastSeq) return;
-                watcherLastSeq = event.seq;
-                updateTrackedJob(set, job.jobId, { lastSeq: watcherLastSeq });
-                if (event.topic !== "job.status") return;
-                const state = event.data.state as string;
-                if (!TERMINAL_JOB_STATES.has(state)) return;
-                watcher.unsubscribe?.();
-                activeSubscriptions.delete(job.jobId);
-                const trackedState = state as TrackedJob["state"];
-                const detail = (event.data.detail as string) ?? null;
-                updateTrackedJob(set, job.jobId, {
-                  state: trackedState,
-                  ...(trackedState !== "completed" ? { error: detail ?? undefined } : {}),
-                });
-                void notifyJobFinished({ ...job, state: trackedState }, worker.label, detail);
-              },
-            };
-            activeSubscriptions.set(job.jobId, watcher);
-            try {
-              await attachSubscription(client, watcher, job.lastSeq);
-            } catch (err) {
-              activeSubscriptions.delete(job.jobId);
-              console.warn(`[connect] resumeTrackedJobs: failed to watch job ${job.jobId}:`, err);
-            }
+            // A chained post-train inference job (PR5w) can complete while
+            // this app wasn't running to watch for it live — tracking it
+            // here too means it still shows up and still toasts, the same
+            // as one discovered mid-session via `submitJobsOn`.
+            await watchTrackedJob(set, client, job, worker.label, (chainedIds) => {
+              for (const chainedId of chainedIds) {
+                trackChainedJob(set, client, workerId, chainedId, job.source, worker.label);
+              }
+            });
           }
         }
       },

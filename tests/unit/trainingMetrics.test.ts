@@ -8,6 +8,8 @@ import {
   buildLossPlotDataBatched,
   boundedLossYValues,
   lossCsv,
+  safeLinearSplits,
+  safeLogSplits,
 } from "@/lib/trainingMetrics";
 import type { EpochSample, BatchSample } from "@/stores/trainingStore";
 
@@ -375,5 +377,32 @@ describe("buildLossPlotDataBatched — never emits a non-finite x (freeze guard)
       null,
     );
     expect(d.x).toEqual([5]);
+  });
+});
+
+describe("safeLinearSplits / safeLogSplits (bounded uPlot tick generators)", () => {
+  it("gives nice linear ticks inside the range", () => {
+    expect(safeLinearSplits(0, 500)).toEqual([0, 100, 200, 300, 400, 500]);
+    expect(safeLinearSplits(0.1, 0.35)).toEqual([0.1, 0.15, 0.2, 0.25, 0.3, 0.35]);
+  });
+
+  it("never returns more than 40 ticks, even for degenerate ranges", () => {
+    for (const [min, max] of [
+      [0, Number.MAX_SAFE_INTEGER],
+      [1e15, 1e15 + 3],
+      [-1e300, 1e300],
+      [9007199254740990, 9007199254740992],
+    ] as const) {
+      expect(safeLinearSplits(min, max).length).toBeLessThanOrEqual(40);
+    }
+    expect(safeLinearSplits(NaN, 1)).toEqual([]);
+    expect(safeLinearSplits(0, Infinity)).toEqual([]);
+  });
+
+  it("gives 1/2/5 log ticks for short ranges and stays bounded for huge ones", () => {
+    expect(safeLogSplits(0.001, 0.1)).toEqual([0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1]);
+    expect(safeLogSplits(1e-300, 1e300).length).toBeLessThanOrEqual(40);
+    expect(safeLogSplits(1e-20, 1).length).toBeLessThanOrEqual(40);
+    expect(safeLogSplits(0, 1)).toEqual([]);
   });
 });

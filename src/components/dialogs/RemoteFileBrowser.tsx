@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { Folder, File, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useConnectStore } from "@/stores/connectStore";
 import type { FileEntry } from "@/lib/sleapConnect";
 
@@ -17,13 +18,37 @@ interface RemoteFileBrowserProps {
    * when mode is "file". Matching is case-insensitive. If omitted, all files show.
    */
   fileFilter?: string | string[];
+  /**
+   * Browse this worker specifically (`browseRemoteDirOn`) instead of the
+   * selected worker (`browseRemoteDir`) — the launcher wizard (PR5b) can
+   * target a worker before it's the one selected in the Connect window.
+   */
+  workerId?: string;
 }
 
 /** Sentinel path representing the mount picker view */
 const MOUNT_PICKER = "//mounts";
 
-/** Remember the last browsed directory across dialog opens */
-let lastBrowsedPath: string | null = null;
+/** `lastBrowsedPath`'s key for the no-`workerId` (selected-worker) case. */
+const SELECTED_WORKER_KEY = "";
+
+/**
+ * The mount `path` lives under (longest match), or null if none does. The
+ * worker only lists inside its mounts, so a mount root is the highest folder
+ * the browser can show: everything above it would list as empty.
+ */
+export function mountRootFor(path: string, mounts: string[]): string | null {
+  let best: string | null = null;
+  for (const m of mounts) {
+    const root = m.length > 1 ? m.replace(/\/+$/, "") : m;
+    const within = path === root || path.startsWith(root === "/" ? "/" : `${root}/`);
+    if (within && (best === null || root.length > best.length)) best = root;
+  }
+  return best;
+}
+
+/** Remember the last browsed directory across dialog opens, per worker (`workerId`, or `SELECTED_WORKER_KEY` when unset) — a launcher wizard for one worker shouldn't resume another's browse position. */
+const lastBrowsedPaths = new Map<string, string>();
 
 export function RemoteFileBrowser({
   open,
@@ -32,14 +57,22 @@ export function RemoteFileBrowser({
   mounts = [],
   mode = "directory",
   fileFilter,
+  workerId,
 }: RemoteFileBrowserProps) {
   const browseRemoteDir = useConnectStore((s) => s.browseRemoteDir);
+  const browseRemoteDirOn = useConnectStore((s) => s.browseRemoteDirOn);
+  const browseKey = workerId ?? SELECTED_WORKER_KEY;
   // Use last browsed path if available, else mount picker / the single mount.
   // Zero mounts (e.g. not actually connected) routes to the mount picker too
   // — it renders its existing "No mounts available" empty state instead of
   // attempting to browse a path with no live connection behind it.
-  const initialPath = lastBrowsedPath
-    ?? (mounts.length === 1 ? mounts[0] : MOUNT_PICKER);
+  // A remembered path outside every current mount (e.g. the worker's mounts
+  // changed) would list as empty with no way back, so it's dropped.
+  const remembered = lastBrowsedPaths.get(browseKey);
+  const initialPath =
+    (remembered && (mounts.length === 0 || mountRootFor(remembered, mounts) !== null)
+      ? remembered
+      : undefined) ?? (mounts.length === 1 ? mounts[0] : MOUNT_PICKER);
   const [currentPath, setCurrentPath] = useState(initialPath);
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(false);
@@ -82,7 +115,9 @@ export function RemoteFileBrowser({
       setError(null);
       setSelectedEntry(null);
       try {
-        const result = await browseRemoteDir(currentPath);
+        const result = workerId
+          ? await browseRemoteDirOn(workerId, currentPath)
+          : await browseRemoteDir(currentPath);
         if (!cancelled) {
           // Sort: directories first, then alphabetical
           const sorted = [...result].sort((a, b) => {
@@ -106,14 +141,19 @@ export function RemoteFileBrowser({
     return () => {
       cancelled = true;
     };
-  }, [openCount, currentPath, browseRemoteDir, mounts]);
+  }, [openCount, currentPath, browseRemoteDir, browseRemoteDirOn, workerId, mounts]);
 
   if (!open) return null;
 
   const isMountPicker = currentPath === MOUNT_PICKER;
+  // Breadcrumbs start at the mount root (one crumb showing its full path):
+  // the worker won't list anything above it. With no mounts known, fall back
+  // to crumbs from "/".
+  const mountRoot = isMountPicker ? null : mountRootFor(currentPath, mounts);
+  const crumbBase = mountRoot ?? "";
   const pathParts = isMountPicker
     ? []
-    : currentPath.split("/").filter(Boolean);
+    : currentPath.slice(crumbBase.length).split("/").filter(Boolean);
 
   const joinPath = (base: string, name: string) => {
     const cleanBase = base.endsWith("/") ? base.slice(0, -1) : base;
@@ -121,9 +161,11 @@ export function RemoteFileBrowser({
   };
 
   const navigateTo = (path: string) => {
+    // Never leave the mounts: above a mount root the worker lists nothing.
+    if (path !== MOUNT_PICKER && mounts.length > 0 && mountRootFor(path, mounts) === null) return;
     setCurrentPath(path);
     if (path !== MOUNT_PICKER) {
-      lastBrowsedPath = path;
+      lastBrowsedPaths.set(browseKey, path);
     }
   };
 
@@ -183,20 +225,17 @@ export function RemoteFileBrowser({
     : entries;
 
   return (
-    <div
-      className="fixed inset-0 bg-black/70 flex items-center justify-center z-50"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
+    <Dialog
+      open
+      onOpenChange={(next) => {
+        if (!next) onClose();
       }}
     >
-      <div className="bg-card border border-border rounded-lg w-[480px] max-h-[500px] flex flex-col shadow-xl">
+      <DialogContent className="sm:max-w-[480px] max-h-[500px] p-0 gap-0 flex flex-col overflow-hidden">
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-border">
-          <h3 className="text-sm font-medium">Browse Worker Filesystem</h3>
-          <Button variant="ghost" size="xs" onClick={onClose}>
-            &times;
-          </Button>
-        </div>
+        <DialogHeader className="px-4 py-3 border-b border-border space-y-0">
+          <DialogTitle className="text-sm font-medium">Browse Worker Filesystem</DialogTitle>
+        </DialogHeader>
 
         {/* Breadcrumb */}
         <div className="flex items-center gap-1 px-3 py-2 text-[11px] font-mono text-muted-foreground border-b border-border">
@@ -216,13 +255,14 @@ export function RemoteFileBrowser({
           {!isMountPicker && (
             <>
               <span
-                className="cursor-pointer hover:text-primary"
-                onClick={() => navigateTo("/")}
+                className={`cursor-pointer ${pathParts.length === 0 ? "text-foreground" : "hover:text-primary"}`}
+                onClick={() => pathParts.length > 0 && navigateTo(mountRoot ?? "/")}
               >
-                /
+                {mountRoot ?? "/"}
               </span>
+              {mountRoot && pathParts.length > 0 && <span className="text-border mx-0.5">/</span>}
               {pathParts.map((part, i) => {
-                const path = "/" + pathParts.slice(0, i + 1).join("/");
+                const path = `${crumbBase}/${pathParts.slice(0, i + 1).join("/")}`;
                 const isLast = i === pathParts.length - 1;
                 return (
                   <span key={path}>
@@ -304,8 +344,8 @@ export function RemoteFileBrowser({
                 : "Select File"}
           </Button>
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
