@@ -25,10 +25,10 @@ import {
   RUN_TRAINING_STEP,
   snapshotTutorialState,
   tutorialStepNumber,
-  TUTORIAL_FIRST_TRAINING_STEP_IDS,
   type TutorialSnapshot,
   type TutorialWatchState,
 } from "@/lib/tutorial/steps";
+import { tutorialTrainingUpdates } from "@/lib/tutorial/trainingDefaults";
 import { useTutorialTargetRect } from "./useTutorialTargetRect";
 import { TutorialCompletionCard } from "./TutorialCompletionCard";
 
@@ -37,25 +37,6 @@ import { TutorialCompletionCard } from "./TutorialCompletionCard";
  * their own stores, not appStore) — a small poll instead of hand-listing every
  * cross-store field as a React dependency. */
 const RECHECK_INTERVAL_MS = 500;
-
-/**
- * The tutorial forces every loaded training config's epoch count down to a
- * small number during `TUTORIAL_FIRST_TRAINING_STEP_IDS` (steps.ts), so a
- * first-time user's training run finishes in the tutorial rather than taking
- * the real (much longer) default. Applied every recheck tick (not just once)
- * because baseline configs for the selected model type load asynchronously in
- * `TrainingPanel` after the panel mounts, so they may not exist yet the
- * instant this step becomes active.
- */
-const TUTORIAL_MAX_EPOCHS = 5;
-
-/**
- * Default epochs for the retrain step. "Train Again" reloads the last run's
- * config — the 5-epoch first pass — so any config still at
- * `TUTORIAL_MAX_EPOCHS` is raised to this while the step is active. A value the
- * user typed themselves is left alone; completion doesn't depend on it.
- */
-const TUTORIAL_RETRAIN_EPOCHS = 50;
 
 /**
  * Frame the "Create a skeleton" step jumps to on entry. This tutorial is
@@ -229,25 +210,19 @@ export function TutorialOverlay() {
       entrySnapshotRef.current.everInferenceRunning =
         entrySnapshotRef.current.everInferenceRunning ||
         watch.inferenceStatus === "running";
-      if (TUTORIAL_FIRST_TRAINING_STEP_IDS.has(step.id)) {
-        const training = useTrainingStore.getState();
-        for (const cf of training.config.configs) {
-          if (cf.hyperparams.maxEpochs !== TUTORIAL_MAX_EPOCHS) {
-            training.updateConfigHyperparams(cf.slot, {
-              maxEpochs: TUTORIAL_MAX_EPOCHS,
-            });
-          }
-        }
-      }
-      if (step.id === "retrain" && watch.trainingStatus !== "running") {
-        const training = useTrainingStore.getState();
-        for (const cf of training.config.configs) {
-          if (cf.hyperparams.maxEpochs === TUTORIAL_MAX_EPOCHS) {
-            training.updateConfigHyperparams(cf.slot, {
-              maxEpochs: TUTORIAL_RETRAIN_EPOCHS,
-            });
-          }
-        }
+      const training = useTrainingStore.getState();
+      const configUpdates = tutorialTrainingUpdates(
+        step.id,
+        watch.trainingStatus,
+        watch.skeleton?.nodes.map((n) => n.name) ?? [],
+        training.config.configs.map((c) => ({
+          slot: c.slot,
+          maxEpochs: c.hyperparams.maxEpochs,
+          anchorPart: c.hyperparams.anchorPart,
+        })),
+      );
+      for (const { slot, updates } of configUpdates) {
+        training.updateConfigHyperparams(slot, updates);
       }
       const complete = step.isComplete(entrySnapshotRef.current, watch);
       setStepComplete(complete);

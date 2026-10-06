@@ -333,7 +333,7 @@ export const LABEL_ONE_FRAME_STEP: TutorialStep = {
 
 /**
  * Step ids covering the tutorial's FIRST training pass — shared by `TutorialOverlay`
- * (forces epochs down to `TUTORIAL_MAX_EPOCHS` here) and `TrainingPanel`'s
+ * (forces epochs down to `TUTORIAL_MAX_EPOCHS` here, see trainingDefaults.ts) and `TrainingPanel`'s
  * config-autoload effect (forces the generic baseline profile here, even if a
  * trained run already exists on disk for this head, e.g. from a prior tutorial
  * pass on the same project — the first pass is meant to demonstrate the
@@ -343,15 +343,15 @@ export const LABEL_ONE_FRAME_STEP: TutorialStep = {
 export const TUTORIAL_FIRST_TRAINING_STEP_IDS = new Set(["run-training"]);
 
 /**
- * Choosing the anchor part and starting training happen in the same panel, so
- * they're one step. Completion only requires training to finish — not a
+ * The anchor part is set to torso for the user (trainingDefaults.ts), so this
+ * step only explains it. Completion only requires training to finish — not a
  * particular anchor — so a run started with a different pick still moves the
  * tutorial on rather than stranding the user.
  */
 export const RUN_TRAINING_STEP: TutorialStep = {
   id: "run-training",
-  title: "Choose an anchor part and train",
-  body: 'Top-Down is selected with its default config already loaded. First pick torso as the Anchor Part — it\'s the central, reliably-visible node in this tutorial\'s skeleton, and Top-Down crops around it every frame.\n\nEpochs is set to 5 for this first pass — just enough to see the workflow work end-to-end. Click Start Training. This can take a while — the tutorial will pick back up once it finishes. While it runs, scroll down and click the graph icon next to a model\'s progress to watch its loss curves live.',
+  title: "Train a model",
+  body: 'Top-Down is selected with its default config already loaded. We\'ve set its Anchor Part to torso — the central, reliably-visible node in this tutorial\'s skeleton, which Top-Down crops around in every frame.\n\nEpochs is set to 5 for this first pass — just enough to see the workflow work end-to-end. Click Start Training. This can take a while — the tutorial will pick back up once it finishes. While it runs, scroll down and click the graph icon next to a model\'s progress to watch its loss curves live.',
   panelId: "training",
   targetSelector: '[data-tutorial="start-training-button"]',
   placement: "top",
@@ -387,8 +387,8 @@ export const CORRECT_PREDICTIONS_STEP: TutorialStep = {
 };
 
 /**
- * Epochs default to `TUTORIAL_RETRAIN_EPOCHS` here (applied by
- * `TutorialOverlay`), but completion only requires training to finish, not a
+ * Epochs default to `TUTORIAL_RETRAIN_EPOCHS` here (trainingDefaults.ts, applied
+ * by `TutorialOverlay`), but completion only requires training to finish, not a
  * particular epoch count or config — the user may change the epochs or click
  * Stop Early to move on sooner, and Stop Early still ends the run as
  * "completed".
@@ -396,7 +396,7 @@ export const CORRECT_PREDICTIONS_STEP: TutorialStep = {
 export const RETRAIN_STEP: TutorialStep = {
   id: "retrain",
   title: "Re-train with the corrected labels",
-  body: 'Back in the Training tab, click "Train Again". Epochs is now set to 50 for a better model, and Anchor Part should still be torso. Click Start Training.\n\nYou don\'t have to wait for every epoch: once you\'ve seen how it works, click Stop Early to finish with what\'s been trained so far. Top-Down trains two models one after the other, so click it once for each.',
+  body: 'Back in the Training tab, click "Train Again". Epochs is now set to 50 for a better model, and Anchor Part stays torso. Click Start Training.\n\nYou don\'t have to wait for every epoch: once you\'ve seen how it works, click Stop Early to finish with what\'s been trained so far. Top-Down trains two models one after the other, so click it once for each.',
   panelId: "training",
   targetSelector: '[data-tutorial="start-training-button"]',
   placement: "top",
