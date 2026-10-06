@@ -56,6 +56,11 @@
       "nsis": {
         "installMode": "currentUser"
       }
+    },
+    "linux": {
+      "appimage": {
+        "bundleMediaFramework": true
+      }
     }
   },
   "plugins": {

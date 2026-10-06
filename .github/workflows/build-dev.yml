@@ -299,7 +299,13 @@ jobs:
             librsvg2-dev \
             patchelf \
             libglib2.0-dev \
-            libayatana-appindicator3-dev ||
+            libayatana-appindicator3-dev \
+            gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-bad \
+            gstreamer1.0-gl \
+            gstreamer1.0-alsa \
+            gstreamer1.0-pulseaudio ||
             {
               echo "::error::could not install Linux build dependencies"
               exit 1
@@ -398,6 +404,16 @@ jobs:
         shell: bash
         run: bash scripts/fetch-ffmpeg.sh "${{ matrix.sidecar-triple }}"
 
+      # bundleMediaFramework copies every plugin in GSTREAMER_PLUGINS_DIR into
+      # the AppImage. Without bundled plugins its GStreamer 1.20 loads the
+      # user's system plugins, which fail on any newer distro, so no video
+      # opens. Stage an allowlist (openh264 for H.264, no GPL / gst-libav) and
+      # export GSTREAMER_PLUGINS_DIR to it -- see the script's header.
+      - name: Stage GStreamer plugins for the AppImage
+        if: matrix.target == 'linux'
+        shell: bash
+        run: bash scripts/appimage-gstreamer.sh stage "$RUNNER_TEMP/gst-plugins"
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         with:
@@ -406,6 +422,15 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      - name: Verify AppImage GStreamer plugins
+        if: matrix.target == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          APPIMAGE="$(find "${{ matrix.bundle-dir }}/appimage" -maxdepth 1 -type f -name '*.AppImage' | head -1)"
+          [ -n "$APPIMAGE" ] || { echo "::error::no .AppImage under ${{ matrix.bundle-dir }}/appimage"; exit 1; }
+          bash scripts/appimage-gstreamer.sh verify "$APPIMAGE"
 
       # Tauri notarizes and staples the .app, then builds the .dmg around it. The
       # disk image itself is left un-notarized, and Gatekeeper assesses the image
