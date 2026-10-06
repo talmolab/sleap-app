@@ -14,14 +14,17 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
-import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, GripVertical, X } from "lucide-react";
+import { AlertTriangle, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, GripVertical, X } from "lucide-react";
 import { toast } from "@/lib/notify";
 import { Button } from "@/components/ui/button";
 import { useAppStore } from "@/stores/appStore";
 import { useTrainingStore } from "@/stores/trainingStore";
 import { useInferenceStore } from "@/stores/inferenceStore";
+import { useEnvironmentStore } from "@/stores/environmentStore";
 import {
+  RUN_TRAINING_STEP,
   snapshotTutorialState,
+  tutorialStepNumber,
   TUTORIAL_FIRST_TRAINING_STEP_IDS,
   type TutorialSnapshot,
   type TutorialWatchState,
@@ -128,6 +131,7 @@ function currentWatchState(): TutorialWatchState {
   const s = useAppStore.getState();
   const training = useTrainingStore.getState();
   const inference = useInferenceStore.getState();
+  const env = useEnvironmentStore.getState();
   const anchorConfig = training.config.configs.find(
     (c) => c.slot === "centered_instance",
   );
@@ -142,6 +146,11 @@ function currentWatchState(): TutorialWatchState {
     trainingAnchorPart: anchorConfig?.hyperparams.anchorPart ?? null,
     trainingMaxEpochs: anchorConfig?.hyperparams.maxEpochs ?? null,
     inferenceStatus: inference.status,
+    envDetected: env.detectionStatus === "done",
+    uvAvailable: env.uv?.available ?? false,
+    sleapNnInstalled: env.tools.some((t) => t.name === "sleap-nn"),
+    acceleratorDetected: env.acceleratorStatus === "done",
+    accelerator: env.accelerator?.accelerator ?? null,
   };
 }
 
@@ -155,6 +164,7 @@ export function TutorialOverlay() {
   const skeletonBuildMode = useAppStore((s) => s.skeletonBuildMode);
   const newProjectDialogOpen = useAppStore((s) => s.newProjectDialogOpen);
   const projectLoaded = useAppStore((s) => s.projectLoaded);
+  const cpuOnly = useEnvironmentStore((s) => s.accelerator?.accelerator === "cpu");
 
   const step = tutorialActive ? tutorialSteps[tutorialStepIndex] : undefined;
   // A step below the high-water mark was already cleared in this run — Prev
@@ -221,7 +231,7 @@ export function TutorialOverlay() {
       }
       const complete = step.isComplete(entrySnapshotRef.current, watch);
       setStepComplete(complete);
-      if (complete) {
+      if (complete && !step.holdBeforeAdvance?.(watch)) {
         useAppStore.getState().advanceTutorialStep();
       }
     };
@@ -287,7 +297,13 @@ export function TutorialOverlay() {
 
   if (!step) return null;
 
-  const stepNumber = tutorialStepIndex + 1;
+  const stepNumber = tutorialStepNumber(tutorialSteps, tutorialStepIndex);
+  const lastStepNumber = tutorialStepNumber(tutorialSteps, tutorialSteps.length - 1);
+  const trainingStepIndex = tutorialSteps.findIndex((s) => s.id === RUN_TRAINING_STEP.id);
+  const cpuNote =
+    cpuOnly && step.cpuNote && trainingStepIndex !== -1
+      ? step.cpuNote(tutorialStepNumber(tutorialSteps, trainingStepIndex))
+      : null;
   const autoCardPos = targetRect
     ? computeCardPosition(targetRect, step.placement, cardSize)
     : { top: window.innerHeight / 2 - cardSize.height / 2, left: window.innerWidth / 2 - cardSize.width / 2 };
@@ -328,7 +344,7 @@ export function TutorialOverlay() {
           >
             <GripVertical className="h-3.5 w-3.5 text-muted-foreground" />
             <span className="text-xs font-medium text-muted-foreground">
-              Step {stepNumber} of {tutorialSteps.length}
+              Step {stepNumber} of {lastStepNumber}
             </span>
           </div>
           <button
@@ -344,6 +360,12 @@ export function TutorialOverlay() {
         <p className="mt-1 text-muted-foreground leading-relaxed whitespace-pre-line">
           {renderBody(step.body, step.bodyLink)}
         </p>
+        {cpuNote && (
+          <p className="mt-2 flex gap-1.5 rounded border border-amber-500/40 bg-amber-500/10 p-2 text-xs leading-relaxed text-amber-700 dark:text-amber-400">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span>{cpuNote}</span>
+          </p>
+        )}
         {step.tips && (
           <div className="mt-2">
             <button

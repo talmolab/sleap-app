@@ -13,7 +13,9 @@ import {
   CORRECT_PREDICTIONS_STEP,
   RETRAIN_STEP,
   RUN_INFERENCE_STEP,
+  CHECK_ENVIRONMENT_STEP,
   buildTutorialSteps,
+  tutorialStepNumber,
   snapshotTutorialState,
   type TutorialWatchState,
 } from "@/lib/tutorial/steps";
@@ -30,6 +32,11 @@ function watchState(overrides: Partial<TutorialWatchState> = {}): TutorialWatchS
     trainingAnchorPart: null,
     trainingMaxEpochs: null,
     inferenceStatus: "idle",
+    envDetected: false,
+    uvAvailable: false,
+    sleapNnInstalled: false,
+    acceleratorDetected: false,
+    accelerator: null,
     ...overrides,
   };
 }
@@ -105,6 +112,75 @@ describe("buildTutorialSteps", () => {
       "retrain",
       "run-inference-video",
     ]);
+  });
+
+  it("prefixes either sequence with the environment check on desktop", () => {
+    for (const projectLoaded of [false, true]) {
+      const steps = buildTutorialSteps(projectLoaded, true);
+      expect(steps[0].id).toBe("check-environment");
+      expect(steps.slice(1)).toEqual(buildTutorialSteps(projectLoaded));
+    }
+  });
+});
+
+describe("tutorialStepNumber", () => {
+  it("numbers from 1 without the environment check", () => {
+    const steps = buildTutorialSteps(false);
+    expect(tutorialStepNumber(steps, 0)).toBe(1);
+    expect(tutorialStepNumber(steps, steps.indexOf(RUN_TRAINING_STEP))).toBe(9);
+  });
+
+  it("makes the environment check step 0 so the rest keep their numbers", () => {
+    const steps = buildTutorialSteps(false, true);
+    expect(tutorialStepNumber(steps, 0)).toBe(0);
+    expect(tutorialStepNumber(steps, steps.indexOf(RUN_TRAINING_STEP))).toBe(9);
+    expect(tutorialStepNumber(steps, steps.length - 1)).toBe(12);
+  });
+});
+
+describe("check-environment step", () => {
+  const ready = {
+    envDetected: true,
+    uvAvailable: true,
+    sleapNnInstalled: true,
+    acceleratorDetected: true,
+  };
+  const entry = snapshotTutorialState(watchState());
+
+  it("is incomplete until detection has run", () => {
+    expect(CHECK_ENVIRONMENT_STEP.isComplete(entry, watchState())).toBe(false);
+  });
+
+  it("is incomplete without uv", () => {
+    expect(
+      CHECK_ENVIRONMENT_STEP.isComplete(entry, watchState({ ...ready, uvAvailable: false })),
+    ).toBe(false);
+  });
+
+  it("is incomplete without sleap-nn", () => {
+    expect(
+      CHECK_ENVIRONMENT_STEP.isComplete(entry, watchState({ ...ready, sleapNnInstalled: false })),
+    ).toBe(false);
+  });
+
+  it("waits for the accelerator probe, so a CPU-only machine isn't skipped past", () => {
+    expect(
+      CHECK_ENVIRONMENT_STEP.isComplete(entry, watchState({ ...ready, acceleratorDetected: false })),
+    ).toBe(false);
+  });
+
+  it("completes on any accelerator but always waits for Next", () => {
+    for (const accelerator of ["cuda", "mps", "cpu", null] as const) {
+      const current = watchState({ ...ready, accelerator });
+      expect(CHECK_ENVIRONMENT_STEP.isComplete(entry, current)).toBe(true);
+      expect(CHECK_ENVIRONMENT_STEP.holdBeforeAdvance?.(current)).toBe(true);
+    }
+  });
+
+  it("names the training step and the last step before it in its CPU warning", () => {
+    const note = CHECK_ENVIRONMENT_STEP.cpuNote?.(9) ?? "";
+    expect(note).toContain("step 9");
+    expect(note).toContain("step 8");
   });
 });
 

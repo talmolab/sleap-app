@@ -53,6 +53,7 @@ import {
   toggleId,
 } from "@/lib/panelLayout";
 import { buildTutorialSteps, type TutorialStep } from "@/lib/tutorial/steps";
+import { isTauri } from "@/platform/index";
 
 // Required before immer can draft Set/Map fields (hiddenInstances /
 // showNonVisibleOverride). Idempotent global; must run before store creation.
@@ -1378,8 +1379,9 @@ export const useAppStore = create<AppState>()(
         // Whether a project already exists decides the whole sequence (a
         // fresh app has no Sidebar/panels mounted yet — see AppShell — so it
         // must go through New Project first); resolved once here, not
-        // re-derived mid-run.
-        const steps = buildTutorialSteps(get().projectLoaded);
+        // re-derived mid-run. The desktop app also gets the environment
+        // check up front; the browser build has no local environment.
+        const steps = buildTutorialSteps(get().projectLoaded, isTauri);
         set((state) => {
           state.tutorialActive = true;
           state.tutorialStepIndex = 0;

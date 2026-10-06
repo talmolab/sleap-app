@@ -26,6 +26,11 @@
  * is just appending an entry and a matching `data-tutorial` attribute at its
  * target — the engine is generic over whatever list `buildTutorialSteps`
  * returns.
+ *
+ * On desktop, both sequences are prefixed with `CHECK_ENVIRONMENT_STEP`
+ * (numbered "Step 0", see `tutorialStepNumber`): training needs uv + sleap-nn,
+ * and a first-time user would otherwise only find that out at the training
+ * step. The browser build skips it — it has no local environment to check.
  */
 
 import type { Labels, Skeleton } from "@/types";
@@ -49,6 +54,17 @@ export interface TutorialWatchState {
   trainingMaxEpochs: number | null;
   /** `inferenceStore.status` — inference lives in its own store, not appState. */
   inferenceStatus: InferenceStatus;
+  /**
+   * The local training environment, from environmentStore. `uvAvailable` and
+   * `sleapNnInstalled` are only meaningful once `envDetected` is true;
+   * `accelerator` is null until sleap-nn's own torch has been probed
+   * (`acceleratorDetected`), and also when that probe failed.
+   */
+  envDetected: boolean;
+  uvAvailable: boolean;
+  sleapNnInstalled: boolean;
+  acceleratorDetected: boolean;
+  accelerator: "cuda" | "mps" | "cpu" | null;
 }
 
 /** Count of `labels.suggestions` frames a human has labeled. */
@@ -134,7 +150,44 @@ export interface TutorialStep {
   targetSelector: string;
   placement: "top" | "bottom" | "left" | "right";
   isComplete: (entry: TutorialSnapshot, current: TutorialWatchState) => boolean;
+  /**
+   * When this returns true for a complete step, the engine enables Next but
+   * doesn't auto-advance — for a step whose coachmark carries something the
+   * user should read first (e.g. the CPU-only warning).
+   */
+  holdBeforeAdvance?: (current: TutorialWatchState) => boolean;
+  /**
+   * Extra warning shown when sleap-nn can only train on the CPU. Given the
+   * displayed number of `RUN_TRAINING_STEP` in this run's sequence, since that
+   * differs between the fresh-app and project-loaded sequences.
+   */
+  cpuNote?: (trainingStepNumber: number) => string;
 }
+
+/**
+ * Desktop "Step 0": make sure uv and sleap-nn are installed before the user
+ * invests in labeling, and find out early whether training will run on the
+ * CPU. Completes once sleap-nn is installed and its accelerator has been
+ * probed, which enables Next — but never auto-advances, even when everything
+ * was already installed, so the user always sees what was found (and the
+ * `cpuNote` warning on a CPU-only machine) before moving on.
+ */
+export const CHECK_ENVIRONMENT_STEP: TutorialStep = {
+  id: "check-environment",
+  title: "Check your environment",
+  body: 'Training and inference run on sleap-nn, which the app installs with uv. If uv shows "Not installed", click Install next to it first, then click Install next to sleap-nn. Once both show as installed, click Next.',
+  panelId: "environment",
+  targetSelector: '[data-tutorial="environment-panel"]',
+  placement: "left",
+  isComplete: (_entry, current) =>
+    current.envDetected &&
+    current.uvAvailable &&
+    current.sleapNnInstalled &&
+    current.acceleratorDetected,
+  holdBeforeAdvance: () => true,
+  cpuNote: (n) =>
+    `No GPU is available to sleap-nn, so training (step ${n}) will run on the CPU and be much slower. You can stop the tutorial after step ${n - 1} — everything from step ${n} on needs a trained model — or keep going and expect training to take a while.`,
+};
 
 /** Fresh-app step 1: WelcomeScreen has no project yet — start a new one. */
 export const NEW_PROJECT_STEP: TutorialStep = {
@@ -313,6 +366,8 @@ export const RUN_TRAINING_STEP: TutorialStep = {
   placement: "top",
   isComplete: (entry, current) =>
     entry.everTraining && current.trainingStatus === "completed",
+  cpuNote: () =>
+    "Training will run on the CPU, which is much slower than on a GPU. If you'd rather not wait, you can exit the tutorial here — the remaining steps all need this trained model.",
 };
 
 /**
@@ -394,7 +449,10 @@ export const RUN_INFERENCE_STEP: TutorialStep = {
  * mid-run, so a project created partway through the New Project steps
  * doesn't retroactively change the list out from under the engine.
  */
-export function buildTutorialSteps(startedWithProjectLoaded: boolean): TutorialStep[] {
+export function buildTutorialSteps(
+  startedWithProjectLoaded: boolean,
+  includeEnvironmentCheck = false,
+): TutorialStep[] {
   const rest = [
     SAVE_PROJECT_STEP,
     GENERATE_SUGGESTIONS_STEP,
@@ -406,7 +464,7 @@ export function buildTutorialSteps(startedWithProjectLoaded: boolean): TutorialS
     RETRAIN_STEP,
     RUN_INFERENCE_STEP,
   ];
-  return startedWithProjectLoaded
+  const steps = startedWithProjectLoaded
     ? [ADD_VIDEO_STEP, ...rest]
     : [
         NEW_PROJECT_STEP,
@@ -414,4 +472,13 @@ export function buildTutorialSteps(startedWithProjectLoaded: boolean): TutorialS
         CONFIRM_VIDEO_AND_CREATE_STEP,
         ...rest,
       ];
+  return includeEnvironmentCheck ? [CHECK_ENVIRONMENT_STEP, ...steps] : steps;
+}
+
+/**
+ * The number shown for `steps[index]`. The environment check is "Step 0", so
+ * the steps after it keep the numbers they have without it.
+ */
+export function tutorialStepNumber(steps: TutorialStep[], index: number): number {
+  return steps[0]?.id === CHECK_ENVIRONMENT_STEP.id ? index : index + 1;
 }
