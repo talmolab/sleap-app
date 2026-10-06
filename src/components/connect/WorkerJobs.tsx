@@ -15,6 +15,7 @@
  * neither runnable alone; the wizard groups a run's siblings itself).
  */
 import { useEffect, useMemo, useState } from "react";
+import { Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "@/lib/notify";
@@ -84,6 +85,33 @@ export function siblingJobIds(jobs: JobSummary[], job: JobSummary): string[] {
 
 export function jobTitle(job: JobSummary): string {
   return job.kind === "track" ? "Inference" : `Train ${job.modelTypes[0] ?? "model"}`;
+}
+
+/**
+ * Whether a run's trash icon is shown (PR6a §a.3) — mirrors the worker's own
+ * `jobs.delete` "active" rule (queued or running, not just non-terminal) so
+ * the icon never offers something the worker would refuse with `job.active`.
+ */
+export function canDeleteRun(jobs: JobSummary[]): boolean {
+  return jobs.every((j) => j.state !== "queued" && j.state !== "running");
+}
+
+/** One line per job for the delete-run confirmation — title, plus its model name once known. */
+function deleteRunJobLine(job: JobSummary): string {
+  return job.modelName ? `${jobTitle(job)} (${job.modelName})` : jobTitle(job);
+}
+
+/**
+ * The delete-run confirmation's body (PR6a §a.3): every job in the run,
+ * then the reassurance that this only drops the worker's job-list rows —
+ * nothing on disk, worker or local, is touched.
+ */
+export function deleteRunMessage(jobs: JobSummary[]): string {
+  return (
+    `${jobs.map(deleteRunJobLine).join("\n")}\n\n` +
+    "This only removes these jobs from the worker's job list. Nothing is deleted from disk: " +
+    "trained models, logs and predictions stay on the worker, and your labels and videos aren't touched."
+  );
 }
 
 export interface JobStatusChip {
@@ -280,6 +308,7 @@ export function WorkerJobs({
   const listJobs = useConnectStore((s) => s.listJobs);
   const jobDetail = useConnectStore((s) => s.jobDetail);
   const cancelJobOn = useConnectStore((s) => s.cancelJobOn);
+  const deleteJobsOn = useConnectStore((s) => s.deleteJobsOn);
   const connectToWorker = useConnectStore((s) => s.connectToWorker);
   const trackedJobs = useConnectStore((s) => s.trackedJobs);
 
@@ -358,6 +387,27 @@ export function WorkerJobs({
       await refresh();
     } catch (err) {
       toast.error(`Failed to ${label.toLowerCase()} job`, {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+
+  const handleDeleteRun = async (group: JobGroup) => {
+    const ok = await confirmDialog({
+      title: `Remove this run from ${label}?`,
+      message: deleteRunMessage(group.jobs),
+      confirmLabel: "Remove",
+      destructive: true,
+    });
+    if (!ok) return;
+    try {
+      await deleteJobsOn(
+        workerId,
+        group.jobs.map((j) => j.jobId),
+      );
+      await refresh();
+    } catch (err) {
+      toast.error("Failed to remove run", {
         description: err instanceof Error ? err.message : String(err),
       });
     }
@@ -472,6 +522,17 @@ export function WorkerJobs({
                   >
                     {group.key.slice(0, 8)}
                   </span>
+                  {canDeleteRun(group.jobs) && (
+                    <Button
+                      size="icon-xs"
+                      variant="ghost"
+                      className="shrink-0"
+                      aria-label="Remove this run"
+                      onClick={() => void handleDeleteRun(group)}
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </Button>
+                  )}
                 </div>
 
                 <div className="space-y-1.5 pl-1 border-l border-border/60">

@@ -20,9 +20,17 @@ import { useConnectStore } from "@/stores/connectStore";
 import { useAppStore } from "@/stores/appStore";
 import { useConfirmStore } from "@/stores/confirmStore";
 import { projectTag } from "@/lib/projectTag";
+import { toast } from "@/lib/notify";
 import type { JobSummary, JobStatus, WorkerClient } from "@/lib/protocolV1/client";
 
 vi.mock("sonner", () => ({
+  toast: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() },
+}));
+// Mocking only `sonner` doesn't give a clean assertable handle: `@/lib/notify`
+// captures sonner's methods BY VALUE at module-load via wrapMethod, so its
+// own `toast.error` isn't the `vi.fn()` above. Mock `@/lib/notify` directly
+// too — precedent: loadProjectFromUrl.test.ts, saveInPlaceRouting.test.ts.
+vi.mock("@/lib/notify", () => ({
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() },
 }));
 
@@ -60,6 +68,8 @@ const {
   siblingJobIds,
   groupJobs,
   jobMatches,
+  canDeleteRun,
+  deleteRunMessage,
 } = await import("@/components/connect/WorkerJobs");
 
 const WORKER_ID = "node-a";
@@ -88,6 +98,7 @@ const noopClearInterval = () => {};
 afterEach(() => {
   cleanup();
   seedWizardFromRunMock.mockClear();
+  (toast.error as unknown as { mockClear: () => void }).mockClear();
 });
 
 beforeEach(() => {
@@ -96,6 +107,7 @@ beforeEach(() => {
     selectedWorkerId: WORKER_ID,
     trackedJobs: [],
     listJobs: async () => [],
+    deleteJobsOn: async () => {},
     jobDetail: async () => {
       throw new Error("jobDetail not stubbed for this test");
     },
@@ -139,6 +151,33 @@ describe("jobTitle / jobStatusChip (pure logic)", () => {
 
   it("falls back to the capitalized state otherwise", () => {
     expect(jobStatusChip(job({ state: "completed" })).text).toBe("Completed");
+  });
+});
+
+describe("canDeleteRun / deleteRunMessage (PR6a §a.3, pure logic)", () => {
+  it("is deletable when every job is terminal", () => {
+    expect(canDeleteRun([job({ state: "completed" }), job({ jobId: "b", state: "failed" })])).toBe(
+      true,
+    );
+  });
+
+  it("is not deletable if any job is queued or running", () => {
+    expect(canDeleteRun([job({ state: "completed" }), job({ jobId: "b", state: "queued" })])).toBe(
+      false,
+    );
+    expect(canDeleteRun([job({ state: "running" })])).toBe(false);
+  });
+
+  it("lists each job's title, with its model name once known, then the disk-safety note", () => {
+    const message = deleteRunMessage([
+      job({ kind: "train", modelTypes: ["centroid"], modelName: "260922_015758.centroid.n=1" }),
+      job({ jobId: "b", kind: "track", modelName: null }),
+    ]);
+    expect(message).toContain("Train centroid (260922_015758.centroid.n=1)");
+    expect(message).toContain("Inference");
+    expect(message).not.toContain("Inference (");
+    expect(message).toContain("Nothing is deleted from disk");
+    expect(message).toContain("your labels and videos aren't touched");
   });
 });
 
@@ -435,6 +474,107 @@ describe("WorkerJobs rendering", () => {
     useConfirmStore.getState().respond(true);
 
     await waitFor(() => expect(cancelCalls).toEqual([[WORKER_ID, "job_1", "cancel"]]));
+  });
+
+  it("shows the run's trash icon once no job in it is queued or running", async () => {
+    useConnectStore.setState({ listJobs: async () => [job({ state: "completed" })] });
+    render(
+      <WorkerJobs workerId={WORKER_ID} setIntervalImpl={noopSetInterval} clearIntervalImpl={noopClearInterval} />,
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Remove this run" })).toBeInTheDocument(),
+    );
+  });
+
+  it("hides the run's trash icon while any job in it is queued or running", async () => {
+    useConnectStore.setState({ listJobs: async () => [job({ state: "running" })] });
+    render(
+      <WorkerJobs workerId={WORKER_ID} setIntervalImpl={noopSetInterval} clearIntervalImpl={noopClearInterval} />,
+    );
+    await waitFor(() => expect(screen.getByRole("button", { name: "Watch live" })).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: "Remove this run" })).not.toBeInTheDocument();
+  });
+
+  it("confirming the trash icon removes every job in the run and refreshes the list", async () => {
+    const deleteCalls: Array<[string, string[]]> = [];
+    useConnectStore.setState({
+      listJobs: async () => [
+        job({ jobId: "a", state: "completed", run: { id: "r1", index: 0, count: 1 } }),
+        job({
+          jobId: "b",
+          kind: "track",
+          state: "completed",
+          run: { id: "r1", index: 0, count: 1, stage: "inference" },
+          createdAt: "2026-10-02T00:00:00.000Z",
+        }),
+      ],
+      deleteJobsOn: async (workerId: string, jobIds: string[]) => {
+        deleteCalls.push([workerId, jobIds]);
+      },
+    });
+    render(
+      <WorkerJobs
+        workerId={WORKER_ID}
+        workerLabel="gpu-box"
+        setIntervalImpl={noopSetInterval}
+        clearIntervalImpl={noopClearInterval}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Remove this run" })).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Remove this run" }));
+
+    await waitFor(() =>
+      expect(useConfirmStore.getState().request?.title).toBe("Remove this run from gpu-box?"),
+    );
+    expect(useConfirmStore.getState().request?.message).toContain(
+      "Nothing is deleted from disk",
+    );
+    useConfirmStore.getState().respond(true);
+
+    await waitFor(() => expect(deleteCalls).toEqual([[WORKER_ID, ["a", "b"]]]));
+  });
+
+  it("does not delete anything if the confirmation is dismissed", async () => {
+    const deleteCalls: string[][] = [];
+    useConnectStore.setState({
+      listJobs: async () => [job({ state: "completed" })],
+      deleteJobsOn: async (_workerId: string, jobIds: string[]) => {
+        deleteCalls.push(jobIds);
+      },
+    });
+    render(
+      <WorkerJobs workerId={WORKER_ID} setIntervalImpl={noopSetInterval} clearIntervalImpl={noopClearInterval} />,
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Remove this run" })).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Remove this run" }));
+    await waitFor(() => expect(useConfirmStore.getState().request).not.toBeNull());
+    useConfirmStore.getState().respond(false);
+
+    expect(deleteCalls).toEqual([]);
+  });
+
+  it("a delete failure (e.g. job.active) shows an error toast instead of crashing", async () => {
+    useConnectStore.setState({
+      listJobs: async () => [job({ state: "completed" })],
+      deleteJobsOn: async () => {
+        throw new Error("Job job_1 is active and can't be deleted");
+      },
+    });
+    render(
+      <WorkerJobs workerId={WORKER_ID} setIntervalImpl={noopSetInterval} clearIntervalImpl={noopClearInterval} />,
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Remove this run" })).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Remove this run" }));
+    await waitFor(() => expect(useConfirmStore.getState().request).not.toBeNull());
+    useConfirmStore.getState().respond(true);
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalled());
   });
 
   it("Fetch & Load connects to the worker first if it isn't the selected backend, then opens the merge dialog", async () => {

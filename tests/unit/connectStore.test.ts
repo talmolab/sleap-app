@@ -58,6 +58,8 @@ class FakeWorkerClient {
   authProveShouldThrow: Error | null = null;
   jobsSubmitCalls: Record<string, unknown>[] = [];
   jobsCancelCalls: Array<[string, string]> = [];
+  jobsDeleteCalls: string[][] = [];
+  jobsDeleteShouldThrow: Error | null = null;
   jobsStatusCalls: string[] = [];
   jobsSubscribeCalls: Array<[string, number]> = [];
   fsListCalls: Array<[string, number]> = [];
@@ -147,6 +149,12 @@ class FakeWorkerClient {
 
   async jobsCancel(jobId: string, mode: string) {
     this.jobsCancelCalls.push([jobId, mode]);
+  }
+
+  async jobsDelete(jobIds: string[]) {
+    this.jobsDeleteCalls.push(jobIds);
+    if (this.jobsDeleteShouldThrow) throw this.jobsDeleteShouldThrow;
+    return { deleted: jobIds };
   }
 
   async jobsStatus(jobId: string) {
@@ -1700,6 +1708,67 @@ describe("connectStore", () => {
       await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
       await useConnectStore.getState().cancelJobOn(PAIRED_WORKER.nodeId, "job_1", "stop");
       expect(lastClient().jobsCancelCalls).toEqual([["job_1", "stop"]]);
+    });
+
+    describe("deleteJobsOn (PR6a §a.3)", () => {
+      let restoreJobIds: () => void;
+
+      afterEach(() => {
+        restoreJobIds();
+      });
+
+      it("calls jobsDelete with the given job ids", async () => {
+        restoreJobIds = withSequentialJobIds("del");
+        await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
+        await useConnectStore.getState().deleteJobsOn(PAIRED_WORKER.nodeId, ["job_a", "job_b"]);
+        expect(lastClient().jobsDeleteCalls).toEqual([["job_a", "job_b"]]);
+      });
+
+      it("prunes the deleted ids from trackedJobs, leaving other tracked jobs alone", async () => {
+        restoreJobIds = withSequentialJobIds("del");
+        useConnectStore.setState({
+          trackedJobs: [
+            makeTracked({ jobId: "job_a", workerId: PAIRED_WORKER.nodeId }),
+            makeTracked({ jobId: "job_keep", workerId: PAIRED_WORKER.nodeId }),
+          ],
+        });
+        await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
+        await useConnectStore.getState().deleteJobsOn(PAIRED_WORKER.nodeId, ["job_a"]);
+        expect(useConnectStore.getState().trackedJobs.map((j) => j.jobId)).toEqual(["job_keep"]);
+      });
+
+      it("drops the deleted job's live subscription, so a later reconnect never re-subscribes it", async () => {
+        restoreJobIds = withSequentialJobIds("del");
+        useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
+        const spec: JobSpec = { type: "track", data_path: "/x.slp", model_paths: ["m1"] };
+        const [jobId] = await useConnectStore
+          .getState()
+          .submitJobsOn(PAIRED_WORKER.nodeId, spec, { source: "worker-file" });
+
+        await useConnectStore.getState().deleteJobsOn(PAIRED_WORKER.nodeId, [jobId!]);
+
+        const freshClient = lastClient();
+        freshClient.jobsSubscribeCalls = [];
+        resubscribeWorker(PAIRED_WORKER.nodeId, freshClient as unknown as WorkerClient);
+        expect(freshClient.jobsSubscribeCalls).toEqual([]);
+      });
+
+      it("propagates a job.active error from the worker without deleting anything client-side", async () => {
+        restoreJobIds = withSequentialJobIds("del");
+        useConnectStore.setState({
+          trackedJobs: [makeTracked({ jobId: "job_a", workerId: PAIRED_WORKER.nodeId })],
+        });
+        await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
+        lastClient().jobsDeleteShouldThrow = new WorkerProtocolError(
+          "job.active",
+          "Job job_a is active and can't be deleted",
+        );
+
+        await expect(
+          useConnectStore.getState().deleteJobsOn(PAIRED_WORKER.nodeId, ["job_a"]),
+        ).rejects.toMatchObject({ code: "job.active" });
+        expect(useConnectStore.getState().trackedJobs.map((j) => j.jobId)).toEqual(["job_a"]);
+      });
     });
   });
 

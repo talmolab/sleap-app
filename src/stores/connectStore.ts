@@ -237,6 +237,18 @@ interface ConnectState {
   /** Cancel/stop a job on ANY paired worker, not just the selected one. */
   cancelJobOn: (workerId: string, jobId: string, mode: "cancel" | "stop") => Promise<void>;
   /**
+   * Removes `jobIds`' records from `workerId` (PR6a §a.3) — job records
+   * only, nothing on disk (see `WorkerClient.jobsDelete`'s doc). All-or-
+   * nothing: throws `job.active` (and deletes nothing) if any of `jobIds`
+   * is currently running or about to be. On success, prunes those ids from
+   * `trackedJobs`, drops their live event subscriptions, and forgets their
+   * `notifiedJobIds` entry (so a job id the worker ever reuses — it never
+   * does today, but nothing here assumes that — would get its own
+   * finish-toast again rather than being silently deduped against a job
+   * this device no longer has any record of).
+   */
+  deleteJobsOn: (workerId: string, jobIds: string[]) => Promise<void>;
+  /**
    * Claim a fresh pairing ticket (JSON from `sleap-rtc pair`) and connect.
    * `options.transport` picks the dial explicitly (default `"ws"`); `"iroh"`
    * needs the desktop app and an `iroh` section in the ticket.
@@ -1063,6 +1075,21 @@ export const useConnectStore = create<ConnectState>()(
       cancelJobOn: async (workerId, jobId, mode) => {
         const client = await get().clientFor(workerId);
         await client.jobsCancel(jobId, mode);
+      },
+
+      deleteJobsOn: async (workerId, jobIds) => {
+        const client = await get().clientFor(workerId);
+        await client.jobsDelete(jobIds);
+
+        const idSet = new Set(jobIds);
+        for (const jobId of jobIds) {
+          activeSubscriptions.get(jobId)?.unsubscribe?.();
+          activeSubscriptions.delete(jobId);
+          notifiedJobIds.delete(jobId);
+        }
+        set((state) => ({
+          trackedJobs: state.trackedJobs.filter((j) => !idSet.has(j.jobId)),
+        }));
       },
 
       pairWithTicket: async (ticketJson, addrOverride, options) => {
