@@ -18,7 +18,7 @@ function TrainedNextSteps() {
   return (
     <>
       <li>
-        Label more frames — generate more suggestions, correct the predictions
+        Label more frames: generate more suggestions, correct the predictions
         on them, and retrain. Each round makes the model better.
       </li>
       <li>
@@ -72,7 +72,7 @@ export function TutorialCompletionCard() {
         ) : (
           <>
             <li>
-              Keep labeling suggested frames — the more you label, the better
+              Keep labeling suggested frames. The more you label, the better
               the model you train later.
             </li>
             <li>

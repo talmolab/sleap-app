@@ -96,14 +96,14 @@ function clampToViewport(
   };
 }
 
-/** Splits `body` around one occurrence of `link.text`, rendering that slice as an `<a>`. */
-function renderBody(body: string, link?: { text: string; href: string }) {
-  if (!link) return body;
-  const idx = body.indexOf(link.text);
-  if (idx === -1) return body;
+/** Splits `text` around one occurrence of `link.text`, rendering that slice as an `<a>`. */
+function withLink(text: string, link?: { text: string; href: string }) {
+  if (!link) return text;
+  const idx = text.indexOf(link.text);
+  if (idx === -1) return text;
   return (
     <>
-      {body.slice(0, idx)}
+      {text.slice(0, idx)}
       <a
         href={link.href}
         target="_blank"
@@ -112,8 +112,41 @@ function renderBody(body: string, link?: { text: string; href: string }) {
       >
         {link.text}
       </a>
-      {body.slice(idx + link.text.length)}
+      {text.slice(idx + link.text.length)}
     </>
+  );
+}
+
+type BodyBlock = { kind: "text"; text: string } | { kind: "list"; items: string[] };
+
+/**
+ * Renders a step's `body`. Text keeps its line breaks (the container is
+ * `whitespace-pre-line`); a run of lines starting with "• " becomes a real
+ * list, so a wrapped bullet indents under its own text instead of the dot.
+ */
+function renderBody(body: string, link?: { text: string; href: string }) {
+  const blocks: BodyBlock[] = [];
+  for (const line of body.split("\n")) {
+    const last = blocks[blocks.length - 1];
+    if (line.startsWith("• ")) {
+      if (last?.kind === "list") last.items.push(line.slice(2));
+      else blocks.push({ kind: "list", items: [line.slice(2)] });
+    } else if (last?.kind === "text") {
+      last.text += "\n" + line;
+    } else {
+      blocks.push({ kind: "text", text: line });
+    }
+  }
+  return blocks.map((b, i) =>
+    b.kind === "list" ? (
+      <ul key={i} className="list-disc pl-4">
+        {b.items.map((item, j) => (
+          <li key={j}>{withLink(item, link)}</li>
+        ))}
+      </ul>
+    ) : (
+      <span key={i}>{withLink(b.text, link)}</span>
+    ),
   );
 }
 
@@ -352,9 +385,9 @@ export function TutorialOverlay() {
           </button>
         </div>
         <p className="mt-1 font-semibold">{step.title}</p>
-        <p className="mt-1 text-muted-foreground leading-relaxed whitespace-pre-line">
+        <div className="mt-1 text-muted-foreground leading-relaxed whitespace-pre-line">
           {renderBody(step.body, step.bodyLink)}
-        </p>
+        </div>
         {cpuNote && (
           <p className="mt-2 flex gap-1.5 rounded border border-amber-500/40 bg-amber-500/10 p-2 text-xs leading-relaxed text-amber-700 dark:text-amber-400">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
