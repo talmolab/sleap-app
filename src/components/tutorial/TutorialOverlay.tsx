@@ -96,27 +96,6 @@ function clampToViewport(
   };
 }
 
-/** Splits `text` around one occurrence of `link.text`, rendering that slice as an `<a>`. */
-function withLink(text: string, link?: { text: string; href: string }) {
-  if (!link) return text;
-  const idx = text.indexOf(link.text);
-  if (idx === -1) return text;
-  return (
-    <>
-      {text.slice(0, idx)}
-      <a
-        href={link.href}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="underline hover:text-foreground"
-      >
-        {link.text}
-      </a>
-      {text.slice(idx + link.text.length)}
-    </>
-  );
-}
-
 type BodyBlock = { kind: "text"; text: string } | { kind: "list"; items: string[] };
 
 /**
@@ -124,7 +103,7 @@ type BodyBlock = { kind: "text"; text: string } | { kind: "list"; items: string[
  * `whitespace-pre-line`); a run of lines starting with "• " becomes a real
  * list, so a wrapped bullet indents under its own text instead of the dot.
  */
-function renderBody(body: string, link?: { text: string; href: string }) {
+function renderBody(body: string) {
   const blocks: BodyBlock[] = [];
   for (const line of body.split("\n")) {
     const last = blocks[blocks.length - 1];
@@ -141,11 +120,11 @@ function renderBody(body: string, link?: { text: string; href: string }) {
     b.kind === "list" ? (
       <ul key={i} className="list-disc pl-4">
         {b.items.map((item, j) => (
-          <li key={j}>{withLink(item, link)}</li>
+          <li key={j}>{item}</li>
         ))}
       </ul>
     ) : (
-      <span key={i}>{withLink(b.text, link)}</span>
+      <span key={i}>{b.text}</span>
     ),
   );
 }
@@ -386,7 +365,7 @@ export function TutorialOverlay() {
         </div>
         <p className="mt-1 font-semibold">{step.title}</p>
         <div className="mt-1 text-muted-foreground leading-relaxed whitespace-pre-line">
-          {renderBody(step.body, step.bodyLink)}
+          {renderBody(step.body)}
         </div>
         {cpuNote && (
           <p className="mt-2 flex gap-1.5 rounded border border-amber-500/40 bg-amber-500/10 p-2 text-xs leading-relaxed text-amber-700 dark:text-amber-400">

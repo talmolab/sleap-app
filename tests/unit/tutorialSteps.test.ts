@@ -14,7 +14,6 @@ import {
   CHECK_ENVIRONMENT_STEP,
   BROWSER_NOTICE_STEP,
   tutorialIncludesTraining,
-  SAMPLE_VIDEO_URL,
   buildTutorialSteps,
   tutorialStepNumber,
   snapshotTutorialState,
@@ -111,9 +110,12 @@ describe("buildTutorialSteps", () => {
   });
 });
 
-describe("SAMPLE_VIDEO_URL", () => {
-  it("is a direct download, not a preview page", () => {
-    expect(SAMPLE_VIDEO_URL).toContain("drive.google.com/uc?export=download");
+describe("add-video-in-dialog step target", () => {
+  it("targets the sample video button and mentions it in the body", () => {
+    expect(ADD_VIDEO_IN_DIALOG_STEP.targetSelector).toBe(
+      '[data-tutorial="new-project-sample-video-button"]',
+    );
+    expect(ADD_VIDEO_IN_DIALOG_STEP.body).toContain("Use sample video");
   });
 });
 

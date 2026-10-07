@@ -125,9 +125,9 @@ export function NewProjectDialog() {
         className="sm:max-w-[420px]"
         onInteractOutside={(e) => {
           // The tutorial coachmark (TutorialOverlay) renders outside this
-          // dialog's Radix portal, so clicking its download link or dragging
-          // its title bar otherwise reads as an outside interaction and closes
-          // the dialog out from under the tutorial's add-video steps.
+          // dialog's Radix portal, so dragging its title bar otherwise reads
+          // as an outside interaction and closes the dialog out from under
+          // the tutorial's add-video steps.
           if ((e.target as HTMLElement | null)?.closest("[data-tutorial-overlay]")) {
             e.preventDefault();
           }
