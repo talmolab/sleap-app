@@ -128,13 +128,6 @@ export interface TutorialStep {
   title: string;
   body: string;
   /**
-   * Turns one occurrence of `text` inside `body` into a hyperlink to `href`,
-   * rendered by `TutorialOverlay` — lets a step's own instructions carry a
-   * download/reference link instead of pointing at a separate link elsewhere
-   * in the app.
-   */
-  bodyLink?: { text: string; href: string };
-  /**
    * Optional supplementary reference (e.g. "Label tips"), rendered by
    * `TutorialOverlay` behind a collapsed-by-default toggle so it doesn't
    * lengthen the coachmark for users who don't need it, while staying one
@@ -215,29 +208,25 @@ export const NEW_PROJECT_STEP: TutorialStep = {
 };
 
 /**
- * Direct download of the fixed sample video (mice.mp4) this tutorial is built
- * around. Google Drive's `uc?export=download` form starts the download
- * straight away; the `/file/d/<id>/view` share link would open Drive's preview
- * page instead.
- */
-export const SAMPLE_VIDEO_URL =
-  "https://drive.google.com/uc?export=download&id=1ncZJlGdBSH0JCYhh_Af3lTsizR2Z8rQQ";
-
-/**
  * Fresh-app step 2: videos picked in the New Project dialog are local
  * component state (no `labels` exists yet, since the project isn't created
  * until "Create Project" is clicked in the next step) — so completion reads
  * the dialog's staged-video list directly from the DOM (`new-project-video-list`,
  * populated by `NewProjectDialog`), same idiom as `GENERATE_SUGGESTIONS_STEP`
  * reading a local `<Select>`'s value.
+ *
+ * Targets the "Use sample video" button rather than the dropzone: the button
+ * sits directly above the dropzone/staged-video list in the dialog, so a
+ * "bottom" placement would park the coachmark right on top of them for the
+ * whole step (the user can drag a file in as an alternative the whole time).
+ * "right" keeps both fully visible.
  */
 export const ADD_VIDEO_IN_DIALOG_STEP: TutorialStep = {
   id: "add-video-in-dialog",
   title: "Add a video",
-  body: "This tutorial uses a short sample video, mice.mp4. Click the name to download it, then add it using the video dropzone: drag the file in, or click to browse.",
-  bodyLink: { text: "mice.mp4", href: SAMPLE_VIDEO_URL },
-  targetSelector: '[data-tutorial="new-project-add-video-button"]',
-  placement: "bottom",
+  body: 'This tutorial uses a short sample video, mice.mp4. Click "Use sample video" to add it. If you already have mice.mp4, you can drag it into the dropzone instead.',
+  targetSelector: '[data-tutorial="new-project-sample-video-button"]',
+  placement: "right",
   isComplete: (_entry, _current) => {
     const list = document.querySelector('[data-tutorial="new-project-video-list"]');
     return !!list && list.children.length > 0;

@@ -21,7 +21,8 @@ import {
   type VideoImportEntry,
 } from "./VideoImportList";
 import { SKELETON_TEMPLATES, TEMPLATE_ORDER } from "../../lib/skeletonTemplates";
-import { SAMPLE_VIDEO_URL } from "../../lib/tutorial/steps";
+import { SAMPLE_VIDEO } from "@/lib/sampleVideo";
+import { SampleVideoButton } from "@/components/common/SampleVideoButton";
 import {
   Dialog,
   DialogContent,
@@ -48,7 +49,6 @@ const EMPTY = "empty";
 export function NewProjectDialog() {
   const open = useAppStore((s) => s.newProjectDialogOpen);
   const setOpen = useAppStore((s) => s.setNewProjectDialogOpen);
-  const tutorialActive = useAppStore((s) => s.tutorialActive);
 
   const [templateId, setTemplateId] = useState<string>(EMPTY);
   const [videos, setVideos] = useState<VideoImportEntry[]>([]);
@@ -125,9 +125,9 @@ export function NewProjectDialog() {
         className="sm:max-w-[420px]"
         onInteractOutside={(e) => {
           // The tutorial coachmark (TutorialOverlay) renders outside this
-          // dialog's Radix portal, so clicking its download link or dragging
-          // its title bar otherwise reads as an outside interaction and closes
-          // the dialog out from under the tutorial's add-video steps.
+          // dialog's Radix portal, so dragging its title bar otherwise reads
+          // as an outside interaction and closes the dialog out from under
+          // the tutorial's add-video steps.
           if ((e.target as HTMLElement | null)?.closest("[data-tutorial-overlay]")) {
             e.preventDefault();
           }
@@ -173,16 +173,21 @@ export function NewProjectDialog() {
                 (optional)
               </span>
             </label>
-            {!tutorialActive && (
-              <a
-                href={SAMPLE_VIDEO_URL}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="self-start text-xs text-muted-foreground underline hover:text-foreground"
-              >
-                No video handy? Download a sample
-              </a>
-            )}
+            <div className="flex items-center gap-2">
+              <span className="whitespace-nowrap text-xs text-muted-foreground">
+                No video handy?
+              </span>
+              <SampleVideoButton
+                onLoaded={(picked) =>
+                  setVideos((v) => [...v, ...toVideoImportEntries([picked])])
+                }
+                disabled={
+                  creating ||
+                  videos.some((v) => v.file.name === SAMPLE_VIDEO.name)
+                }
+                data-tutorial="new-project-sample-video-button"
+              />
+            </div>
             <VideoDropzone
               onFiles={(picked) =>
                 setVideos((v) => [...v, ...toVideoImportEntries(picked)])
