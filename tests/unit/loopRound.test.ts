@@ -144,6 +144,8 @@ describe("startNextRound", () => {
     expect(t.config.trainingLabelsPath).toBe("");
     expect(t.pendingHandoff?.requireModelTypeChoice).toBe(true);
     expect(t.pendingHandoff?.skipUserLabeled).toBe(true);
+    // The run this hand-off sets up belongs to the round we just advanced into.
+    expect(t.pendingHandoff?.activeLearningRound).toBe(al.round);
   });
 
   it("can be driven repeatedly up to the cap", () => {

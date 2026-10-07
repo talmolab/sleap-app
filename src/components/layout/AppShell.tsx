@@ -28,6 +28,7 @@ import { TrainingProgressBar } from "./TrainingProgressBar";
 import { InferenceProgressBar } from "./InferenceProgressBar";
 import { KeypointPassBar } from "./KeypointPassBar";
 import { CorrectionBar } from "./CorrectionBar";
+import { useActiveLearningRoundEngine } from "@/hooks/useActiveLearningRoundEngine";
 
 import { PANELS } from "./panelRegistry";
 import { reorderById, visibleOpenPanels } from "@/lib/panelLayout";
@@ -141,6 +142,9 @@ function PathResolutionHost() {
 }
 
 export function AppShell() {
+  // Keeps the active-learning loop moving between rounds (train → predict →
+  // review → retrain); a no-op for projects without a workflow.
+  useActiveLearningRoundEngine();
   const projectLoaded = useAppStore((s) => s.projectLoaded);
   const isLoading = useAppStore((s) => s.isLoading);
   const windowDragActive = useAppStore((s) => s.windowDragActive);

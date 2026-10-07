@@ -18,6 +18,7 @@
 
 import { useTrainingStore } from "@/stores/trainingStore";
 import { useAppStore } from "@/stores/appStore";
+import { useActiveLearningStore } from "@/stores/activeLearningStore";
 import { toast } from "@/lib/notify";
 
 /**
@@ -41,7 +42,7 @@ const AL_INFERENCE_TARGET = "video";
  * Does NOT set `modelType` — see the module note. It also does not start the
  * run: the user picks the pipeline and presses Start themselves.
  */
-export function setupPoseTraining(): boolean {
+export function setupPoseTraining(opts: { round?: number } = {}): boolean {
   const { projectPath, hasChanges } = useAppStore.getState();
   // Training reads the .slp from DISK — `trainingLabelsPath || projectPath`,
   // with no re-serialize of in-memory labels (autosave only writes a recovery
@@ -64,6 +65,14 @@ export function setupPoseTraining(): boolean {
     inferenceTarget: AL_INFERENCE_TARGET,
     skipUserLabeled: true,
     requireModelTypeChoice: true,
+    // With a workflow loaded, the run the user starts is a loop round: the
+    // round engine records its model and does the round's own inference (new
+    // videos first), so the panel's post-training target steps aside.
+    // `opts.round` when the caller is about to advance the loop (the run
+    // belongs to the NEXT round); otherwise the current one.
+    activeLearningRound: useActiveLearningStore.getState().config
+      ? opts.round ?? useActiveLearningStore.getState().round
+      : undefined,
   });
   return true;
 }

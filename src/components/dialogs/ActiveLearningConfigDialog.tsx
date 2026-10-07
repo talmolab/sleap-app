@@ -174,7 +174,8 @@ export function ActiveLearningConfigDialog({ open, onOpenChange, nodeNames }: Pr
   );
 
   const save = () => {
-    const result = useActiveLearningStore.getState().setConfig(draft, nodeNames);
+    // Editing the current workflow — keep the loop's round + history.
+    const result = useActiveLearningStore.getState().setConfig(draft, nodeNames, { keepProgress: true });
     // Mark the project dirty so the workflow gets written into the .slp on the
     // next save (it's persisted in the project's provenance — see persistence.ts).
     // Structural too: provenance isn't frame data, so the incremental autosave
@@ -265,6 +266,16 @@ export function ActiveLearningConfigDialog({ open, onOpenChange, nodeNames }: Pr
                 checked={draft.loop.stopWhen.metricPlateau}
                 onChange={(b) => edit((d) => (d.loop.stopWhen.metricPlateau = b))}
                 label="Hint to stop when the metric plateaus"
+              />
+              <Check
+                checked={draft.loop.autoRetrain}
+                onChange={(b) => edit((d) => (d.loop.autoRetrain = b))}
+                label="Start the next round by itself when a review sweep is finished"
+              />
+              <Check
+                checked={draft.loop.fineTune}
+                onChange={(b) => edit((d) => (d.loop.fineTune = b))}
+                label="Fine-tune each round from the previous round's model"
               />
               <div className="pt-3 text-xs font-medium text-muted-foreground">
                 Consistency benchmark
@@ -662,6 +673,36 @@ export function ActiveLearningConfigDialog({ open, onOpenChange, nodeNames }: Pr
                   onChange={(n) => edit((d) => (d.mine.scoreThreshold = n))}
                 />
               </Field>
+              <div className="pt-3 text-xs font-medium text-muted-foreground">Each round</div>
+              <Field label="Review up to (instances)">
+                <NumberInput
+                  value={draft.mine.reviewBudget}
+                  min={1}
+                  onChange={(n) => edit((d) => (d.mine.reviewBudget = n))}
+                />
+              </Field>
+              <Check
+                checked={draft.mine.spreadAcrossVideos}
+                onChange={(b) => edit((d) => (d.mine.spreadAcrossVideos = b))}
+                label="Spread the review budget across videos"
+              />
+              <Field label="Revisit frames per earlier video">
+                <NumberInput
+                  value={draft.mine.revisitFrames}
+                  min={0}
+                  step={50}
+                  onChange={(n) => edit((d) => (d.mine.revisitFrames = n))}
+                />
+              </Field>
+              <Check
+                checked={draft.mine.autoReview}
+                onChange={(b) => edit((d) => (d.mine.autoReview = b))}
+                label="Start reviewing as soon as a round's predictions land (if idle)"
+              />
+              <p className="text-[11px] leading-snug text-muted-foreground">
+                New videos are predicted in full first; videos an earlier round covered get a
+                fresh spread sample of unlabeled frames. Frames you labeled by hand are skipped.
+              </p>
               <Check
                 checked={draft.mine.keypointReview}
                 onChange={(b) => edit((d) => (d.mine.keypointReview = b))}

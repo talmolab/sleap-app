@@ -566,6 +566,42 @@ describe("MergePredictions — pose output leaves centroid annotations alone", (
   }
 });
 
+describe("MergePredictions — skipUserLabeledFrames", () => {
+  let ctx: CommandContext;
+  beforeEach(() => {
+    resetStore();
+    ctx = new CommandContext();
+  });
+
+  // sleap-nn ignores --exclude_user_labeled when handed a raw video, so the
+  // merge has to drop predictions for hand-labeled frames itself.
+  it("drops predictions on frames that already have user instances", async () => {
+    const skeleton = makeSkeleton();
+    const baseVideo = makeVideo();
+    setupBase({
+      skeleton,
+      video: baseVideo,
+      frames: [new LabeledFrame({ video: baseVideo, frameIdx: 0, instances: [userInst(skeleton, 10, 10)] })],
+    });
+    const predVideo = makeVideo("/compute-node/test.mp4");
+    const predictions = new Labels({
+      labeledFrames: [
+        new LabeledFrame({ video: predVideo, frameIdx: 0, instances: [predInst(skeleton, 11, 11, 0.9)] }),
+        new LabeledFrame({ video: predVideo, frameIdx: 1, instances: [predInst(skeleton, 50, 50, 0.9)] }),
+      ],
+      videos: [predVideo],
+      skeletons: [skeleton],
+    });
+
+    await ctx.execute(MergePredictions, { predictions, skipUserLabeledFrames: true });
+
+    const labels = currentLabels();
+    expect(frameAt(labels, baseVideo, 0).predictedInstances.length).toBe(0);
+    expect(frameAt(labels, baseVideo, 0).userInstances.length).toBe(1);
+    expect(frameAt(labels, baseVideo, 1).predictedInstances.length).toBe(1);
+  });
+});
+
 describe("MergePredictions — during an active-learning sweep", () => {
   beforeEach(() => resetStore());
 

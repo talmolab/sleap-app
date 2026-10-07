@@ -1027,6 +1027,10 @@ export function TrainingPanel() {
   // edits afterwards aren't clobbered.
   const pendingHandoff = useTrainingStore((s) => s.pendingHandoff);
   const [mustChooseModelType, setMustChooseModelType] = useState(false);
+  // The active-learning round this panel was handed (round 1 of the loop is
+  // started from here): the run is tagged with it, and the loop does its own
+  // post-training inference, so the target picker below steps aside.
+  const [alRound, setAlRound] = useState<number | null>(null);
   useEffect(() => {
     if (!pendingHandoff) return;
     if (pendingHandoff.inferenceTarget !== undefined) {
@@ -1036,6 +1040,7 @@ export function TrainingPanel() {
       setSkipUserLabeled(pendingHandoff.skipUserLabeled);
     }
     if (pendingHandoff.requireModelTypeChoice) setMustChooseModelType(true);
+    setAlRound(pendingHandoff.activeLearningRound ?? null);
     useTrainingStore.getState().setPendingHandoff(null);
   }, [pendingHandoff]);
 
@@ -1196,13 +1201,18 @@ export function TrainingPanel() {
       return;
     }
     await startTraining({
-      inferenceTarget,
+      // An active-learning round predicts on its own terms (new videos first),
+      // after the loop records the trained models — see roundEngine.
+      inferenceTarget: alRound !== null ? "nothing" : inferenceTarget,
       sampleCount,
       skipUserLabeled,
       existingPredictions,
       exportFormat,
       useExportedForInference,
+      activeLearningRound: alRound ?? undefined,
     });
+    // One tagged run per hand-off; a later manual run here is just a run.
+    setAlRound(null);
   };
 
   if (!isTauri && connectionStatus !== "connected") {
@@ -1439,6 +1449,16 @@ export function TrainingPanel() {
             </div>
           </div>
 
+          {alRound !== null && !remoteEnabled ? (
+            <div className="space-y-1">
+              <span className="text-[10px] text-muted-foreground">Post-Training Inference</span>
+              <p className="text-[10px] leading-snug text-muted-foreground">
+                Active-learning round {alRound}: after training, the loop predicts new videos
+                first (then a spread sample of earlier ones), skips frames you labeled by hand,
+                and queues the least-confident predictions for review.
+              </p>
+            </div>
+          ) : (
           <div className="space-y-1">
             <span className="text-[10px] text-muted-foreground flex items-center gap-1">
               Post-Training Inference Target
@@ -1478,6 +1498,7 @@ export function TrainingPanel() {
               </div>
             )}
           </div>
+          )}
         </Section>
 
         <Separator />

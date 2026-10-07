@@ -48,6 +48,12 @@ export interface InferenceConfig {
   excludeUserLabeled: boolean;
   /** How new predictions combine with existing ones (see ExistingPredictionsMode). */
   existingPredictions: ExistingPredictionsMode;
+  /**
+   * With `frameRange: "random_video"`, predict exactly these frames instead of
+   * a random sample (e.g. the active-learning loop's spread of unlabeled
+   * frames). Ignored for every other range.
+   */
+  explicitFrames?: number[];
 
   // Inference
   batchSize: number;
@@ -254,7 +260,11 @@ interface InferenceState {
   reset: () => void;
   cancelInference: () => Promise<void>;
   startInference: (config: InferenceConfig, remoteOpts?: RemoteInferenceOptions) => Promise<void>;
-  loadAndMergeResults: (mode?: ExistingPredictionsMode, trackOnly?: boolean) => Promise<void>;
+  loadAndMergeResults: (
+    mode?: ExistingPredictionsMode,
+    trackOnly?: boolean,
+    opts?: MergeOptions,
+  ) => Promise<void>;
   /** Explicit trigger for `pendingRemoteMerge` — see its own doc comment. */
   mergePendingRemoteResults: () => Promise<void>;
 }
@@ -277,6 +287,25 @@ const initialState = {
   pendingRemoteMerge: null as PendingRemoteMerge | null,
 };
 
+/** Extra merge behavior beyond the existing-predictions mode. */
+export interface MergeOptions {
+  /** Drop predictions on frames that already have user instances. */
+  skipUserLabeledFrames?: boolean;
+}
+
+type PredictionsMergedListener = (predictions: Awaited<ReturnType<typeof loadSlp>>) => void;
+const predictionsMergedListeners = new Set<PredictionsMergedListener>();
+
+/**
+ * Be told about every prediction batch merged into the project (after any
+ * frame filtering, so it's exactly what landed). The active-learning loop uses
+ * it to learn which frames a round predicted. Returns an unsubscribe function.
+ */
+export function onPredictionsMerged(listener: PredictionsMergedListener): () => void {
+  predictionsMergedListeners.add(listener);
+  return () => predictionsMergedListeners.delete(listener);
+}
+
 /** Shared merge dispatch — a `Labels` already loaded by whichever path
  * (bytes in memory, or read directly off a remote range-read source) gets
  * merged into the current project identically either way. */
@@ -284,6 +313,7 @@ async function mergePredictionsIntoProject(
   predictions: Awaited<ReturnType<typeof loadSlp>>,
   mode: ExistingPredictionsMode,
   trackOnly: boolean,
+  opts: MergeOptions = {},
 ): Promise<void> {
   console.log(
     "[inference] Loaded predictions: %d videos, %d labeled frames, %d tracks",
@@ -294,7 +324,18 @@ async function mergePredictionsIntoProject(
   if (trackOnly) {
     await commandContext.execute(MergeTracks, { retracked: predictions });
   } else {
-    await commandContext.execute(MergePredictions, { predictions, mode });
+    await commandContext.execute(MergePredictions, {
+      predictions,
+      mode,
+      skipUserLabeledFrames: opts.skipUserLabeledFrames ?? false,
+    });
+    for (const listener of predictionsMergedListeners) {
+      try {
+        listener(predictions);
+      } catch (err) {
+        console.error("[inference] predictions-merged listener failed:", err);
+      }
+    }
   }
 }
 
@@ -311,12 +352,13 @@ export async function loadAndMergePredictionBytes(
   filenameHint: string,
   mode: ExistingPredictionsMode,
   trackOnly: boolean,
+  opts: MergeOptions = {},
 ): Promise<void> {
   const predictions = await loadSlp(bytes, {
     openVideos: false,
     h5: { filenameHint },
   });
-  await mergePredictionsIntoProject(predictions, mode, trackOnly);
+  await mergePredictionsIntoProject(predictions, mode, trackOnly, opts);
 }
 
 /**
@@ -673,6 +715,7 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
                 result.outputPath,
                 existingPredictionsForPipeline(config.pipeline, config.existingPredictions),
                 config.trackOnly,
+                { skipUserLabeledFrames: config.excludeUserLabeled },
               );
             }
             if (!result.success) {
@@ -709,6 +752,7 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
             await useInferenceStore.getState().loadAndMergeResults(
               existingPredictionsForPipeline(config.pipeline, config.existingPredictions),
               config.trackOnly,
+              { skipUserLabeledFrames: config.excludeUserLabeled },
             );
           } else {
             set({ status: "completed" });
@@ -723,7 +767,11 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
     }
   },
 
-  loadAndMergeResults: async (mode: ExistingPredictionsMode = "replace", trackOnly = false) => {
+  loadAndMergeResults: async (
+    mode: ExistingPredictionsMode = "replace",
+    trackOnly = false,
+    opts: MergeOptions = {},
+  ) => {
     const { outputPath } = useInferenceStore.getState();
     if (!outputPath) return;
 
@@ -731,7 +779,7 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
       const platform = await getPlatform();
       const bytes = await platform.readFile(outputPath);
       console.log("[inference] Read predictions file: %d bytes from %s", bytes.byteLength, outputPath);
-      await loadAndMergePredictionBytes(bytes, outputPath, mode, trackOnly);
+      await loadAndMergePredictionBytes(bytes, outputPath, mode, trackOnly, opts);
 
       set({ status: "completed" });
       // Keep the "Complete" banner (checkmark, progress bar, log) on screen

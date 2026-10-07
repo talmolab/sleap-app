@@ -29,7 +29,7 @@ export interface ModelFsAccess {
 }
 
 /** Default reader backed by the Tauri fs plugin (desktop-only at runtime). */
-function defaultFs(): ModelFsAccess {
+export function defaultFs(): ModelFsAccess {
   return {
     async readDir(path) {
       const { readDir } = await import("@tauri-apps/plugin-fs");
@@ -53,7 +53,7 @@ function defaultFs(): ModelFsAccess {
 }
 
 /** Join a directory and a filename using the directory's path separator. */
-function joinPath(dir: string, name: string): string {
+export function joinPath(dir: string, name: string): string {
   const sep = dir.includes("\\") && !dir.includes("/") ? "\\" : "/";
   const trimmed = dir.replace(/[/\\]+$/, "");
   return `${trimmed}${sep}${name}`;
@@ -85,6 +85,31 @@ function pickCheckpointFile(runEntries: ModelDirEntry[]): string | null {
     ckptFiles[0]?.name ??
     null
   );
+}
+
+/**
+ * Full path of the checkpoint to FINE-TUNE from in a run directory: the best
+ * epoch (`best.ckpt`, what sleap-nn's ModelCheckpoint keeps by the monitored
+ * metric) rather than the last one — fine-tuning wants the best weights, while
+ * a true resume wants `last.ckpt` (see {@link DiscoveredModel.checkpointFile}).
+ * `null` when the directory holds no checkpoint at all.
+ */
+export async function findFineTuneCheckpoint(
+  runDir: string,
+  fs: ModelFsAccess = defaultFs(),
+): Promise<string | null> {
+  let entries: ModelDirEntry[];
+  try {
+    entries = await fs.readDir(runDir);
+  } catch {
+    return null;
+  }
+  const ckpts = entries.filter((e) => !e.isDirectory && e.name.endsWith(".ckpt"));
+  const name =
+    ckpts.find((e) => e.name === "best.ckpt")?.name ??
+    ckpts.find((e) => e.name === "last.ckpt")?.name ??
+    ckpts[0]?.name;
+  return name ? joinPath(runDir, name) : null;
 }
 
 /**

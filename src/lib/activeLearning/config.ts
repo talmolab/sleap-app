@@ -31,6 +31,17 @@ export type MineStrategy = "prediction_score" | "velocity" | "max_displacement";
 export interface LoopConfig {
   maxRounds: number;
   stopWhen: { metricPlateau: boolean };
+  /**
+   * After a round's review sweep is finished, start the next round's training
+   * by itself (saving the project first). Round 1 always goes through the
+   * Training panel, because that's where the pose pipeline is chosen.
+   */
+  autoRetrain: boolean;
+  /**
+   * Later rounds start from the previous round's weights (sleap-nn
+   * `pretrained_*_weights`) instead of training from scratch.
+   */
+  fineTune: boolean;
 }
 
 export type LocatorBackbone = "unet" | "convnext" | "swint";
@@ -120,6 +131,25 @@ export interface MineConfig {
   scoreThreshold: number;
   /** Whether to build a per-keypoint (not just per-frame) review queue. */
   keypointReview: boolean;
+  /** Most instances a round asks you to review (the worst ones). */
+  reviewBudget: number;
+  /**
+   * Share the review budget across videos, so one hard video can't use it all
+   * up and a newly added video always gets looked at.
+   */
+  spreadAcrossVideos: boolean;
+  /**
+   * Videos an earlier round already predicted get a fresh, evenly spread
+   * sample of this many unlabeled frames per round (with the new model), so
+   * the loop keeps finding their hard cases without re-predicting every frame.
+   * 0 = only predict videos no round has predicted yet.
+   */
+  revisitFrames: number;
+  /**
+   * Jump straight into the review sweep when a round's predictions land —
+   * unless you're busy seeding or in a keypoint pass (then it waits, badged).
+   */
+  autoReview: boolean;
 }
 
 /**
@@ -155,6 +185,8 @@ export const DEFAULT_ACTIVE_LEARNING_CONFIG: ActiveLearningConfig = {
   loop: {
     maxRounds: 5,
     stopWhen: { metricPlateau: true },
+    autoRetrain: true,
+    fineTune: true,
   },
   localize: {
     enabled: true,
@@ -200,6 +232,10 @@ export const DEFAULT_ACTIVE_LEARNING_CONFIG: ActiveLearningConfig = {
     strategies: ["prediction_score", "velocity"],
     scoreThreshold: 0.3,
     keypointReview: true,
+    reviewBudget: 50,
+    spreadAcrossVideos: true,
+    revisitFrames: 200,
+    autoReview: true,
   },
   consistency: {
     enabled: true,
@@ -299,6 +335,8 @@ export function normalizeActiveLearningConfig(raw: unknown): ActiveLearningConfi
       stopWhen: {
         metricPlateau: bool(asRecord(loop.stopWhen).metricPlateau, d.loop.stopWhen.metricPlateau),
       },
+      autoRetrain: bool(loop.autoRetrain, d.loop.autoRetrain),
+      fineTune: bool(loop.fineTune, d.loop.fineTune),
     },
     localize: {
       enabled: bool(localize.enabled, d.localize.enabled),
@@ -338,6 +376,10 @@ export function normalizeActiveLearningConfig(raw: unknown): ActiveLearningConfi
       strategies: strategies.length > 0 ? strategies : d.mine.strategies,
       scoreThreshold: num(mine.scoreThreshold, d.mine.scoreThreshold),
       keypointReview: bool(mine.keypointReview, d.mine.keypointReview),
+      reviewBudget: num(mine.reviewBudget, d.mine.reviewBudget),
+      spreadAcrossVideos: bool(mine.spreadAcrossVideos, d.mine.spreadAcrossVideos),
+      revisitFrames: num(mine.revisitFrames, d.mine.revisitFrames),
+      autoReview: bool(mine.autoReview, d.mine.autoReview),
     },
     consistency: {
       enabled: bool(consistency.enabled, d.consistency.enabled),
@@ -480,6 +522,16 @@ export function validateActiveLearningConfig(
     if (t.batchSize < 1) {
       errors.push(`localize.training.batchSize must be at least 1 (got ${t.batchSize}).`);
     }
+  }
+
+  if (config.mine.scoreThreshold < 0 || config.mine.scoreThreshold > 1) {
+    errors.push(`mine.scoreThreshold must be in [0, 1] (got ${config.mine.scoreThreshold}).`);
+  }
+  if (config.mine.reviewBudget < 1) {
+    errors.push(`mine.reviewBudget must be at least 1 (got ${config.mine.reviewBudget}).`);
+  }
+  if (config.mine.revisitFrames < 0) {
+    errors.push(`mine.revisitFrames must be 0 or more (got ${config.mine.revisitFrames}).`);
   }
 
   if (config.consistency.fraction < 0 || config.consistency.fraction > 1) {

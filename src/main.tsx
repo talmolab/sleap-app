@@ -8,10 +8,22 @@ import { useAppStore } from "./stores/appStore";
 import { commandContext } from "./commands";
 import { loadProjectFromFile } from "./lib/loadProject";
 import { initDiagnostics } from "./lib/diagnostics";
+import { useActiveLearningStore } from "./stores/activeLearningStore";
+import { buildRoundQueue, offerReview, runRoundInference } from "./lib/activeLearning/roundEngine";
+import { frameKey } from "./lib/activeLearning/reviewQueue";
 
 // Expose key APIs on window for testing/debugging (typed in src/globals.d.ts,
 // which the test tsconfig also includes so tests/e2e can use window.sleap).
-window.sleap = { loadSlp, Mp4BoxVideoBackend, store: useAppStore, commandContext, loadProjectFromFile, UserCentroid, PredictedCentroid };
+window.sleap = {
+  loadSlp,
+  Mp4BoxVideoBackend,
+  store: useAppStore,
+  commandContext,
+  loadProjectFromFile,
+  UserCentroid,
+  PredictedCentroid,
+  activeLearning: { store: useActiveLearningStore, buildRoundQueue, offerReview, runRoundInference, frameKey },
+};
 
 // A window spawned with `?viz=<runDir>` is a standalone visualization window
 // (its own isolated heap) — render just the viz viewer, not the full editor.

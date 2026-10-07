@@ -63,6 +63,12 @@ export interface BuildReviewQueueOptions {
    * `undefined` includes every scored prediction (the cap alone bounds the set).
    */
   scoreThreshold?: number;
+  /**
+   * Only consider these frames ({@link frameKey} of video index + frame index)
+   * — e.g. the frames one loop round just predicted, so predictions an earlier
+   * round left behind (and the user skipped) don't resurface every round.
+   */
+  frames?: ReadonlySet<string>;
 }
 
 /** Reduced confidence stats for one instance, or the raw per-node scores. */
@@ -138,13 +144,14 @@ export function buildReviewQueue(
   labels: Labels,
   options: BuildReviewQueueOptions = {},
 ): ReviewItem[] {
-  const { limit, scoreThreshold } = options;
+  const { limit, scoreThreshold, frames } = options;
   const videos = labels.videos;
   const items: ReviewItem[] = [];
 
   for (const lf of sortedFrames(labels)) {
     const videoIdx = videos.indexOf(lf.video);
     if (videoIdx < 0) continue;
+    if (frames && !frames.has(frameKey(videoIdx, lf.frameIdx))) continue;
     const insts = lf.instances;
     for (let i = 0; i < insts.length; i++) {
       const inst = insts[i];
@@ -184,6 +191,44 @@ export function buildReviewQueue(
     return items.slice(0, limit);
   }
   return items;
+}
+
+/** Key for {@link BuildReviewQueueOptions.frames}. */
+export function frameKey(videoIdx: number, frameIdx: number): string {
+  return `${videoIdx}:${frameIdx}`;
+}
+
+/**
+ * Cap a worst-first queue at `budget`, sharing it across videos.
+ *
+ * Round-robin, one item per video per turn (each video's own worst first), so
+ * every video with flagged predictions gets reviewed — a single hard video
+ * can't swallow the budget and leave a newly added one unlooked-at — while
+ * budget a video can't use flows to the ones with more. The result keeps the
+ * queue's worst-first order.
+ */
+export function spreadAcrossVideos(queue: ReviewItem[], budget: number): ReviewItem[] {
+  if (budget <= 0 || queue.length <= budget) return queue.slice();
+  const byVideo = new Map<number, ReviewItem[]>();
+  for (const item of queue) {
+    const list = byVideo.get(item.videoIdx);
+    if (list) list.push(item);
+    else byVideo.set(item.videoIdx, [item]);
+  }
+  const lists = [...byVideo.values()];
+  const picked = new Set<ReviewItem>();
+  for (let k = 0; picked.size < budget; k++) {
+    let progressed = false;
+    for (const list of lists) {
+      if (picked.size >= budget) break;
+      if (k < list.length) {
+        picked.add(list[k]);
+        progressed = true;
+      }
+    }
+    if (!progressed) break;
+  }
+  return queue.filter((item) => picked.has(item));
 }
 
 /**

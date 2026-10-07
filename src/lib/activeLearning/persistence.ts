@@ -23,10 +23,22 @@ import {
   normalizeActiveLearningConfig,
   type ActiveLearningConfig,
 } from "./config";
-import { useActiveLearningStore } from "@/stores/activeLearningStore";
+import {
+  useActiveLearningStore,
+  type PersistedLoopState,
+  type RoundRecord,
+} from "@/stores/activeLearningStore";
 
 /** Provenance key holding the serialized workflow config (plain JSON object). */
 export const AL_PROVENANCE_KEY = "sleap_app_active_learning";
+
+/**
+ * Provenance key holding the loop's progress (round, phase, per-round models,
+ * which videos have been predicted) — kept apart from the config so editing or
+ * re-importing the workflow YAML never carries one project's history into
+ * another.
+ */
+export const AL_STATE_PROVENANCE_KEY = "sleap_app_active_learning_state";
 
 /** Node names of the project's first skeleton (validation target on adopt). */
 function skeletonNodeNames(labels: Labels): string[] | undefined {
@@ -53,7 +65,50 @@ export function writeActiveLearningToProvenance(
  * the next SLP write persists it. Call before serializing.
  */
 export function syncActiveLearningProvenance(labels: Labels): void {
-  writeActiveLearningToProvenance(labels, useActiveLearningStore.getState().config);
+  const s = useActiveLearningStore.getState();
+  writeActiveLearningToProvenance(labels, s.config);
+  if (!labels.provenance) labels.provenance = {};
+  if (s.config) {
+    const state: PersistedLoopState = {
+      round: s.round,
+      phase: s.phase,
+      history: s.history,
+      predictedVideos: s.predictedVideos,
+    };
+    labels.provenance[AL_STATE_PROVENANCE_KEY] = state;
+  } else {
+    delete labels.provenance[AL_STATE_PROVENANCE_KEY];
+  }
+}
+
+/** Lenient read of a stored loop state; anything malformed is dropped, not thrown. */
+export function readPersistedLoopState(raw: unknown): Partial<PersistedLoopState> {
+  if (!raw || typeof raw !== "object") return {};
+  const r = raw as Record<string, unknown>;
+  const out: Partial<PersistedLoopState> = {};
+  if (typeof r.round === "number" && Number.isFinite(r.round) && r.round >= 1) out.round = Math.floor(r.round);
+  if (r.phase === null || r.phase === "localize" || r.phase === "labelKeypoints" || r.phase === "mine") {
+    out.phase = r.phase;
+  }
+  if (Array.isArray(r.history)) {
+    out.history = r.history.filter((h): h is RoundRecord => {
+      if (!h || typeof h !== "object") return false;
+      const x = h as Record<string, unknown>;
+      return (
+        typeof x.round === "number" &&
+        typeof x.modelType === "string" &&
+        Array.isArray(x.models) &&
+        x.models.every(
+          (m) => m && typeof m === "object" && typeof (m as Record<string, unknown>).slot === "string" &&
+            typeof (m as Record<string, unknown>).dir === "string",
+        )
+      );
+    });
+  }
+  if (Array.isArray(r.predictedVideos)) {
+    out.predictedVideos = r.predictedVideos.filter((v): v is string => typeof v === "string");
+  }
+  return out;
 }
 
 /**
@@ -69,6 +124,7 @@ export function hydrateActiveLearningStore(labels: Labels): void {
   if (raw && typeof raw === "object") {
     try {
       store.setConfig(normalizeActiveLearningConfig(raw), skeletonNodeNames(labels));
+      store.restoreLoopState(readPersistedLoopState(labels.provenance?.[AL_STATE_PROVENANCE_KEY]));
       return;
     } catch {
       // Corrupt/incompatible payload — fall through to a clean slate.

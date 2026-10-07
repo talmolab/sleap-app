@@ -14,7 +14,7 @@ import { useAppStore } from "../../stores/appStore";
 import { useActiveLearningStore, roundStatus } from "../../stores/activeLearningStore";
 import { buildReviewQueue, resolveReviewInstance } from "@/lib/activeLearning/reviewQueue";
 import { acceptAndAdvanceCorrection } from "@/lib/activeLearning/correctionActions";
-import { startNextRound } from "@/lib/activeLearning/loopRound";
+import { advanceRound } from "@/lib/activeLearning/roundEngine";
 import { toast } from "@/lib/notify";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -36,6 +36,8 @@ export function CorrectionPanel() {
   // a predictions file and there is no loop to advance.
   const alConfig = useActiveLearningStore((s) => s.config);
   const alRound = useActiveLearningStore((s) => s.round);
+  // Once a round has trained, retraining is automatic (save → fine-tune → predict).
+  const hasTrainedRound = useActiveLearningStore((s) => s.history.length > 0);
   const roundInfo = useMemo(
     () => roundStatus({ config: alConfig, round: alRound }),
     [alConfig, alRound],
@@ -128,8 +130,9 @@ export function CorrectionPanel() {
   const total = queue.length;
   const stop = () => useAppStore.getState().exitCorrectMode();
   const nextRound = () => {
-    const outcome = startNextRound();
-    if (!outcome.ok) toast.error(outcome.reason);
+    void advanceRound().then((outcome) => {
+      if (!outcome.ok) toast.error(outcome.reason);
+    });
   };
 
   if (cursor >= total) {
@@ -153,7 +156,9 @@ export function CorrectionPanel() {
                 Retrain → round {roundInfo.round + 1} of {roundInfo.maxRounds}
               </Button>
               <p className="text-muted-foreground">
-                Trains on your corrections, then predicts the next batch to review.
+                {hasTrainedRound
+                  ? "Saves, fine-tunes on your corrections, predicts new videos first, then brings you back here."
+                  : "Trains on your corrections, then predicts the next batch to review."}
               </p>
             </>
           ) : (

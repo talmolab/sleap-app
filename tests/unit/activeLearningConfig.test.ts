@@ -218,7 +218,7 @@ describe("active-learning config", () => {
     const cfg: ActiveLearningConfig = {
       ...DEFAULT_ACTIVE_LEARNING_CONFIG,
       version: ACTIVE_LEARNING_CONFIG_VERSION + 1,
-      loop: { maxRounds: 0, stopWhen: { metricPlateau: false } },
+      loop: { ...DEFAULT_ACTIVE_LEARNING_CONFIG.loop, maxRounds: 0, stopWhen: { metricPlateau: false } },
       labelKeypoints: { order: "pass-major", passes: [] },
       consistency: { enabled: true, fraction: 1.5, blind: true },
     };

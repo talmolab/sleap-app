@@ -13,6 +13,7 @@ import type { Command } from "./types";
 import type { CommandContext } from "./CommandContext";
 import { useAppStore } from "../stores/appStore";
 import { toast } from "@/lib/notify";
+import { videoBasename } from "@/lib/videoFilter";
 import {
   showLabelingHint,
   hintIfFirstInstance,
@@ -862,6 +863,27 @@ export const MergePredictions: Command = {
       toast.info(
         "Paused the sweep: merging predictions changes the instances it was stepping through. Resume it from the Active Learning panel.",
       );
+    }
+
+    // Honor "skip user-labeled frames" here, at the merge. sleap-nn ignores
+    // `--exclude_user_labeled` when it's handed a raw video rather than the
+    // project .slp (which is how a single-video run is invoked), so the output
+    // can still hold predictions for frames already labeled by hand — merged,
+    // they'd sit on top of the ground truth and get queued for review.
+    if (params?.skipUserLabeledFrames) {
+      const labeled = new Set<string>();
+      for (const lf of labels.labeledFrames) {
+        if (lf.hasUserInstances) labeled.add(`${videoBasename(lf.video.filename)}#${lf.frameIdx}`);
+      }
+      if (labeled.size > 0) {
+        const kept = predictions.labeledFrames.filter(
+          (lf) => !labeled.has(`${videoBasename(lf.video.filename)}#${lf.frameIdx}`)
+        );
+        if (kept.length !== predictions.labeledFrames.length) {
+          predictions.labeledFrames = kept;
+          predictions.reindex();
+        }
+      }
     }
 
     const mode = (params?.mode as ExistingPredictionsMode) ?? "replace";

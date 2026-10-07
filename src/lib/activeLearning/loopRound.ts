@@ -48,8 +48,9 @@ export function startNextRound(): NextRoundOutcome {
     };
   }
 
-  // Fails loudly (toasts) when the project isn't saved.
-  if (!setupPoseTraining()) {
+  // Fails loudly (toasts) when the project isn't saved. The run it sets up is
+  // the round we're about to advance into.
+  if (!setupPoseTraining({ round: status.round + 1 })) {
     return { ok: false, reason: "Couldn't set up training for the next round." };
   }
 

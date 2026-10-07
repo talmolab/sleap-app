@@ -619,7 +619,9 @@ export async function runInference(
   // Resolve random-video frame sampling here (needs the app store + RNG); the
   // rest of the argv is built by the pure buildInferenceArgs helper.
   let sampledFrames: number[] | undefined;
-  if (config.frameRange === "random_video") {
+  if (config.frameRange === "random_video" && config.explicitFrames && config.explicitFrames.length > 0) {
+    sampledFrames = [...config.explicitFrames];
+  } else if (config.frameRange === "random_video") {
     const { useAppStore } = await import("@/stores/appStore");
     const activeVideo = useAppStore.getState().video;
     const nFrames = activeVideo?.shape?.[0] ?? 0;

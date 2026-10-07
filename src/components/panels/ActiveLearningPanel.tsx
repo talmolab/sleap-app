@@ -36,6 +36,7 @@ import { Slider } from "@/components/ui/slider";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { ActiveLearningConfigDialog } from "@/components/dialogs/ActiveLearningConfigDialog";
 import { CorrectionPanel } from "@/components/panels/CorrectionPanel";
+import { LoopStatusCard } from "@/components/panels/LoopStatusCard";
 import { cn } from "@/lib/utils";
 import { dirtyFrameTracker } from "@/lib/autosaveDirty";
 
@@ -244,6 +245,7 @@ export function ActiveLearningPanel() {
           localize: { ...currentConfig.localize, centroidNode: ANCHOR, separateCentroid: true },
         },
         poseSkel.nodes.map((n) => n.name),
+        { keepProgress: true },
       );
       markProjectLevelEdit();
       useAppStore.getState().bumpOverlayVersion();
@@ -269,6 +271,7 @@ export function ActiveLearningPanel() {
         },
       },
       names,
+      { keepProgress: true },
     );
     markProjectLevelEdit();
     useAppStore.getState().bumpOverlayVersion();
@@ -435,6 +438,19 @@ export function ActiveLearningPanel() {
   const startReview = () => {
     const { labels, correctZoomWindow, correctScoreThreshold } = useAppStore.getState();
     if (!labels) return;
+    // A loop round left its own queue ready (this round's frames, budgeted and
+    // spread across videos) — use it rather than re-ranking the whole project.
+    const al = useActiveLearningStore.getState();
+    if (al.pendingQueue && al.pendingQueue.length > 0 && al.config) {
+      const roundQueue = al.pendingQueue;
+      al.setPendingQueue(null);
+      useAppStore.getState().enterCorrectMode({
+        queue: roundQueue,
+        zoomWindow: correctZoomWindow,
+        scoreThreshold: al.config.mine.scoreThreshold,
+      });
+      return;
+    }
     const queue = buildReviewQueue(labels, { scoreThreshold: correctScoreThreshold });
     if (queue.length === 0) {
       // Everything got corrected or deleted between the merge and this click.
@@ -995,6 +1011,7 @@ export function ActiveLearningPanel() {
 
         {/* ---- Correct (Phase 3) ---- */}
         <TabsContent value="correct" className="m-0 min-h-0 flex-1 overflow-y-auto">
+          <LoopStatusCard />
           {/* Handoff banner from a finished pose run. Only while NOT already
               correcting — once the sweep is live the panel below is the UI. */}
           {pendingReview && !isCorrecting && (

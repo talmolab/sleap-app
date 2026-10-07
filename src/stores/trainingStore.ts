@@ -498,6 +498,12 @@ export interface LocalTrainingOptions {
   exportFormat?: "none" | "onnx" | "tensorrt";
   /** Run post-training inference on the exported model (falls back to the checkpoint on failure). */
   useExportedForInference?: boolean;
+  /**
+   * This run is round N of the active-learning loop. The loop's engine waits
+   * for it to finish, records the trained models, and runs the round's own
+   * inference (new videos first) instead of the panel's post-training target.
+   */
+  activeLearningRound?: number;
 }
 
 // Session guard: whether we've already confirmed sleap-nn's [export] extra
@@ -634,7 +640,15 @@ interface TrainingState {
     inferenceTarget?: string;
     skipUserLabeled?: boolean;
     requireModelTypeChoice?: boolean;
+    /** The run the user starts from this hand-off is this active-learning round. */
+    activeLearningRound?: number;
   } | null;
+  /**
+   * Set when the current (or just-finished) LOCAL run is an active-learning
+   * round — see {@link LocalTrainingOptions.activeLearningRound}. Cleared when
+   * the next run starts or the store resets.
+   */
+  activeLearningRun: { round: number } | null;
 
   // Actions
   setPendingHandoff: (v: TrainingState["pendingHandoff"]) => void;
@@ -1308,6 +1322,7 @@ const initialState = {
   modelOutputDirs: [] as string[],
   log: [] as string[],
   pendingHandoff: null as TrainingState["pendingHandoff"],
+  activeLearningRun: null as TrainingState["activeLearningRun"],
   postTrainingInference: null as PostTrainingInference | null,
   resetSeq: 0,
 };
@@ -1762,6 +1777,10 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       modelOutputDirs: [],
       log: [],
       postTrainingInference: null,
+      activeLearningRun:
+        !remoteOpts && typeof localOpts?.activeLearningRound === "number"
+          ? { round: localOpts.activeLearningRound }
+          : null,
     });
 
     if (remoteOpts?.remote) {
@@ -2531,6 +2550,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
               await commandContext.execute(MergePredictions, {
                 predictions,
                 mode: localOpts?.existingPredictions ?? "replace",
+                skipUserLabeledFrames: localOpts?.skipUserLabeled ?? false,
               });
               mergedAny = true;
             };

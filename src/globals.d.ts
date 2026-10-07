@@ -15,5 +15,13 @@ interface Window {
     loadProjectFromFile: typeof import("./lib/loadProject").loadProjectFromFile;
     UserCentroid: typeof import("@talmolab/sleap-io.js").UserCentroid;
     PredictedCentroid: typeof import("@talmolab/sleap-io.js").PredictedCentroid;
+    /** Active-learning loop internals, for driving rounds in E2E tests. */
+    activeLearning: {
+      store: typeof import("./stores/activeLearningStore").useActiveLearningStore;
+      buildRoundQueue: typeof import("./lib/activeLearning/roundEngine").buildRoundQueue;
+      offerReview: typeof import("./lib/activeLearning/roundEngine").offerReview;
+      runRoundInference: typeof import("./lib/activeLearning/roundEngine").runRoundInference;
+      frameKey: typeof import("./lib/activeLearning/reviewQueue").frameKey;
+    };
   };
 }
