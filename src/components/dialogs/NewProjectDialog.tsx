@@ -174,7 +174,7 @@ export function NewProjectDialog() {
               </span>
             </label>
             <div className="flex items-center gap-2">
-              <span className="text-xs text-muted-foreground">
+              <span className="whitespace-nowrap text-xs text-muted-foreground">
                 No video handy?
               </span>
               <SampleVideoButton

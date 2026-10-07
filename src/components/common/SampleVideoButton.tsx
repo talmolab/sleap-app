@@ -13,7 +13,8 @@
  *
  * States:
  * - Idle: an outline button with a Download icon, "Use sample video", and a
- *   muted "mice.mp4 · N MB" hint.
+ *   muted "N MB" hint (the file name shows in the video list once staged;
+ *   naming it here too overflowed the 420px dialog).
  * - Loading: the label becomes "Downloading… NN%" (driven by
  *   `loadSampleVideo`'s `onProgress`), with a small cancel (×) button next to
  *   it that aborts the in-flight download via `AbortController`. Unmounting
@@ -123,7 +124,7 @@ export function SampleVideoButton({
       <Download className="h-3.5 w-3.5" />
       Use sample video
       <span className="font-normal text-muted-foreground">
-        {SAMPLE_VIDEO.name} · {SAMPLE_VIDEO_SIZE_LABEL}
+        {SAMPLE_VIDEO_SIZE_LABEL}
       </span>
     </Button>
   );
