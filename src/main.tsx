@@ -1,3 +1,6 @@
+// Must stay the first import: fixes an invalid navigator.language ("C" under
+// LANG=C on Linux WebKitGTK) before uPlot reads it at module load. See the file.
+import "./lib/localeGuard";
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
