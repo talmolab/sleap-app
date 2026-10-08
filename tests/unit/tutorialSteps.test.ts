@@ -13,6 +13,7 @@ import {
   RUN_INFERENCE_STEP,
   CHECK_ENVIRONMENT_STEP,
   BROWSER_NOTICE_STEP,
+  WELCOME_STEP,
   tutorialIncludesTraining,
   buildTutorialSteps,
   tutorialStepNumber,
@@ -90,9 +91,10 @@ describe("buildTutorialSteps", () => {
     "label-one-frame",
   ];
 
-  it("desktop: environment check, then New Project through whole-video inference", () => {
+  it("desktop: welcome, environment check, then New Project through whole-video inference", () => {
     const steps = buildTutorialSteps(true);
     expect(steps.map((s) => s.id)).toEqual([
+      "welcome",
       "check-environment",
       ...core,
       "run-training",
@@ -103,9 +105,9 @@ describe("buildTutorialSteps", () => {
     expect(tutorialIncludesTraining(steps)).toBe(true);
   });
 
-  it("browser: the can't-train notice, then stops after labeling", () => {
+  it("browser: welcome, the can't-train notice, then stops after labeling", () => {
     const steps = buildTutorialSteps(false);
-    expect(steps.map((s) => s.id)).toEqual(["browser-notice", ...core]);
+    expect(steps.map((s) => s.id)).toEqual(["welcome", "browser-notice", ...core]);
     expect(tutorialIncludesTraining(steps)).toBe(false);
   });
 });
@@ -120,23 +122,49 @@ describe("add-video-in-dialog step target", () => {
 });
 
 describe("tutorialStepNumber", () => {
+  it("doesn't number the welcome card", () => {
+    expect(tutorialStepNumber(buildTutorialSteps(true), 0)).toBe(-1);
+    expect(tutorialStepNumber(buildTutorialSteps(false), 0)).toBe(-1);
+  });
+
   it("makes the environment check step 0 so the rest keep their numbers", () => {
     const steps = buildTutorialSteps(true);
-    expect(tutorialStepNumber(steps, 0)).toBe(0);
+    expect(tutorialStepNumber(steps, steps.indexOf(CHECK_ENVIRONMENT_STEP))).toBe(0);
+    expect(tutorialStepNumber(steps, steps.indexOf(NEW_PROJECT_STEP))).toBe(1);
     expect(tutorialStepNumber(steps, steps.indexOf(RUN_TRAINING_STEP))).toBe(8);
     expect(tutorialStepNumber(steps, steps.length - 1)).toBe(11);
   });
 
   it("numbers the browser run the same way, ending at step 7", () => {
     const steps = buildTutorialSteps(false);
-    expect(tutorialStepNumber(steps, 0)).toBe(0);
-    expect(tutorialStepNumber(steps, 1)).toBe(1);
+    expect(tutorialStepNumber(steps, steps.indexOf(BROWSER_NOTICE_STEP))).toBe(0);
+    expect(tutorialStepNumber(steps, steps.indexOf(NEW_PROJECT_STEP))).toBe(1);
     expect(tutorialStepNumber(steps, steps.length - 1)).toBe(7);
   });
 
+  it("gives every shared step the same number in both builds", () => {
+    const desktop = buildTutorialSteps(true);
+    const browser = buildTutorialSteps(false);
+    for (const [i, step] of browser.entries()) {
+      if (step === WELCOME_STEP || step === BROWSER_NOTICE_STEP) continue;
+      expect(tutorialStepNumber(browser, i)).toBe(
+        tutorialStepNumber(desktop, desktop.indexOf(step)),
+      );
+    }
+  });
+
   it("numbers from 1 when the sequence has no step 0", () => {
-    const steps = buildTutorialSteps(true).slice(1);
+    const steps = buildTutorialSteps(true).slice(2);
     expect(tutorialStepNumber(steps, 0)).toBe(1);
+  });
+});
+
+describe("welcome step", () => {
+  it("is centered, complete straight away, and waits for Start", () => {
+    const current = watchState();
+    expect(WELCOME_STEP.targetSelector).toBeNull();
+    expect(WELCOME_STEP.isComplete(snapshotTutorialState(current), current)).toBe(true);
+    expect(WELCOME_STEP.holdBeforeAdvance?.(current)).toBe(true);
   });
 });
 

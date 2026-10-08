@@ -32,6 +32,7 @@ import { useInferenceStore } from "@/stores/inferenceStore";
 import { useEnvironmentStore } from "@/stores/environmentStore";
 import {
   RUN_TRAINING_STEP,
+  WELCOME_STEP,
   snapshotTutorialState,
   tutorialStepNumber,
   type TutorialSnapshot,
@@ -378,6 +379,7 @@ export function TutorialOverlay() {
   if (!step) return tutorialCompleted ? <TutorialCompletionCard /> : null;
   if (confirmingExit) return null;
 
+  const isWelcome = step.id === WELCOME_STEP.id;
   const stepNumber = tutorialStepNumber(tutorialSteps, tutorialStepIndex);
   const lastStepNumber = tutorialStepNumber(tutorialSteps, tutorialSteps.length - 1);
   const trainingStepIndex = tutorialSteps.findIndex((s) => s.id === RUN_TRAINING_STEP.id);
@@ -425,7 +427,7 @@ export function TutorialOverlay() {
           >
             <GripVertical className="h-3.5 w-3.5 text-muted-foreground" />
             <span className="text-xs font-medium text-muted-foreground">
-              Step {stepNumber} of {lastStepNumber}
+              {isWelcome ? "Welcome" : `Step ${stepNumber} of ${lastStepNumber}`}
             </span>
           </div>
           <div className="flex items-center gap-2">
@@ -517,15 +519,19 @@ export function TutorialOverlay() {
           </p>
         )}
         <div className="mt-3 flex items-center justify-between gap-2">
-          <Button
-            variant="outline"
-            size="xs"
-            disabled={tutorialStepIndex === 0}
-            onClick={() => useAppStore.getState().previousTutorialStep()}
-          >
-            <ChevronLeft className="h-3 w-3" />
-            Prev
-          </Button>
+          {isWelcome ? (
+            <span />
+          ) : (
+            <Button
+              variant="outline"
+              size="xs"
+              disabled={tutorialStepIndex === 0}
+              onClick={() => useAppStore.getState().previousTutorialStep()}
+            >
+              <ChevronLeft className="h-3 w-3" />
+              Prev
+            </Button>
+          )}
           <Button
             size="xs"
             className={!stepComplete ? "opacity-50" : undefined}
@@ -541,7 +547,11 @@ export function TutorialOverlay() {
               useAppStore.getState().advanceTutorialStep();
             }}
           >
-            {tutorialStepIndex === tutorialSteps.length - 1 ? "Finish" : "Next"}
+            {isWelcome
+              ? "Start"
+              : tutorialStepIndex === tutorialSteps.length - 1
+                ? "Finish"
+                : "Next"}
             <ChevronRight className="h-3 w-3" />
           </Button>
         </div>

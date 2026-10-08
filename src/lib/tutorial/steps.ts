@@ -23,7 +23,9 @@
  * matching `data-tutorial` attribute at its target — the engine is generic over
  * whatever list `buildTutorialSteps` returns.
  *
- * Both builds open with a "Step 0" (see `tutorialStepNumber`). On desktop it's
+ * Both builds open with the unnumbered `WELCOME_STEP` (what the tutorial
+ * covers and how the card works), then a "Step 0" (see `tutorialStepNumber`),
+ * so every later step has the same number in both builds. On desktop Step 0 is
  * `CHECK_ENVIRONMENT_STEP`: training needs uv + sleap-nn, and a first-time
  * user would otherwise only find that out at the training step. The browser
  * build can't train models at all, so its Step 0 is `BROWSER_NOTICE_STEP`
@@ -179,6 +181,21 @@ export interface TutorialStep {
 }
 
 /**
+ * Starter card for both builds, before Step 0: what the tutorial covers and
+ * how to work the card. Unnumbered (see `tutorialStepNumber`); the overlay
+ * shows "Welcome" in place of "Step N of M" and labels its button Start.
+ */
+export const WELCOME_STEP: TutorialStep = {
+  id: "welcome",
+  title: "Welcome to SLEAP",
+  body: "This hands-on tutorial walks through the whole SLEAP workflow on a short sample video: label a few frames, train a model on them, correct its predictions, retrain, then run the model on the whole video. It builds its own project, so nothing of yours is touched.\n\nThis card shows what to do at each step and moves on once you've done it. Drag it by its handle, collapse it with the chevron, or close it with ✕ at any time.\n\nClick **Start** when you're ready.",
+  targetSelector: null,
+  placement: "bottom",
+  isComplete: () => true,
+  holdBeforeAdvance: () => true,
+};
+
+/**
  * Desktop "Step 0": make sure uv and sleap-nn are installed before the user
  * invests in labeling, and find out early whether training will run on the
  * CPU. Completes once sleap-nn is installed and its accelerator has been
@@ -189,7 +206,7 @@ export interface TutorialStep {
 export const CHECK_ENVIRONMENT_STEP: TutorialStep = {
   id: "check-environment",
   title: "Check your environment",
-  body: "This tutorial walks through the whole SLEAP loop: label a few frames, train a model on them, correct its predictions, retrain, then run it on a whole video.\n\nTraining needs two tools: uv and sleap-nn (SLEAP's training engine). If uv shows \"Not installed\", click **Install** next to it, then do the same for sleap-nn. When both show as installed, click **Next**.",
+  body: "Training needs two tools: uv and sleap-nn (SLEAP's training engine). If uv shows \"Not installed\", click **Install** next to it, then do the same for sleap-nn. When both show as installed, click **Next**.",
   tips: {
     label: "App updates",
     text: "The SLEAP App section at the top shows your version. Stable is the recommended channel. If an update is available, it appears in orange next to an **Update** button. Updating restarts the app, so you'd need to start the tutorial again afterwards.",
@@ -214,7 +231,7 @@ export const CHECK_ENVIRONMENT_STEP: TutorialStep = {
  */
 export const BROWSER_NOTICE_STEP: TutorialStep = {
   id: "browser-notice",
-  title: "Before you start",
+  title: "Training needs the desktop app",
   body: "You're using SLEAP in the browser, where models can't be trained. This tutorial covers everything up to training and ends there: creating a project, adding a video, generating suggestions, building a skeleton, and labeling a frame.\n\nTo train a model and run it on your videos, use the **SLEAP desktop app**.",
   targetSelector: null,
   placement: "bottom",
@@ -487,11 +504,12 @@ export function buildTutorialSteps(desktop: boolean): TutorialStep[] {
   ];
   if (!desktop) {
     return [
+      WELCOME_STEP,
       BROWSER_NOTICE_STEP,
       ...steps.slice(0, steps.indexOf(LABEL_ONE_FRAME_STEP) + 1),
     ];
   }
-  return [CHECK_ENVIRONMENT_STEP, ...steps];
+  return [WELCOME_STEP, CHECK_ENVIRONMENT_STEP, ...steps];
 }
 
 /** True when the sequence includes training (the desktop one). */
@@ -502,9 +520,13 @@ export function tutorialIncludesTraining(steps: TutorialStep[]): boolean {
 const STEP_ZERO_IDS = new Set([CHECK_ENVIRONMENT_STEP.id, BROWSER_NOTICE_STEP.id]);
 
 /**
- * The number shown for `steps[index]`. The environment check / browser notice
- * is "Step 0", so the steps after it keep the same numbers in both builds.
+ * The number shown for `steps[index]`. The welcome card isn't counted, and the
+ * environment check / browser notice is "Step 0", so the steps after it keep
+ * the same numbers in both builds. Returns -1 for the welcome card itself.
  */
 export function tutorialStepNumber(steps: TutorialStep[], index: number): number {
-  return STEP_ZERO_IDS.has(steps[0]?.id ?? "") ? index : index + 1;
+  const numbered = steps.filter((s) => s.id !== WELCOME_STEP.id);
+  const position = numbered.indexOf(steps[index]);
+  if (position === -1) return -1;
+  return STEP_ZERO_IDS.has(numbered[0]?.id ?? "") ? position : position + 1;
 }
