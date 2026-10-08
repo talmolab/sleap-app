@@ -298,6 +298,20 @@ describe("generate-suggestions step", () => {
     const current = watchState({ labels: fakeLabels({ suggestions: 5 }) });
     expect(GENERATE_SUGGESTIONS_STEP.isComplete(entry, current)).toBe(false);
   });
+
+  it("has no hint before anything is generated", () => {
+    const entry = snapshotTutorialState(watchState({ labels: fakeLabels({ suggestions: 0 }) }));
+    const current = watchState({ labels: fakeLabels({ suggestions: 0 }) });
+    expect(GENERATE_SUGGESTIONS_STEP.incompleteHint?.(entry, current)).toBeNull();
+  });
+
+  it("names the expected settings when suggestions were made with others", () => {
+    const entry = snapshotTutorialState(watchState({ labels: fakeLabels({ suggestions: 0 }) }));
+    const current = watchState({ labels: fakeLabels({ suggestions: 5 }) });
+    const hint = GENERATE_SUGGESTIONS_STEP.incompleteHint?.(entry, current) ?? "";
+    expect(hint).toContain("Stride");
+    expect(hint).toContain("20");
+  });
 });
 
 describe("create-skeleton step", () => {
@@ -508,6 +522,16 @@ describe("run-inference-video step", () => {
       entry.everInferenceRunning = true;
       const current = watchState({ inferenceStatus: "completed" });
       expect(RUN_INFERENCE_STEP.isComplete(entry, current)).toBe(false);
+      expect(RUN_INFERENCE_STEP.incompleteHint?.(entry, current)).toContain(
+        "Entire current video",
+      );
+    });
+
+    it("has no hint before inference has run", () => {
+      withTarget("Random sample (current video)");
+      const entry = snapshotTutorialState(watchState());
+      const current = watchState({ inferenceStatus: "idle" });
+      expect(RUN_INFERENCE_STEP.incompleteHint?.(entry, current)).toBeNull();
     });
 
     it("completes once inference on the entire current video finishes", () => {

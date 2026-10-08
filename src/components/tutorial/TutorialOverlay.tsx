@@ -14,8 +14,17 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
-import { AlertTriangle, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, GripVertical, X } from "lucide-react";
+import {
+  AlertTriangle,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ChevronUp,
+  GripVertical,
+  X,
+} from "lucide-react";
 import { toast } from "@/lib/notify";
+import { confirmDialog } from "@/stores/confirmStore";
 import { Button } from "@/components/ui/button";
 import { useAppStore } from "@/stores/appStore";
 import { useTrainingStore } from "@/stores/trainingStore";
@@ -96,6 +105,34 @@ function clampToViewport(
   };
 }
 
+/**
+ * Renders a step string's inline marks: `**text**` as bold full-contrast text
+ * (stands out from the muted body — the control to click or value to use) and
+ * `` `text` `` as a key cap for a shortcut. Unmatched marks render literally.
+ */
+function renderInline(text: string) {
+  return text.split(/(\*\*[^*]+\*\*|`[^`]+`)/).map((part, i) => {
+    if (part.startsWith("**") && part.endsWith("**") && part.length > 4) {
+      return (
+        <strong key={i} className="font-semibold text-foreground">
+          {part.slice(2, -2)}
+        </strong>
+      );
+    }
+    if (part.startsWith("`") && part.endsWith("`") && part.length > 2) {
+      return (
+        <kbd
+          key={i}
+          className="rounded border border-border bg-muted px-1 py-px font-mono text-[11px] text-foreground"
+        >
+          {part.slice(1, -1)}
+        </kbd>
+      );
+    }
+    return part;
+  });
+}
+
 type BodyBlock = { kind: "text"; text: string } | { kind: "list"; items: string[] };
 
 /**
@@ -120,11 +157,11 @@ function renderBody(body: string) {
     b.kind === "list" ? (
       <ul key={i} className="list-disc pl-4">
         {b.items.map((item, j) => (
-          <li key={j}>{item}</li>
+          <li key={j}>{renderInline(item)}</li>
         ))}
       </ul>
     ) : (
-      <span key={i}>{b.text}</span>
+      <span key={i}>{renderInline(b.text)}</span>
     ),
   );
 }
@@ -180,9 +217,13 @@ export function TutorialOverlay() {
   // wouldn't trigger a re-render). Reset on every step change — a step you
   // haven't acted on yet always starts incomplete (unless revisited, below).
   const [stepComplete, setStepComplete] = useState(false);
+  // The step's `incompleteHint`, if any: why it isn't advancing although the
+  // user acted (e.g. a setting changed from what the tutorial needs).
+  const [stepHint, setStepHint] = useState<string | null>(null);
 
   // New step (or tutorial just started): re-snapshot the baseline to diff against.
   useEffect(() => {
+    setStepHint(null);
     if (!step) {
       entrySnapshotRef.current = null;
       setStepComplete(false);
@@ -238,6 +279,9 @@ export function TutorialOverlay() {
       }
       const complete = step.isComplete(entrySnapshotRef.current, watch);
       setStepComplete(complete);
+      setStepHint(
+        complete ? null : (step.incompleteHint?.(entrySnapshotRef.current, watch) ?? null),
+      );
       if (complete && !step.holdBeforeAdvance?.(watch)) {
         useAppStore.getState().advanceTutorialStep();
       }
@@ -258,6 +302,35 @@ export function TutorialOverlay() {
   // every step change so a step you already expanded doesn't carry that state
   // into the next, unrelated step's tips.
   const [tipsOpen, setTipsOpen] = useState(false);
+  // User-toggled collapse (header chevron, or clicking the step title): folds
+  // the card down to its header, title and Prev/Next so it covers less of the
+  // app. Unlike `tipsOpen` this is NOT
+  // reset per step — someone who hid the instructions wants them to stay
+  // hidden as they move through steps — only when the tutorial ends, so a
+  // fresh run starts with them visible again.
+  const [instructionsHidden, setInstructionsHidden] = useState(false);
+  useEffect(() => {
+    if (!tutorialActive) setInstructionsHidden(false);
+  }, [tutorialActive]);
+  const toggleInstructions = () => setInstructionsHidden((hidden) => !hidden);
+
+  // Exit asks first — a stray click on ✕ would otherwise end the run, and
+  // restarting begins again from the first step. The card and ring sit above
+  // every dialog (z-[9998] vs. the dialog's z-50), so they're hidden while the
+  // confirmation is up rather than drawn over it.
+  const [confirmingExit, setConfirmingExit] = useState(false);
+  const handleExit = async () => {
+    setConfirmingExit(true);
+    const ok = await confirmDialog({
+      title: "Exit the tutorial?",
+      message:
+        "Your project and anything you've done in it stay as they are. Start Tutorial in the menu bar starts over from the first step.",
+      confirmLabel: "Exit tutorial",
+      cancelLabel: "Keep going",
+    });
+    setConfirmingExit(false);
+    if (ok) useAppStore.getState().exitTutorial();
+  };
 
   // Manual drag offset from the auto-computed position, so the card can be
   // pulled off a target it happens to be covering (e.g. a canvas control).
@@ -279,7 +352,7 @@ export function TutorialOverlay() {
     if (!cardRef.current) return;
     const r = cardRef.current.getBoundingClientRect();
     if (r.width && r.height) setCardSize({ width: r.width, height: r.height });
-  }, [step, targetRect, tipsOpen]);
+  }, [step, targetRect, tipsOpen, instructionsHidden, stepHint]);
 
   const handleDragPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -303,6 +376,7 @@ export function TutorialOverlay() {
   };
 
   if (!step) return tutorialCompleted ? <TutorialCompletionCard /> : null;
+  if (confirmingExit) return null;
 
   const stepNumber = tutorialStepNumber(tutorialSteps, tutorialStepIndex);
   const lastStepNumber = tutorialStepNumber(tutorialSteps, tutorialSteps.length - 1);
@@ -354,50 +428,92 @@ export function TutorialOverlay() {
               Step {stepNumber} of {lastStepNumber}
             </span>
           </div>
-          <button
-            type="button"
-            aria-label="Exit tutorial"
-            className="text-muted-foreground hover:text-foreground"
-            onClick={() => useAppStore.getState().exitTutorial()}
-          >
-            <X className="h-3.5 w-3.5" />
-          </button>
-        </div>
-        <p className="mt-1 font-semibold">{step.title}</p>
-        <div className="mt-1 text-muted-foreground leading-relaxed whitespace-pre-line">
-          {renderBody(step.body)}
-        </div>
-        {cpuNote && (
-          <p className="mt-2 flex gap-1.5 rounded border border-amber-500/40 bg-amber-500/10 p-2 text-xs leading-relaxed text-amber-700 dark:text-amber-400">
-            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-            <span>{cpuNote}</span>
-          </p>
-        )}
-        {step.tips && (
-          <div className="mt-2">
+          <div className="flex items-center gap-2">
             <button
               type="button"
-              className="flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
-              aria-expanded={tipsOpen}
-              onClick={() => setTipsOpen((open) => !open)}
+              aria-label={instructionsHidden ? "Expand" : "Collapse"}
+              title={instructionsHidden ? "Expand" : "Collapse"}
+              aria-expanded={!instructionsHidden}
+              className="text-muted-foreground hover:text-foreground"
+              onClick={toggleInstructions}
             >
-              {tipsOpen ? (
-                <ChevronUp className="h-3 w-3" />
+              {instructionsHidden ? (
+                <ChevronDown className="h-3.5 w-3.5" />
               ) : (
-                <ChevronDown className="h-3 w-3" />
+                <ChevronUp className="h-3.5 w-3.5" />
               )}
-              {step.tips.label}
             </button>
-            {tipsOpen && (
-              <p className="mt-1 text-xs text-muted-foreground leading-relaxed whitespace-pre-line">
-                {step.tips.text}
+            <button
+              type="button"
+              aria-label="Exit tutorial"
+              className="text-muted-foreground hover:text-foreground"
+              onClick={() => void handleExit()}
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </div>
+        <button
+          type="button"
+          aria-expanded={!instructionsHidden}
+          className="mt-1 block w-full text-left font-semibold hover:text-foreground/80"
+          onClick={toggleInstructions}
+        >
+          {step.title}
+        </button>
+        {instructionsHidden && (
+          <button
+            type="button"
+            className="mt-0.5 text-xs text-muted-foreground hover:text-foreground"
+            onClick={toggleInstructions}
+          >
+            Show instructions
+          </button>
+        )}
+        {!instructionsHidden && (
+          <>
+            <div className="mt-1 text-muted-foreground leading-relaxed whitespace-pre-line">
+              {renderBody(step.body)}
+            </div>
+            {cpuNote && (
+              <p className="mt-2 flex gap-1.5 rounded border border-amber-500/40 bg-amber-500/10 p-2 text-xs leading-relaxed text-amber-700 dark:text-amber-400">
+                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                <span>{cpuNote}</span>
               </p>
             )}
-          </div>
-        )}
+            {step.tips && (
+              <div className="mt-2">
+                <button
+                  type="button"
+                  className="flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+                  aria-expanded={tipsOpen}
+                  onClick={() => setTipsOpen((open) => !open)}
+                >
+                  {tipsOpen ? (
+                    <ChevronUp className="h-3 w-3" />
+                  ) : (
+                    <ChevronDown className="h-3 w-3" />
+                  )}
+                  {step.tips.label}
+                </button>
+                {tipsOpen && (
+                  <p className="mt-1 text-xs text-muted-foreground leading-relaxed whitespace-pre-line">
+                    {renderInline(step.tips.text)}
+                  </p>
+                )}
+              </div>
+            )}
         {step.targetSelector && !targetRect && (
-          <p className="mt-2 text-xs text-muted-foreground italic">
-            Looking for the highlighted control…
+              <p className="mt-2 text-xs text-muted-foreground italic">
+                Looking for the highlighted control…
+              </p>
+            )}
+          </>
+        )}
+        {stepHint && (
+          <p className="mt-2 flex gap-1.5 rounded border border-amber-500/40 bg-amber-500/10 p-2 text-xs leading-relaxed text-amber-700 dark:text-amber-400">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span>{renderInline(stepHint)}</span>
           </p>
         )}
         <div className="mt-3 flex items-center justify-between gap-2">
@@ -416,7 +532,9 @@ export function TutorialOverlay() {
             onClick={() => {
               if (!stepComplete) {
                 toast.warning("Not done yet", {
-                  description: `Finish "${step.title}" before moving on.`,
+                  description: stepHint
+                    ? stepHint.replace(/\*\*|`/g, "")
+                    : `Finish "${step.title}" before moving on.`,
                 });
                 return;
               }
