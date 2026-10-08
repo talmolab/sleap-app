@@ -71,10 +71,13 @@ export function SampleVideoButton({
       });
       if (controller.signal.aborted) return;
       onLoaded(picked);
-    } catch {
+    } catch (err) {
       // A user-initiated cancel also rejects the in-flight fetch — don't
       // surface that as an error.
       if (controller.signal.aborted) return;
+      // The toast is deliberately generic; keep the real cause in the
+      // console (and so the diagnostics session log).
+      console.error("[sample-video] load failed:", err);
       toast.error("Couldn't download the sample video", {
         description: "Check your connection, or download it manually.",
         action: {
