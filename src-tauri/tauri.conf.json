@@ -71,6 +71,9 @@
     }
   },
   "plugins": {
+    "fs": {
+      "requireLiteralLeadingDot": false
+    },
     "updater": {
       "endpoints": [
         "https://github.com/talmolab/sleap-app/releases/latest/download/latest.json"
