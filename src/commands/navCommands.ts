@@ -69,7 +69,7 @@ function suggestionOrder(videos: Video[]) {
   };
 }
 
-/** Navigate to the next suggestion frame. */
+/** Navigate to the next suggestion frame (across videos, wrapping). */
 export const GoNextSuggestion: Command = {
   name: "GoNextSuggestion",
   topics: [UpdateTopic.Frame, UpdateTopic.Suggestions],
@@ -96,7 +96,7 @@ export const GoNextSuggestion: Command = {
   },
 };
 
-/** Navigate to the previous suggestion frame. */
+/** Navigate to the previous suggestion frame (across videos, wrapping). */
 export const GoPrevSuggestion: Command = {
   name: "GoPrevSuggestion",
   topics: [UpdateTopic.Frame, UpdateTopic.Suggestions],

@@ -79,6 +79,11 @@ const FRAME_LEVEL_COMMANDS: ReadonlySet<string> = new Set([
   "SetInstanceTrack",
   "TransposeInstances",
   "PropagateTrackLabels",
+  // Active-learning centroid seeding: adds/removes one centroid (or a
+  // single-seed-node instance) on the active frame — journaled with the frame's
+  // centroids (see autosaveJournal's CentroidDelta).
+  "SeedCentroid",
+  "DeleteCentroid",
 ]);
 
 /**

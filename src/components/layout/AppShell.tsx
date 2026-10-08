@@ -22,6 +22,13 @@ import { MenuBar } from "./MenuBar";
 import { StatusBar } from "./StatusBar";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { VideoPlayer } from "../video/VideoPlayer";
+import { SeedModeBar } from "./SeedModeBar";
+import { TrainPromptBanner } from "./TrainPromptBanner";
+import { TrainingProgressBar } from "./TrainingProgressBar";
+import { InferenceProgressBar } from "./InferenceProgressBar";
+import { KeypointPassBar } from "./KeypointPassBar";
+import { CorrectionBar } from "./CorrectionBar";
+import { useActiveLearningRoundEngine } from "@/hooks/useActiveLearningRoundEngine";
 
 import { PANELS } from "./panelRegistry";
 import { reorderById, visibleOpenPanels } from "@/lib/panelLayout";
@@ -135,6 +142,9 @@ function PathResolutionHost() {
 }
 
 export function AppShell() {
+  // Keeps the active-learning loop moving between rounds (train → predict →
+  // review → retrain); a no-op for projects without a workflow.
+  useActiveLearningRoundEngine();
   const projectLoaded = useAppStore((s) => s.projectLoaded);
   const isLoading = useAppStore((s) => s.isLoading);
   const windowDragActive = useAppStore((s) => s.windowDragActive);
@@ -269,6 +279,11 @@ export function AppShell() {
             >
               {/* Video player takes remaining space */}
               <div className="flex-1 flex flex-col min-w-0 h-full">
+                <SeedModeBar />
+                <KeypointPassBar />
+                <CorrectionBar />
+                <TrainingProgressBar />
+                <InferenceProgressBar />
                 <VideoPlayer />
               </div>
 
@@ -278,6 +293,9 @@ export function AppShell() {
           ) : (
             <WelcomeScreen />
           )}
+
+          {/* Fixed bottom-right pop-out prompting locator training at threshold. */}
+          {projectLoaded && <TrainPromptBanner />}
 
           {/* Loading overlay: determinate progress bar + stage message, with a
               forward "pulse" shimmer that signals active work even between

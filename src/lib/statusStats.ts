@@ -6,6 +6,7 @@
  * Kept free of React so they can be unit-tested directly under `bun test`.
  */
 import type { Labels, Video, LabeledFrame } from "@/types";
+import { isUserLabeledFrame } from "@/lib/frameLabeling";
 
 /**
  * Count of instances shown in the GUI for a frame: user instances plus
@@ -59,9 +60,16 @@ export function computeStatusStats(
   let userInVideo = 0;
   let predictedInVideo = 0;
   for (const lf of frames) {
-    if (lf.hasUserInstances) userInProject++;
+    // "Labeled" = any manual annotation, not just a non-predicted skeleton
+    // instance — a user-placed centroid counts (the active-learning workflow
+    // produces frames that hold ONLY centroids). #240 moved the frames list,
+    // seekbar, suggestions and navigation onto `isUserLabeledFrame` but not this
+    // counter, so the status bar still read "Labeled: 0" for a fully seeded
+    // centroid project.
+    const userLabeled = isUserLabeledFrame(lf);
+    if (userLabeled) userInProject++;
     if (video && lf.video === video) {
-      if (lf.hasUserInstances) userInVideo++;
+      if (userLabeled) userInVideo++;
       if (lf.hasPredictedInstances) predictedInVideo++;
     }
   }

@@ -21,6 +21,8 @@ import {
   Globe,
   GraduationCap,
   TableProperties,
+  Workflow,
+  ScanEye,
 } from "lucide-react";
 
 import { VideosPanel } from "../panels/VideosPanel";
@@ -35,6 +37,8 @@ import { InferencePanel } from "../panels/InferencePanel";
 import { ConnectPanel } from "../panels/ConnectPanel";
 import { FramesPanel } from "../panels/FramesPanel";
 import { TrainingPanel } from "../panels/TrainingPanel";
+import { ActiveLearningPanel } from "../panels/ActiveLearningPanel";
+import { CorrectionPanel } from "../panels/CorrectionPanel";
 
 /** Panel definitions with icons. Render order comes from the store's panelOrder. */
 export const PANELS = [
@@ -46,6 +50,12 @@ export const PANELS = [
   { id: "frames", label: "Frames", icon: TableProperties, component: FramesPanel },
   { id: "inference", label: "Inference", icon: Zap, component: InferencePanel },
   { id: "training", label: "Training", icon: GraduationCap, component: TrainingPanel },
+  { id: "active-learning", label: "Active Learning", icon: Workflow, component: ActiveLearningPanel },
+  // Same component as the Active-Learning "Correct" tab, deliberately mounted
+  // twice: the loop user reaches it in sequence, someone correcting a
+  // predictions.slp reaches it directly. It holds only local filter state and
+  // runs no effects, so two mount points don't interact.
+  { id: "correct", label: "Correct", icon: ScanEye, component: CorrectionPanel },
   { id: "environment", label: "Environment", icon: Cpu, component: EnvironmentPanel },
   { id: "notifications", label: "Notifications", icon: Bell, component: NotificationsPanel },
   { id: "debug", label: "Debug", icon: Bug, component: DebugPanel },

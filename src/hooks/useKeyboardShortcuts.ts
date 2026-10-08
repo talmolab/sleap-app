@@ -12,6 +12,7 @@ import { DEFAULT_SHORTCUTS, STEP_SIZES } from "../lib/shortcuts";
 import { useAppStore } from "../stores/appStore";
 import { Track } from "@talmolab/sleap-io.js";
 import { quitApp } from "../lib/quit";
+import { rejectCurrentPassItem, skipCurrentPassItem } from "../lib/activeLearning/passActions";
 import { openNewInstance } from "../lib/newInstance";
 import { dismiss, toast } from "../lib/notify";
 import { hintIfPredictionsRemain } from "../lib/labelingHints";
@@ -49,6 +50,17 @@ import {
 function isTextInput(e: KeyboardEvent): boolean {
   const tag = (e.target as HTMLElement)?.tagName;
   return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (e.target as HTMLElement)?.isContentEditable === true;
+}
+
+/**
+ * The key was pressed inside an open modal/popover (in-app confirm/prompt
+ * dialogs, the active-learning cheatsheets, …). Those own their keys: Radix
+ * closes itself on Escape but does not stop propagation, so without this the
+ * same Escape would also tear down an active-learning sweep behind it, and the
+ * sweep's step keys would act on work the user can't see.
+ */
+function inOverlay(e: KeyboardEvent): boolean {
+  return !!(e.target as HTMLElement)?.closest?.('[role="dialog"],[role="alertdialog"]');
 }
 
 export function useKeyboardShortcuts() {
@@ -105,13 +117,21 @@ export function useKeyboardShortcuts() {
       // Suggestion navigation (Space / Shift+Space). Only preventDefault here
       // -- the actual jump is deferred to key-release below, so a hold-Space-
       // then-drag pan gesture (VideoPlayer.tsx) doesn't also jump frames out
-      // from under the drag the instant Space goes down.
+      // from under the drag the instant Space goes down. In seed mode
+      // VideoPlayer's own Space handler owns advancing, in keypointPass mode
+      // the pass cursor owns the frame, and correct mode owns Space (accept +
+      // advance) — skip in all three to avoid a double-advance/desync.
       [DEFAULT_SHORTCUTS["goto next suggestion"]]: (e) => {
         if (isTextInput(e)) return;
+        const m = store().labelingMode;
+        // Correct mode owns Space (accept + advance), handled in VideoPlayer.
+        if (m === "seed" || m === "keypointPass" || m === "correct") return;
         e.preventDefault();
       },
       [DEFAULT_SHORTCUTS["goto prev suggestion"]]: (e) => {
         if (isTextInput(e)) return;
+        const m = store().labelingMode;
+        if (m === "seed" || m === "keypointPass" || m === "correct") return;
         e.preventDefault();
       },
 
@@ -196,6 +216,8 @@ export function useKeyboardShortcuts() {
         if (isTextInput(e)) return;
         e.preventDefault();
         const { labelingMode, instance, enterPlacementMode, exitPlacementMode } = store();
+        // Don't switch into placement mid-sweep — it orphans the pass/queue.
+        if (labelingMode === "keypointPass" || labelingMode === "correct") return;
         if (labelingMode === "place") {
           exitPlacementMode();
         } else if (instance) {
@@ -228,10 +250,18 @@ export function useKeyboardShortcuts() {
       // Instance editing (via command system)
       [DEFAULT_SHORTCUTS["add instance"]]: (e) => {
         e.preventDefault();
+        // Adding an instance mid-sweep changes the frame's instance count and
+        // desyncs the work-list/queue indices — block it.
+        const m = store().labelingMode;
+        if (m === "keypointPass" || m === "correct") return;
         commandContext.execute(AddInstance);
       },
       [DEFAULT_SHORTCUTS["delete instance"]]: (e) => {
         e.preventDefault();
+        // Deleting an instance mid-sweep would splice the frame's instances and
+        // shift the work-list/queue indices the sweep resolves against — block it.
+        const m = store().labelingMode;
+        if (m === "keypointPass" || m === "correct") return;
         commandContext.execute(DeleteSelectedInstance);
       },
       [DEFAULT_SHORTCUTS["accept all predictions"]]: (e) => {
@@ -242,6 +272,11 @@ export function useKeyboardShortcuts() {
       // Track commands
       [DEFAULT_SHORTCUTS.transpose]: (e) => {
         e.preventDefault();
+        // The pick mode it can start takes over the next canvas clicks — in a
+        // sweep those are keypoint/centroid placements, so they'd silently swap
+        // two animals' tracks instead.
+        const m = store().labelingMode;
+        if (m === "seed" || m === "keypointPass" || m === "correct") return;
         requestTranspose(commandContext);
       },
       [DEFAULT_SHORTCUTS["add track"]]: (e) => {
@@ -250,6 +285,9 @@ export function useKeyboardShortcuts() {
       },
       [DEFAULT_SHORTCUTS["delete track"]]: (e) => {
         e.preventDefault();
+        // See "delete instance": splicing an instance mid-sweep desyncs it.
+        const m = store().labelingMode;
+        if (m === "keypointPass" || m === "correct") return;
         if (confirm("Delete this instance and its track?")) {
           commandContext.execute(DeleteInstanceAndTrack);
         }
@@ -359,23 +397,108 @@ export function useKeyboardShortcuts() {
       // Delete predictions from area (Ctrl+K)
       [DEFAULT_SHORTCUTS["delete area predictions"]]: (e) => {
         e.preventDefault();
+        // Area-delete splices predictions out of the frame, desyncing a sweep.
+        const m = store().labelingMode;
+        if (m === "keypointPass" || m === "correct") return;
         store().toggle("areaDeleteMode");
       },
 
       // Selection / exit placement mode / cancel area-delete
       [DEFAULT_SHORTCUTS["clear selection"]]: (e) => {
-        if (isTextInput(e)) return;
-        e.preventDefault();
+        // defaultPrevented: something (a closing dialog, a pick-mode bar)
+        // already consumed this Escape.
+        if (isTextInput(e) || e.defaultPrevented || inOverlay(e)) return;
         const s = store();
+        // A transpose pick owns Escape (TransposePickBar cancels it); its window
+        // listener registers after this one, so it can't stop us first.
+        if (s.instanceSequencePick) return;
+        e.preventDefault();
         if (s.areaDeleteMode) {
           s.set("areaDeleteMode", false);
         } else if (s.labelingMode === "place") {
           s.exitPlacementMode();
+        } else if (s.labelingMode === "seed") {
+          s.exitSeedMode();
+        } else if (s.labelingMode === "keypointPass") {
+          s.exitKeypointPassMode();
+        } else if (s.labelingMode === "correct") {
+          s.exitCorrectMode();
         } else {
           hintIfPredictionsRemain(s.instance, s.labeledFrame);
           s.setInstance(null);
         }
       },
+
+      // Phase-2 keypoint pass / Phase-3 correction step keys. s = skip (advance
+      // without placing/accepting); b / Backspace = step back. Gated on the mode
+      // so they're inert everywhere else.
+      //
+      // Shift+S = skip the whole INSTANCE (this animal isn't labelable), not just
+      // the current node. Declared before the bare `KeyS` for readability only —
+      // tinykeys matches modifiers exactly, so `KeyS` never fires with Shift held
+      // and the two can't both run.
+      "Shift+KeyS": (e) => {
+        if (isTextInput(e) || inOverlay(e)) return;
+        if (store().labelingMode !== "keypointPass") return;
+        // Repeat-guarded: holding the key would write off a run of animals.
+        if (e.repeat) return;
+        e.preventDefault();
+        skipCurrentPassItem();
+      },
+      KeyS: (e) => {
+        if (isTextInput(e) || inOverlay(e)) return;
+        const m = store().labelingMode;
+        if (m === "keypointPass") {
+          e.preventDefault();
+          store().passAdvance();
+        } else if (m === "correct") {
+          // Skip: leave this prediction as-is (unaccepted) and move on. Guard
+          // key-repeat so holding S can't skip the whole queue in one press.
+          if (e.repeat) return;
+          e.preventDefault();
+          store().correctAdvance();
+        }
+      },
+      KeyB: (e) => {
+        if (isTextInput(e) || inOverlay(e)) return;
+        const m = store().labelingMode;
+        if (m === "keypointPass") {
+          e.preventDefault();
+          store().passStepBack();
+        } else if (m === "correct") {
+          if (e.repeat) return;
+          e.preventDefault();
+          store().correctBack();
+        }
+      },
+      // x = reject the locator detection under the cursor as a false positive
+      // (deletes it, then continues at the next undecided point). Repeat-guarded
+      // so holding the key can't wipe a run of detections.
+      //
+      // `includePredicted: true` is safe to hardcode here even though the sweep's
+      // checkbox lives in the panel: a reject requires the current item to BE a
+      // prediction, and when the user turned predictions off the work list holds
+      // none — so this rebuild can only ever run for a list that included them.
+      KeyX: (e) => {
+        if (isTextInput(e) || inOverlay(e)) return;
+        if (store().labelingMode !== "keypointPass") return;
+        if (e.repeat) return;
+        e.preventDefault();
+        rejectCurrentPassItem({ includePredicted: true });
+      },
+      Backspace: (e) => {
+        if (isTextInput(e) || inOverlay(e)) return;
+        const m = store().labelingMode;
+        if (m === "keypointPass") {
+          e.preventDefault();
+          store().passStepBack();
+        } else if (m === "correct") {
+          if (e.repeat) return;
+          e.preventDefault();
+          store().correctBack();
+        }
+      },
+
       [DEFAULT_SHORTCUTS["select next"]]: (e) => {
         if (isTextInput(e)) return;
         e.preventDefault();
@@ -474,11 +597,16 @@ export function useKeyboardShortcuts() {
         [DEFAULT_SHORTCUTS["goto next suggestion"]]: (e) => {
           if (isTextInput(e)) return;
           if (spacePanState.draggedWhileHeld) return;
+          // Mirror the keydown stubs: these modes own Space themselves.
+          const m = store().labelingMode;
+          if (m === "seed" || m === "keypointPass" || m === "correct") return;
           commandContext.execute(GoNextSuggestion);
         },
         [DEFAULT_SHORTCUTS["goto prev suggestion"]]: (e) => {
           if (isTextInput(e)) return;
           if (spacePanState.draggedWhileHeld) return;
+          const m = store().labelingMode;
+          if (m === "seed" || m === "keypointPass" || m === "correct") return;
           commandContext.execute(GoPrevSuggestion);
         },
       },

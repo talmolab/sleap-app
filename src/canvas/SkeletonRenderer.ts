@@ -59,6 +59,14 @@ export interface RenderedInstance {
   visible: boolean;
   /** Per-instance "show occluded nodes" (#2782), overriding the global flag. */
   showNonVisible: boolean;
+  /**
+   * Phase-3 correction: skeleton node indices to ring as low-confidence, so the
+   * eye lands on the predictions most likely to be wrong. Driven by the review
+   * queue's score SNAPSHOT (not the live points), so the rings survive the
+   * adopt-on-touch conversion that strips per-point scores. Set only on the
+   * instance under review, so ordinary predicted overlays are unaffected.
+   */
+  highlightNodeIdxs?: number[];
 }
 
 export interface RenderOptions {
@@ -87,6 +95,9 @@ const DEFAULT_OPTIONS: RenderOptions = {
   showTrackScore: false,
   zoom: 1,
 };
+
+/** Warning color for low-confidence keypoint rings in correction mode. */
+const CONFIDENCE_WARN_COLOR: RGB = [255, 64, 64];
 
 /**
  * Render all skeleton instances onto a canvas context.
@@ -171,6 +182,17 @@ function renderInstance(
     renderNode(ctx, node, nodeColor, isPredicted, opts);
   });
 
+  // Phase-3 correction: ring the flagged low-confidence keypoints on top of the
+  // markers so they stand out. Only the instance under review sets these.
+  if (instance.highlightNodeIdxs && instance.highlightNodeIdxs.length > 0) {
+    for (const nIdx of instance.highlightNodeIdxs) {
+      const node = nodes[nIdx];
+      if (!node) continue;
+      if (!node.visible && !opts.showNonVisibleNodes) continue;
+      renderConfidenceRing(ctx, node, opts);
+    }
+  }
+
   // Draw node labels (skip for predicted unless colorPredicted is on)
   if (opts.showLabels && (!isPredicted || opts.colorPredicted)) {
     nodes.forEach((node) => {
@@ -223,6 +245,20 @@ function renderNode(
     ctx.fillStyle = "transparent";
     ctx.stroke();
   }
+}
+
+/** A bold warning ring around a low-confidence keypoint (Phase-3 correction). */
+function renderConfidenceRing(
+  ctx: CanvasRenderingContext2D,
+  node: RenderedNode,
+  opts: RenderOptions
+): void {
+  const radius = (opts.markerSize * 2.2) / opts.zoom;
+  ctx.beginPath();
+  ctx.arc(node.x, node.y, radius, 0, Math.PI * 2);
+  ctx.strokeStyle = rgbToCSS(CONFIDENCE_WARN_COLOR, 0.95);
+  ctx.lineWidth = 2 / opts.zoom;
+  ctx.stroke();
 }
 
 function renderLineEdge(
@@ -744,6 +780,62 @@ export function renderMarqueeRect(
   ctx.lineWidth = 1.5 / zoom;
   ctx.strokeRect(minX, minY, w, h);
   ctx.setLineDash([]);
+  ctx.restore();
+}
+
+/** A first-class centroid annotation to draw (coords already in image space). */
+export interface RenderedCentroid {
+  x: number;
+  y: number;
+  /** Predicted (locator output) vs user-seeded — drawn dimmer/dashed. */
+  predicted: boolean;
+  /**
+   * Palette color for this centroid, so multiple centroids in a frame are
+   * distinguishable (and match their paired instance/track color). Falls back
+   * to amber when omitted.
+   */
+  color?: RGB;
+}
+
+/**
+ * Render first-class centroid annotations (`frame.centroids`) as a crosshair
+ * ring, distinct from skeleton node markers. Drawn in the same source-coord
+ * transform as {@link renderInstances}; sizes divide by `opts.zoom` so markers
+ * stay a constant on-screen size. User centroids are solid amber; predicted
+ * centroids are a dashed, dimmer ring.
+ */
+export function renderCentroids(
+  ctx: CanvasRenderingContext2D,
+  centroids: RenderedCentroid[],
+  opts: RenderOptions,
+): void {
+  if (centroids.length === 0) return;
+  const zoom = opts.zoom || 1;
+  const r = (opts.markerSize + 2) / zoom;
+  const arm = (opts.markerSize + 5) / zoom;
+
+  ctx.save();
+  for (const c of centroids) {
+    if (!Number.isFinite(c.x) || !Number.isFinite(c.y)) continue;
+    // Per-centroid palette color (amber fallback keeps old callers working);
+    // predicted centroids stay dimmer + dashed like before.
+    const rgb: RGB = c.color ?? [255, 193, 7];
+    ctx.strokeStyle = rgbToCSS(rgb, c.predicted ? 0.6 : 0.95);
+    ctx.lineWidth = 1.5 / zoom;
+    ctx.setLineDash(c.predicted ? [3 / zoom, 3 / zoom] : []);
+    // Ring
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, r, 0, Math.PI * 2);
+    ctx.stroke();
+    // Crosshair
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.moveTo(c.x - arm, c.y);
+    ctx.lineTo(c.x + arm, c.y);
+    ctx.moveTo(c.x, c.y - arm);
+    ctx.lineTo(c.x, c.y + arm);
+    ctx.stroke();
+  }
   ctx.restore();
 }
 

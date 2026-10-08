@@ -22,6 +22,7 @@ import {
 } from "@/lib/saveRouting";
 import { fileSize } from "@/lib/nativeRange";
 import { renameFile, removeFile } from "@/lib/nativeWrite";
+import { syncActiveLearningProvenance } from "@/lib/activeLearning/persistence";
 import {
   saveEmbeddedPkgOpfs,
   isOpfsSaveSupported,
@@ -229,6 +230,11 @@ export async function saveProjectAsSlp(
   let displayName = saveName;
 
   try {
+    // Persist the active-learning workflow (if any) into the project's
+    // provenance so it travels with the .slp. Done before serialization so
+    // every save path — including the in-place gate's metadata check — sees it.
+    syncActiveLearningProvenance(labels);
+
     const platform = await getPlatform();
 
     if (platform.isTauri) {

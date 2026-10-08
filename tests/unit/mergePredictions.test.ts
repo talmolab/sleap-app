@@ -30,6 +30,7 @@ import {
   Instance,
   PredictedInstance,
   PredictedCentroid,
+  UserCentroid,
   PredictedBoundingBox,
   Video,
   Skeleton,
@@ -179,6 +180,42 @@ describe("MergePredictions — centroid survival (active-learning locator fix)",
     const merged = frameAt(currentLabels(), baseVideo, 5);
     expect(merged.centroids.length).toBe(1);
     expect(merged.centroids[0].xy).toEqual([7, 8]);
+  });
+
+  // Locator re-runs merge with mode "replace" (io "replace_predictions"; see
+  // existingPredictionsForPipeline) so predicted centroids REFRESH rather than
+  // accumulate. This resurrects a case from the retired hand-rolled merge that
+  // io's "auto" (keep-unmatched-predictions) would otherwise regress.
+  it("replace mode refreshes predicted centroids but keeps user ones", async () => {
+    const skeleton = makeSkeleton();
+    const baseVideo = makeVideo();
+    const baseFrame = new LabeledFrame({
+      video: baseVideo,
+      frameIdx: 0,
+      instances: [userInst(skeleton, 10, 10)],
+      centroids: [
+        new UserCentroid({ x: 1, y: 1 }),
+        new PredictedCentroid({ x: 10, y: 10, score: 0.5 }), // stale locator output
+      ],
+    });
+    setupBase({ skeleton, video: baseVideo, frames: [baseFrame] });
+
+    // Fresh locator run: the centroid moved far (would NOT match under "auto").
+    const predVideo = makeVideo("/compute-node/test.mp4");
+    const predFrame = new LabeledFrame({
+      video: predVideo,
+      frameIdx: 0,
+      centroids: [new PredictedCentroid({ x: 90, y: 90, score: 0.9 })],
+    });
+    const predictions = new Labels({ labeledFrames: [predFrame], videos: [predVideo] });
+
+    await ctx.execute(MergePredictions, { predictions, mode: "replace" });
+
+    const merged = frameAt(currentLabels(), baseVideo, 0);
+    const user = merged.centroids.filter((c) => !c.isPredicted);
+    const pred = merged.centroids.filter((c) => c.isPredicted);
+    expect(user.map((c) => c.xy)).toEqual([[1, 1]]); // user centroid untouched
+    expect(pred.map((c) => c.xy)).toEqual([[90, 90]]); // stale (10,10) refreshed, not accumulated
   });
 });
 
@@ -429,6 +466,172 @@ describe("MergePredictions — existing-predictions modes (PyQt parity)", () => 
     // User instance on frame 0 is untouched.
     expect(frameAt(labels, baseVideo, 0).userInstances.length).toBe(1);
   });
+
+  it("clear_all: keeps centroid-only seed frames and clears stale predicted centroids", async () => {
+    const skeleton = makeSkeleton();
+    const baseVideo = makeVideo();
+    // Frame 3: an active-learning seed — a user centroid and NO instances —
+    // plus a stale locator centroid. Not in the new output.
+    const seedFrame = new LabeledFrame({
+      video: baseVideo,
+      frameIdx: 3,
+      centroids: [
+        new UserCentroid({ x: 1, y: 1 }),
+        new PredictedCentroid({ x: 40, y: 40, score: 0.5 }),
+      ],
+    });
+    // Frame 7: stale locator centroid ONLY → nothing user-supplied left.
+    const staleFrame = new LabeledFrame({
+      video: baseVideo,
+      frameIdx: 7,
+      centroids: [new PredictedCentroid({ x: 70, y: 70, score: 0.4 })],
+    });
+    setupBase({ skeleton, video: baseVideo, frames: [seedFrame, staleFrame] });
+
+    const predVideo = makeVideo("/compute-node/test.mp4");
+    const predictions = new Labels({
+      labeledFrames: [
+        new LabeledFrame({
+          video: predVideo,
+          frameIdx: 0,
+          centroids: [new PredictedCentroid({ x: 9, y: 9, score: 0.9 })],
+        }),
+      ],
+      videos: [predVideo],
+    });
+
+    await ctx.execute(MergePredictions, { predictions, mode: "clear_all" });
+
+    const labels = currentLabels();
+    const seed = frameAt(labels, baseVideo, 3);
+    expect(seed.centroids.map((c) => [c.isPredicted, c.xy])).toEqual([[false, [1, 1]]]);
+    expect(labels.find({ video: baseVideo, frameIdx: 7 }).length).toBe(0);
+    expect(frameAt(labels, baseVideo, 0).centroids.map((c) => c.xy)).toEqual([[9, 9]]);
+  });
+});
+
+describe("MergePredictions — pose output leaves centroid annotations alone", () => {
+  let ctx: CommandContext;
+  beforeEach(() => {
+    resetStore();
+    ctx = new CommandContext();
+  });
+
+  /** A frame with a seed, a locator detection paired to a user pose instance. */
+  function setupLocatedFrame() {
+    const skeleton = makeSkeleton();
+    const baseVideo = makeVideo();
+    const paired = userInst(skeleton, 10, 10);
+    const baseFrame = new LabeledFrame({
+      video: baseVideo,
+      frameIdx: 0,
+      instances: [paired, predInst(skeleton, 20, 20, 0.5)],
+      centroids: [
+        new UserCentroid({ x: 1, y: 1 }),
+        new PredictedCentroid({ x: 10, y: 10, score: 0.8, instance: paired }),
+      ],
+    });
+    setupBase({ skeleton, video: baseVideo, frames: [baseFrame] });
+
+    const predSkel = makeSkeleton();
+    const predVideo = makeVideo("/compute-node/test.mp4");
+    const predictions = new Labels({
+      labeledFrames: [
+        new LabeledFrame({
+          video: predVideo,
+          frameIdx: 0,
+          instances: [predInst(predSkel, 300, 300, 0.99)],
+        }),
+      ],
+      videos: [predVideo],
+      skeletons: [predSkel],
+    });
+    return { baseVideo, paired, predictions };
+  }
+
+  for (const mode of ["replace", "clear_all"] as const) {
+    it(`${mode}: keeps predicted centroids and their pose links, replaces the pose predictions`, async () => {
+      const { baseVideo, paired, predictions } = setupLocatedFrame();
+
+      await ctx.execute(MergePredictions, { predictions, mode });
+
+      const merged = frameAt(currentLabels(), baseVideo, 0);
+      expect(merged.centroids.map((c) => [c.isPredicted, c.xy])).toEqual([
+        [false, [1, 1]],
+        [true, [10, 10]],
+      ]);
+      expect(merged.centroids[1].instance).toBe(paired);
+      expect(merged.predictedInstances.map((p) => p.points[0].xy)).toEqual([[300, 300]]);
+    });
+  }
+});
+
+describe("MergePredictions — skipUserLabeledFrames", () => {
+  let ctx: CommandContext;
+  beforeEach(() => {
+    resetStore();
+    ctx = new CommandContext();
+  });
+
+  // sleap-nn ignores --exclude_user_labeled when handed a raw video, so the
+  // merge has to drop predictions for hand-labeled frames itself.
+  it("drops predictions on frames that already have user instances", async () => {
+    const skeleton = makeSkeleton();
+    const baseVideo = makeVideo();
+    setupBase({
+      skeleton,
+      video: baseVideo,
+      frames: [new LabeledFrame({ video: baseVideo, frameIdx: 0, instances: [userInst(skeleton, 10, 10)] })],
+    });
+    const predVideo = makeVideo("/compute-node/test.mp4");
+    const predictions = new Labels({
+      labeledFrames: [
+        new LabeledFrame({ video: predVideo, frameIdx: 0, instances: [predInst(skeleton, 11, 11, 0.9)] }),
+        new LabeledFrame({ video: predVideo, frameIdx: 1, instances: [predInst(skeleton, 50, 50, 0.9)] }),
+      ],
+      videos: [predVideo],
+      skeletons: [skeleton],
+    });
+
+    await ctx.execute(MergePredictions, { predictions, skipUserLabeledFrames: true });
+
+    const labels = currentLabels();
+    expect(frameAt(labels, baseVideo, 0).predictedInstances.length).toBe(0);
+    expect(frameAt(labels, baseVideo, 0).userInstances.length).toBe(1);
+    expect(frameAt(labels, baseVideo, 1).predictedInstances.length).toBe(1);
+  });
+});
+
+describe("MergePredictions — during an active-learning sweep", () => {
+  beforeEach(() => resetStore());
+
+  for (const mode of ["keypointPass", "correct"] as const) {
+    it(`pauses a ${mode} sweep before changing the instances it indexes`, async () => {
+      const { predictions } = (() => {
+        const skeleton = makeSkeleton();
+        const video = makeVideo();
+        setupBase({
+          skeleton,
+          video,
+          frames: [new LabeledFrame({ video, frameIdx: 0, instances: [userInst(skeleton, 1, 1)] })],
+        });
+        const predVideo = makeVideo("/compute-node/test.mp4");
+        return {
+          predictions: new Labels({
+            labeledFrames: [
+              new LabeledFrame({ video: predVideo, frameIdx: 0, instances: [predInst(skeleton, 5, 5, 0.9)] }),
+            ],
+            videos: [predVideo],
+          }),
+        };
+      })();
+      useAppStore.getState().set("labelingMode", mode);
+
+      await new CommandContext().execute(MergePredictions, { predictions });
+
+      expect(useAppStore.getState().labelingMode).toBe("select");
+    });
+  }
 });
 
 describe("MergePredictions — track wiring (track:'name')", () => {

@@ -139,8 +139,24 @@ const HINT_DURATION_MS = 12000;
  * setting — the only gate. Safe to call unconditionally from a triggering
  * action; a no-op only when the setting is off.
  */
+/**
+ * Hints are off by preference, or during an active-learning sweep (seed /
+ * keypoint pass / correction): those are guided one-key-per-step flows whose
+ * clicks and keys mean something else, so free-form labeling tips there are
+ * wrong advice — and Phase-3 Space-accept would stack one per accepted item.
+ */
+function hintsSuppressed(): boolean {
+  const { showLabelingHints, labelingMode } = useAppStore.getState();
+  return (
+    !showLabelingHints ||
+    labelingMode === "seed" ||
+    labelingMode === "keypointPass" ||
+    labelingMode === "correct"
+  );
+}
+
 export function showLabelingHint(id: LabelingHintId): void {
-  if (!useAppStore.getState().showLabelingHints) return;
+  if (hintsSuppressed()) return;
 
   toast.info("Tip", {
     description: HINT_BODY[id],
@@ -187,7 +203,8 @@ let markOccludedInvisibleShownThisSession = false;
  * explanation for the same toast.
  */
 export function hintIfFirstNodeConfirm(wasAlreadyComplete: boolean): void {
-  if (wasAlreadyComplete) return;
+  // Suppressed hints must not use up the once-per-session slot.
+  if (wasAlreadyComplete || hintsSuppressed()) return;
   if (!nodeConfirmedColorShownThisSession) {
     showLabelingHint("node-confirmed-color");
     nodeConfirmedColorShownThisSession = true;
@@ -216,7 +233,7 @@ let predictionConversionLifecycleShownThisSession = false;
  * `hintIfFirstInstance`'s return-value convention).
  */
 export function hintIfFirstPredictionConversion(): boolean {
-  if (predictionConversionLifecycleShownThisSession) return false;
+  if (predictionConversionLifecycleShownThisSession || hintsSuppressed()) return false;
   showLabelingHint("prediction-conversion-lifecycle");
   predictionConversionLifecycleShownThisSession = true;
   return true;

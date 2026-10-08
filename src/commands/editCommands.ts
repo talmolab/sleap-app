@@ -6,13 +6,14 @@
  * SetInstancePointLocations, DeleteFramePredictions, ConvertPredictionToInstance.
  */
 
-import { Instance, LabeledFrame, PredictedInstance } from "@talmolab/sleap-io.js";
+import { Instance, LabeledFrame, PredictedInstance, UserCentroid } from "@talmolab/sleap-io.js";
 import type { Labels } from "@talmolab/sleap-io.js";
 import { UpdateTopic } from "../types";
 import type { Command } from "./types";
 import type { CommandContext } from "./CommandContext";
 import { useAppStore } from "../stores/appStore";
 import { toast } from "@/lib/notify";
+import { videoBasename } from "@/lib/videoFilter";
 import {
   showLabelingHint,
   hintIfFirstInstance,
@@ -24,6 +25,11 @@ import {
   fillMissingPredictedNodes,
   centerInstanceAt,
 } from "@/lib/instancePlacement";
+import {
+  ensurePairedPoseInstances,
+  poseSkeletonOf,
+  relinkCentroids,
+} from "@/lib/activeLearning/centroidPairing";
 
 /**
  * Create a new Instance on the current frame using the selected placement
@@ -130,6 +136,109 @@ export const AddInstance: Command = {
 };
 
 /**
+ * Drop a single "centroid" point as a new instance (active-learning Phase 1).
+ *
+ * Unlike {@link AddInstance} (which places every node via `placeInstance` and
+ * enters placement mode), this creates an empty instance and marks ONLY the
+ * seed node visible at the clicked location — the one-click-per-animal seeding
+ * interaction. Each click is its own undoable command, so Ctrl+Z removes
+ * exactly one dropped centroid.
+ *
+ * Params: `{ x, y }` in SOURCE coordinates; optional `nodeIdx` (defaults to the
+ * store's `seedNodeIdx`, i.e. the configured centroid node).
+ */
+export const SeedCentroid: Command = {
+  name: "SeedCentroid",
+  topics: [UpdateTopic.Frame, UpdateTopic.Instance],
+  execute(ctx: CommandContext, params?: Record<string, unknown>) {
+    const { labels, video, frameIdx } = ctx.state;
+    if (!labels || !video) return;
+
+    const x = params?.x;
+    const y = params?.y;
+    if (typeof x !== "number" || typeof y !== "number") return;
+
+    // Find or create the LabeledFrame for this video + frame (mirrors AddInstance).
+    const currentFrames = labels.find({ video, frameIdx });
+    let lf: LabeledFrame;
+    if (currentFrames.length > 0) {
+      lf = currentFrames[0];
+    } else {
+      lf = new LabeledFrame({ video, frameIdx });
+      labels.append(lf);
+    }
+
+    // First-class centroid-annotation mode: drop a `UserCentroid` on
+    // `frame.centroids` — a free anchor that need not be a pose node, and never
+    // touches the pose skeleton. Undo is handled by the frame snapshot, which
+    // now captures centroids (see CommandContext).
+    if (ctx.state.seedCentroidAnnotation) {
+      lf.centroids = [...lf.centroids, new UserCentroid({ x, y })];
+      ctx.state.setLabeledFrame(lf);
+      ctx.state.markChanged();
+      return;
+    }
+
+    // Instance-point seeding (a real pose node, or a synthetic "centroid" node
+    // on the pose skeleton). Seeds land on the active pose skeleton.
+    const skeleton = ctx.state.skeleton;
+    if (!skeleton) return;
+    if (skeleton.nodes.length === 0) {
+      toast.info("Add at least one node to the skeleton before seeding.");
+      return;
+    }
+
+    const rawIdx = params?.nodeIdx;
+    let nodeIdx =
+      typeof rawIdx === "number" ? rawIdx : useAppStore.getState().seedNodeIdx;
+    if (nodeIdx < 0 || nodeIdx >= skeleton.nodes.length) nodeIdx = 0;
+
+    // Empty instance = all nodes NaN/invisible; mark just the seed node.
+    // Index-assign (never spread) so the columnar PointView writes back.
+    const instance = Instance.empty({ skeleton });
+    instance.points[nodeIdx].xy = [x, y];
+    instance.points[nodeIdx].visible = true;
+    instance.points[nodeIdx].complete = true;
+
+    lf.instances.push(instance);
+
+    ctx.state.setLabeledFrame(lf);
+    ctx.state.setInstance(instance);
+    ctx.state.markChanged();
+  },
+};
+
+/**
+ * Ensure every first-class centroid annotation (`frame.centroids`) has a pose
+ * instance to pair with — creating empty pose instances where frames have more
+ * centroids than poses — and record the binding on `centroid.instance`
+ * (see ensurePairedPoseInstances).
+ *
+ * All created instances and links span many frames, so this is one all-frames
+ * undo step. When everything is already paired AND linked it is a true no-op:
+ * no undo entry, no dirty flag.
+ */
+export const PairPoseInstances: Command = {
+  name: "PairPoseInstances",
+  topics: [UpdateTopic.Frame, UpdateTopic.Instance],
+  skipAutoSnapshot: true,
+  execute(ctx: CommandContext) {
+    const { labels } = ctx.state;
+    if (!labels) return;
+    const poseSkel = poseSkeletonOf(labels) ?? ctx.state.skeleton;
+    if (!poseSkel) return;
+
+    const snapshot = ctx.takeAllFramesSnapshot("PairPoseInstances");
+    const { created, linked } = ensurePairedPoseInstances(labels, poseSkel);
+    if (created === 0 && linked === 0) return;
+
+    ctx.pushUndoSnapshot(snapshot);
+    ctx.state.markChanged();
+    ctx.state.bumpOverlayVersion();
+  },
+};
+
+/**
  * Toggle the current frame's "negative" (background) flag — a frame explicitly
  * marked as having no animal, used as a negative training example. Creates an
  * empty flagged frame if none exists; turning the flag off prunes a frame that
@@ -193,6 +302,37 @@ export const DeleteSelectedInstance: Command = {
     ctx.state.setInstance(null);
     ctx.state.setLabeledFrame(lf.instances.length > 0 ? lf : null);
     ctx.state.markChanged();
+  },
+};
+
+/**
+ * Remove one first-class centroid annotation (`frame.centroids`) by index from
+ * the current frame — e.g. to fix an accidental double-seed, since centroids
+ * are never selectable pose instances and so can't go through
+ * DeleteSelectedInstance. Undo is handled by the frame snapshot, which captures
+ * centroids (see CommandContext). Pass `{ centroidIdx }`.
+ */
+export const DeleteCentroid: Command = {
+  name: "DeleteCentroid",
+  topics: [UpdateTopic.Frame, UpdateTopic.Instance],
+  execute(ctx: CommandContext, params?: Record<string, unknown>) {
+    const { labels, video, frameIdx } = ctx.state;
+    if (!labels || !video) return;
+
+    const idx = params?.centroidIdx;
+    if (typeof idx !== "number") return;
+
+    const frames = labels.find({ video, frameIdx });
+    if (frames.length === 0) return;
+    const lf = frames[0];
+    if (idx < 0 || idx >= lf.centroids.length) return;
+
+    // Reassign (don't mutate in place) so downstream ref checks notice; the
+    // frame object stays the same, so bump the overlay to force a redraw.
+    lf.centroids = lf.centroids.filter((_, i) => i !== idx);
+    ctx.state.setLabeledFrame(lf);
+    ctx.state.markChanged();
+    ctx.state.bumpOverlayVersion();
   },
 };
 
@@ -416,7 +556,9 @@ export const ConvertPredictionToInstance: Command = {
     );
     fillMissingPredictedNodes(userInstance);
 
-    // Replace the predicted instance with the user instance
+    // Replace the predicted instance with the user instance, carrying any
+    // centroid back-link across the swap (it is by object identity).
+    relinkCentroids(lf, predicted, userInstance);
     lf.instances.splice(instanceIdx, 1, userInstance);
 
     ctx.state.setLabeledFrame(lf);
@@ -483,6 +625,7 @@ export const AddInstancesFromAllPredictions: Command = {
         fromPredicted: inst,
       });
       fillMissingPredictedNodes(userInstance);
+      relinkCentroids(lf, inst, userInstance);
       if (!firstConverted) firstConverted = userInstance;
       return userInstance;
     });
@@ -541,6 +684,7 @@ export const AddInstancesFromAllPredictionsInProject: Command = {
           fromPredicted: inst,
         });
         fillMissingPredictedNodes(userInstance);
+        relinkCentroids(lf, inst, userInstance);
         totalAccepted++;
         return userInstance;
       });
@@ -707,6 +851,41 @@ export const MergePredictions: Command = {
     const predictions = params?.predictions as Labels;
     if (!predictions) return;
 
+    // A keypoint pass / correction queue resolves instances by index; a merge
+    // replaces or appends predictions underneath it, so the next click or Space
+    // would act on the wrong instance. The menu items are disabled mid-sweep,
+    // but main's newer entry points (Connect merge, remote Fetch & Load, a
+    // background post-training merge) all funnel through here — pause first.
+    const app = useAppStore.getState();
+    if (app.labelingMode === "keypointPass" || app.labelingMode === "correct") {
+      if (app.labelingMode === "correct") app.exitCorrectMode();
+      else app.exitKeypointPassMode();
+      toast.info(
+        "Paused the sweep: merging predictions changes the instances it was stepping through. Resume it from the Active Learning panel.",
+      );
+    }
+
+    // Honor "skip user-labeled frames" here, at the merge. sleap-nn ignores
+    // `--exclude_user_labeled` when it's handed a raw video rather than the
+    // project .slp (which is how a single-video run is invoked), so the output
+    // can still hold predictions for frames already labeled by hand — merged,
+    // they'd sit on top of the ground truth and get queued for review.
+    if (params?.skipUserLabeledFrames) {
+      const labeled = new Set<string>();
+      for (const lf of labels.labeledFrames) {
+        if (lf.hasUserInstances) labeled.add(`${videoBasename(lf.video.filename)}#${lf.frameIdx}`);
+      }
+      if (labeled.size > 0) {
+        const kept = predictions.labeledFrames.filter(
+          (lf) => !labeled.has(`${videoBasename(lf.video.filename)}#${lf.frameIdx}`)
+        );
+        if (kept.length !== predictions.labeledFrames.length) {
+          predictions.labeledFrames = kept;
+          predictions.reindex();
+        }
+      }
+    }
+
     const mode = (params?.mode as ExistingPredictionsMode) ?? "replace";
     // `replace` swaps predictions only on frames present in the new output;
     // `keep`/`clear_all` append (the project-wide wipe below handles clear_all).
@@ -714,20 +893,40 @@ export const MergePredictions: Command = {
 
     const snapshot = ctx.takeAllFramesSnapshot("MergePredictions");
 
-    // clear_all: strip every existing PredictedInstance project-wide (keeping
-    // user instances) BEFORE merging, so stale predictions on frames the new
+    // A pose run's output never carries centroids (sleap-nn emits them only for
+    // a centroid-only/locator run), so its merge must leave the project's
+    // centroid annotations — active-learning seeds AND the locator's
+    // PredictedCentroids — alone. Otherwise io's "replace_predictions" treats
+    // every predicted centroid on a re-inferred frame as stale and drops it.
+    const preserveCentroids = predictions.labeledFrames.every(
+      (lf) => lf.centroids.length === 0
+    );
+
+    // clear_all: strip every existing prediction project-wide (keeping user
+    // annotations) BEFORE merging, so stale predictions on frames the new
     // run didn't cover are removed too — io's Labels.merge only visits frames
     // present in the output, so a per-frame strategy alone can't reach them.
+    // A locator run clears the old PredictedCentroids too (`removePredictions`).
+    // A frame survives if anything is left on it worth keeping — a frame
+    // holding only user centroids (an active-learning seed) or a negative flag
+    // is labeling, not empty.
     if (mode === "clear_all") {
       for (const lf of labels.labeledFrames) {
-        lf.instances = lf.instances.filter(
-          (inst) => !(inst instanceof PredictedInstance)
-        );
+        if (preserveCentroids) {
+          lf.instances = lf.instances.filter(
+            (inst) => !(inst instanceof PredictedInstance)
+          );
+        } else {
+          lf.removePredictions();
+        }
       }
       labels.labeledFrames = labels.labeledFrames.filter(
-        (lf) => lf.instances.length > 0
+        (lf) => lf.instances.length > 0 || lf.centroids.length > 0 || lf.isUserLabeled
       );
     }
+    const keptCentroids = preserveCentroids
+      ? new Map(labels.labeledFrames.map((lf) => [lf, lf.centroids] as const))
+      : null;
 
     // Route through sleap-io.js's Labels.merge (issue #226). Match tracks by
     // NAME — io's default is object IDENTITY, which would duplicate every track
@@ -742,6 +941,17 @@ export const MergePredictions: Command = {
       video: "basename",
       frame,
     });
+    if (keptCentroids) {
+      // io merges into the project's own frame objects, so restore by identity.
+      // A centroid paired with a prediction this merge replaced loses its link
+      // (it would dangle); Phase 2's pairing re-links missing ones.
+      for (const [lf, centroids] of keptCentroids) {
+        lf.centroids = centroids;
+        for (const c of centroids) {
+          if (c.instance && !lf.instances.includes(c.instance)) c.instance = null;
+        }
+      }
+    }
     ctx.pushUndoSnapshot(snapshot);
     ctx.state.markChanged();
     // Merge mutates `labels` in place, so overlayVersion-gated consumers (the
@@ -751,11 +961,21 @@ export const MergePredictions: Command = {
     ctx.state.bumpOverlayVersion();
 
     const conflicts = result.conflicts.length;
-    toast.success(
-      `Merged ${result.instancesAdded} prediction(s) across ${result.framesMerged} frame(s)` +
-        (conflicts > 0 ? `, ${conflicts} conflict(s)` : "") +
-        "."
-    );
+    // A run that merged nothing is not a success worth a green toast — it usually
+    // means the frame filter matched no frames (e.g. `--only_suggested_frames`
+    // against a saved project whose suggestions were never saved), which
+    // otherwise looks identical to "the model found no animals".
+    if (result.framesMerged === 0 && result.instancesAdded === 0) {
+      toast.warning(
+        "No predictions merged — the run matched no frames. Check the frame range, and that the frames you expect are saved in the project.",
+      );
+    } else {
+      toast.success(
+        `Merged ${result.instancesAdded} prediction(s) across ${result.framesMerged} frame(s)` +
+          (conflicts > 0 ? `, ${conflicts} conflict(s)` : "") +
+          "."
+      );
+    }
   },
 };
 

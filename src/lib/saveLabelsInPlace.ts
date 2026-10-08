@@ -195,6 +195,35 @@ interface OnDiskProbe {
    *  of a second `fileSize` call (that second call is the only differential
    *  failure vs the full-write path). */
   size: number;
+  /** Whether the file has a `/centroids` group (see {@link frameAnnotationsBlockInPlace}). */
+  hasCentroids: boolean;
+}
+
+/**
+ * io's in-place gate proves confinement for the label tables + sidecars ONLY —
+ * its caller contract says an edit touching the frame-level annotation datasets
+ * (centroids, bboxes, masks, rois, label images) MUST go to a full re-save
+ * instead. The app has no per-annotation dirty tracking, so refuse in-place
+ * whenever any exist in memory, or on disk (covers deleting the last centroid).
+ * Active-learning seeds are first-class centroids, so this is the common case
+ * for an AL project, not an edge one.
+ */
+export function frameAnnotationsBlockInPlace(
+  labels: Labels,
+  probe: Pick<OnDiskProbe, "hasCentroids">,
+): string | null {
+  if (probe.hasCentroids || labels.centroids.length > 0) {
+    return "centroid annotations — full re-save";
+  }
+  if (
+    labels.bboxes.length > 0 ||
+    labels.masks.length > 0 ||
+    labels.rois.length > 0 ||
+    labels.labelImages.length > 0
+  ) {
+    return "frame-level annotations (bboxes/masks/rois/label images) — full re-save";
+  }
+  return null;
 }
 
 /**
@@ -257,7 +286,7 @@ async function probeOnDisk(path: string): Promise<OnDiskProbe> {
       metadataJson,
       videos: buildOnDiskVideoSignatures(videosJson, path),
     };
-    return { tables, sidecars, size };
+    return { tables, sidecars, size, hasCentroids: reader.keys().includes("centroids") };
   } finally {
     await reader.close().catch(() => {});
   }
@@ -455,6 +484,12 @@ export async function saveLabelsInPlace(
       ok: false,
       reason: `probe of ${destPath} failed (${err instanceof Error ? err.message : String(err)})`,
     };
+  }
+
+  const annotationsReason = frameAnnotationsBlockInPlace(labels, probe);
+  if (annotationsReason) {
+    console.log(`[saveLabelsInPlace] not in-place-writable: ${annotationsReason}`);
+    return { ok: false, reason: annotationsReason };
   }
 
   // 2+3. Build the update + expected sidecars, then GATE. This whole region runs

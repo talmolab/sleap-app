@@ -17,6 +17,33 @@ import {
   migrateOpenPanels,
 } from "@/lib/panelLayout";
 
+describe("the 'correct' panel id", () => {
+  it("is valid again, so a legacy active id resolves instead of being dropped", () => {
+    // History: "Correct predictions" started as a standalone panel, moved to an
+    // Active-Learning tab (which retired the id, and this test asserted it
+    // stayed retired), and now has BOTH — the tab for the loop user plus a
+    // top-level entry for someone correcting a predictions.slp with no
+    // workflow config. Since the id maps to a real component again, a returning
+    // user's persisted `sidebarActivePanel: "correct"` should be honored.
+    expect(DEFAULT_PANEL_ORDER as readonly string[]).toContain("correct");
+    expect(migrateOpenPanels(null, "correct")).toEqual(["correct"]);
+    expect(reconcileOpenPanels(["correct"])).toEqual(["correct"]);
+    // A still-valid legacy id is honored as before.
+    expect(migrateOpenPanels(null, "skeleton")).toEqual(["skeleton"]);
+  });
+});
+
+describe("retired panel ids", () => {
+  it("drops an id that no longer maps to a component", () => {
+    // The general guarantee the 'correct' case used to cover: an unknown
+    // persisted id must not reach the open stack, or the sidebar body renders
+    // empty. Uses a name that has never been a panel.
+    expect(DEFAULT_PANEL_ORDER as readonly string[]).not.toContain("nonexistent-panel");
+    expect(migrateOpenPanels(null, "nonexistent-panel")).toEqual([...DEFAULT_OPEN_PANELS]);
+    expect(reconcileOpenPanels(["nonexistent-panel"])).toEqual([]);
+  });
+});
+
 describe("reconcilePanelOrder", () => {
   it("returns the full default order for empty/undefined input", () => {
     expect(reconcilePanelOrder()).toEqual([...DEFAULT_PANEL_ORDER]);

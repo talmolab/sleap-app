@@ -96,6 +96,7 @@ export function InferenceDialog() {
       runtime: "auto",
       maxInstances: Number(maxInstances),
       peakThreshold: 0.2,
+      centroidOutput: "instance",
       integralRefinement: true,
       integralPatchSize: 5,
       nPoints: 10,

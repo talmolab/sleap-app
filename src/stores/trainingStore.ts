@@ -173,7 +173,8 @@ export type ModelType =
   | "top_down"
   | "bottom_up"
   | "top_down_id"
-  | "bottom_up_id";
+  | "bottom_up_id"
+  | "centroid";
 
 export type Backbone = "unet" | "convnext" | "swint";
 
@@ -234,6 +235,14 @@ export interface ConfigHyperparams {
   // Model — head
   outputStride: number;
   anchorPart: string | null;
+  /**
+   * Centroid-head only (`model_config.head_configs.centroid.confmaps.centroid_source`,
+   * sleap-nn >=0.3.1 / #704): which centroid definition the head trains against.
+   * `"user"` = first-class `UserCentroid` annotations (pose-only frames dropped),
+   * `"computed"` = derived from keypoints (user centroids ignored), `null` = leave
+   * unset and let sleap-nn infer it, which it does with a loud warning.
+   */
+  centroidSource: "user" | "computed" | null;
   // Loss weights (per sub-head, only used by multi-head model types)
   confmapsLossWeight: number;
   pafsLossWeight: number;
@@ -340,6 +349,7 @@ export const defaultHyperparams: ConfigHyperparams = {
   upInterpolate: true,
   outputStride: 2,
   anchorPart: null,
+  centroidSource: null,
   confmapsLossWeight: 1.0,
   pafsLossWeight: 1.0,
   classLossWeight: 1.0,
@@ -488,6 +498,12 @@ export interface LocalTrainingOptions {
   exportFormat?: "none" | "onnx" | "tensorrt";
   /** Run post-training inference on the exported model (falls back to the checkpoint on failure). */
   useExportedForInference?: boolean;
+  /**
+   * This run is round N of the active-learning loop. The loop's engine waits
+   * for it to finish, records the trained models, and runs the round's own
+   * inference (new videos first) instead of the panel's post-training target.
+   */
+  activeLearningRound?: number;
 }
 
 // Session guard: whether we've already confirmed sleap-nn's [export] extra
@@ -609,7 +625,33 @@ interface TrainingState {
    */
   resetSeq: number;
 
+  /**
+   * One-shot instructions from another panel that sent the user here (today:
+   * the active-learning Phase-2 → pose-training handoff).
+   *
+   * The post-training inference fields live in TrainingPanel's local state, not
+   * in `config`, so a caller can't preset them directly; the panel drains this
+   * on arrival and clears it. `requireModelTypeChoice` blocks Start until the
+   * user picks a pipeline explicitly — the AL handoff deliberately ships no
+   * default, since top-down vs bottom-up is a real decision about their data
+   * and `config.modelType` would otherwise silently stay whatever it last was.
+   */
+  pendingHandoff: {
+    inferenceTarget?: string;
+    skipUserLabeled?: boolean;
+    requireModelTypeChoice?: boolean;
+    /** The run the user starts from this hand-off is this active-learning round. */
+    activeLearningRound?: number;
+  } | null;
+  /**
+   * Set when the current (or just-finished) LOCAL run is an active-learning
+   * round — see {@link LocalTrainingOptions.activeLearningRound}. Cleared when
+   * the next run starts or the store resets.
+   */
+  activeLearningRun: { round: number } | null;
+
   // Actions
+  setPendingHandoff: (v: TrainingState["pendingHandoff"]) => void;
   setConfig: <K extends keyof TrainingConfig>(key: K, value: TrainingConfig[K]) => void;
   updateConfigHyperparams: (slot: string, updates: Partial<ConfigHyperparams>) => void;
   /** Restore ALL of a config's hyperparameters to its as-loaded baseline. */
@@ -640,6 +682,8 @@ export function getConfigSlots(modelType: ModelType): string[] {
     case "top_down":
     case "top_down_id":
       return ["centroid", "centered_instance"];
+    case "centroid":
+      return ["centroid"];
     default:
       return ["config"];
   }
@@ -655,25 +699,64 @@ export function getSlotLabel(slot: string): string {
 }
 
 /**
- * Count of frames with a user instance or marked negative — the JS
- * equivalent of sleap-io's `Labels.user_labeled_frames` (which includes
+ * Whether a frame is training data: a user instance or a negative frame — the
+ * JS equivalent of sleap-io's `Labels.user_labeled_frames` (which includes
  * negative/background frames as trainable data, not just positively-labeled
- * ones). Used for the `n=` suffix in a default run name; `null` with no
- * project loaded.
+ * ones). With `includeUserCentroids`, a user-placed centroid annotation counts
+ * too: that is exactly what the active-learning centroid locator trains on, and
+ * a seeded frame holds no instance at all.
  */
-let _userLabeledFramesCache: { labels: Labels; result: number } | null = null;
+function isTrainingFrame(lf: Labels["labeledFrames"][number], includeUserCentroids: boolean): boolean {
+  return (
+    lf.hasUserInstances ||
+    lf.isNegative ||
+    (includeUserCentroids && lf.centroids.some((c) => !c.isPredicted))
+  );
+}
 
-export function countUserLabeledFrames(labels: Labels | null): number | null {
+/**
+ * Count of training frames (see {@link isTrainingFrame}). Used for the `n=`
+ * suffix in a default run name; `null` with no project loaded. Deliberately
+ * uncached: callers run once per training start, and `labels` is mutated in
+ * place, so a cache keyed by its reference would freeze the first count for the
+ * whole session. The per-render gate uses {@link hasTrainingFrames}.
+ */
+export function countUserLabeledFrames(
+  labels: Labels | null,
+  opts: { includeUserCentroids?: boolean } = {},
+): number | null {
   if (!labels) return null;
-  // Called on every TrainingPanel render; cache by `labels` reference so it
-  // isn't re-scanned (allocating `lf.userInstances` per frame) each time.
-  if (_userLabeledFramesCache && _userLabeledFramesCache.labels === labels) {
-    return _userLabeledFramesCache.result;
+  const withCentroids = opts.includeUserCentroids ?? false;
+  let n = 0;
+  for (const lf of labels.labeledFrames) if (isTrainingFrame(lf, withCentroids)) n++;
+  return n;
+}
+
+let _hasTrainingFramesCache: {
+  labels: Labels;
+  editSeq: number;
+  includeUserCentroids: boolean;
+  result: boolean;
+} | null = null;
+
+/**
+ * Whether the project has ANY training frame — the Training panel's per-render
+ * Start gate. Short-circuits on the first hit and is cached on
+ * (`labels`, the app store's `editSeq`), so it re-scans only after an edit.
+ */
+export function hasTrainingFrames(
+  labels: Labels | null,
+  editSeq: number,
+  opts: { includeUserCentroids?: boolean } = {},
+): boolean {
+  if (!labels) return false;
+  const withCentroids = opts.includeUserCentroids ?? false;
+  const c = _hasTrainingFramesCache;
+  if (c && c.labels === labels && c.editSeq === editSeq && c.includeUserCentroids === withCentroids) {
+    return c.result;
   }
-  const result = labels.labeledFrames.filter(
-    (lf) => lf.userInstances.length > 0 || lf.isNegative,
-  ).length;
-  _userLabeledFramesCache = { labels, result };
+  const result = labels.labeledFrames.some((lf) => isTrainingFrame(lf, withCentroids));
+  _hasTrainingFramesCache = { labels, editSeq, includeUserCentroids: withCentroids, result };
   return result;
 }
 
@@ -703,11 +786,11 @@ export function resolveRemoteRunName(
   // multi-model pipeline) passes a shared `runTimestamp` so every model's
   // run name carries the exact same timestamp, computed only once for the
   // whole batch — not a fresh one per model (which real time passing
-  // between calls could otherwise let drift by a second). No such override
-  // is needed for the frame count: `countUserLabeledFrames` already caches
-  // its result by `labels` reference.
+  // between calls could otherwise let drift by a second).
   const runTimestamp = opts?.runTimestamp ?? formatRunTimestamp();
-  const userLabeledFrameCount = countUserLabeledFrames(labels);
+  const userLabeledFrameCount = countUserLabeledFrames(labels, {
+    includeUserCentroids: modelType === "centroid",
+  });
   return userLabeledFrameCount !== null
     ? `${runTimestamp}.${modelType}.n=${userLabeledFrameCount}`
     : `${runTimestamp}.${modelType}`;
@@ -816,6 +899,10 @@ export function buildPostTrainingInferenceConfig(opts: {
     filterMinMeanNodeScore: null,
     filterMinInstanceScore: null,
     filterMinCentroidDistance: null,
+    // Ignored by every pose pipeline above; set for type completeness. (A
+    // centroid-only run never reaches here — post-training inference skips
+    // `modelType === "centroid"`.)
+    centroidOutput: "centroid",
   };
 }
 
@@ -1075,8 +1162,8 @@ export function applyHyperparamsToYaml(
     model.backbone_config = backboneConfig;
   }
 
-  // Head params — output_stride and anchor_part
-  for (const [, headVal] of Object.entries(headConfigs)) {
+  // Head params — output_stride, anchor_part, and (centroid head) centroid_source
+  for (const [headName, headVal] of Object.entries(headConfigs)) {
     if (headVal && typeof headVal === "object") {
       const head = headVal as Record<string, unknown>;
       if (head.confmaps && typeof head.confmaps === "object") {
@@ -1084,10 +1171,21 @@ export function applyHyperparamsToYaml(
         if (hp.anchorPart !== null) {
           (head.confmaps as Record<string, unknown>).anchor_part = hp.anchorPart;
         }
+        // sleap-nn >=0.3.1 (#704): the centroid head must train against ONE
+        // centroid definition for the whole dataset. Left unset it infers one and
+        // warns; we always know which we mean, so say it. "user" trains on
+        // `UserCentroid` annotations (and DROPS pose-only frames); "computed"
+        // derives every centroid from keypoints and IGNORES user centroids.
+        if (headName === "centroid" && hp.centroidSource !== null) {
+          (head.confmaps as Record<string, unknown>).centroid_source = hp.centroidSource;
+        }
       } else {
         head.output_stride = hp.outputStride;
         if (hp.anchorPart !== null) {
           head.anchor_part = hp.anchorPart;
+        }
+        if (headName === "centroid" && hp.centroidSource !== null) {
+          head.centroid_source = hp.centroidSource;
         }
       }
     }
@@ -1223,6 +1321,8 @@ const initialState = {
   wandbUrl: null as string | null,
   modelOutputDirs: [] as string[],
   log: [] as string[],
+  pendingHandoff: null as TrainingState["pendingHandoff"],
+  activeLearningRun: null as TrainingState["activeLearningRun"],
   postTrainingInference: null as PostTrainingInference | null,
   resetSeq: 0,
 };
@@ -1231,6 +1331,8 @@ const initialState = {
 
 export const useTrainingStore = create<TrainingState>()((set, get) => ({
   ...initialState,
+
+  setPendingHandoff: (v) => set({ pendingHandoff: v }),
 
   setConfig: (key, value) =>
     set((state) => ({
@@ -1417,18 +1519,24 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       // Extract backbone model params
       const unetConfig = (backboneConfig[activeBackbone.toLowerCase()] ?? {}) as Record<string, unknown>;
 
-      // Extract output_stride and anchor_part from head configs
+      // Extract output_stride, anchor_part and centroid_source from head configs
       let outputStride = 2;
       let anchorPart: string | null = null;
+      let centroidSource: "user" | "computed" | null = null;
+      const readCentroidSource = (v: unknown) => {
+        if (v === "user" || v === "computed") centroidSource = v;
+      };
       for (const headVal of Object.values(headConfigs)) {
         if (headVal && typeof headVal === "object") {
           const head = headVal as Record<string, unknown>;
           if (typeof head.output_stride === "number") outputStride = head.output_stride;
           if (typeof head.anchor_part === "string") anchorPart = head.anchor_part;
+          readCentroidSource(head.centroid_source);
           const confmaps = head.confmaps as Record<string, unknown> | undefined;
           if (confmaps) {
             if (typeof confmaps.output_stride === "number") outputStride = confmaps.output_stride;
             if (typeof confmaps.anchor_part === "string") anchorPart = confmaps.anchor_part;
+            readCentroidSource(confmaps.centroid_source);
           }
         }
       }
@@ -1517,6 +1625,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         upInterpolate: typeof unetConfig.up_interpolate === "boolean" ? unetConfig.up_interpolate : true,
         outputStride,
         anchorPart,
+        centroidSource,
         confmapsLossWeight,
         pafsLossWeight,
         classLossWeight,
@@ -1668,6 +1777,10 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       modelOutputDirs: [],
       log: [],
       postTrainingInference: null,
+      activeLearningRun:
+        !remoteOpts && typeof localOpts?.activeLearningRound === "number"
+          ? { round: localOpts.activeLearningRound }
+          : null,
     });
 
     if (remoteOpts?.remote) {
@@ -1911,8 +2024,10 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         // The worker never runs inference inside a train job. Once every
         // model has trained, submit one track job against the labels file
         // the worker trained on, with every trained model in pipeline order.
+        // A centroid-only (locator) run is skipped, as on the local path: it
+        // has no pose pipeline to run, and would mis-route to top-down.
         const inferenceTarget = remoteOpts.inferenceTarget;
-        if (inferenceTarget && inferenceTarget !== "nothing") {
+        if (inferenceTarget && inferenceTarget !== "nothing" && config.modelType !== "centroid") {
           if (allowedVideoIndices?.length === 0) {
             // "window" mode restricted coverage to visible videos, and none
             // are — no point submitting a track job for nothing.
@@ -2225,7 +2340,9 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
           // used how much data" comparisons useful across a project's history.
           let runName = cf.hyperparams.runName;
           if (!runName) {
-            const n = countUserLabeledFrames(localLabels);
+            const n = countUserLabeledFrames(localLabels, {
+              includeUserCentroids: cf.modelType === "centroid",
+            });
             const ts = formatRunTimestamp();
             runName = n !== null ? `${ts}.${cf.modelType}.n=${n}` : `${ts}.${cf.modelType}`;
           }
@@ -2367,8 +2484,17 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         }
 
         // ── Post-training inference ───────────────────────────
+        // Centroid-only runs have no `sleap-nn track` pipeline (that needs a
+        // paired centered-instance model); standalone centroid prediction uses
+        // `sleap-nn predict`, which isn't wired yet. Skip auto-inference so a
+        // locator run doesn't mis-route to a broken top-down `track` command.
         const inferenceTarget = localOpts?.inferenceTarget;
-        if (inferenceTarget && inferenceTarget !== "nothing" && trainedModelPaths.length > 0) {
+        if (
+          inferenceTarget &&
+          inferenceTarget !== "nothing" &&
+          trainedModelPaths.length > 0 &&
+          config.modelType !== "centroid"
+        ) {
           set((s) => ({
             log: appendLog(s.log, `— Running inference (${inferenceTarget}) with ${useExported ? `exported model: ${exportDir}` : `models: ${trainedModelPaths.join(", ")}`}...`),
           }));
@@ -2397,6 +2523,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
             runtime: useExported ? exportRuntime : "auto",
           });
 
+          let mergedAny = false;
           try {
             const { projectPath, labels: currentLabels } = useAppStore.getState();
 
@@ -2423,7 +2550,9 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
               await commandContext.execute(MergePredictions, {
                 predictions,
                 mode: localOpts?.existingPredictions ?? "replace",
+                skipUserLabeledFrames: localOpts?.skipUserLabeled ?? false,
               });
+              mergedAny = true;
             };
 
             // Run inference; if it targeted the exported model and failed, retry
@@ -2458,7 +2587,33 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
                 set((s) => ({ log: appendLog(s.log, "— Post-training inference failed (non-zero exit).") }));
               }
             }
-            set((s) => ({ log: appendLog(s.log, "— Predictions merged into project.") }));
+            if (!mergedAny) {
+              // Nothing was merged — a failed run, or a successful one that
+              // wrote no output. Say so instead of claiming a merge, and raise
+              // no review signal (there is nothing to review).
+              set((s) => ({ log: appendLog(s.log, "— No predictions were merged.") }));
+            } else {
+              set((s) => ({ log: appendLog(s.log, "— Predictions merged into project.") }));
+
+              // Phase-2 → Phase-3 handoff: surface what landed rather than
+              // seizing the UI. See AppState.pendingReview.
+              const { reviewSignal } = await import("@/lib/activeLearning/reviewQueue");
+              const app = useAppStore.getState();
+              if (app.labels) {
+                const { flagged, total } = reviewSignal(app.labels, app.correctScoreThreshold);
+                app.setPendingReview({ flagged, total });
+                set((s) => ({
+                  log: appendLog(
+                    s.log,
+                    total === 0
+                      ? "— No scored predictions to review."
+                      : flagged === 0
+                        ? `— ${total} predictions merged; none below the ${app.correctScoreThreshold} flag threshold.`
+                        : `— ${flagged} of ${total} predictions need review.`,
+                  ),
+                }));
+              }
+            }
           } catch (e) {
             console.error("[training] Post-training inference failed:", e);
             set((s) => ({

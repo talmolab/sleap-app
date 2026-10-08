@@ -5,6 +5,7 @@
  * All actions are wired to the command system via CommandContext.
  */
 
+import { useEffect, useState } from "react";
 import { useAppStore, type NavigationDomain } from "../../stores/appStore";
 import { useExportStore } from "@/stores/exportStore";
 import { PANELS } from "./panelRegistry";
@@ -441,6 +442,13 @@ function FileMenu() {
 }
 
 function EditMenu() {
+  // Re-render whenever the command stack changes so undo/redo enabled-state and
+  // labels stay live (canUndo/canRedo are read from the non-reactive context).
+  const [, bumpStackVersion] = useState(0);
+  useEffect(
+    () => commandContext.onUpdate(() => bumpStackVersion((n) => n + 1)),
+    [],
+  );
   // Subscribe to reactive state so undo/redo labels update
   useAppStore((s) => s.labeledFrame);
   useAppStore((s) => s.hasChanges);
@@ -452,6 +460,11 @@ function EditMenu() {
   // would yield a null instance). overlayVersion is bumped on node changes.
   useAppStore((s) => s.overlayVersion);
   const skeletonHasNodes = useAppStore((s) => (s.skeleton?.nodes?.length ?? 0) > 0);
+  // A keypoint pass / correction sweep resolves instances by a fixed index, so
+  // adding or deleting an instance mid-sweep would desync it — disable those.
+  const sweepActive = useAppStore(
+    (s) => s.labelingMode === "keypointPass" || s.labelingMode === "correct",
+  );
 
   const exec = (cmd: Parameters<typeof commandContext.execute>[0]) => {
     commandContext.execute(cmd);
@@ -503,13 +516,13 @@ function EditMenu() {
         </MenubarItem>
         <MenubarSeparator />
         <MenubarItem
-          disabled={!projectLoaded || !skeletonHasNodes}
+          disabled={!projectLoaded || !skeletonHasNodes || sweepActive}
           onClick={() => exec(AddInstance)}
         >
           Add Instance <MenubarShortcut>{formatShortcut("$mod+KeyI")}</MenubarShortcut>
         </MenubarItem>
         <MenubarItem
-          disabled={!instance}
+          disabled={!instance || sweepActive}
           onClick={() => {
             exec(DeleteSelectedInstance);
             toast.info("Instance deleted");
@@ -519,7 +532,7 @@ function EditMenu() {
         </MenubarItem>
         <MenubarSeparator />
         <MenubarItem
-          disabled={!projectLoaded}
+          disabled={!projectLoaded || sweepActive}
           onClick={() => exec(DeleteFramePredictions)}
         >
           Delete Predictions on Current Frame
@@ -996,6 +1009,11 @@ function LabelsMenu() {
   // Instances require a skeleton with at least one node (see EditMenu).
   useAppStore((s) => s.overlayVersion);
   const skeletonHasNodes = useAppStore((s) => (s.skeleton?.nodes?.length ?? 0) > 0);
+  // See EditMenu: adding/deleting instances or predictions mid-sweep desyncs a
+  // keypoint pass / correction queue that resolves instances by fixed index.
+  const sweepActive = useAppStore(
+    (s) => s.labelingMode === "keypointPass" || s.labelingMode === "correct",
+  );
   const totalLabeled = labels?.labeledFrames.length ?? 0;
   const totalInstances =
     labels?.labeledFrames.reduce((sum, lf) => sum + lf.instances.length, 0) ?? 0;
@@ -1009,7 +1027,7 @@ function LabelsMenu() {
       <MenubarTrigger className="px-3 h-8 text-xs rounded-none">Labels</MenubarTrigger>
       <MenubarContent>
         <MenubarItem
-          disabled={!projectLoaded || !skeletonHasNodes}
+          disabled={!projectLoaded || !skeletonHasNodes || sweepActive}
           onClick={() => exec(AddInstance)}
         >
           Add Instance <MenubarShortcut>{formatShortcut("$mod+KeyI")}</MenubarShortcut>
@@ -1037,7 +1055,7 @@ function LabelsMenu() {
           Show Hints During Labeling
         </MenubarCheckboxItem>
         <MenubarItem
-          disabled={!instance}
+          disabled={!instance || sweepActive}
           onClick={() => exec(DeleteSelectedInstance)}
         >
           Delete Instance <MenubarShortcut>{formatShortcut("$mod+Backspace")}</MenubarShortcut>
@@ -1051,7 +1069,7 @@ function LabelsMenu() {
         </MenubarCheckboxItem>
         <MenubarSeparator />
         <MenubarItem
-          disabled={!projectLoaded}
+          disabled={!projectLoaded || sweepActive}
           onClick={() => exec(AddInstancesFromAllPredictions)}
         >
           Accept All Predictions on Current Frame
@@ -1064,13 +1082,13 @@ function LabelsMenu() {
           Accept All Predictions
         </MenubarItem>
         <MenubarItem
-          disabled={!projectLoaded}
+          disabled={!projectLoaded || sweepActive}
           onClick={() => exec(DeleteFramePredictions)}
         >
           Delete Predictions on Current Frame
         </MenubarItem>
         <MenubarItem
-          disabled={!projectLoaded}
+          disabled={!projectLoaded || sweepActive}
           onClick={() =>
             useAppStore.getState().setDeletePredictionsDialogOpen(true)
           }
@@ -1078,13 +1096,13 @@ function LabelsMenu() {
           Delete Predictions...
         </MenubarItem>
         <MenubarItem
-          disabled={!projectLoaded}
+          disabled={!projectLoaded || sweepActive}
           onClick={() => useAppStore.getState().toggle("areaDeleteMode")}
         >
           Delete Predictions from Area... <MenubarShortcut>{formatShortcut("$mod+KeyK")}</MenubarShortcut>
         </MenubarItem>
         <MenubarItem
-          disabled={!projectLoaded}
+          disabled={!projectLoaded || sweepActive}
           onClick={() => {
             if (confirm("Delete all predicted instances across all frames?")) {
               exec(DeleteAllPredictions);

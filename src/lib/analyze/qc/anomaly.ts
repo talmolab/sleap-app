@@ -25,6 +25,7 @@ import { analyzerFromSkeleton } from "./skeletonIo";
 import { makeQCConfig, type QcConfig } from "./config";
 import { topIssue, confidence } from "./explain";
 import type { Pose } from "./util";
+import { isUnlabeledPairedPose } from "@/lib/activeLearning/placeholders";
 
 /** One scored instance, keyed by (videoIdx, frameIdx, instIdx). */
 export interface AnomalyInstance {
@@ -66,11 +67,15 @@ function capReference(n: number, max: number): boolean[] {
 interface FrameRef {
   videoIdx: number;
   frameIdx: number;
-  count: number;
+  /** Index (into `pick(lf)`) of each scored instance, in matrix-row order. */
+  instIdxs: number[];
 }
 
 /** Walk the labels once: frames (in a stable order) + the flat pose list whose
- *  row order aligns with the feature matrix. Shared by the sync + async paths. */
+ *  row order aligns with the feature matrix. Shared by the sync + async paths.
+ *  Active-learning placeholders (an empty instance paired to a centroid) are
+ *  left out of both the fit and the scores — they hold no labeled pose — while
+ *  every reported index stays relative to `pick(lf)`. */
 function gather(
   labels: Labels,
   pick: (lf: LabeledFrame) => Instance[],
@@ -79,9 +84,14 @@ function gather(
   const allPoses: Pose[] = [];
   labels.videos.forEach((video, videoIdx) => {
     for (const lf of labels.find({ video })) {
-      const poses = pick(lf).map((inst) => inst.numpy({ invisibleAsNaN: true }));
-      frames.push({ videoIdx, frameIdx: lf.frameIdx, count: poses.length });
-      allPoses.push(...poses);
+      const picked = pick(lf);
+      const instIdxs: number[] = [];
+      picked.forEach((inst, i) => {
+        if (isUnlabeledPairedPose(lf, inst)) return;
+        instIdxs.push(i);
+        allPoses.push(inst.numpy({ invisibleAsNaN: true }));
+      });
+      frames.push({ videoIdx, frameIdx: lf.frameIdx, instIdxs });
     }
   });
   return { frames, allPoses };
@@ -140,7 +150,7 @@ export function scoreLabelsAnomaly(
   const instances: AnomalyInstance[] = [];
   let row = 0;
   for (const f of frames)
-    for (let instIdx = 0; instIdx < f.count; instIdx++)
+    for (const instIdx of f.instIdxs)
       instances.push(scoreRow(det, row++, f.videoIdx, f.frameIdx, instIdx));
   return { instances, featureNames: det.featureNames };
 }
@@ -183,7 +193,7 @@ export async function scoreLabelsAnomalyAsync(
   const n = allPoses.length || 1;
   let row = 0;
   for (const f of frames) {
-    for (let instIdx = 0; instIdx < f.count; instIdx++) {
+    for (const instIdx of f.instIdxs) {
       if (signal?.aborted)
         throw new DOMException("QC analysis cancelled", "AbortError");
       instances.push(scoreRow(det, row++, f.videoIdx, f.frameIdx, instIdx));

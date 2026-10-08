@@ -30,6 +30,8 @@ import {
   Video,
   Skeleton,
   Track,
+  UserCentroid,
+  PredictedCentroid,
 } from "@talmolab/sleap-io.js";
 
 function makeSkeleton(name = "s"): Skeleton {
@@ -291,6 +293,50 @@ describe("applyDeltas (replay)", () => {
     expect(() => applyDeltas(labels, [bad])).not.toThrow();
     // Original frame untouched.
     expect(labels.find({ video, frameIdx: 0 })[0].instances.length).toBe(1);
+  });
+
+  // Active-learning centroids: the `.instance` back-link pairs a centroid with
+  // its pose instance. Replay replaces `lf.instances` with fresh objects, so the
+  // link must be rebuilt onto them — not left pointing at the discarded ones.
+  it("journals centroids and re-links them to the replayed instances", () => {
+    const { labels, video, sk, trackB, lf } = makeBase();
+    const idx = buildBaseIndex(labels);
+    const edited = Instance.fromArray([[5, 5], [6, 6]], sk);
+    const user = new UserCentroid({ x: 5.5, y: 5.5, instance: edited });
+    const pred = new PredictedCentroid({ x: 50, y: 60, score: 0.7, track: trackB });
+    const delta = encodeFrameDelta(
+      new LabeledFrame({ video, frameIdx: 0, instances: [edited], centroids: [user, pred] }),
+      idx,
+    );
+    // Survives the on-disk record framing.
+    const [decoded] = decodeJournal(frameDeltaToRecord(delta)).deltas;
+
+    applyDeltas(labels, [decoded]);
+
+    expect(lf.centroids.map((c) => [c.isPredicted, c.xy])).toEqual([
+      [false, [5.5, 5.5]],
+      [true, [50, 60]],
+    ]);
+    expect(lf.centroids[0].instance).toBe(lf.instances[0]); // the REPLAYED object
+    expect(lf.centroids[1].instance).toBeNull();
+    expect(lf.centroids[1].track).toBe(trackB);
+    expect((lf.centroids[1] as PredictedCentroid).score).toBeCloseTo(0.7);
+  });
+
+  it("re-links base centroids by index for a pre-centroid (legacy) record", () => {
+    const { labels, video, sk, lf } = makeBase();
+    const baseCentroid = new UserCentroid({ x: 1, y: 1, instance: lf.instances[0] });
+    lf.centroids = [baseCentroid];
+    const legacy: FrameDelta = encodeFrameDelta(
+      new LabeledFrame({ video, frameIdx: 0, instances: [Instance.fromArray([[7, 7], [8, 8]], sk)] }),
+      buildBaseIndex(labels),
+    );
+    delete legacy.cen;
+
+    applyDeltas(labels, [legacy]);
+
+    expect(lf.centroids).toEqual([baseCentroid]);
+    expect(baseCentroid.instance).toBe(lf.instances[0]);
   });
 });
 

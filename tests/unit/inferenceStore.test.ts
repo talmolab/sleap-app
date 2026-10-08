@@ -1,9 +1,23 @@
 import { describe, it, expect, beforeEach } from "../bun-test";
-import { useInferenceStore } from "@/stores/inferenceStore";
+import { useInferenceStore, existingPredictionsForPipeline } from "@/stores/inferenceStore";
 
 function resetStore() {
   useInferenceStore.setState(useInferenceStore.getInitialState());
 }
+
+describe("existingPredictionsForPipeline", () => {
+  it("never appends for the locator pipeline (refresh predicted centroids, don't accumulate)", () => {
+    expect(existingPredictionsForPipeline("centroid", "keep")).toBe("replace");
+    expect(existingPredictionsForPipeline("centroid", "replace")).toBe("replace");
+    expect(existingPredictionsForPipeline("centroid", "clear_all")).toBe("clear_all");
+  });
+
+  it("honors the requested mode for pose pipelines", () => {
+    expect(existingPredictionsForPipeline("top-down", "keep")).toBe("keep");
+    expect(existingPredictionsForPipeline("bottom-up", "replace")).toBe("replace");
+    expect(existingPredictionsForPipeline("single-animal", "clear_all")).toBe("clear_all");
+  });
+});
 
 describe("inferenceStore", () => {
   beforeEach(() => {

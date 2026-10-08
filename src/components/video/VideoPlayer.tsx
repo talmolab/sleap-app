@@ -10,7 +10,7 @@
  */
 
 import { useRef, useEffect, useCallback, useState, useMemo } from "react";
-import { PredictedInstance } from "@talmolab/sleap-io.js";
+import { Instance, PredictedInstance } from "@talmolab/sleap-io.js";
 import { useAppStore } from "../../stores/appStore";
 import { debugFlags } from "../panels/DebugPanel";
 import { Seekbar } from "./Seekbar";
@@ -20,6 +20,7 @@ import { AnchorPickBar } from "./AnchorPickBar";
 import { TransposePickBar } from "./TransposePickBar";
 import {
   renderInstances,
+  renderCentroids,
   hitTestNode,
   hitTestInstance,
   renderSelectedNodeHighlights,
@@ -57,6 +58,9 @@ import {
   ConvertPredictionToInstance,
   BeginEdit,
   DeletePredictionsByArea,
+  SeedCentroid,
+  DeleteSelectedInstance,
+  GoNextSuggestion,
   DuplicateInstance,
   AddNodeCommand,
   AddEdgeCommand,
@@ -72,6 +76,9 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { toImageCoords, toSourceCoords } from "@/lib/cropTransform";
+import { suggestionPrefetchTargets } from "@/lib/navigableFrames";
+import { acceptAndAdvanceCorrection } from "@/lib/activeLearning/correctionActions";
+import { relinkCentroids } from "@/lib/activeLearning/centroidPairing";
 import { shouldPrefetch, shouldDecodeAhead } from "@/lib/videoPrefetch";
 import { expandFrameBytesToRGBA, inferFrameChannels } from "@/lib/videoExport";
 import {
@@ -88,6 +95,22 @@ import { spacePanState } from "@/lib/spacePanTracking";
 import { getPlatform, isTauri } from "@/platform/index";
 import { spawnOverlayServe, killOverlayServe, detectGpu } from "@/platform/backend";
 import { Film, Frame, Hand, ImageOff, MousePointer2, Tag } from "lucide-react";
+
+/**
+ * Clone an instance's points into plain objects — used to adopt a predicted
+ * centroid as a fresh user Instance during a Phase-2 keypoint pass (mirrors the
+ * ConvertPredictionToInstance clone). Element-assign, never spread the columnar
+ * PointView.
+ */
+function clonePointsForAdopt(points: Instance["points"]) {
+  return points.map((p) => ({
+    xy: [p.xy[0], p.xy[1]] as [number, number],
+    visible: p.visible,
+    complete: p.complete,
+    name: p.name,
+    score: p.score,
+  }));
+}
 
 /**
  * First unused `node_${k}` name (k = 0, 1, 2, …) for a fresh builder node, so
@@ -123,6 +146,13 @@ export function VideoPlayer() {
   const backendSwapNonce = useAppStore((s) => s.backendSwapNonce);
   const labels = useAppStore((s) => s.labels);
   const selectedInstance = useAppStore((s) => s.instance);
+  // Phase-3 correction selectors, declared early so BOTH the render effect's
+  // low-confidence highlight and the zoom-to-instance effect below can use them.
+  const correctQueue = useAppStore((s) => s.correctQueue);
+  const correctCursor = useAppStore((s) => s.correctCursor);
+  const correctZoomWindow = useAppStore((s) => s.correctZoomWindow);
+  const correctScoreThreshold = useAppStore((s) => s.correctScoreThreshold);
+  const isCorrect = useAppStore((s) => s.labelingMode === "correct");
   const showInstances = useAppStore((s) => s.showInstances);
   const showLabels = useAppStore((s) => s.showLabels);
   const showEdges = useAppStore((s) => s.showEdges);
@@ -154,8 +184,43 @@ export function VideoPlayer() {
   const trailLength = useAppStore((s) => s.trailLength);
   const lutMin = useAppStore((s) => s.lutMin);
   const lutMax = useAppStore((s) => s.lutMax);
+  const autoContrast = useAppStore((s) => s.autoContrast);
+  const frameHistogram = useAppStore((s) => s.frameHistogram);
   const colormap = useAppStore((s) => s.colormap);
   const rotation = useAppStore((s) => s.rotation);
+
+  // Per-frame auto-contrast levels: percentile-clipped min/max from the frame
+  // histogram. Only applied when `autoContrast` is on; the manual lutMin/lutMax
+  // are left untouched so toggling is instant and non-destructive.
+  const [autoLutMin, autoLutMax] = useMemo(() => {
+    if (!frameHistogram) return [0, 255] as [number, number];
+    let total = 0;
+    for (let i = 0; i < 256; i++) total += frameHistogram[i];
+    if (total === 0) return [0, 255] as [number, number];
+    const clip = 0.005; // ignore the darkest/brightest 0.5% (hot/dead pixels)
+    const loTarget = total * clip;
+    const hiTarget = total * (1 - clip);
+    let cum = 0;
+    let lo = 0;
+    for (let i = 0; i < 256; i++) {
+      cum += frameHistogram[i];
+      if (cum >= loTarget) {
+        lo = i;
+        break;
+      }
+    }
+    cum = 0;
+    let hi = 255;
+    for (let i = 0; i < 256; i++) {
+      cum += frameHistogram[i];
+      if (cum >= hiTarget) {
+        hi = i;
+        break;
+      }
+    }
+    if (hi <= lo) hi = Math.min(255, lo + 1);
+    return [lo, hi] as [number, number];
+  }, [frameHistogram]);
   const overlayModelOutputs = useAppStore((s) => s.overlayModelOutputs);
   const overlayModelPaths = useAppStore((s) => s.overlayModelPaths);
   const defaultToPan = useAppStore((s) => s.defaultToPan);
@@ -388,6 +453,33 @@ export function VideoPlayer() {
         // Don't hijack space when typing in an input/textarea
         const tag = (e.target as HTMLElement)?.tagName;
         if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+
+        // In centroid-seeding mode, Space advances to the next frame instead of
+        // pan/zoom (which owns Space elsewhere). Mirrors the top-bar button.
+        if (useAppStore.getState().labelingMode === "seed") {
+          // Not behind an open modal (same guard as correct mode below).
+          if ((e.target as HTMLElement)?.closest?.('[role="dialog"]')) return;
+          e.preventDefault();
+          const s = useAppStore.getState();
+          if (s.labels && s.labels.suggestions.length > 0) {
+            commandContext.execute(GoNextSuggestion);
+          } else {
+            s.incrementFrameIdx(1);
+          }
+          return;
+        }
+
+        // Phase-3 correction: Space ACCEPTS the current instance — adopting the
+        // prediction as a user label (even untouched, since reviewing endorses
+        // it) — and advances to the next queued item. A dragged instance is
+        // already adopted, so the convert no-ops and we just advance. Suppressed
+        // when a modal has focus, so Space behind a dialog can't silently accept.
+        if (useAppStore.getState().labelingMode === "correct") {
+          if ((e.target as HTMLElement)?.closest?.('[role="dialog"]')) return;
+          e.preventDefault();
+          acceptAndAdvanceCorrection();
+          return;
+        }
         e.preventDefault();
 
         const now = performance.now();
@@ -552,6 +644,10 @@ export function VideoPlayer() {
       if (e.metaKey || e.ctrlKey) return;
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      // In keypointPass/correct, Backspace is the step-back key — don't also let
+      // it delete a (possibly stale-selected) instance out from under the sweep.
+      const mode = useAppStore.getState().labelingMode;
+      if (mode === "keypointPass" || mode === "correct") return;
       if (selectedNodes.size === 0) return;
 
       const lf = useAppStore.getState().labeledFrame;
@@ -867,6 +963,31 @@ export function VideoPlayer() {
             } | null
           )?.decodeAhead?.(frameIdx);
         }
+
+        // Active-learning sweeps step suggestion-to-suggestion (Space), so warm
+        // the NEXT suggestion frame while the user works on this one. Only after
+        // this frame has painted (so `cancelled` is known false): the worker mp4
+        // backend aborts every pending read on a cache miss, so a warm read
+        // issued earlier would cancel the newer frame's own demand read. One
+        // frame only (several would just abort each other), keyframe→target only
+        // (`scrub`), and never while playing/scrubbing, where it would fight
+        // decode-ahead. A later demand read still preempts it, as it should.
+        {
+          const st = useAppStore.getState();
+          if (
+            !st.isPlaying &&
+            !st.isScrubbing &&
+            (st.labelingMode === "seed" ||
+              st.labelingMode === "keypointPass" ||
+              st.labelingMode === "correct")
+          ) {
+            const [next] = suggestionPrefetchTargets(st.labels, video, frameIdx, 1);
+            if (next !== undefined && next !== frameIdx) {
+              const warmOpts: { prefetch: boolean; scrub?: boolean } = { prefetch: false, scrub: true };
+              void video.getFrame(next, warmOpts).catch(() => {});
+            }
+          }
+        }
       } catch (err) {
         console.error("Failed to render frame:", err);
         // A resolved backend whose individual frame file can't be read (e.g. one
@@ -1098,7 +1219,10 @@ export function VideoPlayer() {
     }
     ctx.imageSmoothingEnabled = baseScale * zoom <= 2;
     try {
-      const needsLUT = lutMin > 0 || lutMax < 255;
+      // Auto-contrast overrides the manual LUT with per-frame percentile levels.
+      const effLutMin = autoContrast ? autoLutMin : lutMin;
+      const effLutMax = autoContrast ? autoLutMax : lutMax;
+      const needsLUT = effLutMin > 0 || effLutMax < 255;
       const cmapLUT = COLORMAPS[colormap] ?? null;
       if (needsLUT || cmapLUT) {
         const offscreen = new OffscreenCanvas(bmp.width, bmp.height);
@@ -1106,13 +1230,13 @@ export function VideoPlayer() {
         offCtx.drawImage(bmp, 0, 0);
         const imgData = offCtx.getImageData(0, 0, bmp.width, bmp.height);
         const d = imgData.data;
-        const range = lutMax - lutMin || 1;
+        const range = effLutMax - effLutMin || 1;
         for (let i = 0; i < d.length; i += 4) {
           let r = d[i], g = d[i + 1], b = d[i + 2];
           if (needsLUT) {
-            r = Math.max(0, Math.min(255, ((r - lutMin) / range) * 255));
-            g = Math.max(0, Math.min(255, ((g - lutMin) / range) * 255));
-            b = Math.max(0, Math.min(255, ((b - lutMin) / range) * 255));
+            r = Math.max(0, Math.min(255, ((r - effLutMin) / range) * 255));
+            g = Math.max(0, Math.min(255, ((g - effLutMin) / range) * 255));
+            b = Math.max(0, Math.min(255, ((b - effLutMin) / range) * 255));
           }
           if (cmapLUT) {
             // Use luminance of the (possibly LUT-adjusted) pixel to index colormap
@@ -1131,7 +1255,7 @@ export function VideoPlayer() {
       // Bitmap was closed (detached) by a racing frame load — skip, next frame will redraw
     }
     ctx.restore();
-  }, [frameDims, containerSize, zoom, panX, panY, baseScale, offsetX, offsetY, bitmapVersion, lutMin, lutMax, colormap, rotation]);
+  }, [frameDims, containerSize, zoom, panX, panY, baseScale, offsetX, offsetY, bitmapVersion, lutMin, lutMax, autoContrast, autoLutMin, autoLutMax, colormap, rotation]);
 
   // Find the current labeled frame and update store
   useEffect(() => {
@@ -1189,6 +1313,24 @@ export function VideoPlayer() {
     const frameInstanceTracks = labeledFrame.instances.map((i) => i.track);
     const resolvedColorTarget = resolveColorTarget(distinctlyColor, projectHasTracks);
     const vis = { showInstances, hiddenInstances, viewOnlyInstance, showNonVisibleOverride };
+
+    // Phase-3: which instance on THIS frame is under review, and which of its
+    // keypoints are flagged. Read from the queue snapshot (item.pointScores), so
+    // the rings survive the adopt-on-touch conversion that strips per-point
+    // scores, and stick to the review item rather than wandering with selection.
+    let reviewInstanceIdx = -1;
+    const reviewFlaggedNodes: number[] = [];
+    if (isCorrect) {
+      const item = correctQueue[correctCursor];
+      if (item && item.frameIdx === frameIdx && labels?.videos[item.videoIdx] === video) {
+        reviewInstanceIdx = item.instanceIdx;
+        for (let i = 0; i < item.pointScores.length; i++) {
+          const sc = item.pointScores[i];
+          if (sc !== null && sc <= correctScoreThreshold) reviewFlaggedNodes.push(i);
+        }
+      }
+    }
+
     return labeledFrame.instances.map((inst, idx) => {
       const isPredicted = inst instanceof PredictedInstance;
       const skeleton = inst.skeleton;
@@ -1239,6 +1381,9 @@ export function VideoPlayer() {
         score: isPredicted ? inst.score : undefined,
         visible: instanceVisible(vis, inst),
         showNonVisible: instanceShowsNonVisible(vis, inst, showNonVisibleNodes),
+        // Ring the flagged low-confidence keypoints on the instance under
+        // review (Phase 3), from the queue snapshot so they survive adoption.
+        highlightNodeIdxs: idx === reviewInstanceIdx ? reviewFlaggedNodes : undefined,
       };
     });
   }, [
@@ -1257,6 +1402,11 @@ export function VideoPlayer() {
     showNonVisibleNodes,
     video,
     overlayVersion,
+    frameIdx,
+    isCorrect,
+    correctQueue,
+    correctCursor,
+    correctScoreThreshold,
   ]);
 
   useEffect(() => {
@@ -1415,6 +1565,40 @@ export function VideoPlayer() {
 
     renderInstances(ctx, instances, renderOpts);
 
+    // First-class centroid annotations (frame.centroids): drawn as amber
+    // crosshair rings, distinct from skeleton nodes. Coords go through the same
+    // crop transform as instance nodes.
+    if (labeledFrame.centroids.length > 0) {
+      const colorTarget = resolveColorTarget(distinctlyColor, projectHasTracks);
+      const renderedCentroids = labeledFrame.centroids.map((c, i) => {
+        const [cx, cy] = toImageCoords(video, c.x, c.y);
+        // Give each centroid the SAME color as the instance it belongs to, so a
+        // centroid visually coordinates with its animal. Read the binding from
+        // the `centroid.instance` back-link, which `ensurePairedPoseInstances`
+        // assigns once (and the SLP persists) — NEVER re-derive it from geometry
+        // here: this runs on every repaint, so a per-frame guess would re-decide
+        // the pairing as keypoints are placed and the rings would change color
+        // mid-labeling. `labeledFrame.instances` is index-aligned with
+        // `instances`, whose `.color` already reflects the active palette/track/
+        // predicted settings — but only use it when it IS a per-animal color:
+        // "instance" mode, or "track" mode on a tracked instance (honoring
+        // per-track overrides). Under "node"/"edge" — what the default "auto"
+        // resolves to on an untracked project, i.e. every AL project — instance
+        // colors are a uniform gray, and untracked instances in "track" mode are
+        // gray too, so every ring would look alike. Those, and an unlinked
+        // centroid (e.g. seeded before pairing ran), take the centroid's own
+        // stable palette slot, which doesn't move when pairing runs.
+        const matchIdx = c.instance ? labeledFrame.instances.indexOf(c.instance) : -1;
+        const paired = matchIdx >= 0 ? instances[matchIdx] : undefined;
+        const perAnimal =
+          colorTarget === "instance" ||
+          (colorTarget === "track" && !!labeledFrame.instances[matchIdx]?.track);
+        const color = paired && perAnimal ? paired.color : getPaletteColor(palette, i);
+        return { x: cx, y: cy, predicted: c.isPredicted, color };
+      });
+      renderCentroids(ctx, renderedCentroids, renderOpts);
+    }
+
     // Compute effective selection (includes live marquee preview)
     let effectiveSelection = selectedNodes;
     if (marqueeStart && marqueeEnd) {
@@ -1548,6 +1732,10 @@ export function VideoPlayer() {
     video,
     frameIdx,
     rotation,
+    isCorrect,
+    correctScoreThreshold,
+    correctQueue,
+    correctCursor,
     skeletonBuildMode,
     skeletonBuildStage,
     builderPositions,
@@ -1558,6 +1746,13 @@ export function VideoPlayer() {
   const labelingMode = useAppStore((s) => s.labelingMode);
   const placementNodeIdx = useAppStore((s) => s.placementNodeIdx);
   const isPlacingNodes = labelingMode === "place" && selectedInstance !== null;
+
+  // Phase-2 keypoint-pass state (drives zoom-to-centroid; click-to-place reads
+  // the rest via getState()). The progress HUD is the full-width KeypointPassBar.
+  const passCursor = useAppStore((s) => s.passCursor);
+  const passWorkList = useAppStore((s) => s.passWorkList);
+  const passZoomWindow = useAppStore((s) => s.passZoomWindow);
+  const isKeypointPass = labelingMode === "keypointPass";
 
   // Render zoomed inset during node drag or placement mode
   const INSET_SIZE = useAppStore((s) => s.insetSize);
@@ -1967,6 +2162,73 @@ export function VideoPlayer() {
     }
   }, [selectedInstance, frameIdx, labelingMode]);
 
+  // In centroid-seeding, reset to the full-frame view whenever the frame/video
+  // changes (or on entering seed mode), so each new animal is framed at 100%
+  // instead of inheriting the previous frame's zoom/pan.
+  useEffect(() => {
+    if (labelingMode !== "seed") return;
+    viewRef.current = { zoom: 1, panX: 0, panY: 0 };
+    setZoom(1);
+    setPanX(0);
+    setPanY(0);
+    zoomMode.current = "fit-frame";
+  }, [frameIdx, video, labelingMode]);
+
+  // Phase-2 keypoint pass: frame the current work item by zooming a
+  // passZoomWindow-px window onto its centroid. Non-destructive (points stay in
+  // source coords — this only moves the viewport), mirroring the fit-to-bbox
+  // math above. Keyed on the ITEM (not the full cursor) so advancing node-by-
+  // node within an instance keeps whatever zoom the user dialed in; it re-frames
+  // only when the item changes or the window is resized. (Rotation isn't
+  // compensated here, matching the other fit paths; AL projects run unrotated.)
+  const passItemIdx = passCursor?.itemIdx ?? -1;
+  useEffect(() => {
+    if (!isKeypointPass || passItemIdx < 0) return;
+    const item = passWorkList[passItemIdx];
+    if (!item) return;
+    const [cw, ch] = containerSize;
+    if (cw === 0 || ch === 0) return;
+
+    const win = passZoomWindow;
+    // centroidXY is in SOURCE coords; the pan math below works in crop-local
+    // image space, so map through the crop origin (identity when uncropped).
+    const [centerX, centerY] = toImageCoords(video, item.centroidXY[0], item.centroidXY[1]);
+    const newZoom = Math.min(cw / (win * baseScale), ch / (win * baseScale), 10);
+    const newPanX = cw / 2 - offsetX - centerX * baseScale * newZoom;
+    const newPanY = ch / 2 - offsetY - centerY * baseScale * newZoom;
+
+    viewRef.current = { zoom: newZoom, panX: newPanX, panY: newPanY };
+    setZoom(newZoom);
+    setPanX(newPanX);
+    setPanY(newPanY);
+    zoomMode.current = "free";
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isKeypointPass, passItemIdx, passZoomWindow, video, containerSize, baseScale, offsetX, offsetY]);
+
+  // Phase-3 correction: frame the instance under review the same way — zoom a
+  // correctZoomWindow-px window onto its centroid. Keyed on the cursor so each
+  // advance re-frames; adjusting the zoom slider re-frames too.
+  useEffect(() => {
+    if (!isCorrect) return;
+    const item = correctQueue[correctCursor];
+    if (!item) return;
+    const [cw, ch] = containerSize;
+    if (cw === 0 || ch === 0) return;
+    if (!Number.isFinite(item.centroidXY[0]) || !Number.isFinite(item.centroidXY[1])) return;
+
+    const win = correctZoomWindow;
+    const [centerX, centerY] = toImageCoords(video, item.centroidXY[0], item.centroidXY[1]);
+    const newZoom = Math.min(cw / (win * baseScale), ch / (win * baseScale), 10);
+    const newPanX = cw / 2 - offsetX - centerX * baseScale * newZoom;
+    const newPanY = ch / 2 - offsetY - centerY * baseScale * newZoom;
+
+    viewRef.current = { zoom: newZoom, panX: newPanX, panY: newPanY };
+    setZoom(newZoom);
+    setPanX(newPanX);
+    setPanY(newPanY);
+    zoomMode.current = "free";
+  }, [isCorrect, correctCursor, correctQueue, correctZoomWindow, video, containerSize, baseScale, offsetX, offsetY]);
+
   const handleMouseDown = useCallback(
     (e: React.MouseEvent) => {
       // Middle-click panning
@@ -2086,7 +2348,14 @@ export function VideoPlayer() {
           instances, x, y, nt,
           showLabels ? { zoom, markerSize, nodeLabelSize } : undefined
         );
-        if (hit && !instances[hit.instanceIdx]?.isPredicted) {
+        // Predicted nodes aren't normally draggable, so a hit on one pans — but
+        // in Phase-3 correction dragging a predicted node adopts+corrects it, so
+        // fall through to the node handler there instead of panning.
+        const hitDraggable =
+          hit &&
+          (!instances[hit.instanceIdx]?.isPredicted ||
+            useAppStore.getState().labelingMode === "correct");
+        if (hitDraggable) {
           // Node hit in pan mode — fall through to normal node drag handling below
         } else {
           e.preventDefault();
@@ -2108,8 +2377,86 @@ export function VideoPlayer() {
       const currentInstance = useAppStore.getState().instance;
       shiftHeldOnMouseDown.current = e.shiftKey;
 
-      // Node placement mode: place the target node (with undo snapshot)
       const store = useAppStore.getState();
+
+      // Centroid-seeding mode: every empty-space click drops a NEW one-node
+      // instance (no existing selection required), so we return before the
+      // node/instance hit-testing below. Each click is its own undo entry.
+      if (store.labelingMode === "seed") {
+        e.preventDefault();
+        // Option/Alt-drag pans (Space advances frames in seed mode, and plain
+        // left-click drops a centroid, so panning needs its own modifier —
+        // also works on a trackpad with no middle button).
+        if (e.altKey) {
+          setIsPanning(true);
+          setPanStart({ x: e.clientX - panX, y: e.clientY - panY });
+          return;
+        }
+        const [sx, sy] = toSourceCoords(useAppStore.getState().video, x, y);
+        commandContext.execute(SeedCentroid, { x: sx, y: sy });
+        store.bumpOverlayVersion();
+        return;
+      }
+
+      // Phase-2 keypoint-pass mode: left-click places the current pass's target
+      // node on the current work-item instance, then advances the cursor. Each
+      // placement is its own undo entry (BeginEdit snapshot). Space/pan-mode or
+      // Alt-drag pans, so the user can reposition without leaving the mode.
+      if (store.labelingMode === "keypointPass") {
+        e.preventDefault();
+        if (shouldPan || e.altKey) {
+          setIsPanning(true);
+          setPanStart({ x: e.clientX - panX, y: e.clientY - panY });
+          return;
+        }
+        const cur = store.passCursor;
+        const curItem = cur && store.labels ? store.passWorkList[cur.itemIdx] : undefined;
+        if (!cur || !curItem || !store.labels) return;
+        // The click's canvas→source mapping is only valid on the item's own
+        // frame/video — if navigation drifted, snap back instead of placing.
+        if (
+          store.frameIdx !== curItem.frameIdx ||
+          store.labels.videos[curItem.videoIdx] !== store.video
+        ) {
+          store.syncPassSelection();
+          store.bumpOverlayVersion();
+          return;
+        }
+        // Resolve the item's instance FRESH from the frame — never trust
+        // store.instance, which an undo, InstancesPanel click, or select-next
+        // can point elsewhere (index-based resolution survives undo's cloning).
+        const lf = store.labels.find({ video: store.video!, frameIdx: curItem.frameIdx })[0];
+        const nIdx = store.passNodeIndices[cur.passIdx]?.[cur.nodeIdx] ?? -1;
+        let target = lf?.instances[curItem.instanceIdx] ?? null;
+        if (!lf || !target || nIdx < 0 || nIdx >= target.points.length) return;
+        commandContext.execute(BeginEdit);
+        // A predicted centroid is adopted as a user instance IN PLACE (same
+        // index) on first touch, so its keypoints count as ground truth and the
+        // work item keeps resolving to it. Undo restores the prediction.
+        if (target instanceof PredictedInstance) {
+          const adopted = new Instance({
+            skeleton: target.skeleton,
+            points: clonePointsForAdopt(target.points),
+            track: target.track,
+          });
+          // Carry the centroid's back-link across the swap, or its ring would
+          // orphan and change color the moment the animal is first touched.
+          relinkCentroids(lf, target, adopted);
+          lf.instances.splice(curItem.instanceIdx, 1, adopted);
+          target = adopted;
+        }
+        store.setInstance(target);
+        target.points[nIdx].xy = toSourceCoords(useAppStore.getState().video, x, y);
+        target.points[nIdx].visible = true;
+        target.points[nIdx].complete = true;
+        store.markChanged();
+        store.touchFrame();
+        store.passAdvance();
+        store.bumpOverlayVersion();
+        return;
+      }
+
+      // Node placement mode: place the target node (with undo snapshot)
       if (store.labelingMode === "place" && currentInstance && !("score" in currentInstance)) {
         const targetIdx = store.placementNodeIdx;
         if (targetIdx !== null && targetIdx >= 0 && targetIdx < currentInstance.points.length) {
@@ -2225,9 +2572,46 @@ export function VideoPlayer() {
 
         if (lf) useAppStore.getState().setInstance(lf.instances[nodeHit.instanceIdx]);
 
-        // Start dragging if it's a user instance
+        // Start dragging. User instances drag directly. In Phase-3 correction,
+        // dragging a PREDICTED keypoint first ADOPTS the instance as a user
+        // instance in place (same index) so the fix counts as ground truth and
+        // the queue keeps resolving to it; undo restores the prediction.
         const inst = instances[nodeHit.instanceIdx];
-        if (!inst.isPredicted) {
+        const dragStore = useAppStore.getState();
+        // Only the instance UNDER REVIEW is adopt-draggable in correct mode —
+        // dragging a stray prediction must not silently convert it to a label.
+        const reviewItem =
+          dragStore.labelingMode === "correct"
+            ? dragStore.correctQueue[dragStore.correctCursor]
+            : undefined;
+        const isReviewInst =
+          !!reviewItem &&
+          !!lf &&
+          nodeHit.instanceIdx === reviewItem.instanceIdx &&
+          dragStore.frameIdx === reviewItem.frameIdx &&
+          dragStore.labels?.videos[reviewItem.videoIdx] === dragStore.video;
+        if (inst.isPredicted && isReviewInst && lf) {
+          const predicted = lf.instances[nodeHit.instanceIdx];
+          if (predicted instanceof PredictedInstance) {
+            // Snapshot only when we actually adopt (avoids a no-op undo entry).
+            commandContext.execute(BeginEdit);
+            const adopted = new Instance({
+              skeleton: predicted.skeleton,
+              points: clonePointsForAdopt(predicted.points),
+              track: predicted.track,
+            });
+            relinkCentroids(lf, predicted, adopted);
+            lf.instances.splice(nodeHit.instanceIdx, 1, adopted);
+            dragStore.setInstance(adopted);
+            setDragNodeInfo(nodeHit);
+            setIsDragging(true);
+            setInteractionMode("dragging");
+            lastDragPos.current = { x, y };
+            dragStartClient.current = { clientX: e.clientX, clientY: e.clientY };
+            dragStore.markChanged();
+            dragStore.touchFrame();
+          }
+        } else if (!inst.isPredicted) {
           commandContext.execute(BeginEdit);
           // Clicking a node marks it "complete" (confirmed by the user), same
           // as PyQt SLEAP's QtNode.mousePressEvent -- turns its label green.
@@ -2868,6 +3252,112 @@ export function VideoPlayer() {
       const sceneLocation = toSourceCoords(useAppStore.getState().video, x, y);
       const instances = renderedInstancesRef.current;
 
+      // Phase-2 keypoint pass: right-click marks the current target node as not
+      // visible (occluded → a real labeling decision) and advances. No menu.
+      if (useAppStore.getState().labelingMode === "keypointPass") {
+        const store = useAppStore.getState();
+        const cur = store.passCursor;
+        const curItem = cur && store.labels ? store.passWorkList[cur.itemIdx] : undefined;
+        if (!cur || !curItem || !store.labels) return;
+        if (
+          store.frameIdx !== curItem.frameIdx ||
+          store.labels.videos[curItem.videoIdx] !== store.video
+        ) {
+          store.syncPassSelection();
+          store.bumpOverlayVersion();
+          return;
+        }
+        // Resolve fresh from the frame (see the left-click path) — don't trust
+        // store.instance.
+        const lf = store.labels.find({ video: store.video!, frameIdx: curItem.frameIdx })[0];
+        const nIdx = store.passNodeIndices[cur.passIdx]?.[cur.nodeIdx] ?? -1;
+        let inst = lf?.instances[curItem.instanceIdx] ?? null;
+        if (!lf || !inst || nIdx < 0 || nIdx >= inst.points.length) return;
+        commandContext.execute(BeginEdit);
+        // Same adopt-on-touch as left-click: marking a predicted centroid's node
+        // occluded is a real labeling decision, so materialize it as user data.
+        if (inst instanceof PredictedInstance) {
+          const adopted = new Instance({
+            skeleton: inst.skeleton,
+            points: clonePointsForAdopt(inst.points),
+            track: inst.track,
+          });
+          relinkCentroids(lf, inst, adopted);
+          lf.instances.splice(curItem.instanceIdx, 1, adopted);
+          inst = adopted;
+        }
+        store.setInstance(inst);
+        // Place a present-but-INVISIBLE point at the click (occluded → a real
+        // decision WITH a location) instead of leaving the node NaN/unlabeled.
+        // `complete = true` marks it decided, so resume/next-unlabeled skips it.
+        inst.points[nIdx].xy = toSourceCoords(store.video, x, y);
+        inst.points[nIdx].visible = false;
+        inst.points[nIdx].complete = true;
+        store.markChanged();
+        store.touchFrame();
+        store.passAdvance();
+        store.bumpOverlayVersion();
+        return;
+      }
+
+      // Phase-3 correction: right-click a keypoint on the instance under review
+      // to mark it NOT visible (occluded), adopting the prediction first if
+      // needed. Position is kept; it does NOT advance (mark several, then Space).
+      if (useAppStore.getState().labelingMode === "correct") {
+        const store = useAppStore.getState();
+        const item = store.correctQueue[store.correctCursor];
+        if (!item || !store.labels) return;
+        const nodeHit = hitTestNode(instances, x, y, (markerSize * 2) / (baseScale * zoom));
+        if (
+          !nodeHit ||
+          nodeHit.instanceIdx !== item.instanceIdx ||
+          store.frameIdx !== item.frameIdx ||
+          store.labels.videos[item.videoIdx] !== store.video
+        ) {
+          return;
+        }
+        const lf = store.labels.find({ video: store.video!, frameIdx: item.frameIdx })[0];
+        let inst = lf?.instances[item.instanceIdx] ?? null;
+        const nIdx = nodeHit.nodeIdx;
+        if (!lf || !inst || nIdx < 0 || nIdx >= inst.points.length) return;
+        commandContext.execute(BeginEdit);
+        if (inst instanceof PredictedInstance) {
+          const adopted = new Instance({
+            skeleton: inst.skeleton,
+            points: clonePointsForAdopt(inst.points),
+            track: inst.track,
+          });
+          relinkCentroids(lf, inst, adopted);
+          lf.instances.splice(item.instanceIdx, 1, adopted);
+          inst = adopted;
+        }
+        store.setInstance(inst);
+        inst.points[nIdx].visible = false;
+        inst.points[nIdx].complete = true;
+        store.markChanged();
+        store.touchFrame();
+        store.bumpOverlayVersion();
+        return;
+      }
+
+      // Seeding mode: right-click removes the clicked seed (fix a misclick), or
+      // undoes the last dropped centroid when clicking empty space. No menu.
+      if (useAppStore.getState().labelingMode === "seed") {
+        const seedNodeHit = hitTestNode(instances, x, y, markerSize * 2);
+        const instIdx = seedNodeHit
+          ? seedNodeHit.instanceIdx
+          : hitTestInstance(instances, x, y);
+        const lf = useAppStore.getState().labeledFrame;
+        if (instIdx !== null && lf) {
+          useAppStore.getState().setInstance(lf.instances[instIdx]);
+          commandContext.execute(DeleteSelectedInstance);
+        } else {
+          commandContext.undo();
+        }
+        useAppStore.getState().bumpOverlayVersion();
+        return;
+      }
+
       // Check if right-clicking on a node
       const nodeHit = hitTestNode(
         instances, x, y, (markerSize * 2) / (baseScale * zoom),
@@ -2959,7 +3449,7 @@ export function VideoPlayer() {
         ref={containerRef}
         className={cn(
           "flex-1 relative overflow-hidden bg-background min-h-0",
-          pickingAnchor ? "cursor-crosshair" : instanceSequencePick ? "cursor-crosshair" : skeletonBuildMode ? (skeletonBuildStage === "connect" ? "cursor-crosshair" : "cursor-cell") : imageFeatureRoiDrawActive ? "cursor-crosshair" : isPanning ? "cursor-grabbing" : isZoomDragging ? "cursor-zoom-in" : (shouldPan && isCmdHeld) ? "cursor-zoom-in" : shouldPan ? "cursor-grab" : isDragging ? "cursor-grabbing" : areaDeleteMode ? "cursor-crosshair" : interactionMode === "marquee" ? "cursor-crosshair" : isPlacingNodes ? "cursor-cell" : hoveredNode ? "cursor-pointer" : "cursor-default"
+          pickingAnchor ? "cursor-crosshair" : instanceSequencePick ? "cursor-crosshair" : skeletonBuildMode ? (skeletonBuildStage === "connect" ? "cursor-crosshair" : "cursor-cell") : imageFeatureRoiDrawActive ? "cursor-crosshair" : isPanning ? "cursor-grabbing" : isZoomDragging ? "cursor-zoom-in" : (shouldPan && isCmdHeld) ? "cursor-zoom-in" : shouldPan ? "cursor-grab" : isDragging ? "cursor-grabbing" : areaDeleteMode ? "cursor-crosshair" : interactionMode === "marquee" ? "cursor-crosshair" : labelingMode === "seed" ? "cursor-cell" : isKeypointPass ? "cursor-cell" : isPlacingNodes ? "cursor-cell" : hoveredNode ? "cursor-pointer" : "cursor-default"
         )}
         onMouseMove={crosshairActive ? handleCrosshairMove : undefined}
         onMouseLeave={
@@ -3254,6 +3744,9 @@ export function VideoPlayer() {
             {` · ${formatShortcut("Tab")}/${formatShortcut("Shift+Tab")} to cycle · Esc to exit`}
           </Badge>
         )}
+
+        {/* Phase-2 keypoint-pass progress lives in the full-width KeypointPassBar
+            (top of the video pane), not a floating badge. */}
 
         {/* Selection count indicator */}
         {selectedNodes.size > 0 && !isPlacingNodes && (

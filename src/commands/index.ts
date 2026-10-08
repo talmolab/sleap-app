@@ -79,8 +79,11 @@ export {
 // Edit commands
 export {
   AddInstance,
+  SeedCentroid,
+  PairPoseInstances,
   ToggleNegativeFrame,
   DeleteSelectedInstance,
+  DeleteCentroid,
   SetPointLocation,
   CopyInstance,
   PasteInstance,

@@ -22,7 +22,8 @@ export type PipelineType =
   | "bottom-up"
   | "single-animal"
   | "top-down-id"
-  | "bottom-up-id";
+  | "bottom-up-id"
+  | "centroid";
 
 export interface InferenceConfig {
   // Pipeline
@@ -47,6 +48,12 @@ export interface InferenceConfig {
   excludeUserLabeled: boolean;
   /** How new predictions combine with existing ones (see ExistingPredictionsMode). */
   existingPredictions: ExistingPredictionsMode;
+  /**
+   * With `frameRange: "random_video"`, predict exactly these frames instead of
+   * a random sample (e.g. the active-learning loop's spread of unlabeled
+   * frames). Ignored for every other range.
+   */
+  explicitFrames?: number[];
 
   // Inference
   batchSize: number;
@@ -59,6 +66,12 @@ export interface InferenceConfig {
   runtime: "auto" | "onnx" | "tensorrt";
   maxInstances: number | null;
   peakThreshold: number;
+  /**
+   * For the centroid pipeline, what sleap-nn emits: `"instance"` → single-node
+   * PredictedInstances (legacy), `"centroid"` → first-class PredictedCentroids
+   * on `frame.centroids` (the annotation model). Ignored for other pipelines.
+   */
+  centroidOutput: "instance" | "centroid";
 
   // Bottom-up advanced
   integralRefinement: boolean;
@@ -117,6 +130,100 @@ export interface RemoteInferenceOptions {
   workerId: string;
 }
 
+/**
+ * Build an InferenceConfig for a standalone centroid-locator `predict` run
+ * (active-learning Phase 1). Predicts centroids on the suggestion frames,
+ * skipping already-seeded ones. Track-only fields are set inert (the centroid
+ * branch in runInference ignores them).
+ */
+export function centroidInferenceConfig(
+  modelPaths: string[],
+  overrides: Partial<InferenceConfig> = {},
+): InferenceConfig {
+  return {
+    pipeline: "centroid",
+    trackOnly: false,
+    modelPaths,
+    videoIndex: "all",
+    frameRange: "suggestions",
+    sampleCount: 20,
+    excludeUserLabeled: true,
+    // Refresh the locator's predicted centroids on re-run (see
+    // existingPredictionsForPipeline).
+    existingPredictions: "replace",
+    batchSize: 4,
+    device: "auto",
+    runtime: "auto",
+    maxInstances: null,
+    peakThreshold: 0.2,
+    // Defaults suit the separate-annotation mode: first-class PredictedCentroids
+    // on `frame.centroids`, feeding the Phase-2 work list via
+    // `buildWorkListSeparate`. In anchor-node mode the caller MUST override this
+    // to "instance", because that mode's `buildWorkList` walks `frame.instances`
+    // and never reads `frame.centroids` — otherwise the detections render on the
+    // canvas but the sweep never visits them.
+    centroidOutput: "centroid",
+    integralRefinement: false,
+    integralPatchSize: 5,
+    nPoints: 10,
+    maxEdgeLengthRatio: 0.25,
+    distPenaltyWeight: 1.0,
+    minLineScores: 0.25,
+    tracking: false,
+    trackerMethod: "simple",
+    similarityMethod: "oks",
+    matchingMethod: "hungarian",
+    trackingWindowSize: 5,
+    maxTracks: null,
+    connectSingleBreaks: false,
+    robust: 0.95,
+    minMatchPoints: 0,
+    minNewTrackPoints: 0,
+    scoringReduction: "mean",
+    trackingTargetInstanceCount: null,
+    trackingPreCullToTarget: false,
+    trackingPreCullIouThreshold: 0,
+    trackingCleanInstanceCount: null,
+    trackingCleanIouThreshold: 0,
+    flowImgScale: 1.0,
+    flowWindowSize: 21,
+    flowMaxLevels: 3,
+    kfTrackFeatures: "centroid",
+    kfInitFrameCount: 10,
+    kfNodeIndices: [],
+    kfResetGapSize: 5,
+    ensureChannels: "auto",
+    filterOverlapping: false,
+    filterMethod: "iou",
+    filterThreshold: 0.8,
+    filterMinVisibleNodes: null,
+    filterMinVisibleNodeFraction: null,
+    filterMinMeanNodeScore: null,
+    filterMinInstanceScore: null,
+    filterMinCentroidDistance: null,
+    ...overrides,
+  };
+}
+
+/**
+ * The "Existing predictions" mode a pipeline's results should actually merge
+ * back with.
+ *
+ * The centroid/locator pipeline must REPLACE predictions on matched frames so
+ * re-running the locator refreshes its predicted centroids rather than
+ * accumulating stale ones — appending (`keep`) would leave the old predicted
+ * centroid next to the new one whenever an animal moved between runs (two
+ * predicted centroids per animal → duplicate Phase-2 work items). So `keep` is
+ * promoted to `replace` for that pipeline; `replace`/`clear_all` already drop
+ * the old predictions. Every other pipeline honors the requested mode as-is.
+ */
+export function existingPredictionsForPipeline(
+  pipeline: PipelineType,
+  mode: ExistingPredictionsMode,
+): ExistingPredictionsMode {
+  return pipeline === "centroid" && mode === "keep" ? "replace" : mode;
+}
+
 export type InferenceStatus =
   | "idle"
   | "running"
@@ -153,7 +260,11 @@ interface InferenceState {
   reset: () => void;
   cancelInference: () => Promise<void>;
   startInference: (config: InferenceConfig, remoteOpts?: RemoteInferenceOptions) => Promise<void>;
-  loadAndMergeResults: (mode?: ExistingPredictionsMode, trackOnly?: boolean) => Promise<void>;
+  loadAndMergeResults: (
+    mode?: ExistingPredictionsMode,
+    trackOnly?: boolean,
+    opts?: MergeOptions,
+  ) => Promise<void>;
   /** Explicit trigger for `pendingRemoteMerge` — see its own doc comment. */
   mergePendingRemoteResults: () => Promise<void>;
 }
@@ -176,6 +287,25 @@ const initialState = {
   pendingRemoteMerge: null as PendingRemoteMerge | null,
 };
 
+/** Extra merge behavior beyond the existing-predictions mode. */
+export interface MergeOptions {
+  /** Drop predictions on frames that already have user instances. */
+  skipUserLabeledFrames?: boolean;
+}
+
+type PredictionsMergedListener = (predictions: Awaited<ReturnType<typeof loadSlp>>) => void;
+const predictionsMergedListeners = new Set<PredictionsMergedListener>();
+
+/**
+ * Be told about every prediction batch merged into the project (after any
+ * frame filtering, so it's exactly what landed). The active-learning loop uses
+ * it to learn which frames a round predicted. Returns an unsubscribe function.
+ */
+export function onPredictionsMerged(listener: PredictionsMergedListener): () => void {
+  predictionsMergedListeners.add(listener);
+  return () => predictionsMergedListeners.delete(listener);
+}
+
 /** Shared merge dispatch — a `Labels` already loaded by whichever path
  * (bytes in memory, or read directly off a remote range-read source) gets
  * merged into the current project identically either way. */
@@ -183,6 +313,7 @@ async function mergePredictionsIntoProject(
   predictions: Awaited<ReturnType<typeof loadSlp>>,
   mode: ExistingPredictionsMode,
   trackOnly: boolean,
+  opts: MergeOptions = {},
 ): Promise<void> {
   console.log(
     "[inference] Loaded predictions: %d videos, %d labeled frames, %d tracks",
@@ -193,7 +324,18 @@ async function mergePredictionsIntoProject(
   if (trackOnly) {
     await commandContext.execute(MergeTracks, { retracked: predictions });
   } else {
-    await commandContext.execute(MergePredictions, { predictions, mode });
+    await commandContext.execute(MergePredictions, {
+      predictions,
+      mode,
+      skipUserLabeledFrames: opts.skipUserLabeledFrames ?? false,
+    });
+    for (const listener of predictionsMergedListeners) {
+      try {
+        listener(predictions);
+      } catch (err) {
+        console.error("[inference] predictions-merged listener failed:", err);
+      }
+    }
   }
 }
 
@@ -210,12 +352,13 @@ export async function loadAndMergePredictionBytes(
   filenameHint: string,
   mode: ExistingPredictionsMode,
   trackOnly: boolean,
+  opts: MergeOptions = {},
 ): Promise<void> {
   const predictions = await loadSlp(bytes, {
     openVideos: false,
     h5: { filenameHint },
   });
-  await mergePredictionsIntoProject(predictions, mode, trackOnly);
+  await mergePredictionsIntoProject(predictions, mode, trackOnly, opts);
 }
 
 /**
@@ -362,6 +505,14 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
   },
 
   startInference: async (config: InferenceConfig, remoteOpts?: RemoteInferenceOptions) => {
+    // Centroid-only prediction uses `sleap-nn predict`, which the remote worker
+    // (track-only job spec) can't run — keep it desktop-local. (A track-only
+    // run uses no model, so a leftover "centroid" pipeline doesn't apply.)
+    if (config.pipeline === "centroid" && !config.trackOnly && remoteOpts?.remote) {
+      set({ status: "error", error: "Centroid prediction is desktop-only for now." });
+      return;
+    }
+
     set({
       status: "running",
       error: null,
@@ -562,8 +713,9 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
               await loadAndMergePredictionBytes(
                 bytes,
                 result.outputPath,
-                config.existingPredictions,
+                existingPredictionsForPipeline(config.pipeline, config.existingPredictions),
                 config.trackOnly,
+                { skipUserLabeledFrames: config.excludeUserLabeled },
               );
             }
             if (!result.success) {
@@ -579,9 +731,31 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
               log: [`$ ${result.command}`, ...state.log],
             }));
           }
+          if (!result.success) {
+            // The process failed (or produced no output). Surface it rather than
+            // masking it with a doomed merge attempt — and make sure we never
+            // leave the UI stuck on "running" (which greys the Run-locator button
+            // with no way to recover). `handleProcessEvent`'s "finished" event
+            // usually sets status="error" already; this backstops the case where
+            // the run ends without one.
+            const cur = useInferenceStore.getState();
+            if (cur.status !== "error" && cur.status !== "cancelled") {
+              set({
+                status: "error",
+                error: cur.error ?? "Inference failed to produce output — see log.",
+              });
+            }
+            return;
+          }
           if (result.outputPath) {
             set({ outputPath: result.outputPath });
-            await useInferenceStore.getState().loadAndMergeResults(config.existingPredictions, config.trackOnly);
+            await useInferenceStore.getState().loadAndMergeResults(
+              existingPredictionsForPipeline(config.pipeline, config.existingPredictions),
+              config.trackOnly,
+              { skipUserLabeledFrames: config.excludeUserLabeled },
+            );
+          } else {
+            set({ status: "completed" });
           }
         }
       } catch (e) {
@@ -593,7 +767,11 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
     }
   },
 
-  loadAndMergeResults: async (mode: ExistingPredictionsMode = "replace", trackOnly = false) => {
+  loadAndMergeResults: async (
+    mode: ExistingPredictionsMode = "replace",
+    trackOnly = false,
+    opts: MergeOptions = {},
+  ) => {
     const { outputPath } = useInferenceStore.getState();
     if (!outputPath) return;
 
@@ -601,7 +779,7 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
       const platform = await getPlatform();
       const bytes = await platform.readFile(outputPath);
       console.log("[inference] Read predictions file: %d bytes from %s", bytes.byteLength, outputPath);
-      await loadAndMergePredictionBytes(bytes, outputPath, mode, trackOnly);
+      await loadAndMergePredictionBytes(bytes, outputPath, mode, trackOnly, opts);
 
       set({ status: "completed" });
       // Keep the "Complete" banner (checkmark, progress bar, log) on screen
@@ -637,9 +815,14 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
       await mergeRemoteResults(pendingRemoteMerge);
       set({ pendingRemoteMerge: null, status: "completed" });
       // Same cosmetic settle-before-idle delay as loadAndMergeResults above —
-      // only reset if nothing else started a new run in the meantime.
+      // only reset if nothing else started a new run in the meantime. A new run
+      // never touches pendingRemoteMerge, so key on its start time + status
+      // too, or e.g. a locator run started within the window would be flipped
+      // to idle mid-run (its progress bar and Stop button would vanish).
+      const { startedAt } = useInferenceStore.getState();
       setTimeout(() => {
-        if (useInferenceStore.getState().pendingRemoteMerge === null) {
+        const s = useInferenceStore.getState();
+        if (s.pendingRemoteMerge === null && s.status === "completed" && s.startedAt === startedAt) {
           set({ status: "idle" });
         }
       }, 1500);

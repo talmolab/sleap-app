@@ -602,6 +602,8 @@ export async function runInference(
   // `track` command — present in every sleap-nn version and exactly what the app
   // invoked before the `predict` migration. Older installs are never blocked and
   // see no regression; only newer installs get the new pipeline.
+  // (The centroid pipeline overrides this inside buildInferenceArgs — a
+  // standalone centroid model can only run through `predict`.)
   const program = "sleap-nn";
   const { useEnvironmentStore } = await import("@/stores/environmentStore");
   const sleapNnVersion =
@@ -617,7 +619,9 @@ export async function runInference(
   // Resolve random-video frame sampling here (needs the app store + RNG); the
   // rest of the argv is built by the pure buildInferenceArgs helper.
   let sampledFrames: number[] | undefined;
-  if (config.frameRange === "random_video") {
+  if (config.frameRange === "random_video" && config.explicitFrames && config.explicitFrames.length > 0) {
+    sampledFrames = [...config.explicitFrames];
+  } else if (config.frameRange === "random_video") {
     const { useAppStore } = await import("@/stores/appStore");
     const activeVideo = useAppStore.getState().video;
     const nFrames = activeVideo?.shape?.[0] ?? 0;

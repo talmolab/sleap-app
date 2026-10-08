@@ -1,0 +1,78 @@
+/**
+ * Hand active-learning Phase 2 off to pose-model training (issue #212).
+ *
+ * Phase 2 ends with a project full of hand-placed keypoints and nothing to do
+ * with them. This is the bridge to Phase 3: set the Training panel up for a
+ * pose run, send the user there to choose a pipeline, and let the panel's
+ * existing post-training inference carry the predictions back for correction.
+ *
+ * Deliberately thin compared to {@link ./trainLocator}. The locator is a fixed
+ * recipe (centroid head, fast preset, known augmentation), so it presets
+ * everything and can start unattended. A pose model is NOT a fixed recipe —
+ * top-down, bottom-up and single-animal are all legitimate depending on the
+ * data, so this presets nothing about the model and hands the choice to the
+ * Training panel, which already recommends a pipeline from the labels
+ * (`recommendPipeline`) and disables the ones the skeleton can't support
+ * (`getSkeletonCompatibility`, e.g. bottom-up needs edges for PAFs).
+ */
+
+import { useTrainingStore } from "@/stores/trainingStore";
+import { useAppStore } from "@/stores/appStore";
+import { useActiveLearningStore } from "@/stores/activeLearningStore";
+import { toast } from "@/lib/notify";
+
+/**
+ * Post-training inference scope for the AL loop: every frame of the current
+ * video EXCEPT the ones already labeled by hand.
+ *
+ * Phase 3 ranks by worst keypoint to surface hard examples, so re-predicting
+ * frames that already have ground truth spends compute to produce instances
+ * that will never be corrected. `"video"` + `skipUserLabeled` is how the
+ * training store expresses that (it becomes `excludeUserLabeled` on the
+ * inference config, i.e. sleap-nn's `--exclude_user_labeled`).
+ */
+const AL_INFERENCE_TARGET = "video";
+
+/**
+ * Prepare the training store for a Phase-2 → pose handoff.
+ *
+ * Returns true when the caller should navigate to the Training panel; on
+ * failure it toasts and returns false.
+ *
+ * Does NOT set `modelType` — see the module note. It also does not start the
+ * run: the user picks the pipeline and presses Start themselves.
+ */
+export function setupPoseTraining(opts: { round?: number } = {}): boolean {
+  const { projectPath, hasChanges } = useAppStore.getState();
+  // Training reads the .slp from DISK — `trainingLabelsPath || projectPath`,
+  // with no re-serialize of in-memory labels (autosave only writes a recovery
+  // draft). An unsaved project, or unsaved keypoints/corrections, would train
+  // on a file that predates them.
+  if (!projectPath) {
+    toast.error("Save the project first, then train a pose model.");
+    return false;
+  }
+  if (hasChanges) {
+    toast.error("Save the project first — training reads the saved .slp, so unsaved labels would be left out.");
+    return false;
+  }
+
+  const t = useTrainingStore.getState();
+  // Empty = follow the LIVE projectPath at start time (a Save As in between
+  // moves it to an auto-versioned labels.vNNN.slp); don't pin today's file.
+  t.setConfig("trainingLabelsPath", "");
+  t.setPendingHandoff({
+    inferenceTarget: AL_INFERENCE_TARGET,
+    skipUserLabeled: true,
+    requireModelTypeChoice: true,
+    // With a workflow loaded, the run the user starts is a loop round: the
+    // round engine records its model and does the round's own inference (new
+    // videos first), so the panel's post-training target steps aside.
+    // `opts.round` when the caller is about to advance the loop (the run
+    // belongs to the NEXT round); otherwise the current one.
+    activeLearningRound: useActiveLearningStore.getState().config
+      ? opts.round ?? useActiveLearningStore.getState().round
+      : undefined,
+  });
+  return true;
+}

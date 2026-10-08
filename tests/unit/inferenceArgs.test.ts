@@ -12,6 +12,7 @@ import {
 function baseConfig(overrides: Partial<InferenceConfig> = {}): InferenceConfig {
   return {
     pipeline: "top-down",
+    centroidOutput: "instance",
     trackOnly: false,
     modelPaths: ["/models/centroid", "/models/centered_instance"],
     videoIndex: "all",
@@ -386,6 +387,92 @@ describe("buildInferenceArgs — tracking / bottom-up / preprocessing / filter",
     expect(valAfter(args, "--filter_min_mean_node_score")).toBe("0.4");
     expect(valAfter(args, "--filter_min_instance_score")).toBe("0.2");
     expect(valAfter(args, "--filter_min_centroid_distance")).toBe("10");
+  });
+});
+
+describe("buildInferenceArgs — centroid pipeline (standalone locator)", () => {
+  const centroid = (overrides: Partial<InferenceConfig> = {}) =>
+    baseConfig({ pipeline: "centroid", centroidOutput: "centroid", ...overrides });
+
+  it("always runs `predict` without --gui, even when the caller picked legacy `track`", () => {
+    const args = buildInferenceArgs(centroid(), { ...io(), subcommand: "track" });
+    expect(args[0]).toBe("predict");
+    expect(args).not.toContain("--gui");
+  });
+
+  it("emits --centroid_output with the configured value, right after --output_path", () => {
+    const args = buildInferenceArgs(centroid(), io());
+    expect(valAfter(args, "--centroid_output")).toBe("centroid");
+    expect(args.indexOf("--centroid_output")).toBe(args.indexOf("--output_path") + 2);
+    const legacy = buildInferenceArgs(centroid({ centroidOutput: "instance" }), io());
+    expect(valAfter(legacy, "--centroid_output")).toBe("instance");
+  });
+
+  it("omits --centroid_output for non-centroid pipelines", () => {
+    expect(buildInferenceArgs(baseConfig(), io())).not.toContain("--centroid_output");
+  });
+
+  it("guards out track-only flags even when their config fields are set", () => {
+    const args = buildInferenceArgs(
+      centroid({
+        maxInstances: 3,
+        integralRefinement: true,
+        tracking: true,
+        filterOverlapping: true,
+      }),
+      io()
+    );
+    for (const flag of [
+      "--max_instances",
+      "--integral_refinement",
+      "--tracking",
+      "--filter_overlapping",
+    ]) {
+      expect(args).not.toContain(flag);
+    }
+  });
+
+  it("guards out the pose post-processing filters", () => {
+    const args = buildInferenceArgs(
+      centroid({
+        filterMinVisibleNodes: 2,
+        filterMinVisibleNodeFraction: 0.5,
+        filterMinMeanNodeScore: 0.3,
+        filterMinInstanceScore: 0.3,
+        filterMinCentroidDistance: 10,
+      }),
+      io()
+    );
+    expect(args.filter((a) => a.startsWith("--filter_"))).toEqual([]);
+  });
+
+  it("emits --runtime for an exported locator even when the version picked legacy `track`", () => {
+    const args = buildInferenceArgs(centroid({ runtime: "onnx" }), { ...io(), subcommand: "track" });
+    expect(args[0]).toBe("predict");
+    expect(valAfter(args, "--runtime")).toBe("onnx");
+  });
+
+  it("a track-only run with a leftover centroid pipeline is still a retrack, not a centroid predict", () => {
+    const args = buildInferenceArgs(
+      centroid({ trackOnly: true, tracking: true, modelPaths: [] }),
+      io()
+    );
+    expect(args).toContain("--gui");
+    expect(args).toContain("--tracking");
+    expect(args).not.toContain("--centroid_output");
+  });
+
+  it("keeps the shared flags (I/O, frame filters, inference settings, preprocessing)", () => {
+    const args = buildInferenceArgs(
+      centroid({ frameRange: "suggestions", excludeUserLabeled: true, ensureChannels: "grayscale" }),
+      io()
+    );
+    expect(args).toContain("--only_suggested_frames");
+    expect(args).toContain("--exclude_user_labeled");
+    expect(args).toContain("--ensure_grayscale");
+    expect(valAfter(args, "--batch_size")).toBe("4");
+    expect(valAfter(args, "--device")).toBe("auto");
+    expect(valAfter(args, "--peak_threshold")).toBe("0.2");
   });
 });
 

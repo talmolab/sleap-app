@@ -9,8 +9,9 @@
  *
  * Fidelity: a delta captures ONE frame's imageless annotation state at exactly
  * the fidelity the app's own undo system preserves (mirrors CommandContext's
- * `cloneInstances`: skeleton, points {xy, visible, complete, name, score},
- * track, predicted + score, isNegative). A recovered edited frame therefore
+ * `cloneInstances`/`cloneCentroids`: skeleton, points {xy, visible, complete,
+ * name, score}, track, predicted + score, isNegative, plus first-class
+ * centroids with their `.instance` link). A recovered edited frame therefore
  * matches what an undo would have produced. Instances reference the base's
  * videos/tracks/skeletons BY INDEX — valid because any structural change (new/
  * removed/renamed track, skeleton edit, new video, merge) rewrites the base and
@@ -25,6 +26,9 @@ import {
   Instance,
   PredictedInstance,
   LabeledFrame,
+  UserCentroid,
+  PredictedCentroid,
+  type Centroid,
   type Labels,
   type Video,
   type Track,
@@ -58,6 +62,30 @@ export interface InstanceDelta {
   pts: PointDelta[];
 }
 
+/** One first-class centroid annotation (`LabeledFrame.centroids`). */
+export interface CentroidDelta {
+  x: number;
+  y: number;
+  /** z coordinate; null when 2D. */
+  z: number | null;
+  /** Predicted centroid? */
+  p: boolean;
+  /** Score (predicted only); null otherwise. */
+  s: number | null;
+  /** Index into base.tracks, or -1 if untracked. */
+  t: number;
+  /** Tracking score; null if absent. */
+  ts: number | null;
+  /**
+   * Index of the paired pose instance (`.instance`) in THIS frame's `ins`, or
+   * -1 if unlinked — so the link is rebuilt onto the replayed instance object.
+   */
+  i: number;
+  cat: string;
+  nm: string;
+  src: string;
+}
+
 /** One frame's full imageless state. */
 export interface FrameDelta {
   /** Index into base.videos. */
@@ -67,6 +95,11 @@ export interface FrameDelta {
   /** isNegative flag. */
   neg: boolean;
   ins: InstanceDelta[];
+  /**
+   * The frame's centroids. Optional only for journals written before centroids
+   * were journaled; replay keeps (and re-links) the base's centroids then.
+   */
+  cen?: CentroidDelta[];
 }
 
 /** Reverse lookups from base entities to their array indices (built per tick). */
@@ -94,6 +127,23 @@ export function encodeFrameDelta(frame: LabeledFrame, index: BaseIndex): FrameDe
     f: frame.frameIdx,
     neg: frame.isNegative,
     ins: frame.instances.map((inst) => encodeInstance(inst, index)),
+    cen: frame.centroids.map((c) => encodeCentroid(c, frame.instances, index)),
+  };
+}
+
+function encodeCentroid(c: Centroid, instances: Instance[], index: BaseIndex): CentroidDelta {
+  return {
+    x: c.x,
+    y: c.y,
+    z: c.z ?? null,
+    p: c instanceof PredictedCentroid,
+    s: c instanceof PredictedCentroid ? c.score : null,
+    t: c.track ? index.tracks.get(c.track) ?? -1 : -1,
+    ts: c.trackingScore ?? null,
+    i: c.instance ? instances.indexOf(c.instance) : -1,
+    cat: c.category ?? "",
+    nm: c.name ?? "",
+    src: c.source ?? "",
   };
 }
 
@@ -200,13 +250,25 @@ export function applyDeltas(base: Labels, deltas: FrameDelta[]): void {
       base.labeledFrames.push(lf);
       m.set(delta.f, lf);
     }
-    const instances: Instance[] = [];
-    for (const ins of delta.ins) {
-      const rebuilt = rebuildInstance(ins, base);
-      if (rebuilt) instances.push(rebuilt);
-    }
+    // Rebuilt instances, aligned with `delta.ins` (null where one couldn't be
+    // rebuilt) so centroid links can resolve by delta index.
+    const rebuiltByIdx = delta.ins.map((ins) => rebuildInstance(ins, base));
+    const instances = rebuiltByIdx.filter((inst): inst is Instance => inst !== null);
+    const oldInstances = lf.instances;
     lf.instances = instances;
     lf.isNegative = delta.neg;
+    if (delta.cen) {
+      lf.centroids = delta.cen.map((c) => rebuildCentroid(c, base, rebuiltByIdx));
+    } else {
+      // Pre-centroid journal record: keep the base's centroids, but re-point
+      // their `.instance` links from the replaced instances to the rebuilt ones
+      // by index — otherwise they'd dangle at objects no longer in the frame.
+      for (const c of lf.centroids) {
+        if (!c.instance) continue;
+        const i = oldInstances.indexOf(c.instance);
+        c.instance = i >= 0 ? rebuiltByIdx[i] ?? null : null;
+      }
+    }
   }
 
   // We mutated `labeledFrames`/`instances` directly, so io's count-guarded
@@ -243,6 +305,25 @@ function rebuildInstance(ins: InstanceDelta, base: Labels): Instance | null {
     })),
     track,
   });
+}
+
+function rebuildCentroid(
+  c: CentroidDelta,
+  base: Labels,
+  rebuiltByIdx: (Instance | null)[],
+): Centroid {
+  const opts = {
+    x: c.x,
+    y: c.y,
+    z: c.z,
+    track: c.t >= 0 ? base.tracks[c.t] ?? null : null,
+    trackingScore: c.ts,
+    instance: c.i >= 0 ? rebuiltByIdx[c.i] ?? null : null,
+    category: c.cat,
+    name: c.nm,
+    source: c.src,
+  };
+  return c.p ? new PredictedCentroid({ ...opts, score: c.s ?? 0 }) : new UserCentroid(opts);
 }
 
 // --- CRC32 (standard IEEE polynomial 0xEDB88320) -----------------------------

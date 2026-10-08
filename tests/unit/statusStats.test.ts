@@ -14,14 +14,23 @@ function mockLF(opts: {
   hasUser?: boolean;
   hasPred?: boolean;
   isNegative?: boolean;
+  /**
+   * io.js `isUserLabeled`: user instances OR any other manual annotation (user
+   * centroid / bbox / mask / ROI) OR the negative flag. Defaults to
+   * `hasUserInstances` so existing cases keep their meaning; set it explicitly
+   * to model a frame labeled ONLY by e.g. a user centroid.
+   */
+  isUserLabeled?: boolean;
 }): LabeledFrame {
+  const hasUserInstances = opts.hasUser ?? (opts.user ?? 0) > 0;
   return {
     video: opts.video,
     userInstances: new Array(opts.user ?? 0).fill({}),
     unusedPredictions: new Array(opts.unusedPred ?? 0).fill({}),
-    hasUserInstances: opts.hasUser ?? (opts.user ?? 0) > 0,
+    hasUserInstances,
     hasPredictedInstances: opts.hasPred ?? false,
     isNegative: opts.isNegative ?? false,
+    isUserLabeled: opts.isUserLabeled ?? hasUserInstances,
   } as unknown as LabeledFrame;
 }
 
@@ -80,6 +89,22 @@ describe("computeStatusStats", () => {
     const s = computeStatusStats(labels, vidA, 100);
     expect(s.userInVideo).toBe(2);
     expect(s.userInProject).toBe(3);
+  });
+
+  it("counts a centroid-only frame as labeled (active-learning seeding)", () => {
+    // A seeded frame in separate-centroid mode holds a UserCentroid and NO pose
+    // instance. io.js calls that user-labeled; the status bar must agree, or a
+    // fully seeded project reads "Labeled: 0".
+    const frames = [
+      mockLF({ video: vidA, user: 0, hasUser: false, isUserLabeled: true }),
+      mockLF({ video: vidA, user: 0, hasUser: false, isUserLabeled: true }),
+      // Predicted-only frames are still NOT user-labeled.
+      mockLF({ video: vidA, user: 0, hasUser: false, hasPred: true }),
+    ];
+    const s = computeStatusStats(mockLabels([vidA], frames), vidA, 100);
+    expect(s.userInVideo).toBe(2);
+    expect(s.userInProject).toBe(2);
+    expect(s.predictedInVideo).toBe(1);
   });
 
   it("counts predicted frames in-video and computes percentage", () => {

@@ -52,6 +52,23 @@ import {
   migrateOpenPanels,
   toggleId,
 } from "@/lib/panelLayout";
+import { hydrateActiveLearningStore } from "@/lib/activeLearning/persistence";
+import {
+  advance as advancePassCursor,
+  stepBack as stepBackPassCursor,
+  initialCursor as initialPassCursor,
+  finalCursor as finalPassCursor,
+  nextUnlabeledCursor,
+  resolveItemInstance,
+  type PassItem,
+  type PassCursor,
+  type PassDims,
+} from "@/lib/activeLearning/passEngine";
+import {
+  resolveReviewInstance,
+  type ReviewItem,
+} from "@/lib/activeLearning/reviewQueue";
+export type { PassItem, PassCursor, PassDims };
 import { buildTutorialSteps, type TutorialStep } from "@/lib/tutorial/steps";
 import { isTauri } from "@/platform/index";
 
@@ -238,6 +255,8 @@ export interface AppState {
   trailShade: string;
   lutMin: number;
   lutMax: number;
+  /** Auto-contrast: derive the LUT from each frame's histogram (per-frame stretch). */
+  autoContrast: boolean;
   frameHistogram: Uint32Array | null;
   /**
    * True while VideoPlayer has a frame read in flight. Transient (never
@@ -362,8 +381,58 @@ export interface AppState {
   videoPrefixSwaps: VideoPrefixSwap[];
 
   // === Labeling mode state (transient, not persisted) ===
-  labelingMode: "select" | "place";
+  labelingMode: "select" | "place" | "seed" | "keypointPass" | "correct";
   placementNodeIdx: number | null;
+  /** Skeleton node index a "seed" click places (the centroid/body-center node). */
+  seedNodeIdx: number;
+  /**
+   * When true, a "seed" click creates a first-class `UserCentroid` annotation
+   * on `frame.centroids` instead of an Instance point — the centroid-annotation
+   * model for a separate (non-keypoint) centroid anchor.
+   */
+  seedCentroidAnnotation: boolean;
+
+  // === Phase-2 keypoint-pass state (transient, not persisted) ===
+  /** Ordered (frame, instance) units the multi-pass sweep walks. */
+  passWorkList: PassItem[];
+  /** Fixed pass/item/node counts for the current sweep. */
+  passDims: PassDims | null;
+  /** Skeleton node indices per pass, in click order (`[passIdx][k]`). */
+  passNodeIndices: number[][];
+  /** Position in the sweep; `null` while active means the sweep is complete. */
+  passCursor: PassCursor | null;
+  /** Live zoom-to-centroid window (px); adjustable during Phase-2 labeling. */
+  passZoomWindow: number;
+
+  // === Phase-3 keypoint-correction state (transient, not persisted) ===
+  /** Predicted instances queued for review, worst single keypoint first. */
+  correctQueue: ReviewItem[];
+  /**
+   * Position in the queue. A value in `[0, correctQueue.length)` is the item
+   * being corrected; `correctQueue.length` (past the end) means the sweep is
+   * complete but the mode stays active so the HUD can show the "done" state.
+   */
+  correctCursor: number;
+  /** Live zoom-to-instance window (px) for Phase-3 correction. */
+  correctZoomWindow: number;
+  /** Keypoints at/below this confidence are flagged (ring + sidebar color). */
+  correctScoreThreshold: number;
+  /**
+   * Set when a post-training inference run has merged predictions that are
+   * waiting to be reviewed — the Phase-2 → Phase-3 handoff signal.
+   *
+   * Deliberately NOT the same thing as entering correct mode: training +
+   * inference takes tens of minutes, so the user is usually elsewhere (often
+   * still mid keypoint-sweep) when it lands. Auto-entering would move the
+   * viewport and silently rebind Space/S/B/Esc under them. This just says
+   * "there is something to review", and the AL panel turns it into a badge and
+   * a one-click entry.
+   *
+   * `flagged` = instances with a keypoint at/below the score threshold (what
+   * the queue would contain); `total` = every scored prediction merged, so
+   * "nothing merged" reads differently from "merged, but all confident".
+   */
+  pendingReview: { flagged: number; total: number } | null;
 
   // === Skeleton-builder state (transient, not persisted) ===
   // Visual skeleton builder: place nodes on the canvas, then connect them into
@@ -622,6 +691,61 @@ export interface AppState {
   dismissTutorialCompletion: () => void;
   enterPlacementMode: () => void;
   exitPlacementMode: () => void;
+  /**
+   * Enter centroid-seeding mode. Each click drops a new one-node instance, or —
+   * when `centroidAnnotation` is true — a first-class `UserCentroid` on
+   * `frame.centroids`.
+   */
+  enterSeedMode: (nodeIdx?: number, centroidAnnotation?: boolean) => void;
+  exitSeedMode: () => void;
+  /** Enter Phase-2 keypoint-pass labeling with a prebuilt work list + dims. */
+  enterKeypointPassMode: (args: {
+    workList: PassItem[];
+    dims: PassDims;
+    nodeIndices: number[][];
+    zoomWindow?: number;
+  }) => void;
+  exitKeypointPassMode: () => void;
+  /** Advance the pass cursor (place/skip); navigates on item change. */
+  passAdvance: () => void;
+  /** Step the pass cursor back one node; navigates on item change. */
+  passStepBack: () => void;
+  /**
+   * Jump the pass cursor to the next UNLABELED node, skipping the pre-seeded
+   * anchor and anything already decided. Searches from the START of the sweep by
+   * default (that's "resume Phase-2 where labeling left off"); `from: "cursor"`
+   * searches FORWARD from the current position instead, so an action that just
+   * decided a run of points moves on rather than snapping back to something the
+   * labeler already chose to leave. Returns true if an unlabeled node was found.
+   */
+  passJumpToUnlabeled: (options?: { from?: "start" | "cursor" }) => boolean;
+  /** Set the zoom-to-centroid window (px) for Phase-2 labeling. */
+  setPassZoomWindow: (px: number) => void;
+  /** Sync frame/instance selection to the current pass cursor. */
+  syncPassSelection: () => void;
+  /** Enter Phase-3 correction with a prebuilt review queue (worst-first). */
+  enterCorrectMode: (args: {
+    queue: ReviewItem[];
+    zoomWindow?: number;
+    scoreThreshold?: number;
+  }) => void;
+  exitCorrectMode: () => void;
+  /** Flag/clear "predictions merged and waiting for review" (see {@link AppState.pendingReview}). */
+  setPendingReview: (v: { flagged: number; total: number } | null) => void;
+  /** Advance to the next queued item (accepting happens in the UI/command layer). */
+  correctAdvance: () => void;
+  /** Step back to the previous queued item. */
+  correctBack: () => void;
+  /** Set the zoom-to-instance window (px) for Phase-3 correction. */
+  setCorrectZoomWindow: (px: number) => void;
+  /** Sync frame/instance selection to the current correction cursor. */
+  syncCorrectSelection: () => void;
+  /**
+   * Move the correction cursor to the queue item at (video, frameIdx,
+   * instanceIdx) and frame it, if such an item exists. Used by undo/redo to land
+   * the cursor exactly on the restored item. No-op when it isn't in the queue.
+   */
+  correctSyncToFrame: (video: Video, frameIdx: number, instanceIdx: number) => void;
 
   // Skeleton-builder actions (scratch buffer; see field docs above).
   enterSkeletonBuild: () => void;
@@ -701,6 +825,7 @@ export const PERSISTED_KEYS: (keyof AppState)[] = [
   "showNonVisibleNodes",
   "showCrosshair",
   "colorPredicted",
+  "autoContrast",
   "showTrackScore",
   "showLabelingHints",
   "hasSeenLabelingHintsPrompt",
@@ -817,6 +942,7 @@ export const useAppStore = create<AppState>()(
       trailShade: "Normal",
       lutMin: 0,
       lutMax: 255,
+      autoContrast: false,
       frameHistogram: null,
       frameLoading: false,
       isScrubbing: false,
@@ -853,8 +979,24 @@ export const useAppStore = create<AppState>()(
       videoPrefixSwaps: [] as VideoPrefixSwap[],
 
       // Labeling mode state (transient)
-      labelingMode: "select" as "select" | "place",
+      labelingMode: "select" as "select" | "place" | "seed" | "keypointPass" | "correct",
       placementNodeIdx: null as number | null,
+      seedNodeIdx: 0,
+      seedCentroidAnnotation: false,
+
+      // Phase-2 keypoint-pass state (transient)
+      passWorkList: [] as PassItem[],
+      passDims: null as PassDims | null,
+      passNodeIndices: [] as number[][],
+      passCursor: null as PassCursor | null,
+      passZoomWindow: 256,
+
+      // Phase-3 keypoint-correction state (transient)
+      correctQueue: [] as ReviewItem[],
+      correctCursor: 0,
+      correctZoomWindow: 256,
+      correctScoreThreshold: 0.3,
+      pendingReview: null as { flagged: number; total: number } | null,
 
       // Skeleton-builder state (transient scratch buffer)
       skeletonBuildMode: false,
@@ -955,10 +1097,26 @@ export const useAppStore = create<AppState>()(
           state.frameIdx = 0;
           state.instance = null;
           state.labeledFrame = null;
+          // A new project invalidates any in-progress labeling mode: the pass
+          // work list references the OLD project's instances, so leaving it
+          // active would mutate the wrong data on the next click.
+          state.labelingMode = "select";
+          state.seedCentroidAnnotation = false;
+          state.passCursor = null;
+          state.passWorkList = [];
+          state.passDims = null;
+          state.passNodeIndices = [];
+          // The correction queue references the OLD project's instances too.
+          state.correctQueue = [];
+          state.correctCursor = 0;
           // setLabels sets video/frame directly (not via setVideo), so drop any
           // stale identity-keyed transients from the previous project.
           clearTransientVisibility(state);
         });
+        // Adopt (or clear) the active-learning workflow saved in this project's
+        // provenance. Done after the appStore update, outside the immer producer,
+        // since it drives a separate store. Covers every load path + New Project.
+        hydrateActiveLearningStore(labels);
         // Prune this project's color overrides for tracks that no longer exist
         // (e.g. deleted between sessions). Uses committed (plain) state; no-op
         // when nothing is stale.
@@ -1491,6 +1649,195 @@ export const useAppStore = create<AppState>()(
           state.placementNodeIdx = null;
         }),
 
+      enterSeedMode: (nodeIdx?: number, centroidAnnotation?: boolean) =>
+        set((state) => {
+          state.labelingMode = "seed";
+          if (typeof nodeIdx === "number") state.seedNodeIdx = nodeIdx;
+          state.seedCentroidAnnotation = centroidAnnotation ?? false;
+        }),
+
+      exitSeedMode: () =>
+        set((state) => {
+          state.labelingMode = "select";
+          state.seedCentroidAnnotation = false;
+        }),
+
+      enterKeypointPassMode: ({ workList, dims, nodeIndices, zoomWindow }) => {
+        const cur = initialPassCursor(dims);
+        set((state) => {
+          state.labelingMode = "keypointPass";
+          state.passWorkList = workList;
+          state.passDims = dims;
+          state.passNodeIndices = nodeIndices;
+          state.passCursor = cur;
+          if (typeof zoomWindow === "number" && zoomWindow > 0) {
+            state.passZoomWindow = zoomWindow;
+          }
+        });
+        // Frame the first item. Guard on a non-null cursor: an empty sweep
+        // leaves the mode active but with nothing selected.
+        if (cur) get().syncPassSelection();
+      },
+
+      exitKeypointPassMode: () =>
+        set((state) => {
+          state.labelingMode = "select";
+          state.passCursor = null;
+          state.passWorkList = [];
+          state.passDims = null;
+          state.passNodeIndices = [];
+        }),
+
+      passAdvance: () => {
+        const { passCursor, passDims } = get();
+        if (!passCursor || !passDims) return;
+        const next = advancePassCursor(passCursor, passDims);
+        const prevItem = passCursor.itemIdx;
+        set((state) => {
+          state.passCursor = next;
+        });
+        // next === null → sweep complete; mode stays so the panel/HUD can show
+        // the "done" state and VideoPlayer stops re-zooming. Only re-navigate
+        // when the work item actually changes (advancing within an item must
+        // not deselect the in-progress instance).
+        if (next && next.itemIdx !== prevItem) get().syncPassSelection();
+      },
+
+      passStepBack: () => {
+        const { passCursor, passDims } = get();
+        if (!passDims) return;
+        // From the completed (null) state, step back INTO the last position.
+        const prev = passCursor
+          ? stepBackPassCursor(passCursor, passDims)
+          : finalPassCursor(passDims);
+        if (!prev) return;
+        const prevItem = passCursor ? passCursor.itemIdx : -1;
+        set((state) => {
+          state.passCursor = prev;
+        });
+        if (prev.itemIdx !== prevItem) get().syncPassSelection();
+      },
+
+      passJumpToUnlabeled: (options) => {
+        const s = get();
+        if (!s.labels || !s.passDims || s.passWorkList.length === 0) return false;
+        const cur = nextUnlabeledCursor(
+          s.labels,
+          s.passWorkList,
+          s.passDims,
+          s.passNodeIndices,
+          options?.from === "cursor" ? s.passCursor : null,
+        );
+        set((state) => {
+          state.passCursor = cur;
+        });
+        if (cur) get().syncPassSelection();
+        return !!cur;
+      },
+
+      setPassZoomWindow: (px) =>
+        set((state) => {
+          state.passZoomWindow = Math.max(16, px);
+        }),
+
+      syncPassSelection: () => {
+        const s = get();
+        const cur = s.passCursor;
+        if (!cur || !s.labels) return;
+        const item = s.passWorkList[cur.itemIdx];
+        if (!item) return;
+        const video = s.labels.videos[item.videoIdx];
+        if (video && video !== s.video) get().setVideo(video);
+        get().setFrameIdx(item.frameIdx);
+        get().setInstance(resolveItemInstance(s.labels, item));
+      },
+
+      enterCorrectMode: ({ queue, zoomWindow, scoreThreshold }) => {
+        set((state) => {
+          state.labelingMode = "correct";
+          // A pre-existing area-delete mode would splice predictions on click and
+          // desync the queue — clear it on entry.
+          state.areaDeleteMode = false;
+          state.correctQueue = queue;
+          state.correctCursor = 0;
+          // Entering the sweep consumes the handoff signal — the badge has done
+          // its job and a stale count would keep re-announcing work in progress.
+          state.pendingReview = null;
+          if (typeof zoomWindow === "number" && zoomWindow > 0) {
+            state.correctZoomWindow = zoomWindow;
+          }
+          if (typeof scoreThreshold === "number") {
+            state.correctScoreThreshold = scoreThreshold;
+          }
+        });
+        // Frame the first item. An empty queue leaves the mode active but with
+        // nothing selected (the panel/HUD shows an "all clear" state).
+        if (queue.length > 0) get().syncCorrectSelection();
+      },
+
+      exitCorrectMode: () =>
+        set((state) => {
+          state.labelingMode = "select";
+          state.correctQueue = [];
+          state.correctCursor = 0;
+        }),
+
+      setPendingReview: (v) =>
+        set((state) => {
+          state.pendingReview = v;
+        }),
+
+      correctAdvance: () => {
+        const { correctCursor, correctQueue } = get();
+        // Clamp at length (past the end = the completed state); the mode stays
+        // so the HUD can show "done" and VideoPlayer stops re-zooming.
+        const next = Math.min(correctCursor + 1, correctQueue.length);
+        set((state) => {
+          state.correctCursor = next;
+        });
+        if (next < correctQueue.length) get().syncCorrectSelection();
+      },
+
+      correctBack: () => {
+        const { correctCursor } = get();
+        const prev = Math.max(0, correctCursor - 1);
+        set((state) => {
+          state.correctCursor = prev;
+        });
+        get().syncCorrectSelection();
+      },
+
+      setCorrectZoomWindow: (px) =>
+        set((state) => {
+          state.correctZoomWindow = Math.max(16, px);
+        }),
+
+      syncCorrectSelection: () => {
+        const s = get();
+        if (!s.labels) return;
+        const item = s.correctQueue[s.correctCursor];
+        if (!item) return;
+        const video = s.labels.videos[item.videoIdx];
+        if (video && video !== s.video) get().setVideo(video);
+        get().setFrameIdx(item.frameIdx);
+        get().setInstance(resolveReviewInstance(s.labels, item));
+      },
+
+      correctSyncToFrame: (video, frameIdx, instanceIdx) => {
+        const s = get();
+        if (s.labelingMode !== "correct" || !s.labels) return;
+        const videoIdx = s.labels.videos.indexOf(video);
+        if (videoIdx < 0) return;
+        const idx = s.correctQueue.findIndex(
+          (it) => it.videoIdx === videoIdx && it.frameIdx === frameIdx && it.instanceIdx === instanceIdx,
+        );
+        if (idx < 0) return;
+        set((state) => {
+          state.correctCursor = idx;
+        });
+        get().syncCorrectSelection();
+      },
+
       // Enter the visual skeleton builder. Seeds one null slot per skeleton
       // node (scratch positions, index-aligned). Also clears place-labeling so
       // the two modes never fight over canvas clicks. Snapshots the current
@@ -1885,6 +2232,9 @@ export const useAppStore = create<AppState>()(
           hiddenPanels: reconcileHiddenPanels(p.hiddenPanels),
           // Seed the open-panel stack: a stored set wins; a legacy single
           // active panel migrates when no set was stored (see migrateOpenPanels).
+          // A retired id (e.g. the old standalone "correct" panel, now an
+          // Active-Learning tab) is not in DEFAULT_PANEL_ORDER, so it drops here
+          // rather than resolving to a panel that no longer exists.
           sidebarOpenPanels: migrateOpenPanels(
             p.sidebarOpenPanels,
             p.sidebarActivePanel,
