@@ -17,7 +17,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, HelpCircle, RefreshCw, Check, RotateCcw } from "lucide-react";
+import { Search, HelpCircle, RefreshCw, Check, RotateCcw, Lightbulb } from "lucide-react";
 import type { Labels } from "@talmolab/sleap-io.js";
 import type { ConfigFile, ConfigHyperparams, Backbone, ModelType, DataPipeline, ColorMode } from "@/stores/trainingStore";
 import { getSlotLabel, getConfigSlots, useTrainingStore } from "@/stores/trainingStore";
@@ -594,7 +594,7 @@ function HeadTabContent({
           if ((backboneRecommendation.tier === "large") === isLarge) return null;
           return (
             <p className="text-[10px] text-muted-foreground mt-1.5">
-              💡 Recommended: {backboneRecommendation.tier === "large" ? "Large RF" : "Medium RF"} — {backboneRecommendation.reason}
+              <Lightbulb className="mr-1 inline h-3 w-3 align-[-2px]" />Recommended: {backboneRecommendation.tier === "large" ? "Large RF" : "Medium RF"} — {backboneRecommendation.reason}
             </p>
           );
         })()}
@@ -686,9 +686,10 @@ function HeadTabContent({
         </Field>
         {slot === "centroid" && centroidScaleRecommendation && (
           <p className="text-[10px] text-green-400 -mt-1 pl-1">
+            <Lightbulb className="mr-1 inline h-3 w-3 align-[-2px]" />
             {hp.scale === centroidScaleRecommendation.scale
-              ? `💡 ${centroidScaleRecommendation.scale}× recommended — ${centroidScaleRecommendation.reason}`
-              : `💡 Recommended: ${centroidScaleRecommendation.scale}× — ${centroidScaleRecommendation.reason}`}
+              ? `${centroidScaleRecommendation.scale}× recommended — ${centroidScaleRecommendation.reason}`
+              : `Recommended: ${centroidScaleRecommendation.scale}× — ${centroidScaleRecommendation.reason}`}
           </p>
         )}
         {showCropSize && (
@@ -720,7 +721,7 @@ function HeadTabContent({
             </div>
             {hp.cropSize === null && sizeStats && (
               <p className="text-[10px] text-muted-foreground pl-1">
-                💡 Auto: padded for ±{hp.rotationPreset === "custom" ? hp.rotationCustomAngle : hp.rotationPreset === "off" ? 0 : hp.rotationPreset}° rotation
+                <Lightbulb className="mr-1 inline h-3 w-3 align-[-2px]" />Auto: padded for ±{hp.rotationPreset === "custom" ? hp.rotationCustomAngle : hp.rotationPreset === "off" ? 0 : hp.rotationPreset}° rotation
                 {hp.scaleEnabled ? ` and ${hp.scaleMax}× scale` : ""} augmentation.
               </p>
             )}
@@ -1025,7 +1026,7 @@ function HeadTabContent({
         </Field>
         {isPretrainedBackbone && (
           <p className="text-[10px] text-muted-foreground pl-1">
-            💡 {hp.backbone === "convnext" ? "ConvNeXt" : "Swin Transformer"} is pretrained on RGB images — Convert Colors set to RGB
+            <Lightbulb className="mr-1 inline h-3 w-3 align-[-2px]" />{hp.backbone === "convnext" ? "ConvNeXt" : "Swin Transformer"} is pretrained on RGB images — Convert Colors set to RGB
           </p>
         )}
         <Separator className="my-3" />
@@ -1074,12 +1075,12 @@ function HeadTabContent({
         </div>
         {hp.maxStride === null && isPretrainedBackbone && (
           <p className="text-[10px] text-muted-foreground pl-1">
-            💡 Auto: {effectiveMaxStride} — fixed for pretrained {hp.backbone === "convnext" ? "ConvNeXt" : "Swin Transformer"} backbones
+            <Lightbulb className="mr-1 inline h-3 w-3 align-[-2px]" />Auto: {effectiveMaxStride} — fixed for pretrained {hp.backbone === "convnext" ? "ConvNeXt" : "Swin Transformer"} backbones
           </p>
         )}
         {hp.maxStride === null && !isPretrainedBackbone && sizeStats && (
           <p className="text-[10px] text-muted-foreground pl-1">
-            💡 Auto: {effectiveMaxStride} — based on avg. animal size ~{Math.round(sizeStats.avgAnimalSize)}px (scaled {hp.scale}×)
+            <Lightbulb className="mr-1 inline h-3 w-3 align-[-2px]" />Auto: {effectiveMaxStride} — based on avg. animal size ~{Math.round(sizeStats.avgAnimalSize)}px (scaled {hp.scale}×)
           </p>
         )}
         <div className="flex items-center gap-6 flex-wrap">

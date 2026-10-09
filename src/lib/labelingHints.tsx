@@ -47,6 +47,7 @@
 
 import { PredictedInstance } from "@talmolab/sleap-io.js";
 import type { Instance, LabeledFrame, Labels } from "@talmolab/sleap-io.js";
+import { Lightbulb } from "lucide-react";
 import { toast } from "@/lib/notify";
 import { useAppStore } from "@/stores/appStore";
 import { formatShortcut } from "@/lib/formatShortcut";
@@ -151,7 +152,9 @@ export function showLabelingHint(id: LabelingHintId): void {
     position: "top-center",
     // Replaces sonner's default info-circle icon (redundant with a second
     // icon otherwise sitting right next to it) rather than adding alongside it.
-    icon: "💡",
+    // An SVG, not the 💡 emoji: Linux machines without a color-emoji font
+    // (e.g. the lablink workshop VMs) render the emoji blank.
+    icon: <Lightbulb className="h-4 w-4 text-yellow-500" />,
     // A size step down from the app's regular toasts (they read as more
     // "ambient nudge" than "status update").
     classNames: { title: "text-xs", description: "text-xs leading-snug" },
