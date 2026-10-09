@@ -233,7 +233,7 @@ export interface TutorialStep {
 export const WELCOME_STEP: TutorialStep = {
   id: "welcome",
   title: "Welcome to SLEAP",
-  body: "This hands-on tutorial walks through the whole SLEAP workflow on a short sample video: label a few frames, train a model on them, correct its predictions, retrain, then run the model on the whole video. It builds its own project, so nothing of yours is touched.\n\nThis card shows what to do at each step and moves on once you've done it. Drag it by its handle, collapse it with the chevron, or close it with ✕ at any time.\n\nClick **Start** when you're ready.",
+  body: "This hands-on tutorial walks through the whole SLEAP workflow on a sample video of mice: label a few frames, train a model on them, correct its predictions, retrain, then run the model on the whole video. It builds its own project, so nothing of yours is touched.\n\nThis card shows what to do at each step and moves on once you've done it. Drag it by its handle, collapse it with the chevron, or close it with ✕ at any time.\n\nClick **Start** when you're ready.",
   targetSelector: null,
   placement: "bottom",
   isComplete: () => true,
@@ -311,7 +311,7 @@ export const NEW_PROJECT_STEP: TutorialStep = {
 export const ADD_VIDEO_IN_DIALOG_STEP: TutorialStep = {
   id: "add-video-in-dialog",
   title: "Add a video",
-  body: 'This tutorial uses a short sample video, mice.mp4. Click **Use sample video** to add it. If you already have mice.mp4, you can drag it into the dropzone instead.',
+  body: 'This tutorial uses a sample video, mice.mp4. Click **Use sample video** to add it. If you already have mice.mp4, you can drag it into the dropzone instead.',
   targetSelector: '[data-tutorial="new-project-sample-video-button"]',
   placement: "right",
   isComplete: (_entry, _current) => {
