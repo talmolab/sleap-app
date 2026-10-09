@@ -6,7 +6,7 @@
  * centered, since there's no target to point at.
  */
 
-import { BookOpen, CheckCircle2, X } from "lucide-react";
+import { BookOpen, PartyPopper, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAppStore } from "@/stores/appStore";
 import { useDocsUrl } from "@/lib/docsUrl";
@@ -43,8 +43,10 @@ export function TutorialCompletionCard() {
     >
       <div className="flex items-start justify-between gap-2">
         <p className="flex items-center gap-1.5 font-semibold">
-          <CheckCircle2 className="h-4 w-4 text-green-500" />
-          Tutorial complete 🎉
+          {/* An icon, not the 🎉 emoji: VMs and minimal Linux installs often
+              have no color-emoji font, so the emoji renders as a blank box. */}
+          <PartyPopper className="h-4 w-4 text-green-500" />
+          Tutorial complete
         </p>
         <button
           type="button"

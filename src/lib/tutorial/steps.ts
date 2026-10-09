@@ -382,10 +382,22 @@ export const GENERATE_SUGGESTIONS_STEP: TutorialStep = {
       : null,
 };
 
+/**
+ * Frame the "Create a skeleton" step jumps to on entry, and the one the label
+ * step asks the user to label. This tutorial is built around a fixed sample
+ * video (mice.mp4) generated with a deterministic Stride/20 suggestion — 1410
+ * is one of the resulting suggestion frames, so drawing the skeleton here
+ * always lands on a real suggested frame (letting it double-count toward
+ * `LABEL_ONE_FRAME_STEP` if the user creates an instance from it).
+ * `setFrameIdx` clamps to the loaded video's last frame, so this is a harmless
+ * no-op/best-effort jump on a different or shorter video.
+ */
+export const TUTORIAL_LABEL_FRAME_IDX = 1410;
+
 export const CREATE_SKELETON_STEP: TutorialStep = {
   id: "create-skeleton",
   title: "Create a skeleton",
-  body: "A skeleton is the set of body parts you track (nodes) and the lines between them (edges). For the mice, make 3 nodes named **head**, **torso**, and **tailbase**, with edges from **torso to head** and from **torso to tailbase**.\n\nClick **Draw skeleton on frame**, then follow the bar at the top of the frame:\n• Click the frame to place each node. Double-click a node to rename it.\n• Click **Next: Connect edges**. Edges follow the direction you drag, so draw **two strokes, each starting at torso**: one to head, one to tailbase.\n• Click **Done**. When asked, click **Create instance** to put this skeleton on the current frame.\n\nDraw the skeleton **only once**, even if there's more than one mouse. It's a template: each animal gets its own copy in the next step.",
+  body: `A skeleton is the set of body parts you track (nodes) and the lines between them (edges). For the mice, make 3 nodes named **head**, **torso**, and **tailbase**, with edges from **torso to head** and from **torso to tailbase**.\n\nWe've moved to **frame ${TUTORIAL_LABEL_FRAME_IDX}**, one of your suggested frames, to draw and label on. Click **Draw skeleton on frame**, then follow the bar at the top of the frame:\n• Click the frame to place each node. Double-click a node to rename it.\n• Click **Next: Connect edges**. Edges follow the direction you drag, so draw **two strokes, each starting at torso**: one to head, one to tailbase.\n• Click **Done**. When asked, click **Create instance** to put this skeleton on frame ${TUTORIAL_LABEL_FRAME_IDX}.\n\nDraw the skeleton **only once**, even if there's more than one mouse. It's a template: each animal gets its own copy in the next step.`,
   panelId: "skeleton",
   targetSelector: '[data-tutorial="draw-skeleton-button"]',
   placement: "left",
@@ -418,7 +430,7 @@ export const CREATE_SKELETON_STEP: TutorialStep = {
 export const LABEL_ONE_FRAME_STEP: TutorialStep = {
   id: "label-one-frame",
   title: "Label one frame, then save",
-  body: `An instance is one animal's copy of the skeleton. We'll label **just one suggested frame**, only to see how the whole workflow works; a real project needs many more labeled frames. Fully label it: one instance per animal, with each node on the right body part.\n• If you clicked **Create instance** in the last step, it's already on this frame. Drag its nodes onto a mouse.\n• For each other mouse, right-click the frame and choose **Add Instance ▸ Best** (or press \`${ADD_INSTANCE_KEY}\`), or \`Ctrl\`+drag an existing instance to copy it. Then drag its nodes into place.\n• Save with \`${SAVE_KEY}\`.\n\nYou're on a suggested frame already. The rest are listed in the Suggestions panel; click one to jump to it.`,
+  body: `An instance is one animal's copy of the skeleton. We'll label **just one suggested frame**, **frame ${TUTORIAL_LABEL_FRAME_IDX}** (the one you're on), only to see how the whole workflow works; a real project needs many more labeled frames. Fully label it: one instance per animal, with each node on the right body part.\n• If you clicked **Create instance** in the last step, it's already on this frame. Drag its nodes onto a mouse.\n• For each other mouse, right-click the frame and choose **Add Instance ▸ Best** (or press \`${ADD_INSTANCE_KEY}\`), or \`Ctrl\`+drag an existing instance to copy it. Then drag its nodes into place.\n• Save with \`${SAVE_KEY}\`.\n\nYour other suggested frames are listed in the Suggestions panel; click one to jump to it.`,
   panelId: "suggestions",
   targetSelector: '[data-tutorial="suggestions-panel"]',
   placement: "left",
@@ -453,7 +465,7 @@ export const RUN_TRAINING_STEP: TutorialStep = {
   },
   panelId: "training",
   targetSelector: '[data-tutorial="start-training-button"]',
-  placement: "top",
+  placement: "left",
   isComplete: (entry) => entry.everTraining,
   cpuNote: () =>
     "Training will run on the CPU, which is much slower than on a GPU. If you'd rather not wait, you can exit the tutorial here, because the remaining steps all need this trained model.",
@@ -515,7 +527,7 @@ export const RETRAIN_STEP: TutorialStep = {
   body: "Click **Train Again**, then **Start Training**. Epochs is now 50 for a better model; everything else stays the same. As before, the new model runs on your suggested frames when it finishes.\n\nYou don't have to wait for all 50 epochs: click **Stop Early** to keep what's been trained so far. Top-Down trains two models one after the other, so you'll click Stop Early once for each.",
   panelId: "training",
   targetSelector: '[data-tutorial="start-training-button"]',
-  placement: "top",
+  placement: "left",
   isComplete: (entry, current) =>
     entry.everTraining && current.trainingStatus === "completed",
 };
@@ -542,7 +554,7 @@ export const RUN_INFERENCE_STEP: TutorialStep = {
   body: "The retrained model has already made new predictions on your suggested frames. Now run it on the whole video to see how it does: Inference Target is set to **Entire current video**, so click **Run Inference**. When it finishes, play or scrub through the video to see predictions on every frame.",
   panelId: "inference",
   targetSelector: '[data-tutorial="run-inference-button"]',
-  placement: "top",
+  placement: "left",
   isComplete: (entry, current) =>
     inferenceFinished(entry, current) && entry.inferenceTargetOkAtRun === true,
   incompleteHint: (entry, current) =>

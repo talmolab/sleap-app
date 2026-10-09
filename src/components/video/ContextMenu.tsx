@@ -114,6 +114,7 @@ export function ContextMenu({
   return (
     <div
       ref={menuRef}
+      data-tutorial-keep-clear
       className="fixed z-50 min-w-[180px] bg-popover text-popover-foreground border border-border rounded-md shadow-md py-1"
       style={{ left: clampedPos.left, top: clampedPos.top }}
       onClick={(e) => e.stopPropagation()}
@@ -320,6 +321,7 @@ function ContextMenuSubmenu({
       </button>
       {open && (
         <div
+          data-tutorial-keep-clear
           className="absolute min-w-[160px] rounded-md border border-border bg-popover p-1 shadow-lg z-[100]"
           style={position}
         >
