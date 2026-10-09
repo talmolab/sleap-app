@@ -334,7 +334,7 @@ export const CONFIRM_VIDEO_AND_CREATE_STEP: TutorialStep = {
 export const SAVE_PROJECT_STEP: TutorialStep = {
   id: "save-project",
   title: "Save your project",
-  body: `Save your project: open **File ▸ Save**, or press \`${SAVE_KEY}\`. The first time, you'll choose where to put the file.\n\nSLEAP projects are .slp files. Open this one later to pick up where you left off.`,
+  body: `Save your project: open **File ▸ Save**, or press \`${SAVE_KEY}\`. The first time, you'll choose where to put the file.\n\nSLEAP projects are .slp files. The save dialog suggests the name **labels.v001.slp**. Next time, open that file (**File ▸ Open Project**) to load this project and pick up where you left off.`,
   targetSelector: '[data-tutorial="file-menu-trigger"]',
   placement: "bottom",
   isComplete: (_entry, current) => current.hasChanges === false,
