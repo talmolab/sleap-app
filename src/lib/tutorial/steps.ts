@@ -33,7 +33,7 @@
  */
 
 import type { Labels, Skeleton } from "@/types";
-import { frameHasUserLabels, frameHasPredictedInstances } from "@/lib/frameLabeling";
+import { frameHasUserLabels } from "@/lib/frameLabeling";
 import type { TrainingStatus } from "@/stores/trainingStore";
 import type { InferenceStatus } from "@/stores/inferenceStore";
 import { formatShortcut } from "@/lib/formatShortcut";
@@ -82,12 +82,20 @@ function countLabeledSuggestions(labels: Labels | null): number {
   ).length;
 }
 
-/** Count of `labels.suggestions` frames still carrying an unaccepted prediction. */
-function countSuggestionsWithPredictions(labels: Labels | null): number {
+/**
+ * Count of user instances made by accepting a prediction: accepting keeps a
+ * `fromPredicted` link to the prediction it replaced (editCommands.ts), and
+ * correcting the nodes afterwards doesn't clear it.
+ */
+function countAcceptedPredictions(labels: Labels | null): number {
   if (!labels) return 0;
-  return labels.suggestions.filter((sf) =>
-    frameHasPredictedInstances(labels, sf.video, sf.frameIdx),
-  ).length;
+  let count = 0;
+  for (const lf of labels.labeledFrames) {
+    for (const inst of lf.instances) {
+      if ((inst as { fromPredicted?: unknown }).fromPredicted) count++;
+    }
+  }
+  return count;
 }
 
 export interface TutorialSnapshot {
@@ -102,8 +110,8 @@ export interface TutorialSnapshot {
    * time, since the builder is opened well after the step starts.
    */
   everEnteredSkeletonBuild: boolean;
-  /** How many suggestion frames already carried predictions when this step started. */
-  suggestionFramesWithPredictionsAtEntry: number;
+  /** How many accepted predictions (see `countAcceptedPredictions`) existed when this step started. */
+  acceptedPredictionCount: number;
   /**
    * Sticky flag (same idiom as `everEnteredSkeletonBuild`): has training been
    * seen `running` at any point since this step became active? Training is a
@@ -144,9 +152,7 @@ export function snapshotTutorialState(
     skeletonNodeCount: state.skeleton?.nodes.length ?? 0,
     skeletonEdgeCount: state.skeleton?.edges.length ?? 0,
     everEnteredSkeletonBuild: state.skeletonBuildMode,
-    suggestionFramesWithPredictionsAtEntry: countSuggestionsWithPredictions(
-      state.labels,
-    ),
+    acceptedPredictionCount: countAcceptedPredictions(state.labels),
     everTraining: state.trainingStatus === "running",
     everInferenceRunning: state.inferenceStatus === "running",
     seenSuggestions: state.labels?.suggestions ?? null,
@@ -251,7 +257,7 @@ export const WELCOME_STEP: TutorialStep = {
 export const CHECK_ENVIRONMENT_STEP: TutorialStep = {
   id: "check-environment",
   title: "Check your environment",
-  body: "Training needs two tools: uv and sleap-nn (SLEAP's training engine). If uv shows \"Not installed\", click **Install** next to it, then do the same for sleap-nn. When both show as installed, click **Next**.",
+  body: "Training needs two tools: uv and sleap-nn (SLEAP's training engine). If uv shows \"Not installed\", click **Install** next to it, then do the same for sleap-nn.\n\nOnce sleap-nn is installed, look at **Accelerator** below it: a green light means a GPU was detected, so training will run fast.\n\nWhen both tools show as installed, click **Next**.",
   tips: {
     label: "App updates",
     text: "The SLEAP App section at the top shows your version. Stable is the recommended channel. If an update is available, it appears in orange next to an **Update** button. Updating restarts the app, so you'd need to start the tutorial again afterwards.",
@@ -412,7 +418,7 @@ export const CREATE_SKELETON_STEP: TutorialStep = {
 export const LABEL_ONE_FRAME_STEP: TutorialStep = {
   id: "label-one-frame",
   title: "Label one frame, then save",
-  body: `An instance is one animal's copy of the skeleton. To get to training quickly, fully label **just one suggested frame**: one instance per animal, with each node on the right body part.\n• If you clicked **Create instance** in the last step, it's already on this frame. Drag its nodes onto a mouse.\n• For each other mouse, right-click the frame and choose **Add Instance ▸ Best** (or press \`${ADD_INSTANCE_KEY}\`), or \`Ctrl\`+drag an existing instance to copy it. Then drag its nodes into place.\n• Save with \`${SAVE_KEY}\`.\n\nYou're on a suggested frame already. The rest are listed in the Suggestions panel; click one to jump to it.`,
+  body: `An instance is one animal's copy of the skeleton. We'll label **just one suggested frame**, only to see how the whole workflow works; a real project needs many more labeled frames. Fully label it: one instance per animal, with each node on the right body part.\n• If you clicked **Create instance** in the last step, it's already on this frame. Drag its nodes onto a mouse.\n• For each other mouse, right-click the frame and choose **Add Instance ▸ Best** (or press \`${ADD_INSTANCE_KEY}\`), or \`Ctrl\`+drag an existing instance to copy it. Then drag its nodes into place.\n• Save with \`${SAVE_KEY}\`.\n\nYou're on a suggested frame already. The rest are listed in the Suggestions panel; click one to jump to it.`,
   panelId: "suggestions",
   targetSelector: '[data-tutorial="suggestions-panel"]',
   placement: "left",
@@ -429,43 +435,61 @@ export const LABEL_ONE_FRAME_STEP: TutorialStep = {
  * baseline workflow). Past this set (e.g. `retrain`), a trained run's exact
  * config is preferred again, same as normal "Train Again" behavior.
  */
-export const TUTORIAL_FIRST_TRAINING_STEP_IDS = new Set(["run-training"]);
+export const TUTORIAL_FIRST_TRAINING_STEP_IDS = new Set(["run-training", "training-progress"]);
 
 /**
  * The anchor part is set to torso for the user (trainingDefaults.ts), so this
- * step only explains it. Completion only requires training to finish — not a
- * particular anchor — so a run started with a different pick still moves the
- * tutorial on rather than stranding the user.
+ * step only explains it. Completes as soon as training starts — not with a
+ * particular anchor, so a run started with a different pick still moves the
+ * tutorial on — and `TRAINING_PROGRESS_STEP` takes over while it runs.
  */
 export const RUN_TRAINING_STEP: TutorialStep = {
   id: "run-training",
   title: "Train a model",
-  body: "Training teaches a model to find your skeleton's nodes, using the frames you labeled. Everything is set up for a quick first pass of 5 epochs (an epoch is one pass over your labels), just enough to see the whole workflow.\n\nClick **Start Training**. When it finishes, the app runs the new model on your suggested frames and the tutorial continues.",
+  body: "Training teaches a model to find your skeleton's nodes, using the frames you labeled. You've labeled just one frame, so this first model won't be accurate; it's here to show how training works. Everything is set up for a quick pass of 5 epochs (an epoch is one pass over your labels).\n\nClick **Start Training**.",
   tips: {
     label: "About these settings",
-    text: "Top-Down is selected. It trains two models one after the other: the first finds each animal by its anchor part, the second crops around that anchor and finds the rest of the nodes. Anchor Part is set to torso because it's central and visible in most frames.\n\nTo watch training live, scroll down and click the graph icon next to a model's progress to see its loss curves.",
+    text: "Top-Down is selected. It trains two models one after the other: the first finds each animal by its anchor part, the second crops around that anchor and finds the rest of the nodes. Anchor Part is set to torso because it's central and visible in most frames.",
   },
   panelId: "training",
   targetSelector: '[data-tutorial="start-training-button"]',
   placement: "top",
-  isComplete: (entry, current) =>
-    entry.everTraining && current.trainingStatus === "completed",
+  isComplete: (entry) => entry.everTraining,
   cpuNote: () =>
     "Training will run on the CPU, which is much slower than on a GPU. If you'd rather not wait, you can exit the tutorial here, because the remaining steps all need this trained model.",
 };
 
 /**
- * Phase 2, step 4: training runs post-training inference on the suggested
- * frames, so some of them now carry predictions. Completion only requires
- * the count of still-predicted suggestion frames to have dropped below what
- * it was at step-entry — i.e. at least one predicted instance was accepted
- * (double-click, or Ctrl/Cmd+Shift+A) — not that every frame was corrected;
- * the body text still encourages doing all of them before retraining.
+ * Shown while the first training run is in progress: how to follow it (loss
+ * curves) and what happens when it ends. Completes when training finishes,
+ * which `trainingStore` only reports after the post-training inference on the
+ * suggested frames is done, so the next step always has predictions to show.
  */
+export const TRAINING_PROGRESS_STEP: TutorialStep = {
+  id: "training-progress",
+  title: "Watch training",
+  body: "Training is running. Top-Down trains two models one after the other, and each gets a progress bar here.\n\nClick a model's name to open its **loss curves**. Loss measures how far the model's predictions are from your labels, so it should go down as training goes on. If this card is in the way, collapse it.\n\nWhen training finishes, the app runs the new model on your suggested frames to predict poses there (this is called **inference**), then the tutorial moves on.",
+  panelId: "training",
+  targetSelector: '[data-tutorial="training-progress"]',
+  placement: "left",
+  isComplete: (entry, current) =>
+    entry.everTraining && current.trainingStatus === "completed",
+};
+
+/**
+ * Phase 2, step 4: training runs post-training inference on the suggested
+ * frames, so some of them now carry predictions. Completes once at least
+ * `MIN_ACCEPTED_PREDICTIONS` more predicted instances have been accepted
+ * (double-click, or Ctrl/Cmd+Shift+A) than at step entry, and the project is
+ * saved — not that every frame was corrected; the body text still encourages
+ * doing more before retraining.
+ */
+const MIN_ACCEPTED_PREDICTIONS = 2;
+
 export const CORRECT_PREDICTIONS_STEP: TutorialStep = {
   id: "correct-predictions",
   title: "Review and correct predictions",
-  body: `Training is done, and the app has run the new model on your suggested frames. Expect rough predictions: the model has learned from just one labeled frame. Correcting them is how it improves.\n\nIn the Suggestions panel, frames with a value in the **Score** column have predictions. Click one and accept its predictions: **double-click** a predicted instance, or press \`${ACCEPT_ALL_KEY}\` to accept every prediction on the frame. Then drag any nodes that are off. Do **at least one frame**, and ideally all of them, for a better retrain.`,
+  body: `Training is done, and the app has run the new model on your suggested frames. Expect rough predictions: the model has learned from just one labeled frame. Correcting them is how it improves.\n\nIn the Suggestions panel, frames with a value in the **Score** column have predictions. The score is the model's confidence in its predictions on that frame: higher means more confident. Click one and accept its predictions: **double-click** a predicted instance, or press \`${ACCEPT_ALL_KEY}\` to accept every prediction on the frame. Then drag any nodes that are off.\n\nAccept and correct **at least ${MIN_ACCEPTED_PREDICTIONS} predicted instances**, then save with \`${SAVE_KEY}\` to continue. The more you correct, the better the retrained model.`,
   tips: {
     label: "Label tips",
     text: "Predicted nodes are yellow. Once accepted, a node is red until you click or drag it, then it turns green. A hollow gray marker means that node is set as not visible. Right-click it and choose **Mark Node Visible**, or select several and use **Toggle Selected Nodes Visibility**, to turn it back on.",
@@ -474,9 +498,8 @@ export const CORRECT_PREDICTIONS_STEP: TutorialStep = {
   targetSelector: '[data-tutorial="suggestions-panel"]',
   placement: "left",
   isComplete: (entry, current) =>
-    entry.suggestionFramesWithPredictionsAtEntry > 0 &&
-    countSuggestionsWithPredictions(current.labels) <
-      entry.suggestionFramesWithPredictionsAtEntry,
+    countAcceptedPredictions(current.labels) - entry.acceptedPredictionCount >=
+      MIN_ACCEPTED_PREDICTIONS && current.hasChanges === false,
 };
 
 /**
@@ -516,7 +539,7 @@ function inferenceTargetOk(): boolean {
 export const RUN_INFERENCE_STEP: TutorialStep = {
   id: "run-inference-video",
   title: "Run inference on the whole video",
-  body: 'Inference means running your model on frames to predict poses. Set Inference Target to **Entire current video** and click **Run Inference**. When it finishes, play or scrub through the video to see predictions on every frame.',
+  body: "The retrained model has already made new predictions on your suggested frames. Now run it on the whole video to see how it does: Inference Target is set to **Entire current video**, so click **Run Inference**. When it finishes, play or scrub through the video to see predictions on every frame.",
   panelId: "inference",
   targetSelector: '[data-tutorial="run-inference-button"]',
   placement: "top",
@@ -544,6 +567,7 @@ export function buildTutorialSteps(desktop: boolean): TutorialStep[] {
     CREATE_SKELETON_STEP,
     LABEL_ONE_FRAME_STEP,
     RUN_TRAINING_STEP,
+    TRAINING_PROGRESS_STEP,
     CORRECT_PREDICTIONS_STEP,
     RETRAIN_STEP,
     RUN_INFERENCE_STEP,

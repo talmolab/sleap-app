@@ -8,6 +8,7 @@ import {
   CREATE_SKELETON_STEP,
   LABEL_ONE_FRAME_STEP,
   RUN_TRAINING_STEP,
+  TRAINING_PROGRESS_STEP,
   CORRECT_PREDICTIONS_STEP,
   RETRAIN_STEP,
   RUN_INFERENCE_STEP,
@@ -19,6 +20,7 @@ import {
   tutorialStepNumber,
   snapshotTutorialState,
   observeTutorialState,
+  TUTORIAL_FIRST_TRAINING_STEP_IDS,
   type TutorialWatchState,
 } from "@/lib/tutorial/steps";
 
@@ -44,32 +46,33 @@ function watchState(overrides: Partial<TutorialWatchState> = {}): TutorialWatchS
 }
 
 /**
- * `suggestions` frames are numbered 0..count-1; `labeledFrameIdxs` and
- * `predictedFrameIdxs` mark which of those already carry a user label or an
- * unaccepted prediction, matching `frameHasUserLabels`/
- * `frameHasPredictedInstances` (both keyed on `labels.find({video, frameIdx})`).
+ * `suggestions` frames are numbered 0..count-1; `labeledFrameIdxs` marks which
+ * of those already carry a user label, matching `frameHasUserLabels` (keyed on
+ * `labels.find({video, frameIdx})`). `acceptedPredictions` user instances with
+ * a `fromPredicted` link sit in `labeledFrames`, alongside one plain user
+ * instance and one prediction that don't count as accepted.
  */
 function fakeLabels(
   opts: {
     videos?: number;
     suggestions?: number;
     labeledFrameIdxs?: number[];
-    predictedFrameIdxs?: number[];
+    acceptedPredictions?: number;
   } = {},
 ) {
   const labeledSet = new Set(opts.labeledFrameIdxs ?? []);
-  const predictedSet = new Set(opts.predictedFrameIdxs ?? []);
   const suggestions = new Array(opts.suggestions ?? 0)
     .fill(null)
     .map((_, i) => ({ video: {}, frameIdx: i }));
+  const accepted = new Array(opts.acceptedPredictions ?? 0)
+    .fill(null)
+    .map(() => ({ fromPredicted: { score: 1 } }));
   return {
     videos: new Array(opts.videos ?? 0).fill(null),
     suggestions,
+    labeledFrames: [{ instances: [...accepted, { fromPredicted: null }, { score: 0.5 }] }],
     find: ({ frameIdx }: { frameIdx: number }) => [
-      {
-        isUserLabeled: labeledSet.has(frameIdx),
-        hasPredictedInstances: predictedSet.has(frameIdx),
-      },
+      { isUserLabeled: labeledSet.has(frameIdx) },
     ],
   } as unknown as TutorialWatchState["labels"];
 }
@@ -99,6 +102,7 @@ describe("buildTutorialSteps", () => {
       "check-environment",
       ...core,
       "run-training",
+      "training-progress",
       "correct-predictions",
       "retrain",
       "run-inference-video",
@@ -133,7 +137,8 @@ describe("tutorialStepNumber", () => {
     expect(tutorialStepNumber(steps, steps.indexOf(CHECK_ENVIRONMENT_STEP))).toBe(0);
     expect(tutorialStepNumber(steps, steps.indexOf(NEW_PROJECT_STEP))).toBe(1);
     expect(tutorialStepNumber(steps, steps.indexOf(RUN_TRAINING_STEP))).toBe(8);
-    expect(tutorialStepNumber(steps, steps.length - 1)).toBe(11);
+    expect(tutorialStepNumber(steps, steps.indexOf(TRAINING_PROGRESS_STEP))).toBe(9);
+    expect(tutorialStepNumber(steps, steps.length - 1)).toBe(12);
   });
 
   it("numbers the browser run the same way, ending at step 7", () => {
@@ -460,60 +465,80 @@ describe("label-one-frame step", () => {
 });
 
 describe("run-training step", () => {
-  it("is incomplete if training never ran during this step", () => {
-    const entry = snapshotTutorialState(watchState({ trainingStatus: "idle" }));
-    const current = watchState({ trainingStatus: "completed" });
+  it("is incomplete until training starts", () => {
+    const current = watchState({ trainingStatus: "idle" });
+    const entry = snapshotTutorialState(current);
+    observeTutorialState(entry, current);
     expect(RUN_TRAINING_STEP.isComplete(entry, current)).toBe(false);
+  });
+
+  it("completes as soon as training is running", () => {
+    const entry = snapshotTutorialState(watchState({ trainingStatus: "idle" }));
+    const current = watchState({ trainingStatus: "running" });
+    observeTutorialState(entry, current);
+    expect(RUN_TRAINING_STEP.isComplete(entry, current)).toBe(true);
+  });
+
+  it("doesn't complete from an earlier run's completed status", () => {
+    const current = watchState({ trainingStatus: "completed" });
+    const entry = snapshotTutorialState(current);
+    observeTutorialState(entry, current);
+    expect(RUN_TRAINING_STEP.isComplete(entry, current)).toBe(false);
+  });
+});
+
+describe("training-progress step", () => {
+  it("points at the training progress area", () => {
+    expect(TRAINING_PROGRESS_STEP.targetSelector).toBe('[data-tutorial="training-progress"]');
   });
 
   it("is incomplete while training is still running", () => {
-    const entry = snapshotTutorialState(watchState({ trainingStatus: "running" }));
     const current = watchState({ trainingStatus: "running" });
-    expect(RUN_TRAINING_STEP.isComplete(entry, current)).toBe(false);
+    const entry = snapshotTutorialState(current);
+    observeTutorialState(entry, current);
+    expect(TRAINING_PROGRESS_STEP.isComplete(entry, current)).toBe(false);
   });
 
-  it("completes once a run seen during this step reaches completed", () => {
-    // The engine ORs `everTraining` forward as it observes `trainingStatus`;
-    // simulate that here directly on the entry snapshot (same idiom as
-    // `everEnteredSkeletonBuild` above).
-    const entry = snapshotTutorialState(watchState());
-    entry.everTraining = true;
+  it("completes once the run it saw finishes", () => {
+    const entry = snapshotTutorialState(watchState({ trainingStatus: "running" }));
     const current = watchState({ trainingStatus: "completed" });
-    expect(RUN_TRAINING_STEP.isComplete(entry, current)).toBe(true);
+    observeTutorialState(entry, current);
+    expect(TRAINING_PROGRESS_STEP.isComplete(entry, current)).toBe(true);
+  });
+
+  it("keeps the first pass's 5-epoch settings while it runs", () => {
+    expect(TUTORIAL_FIRST_TRAINING_STEP_IDS.has(TRAINING_PROGRESS_STEP.id)).toBe(true);
   });
 });
 
 describe("correct-predictions step", () => {
-  it("is incomplete if no suggestion frame had a prediction at entry", () => {
-    const entry = snapshotTutorialState(
-      watchState({ labels: fakeLabels({ suggestions: 5 }) }),
-    );
-    const current = watchState({ labels: fakeLabels({ suggestions: 5 }) });
+  it("is incomplete with fewer than 2 accepted predictions", () => {
+    const entry = snapshotTutorialState(watchState({ labels: fakeLabels() }));
+    const current = watchState({ labels: fakeLabels({ acceptedPredictions: 1 }) });
     expect(CORRECT_PREDICTIONS_STEP.isComplete(entry, current)).toBe(false);
   });
 
-  it("is incomplete while the predicted-frame count hasn't dropped", () => {
-    const entry = snapshotTutorialState(
-      watchState({
-        labels: fakeLabels({ suggestions: 5, predictedFrameIdxs: [0, 1] }),
-      }),
-    );
+  it("is incomplete until saved", () => {
+    const entry = snapshotTutorialState(watchState({ labels: fakeLabels() }));
     const current = watchState({
-      labels: fakeLabels({ suggestions: 5, predictedFrameIdxs: [0, 1] }),
+      labels: fakeLabels({ acceptedPredictions: 2 }),
+      hasChanges: true,
     });
     expect(CORRECT_PREDICTIONS_STEP.isComplete(entry, current)).toBe(false);
   });
 
-  it("completes once at least one predicted frame is accepted/corrected", () => {
-    const entry = snapshotTutorialState(
-      watchState({
-        labels: fakeLabels({ suggestions: 5, predictedFrameIdxs: [0, 1] }),
-      }),
-    );
-    const current = watchState({
-      labels: fakeLabels({ suggestions: 5, predictedFrameIdxs: [1] }),
-    });
+  it("completes once 2 predictions are accepted and saved", () => {
+    const entry = snapshotTutorialState(watchState({ labels: fakeLabels() }));
+    const current = watchState({ labels: fakeLabels({ acceptedPredictions: 2 }) });
     expect(CORRECT_PREDICTIONS_STEP.isComplete(entry, current)).toBe(true);
+  });
+
+  it("only counts predictions accepted during this step", () => {
+    const entry = snapshotTutorialState(
+      watchState({ labels: fakeLabels({ acceptedPredictions: 3 }) }),
+    );
+    const current = watchState({ labels: fakeLabels({ acceptedPredictions: 4 }) });
+    expect(CORRECT_PREDICTIONS_STEP.isComplete(entry, current)).toBe(false);
   });
 });
 

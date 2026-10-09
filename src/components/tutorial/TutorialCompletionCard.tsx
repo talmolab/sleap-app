@@ -44,7 +44,7 @@ export function TutorialCompletionCard() {
       <div className="flex items-start justify-between gap-2">
         <p className="flex items-center gap-1.5 font-semibold">
           <CheckCircle2 className="h-4 w-4 text-green-500" />
-          Tutorial complete
+          Tutorial complete 🎉
         </p>
         <button
           type="button"

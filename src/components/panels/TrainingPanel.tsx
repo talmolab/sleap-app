@@ -1776,7 +1776,7 @@ export function TrainingPanel() {
       (isRunning || isDone) && models.length > 0 && (
         <>
           <Separator />
-          <div className="px-3 py-2 space-y-2">
+          <div className="px-3 py-2 space-y-2" data-tutorial="training-progress">
             {/* Status header */}
             <div className="flex items-center gap-2">
               {isRunning && (
