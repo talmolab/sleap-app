@@ -83,19 +83,15 @@ function countLabeledSuggestions(labels: Labels | null): number {
 }
 
 /**
- * Count of user instances made by accepting a prediction: accepting keeps a
+ * Count of frames with at least one accepted prediction: accepting keeps a
  * `fromPredicted` link to the prediction it replaced (editCommands.ts), and
  * correcting the nodes afterwards doesn't clear it.
  */
-function countAcceptedPredictions(labels: Labels | null): number {
+function countFramesWithAcceptedPredictions(labels: Labels | null): number {
   if (!labels) return 0;
-  let count = 0;
-  for (const lf of labels.labeledFrames) {
-    for (const inst of lf.instances) {
-      if ((inst as { fromPredicted?: unknown }).fromPredicted) count++;
-    }
-  }
-  return count;
+  return labels.labeledFrames.filter((lf) =>
+    lf.instances.some((inst) => (inst as { fromPredicted?: unknown }).fromPredicted),
+  ).length;
 }
 
 export interface TutorialSnapshot {
@@ -110,8 +106,8 @@ export interface TutorialSnapshot {
    * time, since the builder is opened well after the step starts.
    */
   everEnteredSkeletonBuild: boolean;
-  /** How many accepted predictions (see `countAcceptedPredictions`) existed when this step started. */
-  acceptedPredictionCount: number;
+  /** How many frames had accepted predictions (see `countFramesWithAcceptedPredictions`) when this step started. */
+  correctedFrameCount: number;
   /**
    * Sticky flag (same idiom as `everEnteredSkeletonBuild`): has training been
    * seen `running` at any point since this step became active? Training is a
@@ -152,7 +148,7 @@ export function snapshotTutorialState(
     skeletonNodeCount: state.skeleton?.nodes.length ?? 0,
     skeletonEdgeCount: state.skeleton?.edges.length ?? 0,
     everEnteredSkeletonBuild: state.skeletonBuildMode,
-    acceptedPredictionCount: countAcceptedPredictions(state.labels),
+    correctedFrameCount: countFramesWithAcceptedPredictions(state.labels),
     everTraining: state.trainingStatus === "running",
     everInferenceRunning: state.inferenceStatus === "running",
     seenSuggestions: state.labels?.suggestions ?? null,
@@ -490,18 +486,18 @@ export const TRAINING_PROGRESS_STEP: TutorialStep = {
 
 /**
  * Phase 2, step 4: training runs post-training inference on the suggested
- * frames, so some of them now carry predictions. Completes once at least
- * `MIN_ACCEPTED_PREDICTIONS` more predicted instances have been accepted
- * (double-click, or Ctrl/Cmd+Shift+A) than at step entry, and the project is
+ * frames, so some of them now carry predictions. Completes once predictions
+ * have been accepted (double-click, or Ctrl/Cmd+Shift+A) on at least
+ * `MIN_CORRECTED_FRAMES` more frames than at step entry, and the project is
  * saved — not that every frame was corrected; the body text still encourages
  * doing more before retraining.
  */
-const MIN_ACCEPTED_PREDICTIONS = 2;
+const MIN_CORRECTED_FRAMES = 2;
 
 export const CORRECT_PREDICTIONS_STEP: TutorialStep = {
   id: "correct-predictions",
   title: "Review and correct predictions",
-  body: `Training is done, and the app has run the new model on your suggested frames. Expect rough predictions: the model has learned from just one labeled frame. Correcting them is how it improves.\n\nIn the Suggestions panel, frames with a value in the **Score** column have predictions. The score is the model's confidence in its predictions on that frame: higher means more confident. Click one and accept its predictions: **double-click** a predicted instance, or press \`${ACCEPT_ALL_KEY}\` to accept every prediction on the frame. Then drag any nodes that are off.\n\nAccept and correct **at least ${MIN_ACCEPTED_PREDICTIONS} predicted instances**, then save with \`${SAVE_KEY}\` to continue. The more you correct, the better the retrained model.`,
+  body: `Training is done, and the app has run the new model on your suggested frames. Expect rough predictions: the model has learned from just one labeled frame. Correcting them is how it improves.\n\nIn the Suggestions panel, frames with a value in the **Score** column have predictions. The score is the model's confidence in its predictions on that frame: higher means more confident. Click one and accept its predictions: **double-click** a predicted instance, or press \`${ACCEPT_ALL_KEY}\` to accept every prediction on the frame. Then drag any nodes that are off.\n\nAccept and correct predictions on **at least ${MIN_CORRECTED_FRAMES} frames**, then save with \`${SAVE_KEY}\` to continue. The more you correct, the better the retrained model.`,
   tips: {
     label: "Label tips",
     text: "Predicted nodes are yellow. Once accepted, a node is red until you click or drag it, then it turns green. A hollow gray marker means that node is set as not visible. Right-click it and choose **Mark Node Visible**, or select several and use **Toggle Selected Nodes Visibility**, to turn it back on.",
@@ -510,8 +506,8 @@ export const CORRECT_PREDICTIONS_STEP: TutorialStep = {
   targetSelector: '[data-tutorial="suggestions-panel"]',
   placement: "left",
   isComplete: (entry, current) =>
-    countAcceptedPredictions(current.labels) - entry.acceptedPredictionCount >=
-      MIN_ACCEPTED_PREDICTIONS && current.hasChanges === false,
+    countFramesWithAcceptedPredictions(current.labels) - entry.correctedFrameCount >=
+      MIN_CORRECTED_FRAMES && current.hasChanges === false,
 };
 
 /**

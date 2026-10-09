@@ -48,29 +48,33 @@ function watchState(overrides: Partial<TutorialWatchState> = {}): TutorialWatchS
 /**
  * `suggestions` frames are numbered 0..count-1; `labeledFrameIdxs` marks which
  * of those already carry a user label, matching `frameHasUserLabels` (keyed on
- * `labels.find({video, frameIdx})`). `acceptedPredictions` user instances with
- * a `fromPredicted` link sit in `labeledFrames`, alongside one plain user
- * instance and one prediction that don't count as accepted.
+ * `labels.find({video, frameIdx})`). `correctedFrames` frames in
+ * `labeledFrames` each hold `acceptedPerFrame` user instances with a
+ * `fromPredicted` link; one more frame holds only a plain user instance and a
+ * prediction, which don't count as accepted.
  */
 function fakeLabels(
   opts: {
     videos?: number;
     suggestions?: number;
     labeledFrameIdxs?: number[];
-    acceptedPredictions?: number;
+    correctedFrames?: number;
+    acceptedPerFrame?: number;
   } = {},
 ) {
   const labeledSet = new Set(opts.labeledFrameIdxs ?? []);
   const suggestions = new Array(opts.suggestions ?? 0)
     .fill(null)
     .map((_, i) => ({ video: {}, frameIdx: i }));
-  const accepted = new Array(opts.acceptedPredictions ?? 0)
-    .fill(null)
-    .map(() => ({ fromPredicted: { score: 1 } }));
+  const corrected = new Array(opts.correctedFrames ?? 0).fill(null).map(() => ({
+    instances: new Array(opts.acceptedPerFrame ?? 1)
+      .fill(null)
+      .map(() => ({ fromPredicted: { score: 1 } })),
+  }));
   return {
     videos: new Array(opts.videos ?? 0).fill(null),
     suggestions,
-    labeledFrames: [{ instances: [...accepted, { fromPredicted: null }, { score: 0.5 }] }],
+    labeledFrames: [...corrected, { instances: [{ fromPredicted: null }, { score: 0.5 }] }],
     find: ({ frameIdx }: { frameIdx: number }) => [
       { isUserLabeled: labeledSet.has(frameIdx) },
     ],
@@ -512,32 +516,40 @@ describe("training-progress step", () => {
 });
 
 describe("correct-predictions step", () => {
-  it("is incomplete with fewer than 2 accepted predictions", () => {
+  it("is incomplete with predictions accepted on only 1 frame", () => {
     const entry = snapshotTutorialState(watchState({ labels: fakeLabels() }));
-    const current = watchState({ labels: fakeLabels({ acceptedPredictions: 1 }) });
+    const current = watchState({ labels: fakeLabels({ correctedFrames: 1 }) });
+    expect(CORRECT_PREDICTIONS_STEP.isComplete(entry, current)).toBe(false);
+  });
+
+  it("counts frames, not instances: 2 accepted on one frame isn't enough", () => {
+    const entry = snapshotTutorialState(watchState({ labels: fakeLabels() }));
+    const current = watchState({
+      labels: fakeLabels({ correctedFrames: 1, acceptedPerFrame: 2 }),
+    });
     expect(CORRECT_PREDICTIONS_STEP.isComplete(entry, current)).toBe(false);
   });
 
   it("is incomplete until saved", () => {
     const entry = snapshotTutorialState(watchState({ labels: fakeLabels() }));
     const current = watchState({
-      labels: fakeLabels({ acceptedPredictions: 2 }),
+      labels: fakeLabels({ correctedFrames: 2 }),
       hasChanges: true,
     });
     expect(CORRECT_PREDICTIONS_STEP.isComplete(entry, current)).toBe(false);
   });
 
-  it("completes once 2 predictions are accepted and saved", () => {
+  it("completes once predictions on 2 frames are accepted and saved", () => {
     const entry = snapshotTutorialState(watchState({ labels: fakeLabels() }));
-    const current = watchState({ labels: fakeLabels({ acceptedPredictions: 2 }) });
+    const current = watchState({ labels: fakeLabels({ correctedFrames: 2 }) });
     expect(CORRECT_PREDICTIONS_STEP.isComplete(entry, current)).toBe(true);
   });
 
-  it("only counts predictions accepted during this step", () => {
+  it("only counts frames corrected during this step", () => {
     const entry = snapshotTutorialState(
-      watchState({ labels: fakeLabels({ acceptedPredictions: 3 }) }),
+      watchState({ labels: fakeLabels({ correctedFrames: 3 }) }),
     );
-    const current = watchState({ labels: fakeLabels({ acceptedPredictions: 4 }) });
+    const current = watchState({ labels: fakeLabels({ correctedFrames: 4 }) });
     expect(CORRECT_PREDICTIONS_STEP.isComplete(entry, current)).toBe(false);
   });
 });
