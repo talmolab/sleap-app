@@ -18,6 +18,7 @@ import {
   buildTutorialSteps,
   tutorialStepNumber,
   snapshotTutorialState,
+  observeTutorialState,
   type TutorialWatchState,
 } from "@/lib/tutorial/steps";
 
@@ -313,32 +314,72 @@ describe("save-project step", () => {
 });
 
 describe("generate-suggestions step", () => {
+  let controls: HTMLElement[] = [];
+
+  afterEach(() => {
+    for (const el of controls) el.remove();
+    controls = [];
+  });
+
+  /** Stand-ins for the Suggestions panel's Method select and Per video input. */
+  function withSettings(method: string, perVideo: string) {
+    for (const el of controls) el.remove();
+    const select = document.createElement("div");
+    select.setAttribute("data-tutorial", "suggestions-method-select");
+    select.textContent = method;
+    const input = document.createElement("input");
+    input.setAttribute("data-tutorial", "suggestions-per-video-input");
+    input.value = perVideo;
+    controls = [select, input];
+    for (const el of controls) document.body.appendChild(el);
+  }
+
   it("is incomplete when the suggestion count hasn't grown", () => {
-    const entry = snapshotTutorialState(watchState({ labels: fakeLabels({ suggestions: 0 }) }));
+    withSettings("Stride", "20");
     const current = watchState({ labels: fakeLabels({ suggestions: 0 }) });
+    const entry = snapshotTutorialState(current);
+    observeTutorialState(entry, current);
     expect(GENERATE_SUGGESTIONS_STEP.isComplete(entry, current)).toBe(false);
-  });
-
-  it("does not complete just from a grown count without matching DOM param values", () => {
-    // No matching data-tutorial elements exist in this DOM-less test env, so
-    // textContent/value reads come back empty/undefined — params don't validate.
-    const entry = snapshotTutorialState(watchState({ labels: fakeLabels({ suggestions: 0 }) }));
-    const current = watchState({ labels: fakeLabels({ suggestions: 5 }) });
-    expect(GENERATE_SUGGESTIONS_STEP.isComplete(entry, current)).toBe(false);
-  });
-
-  it("has no hint before anything is generated", () => {
-    const entry = snapshotTutorialState(watchState({ labels: fakeLabels({ suggestions: 0 }) }));
-    const current = watchState({ labels: fakeLabels({ suggestions: 0 }) });
     expect(GENERATE_SUGGESTIONS_STEP.incompleteHint?.(entry, current)).toBeNull();
   });
 
+  it("completes when suggestions are generated with Stride / 20", () => {
+    withSettings("Stride", "20");
+    const entry = snapshotTutorialState(watchState({ labels: fakeLabels({ suggestions: 0 }) }));
+    const current = watchState({ labels: fakeLabels({ suggestions: 20 }) });
+    observeTutorialState(entry, current);
+    expect(GENERATE_SUGGESTIONS_STEP.isComplete(entry, current)).toBe(true);
+  });
+
   it("names the expected settings when suggestions were made with others", () => {
+    withSettings("Random", "5");
     const entry = snapshotTutorialState(watchState({ labels: fakeLabels({ suggestions: 0 }) }));
     const current = watchState({ labels: fakeLabels({ suggestions: 5 }) });
+    observeTutorialState(entry, current);
+    expect(GENERATE_SUGGESTIONS_STEP.isComplete(entry, current)).toBe(false);
     const hint = GENERATE_SUGGESTIONS_STEP.incompleteHint?.(entry, current) ?? "";
     expect(hint).toContain("Stride");
     expect(hint).toContain("20");
+  });
+
+  it("doesn't complete from fixing the settings without generating again", () => {
+    withSettings("Random", "5");
+    const entry = snapshotTutorialState(watchState({ labels: fakeLabels({ suggestions: 0 }) }));
+    const current = watchState({ labels: fakeLabels({ suggestions: 5 }) });
+    observeTutorialState(entry, current);
+    withSettings("Stride", "20");
+    observeTutorialState(entry, current);
+    expect(GENERATE_SUGGESTIONS_STEP.isComplete(entry, current)).toBe(false);
+  });
+
+  it("completes once regenerated with the right settings", () => {
+    withSettings("Random", "5");
+    const entry = snapshotTutorialState(watchState({ labels: fakeLabels({ suggestions: 0 }) }));
+    observeTutorialState(entry, watchState({ labels: fakeLabels({ suggestions: 5 }) }));
+    withSettings("Stride", "20");
+    const regenerated = watchState({ labels: fakeLabels({ suggestions: 20 }) });
+    observeTutorialState(entry, regenerated);
+    expect(GENERATE_SUGGESTIONS_STEP.isComplete(entry, regenerated)).toBe(true);
   });
 });
 
@@ -525,7 +566,7 @@ describe("run-inference-video step", () => {
     // No matching data-tutorial element exists in this DOM-less test env, so
     // textContent reads back empty — same idiom as generate-suggestions above.
     const entry = snapshotTutorialState(watchState());
-    entry.everInferenceRunning = true;
+    observeTutorialState(entry, watchState({ inferenceStatus: "running" }));
     const current = watchState({ inferenceStatus: "completed" });
     expect(RUN_INFERENCE_STEP.isComplete(entry, current)).toBe(false);
   });
@@ -544,10 +585,14 @@ describe("run-inference-video step", () => {
       document.body.appendChild(select);
     }
 
+    function setTarget(text: string) {
+      select.textContent = text;
+    }
+
     it("is incomplete for a target other than the entire video", () => {
       withTarget("Random sample (current video)");
       const entry = snapshotTutorialState(watchState());
-      entry.everInferenceRunning = true;
+      observeTutorialState(entry, watchState({ inferenceStatus: "running" }));
       const current = watchState({ inferenceStatus: "completed" });
       expect(RUN_INFERENCE_STEP.isComplete(entry, current)).toBe(false);
       expect(RUN_INFERENCE_STEP.incompleteHint?.(entry, current)).toContain(
@@ -565,9 +610,21 @@ describe("run-inference-video step", () => {
     it("completes once inference on the entire current video finishes", () => {
       withTarget("Entire current video");
       const entry = snapshotTutorialState(watchState());
-      entry.everInferenceRunning = true;
+      observeTutorialState(entry, watchState({ inferenceStatus: "running" }));
       const current = watchState({ inferenceStatus: "completed" });
+      observeTutorialState(entry, current);
       expect(RUN_INFERENCE_STEP.isComplete(entry, current)).toBe(true);
+    });
+
+    it("doesn't complete from switching the target after a wrong-target run", () => {
+      withTarget("Random sample (current video)");
+      const entry = snapshotTutorialState(watchState());
+      observeTutorialState(entry, watchState({ inferenceStatus: "running" }));
+      const current = watchState({ inferenceStatus: "completed" });
+      observeTutorialState(entry, current);
+      setTarget("Entire current video");
+      observeTutorialState(entry, current);
+      expect(RUN_INFERENCE_STEP.isComplete(entry, current)).toBe(false);
     });
   });
 });

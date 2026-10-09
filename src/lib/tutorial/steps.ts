@@ -114,6 +114,25 @@ export interface TutorialSnapshot {
   everTraining: boolean;
   /** Sticky flag, same idiom, for the inference job. */
   everInferenceRunning: boolean;
+  /**
+   * The `labels.suggestions` array last seen by `observeTutorialState`. The
+   * Suggestions panel replaces the array on every Generate, so a new
+   * reference marks a new generation.
+   */
+  seenSuggestions: unknown;
+  /**
+   * Whether Method / Per video were Stride / 20 when suggestions last changed
+   * during this step; null if they haven't changed yet. Recorded then, not
+   * read at check time, so fixing the settings afterwards without clicking
+   * Generate again doesn't count.
+   */
+  suggestionSettingsOkAtGenerate: boolean | null;
+  /**
+   * Whether Inference Target was "Entire current video" while inference ran
+   * during this step; null if it hasn't run. The select is disabled while a
+   * run is in progress, so reading it then gives the run's real target.
+   */
+  inferenceTargetOkAtRun: boolean | null;
 }
 
 export function snapshotTutorialState(
@@ -130,7 +149,33 @@ export function snapshotTutorialState(
     ),
     everTraining: state.trainingStatus === "running",
     everInferenceRunning: state.inferenceStatus === "running",
+    seenSuggestions: state.labels?.suggestions ?? null,
+    suggestionSettingsOkAtGenerate: null,
+    inferenceTargetOkAtRun: null,
   };
+}
+
+/**
+ * Carry the step's snapshot forward with what's happened since it was taken:
+ * the sticky flags (once true, stay true) and the settings in effect when the
+ * user acted. `TutorialOverlay` calls this on every re-check, before
+ * `isComplete`.
+ */
+export function observeTutorialState(
+  entry: TutorialSnapshot,
+  current: TutorialWatchState,
+): void {
+  entry.everEnteredSkeletonBuild ||= current.skeletonBuildMode;
+  entry.everTraining ||= current.trainingStatus === "running";
+  entry.everInferenceRunning ||= current.inferenceStatus === "running";
+  const suggestions = current.labels?.suggestions ?? null;
+  if (suggestions !== entry.seenSuggestions) {
+    entry.seenSuggestions = suggestions;
+    entry.suggestionSettingsOkAtGenerate = suggestionSettingsOk();
+  }
+  if (current.inferenceStatus === "running") {
+    entry.inferenceTargetOkAtRun = inferenceTargetOk();
+  }
 }
 
 export interface TutorialStep {
@@ -297,7 +342,8 @@ export const SAVE_PROJECT_STEP: TutorialStep = {
 
 /**
  * Whether the Suggestions panel's Method / Per video controls are at the
- * tutorial's Stride / 20. Both are local component state, so read from the DOM.
+ * tutorial's Stride / 20. Both are local component state, so read from the DOM,
+ * by `observeTutorialState` when suggestions change.
  */
 function suggestionSettingsOk(): boolean {
   const select = document.querySelector(
@@ -323,9 +369,9 @@ export const GENERATE_SUGGESTIONS_STEP: TutorialStep = {
   targetSelector: '[data-tutorial="generate-suggestions-button"]',
   placement: "left",
   isComplete: (entry, current) =>
-    suggestionsGrew(entry, current) && suggestionSettingsOk(),
+    suggestionsGrew(entry, current) && entry.suggestionSettingsOkAtGenerate === true,
   incompleteHint: (entry, current) =>
-    suggestionsGrew(entry, current) && !suggestionSettingsOk()
+    suggestionsGrew(entry, current) && entry.suggestionSettingsOkAtGenerate === false
       ? "These suggestions weren't made with **Method: Stride** and **Per video: 20**, which this tutorial relies on. Set them back and click **Generate** again."
       : null,
 };
@@ -458,7 +504,7 @@ function inferenceFinished(entry: TutorialSnapshot, current: TutorialWatchState)
 /**
  * Inference Target is local component state (InferencePanel), not part of any
  * store — same DOM-text-read idiom `suggestionSettingsOk` uses for a local
- * <Select>'s current value.
+ * <Select>'s current value. Read during the run by `observeTutorialState`.
  */
 function inferenceTargetOk(): boolean {
   const targetSelect = document.querySelector(
@@ -475,9 +521,9 @@ export const RUN_INFERENCE_STEP: TutorialStep = {
   targetSelector: '[data-tutorial="run-inference-button"]',
   placement: "top",
   isComplete: (entry, current) =>
-    inferenceFinished(entry, current) && inferenceTargetOk(),
+    inferenceFinished(entry, current) && entry.inferenceTargetOkAtRun === true,
   incompleteHint: (entry, current) =>
-    inferenceFinished(entry, current) && !inferenceTargetOk()
+    inferenceFinished(entry, current) && entry.inferenceTargetOkAtRun === false
       ? 'That run didn\'t cover the whole video. Set Inference Target to **Entire current video** and click **Run Inference** again.'
       : null,
 };

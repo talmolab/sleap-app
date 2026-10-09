@@ -33,6 +33,7 @@ import { useEnvironmentStore } from "@/stores/environmentStore";
 import {
   RUN_TRAINING_STEP,
   WELCOME_STEP,
+  observeTutorialState,
   snapshotTutorialState,
   tutorialStepNumber,
   type TutorialSnapshot,
@@ -256,14 +257,9 @@ export function TutorialOverlay() {
       // inference start running) during this step, remember it even after it
       // flips back (see steps.ts doc comments) — otherwise a step that reads
       // "completed" from an earlier run before the user acts again would
-      // instantly satisfy isComplete.
-      entrySnapshotRef.current.everEnteredSkeletonBuild =
-        entrySnapshotRef.current.everEnteredSkeletonBuild || watch.skeletonBuildMode;
-      entrySnapshotRef.current.everTraining =
-        entrySnapshotRef.current.everTraining || watch.trainingStatus === "running";
-      entrySnapshotRef.current.everInferenceRunning =
-        entrySnapshotRef.current.everInferenceRunning ||
-        watch.inferenceStatus === "running";
+      // instantly satisfy isComplete. Also records the settings in effect
+      // when suggestions were generated / inference ran.
+      observeTutorialState(entrySnapshotRef.current, watch);
       const training = useTrainingStore.getState();
       const configUpdates = tutorialTrainingUpdates(
         step.id,
@@ -315,12 +311,17 @@ export function TutorialOverlay() {
   }, [tutorialActive]);
   const toggleInstructions = () => setInstructionsHidden((hidden) => !hidden);
 
-  // Exit asks first — a stray click on ✕ would otherwise end the run, and
-  // restarting begins again from the first step. The card and ring sit above
+  // Exit asks first (except on the welcome card) — a stray click on ✕ would
+  // otherwise end the run, and restarting begins again from the first step. The card and ring sit above
   // every dialog (z-[9998] vs. the dialog's z-50), so they're hidden while the
   // confirmation is up rather than drawn over it.
   const [confirmingExit, setConfirmingExit] = useState(false);
   const handleExit = async () => {
+    // Nothing to lose yet on the welcome card, so no need to ask.
+    if (step?.id === WELCOME_STEP.id) {
+      useAppStore.getState().exitTutorial();
+      return;
+    }
     setConfirmingExit(true);
     const ok = await confirmDialog({
       title: "Exit the tutorial?",
@@ -505,7 +506,7 @@ export function TutorialOverlay() {
                 )}
               </div>
             )}
-        {step.targetSelector && !targetRect && (
+            {step.targetSelector && !targetRect && (
               <p className="mt-2 text-xs text-muted-foreground italic">
                 Looking for the highlighted control…
               </p>
