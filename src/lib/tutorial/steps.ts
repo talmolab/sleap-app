@@ -233,7 +233,7 @@ export interface TutorialStep {
 export const WELCOME_STEP: TutorialStep = {
   id: "welcome",
   title: "Welcome to SLEAP",
-  body: "This hands-on tutorial walks through the whole SLEAP workflow on a sample video of mice: label a few frames, train a model on them, correct its predictions, retrain, then run the model on the whole video. It builds its own project, so nothing of yours is touched.\n\nThis card shows what to do at each step and moves on once you've done it. Drag it by its handle, collapse it with the toggle button, or exit the tutorial with ✕ at any time.\n\nClick **Start** when you're ready.",
+  body: "This hands-on tutorial walks through the whole SLEAP workflow on a sample video of mice: label a few frames, train a model on them, correct its predictions, retrain, then run the model on the whole video.\n\nThis card shows what to do at each step and moves on once you've done it. Drag it by its handle, collapse it with the toggle button, or exit the tutorial with ✕ at any time.\n\nClick **Start** when you're ready.",
   targetSelector: null,
   placement: "bottom",
   isComplete: () => true,
