@@ -21,6 +21,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { HintBubble } from "@/components/HintBubble";
+import { RUN_INFERENCE_STEP } from "@/lib/tutorial/steps";
 import {
   Select,
   SelectContent,
@@ -492,6 +493,16 @@ export function InferencePanel() {
   // "Not connected to worker" error instead of showing an empty/disabled state.
   const workerMounts =
     connectionStatus === "connected" ? connectedMounts.map((m) => m.path) : [];
+
+  // The tutorial's whole-video inference step starts with the target already
+  // on the entire current video, so the user only has to click Run Inference.
+  // Set on entering the step only, so a target picked afterwards is kept.
+  const onTutorialInferenceStep = useAppStore(
+    (s) => s.tutorialActive && s.tutorialSteps[s.tutorialStepIndex]?.id === RUN_INFERENCE_STEP.id,
+  );
+  useEffect(() => {
+    if (onTutorialInferenceStep) setFrameRange("video");
+  }, [onTutorialInferenceStep]);
 
   // Track-only needs a temporally CONTIGUOUS run of frames to track across —
   // a single frame or a scattered subset (suggestions/user-labeled/predicted/
