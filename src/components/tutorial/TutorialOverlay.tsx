@@ -32,6 +32,7 @@ import { useInferenceStore } from "@/stores/inferenceStore";
 import { useEnvironmentStore } from "@/stores/environmentStore";
 import {
   RUN_TRAINING_STEP,
+  TUTORIAL_LABEL_FRAME_IDX,
   WELCOME_STEP,
   observeTutorialState,
   snapshotTutorialState,
@@ -40,7 +41,8 @@ import {
   type TutorialWatchState,
 } from "@/lib/tutorial/steps";
 import { tutorialTrainingUpdates } from "@/lib/tutorial/trainingDefaults";
-import { useTutorialTargetRect } from "./useTutorialTargetRect";
+import { useOpenMenuRects, useTutorialTargetRect } from "./useTutorialTargetRect";
+import { clampToViewport, placeCard } from "@/lib/tutorial/cardPlacement";
 import { TutorialCompletionCard } from "./TutorialCompletionCard";
 
 /** How often to re-check the active step's `isComplete` against stores this
@@ -49,63 +51,8 @@ import { TutorialCompletionCard } from "./TutorialCompletionCard";
  * cross-store field as a React dependency. */
 const RECHECK_INTERVAL_MS = 500;
 
-/**
- * Frame the "Create a skeleton" step jumps to on entry. This tutorial is
- * built around a fixed sample video (mice.mp4) generated with a deterministic
- * Stride/20 suggestion — 1410 is one of the resulting suggestion frames, so
- * drawing the skeleton here always lands on a real suggested frame (letting
- * it double-count toward `LABEL_ONE_FRAME_STEP` if the user creates an
- * instance from it). `setFrameIdx` clamps to the loaded video's last frame,
- * so this is a harmless no-op/best-effort jump on a different or shorter video.
- */
-const CREATE_SKELETON_FRAME_IDX = 1410;
-
 const SPOTLIGHT_PADDING = 6;
-const CARD_GAP = 12;
 const DEFAULT_CARD_SIZE = { width: 300, height: 150 };
-
-function computeCardPosition(
-  rect: { top: number; left: number; width: number; height: number },
-  placement: "top" | "bottom" | "left" | "right",
-  card: { width: number; height: number },
-) {
-  let top: number;
-  let left: number;
-  switch (placement) {
-    case "top":
-      top = rect.top - card.height - CARD_GAP;
-      left = rect.left + rect.width / 2 - card.width / 2;
-      break;
-    case "bottom":
-      top = rect.top + rect.height + CARD_GAP;
-      left = rect.left + rect.width / 2 - card.width / 2;
-      break;
-    case "right":
-      top = rect.top + rect.height / 2 - card.height / 2;
-      left = rect.left + rect.width + CARD_GAP;
-      break;
-    case "left":
-    default:
-      top = rect.top + rect.height / 2 - card.height / 2;
-      left = rect.left - card.width - CARD_GAP;
-      break;
-  }
-  return clampToViewport(top, left, card);
-}
-
-/** Keep the card fully on-screen, whether auto-placed or user-dragged. */
-function clampToViewport(
-  top: number,
-  left: number,
-  card: { width: number; height: number },
-) {
-  const vw = window.innerWidth;
-  const vh = window.innerHeight;
-  return {
-    top: Math.min(Math.max(top, 8), vh - card.height - 8),
-    left: Math.min(Math.max(left, 8), vw - card.width - 8),
-  };
-}
 
 /**
  * Renders a step string's inline marks: `**text**` as bold full-contrast text
@@ -232,7 +179,7 @@ export function TutorialOverlay() {
       return;
     }
     if (step.id === "create-skeleton") {
-      useAppStore.getState().setFrameIdx(CREATE_SKELETON_FRAME_IDX);
+      useAppStore.getState().setFrameIdx(TUTORIAL_LABEL_FRAME_IDX);
     }
     if (isRevisited) {
       entrySnapshotRef.current = null;
@@ -293,6 +240,7 @@ export function TutorialOverlay() {
   }, [step, isRevisited, editSeq, hasChanges, skeletonBuildMode, newProjectDialogOpen, projectLoaded]);
 
   const targetRect = useTutorialTargetRect(step?.targetSelector ?? null);
+  const openMenuRects = useOpenMenuRects(!!step);
   const cardRef = useRef<HTMLDivElement>(null);
   const [cardSize, setCardSize] = useState(DEFAULT_CARD_SIZE);
   // Collapsed-by-default supplementary reference (e.g. "Label tips"). Reset on
@@ -388,13 +336,21 @@ export function TutorialOverlay() {
     cpuOnly && step.cpuNote && trainingStepIndex !== -1
       ? step.cpuNote(tutorialStepNumber(tutorialSteps, trainingStepIndex))
       : null;
+  const viewport = { width: window.innerWidth, height: window.innerHeight };
   const autoCardPos = targetRect
-    ? computeCardPosition(targetRect, step.placement, cardSize)
-    : { top: window.innerHeight / 2 - cardSize.height / 2, left: window.innerWidth / 2 - cardSize.width / 2 };
+    ? placeCard({
+        target: targetRect,
+        placement: step.placement,
+        card: cardSize,
+        viewport,
+        keepClear: openMenuRects,
+        clearance: SPOTLIGHT_PADDING,
+      })
+    : { top: viewport.height / 2 - cardSize.height / 2, left: viewport.width / 2 - cardSize.width / 2 };
   const cardPos = clampToViewport(
-    autoCardPos.top + dragOffset.dy,
-    autoCardPos.left + dragOffset.dx,
+    { top: autoCardPos.top + dragOffset.dy, left: autoCardPos.left + dragOffset.dx },
     cardSize,
+    viewport,
   );
 
   return (

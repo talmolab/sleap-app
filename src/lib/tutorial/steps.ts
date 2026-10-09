@@ -83,19 +83,15 @@ function countLabeledSuggestions(labels: Labels | null): number {
 }
 
 /**
- * Count of user instances made by accepting a prediction: accepting keeps a
+ * Count of frames with at least one accepted prediction: accepting keeps a
  * `fromPredicted` link to the prediction it replaced (editCommands.ts), and
  * correcting the nodes afterwards doesn't clear it.
  */
-function countAcceptedPredictions(labels: Labels | null): number {
+function countFramesWithAcceptedPredictions(labels: Labels | null): number {
   if (!labels) return 0;
-  let count = 0;
-  for (const lf of labels.labeledFrames) {
-    for (const inst of lf.instances) {
-      if ((inst as { fromPredicted?: unknown }).fromPredicted) count++;
-    }
-  }
-  return count;
+  return labels.labeledFrames.filter((lf) =>
+    lf.instances.some((inst) => (inst as { fromPredicted?: unknown }).fromPredicted),
+  ).length;
 }
 
 export interface TutorialSnapshot {
@@ -110,8 +106,8 @@ export interface TutorialSnapshot {
    * time, since the builder is opened well after the step starts.
    */
   everEnteredSkeletonBuild: boolean;
-  /** How many accepted predictions (see `countAcceptedPredictions`) existed when this step started. */
-  acceptedPredictionCount: number;
+  /** How many frames had accepted predictions (see `countFramesWithAcceptedPredictions`) when this step started. */
+  correctedFrameCount: number;
   /**
    * Sticky flag (same idiom as `everEnteredSkeletonBuild`): has training been
    * seen `running` at any point since this step became active? Training is a
@@ -152,7 +148,7 @@ export function snapshotTutorialState(
     skeletonNodeCount: state.skeleton?.nodes.length ?? 0,
     skeletonEdgeCount: state.skeleton?.edges.length ?? 0,
     everEnteredSkeletonBuild: state.skeletonBuildMode,
-    acceptedPredictionCount: countAcceptedPredictions(state.labels),
+    correctedFrameCount: countFramesWithAcceptedPredictions(state.labels),
     everTraining: state.trainingStatus === "running",
     everInferenceRunning: state.inferenceStatus === "running",
     seenSuggestions: state.labels?.suggestions ?? null,
@@ -382,10 +378,22 @@ export const GENERATE_SUGGESTIONS_STEP: TutorialStep = {
       : null,
 };
 
+/**
+ * Frame the "Create a skeleton" step jumps to on entry, and the one the label
+ * step asks the user to label. This tutorial is built around a fixed sample
+ * video (mice.mp4) generated with a deterministic Stride/20 suggestion — 1410
+ * is one of the resulting suggestion frames, so drawing the skeleton here
+ * always lands on a real suggested frame (letting it double-count toward
+ * `LABEL_ONE_FRAME_STEP` if the user creates an instance from it).
+ * `setFrameIdx` clamps to the loaded video's last frame, so this is a harmless
+ * no-op/best-effort jump on a different or shorter video.
+ */
+export const TUTORIAL_LABEL_FRAME_IDX = 1410;
+
 export const CREATE_SKELETON_STEP: TutorialStep = {
   id: "create-skeleton",
   title: "Create a skeleton",
-  body: "A skeleton is the set of body parts you track (nodes) and the lines between them (edges). For the mice, make 3 nodes named **head**, **torso**, and **tailbase**, with edges from **torso to head** and from **torso to tailbase**.\n\nClick **Draw skeleton on frame**, then follow the bar at the top of the frame:\n• Click the frame to place each node. Double-click a node to rename it.\n• Click **Next: Connect edges**. Edges follow the direction you drag, so draw **two strokes, each starting at torso**: one to head, one to tailbase.\n• Click **Done**. When asked, click **Create instance** to put this skeleton on the current frame.\n\nDraw the skeleton **only once**, even if there's more than one mouse. It's a template: each animal gets its own copy in the next step.",
+  body: `A skeleton is the set of body parts you track (nodes) and the lines between them (edges). For the mice, make 3 nodes named **head**, **torso**, and **tailbase**, with edges from **torso to head** and from **torso to tailbase**.\n\nWe've moved to **frame ${TUTORIAL_LABEL_FRAME_IDX}**, one of your suggested frames, to draw and label on. Click **Draw skeleton on frame**, then follow the bar at the top of the frame:\n• Click the frame to place each node. Double-click a node to rename it.\n• Click **Next: Connect edges**. Edges follow the direction you drag, so draw **two strokes, each starting at torso**: one to head, one to tailbase.\n• Click **Done**. When asked, click **Create instance** to put this skeleton on frame ${TUTORIAL_LABEL_FRAME_IDX}.\n\nDraw the skeleton **only once**, even if there's more than one mouse. It's a template: each animal gets its own copy in the next step.`,
   panelId: "skeleton",
   targetSelector: '[data-tutorial="draw-skeleton-button"]',
   placement: "left",
@@ -418,7 +426,7 @@ export const CREATE_SKELETON_STEP: TutorialStep = {
 export const LABEL_ONE_FRAME_STEP: TutorialStep = {
   id: "label-one-frame",
   title: "Label one frame, then save",
-  body: `An instance is one animal's copy of the skeleton. We'll label **just one suggested frame**, only to see how the whole workflow works; a real project needs many more labeled frames. Fully label it: one instance per animal, with each node on the right body part.\n• If you clicked **Create instance** in the last step, it's already on this frame. Drag its nodes onto a mouse.\n• For each other mouse, right-click the frame and choose **Add Instance ▸ Best** (or press \`${ADD_INSTANCE_KEY}\`), or \`Ctrl\`+drag an existing instance to copy it. Then drag its nodes into place.\n• Save with \`${SAVE_KEY}\`.\n\nYou're on a suggested frame already. The rest are listed in the Suggestions panel; click one to jump to it.`,
+  body: `An instance is one animal's copy of the skeleton. We'll label **just one suggested frame**, **frame ${TUTORIAL_LABEL_FRAME_IDX}** (the one you're on), only to see how the whole workflow works; a real project needs many more labeled frames. Fully label it: one instance per animal, with each node on the right body part.\n• If you clicked **Create instance** in the last step, it's already on this frame. Drag its nodes onto a mouse.\n• For each other mouse, right-click the frame and choose **Add Instance ▸ Best** (or press \`${ADD_INSTANCE_KEY}\`), or \`Ctrl\`+drag an existing instance to copy it. Then drag its nodes into place.\n• Save with \`${SAVE_KEY}\`.\n\nYour other suggested frames are listed in the Suggestions panel; click one to jump to it.`,
   panelId: "suggestions",
   targetSelector: '[data-tutorial="suggestions-panel"]',
   placement: "left",
@@ -453,7 +461,7 @@ export const RUN_TRAINING_STEP: TutorialStep = {
   },
   panelId: "training",
   targetSelector: '[data-tutorial="start-training-button"]',
-  placement: "top",
+  placement: "left",
   isComplete: (entry) => entry.everTraining,
   cpuNote: () =>
     "Training will run on the CPU, which is much slower than on a GPU. If you'd rather not wait, you can exit the tutorial here, because the remaining steps all need this trained model.",
@@ -478,18 +486,18 @@ export const TRAINING_PROGRESS_STEP: TutorialStep = {
 
 /**
  * Phase 2, step 4: training runs post-training inference on the suggested
- * frames, so some of them now carry predictions. Completes once at least
- * `MIN_ACCEPTED_PREDICTIONS` more predicted instances have been accepted
- * (double-click, or Ctrl/Cmd+Shift+A) than at step entry, and the project is
+ * frames, so some of them now carry predictions. Completes once predictions
+ * have been accepted (double-click, or Ctrl/Cmd+Shift+A) on at least
+ * `MIN_CORRECTED_FRAMES` more frames than at step entry, and the project is
  * saved — not that every frame was corrected; the body text still encourages
  * doing more before retraining.
  */
-const MIN_ACCEPTED_PREDICTIONS = 2;
+const MIN_CORRECTED_FRAMES = 2;
 
 export const CORRECT_PREDICTIONS_STEP: TutorialStep = {
   id: "correct-predictions",
   title: "Review and correct predictions",
-  body: `Training is done, and the app has run the new model on your suggested frames. Expect rough predictions: the model has learned from just one labeled frame. Correcting them is how it improves.\n\nIn the Suggestions panel, frames with a value in the **Score** column have predictions. The score is the model's confidence in its predictions on that frame: higher means more confident. Click one and accept its predictions: **double-click** a predicted instance, or press \`${ACCEPT_ALL_KEY}\` to accept every prediction on the frame. Then drag any nodes that are off.\n\nAccept and correct **at least ${MIN_ACCEPTED_PREDICTIONS} predicted instances**, then save with \`${SAVE_KEY}\` to continue. The more you correct, the better the retrained model.`,
+  body: `Training is done, and the app has run the new model on your suggested frames. Expect rough predictions: the model has learned from just one labeled frame. Correcting them is how it improves.\n\nIn the Suggestions panel, frames with a value in the **Score** column have predictions. The score is the model's confidence in its predictions on that frame: higher means more confident. Click one and accept its predictions: **double-click** a predicted instance, or press \`${ACCEPT_ALL_KEY}\` to accept every prediction on the frame. Then drag any nodes that are off.\n\nAccept and correct predictions on **at least ${MIN_CORRECTED_FRAMES} frames**, then save with \`${SAVE_KEY}\` to continue. The more you correct, the better the retrained model.`,
   tips: {
     label: "Label tips",
     text: "Predicted nodes are yellow. Once accepted, a node is red until you click or drag it, then it turns green. A hollow gray marker means that node is set as not visible. Right-click it and choose **Mark Node Visible**, or select several and use **Toggle Selected Nodes Visibility**, to turn it back on.",
@@ -498,8 +506,8 @@ export const CORRECT_PREDICTIONS_STEP: TutorialStep = {
   targetSelector: '[data-tutorial="suggestions-panel"]',
   placement: "left",
   isComplete: (entry, current) =>
-    countAcceptedPredictions(current.labels) - entry.acceptedPredictionCount >=
-      MIN_ACCEPTED_PREDICTIONS && current.hasChanges === false,
+    countFramesWithAcceptedPredictions(current.labels) - entry.correctedFrameCount >=
+      MIN_CORRECTED_FRAMES && current.hasChanges === false,
 };
 
 /**
@@ -515,7 +523,7 @@ export const RETRAIN_STEP: TutorialStep = {
   body: "Click **Train Again**, then **Start Training**. Epochs is now 50 for a better model; everything else stays the same. As before, the new model runs on your suggested frames when it finishes.\n\nYou don't have to wait for all 50 epochs: click **Stop Early** to keep what's been trained so far. Top-Down trains two models one after the other, so you'll click Stop Early once for each.",
   panelId: "training",
   targetSelector: '[data-tutorial="start-training-button"]',
-  placement: "top",
+  placement: "left",
   isComplete: (entry, current) =>
     entry.everTraining && current.trainingStatus === "completed",
 };
@@ -542,7 +550,7 @@ export const RUN_INFERENCE_STEP: TutorialStep = {
   body: "The retrained model has already made new predictions on your suggested frames. Now run it on the whole video to see how it does: Inference Target is set to **Entire current video**, so click **Run Inference**. When it finishes, play or scrub through the video to see predictions on every frame.",
   panelId: "inference",
   targetSelector: '[data-tutorial="run-inference-button"]',
-  placement: "top",
+  placement: "left",
   isComplete: (entry, current) =>
     inferenceFinished(entry, current) && entry.inferenceTargetOkAtRun === true,
   incompleteHint: (entry, current) =>

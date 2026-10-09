@@ -62,6 +62,7 @@ import {
   Eye,
   EyeOff,
   Download,
+  Lightbulb,
 } from "lucide-react";
 import { computeNodeVisibility, visibilityTier } from "@/lib/anchorVisibility";
 import { TUTORIAL_FIRST_TRAINING_STEP_IDS } from "@/lib/tutorial/steps";
@@ -1236,9 +1237,10 @@ export function TrainingPanel() {
             </Select>
             {pipelineRec && !skeletonCompat.disabledTypes.has(config.modelType) && (
               <p className="text-[10px] text-green-400">
+                <Lightbulb className="mr-1 inline h-3 w-3 align-[-2px]" />
                 {config.modelType === pipelineRec.recommended
-                  ? `💡 ${pipelineRec.reason}`
-                  : `💡 Recommended: ${MODEL_TYPE_OPTIONS.find((o) => o.value === pipelineRec.recommended)?.label} — ${pipelineRec.reason}`}
+                  ? pipelineRec.reason
+                  : `Recommended: ${MODEL_TYPE_OPTIONS.find((o) => o.value === pipelineRec.recommended)?.label} — ${pipelineRec.reason}`}
               </p>
             )}
             {skeletonCompat.warnings.has(config.modelType) && (

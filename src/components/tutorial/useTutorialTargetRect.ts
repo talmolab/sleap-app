@@ -78,3 +78,56 @@ export function useTutorialTargetRect(
 
   return rect;
 }
+
+/**
+ * Menus, dropdowns and select lists the coachmark must not cover: Radix menus
+ * (`role="menu"`, e.g. the File menu), select option lists (`role="listbox"`),
+ * and the canvas right-click menu (`data-tutorial-keep-clear`). Tooltips are
+ * deliberately left out, so hovering a control doesn't make the card jump.
+ */
+const KEEP_CLEAR_SELECTOR = '[role="menu"], [role="listbox"], [data-tutorial-keep-clear]';
+
+/**
+ * Rects of every open menu matching `KEEP_CLEAR_SELECTOR`, re-measured on DOM
+ * changes like `useTutorialTargetRect`. Empty while `active` is false. Only
+ * sets state when the rects actually change, so the card's own re-renders
+ * don't loop back through the observer.
+ */
+export function useOpenMenuRects(active: boolean): TutorialTargetRect[] {
+  const [rects, setRects] = useState<TutorialTargetRect[]>([]);
+
+  useEffect(() => {
+    if (!active) {
+      setRects([]);
+      return;
+    }
+    let lastKey = "";
+    const measure = () => {
+      const next = Array.from(document.querySelectorAll(KEEP_CLEAR_SELECTOR))
+        .map(rectOf)
+        .filter((r) => r.width > 0 && r.height > 0);
+      const key = JSON.stringify(next);
+      if (key === lastKey) return;
+      lastKey = key;
+      setRects(next);
+    };
+    measure();
+
+    const mutationObserver = new MutationObserver(measure);
+    mutationObserver.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+    });
+    window.addEventListener("resize", measure);
+    window.addEventListener("scroll", measure, true);
+
+    return () => {
+      mutationObserver.disconnect();
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("scroll", measure, true);
+    };
+  }, [active]);
+
+  return rects;
+}
