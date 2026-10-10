@@ -970,6 +970,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Adding videos">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#supported-formats" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Supported formats
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1898,6 +1915,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Adding videos">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#supported-formats" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Supported formats
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -2009,18 +2043,56 @@
 <td>New projects</td>
 </tr>
 <tr>
+<td>The dropzone in the <strong>Videos</strong> panel — drag files onto it, or click it to browse</td>
+<td>Open projects</td>
+</tr>
+<tr>
 <td><strong>File ▸ Add Video from URL…</strong></td>
 <td>Videos served over <code>https://</code></td>
 </tr>
 </tbody>
 </table>
+<p>Both dropzones list the picked files with a <strong>Grayscale</strong> checkbox per file
+(and <strong>All grayscale</strong> / <strong>All RGB</strong> for several at once). From the <strong>Videos</strong>
+panel this list appears in an <strong>Import Videos</strong> dialog. Choose before you click
+<strong>Import</strong> or <strong>Create Project</strong> — it can't be changed afterwards.</p>
+<h3 id="supported-formats">Supported formats<a class="headerlink" href="#supported-formats" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Extension</th>
+<th>Opened with</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>.mp4</code></td>
+<td><code>mp4box.js</code></td>
+</tr>
+<tr>
+<td><code>.webm</code>, <code>.mkv</code>, <code>.mov</code>, <code>.ogg</code>, <code>.ogv</code>, <code>.ts</code></td>
+<td>MediaBunny</td>
+</tr>
+<tr>
+<td><code>.avi</code>, <code>.wmv</code>, <code>.mpeg</code>, <code>.mpg</code></td>
+<td>web-demuxer</td>
+</tr>
+<tr>
+<td><code>.seq</code></td>
+<td>the app's SEQ reader</td>
+</tr>
+</tbody>
+</table>
+<p>The container only gets the file open; the codec inside it still has to be one
+the app can decode — see <a href="#codecs">Codecs</a>.</p>
 <p><code>.pkg.slp</code> projects carry their frames inside the file, so they open with no
 video files needed at all.</p>
 <h2 id="playback">Playback<a class="headerlink" href="#playback" title="Permanent link">&para;</a></h2>
-<p>Video decoding uses <a href="https://developer.mozilla.org/en-US/docs/Web/API/WebCodecs_API">WebCodecs</a>
-with <code>mp4box.js</code> for demuxing, which gives frame-accurate seeking rather than
-the approximate seeking you get from an HTML <code>&lt;video&gt;</code> element. Playback speed
-runs from 0.25× to 8×.</p>
+<p>Video decoding uses <a href="https://developer.mozilla.org/en-US/docs/Web/API/WebCodecs_API">WebCodecs</a>.
+The file is demuxed by <code>mp4box.js</code> (MP4), MediaBunny (WebM, MKV, MOV, Ogg,
+MPEG-TS), or web-demuxer (AVI, WMV, MPEG), which gives frame-accurate seeking
+rather than the approximate seeking you get from an HTML <code>&lt;video&gt;</code> element.
+Playback speed runs from 0.25× to 8×.</p>
 <h2 id="codecs">Codecs<a class="headerlink" href="#codecs" title="Permanent link">&para;</a></h2>
 <p>WebCodecs decodes, at 8-bit:</p>
 <ul>
@@ -2051,7 +2123,12 @@ written atomically, so an interrupted transcode never leaves a half-file behind.
 <p>A <code>.slp</code> project stores paths to its videos. Move the videos, or open the project
 on another machine, and those paths stop resolving.</p>
 <ul>
-<li><strong>File ▸ Replace Videos ▸ <em>(video name)</em></strong> re-points one video at a new file.</li>
+<li><strong>File ▸ Replace Videos… ▸ <em>(video name)</em></strong>, or <strong>Replace Video</strong> in the
+  <strong>Videos</strong> panel, re-points one video at a new file.</li>
+<li><strong>Locate All Missing</strong> in the <strong>Videos</strong> panel (shown only when videos are
+  missing) finds them all at once. In Chrome / Edge you pick one folder and the
+  app matches each missing video by file name anywhere inside it; elsewhere you
+  pick the files.</li>
 <li>The app also looks for the file near the project and next to the old path
   before asking you.</li>
 </ul>
@@ -2060,8 +2137,9 @@ file the job needs onto a path the worker can see — including auto-detecting t
 rest of a folder and cascade-filling once it works out the prefix difference. See
 <a href="../remote-compute/">Remote Compute</a>.</p>
 <h2 id="removing-videos">Removing videos<a class="headerlink" href="#removing-videos" title="Permanent link">&para;</a></h2>
-<p>The <strong>Videos</strong> panel lists the project's videos and lets you remove one. Removing
-a video removes its labeled frames with it, so the app confirms first.</p>
+<p>The <strong>Videos</strong> panel lists the project's videos; <strong>Remove Video</strong> removes the
+selected one. Removing a video removes its labeled frames with it, so if it has
+any, the app confirms first.</p>
 <h2 id="exporting-a-labeled-clip">Exporting a labeled clip<a class="headerlink" href="#exporting-a-labeled-clip" title="Permanent link">&para;</a></h2>
 <p><strong>File ▸ Export ▸ Labeled Clip (Video)…</strong> renders a video with the pose overlay
 burned in — for talks, for figures, or for showing a collaborator what the data

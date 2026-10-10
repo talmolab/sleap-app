@@ -1257,10 +1257,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#conflict-strategies" class="md-nav__link">
+  <a href="#conflicts" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
-        Conflict strategies
+        Conflicts
       </span>
     </span>
   </a>
@@ -1862,10 +1862,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#conflict-strategies" class="md-nav__link">
+  <a href="#conflicts" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
-        Conflict strategies
+        Conflicts
       </span>
     </span>
   </a>
@@ -1916,49 +1916,55 @@
 <p><strong>File ▸ Merge into Project…</strong> combines another <code>.slp</code> into the one you have open
 — for pulling together work split across people, sessions, or machines.</p>
 <h2 id="the-preview">The preview<a class="headerlink" href="#the-preview" title="Permanent link">&para;</a></h2>
-<p>Before anything changes, the app matches the two projects and shows you what the
-merge would do: how many frames and instances are new, how many match, and how
-many conflict. Nothing is applied until you accept it.</p>
+<p>Click <strong>Choose .slp…</strong> and pick the file to merge in. Before anything changes,
+the app matches the two projects and shows a preview: how many <strong>Videos</strong> and
+<strong>Tracks</strong> match or are new, and whether the <strong>Skeleton</strong> matches. Nothing is
+applied until you click <strong>Merge</strong>.</p>
 <p>Videos are matched by <strong>basename</strong> and tracks by <strong>name</strong>, so two projects
 labeling the same videos line up even if the files sit at different paths.</p>
-<h2 id="conflict-strategies">Conflict strategies<a class="headerlink" href="#conflict-strategies" title="Permanent link">&para;</a></h2>
-<p>A <strong>conflict</strong> is when both projects have instances on the same frame of the same
-video, close enough to be the same animal (within a few pixels). The app groups
-these into clusters — a base instance can clash with several donor instances and
-vice versa, so they're resolved as a unit rather than pairwise.</p>
+<div class="admonition warning">
+<p class="admonition-title">The skeletons must match</p>
+<p>If the incoming file's skeleton differs from this project's, the preview
+shows <strong>Skeleton ⚠ differs</strong> and the merge is blocked. Open that file as
+its own project, or make the two skeletons match first.</p>
+</div>
+<h2 id="conflicts">Conflicts<a class="headerlink" href="#conflicts" title="Permanent link">&para;</a></h2>
+<p>A <strong>conflict</strong> is when both projects have a user-labeled instance on the same
+frame of the same video, close enough to be the same animal (within 5 pixels).
+Predictions never count as conflicts. The app groups conflicts into clusters — a
+base instance can clash with several incoming instances and vice versa, so
+they're resolved as a unit rather than pairwise.</p>
+<p>If there are no conflicts, the dialog says it's a clean merge and <strong>Merge</strong>
+combines the two projects.</p>
+<p>If there are, pick a <strong>Global rule</strong> for them:</p>
 <table>
 <thead>
 <tr>
-<th>Strategy</th>
+<th>Rule</th>
 <th>Resolution</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><strong>Smart</strong></td>
-<td>Prefer user labels over predictions, and the more complete instance otherwise</td>
-</tr>
-<tr>
-<td><strong>Keep both</strong></td>
+<td><strong>Keep both</strong> <em>(default)</em></td>
 <td>Keep every instance from both sides</td>
 </tr>
 <tr>
-<td><strong>New wins</strong></td>
-<td>The incoming project's instance replaces the existing one</td>
+<td><strong>Base wins</strong></td>
+<td>Keep this project's instance, discard the incoming one</td>
 </tr>
 <tr>
-<td><strong>Base wins</strong></td>
-<td>Keep the existing instance, discard the incoming one</td>
+<td><strong>Donor wins</strong></td>
+<td>The incoming project's instance replaces this project's</td>
 </tr>
 </tbody>
 </table>
-<p><strong>Smart</strong> is the right default: it will not let a prediction overwrite a label
-you placed by hand.</p>
 <h2 id="reviewing-conflicts">Reviewing conflicts<a class="headerlink" href="#reviewing-conflicts" title="Permanent link">&para;</a></h2>
-<p>For anything you don't want decided by a blanket rule, the <strong>conflict review</strong>
-step walks you through clusters one at a time, drawing the competing instances on
-the actual frame so you can see which is right, and lets you choose the survivors
-per cluster.</p>
+<p>For anything you don't want decided by the global rule, the conflict list
+(sortable by <strong>Frame</strong>, <strong>Track</strong>, and distance, and filterable) lets you set
+<strong>Keep</strong> per conflict: <strong>Both</strong>, <strong>Base</strong>, or <strong>Donor</strong>. Click a row to draw the
+competing instances on the actual frame so you can see which is right. <strong>Reset
+choices</strong> drops your per-row picks and goes back to the global rule.</p>
 <p>This is worth doing when two people labeled the same frames — the disagreements
 are exactly the frames where your labeling guidelines are ambiguous, and seeing
 them is useful beyond the merge itself.</p>

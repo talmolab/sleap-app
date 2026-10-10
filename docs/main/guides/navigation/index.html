@@ -2018,11 +2018,11 @@
 </tr>
 <tr>
 <td>± 10 frames</td>
-<td><span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-arrow-right">Right</kbd></span> / <span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-arrow-left">Left</kbd></span></td>
+<td><span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-arrow-right">Right</kbd></span> / <span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-arrow-left">Left</kbd></span> (<span class="keys"><kbd class="key-control">Ctrl</kbd><span>+</span><kbd class="key-arrow-right">Right</kbd></span> / <span class="keys"><kbd class="key-control">Ctrl</kbd><span>+</span><kbd class="key-arrow-left">Left</kbd></span>)</td>
 </tr>
 <tr>
 <td>± 100 frames</td>
-<td><span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-shift">Shift</kbd><span>+</span><kbd class="key-arrow-right">Right</kbd></span> / <span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-shift">Shift</kbd><span>+</span><kbd class="key-arrow-left">Left</kbd></span></td>
+<td><span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-shift">Shift</kbd><span>+</span><kbd class="key-arrow-right">Right</kbd></span> / <span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-shift">Shift</kbd><span>+</span><kbd class="key-arrow-left">Left</kbd></span> (<span class="keys"><kbd class="key-control">Ctrl</kbd><span>+</span><kbd class="key-shift">Shift</kbd><span>+</span><kbd class="key-arrow-right">Right</kbd></span> / <span class="keys"><kbd class="key-control">Ctrl</kbd><span>+</span><kbd class="key-shift">Shift</kbd><span>+</span><kbd class="key-arrow-left">Left</kbd></span>)</td>
 </tr>
 <tr>
 <td>First / last frame</td>
@@ -2055,7 +2055,7 @@ straight to the frames you care about:</p>
 </tr>
 <tr>
 <td>Next / previous <strong>user-labeled</strong> frame</td>
-<td><span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-u">U</kbd></span> / <span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-shift">Shift</kbd><span>+</span><kbd class="key-u">U</kbd></span></td>
+<td><span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-u">U</kbd></span> / <span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-shift">Shift</kbd><span>+</span><kbd class="key-u">U</kbd></span> (<span class="keys"><kbd class="key-control">Ctrl</kbd><span>+</span><kbd class="key-u">U</kbd></span> / <span class="keys"><kbd class="key-control">Ctrl</kbd><span>+</span><kbd class="key-shift">Shift</kbd><span>+</span><kbd class="key-u">U</kbd></span>)</td>
 </tr>
 <tr>
 <td>Next / previous <strong>suggestion</strong></td>
@@ -2076,11 +2076,11 @@ to review your own work rather than a model's.</p>
 <p>"Track spawn" frames are where a new track identity first appears, which is where
 tracking errors usually originate.</p>
 <h3 id="navigation-scope">Navigation scope<a class="headerlink" href="#navigation-scope" title="Permanent link">&para;</a></h3>
-<p><strong>Go ▸ Navigate…</strong> restricts what <span class="keys"><kbd class="key-arrow-right">Right</kbd></span> / <span class="keys"><kbd class="key-arrow-left">Left</kbd></span> step through:</p>
+<p>Three options in the <strong>Go</strong> menu restrict what <span class="keys"><kbd class="key-arrow-right">Right</kbd></span> / <span class="keys"><kbd class="key-arrow-left">Left</kbd></span> step through:</p>
 <ul>
-<li><strong>All Frames</strong> — every frame in the video</li>
-<li><strong>Labeled Frames Only</strong> — skip everything unlabeled</li>
-<li><strong>Imaged Frames Only</strong> — only frames whose pixels are actually present (useful
+<li><strong>Navigate All Frames</strong> — every frame in the video</li>
+<li><strong>Navigate Labeled Frames Only</strong> — skip everything unlabeled</li>
+<li><strong>Navigate Imaged Frames Only</strong> — only frames whose pixels are actually present (useful
   in <code>.pkg.slp</code> projects with a sparse set of embedded images)</li>
 </ul>
 <h3 id="marks">Marks<a class="headerlink" href="#marks" title="Permanent link">&para;</a></h3>
@@ -2115,7 +2115,7 @@ you can <em>see</em> where a video gets hard:</p>
 </tr>
 <tr>
 <td><strong>Primary Point Displacement</strong></td>
-<td>The same, for one chosen node</td>
+<td>The same, for the skeleton's first node only</td>
 </tr>
 <tr>
 <td><strong>Tracking Score</strong></td>

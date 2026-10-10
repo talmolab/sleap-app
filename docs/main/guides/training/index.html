@@ -1100,10 +1100,10 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#data" class="md-nav__link">
+  <a href="#in-the-panel" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
-        Data
+        In the panel
       </span>
     </span>
   </a>
@@ -1111,10 +1111,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#model" class="md-nav__link">
+  <a href="#full-configuration" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
-        Model
+        Full Configuration...
       </span>
     </span>
   </a>
@@ -1122,43 +1122,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#optimization" class="md-nav__link">
+  <a href="#scratch-fine-tune-or-resume" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
-        Optimization
-      </span>
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#augmentation" class="md-nav__link">
-    <span class="md-ellipsis">
-      <span class="md-typeset">
-        Augmentation
-      </span>
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#hardware" class="md-nav__link">
-    <span class="md-ellipsis">
-      <span class="md-typeset">
-        Hardware
-      </span>
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#logging" class="md-nav__link">
-    <span class="md-ellipsis">
-      <span class="md-typeset">
-        Logging
+        Scratch, fine-tune, or resume
       </span>
     </span>
   </a>
@@ -1957,10 +1924,10 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#data" class="md-nav__link">
+  <a href="#in-the-panel" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
-        Data
+        In the panel
       </span>
     </span>
   </a>
@@ -1968,10 +1935,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#model" class="md-nav__link">
+  <a href="#full-configuration" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
-        Model
+        Full Configuration...
       </span>
     </span>
   </a>
@@ -1979,43 +1946,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#optimization" class="md-nav__link">
+  <a href="#scratch-fine-tune-or-resume" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
-        Optimization
-      </span>
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#augmentation" class="md-nav__link">
-    <span class="md-ellipsis">
-      <span class="md-typeset">
-        Augmentation
-      </span>
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#hardware" class="md-nav__link">
-    <span class="md-ellipsis">
-      <span class="md-typeset">
-        Hardware
-      </span>
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#logging" class="md-nav__link">
-    <span class="md-ellipsis">
-      <span class="md-typeset">
-        Logging
+        Scratch, fine-tune, or resume
       </span>
     </span>
   </a>
@@ -2131,69 +2065,174 @@ You can <strong>pick the anchor from the canvas</strong> and <strong>preview the
 current frame before committing.</p>
 </div>
 <h2 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h2>
-<p>The panel is organized into collapsible sections; <strong>Model Type &amp; Configs</strong> and
-<strong>Hyperparameters</strong> cover most of what you'll touch.</p>
-<h3 id="data">Data<a class="headerlink" href="#data" title="Permanent link">&para;</a></h3>
+<p>The panel holds the settings you change most. Everything else lives in the
+<strong>Full Configuration...</strong> dialog.</p>
+<h3 id="in-the-panel">In the panel<a class="headerlink" href="#in-the-panel" title="Permanent link">&para;</a></h3>
 <ul>
+<li><strong>Model Type &amp; Configs</strong> — the <strong>Model Type</strong>, plus one config slot per model.
+  A ★ marks the type recommended for your data; types that need skeleton edges
+  are disabled until you add them. Each slot is filled in for you (from your
+  most recent trained run when there is one, otherwise a baseline profile), and
+  you can browse to a different config</li>
+<li><strong>Data</strong><ul>
 <li><strong>Training Labels</strong> — which project to train on (defaults to the open one)</li>
-<li><strong>Validation</strong> — <em>Same as training (auto-split)</em> by default</li>
-<li><strong>Input Scaling</strong> and <strong>Crop Size</strong> — resolution the model sees. Size the crop
-  from <a href="../instance-size/">Instance Size Distribution</a>, not from a guess</li>
-<li><strong>Convert Colors</strong> — RGB, grayscale, or auto-detect from the video</li>
-<li><strong>Data Pipeline</strong> — stream, in-memory, or on-disk caching. Memory is fastest
-  when the dataset fits; stream is safe when it doesn't</li>
+<li><strong>Validation Labels (optional)</strong> — leave empty for <em>Same as training
+  (auto-split)</em></li>
+<li><strong>Post-Training Inference Target</strong> — see
+  <a href="#post-training-inference">Post-training inference</a></li>
 </ul>
-<h3 id="model">Model<a class="headerlink" href="#model" title="Permanent link">&para;</a></h3>
-<ul>
-<li><strong>Backbone</strong> — <strong>UNet</strong> (default), <strong>ConvNeXt</strong>, or <strong>Swin Transformer</strong></li>
-<li><strong>Filters</strong>, <strong>Filters Rate</strong>, <strong>Max Stride</strong>, <strong>Middle Block</strong> — network capacity</li>
-<li><strong>Checkpoint</strong> / <strong>Fine-tune (start from prior weights)</strong> — start from an
-  existing model instead of from scratch</li>
+</li>
+<li><strong>Hyperparameters</strong> — <strong>Max Epochs</strong>, <strong>Batch Size</strong>, <strong>Rotation
+  Augmentation</strong> (Off, ±15°, ±180°, Custom), and <strong>Scale Augmentation</strong>. For
+  top-down, <strong>Anchor Part</strong> sits above them, and two-model pipelines get one tab
+  per model. Start at 5 epochs for a first end-to-end run, then raise it</li>
+<li><strong>Remote</strong> (desktop) — send the run to a <a href="../remote-compute/">remote worker</a>
+  instead of the local GPU</li>
+<li><strong>Estimated Memory Usage</strong> — params, weights, batch images, activations,
+  confidence maps, gradients, and image cache, so you find out that a
+  configuration won't fit <em>before</em> you start the run rather than at epoch 1</li>
 </ul>
-<h3 id="optimization">Optimization<a class="headerlink" href="#optimization" title="Permanent link">&para;</a></h3>
-<ul>
-<li><strong>Epochs</strong> — start at 5 for a first end-to-end run, then raise to ~200</li>
-<li><strong>Batch Size</strong>, <strong>Initial Learning Rate</strong></li>
-<li><strong>LR Scheduler</strong> with patience, factor, cooldown, and min/end LR</li>
-<li><strong>Online Mining</strong> with hard/easy ratios, for datasets with a few very hard frames</li>
-</ul>
-<h3 id="augmentation">Augmentation<a class="headerlink" href="#augmentation" title="Permanent link">&para;</a></h3>
-<p>Rotation, scaling, brightness, contrast, and Gaussian noise. Augmentation is
-usually the cheapest accuracy you can buy on a small labeled set.</p>
-<h3 id="hardware">Hardware<a class="headerlink" href="#hardware" title="Permanent link">&para;</a></h3>
-<ul>
-<li><strong>Accelerator</strong>, <strong>Number of Devices</strong>, <strong>Multi-GPU Strategy</strong></li>
-<li><strong>Dataloader Workers</strong></li>
-</ul>
-<p>The panel also shows an <strong>Estimated Memory Usage</strong> breakdown — weights,
-gradients, activations, image cache, batch images — so you find out that a
-configuration won't fit <em>before</em> you start the run rather than at epoch 1.</p>
-<h3 id="logging">Logging<a class="headerlink" href="#logging" title="Permanent link">&para;</a></h3>
-<p>Enable <strong>Weights &amp; Biases</strong> with an entity, group, and run name, or leave it off.
-Offline mode is available.</p>
+<h3 id="full-configuration">Full Configuration...<a class="headerlink" href="#full-configuration" title="Permanent link">&para;</a></h3>
+<p><strong>Full Configuration...</strong> opens the <strong>Training Configuration</strong> dialog: a
+<strong>Pipeline</strong> tab, plus one tab per model. Use <strong>Search parameters...</strong> to jump to
+a field. Edits save as you type; click <strong>Done</strong> to close, or <strong>Reset to profile
+defaults…</strong> to start over.</p>
+<p>The <strong>Pipeline</strong> tab:</p>
+<table>
+<thead>
+<tr>
+<th>Section</th>
+<th>What's in it</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Pipeline Type</strong></td>
+<td>The pipeline, plus pipeline-wide fields such as <strong>Anchor Part</strong> and sigma</td>
+</tr>
+<tr>
+<td><strong>Inference Target</strong></td>
+<td><strong>Post-Training Inference Target</strong>, <strong>Skip user labeled frames</strong>, and <strong>Existing predictions</strong> (Replace, Keep, Clear all)</td>
+</tr>
+<tr>
+<td><strong>Pre/Post-proc.</strong></td>
+<td><strong>Convert Colors</strong> (Auto, RGB, Grayscale), <strong>Max Instances</strong>, <strong>Filter Overlapping Instances</strong></td>
+</tr>
+<tr>
+<td><strong>Performance</strong></td>
+<td><strong>Data Pipeline</strong> (Stream (no caching), Cache in Memory, Cache to Disk), <strong>Dataloader Workers</strong>, <strong>Accelerator</strong>, <strong>Number of Devices</strong>, <strong>Multi-GPU Strategy</strong></td>
+</tr>
+<tr>
+<td><strong>W&amp;B</strong></td>
+<td><strong>Enable WandB for logging</strong>, <strong>Offline Mode</strong>, API key, entity, project, and group names</td>
+</tr>
+<tr>
+<td><strong>Evaluation</strong></td>
+<td><strong>Run evaluation during training</strong> (mOKS, mAP, PCK) at a set epoch frequency</td>
+</tr>
+<tr>
+<td><strong>Output</strong></td>
+<td><strong>Run Name</strong>, <strong>Runs Folder</strong>, <strong>Checkpoint</strong>, <strong>Visualization</strong>, and <strong>Export Model</strong> (convert to ONNX or TensorRT when training finishes)</td>
+</tr>
+<tr>
+<td><strong>Remote Training</strong></td>
+<td>Pick a <a href="../remote-compute/">remote worker</a> for the run</td>
+</tr>
+</tbody>
+</table>
+<p>Each model's tab:</p>
+<table>
+<thead>
+<tr>
+<th>Section</th>
+<th>What's in it</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Data</strong></td>
+<td><strong>Validation Fraction</strong>, <strong>Overfit Mode (train=val)</strong>, <strong>Random Seed</strong>, <strong>Input Scaling</strong>, and <strong>Crop Size</strong>. Size the crop from <a href="../instance-size/">Instance Size Distribution</a>, not from a guess</td>
+</tr>
+<tr>
+<td><strong>Augmentation</strong></td>
+<td><strong>Rotation</strong>, <strong>Scale</strong>, <strong>Uniform Noise</strong>, <strong>Gaussian Noise</strong>, <strong>Contrast</strong>, <strong>Brightness</strong>. Usually the cheapest accuracy you can buy on a small labeled set</td>
+</tr>
+<tr>
+<td><strong>Optimization</strong></td>
+<td><strong>Batch Size</strong>, <strong>Epochs</strong>, <strong>Initial Learning Rate</strong>, <strong>LR Scheduler</strong>, <strong>Stop Training on Plateau</strong>, and <strong>Online Mining</strong> for datasets with a few very hard frames</td>
+</tr>
+<tr>
+<td><strong>Model</strong></td>
+<td><strong>Backbone</strong> (UNet, ConvNeXt, Swin Transformer), <strong>Max Stride</strong>, <strong>Filters</strong>, <strong>Filters Rate</strong>, <strong>Middle Block</strong>, and more</td>
+</tr>
+</tbody>
+</table>
+<h3 id="scratch-fine-tune-or-resume">Scratch, fine-tune, or resume<a class="headerlink" href="#scratch-fine-tune-or-resume" title="Permanent link">&para;</a></h3>
+<p>The top of each model's tab picks how the run starts:</p>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>What it does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Train from scratch</strong></td>
+<td>New weights. The default</td>
+</tr>
+<tr>
+<td><strong>Fine-tune (start from prior weights)</strong></td>
+<td>Starts from a <code>.ckpt</code> or <code>.h5</code> checkpoint and trains with your current settings. The <strong>Model</strong> section is locked to match the checkpoint</td>
+</tr>
+<tr>
+<td><strong>Resume training (continue from checkpoint)</strong></td>
+<td>Continues an interrupted run from its <code>.ckpt</code>. All settings are locked</td>
+</tr>
+</tbody>
+</table>
+<p>Fine-tune and Resume need a checkpoint path; <strong>Start Training</strong> stays disabled
+until you set one.</p>
 <h2 id="running">Running<a class="headerlink" href="#running" title="Permanent link">&para;</a></h2>
 <p>Click <strong>Start Training</strong> (or <strong>Start Remote Training</strong> with a worker selected).
 While it runs:</p>
 <ul>
-<li>The <strong>progress display</strong> shows epochs and status</li>
-<li>The <strong>loss viewer</strong> plots training and validation curves live — click the graph
-  icon next to a model's progress</li>
-<li>The <strong>log terminal</strong> shows raw <code>sleap-nn</code> output</li>
-<li><strong>Error output</strong> surfaces failures without making you dig through the log</li>
+<li>Each model gets a <strong>progress row</strong> with its epoch count and loss. Click the row
+  to open the <strong>Training Monitor</strong> — live training and validation loss curves,
+  plus each epoch's sample predictions when <strong>Visualize Predictions</strong> is on
+  (under <strong>Output</strong> ▸ <strong>Visualization</strong>)</li>
+<li>The <strong>log</strong> shows raw <code>sleap-nn</code> output — click it, or <strong>Expand</strong>, for the full
+  log</li>
+<li>If a run fails, the <strong>error output</strong> shows why without making you dig through
+  the log</li>
 </ul>
-<p>You can <strong>stop</strong> a run in progress. <strong>Train Again</strong> re-opens the same
-configuration for the next round.</p>
+<p>To end a run early, use the buttons under the panel (also in the Training
+Monitor):</p>
+<ul>
+<li><strong>Stop Early</strong> — stops the current model and keeps its checkpoint. The run
+  carries on: the next model of a top-down pair, then post-training inference</li>
+<li><strong>Cancel</strong> — terminates immediately. Nothing after it runs</li>
+</ul>
+<p>When training finishes:</p>
+<ul>
+<li><strong>View Metrics</strong> — accuracy metrics for the models you just trained</li>
+<li><strong>Export Model…</strong> (desktop) — convert the trained model to ONNX or TensorRT.
+  See <a href="../inference/#exporting-a-model">Exporting a model</a></li>
+<li><strong>Train Again</strong> — clears the finished run so you can start the next round</li>
+</ul>
 <h2 id="post-training-inference">Post-training inference<a class="headerlink" href="#post-training-inference" title="Permanent link">&para;</a></h2>
-<p><strong>Inference Target</strong> tells the app what to predict on as soon as training
-finishes:</p>
+<p><strong>Post-Training Inference Target</strong> tells the app what to predict on as soon as
+training finishes. The predictions are merged into the project automatically
+(a remote run shows <strong>Fetch &amp; Load Predictions</strong> instead):</p>
 <ul>
 <li>Nothing (skip inference)</li>
 <li>Suggested frames</li>
-<li>User-labeled frames</li>
+<li>User labeled frames</li>
 <li>Frames with predictions</li>
-<li>Random sample (current video / all videos)</li>
 <li>Entire current video</li>
 <li>All videos</li>
+<li>Random sample (current video)</li>
+<li>Random sample (all videos)</li>
 </ul>
 <div class="admonition warning">
 <p class="admonition-title">Set it before you start</p>
@@ -2204,9 +2243,11 @@ what turns a finished model straight into frames you can correct.</p>
 <ul>
 <li><strong>Predict ▸ Evaluation Metrics for Trained Models…</strong> — accuracy metrics for
   models you've trained, with detailed per-node breakdowns</li>
-<li><strong>Predict ▸ Visualize Model Outputs…</strong> — confidence maps, part affinity fields,
-  and class maps rendered over your frames, which is how you diagnose <em>why</em> a
-  model is wrong rather than just <em>that</em> it is</li>
+<li><strong>Predict ▸ Set Overlay Models…</strong>, then check <strong>Predict ▸ Visualize Model
+  Outputs</strong> (desktop) — draws a model's confidence map over the current frame,
+  which is how you diagnose <em>why</em> a model is wrong rather than just <em>that</em> it is.
+  The checkbox stays disabled until you've set overlay models. Single-animal and
+  top-down models are supported</li>
 <li><strong>Predict ▸ Export Labels Package…</strong> — bundle labels and frames for training
   elsewhere</li>
 </ul>

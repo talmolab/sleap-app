@@ -2127,19 +2127,36 @@ instances' tracks. To find where it goes wrong, set the seekbar header to
 <span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-e">E</kbd></span> to walk track spawn frames. See <a href="../../guides/tracks/">Tracks</a>.</p>
 <h2 id="cant-connect-to-a-worker">Can't connect to a worker<a class="headerlink" href="#cant-connect-to-a-worker" title="Permanent link">&para;</a></h2>
 <ul>
-<li>Check the <strong>Connect</strong> panel shows you as logged in and a room selected.</li>
-<li>All workers may be busy — the panel says so.</li>
-<li>A <strong>relay</strong> connection instead of <strong>direct</strong> is fine, just slower; it means
-  WebRTC couldn't establish a peer-to-peer path.</li>
-<li>If a job fails on paths, use the path resolution dialog's <strong>Auto-detect in
-  folder</strong> and cascade fill. See <a href="../../guides/remote-compute/">Remote Compute</a>.</li>
+<li>Check the worker is running: <code>sleap-rtc serve</code> on the GPU machine. A worker
+  that isn't shows <strong>Offline</strong> in the Connect window.</li>
+<li><strong>This pairing code expired</strong> — run <code>sleap-rtc pair</code> again and paste the new code.</li>
+<li><strong>This ticket has no worker address</strong> — fill in <strong>Worker address</strong> under the code,
+  for example <code>ws://192.168.1.42:9631</code>. This computer must be able to reach that
+  address.</li>
+<li><strong>Has a new identity</strong> — the address now answers as a different worker (it
+  was reinstalled, or the IP moved). Click <strong>Re-pair</strong> on its card and paste a
+  fresh code from <code>sleap-rtc pair</code>.</li>
+<li><strong>Reconnecting…</strong> — the app retries on its own. Jobs keep running on the
+  worker meanwhile.</li>
+<li><strong>Busy</strong> is not an error: the worker is running a job, and new jobs wait in
+  its queue.</li>
+<li>If the worker can't see your videos, use <strong>Locate on worker…</strong>, or check the
+  <strong>Data access</strong> tab for the folders it shares. See
+  <a href="../../guides/remote-compute/">Remote Compute</a>.</li>
 </ul>
 <h2 id="save-is-slow">Save is slow<a class="headerlink" href="#save-is-slow" title="Permanent link">&para;</a></h2>
 <p>Saving a large <code>.pkg.slp</code> with embedded images uses a streaming writer that does
 many small operations. Over a network share this is slow. Save locally, then copy.</p>
 <h2 id="macos-refuses-to-open-the-app">macOS refuses to open the app<a class="headerlink" href="#macos-refuses-to-open-the-app" title="Permanent link">&para;</a></h2>
-<p>Clear the quarantine flag on the <code>.dmg</code> <strong>before</strong> opening it, or use the
-installer script, which never sets it.</p>
+<p>macOS builds from v0.1.2 on are signed with an Apple Developer ID and notarized,
+so a downloaded <code>.dmg</code> opens normally.</p>
+<p>The block only affects older copies (v0.1.1 and earlier) and builds you made
+yourself, which aren't notarized. For those, clear the quarantine flag on the
+<code>.dmg</code> <strong>before</strong> opening it:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>xattr<span class="w"> </span>-dr<span class="w"> </span>com.apple.quarantine<span class="w"> </span>~/Downloads/SLEAP_*.dmg
+</span></code></pre></div>
+<p>Or install with the <a href="../../installation/#desktop-app">installer script</a>, which
+clears the flag for you.</p>
 <h2 id="the-update-wont-apply">The update won't apply<a class="headerlink" href="#the-update-wont-apply" title="Permanent link">&para;</a></h2>
 <ul>
 <li><strong>Linux</strong> — only the <code>.AppImage</code> payload can be replaced in place without root.

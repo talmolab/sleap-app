@@ -2130,7 +2130,11 @@ running on a <a href="../../guides/remote-compute/">remote worker</a> you connec
 locally through the browser's file-system APIs, and nothing is sent to a server.</p>
 <p>The exception is deliberate: if you connect to a
 <a href="../../guides/remote-compute/">remote worker</a>, the files that job needs go to that
-worker, over an encrypted peer-to-peer channel you authenticated to.</p>
+worker — there is no SLEAP server or account in between. The browser connects
+over WebSocket, normally a plain, unencrypted <code>ws://</code> address, so keep the worker
+on a network you trust, such as your lab network or a VPN. The desktop app can
+also connect over iroh, which is encrypted. Either way, the app and the worker
+check each other's keys from pairing before any job data is sent.</p>
 <h2 id="can-i-open-files-from-the-legacy-sleap-gui">Can I open files from the legacy SLEAP GUI?<a class="headerlink" href="#can-i-open-files-from-the-legacy-sleap-gui" title="Permanent link">&para;</a></h2>
 <p>Yes. <code>.slp</code> is the same format. You can label here, analyze in Python with
 <a href="https://io.sleap.ai">sleap-io</a>, and open the same file in the Qt GUI, without
@@ -2166,7 +2170,7 @@ next launch. It's a safety net, not a substitute for <span class="keys"><kbd cla
 <p><strong>Help ▸ About SLEAP Label</strong>, or the window title. See
 <a href="../../installation/#release-channels">Release channels</a>.</p>
 <h2 id="can-i-cite-a-specific-version">Can I cite a specific version?<a class="headerlink" href="#can-i-cite-a-specific-version" title="Permanent link">&para;</a></h2>
-<p>Yes — every release gets a permanent URL like <code>app.sleap.ai/v0.1.2-1/</code> that is
+<p>Yes — every release gets a permanent URL like <code>app.sleap.ai/v0.1.2/</code> that is
 never modified afterwards. Cite that rather than the bare domain.</p>
 <h2 id="where-do-i-report-bugs">Where do I report bugs?<a class="headerlink" href="#where-do-i-report-bugs" title="Permanent link">&para;</a></h2>
 <p><strong>Help ▸ Report Issue</strong>, or

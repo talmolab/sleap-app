@@ -1137,10 +1137,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#device-and-performance" class="md-nav__link">
+  <a href="#inference-settings" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
-        Device and performance
+        Inference settings
       </span>
     </span>
   </a>
@@ -1928,10 +1928,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#device-and-performance" class="md-nav__link">
+  <a href="#inference-settings" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
-        Device and performance
+        Inference settings
       </span>
     </span>
   </a>
@@ -2005,7 +2005,7 @@
 project. Open the <strong>Inference</strong> panel, or <strong>Predict ▸ Inference / Run
 Prediction…</strong>.</p>
 <h2 id="models">Models<a class="headerlink" href="#models" title="Permanent link">&para;</a></h2>
-<p>Point the panel at your trained model directories:</p>
+<p>Pick the <strong>Pipeline</strong>, then point the panel at your trained model directories:</p>
 <table>
 <thead>
 <tr>
@@ -2015,16 +2015,16 @@ Prediction…</strong>.</p>
 </thead>
 <tbody>
 <tr>
-<td><strong>Single Animal</strong></td>
-<td>One confidence-map model</td>
-</tr>
-<tr>
 <td><strong>Top-Down</strong></td>
 <td>Two — centroid and centered-instance</td>
 </tr>
 <tr>
 <td><strong>Bottom-Up</strong></td>
 <td>One — confidence maps + PAFs</td>
+</tr>
+<tr>
+<td><strong>Single Animal</strong></td>
+<td>One confidence-map model</td>
 </tr>
 <tr>
 <td><strong>Top-Down + ID</strong></td>
@@ -2036,94 +2036,120 @@ Prediction…</strong>.</p>
 </tr>
 </tbody>
 </table>
-<p>Models you trained in the app are discovered automatically; you can also browse
-for a directory, including on a <a href="../remote-compute/">remote worker</a>.</p>
+<p>On the desktop app, the most recently trained models in the project's <code>models/</code>
+folder are picked for you. Click <strong>Add</strong> to choose a directory yourself, or
+<strong>Browse Worker</strong> for one on a <a href="../remote-compute/">remote worker</a>.</p>
 <h2 id="what-to-predict-on">What to predict on<a class="headerlink" href="#what-to-predict-on" title="Permanent link">&para;</a></h2>
 <p><strong>Inference Target</strong>:</p>
 <ul>
-<li>Current frame</li>
 <li>Custom range</li>
-<li>Suggested frames</li>
-<li>User-labeled frames</li>
-<li>Frames with predictions</li>
-<li>Random sample (current video / all videos)</li>
 <li>Entire current video</li>
 <li>All videos</li>
+<li>Current frame</li>
+<li>Random sample (current video)</li>
+<li>Random sample (all videos)</li>
+<li>Suggested frames</li>
+<li>User labeled frames</li>
+<li>Frames with predictions</li>
 </ul>
 <p><strong>Exclude user-labeled frames</strong> keeps the model off the frames you already did by
 hand.</p>
 <p>Predicting on <strong>suggested frames</strong> right after a first training run is the
 fastest way to get correctable predictions in front of you.</p>
 <h2 id="handling-existing-predictions">Handling existing predictions<a class="headerlink" href="#handling-existing-predictions" title="Permanent link">&para;</a></h2>
+<p><strong>Existing predictions</strong> decides what happens to predictions already in the
+project:</p>
 <table>
 <thead>
 <tr>
-<th>Mode</th>
+<th>Option</th>
 <th>Effect</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><strong>Replace</strong></td>
+<td><strong>Replace</strong> (default)</td>
 <td>Replace predictions on re-inferred frames; your labels are kept</td>
 </tr>
 <tr>
-<td><strong>Add</strong></td>
+<td><strong>Keep</strong></td>
 <td>Add new predictions on top of existing ones (may duplicate)</td>
 </tr>
 <tr>
-<td><strong>Clear first</strong></td>
-<td>Remove all existing predictions, then add the new ones</td>
+<td><strong>Clear all</strong></td>
+<td>Remove all existing predictions first, then add the new ones</td>
 </tr>
 </tbody>
 </table>
 <p><strong>Replace</strong> is almost always what you want.</p>
-<h2 id="device-and-performance">Device and performance<a class="headerlink" href="#device-and-performance" title="Permanent link">&para;</a></h2>
+<h2 id="inference-settings">Inference settings<a class="headerlink" href="#inference-settings" title="Permanent link">&para;</a></h2>
 <ul>
-<li><strong>Device</strong> — CUDA (GPU), MPS (Apple Silicon), or CPU</li>
-<li><strong>Batch size</strong> and <strong>Image scale</strong></li>
+<li><strong>Batch size</strong></li>
+<li><strong>Device</strong> (desktop) — <strong>Auto</strong> (the default), <strong>CUDA (GPU)</strong>, <strong>CPU</strong>, or
+  <strong>MPS (Apple Silicon)</strong></li>
+<li><strong>Runtime</strong> (desktop) — <strong>Auto</strong> (the default) lets <code>sleap-nn</code> choose.
+  <strong>ONNX</strong> and <strong>TensorRT</strong> apply only when the model is an
+  <a href="#exporting-a-model">exported model</a> directory; they're ignored for regular
+  checkpoints. <strong>TensorRT</strong> is only listed on machines with an NVIDIA (CUDA) GPU</li>
 <li><strong>Peak threshold</strong> — minimum confidence for a detected point</li>
-<li><strong>Max instances</strong> — cap per frame</li>
+<li><strong>Max instances</strong> — cap per frame, or check <strong>No limit</strong></li>
 </ul>
 <h2 id="post-processing">Post-processing<a class="headerlink" href="#post-processing" title="Permanent link">&para;</a></h2>
 <p>Filters that clean up predictions before they land in the project:</p>
 <ul>
-<li><strong>Min instance score</strong>, <strong>min mean node score</strong></li>
-<li><strong>Min visible nodes</strong> / <strong>min visible node fraction</strong></li>
-<li><strong>Filter overlapping instances</strong>, with an IoU threshold</li>
-<li><strong>Pre-cull to target</strong> instance count, with its own IoU threshold</li>
+<li><strong>Filter overlapping instances</strong>, with a <strong>Method</strong> (IoU or OKS) and
+  <strong>Threshold</strong></li>
+<li><strong>Min visible nodes</strong> / <strong>Min visible node fraction</strong></li>
+<li><strong>Min mean node score</strong>, <strong>Min instance score</strong></li>
+<li><strong>Min centroid distance</strong></li>
 </ul>
 <p>These are much cheaper than deleting bad instances by hand afterwards.</p>
 <h2 id="tracking">Tracking<a class="headerlink" href="#tracking" title="Permanent link">&para;</a></h2>
-<p>Enable <strong>tracking</strong> to assign identities across frames as part of the same run.</p>
+<p>Check <strong>Enable tracking</strong> to assign identities across frames as part of the same
+run.</p>
 <ul>
-<li><strong>Track features</strong> — centroid, keypoints, or bounding box</li>
-<li><strong>Similarity</strong> — Euclidean distance, centroid distance, IoU, or optical flow</li>
-<li><strong>Matching</strong> — greedy or Hungarian assignment</li>
-<li><strong>Max tracks</strong>, <strong>window size</strong>, <strong>init frame count</strong></li>
-<li><strong>Connect single-frame breaks</strong>, <strong>reset gap size</strong>, <strong>min new-track points</strong></li>
-<li>Optional <strong>Kalman filter</strong> smoothing</li>
-<li><strong>Tracked nodes</strong> — restrict tracking to a subset of nodes</li>
+<li><strong>Method</strong> — <strong>Simple</strong> (match by similarity alone), <strong>Optical Flow</strong> (predict
+  motion from pixel displacement; good for fast-moving animals), or <strong>Kalman
+  Filter</strong> (a per-track motion model; good for a known, fixed number of animals)</li>
+<li><strong>Similarity</strong> — <strong>OKS</strong>, <strong>IoU</strong>, <strong>Centroid dist.</strong>, or <strong>Euclidean dist.</strong></li>
+<li><strong>Matching</strong> — <strong>Hungarian</strong> or <strong>Greedy</strong></li>
+<li><strong>Window size</strong>, <strong>Max tracks</strong></li>
+<li><strong>Advanced</strong> — <strong>Robust (quantile)</strong>, <strong>Connect single-frame breaks</strong>, <strong>Min match points</strong>, <strong>Min
+  new-track points</strong>, <strong>Scoring reduction</strong>, <strong>Target instance count</strong>, <strong>Pre-cull
+  to target</strong> (with its own IoU threshold), and <strong>Clean-up instance count</strong> (with
+  its own IoU threshold)</li>
+<li>With <strong>Optical Flow</strong>: <strong>Image scale</strong>, <strong>Flow window size</strong>, <strong>Pyramid levels</strong></li>
+<li>With <strong>Kalman Filter</strong>: <strong>Track features</strong> (<strong>Centroid</strong> or <strong>Keypoints</strong>),
+  <strong>Init frame count</strong>, <strong>Reset gap size</strong>, and <strong>Tracked nodes</strong> to restrict
+  tracking to a subset of nodes</li>
 </ul>
-<p><strong>Track only</strong> mode skips pose estimation entirely and just (re)tracks existing
-predictions — use it to retry tracking parameters without paying for inference
-again.</p>
+<p><strong>Track only</strong> (top of the panel) skips pose estimation entirely and just
+(re)tracks the instances already in the project — use it to retry tracking
+parameters without paying for inference again.</p>
 <p>See <a href="../tracks/">Tracks</a> for correcting what tracking gets wrong.</p>
 <h2 id="monitoring-and-results">Monitoring and results<a class="headerlink" href="#monitoring-and-results" title="Permanent link">&para;</a></h2>
-<p>The panel shows progress, an inference log (click for the full terminal), and
-errors. When a run finishes, <strong>Load Results</strong> brings the predictions into the
-open project.</p>
-<p>You can also bring in predictions produced elsewhere with
-<strong>Predict ▸ Import Predictions…</strong>.</p>
+<p>Click <strong>Run Inference</strong> (or <strong>Run Remote Inference</strong> with a worker selected). The
+panel shows progress, an inference log (click for the full terminal), and
+errors; <strong>Cancel</strong> stops a run. When a run finishes, <strong>Load Results</strong> brings the
+predictions into the open project (for a remote run, <strong>Fetch &amp; Load Results</strong>).</p>
+<p>To bring in predictions produced elsewhere, open the <code>.slp</code> with
+<strong>File ▸ Open Project…</strong>, or merge it into the current project with
+<strong>File ▸ Merge into Project…</strong>.</p>
 <h2 id="exporting-a-model">Exporting a model<a class="headerlink" href="#exporting-a-model" title="Permanent link">&para;</a></h2>
-<p><strong>Export model</strong> writes a trained model out for deployment:</p>
+<p>Exporting converts a trained model to a faster runtime. It's desktop-only. Open
+it from <strong>Predict ▸ Export Model to ONNX/TensorRT…</strong>, or from <strong>Export Model…</strong>
+in the Training panel after a run finishes.</p>
 <ul>
-<li><strong>ONNX</strong></li>
-<li><strong>TensorRT</strong>, with a precision setting</li>
+<li><strong>Format</strong> — <strong>ONNX</strong>, <strong>TensorRT</strong>, or <strong>Both</strong>. TensorRT needs an NVIDIA GPU</li>
+<li><strong>Precision</strong> (TensorRT) — fp16, fp32, or tf32</li>
 </ul>
-<p>Both need <code>sleap-nn</code> installed with the export extras — the
-<a href="../../installation/#environment-setup">Environment</a> panel can reinstall it with those included, and the
-export dialog offers to do it for you.</p>
+<p>Export needs <code>sleap-nn</code>'s ONNX/TensorRT support. Install it from the
+<a href="../../installation/#environment-setup">Environment</a> panel: under <strong>Extras</strong>,
+check <strong>ONNX</strong> (and <strong>TensorRT</strong>, on Linux/Windows with an NVIDIA GPU), then click
+<strong>Apply</strong>. That reinstalls <code>sleap-nn</code> with those extras. If support is missing
+when you export, the export dialog offers <strong>Install support &amp; retry</strong>.</p>
+<p>To export automatically when a local training run finishes, set <strong>Export Model</strong> under
+<strong>Output</strong> in the training <strong>Full Configuration...</strong> dialog.</p>
 
 
 

@@ -2087,7 +2087,7 @@ channel it was installed from.</p>
 <tr>
 <td><strong><code>&lt;tag&gt;</code></strong> — one release, never republished; cite this one</td>
 <td><a href="https://app.sleap.ai/v0.1.2-2/">/v0.1.2-2/</a></td>
-<td>— <em>web only</em></td>
+<td><code>install.sh --tag &lt;tag&gt;</code> — see below</td>
 </tr>
 </tbody>
 </table>
@@ -2105,17 +2105,36 @@ channel it was installed from.</p>
 </div>
 </div>
 </div>
+<p>To install one exact release — pre-releases included — pass its tag:</p>
+<div class="tabbed-set tabbed-alternate" data-tabs="3:2"><input checked="checked" id="__tabbed_3_1" name="__tabbed_3" type="radio" /><input id="__tabbed_3_2" name="__tabbed_3" type="radio" /><div class="tabbed-labels"><label for="__tabbed_3_1">macOS / Linux</label><label for="__tabbed_3_2">Windows</label></div>
+<div class="tabbed-content">
+<div class="tabbed-block">
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>curl<span class="w"> </span>-fsSL<span class="w"> </span>https://app.sleap.ai/install.sh<span class="w"> </span><span class="p">|</span><span class="w"> </span>sh<span class="w"> </span>-s<span class="w"> </span>--<span class="w"> </span>--tag<span class="w"> </span>v0.1.2
+</span></code></pre></div>
+</div>
+<div class="tabbed-block">
+<div class="language-powershell highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="c"># `| iex` cannot pass parameters, so build a script block first.</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="p">&amp;</span> <span class="p">(</span><span class="no">[scriptblock]</span><span class="p">::</span><span class="n">Create</span><span class="p">((</span><span class="nb">irm </span><span class="n">https</span><span class="p">://</span><span class="n">app</span><span class="p">.</span><span class="n">sleap</span><span class="p">.</span><span class="n">ai</span><span class="p">/</span><span class="n">install</span><span class="p">.</span><span class="n">ps1</span><span class="p">)))</span> <span class="n">-Tag</span> <span class="n">v0</span><span class="p">.</span><span class="n">1</span><span class="p">.</span><span class="n">2</span>
+</span></code></pre></div>
+</div>
+</div>
+</div>
 <h3 id="knowing-what-youre-running">Knowing what you're running<a class="headerlink" href="#knowing-what-youre-running" title="Permanent link">&para;</a></h3>
-<p><strong>Help ▸ About SLEAP Label</strong> reports the exact version and channel. The version is
-also in the window title.</p>
-<p>Versions are stamped by CI from the release tag rather than committed to the
-repository, so the version a build reports is always the version it actually is.
+<p><strong>Help ▸ About SLEAP Label</strong> reports the exact version and whether it is a
+<em>Stable release</em>, <em>Pre-release</em>, or <em>Dev build</em>. The version is also in the
+window title.</p>
+<p>Release builds are stamped by CI from the release tag, so the version a build
+reports is always the version it actually is.
 <code>/main/</code> builds report <code>&lt;highest-tag&gt;+main.&lt;sha&gt;</code>, which names the exact commit.</p>
 <hr />
 <h2 id="updating">Updating<a class="headerlink" href="#updating" title="Permanent link">&para;</a></h2>
-<p>The desktop app checks its own release channel for updates and shows an indicator
-in the title bar when one is available. Accepting it downloads and swaps the app
-in place; on Linux this works for the <code>.AppImage</code> payload without root.</p>
+<p>The desktop app checks its own release channel for updates. When one is
+available, the <strong>Environment</strong> button — in the sidebar strip, and in the corner
+of the Welcome screen — gets a pulsing orange dot and an <strong>Update available</strong>
+label. (The same badge also flags a newer <code>sleap-nn</code>, or reads <strong>Install
+packages</strong> if training isn't set up yet.) Open the Environment panel and click
+<strong>Update</strong>: it downloads and swaps the app in place; on Linux this works for the
+<code>.AppImage</code> payload without root.</p>
 <p>You are not locked into the channel you installed from. The <strong>Environment</strong>
 panel has a <strong>Channel</strong> dropdown — <em>Stable</em>, <em>Latest</em>, <em>Dev (main)</em> — and
 changing it re-points the updater. If the channel you pick is on an older
@@ -2151,8 +2170,10 @@ it to use.</p>
 <p>When installing <code>sleap-nn</code>, the app detects your GPU and picks the matching
 PyTorch build automatically — you do not choose a CUDA version by hand.</p>
 <p>If you plan to <a href="../guides/inference/#exporting-a-model">export models</a> to ONNX or
-TensorRT, use the <strong>Advanced</strong> options to reinstall <code>sleap-nn</code> with the export
-extras included.</p>
+TensorRT, use the <strong>Extras</strong> field in the panel's <code>sleap-nn</code> section: tick
+<strong>ONNX</strong> and/or <strong>TensorRT</strong>, then click <strong>Apply</strong>, which reinstalls <code>sleap-nn</code>
+with exactly those extras. <strong>TensorRT</strong> is greyed out where it can't be used —
+on macOS ("Linux/Windows only") and on machines without an NVIDIA GPU.</p>
 <h3 id="keeping-sleap-nn-up-to-date">Keeping sleap-nn up to date<a class="headerlink" href="#keeping-sleap-nn-up-to-date" title="Permanent link">&para;</a></h3>
 <p>The panel reports the installed <code>sleap-nn</code> version, links to its release notes,
 and offers <strong>Update</strong> or <strong>Force reinstall</strong>. <code>uv</code> itself can be updated from the
@@ -2161,8 +2182,9 @@ same place.</p>
 <p class="admonition-title">No GPU? No problem</p>
 <p><strong>Train on CPU</strong> — fine for a tiny sanity-check run, painful for anything
 real. Or point the app at a <strong>remote worker</strong> with a GPU and submit training
-and inference jobs to it over an encrypted peer-to-peer connection, which
-works from the browser too. See <a href="../guides/remote-compute/">Remote Compute</a>.</p>
+and inference jobs to it. This works from the browser too: the browser
+connects to the worker over WebSocket, and the desktop app can also connect
+directly over iroh. See <a href="../guides/remote-compute/">Remote Compute</a>.</p>
 </div>
 <h3 id="checking-what-the-app-sees">Checking what the app sees<a class="headerlink" href="#checking-what-the-app-sees" title="Permanent link">&para;</a></h3>
 <p><strong>Help ▸ Collect Diagnostics…</strong> gathers the runtime, versions, detected GPU,

@@ -1888,7 +1888,7 @@ files, processes, and GPUs.</p>
 <tr>
 <td>Install</td>
 <td>None — <a href="https://app.sleap.ai">app.sleap.ai</a></td>
-<td>~5 MB, <a href="../../installation/">installer</a></td>
+<td>~100–220 MB depending on platform, <a href="../../installation/">installer</a></td>
 </tr>
 <tr>
 <td>Open / save <code>.slp</code></td>
@@ -1936,13 +1936,43 @@ files, processes, and GPUs.</p>
 <td>✅</td>
 </tr>
 <tr>
+<td>Open Preferences Directory / Clear Video Transcode Cache</td>
+<td>❌</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>Local scrub proxies for network videos</td>
+<td>❌</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>NWB export</td>
+<td>❌</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>ONNX / TensorRT model export</td>
+<td>❌</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>Model-output overlays</td>
+<td>❌</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>DeepLabCut import</td>
+<td>Chromium browsers only (Chrome, Edge) — needs the folder picker</td>
+<td>✅</td>
+</tr>
+<tr>
 <td>In-app updates</td>
 <td>Reload the page</td>
 <td>✅ per <a href="../../installation/#release-channels">channel</a></td>
 </tr>
 <tr>
 <td>Offline</td>
-<td>Only if cached</td>
+<td>❌ needs a connection to load the page</td>
 <td>✅</td>
 </tr>
 </tbody>
@@ -1964,10 +1994,10 @@ yields no handle, so <strong>Save</strong> falls back to a Save-As prompt. On th
 <p>See <a href="../../guides/saving/">Saving &amp; Recovery</a>.</p>
 <h2 id="under-the-hood">Under the hood<a class="headerlink" href="#under-the-hood" title="Permanent link">&para;</a></h2>
 <p>The desktop app is <a href="https://v2.tauri.app/">Tauri v2</a> — it uses the operating
-system's own WebView rather than bundling a browser engine, which is why it is
-~5 MB rather than ~244 MB. Platform-specific behavior is isolated behind a small
-abstraction layer, so features arrive in both runtimes at once unless they
-fundamentally cannot.</p>
+system's own WebView rather than bundling a browser engine. It does bundle its
+own <code>ffmpeg</code>/<code>ffprobe</code> for converting legacy-codec videos. Platform-specific
+behavior is isolated behind a small abstraction layer, so features arrive in
+both runtimes at once unless they fundamentally cannot.</p>
 
 
 
