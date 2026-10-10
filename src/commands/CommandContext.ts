@@ -122,6 +122,25 @@ export class CommandContext {
   /** Listeners notified when topics are signaled. */
   private listeners: Set<UpdateListener> = new Set();
 
+  constructor() {
+    // Snapshots hold references into one Labels object (its frames, videos,
+    // skeletons, tracks) and restore by writing them into whatever `labels` is
+    // current, so undoing across a project replacement grafts the old project
+    // into the new one. Every replacement (open, New Project, draft restore,
+    // open predictions) swaps the `labels` object, so drop history whenever it
+    // changes identity.
+    useAppStore.subscribe(
+      (s) => s.labels,
+      () => this.reset(),
+    );
+  }
+
+  /** Discard the undo and redo history. */
+  reset(): void {
+    this.undoStack.length = 0;
+    this.redoStack.length = 0;
+  }
+
   /**
    * Take a snapshot of the current frame state. Public so a command using
    * `skipAutoSnapshot` can manage its own single-frame undo (the single-frame
