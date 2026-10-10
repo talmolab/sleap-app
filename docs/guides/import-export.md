@@ -22,7 +22,9 @@ by [sleap-io.js](https://iojs.sleap.ai).
 | **DeepLabCut dataset** | A single DLC project |
 | **Multiple DeepLabCut datasets from folder** | Batch-import a folder of DLC projects at once |
 
-**Predict ▸ Import Predictions…** brings in predictions produced outside the app.
+To bring in predictions produced outside the app, open their `.slp` with
+**File ▸ Open Project…**, or merge it into the open project with
+**File ▸ Merge into Project…**.
 
 ## Exporting
 
@@ -32,28 +34,28 @@ by [sleap-io.js](https://iojs.sleap.ai).
 |---|---|
 | **JSON** | Plain-text dump of the labels |
 | **Analysis CSV** | Tabular per-frame, per-node coordinates — the usual input to downstream analysis |
-| **Analysis HDF5** | The same data in SLEAP's analysis `.h5` layout |
-| **NWB (ndx-pose)** | Sharing and archiving in the NWB ecosystem |
-| **Labels Package** | Labels bundled with their image data — portable, self-contained |
+| **Analysis HDF5** | The same data in SLEAP's analysis `.h5` layout, for the **current video** only |
+| **NWB (ndx-pose)** | Sharing and archiving in the NWB ecosystem. Desktop only |
+| **Labels Package** | A `.pkg.json` file: the labels plus a list of the project's videos. No image data |
 | **Labeled Clip (Video)** | An MP4 with the pose overlay rendered in |
 
-++cmd+alt+e++ exports the analysis file for the current video directly.
+For a portable project that carries its own frames, use the `.pkg.slp` labels
+package below instead.
 
 ### Labels packages
 
 A **labels package** (`.pkg.slp`) embeds the image data alongside the labels, so
-the project opens anywhere without its original videos. Three levels of
-completeness:
+the project opens anywhere without its original videos. Export one with
+**Predict ▸ Export Labels Package…** and pick a level:
 
-| Level | Contents |
-|---|---|
-| **Level 1** | Only frames you labeled by hand |
-| **Level 2** | Your labeled frames plus suggested frames |
-| **Level 3** | Every labeled frame, including predictions |
+| Level | Option | Contents |
+|---|---|---|
+| **Level 1** | User labeled frames | Only frames you labeled by hand |
+| **Level 2** | User labeled + suggested frames | Your labeled frames plus suggested frames. The default |
+| **Level 3** | All labeled frames | Every labeled frame, including predictions |
 
-Level 1 is what you send to a collaborator or upload for training elsewhere;
-Level 3 is a full archive. **Predict ▸ Export Labels Package…** is the same
-export, reachable from the training workflow.
+Level 1 is the smallest package to send to a collaborator; Level 3 is a full
+archive.
 
 ### Labeled clips
 

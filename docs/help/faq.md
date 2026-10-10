@@ -20,7 +20,11 @@ locally through the browser's file-system APIs, and nothing is sent to a server.
 
 The exception is deliberate: if you connect to a
 [remote worker](../guides/remote-compute.md), the files that job needs go to that
-worker, over an encrypted peer-to-peer channel you authenticated to.
+worker — there is no SLEAP server or account in between. The browser connects
+over WebSocket, normally a plain, unencrypted `ws://` address, so keep the worker
+on a network you trust, such as your lab network or a VPN. The desktop app can
+also connect over iroh, which is encrypted. Either way, the app and the worker
+check each other's keys from pairing before any job data is sent.
 
 ## Can I open files from the legacy SLEAP GUI?
 
@@ -76,7 +80,7 @@ next launch. It's a safety net, not a substitute for ++cmd+s++. See
 
 ## Can I cite a specific version?
 
-Yes — every release gets a permanent URL like `app.sleap.ai/v0.1.2-1/` that is
+Yes — every release gets a permanent URL like `app.sleap.ai/v0.1.2/` that is
 never modified afterwards. Cite that rather than the bare domain.
 
 ## Where do I report bugs?

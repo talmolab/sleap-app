@@ -20,7 +20,7 @@ byte-compatible with the rest of the SLEAP ecosystem.
 | COCO keypoints (`.json`) | **File ▸ Import ▸ COCO dataset…** |
 | DeepLabCut | **File ▸ Import ▸ DeepLabCut dataset…** |
 | DeepLabCut, in bulk | **File ▸ Import ▸ Multiple DeepLabCut datasets from folder…** |
-| Predictions | **Predict ▸ Import Predictions…** |
+| Predictions (`.slp`) | **File ▸ Open Project…**, or **File ▸ Merge into Project…** to add them to the open project |
 
 ## Export
 
@@ -28,18 +28,21 @@ byte-compatible with the rest of the SLEAP ecosystem.
 |---|---|---|
 | JSON | **File ▸ Export ▸ JSON…** | Plain-text dump |
 | Analysis CSV | **File ▸ Export ▸ Analysis CSV…** | Downstream analysis |
-| Analysis HDF5 | **File ▸ Export ▸ Analysis HDF5…** | SLEAP's analysis `.h5` layout |
-| NWB (ndx-pose) | **File ▸ Export ▸ NWB (ndx-pose)…** | Sharing and archiving |
-| Labels Package | **File ▸ Export ▸ Labels Package…** | Portable, self-contained project |
+| Analysis HDF5 | **File ▸ Export ▸ Analysis HDF5…** | SLEAP's analysis `.h5` layout, current video only |
+| NWB (ndx-pose) | **File ▸ Export ▸ NWB (ndx-pose)…** | Sharing and archiving. Desktop only |
+| Labels package (`.pkg.slp`) | **Predict ▸ Export Labels Package…** | Portable, self-contained project with frames embedded (Level 1/2/3, below) |
+| Labels package (`.pkg.json`) | **File ▸ Export ▸ Labels Package…** | Labels plus a list of the project's videos, as JSON. No image data |
 | Labeled clip (MP4) | **File ▸ Export ▸ Labeled Clip (Video)…** | Talks and figures |
-| ONNX / TensorRT | Inference panel ▸ **Export model** | Model deployment |
+| ONNX / TensorRT | **Predict ▸ Export Model to ONNX/TensorRT…**, or **Export Model…** in the Training panel after a run | Model deployment. Desktop only |
 
 ### Labels package levels
+
+For the `.pkg.slp` export:
 
 | Level | Frames included |
 |---|---|
 | 1 | Only frames you labeled by hand |
-| 2 | Your labeled frames plus suggested frames |
+| 2 | Your labeled frames plus suggested frames (the default) |
 | 3 | Every labeled frame, including predictions |
 
 ## Skeletons

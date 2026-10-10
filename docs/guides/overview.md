@@ -83,7 +83,7 @@ the [Quick Start](../getting-started/quickstart.md) instead.
 
     ---
 
-    Submitting jobs to a GPU worker over an encrypted peer-to-peer link.
+    Pairing a GPU worker and sending it training and inference jobs.
 
 </div>
 

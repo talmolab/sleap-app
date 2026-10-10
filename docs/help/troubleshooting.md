@@ -69,12 +69,22 @@ instances' tracks. To find where it goes wrong, set the seekbar header to
 
 ## Can't connect to a worker
 
-- Check the **Connect** panel shows you as logged in and a room selected.
-- All workers may be busy — the panel says so.
-- A **relay** connection instead of **direct** is fine, just slower; it means
-  WebRTC couldn't establish a peer-to-peer path.
-- If a job fails on paths, use the path resolution dialog's **Auto-detect in
-  folder** and cascade fill. See [Remote Compute](../guides/remote-compute.md).
+- Check the worker is running: `sleap-rtc serve` on the GPU machine. A worker
+  that isn't shows **Offline** in the Connect window.
+- **This pairing code expired** — run `sleap-rtc pair` again and paste the new code.
+- **This ticket has no worker address** — fill in **Worker address** under the code,
+  for example `ws://192.168.1.42:9631`. This computer must be able to reach that
+  address.
+- **Has a new identity** — the address now answers as a different worker (it
+  was reinstalled, or the IP moved). Click **Re-pair** on its card and paste a
+  fresh code from `sleap-rtc pair`.
+- **Reconnecting…** — the app retries on its own. Jobs keep running on the
+  worker meanwhile.
+- **Busy** is not an error: the worker is running a job, and new jobs wait in
+  its queue.
+- If the worker can't see your videos, use **Locate on worker…**, or check the
+  **Data access** tab for the folders it shares. See
+  [Remote Compute](../guides/remote-compute.md).
 
 ## Save is slow
 
@@ -83,8 +93,19 @@ many small operations. Over a network share this is slow. Save locally, then cop
 
 ## macOS refuses to open the app
 
-Clear the quarantine flag on the `.dmg` **before** opening it, or use the
-installer script, which never sets it.
+macOS builds from v0.1.2 on are signed with an Apple Developer ID and notarized,
+so a downloaded `.dmg` opens normally.
+
+The block only affects older copies (v0.1.1 and earlier) and builds you made
+yourself, which aren't notarized. For those, clear the quarantine flag on the
+`.dmg` **before** opening it:
+
+```bash
+xattr -dr com.apple.quarantine ~/Downloads/SLEAP_*.dmg
+```
+
+Or install with the [installer script](../installation.md#desktop-app), which
+clears the flag for you.
 
 ## The update won't apply
 

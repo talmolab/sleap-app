@@ -5,7 +5,7 @@ files, processes, and GPUs.
 
 | | Browser | Desktop |
 |---|---|---|
-| Install | None — [app.sleap.ai](https://app.sleap.ai) | ~5 MB, [installer](../installation.md) |
+| Install | None — [app.sleap.ai](https://app.sleap.ai) | ~100–220 MB depending on platform, [installer](../installation.md) |
 | Open / save `.slp` | File System Access API | Native file dialogs, writes in place |
 | Drag-and-drop | ✅ | ✅ |
 | Labeling, tracks, view, analyze | ✅ | ✅ |
@@ -15,8 +15,14 @@ files, processes, and GPUs.
 | Remote training / inference | ✅ | ✅ |
 | Crash-recovery drafts | ✅ OPFS | ✅ app data directory |
 | Reveal file in file manager | ❌ | ✅ |
+| Open Preferences Directory / Clear Video Transcode Cache | ❌ | ✅ |
+| Local scrub proxies for network videos | ❌ | ✅ |
+| NWB export | ❌ | ✅ |
+| ONNX / TensorRT model export | ❌ | ✅ |
+| Model-output overlays | ❌ | ✅ |
+| DeepLabCut import | Chromium browsers only (Chrome, Edge) — needs the folder picker | ✅ |
 | In-app updates | Reload the page | ✅ per [channel](../installation.md#release-channels) |
-| Offline | Only if cached | ✅ |
+| Offline | ❌ needs a connection to load the page | ✅ |
 
 ## Which should I use?
 
@@ -43,7 +49,7 @@ See [Saving & Recovery](../guides/saving.md).
 ## Under the hood
 
 The desktop app is [Tauri v2](https://v2.tauri.app/) — it uses the operating
-system's own WebView rather than bundling a browser engine, which is why it is
-~5 MB rather than ~244 MB. Platform-specific behavior is isolated behind a small
-abstraction layer, so features arrive in both runtimes at once unless they
-fundamentally cannot.
+system's own WebView rather than bundling a browser engine. It does bundle its
+own `ffmpeg`/`ffprobe` for converting legacy-codec videos. Platform-specific
+behavior is isolated behind a small abstraction layer, so features arrive in
+both runtimes at once unless they fundamentally cannot.

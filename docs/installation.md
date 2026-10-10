@@ -45,7 +45,7 @@ channel it was installed from.
 | **Latest** — highest version, release *or* pre-release | [/latest/](https://app.sleap.ai/latest/) | `app.sleap.ai/latest/install.sh` |
 | **Dev** — rolling, refreshed nightly | [/dev/](https://app.sleap.ai/dev/) | `app.sleap.ai/dev/install.sh` |
 | **Main** — tip of `main`, rebuilt on every merge | [/main/](https://app.sleap.ai/main/) | — *web only* |
-| **`<tag>`** — one release, never republished; cite this one | [/v0.1.2-2/](https://app.sleap.ai/v0.1.2-2/) | — *web only* |
+| **`<tag>`** — one release, never republished; cite this one | [/v0.1.2-2/](https://app.sleap.ai/v0.1.2-2/) | `install.sh --tag <tag>` — see below |
 
 To install a channel other than stable, use the same command from
 [Desktop app](#desktop-app) with that URL swapped in — nothing else changes:
@@ -62,22 +62,42 @@ To install a channel other than stable, use the same command from
     irm https://app.sleap.ai/dev/install.ps1 | iex
     ```
 
+To install one exact release — pre-releases included — pass its tag:
+
+=== "macOS / Linux"
+
+    ```bash
+    curl -fsSL https://app.sleap.ai/install.sh | sh -s -- --tag v0.1.2
+    ```
+
+=== "Windows"
+
+    ```powershell
+    # `| iex` cannot pass parameters, so build a script block first.
+    & ([scriptblock]::Create((irm https://app.sleap.ai/install.ps1))) -Tag v0.1.2
+    ```
+
 ### Knowing what you're running
 
-**Help ▸ About SLEAP Label** reports the exact version and channel. The version is
-also in the window title.
+**Help ▸ About SLEAP Label** reports the exact version and whether it is a
+*Stable release*, *Pre-release*, or *Dev build*. The version is also in the
+window title.
 
-Versions are stamped by CI from the release tag rather than committed to the
-repository, so the version a build reports is always the version it actually is.
+Release builds are stamped by CI from the release tag, so the version a build
+reports is always the version it actually is.
 `/main/` builds report `<highest-tag>+main.<sha>`, which names the exact commit.
 
 ---
 
 ## Updating
 
-The desktop app checks its own release channel for updates and shows an indicator
-in the title bar when one is available. Accepting it downloads and swaps the app
-in place; on Linux this works for the `.AppImage` payload without root.
+The desktop app checks its own release channel for updates. When one is
+available, the **Environment** button — in the sidebar strip, and in the corner
+of the Welcome screen — gets a pulsing orange dot and an **Update available**
+label. (The same badge also flags a newer `sleap-nn`, or reads **Install
+packages** if training isn't set up yet.) Open the Environment panel and click
+**Update**: it downloads and swaps the app in place; on Linux this works for the
+`.AppImage` payload without root.
 
 You are not locked into the channel you installed from. The **Environment**
 panel has a **Channel** dropdown — *Stable*, *Latest*, *Dev (main)* — and
@@ -124,8 +144,10 @@ When installing `sleap-nn`, the app detects your GPU and picks the matching
 PyTorch build automatically — you do not choose a CUDA version by hand.
 
 If you plan to [export models](guides/inference.md#exporting-a-model) to ONNX or
-TensorRT, use the **Advanced** options to reinstall `sleap-nn` with the export
-extras included.
+TensorRT, use the **Extras** field in the panel's `sleap-nn` section: tick
+**ONNX** and/or **TensorRT**, then click **Apply**, which reinstalls `sleap-nn`
+with exactly those extras. **TensorRT** is greyed out where it can't be used —
+on macOS ("Linux/Windows only") and on machines without an NVIDIA GPU.
 
 ### Keeping sleap-nn up to date
 
@@ -137,8 +159,9 @@ same place.
 
     **Train on CPU** — fine for a tiny sanity-check run, painful for anything
     real. Or point the app at a **remote worker** with a GPU and submit training
-    and inference jobs to it over an encrypted peer-to-peer connection, which
-    works from the browser too. See [Remote Compute](guides/remote-compute.md).
+    and inference jobs to it. This works from the browser too: the browser
+    connects to the worker over WebSocket, and the desktop app can also connect
+    directly over iroh. See [Remote Compute](guides/remote-compute.md).
 
 ### Checking what the app sees
 

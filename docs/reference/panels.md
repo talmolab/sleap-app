@@ -1,6 +1,8 @@
 # Panels
 
-Panels live in a column beside the video. Open them from the **Panels** menu.
+Panels live in a column beside the video. Click a panel's icon in the sidebar
+strip to open it. The **Panels** menu chooses which panels' icons appear in the
+strip — tick or untick each one.
 
 **View ▸ Allow Multiple Panels** lets several be open at once; **View ▸ Sidebar on
 Left** moves the column; **Panels ▸ Reset to Defaults…** restores the layout.

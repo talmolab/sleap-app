@@ -29,78 +29,116 @@ model — so the panel shows two config slots. The other types use one.
 
 ## Configuration
 
-The panel is organized into collapsible sections; **Model Type & Configs** and
-**Hyperparameters** cover most of what you'll touch.
+The panel holds the settings you change most. Everything else lives in the
+**Full Configuration...** dialog.
 
-### Data
+### In the panel
 
-- **Training Labels** — which project to train on (defaults to the open one)
-- **Validation** — *Same as training (auto-split)* by default
-- **Input Scaling** and **Crop Size** — resolution the model sees. Size the crop
-  from [Instance Size Distribution](instance-size.md), not from a guess
-- **Convert Colors** — RGB, grayscale, or auto-detect from the video
-- **Data Pipeline** — stream, in-memory, or on-disk caching. Memory is fastest
-  when the dataset fits; stream is safe when it doesn't
+- **Model Type & Configs** — the **Model Type**, plus one config slot per model.
+  A ★ marks the type recommended for your data; types that need skeleton edges
+  are disabled until you add them. Each slot is filled in for you (from your
+  most recent trained run when there is one, otherwise a baseline profile), and
+  you can browse to a different config
+- **Data**
+    - **Training Labels** — which project to train on (defaults to the open one)
+    - **Validation Labels (optional)** — leave empty for *Same as training
+      (auto-split)*
+    - **Post-Training Inference Target** — see
+      [Post-training inference](#post-training-inference)
+- **Hyperparameters** — **Max Epochs**, **Batch Size**, **Rotation
+  Augmentation** (Off, ±15°, ±180°, Custom), and **Scale Augmentation**. For
+  top-down, **Anchor Part** sits above them, and two-model pipelines get one tab
+  per model. Start at 5 epochs for a first end-to-end run, then raise it
+- **Remote** (desktop) — send the run to a [remote worker](remote-compute.md)
+  instead of the local GPU
+- **Estimated Memory Usage** — params, weights, batch images, activations,
+  confidence maps, gradients, and image cache, so you find out that a
+  configuration won't fit *before* you start the run rather than at epoch 1
 
-### Model
+### Full Configuration...
 
-- **Backbone** — **UNet** (default), **ConvNeXt**, or **Swin Transformer**
-- **Filters**, **Filters Rate**, **Max Stride**, **Middle Block** — network capacity
-- **Checkpoint** / **Fine-tune (start from prior weights)** — start from an
-  existing model instead of from scratch
+**Full Configuration...** opens the **Training Configuration** dialog: a
+**Pipeline** tab, plus one tab per model. Use **Search parameters...** to jump to
+a field. Edits save as you type; click **Done** to close, or **Reset to profile
+defaults…** to start over.
 
-### Optimization
+The **Pipeline** tab:
 
-- **Epochs** — start at 5 for a first end-to-end run, then raise to ~200
-- **Batch Size**, **Initial Learning Rate**
-- **LR Scheduler** with patience, factor, cooldown, and min/end LR
-- **Online Mining** with hard/easy ratios, for datasets with a few very hard frames
+| Section | What's in it |
+|---|---|
+| **Pipeline Type** | The pipeline, plus pipeline-wide fields such as **Anchor Part** and sigma |
+| **Inference Target** | **Post-Training Inference Target**, **Skip user labeled frames**, and **Existing predictions** (Replace, Keep, Clear all) |
+| **Pre/Post-proc.** | **Convert Colors** (Auto, RGB, Grayscale), **Max Instances**, **Filter Overlapping Instances** |
+| **Performance** | **Data Pipeline** (Stream (no caching), Cache in Memory, Cache to Disk), **Dataloader Workers**, **Accelerator**, **Number of Devices**, **Multi-GPU Strategy** |
+| **W&B** | **Enable WandB for logging**, **Offline Mode**, API key, entity, project, and group names |
+| **Evaluation** | **Run evaluation during training** (mOKS, mAP, PCK) at a set epoch frequency |
+| **Output** | **Run Name**, **Runs Folder**, **Checkpoint**, **Visualization**, and **Export Model** (convert to ONNX or TensorRT when training finishes) |
+| **Remote Training** | Pick a [remote worker](remote-compute.md) for the run |
 
-### Augmentation
+Each model's tab:
 
-Rotation, scaling, brightness, contrast, and Gaussian noise. Augmentation is
-usually the cheapest accuracy you can buy on a small labeled set.
+| Section | What's in it |
+|---|---|
+| **Data** | **Validation Fraction**, **Overfit Mode (train=val)**, **Random Seed**, **Input Scaling**, and **Crop Size**. Size the crop from [Instance Size Distribution](instance-size.md), not from a guess |
+| **Augmentation** | **Rotation**, **Scale**, **Uniform Noise**, **Gaussian Noise**, **Contrast**, **Brightness**. Usually the cheapest accuracy you can buy on a small labeled set |
+| **Optimization** | **Batch Size**, **Epochs**, **Initial Learning Rate**, **LR Scheduler**, **Stop Training on Plateau**, and **Online Mining** for datasets with a few very hard frames |
+| **Model** | **Backbone** (UNet, ConvNeXt, Swin Transformer), **Max Stride**, **Filters**, **Filters Rate**, **Middle Block**, and more |
 
-### Hardware
+### Scratch, fine-tune, or resume
 
-- **Accelerator**, **Number of Devices**, **Multi-GPU Strategy**
-- **Dataloader Workers**
+The top of each model's tab picks how the run starts:
 
-The panel also shows an **Estimated Memory Usage** breakdown — weights,
-gradients, activations, image cache, batch images — so you find out that a
-configuration won't fit *before* you start the run rather than at epoch 1.
+| Option | What it does |
+|---|---|
+| **Train from scratch** | New weights. The default |
+| **Fine-tune (start from prior weights)** | Starts from a `.ckpt` or `.h5` checkpoint and trains with your current settings. The **Model** section is locked to match the checkpoint |
+| **Resume training (continue from checkpoint)** | Continues an interrupted run from its `.ckpt`. All settings are locked |
 
-### Logging
-
-Enable **Weights & Biases** with an entity, group, and run name, or leave it off.
-Offline mode is available.
+Fine-tune and Resume need a checkpoint path; **Start Training** stays disabled
+until you set one.
 
 ## Running
 
 Click **Start Training** (or **Start Remote Training** with a worker selected).
 While it runs:
 
-- The **progress display** shows epochs and status
-- The **loss viewer** plots training and validation curves live — click the graph
-  icon next to a model's progress
-- The **log terminal** shows raw `sleap-nn` output
-- **Error output** surfaces failures without making you dig through the log
+- Each model gets a **progress row** with its epoch count and loss. Click the row
+  to open the **Training Monitor** — live training and validation loss curves,
+  plus each epoch's sample predictions when **Visualize Predictions** is on
+  (under **Output** ▸ **Visualization**)
+- The **log** shows raw `sleap-nn` output — click it, or **Expand**, for the full
+  log
+- If a run fails, the **error output** shows why without making you dig through
+  the log
 
-You can **stop** a run in progress. **Train Again** re-opens the same
-configuration for the next round.
+To end a run early, use the buttons under the panel (also in the Training
+Monitor):
+
+- **Stop Early** — stops the current model and keeps its checkpoint. The run
+  carries on: the next model of a top-down pair, then post-training inference
+- **Cancel** — terminates immediately. Nothing after it runs
+
+When training finishes:
+
+- **View Metrics** — accuracy metrics for the models you just trained
+- **Export Model…** (desktop) — convert the trained model to ONNX or TensorRT.
+  See [Exporting a model](inference.md#exporting-a-model)
+- **Train Again** — clears the finished run so you can start the next round
 
 ## Post-training inference
 
-**Inference Target** tells the app what to predict on as soon as training
-finishes:
+**Post-Training Inference Target** tells the app what to predict on as soon as
+training finishes. The predictions are merged into the project automatically
+(a remote run shows **Fetch & Load Predictions** instead):
 
 - Nothing (skip inference)
 - Suggested frames
-- User-labeled frames
+- User labeled frames
 - Frames with predictions
-- Random sample (current video / all videos)
 - Entire current video
 - All videos
+- Random sample (current video)
+- Random sample (all videos)
 
 !!! warning "Set it before you start"
 
@@ -111,9 +149,11 @@ finishes:
 
 - **Predict ▸ Evaluation Metrics for Trained Models…** — accuracy metrics for
   models you've trained, with detailed per-node breakdowns
-- **Predict ▸ Visualize Model Outputs…** — confidence maps, part affinity fields,
-  and class maps rendered over your frames, which is how you diagnose *why* a
-  model is wrong rather than just *that* it is
+- **Predict ▸ Set Overlay Models…**, then check **Predict ▸ Visualize Model
+  Outputs** (desktop) — draws a model's confidence map over the current frame,
+  which is how you diagnose *why* a model is wrong rather than just *that* it is.
+  The checkbox stays disabled until you've set overlay models. Single-animal and
+  top-down models are supported
 - **Predict ▸ Export Labels Package…** — bundle labels and frames for training
   elsewhere
 

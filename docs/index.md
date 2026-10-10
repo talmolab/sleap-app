@@ -127,7 +127,7 @@ frames, and place your first instance in a few minutes.
 
 | Package | What it does | Docs |
 |---|---|---|
-| **sleap-app** | Labeling GUI, training/inference launcher (this site) | [docs.app.sleap.ai](https://docs.app.sleap.ai) |
+| **sleap-app** | Labeling GUI, training/inference launcher (this site) | [app.sleap.ai/docs](https://app.sleap.ai/docs) |
 | **sleap-nn** | PyTorch training and inference backend | [nn.sleap.ai](https://nn.sleap.ai) |
 | **sleap-io** | Python data model and file I/O | [io.sleap.ai](https://io.sleap.ai) |
 | **sleap-io.js** | The TypeScript port this app reads and writes SLP with | [iojs.sleap.ai](https://iojs.sleap.ai) |

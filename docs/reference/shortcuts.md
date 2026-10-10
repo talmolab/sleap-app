@@ -5,7 +5,8 @@ over from the legacy GUI.
 
 ++cmd++ is shown for macOS; on Windows and Linux it is ++ctrl++.
 
-**Help ▸ Keyboard Shortcuts…** shows this list inside the app.
+**Help ▸ Keyboard Shortcuts…** shows the most common of these inside the app;
+this page is the full list.
 
 ## File
 
@@ -16,7 +17,6 @@ over from the legacy GUI.
 | Save | ++cmd+s++ |
 | Save As | ++cmd+shift+s++ |
 | Quit | ++cmd+q++ |
-| Export analysis for current video | ++cmd+alt+e++ |
 
 ## Frame navigation
 
@@ -77,6 +77,7 @@ over from the legacy GUI.
 |---|---|
 | Transpose instance tracks | ++cmd+t++ |
 | New track | ++cmd+0++ |
+| Set instance track 1–9 | ++cmd+1++ … ++cmd+9++ — creates the track (and any before it) if it doesn't exist yet |
 | Delete instance and track | ++cmd+shift+backspace++ |
 | Copy instance track | ++cmd+shift+c++ |
 | Paste instance track | ++cmd+shift+v++ |
@@ -89,6 +90,7 @@ over from the legacy GUI.
 | Reset view | ++r++ |
 | Toggle pan mode | ++p++ |
 | Node placement mode | ++n++ |
+| Next / previous node, in node placement mode | ++tab++ / ++shift+tab++ |
 | Show / hide instances | ++h++ |
 | Show / hide node names | ++t++ |
 | Show / hide edges | ++cmd+shift+tab++ |
@@ -108,12 +110,13 @@ Mouse and trackpad, on the video canvas.
 | Hold ++space++ + drag | Pan |
 | Double-tap ++space++ | Cycle zoom: free → fit instances → fit frame |
 | ++cmd++ + drag, in pan mode (++p++) | Zoom by dragging |
+| ++ctrl++ + drag a user instance | Clone it and drag the copy — ++ctrl++ on macOS too |
 
 Scrolling **pans** by default — deliberately, so a mouse wheel and a trackpad
 two-finger swipe behave identically without the app guessing which one you have.
-Hold ++ctrl++ to zoom instead. This is the one case where ++ctrl++ means ++ctrl++
-on macOS as well: ++cmd++ with the scroll wheel does not zoom, though a trackpad
-pinch does.
+Hold ++ctrl++ to zoom instead. Here ++ctrl++ means ++ctrl++ on macOS as well
+(as it does for ++ctrl++ + drag to clone): ++cmd++ with the scroll wheel does not
+zoom, though a trackpad pinch does.
 
 ++space++ does three things without them colliding. A **tap** jumps to the next
 suggestion — it fires on release, and is skipped entirely if you panned while

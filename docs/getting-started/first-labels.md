@@ -16,11 +16,12 @@ this first if you'd like to know *why* each step is there.
 
 ## 1. Create the project
 
-**File ▸ New Project…**, then add your video. In the browser you drag it in or
-click to browse; on the desktop you get a native file picker.
+**File ▸ New Project…**, then add your video: drag it onto the dropzone or click
+the dropzone to browse. To follow along with the tutorial's data, click **Use
+sample video** instead — it downloads `mice.mp4`. Then click **Create Project**.
 
 Save immediately (++cmd+s++ / ++ctrl+s++) so the project has a `.slp` file to
-write into.
+write into. The save dialog suggests `labels.v001.slp`.
 
 ---
 
@@ -35,9 +36,11 @@ Either pick a template in the New Project dialog, or build one on the frame:
 2. Click to place each node on the animal.
 3. Double-click a node to rename it to something meaningful (`head`, `torso`,
    `tailbase`) — nodes start out named `node_0`, `node_1`, …
-4. Click **Next: Connect edges** and drag a stroke through the nodes to connect
-   them into edges.
-5. Click **Done**.
+4. Click **Next: Connect edges →** and drag a stroke through the nodes to
+   connect them into edges.
+5. Click **Done**. The app asks whether to create an instance on this frame
+   from your layout — click **Create instance** to start labeling right away,
+   or **Not now**.
 
 Renaming on the frame works while you're placing nodes. After that, double-click
 a node's name in the **Skeleton** panel instead.
@@ -69,7 +72,8 @@ On each suggested frame, place one instance per animal and drag every visible
 node into place.
 
 - **Add instance** — ++cmd+i++ / ++ctrl+i++, or right-click ▸ **Add Instance**
-- **Clone an existing instance** — ++cmd++-drag it
+- **Clone an existing instance** — hold ++ctrl++ and drag one of its nodes
+  (++ctrl++ on macOS too, not ++cmd++)
 - **Delete** — ++cmd+backspace++ / ++ctrl+backspace++
 - **Don't guess occluded parts** — mark them non-visible instead
 
@@ -93,7 +97,8 @@ Save when you're done with a frame.
 
 ## 5. Check your labels before training
 
-Before you spend GPU time, run **Analyze ▸ Label Quality Check**. It flags:
+Before you spend GPU time, open **Analyze ▸ Label Quality Check…** and click
+**Run checks**. It flags:
 
 - duplicate instances stacked on the same animal
 - frames with fewer instances than the project's typical count
@@ -148,7 +153,8 @@ whole point of the loop.
 
 Back in the **Training** panel, click **Train Again**. This time:
 
-- raise **Epochs** to something real (200 is a reasonable starting point)
+- raise **Epochs** — the built-in tutorial uses 50; a real project usually
+  wants more
 - keep the same anchor part
 - set **Post-Training Inference Target** *before* you start — the field is
   disabled once training is running

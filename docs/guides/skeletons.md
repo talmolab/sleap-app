@@ -15,7 +15,7 @@ is defined in terms of it.
 | Mouse top-down | 12 |
 | Human | 17 |
 | *C. elegans* | 2 |
-| Custom (empty) | — define it later |
+| Empty — define later | none yet |
 
 Pick the closest one and edit it, or start empty.
 
@@ -24,13 +24,20 @@ Pick the closest one and edit it, or start empty.
 Often the fastest route, because you can see the animal while you do it:
 
 1. Open the **Skeleton** panel and click **Draw skeleton on frame**.
-2. **Click** to place each node where that body part sits.
-3. **Drag a stroke through** the nodes you want connected — the stroke becomes
-   edges along the path.
-4. Click **Done**.
+2. **1 · Place nodes** — **click** to place each node where that body part sits.
+   Drag a placed node to move it, and double-click it to rename it.
+3. Click **Next: Connect edges →**.
+4. **2 · Connect edges** — **drag a stroke through** the nodes you want
+   connected; the stroke becomes edges along the path. **Clear edges** starts
+   the edges over, and **← Back** returns to placing nodes.
+5. Click **Done**. The app asks whether to create an instance on this frame from
+   your layout: **Create instance** or **Not now**.
 
-Nodes come out named `node_0`, `node_1`, … Double-click a name in the **Skeleton**
-panel to rename it.
+Nodes come out named `node_0`, `node_1`, … Rename them on the frame while
+placing, or later by double-clicking a name in the **Skeleton** panel.
+
+If the project already has a skeleton, **Draw skeleton on frame** first asks
+whether to **Edit existing** (add to it) or **Delete & start new**.
 
 !!! tip "Rename before you label"
 
@@ -40,12 +47,13 @@ panel to rename it.
 
 ## Editing in the panel
 
-The **Skeleton** panel lists nodes and edges with buttons to:
+The **Skeleton** panel has three tabs, each with its own buttons:
 
-- **Add Node** / **Delete Node**
-- **Add Edge** — pick a source and destination node
-- **Add Symmetry** — declare a left/right pair
-- **Delete Skeleton** — clear it and start again
+| Tab | Buttons |
+|---|---|
+| **Nodes** | **New Node**, **Delete Node**, **Delete Skeleton** (clear it and start again) |
+| **Edges** | **New Edge** (pick a source and destination node), **Delete Edge** |
+| **Symmetries** | **New Symmetry** (declare a left/right pair), **Delete Symmetry** |
 
 ## Symmetries
 
