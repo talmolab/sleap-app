@@ -1,0 +1,1 @@
+async function i(n){throw new Error("open dialog is only available in Tauri runtime")}async function r(n){throw new Error("save dialog is only available in Tauri runtime")}async function a(n,o){return window.confirm(n)}async function t(n,o){return window.confirm(n)}async function s(n,o){window.alert(n)}export{t as ask,a as confirm,s as message,i as open,r as save};
