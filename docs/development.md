@@ -12,7 +12,7 @@ Contributing to the app itself. For using it, start with the
 | **State** | [Zustand](https://zustand.docs.pmnd.rs/) + [Immer](https://immerjs.github.io/immer/) |
 | **Rendering** | Canvas 2D — video frame layer + skeleton overlay layer |
 | **Data model** | [@talmolab/sleap-io.js](https://iojs.sleap.ai) — SLP/HDF5 via [h5wasm](https://github.com/usnistgov/h5wasm) |
-| **Video** | [WebCodecs](https://developer.mozilla.org/en-US/docs/Web/API/WebCodecs_API) + [mp4box.js](https://gpac.github.io/mp4box.js/) |
+| **Video** | [WebCodecs](https://developer.mozilla.org/en-US/docs/Web/API/WebCodecs_API), demuxed by [mp4box.js](https://github.com/gpac/mp4box.js) (MP4), [MediaBunny](https://mediabunny.dev/) (WebM, MKV, MOV, Ogg, TS) and [web-demuxer](https://github.com/ForeverSc/web-demuxer) (AVI, WMV, MPEG) |
 | **Desktop** | [Tauri v2](https://v2.tauri.app/) |
 | **Shortcuts** | [tinykeys](https://github.com/jamiebuilds/tinykeys) |
 | **Testing** | `bun test` (unit), [Playwright](https://playwright.dev/) (E2E) |
@@ -31,9 +31,16 @@ bun run lint         # ESLint
 bun run test         # unit tests (bun's runner, --isolate)
 bun run test:e2e     # Playwright E2E
 
+bun run fetch:ffmpeg # once: vendor the ffmpeg/ffprobe sidecars the desktop build needs
 bun run tauri:dev    # desktop dev mode
 bun run tauri:build  # desktop installer
 ```
+
+The desktop build needs a **Rust 1.95+** toolchain (the dev-only `tauri-pilot`
+plugin uses edition 2024). Run `bun run fetch:ffmpeg` before the first
+`tauri:dev` or `tauri:build`: the `ffmpeg`/`ffprobe` sidecars are not committed,
+and without them `tauri build` fails with
+`resource path binaries/ffmpeg-<triple> doesn't exist`.
 
 !!! warning "Always use `bun run test`"
 
@@ -45,8 +52,14 @@ bun run tauri:build  # desktop installer
 ```bash
 sudo apt-get install libwebkit2gtk-4.1-dev libgtk-3-dev \
   libjavascriptcoregtk-4.1-dev librsvg2-dev patchelf \
-  libglib2.0-dev libayatana-appindicator3-dev libdbus-1-dev
+  libglib2.0-dev libayatana-appindicator3-dev libdbus-1-dev \
+  gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+  gstreamer1.0-plugins-bad gstreamer1.0-gl \
+  gstreamer1.0-alsa gstreamer1.0-pulseaudio
 ```
+
+The GStreamer plugins are what the Linux WebView needs to open videos; CI installs
+the same set.
 
 ## Layout
 

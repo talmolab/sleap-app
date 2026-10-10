@@ -7,6 +7,21 @@
 | Save | ++cmd+s++ / ++ctrl+s++ |
 | Save As… | ++cmd+shift+s++ / ++ctrl+shift+s++ |
 
+### File names
+
+Save dialogs suggest a versioned name, following SLEAP's convention:
+
+- The first save of a new project suggests `labels.v001.slp`.
+- **Save As…** suggests the next version of the current name:
+  `labels.v001.slp` → `labels.v002.slp`. A name with no version number gets
+  one: `experiment.slp` → `experiment.v001.slp`.
+- **Save** on a project that already has a file writes to that same name — it
+  never bumps the version.
+
+You can always type a different name.
+
+### Where it writes
+
 What **Save** does depends on where you're running:
 
 === "Desktop"
@@ -17,14 +32,24 @@ What **Save** does depends on where you're running:
     **File ▸ Reveal Project in File Manager** shows the file in Finder / Explorer
     / your file manager.
 
-=== "Browser"
+=== "Browser (Chrome / Edge)"
 
     If you opened the file through the file picker, the page holds a writable
     handle to it and **Save** writes back to that same file in place. If you
     opened it by drag-and-drop — which yields no handle — **Save** falls back to
-    a Save-As prompt. **Save As…** always prompts.
+    a Save-As prompt. **Save As…** always prompts, and later saves go to the
+    file you picked.
 
     The browser will ask for permission the first time it writes.
+
+=== "Browser (Firefox / Safari)"
+
+    These browsers can't write to a file on disk, so **Save** and **Save As…**
+    both download a new copy of the `.slp` to your downloads folder. The file
+    you opened is not changed.
+
+    Because the app can't tell whether the download landed, it keeps its
+    crash-recovery draft after a save here.
 
 !!! note "Large embedded packages"
 

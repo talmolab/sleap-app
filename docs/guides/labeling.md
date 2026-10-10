@@ -11,7 +11,7 @@ visible/not-visible flag) for each node in the project's
 | ++cmd+i++ / ++ctrl+i++ | Add an instance using the current placement method |
 | **Labels ▸ Add Instance** | Same, from the menu |
 | Right-click ▸ **Add Instance** | Pick the placement method for this one instance |
-| ++cmd++-drag an existing instance | Clone it, pose and all |
+| ++ctrl++-drag a node of an existing user instance | Clone it, pose and all (++ctrl++ on macOS too, not ++cmd++) |
 
 ### Placement methods
 
@@ -32,7 +32,11 @@ Once you have a model, **Copy Predictions** turns labeling into correction.
 ## Editing
 
 - **Drag a node** to move it.
-- **Drag the instance body** to move the whole pose.
+- **Move the whole pose**: double-click any node to select every node in the
+  instance, then drag one of them.
+- **Rotate** the selected instance: hold ++alt++ and scroll.
+- **Shift-click** nodes to add them to the selection; drag on empty canvas to
+  draw a selection box.
 - **Right-click** a node or instance for its context menu — visibility, deletion,
   track assignment, and more.
 - **Node placement mode** (++n++, or **View ▸ Node Placement Mode**) is for
@@ -44,7 +48,11 @@ Nodes that are genuinely occluded should be marked **not visible** rather than
 parked somewhere plausible — a guessed point is training signal that says the
 part is *there*, which it isn't.
 
-- ++v++ toggles whether non-visible nodes are drawn at all.
+- To mark a node non-visible, right-click it ▸ **Mark Node Non-Visible** (or
+  **Mark Node Visible** to undo it).
+- ++v++ toggles **View ▸ Show Non-Visible Nodes** — whether non-visible nodes
+  are drawn at all. If the pointer is over a node, or nodes are selected, ++v++
+  also flips those nodes' visibility.
 - **View ▸ Display** controls how much of the hidden geometry you see:
 
     | Mode | Shows |
@@ -85,8 +93,14 @@ Copying a *track* copies the identity assignment rather than the pose — see
 | Delete instance **and** its track | ++cmd+shift+backspace++ / ++ctrl+shift+backspace++ |
 | Delete predictions in a dragged area | ++cmd+k++ / ++ctrl+k++ |
 
-**Labels ▸ Delete Predictions…** deletes in bulk — on the current frame, over a
-frame range, or across the whole project.
+The **Labels** menu has the bulk options:
+
+| Menu item | Deletes |
+|---|---|
+| **Delete Predictions on Current Frame** | Every prediction on this frame |
+| **Delete Predictions…** | Predictions matching one filter: score threshold, frame range, on user-labeled frames, max instances per frame, track, or instance type |
+| **Delete Predictions from Area…** (++cmd+k++ / ++ctrl+k++) | Predictions inside a rectangle you drag |
+| **Delete All Predictions…** | Every prediction in the project, after a confirm |
 
 ## Working with predictions
 

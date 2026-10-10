@@ -12,8 +12,20 @@ Everything here lives under the **View** menu, and most of it is also in the
 | Reset view | ++r++ |
 | Toggle pan mode | ++p++ |
 
-Scroll to zoom, drag to pan. **Default to Pan Mode** makes dragging pan instead of
-select, for when you're reviewing rather than editing.
+With the mouse and trackpad:
+
+| Gesture | Does |
+|---|---|
+| Scroll (wheel or two-finger) | Pan |
+| ++ctrl++ + scroll, or trackpad pinch | Zoom toward the pointer (++ctrl++ on macOS too) |
+| Middle-button drag | Pan |
+| Hold ++space++ and drag | Pan |
+| Drag on empty canvas | Draw a selection box |
+
+**Default to Pan Mode** (++p++) makes a plain drag pan instead of drawing a
+selection box — handy when you're reviewing rather than editing. You can still
+drag nodes in pan mode. In pan mode, ++space++-drag selects instead, ++cmd++ /
+++ctrl++-drag zooms, and double-clicking empty canvas resets the view.
 
 Two aids for precision work:
 

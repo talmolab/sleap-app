@@ -5,36 +5,46 @@
 
 ## The preview
 
-Before anything changes, the app matches the two projects and shows you what the
-merge would do: how many frames and instances are new, how many match, and how
-many conflict. Nothing is applied until you accept it.
+Click **Choose .slp…** and pick the file to merge in. Before anything changes,
+the app matches the two projects and shows a preview: how many **Videos** and
+**Tracks** match or are new, and whether the **Skeleton** matches. Nothing is
+applied until you click **Merge**.
 
 Videos are matched by **basename** and tracks by **name**, so two projects
 labeling the same videos line up even if the files sit at different paths.
 
-## Conflict strategies
+!!! warning "The skeletons must match"
 
-A **conflict** is when both projects have instances on the same frame of the same
-video, close enough to be the same animal (within a few pixels). The app groups
-these into clusters — a base instance can clash with several donor instances and
-vice versa, so they're resolved as a unit rather than pairwise.
+    If the incoming file's skeleton differs from this project's, the preview
+    shows **Skeleton ⚠ differs** and the merge is blocked. Open that file as
+    its own project, or make the two skeletons match first.
 
-| Strategy | Resolution |
+## Conflicts
+
+A **conflict** is when both projects have a user-labeled instance on the same
+frame of the same video, close enough to be the same animal (within 5 pixels).
+Predictions never count as conflicts. The app groups conflicts into clusters — a
+base instance can clash with several incoming instances and vice versa, so
+they're resolved as a unit rather than pairwise.
+
+If there are no conflicts, the dialog says it's a clean merge and **Merge**
+combines the two projects.
+
+If there are, pick a **Global rule** for them:
+
+| Rule | Resolution |
 |---|---|
-| **Smart** | Prefer user labels over predictions, and the more complete instance otherwise |
-| **Keep both** | Keep every instance from both sides |
-| **New wins** | The incoming project's instance replaces the existing one |
-| **Base wins** | Keep the existing instance, discard the incoming one |
-
-**Smart** is the right default: it will not let a prediction overwrite a label
-you placed by hand.
+| **Keep both** *(default)* | Keep every instance from both sides |
+| **Base wins** | Keep this project's instance, discard the incoming one |
+| **Donor wins** | The incoming project's instance replaces this project's |
 
 ## Reviewing conflicts
 
-For anything you don't want decided by a blanket rule, the **conflict review**
-step walks you through clusters one at a time, drawing the competing instances on
-the actual frame so you can see which is right, and lets you choose the survivors
-per cluster.
+For anything you don't want decided by the global rule, the conflict list
+(sortable by **Frame**, **Track**, and distance, and filterable) lets you set
+**Keep** per conflict: **Both**, **Base**, or **Donor**. Click a row to draw the
+competing instances on the actual frame so you can see which is right. **Reset
+choices** drops your per-row picks and goes back to the global rule.
 
 This is worth doing when two people labeled the same frames — the disagreements
 are exactly the frames where your labeling guidelines are ambiguous, and seeing

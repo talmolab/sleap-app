@@ -5,8 +5,8 @@
 | Action | Shortcut |
 |---|---|
 | Next / previous frame | ++right++ / ++left++ |
-| ± 10 frames | ++cmd+right++ / ++cmd+left++ |
-| ± 100 frames | ++cmd+shift+right++ / ++cmd+shift+left++ |
+| ± 10 frames | ++cmd+right++ / ++cmd+left++ (++ctrl+right++ / ++ctrl+left++) |
+| ± 100 frames | ++cmd+shift+right++ / ++cmd+shift+left++ (++ctrl+shift+right++ / ++ctrl+shift+left++) |
 | First / last frame | ++home++ / ++end++ |
 | Go to Frame… | ++cmd+j++ / ++ctrl+j++ |
 | Select to Frame… | ++cmd+shift+j++ / ++ctrl+shift+j++ |
@@ -19,7 +19,7 @@ straight to the frames you care about:
 | Target | Shortcut |
 |---|---|
 | Next / previous **labeled** frame | ++alt+right++ / ++alt+left++ |
-| Next / previous **user-labeled** frame | ++cmd+u++ / ++cmd+shift+u++ |
+| Next / previous **user-labeled** frame | ++cmd+u++ / ++cmd+shift+u++ (++ctrl+u++ / ++ctrl+shift+u++) |
 | Next / previous **suggestion** | ++space++ / ++shift+space++ |
 | Next **track spawn** frame | ++cmd+e++ / ++ctrl+e++ |
 | Last interacted frame | ++cmd+a++ / ++ctrl+a++ |
@@ -32,11 +32,11 @@ tracking errors usually originate.
 
 ### Navigation scope
 
-**Go ▸ Navigate…** restricts what ++right++ / ++left++ step through:
+Three options in the **Go** menu restrict what ++right++ / ++left++ step through:
 
-- **All Frames** — every frame in the video
-- **Labeled Frames Only** — skip everything unlabeled
-- **Imaged Frames Only** — only frames whose pixels are actually present (useful
+- **Navigate All Frames** — every frame in the video
+- **Navigate Labeled Frames Only** — skip everything unlabeled
+- **Navigate Imaged Frames Only** — only frames whose pixels are actually present (useful
   in `.pkg.slp` projects with a sparse set of embedded images)
 
 ### Marks
@@ -62,7 +62,7 @@ you can *see* where a video gets hard:
 |---|---|
 | **Instance Count** | How many instances are on each frame |
 | **Point Displacement** | How far points moved from the previous frame |
-| **Primary Point Displacement** | The same, for one chosen node |
+| **Primary Point Displacement** | The same, for the skeleton's first node only |
 | **Tracking Score** | Confidence of the track assignment |
 | **Instance Score** | Model confidence per instance |
 | **Point Score** | Model confidence per point |

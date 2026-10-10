@@ -6,17 +6,36 @@
 |---|---|
 | Drag and drop onto the window | Anywhere |
 | The video dropzone in **New Project** | New projects |
+| The dropzone in the **Videos** panel — drag files onto it, or click it to browse | Open projects |
 | **File ▸ Add Video from URL…** | Videos served over `https://` |
+
+Both dropzones list the picked files with a **Grayscale** checkbox per file
+(and **All grayscale** / **All RGB** for several at once). From the **Videos**
+panel this list appears in an **Import Videos** dialog. Choose before you click
+**Import** or **Create Project** — it can't be changed afterwards.
+
+### Supported formats
+
+| Extension | Opened with |
+|---|---|
+| `.mp4` | `mp4box.js` |
+| `.webm`, `.mkv`, `.mov`, `.ogg`, `.ogv`, `.ts` | MediaBunny |
+| `.avi`, `.wmv`, `.mpeg`, `.mpg` | web-demuxer |
+| `.seq` | the app's SEQ reader |
+
+The container only gets the file open; the codec inside it still has to be one
+the app can decode — see [Codecs](#codecs).
 
 `.pkg.slp` projects carry their frames inside the file, so they open with no
 video files needed at all.
 
 ## Playback
 
-Video decoding uses [WebCodecs](https://developer.mozilla.org/en-US/docs/Web/API/WebCodecs_API)
-with `mp4box.js` for demuxing, which gives frame-accurate seeking rather than
-the approximate seeking you get from an HTML `<video>` element. Playback speed
-runs from 0.25× to 8×.
+Video decoding uses [WebCodecs](https://developer.mozilla.org/en-US/docs/Web/API/WebCodecs_API).
+The file is demuxed by `mp4box.js` (MP4), MediaBunny (WebM, MKV, MOV, Ogg,
+MPEG-TS), or web-demuxer (AVI, WMV, MPEG), which gives frame-accurate seeking
+rather than the approximate seeking you get from an HTML `<video>` element.
+Playback speed runs from 0.25× to 8×.
 
 ## Codecs
 
@@ -59,7 +78,12 @@ written atomically, so an interrupted transcode never leaves a half-file behind.
 A `.slp` project stores paths to its videos. Move the videos, or open the project
 on another machine, and those paths stop resolving.
 
-- **File ▸ Replace Videos ▸ *(video name)*** re-points one video at a new file.
+- **File ▸ Replace Videos… ▸ *(video name)***, or **Replace Video** in the
+  **Videos** panel, re-points one video at a new file.
+- **Locate All Missing** in the **Videos** panel (shown only when videos are
+  missing) finds them all at once. In Chrome / Edge you pick one folder and the
+  app matches each missing video by file name anywhere inside it; elsewhere you
+  pick the files.
 - The app also looks for the file near the project and next to the old path
   before asking you.
 
@@ -70,8 +94,9 @@ rest of a folder and cascade-filling once it works out the prefix difference. Se
 
 ## Removing videos
 
-The **Videos** panel lists the project's videos and lets you remove one. Removing
-a video removes its labeled frames with it, so the app confirms first.
+The **Videos** panel lists the project's videos; **Remove Video** removes the
+selected one. Removing a video removes its labeled frames with it, so if it has
+any, the app confirms first.
 
 ## Exporting a labeled clip
 

@@ -33,25 +33,43 @@ much better than the first.
 Depending on the method:
 
 - **Per video** — how many frames to sample (stride/random, default 20)
-- **Frame range** — restrict generation to an interval; there is also a global
-  frame-range post-filter that applies to any method
+- **Frame range** — **Frame chunk** takes its own range; for the other methods,
+  tick **Limit to frame range**
 - **Score limit** and **instance count bounds** — for prediction score, what
   counts as "low confidence" and how many low-confidence instances a frame needs
 - **Node** and **threshold** — for velocity, which node's motion to measure
 - **Displacement threshold** — for max displacement
-- **Target** — all videos, or just the current one
+- **Target** — **All videos** (the default) or **Current video**
+- **On Generate** — **Add** (the default) appends the new frames to the existing
+  list; **Replace** swaps the list out
+
+### Image features settings
+
+| Setting | What it does |
+|---|---|
+| **Sample** | How many frames per video to decode and compare (default 200) |
+| **Sample by** | **Stride** or **Random** — how those frames are picked |
+| **Resolution** | Frames are shrunk so their long side is at most this many pixels before comparing (default 128) |
+| **Clusters** | How many groups of similar-looking frames to form (default 5) |
+| **Frames per cluster** | How many suggestions to take from each group (default 5) |
+| **Seed** | Fixes the random choices so a run is repeatable; ⟳ picks a new one |
+| **Set region** | Drag a box on the frame so only that area is compared |
+| **PCA components** | Under **▸ Advanced** — how many dimensions to reduce each frame to before clustering (default 5) |
+
+You get about **Clusters × Frames per cluster** suggestions per video — the
+panel shows the number.
 
 ## Managing the list
 
 The panel also lets you:
 
 - **Sort** by video, frame, or score
-- **Add** the current frame as a suggestion
-- **Remove** a suggestion, or **remove all unlabeled** ones once you're done
+- **Add current frame** as a suggestion
+- **Remove** the selected suggestion, or **Remove unlabeled** ones once you're
+  done
 - **Shuffle** the order, so you don't systematically label the start of the video
   first
-- **Merge** a newly generated set into the existing one instead of replacing it
-- **Promote user-labeled frames** into the suggestion list
+- **Add labeled frames** — put every frame you've already labeled into the list
 
 ## A reasonable workflow
 

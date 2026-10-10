@@ -7,15 +7,15 @@ name.
 
 | Item | Notes |
 |---|---|
-| New Project… | ++cmd+n++ — pick a skeleton and add videos |
+| New Project… | ++cmd+n++ — opens a new tab (browser) or window (desktop) at the Welcome screen, where you create the project; the current project stays open |
 | Open Project… | ++cmd+o++ — `.slp` or `.pkg.slp` |
 | **Import ▸** Analysis HDF5 / NWB dataset / COCO dataset / DeepLabCut dataset / Multiple DeepLabCut datasets from folder | [Import & Export](../guides/import-export.md) |
 | Merge into Project… | [Merging Projects](../guides/merging.md) |
-| **Replace Videos ▸** *(per video)* | Re-point a video at a new file |
+| **Replace Videos… ▸** *(per video)* | Re-point a video at a new file |
 | Add Video from URL… | Videos served over `https://` |
 | Save | ++cmd+s++ |
 | Save As… | ++cmd+shift+s++ |
-| **Export ▸** JSON / Analysis CSV / Analysis HDF5 / NWB (ndx-pose) / Labels Package / Labeled Clip (Video) | [Import & Export](../guides/import-export.md) |
+| **Export ▸** JSON / Analysis CSV / Analysis HDF5 / NWB (ndx-pose) / Labels Package / Labeled Clip (Video) | [Import & Export](../guides/import-export.md). NWB is desktop only. **Labels Package** here downloads a `.pkg.json` (the labels as JSON plus a list of the referenced videos); for a `.pkg.slp` with embedded images, use **Predict ▸ Export Labels Package…** |
 | Reveal Project in File Manager | Desktop only |
 | Open Preferences Directory… | Desktop only |
 | Clear Video Transcode Cache… | Desktop only |
@@ -25,7 +25,7 @@ name.
 
 | Item | Notes |
 |---|---|
-| Undo / Redo | ++cmd+z++ / ++cmd+shift+z++ |
+| Undo / Redo | ++cmd+z++ / ++cmd+shift+z++ — the label names the action, e.g. *Undo Add Instance* |
 | Copy Instance / Paste Instance | ++cmd+c++ / ++cmd+v++ |
 | Add Instance | ++cmd+i++ |
 | Delete Instance | ++cmd+backspace++ |
@@ -65,13 +65,15 @@ name.
 | **Color Palette ▸** standard / five+ / alphabet | |
 | **Apply Distinct Colors To ▸** Auto (Node / Track) / Tracks / Instances / Nodes / Edges | |
 | Color Predicted Instances / Show Track Scores | |
+| Create Local Scrub Proxies for Network Videos (Desktop) | Desktop only; off by default. Builds a local copy of large network-drive videos for smoother scrubbing |
 
 [View guide](../guides/view.md)
 
 ## Panels
 
-Opens any panel, plus **Reset to Defaults…** for the layout. See
-[Panels](panels.md).
+One checkbox per panel, which shows or hides that panel's button in the sidebar
+strip — it doesn't open the panel. **Reset to Defaults…** restores the default
+order and visibility. See [Panels](panels.md).
 
 ## Labels
 
@@ -95,10 +97,12 @@ Opens any panel, plus **Reset to Defaults…** for the layout. See
 |---|---|
 | Training… | ++cmd+l++ — [Training](../guides/training.md) |
 | Inference / Run Prediction… | [Inference](../guides/inference.md) |
-| Export Labels Package… | For training elsewhere |
-| Import Predictions… | Bring in predictions made outside the app |
+| Export Labels Package… | A self-contained `.pkg.slp` with frame images embedded — user-labeled frames, + suggestions, or all labeled frames. For training elsewhere |
+| Export Model to ONNX/TensorRT… | Desktop only — [Inference](../guides/inference.md#exporting-a-model) |
+| Import Predictions… | Not yet implemented — it shows a notice. Load predictions with **File ▸ Open Project…** or **File ▸ Merge into Project…** |
 | Evaluation Metrics for Trained Models… | Accuracy metrics per model |
-| Visualize Model Outputs… | Confidence maps, PAFs, class maps |
+| Set Overlay Models… | Pick the trained models whose outputs to overlay. The overlay runs `sleap-nn` locally, so it needs the desktop app |
+| Visualize Model Outputs | Checkbox — confidence maps, PAFs, class maps. Disabled until overlay models are set |
 
 ## Tracks
 
@@ -106,11 +110,11 @@ Opens any panel, plus **Reset to Defaults…** for the layout. See
 |---|---|
 | Transpose Instance Tracks | ++cmd+t++ |
 | New Track | ++cmd+0++ |
-| **Set Instance Track ▸** *(per track)* | |
+| **Set Instance Track ▸** *(per track)* | Only when the project has tracks. ++cmd+1++ … ++cmd+9++ set tracks 1–9 directly |
 | Copy / Paste Instance Track | ++cmd+shift+c++ / ++cmd+shift+v++ |
 | Propagate Track Labels | Carry an identity forward |
 | Delete Instance and Track | ++cmd+shift+backspace++ |
-| **Delete Track ▸** *(per track)* | |
+| **Delete Track ▸** *(per track)* | Only when the project has tracks |
 | Delete Unused Tracks / Delete All Tracks | |
 | **Seekbar Header ▸** None / Instance Count / Point Displacement / Primary Point Displacement / Tracking Score / Instance Score / Point Score / Number of predicted points / Min Centroid Proximity | [Navigation](../guides/navigation.md#statistic-graphs) |
 
@@ -139,7 +143,7 @@ that models can't be trained there, and the tutorial ends after labeling.
 | Search Menus… | Find and run any menu command by name |
 | Keyboard Shortcuts… | [Reference](shortcuts.md) |
 | Labeling Tips… | |
-| Documentation | Opens [docs.sleap.ai](https://docs.sleap.ai) |
+| Documentation | Opens this site, for the channel the app is on (`app.sleap.ai/docs/<channel>/`) |
 | Report Issue | Opens the issue tracker |
 | Collect Diagnostics… | Bundles environment info for a bug report |
 | Releases | Opens the releases page |

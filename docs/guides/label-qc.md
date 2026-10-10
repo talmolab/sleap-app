@@ -2,13 +2,19 @@
 
 **Analyze ▸ Label Quality Check…**
 
-Walks every labeled frame in the project and flags labels that are probably
+Checks every labeled frame in the project and flags labels that are probably
 wrong. Running it before a training run is a much better use of ten seconds than
 almost anything else you could do with them — training on a systematically
 mislabeled set teaches the model to be systematically wrong.
 
-Each finding names the video, frame, and instance, and clicking it navigates
-there.
+Nothing runs when the dialog opens. It has two tabs, and each has its own run
+button:
+
+- **Rules** — click **Run checks** for the rule-based checks below.
+- **Anomalies** — click **Run analysis** for a statistical score per instance.
+
+Click any result row to jump to that frame and instance. After you fix things,
+click **Re-run** to check again.
 
 ## What it checks
 
@@ -54,12 +60,27 @@ transposed one doubles back on itself.
 
 ## Working through the results
 
-Results are a table of issue, frame, and details. Click a row to jump to it and
-fix it.
+On the **Rules** tab, results are a table of **Issue**, **Frame**, and
+**Details**. Click a row to jump to it and fix it.
 
 **Add flagged frames to Suggestions** pushes every flagged frame into the
 [Suggestions](suggestions.md) list, so you can work through them with ++space++
 like any other labeling pass.
+
+## Anomalies
+
+The **Anomalies** tab scores every instance by how unusual its pose is compared
+with the rest of your labels — an unusual joint angle, edge length, or
+visibility pattern, a likely L/R swap, and the like.
+Click **Run analysis**; on a large project it shows progress and a **Cancel**
+button.
+
+- The table lists **Score**, **Confidence**, **Top issue**, and **Frame**,
+  worst first.
+- The **Threshold** slider sets the score at which an instance is flagged.
+  Lower it to flag more.
+- **Export CSV** saves the scores for every instance, not just the flagged
+  ones.
 
 ## When to run it
 
