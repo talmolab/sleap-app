@@ -56,6 +56,7 @@ import {
   commandContext,
   ConvertPredictionToInstance,
   BeginEdit,
+  ToggleNodeVisibility,
   DeletePredictionsByArea,
   DuplicateInstance,
   AddNodeCommand,
@@ -512,33 +513,15 @@ export function VideoPlayer() {
       if (selectedNodes.size > 0) {
         // Toggle selected nodes
         e.preventDefault();
-        commandContext.execute(BeginEdit);
-        let visibleCount = 0;
-        for (const key of selectedNodes) {
-          const { instanceIdx, nodeIdx } = parseNodeKey(key);
-          const point = lf.instances[instanceIdx]?.points[nodeIdx];
-          if (point?.visible) visibleCount++;
-        }
-        const makeVisible = visibleCount <= selectedNodes.size / 2;
-        for (const key of selectedNodes) {
-          const { instanceIdx, nodeIdx } = parseNodeKey(key);
-          const point = lf.instances[instanceIdx]?.points[nodeIdx];
-          if (point) point.visible = makeVisible;
-        }
-        useAppStore.getState().markChanged();
-        useAppStore.getState().touchFrame();
-        useAppStore.getState().bumpOverlayVersion();
+        commandContext.execute(ToggleNodeVisibility, {
+          nodes: [...selectedNodes].map(parseNodeKey),
+        });
       } else if (hoveredNode) {
         // Toggle hovered node
         e.preventDefault();
-        commandContext.execute(BeginEdit);
-        const point = lf.instances[hoveredNode.instanceIdx]?.points[hoveredNode.nodeIdx];
-        if (point) {
-          point.visible = !point.visible;
-          useAppStore.getState().markChanged();
-          useAppStore.getState().touchFrame();
-          useAppStore.getState().bumpOverlayVersion();
-        }
+        commandContext.execute(ToggleNodeVisibility, {
+          nodes: [{ instanceIdx: hoveredNode.instanceIdx, nodeIdx: hoveredNode.nodeIdx }],
+        });
       }
     };
     window.addEventListener("keydown", handler);
@@ -2888,13 +2871,10 @@ export function VideoPlayer() {
         const nodeKey = makeNodeKey(nodeHit.instanceIdx, nodeHit.nodeIdx);
         const isMultiSelected = selectedNodes.size > 1 && selectedNodes.has(nodeKey);
         if (inst && !(inst instanceof PredictedInstance) && !isMultiSelected) {
-          const point = inst.points[nodeHit.nodeIdx];
-          if (point) {
-            commandContext.execute(BeginEdit);
-            point.visible = !point.visible;
-            useAppStore.getState().markChanged();
-            useAppStore.getState().touchFrame();
-            useAppStore.getState().bumpOverlayVersion();
+          if (inst.points[nodeHit.nodeIdx]) {
+            commandContext.execute(ToggleNodeVisibility, {
+              nodes: [{ instanceIdx: nodeHit.instanceIdx, nodeIdx: nodeHit.nodeIdx }],
+            });
           }
           return;
         }
@@ -3431,25 +3411,10 @@ export function VideoPlayer() {
           nodeIdx={contextMenu.nodeIdx}
           selectedNodes={selectedNodes}
           onToggleSelectedNodesVisibility={() => {
-            const lf = useAppStore.getState().labeledFrame;
-            if (!lf) return;
-            commandContext.execute(BeginEdit);
-            // Determine majority visibility to decide toggle direction
-            let visibleCount = 0;
-            for (const key of selectedNodes) {
-              const { instanceIdx, nodeIdx } = parseNodeKey(key);
-              const point = lf.instances[instanceIdx]?.points[nodeIdx];
-              if (point?.visible) visibleCount++;
-            }
-            const makeVisible = visibleCount <= selectedNodes.size / 2;
-            for (const key of selectedNodes) {
-              const { instanceIdx, nodeIdx } = parseNodeKey(key);
-              const point = lf.instances[instanceIdx]?.points[nodeIdx];
-              if (point) point.visible = makeVisible;
-            }
-            useAppStore.getState().markChanged();
-            useAppStore.getState().touchFrame();
-            useAppStore.getState().bumpOverlayVersion();
+            if (!useAppStore.getState().labeledFrame) return;
+            commandContext.execute(ToggleNodeVisibility, {
+              nodes: [...selectedNodes].map(parseNodeKey),
+            });
           }}
           onClose={() => setContextMenu(null)}
         />

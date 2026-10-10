@@ -20,6 +20,7 @@ import {
   DeleteFramePredictions,
   AddTrack,
   SetInstanceTrack,
+  ToggleNodeVisibility,
 } from "../../commands";
 import { cn } from "@/lib/utils";
 import { formatShortcut } from "@/lib/formatShortcut";
@@ -145,14 +146,9 @@ export function ContextMenu({
             }
             shortcut="V"
             onClick={() => {
-              const point = instance.points[nodeIdx!];
-              if (point) {
-                point.visible = !point.visible;
-                useAppStore.getState().markChanged();
-                useAppStore.getState().touchFrame();
-                useAppStore.getState().bumpOverlayVersion();
-              }
-              onClose();
+              const lf = useAppStore.getState().labeledFrame;
+              const instanceIdx = lf ? lf.instances.indexOf(instance) : -1;
+              exec(ToggleNodeVisibility, { nodes: [{ instanceIdx, nodeIdx: nodeIdx! }] });
             }}
           />
           <ContextMenuSeparator />
