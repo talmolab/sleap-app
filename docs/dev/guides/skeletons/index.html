@@ -1988,8 +1988,8 @@ is defined in terms of it.</p>
 <td>2</td>
 </tr>
 <tr>
-<td>Custom (empty)</td>
-<td>— define it later</td>
+<td>Empty — define later</td>
+<td>none yet</td>
 </tr>
 </tbody>
 </table>
@@ -1998,13 +1998,19 @@ is defined in terms of it.</p>
 <p>Often the fastest route, because you can see the animal while you do it:</p>
 <ol>
 <li>Open the <strong>Skeleton</strong> panel and click <strong>Draw skeleton on frame</strong>.</li>
-<li><strong>Click</strong> to place each node where that body part sits.</li>
-<li><strong>Drag a stroke through</strong> the nodes you want connected — the stroke becomes
-   edges along the path.</li>
-<li>Click <strong>Done</strong>.</li>
+<li><strong>1 · Place nodes</strong> — <strong>click</strong> to place each node where that body part sits.
+   Drag a placed node to move it, and double-click it to rename it.</li>
+<li>Click <strong>Next: Connect edges →</strong>.</li>
+<li><strong>2 · Connect edges</strong> — <strong>drag a stroke through</strong> the nodes you want
+   connected; the stroke becomes edges along the path. <strong>Clear edges</strong> starts
+   the edges over, and <strong>← Back</strong> returns to placing nodes.</li>
+<li>Click <strong>Done</strong>. The app asks whether to create an instance on this frame from
+   your layout: <strong>Create instance</strong> or <strong>Not now</strong>.</li>
 </ol>
-<p>Nodes come out named <code>node_0</code>, <code>node_1</code>, … Double-click a name in the <strong>Skeleton</strong>
-panel to rename it.</p>
+<p>Nodes come out named <code>node_0</code>, <code>node_1</code>, … Rename them on the frame while
+placing, or later by double-clicking a name in the <strong>Skeleton</strong> panel.</p>
+<p>If the project already has a skeleton, <strong>Draw skeleton on frame</strong> first asks
+whether to <strong>Edit existing</strong> (add to it) or <strong>Delete &amp; start new</strong>.</p>
 <div class="admonition tip">
 <p class="admonition-title">Rename before you label</p>
 <p>Node names are how you'll read every quality-check finding, every metrics
@@ -2012,13 +2018,29 @@ table, and every exported column. <code>head</code> / <code>torso</code> / <code
 <code>node_0</code> / <code>node_1</code> / <code>node_2</code> immediately and forever.</p>
 </div>
 <h2 id="editing-in-the-panel">Editing in the panel<a class="headerlink" href="#editing-in-the-panel" title="Permanent link">&para;</a></h2>
-<p>The <strong>Skeleton</strong> panel lists nodes and edges with buttons to:</p>
-<ul>
-<li><strong>Add Node</strong> / <strong>Delete Node</strong></li>
-<li><strong>Add Edge</strong> — pick a source and destination node</li>
-<li><strong>Add Symmetry</strong> — declare a left/right pair</li>
-<li><strong>Delete Skeleton</strong> — clear it and start again</li>
-</ul>
+<p>The <strong>Skeleton</strong> panel has three tabs, each with its own buttons:</p>
+<table>
+<thead>
+<tr>
+<th>Tab</th>
+<th>Buttons</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Nodes</strong></td>
+<td><strong>New Node</strong>, <strong>Delete Node</strong>, <strong>Delete Skeleton</strong> (clear it and start again)</td>
+</tr>
+<tr>
+<td><strong>Edges</strong></td>
+<td><strong>New Edge</strong> (pick a source and destination node), <strong>Delete Edge</strong></td>
+</tr>
+<tr>
+<td><strong>Symmetries</strong></td>
+<td><strong>New Symmetry</strong> (declare a left/right pair), <strong>Delete Symmetry</strong></td>
+</tr>
+</tbody>
+</table>
 <h2 id="symmetries">Symmetries<a class="headerlink" href="#symmetries" title="Permanent link">&para;</a></h2>
 <p>A <strong>symmetry</strong> marks two nodes as mirror images of each other — <code>left_ear</code> and
 <code>right_ear</code>, <code>left_hind_paw</code> and <code>right_hind_paw</code>.</p>

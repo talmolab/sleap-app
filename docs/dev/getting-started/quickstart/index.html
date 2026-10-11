@@ -1966,10 +1966,17 @@
 <div class="admonition tip">
 <p class="admonition-title">There is a guided tutorial built into the app</p>
 <p>Click <strong>Start Tutorial</strong> in the menu bar and the app walks you through the
-entire workflow — new project, video, skeleton, suggestions, labeling,
-training, correcting predictions, retraining, and inference — highlighting
-the exact control to click at each step. It downloads a small sample video
-(<code>mice.mp4</code>) for you. If you would rather be shown than read, start there.</p>
+workflow, highlighting the exact control to click at each step. It
+downloads a sample video (<code>mice.mp4</code>) for you. If you would rather be
+shown than read, start there.</p>
+<ul>
+<li><strong>Desktop app:</strong> the full loop — new project, video, suggestions,
+  skeleton, labeling, training, correcting predictions, retraining, and
+  inference.</li>
+<li><strong>Browser:</strong> everything up to training — new project, video,
+  suggestions, skeleton, and labeling one frame. It ends there, because
+  models can't be trained in the browser.</li>
+</ul>
 </div>
 <hr />
 <h2 id="1-open-the-app">1. Open the app<a class="headerlink" href="#1-open-the-app" title="Permanent link">&para;</a></h2>
@@ -1989,15 +1996,24 @@ the exact control to click at each step. It downloads a small sample video
 <strong>File ▸ Open Project…</strong> (<span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-o">O</kbd></span> / <span class="keys"><kbd class="key-control">Ctrl</kbd><span>+</span><kbd class="key-o">O</kbd></span>).</p>
 <p><code>.pkg.slp</code> files with embedded videos work too, and open with no further setup —
 the frames come out of the file itself.</p>
-<p>To start fresh, use <strong>File ▸ New Project…</strong> (<span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-n">N</kbd></span> / <span class="keys"><kbd class="key-control">Ctrl</kbd><span>+</span><kbd class="key-n">N</kbd></span>). You pick a
-skeleton — one of the built-in templates (fly, mouse top-down, human,
-<em>C. elegans</em>) or an empty one you define later — and add one or more videos.</p>
+<p>To start fresh, use <strong>File ▸ New Project…</strong> (<span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-n">N</kbd></span> / <span class="keys"><kbd class="key-control">Ctrl</kbd><span>+</span><kbd class="key-n">N</kbd></span>):</p>
+<ol>
+<li>Pick a <strong>Skeleton</strong> — one of the built-in templates (fly, mouse top-down,
+   human, <em>C. elegans</em>) or <strong>Empty — define later</strong>.</li>
+<li>Add videos: drag them onto the dropzone or click it to browse. No video
+   handy? Click <strong>Use sample video</strong> to download <code>mice.mp4</code>.</li>
+<li>Click <strong>Create Project</strong>.</li>
+</ol>
 <div class="admonition note">
 <p class="admonition-title">Where projects live</p>
 <p>In the <strong>desktop app</strong>, projects are ordinary files on disk and <strong>Save</strong>
-writes back in place. In the <strong>browser</strong>, opening a file gives the page a
-copy; <strong>Save</strong> writes back through the browser's file-system access, and
-<strong>Save As</strong> downloads. See <a href="../../guides/saving/">Saving &amp; Recovery</a>.</p>
+writes back in place. In the <strong>browser</strong>, it depends on the browser:</p>
+<ul>
+<li><strong>Chrome / Edge</strong> — <strong>Save</strong> writes back to the file you opened, and
+  <strong>Save As…</strong> opens a save dialog.</li>
+<li><strong>Firefox / Safari</strong> — both download a new copy of the <code>.slp</code>.</li>
+</ul>
+<p>See <a href="../../guides/saving/">Saving &amp; Recovery</a>.</p>
 </div>
 <hr />
 <h2 id="3-move-around-the-video">3. Move around the video<a class="headerlink" href="#3-move-around-the-video" title="Permanent link">&para;</a></h2>
@@ -2015,11 +2031,11 @@ copy; <strong>Save</strong> writes back through the browser's file-system access
 </tr>
 <tr>
 <td>Jump 10 frames</td>
-<td><span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-arrow-right">Right</kbd></span> / <span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-arrow-left">Left</kbd></span></td>
+<td><span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-arrow-right">Right</kbd></span> / <span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-arrow-left">Left</kbd></span> (<span class="keys"><kbd class="key-control">Ctrl</kbd><span>+</span><kbd class="key-arrow-right">Right</kbd></span> / <span class="keys"><kbd class="key-control">Ctrl</kbd><span>+</span><kbd class="key-arrow-left">Left</kbd></span>)</td>
 </tr>
 <tr>
 <td>Jump 100 frames</td>
-<td><span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-shift">Shift</kbd><span>+</span><kbd class="key-arrow-right">Right</kbd></span> / <span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-shift">Shift</kbd><span>+</span><kbd class="key-arrow-left">Left</kbd></span></td>
+<td><span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-shift">Shift</kbd><span>+</span><kbd class="key-arrow-right">Right</kbd></span> / <span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-shift">Shift</kbd><span>+</span><kbd class="key-arrow-left">Left</kbd></span> (<span class="keys"><kbd class="key-control">Ctrl</kbd><span>+</span><kbd class="key-shift">Shift</kbd><span>+</span><kbd class="key-arrow-right">Right</kbd></span> / <span class="keys"><kbd class="key-control">Ctrl</kbd><span>+</span><kbd class="key-shift">Shift</kbd><span>+</span><kbd class="key-arrow-left">Left</kbd></span>)</td>
 </tr>
 <tr>
 <td>Next / previous <strong>labeled</strong> frame</td>
@@ -2049,12 +2065,12 @@ displacement, prediction score, and more. See <a href="../../guides/navigation/"
    instance on the current frame.</li>
 <li><strong>Drag nodes</strong> to their correct positions.</li>
 <li>Nodes you can't see should be marked non-visible rather than guessed —
-   right-click a node for its menu. Press <span class="keys"><kbd class="key-v">V</kbd></span> to toggle whether non-visible
-   nodes are drawn at all.</li>
+   right-click the node ▸ <strong>Mark Node Non-Visible</strong>.</li>
 <li><span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-z">Z</kbd></span> / <span class="keys"><kbd class="key-control">Ctrl</kbd><span>+</span><kbd class="key-z">Z</kbd></span> undoes anything.</li>
 </ol>
-<p>Have more than one animal in the frame? <span class="keys"><kbd class="key-command">Cmd</kbd></span>-drag an existing instance to
-clone it, or right-click ▸ <strong>Add Instance</strong>.</p>
+<p>Have more than one animal in the frame? Hold <span class="keys"><kbd class="key-control">Ctrl</kbd></span> and drag a node of an
+existing instance to clone it (it's <span class="keys"><kbd class="key-control">Ctrl</kbd></span> on macOS too, not <span class="keys"><kbd class="key-command">Cmd</kbd></span>), or
+right-click ▸ <strong>Add Instance</strong>.</p>
 <p>More in <a href="../../guides/labeling/">Labeling Instances</a>.</p>
 <hr />
 <h2 id="5-pick-better-frames-to-label">5. Pick better frames to label<a class="headerlink" href="#5-pick-better-frames-to-label" title="Permanent link">&para;</a></h2>
@@ -2064,6 +2080,7 @@ spread across the video instead:</p>
 <ul>
 <li><strong>Stride</strong> — evenly spaced, the sane default</li>
 <li><strong>Random</strong> — uniform random sample</li>
+<li><strong>Frame chunk</strong> — every frame in one range</li>
 <li><strong>Image features</strong> — decodes frames, clusters them, and picks a diverse set</li>
 <li><strong>Prediction score</strong> / <strong>Velocity</strong> / <strong>Max displacement</strong> — target frames a
   model already struggles with</li>
@@ -2072,7 +2089,9 @@ spread across the video instead:</p>
 <p>See <a href="../../guides/suggestions/">Suggestions</a>.</p>
 <hr />
 <h2 id="6-save">6. Save<a class="headerlink" href="#6-save" title="Permanent link">&para;</a></h2>
-<p><span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-s">S</kbd></span> / <span class="keys"><kbd class="key-control">Ctrl</kbd><span>+</span><kbd class="key-s">S</kbd></span> saves back to <code>.slp</code>. <strong>File ▸ Save As…</strong> writes a new file.</p>
+<p><span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-s">S</kbd></span> / <span class="keys"><kbd class="key-control">Ctrl</kbd><span>+</span><kbd class="key-s">S</kbd></span> saves back to <code>.slp</code>. The first save of a new project
+suggests the name <code>labels.v001.slp</code>. <strong>File ▸ Save As…</strong> writes a new file and
+suggests the next version (<code>labels.v002.slp</code>, …).</p>
 <p>The app also keeps a background draft of unsaved work, so a crashed tab or a
 closed window doesn't cost you labels — you get a <strong>Restore unsaved work?</strong>
 prompt next time. It's a safety net, not a substitute for saving.</p>

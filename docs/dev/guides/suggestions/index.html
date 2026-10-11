@@ -866,6 +866,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Parameters">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#image-features-settings" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Image features settings
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1870,6 +1887,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Parameters">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#image-features-settings" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Image features settings
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1976,24 +2010,71 @@ much better than the first.</p>
 <p>Depending on the method:</p>
 <ul>
 <li><strong>Per video</strong> — how many frames to sample (stride/random, default 20)</li>
-<li><strong>Frame range</strong> — restrict generation to an interval; there is also a global
-  frame-range post-filter that applies to any method</li>
+<li><strong>Frame range</strong> — <strong>Frame chunk</strong> takes its own range; for the other methods,
+  tick <strong>Limit to frame range</strong></li>
 <li><strong>Score limit</strong> and <strong>instance count bounds</strong> — for prediction score, what
   counts as "low confidence" and how many low-confidence instances a frame needs</li>
 <li><strong>Node</strong> and <strong>threshold</strong> — for velocity, which node's motion to measure</li>
 <li><strong>Displacement threshold</strong> — for max displacement</li>
-<li><strong>Target</strong> — all videos, or just the current one</li>
+<li><strong>Target</strong> — <strong>All videos</strong> (the default) or <strong>Current video</strong></li>
+<li><strong>On Generate</strong> — <strong>Add</strong> (the default) appends the new frames to the existing
+  list; <strong>Replace</strong> swaps the list out</li>
 </ul>
+<h3 id="image-features-settings">Image features settings<a class="headerlink" href="#image-features-settings" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Setting</th>
+<th>What it does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Sample</strong></td>
+<td>How many frames per video to decode and compare (default 200)</td>
+</tr>
+<tr>
+<td><strong>Sample by</strong></td>
+<td><strong>Stride</strong> or <strong>Random</strong> — how those frames are picked</td>
+</tr>
+<tr>
+<td><strong>Resolution</strong></td>
+<td>Frames are shrunk so their long side is at most this many pixels before comparing (default 128)</td>
+</tr>
+<tr>
+<td><strong>Clusters</strong></td>
+<td>How many groups of similar-looking frames to form (default 5)</td>
+</tr>
+<tr>
+<td><strong>Frames per cluster</strong></td>
+<td>How many suggestions to take from each group (default 5)</td>
+</tr>
+<tr>
+<td><strong>Seed</strong></td>
+<td>Fixes the random choices so a run is repeatable; ⟳ picks a new one</td>
+</tr>
+<tr>
+<td><strong>Set region</strong></td>
+<td>Drag a box on the frame so only that area is compared</td>
+</tr>
+<tr>
+<td><strong>PCA components</strong></td>
+<td>Under <strong>▸ Advanced</strong> — how many dimensions to reduce each frame to before clustering (default 5)</td>
+</tr>
+</tbody>
+</table>
+<p>You get about <strong>Clusters × Frames per cluster</strong> suggestions per video — the
+panel shows the number.</p>
 <h2 id="managing-the-list">Managing the list<a class="headerlink" href="#managing-the-list" title="Permanent link">&para;</a></h2>
 <p>The panel also lets you:</p>
 <ul>
 <li><strong>Sort</strong> by video, frame, or score</li>
-<li><strong>Add</strong> the current frame as a suggestion</li>
-<li><strong>Remove</strong> a suggestion, or <strong>remove all unlabeled</strong> ones once you're done</li>
+<li><strong>Add current frame</strong> as a suggestion</li>
+<li><strong>Remove</strong> the selected suggestion, or <strong>Remove unlabeled</strong> ones once you're
+  done</li>
 <li><strong>Shuffle</strong> the order, so you don't systematically label the start of the video
   first</li>
-<li><strong>Merge</strong> a newly generated set into the existing one instead of replacing it</li>
-<li><strong>Promote user-labeled frames</strong> into the suggestion list</li>
+<li><strong>Add labeled frames</strong> — put every frame you've already labeled into the list</li>
 </ul>
 <h2 id="a-reasonable-workflow">A reasonable workflow<a class="headerlink" href="#a-reasonable-workflow" title="Permanent link">&para;</a></h2>
 <ol>

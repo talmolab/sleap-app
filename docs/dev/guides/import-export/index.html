@@ -2022,7 +2022,9 @@ by <a href="https://iojs.sleap.ai">sleap-io.js</a>.</p>
 </tr>
 </tbody>
 </table>
-<p><strong>Predict ▸ Import Predictions…</strong> brings in predictions produced outside the app.</p>
+<p>To bring in predictions produced outside the app, open their <code>.slp</code> with
+<strong>File ▸ Open Project…</strong>, or merge it into the open project with
+<strong>File ▸ Merge into Project…</strong>.</p>
 <h2 id="exporting">Exporting<a class="headerlink" href="#exporting" title="Permanent link">&para;</a></h2>
 <p><strong>File ▸ Export ▸ …</strong></p>
 <table>
@@ -2043,15 +2045,15 @@ by <a href="https://iojs.sleap.ai">sleap-io.js</a>.</p>
 </tr>
 <tr>
 <td><strong>Analysis HDF5</strong></td>
-<td>The same data in SLEAP's analysis <code>.h5</code> layout</td>
+<td>The same data in SLEAP's analysis <code>.h5</code> layout, for the <strong>current video</strong> only</td>
 </tr>
 <tr>
 <td><strong>NWB (ndx-pose)</strong></td>
-<td>Sharing and archiving in the NWB ecosystem</td>
+<td>Sharing and archiving in the NWB ecosystem. Desktop only</td>
 </tr>
 <tr>
 <td><strong>Labels Package</strong></td>
-<td>Labels bundled with their image data — portable, self-contained</td>
+<td>A <code>.pkg.json</code> file: the labels plus a list of the project's videos. No image data</td>
 </tr>
 <tr>
 <td><strong>Labeled Clip (Video)</strong></td>
@@ -2059,36 +2061,40 @@ by <a href="https://iojs.sleap.ai">sleap-io.js</a>.</p>
 </tr>
 </tbody>
 </table>
-<p><span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-alt">Alt</kbd><span>+</span><kbd class="key-e">E</kbd></span> exports the analysis file for the current video directly.</p>
+<p>For a portable project that carries its own frames, use the <code>.pkg.slp</code> labels
+package below instead.</p>
 <h3 id="labels-packages">Labels packages<a class="headerlink" href="#labels-packages" title="Permanent link">&para;</a></h3>
 <p>A <strong>labels package</strong> (<code>.pkg.slp</code>) embeds the image data alongside the labels, so
-the project opens anywhere without its original videos. Three levels of
-completeness:</p>
+the project opens anywhere without its original videos. Export one with
+<strong>Predict ▸ Export Labels Package…</strong> and pick a level:</p>
 <table>
 <thead>
 <tr>
 <th>Level</th>
+<th>Option</th>
 <th>Contents</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td><strong>Level 1</strong></td>
+<td>User labeled frames</td>
 <td>Only frames you labeled by hand</td>
 </tr>
 <tr>
 <td><strong>Level 2</strong></td>
-<td>Your labeled frames plus suggested frames</td>
+<td>User labeled + suggested frames</td>
+<td>Your labeled frames plus suggested frames. The default</td>
 </tr>
 <tr>
 <td><strong>Level 3</strong></td>
+<td>All labeled frames</td>
 <td>Every labeled frame, including predictions</td>
 </tr>
 </tbody>
 </table>
-<p>Level 1 is what you send to a collaborator or upload for training elsewhere;
-Level 3 is a full archive. <strong>Predict ▸ Export Labels Package…</strong> is the same
-export, reachable from the training workflow.</p>
+<p>Level 1 is the smallest package to send to a collaborator; Level 3 is a full
+archive.</p>
 <h3 id="labeled-clips">Labeled clips<a class="headerlink" href="#labeled-clips" title="Permanent link">&para;</a></h3>
 <p><strong>File ▸ Export ▸ Labeled Clip (Video)…</strong> renders MP4 with the skeleton overlay
 burned in. You pick the frame range, which videos to include, and the frame rate,

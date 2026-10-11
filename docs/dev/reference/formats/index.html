@@ -2010,8 +2010,8 @@ byte-compatible with the rest of the SLEAP ecosystem.</p>
 <td><strong>File ▸ Import ▸ Multiple DeepLabCut datasets from folder…</strong></td>
 </tr>
 <tr>
-<td>Predictions</td>
-<td><strong>Predict ▸ Import Predictions…</strong></td>
+<td>Predictions (<code>.slp</code>)</td>
+<td><strong>File ▸ Open Project…</strong>, or <strong>File ▸ Merge into Project…</strong> to add them to the open project</td>
 </tr>
 </tbody>
 </table>
@@ -2038,17 +2038,22 @@ byte-compatible with the rest of the SLEAP ecosystem.</p>
 <tr>
 <td>Analysis HDF5</td>
 <td><strong>File ▸ Export ▸ Analysis HDF5…</strong></td>
-<td>SLEAP's analysis <code>.h5</code> layout</td>
+<td>SLEAP's analysis <code>.h5</code> layout, current video only</td>
 </tr>
 <tr>
 <td>NWB (ndx-pose)</td>
 <td><strong>File ▸ Export ▸ NWB (ndx-pose)…</strong></td>
-<td>Sharing and archiving</td>
+<td>Sharing and archiving. Desktop only</td>
 </tr>
 <tr>
-<td>Labels Package</td>
+<td>Labels package (<code>.pkg.slp</code>)</td>
+<td><strong>Predict ▸ Export Labels Package…</strong></td>
+<td>Portable, self-contained project with frames embedded (Level &frac12;/3, below)</td>
+</tr>
+<tr>
+<td>Labels package (<code>.pkg.json</code>)</td>
 <td><strong>File ▸ Export ▸ Labels Package…</strong></td>
-<td>Portable, self-contained project</td>
+<td>Labels plus a list of the project's videos, as JSON. No image data</td>
 </tr>
 <tr>
 <td>Labeled clip (MP4)</td>
@@ -2057,12 +2062,13 @@ byte-compatible with the rest of the SLEAP ecosystem.</p>
 </tr>
 <tr>
 <td>ONNX / TensorRT</td>
-<td>Inference panel ▸ <strong>Export model</strong></td>
-<td>Model deployment</td>
+<td><strong>Predict ▸ Export Model to ONNX/TensorRT…</strong>, or <strong>Export Model…</strong> in the Training panel after a run</td>
+<td>Model deployment. Desktop only</td>
 </tr>
 </tbody>
 </table>
 <h3 id="labels-package-levels">Labels package levels<a class="headerlink" href="#labels-package-levels" title="Permanent link">&para;</a></h3>
+<p>For the <code>.pkg.slp</code> export:</p>
 <table>
 <thead>
 <tr>
@@ -2077,7 +2083,7 @@ byte-compatible with the rest of the SLEAP ecosystem.</p>
 </tr>
 <tr>
 <td>2</td>
-<td>Your labeled frames plus suggested frames</td>
+<td>Your labeled frames plus suggested frames (the default)</td>
 </tr>
 <tr>
 <td>3</td>

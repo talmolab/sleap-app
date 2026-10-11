@@ -2019,10 +2019,11 @@ your skeleton and crop size than another hour of labeling does.</p>
 </div>
 <hr />
 <h2 id="1-create-the-project">1. Create the project<a class="headerlink" href="#1-create-the-project" title="Permanent link">&para;</a></h2>
-<p><strong>File ▸ New Project…</strong>, then add your video. In the browser you drag it in or
-click to browse; on the desktop you get a native file picker.</p>
+<p><strong>File ▸ New Project…</strong>, then add your video: drag it onto the dropzone or click
+the dropzone to browse. To follow along with the tutorial's data, click <strong>Use
+sample video</strong> instead — it downloads <code>mice.mp4</code>. Then click <strong>Create Project</strong>.</p>
 <p>Save immediately (<span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-s">S</kbd></span> / <span class="keys"><kbd class="key-control">Ctrl</kbd><span>+</span><kbd class="key-s">S</kbd></span>) so the project has a <code>.slp</code> file to
-write into.</p>
+write into. The save dialog suggests <code>labels.v001.slp</code>.</p>
 <hr />
 <h2 id="2-define-a-skeleton">2. Define a skeleton<a class="headerlink" href="#2-define-a-skeleton" title="Permanent link">&para;</a></h2>
 <p>A skeleton is the set of body parts (<strong>nodes</strong>) and the connections between them
@@ -2033,9 +2034,11 @@ write into.</p>
 <li>Click to place each node on the animal.</li>
 <li>Double-click a node to rename it to something meaningful (<code>head</code>, <code>torso</code>,
    <code>tailbase</code>) — nodes start out named <code>node_0</code>, <code>node_1</code>, …</li>
-<li>Click <strong>Next: Connect edges</strong> and drag a stroke through the nodes to connect
-   them into edges.</li>
-<li>Click <strong>Done</strong>.</li>
+<li>Click <strong>Next: Connect edges →</strong> and drag a stroke through the nodes to
+   connect them into edges.</li>
+<li>Click <strong>Done</strong>. The app asks whether to create an instance on this frame
+   from your layout — click <strong>Create instance</strong> to start labeling right away,
+   or <strong>Not now</strong>.</li>
 </ol>
 <p>Renaming on the frame works while you're placing nodes. After that, double-click
 a node's name in the <strong>Skeleton</strong> panel instead.</p>
@@ -2059,7 +2062,8 @@ and click <strong>Generate</strong>. You now have 20 frames spread across the vi
 node into place.</p>
 <ul>
 <li><strong>Add instance</strong> — <span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-i">I</kbd></span> / <span class="keys"><kbd class="key-control">Ctrl</kbd><span>+</span><kbd class="key-i">I</kbd></span>, or right-click ▸ <strong>Add Instance</strong></li>
-<li><strong>Clone an existing instance</strong> — <span class="keys"><kbd class="key-command">Cmd</kbd></span>-drag it</li>
+<li><strong>Clone an existing instance</strong> — hold <span class="keys"><kbd class="key-control">Ctrl</kbd></span> and drag one of its nodes
+  (<span class="keys"><kbd class="key-control">Ctrl</kbd></span> on macOS too, not <span class="keys"><kbd class="key-command">Cmd</kbd></span>)</li>
 <li><strong>Delete</strong> — <span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-backspace">Backspace</kbd></span> / <span class="keys"><kbd class="key-control">Ctrl</kbd><span>+</span><kbd class="key-backspace">Backspace</kbd></span></li>
 <li><strong>Don't guess occluded parts</strong> — mark them non-visible instead</li>
 </ul>
@@ -2103,7 +2107,8 @@ into nudging rather than placing.</p>
 <p>Save when you're done with a frame.</p>
 <hr />
 <h2 id="5-check-your-labels-before-training">5. Check your labels before training<a class="headerlink" href="#5-check-your-labels-before-training" title="Permanent link">&para;</a></h2>
-<p>Before you spend GPU time, run <strong>Analyze ▸ Label Quality Check</strong>. It flags:</p>
+<p>Before you spend GPU time, open <strong>Analyze ▸ Label Quality Check…</strong> and click
+<strong>Run checks</strong>. It flags:</p>
 <ul>
 <li>duplicate instances stacked on the same animal</li>
 <li>frames with fewer instances than the project's typical count</li>
@@ -2148,7 +2153,8 @@ whole point of the loop.</p>
 <h2 id="8-retrain">8. Retrain<a class="headerlink" href="#8-retrain" title="Permanent link">&para;</a></h2>
 <p>Back in the <strong>Training</strong> panel, click <strong>Train Again</strong>. This time:</p>
 <ul>
-<li>raise <strong>Epochs</strong> to something real (200 is a reasonable starting point)</li>
+<li>raise <strong>Epochs</strong> — the built-in tutorial uses 50; a real project usually
+  wants more</li>
 <li>keep the same anchor part</li>
 <li>set <strong>Post-Training Inference Target</strong> <em>before</em> you start — the field is
   disabled once training is running</li>

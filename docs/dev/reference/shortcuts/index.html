@@ -2053,7 +2053,8 @@
 <p>These match <a href="https://docs.sleap.ai">SLEAP</a>'s defaults, so muscle memory carries
 over from the legacy GUI.</p>
 <p><span class="keys"><kbd class="key-command">Cmd</kbd></span> is shown for macOS; on Windows and Linux it is <span class="keys"><kbd class="key-control">Ctrl</kbd></span>.</p>
-<p><strong>Help ▸ Keyboard Shortcuts…</strong> shows this list inside the app.</p>
+<p><strong>Help ▸ Keyboard Shortcuts…</strong> shows the most common of these inside the app;
+this page is the full list.</p>
 <h2 id="file">File<a class="headerlink" href="#file" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
@@ -2082,10 +2083,6 @@ over from the legacy GUI.</p>
 <tr>
 <td>Quit</td>
 <td><span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-q">Q</kbd></span></td>
-</tr>
-<tr>
-<td>Export analysis for current video</td>
-<td><span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-alt">Alt</kbd><span>+</span><kbd class="key-e">E</kbd></span></td>
 </tr>
 </tbody>
 </table>
@@ -2274,6 +2271,10 @@ over from the legacy GUI.</p>
 <td><span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-0">0</kbd></span></td>
 </tr>
 <tr>
+<td>Set instance track 1–9</td>
+<td><span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-1">1</kbd></span> … <span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-9">9</kbd></span> — creates the track (and any before it) if it doesn't exist yet</td>
+</tr>
+<tr>
 <td>Delete instance and track</td>
 <td><span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-shift">Shift</kbd><span>+</span><kbd class="key-backspace">Backspace</kbd></span></td>
 </tr>
@@ -2311,6 +2312,10 @@ over from the legacy GUI.</p>
 <tr>
 <td>Node placement mode</td>
 <td><span class="keys"><kbd class="key-n">N</kbd></span></td>
+</tr>
+<tr>
+<td>Next / previous node, in node placement mode</td>
+<td><span class="keys"><kbd class="key-tab">Tab</kbd></span> / <span class="keys"><kbd class="key-shift">Shift</kbd><span>+</span><kbd class="key-tab">Tab</kbd></span></td>
 </tr>
 <tr>
 <td>Show / hide instances</td>
@@ -2372,13 +2377,17 @@ over from the legacy GUI.</p>
 <td><span class="keys"><kbd class="key-command">Cmd</kbd></span> + drag, in pan mode (<span class="keys"><kbd class="key-p">P</kbd></span>)</td>
 <td>Zoom by dragging</td>
 </tr>
+<tr>
+<td><span class="keys"><kbd class="key-control">Ctrl</kbd></span> + drag a user instance</td>
+<td>Clone it and drag the copy — <span class="keys"><kbd class="key-control">Ctrl</kbd></span> on macOS too</td>
+</tr>
 </tbody>
 </table>
 <p>Scrolling <strong>pans</strong> by default — deliberately, so a mouse wheel and a trackpad
 two-finger swipe behave identically without the app guessing which one you have.
-Hold <span class="keys"><kbd class="key-control">Ctrl</kbd></span> to zoom instead. This is the one case where <span class="keys"><kbd class="key-control">Ctrl</kbd></span> means <span class="keys"><kbd class="key-control">Ctrl</kbd></span>
-on macOS as well: <span class="keys"><kbd class="key-command">Cmd</kbd></span> with the scroll wheel does not zoom, though a trackpad
-pinch does.</p>
+Hold <span class="keys"><kbd class="key-control">Ctrl</kbd></span> to zoom instead. Here <span class="keys"><kbd class="key-control">Ctrl</kbd></span> means <span class="keys"><kbd class="key-control">Ctrl</kbd></span> on macOS as well
+(as it does for <span class="keys"><kbd class="key-control">Ctrl</kbd></span> + drag to clone): <span class="keys"><kbd class="key-command">Cmd</kbd></span> with the scroll wheel does not
+zoom, though a trackpad pinch does.</p>
 <p><span class="keys"><kbd class="key-space">Space</kbd></span> does three things without them colliding. A <strong>tap</strong> jumps to the next
 suggestion — it fires on release, and is skipped entirely if you panned while
 holding it. A <strong>hold</strong> pans. A <strong>double-tap</strong> cycles the zoom modes.</p>

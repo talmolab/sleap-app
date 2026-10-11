@@ -2116,8 +2116,8 @@ visible/not-visible flag) for each node in the project's
 <td>Pick the placement method for this one instance</td>
 </tr>
 <tr>
-<td><span class="keys"><kbd class="key-command">Cmd</kbd></span>-drag an existing instance</td>
-<td>Clone it, pose and all</td>
+<td><span class="keys"><kbd class="key-control">Ctrl</kbd></span>-drag a node of an existing user instance</td>
+<td>Clone it, pose and all (<span class="keys"><kbd class="key-control">Ctrl</kbd></span> on macOS too, not <span class="keys"><kbd class="key-command">Cmd</kbd></span>)</td>
 </tr>
 </tbody>
 </table>
@@ -2162,7 +2162,11 @@ instance. Getting this right saves a lot of dragging.</p>
 <h2 id="editing">Editing<a class="headerlink" href="#editing" title="Permanent link">&para;</a></h2>
 <ul>
 <li><strong>Drag a node</strong> to move it.</li>
-<li><strong>Drag the instance body</strong> to move the whole pose.</li>
+<li><strong>Move the whole pose</strong>: double-click any node to select every node in the
+  instance, then drag one of them.</li>
+<li><strong>Rotate</strong> the selected instance: hold <span class="keys"><kbd class="key-alt">Alt</kbd></span> and scroll.</li>
+<li><strong>Shift-click</strong> nodes to add them to the selection; drag on empty canvas to
+  draw a selection box.</li>
 <li><strong>Right-click</strong> a node or instance for its context menu — visibility, deletion,
   track assignment, and more.</li>
 <li><strong>Node placement mode</strong> (<span class="keys"><kbd class="key-n">N</kbd></span>, or <strong>View ▸ Node Placement Mode</strong>) is for
@@ -2173,7 +2177,11 @@ instance. Getting this right saves a lot of dragging.</p>
 parked somewhere plausible — a guessed point is training signal that says the
 part is <em>there</em>, which it isn't.</p>
 <ul>
-<li><span class="keys"><kbd class="key-v">V</kbd></span> toggles whether non-visible nodes are drawn at all.</li>
+<li>To mark a node non-visible, right-click it ▸ <strong>Mark Node Non-Visible</strong> (or
+  <strong>Mark Node Visible</strong> to undo it).</li>
+<li><span class="keys"><kbd class="key-v">V</kbd></span> toggles <strong>View ▸ Show Non-Visible Nodes</strong> — whether non-visible nodes
+  are drawn at all. If the pointer is over a node, or nodes are selected, <span class="keys"><kbd class="key-v">V</kbd></span>
+  also flips those nodes' visibility.</li>
 <li>
 <p><strong>View ▸ Display</strong> controls how much of the hidden geometry you see:</p>
 <table>
@@ -2281,8 +2289,33 @@ current frame's instances with their track, type, and score.</p>
 </tr>
 </tbody>
 </table>
-<p><strong>Labels ▸ Delete Predictions…</strong> deletes in bulk — on the current frame, over a
-frame range, or across the whole project.</p>
+<p>The <strong>Labels</strong> menu has the bulk options:</p>
+<table>
+<thead>
+<tr>
+<th>Menu item</th>
+<th>Deletes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Delete Predictions on Current Frame</strong></td>
+<td>Every prediction on this frame</td>
+</tr>
+<tr>
+<td><strong>Delete Predictions…</strong></td>
+<td>Predictions matching one filter: score threshold, frame range, on user-labeled frames, max instances per frame, track, or instance type</td>
+</tr>
+<tr>
+<td><strong>Delete Predictions from Area…</strong> (<span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-k">K</kbd></span> / <span class="keys"><kbd class="key-control">Ctrl</kbd><span>+</span><kbd class="key-k">K</kbd></span>)</td>
+<td>Predictions inside a rectangle you drag</td>
+</tr>
+<tr>
+<td><strong>Delete All Predictions…</strong></td>
+<td>Every prediction in the project, after a confirm</td>
+</tr>
+</tbody>
+</table>
 <h2 id="working-with-predictions">Working with predictions<a class="headerlink" href="#working-with-predictions" title="Permanent link">&para;</a></h2>
 <p>Predicted instances are drawn distinctly from user labels (<strong>View ▸ Color
 Predicted Instances</strong> changes how). They are suggestions until you accept them.</p>

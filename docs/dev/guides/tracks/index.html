@@ -882,6 +882,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Assigning tracks">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#renaming-and-recoloring" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Renaming and recoloring
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1881,6 +1898,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Assigning tracks">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#renaming-and-recoloring" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Renaming and recoloring
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1975,7 +2009,11 @@ there; tracks tell you <em>who</em>.</p>
 </tr>
 <tr>
 <td>Assign the selected instance to a track</td>
-<td><strong>Tracks ▸ Set Instance Track ▸ …</strong></td>
+<td><strong>Tracks ▸ Set Instance Track ▸ …</strong>, or right-click ▸ <strong>Assign Track</strong></td>
+</tr>
+<tr>
+<td>Assign the selected instance to track 1–9</td>
+<td><span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-1">1</kbd></span> … <span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-9">9</kbd></span> / <span class="keys"><kbd class="key-control">Ctrl</kbd><span>+</span><kbd class="key-1">1</kbd></span> … <span class="keys"><kbd class="key-control">Ctrl</kbd><span>+</span><kbd class="key-9">9</kbd></span></td>
 </tr>
 <tr>
 <td>Copy an instance's track</td>
@@ -1987,16 +2025,30 @@ there; tracks tell you <em>who</em>.</p>
 </tr>
 </tbody>
 </table>
+<p><span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-1">1</kbd></span> … <span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-9">9</kbd></span> (<span class="keys"><kbd class="key-control">Ctrl</kbd><span>+</span><kbd class="key-1">1</kbd></span> … <span class="keys"><kbd class="key-control">Ctrl</kbd><span>+</span><kbd class="key-9">9</kbd></span>) picks the track by its number in
+the tracks legend. If that track doesn't exist yet, the app creates <code>Track 1</code>,
+<code>Track 2</code>, … up to that number first, so you can start tracking with no setup.</p>
 <p>Copy/paste of tracks is the fast way to fix a run of frames: copy the correct
 identity once, then step forward pasting it onto the instance that should carry it.</p>
+<h3 id="renaming-and-recoloring">Renaming and recoloring<a class="headerlink" href="#renaming-and-recoloring" title="Permanent link">&para;</a></h3>
+<p>In the <strong>Instances</strong> panel:</p>
+<ul>
+<li><strong>Double-click a track name</strong> to rename it inline. <span class="keys"><kbd class="key-enter">Enter</kbd></span> saves, <span class="keys"><kbd class="key-escape">Esc</kbd></span>
+  cancels.</li>
+<li><strong>Click the color swatch</strong> next to it to pick that track's color — a palette
+  preset or <strong>Custom</strong> — or <strong>Reset to auto</strong>.</li>
+</ul>
 <h2 id="transposing">Transposing<a class="headerlink" href="#transposing" title="Permanent link">&para;</a></h2>
 <p><span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-t">T</kbd></span> / <span class="keys"><kbd class="key-control">Ctrl</kbd><span>+</span><kbd class="key-t">T</kbd></span> (<strong>Tracks ▸ Transpose Instance Tracks</strong>) swaps the track
 assignment of two instances. This is <em>the</em> correction for the most common
 tracking failure: two animals cross paths and the tracker swaps their identities.</p>
-<p>Trigger it and pick the two instances to swap.</p>
+<p>On a frame with exactly two instances it swaps them directly. With three or
+more, it asks you to pick the two.</p>
 <h2 id="propagating">Propagating<a class="headerlink" href="#propagating" title="Permanent link">&para;</a></h2>
-<p><strong>Tracks ▸ Propagate Track Labels</strong> carries a track assignment forward across
-frames, so you fix an identity once rather than per-frame.</p>
+<p><strong>Tracks ▸ Propagate Track Labels</strong> is a toggle. While it's on, changing an
+instance's track (or transposing two instances) also swaps the identities on
+every later frame — to the end of the video, or to the end of the frame range
+selected on the seekbar. You fix a swap once rather than per frame.</p>
 <h2 id="cleaning-up">Cleaning up<a class="headerlink" href="#cleaning-up" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
@@ -2033,7 +2085,9 @@ leave behind empty identities that clutter the legend and every analysis file.</
 <li><span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-e">E</kbd></span> / <span class="keys"><kbd class="key-control">Ctrl</kbd><span>+</span><kbd class="key-e">E</kbd></span> jumps to the next <strong>track spawn</strong> frame — where a new
   identity first appears. New identities mid-video are usually a tracking break
   rather than a new animal, so this is a fast audit route.</li>
-<li>The <strong>tracks legend</strong> on the canvas maps colors to identities.</li>
+<li>Hold <span class="keys"><kbd class="key-control">Ctrl</kbd></span> to show the <strong>tracks legend</strong> on the canvas: each track's
+  number, color, and name. The numbers are the ones <span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-1">1</kbd></span> … <span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-9">9</kbd></span> use.
+  It only shows while <span class="keys"><kbd class="key-control">Ctrl</kbd></span> is held (<span class="keys"><kbd class="key-control">Ctrl</kbd></span> on macOS too).</li>
 <li><strong>View ▸ Apply Distinct Colors To ▸ Tracks</strong> colors instances by identity, which
   makes a swap visible instantly.</li>
 <li><strong>View ▸ Show Track Scores</strong> displays the tracker's confidence.</li>

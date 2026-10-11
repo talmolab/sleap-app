@@ -1281,6 +1281,34 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Saving">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#file-names" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        File names
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#where-it-writes" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Where it writes
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1859,6 +1887,34 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Saving">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#file-names" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        File names
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#where-it-writes" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Where it writes
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1932,8 +1988,20 @@
 </tr>
 </tbody>
 </table>
+<h3 id="file-names">File names<a class="headerlink" href="#file-names" title="Permanent link">&para;</a></h3>
+<p>Save dialogs suggest a versioned name, following SLEAP's convention:</p>
+<ul>
+<li>The first save of a new project suggests <code>labels.v001.slp</code>.</li>
+<li><strong>Save As…</strong> suggests the next version of the current name:
+  <code>labels.v001.slp</code> → <code>labels.v002.slp</code>. A name with no version number gets
+  one: <code>experiment.slp</code> → <code>experiment.v001.slp</code>.</li>
+<li><strong>Save</strong> on a project that already has a file writes to that same name — it
+  never bumps the version.</li>
+</ul>
+<p>You can always type a different name.</p>
+<h3 id="where-it-writes">Where it writes<a class="headerlink" href="#where-it-writes" title="Permanent link">&para;</a></h3>
 <p>What <strong>Save</strong> does depends on where you're running:</p>
-<div class="tabbed-set tabbed-alternate" data-tabs="1:2"><input checked="checked" id="__tabbed_1_1" name="__tabbed_1" type="radio" /><input id="__tabbed_1_2" name="__tabbed_1" type="radio" /><div class="tabbed-labels"><label for="__tabbed_1_1">Desktop</label><label for="__tabbed_1_2">Browser</label></div>
+<div class="tabbed-set tabbed-alternate" data-tabs="1:3"><input checked="checked" id="__tabbed_1_1" name="__tabbed_1" type="radio" /><input id="__tabbed_1_2" name="__tabbed_1" type="radio" /><input id="__tabbed_1_3" name="__tabbed_1" type="radio" /><div class="tabbed-labels"><label for="__tabbed_1_1">Desktop</label><label for="__tabbed_1_2">Browser (Chrome / Edge)</label><label for="__tabbed_1_3">Browser (Firefox / Safari)</label></div>
 <div class="tabbed-content">
 <div class="tabbed-block">
 <p><strong>Save</strong> writes back to the project's path on disk, like any native app.
@@ -1945,8 +2013,16 @@
 <p>If you opened the file through the file picker, the page holds a writable
 handle to it and <strong>Save</strong> writes back to that same file in place. If you
 opened it by drag-and-drop — which yields no handle — <strong>Save</strong> falls back to
-a Save-As prompt. <strong>Save As…</strong> always prompts.</p>
+a Save-As prompt. <strong>Save As…</strong> always prompts, and later saves go to the
+file you picked.</p>
 <p>The browser will ask for permission the first time it writes.</p>
+</div>
+<div class="tabbed-block">
+<p>These browsers can't write to a file on disk, so <strong>Save</strong> and <strong>Save As…</strong>
+both download a new copy of the <code>.slp</code> to your downloads folder. The file
+you opened is not changed.</p>
+<p>Because the app can't tell whether the download landed, it keeps its
+crash-recovery draft after a save here.</p>
 </div>
 </div>
 </div>

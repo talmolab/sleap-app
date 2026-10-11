@@ -2063,7 +2063,7 @@ name.</p>
 <tbody>
 <tr>
 <td>New Project…</td>
-<td><span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-n">N</kbd></span> — pick a skeleton and add videos</td>
+<td><span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-n">N</kbd></span> — opens a new tab (browser) or window (desktop) at the Welcome screen, where you create the project; the current project stays open</td>
 </tr>
 <tr>
 <td>Open Project…</td>
@@ -2078,7 +2078,7 @@ name.</p>
 <td><a href="../../guides/merging/">Merging Projects</a></td>
 </tr>
 <tr>
-<td><strong>Replace Videos ▸</strong> <em>(per video)</em></td>
+<td><strong>Replace Videos… ▸</strong> <em>(per video)</em></td>
 <td>Re-point a video at a new file</td>
 </tr>
 <tr>
@@ -2095,7 +2095,7 @@ name.</p>
 </tr>
 <tr>
 <td><strong>Export ▸</strong> JSON / Analysis CSV / Analysis HDF5 / NWB (ndx-pose) / Labels Package / Labeled Clip (Video)</td>
-<td><a href="../../guides/import-export/">Import &amp; Export</a></td>
+<td><a href="../../guides/import-export/">Import &amp; Export</a>. NWB is desktop only. <strong>Labels Package</strong> here downloads a <code>.pkg.json</code> (the labels as JSON plus a list of the referenced videos); for a <code>.pkg.slp</code> with embedded images, use <strong>Predict ▸ Export Labels Package…</strong></td>
 </tr>
 <tr>
 <td>Reveal Project in File Manager</td>
@@ -2126,7 +2126,7 @@ name.</p>
 <tbody>
 <tr>
 <td>Undo / Redo</td>
-<td><span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-z">Z</kbd></span> / <span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-shift">Shift</kbd><span>+</span><kbd class="key-z">Z</kbd></span></td>
+<td><span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-z">Z</kbd></span> / <span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-shift">Shift</kbd><span>+</span><kbd class="key-z">Z</kbd></span> — the label names the action, e.g. <em>Undo Add Instance</em></td>
 </tr>
 <tr>
 <td>Copy Instance / Paste Instance</td>
@@ -2259,12 +2259,17 @@ name.</p>
 <td>Color Predicted Instances / Show Track Scores</td>
 <td></td>
 </tr>
+<tr>
+<td>Create Local Scrub Proxies for Network Videos (Desktop)</td>
+<td>Desktop only; off by default. Builds a local copy of large network-drive videos for smoother scrubbing</td>
+</tr>
 </tbody>
 </table>
 <p><a href="../../guides/view/">View guide</a></p>
 <h2 id="panels">Panels<a class="headerlink" href="#panels" title="Permanent link">&para;</a></h2>
-<p>Opens any panel, plus <strong>Reset to Defaults…</strong> for the layout. See
-<a href="../panels/">Panels</a>.</p>
+<p>One checkbox per panel, which shows or hides that panel's button in the sidebar
+strip — it doesn't open the panel. <strong>Reset to Defaults…</strong> restores the default
+order and visibility. See <a href="../panels/">Panels</a>.</p>
 <h2 id="labels">Labels<a class="headerlink" href="#labels" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
@@ -2339,19 +2344,27 @@ name.</p>
 </tr>
 <tr>
 <td>Export Labels Package…</td>
-<td>For training elsewhere</td>
+<td>A self-contained <code>.pkg.slp</code> with frame images embedded — user-labeled frames, + suggestions, or all labeled frames. For training elsewhere</td>
+</tr>
+<tr>
+<td>Export Model to ONNX/TensorRT…</td>
+<td>Desktop only — <a href="../../guides/inference/#exporting-a-model">Inference</a></td>
 </tr>
 <tr>
 <td>Import Predictions…</td>
-<td>Bring in predictions made outside the app</td>
+<td>Not yet implemented — it shows a notice. Load predictions with <strong>File ▸ Open Project…</strong> or <strong>File ▸ Merge into Project…</strong></td>
 </tr>
 <tr>
 <td>Evaluation Metrics for Trained Models…</td>
 <td>Accuracy metrics per model</td>
 </tr>
 <tr>
-<td>Visualize Model Outputs…</td>
-<td>Confidence maps, PAFs, class maps</td>
+<td>Set Overlay Models…</td>
+<td>Pick the trained models whose outputs to overlay. The overlay runs <code>sleap-nn</code> locally, so it needs the desktop app</td>
+</tr>
+<tr>
+<td>Visualize Model Outputs</td>
+<td>Checkbox — confidence maps, PAFs, class maps. Disabled until overlay models are set</td>
 </tr>
 </tbody>
 </table>
@@ -2374,7 +2387,7 @@ name.</p>
 </tr>
 <tr>
 <td><strong>Set Instance Track ▸</strong> <em>(per track)</em></td>
-<td></td>
+<td>Only when the project has tracks. <span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-1">1</kbd></span> … <span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-9">9</kbd></span> set tracks 1–9 directly</td>
 </tr>
 <tr>
 <td>Copy / Paste Instance Track</td>
@@ -2390,7 +2403,7 @@ name.</p>
 </tr>
 <tr>
 <td><strong>Delete Track ▸</strong> <em>(per track)</em></td>
-<td></td>
+<td>Only when the project has tracks</td>
 </tr>
 <tr>
 <td>Delete Unused Tracks / Delete All Tracks</td>
@@ -2452,7 +2465,7 @@ that models can't be trained there, and the tutorial ends after labeling.</p>
 </tr>
 <tr>
 <td>Documentation</td>
-<td>Opens <a href="https://docs.sleap.ai">docs.sleap.ai</a></td>
+<td>Opens this site, for the channel the app is on (<code>app.sleap.ai/docs/&lt;channel&gt;/</code>)</td>
 </tr>
 <tr>
 <td>Report Issue</td>

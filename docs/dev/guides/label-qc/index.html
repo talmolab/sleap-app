@@ -1438,6 +1438,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#anomalies" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Anomalies
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#when-to-run-it" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -1929,6 +1940,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#anomalies" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Anomalies
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#when-to-run-it" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -1970,12 +1992,18 @@
 
 <h1 id="label-quality-check">Label Quality Check<a class="headerlink" href="#label-quality-check" title="Permanent link">&para;</a></h1>
 <p><strong>Analyze ▸ Label Quality Check…</strong></p>
-<p>Walks every labeled frame in the project and flags labels that are probably
+<p>Checks every labeled frame in the project and flags labels that are probably
 wrong. Running it before a training run is a much better use of ten seconds than
 almost anything else you could do with them — training on a systematically
 mislabeled set teaches the model to be systematically wrong.</p>
-<p>Each finding names the video, frame, and instance, and clicking it navigates
-there.</p>
+<p>Nothing runs when the dialog opens. It has two tabs, and each has its own run
+button:</p>
+<ul>
+<li><strong>Rules</strong> — click <strong>Run checks</strong> for the rule-based checks below.</li>
+<li><strong>Anomalies</strong> — click <strong>Run analysis</strong> for a statistical score per instance.</li>
+</ul>
+<p>Click any result row to jump to that frame and instance. After you fix things,
+click <strong>Re-run</strong> to check again.</p>
 <h2 id="what-it-checks">What it checks<a class="headerlink" href="#what-it-checks" title="Permanent link">&para;</a></h2>
 <h3 id="structural-checks">Structural checks<a class="headerlink" href="#structural-checks" title="Permanent link">&para;</a></h3>
 <table>
@@ -2037,11 +2065,25 @@ sequence. The check finds the longest chain in your skeleton and looks at the
 turning angles along it; a correctly ordered chain turns smoothly, a
 transposed one doubles back on itself.</p>
 <h2 id="working-through-the-results">Working through the results<a class="headerlink" href="#working-through-the-results" title="Permanent link">&para;</a></h2>
-<p>Results are a table of issue, frame, and details. Click a row to jump to it and
-fix it.</p>
+<p>On the <strong>Rules</strong> tab, results are a table of <strong>Issue</strong>, <strong>Frame</strong>, and
+<strong>Details</strong>. Click a row to jump to it and fix it.</p>
 <p><strong>Add flagged frames to Suggestions</strong> pushes every flagged frame into the
 <a href="../suggestions/">Suggestions</a> list, so you can work through them with <span class="keys"><kbd class="key-space">Space</kbd></span>
 like any other labeling pass.</p>
+<h2 id="anomalies">Anomalies<a class="headerlink" href="#anomalies" title="Permanent link">&para;</a></h2>
+<p>The <strong>Anomalies</strong> tab scores every instance by how unusual its pose is compared
+with the rest of your labels — an unusual joint angle, edge length, or
+visibility pattern, a likely L/R swap, and the like.
+Click <strong>Run analysis</strong>; on a large project it shows progress and a <strong>Cancel</strong>
+button.</p>
+<ul>
+<li>The table lists <strong>Score</strong>, <strong>Confidence</strong>, <strong>Top issue</strong>, and <strong>Frame</strong>,
+  worst first.</li>
+<li>The <strong>Threshold</strong> slider sets the score at which an instance is flagged.
+  Lower it to flag more.</li>
+<li><strong>Export CSV</strong> saves the scores for every instance, not just the flagged
+  ones.</li>
+</ul>
 <h2 id="when-to-run-it">When to run it<a class="headerlink" href="#when-to-run-it" title="Permanent link">&para;</a></h2>
 <ul>
 <li><strong>Before your first training run</strong> — cheapest possible model improvement</li>
