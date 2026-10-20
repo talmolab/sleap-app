@@ -278,6 +278,8 @@ export interface WorkerJobsProps {
   workerLabel?: string;
   /** How often jobs are re-fetched while mounted, in ms. Injectable for tests; defaults to 10 s. */
   pollIntervalMs?: number;
+  /** Bumped by the Connect window's Refresh: re-fetch now and restart the poll timer. */
+  refreshToken?: number;
   /** Overridable for tests (no fake timers in this repo); defaults to the real `setInterval`. */
   setIntervalImpl?: (cb: () => void, ms: number) => unknown;
   /** Overridable for tests; defaults to the real `clearInterval`. */
@@ -301,6 +303,7 @@ export function WorkerJobs({
   workerId,
   workerLabel,
   pollIntervalMs = DEFAULT_POLL_MS,
+  refreshToken = 0,
   setIntervalImpl = defaultSetInterval,
   clearIntervalImpl = defaultClearInterval,
 }: WorkerJobsProps) {
@@ -352,15 +355,23 @@ export function WorkerJobs({
     [listJobs, workerId],
   );
 
+  // Only a worker switch blanks the list — a manual refresh (below) keeps the
+  // current rows on screen instead of flashing "Loading…".
   useEffect(() => {
     setLoading(true);
     setJobs([]);
     setViewer(null);
+  }, [workerId]);
+
+  // Fetch now and (re)start the poll. A Refresh bumps `refreshToken`, which
+  // restarts the timer too, so the next automatic poll is a full interval
+  // after the click rather than possibly a second later.
+  useEffect(() => {
     void refresh();
     const handle = setIntervalImpl(() => void refresh(), pollIntervalMs);
     return () => clearIntervalImpl(handle);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workerId, pollIntervalMs]);
+  }, [workerId, pollIntervalMs, refreshToken]);
 
   // An inference job has no loss curve to monitor — its viewer opens on logs.
   const openViewer = (job: JobSummary, initialView: "monitor" | "logs") =>

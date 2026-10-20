@@ -166,6 +166,7 @@ function buildActions(): MenuAction[] {
     { group: "Predict", label: "Inference / Run Prediction...", run: () => store().openPanel("inference") },
     { group: "Predict", label: "Evaluation Metrics for Trained Models...", run: () => store().setModelMetricsDialogOpen(true) },
     { group: "Predict", label: "Export Labels Package...", run: () => store().setExportPackageDialogOpen(true) },
+    { group: "Predict", label: "Connect", run: () => store().setConnectWindowOpen(true) },
 
     // Help
     { group: "Help", label: "Start Tutorial", run: () => void requestStartTutorial() },

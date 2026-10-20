@@ -141,6 +141,16 @@ export function MenuBar() {
       <PredictMenu />
       <TracksMenu />
       <AnalyzeMenu />
+      {/* Top-level, like Start Tutorial: the Connect window works with or
+          without a project, so it shouldn't hide inside a project-only menu. */}
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-8 rounded-none px-3 text-xs font-normal"
+        onClick={() => useAppStore.getState().setConnectWindowOpen(true)}
+      >
+        Connect
+      </Button>
       <Button
         variant="ghost"
         size="sm"

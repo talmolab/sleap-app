@@ -6,7 +6,9 @@
  * "ours" (this project, every video matches, skeleton compatible) skips
  * this UI entirely and merges right away — see {@link shouldAutoMerge} —
  * matching the pre-PR5b "mine" fast path, now generalized to every
- * completed track job rather than just this project's own.
+ * completed track job rather than just this project's own. With no project
+ * open there's nothing to merge into, so the predictions open straight away
+ * as a new, unsaved project (Connect is reachable from the welcome screen).
  */
 import { useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
@@ -51,7 +53,8 @@ type Stage =
   | { kind: "loading" }
   | { kind: "error"; message: string }
   | { kind: "ready"; predictions: Labels; compat: MergeCompat; jobLabelsPath: string | null }
-  | { kind: "merging" };
+  | { kind: "merging" }
+  | { kind: "opening" };
 
 export interface MergePredictionsDialogProps {
   workerId: string;
@@ -66,6 +69,22 @@ export function MergePredictionsDialog({ workerId, jobId, mine, onClose }: Merge
   const jobDetail = useConnectStore((s) => s.jobDetail);
   const projectPath = useAppStore((s) => s.projectPath);
   const projectLabels = useAppStore((s) => s.labels);
+
+  /** Re-points worker video paths to local ones, loads the predictions as a new unsaved project, and closes the Connect window so it's visible. */
+  const openAsNewProject = async (predictions: Labels) => {
+    const rules = pathRulesFor(workerId);
+    for (const video of predictions.videos) {
+      if (typeof video.filename !== "string") continue;
+      const local = translatePathToLocal(video.filename, rules);
+      if (local) video.filename = local;
+    }
+    await resolveExternalVideos(predictions);
+    const store = useAppStore.getState();
+    store.setLabels(predictions, `${jobId}.predictions.slp`);
+    store.setConnectWindowOpen(false);
+    toast.success("Opened predictions as a new, unsaved project.");
+    onClose();
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -92,7 +111,14 @@ export function MergePredictionsDialog({ workerId, jobId, mine, onClose }: Merge
         });
         if (cancelled) return;
 
-        if (shouldAutoMerge(mine, compat) && projectLabels) {
+        // Nothing to merge into (Connect opened from the welcome screen):
+        // opening the predictions is the only sensible load, so skip the choice.
+        if (!projectLabels) {
+          setStage({ kind: "opening" });
+          await openAsNewProject(predictions);
+          return;
+        }
+        if (shouldAutoMerge(mine, compat)) {
           setStage({ kind: "merging" });
           await commandContext.execute(MergePredictions, { predictions, mode: "replace" });
           toast.success("Loaded. Predictions merged into the project.");
@@ -130,16 +156,7 @@ export function MergePredictionsDialog({ workerId, jobId, mine, onClose }: Merge
   const handleOpenPredictions = async () => {
     if (stage.kind !== "ready") return;
     if (!(await confirmDiscardUnsavedWork("Opening predictions"))) return;
-    const rules = pathRulesFor(workerId);
-    for (const video of stage.predictions.videos) {
-      if (typeof video.filename !== "string") continue;
-      const local = translatePathToLocal(video.filename, rules);
-      if (local) video.filename = local;
-    }
-    await resolveExternalVideos(stage.predictions);
-    useAppStore.getState().setLabels(stage.predictions, `${jobId}.predictions.slp`);
-    toast.success("Opened predictions as a new, unsaved project.");
-    onClose();
+    await openAsNewProject(stage.predictions);
   };
 
   const handleDownload = async () => {
@@ -174,6 +191,11 @@ export function MergePredictionsDialog({ workerId, jobId, mine, onClose }: Merge
         {stage.kind === "merging" && (
           <div className="flex items-center gap-2 text-xs text-muted-foreground py-4">
             <Loader2 className="h-4 w-4 animate-spin" /> Merging…
+          </div>
+        )}
+        {stage.kind === "opening" && (
+          <div className="flex items-center gap-2 text-xs text-muted-foreground py-4">
+            <Loader2 className="h-4 w-4 animate-spin" /> Opening predictions…
           </div>
         )}
         {stage.kind === "error" && <p className="text-xs text-red-400">{stage.message}</p>}

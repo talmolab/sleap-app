@@ -18,9 +18,11 @@ const NO_PATH_RULES: PathMapping[] = [];
 
 export interface WorkerDataAccessProps {
   workerId: string;
+  /** Bumped by the Connect window's Refresh to re-fetch the mounts. */
+  refreshToken?: number;
 }
 
-export function WorkerDataAccess({ workerId }: WorkerDataAccessProps) {
+export function WorkerDataAccess({ workerId, refreshToken = 0 }: WorkerDataAccessProps) {
   const clientFor = useConnectStore((s) => s.clientFor);
   const clearPathRule = useConnectStore((s) => s.clearPathRule);
   // A reactive selector rather than the non-hook `pathRulesFor` helper
@@ -52,7 +54,7 @@ export function WorkerDataAccess({ workerId }: WorkerDataAccessProps) {
     return () => {
       cancelled = true;
     };
-  }, [workerId, clientFor]);
+  }, [workerId, clientFor, refreshToken]);
 
   return (
     <div className="space-y-5 max-w-xl">

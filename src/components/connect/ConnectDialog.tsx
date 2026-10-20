@@ -13,9 +13,13 @@
  * just to populate this window are released (`releaseIdleConnections`) —
  * otherwise browsing every paired worker here would leave all of them
  * connected indefinitely.
+ *
+ * The header's Refresh re-fetches every worker's info and bumps
+ * `refreshToken`, which the open tab watches to re-fetch its own data now
+ * rather than on its next poll.
  */
 import { useEffect, useState } from "react";
-import { X } from "lucide-react";
+import { RefreshCw, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -39,6 +43,8 @@ export function ConnectDialog({ open, onOpenChange }: ConnectDialogProps) {
 
   const [pickedWorkerId, setPickedWorkerId] = useState<string | null>(null);
   const [tab, setTab] = useState<WorkerTab>("jobs");
+  const [refreshToken, setRefreshToken] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
 
   // Refresh every paired worker's info in parallel each time the window
   // opens, so cards show live specs/busy state right away rather than only
@@ -65,6 +71,16 @@ export function ConnectDialog({ open, onOpenChange }: ConnectDialogProps) {
     setPickedWorkerId(fallback);
   }, [open, pairedWorkers, pickedWorkerId, activeSelectedWorkerId]);
 
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    setRefreshToken((t) => t + 1);
+    try {
+      await Promise.all(pairedWorkers.map((w) => refreshWorkerInfo(w.nodeId)));
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
   const handleOpenChange = (next: boolean) => {
     if (!next) releaseIdleConnections();
     onOpenChange(next);
@@ -83,8 +99,18 @@ export function ConnectDialog({ open, onOpenChange }: ConnectDialogProps) {
           <DialogDescription className="text-xs text-muted-foreground mt-0">
             Your workers and the jobs on them
           </DialogDescription>
+          <Button
+            variant="ghost"
+            size="xs"
+            className="ml-auto text-xs"
+            disabled={refreshing}
+            onClick={() => void handleRefresh()}
+          >
+            <RefreshCw className={refreshing ? "animate-spin" : undefined} />
+            Refresh
+          </Button>
           <DialogClose asChild>
-            <Button variant="ghost" size="icon-xs" className="ml-auto" aria-label="Close">
+            <Button variant="ghost" size="icon-xs" aria-label="Close">
               <X className="h-4 w-4" />
             </Button>
           </DialogClose>
@@ -113,9 +139,13 @@ export function ConnectDialog({ open, onOpenChange }: ConnectDialogProps) {
                 </div>
                 <div className="flex-1 min-h-0 overflow-y-auto p-4">
                   {tab === "jobs" ? (
-                    <WorkerJobs workerId={pickedWorker.nodeId} workerLabel={pickedWorker.label} />
+                    <WorkerJobs
+                      workerId={pickedWorker.nodeId}
+                      workerLabel={pickedWorker.label}
+                      refreshToken={refreshToken}
+                    />
                   ) : (
-                    <WorkerDataAccess workerId={pickedWorker.nodeId} />
+                    <WorkerDataAccess workerId={pickedWorker.nodeId} refreshToken={refreshToken} />
                   )}
                 </div>
               </>

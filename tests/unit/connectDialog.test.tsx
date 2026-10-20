@@ -68,6 +68,29 @@ describe("ConnectDialog", () => {
     await waitFor(() => expect(refreshed.sort()).toEqual(["node-a", "node-b"]));
   });
 
+  it("Refresh re-fetches every paired worker's info and the picked worker's jobs", async () => {
+    const refreshed: string[] = [];
+    const listed: string[] = [];
+    useConnectStore.setState({
+      pairedWorkers: [WORKER_A, WORKER_B],
+      refreshWorkerInfo: async (id: string) => {
+        refreshed.push(id);
+      },
+      listJobs: async (id: string) => {
+        listed.push(id);
+        return [];
+      },
+    });
+    render(<ConnectDialog open onOpenChange={() => {}} />);
+    await waitFor(() => expect(refreshed.length).toBe(2));
+    await waitFor(() => expect(listed).toEqual(["node-a"]));
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+
+    await waitFor(() => expect(refreshed.sort()).toEqual(["node-a", "node-a", "node-b", "node-b"]));
+    await waitFor(() => expect(listed).toEqual(["node-a", "node-a"]));
+  });
+
   it("shows the picked worker's label as the right-pane header", () => {
     useConnectStore.setState({ pairedWorkers: [WORKER_A], selectedWorkerId: "node-a" });
     render(<ConnectDialog open onOpenChange={() => {}} />);

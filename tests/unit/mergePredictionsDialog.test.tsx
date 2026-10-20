@@ -246,20 +246,24 @@ describe("MergePredictionsDialog", () => {
     );
   });
 
-  it("no open project disables Merge matching, shows Open/Download, and never toasts 'Loaded'", async () => {
-    useAppStore.setState({ projectPath: null, labels: null });
-    predictionsResult = fakeLabels(["video_0.mp4"]);
+  it("no open project opens the predictions as a new project right away, closing the Connect window", async () => {
+    useAppStore.setState({ projectPath: null, labels: null, connectWindowOpen: true });
+    const predictions = fakeLabels(["/mnt/data/exp1/video_0.mp4"]);
+    predictionsResult = predictions;
     compatResult = noProjectCompat();
+    const onClose = vi.fn();
 
-    render(<MergePredictionsDialog workerId={WORKER_ID} jobId={JOB_ID} mine={false} onClose={vi.fn()} />);
+    render(<MergePredictionsDialog workerId={WORKER_ID} jobId={JOB_ID} mine={false} onClose={onClose} />);
 
-    const mergeButton = await screen.findByRole("button", { name: /Merge matching/ });
-    expect(mergeButton).toBeDisabled();
-    expect(mergeButton).toHaveAttribute("title", "No project open");
-    expect(screen.getByRole("button", { name: "Open predictions" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Download .slp" })).toBeInTheDocument();
-    expect(executeMock).not.toHaveBeenCalled();
-    expect(toastSuccessMock).not.toHaveBeenCalled(); // no "Loaded" toast — nothing was merged
+    await waitFor(() => expect(useAppStore.getState().labels).toBe(predictions as never));
+    expect(predictions.videos[0]!.filename).toBe("/local/mnt/data/exp1/video_0.mp4");
+    expect(resolveExternalVideosMock).toHaveBeenCalledWith(predictions);
+    expect(useAppStore.getState().projectPath).toBeNull(); // opened as a new, unsaved project
+    expect(useAppStore.getState().connectWindowOpen).toBe(false);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("button", { name: /Merge matching/ })).not.toBeInTheDocument();
+    expect(executeMock).not.toHaveBeenCalled(); // nothing merged
+    expect(toastSuccessMock).toHaveBeenCalledWith("Opened predictions as a new, unsaved project.", expect.anything());
   });
 
   it("Open predictions re-points filenames through translatePathToLocal and calls setLabels", async () => {

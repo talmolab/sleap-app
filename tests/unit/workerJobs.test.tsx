@@ -328,6 +328,36 @@ describe("WorkerJobs rendering", () => {
     expect(stars).toHaveLength(1); // only the pinned ("mine") job gets a star
   });
 
+  it("a Refresh (bumped refreshToken) re-fetches now and restarts the poll timer, keeping the rows on screen", async () => {
+    let calls = 0;
+    useConnectStore.setState({
+      listJobs: async () => {
+        calls++;
+        return [job({ jobId: "mine" })];
+      },
+    });
+    const started: string[] = [];
+    const cleared: unknown[] = [];
+    const setIntervalImpl = () => {
+      const handle = `h${started.length + 1}`;
+      started.push(handle);
+      return handle;
+    };
+    const props = { workerId: WORKER_ID, setIntervalImpl, clearIntervalImpl: (h: unknown) => cleared.push(h) };
+
+    const { rerender } = render(<WorkerJobs {...props} refreshToken={0} />);
+    await waitFor(() => expect(screen.getByText("Train centroid")).toBeInTheDocument());
+    expect(calls).toBe(1);
+    expect(started).toEqual(["h1"]);
+
+    rerender(<WorkerJobs {...props} refreshToken={1} />);
+    // Rows never blank to "Loading…" during a manual refresh.
+    expect(screen.getByText("Train centroid")).toBeInTheDocument();
+    await waitFor(() => expect(calls).toBe(2));
+    expect(cleared).toEqual(["h1"]);
+    expect(started).toEqual(["h1", "h2"]);
+  });
+
   it("shows a run tag when run.count > 1", async () => {
     useConnectStore.setState({
       listJobs: async () => [job({ run: { id: "r1", index: 1, count: 2 } })],
