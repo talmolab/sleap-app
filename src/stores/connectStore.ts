@@ -33,6 +33,7 @@ import type {
 } from "@/lib/sleapConnect";
 import { APP_VERSION } from "@/lib/version";
 import { isTauri } from "@/platform/index";
+import { hydraQuote } from "@/platform/trainingArgs";
 import type { AgentInfo } from "@/lib/protocolV1/envelope";
 import type {
   FsListResult,
@@ -452,9 +453,12 @@ function isMultiModelTrainSpec(
  * spec's `run_name`. Without it the worker falls back to the model type and
  * passes `trainer_config.run_name=<model_type>` on the sleap-nn command line,
  * which overrides the YAML and drops the `<ts>.<model>.n=<N>` name this app
- * resolved (sleap-connect `jobs/builder.py`'s `build_train_command`). Applied
- * to each job as it's sent, so it holds after a multi-model spec is split. An
- * explicit `run_name` is never overridden.
+ * resolved (sleap-connect `jobs/builder.py`'s `build_train_command`). The
+ * worker interpolates the value unquoted, so it's sent Hydra-quoted — the `=`
+ * in `n=<N>` is otherwise an override parse error — the same quoting local
+ * training applies (`trainingArgs.ts`). Applied to each job as it's sent, so
+ * it holds after a multi-model spec is split. An explicit `run_name` is never
+ * overridden.
  */
 export function withYamlRunName(spec: JobSpec): JobSpec {
   if (spec.type !== "train" || spec.run_name || spec.config_contents?.length !== 1) return spec;
@@ -464,7 +468,7 @@ export function withYamlRunName(spec: JobSpec): JobSpec {
       | null
       | undefined;
     const runName = parsed?.trainer_config?.run_name;
-    return typeof runName === "string" && runName ? { ...spec, run_name: runName } : spec;
+    return typeof runName === "string" && runName ? { ...spec, run_name: hydraQuote(runName) } : spec;
   } catch {
     return spec;
   }
