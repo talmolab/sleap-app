@@ -1416,7 +1416,7 @@ export function Seekbar() {
       <div className="relative grid grid-cols-subgrid col-span-full items-center h-12 bg-card border-t border-border px-2 gap-2">
         {/* Seekbar canvas (relative wrapper hosts the floating hover tooltip) */}
         {/* bg-zinc-800 = the canvas fill, so the mx-1 inset reads as part of the
-            bar; the inset keeps marks at frame 0 and N clear of the border. */}
+            bar; the inset keeps marks at frame 0 and N off the bar's edge. */}
         <div className="relative min-w-0 bg-zinc-800">
           <div
             ref={containerRef}
@@ -1432,10 +1432,6 @@ export function Seekbar() {
               style={{ display: "block" }}
             />
           </div>
-          {/* Light square inset border so the bar's edge reads against the card. An
-              overlay rather than a CSS border on the container, whose rect sizes
-              the canvas (a border would offset the frame→x mapping). */}
-          <div className="pointer-events-none absolute inset-0 ring-2 ring-inset ring-white/25" />
           {/* Hover-preview tooltip — floats above the bar near the cursor
               (positioned by the layout effect above), suppressed while
               scrubbing/selecting (the solid playhead is there). */}
