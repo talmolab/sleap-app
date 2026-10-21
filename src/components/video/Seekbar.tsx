@@ -1034,9 +1034,8 @@ export function Seekbar() {
     const w = rect.width;
     const h = rect.height;
 
-    // Background - matches card bg with subtle gradient
-    ctx.fillStyle = "#141418";
-    ctx.fillRect(0, 0, w, h);
+    // Transparent background, like the header: the card color shows through.
+    ctx.clearRect(0, 0, w, h);
 
     if (totalFrames === 0) return;
 
