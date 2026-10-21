@@ -99,16 +99,19 @@ function frameKey(labels: Labels, video: Video, frameIdx: number): string {
   return `${labels.videos.indexOf(video)}:${frameIdx}`;
 }
 
-/** Level 1 count: user-labeled frames only. */
+/**
+ * Level 1 count: user-labeled frames only — any user labeling, negative
+ * (background) frames included, as sleap-io's `user_labeled_frames`.
+ */
 export function countUserFrames(labels: Labels): number {
-  return labels.labeledFrames.filter((f) => f.hasUserInstances).length;
+  return labels.labeledFrames.filter((f) => f.isUserLabeled).length;
 }
 
 /** Level 2 count: user-labeled frames + suggestion frames not already labeled. */
 export function countTrainingFrames(labels: Labels): number {
   const seen = new Set<string>();
   for (const f of labels.labeledFrames) {
-    if (f.hasUserInstances) seen.add(frameKey(labels, f.video, f.frameIdx));
+    if (f.isUserLabeled) seen.add(frameKey(labels, f.video, f.frameIdx));
   }
   for (const s of labels.suggestions) {
     seen.add(frameKey(labels, s.video, s.frameIdx));
@@ -128,11 +131,14 @@ export function countFullFrames(labels: Labels): number {
   return seen.size;
 }
 
-/** Indices into `labels.labeledFrames` of the user-labeled frames. */
+/**
+ * Indices into `labels.labeledFrames` of the user-labeled frames (negative
+ * frames included, so `embed: "user"` can embed their images like sleap-io).
+ */
 function userLabeledFrameIndices(labels: Labels): number[] {
   const inds: number[] = [];
   labels.labeledFrames.forEach((f, i) => {
-    if (f.hasUserInstances) inds.push(i);
+    if (f.isUserLabeled) inds.push(i);
   });
   return inds;
 }

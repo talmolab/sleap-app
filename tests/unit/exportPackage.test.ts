@@ -211,6 +211,16 @@ describe("Export Labels Package — per-level frame selection", () => {
     expect(subset.labeledFrames.length).toBe(3);
   });
 
+  it("user/training keep negative frames — user-labeled, as in sleap-io (SLEAP #2894)", () => {
+    const labels = makeProject();
+    const video = labels.videos[0];
+    labels.labeledFrames.push(new LabeledFrame({ video, frameIdx: 7, isNegative: true }));
+    expect(labelsForLevel(labels, "user").labeledFrames.map((f) => f.frameIdx)).toEqual([0, 7]);
+    expect(labelsForLevel(labels, "training").labeledFrames.map((f) => f.frameIdx)).toEqual([0, 7]);
+    expect(countUserFrames(labels)).toBe(2);
+    expect(countTrainingFrames(labels)).toBe(3); // frames 0, 7 + suggestion at 5
+  });
+
   it("does not mutate the source labels (copy:false shares videos safely)", () => {
     const labels = makeProject();
     const beforeFrames = labels.labeledFrames.length;
