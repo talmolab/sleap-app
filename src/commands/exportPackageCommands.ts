@@ -59,6 +59,7 @@ import type { Command } from "./types";
 import type { CommandContext } from "./CommandContext";
 import { saveBytesFile } from "./fileCommands";
 import { toast } from "@/lib/notify";
+import { useAppStore } from "@/stores/appStore";
 
 /** The three PyQt package levels. */
 export type ExportPackageLevel = "user" | "training" | "full";
@@ -220,7 +221,26 @@ export async function exportLabelsPackage(
     // are dropped for user/training) BEFORE serializing — `embed` alone would
     // still write every frame's metadata. See the module doc (FRAME SELECTION).
     const exportLabels = labelsForLevel(labels, level);
-    const bytes = await saveSlpToBytes(exportLabels, { embed: mode });
+    // Reading + encoding each frame image from a continuous video takes a
+    // while (~0.5 s/frame for an mp4), so show the progress overlay meanwhile.
+    // `onProgress` is io >= the release with pinned embed reads; older io
+    // ignores it (the overlay then just shows the message). Built as a variable
+    // so it type-checks against either pinned io version.
+    const { setLoading } = useAppStore.getState();
+    setLoading(true, "Embedding frames…", 0);
+    const saveOptions = {
+      embed: mode,
+      onProgress: (current: number, total: number) => {
+        const pct = total > 0 ? Math.round((current / total) * 100) : 0;
+        setLoading(true, `Embedding frames (${current}/${total})`, pct);
+      },
+    };
+    let bytes: Uint8Array;
+    try {
+      bytes = await saveSlpToBytes(exportLabels, saveOptions);
+    } finally {
+      setLoading(false);
+    }
     const suggestedName = derivePackageFilename(filename);
     const saved = await saveBytesFile(bytes, suggestedName, {
       name: "SLEAP Labels Package",
