@@ -14,7 +14,13 @@ import { useFileIO } from "../../hooks/useFileIO";
 import { useAppStore } from "../../stores/appStore";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Plus, FolderOpen, Cpu } from "lucide-react";
+import { Plus, FolderOpen, Cpu, Globe, ChevronDown } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   loadRecoverableDrafts,
   type RecoverableDraft,
@@ -43,6 +49,7 @@ export function WelcomeScreen() {
   // confirm (keyed by draft path) that replaces the old window.confirm.
   const [confirmingKey, setConfirmingKey] = useState<string | null>(null);
   const [showEnvironments, setShowEnvironments] = useState(false);
+  const openConnect = useCallback(() => useAppStore.getState().setConnectWindowOpen(true), []);
   // The tutorial's environment check runs before any project (and so any
   // sidebar) exists — this is the only Environment panel there is to point at.
   const tutorialOnEnvironmentStep = useAppStore(
@@ -256,8 +263,9 @@ export function WelcomeScreen() {
             </div>
           )}
 
-          {/* Compact popup: New + Open only */}
-          <div className="flex items-center gap-3 rounded-xl border border-border bg-card/95 backdrop-blur-sm px-4 py-3 shadow-lg">
+          {/* Compact popup: New + Open (with a Connect dropdown), in two equal
+              columns so New Project matches the whole split button. */}
+          <div className="grid grid-cols-2 items-center gap-3 rounded-xl border border-border bg-card/95 backdrop-blur-sm px-4 py-3 shadow-lg">
             <Button
               onClick={() => useAppStore.getState().setNewProjectDialogOpen(true)}
               size="lg"
@@ -266,15 +274,39 @@ export function WelcomeScreen() {
               <Plus className="h-4 w-4" />
               New Project
             </Button>
-            <Button
-              onClick={openProject}
-              disabled={loading}
-              variant="outline"
-              size="lg"
-            >
-              <FolderOpen className="h-4 w-4" />
-              {loading ? "Loading..." : "Open Project"}
-            </Button>
+            {/* Split button: Open Project + its own chevron, whose menu offers
+                Connect (no project needed). The menu renders in a portal, so
+                opening it never resizes the card. */}
+            <div className="flex items-center">
+              <Button
+                onClick={openProject}
+                disabled={loading}
+                variant="outline"
+                size="lg"
+                className="flex-1 rounded-r-none dark:border-white/20"
+              >
+                <FolderOpen className="h-4 w-4" />
+                {loading ? "Loading..." : "Open Project"}
+              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="lg"
+                    className="rounded-l-none border-l-0 w-7 px-0 has-[>svg]:px-0 dark:border-white/20"
+                    aria-label="More ways to start"
+                  >
+                    <ChevronDown className="h-4 w-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="min-w-0">
+                  <DropdownMenuItem onSelect={openConnect}>
+                    <Globe className="h-4 w-4" />
+                    Connect…
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
           </div>
         </div>
 

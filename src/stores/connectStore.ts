@@ -21,6 +21,7 @@
  * `job.log`'s optional `progress: true` flag (an in-place tqdm redraw) is
  * forwarded as `onProgress`'s second argument.
  */
+import yaml from "js-yaml";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type {
@@ -32,6 +33,7 @@ import type {
 } from "@/lib/sleapConnect";
 import { APP_VERSION } from "@/lib/version";
 import { isTauri } from "@/platform/index";
+import { hydraQuote } from "@/platform/trainingArgs";
 import type { AgentInfo } from "@/lib/protocolV1/envelope";
 import type {
   FsListResult,
@@ -268,15 +270,21 @@ interface ConnectState {
   selectWorker: (nodeId: string | null, options?: ConnectOptions) => Promise<void>;
   disconnect: () => void;
   forgetWorker: (nodeId: string) => void;
-  browseRemoteDir: (path: string) => Promise<FileEntry[]>;
+  /**
+   * Lists `path` on the selected worker, paging through `fs.list` from
+   * `offset` (default 0). With `limit`, stops once at least that many
+   * entries are in — the file browser loads big folders a batch at a time;
+   * fewer than `limit` back means the folder is done.
+   */
+  browseRemoteDir: (path: string, offset?: number, limit?: number) => Promise<FileEntry[]>;
   /**
    * `browseRemoteDir` for ANY paired worker, not just the selected one —
    * the launcher wizard (PR5b) browses whichever worker it's building a job
    * for. Dials via `clientFor` (so it connects on demand, unlike
    * `browseRemoteDir`'s "must already be connected" guard) and paginates
-   * `fs.list` the same way, starting from `offset` (default 0).
+   * `fs.list` the same way.
    */
-  browseRemoteDirOn: (workerId: string, path: string, offset?: number) => Promise<FileEntry[]>;
+  browseRemoteDirOn: (workerId: string, path: string, offset?: number, limit?: number) => Promise<FileEntry[]>;
   /** `fs.mounts` for ANY paired worker, not just the selected one — dials via `clientFor`. */
   mountsFor: (workerId: string) => Promise<Mount[]>;
   /** Statted via the worker's `fs.stat` — requires an authenticated connection (same precondition as `browseRemoteDir`). */
@@ -342,6 +350,7 @@ function upsertWorker(existing: PairedWorker[], next: PairedWorker): PairedWorke
 async function fetchAllRemoteEntries(
   fetchPage: (offset: number) => Promise<FsListResult>,
   offset = 0,
+  limit = Infinity,
 ): Promise<FileEntry[]> {
   const allEntries: FileEntry[] = [];
   let currentOffset = offset;
@@ -353,9 +362,10 @@ async function fetchAllRemoteEntries(
       name: e.name,
       isDir: e.type === "directory",
       size: e.size,
+      modified: e.modified,
     }));
     allEntries.push(...entries);
-    if (!result.hasMore || entries.length === 0) break;
+    if (!result.hasMore || entries.length === 0 || allEntries.length >= limit) break;
     currentOffset += entries.length;
   }
 
@@ -444,6 +454,32 @@ function isMultiModelTrainSpec(
     Array.isArray(spec.config_contents) &&
     spec.config_contents.length > 1
   );
+}
+
+/**
+ * Copies a single-config train job's YAML `trainer_config.run_name` onto the
+ * spec's `run_name`. Without it the worker falls back to the model type and
+ * passes `trainer_config.run_name=<model_type>` on the sleap-nn command line,
+ * which overrides the YAML and drops the `<ts>.<model>.n=<N>` name this app
+ * resolved (sleap-connect `jobs/builder.py`'s `build_train_command`). The
+ * worker interpolates the value unquoted, so it's sent Hydra-quoted — the `=`
+ * in `n=<N>` is otherwise an override parse error — the same quoting local
+ * training applies (`trainingArgs.ts`). Applied to each job as it's sent, so
+ * it holds after a multi-model spec is split. An explicit `run_name` is never
+ * overridden.
+ */
+export function withYamlRunName(spec: JobSpec): JobSpec {
+  if (spec.type !== "train" || spec.run_name || spec.config_contents?.length !== 1) return spec;
+  try {
+    const parsed = yaml.load(spec.config_contents[0]) as
+      | { trainer_config?: { run_name?: unknown } }
+      | null
+      | undefined;
+    const runName = parsed?.trainer_config?.run_name;
+    return typeof runName === "string" && runName ? { ...spec, run_name: hydraQuote(runName) } : spec;
+  } catch {
+    return spec;
+  }
 }
 
 /** What to dial: `url` is a ws address, or the encoded iroh target for `"iroh"`. */
@@ -868,7 +904,7 @@ async function submitSingleJob(
   set: ConnectSet,
   onTelemetry?: (telemetry: JobTelemetry) => void,
 ): Promise<JobResult> {
-  const { jobId } = await client.jobsSubmit(spec as unknown as Record<string, unknown>);
+  const { jobId } = await client.jobsSubmit(withYamlRunName(spec) as unknown as Record<string, unknown>);
   const tracked: TrackedJob = {
     workerId,
     jobId,
@@ -1377,19 +1413,23 @@ export const useConnectStore = create<ConnectState>()(
         });
       },
 
-      browseRemoteDir: async (path) => {
-        return fetchAllRemoteEntries((offset) => {
-          const { _client } = get();
-          if (!_client || !_client.authenticated) {
-            throw new Error("Not connected to worker");
-          }
-          return _client.fsList(path, offset);
-        });
+      browseRemoteDir: async (path, offset, limit) => {
+        return fetchAllRemoteEntries(
+          (o) => {
+            const { _client } = get();
+            if (!_client || !_client.authenticated) {
+              throw new Error("Not connected to worker");
+            }
+            return _client.fsList(path, o);
+          },
+          offset,
+          limit,
+        );
       },
 
-      browseRemoteDirOn: async (workerId, path, offset) => {
+      browseRemoteDirOn: async (workerId, path, offset, limit) => {
         const client = await get().clientFor(workerId);
-        return fetchAllRemoteEntries((o) => client.fsList(path, o), offset);
+        return fetchAllRemoteEntries((o) => client.fsList(path, o), offset, limit);
       },
 
       mountsFor: async (workerId) => {
@@ -1508,7 +1548,9 @@ export const useConnectStore = create<ConnectState>()(
         };
 
         const submitTracked = async (oneSpec: JobSpec): Promise<string> => {
-          const { jobId } = await client.jobsSubmit(oneSpec as unknown as Record<string, unknown>);
+          const { jobId } = await client.jobsSubmit(
+            withYamlRunName(oneSpec) as unknown as Record<string, unknown>,
+          );
           const tracked: TrackedJob = {
             workerId,
             jobId,

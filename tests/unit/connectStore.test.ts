@@ -1107,6 +1107,59 @@ describe("connectStore", () => {
       expect(result.resultBlobs).toBeUndefined();
     });
 
+    // Hydra-quoted: the worker interpolates run_name unquoted into
+    // `trainer_config.run_name=<value>`, and the `=` in `n=12` would otherwise
+    // be a sleap-nn override parse error.
+    it("sends each split job's YAML run name as a Hydra-quoted run_name, so the worker doesn't rename it to the model type", async () => {
+      const spec: JobSpec = {
+        type: "train",
+        config_contents: [
+          "trainer_config:\n  run_name: 261020_120000.centroid.n=12\n",
+          "trainer_config:\n  run_name: 261020_120000.centered_instance.n=12\n",
+        ],
+        model_types: ["centroid", "centered_instance"],
+        labels_path: "/labels.slp",
+      };
+
+      const promise = useConnectStore.getState().submitJob(spec, () => {});
+      for (let i = 0; i < 2; i++) {
+        await flushAsync();
+        lastClient().emit("job_1", "job.status", { state: "completed" });
+      }
+      await promise;
+
+      const [first, second] = lastClient().jobsSubmitCalls;
+      expect(first.run_name).toBe("'261020_120000.centroid.n=12'");
+      expect(second.run_name).toBe("'261020_120000.centered_instance.n=12'");
+    });
+
+    it("leaves run_name unset when the YAML has none, and never overrides an explicit one", async () => {
+      const submit = async (spec: JobSpec) => {
+        const promise = useConnectStore.getState().submitJob(spec, () => {});
+        await flushAsync();
+        lastClient().emit("job_1", "job.status", { state: "completed" });
+        await promise;
+        return lastClient().jobsSubmitCalls.at(-1)!;
+      };
+
+      const noName = await submit({
+        type: "train",
+        config_contents: ["trainer_config: {}\n"],
+        model_types: ["single_instance"],
+        labels_path: "/l.slp",
+      });
+      expect("run_name" in noName).toBe(false);
+
+      const explicit = await submit({
+        type: "train",
+        config_contents: ["trainer_config:\n  run_name: from_yaml\n"],
+        model_types: ["single_instance"],
+        labels_path: "/l.slp",
+        run_name: "explicit",
+      });
+      expect(explicit.run_name).toBe("explicit");
+    });
+
     it("splits a multi-model TrainJobSpec into sequential single-model jobs", async () => {
       const modelCompletions: unknown[] = [];
       const spec: JobSpec = {
@@ -1366,6 +1419,29 @@ describe("connectStore", () => {
 
     afterEach(() => {
       restoreJobIds();
+    });
+
+    it("sends each job's YAML run name as run_name (the launcher wizard's worker-file path)", async () => {
+      restoreJobIds = withSequentialJobIds("launchRunName");
+      const spec: JobSpec = {
+        type: "train",
+        config_contents: [
+          "trainer_config:\n  run_name: 261020_120000.centroid.n=7\n",
+          "trainer_config:\n  run_name: 261020_120000.centered_instance.n=7\n",
+        ],
+        model_types: ["centroid", "centered_instance"],
+        labels_path: "/data/labels.slp",
+      };
+
+      await useConnectStore.getState().submitJobsOn(PAIRED_WORKER.nodeId, spec, { source: "worker-file" });
+
+      const [first, second] = lastClient().jobsSubmitCalls;
+      expect(first.run_name).toBe("'261020_120000.centroid.n=7'");
+      expect(second.run_name).toBe("'261020_120000.centered_instance.n=7'");
+
+      lastClient().emit("launchRunName_1", "job.status", { state: "completed" });
+      lastClient().emit("launchRunName_2", "job.status", { state: "completed" });
+      await flushAsync();
     });
 
     it("submits every model's job up front, before any of them finishes, sharing one run id", async () => {

@@ -148,6 +148,8 @@ export interface FsEntry {
   name: string;
   type: "file" | "directory";
   size?: number;
+  /** Last-modified time, Unix seconds (the worker's `st_mtime`). */
+  modified?: number;
 }
 
 export interface FsListResult {
@@ -537,8 +539,17 @@ export class WorkerClient {
     }));
   }
 
+  /**
+   * One page of a directory listing within the worker's configured mounts.
+   *
+   * @throws {WorkerProtocolError} with an `fs.*` code if the worker reports
+   * failure (missing folder, outside the mounts, permission denied) — an
+   * embedded `{error, error_code}` pair, same as `fsStat`; without this check
+   * a missing folder would read as an empty one.
+   */
   async fsList(path: string, offset = 0): Promise<FsListResult> {
     const result = await this._request("fs.list", { path, offset });
+    _throwIfFsError(result, `fs.list('${path}')`);
     return {
       entries: (result.entries as FsEntry[]) ?? [],
       totalCount: (result.total_count as number) ?? 0,
