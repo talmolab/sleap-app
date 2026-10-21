@@ -39,7 +39,7 @@ Once you have a model, **Copy Predictions** turns labeling into correction.
   draw a selection box.
 - **Right-click** a node or instance for its context menu — visibility, deletion,
   track assignment, and more.
-- **Node placement mode** (++n++, or **View ▸ Node Placement Mode**) is for
+- **Node placement mode** (++shift+n++, or **View ▸ Node Placement Mode**) is for
   clicking nodes down one at a time rather than dragging a pre-posed template.
 
 ### Visibility
@@ -118,10 +118,13 @@ is what training actually consumes.
 
 ## Negative frames
 
-**Labels ▸ Mark Frame as Negative** records that a frame genuinely contains no
-animals. This is real training signal, not an empty frame that you skipped, and
-the [label quality check](label-qc.md) will flag a negative frame that still has
-instances on it.
+**Labels ▸ Mark Frame as Negative** (++n++, or right-click the video) records
+that a frame genuinely contains no animals. This is real training signal, not an
+empty frame that you skipped. Marking a frame that still has instances asks
+first, then removes them (undo brings them back), and adding an instance to a
+negative frame unmarks it. A negative frame shows a red border with a "Negative
+Frame" label on the video and a red tick on the seekbar, and it counts toward
+the status bar's labeled total, e.g. "Labeled: 6 (2 negative frames)".
 
 ## Undo
 

@@ -136,7 +136,7 @@ function buildActions(): MenuAction[] {
     { group: "View", label: "Toggle Side Panel", run: () => store().toggle("sidebarCollapsed") },
     { group: "View", label: "Sidebar on Left", run: () => store().set("sidebarSide", store().sidebarSide === "left" ? "right" : "left") },
     { group: "View", label: "Multi-Panel Sidebar", run: () => store().setSidebarMultiPanel(!store().sidebarMultiPanel) },
-    { group: "View", label: "Node Placement Mode", shortcut: "N", run: () => store().set("labelingMode", store().labelingMode === "place" ? "select" : "place") },
+    { group: "View", label: "Node Placement Mode", shortcut: formatShortcut("Shift+KeyN"), run: () => store().set("labelingMode", store().labelingMode === "place" ? "select" : "place") },
     { group: "View", label: "Reset Text Size", run: () => store().set("uiScale", 1) },
     { group: "View", label: "Fit View to Instances", run: () => store().toggle("fit") },
     { group: "View", label: "Fit View to Selection", run: () => store().set("fitSelection", true) },
@@ -154,7 +154,7 @@ function buildActions(): MenuAction[] {
     { group: "Labels", label: "Accept All Predictions on Current Frame", shortcut: formatShortcut("$mod+Shift+KeyA"), run: exec(AddInstancesFromAllPredictions) },
     { group: "Labels", label: "Accept All Predictions (Project)", run: exec(AddInstancesFromAllPredictionsInProject) },
     { group: "Labels", label: "Delete Predictions...", run: () => store().setDeletePredictionsDialogOpen(true) },
-    { group: "Labels", label: "Mark Frame as Negative", run: () => void requestToggleNegativeFrame() },
+    { group: "Labels", label: "Mark Frame as Negative", shortcut: formatShortcut("KeyN"), run: () => void requestToggleNegativeFrame() },
 
     // Tracks
     { group: "Tracks", label: "Transpose Instance Tracks", shortcut: formatShortcut("$mod+KeyT"), run: () => requestTranspose(commandContext) },

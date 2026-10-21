@@ -12,6 +12,7 @@ import { isTauri } from "../../lib/platform";
 import { APP_VERSION, APP_VERSION_KIND_LABEL } from "@/lib/version";
 import { getDocsUrl } from "@/lib/docsUrl";
 import { formatShortcut } from "@/lib/formatShortcut";
+import { DEFAULT_SHORTCUTS } from "@/lib/shortcuts";
 
 async function openExternal(url: string) {
   if (isTauri) {
@@ -767,7 +768,7 @@ function ViewMenu() {
             }
           }}
         >
-          Node Placement Mode <MenubarShortcut>N</MenubarShortcut>
+          Node Placement Mode <MenubarShortcut>{formatShortcut(DEFAULT_SHORTCUTS["toggle place mode"])}</MenubarShortcut>
         </MenubarCheckboxItem>
         <MenubarSeparator />
         <MenubarSub>
@@ -1057,7 +1058,7 @@ function LabelsMenu() {
           checked={labeledFrame?.isNegative ?? false}
           onClick={() => void requestToggleNegativeFrame()}
         >
-          Mark Frame as Negative
+          Mark Frame as Negative <MenubarShortcut>{formatShortcut(DEFAULT_SHORTCUTS["mark negative"])}</MenubarShortcut>
         </MenubarCheckboxItem>
         <MenubarSeparator />
         <MenubarItem

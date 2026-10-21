@@ -45,6 +45,7 @@ const CATEGORIES: Record<string, string[]> = {
     "add instance",
     "delete instance",
     "accept all predictions",
+    "mark negative",
     "copy instance",
     "paste instance",
   ],

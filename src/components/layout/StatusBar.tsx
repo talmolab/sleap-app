@@ -226,7 +226,7 @@ export function StatusBar() {
               </Button>
             </TooltipTrigger>
             <TooltipContent side="top">
-              <p>{labelingMode === "place" ? "Place mode (N to switch to Select)" : "Select mode (N to switch to Place)"}</p>
+              <p>{labelingMode === "place" ? "Place mode (Shift+N to switch to Select)" : "Select mode (Shift+N to switch to Place)"}</p>
             </TooltipContent>
           </Tooltip>
           <Separator orientation="vertical" className="h-3.5 mr-1" />

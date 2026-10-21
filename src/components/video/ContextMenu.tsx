@@ -225,6 +225,7 @@ export function ContextMenu({
       />
       <ContextMenuItem
         label="Mark Frame as Negative"
+        shortcut="N"
         active={frameIsNegative}
         onClick={() => {
           onClose();

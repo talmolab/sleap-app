@@ -45,6 +45,7 @@ import {
   PasteTrack,
   DeleteInstanceAndTrack,
 } from "../commands";
+import { requestToggleNegativeFrame } from "@/lib/negativeFrame";
 
 function isTextInput(e: KeyboardEvent): boolean {
   const tag = (e.target as HTMLElement)?.tagName;
@@ -191,7 +192,14 @@ export function useKeyboardShortcuts() {
         store().toggle("defaultToPan");
       },
 
-      // Toggle place mode (N key)
+      // Mark Frame as Negative (N, as in SLEAP) — asks first if it would remove instances.
+      [DEFAULT_SHORTCUTS["mark negative"]]: (e) => {
+        if (isTextInput(e)) return;
+        e.preventDefault();
+        void requestToggleNegativeFrame();
+      },
+
+      // Toggle place mode (Shift+N)
       [DEFAULT_SHORTCUTS["toggle place mode"]]: (e) => {
         if (isTextInput(e)) return;
         e.preventDefault();

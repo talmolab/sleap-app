@@ -48,6 +48,8 @@ export const DEFAULT_SHORTCUTS: Record<string, string> = {
   "add instance": "$mod+KeyI",
   "delete instance": "$mod+Backspace",
   "accept all predictions": "$mod+Shift+KeyA",
+  // SLEAP's key. Node placement mode moved to Shift+N to make room for it.
+  "mark negative": "KeyN",
 
   // View
   fit: "$mod+Equal",
@@ -57,7 +59,7 @@ export const DEFAULT_SHORTCUTS: Record<string, string> = {
   "show edges": "$mod+Shift+Tab",
   "toggle node visibility": "KeyV",
   "toggle pan mode": "KeyP",
-  "toggle place mode": "KeyN",
+  "toggle place mode": "Shift+KeyN",
 
   // Tracks
   transpose: "$mod+KeyT",

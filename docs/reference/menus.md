@@ -55,7 +55,7 @@ name.
 | Side Panel / Sidebar on Left / Allow Multiple Panels | Layout |
 | Fit View to Instances / to Selection | ++cmd+equal++ |
 | Default to Pan Mode | ++p++ |
-| Node Placement Mode | ++n++ |
+| Node Placement Mode | ++shift+n++ |
 | **Text Size ▸** Increase / Decrease / Reset to Default | |
 | **Display ▸** Manual / Only selected (with hidden points) / All instances, visible points only / All visible + selected hidden points | Occluded-node policy |
 | Show Instances / Show Non-Visible Nodes / Show Node Names / Show Edges | ++h++ / ++v++ / ++t++ / ++cmd+shift+tab++ |
@@ -83,7 +83,7 @@ order and visibility. See [Panels](panels.md).
 | **Instance Placement Method ▸** Best / Template / Force Directed / Random / Copy Prior Frame / Copy Predictions | [Labeling](../guides/labeling.md) |
 | Show Hints During Labeling | |
 | Delete Instance | ++cmd+backspace++ |
-| Mark Frame as Negative | |
+| Mark Frame as Negative | ++n++ |
 | Accept All Predictions on Current Frame | ++cmd+shift+a++ |
 | Accept All Predictions | Project-wide |
 | Delete Predictions on Current Frame | |
