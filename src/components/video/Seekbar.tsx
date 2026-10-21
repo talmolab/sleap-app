@@ -105,6 +105,9 @@ const WORKER_GRAPHS: ReadonlySet<StatisticGraphType> = new Set<StatisticGraphTyp
   "min-centroid-proximity",
 ]);
 
+/** Length (px) of the suggestion ticks hanging from the top of the main bar. */
+const SUGGESTION_TICK_PX = 9;
+
 /**
  * Draw frame-index gridlines + labels onto the header canvas every N frames
  * (PyQt-style ticks — see frameTickInterval), so a stretched header stays
@@ -132,9 +135,9 @@ function drawHeaderFrameMarkers(
 }
 
 /**
- * Frame numbers for the main bar's gridlines, right-aligned just left of each
- * line and vertically between the suggestion ticks and the labeled-frame marks.
- * A label that would run off the left edge is skipped.
+ * Bold frame numbers for the main bar's gridlines, just right of each line (as
+ * in the header) and vertically between the suggestion ticks and the
+ * labeled-frame marks. A label that would run off the right edge is skipped.
  */
 function drawBarFrameLabels(
   ctx: CanvasRenderingContext2D,
@@ -145,15 +148,14 @@ function drawBarFrameLabels(
   if (totalFrames <= 1) return;
   const step = frameTickInterval(totalFrames);
   ctx.save();
-  ctx.font = "10px system-ui, sans-serif";
-  ctx.textAlign = "right";
+  ctx.font = "bold 10px system-ui, sans-serif";
   ctx.textBaseline = "middle";
-  ctx.fillStyle = "rgba(255, 255, 255, 0.55)";
+  ctx.fillStyle = "rgba(255, 255, 255, 0.6)";
   for (let f = step; f < totalFrames; f += step) {
-    const x = (f / (totalFrames - 1)) * w - 3;
+    const x = (f / (totalFrames - 1)) * w + 3;
     const label = String(f);
-    if (x - ctx.measureText(label).width < 0) continue;
-    ctx.fillText(label, x, (h - 14) / 2 + 3);
+    if (x + ctx.measureText(label).width > w) continue;
+    ctx.fillText(label, x, (SUGGESTION_TICK_PX + h - 14) / 2);
   }
   ctx.restore();
 }
@@ -763,7 +765,9 @@ export function Seekbar() {
     if (!tip || !container || hoverX === null) return;
     const cw = container.clientWidth;
     const w = tip.offsetWidth;
-    tip.style.left = `${Math.max(0, Math.min(cw - w, hoverX - w / 2))}px`;
+    // The tooltip is positioned in the bar's wrapper; the canvas is inset in it.
+    const x = container.offsetLeft + hoverX;
+    tip.style.left = `${Math.max(0, Math.min(container.offsetLeft + cw - w, x - w / 2))}px`;
   }, [hoverX, hoverInfo]);
 
   // Global mouse tracking during seekbar drag — serialized read loop.
@@ -1070,7 +1074,7 @@ export function Seekbar() {
     const frameToX = (f: number) => (f / (totalFrames - 1)) * w;
 
     // Frame gridlines + numbers, matching the header's, so the bar isn't a flat
-    // strip. Numbers sit just LEFT of their line, in the band between the
+    // strip. Numbers sit just right of their line, in the band between the
     // suggestion ticks (top) and the labeled-frame marks (bottom).
     drawFrameGridlines(ctx, totalFrames, w, h);
     drawBarFrameLabels(ctx, totalFrames, w, h);
@@ -1094,7 +1098,7 @@ export function Seekbar() {
       for (const sf of labels.suggestions ?? []) {
         if (sf.video !== currentVideo) continue;
         const x = frameToX(sf.frameIdx);
-        ctx.fillRect(x - 0.5, 0, 1, 6);
+        ctx.fillRect(x - 0.5, 0, 1, SUGGESTION_TICK_PX);
       }
     }
 
@@ -1240,7 +1244,8 @@ export function Seekbar() {
         </div>
         <div
           ref={headerContainerRef}
-          className="overflow-hidden min-w-0 h-full cursor-pointer"
+          // mx-1: same inset as the main bar's canvas, so gridlines line up.
+          className="mx-1 overflow-hidden min-w-0 h-full cursor-pointer"
           style={{ height: seekbarHeaderHeight }}
           onMouseDown={handleMouseDown}
           onMouseMove={handleHeaderMouseMove}
@@ -1352,7 +1357,8 @@ export function Seekbar() {
           </div>
           <div
             ref={tracksContainerRef}
-            className="relative overflow-y-auto overflow-x-hidden min-w-0 h-full rounded-sm"
+            // mx-1: same inset as the main bar's canvas, so lanes line up.
+            className="relative mx-1 overflow-y-auto overflow-x-hidden min-w-0 h-full rounded-sm"
             onPointerMove={tracksExpanded ? handleTracksHoverMove : undefined}
             onPointerLeave={handleTracksHoverLeave}
             onScroll={handleTracksScroll}
@@ -1409,10 +1415,12 @@ export function Seekbar() {
       {/* `relative` keeps this row painted above the bands above it. */}
       <div className="relative grid grid-cols-subgrid col-span-full items-center h-12 bg-card border-t border-border px-2 gap-2">
         {/* Seekbar canvas (relative wrapper hosts the floating hover tooltip) */}
-        <div className="relative min-w-0">
+        {/* bg-zinc-800 = the canvas fill, so the mx-1 inset reads as part of the
+            bar; the inset keeps marks at frame 0 and N clear of the border. */}
+        <div className="relative min-w-0 bg-zinc-800">
           <div
             ref={containerRef}
-            className="h-9 cursor-pointer overflow-hidden min-w-0"
+            className="mx-1 h-9 cursor-pointer overflow-hidden min-w-0"
             onMouseDown={handleMouseDown}
             onMouseMove={handleMouseMove}
             onMouseUp={handleMouseUp}
