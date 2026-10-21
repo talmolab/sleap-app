@@ -59,6 +59,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { requestStartTutorial } from "@/lib/tutorial/startTutorial";
+import { requestToggleNegativeFrame } from "@/lib/negativeFrame";
 
 interface MenuAction {
   group: string;
@@ -153,6 +154,7 @@ function buildActions(): MenuAction[] {
     { group: "Labels", label: "Accept All Predictions on Current Frame", shortcut: formatShortcut("$mod+Shift+KeyA"), run: exec(AddInstancesFromAllPredictions) },
     { group: "Labels", label: "Accept All Predictions (Project)", run: exec(AddInstancesFromAllPredictionsInProject) },
     { group: "Labels", label: "Delete Predictions...", run: () => store().setDeletePredictionsDialogOpen(true) },
+    { group: "Labels", label: "Mark Frame as Negative", run: () => void requestToggleNegativeFrame() },
 
     // Tracks
     { group: "Tracks", label: "Transpose Instance Tracks", shortcut: formatShortcut("$mod+KeyT"), run: () => requestTranspose(commandContext) },

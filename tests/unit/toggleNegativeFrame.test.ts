@@ -1,17 +1,23 @@
 /**
  * Tests for ToggleNegativeFrame: mark/unmark a frame as a negative (background)
  * example, incl. creating an empty flagged frame and undo (the snapshot now
- * captures `isNegative`).
+ * captures `isNegative`). Matches SLEAP #2894: marking clears the frame's
+ * instances (after `requestToggleNegativeFrame`'s confirm), and adding an
+ * instance to a negative frame unmarks it.
  */
 
 import { describe, it, expect, beforeEach } from "../bun-test";
 import { CommandContext } from "@/commands/CommandContext";
 import { useAppStore } from "@/stores/appStore";
-import { ToggleNegativeFrame } from "@/commands/editCommands";
+import { AddInstance, ToggleNegativeFrame } from "@/commands/editCommands";
+import { GoNextUserFrame, GoPrevUserFrame } from "@/commands/navCommands";
+import { requestToggleNegativeFrame } from "@/lib/negativeFrame";
+import { useConfirmStore } from "@/stores/confirmStore";
 import {
   Labels,
   LabeledFrame,
   Instance,
+  PredictedInstance,
   Video,
   Skeleton,
 } from "@talmolab/sleap-io.js";
@@ -72,16 +78,51 @@ describe("ToggleNegativeFrame", () => {
     expect(at(labels, video, 3)).toHaveLength(0);
   });
 
-  it("toggles an existing frame's flag; undo reverts it", async () => {
+  it("marking a frame with instances removes them (user and predicted); undo brings them back", async () => {
     const { labels, video } = setup();
+    const lf = at(labels, video, 0)[0];
+    lf.instances.push(PredictedInstance.fromArray([[20, 20], [21, 21]], labels.skeletons[0]));
     useAppStore.getState().setFrameIdx(0);
 
     await ctx.execute(ToggleNegativeFrame);
     expect(at(labels, video, 0)[0].isNegative).toBe(true);
-    expect(at(labels, video, 0)[0].instances).toHaveLength(1); // kept (has instance)
+    expect(at(labels, video, 0)[0].instances).toHaveLength(0);
+    expect(useAppStore.getState().instance).toBeNull();
 
     expect(ctx.undo()).toBe(true);
     expect(at(labels, video, 0)[0].isNegative).toBe(false);
+    expect(at(labels, video, 0)[0].instances).toHaveLength(2);
+  });
+
+  it("unmarking an empty negative frame removes it", async () => {
+    const { labels, video } = setup();
+    useAppStore.getState().setFrameIdx(4);
+    await ctx.execute(ToggleNegativeFrame);
+    await ctx.execute(ToggleNegativeFrame);
+    expect(at(labels, video, 4)).toHaveLength(0);
+  });
+
+  it("Next/Previous labeled frame stop on negative frames (SLEAP #2894)", async () => {
+    setup(); // user instance on frame 0
+    useAppStore.getState().setFrameIdx(40);
+    await ctx.execute(ToggleNegativeFrame);
+    useAppStore.getState().setFrameIdx(10);
+    await ctx.execute(GoNextUserFrame);
+    expect(useAppStore.getState().frameIdx).toBe(40);
+    useAppStore.getState().setFrameIdx(60);
+    await ctx.execute(GoPrevUserFrame);
+    expect(useAppStore.getState().frameIdx).toBe(40);
+  });
+
+  it("adding an instance to a negative frame unmarks it", async () => {
+    const { labels, video } = setup();
+    useAppStore.getState().setFrameIdx(7);
+    await ctx.execute(ToggleNegativeFrame);
+    expect(at(labels, video, 7)[0].isNegative).toBe(true);
+
+    await ctx.execute(AddInstance);
+    expect(at(labels, video, 7)[0].instances).toHaveLength(1);
+    expect(at(labels, video, 7)[0].isNegative).toBe(false);
   });
 
   // Regression: the seekbar marks memo + canvas overlays recompute only when
@@ -102,5 +143,52 @@ describe("ToggleNegativeFrame", () => {
     before = useAppStore.getState().overlayVersion;
     await ctx.execute(ToggleNegativeFrame);
     expect(useAppStore.getState().overlayVersion).toBeGreaterThan(before);
+  });
+});
+
+describe("requestToggleNegativeFrame (menu, right-click, shortcut)", () => {
+  let ctx: CommandContext;
+  let confirms: string[];
+  let answer: boolean;
+  beforeEach(() => {
+    resetStore();
+    ctx = new CommandContext();
+    confirms = [];
+    answer = true;
+    useConfirmStore.setState({
+      confirm: async (req: { message: string }) => {
+        confirms.push(req.message);
+        return answer;
+      },
+    } as never);
+  });
+
+  it("asks first when the frame has instances, like SLEAP", async () => {
+    const { labels, video } = setup();
+    useAppStore.getState().setFrameIdx(0);
+    await requestToggleNegativeFrame(ctx);
+    expect(confirms).toEqual([
+      "Frame 1 has 1 instance. Marking it as a negative (background) frame will remove it.\n\nContinue?",
+    ]);
+    expect(at(labels, video, 0)[0].isNegative).toBe(true);
+  });
+
+  it("declining changes nothing and leaves no undo step", async () => {
+    const { labels, video } = setup();
+    useAppStore.getState().setFrameIdx(0);
+    answer = false;
+    await requestToggleNegativeFrame(ctx);
+    expect(at(labels, video, 0)[0].isNegative).toBe(false);
+    expect(at(labels, video, 0)[0].instances).toHaveLength(1);
+    expect(ctx.undo()).toBe(false);
+  });
+
+  it("doesn't ask for an empty frame, or when unmarking", async () => {
+    const { labels, video } = setup();
+    useAppStore.getState().setFrameIdx(9);
+    await requestToggleNegativeFrame(ctx);
+    await requestToggleNegativeFrame(ctx);
+    expect(confirms).toEqual([]);
+    expect(at(labels, video, 9)).toHaveLength(0);
   });
 });

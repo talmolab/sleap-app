@@ -6,6 +6,7 @@
  * - Delete instance
  * - Assign to track
  * - Add new instance
+ * - Mark frame as negative (background)
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -23,6 +24,7 @@ import {
 } from "../../commands";
 import { cn } from "@/lib/utils";
 import { formatShortcut } from "@/lib/formatShortcut";
+import { requestToggleNegativeFrame } from "@/lib/negativeFrame";
 import type { InstancePlacementMethod } from "../../types";
 
 interface ContextMenuProps {
@@ -48,6 +50,7 @@ export function ContextMenu({
 }: ContextMenuProps) {
   const labels = useAppStore((s) => s.labels);
   const instance = useAppStore((s) => s.instance);
+  const frameIsNegative = useAppStore((s) => s.labeledFrame?.isNegative ?? false);
   const clipboardInstance = useAppStore((s) => s.clipboardInstance);
   // Instances need a skeleton with at least one node, else placement produces a
   // null instance. overlayVersion is bumped when the skeleton node count changes.
@@ -219,6 +222,14 @@ export function ContextMenu({
       <ContextMenuItem
         label="Delete Predictions"
         onClick={() => exec(DeleteFramePredictions)}
+      />
+      <ContextMenuItem
+        label="Mark Frame as Negative"
+        active={frameIsNegative}
+        onClick={() => {
+          onClose();
+          void requestToggleNegativeFrame();
+        }}
       />
     </div>
   );

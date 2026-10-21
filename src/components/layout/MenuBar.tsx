@@ -47,7 +47,6 @@ import {
   GoToMarkedFrame,
   GoNextTrackSpawnFrame,
   AddInstance,
-  ToggleNegativeFrame,
   DeleteSelectedInstance,
   CopyInstance,
   PasteInstance,
@@ -95,6 +94,7 @@ import {
   type Reduction,
 } from "@/lib/statisticSeries";
 import { requestStartTutorial } from "@/lib/tutorial/startTutorial";
+import { requestToggleNegativeFrame } from "@/lib/negativeFrame";
 
 export function MenuBar() {
   return (
@@ -1055,7 +1055,7 @@ function LabelsMenu() {
         <MenubarCheckboxItem
           disabled={!projectLoaded}
           checked={labeledFrame?.isNegative ?? false}
-          onClick={() => exec(ToggleNegativeFrame)}
+          onClick={() => void requestToggleNegativeFrame()}
         >
           Mark Frame as Negative
         </MenubarCheckboxItem>

@@ -88,6 +88,11 @@ export const AddInstance: Command = {
     }
 
     lf.instances.push(instance);
+    // A frame with an animal on it isn't a background frame any more (SLEAP #2894).
+    if (lf.isNegative) {
+      lf.isNegative = false;
+      ctx.state.bumpOverlayVersion();
+    }
 
     // Select the new instance and update state
     ctx.state.setLabeledFrame(lf);
@@ -157,6 +162,13 @@ export const ToggleNegativeFrame: Command = {
     }
 
     lf.isNegative = !lf.isNegative;
+    // A negative frame has no animals by definition, so marking one removes
+    // its instances, user and predicted alike, like SLEAP (#2894). The UI asks
+    // first (`requestToggleNegativeFrame`); undo restores them.
+    if (lf.isNegative && lf.instances.length > 0) {
+      lf.instances.splice(0, lf.instances.length);
+      ctx.state.setInstance(null);
+    }
 
     // Turning OFF an otherwise-empty frame prunes it (it only held the flag).
     if (!lf.isNegative && lf.instances.length === 0) {

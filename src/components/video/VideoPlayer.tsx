@@ -2994,6 +2994,27 @@ export function VideoPlayer() {
           onContextMenu={handleContextMenu}
         />
 
+        {/* Negative (background) frame marker, like SLEAP's NegativeFrameOverlay:
+            a border inset 1.2% of the frame, with a caption at its top-left.
+            Screen-space, so it follows zoom/pan/rotation and stays a fixed
+            thickness. Red, matching this app's seekbar ticks for negative frames. */}
+        {labeledFrame?.isNegative && displayW > 0 && (() => {
+          const w = displayW * baseScale * zoom;
+          const h = displayH * baseScale * zoom;
+          const inset = 0.012 * Math.min(w, h);
+          return (
+            <div
+              data-testid="negative-frame-marker"
+              className="absolute z-10 pointer-events-none border-[6px] border-red-500"
+              style={{ left: offsetX + panX + inset, top: offsetY + panY + inset, width: w - 2 * inset, height: h - 2 * inset }}
+            >
+              <span className="absolute left-0 top-0 bg-red-500 px-2 py-0.5 text-[14px] font-bold text-white">
+                Negative Frame
+              </span>
+            </div>
+          );
+        })()}
+
 
         {/* Zoomed inset during node drag */}
         <canvas
