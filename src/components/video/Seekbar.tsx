@@ -117,23 +117,42 @@ function drawHeaderFrameMarkers(
   h: number,
 ): void {
   if (totalFrames <= 1) return;
+  drawFrameGridlines(ctx, totalFrames, w, h);
+  const step = frameTickInterval(totalFrames);
+  ctx.save();
+  ctx.font = "11px system-ui, sans-serif";
+  ctx.textBaseline = "top";
+  // Frame number moved down (y=4) so the drag handle straddling the top seam
+  // doesn't overshadow it, and enlarged for legibility.
+  ctx.fillStyle = "rgba(255, 255, 255, 0.7)";
+  for (let f = step; f < totalFrames; f += step) {
+    ctx.fillText(String(f), (f / (totalFrames - 1)) * w + 3, 4);
+  }
+  ctx.restore();
+}
+
+/**
+ * Subtle full-height grey verticals every N frames (see frameTickInterval).
+ * Shared by the header and the main bar so their gridlines line up.
+ */
+function drawFrameGridlines(
+  ctx: CanvasRenderingContext2D,
+  totalFrames: number,
+  w: number,
+  h: number,
+): void {
+  if (totalFrames <= 1) return;
   const step = frameTickInterval(totalFrames);
   ctx.save();
   ctx.lineWidth = 1;
-  ctx.font = "11px system-ui, sans-serif";
-  ctx.textBaseline = "top";
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.12)";
+  ctx.beginPath();
   for (let f = step; f < totalFrames; f += step) {
     const x = (f / (totalFrames - 1)) * w;
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.12)";
-    ctx.beginPath();
     ctx.moveTo(x, 0);
     ctx.lineTo(x, h);
-    ctx.stroke();
-    // Frame number moved down (y=4) so the drag handle straddling the top seam
-    // doesn't overshadow it, and enlarged for legibility.
-    ctx.fillStyle = "rgba(255, 255, 255, 0.7)";
-    ctx.fillText(String(f), x + 3, 4);
   }
+  ctx.stroke();
   ctx.restore();
 }
 
@@ -1023,6 +1042,9 @@ export function Seekbar() {
 
     const frameToX = (f: number) => (f / (totalFrames - 1)) * w;
 
+    // Frame gridlines, matching the header's, so the bar isn't a flat black strip.
+    drawFrameGridlines(ctx, totalFrames, w, h);
+
     // Draw frame range selection
     if (frameRange) {
       const x1 = frameToX(frameRange[0]);
@@ -1368,6 +1390,10 @@ export function Seekbar() {
               style={{ display: "block" }}
             />
           </div>
+          {/* Light inset border so the bar's edge reads against the card. An
+              overlay rather than a CSS border on the container, whose rect sizes
+              the canvas (a border would offset the frame→x mapping). */}
+          <div className="pointer-events-none absolute inset-0 rounded ring-1 ring-inset ring-white/20" />
           {/* Hover-preview tooltip — floats above the bar near the cursor
               (positioned by the layout effect above), suppressed while
               scrubbing/selecting (the solid playhead is there). */}
