@@ -14,7 +14,7 @@ import { isUserLabeledFrame } from "./frameLabeling";
 
 /**
  * Sorted, ascending list of frame indices that have a LabeledFrame for the
- * given video (any instance — user or predicted). This is the canonical
+ * given video (any instance — user or predicted — or a negative flag). This is the canonical
  * "included frames" source, matching GoNextLabeledFrame / GoPrevLabeledFrame.
  *
  * Structured to accept an optional per-frame predicate later (e.g. an
@@ -30,8 +30,9 @@ export function labeledFrameIndices(
     .find({ video })
     // Skip empty LabeledFrames (no instances) — e.g. pkg.slp leftovers after
     // removing predictions. They have no image, so navigating to one shows a
-    // frozen frame. Matches the "Labeled" count, which also ignores them.
-    .filter((lf) => lf.instances.length > 0)
+    // frozen frame. A negative (background) frame is empty on purpose and
+    // counts as labeled (SLEAP #2894), so it stays.
+    .filter((lf) => lf.instances.length > 0 || lf.isNegative)
     .map((lf) => lf.frameIdx)
     .sort((a, b) => a - b);
 }

@@ -14,6 +14,7 @@ import {
   trackSpawnFrameIndices,
   stepLabeled,
   nearestFrameInDomain,
+  navigableDomain,
 } from "@/lib/navigableFrames";
 import { useAppStore } from "@/stores/appStore";
 import {
@@ -189,6 +190,22 @@ function emptyVideo(name = "mixed.mp4") {
     openBackend: false,
   });
 }
+
+describe("labeledFrameIndices keeps negative frames", () => {
+  it("includes a negative (background) frame even though it has no instances", () => {
+    // Navigate ▸ Labeled frames should land on frames marked negative (SLEAP
+    // #2894 counts them as labeled), while still skipping plain empty frames.
+    const skeleton = new Skeleton({ nodes: ["a", "b"], name: "s" });
+    const video = emptyVideo();
+    const labels = new Labels({ videos: [video], skeletons: [skeleton] });
+    labels.labeledFrames.push(new LabeledFrame({ video, frameIdx: 10, instances: [userInst(skeleton)] }));
+    labels.labeledFrames.push(new LabeledFrame({ video, frameIdx: 20, isNegative: true }));
+    labels.labeledFrames.push(new LabeledFrame({ video, frameIdx: 30 })); // empty, not negative
+
+    expect(labeledFrameIndices(labels, video)).toEqual([10, 20]);
+    expect(navigableDomain(labels, video, "labeled")).toEqual([10, 20]);
+  });
+});
 
 describe("allLabeledFrameIndices (includes empty frames — GoNext/PrevLabeledFrame parity)", () => {
   it("returns every LabeledFrame index sorted, INCLUDING empty ones", () => {
