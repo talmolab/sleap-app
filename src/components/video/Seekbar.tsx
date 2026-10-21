@@ -135,7 +135,7 @@ function drawHeaderFrameMarkers(
 }
 
 /**
- * Bold frame numbers for the main bar's gridlines, just right of each line (as
+ * Frame numbers for the main bar's gridlines, just right of each line (as
  * in the header) and vertically between the suggestion ticks and the
  * labeled-frame marks. A label that would run off the right edge is skipped.
  */
@@ -148,7 +148,7 @@ function drawBarFrameLabels(
   if (totalFrames <= 1) return;
   const step = frameTickInterval(totalFrames);
   ctx.save();
-  ctx.font = "bold 10px system-ui, sans-serif";
+  ctx.font = "10px system-ui, sans-serif";
   ctx.textBaseline = "middle";
   ctx.fillStyle = "rgba(255, 255, 255, 0.6)";
   for (let f = step; f < totalFrames; f += step) {
