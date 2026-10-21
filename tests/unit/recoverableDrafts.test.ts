@@ -59,6 +59,16 @@ describe("recoverableDrafts normalization", () => {
     expect(typeof out[0].discard).toBe("function");
   });
 
+  it("carries the detail the Unsaved work menu shows", () => {
+    const [t] = normalizeTauriDrafts([
+      tauriEntry({ projectPath: "/p/mice.slp", videoCount: 3, embedded: true }),
+    ]);
+    expect(t).toMatchObject({ projectPath: "/p/mice.slp", videoCount: 3, embedded: true });
+    // The browser keeps no project path (only an opaque file handle).
+    const [b] = normalizeBrowserDrafts([browserEntry({ videoCount: 2 })]);
+    expect(b).toMatchObject({ projectPath: null, videoCount: 2, embedded: false });
+  });
+
   it("returns an empty list when there are no drafts (either runtime)", () => {
     expect(normalizeTauriDrafts([])).toEqual([]);
     expect(normalizeBrowserDrafts([])).toEqual([]);
