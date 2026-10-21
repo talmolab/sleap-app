@@ -2169,7 +2169,7 @@ instance. Getting this right saves a lot of dragging.</p>
   draw a selection box.</li>
 <li><strong>Right-click</strong> a node or instance for its context menu — visibility, deletion,
   track assignment, and more.</li>
-<li><strong>Node placement mode</strong> (<span class="keys"><kbd class="key-n">N</kbd></span>, or <strong>View ▸ Node Placement Mode</strong>) is for
+<li><strong>Node placement mode</strong> (<span class="keys"><kbd class="key-shift">Shift</kbd><span>+</span><kbd class="key-n">N</kbd></span>, or <strong>View ▸ Node Placement Mode</strong>) is for
   clicking nodes down one at a time rather than dragging a pre-posed template.</li>
 </ul>
 <h3 id="visibility">Visibility<a class="headerlink" href="#visibility" title="Permanent link">&para;</a></h3>
@@ -2344,10 +2344,13 @@ Predicted Instances</strong> changes how). They are suggestions until you accept
 <p>Accepting converts a <code>PredictedInstance</code> into a user-labeled <code>Instance</code> — which
 is what training actually consumes.</p>
 <h2 id="negative-frames">Negative frames<a class="headerlink" href="#negative-frames" title="Permanent link">&para;</a></h2>
-<p><strong>Labels ▸ Mark Frame as Negative</strong> records that a frame genuinely contains no
-animals. This is real training signal, not an empty frame that you skipped, and
-the <a href="../label-qc/">label quality check</a> will flag a negative frame that still has
-instances on it.</p>
+<p><strong>Labels ▸ Mark Frame as Negative</strong> (<span class="keys"><kbd class="key-n">N</kbd></span>, or right-click the video) records
+that a frame genuinely contains no animals. This is real training signal, not an
+empty frame that you skipped. Marking a frame that still has instances asks
+first, then removes them (undo brings them back), and adding an instance to a
+negative frame unmarks it. A negative frame shows a red border with a "Negative
+Frame" label on the video and a red tick on the seekbar, and it counts toward
+the status bar's labeled total, e.g. "Labeled: 6 (2 negative frames)".</p>
 <h2 id="undo">Undo<a class="headerlink" href="#undo" title="Permanent link">&para;</a></h2>
 <p>Every edit goes through a command with a frame-level snapshot, so <span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-z">Z</kbd></span> /
 <span class="keys"><kbd class="key-control">Ctrl</kbd><span>+</span><kbd class="key-z">Z</kbd></span> and <span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-shift">Shift</kbd><span>+</span><kbd class="key-z">Z</kbd></span> / <span class="keys"><kbd class="key-control">Ctrl</kbd><span>+</span><kbd class="key-shift">Shift</kbd><span>+</span><kbd class="key-z">Z</kbd></span> work across the whole editing
