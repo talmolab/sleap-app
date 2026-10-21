@@ -154,6 +154,8 @@ export interface FileEntry {
   name: string;
   isDir: boolean;
   size?: number;
+  /** Last-modified time, Unix seconds. */
+  modified?: number;
 }
 
 export interface Credentials {

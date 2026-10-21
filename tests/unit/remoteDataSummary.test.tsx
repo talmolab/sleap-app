@@ -237,7 +237,7 @@ describe("RemoteDataSummary", () => {
     await waitFor(() => expect(screen.getAllByText("a.mp4")).toHaveLength(2));
     fireEvent.click(screen.getAllByText("a.mp4")[1]);
     visible = true; // the re-check after Locate should report it resolved
-    fireEvent.click(screen.getByText("Select File"));
+    fireEvent.click(screen.getByRole("button", { name: "Open" }));
 
     await waitFor(() => {
       const rules = useConnectStore.getState().pairedWorkers.find((w) => w.nodeId === "w1")?.pathRules ?? [];

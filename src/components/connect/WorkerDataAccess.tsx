@@ -6,7 +6,9 @@
  * ("Locate on worker…", connectStore's `addPathRule`).
  */
 import { useEffect, useState } from "react";
+import { FolderSearch } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { RemoteFileBrowser } from "@/components/dialogs/RemoteFileBrowser";
 import type { Mount } from "@/lib/protocolV1/client";
 import type { PathMapping } from "@/lib/pathMappings";
 import { useConnectStore } from "@/stores/connectStore";
@@ -34,6 +36,7 @@ export function WorkerDataAccess({ workerId, refreshToken = 0 }: WorkerDataAcces
   const [mounts, setMounts] = useState<Mount[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [browsing, setBrowsing] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -58,10 +61,30 @@ export function WorkerDataAccess({ workerId, refreshToken = 0 }: WorkerDataAcces
 
   return (
     <div className="space-y-5 max-w-xl">
+      <RemoteFileBrowser
+        open={browsing}
+        onClose={() => setBrowsing(false)}
+        mode="browse"
+        workerId={workerId}
+        mounts={mounts.map((m) => m.path)}
+        mountLabels={Object.fromEntries(mounts.filter((m) => m.label).map((m) => [m.path, m.label!]))}
+      />
       <div className="space-y-1.5">
-        <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
-          Folders this worker shares (set with --mount on the worker)
-        </p>
+        <div className="flex items-center gap-2">
+          <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+            Folders this worker shares (set with --mount on the worker)
+          </p>
+          <Button
+            size="xs"
+            variant="outline"
+            className="ml-auto h-6 text-[11px]"
+            disabled={loading || mounts.length === 0}
+            onClick={() => setBrowsing(true)}
+          >
+            <FolderSearch className="h-3.5 w-3.5" />
+            Browse files
+          </Button>
+        </div>
         {error && <p className="text-[11px] text-red-400">{error}</p>}
         {loading ? (
           <p className="text-xs text-muted-foreground">Loading…</p>
