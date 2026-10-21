@@ -132,6 +132,33 @@ function drawHeaderFrameMarkers(
 }
 
 /**
+ * Frame numbers for the main bar's gridlines, right-aligned just left of each
+ * line and vertically between the suggestion ticks and the labeled-frame marks.
+ * A label that would run off the left edge is skipped.
+ */
+function drawBarFrameLabels(
+  ctx: CanvasRenderingContext2D,
+  totalFrames: number,
+  w: number,
+  h: number,
+): void {
+  if (totalFrames <= 1) return;
+  const step = frameTickInterval(totalFrames);
+  ctx.save();
+  ctx.font = "10px system-ui, sans-serif";
+  ctx.textAlign = "right";
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = "rgba(255, 255, 255, 0.55)";
+  for (let f = step; f < totalFrames; f += step) {
+    const x = (f / (totalFrames - 1)) * w - 3;
+    const label = String(f);
+    if (x - ctx.measureText(label).width < 0) continue;
+    ctx.fillText(label, x, (h - 14) / 2 + 3);
+  }
+  ctx.restore();
+}
+
+/**
  * Subtle full-height grey verticals every N frames (see frameTickInterval).
  * Shared by the header and the main bar so their gridlines line up.
  */
@@ -1034,15 +1061,19 @@ export function Seekbar() {
     const w = rect.width;
     const h = rect.height;
 
-    // Transparent background, like the header: the card color shows through.
-    ctx.clearRect(0, 0, w, h);
+    // Slightly lighter than the card, so the bar reads as a track.
+    ctx.fillStyle = "#27272a";
+    ctx.fillRect(0, 0, w, h);
 
     if (totalFrames === 0) return;
 
     const frameToX = (f: number) => (f / (totalFrames - 1)) * w;
 
-    // Frame gridlines, matching the header's, so the bar isn't a flat black strip.
+    // Frame gridlines + numbers, matching the header's, so the bar isn't a flat
+    // strip. Numbers sit just LEFT of their line, in the band between the
+    // suggestion ticks (top) and the labeled-frame marks (bottom).
     drawFrameGridlines(ctx, totalFrames, w, h);
+    drawBarFrameLabels(ctx, totalFrames, w, h);
 
     // Draw frame range selection
     if (frameRange) {
@@ -1299,7 +1330,10 @@ export function Seekbar() {
           have occupancy; display-only (seek/hover stay on the bar). */}
       {hasTrackOccupancy && (
         <div
-          className="relative grid grid-cols-subgrid col-span-full items-stretch bg-card border-t border-border px-2 gap-2"
+          // grid-rows-[minmax(0,1fr)]: the row takes the band's height, not the
+          // full-height lane canvas's, so many tracks scroll inside the band
+          // instead of overflowing over the seekbar below.
+          className="relative grid grid-cols-subgrid grid-rows-[minmax(0,1fr)] col-span-full items-stretch bg-card border-t border-border px-2 gap-2"
           style={{ height: tracksBandHeight }}
         >
           <div
@@ -1372,12 +1406,13 @@ export function Seekbar() {
         </div>
       )}
 
-      <div className="grid grid-cols-subgrid col-span-full items-center h-10 bg-card border-t border-border px-2 gap-2">
+      {/* `relative` keeps this row painted above the bands above it. */}
+      <div className="relative grid grid-cols-subgrid col-span-full items-center h-12 bg-card border-t border-border px-2 gap-2">
         {/* Seekbar canvas (relative wrapper hosts the floating hover tooltip) */}
         <div className="relative min-w-0">
           <div
             ref={containerRef}
-            className="h-6 rounded cursor-pointer overflow-hidden min-w-0"
+            className="h-9 cursor-pointer overflow-hidden min-w-0"
             onMouseDown={handleMouseDown}
             onMouseMove={handleMouseMove}
             onMouseUp={handleMouseUp}
@@ -1389,10 +1424,10 @@ export function Seekbar() {
               style={{ display: "block" }}
             />
           </div>
-          {/* Light inset border so the bar's edge reads against the card. An
+          {/* Light square inset border so the bar's edge reads against the card. An
               overlay rather than a CSS border on the container, whose rect sizes
               the canvas (a border would offset the frame→x mapping). */}
-          <div className="pointer-events-none absolute inset-0 rounded ring-1 ring-inset ring-white/20" />
+          <div className="pointer-events-none absolute inset-0 ring-2 ring-inset ring-white/25" />
           {/* Hover-preview tooltip — floats above the bar near the cursor
               (positioned by the layout effect above), suppressed while
               scrubbing/selecting (the solid playhead is there). */}
