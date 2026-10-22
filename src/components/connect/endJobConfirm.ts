@@ -1,5 +1,11 @@
 import type { ConfirmRequest } from "@/stores/confirmStore";
 
+/** Stop Early is yellow and Cancel red, as in the Training panel. */
+export const STOP_EARLY_BUTTON_CLASS =
+  "h-6 text-[10px] border-yellow-500/50 text-yellow-500 hover:bg-yellow-500/10 hover:text-yellow-400";
+export const CANCEL_BUTTON_CLASS =
+  "h-6 text-[10px] border-red-500/50 text-red-400 hover:bg-red-500/10 hover:text-red-300";
+
 /**
  * The confirm dialog for ending a worker job, shared by the Jobs tab and the
  * job viewer. Like SLEAP's training monitor: Stop Early finishes training and

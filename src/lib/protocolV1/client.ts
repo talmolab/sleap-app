@@ -110,6 +110,8 @@ export interface JobSummary {
   // Added by sleap-connect #98; omitted (not defaulted) by an older worker
   // except where noted, since there's no safe default for "unknown".
   updatedAt?: string;
+  /** When the job's process started (wire: `started_at`); absent while queued, or from a worker that doesn't report it. */
+  startedAt?: string;
   error?: string | null;
   queuePosition: number | null;
   kind?: "train" | "track";
@@ -224,6 +226,7 @@ function _mapJobSummary(j: Record<string, unknown>): JobSummary {
     state: j.state as string,
     createdAt: _isoTimestamp(j.created_at) ?? "",
     updatedAt: _isoTimestamp(j.updated_at),
+    startedAt: _isoTimestamp(j.started_at),
     error: j.error as string | null | undefined,
     queuePosition: (j.queue_position as number | null | undefined) ?? null,
     kind: j.kind as "train" | "track" | undefined,

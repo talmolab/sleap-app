@@ -70,6 +70,8 @@ const {
   jobMatches,
   canDeleteRun,
   deleteRunMessage,
+  jobTimeLabel,
+  groupTimeLabel,
 } = await import("@/components/connect/WorkerJobs");
 
 const WORKER_ID = "node-a";
@@ -436,12 +438,13 @@ describe("WorkerJobs rendering", () => {
     await waitFor(() => expect(calls).toEqual([[WORKER_ID, "job_1", "cancel"]]));
   });
 
-  it("a queued job owned by this project shows Cancel, not Stop Early/Watch live", async () => {
+  it("a queued job owned by this project is canceled with its run: Cancel run, no per-job Cancel/Stop Early/Watch live", async () => {
     useConnectStore.setState({ listJobs: async () => [job({ state: "queued", queuePosition: 1 })] });
     render(
       <WorkerJobs workerId={WORKER_ID} setIntervalImpl={noopSetInterval} clearIntervalImpl={noopClearInterval} />,
     );
-    await waitFor(() => expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Cancel run" })).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Stop Early" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Watch live" })).not.toBeInTheDocument();
   });
@@ -530,7 +533,7 @@ describe("WorkerJobs rendering", () => {
     expect(screen.getByRole("button", { name: "Fetch & Load" })).toBeInTheDocument();
   });
 
-  it("Cancel confirms, then calls cancelJobOn and refreshes the list", async () => {
+  it("Cancel run on a queued run confirms, calls cancelJobOn and shows Canceling…", async () => {
     const cancelCalls: Array<[string, string, string]> = [];
     useConnectStore.setState({
       listJobs: async () => [job({ state: "queued", queuePosition: 1 })],
@@ -541,8 +544,8 @@ describe("WorkerJobs rendering", () => {
     render(
       <WorkerJobs workerId={WORKER_ID} setIntervalImpl={noopSetInterval} clearIntervalImpl={noopClearInterval} />,
     );
-    await waitFor(() => expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Cancel run" })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Cancel run" }));
 
     // confirmDialog renders via ConfirmDialog elsewhere — answer it directly
     // through the store, the same way ConfirmDialog's own buttons would.
@@ -550,6 +553,8 @@ describe("WorkerJobs rendering", () => {
     useConfirmStore.getState().respond(true);
 
     await waitFor(() => expect(cancelCalls).toEqual([[WORKER_ID, "job_1", "cancel"]]));
+    // The worker still lists it as queued here, so the button keeps saying so.
+    expect(screen.getByRole("button", { name: "Canceling…" })).toBeDisabled();
   });
 
   it("shows the run's trash icon once no job in it is queued or running", async () => {
@@ -949,5 +954,21 @@ describe("Cancel run and jump-to-run (sidebar queue)", () => {
     await waitFor(() =>
       expect(document.querySelector('[data-run-key="run_x"]')?.className).toContain("ring-primary"),
     );
+  });
+});
+
+describe("job and run times", () => {
+  it("nothing while queued, 'started' while running, 'finished' once done", () => {
+    expect(jobTimeLabel(job({ state: "queued" }))).toBeNull();
+    expect(jobTimeLabel(job({ state: "running", updatedAt: new Date().toISOString() }))).toBe("started just now");
+    expect(
+      jobTimeLabel(job({ state: "running", startedAt: new Date(Date.now() - 5 * 60_000).toISOString() })),
+    ).toBe("started 5 min ago");
+    expect(jobTimeLabel(job({ state: "completed", updatedAt: new Date().toISOString() }))).toBe("finished just now");
+  });
+
+  it("a queued run shows no time", () => {
+    const [g] = groupJobs([job({ state: "queued" })], myProject.id);
+    expect(groupTimeLabel(g!)).toBeNull();
   });
 });

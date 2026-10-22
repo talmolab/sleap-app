@@ -23,7 +23,7 @@ import { toast } from "@/lib/notify";
 import { useJobStream } from "@/hooks/useJobStream";
 import { useConnectStore } from "@/stores/connectStore";
 import { confirmDialog } from "@/stores/confirmStore";
-import { endJobConfirm } from "./endJobConfirm";
+import { CANCEL_BUTTON_CLASS, STOP_EARLY_BUTTON_CLASS, endJobConfirm } from "./endJobConfirm";
 import type { TrainingStatus } from "@/stores/trainingStore";
 
 export interface JobViewerDialogProps {
@@ -138,7 +138,7 @@ export function JobViewerDialog({
                 <Button
                   size="xs"
                   variant="outline"
-                  className="h-6 text-[10px]"
+                  className={STOP_EARLY_BUTTON_CLASS}
                   onClick={() => handleEnd("stop")}
                 >
                   Stop Early
@@ -147,7 +147,7 @@ export function JobViewerDialog({
               <Button
                 size="xs"
                 variant="outline"
-                className="h-6 text-[10px]"
+                className={CANCEL_BUTTON_CLASS}
                 onClick={() => handleEnd("cancel")}
               >
                 Cancel

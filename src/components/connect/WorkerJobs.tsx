@@ -25,7 +25,7 @@ import type { JobSummary, JobStatus } from "@/lib/protocolV1/client";
 import { useAppStore } from "@/stores/appStore";
 import { useConnectStore } from "@/stores/connectStore";
 import { confirmDialog } from "@/stores/confirmStore";
-import { endJobConfirm } from "./endJobConfirm";
+import { CANCEL_BUTTON_CLASS, STOP_EARLY_BUTTON_CLASS, endJobConfirm } from "./endJobConfirm";
 import { JobViewerDialog } from "./JobViewerDialog";
 import { MergePredictionsDialog } from "./MergePredictionsDialog";
 import { NewJobWizard, seedWizardFromRun, type NewJobWizardSeed } from "./NewJobWizard";
@@ -136,6 +136,37 @@ export function statusChipFor(state: string, queuePosition: number | null = null
     return { text: `Queued · #${queuePosition}`, className };
   }
   return { text: state.charAt(0).toUpperCase() + state.slice(1), className };
+}
+
+/**
+ * When to say a job happened: nothing while queued (it hasn't started, and a
+ * submission time there reads like a start time), "started …" while running,
+ * "finished …" once done. The start time is the worker's `started_at`, or
+ * when it left the queue (`updatedAt` of a running job) from a worker that
+ * doesn't report it.
+ */
+export function jobTimeLabel(job: JobSummary): string | null {
+  if (job.state === "queued") return null;
+  if (job.state === "running") {
+    const started = job.startedAt ?? job.updatedAt;
+    return started ? `started ${timeAgo(started)}` : null;
+  }
+  return `${job.state === "completed" ? "finished" : "ended"} ${timeAgo(job.updatedAt ?? job.createdAt)}`;
+}
+
+/** A run's time, by the same rules: none while it waits, its first job's start while running, its last job's end once done. */
+export function groupTimeLabel(group: JobGroup): string | null {
+  if (group.status === "queued") return null;
+  const times = (pick: (j: JobSummary) => string | undefined) =>
+    group.jobs.map(pick).filter((t): t is string => !!t).map((t) => new Date(t).getTime());
+  if (group.status === "running") {
+    const starts = times((j) => j.startedAt ?? (j.state === "running" ? j.updatedAt : undefined));
+    return starts.length ? `started ${timeAgo(new Date(Math.min(...starts)).toISOString())}` : null;
+  }
+  const ends = times((j) => j.updatedAt ?? j.createdAt);
+  return ends.length
+    ? `${group.status === "completed" ? "finished" : "ended"} ${timeAgo(new Date(Math.max(...ends)).toISOString())}`
+    : null;
 }
 
 export function jobStatusChip(job: JobSummary): JobStatusChip {
@@ -330,6 +361,9 @@ export function WorkerJobs({
   const [wizardSeed, setWizardSeed] = useState<NewJobWizardSeed | null>(null);
   const [query, setQuery] = useState("");
   const [highlightKey, setHighlightKey] = useState<string | null>(null);
+  // Runs whose Cancel run was sent: the button reads "Canceling…" until the
+  // worker's list shows nothing of the run left running or queued.
+  const [cancelingRuns, setCancelingRuns] = useState<Set<string>>(new Set());
 
   const label = workerLabel ?? workerId;
   const myProjectId = useMemo(() => projectTag(projectPath).id, [projectPath]);
@@ -378,6 +412,17 @@ export function WorkerJobs({
     return () => clearIntervalImpl(handle);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workerId, pollIntervalMs, refreshToken]);
+
+  // A run's "Canceling…" ends once the worker shows nothing of it left
+  // running or queued (or the run is gone from the list).
+  useEffect(() => {
+    setCancelingRuns((prev) => {
+      if (prev.size === 0) return prev;
+      const stillActive = new Set(groups.filter(isActiveGroup).map((g) => g.key));
+      const next = new Set([...prev].filter((k) => stillActive.has(k)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [groups]);
 
   // A queue card's click: clear a search that could hide the run, then scroll
   // it into view and flash it. Retries briefly while the list is loading.
@@ -431,9 +476,15 @@ export function WorkerJobs({
     const unfinished = unfinishedJobs(group);
     if (unfinished.length === 0) return;
     if (!(await confirmDialog(cancelRunConfirm(group)))) return;
+    setCancelingRuns((s) => new Set(s).add(group.key));
     try {
       for (const job of unfinished) await cancelJobOn(workerId, job.jobId, "cancel");
     } catch (err) {
+      setCancelingRuns((s) => {
+        const next = new Set(s);
+        next.delete(group.key);
+        return next;
+      });
       toast.error("Failed to cancel run", {
         description: err instanceof Error ? err.message : String(err),
       });
@@ -568,7 +619,9 @@ export function WorkerJobs({
                   >
                     {groupChip.text}
                   </span>
-                  <span className="text-[10px] text-muted-foreground shrink-0">{timeAgo(group.createdAt)}</span>
+                  {groupTimeLabel(group) && (
+                    <span className="text-[10px] text-muted-foreground shrink-0">{groupTimeLabel(group)}</span>
+                  )}
                   <span
                     className="text-[9px] font-mono text-muted-foreground shrink-0"
                     title={`Run ${group.key}`}
@@ -579,10 +632,11 @@ export function WorkerJobs({
                     <Button
                       size="xs"
                       variant="outline"
-                      className="h-6 text-[10px] shrink-0"
+                      className={`${CANCEL_BUTTON_CLASS} shrink-0`}
+                      disabled={cancelingRuns.has(group.key)}
                       onClick={() => void handleCancelRun(group)}
                     >
-                      Cancel run
+                      {cancelingRuns.has(group.key) ? "Canceling…" : "Cancel run"}
                     </Button>
                   )}
                   {canDeleteRun(group.jobs) && (
@@ -608,8 +662,11 @@ export function WorkerJobs({
                     const canWatch = job.state === "running";
                     const canView =
                       job.state === "completed" || job.state === "failed" || job.state === "canceled";
-                    const canCancel = managed && (job.state === "queued" || job.state === "running");
-                    const canStopEarly = canCancel && job.state === "running" && job.kind !== "track";
+                    // A queued job is canceled with its whole run (Cancel run, in
+                    // the run's header); the job running now gets its own
+                    // Stop Early / Cancel.
+                    const canCancel = managed && job.state === "running";
+                    const canStopEarly = canCancel && job.kind !== "track";
                     const canFetch = job.kind === "track" && job.state === "completed";
                     const canRunAgain = managed && job.kind === "train" && job.state === "failed";
                     return (
@@ -632,9 +689,9 @@ export function WorkerJobs({
                           >
                             {chip.text}
                           </span>
-                          <span className="text-[10px] text-muted-foreground shrink-0">
-                            {timeAgo(job.createdAt)}
-                          </span>
+                          {jobTimeLabel(job) && (
+                            <span className="text-[10px] text-muted-foreground shrink-0">{jobTimeLabel(job)}</span>
+                          )}
                         </div>
 
                         {job.modelName && (
@@ -680,7 +737,7 @@ export function WorkerJobs({
                             <Button
                               size="xs"
                               variant="outline"
-                              className="h-6 text-[10px]"
+                              className={STOP_EARLY_BUTTON_CLASS}
                               onClick={() => handleEndJob(job, "stop")}
                             >
                               Stop Early
@@ -690,7 +747,7 @@ export function WorkerJobs({
                             <Button
                               size="xs"
                               variant="outline"
-                              className="h-6 text-[10px]"
+                              className={CANCEL_BUTTON_CLASS}
                               onClick={() => handleEndJob(job, "cancel")}
                             >
                               Cancel
