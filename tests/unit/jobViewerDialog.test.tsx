@@ -119,10 +119,52 @@ describe("JobViewerDialog", () => {
         onClose={() => {}}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+    fireEvent.click(screen.getByRole("button", { name: "Stop Early" }));
     await waitFor(() => expect(useConfirmStore.getState().request).not.toBeNull());
     useConfirmStore.getState().respond(true);
     await waitFor(() => expect(calls).toEqual([["w1", "job_1", "stop"]]));
+  });
+
+  it("offers Cancel alongside Stop Early, and Cancel sends mode cancel", async () => {
+    mockStream = { ...initialJobStream("Train centroid"), status: "running" };
+    const calls: Array<[string, string, string]> = [];
+    useConnectStore.setState({
+      cancelJobOn: async (workerId: string, jobId: string, mode: string) => {
+        calls.push([workerId, jobId, mode]);
+      },
+    });
+    render(
+      <JobViewerDialog
+        workerId="w1"
+        jobId="job_1"
+        label="Train centroid"
+        initialView="monitor"
+        canStop
+        onClose={() => {}}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Stop Early" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(useConfirmStore.getState().request).not.toBeNull());
+    useConfirmStore.getState().respond(true);
+    await waitFor(() => expect(calls).toEqual([["w1", "job_1", "cancel"]]));
+  });
+
+  it("an inference job offers Cancel but not Stop Early", () => {
+    mockStream = { ...initialJobStream("Inference"), status: "running" };
+    render(
+      <JobViewerDialog
+        workerId="w1"
+        jobId="job_1"
+        label="Inference"
+        initialView="logs"
+        kind="track"
+        canStop
+        onClose={() => {}}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Stop Early" })).not.toBeInTheDocument();
   });
 
   it("hides Stop once the job is no longer running", () => {
@@ -137,7 +179,8 @@ describe("JobViewerDialog", () => {
         onClose={() => {}}
       />,
     );
-    expect(screen.queryByRole("button", { name: "Stop" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Stop Early" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
   });
 
   it("never offers Stop for a view-only job (another project's), even while running", () => {
@@ -152,7 +195,8 @@ describe("JobViewerDialog", () => {
         onClose={() => {}}
       />,
     );
-    expect(screen.queryByRole("button", { name: "Stop" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Stop Early" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
   });
 
   it("shows the failure detail for a failed job", () => {

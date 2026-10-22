@@ -25,6 +25,7 @@ import type { JobSummary, JobStatus } from "@/lib/protocolV1/client";
 import { useAppStore } from "@/stores/appStore";
 import { useConnectStore } from "@/stores/connectStore";
 import { confirmDialog } from "@/stores/confirmStore";
+import { endJobConfirm } from "./endJobConfirm";
 import { JobViewerDialog } from "./JobViewerDialog";
 import { MergePredictionsDialog } from "./MergePredictionsDialog";
 import { NewJobWizard, seedWizardFromRun, type NewJobWizardSeed } from "./NewJobWizard";
@@ -383,21 +384,16 @@ export function WorkerJobs({
       canStop: isManagedJob(job, myProjectId, trackedJobIds),
     });
 
-  const handleCancelOrStop = async (job: JobSummary) => {
-    const mode: "cancel" | "stop" = job.state === "running" ? "stop" : "cancel";
-    const label = mode === "stop" ? "Stop" : "Cancel";
-    const ok = await confirmDialog({
-      title: `${label} job?`,
-      message: `${label} "${jobTitle(job)}" on this worker?`,
-      confirmLabel: label,
-      destructive: true,
-    });
+  // Like SLEAP's training monitor: Stop Early finishes training and keeps the
+  // model trained so far; Cancel ends the job without one.
+  const handleEndJob = async (job: JobSummary, mode: "cancel" | "stop") => {
+    const ok = await confirmDialog(endJobConfirm(jobTitle(job), mode, job.state === "queued"));
     if (!ok) return;
     try {
       await cancelJobOn(workerId, job.jobId, mode);
       await refresh();
     } catch (err) {
-      toast.error(`Failed to ${label.toLowerCase()} job`, {
+      toast.error(mode === "stop" ? "Failed to stop training early" : "Failed to cancel job", {
         description: err instanceof Error ? err.message : String(err),
       });
     }
@@ -557,6 +553,7 @@ export function WorkerJobs({
                     const canView =
                       job.state === "completed" || job.state === "failed" || job.state === "canceled";
                     const canCancel = managed && (job.state === "queued" || job.state === "running");
+                    const canStopEarly = canCancel && job.state === "running" && job.kind !== "track";
                     const canFetch = job.kind === "track" && job.state === "completed";
                     const canRunAgain = managed && job.kind === "train" && job.state === "failed";
                     return (
@@ -623,14 +620,24 @@ export function WorkerJobs({
                           >
                             Logs
                           </Button>
+                          {canStopEarly && (
+                            <Button
+                              size="xs"
+                              variant="outline"
+                              className="h-6 text-[10px]"
+                              onClick={() => handleEndJob(job, "stop")}
+                            >
+                              Stop Early
+                            </Button>
+                          )}
                           {canCancel && (
                             <Button
                               size="xs"
                               variant="outline"
                               className="h-6 text-[10px]"
-                              onClick={() => handleCancelOrStop(job)}
+                              onClick={() => handleEndJob(job, "cancel")}
                             >
-                              {job.state === "running" ? "Stop" : "Cancel"}
+                              Cancel
                             </Button>
                           )}
                           {canRunAgain && (

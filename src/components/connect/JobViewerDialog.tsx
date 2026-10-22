@@ -23,6 +23,7 @@ import { toast } from "@/lib/notify";
 import { useJobStream } from "@/hooks/useJobStream";
 import { useConnectStore } from "@/stores/connectStore";
 import { confirmDialog } from "@/stores/confirmStore";
+import { endJobConfirm } from "./endJobConfirm";
 import type { TrainingStatus } from "@/stores/trainingStore";
 
 export interface JobViewerDialogProps {
@@ -32,7 +33,7 @@ export interface JobViewerDialogProps {
   initialView: "monitor" | "logs";
   /** An inference ("track") job has no loss curve: only its logs are shown. */
   kind?: "train" | "track";
-  /** Whether Stop is offered — false for another project's job, which is view-only. */
+  /** Whether Stop Early / Cancel are offered — false for another project's job, which is view-only. */
   canStop: boolean;
   onClose: () => void;
 }
@@ -76,18 +77,13 @@ export function JobViewerDialog({
     [stream.log, errorsOnly],
   );
 
-  const handleStop = async () => {
-    const ok = await confirmDialog({
-      title: "Stop job?",
-      message: `Stop "${label}" on this worker?`,
-      confirmLabel: "Stop",
-      destructive: true,
-    });
+  const handleEnd = async (mode: "cancel" | "stop") => {
+    const ok = await confirmDialog(endJobConfirm(label, mode, false));
     if (!ok) return;
     try {
-      await cancelJobOn(workerId, jobId, "stop");
+      await cancelJobOn(workerId, jobId, mode);
     } catch (err) {
-      toast.error("Failed to stop job", {
+      toast.error(mode === "stop" ? "Failed to stop training early" : "Failed to cancel job", {
         description: err instanceof Error ? err.message : String(err),
       });
     }
@@ -137,14 +133,26 @@ export function JobViewerDialog({
             </>
           )}
           {canStop && stream.status === "running" && (
-            <Button
-              size="xs"
-              variant="outline"
-              className="ml-auto h-6 text-[10px]"
-              onClick={handleStop}
-            >
-              Stop
-            </Button>
+            <div className="ml-auto flex gap-1">
+              {kind !== "track" && (
+                <Button
+                  size="xs"
+                  variant="outline"
+                  className="h-6 text-[10px]"
+                  onClick={() => handleEnd("stop")}
+                >
+                  Stop Early
+                </Button>
+              )}
+              <Button
+                size="xs"
+                variant="outline"
+                className="h-6 text-[10px]"
+                onClick={() => handleEnd("cancel")}
+              >
+                Cancel
+              </Button>
+            </div>
           )}
         </div>
 
