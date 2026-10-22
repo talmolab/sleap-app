@@ -215,7 +215,7 @@ describe("BackendPicker rendering", () => {
       connectionStatus: "connected",
       trackedJobs: [makeTracked({ jobId: "job_abc" })],
       reattachableJob: { jobId: "job_abc", state: "running" },
-      cancelJob: vi.fn(),
+      cancelJob: vi.fn() as unknown as (runId?: string) => void,
     });
     await renderPicker({ remoteEnabled: true });
 

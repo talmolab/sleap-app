@@ -1677,6 +1677,38 @@ describe("connectStore", () => {
       expect(lastClient().jobsCancelCalls.map(([id]) => id)).toEqual(["job_a", "job_b"]);
     });
 
+    it("cancelJob(runId) cancels that run even when a newer run was started since", async () => {
+      // The Training panel's run (run_1) and, after it, a run queued from the
+      // Connect window's New job wizard (run_2): the panel's Cancel must end
+      // run_1, and run_2 must be left to start next.
+      splitRun();
+      useConnectStore.setState({
+        trackedJobs: [
+          ...useConnectStore.getState().trackedJobs,
+          makeTracked({ jobId: "job_w1", kind: "train", source: "worker-file", submittedAt: 3 }),
+          makeTracked({ jobId: "job_w2", kind: "train", source: "worker-file", submittedAt: 4 }),
+        ],
+      });
+      lastClient().jobsListResult = [
+        ...lastClient().jobsListResult,
+        { jobId: "job_w1", state: "queued", createdAt: "t3", queuePosition: 2, modelTypes: [], run: { id: "run_2", index: 0, count: 2 } },
+        { jobId: "job_w2", state: "queued", createdAt: "t4", queuePosition: 3, modelTypes: [], run: { id: "run_2", index: 1, count: 2 } },
+      ];
+      useConnectStore.getState().cancelJob("run_1");
+      await flushAsync();
+      expect(lastClient().jobsCancelCalls).toEqual([
+        ["job_a", "cancel"],
+        ["job_b", "cancel"],
+      ]);
+    });
+
+    it("stopJob(runId) stops that run's model in progress", async () => {
+      splitRun();
+      useConnectStore.getState().stopJob("run_1");
+      await flushAsync();
+      expect(lastClient().jobsCancelCalls).toEqual([["job_a", "stop"]]);
+    });
+
     it("falls back to the latest tracked job when the worker's job list is unavailable", async () => {
       useConnectStore.setState({ trackedJobs: [makeTracked()] });
       lastClient().jobsListShouldThrow = new Error("offline");

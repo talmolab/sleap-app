@@ -145,7 +145,7 @@ export function BackendPicker({
             A {jobLabel} (<code className="font-mono">{reattachableJob.jobId}</code>) is still{" "}
             <b>{reattachableJob.state}</b> on this worker from a previous session.
           </p>
-          <Button size="xs" variant="outline" className="h-6 text-[10px]" onClick={cancelJob}>
+          <Button size="xs" variant="outline" className="h-6 text-[10px]" onClick={() => cancelJob()}>
             Cancel it
           </Button>
         </div>

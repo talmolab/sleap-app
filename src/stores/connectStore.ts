@@ -168,9 +168,10 @@ export interface SubmitJobOptions {
    * tab (`WorkerJobs.groupJobs`), the same way the worker's own
    * `post_inference` chaining (sleap-connect PR5w) does. Omitted, `submitJob`
    * behaves exactly as before: one fresh run id per call, untagged (a plain
-   * training job).
+   * training job). `trainingStore` also passes its own id WITHOUT a stage
+   * for the training jobs, so its Stop/Cancel can name exactly its run.
    */
-  run?: { id: string; stage: "inference" };
+  run?: { id: string; stage?: "inference" };
 }
 
 export interface ConnectOptions {
@@ -317,10 +318,12 @@ interface ConnectState {
     spec: JobSpec,
     opts: { source: TrackedJob["source"] },
   ) => Promise<string[]>;
-  /** Hard-cancel the current job. */
-  cancelJob: () => void;
-  /** Gracefully early-stop the current job (checkpoint + finish). */
-  stopJob: () => void;
+  /** Hard-cancel every unfinished job of run `runId` (default: the latest
+   *  active tracked job's run). See `runJobsToEnd`. */
+  cancelJob: (runId?: string) => void;
+  /** Gracefully early-stop the model in progress of run `runId` (default:
+   *  the latest active tracked job's run). See `runJobsToEnd`. */
+  stopJob: (runId?: string) => void;
   /** Fetch a result blob's bytes (e.g. `JobResult.resultBlobs.predictions`). */
   fetchResultBlob: (ref: JobResultBlobRef) => Promise<Uint8Array>;
   /**
@@ -383,8 +386,9 @@ function latestActiveJobFor(workerId: string, jobs: TrackedJob[]): TrackedJob | 
 }
 
 /**
- * What the training panel's Stop Early / Cancel act on: the run of the latest
- * active tracked job. A split multi-model run is N sequential jobs sharing
+ * What the training panel's Stop Early / Cancel act on: run `runId` if
+ * given (the panel's own run), else the run of the latest active tracked job.
+ * A split multi-model run is N sequential jobs sharing
  * `run.id`, so `all` is every unfinished job in it (Cancel ends them all) and
  * `current` is the one in progress (Stop Early ends only that model, and the
  * next one still trains, like local training and SLEAP). Without the worker's
@@ -395,9 +399,10 @@ export function runJobsToEnd(
   latest: TrackedJob,
   active: TrackedJob[],
   summaries: JobSummary[],
+  wantedRunId?: string,
 ): { all: string[]; current: string } {
   const byId = new Map(summaries.map((s) => [s.jobId, s]));
-  const runId = byId.get(latest.jobId)?.run?.id;
+  const runId = wantedRunId ?? byId.get(latest.jobId)?.run?.id;
   if (!runId) return { all: [latest.jobId], current: latest.jobId };
   const siblings = active
     .map((j) => byId.get(j.jobId))
@@ -420,7 +425,7 @@ const MAX_TRACKED_JOBS = 50;
  * `runJobsToEnd`). A failure gets a toast: the panel already logged
  * "Stop Early requested", so a silent failure would leave it waiting.
  */
-async function endCurrentRun(mode: "cancel" | "stop"): Promise<void> {
+async function endCurrentRun(mode: "cancel" | "stop", runId?: string): Promise<void> {
   const store = useConnectStore.getState();
   const { _client, selectedWorkerId, trackedJobs } = store;
   if (!_client || !selectedWorkerId) return;
@@ -433,7 +438,7 @@ async function endCurrentRun(mode: "cancel" | "stop"): Promise<void> {
   } catch {
     // Unknown run membership: act on the latest job alone.
   }
-  const { all, current } = runJobsToEnd(latest, active, summaries);
+  const { all, current } = runJobsToEnd(latest, active, summaries, runId);
   for (const jobId of mode === "stop" ? [current] : all) {
     try {
       await store.cancelJobOn(selectedWorkerId, jobId, mode);
@@ -1652,13 +1657,13 @@ export const useConnectStore = create<ConnectState>()(
         return [await submitTracked({ ...spec, run: { id: runId, index: 0, count: 1 } })];
       },
 
-      cancelJob: () => {
-        void endCurrentRun("cancel");
+      cancelJob: (runId) => {
+        void endCurrentRun("cancel", runId);
         set({ reattachableJob: null });
       },
 
-      stopJob: () => {
-        void endCurrentRun("stop");
+      stopJob: (runId) => {
+        void endCurrentRun("stop", runId);
         set({ reattachableJob: null });
       },
 

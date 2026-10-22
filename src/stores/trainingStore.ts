@@ -590,6 +590,9 @@ interface TrainingState {
   startedAt: number | null;
   _stopRequested: boolean;
   _isRemote: boolean;
+  /** The remote run's id (every job of it, training and post-training
+   *  inference, shares it), so Stop Early / Cancel end exactly this run. */
+  _remoteRunId: string | null;
 
   // Progress
   models: ModelProgress[];
@@ -1218,6 +1221,7 @@ const initialState = {
   startedAt: null as number | null,
   _stopRequested: false,
   _isRemote: false,
+  _remoteRunId: null,
   models: [] as ModelProgress[],
   currentModelIndex: 0,
   wandbUrl: null as string | null,
@@ -1662,6 +1666,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       startedAt: Date.now(),
       _stopRequested: false,
       _isRemote: !!remoteOpts?.remote,
+      _remoteRunId: remoteOpts?.remote ? crypto.randomUUID() : null,
       models,
       currentModelIndex: 0,
       wandbUrl: null,
@@ -1856,6 +1861,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       try {
         const trainResults: JobResult[] = [];
         const result = await submitJob(spec, onLogLine, {
+          ...(get()._remoteRunId ? { run: { id: get()._remoteRunId as string } } : {}),
           onTelemetry: (telemetry, jobIndex) => get().applyRemoteTelemetry(jobIndex, telemetry),
           onModelComplete: (modelResult) => {
             trainResults.push(modelResult);
@@ -2495,7 +2501,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       // Remote: jobs.cancel(mode: "stop") for graceful early stop
       const { useConnectStore } = await import("@/stores/connectStore");
       const { stopJob } = useConnectStore.getState();
-      stopJob();
+      stopJob(get()._remoteRunId ?? undefined);
       set((s) => ({
         log: appendLog(s.log, "— Stop Early requested, saving checkpoint..."),
       }));
@@ -2522,7 +2528,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       // Remote: jobs.cancel(mode: "cancel")
       const { useConnectStore } = await import("@/stores/connectStore");
       const { cancelJob } = useConnectStore.getState();
-      cancelJob();
+      cancelJob(get()._remoteRunId ?? undefined);
     } else {
       // Local: kill subprocess
       await cancelCommand();
