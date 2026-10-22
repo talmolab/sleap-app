@@ -899,3 +899,55 @@ describe("WorkerJobs — grouping + search", () => {
     expect(screen.getByText("run_zzzz")).toBeInTheDocument();
   });
 });
+
+describe("Cancel run and jump-to-run (sidebar queue)", () => {
+  const RUN = { id: "run_top", index: 0, count: 2 };
+
+  it("an active run of this project has Cancel run, which cancels only its unfinished jobs", async () => {
+    const calls: Array<[string, string]> = [];
+    useConnectStore.setState({
+      listJobs: async () => [
+        job({ jobId: "j_done", state: "completed", run: RUN }),
+        job({ jobId: "j_run", state: "running", modelTypes: ["centered_instance"], run: { ...RUN, index: 1 } }),
+      ],
+      cancelJobOn: async (_w: string, jobId: string, mode: string) => {
+        calls.push([jobId, mode]);
+      },
+    });
+    render(<WorkerJobs workerId={WORKER_ID} setIntervalImpl={noopSetInterval} clearIntervalImpl={noopClearInterval} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Cancel run" })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Cancel run" }));
+    await waitFor(() => expect(useConfirmStore.getState().request).not.toBeNull());
+    useConfirmStore.getState().respond(true);
+    await waitFor(() => expect(calls).toEqual([["j_run", "cancel"]]));
+  });
+
+  it("no Cancel run on a finished run or another project's run", async () => {
+    useConnectStore.setState({
+      listJobs: async () => [
+        job({ jobId: "j_done", state: "completed", run: { id: "r1", index: 0, count: 1 } }),
+        job({ jobId: "j_other", state: "running", project: { id: "other", name: "x.slp" }, run: { id: "r2", index: 0, count: 1 } }),
+      ],
+    });
+    render(<WorkerJobs workerId={WORKER_ID} setIntervalImpl={noopSetInterval} clearIntervalImpl={noopClearInterval} />);
+    await waitFor(() => expect(screen.getAllByRole("button", { name: "Logs" })).toHaveLength(2));
+    expect(screen.queryByRole("button", { name: "Cancel run" })).not.toBeInTheDocument();
+  });
+
+  it("focusRun highlights that run's card", async () => {
+    useConnectStore.setState({
+      listJobs: async () => [job({ jobId: "j1", state: "queued", run: { id: "run_x", index: 0, count: 1 } })],
+    });
+    render(
+      <WorkerJobs
+        workerId={WORKER_ID}
+        setIntervalImpl={noopSetInterval}
+        clearIntervalImpl={noopClearInterval}
+        focusRun={{ key: "run_x", nonce: 1 }}
+      />,
+    );
+    await waitFor(() =>
+      expect(document.querySelector('[data-run-key="run_x"]')?.className).toContain("ring-primary"),
+    );
+  });
+});

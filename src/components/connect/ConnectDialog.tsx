@@ -17,6 +17,11 @@
  * The header's Refresh re-fetches every worker's info and bumps
  * `refreshToken`, which the open tab watches to re-fetch its own data now
  * rather than on its next poll.
+ *
+ * The sidebar splits into Paired workers (top) and the picked worker's queue
+ * (`SidebarQueue`), each scrolling on its own. A queue card's click switches
+ * to the Jobs tab and scrolls to that run; a Stop Early / Cancel run from the
+ * queue bumps `refreshToken` so the Jobs tab catches up right away.
  */
 import { useEffect, useState } from "react";
 import { RefreshCw, X } from "lucide-react";
@@ -27,6 +32,7 @@ import { useConnectStore } from "@/stores/connectStore";
 import { WorkerList } from "./WorkerList";
 import { WorkerJobs } from "./WorkerJobs";
 import { WorkerDataAccess } from "./WorkerDataAccess";
+import { SidebarQueue } from "./SidebarQueue";
 
 export interface ConnectDialogProps {
   open: boolean;
@@ -45,6 +51,7 @@ export function ConnectDialog({ open, onOpenChange }: ConnectDialogProps) {
   const [tab, setTab] = useState<WorkerTab>("jobs");
   const [refreshToken, setRefreshToken] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
+  const [focusRun, setFocusRun] = useState<{ key: string; nonce: number } | null>(null);
 
   // Refresh every paired worker's info in parallel each time the window
   // opens, so cards show live specs/busy state right away rather than only
@@ -117,8 +124,25 @@ export function ConnectDialog({ open, onOpenChange }: ConnectDialogProps) {
         </div>
 
         <div className="flex flex-1 min-h-0">
-          <div className="w-[320px] shrink-0 border-r overflow-y-auto">
-            <WorkerList selectedId={pickedWorkerId} onSelect={setPickedWorkerId} />
+          <div className="w-[320px] shrink-0 border-r flex flex-col overflow-hidden">
+            {/* Paired workers takes the top ~45%, so the queue starts near the middle. */}
+            <div className="h-[45%] shrink-0 overflow-y-auto">
+              <WorkerList selectedId={pickedWorkerId} onSelect={setPickedWorkerId} />
+            </div>
+            {pickedWorker && (
+              <div className="flex-1 min-h-0 border-t">
+                <SidebarQueue
+                  workerId={pickedWorker.nodeId}
+                  workerLabel={pickedWorker.label}
+                  refreshToken={refreshToken}
+                  onChanged={() => setRefreshToken((t) => t + 1)}
+                  onOpenRun={(key) => {
+                    setTab("jobs");
+                    setFocusRun((f) => ({ key, nonce: (f?.nonce ?? 0) + 1 }));
+                  }}
+                />
+              </div>
+            )}
           </div>
 
           <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
@@ -143,6 +167,7 @@ export function ConnectDialog({ open, onOpenChange }: ConnectDialogProps) {
                       workerId={pickedWorker.nodeId}
                       workerLabel={pickedWorker.label}
                       refreshToken={refreshToken}
+                      focusRun={focusRun}
                     />
                   ) : (
                     <WorkerDataAccess workerId={pickedWorker.nodeId} refreshToken={refreshToken} />

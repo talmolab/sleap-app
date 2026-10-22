@@ -68,7 +68,7 @@ describe("ConnectDialog", () => {
     await waitFor(() => expect(refreshed.sort()).toEqual(["node-a", "node-b"]));
   });
 
-  it("Refresh re-fetches every paired worker's info and the picked worker's jobs", async () => {
+  it("Refresh re-fetches every paired worker's info and the picked worker's jobs (Jobs tab + queue)", async () => {
     const refreshed: string[] = [];
     const listed: string[] = [];
     useConnectStore.setState({
@@ -83,12 +83,40 @@ describe("ConnectDialog", () => {
     });
     render(<ConnectDialog open onOpenChange={() => {}} />);
     await waitFor(() => expect(refreshed.length).toBe(2));
-    await waitFor(() => expect(listed).toEqual(["node-a"]));
+    // The Jobs tab and the sidebar queue each list the picked worker's jobs.
+    await waitFor(() => expect(listed).toEqual(["node-a", "node-a"]));
 
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
 
     await waitFor(() => expect(refreshed.sort()).toEqual(["node-a", "node-a", "node-b", "node-b"]));
-    await waitFor(() => expect(listed).toEqual(["node-a", "node-a"]));
+    await waitFor(() => expect(listed).toEqual(["node-a", "node-a", "node-a", "node-a"]));
+  });
+
+  it("shows the picked worker's queue in the sidebar, and a card click opens that run in Jobs", async () => {
+    useConnectStore.setState({
+      pairedWorkers: [WORKER_A],
+      listJobs: async () => [
+        {
+          jobId: "j1",
+          state: "running",
+          createdAt: "2026-10-01T00:00:00.000Z",
+          queuePosition: null,
+          kind: "train" as const,
+          modelTypes: ["centroid"],
+          run: { id: "run_q", index: 0, count: 1 },
+        },
+      ],
+    });
+    render(<ConnectDialog open onOpenChange={() => {}} />);
+    await waitFor(() => expect(screen.getByText(/Queue on Lab GPU/i)).toBeInTheDocument());
+    // Radix tabs switch on mousedown.
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Data access" }), { button: 0 });
+    await waitFor(() =>
+      expect(screen.getByRole("tab", { name: "Data access" })).toHaveAttribute("data-state", "active"),
+    );
+    const card = await screen.findByRole("button", { name: /open in Jobs/ });
+    fireEvent.click(card);
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Jobs" })).toHaveAttribute("data-state", "active"));
   });
 
   it("shows the picked worker's label as the right-pane header", () => {

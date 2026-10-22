@@ -29,6 +29,7 @@ import { endJobConfirm } from "./endJobConfirm";
 import { JobViewerDialog } from "./JobViewerDialog";
 import { MergePredictionsDialog } from "./MergePredictionsDialog";
 import { NewJobWizard, seedWizardFromRun, type NewJobWizardSeed } from "./NewJobWizard";
+import { cancelRunConfirm, isActiveGroup, unfinishedJobs } from "./WorkerQueue";
 
 /** Last path segment of a worker path (handles both `/` and `\`), or `null` if absent. */
 function basename(p: string | undefined): string | null {
@@ -285,6 +286,8 @@ export interface WorkerJobsProps {
   setIntervalImpl?: (cb: () => void, ms: number) => unknown;
   /** Overridable for tests; defaults to the real `clearInterval`. */
   clearIntervalImpl?: (handle: unknown) => void;
+  /** Scroll to and briefly highlight this run (a queue card's click); the nonce lets a repeat click scroll again. */
+  focusRun?: { key: string; nonce: number } | null;
 }
 
 const DEFAULT_POLL_MS = 10000;
@@ -307,6 +310,7 @@ export function WorkerJobs({
   refreshToken = 0,
   setIntervalImpl = defaultSetInterval,
   clearIntervalImpl = defaultClearInterval,
+  focusRun = null,
 }: WorkerJobsProps) {
   const projectPath = useAppStore((s) => s.projectPath);
   const listJobs = useConnectStore((s) => s.listJobs);
@@ -325,6 +329,7 @@ export function WorkerJobs({
   const [wizardOpen, setWizardOpen] = useState(false);
   const [wizardSeed, setWizardSeed] = useState<NewJobWizardSeed | null>(null);
   const [query, setQuery] = useState("");
+  const [highlightKey, setHighlightKey] = useState<string | null>(null);
 
   const label = workerLabel ?? workerId;
   const myProjectId = useMemo(() => projectTag(projectPath).id, [projectPath]);
@@ -374,6 +379,27 @@ export function WorkerJobs({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workerId, pollIntervalMs, refreshToken]);
 
+  // A queue card's click: clear a search that could hide the run, then scroll
+  // it into view and flash it. Retries briefly while the list is loading.
+  useEffect(() => {
+    if (!focusRun) return;
+    setQuery("");
+    let tries = 0;
+    let timer = 0;
+    const find = () => {
+      const el = document.querySelector<HTMLElement>(`[data-run-key="${CSS.escape(focusRun.key)}"]`);
+      if (el) {
+        el.scrollIntoView({ block: "center", behavior: "smooth" });
+        setHighlightKey(focusRun.key);
+        timer = window.setTimeout(() => setHighlightKey(null), 1800);
+      } else if (tries++ < 20) {
+        timer = window.setTimeout(find, 100);
+      }
+    };
+    find();
+    return () => window.clearTimeout(timer);
+  }, [focusRun]);
+
   // An inference job has no loss curve to monitor — its viewer opens on logs.
   const openViewer = (job: JobSummary, initialView: "monitor" | "logs") =>
     setViewer({
@@ -396,6 +422,23 @@ export function WorkerJobs({
       toast.error(mode === "stop" ? "Failed to stop training early" : "Failed to cancel job", {
         description: err instanceof Error ? err.message : String(err),
       });
+    }
+  };
+
+  // Ends every unfinished job of the run, like the Training panel's Cancel:
+  // the model training now and the ones still queued behind it.
+  const handleCancelRun = async (group: JobGroup) => {
+    const unfinished = unfinishedJobs(group);
+    if (unfinished.length === 0) return;
+    if (!(await confirmDialog(cancelRunConfirm(group)))) return;
+    try {
+      for (const job of unfinished) await cancelJobOn(workerId, job.jobId, "cancel");
+    } catch (err) {
+      toast.error("Failed to cancel run", {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      await refresh();
     }
   };
 
@@ -497,14 +540,17 @@ export function WorkerJobs({
         <div className="space-y-2">
           {visibleGroups.map((group) => {
             const groupChip = statusChipFor(group.status);
+            const canCancelRun =
+              isActiveGroup(group) && group.jobs.some((j) => isManagedJob(j, myProjectId, trackedJobIds));
             return (
               <div
                 key={group.key}
-                className={`rounded-md border border-border p-2.5 space-y-1.5 ${
+                data-run-key={group.key}
+                className={`rounded-md border p-2.5 space-y-1.5 transition-shadow ${
                   // Not dimmed with opacity: that greyed out the whole card,
                   // buttons included, so it read as disabled.
                   group.mine ? "bg-zinc-800/50" : "bg-transparent"
-                }`}
+                } ${highlightKey === group.key ? "border-primary ring-2 ring-primary/60" : "border-border"}`}
               >
                 <div className="flex items-center gap-2 flex-wrap">
                   {group.mine && <span className="text-orange-400 text-xs shrink-0">★</span>}
@@ -529,6 +575,16 @@ export function WorkerJobs({
                   >
                     {group.key.slice(0, 8)}
                   </span>
+                  {canCancelRun && (
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      className="h-6 text-[10px] shrink-0"
+                      onClick={() => void handleCancelRun(group)}
+                    >
+                      Cancel run
+                    </Button>
+                  )}
                   {canDeleteRun(group.jobs) && (
                     <Button
                       size="icon-xs"
