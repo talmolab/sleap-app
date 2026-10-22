@@ -136,26 +136,26 @@ function drawHeaderFrameMarkers(
 
 /**
  * Frame numbers for the main bar's gridlines, just right of each line (as
- * in the header) and vertically between the suggestion ticks and the
- * labeled-frame marks. A label that would run off the right edge is skipped.
+ * in the header) and along the top edge, leaving the gap below them clear
+ * above the labeled-frame marks. A label that would run off the right edge is
+ * skipped.
  */
 function drawBarFrameLabels(
   ctx: CanvasRenderingContext2D,
   totalFrames: number,
   w: number,
-  h: number,
 ): void {
   if (totalFrames <= 1) return;
   const step = frameTickInterval(totalFrames);
   ctx.save();
   ctx.font = "10px system-ui, sans-serif";
-  ctx.textBaseline = "middle";
+  ctx.textBaseline = "top";
   ctx.fillStyle = "rgba(255, 255, 255, 0.6)";
   for (let f = step; f < totalFrames; f += step) {
     const x = (f / (totalFrames - 1)) * w + 3;
     const label = String(f);
     if (x + ctx.measureText(label).width > w) continue;
-    ctx.fillText(label, x, (SUGGESTION_TICK_PX + h - 14) / 2);
+    ctx.fillText(label, x, 3);
   }
   ctx.restore();
 }
@@ -1074,10 +1074,10 @@ export function Seekbar() {
     const frameToX = (f: number) => (f / (totalFrames - 1)) * w;
 
     // Frame gridlines + numbers, matching the header's, so the bar isn't a flat
-    // strip. Numbers sit just right of their line, in the band between the
-    // suggestion ticks (top) and the labeled-frame marks (bottom).
+    // strip. Numbers sit just right of their line along the top edge, as in
+    // the header.
     drawFrameGridlines(ctx, totalFrames, w, h);
-    drawBarFrameLabels(ctx, totalFrames, w, h);
+    drawBarFrameLabels(ctx, totalFrames, w);
 
     // Draw frame range selection
     if (frameRange) {
