@@ -2021,9 +2021,18 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
               }));
             } catch (e) {
               logFlusher.flush();
-              const message = `Post-training inference failed: ${e instanceof Error ? e.message : String(e)}`;
+              // The user's own Cancel ended the inference job: not a failure.
+              const canceled = get().error === "Training cancelled";
+              const message = canceled
+                ? "Post-training inference canceled"
+                : `Post-training inference failed: ${e instanceof Error ? e.message : String(e)}`;
               set((s) => ({
-                postTrainingInference: { status: "error", message, pendingMerge: null, merged: false },
+                postTrainingInference: {
+                  status: canceled ? "skipped" : "error",
+                  message,
+                  pendingMerge: null,
+                  merged: false,
+                },
                 log: appendLog(s.log, `— ${message}`),
               }));
             }

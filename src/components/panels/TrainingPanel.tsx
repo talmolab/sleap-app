@@ -726,6 +726,9 @@ export function TrainingPanel() {
   const wandbUrl = useTrainingStore((s) => s.wandbUrl);
   const modelOutputDirs = useTrainingStore((s) => s.modelOutputDirs);
   const postTrainingInference = useTrainingStore((s) => s.postTrainingInference);
+  // Training is over once post-training inference runs: Stop Early has
+  // nothing to stop (it would just end the inference job), so only Cancel.
+  const inferenceRunning = postTrainingInference?.status === "running";
   const fetchAndLoadPostTrainingPredictions = useTrainingStore((s) => s.fetchAndLoadPostTrainingPredictions);
   const [fetchingPredictions, setFetchingPredictions] = useState(false);
   const openExport = useExportStore((s) => s.openExport);
@@ -1619,14 +1622,16 @@ export function TrainingPanel() {
 
         {isRunning && (
           <div className="flex gap-2">
-            <Button
-              variant="outline"
-              className="flex-1 h-8 text-xs border-yellow-500/50 text-yellow-500 hover:bg-yellow-500/10"
-              onClick={() => stopTraining()}
-            >
-              <Square className="h-3 w-3 mr-1" />
-              Stop Early
-            </Button>
+            {!inferenceRunning && (
+              <Button
+                variant="outline"
+                className="flex-1 h-8 text-xs border-yellow-500/50 text-yellow-500 hover:bg-yellow-500/10"
+                onClick={() => stopTraining()}
+              >
+                <Square className="h-3 w-3 mr-1" />
+                Stop Early
+              </Button>
+            )}
             <Button
               variant="destructive"
               className="flex-1 h-8 text-xs"
@@ -2006,7 +2011,8 @@ export function TrainingPanel() {
         isActive={
           viewerIndex !== null &&
           viewerIndex === currentModelIndex &&
-          isRunning
+          isRunning &&
+          !inferenceRunning
         }
         onStopEarly={() => stopTraining()}
         onCancel={() => cancelTraining()}
