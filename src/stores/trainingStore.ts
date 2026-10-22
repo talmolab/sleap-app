@@ -1882,6 +1882,9 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         logFlusher.flush();
 
         if (!result.success) {
+          // The user's own Cancel already set "Training cancelled"; the run
+          // ending is that cancel landing, not a failure to report.
+          if (get().error === "Training cancelled") return;
           const message = result.error || "Training failed";
           set((s) => ({
             status: "error",

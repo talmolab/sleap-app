@@ -382,7 +382,70 @@ function latestActiveJobFor(workerId: string, jobs: TrackedJob[]): TrackedJob | 
   return active.length > 0 ? active[active.length - 1] : null;
 }
 
+/**
+ * What the training panel's Stop Early / Cancel act on: the run of the latest
+ * active tracked job. A split multi-model run is N sequential jobs sharing
+ * `run.id`, so `all` is every unfinished job in it (Cancel ends them all) and
+ * `current` is the one in progress (Stop Early ends only that model, and the
+ * next one still trains, like local training and SLEAP). Without the worker's
+ * job list (`summaries` empty) both fall back to the latest job. Exported for
+ * direct unit testing.
+ */
+export function runJobsToEnd(
+  latest: TrackedJob,
+  active: TrackedJob[],
+  summaries: JobSummary[],
+): { all: string[]; current: string } {
+  const byId = new Map(summaries.map((s) => [s.jobId, s]));
+  const runId = byId.get(latest.jobId)?.run?.id;
+  if (!runId) return { all: [latest.jobId], current: latest.jobId };
+  const siblings = active
+    .map((j) => byId.get(j.jobId))
+    .filter(
+      (s): s is JobSummary =>
+        s !== undefined &&
+        s.run?.id === runId &&
+        (s.state === "queued" || s.state === "running"),
+    )
+    .sort((a, b) => (a.run?.index ?? 0) - (b.run?.index ?? 0));
+  if (siblings.length === 0) return { all: [latest.jobId], current: latest.jobId };
+  const current = siblings.find((s) => s.state === "running") ?? siblings[0];
+  return { all: siblings.map((s) => s.jobId), current: current.jobId };
+}
+
 const MAX_TRACKED_JOBS = 50;
+
+/**
+ * Stop Early / Cancel for the selected worker's current run (see
+ * `runJobsToEnd`). A failure gets a toast: the panel already logged
+ * "Stop Early requested", so a silent failure would leave it waiting.
+ */
+async function endCurrentRun(mode: "cancel" | "stop"): Promise<void> {
+  const store = useConnectStore.getState();
+  const { _client, selectedWorkerId, trackedJobs } = store;
+  if (!_client || !selectedWorkerId) return;
+  const active = activeJobsFor(selectedWorkerId, trackedJobs);
+  const latest = active[active.length - 1];
+  if (!latest) return;
+  let summaries: JobSummary[] = [];
+  try {
+    summaries = await store.listJobs(selectedWorkerId);
+  } catch {
+    // Unknown run membership: act on the latest job alone.
+  }
+  const { all, current } = runJobsToEnd(latest, active, summaries);
+  for (const jobId of mode === "stop" ? [current] : all) {
+    try {
+      await store.cancelJobOn(selectedWorkerId, jobId, mode);
+    } catch (err) {
+      const { toast } = await import("@/lib/notify");
+      toast.error(mode === "stop" ? "Couldn't stop training" : "Couldn't cancel training", {
+        description: err instanceof Error ? err.message : String(err),
+      });
+      return;
+    }
+  }
+}
 
 /**
  * Caps the list at `MAX_TRACKED_JOBS`, oldest-first among non-active jobs
@@ -1590,24 +1653,12 @@ export const useConnectStore = create<ConnectState>()(
       },
 
       cancelJob: () => {
-        const { _client, selectedWorkerId, trackedJobs } = get();
-        const job = selectedWorkerId ? latestActiveJobFor(selectedWorkerId, trackedJobs) : null;
-        if (_client && selectedWorkerId && job) {
-          get()
-            .cancelJobOn(selectedWorkerId, job.jobId, "cancel")
-            .catch((err: unknown) => console.warn("[connect] jobsCancel failed:", err));
-        }
+        void endCurrentRun("cancel");
         set({ reattachableJob: null });
       },
 
       stopJob: () => {
-        const { _client, selectedWorkerId, trackedJobs } = get();
-        const job = selectedWorkerId ? latestActiveJobFor(selectedWorkerId, trackedJobs) : null;
-        if (_client && selectedWorkerId && job) {
-          get()
-            .cancelJobOn(selectedWorkerId, job.jobId, "stop")
-            .catch((err: unknown) => console.warn("[connect] jobsCancel(stop) failed:", err));
-        }
+        void endCurrentRun("stop");
         set({ reattachableJob: null });
       },
 

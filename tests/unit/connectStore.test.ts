@@ -147,8 +147,10 @@ class FakeWorkerClient {
     return this.jobsSubmitResult;
   }
 
+  jobsCancelShouldThrow: Error | null = null;
   async jobsCancel(jobId: string, mode: string) {
     this.jobsCancelCalls.push([jobId, mode]);
+    if (this.jobsCancelShouldThrow) throw this.jobsCancelShouldThrow;
   }
 
   async jobsDelete(jobIds: string[]) {
@@ -1622,6 +1624,79 @@ describe("connectStore", () => {
       useConnectStore.getState().stopJob();
       await flushAsync();
       expect(lastClient().jobsCancelCalls).toEqual([["job_1", "stop"]]);
+    });
+
+    // A split multi-model run is N sequential jobs sharing run.id: model 1
+    // runs while the rest wait in the worker's queue. Stop Early (like local
+    // training and SLEAP) ends only the model in progress, so the next one
+    // still trains; Cancel ends the whole run.
+    function splitRun() {
+      useConnectStore.setState({
+        trackedJobs: [
+          makeTracked({ jobId: "job_a", kind: "train", submittedAt: 1 }),
+          makeTracked({ jobId: "job_b", kind: "train", submittedAt: 2 }),
+        ],
+      });
+      lastClient().jobsListResult = [
+        { jobId: "job_a", state: "running", createdAt: "t1", queuePosition: null, modelTypes: [], run: { id: "run_1", index: 0, count: 2 } },
+        { jobId: "job_b", state: "queued", createdAt: "t2", queuePosition: 1, modelTypes: [], run: { id: "run_1", index: 1, count: 2 } },
+      ];
+    }
+
+    it("stopJob on a split run stops the model in progress, not the queued last one", async () => {
+      splitRun();
+      useConnectStore.getState().stopJob();
+      await flushAsync();
+      expect(lastClient().jobsCancelCalls).toEqual([["job_a", "stop"]]);
+    });
+
+    it("cancelJob on a split run cancels every unfinished job in it", async () => {
+      splitRun();
+      useConnectStore.getState().cancelJob();
+      await flushAsync();
+      expect(lastClient().jobsCancelCalls).toEqual([
+        ["job_a", "cancel"],
+        ["job_b", "cancel"],
+      ]);
+    });
+
+    it("cancelJob leaves another run's jobs alone", async () => {
+      splitRun();
+      useConnectStore.setState({
+        trackedJobs: [
+          makeTracked({ jobId: "job_old", kind: "track", submittedAt: 0 }),
+          ...useConnectStore.getState().trackedJobs,
+        ],
+      });
+      lastClient().jobsListResult = [
+        { jobId: "job_old", state: "running", createdAt: "t0", queuePosition: null, modelTypes: [], run: { id: "run_0", index: 0, count: 1 } },
+        ...lastClient().jobsListResult,
+      ];
+      useConnectStore.getState().cancelJob();
+      await flushAsync();
+      expect(lastClient().jobsCancelCalls.map(([id]) => id)).toEqual(["job_a", "job_b"]);
+    });
+
+    it("falls back to the latest tracked job when the worker's job list is unavailable", async () => {
+      useConnectStore.setState({ trackedJobs: [makeTracked()] });
+      lastClient().jobsListShouldThrow = new Error("offline");
+      useConnectStore.getState().stopJob();
+      await flushAsync();
+      expect(lastClient().jobsCancelCalls).toEqual([["job_1", "stop"]]);
+      lastClient().jobsListShouldThrow = null;
+    });
+
+    it("shows an error toast when the worker refuses the stop", async () => {
+      useConnectStore.setState({ trackedJobs: [makeTracked()] });
+      lastClient().jobsCancelShouldThrow = new Error("job.not_found");
+      useConnectStore.getState().stopJob();
+      await flushAsync();
+      const { toast } = await import("@/lib/notify");
+      expect(toast.error).toHaveBeenCalledWith(
+        expect.stringContaining("Couldn't stop training"),
+        expect.objectContaining({ description: expect.stringContaining("job.not_found") }),
+      );
+      lastClient().jobsCancelShouldThrow = null;
     });
 
     it("only cancels a job tracked against the currently-selected worker", async () => {
