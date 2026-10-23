@@ -35,9 +35,11 @@ import { APP_VERSION } from "@/lib/version";
 import { isTauri } from "@/platform/index";
 import { hydraQuote } from "@/platform/trainingArgs";
 import type { AgentInfo } from "@/lib/protocolV1/envelope";
+import { defaultDeviceName, normalizeDeviceName } from "@/lib/protocolV1/deviceName";
 import type {
   FsListResult,
   JobRun,
+  PairedDevice,
   JobStatus,
   JobSummary,
   Mount,
@@ -185,6 +187,12 @@ interface ConnectState {
   pairedWorkers: PairedWorker[];
   selectedWorkerId: string | null;
   trackedJobs: TrackedJob[];
+  /**
+   * The name this device reports to every worker (`hello`'s
+   * `agent.device_name`); null = the OS computer name, or "<Browser> on <OS>"
+   * in a browser (see `resolveDeviceName`).
+   */
+  deviceName: string | null;
 
   // ── Runtime (not persisted) ─────────────────────────────────────
   connectionStatus: ConnectionStatus;
@@ -288,6 +296,14 @@ interface ConnectState {
   browseRemoteDirOn: (workerId: string, path: string, offset?: number, limit?: number) => Promise<FileEntry[]>;
   /** `fs.mounts` for ANY paired worker, not just the selected one — dials via `clientFor`. */
   mountsFor: (workerId: string) => Promise<Mount[]>;
+  /** `clients.list` — the devices paired with `workerId` (who can use it). Dials via `clientFor`. */
+  devicesFor: (workerId: string) => Promise<PairedDevice[]>;
+  /**
+   * Renames this device everywhere: saved for future hellos, and pushed now
+   * (`clients.rename`) to every worker it's currently connected to.
+   * Workers it isn't connected to pick the name up on the next connect.
+   */
+  setDeviceName: (name: string) => Promise<void>;
   /** Statted via the worker's `fs.stat` — requires an authenticated connection (same precondition as `browseRemoteDir`). */
   statWorkerPath: (path: string) => Promise<{ exists: boolean; type?: "file" | "directory" }>;
   /** Add (or replace, by `rule.local`) one path rule for `workerId`. */
@@ -580,20 +596,32 @@ async function irohDial(info: IrohEndpointInfo | undefined, nodeId: string): Pro
   };
 }
 
+let _defaultDeviceName: Promise<string> | null = null;
+
+/** This device's name for workers: the user's choice, else the OS/browser default (looked up once). */
+export async function resolveDeviceName(): Promise<string> {
+  const chosen = useConnectStore.getState().deviceName;
+  if (chosen) return chosen;
+  _defaultDeviceName ??= defaultDeviceName();
+  return _defaultDeviceName;
+}
+
 async function makeClient(dial: DialSpec): Promise<WorkerClient> {
   const { getClientIdentity } = await import("@/lib/protocolV1/identity");
   const { WorkerClient: WorkerClientCtor } = await import("@/lib/protocolV1/client");
   const identity = await getClientIdentity();
+  // Sent in every hello, so a reconnect always carries the current name.
+  const agent: AgentInfo = { ...AGENT_INFO, device_name: await resolveDeviceName() };
   if (dial.transport === "iroh") {
     const { createTauriIrohSocket } = await import("@/lib/protocolV1/tauriIrohSocket");
     return new WorkerClientCtor({
       url: dial.url,
       identity,
-      agent: AGENT_INFO,
+      agent,
       createSocket: createTauriIrohSocket(),
     });
   }
-  return new WorkerClientCtor({ url: dial.url, identity, agent: AGENT_INFO });
+  return new WorkerClientCtor({ url: dial.url, identity, agent });
 }
 
 /**
@@ -1090,6 +1118,7 @@ export const useConnectStore = create<ConnectState>()(
       pairedWorkers: [],
       selectedWorkerId: null,
       trackedJobs: [],
+      deviceName: null,
 
       connectionStatus: "disconnected",
       connectionError: null,
@@ -1505,6 +1534,29 @@ export const useConnectStore = create<ConnectState>()(
         return client.fsMounts();
       },
 
+      devicesFor: async (workerId) => {
+        const client = await get().clientFor(workerId);
+        return client.clientsList();
+      },
+
+      setDeviceName: async (name) => {
+        const clean = normalizeDeviceName(name);
+        if (!clean) return;
+        set({ deviceName: clean });
+        await Promise.all(
+          [...managed.values()].map(async (mc) => {
+            const client = mc.client;
+            if (!client?.authenticated) return;
+            try {
+              await client.clientsRename(clean);
+            } catch (err) {
+              // An older worker without clients.rename still learns it on the next hello.
+              console.warn("[connect] clients.rename failed:", err);
+            }
+          }),
+        );
+      },
+
       statWorkerPath: async (path) => {
         const { _client } = get();
         if (!_client || !_client.authenticated) {
@@ -1760,6 +1812,7 @@ export const useConnectStore = create<ConnectState>()(
         pairedWorkers: state.pairedWorkers,
         selectedWorkerId: state.selectedWorkerId,
         trackedJobs: state.trackedJobs,
+        deviceName: state.deviceName,
       }),
       migrate: migrateConnectPersisted as (persisted: unknown, version: number) => ConnectState,
     },

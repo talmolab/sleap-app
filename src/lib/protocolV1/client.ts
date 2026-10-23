@@ -257,6 +257,21 @@ export interface CloseInfo {
   error?: WorkerProtocolError;
 }
 
+/** A device paired with a worker, from `clients.list`. */
+export interface PairedDevice {
+  nodeId: string;
+  /** The name it reports; null if it paired before devices were named. */
+  name: string | null;
+  /** "tauri" (desktop app) or "web" (browser), if reported. */
+  platform: string | null;
+  appVersion: string | null;
+  pairedAt: string | null;
+  /** When it last connected or disconnected. */
+  lastSeenAt: string | null;
+  /** This device's own entry. */
+  you: boolean;
+}
+
 export interface WorkerClientOptions {
   url: string;
   identity: ClientIdentity;
@@ -485,6 +500,29 @@ export class WorkerClient {
     const result = await this._request("jobs.list", {});
     const jobs = (result.jobs as Array<Record<string, unknown>>) ?? [];
     return jobs.map((j) => _mapJobSummary(j));
+  }
+
+  /**
+   * `clients.list` — every device paired with this worker (who can use it),
+   * with `you` on this device's own entry.
+   */
+  async clientsList(): Promise<PairedDevice[]> {
+    const result = await this._request("clients.list", {});
+    const clients = (result.clients as Array<Record<string, unknown>>) ?? [];
+    return clients.map((c) => ({
+      nodeId: c.node_id as string,
+      name: (c.name as string | null) ?? null,
+      platform: (c.platform as string | null) ?? null,
+      appVersion: (c.app_version as string | null) ?? null,
+      pairedAt: _isoTimestamp(c.paired_at) ?? null,
+      lastSeenAt: _isoTimestamp(c.last_seen_at) ?? null,
+      you: !!c.you,
+    }));
+  }
+
+  /** `clients.rename` — sets this device's own name on the worker now (it's also sent with every hello). */
+  async clientsRename(name: string): Promise<void> {
+    await this._request("clients.rename", { name });
   }
 
   /** A snapshot of the worker's own hardware/software (spec/sleap-connect #98). */

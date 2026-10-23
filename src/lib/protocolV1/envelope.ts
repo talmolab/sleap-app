@@ -14,6 +14,8 @@ export interface AgentInfo {
   name: string;
   version: string;
   platform: string;
+  /** This device's name, shown in the worker's paired-devices list (`clients.list`). */
+  device_name?: string;
 }
 
 export interface HelloFrame {

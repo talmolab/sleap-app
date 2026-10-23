@@ -365,6 +365,46 @@ fn remove_file(path: String) -> Result<(), String> {
     }
 }
 
+/// This computer's name, as people know it ("Liezl's MacBook Pro"), for
+/// naming this device to a sleap-connect worker. macOS: the Sharing
+/// "Computer Name"; Windows: COMPUTERNAME; Linux: the systemd "pretty"
+/// hostname, else the kernel hostname (read from files — minimal distros
+/// ship no `hostname` binary). None if it can't be read (the app falls
+/// back to a generic name, as it does in the browser).
+#[tauri::command]
+fn computer_name() -> Option<String> {
+    fn clean(s: &str) -> Option<String> {
+        let s = s.trim().trim_matches('"').trim();
+        (!s.is_empty() && s != "localhost").then(|| s.to_string())
+    }
+    #[cfg(target_os = "macos")]
+    let name = {
+        let run = |cmd: &str, args: &[&str]| {
+            let out = std::process::Command::new(cmd).args(args).output().ok()?;
+            if !out.status.success() {
+                return None;
+            }
+            clean(&String::from_utf8(out.stdout).ok()?)
+        };
+        run("scutil", &["--get", "ComputerName"]).or_else(|| run("hostname", &[]))
+    };
+    #[cfg(target_os = "windows")]
+    let name = std::env::var("COMPUTERNAME").ok().and_then(|n| clean(&n));
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let name = {
+        let read = |p: &str| std::fs::read_to_string(p).ok();
+        read("/etc/machine-info")
+            .and_then(|s| {
+                s.lines()
+                    .find_map(|l| l.strip_prefix("PRETTY_HOSTNAME=").and_then(clean))
+            })
+            .or_else(|| read("/proc/sys/kernel/hostname").and_then(|s| clean(&s)))
+            .or_else(|| read("/etc/hostname").and_then(|s| clean(&s)))
+            .or_else(|| std::env::var("HOSTNAME").ok().and_then(|s| clean(&s)))
+    };
+    name
+}
+
 /// Reveal a file in the OS file manager (Finder / Explorer / xdg-open).
 #[tauri::command]
 fn reveal_in_file_manager(path: String) -> Result<(), String> {
@@ -575,6 +615,7 @@ fn sleap_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
             read_image_file,
             reveal_in_file_manager,
             open_preferences_directory,
+            computer_name,
             environment::detect_uv,
             environment::detect_gpu,
             environment::detect_accelerator,

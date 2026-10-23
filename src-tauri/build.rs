@@ -38,6 +38,7 @@ fn main() {
                     "read_image_file",
                     "reveal_in_file_manager",
                     "open_preferences_directory",
+                    "computer_name",
                     // environment (uv / python / training)
                     "detect_uv",
                     "detect_gpu",

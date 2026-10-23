@@ -33,6 +33,7 @@ import { WorkerList } from "./WorkerList";
 import { WorkerJobs } from "./WorkerJobs";
 import { WorkerDataAccess } from "./WorkerDataAccess";
 import { SidebarQueue } from "./SidebarQueue";
+import { WorkerDevicesButton } from "./WorkerDevices";
 
 export interface ConnectDialogProps {
   open: boolean;
@@ -160,6 +161,11 @@ export function ConnectDialog({ open, onOpenChange }: ConnectDialogProps) {
                       </TabsTrigger>
                     </TabsList>
                   </Tabs>
+                  <WorkerDevicesButton
+                    workerId={pickedWorker.nodeId}
+                    workerLabel={pickedWorker.label}
+                    refreshToken={refreshToken}
+                  />
                 </div>
                 <div className="flex-1 min-h-0 overflow-y-auto p-4">
                   {tab === "jobs" ? (

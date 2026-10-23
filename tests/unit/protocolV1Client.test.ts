@@ -467,6 +467,77 @@ describe("protocolV1 WorkerClient", () => {
       ]);
     });
 
+    it("clientsList maps devices, converting unix seconds to ISO and keeping nulls", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({
+        handleRequest: (method) => {
+          if (method === "pair.claim") return { result: {} };
+          if (method === "clients.list") {
+            return {
+              result: {
+                clients: [
+                  {
+                    node_id: "me",
+                    name: "Lab Mac",
+                    platform: "tauri",
+                    app_version: "0.1.2",
+                    paired_at: 1_700_000_000,
+                    last_seen_at: 1_700_000_060,
+                    you: true,
+                  },
+                  { node_id: "old", name: null, platform: null, app_version: null, paired_at: null, last_seen_at: null, you: false },
+                ],
+              },
+            };
+          }
+          return { error: { code: "proto.unknown_method", msg: "?" } };
+        },
+      });
+      const client = await pairedClient(identity, socket);
+
+      expect(await client.clientsList()).toEqual([
+        {
+          nodeId: "me",
+          name: "Lab Mac",
+          platform: "tauri",
+          appVersion: "0.1.2",
+          pairedAt: new Date(1_700_000_000_000).toISOString(),
+          lastSeenAt: new Date(1_700_000_060_000).toISOString(),
+          you: true,
+        },
+        { nodeId: "old", name: null, platform: null, appVersion: null, pairedAt: null, lastSeenAt: null, you: false },
+      ]);
+    });
+
+    it("clientsRename sends the new name", async () => {
+      const identity = await freshIdentity();
+      const sent: Array<Record<string, unknown>> = [];
+      const socket = new FakeWorkerSocket({
+        handleRequest: (method, p) => {
+          if (method === "pair.claim") return { result: {} };
+          if (method === "clients.rename") {
+            sent.push(p);
+            return { result: {} };
+          }
+          return { error: { code: "proto.unknown_method", msg: "?" } };
+        },
+      });
+      const client = await pairedClient(identity, socket);
+
+      await client.clientsRename("Bench PC");
+      expect(sent).toEqual([{ name: "Bench PC" }]);
+    });
+
+    it("sends agent.device_name in the hello", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket();
+      await connected(identity, socket, {
+        agent: { name: "sleap-app", version: "1", platform: "web", device_name: "Chrome on macOS" },
+      });
+      const hello = socket.sent.find((f) => f.type === "hello");
+      expect((hello?.agent as Record<string, unknown>).device_name).toBe("Chrome on macOS");
+    });
+
     it("fsMounts maps the mounts array", async () => {
       const identity = await freshIdentity();
       const socket = new FakeWorkerSocket({
