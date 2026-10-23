@@ -16,6 +16,7 @@ import type { LinkStatus } from "@/lib/protocolV1/managedConnection";
 import { transportLabel, type TransportKind } from "@/lib/protocolV1/transport";
 import { useConnectStore } from "@/stores/connectStore";
 import { PairWorkerForm } from "./PairWorkerForm";
+import { forgetWorkerWithConfirm } from "./forgetWorker";
 
 export type WorkerStatusBucket = "idle" | "busy" | "offline";
 
@@ -251,7 +252,7 @@ export function WorkerList({ selectedId, onSelect }: WorkerListProps) {
                           size="xs"
                           variant="ghost"
                           className="h-5 text-[10px] text-muted-foreground"
-                          onClick={() => void forgetWorker(w.nodeId)}
+                          onClick={() => void forgetWorkerWithConfirm(w.nodeId)}
                         >
                           Forget
                         </Button>

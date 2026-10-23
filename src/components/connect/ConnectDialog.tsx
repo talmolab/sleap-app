@@ -24,7 +24,7 @@
  * queue bumps `refreshToken` so the Jobs tab catches up right away.
  */
 import { useEffect, useRef, useState } from "react";
-import { RefreshCw, X } from "lucide-react";
+import { RefreshCw, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -34,6 +34,7 @@ import { WorkerJobs } from "./WorkerJobs";
 import { WorkerDataAccess } from "./WorkerDataAccess";
 import { SidebarQueue } from "./SidebarQueue";
 import { WorkerDevicesButton } from "./WorkerDevices";
+import { forgetWorkerWithConfirm } from "./forgetWorker";
 
 export interface ConnectDialogProps {
   open: boolean;
@@ -175,6 +176,16 @@ export function ConnectDialog({ open, onOpenChange }: ConnectDialogProps) {
                     workerLabel={pickedWorker.label}
                     refreshToken={refreshToken}
                   />
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    className="h-7 text-xs text-muted-foreground hover:text-red-400"
+                    title="Remove this worker from the app and unpair this device there"
+                    onClick={() => void forgetWorkerWithConfirm(pickedWorker.nodeId)}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    Forget
+                  </Button>
                 </div>
                 <div className="flex-1 min-h-0 overflow-y-auto p-4">
                   {tab === "jobs" ? (
