@@ -114,7 +114,14 @@ export interface WorkerDevicesListProps {
 export function WorkerDevicesList({ devices, onRenameThisDevice }: WorkerDevicesListProps) {
   return (
     <div className="space-y-1.5">
-      <ul className="max-h-[50vh] space-y-1.5 overflow-y-auto">
+      {/* The popover portals outside the Connect dialog, whose scroll lock
+          (react-remove-scroll, a document-level listener) would otherwise
+          swallow wheel/touch scrolling here — keep those events in the list. */}
+      <ul
+        className="max-h-[50vh] space-y-1.5 overflow-y-auto overscroll-contain pr-1"
+        onWheel={(e) => e.stopPropagation()}
+        onTouchMove={(e) => e.stopPropagation()}
+      >
         {sortDevices(devices).map((d) => (
           <DeviceRow key={d.nodeId} device={d} onRename={onRenameThisDevice} />
         ))}
