@@ -153,6 +153,23 @@ export async function clearClientIdentity(): Promise<void> {
   });
 }
 
+/** Web Locks name serializing identity load/creation across this origin's tabs and windows. */
+export const IDENTITY_LOCK_NAME = "sleap-app-protocol-v1-identity";
+
+/**
+ * Runs `fn` holding an exclusive cross-tab lock (Web Locks API), so two
+ * tabs opening for the first time can't both generate a key — the second
+ * waits, then reads the key the first one stored. Without this the last
+ * write wins and the other tab could pair with a key that no longer exists.
+ * Falls back to running unlocked where Web Locks is missing (tests, very
+ * old WebViews).
+ */
+export async function withIdentityLock<T>(fn: () => Promise<T>): Promise<T> {
+  const locks = typeof navigator !== "undefined" ? navigator.locks : undefined;
+  if (!locks?.request) return fn();
+  return locks.request(IDENTITY_LOCK_NAME, { mode: "exclusive" }, fn);
+}
+
 let _cached: ClientIdentity | null = null;
 // Concurrent first callers (several workers connecting at once) share one
 // load, so the stored key is read once per launch.
@@ -215,7 +232,7 @@ async function loadOrCreateIdentity(): Promise<ClientIdentity> {
 export async function getClientIdentity(): Promise<ClientIdentity> {
   if (_cached) return _cached;
   if (!_pending) {
-    _pending = loadOrCreateIdentity()
+    _pending = withIdentityLock(loadOrCreateIdentity)
       .then((identity) => {
         _cached = identity;
         return identity;

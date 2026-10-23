@@ -596,6 +596,9 @@ async function irohDial(info: IrohEndpointInfo | undefined, nodeId: string): Pro
   };
 }
 
+/** localStorage key the connect store persists under. */
+const CONNECT_STORAGE_KEY = "sleap-app-connect";
+
 let _defaultDeviceName: Promise<string> | null = null;
 
 /** This device's name for workers: the user's choice, else the OS/browser default (looked up once). */
@@ -604,6 +607,22 @@ export async function resolveDeviceName(): Promise<string> {
   if (chosen) return chosen;
   _defaultDeviceName ??= defaultDeviceName();
   return _defaultDeviceName;
+}
+
+/** `clients.rename` on every worker this tab/window is connected to (best effort). */
+async function pushDeviceNameToConnected(name: string): Promise<void> {
+  await Promise.all(
+    [...managed.values()].map(async (mc) => {
+      const client = mc.client;
+      if (!client?.authenticated) return;
+      try {
+        await client.clientsRename(name);
+      } catch (err) {
+        // An older worker without clients.rename still learns it on the next hello.
+        console.warn("[connect] clients.rename failed:", err);
+      }
+    }),
+  );
 }
 
 async function makeClient(dial: DialSpec): Promise<WorkerClient> {
@@ -1543,18 +1562,7 @@ export const useConnectStore = create<ConnectState>()(
         const clean = normalizeDeviceName(name);
         if (!clean) return;
         set({ deviceName: clean });
-        await Promise.all(
-          [...managed.values()].map(async (mc) => {
-            const client = mc.client;
-            if (!client?.authenticated) return;
-            try {
-              await client.clientsRename(clean);
-            } catch (err) {
-              // An older worker without clients.rename still learns it on the next hello.
-              console.warn("[connect] clients.rename failed:", err);
-            }
-          }),
-        );
+        await pushDeviceNameToConnected(clean);
       },
 
       statWorkerPath: async (path) => {
@@ -1806,7 +1814,7 @@ export const useConnectStore = create<ConnectState>()(
       },
     }),
     {
-      name: "sleap-app-connect",
+      name: CONNECT_STORAGE_KEY,
       version: 2,
       partialize: (state) => ({
         pairedWorkers: state.pairedWorkers,
@@ -1818,3 +1826,31 @@ export const useConnectStore = create<ConnectState>()(
     },
   ),
 );
+
+/**
+ * Applies a rename made in ANOTHER tab/window (same origin = same identity,
+ * same saved name). Every tab keeps its own in-memory store, so without this
+ * a tab opened before the rename would send the old name in its next hello
+ * and undo it on the worker. Also pushes the name to the workers this tab is
+ * connected to, which the renaming tab may not be. Takes the raw persisted
+ * value (`storage` event `newValue`); a no-op if the name didn't change.
+ */
+export function syncDeviceNameFromStorage(newValue: string | null): void {
+  if (!newValue) return;
+  let name: unknown;
+  try {
+    name = (JSON.parse(newValue) as { state?: { deviceName?: unknown } }).state?.deviceName;
+  } catch {
+    return;
+  }
+  if (typeof name !== "string" && name !== null) return;
+  if (name === useConnectStore.getState().deviceName) return;
+  useConnectStore.setState({ deviceName: name });
+  if (name) void pushDeviceNameToConnected(name);
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (e) => {
+    if (e.key === CONNECT_STORAGE_KEY) syncDeviceNameFromStorage(e.newValue);
+  });
+}

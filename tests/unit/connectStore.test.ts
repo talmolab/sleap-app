@@ -7,6 +7,7 @@ import {
   capTrackedJobs,
   migrateConnectPersisted,
   resubscribeWorker,
+  syncDeviceNameFromStorage,
   __resetManagedConnections,
   __setManagedDeps,
 } from "@/stores/connectStore";
@@ -985,6 +986,30 @@ describe("connectStore", () => {
       await useConnectStore.getState().setDeviceName("  Lab   Mac ");
       expect(useConnectStore.getState().deviceName).toBe("Lab Mac");
       expect(lastClient().clientsRenameCalls).toEqual(["Lab Mac"]);
+    });
+
+    it("a rename in another tab updates this tab and pushes it to this tab's workers", async () => {
+      useConnectStore.setState({ deviceName: "Old" });
+      await useConnectStore.getState().clientFor(OTHER_WORKER.nodeId);
+      syncDeviceNameFromStorage(JSON.stringify({ state: { deviceName: "New" }, version: 2 }));
+      expect(useConnectStore.getState().deviceName).toBe("New");
+      await Promise.resolve();
+      expect(lastClient().clientsRenameCalls).toEqual(["New"]);
+      // The next hello carries it too.
+      __resetManagedConnections();
+      await useConnectStore.getState().clientFor(OTHER_WORKER.nodeId);
+      expect(lastClient().opts.agent?.device_name).toBe("New");
+    });
+
+    it("ignores storage writes that don't change the name, or aren't parseable", async () => {
+      useConnectStore.setState({ deviceName: "Same" });
+      await useConnectStore.getState().clientFor(OTHER_WORKER.nodeId);
+      syncDeviceNameFromStorage(JSON.stringify({ state: { deviceName: "Same" } }));
+      syncDeviceNameFromStorage("not json");
+      syncDeviceNameFromStorage(null);
+      await Promise.resolve();
+      expect(useConnectStore.getState().deviceName).toBe("Same");
+      expect(lastClient().clientsRenameCalls).toEqual([]);
     });
 
     it("setDeviceName ignores a blank name", async () => {
