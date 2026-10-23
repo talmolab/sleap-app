@@ -48,8 +48,17 @@ import type {
   WorkerInfo,
 } from "@/lib/protocolV1/client";
 import { parseJobTelemetry, type JobTelemetry } from "@/lib/protocolV1/jobTelemetry";
-import { ManagedConnection, type LinkStatus } from "@/lib/protocolV1/managedConnection";
-import { WorkerProtocolError, FS_NOT_FOUND, FS_FORBIDDEN } from "@/lib/protocolV1/errors";
+import {
+  ManagedConnection,
+  isUnpairedError,
+  type LinkStatus,
+} from "@/lib/protocolV1/managedConnection";
+import {
+  WorkerProtocolError,
+  FS_NOT_FOUND,
+  FS_FORBIDDEN,
+  AUTH_UNTRUSTED,
+} from "@/lib/protocolV1/errors";
 import { decodePairCode, isPairCode, PairCodeError } from "@/lib/protocolV1/pairCode";
 import type { PathMapping } from "@/lib/pathMappings";
 import {
@@ -94,6 +103,13 @@ export interface PairedWorker {
    * re-imported, so a user who deliberately clears every rule stays cleared.
    */
   pathRules?: PathMapping[];
+  /**
+   * When the worker refused this device as no longer paired (removed there
+   * with `sleap-rtc clients remove`). Set, nothing dials it automatically
+   * (background resume, the Connect window's refresh) — only re-pairing or
+   * an explicit connect does. Cleared by re-pairing.
+   */
+  unpairedAt?: string;
 }
 
 /**
@@ -278,7 +294,13 @@ interface ConnectState {
   /** Select (and connect to) a paired worker, or `null` to disconnect. */
   selectWorker: (nodeId: string | null, options?: ConnectOptions) => Promise<void>;
   disconnect: () => void;
-  forgetWorker: (nodeId: string) => void;
+  /**
+   * Removes the worker from this app, and — if it can be reached within a
+   * few seconds — unpairs this device there too (`clients.leave`), so it
+   * drops off the worker's device list. Resolves once that attempt is done;
+   * the local removal is immediate.
+   */
+  forgetWorker: (nodeId: string) => Promise<void>;
   /**
    * Lists `path` on the selected worker, paging through `fs.list` from
    * `offset` (default 0). With `limit`, stops once at least that many
@@ -352,9 +374,55 @@ interface ConnectState {
 
 // ── Helpers ───────────────────────────────────────────────────────
 
+/**
+ * Adds or replaces a paired worker. Re-pairing a worker this device already
+ * knows (e.g. after it was unpaired there) keeps its name and path rules,
+ * and clears `unpairedAt` (`next` never carries one).
+ */
 function upsertWorker(existing: PairedWorker[], next: PairedWorker): PairedWorker[] {
-  return [...existing.filter((w) => w.nodeId !== next.nodeId), next];
+  const old = existing.find((w) => w.nodeId === next.nodeId);
+  const merged: PairedWorker = old
+    ? { ...next, label: old.label, pathRules: old.pathRules ?? next.pathRules }
+    : next;
+  return [...existing.filter((w) => w.nodeId !== next.nodeId), merged];
 }
+
+/** How long Forget waits to unpair this device on the worker before giving up. */
+const FORGET_LEAVE_TIMEOUT_MS = 5000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`timed out after ${ms} ms`)), ms);
+    promise.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
+}
+
+/** `clients.leave` on `worker`: over `live` if given, else a one-off dial (closed after). */
+async function leaveWorker(worker: PairedWorker, live: WorkerClient | null): Promise<void> {
+  if (live) {
+    await live.clientsLeave();
+    return;
+  }
+  const client = await dialWorker(worker, resolvePreferredTransport(worker));
+  try {
+    await client.clientsLeave();
+  } finally {
+    client.close();
+  }
+}
+
+/** Shown wherever a worker refused this device as no longer paired. */
+export const UNPAIRED_MESSAGE =
+  "This device was unpaired by the worker. Pair again with a new code from 'sleap-rtc pair'.";
 
 /**
  * Fetches every entry in a directory, paginating via `fetchPage` (one
@@ -675,6 +743,9 @@ async function dialWorker(worker: PairedWorker, route: TransportKind): Promise<W
     return client;
   } catch (err) {
     client.close();
+    // Same code (so `isUnpairedError` still matches), friendlier words than
+    // the worker's "Node '<id>' is not paired with this worker".
+    if (isUnpairedError(err)) throw new WorkerProtocolError(AUTH_UNTRUSTED, UNPAIRED_MESSAGE);
     throw err;
   }
 }
@@ -698,6 +769,8 @@ function mapLinkStatus(status: LinkStatus): ConnectionStatus {
       return "connecting";
     case "stopped":
       return "disconnected";
+    case "unpaired":
+      return "error";
   }
 }
 
@@ -752,17 +825,35 @@ function ensureConnection(nodeId: string, options?: ConnectOptions): ManagedConn
     preferredRoute: resolvePreferredTransport(worker, options),
     canFallBackToIroh: !!worker.iroh && irohTransportAvailable(),
     onStatus: (status, route) => {
+      // A forgotten worker's connection can still report in while Forget
+      // tells the worker (`clients.leave`) — it's no longer ours to track.
+      if (!useConnectStore.getState().pairedWorkers.some((w) => w.nodeId === nodeId)) return;
       useConnectStore.setState((state) => {
         const patch: Partial<ConnectState> = {
           connections: { ...state.connections, [nodeId]: { status, route } },
         };
+        if (status === "unpaired") {
+          patch.pairedWorkers = state.pairedWorkers.map((w) =>
+            w.nodeId === nodeId && !w.unpairedAt
+              ? { ...w, unpairedAt: new Date().toISOString() }
+              : w,
+          );
+        }
         if (nodeId === state.selectedWorkerId) {
           patch.connectionStatus = mapLinkStatus(status);
-          patch.connectionError = status === "offline" ? "Worker unreachable — retrying" : null;
+          patch.connectionError =
+            status === "offline"
+              ? "Worker unreachable — retrying"
+              : status === "unpaired"
+                ? UNPAIRED_MESSAGE
+                : null;
           patch.activeTransport = route;
+          if (status === "unpaired") patch._client = null;
         }
         return patch;
       });
+      // Stopped for good: drop it so a later explicit connect builds a fresh one.
+      if (status === "unpaired" && managed.get(nodeId) === mc) managed.delete(nodeId);
     },
     onConnected: (client, route) => {
       if (nodeId === useConnectStore.getState().selectedWorkerId) {
@@ -1152,6 +1243,11 @@ export const useConnectStore = create<ConnectState>()(
       clientFor: async (workerId) => {
         const existing = managed.get(workerId);
         if (existing?.client) return existing.client;
+        // Automatic callers (the Connect window's refresh, etc.) don't keep
+        // dialing a worker that has refused this device.
+        if (get().pairedWorkers.find((w) => w.nodeId === workerId)?.unpairedAt) {
+          throw new Error(UNPAIRED_MESSAGE);
+        }
         // Concurrent callers (the Connect window fires info + jobs at once)
         // share one dial — `start()` isn't idempotent and a second call would
         // adopt a second client, leaking the first.
@@ -1323,6 +1419,11 @@ export const useConnectStore = create<ConnectState>()(
 
           set((state) => ({
             pairedWorkers: upsertWorker(state.pairedWorkers, paired),
+            // A stale "unpaired" status from before this re-pair.
+            connections: Object.fromEntries(
+              Object.entries(state.connections).filter(([id]) => id !== paired.nodeId),
+            ),
+            workerErrors: { ...state.workerErrors, [paired.nodeId]: null },
             selectedWorkerId: paired.nodeId,
             connectionStatus: "connected",
             connectionError: null,
@@ -1392,9 +1493,14 @@ export const useConnectStore = create<ConnectState>()(
 
         const mc = ensureConnection(nodeId, options);
         let client: WorkerClient;
+        // Shared with `clientFor`, so a pane asking for this worker while we
+        // connect waits for this dial instead of failing "reconnecting".
+        const start = mc.start();
+        clientForStarts.set(nodeId, start);
         try {
-          client = await mc.start();
+          client = await start;
         } catch (err) {
+          if (clientForStarts.get(nodeId) === start) clientForStarts.delete(nodeId);
           // start() never adopted a client on failure — nothing to stop()
           // (no `onClose` was ever wired) — just drop the dead instance so
           // the next attempt builds a fresh one.
@@ -1406,6 +1512,7 @@ export const useConnectStore = create<ConnectState>()(
           });
           throw err;
         }
+        if (clientForStarts.get(nodeId) === start) clientForStarts.delete(nodeId);
 
         try {
           const mounts = await client.fsMounts();
@@ -1499,11 +1606,17 @@ export const useConnectStore = create<ConnectState>()(
         });
       },
 
-      forgetWorker: (nodeId) => {
+      forgetWorker: async (nodeId) => {
         // Always fully torn down, regardless of any active job — forgetting
         // means the user doesn't want this worker tracked at all anymore,
         // unlike a plain disconnect() (which keeps a background job alive).
-        managed.get(nodeId)?.stop();
+        const worker = get().pairedWorkers.find((w) => w.nodeId === nodeId);
+        const mc = managed.get(nodeId);
+        const liveClient = mc?.client?.authenticated
+          ? mc.client
+          : get().selectedWorkerId === nodeId && get()._client?.authenticated
+            ? get()._client
+            : null;
         managed.delete(nodeId);
         const wasSelected = get().selectedWorkerId === nodeId;
         set((state) => {
@@ -1527,6 +1640,21 @@ export const useConnectStore = create<ConnectState>()(
               : {}),
           };
         });
+
+        // Then tell the worker, best effort: over the live connection if
+        // there is one, else a short dial. A worker that's offline (or
+        // already removed this device) just keeps or drops its entry on its
+        // own — `sleap-rtc clients remove` there clears it.
+        try {
+          if (worker && !worker.unpairedAt) {
+            await withTimeout(leaveWorker(worker, liveClient), FORGET_LEAVE_TIMEOUT_MS);
+          }
+        } catch (err) {
+          console.warn("[connect] couldn't unpair from the worker on Forget:", err);
+        } finally {
+          mc?.stop();
+          if (liveClient && liveClient !== mc?.client) liveClient.close();
+        }
       },
 
       browseRemoteDir: async (path, offset, limit) => {
@@ -1756,6 +1884,7 @@ export const useConnectStore = create<ConnectState>()(
         for (const [workerId, jobs] of jobsByWorker) {
           const worker = get().pairedWorkers.find((w) => w.nodeId === workerId);
           if (!worker) continue; // forgotten since the job was tracked — nothing to resume
+          if (worker.unpairedAt) continue; // refused this device; re-pair to resume
 
           let client: WorkerClient;
           try {

@@ -23,7 +23,7 @@
  * to the Jobs tab and scrolls to that run; a Stop Early / Cancel run from the
  * queue bumps `refreshToken` so the Jobs tab catches up right away.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { RefreshCw, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
@@ -95,6 +95,15 @@ export function ConnectDialog({ open, onOpenChange }: ConnectDialogProps) {
   };
 
   const pickedWorker = pairedWorkers.find((w) => w.nodeId === pickedWorkerId) ?? null;
+
+  // Re-pairing an unpaired worker: reload its panes now rather than leaving
+  // the "unpaired" errors up until the next poll.
+  const pickedUnpairedAt = pickedWorker?.unpairedAt;
+  const prevUnpairedAt = useRef(pickedUnpairedAt);
+  useEffect(() => {
+    if (prevUnpairedAt.current && !pickedUnpairedAt) setRefreshToken((t) => t + 1);
+    prevUnpairedAt.current = pickedUnpairedAt;
+  }, [pickedUnpairedAt]);
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>

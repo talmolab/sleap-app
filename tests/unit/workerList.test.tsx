@@ -43,7 +43,7 @@ function resetConnectStore() {
     workerErrors: {},
     workerInfo: {},
     selectedWorkerId: null,
-    forgetWorker: () => {},
+    forgetWorker: async () => {},
   });
 }
 
@@ -51,6 +51,12 @@ beforeEach(resetConnectStore);
 afterEach(cleanup);
 
 describe("classifyWorkerStatus (pure logic)", () => {
+  it("an unpaired worker is 'Unpaired' (red), whatever its link says", () => {
+    const s = classifyWorkerStatus({ status: "connected", route: "ws" }, null, false, true);
+    expect(s).toMatchObject({ bucket: "offline", label: "Unpaired", unpaired: true, dotClass: "bg-red-500" });
+    expect(classifyWorkerStatus({ status: "unpaired", route: "ws" }, null, false).unpaired).toBe(true);
+  });
+
   it("connected + not busy -> idle", () => {
     expect(classifyWorkerStatus({ status: "connected", route: "ws" }, null, false).bucket).toBe(
       "idle",
@@ -175,7 +181,9 @@ describe("WorkerList rendering", () => {
       workerErrors: {
         "node-a": "Worker at ws://a:1 identified itself as a different node than expected",
       },
-      forgetWorker: (id: string) => forgotten.push(id),
+      forgetWorker: async (id: string) => {
+        forgotten.push(id);
+      },
       pairWithTicket: async (ticketJson: string, addrOverride?: string, options?: ConnectOptions) => {
         calls.push([ticketJson, addrOverride, options]);
       },

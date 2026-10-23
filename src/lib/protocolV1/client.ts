@@ -520,6 +520,15 @@ export class WorkerClient {
     }));
   }
 
+  /**
+   * `clients.leave` — unpairs this device from the worker (the app's
+   * Forget). The worker closes this connection right after replying.
+   */
+  async clientsLeave(): Promise<{ removed: boolean }> {
+    const result = await this._request("clients.leave", {});
+    return { removed: !!result.removed };
+  }
+
   /** `clients.rename` — sets this device's own name on the worker now (it's also sent with every hello). */
   async clientsRename(name: string): Promise<void> {
     await this._request("clients.rename", { name });

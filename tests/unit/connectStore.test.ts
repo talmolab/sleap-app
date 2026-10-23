@@ -14,7 +14,12 @@ import {
 import type { JobSpec } from "@/lib/sleapConnect";
 import type { WorkerClient } from "@/lib/protocolV1/client";
 import type { PathMapping } from "@/lib/pathMappings";
-import { WorkerProtocolError, FS_NOT_FOUND, FS_FORBIDDEN } from "@/lib/protocolV1/errors";
+import {
+  WorkerProtocolError,
+  FS_NOT_FOUND,
+  FS_FORBIDDEN,
+  AUTH_UNTRUSTED,
+} from "@/lib/protocolV1/errors";
 import { buildPairCode, base64UrlEncode, fakeBytes, mistypeCode } from "./buildPairCode";
 
 // connectStore's own actions (pairing flow, browse pagination, job
@@ -47,6 +52,8 @@ class FakeWorkerClient {
   static nextPeerNodeId: string | null = "worker-node-id";
   /** One-shot: the NEXT-constructed instance's connect() throws this once, then clears — simulates a failed redial. */
   static nextConnectShouldThrow: Error | null = null;
+  /** One-shot: the NEXT-constructed instance's authProve() throws this. */
+  static nextAuthProveShouldThrow: Error | null = null;
 
   peerNodeId: string | null;
   authenticated = false;
@@ -97,6 +104,12 @@ class FakeWorkerClient {
   private _closeListeners = new Set<(info: { intentional: boolean; error?: unknown }) => void>();
 
   clientsRenameCalls: string[] = [];
+  clientsLeaveCalls = 0;
+
+  async clientsLeave() {
+    this.clientsLeaveCalls++;
+    return { removed: true };
+  }
 
   async clientsRename(name: string) {
     this.clientsRenameCalls.push(name);
@@ -111,6 +124,8 @@ class FakeWorkerClient {
   ) {
     this.mountsResult = FakeWorkerClient.nextMounts;
     this.peerNodeId = FakeWorkerClient.nextPeerNodeId;
+    this.authProveShouldThrow = FakeWorkerClient.nextAuthProveShouldThrow;
+    FakeWorkerClient.nextAuthProveShouldThrow = null;
     FakeWorkerClient.instances.push(this);
   }
 
@@ -336,6 +351,7 @@ describe("connectStore", () => {
     FakeWorkerClient.nextMounts = [];
     FakeWorkerClient.nextPeerNodeId = "worker-node-id";
     FakeWorkerClient.nextConnectShouldThrow = null;
+    FakeWorkerClient.nextAuthProveShouldThrow = null;
     nextSavedMappings = [];
     // `managed`/`activeSubscriptions` are module-level state that outlives
     // any one test in this file (--isolate resets per FILE, not per test) —
@@ -872,9 +888,9 @@ describe("connectStore", () => {
   });
 
   describe("forgetWorker", () => {
-    it("removes the worker from the paired list", () => {
+    it("removes the worker from the paired list", async () => {
       useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
-      useConnectStore.getState().forgetWorker(PAIRED_WORKER.nodeId);
+      await useConnectStore.getState().forgetWorker(PAIRED_WORKER.nodeId);
       expect(useConnectStore.getState().pairedWorkers).toEqual([]);
     });
 
@@ -883,7 +899,7 @@ describe("connectStore", () => {
       await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
       const client = lastClient();
 
-      useConnectStore.getState().forgetWorker(PAIRED_WORKER.nodeId);
+      await useConnectStore.getState().forgetWorker(PAIRED_WORKER.nodeId);
 
       expect(client.closed).toBe(true);
       const state = useConnectStore.getState();
@@ -896,7 +912,7 @@ describe("connectStore", () => {
       useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER, other] });
       await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
 
-      useConnectStore.getState().forgetWorker("other");
+      await useConnectStore.getState().forgetWorker("other");
 
       const state = useConnectStore.getState();
       expect(state.selectedWorkerId).toBe(PAIRED_WORKER.nodeId);
@@ -954,6 +970,81 @@ describe("connectStore", () => {
         ["/mnt", 0],
         ["/mnt", 1],
       ]);
+    });
+  });
+
+  describe("unpaired by the worker / Forget", () => {
+    it("Forget over a live connection unpairs on the worker, then closes it", async () => {
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
+      await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
+      const client = lastClient();
+
+      await useConnectStore.getState().forgetWorker(PAIRED_WORKER.nodeId);
+
+      expect(client.clientsLeaveCalls).toBe(1);
+      expect(client.closed).toBe(true);
+      expect(useConnectStore.getState().pairedWorkers).toEqual([]);
+    });
+
+    it("Forget while not connected dials once to unpair, and closes that client", async () => {
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
+      await useConnectStore.getState().forgetWorker(PAIRED_WORKER.nodeId);
+      const client = lastClient();
+      expect(client.clientsLeaveCalls).toBe(1);
+      expect(client.closed).toBe(true);
+      expect(useConnectStore.getState().pairedWorkers).toEqual([]);
+    });
+
+    it("Forget of an unreachable worker still forgets it locally", async () => {
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
+      FakeWorkerClient.nextConnectShouldThrow = new Error("unreachable");
+      await useConnectStore.getState().forgetWorker(PAIRED_WORKER.nodeId);
+      expect(useConnectStore.getState().pairedWorkers).toEqual([]);
+    });
+
+    it("a connect refused as untrusted marks the worker unpaired, and automatic dials stop", async () => {
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
+      FakeWorkerClient.nextAuthProveShouldThrow = new WorkerProtocolError(AUTH_UNTRUSTED, "not paired");
+
+      await expect(useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId)).rejects.toThrow();
+
+      const state = useConnectStore.getState();
+      expect(state.pairedWorkers[0].unpairedAt).toBeTruthy();
+      expect(state.connectionError).toContain("unpaired by the worker");
+      const dials = FakeWorkerClient.instances.length;
+      await expect(state.clientFor(PAIRED_WORKER.nodeId)).rejects.toThrow("unpaired by the worker");
+      expect(FakeWorkerClient.instances.length).toBe(dials);
+    });
+
+    it("clientFor during an explicit connect waits for that dial instead of failing", async () => {
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
+      const connecting = useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
+      const client = await useConnectStore.getState().clientFor(PAIRED_WORKER.nodeId);
+      await connecting;
+      expect(client).toBe(lastClient() as unknown as WorkerClient);
+      expect(FakeWorkerClient.instances.length).toBe(1);
+    });
+
+    it("re-pairing an unpaired worker keeps its name and path rules", async () => {
+      useConnectStore.setState({
+        pairedWorkers: [
+          {
+            ...PAIRED_WORKER,
+            label: "GPU box",
+            pathRules: [{ local: "/a", worker: "/mnt/a" }],
+            unpairedAt: "2026-10-23T00:00:00Z",
+          },
+        ],
+        connections: { [PAIRED_WORKER.nodeId]: { status: "unpaired", route: "ws" } },
+      });
+
+      await useConnectStore.getState().pairWithTicket(TICKET);
+
+      const [w] = useConnectStore.getState().pairedWorkers;
+      expect(w.label).toBe("GPU box");
+      expect(w.pathRules).toEqual([{ local: "/a", worker: "/mnt/a" }]);
+      expect(w.unpairedAt).toBeUndefined();
+      expect(useConnectStore.getState().connections[PAIRED_WORKER.nodeId]?.status).not.toBe("unpaired");
     });
   });
 

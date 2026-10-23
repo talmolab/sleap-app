@@ -107,7 +107,7 @@ export function ConnectPanel() {
                     size="xs"
                     className="ml-auto h-5 w-5 p-0 text-muted-foreground hover:text-red-400"
                     title="Forget this worker"
-                    onClick={() => forgetWorker(w.nodeId)}
+                    onClick={() => void forgetWorker(w.nodeId)}
                   >
                     <Trash2 className="h-3 w-3" />
                   </Button>
@@ -118,6 +118,11 @@ export function ConnectPanel() {
                 {isConnected && activeTransport && (
                   <div className="text-[10px] text-muted-foreground mt-0.5">
                     Connected via {transportLabel(activeTransport)}
+                  </div>
+                )}
+                {w.unpairedAt && (
+                  <div className="text-[10px] text-red-400 mt-0.5">
+                    Unpaired by this worker — re-pair with a new code to use it again.
                   </div>
                 )}
                 {isReconnecting && (
