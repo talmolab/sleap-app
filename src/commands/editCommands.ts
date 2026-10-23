@@ -584,6 +584,41 @@ export const BeginEdit: Command = {
 };
 
 /**
+ * Toggle node visibility on the current frame (V key, right-click, context
+ * menu). Every toggle path goes through here so each one is undoable.
+ *
+ * Params:
+ *   nodes: { instanceIdx: number; nodeIdx: number }[] - indices into the
+ *     current labeled frame's instances and that instance's points.
+ *
+ * A single node flips. Several nodes all move to one state — visible unless
+ * more than half already are — so a mixed selection converges instead of
+ * every node flipping independently.
+ */
+export const ToggleNodeVisibility: Command = {
+  name: "ToggleNodeVisibility",
+  topics: [UpdateTopic.Frame, UpdateTopic.Instance],
+  execute(ctx: CommandContext, params?: Record<string, unknown>) {
+    const lf = ctx.state.labeledFrame;
+    const nodes = params?.nodes;
+    if (!lf || !Array.isArray(nodes)) return;
+
+    const points = (nodes as { instanceIdx: number; nodeIdx: number }[])
+      .map(({ instanceIdx, nodeIdx }) => lf.instances[instanceIdx]?.points[nodeIdx])
+      .filter((p) => p !== undefined);
+    if (points.length === 0) return;
+
+    const visibleCount = points.filter((p) => p.visible).length;
+    const makeVisible = visibleCount <= points.length / 2;
+    for (const point of points) point.visible = makeVisible;
+
+    ctx.state.markChanged();
+    ctx.state.touchFrame();
+    ctx.state.bumpOverlayVersion();
+  },
+};
+
+/**
  * Move an entire instance by a delta.
  *
  * Params:
