@@ -13,15 +13,32 @@ a one-line code, and after that the app connects to it directly.
 
 ## Pairing a worker
 
-On the GPU machine, start the worker, then ask it for a pairing code:
+On the GPU machine, go to the folder with your data, start the worker there, then
+ask it for a pairing code:
 
 ```bash
+cd /path/to/your/data
 sleap-rtc serve
 sleap-rtc pair
 ```
 
-`sleap-rtc serve --daemonize` keeps the worker running in the background.
+The first time you start the worker in a folder, it asks whether to share that
+folder with the devices you pair. Answer **y**. Paired devices can then browse
+it, and their training and inference jobs can read and write inside it. The
+answer is remembered, so the next `serve` there doesn't ask again. Starting in
+your home folder works too, but the worker warns you: that shares everything in
+it.
+
+`sleap-rtc serve --daemonize` keeps the worker running in the background (it
+asks about the folder before going to the background).
 `sleap-rtc pair` prints a one-line code that starts with `sleap1`.
+
+### Sharing more folders
+
+To share another folder, run `sleap-rtc add-folder` with its path (relative paths
+are fine). `sleap-rtc folders` lists what's shared, and `sleap-rtc remove-folder`
+stops sharing one. A running worker picks up changes right away. The worker's
+own settings folder (`~/.sleap-rtc`) is never shared.
 
 In the app:
 
@@ -200,8 +217,9 @@ adding jobs (**Add another**) and follow jobs on several workers at once.
 
 ### Data access tab
 
-- **Folders this worker shares** — the folders the worker can see, set with
-  `--mount` on the worker. The file browser only reaches inside these.
+- **Folders this worker shares** — the folder the worker was started in, plus
+  any added with `sleap-rtc add-folder` on the worker. The file browser only
+  reaches inside these.
 - **Remembered locations** — the local-to-worker folder matches saved when you
   used **Locate on worker…**. **Clear** forgets one.
 
