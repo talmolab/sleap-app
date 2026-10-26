@@ -10,6 +10,14 @@ export interface SkeletonTemplate {
   description: string;
   nodes: string[];
   edges: [number, number][];
+  /** Left/right node pairs, as node indices. */
+  symmetries?: [number, number][];
+  /**
+   * A labeled example of this skeleton, shown before loading it: a file in
+   * `public/skeleton-templates/`. The reference-dataset templates carry the
+   * preview images legacy SLEAP shipped with them.
+   */
+  previewImage?: string;
 }
 
 /** Drosophila melanogaster (fruit fly) — 32 nodes, top-down view. */
@@ -183,12 +191,77 @@ const custom: SkeletonTemplate = {
   edges: [],
 };
 
+// The skeleton templates legacy SLEAP shipped (sleap/skeletons/*.json), with
+// their nodes, edges, symmetries and preview images copied exactly.
+
+/** SLEAP's `bees` reference-dataset template (21 nodes). */
+const beesRef: SkeletonTemplate = {
+  name: "Bees (21 nodes)",
+  description: "Bees, from the SLEAP bees reference dataset",
+  nodes: ["thorax1", "head1", "abdomen1", "antennaL1", "antennaL2", "antennaR1", "antennaR2", "forelegL1", "forelegL2", "forelegR1", "forelegR2", "midlegL1", "midlegL2", "midlegR1", "midlegR2", "hindlegL1", "hindlegL2", "hindlegR1", "hindlegR2", "wingL1", "wingR1"],
+  edges: [[0, 1], [0, 2], [0, 7], [0, 9], [0, 11], [0, 13], [0, 15], [0, 17], [0, 19], [0, 20], [1, 3], [1, 5], [3, 4], [5, 6], [7, 8], [9, 10], [11, 12], [13, 14], [15, 16], [17, 18]],
+  previewImage: "bees.png",
+};
+
+/** SLEAP's `flies13` reference-dataset template (13 nodes). */
+const flies13Ref: SkeletonTemplate = {
+  name: "Flies 13 (13 nodes)",
+  description: "Fruit flies, 13 nodes, from the SLEAP flies13 reference dataset",
+  nodes: ["head1", "thorax1", "abdomen1", "wingL1", "wingR1", "forelegL1", "forelegR1", "midlegL1", "midlegR1", "hindlegL1", "hindlegR1", "eyeL1", "eyeR1"],
+  edges: [[0, 11], [0, 12], [1, 0], [1, 2], [1, 3], [1, 4], [1, 5], [1, 6], [1, 7], [1, 8], [1, 9], [1, 10]],
+  symmetries: [[4, 3], [6, 5], [8, 7], [9, 10], [11, 12]],
+  previewImage: "flies13.png",
+};
+
+/** SLEAP's `fly32` reference-dataset template (32 nodes). */
+const fly32Ref: SkeletonTemplate = {
+  name: "Fly 32 (reference) (32 nodes)",
+  description: "Fruit fly, 32 nodes, from the SLEAP fly32 reference dataset",
+  nodes: ["head1", "eyeL1", "eyeR1", "neck1", "thorax1", "abdomen1", "forelegR1", "forelegR2", "forelegR3", "forelegR4", "midlegR1", "midlegR2", "midlegR3", "midlegR4", "hindlegR1", "hindlegR2", "hindlegR3", "hindlegR4", "forelegL1", "forelegL2", "forelegL3", "forelegL4", "midlegL1", "midlegL2", "midlegL3", "midlegL4", "hindlegL1", "hindlegL2", "hindlegL3", "hindlegL4", "wingL1", "wingR1"],
+  edges: [[0, 1], [0, 2], [0, 3], [3, 4], [3, 30], [3, 31], [4, 5], [6, 7], [7, 8], [8, 9], [10, 11], [11, 12], [12, 13], [14, 15], [15, 16], [16, 17], [18, 19], [19, 20], [20, 21], [22, 23], [23, 24], [24, 25], [26, 27], [27, 28], [28, 29]],
+  previewImage: "fly32.png",
+};
+
+/** SLEAP's `gerbils` reference-dataset template (14 nodes). */
+const gerbilsRef: SkeletonTemplate = {
+  name: "Gerbils (14 nodes)",
+  description: "Gerbils, from the SLEAP gerbils reference dataset",
+  nodes: ["nose1", "eyeL1", "eyeR1", "earL1", "earR1", "spinestart1", "spine1", "spine2", "spineend1", "tailstart1", "tail1", "tail2", "tail3", "tailend1"],
+  edges: [[5, 1], [5, 3], [5, 0], [5, 2], [5, 4], [6, 5], [7, 6], [7, 8], [8, 9], [9, 10], [10, 11], [11, 12], [12, 13]],
+  symmetries: [[2, 1], [4, 3]],
+  previewImage: "gerbils.png",
+};
+
+/** SLEAP's `mice_hc` reference-dataset template (5 nodes). */
+const miceHcRef: SkeletonTemplate = {
+  name: "Mice, home cage (5 nodes)",
+  description: "Mice in a home cage, from the SLEAP mice_hc reference dataset",
+  nodes: ["nose1", "earL1", "earR1", "tailstart1", "tailend1"],
+  edges: [[0, 1], [0, 2], [0, 3], [3, 4]],
+  previewImage: "mice_hc.png",
+};
+
+/** SLEAP's `mice_of` reference-dataset template (11 nodes). */
+const miceOfRef: SkeletonTemplate = {
+  name: "Mice, open field (11 nodes)",
+  description: "Mice in an open field, from the SLEAP mice_of reference dataset",
+  nodes: ["nose1", "neck1", "earL1", "earR1", "forelegL1", "forelegR1", "tailstart1", "hindlegL1", "hindlegR1", "tail1", "tailend1"],
+  edges: [[1, 4], [1, 5], [1, 0], [1, 3], [1, 2], [6, 8], [6, 7], [6, 9], [6, 1], [9, 10]],
+  previewImage: "mice_of.png",
+};
+
 /** All available skeleton templates keyed by ID. */
 export const SKELETON_TEMPLATES: Record<string, SkeletonTemplate> = {
   fly,
   mouse_topdown: mouseTopdown,
   human,
   celegans,
+  bees: beesRef,
+  flies13: flies13Ref,
+  fly32: fly32Ref,
+  gerbils: gerbilsRef,
+  mice_hc: miceHcRef,
+  mice_of: miceOfRef,
   custom,
 };
 
@@ -198,5 +271,11 @@ export const TEMPLATE_ORDER = [
   "mouse_topdown",
   "human",
   "celegans",
+  "bees",
+  "flies13",
+  "fly32",
+  "gerbils",
+  "mice_hc",
+  "mice_of",
   "custom",
 ] as const;
