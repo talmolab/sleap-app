@@ -5,6 +5,7 @@
  * CSV export, JSON save-as, prediction deletion variants, and package export.
  */
 
+import { frameHasContent } from "@/lib/frameLabeling";
 import {
   Labels,
   PredictedInstance,
@@ -613,9 +614,7 @@ export const DeletePredictionsByScore: Command = {
       removed += before - lf.instances.length;
     }
 
-    labels.labeledFrames = labels.labeledFrames.filter(
-      (lf) => lf.instances.length > 0
-    );
+    labels.labeledFrames = labels.labeledFrames.filter(frameHasContent);
 
     if (removed === 0) {
       toast.info("No predictions matched the filter.");
@@ -660,9 +659,7 @@ export const DeletePredictionsByRange: Command = {
       }
     }
 
-    labels.labeledFrames = labels.labeledFrames.filter(
-      (lf) => lf.instances.length > 0
-    );
+    labels.labeledFrames = labels.labeledFrames.filter(frameHasContent);
 
     if (removed === 0) {
       toast.info("No predictions found in the specified range.");
@@ -708,9 +705,7 @@ export const DeletePredictionsOnLabeledFrames: Command = {
       }
     }
 
-    labels.labeledFrames = labels.labeledFrames.filter(
-      (lf) => lf.instances.length > 0
-    );
+    labels.labeledFrames = labels.labeledFrames.filter(frameHasContent);
 
     if (removed === 0) {
       toast.info("No predictions found on user-labeled frames.");
@@ -760,9 +755,7 @@ export const DeletePredictionsByMaxCount: Command = {
       }
     }
 
-    labels.labeledFrames = labels.labeledFrames.filter(
-      (lf) => lf.instances.length > 0
-    );
+    labels.labeledFrames = labels.labeledFrames.filter(frameHasContent);
 
     if (removed === 0) {
       toast.info("No predictions exceeded the max count.");
@@ -894,9 +887,7 @@ export const DeletePredictionsByTrack: Command = {
       removed += before - lf.instances.length;
     }
 
-    labels.labeledFrames = labels.labeledFrames.filter(
-      (lf) => lf.instances.length > 0
-    );
+    labels.labeledFrames = labels.labeledFrames.filter(frameHasContent);
 
     if (removed === 0) {
       toast.info("No predictions matched the track filter.");
@@ -948,9 +939,7 @@ export const DeleteInstancesByType: Command = {
       removed += before - lf.instances.length;
     }
 
-    labels.labeledFrames = labels.labeledFrames.filter(
-      (lf) => lf.instances.length > 0
-    );
+    labels.labeledFrames = labels.labeledFrames.filter(frameHasContent);
 
     if (removed === 0) {
       toast.info("No instances matched the type filter.");
