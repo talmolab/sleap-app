@@ -68,6 +68,9 @@ import {
 import { PALETTES } from "../../lib/colorPalettes";
 import { QC_MODE_CHOICES } from "../../lib/instanceVisibility";
 import { toast } from "@/lib/notify";
+import { confirmDialog } from "@/stores/confirmStore";
+import { confirmDeleteInstanceAndTrack, confirmDeleteUnusedTracks } from "@/lib/trackDeleteConfirms";
+import { PredictedInstance } from "@talmolab/sleap-io.js";
 import { humanizeCommandName } from "@/lib/humanizeCommand";
 import { sleapCmd } from "@/lib/sleapPlugin";
 import { openNewInstance } from "@/lib/newInstance";
@@ -1096,8 +1099,18 @@ function LabelsMenu() {
         </MenubarItem>
         <MenubarItem
           disabled={!projectLoaded}
-          onClick={() => {
-            if (confirm("Delete all predicted instances across all frames?")) {
+          onClick={async () => {
+            const count = (labels?.labeledFrames ?? []).reduce(
+              (n, lf) => n + lf.instances.filter((i) => i instanceof PredictedInstance).length,
+              0,
+            );
+            const ok = await confirmDialog({
+              title: "Delete all predictions",
+              message: `There are ${count} predicted instances which would be deleted, across all frames. Delete them?`,
+              confirmLabel: "Delete",
+              destructive: true,
+            });
+            if (ok) {
               exec(DeleteAllPredictions);
               toast.info("All predictions deleted");
             }
@@ -1259,9 +1272,8 @@ function TracksMenu() {
         <MenubarSeparator />
         <MenubarItem
           disabled={!instance}
-          onClick={() => {
-            if (confirm("Delete this instance and its track?"))
-              exec(DeleteInstanceAndTrack);
+          onClick={async () => {
+            if (await confirmDeleteInstanceAndTrack()) exec(DeleteInstanceAndTrack);
           }}
         >
           Delete Instance and Track <MenubarShortcut>{formatShortcut("$mod+Shift+Backspace")}</MenubarShortcut>
@@ -1277,9 +1289,13 @@ function TracksMenu() {
                 {labels.tracks.map((track, idx) => (
                   <MenubarItem
                     key={idx}
-                    onClick={() => {
-                      if (confirm(`Delete track "${track.name}"?`))
-                        commandContext.execute(DeleteTrack, { trackIdx: idx });
+                    onClick={async () => {
+                      const ok = await confirmDialog({
+                        message: `Delete track "${track.name}"?`,
+                        confirmLabel: "Delete",
+                        destructive: true,
+                      });
+                      if (ok) commandContext.execute(DeleteTrack, { trackIdx: idx });
                     }}
                   >
                     {track.name}
@@ -1291,18 +1307,21 @@ function TracksMenu() {
         )}
         <MenubarItem
           disabled={!projectLoaded}
-          onClick={() => {
-            if (confirm("Delete all unused tracks?"))
-              exec(DeleteUnusedTracks);
+          onClick={async () => {
+            if (await confirmDeleteUnusedTracks()) exec(DeleteUnusedTracks);
           }}
         >
           Delete Unused Tracks
         </MenubarItem>
         <MenubarItem
           disabled={!projectLoaded}
-          onClick={() => {
-            if (confirm("Delete ALL tracks?"))
-              exec(DeleteAllTracks);
+          onClick={async () => {
+            const ok = await confirmDialog({
+              message: "Delete ALL tracks? Every instance will be left untracked.",
+              confirmLabel: "Delete",
+              destructive: true,
+            });
+            if (ok) exec(DeleteAllTracks);
           }}
         >
           Delete All Tracks
