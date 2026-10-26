@@ -7,7 +7,17 @@
  */
 
 import type { TrainingStatus } from "@/stores/trainingStore";
-import { TUTORIAL_FIRST_TRAINING_STEP_IDS } from "./steps";
+
+/**
+ * Step ids covering the tutorial's FIRST training pass — shared by `TutorialOverlay`
+ * (forces epochs down to `TUTORIAL_MAX_EPOCHS` here, see trainingDefaults.ts) and `TrainingPanel`'s
+ * config-autoload effect (forces the generic baseline profile here, even if a
+ * trained run already exists on disk for this head, e.g. from a prior tutorial
+ * pass on the same project — the first pass is meant to demonstrate the
+ * baseline workflow). Past this set (e.g. `retrain`), a trained run's exact
+ * config is preferred again, same as normal "Train Again" behavior.
+ */
+export const TUTORIAL_FIRST_TRAINING_STEP_IDS = new Set(["run-training", "training-progress"]);
 
 /** Epochs for the first training pass: just enough to see the loop work. */
 export const TUTORIAL_MAX_EPOCHS = 5;
@@ -16,7 +26,8 @@ export const TUTORIAL_MAX_EPOCHS = 5;
  * Default epochs for the retrain step. "Train Again" reloads the last run's
  * config — the 5-epoch first pass — so any config still at
  * `TUTORIAL_MAX_EPOCHS` is raised to this. A value the user typed themselves
- * is left alone; the step's completion doesn't depend on it.
+ * is left alone; the step's checklist (`RETRAIN_CHECKS`) shows it instead,
+ * and holds the step until a run starts with this many.
  */
 export const TUTORIAL_RETRAIN_EPOCHS = 50;
 

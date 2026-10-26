@@ -16,11 +16,14 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import {
   AlertTriangle,
+  CheckCircle2,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   ChevronUp,
+  Circle,
   GripVertical,
+  Image as ImageIcon,
   X,
 } from "lucide-react";
 import { toast } from "@/lib/notify";
@@ -34,16 +37,25 @@ import {
   RUN_TRAINING_STEP,
   TUTORIAL_LABEL_FRAME_IDX,
   WELCOME_STEP,
+  evaluateChecklist,
   observeTutorialState,
   snapshotTutorialState,
   tutorialStepNumber,
+  type TutorialCheckRow,
+  type TutorialExample,
   type TutorialSnapshot,
   type TutorialWatchState,
 } from "@/lib/tutorial/steps";
 import { tutorialTrainingUpdates } from "@/lib/tutorial/trainingDefaults";
-import { useOpenMenuRects, useTutorialTargetRect } from "./useTutorialTargetRect";
+import {
+  useOpenMenuRects,
+  useTutorialElementRects,
+  useTutorialTargetRect,
+  type TutorialTargetRect,
+} from "./useTutorialTargetRect";
 import { clampToViewport, placeCard } from "@/lib/tutorial/cardPlacement";
 import { TutorialCompletionCard } from "./TutorialCompletionCard";
+import { PANELS } from "../layout/panelRegistry";
 
 /** How often to re-check the active step's `isComplete` against stores this
  * overlay doesn't otherwise subscribe to (training/inference status live in
@@ -123,6 +135,10 @@ function currentWatchState(): TutorialWatchState {
   const anchorConfig = training.config.configs.find(
     (c) => c.slot === "centered_instance",
   );
+  const centroidConfig = training.config.configs.find((c) => c.slot === "centroid");
+  const postTrainingTarget = document.querySelector(
+    '[data-tutorial="post-training-inference-target-select"]',
+  );
   return {
     labels: s.labels,
     hasChanges: s.hasChanges,
@@ -133,6 +149,8 @@ function currentWatchState(): TutorialWatchState {
     trainingStatus: training.status,
     trainingAnchorPart: anchorConfig?.hyperparams.anchorPart ?? null,
     trainingMaxEpochs: anchorConfig?.hyperparams.maxEpochs ?? null,
+    trainingCentroidMaxEpochs: centroidConfig?.hyperparams.maxEpochs ?? null,
+    postTrainingInferenceTarget: postTrainingTarget?.textContent?.trim() || null,
     inferenceStatus: inference.status,
     envDetected: env.detectionStatus === "done",
     uvAvailable: env.uv?.available ?? false,
@@ -140,6 +158,121 @@ function currentWatchState(): TutorialWatchState {
     acceleratorDetected: env.acceleratorStatus === "done",
     accelerator: env.accelerator?.accelerator ?? null,
   };
+}
+
+/** Glowing ring around a highlighted control; never intercepts clicks. */
+function SpotlightRing({ rect }: { rect: TutorialTargetRect }) {
+  return (
+    <div
+      data-tutorial-spotlight
+      className="fixed z-[9998] rounded-md transition-[top,left,width,height] duration-150"
+      style={{
+        top: rect.top - SPOTLIGHT_PADDING,
+        left: rect.left - SPOTLIGHT_PADDING,
+        width: rect.width + SPOTLIGHT_PADDING * 2,
+        height: rect.height + SPOTLIGHT_PADDING * 2,
+        boxShadow: "0 0 0 2px var(--primary), 0 0 16px 3px var(--primary)",
+        pointerEvents: "none",
+      }}
+    />
+  );
+}
+
+/** Node marker radius in the example's own coordinate units. */
+const EXAMPLE_NODE_RADIUS = 3;
+
+/**
+ * A step's example image with its skeleton drawn over it in SVG (crisp at any
+ * card width, and its node names stay real text). Edges stop short of their
+ * destination node so the arrowhead showing the drag direction isn't hidden.
+ */
+function TutorialExampleFigure({ example }: { example: TutorialExample }) {
+  const byName = new Map(example.nodes.map((n) => [n.name, n]));
+  return (
+    <figure className="mt-1.5" data-tutorial-example>
+      <div
+        className="relative overflow-hidden rounded border border-border"
+        style={{ aspectRatio: `${example.width} / ${example.height}` }}
+      >
+        <img
+          src={example.imageUrl}
+          alt=""
+          draggable={false}
+          className="absolute inset-0 h-full w-full"
+        />
+        <svg
+          viewBox={`0 0 ${example.width} ${example.height}`}
+          className="absolute inset-0 h-full w-full"
+          role="img"
+          aria-label={example.alt}
+        >
+          <defs>
+            <marker
+              id="tutorial-example-arrow"
+              viewBox="0 0 6 6"
+              refX="5"
+              refY="3"
+              markerWidth="5"
+              markerHeight="5"
+              orient="auto"
+            >
+              <path d="M0,0 L6,3 L0,6 z" fill="var(--primary)" />
+            </marker>
+          </defs>
+          {example.edges.map(([source, destination]) => {
+            const a = byName.get(source);
+            const b = byName.get(destination);
+            if (!a || !b) return null;
+            const length = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+            const stop = (length - EXAMPLE_NODE_RADIUS - 1.5) / length;
+            return (
+              <line
+                key={`${source}-${destination}`}
+                x1={a.x}
+                y1={a.y}
+                x2={a.x + (b.x - a.x) * stop}
+                y2={a.y + (b.y - a.y) * stop}
+                stroke="var(--primary)"
+                strokeWidth={1.5}
+                markerEnd="url(#tutorial-example-arrow)"
+              />
+            );
+          })}
+          {example.nodes.map((n) => (
+            <circle
+              key={n.name}
+              cx={n.x}
+              cy={n.y}
+              r={EXAMPLE_NODE_RADIUS}
+              fill="white"
+              stroke="var(--primary)"
+              strokeWidth={1.5}
+            />
+          ))}
+          {/* Dark text on a light halo: the bedding behind is bright in any app theme. */}
+          {example.nodes.map((n) => (
+            <text
+              key={n.name}
+              x={n.x}
+              y={n.y - EXAMPLE_NODE_RADIUS - 3}
+              textAnchor="middle"
+              fontSize={8}
+              fontWeight={600}
+              fill="#111"
+              stroke="white"
+              strokeWidth={2.5}
+              paintOrder="stroke"
+            >
+              {n.name}
+            </text>
+          ))}
+        </svg>
+      </div>
+      <figcaption className="mt-1 text-[10px] leading-snug text-muted-foreground">
+        {example.caption}
+      </figcaption>
+    </figure>
+  );
 }
 
 export function TutorialOverlay() {
@@ -187,7 +320,7 @@ export function TutorialOverlay() {
       return;
     }
     setStepComplete(false);
-    entrySnapshotRef.current = snapshotTutorialState(currentWatchState());
+    entrySnapshotRef.current = snapshotTutorialState(currentWatchState(), step.checklist);
   }, [step, tutorialActive, isRevisited]);
 
   // Re-check completion whenever anything a step might care about changes.
@@ -206,7 +339,7 @@ export function TutorialOverlay() {
       // "completed" from an earlier run before the user acts again would
       // instantly satisfy isComplete. Also records the settings in effect
       // when suggestions were generated / inference ran.
-      observeTutorialState(entrySnapshotRef.current, watch);
+      observeTutorialState(entrySnapshotRef.current, watch, step.checklist);
       const training = useTrainingStore.getState();
       const configUpdates = tutorialTrainingUpdates(
         step.id,
@@ -241,12 +374,38 @@ export function TutorialOverlay() {
 
   const targetRect = useTutorialTargetRect(step?.targetSelector ?? null);
   const openMenuRects = useOpenMenuRects(!!step);
+  const alsoHighlightRects = useTutorialElementRects(step?.alsoHighlightSelector ?? null);
   const cardRef = useRef<HTMLDivElement>(null);
   const [cardSize, setCardSize] = useState(DEFAULT_CARD_SIZE);
   // Collapsed-by-default supplementary reference (e.g. "Label tips"). Reset on
   // every step change so a step you already expanded doesn't carry that state
   // into the next, unrelated step's tips.
   const [tipsOpen, setTipsOpen] = useState(false);
+  // The step's checklist as last read, and whether its "What do these mean?"
+  // explanations are showing. Polled in its own effect, not the re-check
+  // above, because that one stands down on a revisit, and a user coming back
+  // to a step is exactly who needs to see what's really set now.
+  const [checklistRows, setChecklistRows] = useState<TutorialCheckRow[]>([]);
+  const [meaningsOpen, setMeaningsOpen] = useState(false);
+  const [exampleOpen, setExampleOpen] = useState(false);
+  useEffect(() => {
+    const checks = step?.checklist;
+    if (!checks) {
+      setChecklistRows([]);
+      return;
+    }
+    let lastKey = "";
+    const read = () => {
+      const rows = evaluateChecklist(checks, currentWatchState());
+      const key = JSON.stringify(rows);
+      if (key === lastKey) return;
+      lastKey = key;
+      setChecklistRows(rows);
+    };
+    read();
+    const intervalId = setInterval(read, RECHECK_INTERVAL_MS);
+    return () => clearInterval(intervalId);
+  }, [step]);
   // User-toggled collapse (header chevron, or clicking the step title): folds
   // the card down to its header, title and Prev/Next so it covers less of the
   // app. Unlike `tipsOpen` this is NOT
@@ -296,13 +455,15 @@ export function TutorialOverlay() {
   useEffect(() => {
     setDragOffset({ dx: 0, dy: 0 });
     setTipsOpen(false);
+    setMeaningsOpen(false);
+    setExampleOpen(false);
   }, [step]);
 
   useLayoutEffect(() => {
     if (!cardRef.current) return;
     const r = cardRef.current.getBoundingClientRect();
     if (r.width && r.height) setCardSize({ width: r.width, height: r.height });
-  }, [step, targetRect, tipsOpen, instructionsHidden, stepHint]);
+  }, [step, targetRect, tipsOpen, meaningsOpen, exampleOpen, checklistRows, instructionsHidden, stepHint]);
 
   const handleDragPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -336,6 +497,17 @@ export function TutorialOverlay() {
     cpuOnly && step.cpuNote && trainingStepIndex !== -1
       ? step.cpuNote(tutorialStepNumber(tutorialSteps, trainingStepIndex))
       : null;
+  // Where this step happens, named at the top of the card: its sidebar panel
+  // (label and icon straight from the registry, so it matches the strip) or,
+  // for a step outside the sidebar, its `location`.
+  const focusPanel = step.panelId ? PANELS.find((p) => p.id === step.panelId) : undefined;
+  const FocusIcon = focusPanel?.icon;
+  const focusLabel = focusPanel ? `${focusPanel.label} panel` : step.location;
+  // A step with an example shows its toggle right after the first paragraph,
+  // where it's seen before the instructions below it, not under them.
+  const paragraphBreak = step.example ? step.body.indexOf("\n\n") : -1;
+  const bodyLead = paragraphBreak === -1 ? step.body : step.body.slice(0, paragraphBreak);
+  const bodyRest = paragraphBreak === -1 ? "" : step.body.slice(paragraphBreak + 2);
   const viewport = { width: window.innerWidth, height: window.innerHeight };
   const autoCardPos = targetRect
     ? placeCard({
@@ -343,7 +515,7 @@ export function TutorialOverlay() {
         placement: step.placement,
         card: cardSize,
         viewport,
-        keepClear: openMenuRects,
+        keepClear: [...openMenuRects, ...alsoHighlightRects],
         clearance: SPOTLIGHT_PADDING,
       })
     : { top: viewport.height / 2 - cardSize.height / 2, left: viewport.width / 2 - cardSize.width / 2 };
@@ -355,24 +527,18 @@ export function TutorialOverlay() {
 
   return (
     <>
-      {targetRect && (
-        <div
-          className="fixed z-[9998] rounded-md transition-[top,left,width,height] duration-150"
-          style={{
-            top: targetRect.top - SPOTLIGHT_PADDING,
-            left: targetRect.left - SPOTLIGHT_PADDING,
-            width: targetRect.width + SPOTLIGHT_PADDING * 2,
-            height: targetRect.height + SPOTLIGHT_PADDING * 2,
-            boxShadow: "0 0 0 2px var(--primary), 0 0 16px 3px var(--primary)",
-            pointerEvents: "none",
-          }}
-        />
-      )}
+      {targetRect && <SpotlightRing rect={targetRect} />}
+      {alsoHighlightRects.map((rect, i) => (
+        <SpotlightRing key={i} rect={rect} />
+      ))}
       <div
         ref={cardRef}
         data-tutorial-overlay
-        className="fixed z-[9998] w-[300px] rounded-md border border-border bg-popover p-3 text-sm text-popover-foreground shadow-lg pointer-events-auto"
-        style={{ top: cardPos.top, left: cardPos.left }}
+        className="fixed z-[9998] w-[300px] overflow-y-auto rounded-md border border-border bg-popover p-3 text-sm text-popover-foreground shadow-lg pointer-events-auto"
+        // Never taller than the window (less cardPlacement's 8px margin each
+        // side): a long step with its checklist meanings or tips open would
+        // otherwise be clamped to a negative top, hiding its title off-screen.
+        style={{ top: cardPos.top, left: cardPos.left, maxHeight: viewport.height - 16 }}
       >
         <div className="flex items-start justify-between gap-2">
           <div
@@ -386,6 +552,16 @@ export function TutorialOverlay() {
             <span className="text-xs font-medium text-muted-foreground">
               {isWelcome ? "Welcome" : `Step ${stepNumber} of ${lastStepNumber}`}
             </span>
+            {focusLabel && (
+              <span
+                data-tutorial-focus
+                className="ml-1 flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-foreground"
+                title={focusPanel ? `This step uses the ${focusPanel.label} panel in the sidebar` : undefined}
+              >
+                {FocusIcon && <FocusIcon className="h-3 w-3" aria-hidden />}
+                {focusLabel}
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -432,13 +608,83 @@ export function TutorialOverlay() {
         {!instructionsHidden && (
           <>
             <div className="mt-1 text-muted-foreground leading-relaxed whitespace-pre-line">
-              {renderBody(step.body)}
+              {renderBody(bodyLead)}
             </div>
+            {step.example && (
+              <div className="mt-2">
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1.5 rounded-md border border-primary/50 bg-primary/10 px-2 py-1 text-xs font-medium text-primary hover:bg-primary/15"
+                  aria-expanded={exampleOpen}
+                  onClick={() => setExampleOpen((open) => !open)}
+                >
+                  <ImageIcon className="h-3.5 w-3.5" aria-hidden />
+                  {exampleOpen ? step.example.hideLabel : step.example.showLabel}
+                  {exampleOpen ? (
+                    <ChevronUp className="h-3 w-3" aria-hidden />
+                  ) : (
+                    <ChevronDown className="h-3 w-3" aria-hidden />
+                  )}
+                </button>
+                {exampleOpen && <TutorialExampleFigure example={step.example} />}
+              </div>
+            )}
+            {bodyRest && (
+              <div className="mt-2 text-muted-foreground leading-relaxed whitespace-pre-line">
+                {renderBody(bodyRest)}
+              </div>
+            )}
             {cpuNote && (
               <p className="mt-2 flex gap-1.5 rounded border border-amber-500/40 bg-amber-500/10 p-2 text-xs leading-relaxed text-amber-700 dark:text-amber-400">
                 <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                 <span>{cpuNote}</span>
               </p>
+            )}
+            {step.checklist && checklistRows.length > 0 && (
+              <div className="mt-2 rounded border border-border p-2" data-tutorial-checklist>
+                <ul className="flex flex-col gap-1">
+                  {checklistRows.map((row) => (
+                    <li key={row.label} className="flex items-start gap-1.5 text-xs leading-snug">
+                      {row.ok ? (
+                        <CheckCircle2 className="mt-px h-3.5 w-3.5 shrink-0 text-green-500" aria-label="Set" />
+                      ) : (
+                        <Circle className="mt-px h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="Not set" />
+                      )}
+                      <span>
+                        {row.label}: <span className="font-semibold">{row.expected}</span>
+                        {!row.ok && (
+                          <span className="text-amber-700 dark:text-amber-400">
+                            {" "}(now {row.current ?? "not shown"})
+                          </span>
+                        )}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+                <button
+                  type="button"
+                  className="mt-1.5 flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+                  aria-expanded={meaningsOpen}
+                  onClick={() => setMeaningsOpen((open) => !open)}
+                >
+                  {meaningsOpen ? (
+                    <ChevronUp className="h-3 w-3" />
+                  ) : (
+                    <ChevronDown className="h-3 w-3" />
+                  )}
+                  What do these mean?
+                </button>
+                {meaningsOpen && (
+                  <dl className="mt-1 flex flex-col gap-1.5 text-xs leading-relaxed text-muted-foreground">
+                    {step.checklist.map((check) => (
+                      <div key={check.label}>
+                        <dt className="font-medium text-foreground">{check.label}</dt>
+                        <dd>{renderInline(check.meaning)}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                )}
+              </div>
             )}
             {step.tips && (
               <div className="mt-2">
