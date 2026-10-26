@@ -50,6 +50,24 @@ export const APP_VERSION_KIND: VersionKind = classifyVersion(APP_VERSION);
 /** e.g. "Pre-release" -- the channel wording shown next to the version. */
 export const APP_VERSION_KIND_LABEL = VERSION_KIND_LABEL[APP_VERSION_KIND];
 
+/** GitHub release pages, by tag. A release's tag is `v` + its version. */
+export const SLEAP_APP_RELEASES_URL =
+  "https://github.com/talmolab/sleap-app/releases/tag";
+
+/**
+ * Release-notes page for a build, or null when it has none of its own.
+ *
+ * Stable and pre-release builds are each a real GitHub Release tagged
+ * `v<version>` (build.yml stamps the version FROM that tag, so the mapping is
+ * exact: `0.1.2-2` -> `v0.1.2-2`). Dev builds all ship under a single rolling
+ * `dev` release whose description belongs to no particular build, so there is
+ * nothing meaningful to link to.
+ */
+export function releaseNotesUrlFor(version: string): string | null {
+  if (classifyVersion(version) === "dev") return null;
+  return `${SLEAP_APP_RELEASES_URL}/v${version}`;
+}
+
 /**
  * Base of the published documentation site. Absolute on purpose: the desktop
  * shell and `bun run dev` both serve the app from somewhere that is not
