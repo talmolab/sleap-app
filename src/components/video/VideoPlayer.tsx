@@ -502,7 +502,8 @@ export function VideoPlayer() {
   // Toggle node visibility with 'v' key
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.code !== "KeyV" || e.ctrlKey || e.metaKey || e.altKey) return;
+      // Plain V only: Shift+V is "show non-visible nodes" (useKeyboardShortcuts).
+      if (e.code !== "KeyV" || e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
 

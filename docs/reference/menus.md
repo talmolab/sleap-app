@@ -58,7 +58,7 @@ name.
 | Node Placement Mode | ++shift+n++ |
 | **Text Size ▸** Increase / Decrease / Reset to Default | |
 | **Display ▸** Manual / Only selected (with hidden points) / All instances, visible points only / All visible + selected hidden points | Occluded-node policy |
-| Show Instances / Show Non-Visible Nodes / Show Node Names / Show Edges | ++h++ / ++v++ / ++t++ / ++cmd+shift+tab++ |
+| Show Instances / Show Non-Visible Nodes / Show Node Names / Show Edges | ++h++ / ++shift+v++ / ++t++ / ++cmd+shift+tab++ |
 | Crosshair When Zoomed / Magnifier When Moving Nodes | Precision aids |
 | **Edge Style ▸** Line / Wedge | |
 | **Node Marker Size ▸** / **Node Label Size ▸** / **Trail Length ▸** | |
