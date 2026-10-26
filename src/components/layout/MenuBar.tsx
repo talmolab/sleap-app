@@ -803,7 +803,7 @@ function ViewMenu() {
           checked={showNonVisibleNodes}
           onCheckedChange={() => toggle("showNonVisibleNodes")}
         >
-          Show Non-Visible Nodes <MenubarShortcut>V</MenubarShortcut>
+          Show Non-Visible Nodes <MenubarShortcut>{formatShortcut(DEFAULT_SHORTCUTS["show non-visible nodes"])}</MenubarShortcut>
         </MenubarCheckboxItem>
         <MenubarSub>
           <MenubarSubTrigger className="text-sm">Display</MenubarSubTrigger>
