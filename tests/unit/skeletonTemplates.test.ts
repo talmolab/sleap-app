@@ -3,6 +3,8 @@
  */
 
 import { describe, it, expect } from "../bun-test";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import {
   SKELETON_TEMPLATES,
   TEMPLATE_ORDER,
@@ -94,6 +96,50 @@ describe("skeletonTemplates", () => {
       for (const [srcIdx, dstIdx] of template.edges) {
         expect(srcIdx).not.toBe(dstIdx);
       }
+    }
+  });
+
+  describe("legacy SLEAP reference templates", () => {
+    const expected: Record<string, number> = {
+      bees: 21,
+      flies13: 13,
+      fly32: 32,
+      gerbils: 14,
+      mice_hc: 5,
+      mice_of: 11,
+    };
+
+    it("includes each template legacy SLEAP shipped, with its node count", () => {
+      for (const [id, count] of Object.entries(expected)) {
+        expect(TEMPLATE_ORDER as readonly string[]).toContain(id);
+        expect(SKELETON_TEMPLATES[id].nodes).toHaveLength(count);
+      }
+    });
+
+    it("keeps the left/right symmetries legacy defined", () => {
+      expect(SKELETON_TEMPLATES.flies13.symmetries).toHaveLength(5);
+      expect(SKELETON_TEMPLATES.gerbils.symmetries).toHaveLength(2);
+    });
+  });
+
+  it("symmetry indices are within node bounds and pair two different nodes", () => {
+    for (const template of Object.values(SKELETON_TEMPLATES)) {
+      for (const [a, b] of template.symmetries ?? []) {
+        expect(a).not.toBe(b);
+        for (const i of [a, b]) {
+          expect(i).toBeGreaterThanOrEqual(0);
+          expect(i).toBeLessThan(template.nodes.length);
+        }
+      }
+    }
+  });
+
+  it("every preview image a template names is in public/skeleton-templates", () => {
+    const dir = join(import.meta.dir, "../../public/skeleton-templates");
+    const named = Object.values(SKELETON_TEMPLATES).filter((t) => t.previewImage);
+    expect(named.length).toBe(6);
+    for (const t of named) {
+      expect(existsSync(join(dir, t.previewImage!))).toBe(true);
     }
   });
 });

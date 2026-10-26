@@ -467,6 +467,27 @@ describe("Skeleton commands", () => {
       expect(project.skeleton.nodes[0].name).toBe("nose");
     });
 
+    it("applies a template's symmetries", async () => {
+      const project = setupProject({ numNodes: 3 });
+
+      await ctx.execute(LoadSkeletonTemplateCommand, { templateId: "flies13" });
+
+      expect(project.skeleton.symmetries).toHaveLength(5);
+      const names = new Set(project.skeleton.nodes.map((n) => n.name));
+      for (const sym of project.skeleton.symmetries) {
+        for (const node of sym.nodes) expect(names.has(node.name)).toBe(true);
+      }
+    });
+
+    it("clears the previous skeleton's symmetries when the template has none", async () => {
+      const project = setupProject({ numNodes: 3 });
+
+      await ctx.execute(LoadSkeletonTemplateCommand, { templateId: "flies13" });
+      await ctx.execute(LoadSkeletonTemplateCommand, { templateId: "celegans" });
+
+      expect(project.skeleton.symmetries).toHaveLength(0);
+    });
+
     it("resets instance points to match new node count", async () => {
       const project = setupProject({ numNodes: 3, numFrames: 2, numInstancesPerFrame: 1 });
 

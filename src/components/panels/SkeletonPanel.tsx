@@ -26,6 +26,7 @@ import {
 import {
   SKELETON_TEMPLATES,
   TEMPLATE_ORDER,
+  type SkeletonTemplate,
 } from "../../lib/skeletonTemplates";
 import {
   parseSkeletonFile,
@@ -83,6 +84,56 @@ function ensureInterceptor() {
   }
 }
 
+/**
+ * What a skeleton template looks like before it's loaded: legacy SLEAP's
+ * template preview. Shows the template's labeled example image when it has one
+ * (the reference-dataset templates do), its name, description and nodes, and a
+ * Load button.
+ */
+function TemplatePreview({
+  template,
+  onLoad,
+}: {
+  template: SkeletonTemplate;
+  onLoad: () => void;
+}) {
+  return (
+    <div
+      className="mt-1.5 flex gap-2 rounded border border-border p-1.5"
+      data-testid="skeleton-template-preview"
+    >
+      {template.previewImage && (
+        <img
+          src={`${import.meta.env.BASE_URL}skeleton-templates/${template.previewImage}`}
+          alt={`Example of the ${template.name} skeleton`}
+          className="h-24 w-24 shrink-0 rounded object-cover"
+          draggable={false}
+        />
+      )}
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
+        <div className="text-xs font-medium leading-snug">{template.name}</div>
+        <div className="text-[10px] leading-snug text-muted-foreground">
+          {template.description}
+        </div>
+        {template.nodes.length > 0 && (
+          <div
+            className="line-clamp-3 text-[10px] leading-snug text-muted-foreground"
+            title={template.nodes.join(", ")}
+          >
+            <span className="font-medium text-foreground">
+              {template.nodes.length} nodes, {template.edges.length} edges:
+            </span>{" "}
+            {template.nodes.join(", ")}
+          </div>
+        )}
+        <Button size="xs" className="mt-auto self-start" onClick={onLoad}>
+          Load
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export function SkeletonPanel() {
   const skeleton = useAppStore((s) => s.skeleton);
   // A video (i.e. a frame to draw on) is required to launch the visual builder.
@@ -130,6 +181,12 @@ export function SkeletonPanel() {
   // Sticky seed: remember the last destination we connected to, so reopening
   // the dialog can prefer it as the next source (PyQt-like rapid chaining).
   const lastEdgeDst = useRef<string>("");
+
+  // The template picked in the dropdown: previewed below it, loaded only on
+  // "Load" (as in legacy SLEAP), so a pick never replaces the skeleton by itself.
+  const [previewTemplateId, setPreviewTemplateId] = useState<string | undefined>(
+    undefined
+  );
 
   // Dialog state for template confirmation
   const [templateConfirmOpen, setTemplateConfirmOpen] = useState(false);
@@ -488,7 +545,7 @@ export function SkeletonPanel() {
         <label className="text-xs text-muted-foreground block mb-1">
           Load template
         </label>
-        <Select onValueChange={handleTemplateSelect}>
+        <Select value={previewTemplateId} onValueChange={setPreviewTemplateId}>
           <SelectTrigger className="w-full h-7 text-xs" size="sm">
             <SelectValue placeholder="Select skeleton template..." />
           </SelectTrigger>
@@ -503,6 +560,12 @@ export function SkeletonPanel() {
             })}
           </SelectContent>
         </Select>
+        {previewTemplateId && SKELETON_TEMPLATES[previewTemplateId] && (
+          <TemplatePreview
+            template={SKELETON_TEMPLATES[previewTemplateId]}
+            onLoad={() => handleTemplateSelect(previewTemplateId)}
+          />
+        )}
         <div className="flex gap-1 mt-1.5">
           <Button
             variant="subtle"
