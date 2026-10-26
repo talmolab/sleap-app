@@ -144,7 +144,12 @@ export function UnsavedWorkDropdown({ drafts, loading, onDiscard, onDiscardAll }
                   "rounded p-1 text-muted-foreground opacity-0 hover:bg-destructive/15 hover:text-destructive",
                   "group-hover:opacity-100 group-data-[highlighted]:opacity-100",
                 )}
+                // Stop the whole press, not just pointerdown: the menu item
+                // clicks itself (= restores) on a pointerup it didn't see the
+                // pointerdown for, which is exactly what stopping only
+                // pointerdown produced.
                 onPointerDown={(e) => e.stopPropagation()}
+                onPointerUp={(e) => e.stopPropagation()}
                 onClick={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
