@@ -12,7 +12,11 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "../bun-test";
 import { useAppStore } from "@/stores/appStore";
 
 type Progress = (current: number, total: number, message?: string) => unknown;
-type SaveOpts = { embed?: string; onProgress?: Progress };
+type SaveOpts = {
+  embed?: string;
+  onProgress?: Progress;
+  frameReader?: (video: unknown, frames: number[]) => Promise<unknown>;
+};
 
 class ExportCancelled extends Error {}
 
@@ -39,6 +43,13 @@ vi.mock("@/lib/saveEmbeddedPkgStreaming", () => ({
   saveEmbeddedPkgStreaming: (labels: unknown, dest: string, source: unknown, opts: SaveOpts) => {
     order.push("stream");
     return streamImpl(labels, dest, source, opts);
+  },
+}));
+vi.mock("@/lib/transcode/extractFrames", () => ({
+  createTauriExtractFramesDeps: () => ({}),
+  createFfmpegFrameReader: async (video: unknown, frames: number[]) => {
+    order.push(`ffmpeg(${frames.join(",")})`);
+    return { video };
   },
 }));
 vi.mock("@/platform/index", () => ({
@@ -193,10 +204,12 @@ describe("exportLabelsPackage on desktop (streamed straight to the chosen file)"
       opts.onProgress?.(1, 2);
       expect(useAppStore.getState().loadingMessage).toBe("Embedding frames (1/2)");
       seen.args = { dest, source, embed: opts.embed };
+      // Frames come from ffmpeg on desktop.
+      expect(await opts.frameReader?.(video, [3, 4])).toEqual({ video });
     };
     await exportLabelsPackage(mp4Labels, "labels.slp", "training");
 
-    expect(order).toEqual(["dialog", "prepare", "stream"]);
+    expect(order).toEqual(["dialog", "prepare", "stream", "ffmpeg(3,4)"]);
     expect(seen.args).toEqual({ dest: "/data/out.pkg.slp", source: null, embed: "user+suggestions" });
     expect(useAppStore.getState().isLoading).toBe(false);
     const [title, opts] = toastSuccess.mock.calls[0] as unknown as [

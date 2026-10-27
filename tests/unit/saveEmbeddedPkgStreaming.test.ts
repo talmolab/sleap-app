@@ -31,9 +31,10 @@ vi.mock("@talmolab/sleap-io.js", () => ({
     _writer: unknown,
     _labels: unknown,
     entries: unknown[],
-    opts: { onProgress?: (c: number, t: number) => unknown }
+    opts: { onProgress?: (c: number, t: number) => unknown; frameReader?: unknown }
   ) => {
     calls.push(`appendEncodedVideos(${entries.length})`);
+    if (opts.frameReader) calls.push("frameReader");
     await appendImpl(opts);
   },
   StreamingH5Writer: class {
@@ -124,6 +125,14 @@ describe("saveEmbeddedPkgStreaming — new embed (no source file)", () => {
     expect(calls.indexOf("appendEncodedVideos(1)")).toBeLessThan(calls.indexOf("copy"));
     expect(calls.indexOf("copy")).toBeLessThan(calls.indexOf("rename"));
     expect(files.has("/out/x.pkg.slp")).toBe(true);
+  });
+
+  it("hands a frame reader (desktop: ffmpeg) through to io", async () => {
+    await saveEmbeddedPkgStreaming(labels, "/out/x.pkg.slp", null, {
+      embed: "user",
+      frameReader: async () => null,
+    });
+    expect(calls).toContain("frameReader");
   });
 
   it("refuses to publish when the file holds fewer frames than planned", async () => {

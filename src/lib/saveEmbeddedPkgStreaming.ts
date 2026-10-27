@@ -46,6 +46,7 @@ import {
   type Labels,
   type SerializableEmbedPlan,
   type SlpWriteOptions,
+  type AppendEncodedVideosOptions,
 } from "@talmolab/sleap-io.js";
 import {
   withNativeWriteHandle,
@@ -77,6 +78,10 @@ export interface SaveEmbeddedPkgStreamingOptions {
   /** As `saveSlpToBytes`'s: frames embedded so far; return `false` to cancel
    * (throws io's `ExportCancelled`, after removing the partial file). */
   onProgress?: SlpWriteOptions["onProgress"];
+  /** Supplies a new embed's frames from outside the app's decoders (desktop:
+   * ffmpeg-extracted PNGs, see `extractFrames.ts`); as io's
+   * `appendEncodedVideos` option. */
+  frameReader?: AppendEncodedVideosOptions["frameReader"];
 }
 
 /** Fresh, collision-resistant random suffix for a temp file name. */
@@ -164,7 +169,7 @@ async function appendEmbeddedVideosToTemp(
   tempPath: string,
   sourcePath: string | null,
   labels: Labels,
-  onProgress?: SlpWriteOptions["onProgress"]
+  options: Pick<SaveEmbeddedPkgStreamingOptions, "onProgress" | "frameReader"> = {}
 ): Promise<void> {
   await writeOpenAppend(tempPath);
   const writer = new StreamingH5Writer();
@@ -206,7 +211,10 @@ async function appendEmbeddedVideosToTemp(
     }
 
     if (plan.encodeEntries.length > 0) {
-      await appendEncodedVideos(writer, labels, plan.encodeEntries, { onProgress });
+      await appendEncodedVideos(writer, labels, plan.encodeEntries, {
+        onProgress: options.onProgress,
+        frameReader: options.frameReader,
+      });
       console.log(
         `[saveEmbeddedPkgStreaming] embedded ${plan.encodeEntries.length} video(s) ` +
           `(${plan.encodeEntries.reduce((n, e) => n + e.frameNumbers.length, 0)} frames)`
@@ -359,7 +367,7 @@ async function saveEmbeddedPkgStreamingNow(
           stagePath,
           sourcePath,
           labels,
-          options?.onProgress
+          { onProgress: options?.onProgress, frameReader: options?.frameReader }
         );
         await verifyAppendedTemp(plan, stagePath);
       }

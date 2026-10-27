@@ -57,6 +57,10 @@ import { saveBytesFile } from "./fileCommands";
 import { toast } from "@/lib/notify";
 import { prepareVideosForFrameReads } from "@/lib/resolveVideos";
 import { saveEmbeddedPkgStreaming } from "@/lib/saveEmbeddedPkgStreaming";
+import {
+  createFfmpegFrameReader,
+  createTauriExtractFramesDeps,
+} from "@/lib/transcode/extractFrames";
 import { toastExported } from "@/lib/exportToast";
 import { getPlatform } from "../platform/index";
 import { useAppStore } from "@/stores/appStore";
@@ -355,9 +359,13 @@ async function exportLabelsPackageNow(
         // Open videos that haven't been viewed yet (their frames would otherwise
         // be skipped) and decode on a worker where possible.
         await prepareVideosForFrameReads(embedVideos);
+        // Frames of local video files come from ffmpeg (native, all cores);
+        // anything ffmpeg can't read is decoded and encoded in the app.
+        const extractDeps = createTauriExtractFramesDeps();
         await saveEmbeddedPkgStreaming(exportLabels, destPath, null, {
           embed: mode,
           onProgress,
+          frameReader: (video, frames) => createFfmpegFrameReader(video, frames, extractDeps),
         });
         // A video with no open decoder can't be embedded and stays a link.
         return embedVideos.some((v) => !v.backend);
