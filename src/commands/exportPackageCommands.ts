@@ -29,21 +29,17 @@
  * sever the decoder/HDF5 handle. `saveSlpToBytes` does not mutate the videos it is
  * given, so sharing them is safe.
  *
- * ── IO GAP 1 (continuous / mp4 sources do NOT embed) ──────────────────────────
- * io only embeds a frame when the video backend's `getFrame()` yields ENCODED
- * byte blobs (`Uint8Array` / `ArrayBuffer`). The continuous-video backends
- * (MediaBunny / Mp4Box) return an `ImageBitmap`, which io's `frameToBytes()`
- * rejects (→ null → the frame is skipped). Net effect: for a project backed by a
- * continuous video (e.g. `.mp4`), NO frames are embedded — the package instead
- * references the source video, exactly like a plain `.slp`. Already-embedded
- * `pkg.slp` sources copy their stored blobs verbatim and round-trip byte-exact.
- * Verified empirically 2026-08-01 (encode-path round-trip works with encoded
- * bytes; ImageBitmap → `hasEmbeddedImages: false`). The fix belongs in
- * sleap-io.js: rasterize + re-encode `ImageBitmap`/`ImageData` to PNG/JPEG
- * before storing. We surface a toast warning at export time — but ONLY when the
- * WRITTEN package genuinely left frames unembedded (see
- * {@link packageLeavesFramesUnembedded}), so a build of io that CAN embed
- * continuous frames never triggers a false warning.
+ * ── WRITE PATHS ────────────────────────────────────────────────────────────────
+ * Desktop exports of continuous (e.g. `.mp4`) videos follow PyQt: the Save
+ * dialog comes first, then the package is written straight to that file by
+ * {@link saveEmbeddedPkgStreaming}. Frames are read here (an mp4 decodes in its
+ * own worker) and PNG-encoded + appended by the h5 writer's worker, so the
+ * window stays responsive and only a few frames are in memory at a time.
+ * Already-embedded (`.pkg.slp`) projects, and the browser, build the package in
+ * memory with `saveSlpToBytes` and save it afterwards; the toast warning there
+ * fires ONLY when the WRITTEN package genuinely left frames unembedded (see
+ * {@link packageLeavesFramesUnembedded}). Both paths show progress with Cancel
+ * (io's `onProgress` returning `false` → `ExportCancelled`; nothing is written).
  *
  * ── SUGGESTION IMAGES on `full` (follow-up, io-gated) ────────────────────────
  * PyQt's Level 3 is `all_labeled=T, suggested=T` → the ideal embed mode is
@@ -54,12 +50,16 @@
  */
 
 import type { Labels, Video } from "@talmolab/sleap-io.js";
-import { saveSlpToBytes, loadSlp } from "@talmolab/sleap-io.js";
+import { ExportCancelled, saveSlpToBytes, loadSlp } from "@talmolab/sleap-io.js";
+import { invoke } from "@tauri-apps/api/core";
 import type { Command } from "./types";
 import type { CommandContext } from "./CommandContext";
 import { saveBytesFile } from "./fileCommands";
 import { toast } from "@/lib/notify";
 import { prepareVideosForFrameReads } from "@/lib/resolveVideos";
+import { saveEmbeddedPkgStreaming } from "@/lib/saveEmbeddedPkgStreaming";
+import { sleapCmd } from "@/lib/sleapPlugin";
+import { getPlatform } from "../platform/index";
 import { useAppStore } from "@/stores/appStore";
 
 /** The three PyQt package levels. */
@@ -219,10 +219,83 @@ export function frameCountForLevel(labels: Labels, level: ExportPackageLevel): n
   }
 }
 
+/** Is the streaming desktop write (worker + native file writes) available? */
+async function canStreamPackage(): Promise<boolean> {
+  return (
+    (await getPlatform()).isTauri &&
+    typeof SharedArrayBuffer !== "undefined" &&
+    !!(globalThis as { crossOriginIsolated?: boolean }).crossOriginIsolated
+  );
+}
+
 /**
- * Export a labels package: serialize `labels` to an embedded-image `.pkg.slp`
- * (via `saveSlpToBytes({ embed })`) and write it through the Save-As plumbing
- * (Tauri native dialog / File System Access picker / download fallback).
+ * Run `work` under the progress overlay with a Cancel button. `work` gets an
+ * io `onProgress` that updates the overlay and returns `false` once Cancel is
+ * clicked, which makes io stop with `ExportCancelled`. Always clears the
+ * overlay.
+ */
+async function withEmbedProgress<T>(
+  work: (onProgress: (current: number, total: number) => boolean) => Promise<T>
+): Promise<T> {
+  const { setLoading, setLoadingCancel } = useAppStore.getState();
+  let cancelled = false;
+  setLoading(true, "Embedding frames…", 0);
+  setLoadingCancel(() => {
+    cancelled = true;
+    setLoading(true, "Cancelling…");
+  });
+  const onProgress = (current: number, total: number) => {
+    if (cancelled) return false;
+    const pct = total > 0 ? Math.round((current / total) * 100) : 0;
+    setLoading(true, `Embedding frames (${current}/${total})`, pct);
+    return true;
+  };
+  try {
+    return await work(onProgress);
+  } finally {
+    setLoading(false);
+  }
+}
+
+/** Success toast, with "Show in folder" when the package is a desktop file. */
+function toastExported(savedPath: string, revealable: boolean): void {
+  toast.success("Labels package exported", {
+    description: savedPath,
+    action: revealable
+      ? {
+          label: "Show in folder",
+          onClick: () => {
+            void invoke(sleapCmd("reveal_in_file_manager"), { path: savedPath }).catch(
+              (e: unknown) =>
+                toast.error("Couldn't show the package", {
+                  description: e instanceof Error ? e.message : String(e),
+                })
+            );
+          },
+        }
+      : undefined,
+  });
+}
+
+function warnUnembedded(): void {
+  toast.warning("Frames from continuous videos were not embedded", {
+    description:
+      "This project references a source video (e.g. .mp4) and its frame " +
+      "images could not be embedded, so the package links to the source " +
+      "video instead. Keep the source video alongside this package.",
+  });
+}
+
+/**
+ * Export a labels package (embedded-image `.pkg.slp`).
+ *
+ * Desktop, as PyQt SLEAP: ask where to save first, then write the package
+ * straight to that file — the frames are read here and PNG-encoded + written
+ * by a worker ({@link saveEmbeddedPkgStreaming}), so the window stays
+ * responsive and only a few frames are in memory at a time, with progress and
+ * Cancel. Projects whose videos are already embedded (a `.pkg.slp`), and the
+ * browser, build the package in memory via `saveSlpToBytes` and then save it
+ * through the Save-As plumbing (File System Access picker / download).
  */
 export async function exportLabelsPackage(
   labels: Labels | null,
@@ -232,44 +305,55 @@ export async function exportLabelsPackage(
   if (!labels) return;
 
   const mode = embedModeForLevel(level);
+  const suggestedName = derivePackageFilename(filename);
+  const filter = { name: "SLEAP Labels Package", ext: "slp" };
   try {
     // Restrict the package to the frames this level means (predicted-only frames
     // are dropped for user/training) BEFORE serializing — `embed` alone would
     // still write every frame's metadata. See the module doc (FRAME SELECTION).
     const exportLabels = labelsForLevel(labels, level);
-    // Reading + encoding each frame image from a continuous video takes a
-    // while (seconds per frame for an mp4 with sparse keyframes), so show the
-    // progress overlay meanwhile.
-    // `onProgress` is io >= the release with pinned embed reads; older io
-    // ignores it (the overlay then just shows the message). Built as a variable
-    // so it type-checks against either pinned io version.
-    const { setLoading } = useAppStore.getState();
-    setLoading(true, "Embedding frames…", 0);
-    const saveOptions = {
-      embed: mode,
-      onProgress: (current: number, total: number) => {
-        const pct = total > 0 ? Math.round((current / total) * 100) : 0;
-        setLoading(true, `Embedding frames (${current}/${total})`, pct);
-      },
-    };
-    let bytes: Uint8Array;
-    try {
-      // Open videos that haven't been viewed yet (their frames would otherwise
-      // be skipped) and move every video's decoding off the UI thread, so the
-      // window and this progress overlay stay live while frames are read.
-      await prepareVideosForFrameReads(videosToEmbed(exportLabels, level));
-      bytes = await saveSlpToBytes(exportLabels, saveOptions);
-    } finally {
-      setLoading(false);
+    const embedVideos = videosToEmbed(exportLabels, level);
+
+    // Already-embedded videos copy their stored images from their own file;
+    // the streaming export only embeds continuous videos.
+    if (
+      (await canStreamPackage()) &&
+      !exportLabels.videos.some((v) => v.hasEmbeddedImages)
+    ) {
+      const platform = await getPlatform();
+      const destPath = await platform.showSaveDialog({
+        filters: [{ name: filter.name, extensions: [filter.ext] }],
+        defaultName: suggestedName,
+      });
+      if (!destPath) return; // user cancelled the dialog
+
+      const unembedded = await withEmbedProgress(async (onProgress) => {
+        // Open videos that haven't been viewed yet (their frames would otherwise
+        // be skipped) and decode on a worker where possible.
+        await prepareVideosForFrameReads(embedVideos);
+        await saveEmbeddedPkgStreaming(exportLabels, destPath, null, {
+          embed: mode,
+          onProgress,
+        });
+        // A video with no open decoder can't be embedded and stays a link.
+        return embedVideos.some((v) => !v.backend);
+      });
+      toastExported(destPath, true);
+      if (unembedded) warnUnembedded();
+      return;
     }
-    const suggestedName = derivePackageFilename(filename);
-    const saved = await saveBytesFile(bytes, suggestedName, {
-      name: "SLEAP Labels Package",
-      ext: "slp",
+
+    // In memory: read + encode each frame here (seconds per frame for an mp4
+    // with sparse keyframes) under the progress overlay, then pick where to
+    // save.
+    const bytes = await withEmbedProgress(async (onProgress) => {
+      await prepareVideosForFrameReads(embedVideos);
+      return saveSlpToBytes(exportLabels, { embed: mode, onProgress });
     });
+    const saved = await saveBytesFile(bytes, suggestedName, filter);
     if (!saved) return; // user cancelled the dialog/picker
 
-    toast.success("Labels package exported", { description: saved });
+    toastExported(saved, false);
 
     // Warn ONLY if the WRITTEN package genuinely left frames unembedded (accurate
     // by construction — see packageLeavesFramesUnembedded). Checking the export
@@ -284,15 +368,12 @@ export async function exportLabelsPackage(
       // warning we can't stand behind.
       console.warn("[ExportLabelsPackage] embed verification failed:", e);
     }
-    if (missingEmbeds) {
-      toast.warning("Frames from continuous videos were not embedded", {
-        description:
-          "This project references a source video (e.g. .mp4) and its frame " +
-          "images could not be embedded, so the package links to the source " +
-          "video instead. Keep the source video alongside this package.",
-      });
-    }
+    if (missingEmbeds) warnUnembedded();
   } catch (err) {
+    if (err instanceof ExportCancelled) {
+      toast.info("Export cancelled", { description: "No package was written." });
+      return;
+    }
     const msg = err instanceof Error ? err.message : String(err);
     toast.error("Failed to export labels package", { description: msg });
     console.error("[ExportLabelsPackage] Failed to export:", err);

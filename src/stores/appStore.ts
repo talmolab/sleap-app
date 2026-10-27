@@ -463,6 +463,11 @@ export interface AppState {
    * (e.g. "Locating videos…"), so the bar holds rather than jumping back.
    */
   loadingProgress: number;
+  /**
+   * When set, the loading overlay shows a Cancel button that calls it (e.g.
+   * Export Labels Package). Cleared when the overlay is dismissed.
+   */
+  loadingCancel: (() => void) | null;
 
   // === Dialog state ===
   inferenceDialogOpen: boolean;
@@ -586,6 +591,7 @@ export interface AppState {
   /** Migrate a track's color override across a rename (called by SetTrackName). */
   renameTrackColor: (oldName: string, newName: string) => void;
   setLoading: (loading: boolean, message?: string, progress?: number) => void;
+  setLoadingCancel: (cancel: (() => void) | null) => void;
   setInferenceDialogOpen: (open: boolean) => void;
   setNewProjectDialogOpen: (open: boolean) => void;
   setGoToFrameDialogOpen: (open: boolean) => void;
@@ -886,6 +892,7 @@ export const useAppStore = create<AppState>()(
       isLoading: false,
       loadingMessage: "",
       loadingProgress: 0,
+      loadingCancel: null,
 
       // Dialog state
       inferenceDialogOpen: false,
@@ -1293,7 +1300,15 @@ export const useAppStore = create<AppState>()(
           // messages without a percent (e.g. "Locating videos…") hold the bar
           // rather than snapping it to 0. Reset once the overlay is dismissed.
           if (progress !== undefined) state.loadingProgress = progress;
-          if (!loading) state.loadingProgress = 0;
+          if (!loading) {
+            state.loadingProgress = 0;
+            state.loadingCancel = null;
+          }
+        }),
+
+      setLoadingCancel: (cancel) =>
+        set((state) => {
+          state.loadingCancel = cancel;
         }),
 
       setInferenceDialogOpen: (open) =>

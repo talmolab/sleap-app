@@ -18,6 +18,7 @@ import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { PathResolutionDialog } from "../dialogs/PathResolutionDialog";
 import type { ResolvedPath } from "@/lib/pathMappings";
 import { Toaster } from "sonner";
+import { Button } from "@/components/ui/button";
 import { MenuBar } from "./MenuBar";
 import { StatusBar } from "./StatusBar";
 import { ErrorBoundary } from "./ErrorBoundary";
@@ -140,6 +141,7 @@ export function AppShell() {
   const windowDragActive = useAppStore((s) => s.windowDragActive);
   const loadingMessage = useAppStore((s) => s.loadingMessage);
   const loadingProgress = useAppStore((s) => s.loadingProgress);
+  const loadingCancel = useAppStore((s) => s.loadingCancel);
   const sidebarSide = useAppStore((s) => s.sidebarSide);
 
   // Dialog state
@@ -295,6 +297,11 @@ export function AppShell() {
                   {/* Strip the trailing "(NN%)" — the bar shows the number now. */}
                   {loadingMessage.replace(/\s*\(\d+%\)\s*$/, "") || "Loading..."}
                 </p>
+                {loadingCancel && (
+                  <Button variant="outline" size="sm" onClick={loadingCancel}>
+                    Cancel
+                  </Button>
+                )}
               </div>
             </div>
           )}
