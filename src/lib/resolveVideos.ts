@@ -48,6 +48,7 @@ import {
   buildBlobByteSourceDescriptor,
   buildUrlByteSourceDescriptor,
   runWorkerDecodeUpgrade,
+  type WorkerUpgradeOutcome,
 } from "./workerDecodeUpgrade";
 import type { ByteSourceDescriptor } from "@talmolab/sleap-io.js";
 import { useTranscodeStore } from "@/stores/transcodeStore";
@@ -1616,28 +1617,54 @@ export async function scheduleBackgroundProxyBuild(
  */
 export async function scheduleWorkerDecodeUpgrade(
   video: Video,
-  path: string
-): Promise<void> {
-  if (!isWorkerDecodeAvailable()) return;
+  path: string,
+  isStillActive: () => boolean = () => useAppStore.getState().video === video
+): Promise<WorkerUpgradeOutcome> {
+  if (!isWorkerDecodeAvailable()) return "skipped";
   const name = getBasename(path);
-  if (backendKindForFilename(name) !== "mp4box") return;
+  if (backendKindForFilename(name) !== "mp4box") return "skipped";
   const platform = await getPlatform();
-  if (!platform.isTauri) return; // desktop wiring; browser is a follow-up
+  if (!platform.isTauri) return "skipped"; // desktop wiring; browser is a follow-up
   const original = video.backend;
-  if (!original) return;
-  await runWorkerDecodeUpgrade(original, path, name, {
+  if (!original) return "skipped";
+  return runWorkerDecodeUpgrade(original, path, name, {
     isAvailable: isWorkerDecodeAvailable,
     buildDescriptor: buildTauriByteSourceDescriptor,
     createWorkerBackend: (params) => WorkerMp4BoxBackend.create(params),
-    isStillActive: () => useAppStore.getState().video === video,
+    isStillActive,
     currentBackend: () => video.backend,
     swap: (backend) => {
       video.backend = backend;
     },
-    triggerReread: () => useAppStore.getState().bumpBackendSwapNonce(),
+    triggerReread: () => {
+      if (useAppStore.getState().video === video) {
+        useAppStore.getState().bumpBackendSwapNonce();
+      }
+    },
     onUpgraded: () =>
       console.info(`[offmain] worker decode active for "${name}"`),
   });
+}
+
+/**
+ * Get `videos` ready for a long run of frame reads (Export Labels Package's
+ * embedding): open any still-lazy backend, then upgrade each desktop MP4 to the
+ * off-main worker decoder. The open-time upgrade only covers the video on
+ * screen, and an export reads every video, so without this the reads of the
+ * others decode on the UI thread and freeze the window for the whole export.
+ * Awaited, unlike the open-time upgrade, so the export starts on the worker.
+ * Each upgrade is best-effort: a video that can't upgrade keeps its backend.
+ */
+export async function prepareVideosForFrameReads(
+  videos: readonly Video[]
+): Promise<void> {
+  const stillOpen = (video: Video) => () =>
+    useAppStore.getState().labels?.videos.includes(video) ?? false;
+  for (const video of videos) {
+    if (!(await ensureVideoBackend(video))) continue;
+    const path = Array.isArray(video.filename) ? null : video.filename;
+    if (path) await scheduleWorkerDecodeUpgrade(video, path, stillOpen(video));
+  }
 }
 
 /**

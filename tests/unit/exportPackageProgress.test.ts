@@ -25,6 +25,14 @@ vi.mock("@/commands/fileCommands", () => ({
     return "/out/labels.pkg.slp";
   },
 }));
+const order: string[] = [];
+const prepared: unknown[][] = [];
+vi.mock("@/lib/resolveVideos", () => ({
+  prepareVideosForFrameReads: async (videos: unknown[]) => {
+    order.push("prepare");
+    prepared.push(videos);
+  },
+}));
 vi.mock("@/lib/notify", () => ({
   toast: { success: vi.fn(), error: toastError, warning: vi.fn(), info: vi.fn() },
 }));
@@ -37,6 +45,8 @@ const labels = { videos: [], labeledFrames: [], suggestions: [] } as never;
 beforeEach(() => {
   useAppStore.getState().setLoading(false);
   overlayDuringSave.length = 0;
+  order.length = 0;
+  prepared.length = 0;
   toastError.mockClear();
 });
 
@@ -58,6 +68,25 @@ describe("exportLabelsPackage progress", () => {
     expect(seen[1]).toEqual({ message: "Embedding frames (2/4)", progress: 50 });
     expect(overlayDuringSave).toEqual([{ loading: false, message: "", progress: 0 }]);
     expect(useAppStore.getState().isLoading).toBe(false);
+  });
+
+  it("opens and readies the embedded videos for off-main reads before embedding", async () => {
+    const video = { filename: "/data/mice.mp4" };
+    const withVideo = {
+      videos: [video, { filename: "/data/unused.mp4" }],
+      labeledFrames: [{ video, frameIdx: 0, isUserLabeled: true }],
+      suggestions: [],
+    } as never;
+    saveImpl = async () => {
+      order.push("save");
+      // The overlay is already up while videos are prepared and read.
+      expect(useAppStore.getState().isLoading).toBe(true);
+      return new Uint8Array([1]);
+    };
+    await exportLabelsPackage(withVideo, "labels.slp", "full");
+
+    expect(order).toEqual(["prepare", "save"]);
+    expect(prepared).toEqual([[video]]);
   });
 
   it("clears the overlay when embedding fails, and reports the error", async () => {

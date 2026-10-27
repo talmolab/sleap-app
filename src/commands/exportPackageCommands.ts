@@ -59,6 +59,7 @@ import type { Command } from "./types";
 import type { CommandContext } from "./CommandContext";
 import { saveBytesFile } from "./fileCommands";
 import { toast } from "@/lib/notify";
+import { prepareVideosForFrameReads } from "@/lib/resolveVideos";
 import { useAppStore } from "@/stores/appStore";
 
 /** The three PyQt package levels. */
@@ -162,6 +163,21 @@ export function labelsForLevel(
 }
 
 /**
+ * The videos a package level reads frame images from: those of its labeled
+ * frames, plus its suggestion frames' for the levels that embed suggestions.
+ */
+export function videosToEmbed(
+  labels: Labels,
+  level: ExportPackageLevel
+): Video[] {
+  const videos = new Set<Video>(labels.labeledFrames.map((f) => f.video));
+  if (level !== "user") {
+    for (const s of labels.suggestions) videos.add(s.video);
+  }
+  return labels.videos.filter((v) => videos.has(v));
+}
+
+/**
  * Whether the just-written package still links to an external video instead of
  * embedding its frames — the accurate, RESULT-based signal for the export-time
  * warning. Reloads `bytes` (metadata only; the embedded image datasets stay
@@ -222,7 +238,8 @@ export async function exportLabelsPackage(
     // still write every frame's metadata. See the module doc (FRAME SELECTION).
     const exportLabels = labelsForLevel(labels, level);
     // Reading + encoding each frame image from a continuous video takes a
-    // while (~0.5 s/frame for an mp4), so show the progress overlay meanwhile.
+    // while (seconds per frame for an mp4 with sparse keyframes), so show the
+    // progress overlay meanwhile.
     // `onProgress` is io >= the release with pinned embed reads; older io
     // ignores it (the overlay then just shows the message). Built as a variable
     // so it type-checks against either pinned io version.
@@ -237,6 +254,10 @@ export async function exportLabelsPackage(
     };
     let bytes: Uint8Array;
     try {
+      // Open videos that haven't been viewed yet (their frames would otherwise
+      // be skipped) and move every video's decoding off the UI thread, so the
+      // window and this progress overlay stay live while frames are read.
+      await prepareVideosForFrameReads(videosToEmbed(exportLabels, level));
       bytes = await saveSlpToBytes(exportLabels, saveOptions);
     } finally {
       setLoading(false);

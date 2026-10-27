@@ -38,6 +38,7 @@ import {
   frameCountForLevel,
   labelsForLevel,
   packageLeavesFramesUnembedded,
+  videosToEmbed,
 } from "@/commands/exportPackageCommands";
 import fs from "fs";
 import os from "os";
@@ -156,6 +157,50 @@ describe("Export Labels Package — frame-count selectors", () => {
     expect(frameCountForLevel(labels, "user")).toBe(1);
     expect(frameCountForLevel(labels, "training")).toBe(2);
     expect(frameCountForLevel(labels, "full")).toBe(3);
+  });
+});
+
+describe("Export Labels Package — videos to embed", () => {
+  /**
+   * Four videos: `a` has a user frame, `b` only a prediction, `c` only a
+   * suggestion, `d` nothing.
+   */
+  function makeProject() {
+    const skeleton = new Skeleton({ nodes: ["a"], name: "s" });
+    const [a, b, c, d] = ["a", "b", "c", "d"].map(
+      (name) =>
+        new Video({
+          filename: `${name}.mp4`,
+          backendMetadata: { shape: [10, 2, 2, 1] },
+          openBackend: false,
+        })
+    );
+    const labels = new Labels({ videos: [a, b, c, d], skeletons: [skeleton] });
+    const inst = Instance.empty({ skeleton });
+    inst.points[0].xy = [1, 1];
+    labels.labeledFrames.push(
+      new LabeledFrame({ video: a, frameIdx: 0, instances: [inst] })
+    );
+    labels.labeledFrames.push(
+      new LabeledFrame({
+        video: b,
+        frameIdx: 0,
+        instances: [PredictedInstance.fromArray([[2, 2]], skeleton, 0.9)],
+      })
+    );
+    labels.suggestions.push(new SuggestionFrame({ video: c, frameIdx: 3 }));
+    return { labels, a, b, c };
+  }
+
+  it("user: only the labeled frames' videos", () => {
+    const { labels, a, b } = makeProject();
+    expect(videosToEmbed(labels, "user")).toEqual([a, b]);
+  });
+
+  it("training and full: suggestion videos too, never a video with nothing to embed", () => {
+    const { labels, a, b, c } = makeProject();
+    expect(videosToEmbed(labels, "training")).toEqual([a, b, c]);
+    expect(videosToEmbed(labels, "full")).toEqual([a, b, c]);
   });
 });
 
