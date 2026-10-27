@@ -52,6 +52,7 @@ import {
   type OnDiskSidecars,
 } from "@talmolab/sleap-io.js";
 import {
+  withNativeWriteHandle,
   writeOpenAppend,
   writeAt,
   readAt,
@@ -493,28 +494,31 @@ export async function saveLabelsInPlace(
   // any failure THROWS (no silent fall-through — see the module header). Reuse the
   // size the probe already measured rather than a second fileSize() round-trip.
   const destSize = probe.size;
-  await writeOpenAppend(destPath); // open existing WITHOUT truncating
-  const destSink: RangeSink = {
-    writeAt: (o, b) => writeAt(o, b),
-    readAt: (o, l) => readAt(o, l),
-    truncate: (l) => truncateFile(l),
-    close: () => writeClose(),
-  };
-  const writer = new StreamingH5Writer();
-  try {
-    await writer.openWrite(destSink, destPath, destSize, H5WASM_URL);
-    const res = await writer.updateLabelsInPlace(update);
-    if (res.success !== true) {
-      throw new Error(
-        `saveLabelsInPlace: updateLabelsInPlace failed: ${res.error ?? JSON.stringify(res)}`
-      );
+  // Exclusive use of the app's one native write handle (an export may hold it).
+  await withNativeWriteHandle(async () => {
+    await writeOpenAppend(destPath); // open existing WITHOUT truncating
+    const destSink: RangeSink = {
+      writeAt: (o, b) => writeAt(o, b),
+      readAt: (o, l) => readAt(o, l),
+      truncate: (l) => truncateFile(l),
+      close: () => writeClose(),
+    };
+    const writer = new StreamingH5Writer();
+    try {
+      await writer.openWrite(destSink, destPath, destSize, H5WASM_URL);
+      const res = await writer.updateLabelsInPlace(update);
+      if (res.success !== true) {
+        throw new Error(
+          `saveLabelsInPlace: updateLabelsInPlace failed: ${res.error ?? JSON.stringify(res)}`
+        );
+      }
+    } finally {
+      // Belt-and-suspenders close, mirroring the streaming writer: close the
+      // worker first (flushes h5wasm through the bridge), then the native handle.
+      await writer.close().catch(() => {});
+      await writeClose().catch(() => {});
     }
-  } finally {
-    // Belt-and-suspenders close, mirroring the streaming writer: close the
-    // worker first (flushes h5wasm through the bridge), then the native handle.
-    await writer.close().catch(() => {});
-    await writeClose().catch(() => {});
-  }
+  });
   console.log(
     `[saveLabelsInPlace] patched label tables in place -> ${destPath}` +
       (metadataChanged ? " (+ /metadata)" : "")

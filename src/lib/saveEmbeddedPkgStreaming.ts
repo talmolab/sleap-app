@@ -48,6 +48,7 @@ import {
   type SlpWriteOptions,
 } from "@talmolab/sleap-io.js";
 import {
+  withNativeWriteHandle,
   writeOpen,
   writeOpenAppend,
   writeAt,
@@ -280,7 +281,20 @@ async function verifyAppendedTemp(
  *   `false` (re-save/preserve). `onProgress` reports (and can cancel) a new
  *   embed.
  */
-export async function saveEmbeddedPkgStreaming(
+export function saveEmbeddedPkgStreaming(
+  labels: Labels,
+  destPath: string,
+  sourcePath: string | null,
+  options?: SaveEmbeddedPkgStreamingOptions
+): Promise<void> {
+  // One save/export at a time owns the native write handle (see
+  // withNativeWriteHandle); a second one waits instead of breaking the first.
+  return withNativeWriteHandle(() =>
+    saveEmbeddedPkgStreamingNow(labels, destPath, sourcePath, options)
+  );
+}
+
+async function saveEmbeddedPkgStreamingNow(
   labels: Labels,
   destPath: string,
   sourcePath: string | null,

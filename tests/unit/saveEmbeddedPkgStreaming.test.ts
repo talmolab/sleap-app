@@ -60,6 +60,7 @@ vi.mock("@talmolab/sleap-io.js", () => ({
   },
 }));
 vi.mock("@/lib/nativeWrite", () => ({
+  withNativeWriteHandle: <T,>(work: () => Promise<T>) => work(),
   writeOpen: async (p: string) => void files.set(p, 0),
   writeOpenAppend: async () => {},
   writeAt: async () => {},

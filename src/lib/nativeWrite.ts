@@ -11,6 +11,21 @@
 import { invoke } from "@tauri-apps/api/core";
 import { sleapCmd } from "./sleapPlugin";
 
+let handleQueue: Promise<unknown> = Promise.resolve();
+
+/**
+ * Run `work` with exclusive use of the native write handle. The app has ONE
+ * handle (`write_open` replaces it, `write_close` closes it), so two writers at
+ * once — two exports, or a save during an export — close each other's file
+ * mid-write ("no open write handle"). Callers queue: each waits for the
+ * previous holder to finish, success or failure.
+ */
+export function withNativeWriteHandle<T>(work: () => Promise<T>): Promise<T> {
+  const run = handleQueue.then(work, work);
+  handleQueue = run.catch(() => {});
+  return run;
+}
+
 /** Open (create/truncate) a native file for writing at `path`. */
 export async function writeOpen(path: string): Promise<void> {
   return invoke(sleapCmd("write_open"), { path });

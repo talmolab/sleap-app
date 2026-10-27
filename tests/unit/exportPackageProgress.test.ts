@@ -98,21 +98,28 @@ afterEach(() => {
 });
 
 describe("exportLabelsPackage progress (in memory: browser, or already-embedded videos)", () => {
-  it("shows embedding progress from io, then clears it before the Save dialog", async () => {
+  it("shows embedding then writing progress from io, never going back, then clears it before the Save dialog", async () => {
     const seen: Array<{ message: string; progress: number }> = [];
     saveImpl = async (_l, opts) => {
       expect(useAppStore.getState().isLoading).toBe(true);
-      for (let i = 1; i <= 4; i++) {
-        opts.onProgress?.(i, 4, "Embedding frames");
-        const s = useAppStore.getState();
-        seen.push({ message: s.loadingMessage, progress: s.loadingProgress });
+      // io reports two passes, each counting from 1.
+      for (const message of ["Embedding frames", "Writing frames"]) {
+        for (let i = 1; i <= 4; i++) {
+          opts.onProgress?.(i, 4, message);
+          const s = useAppStore.getState();
+          seen.push({ message: s.loadingMessage, progress: s.loadingProgress });
+        }
       }
       return new Uint8Array([1]);
     };
     await exportLabelsPackage(labels, "labels.slp", "full");
 
-    expect(seen.at(-1)).toEqual({ message: "Embedding frames (4/4)", progress: 100 });
-    expect(seen[1]).toEqual({ message: "Embedding frames (2/4)", progress: 50 });
+    expect(seen[1]).toEqual({ message: "Embedding frames (2/4)", progress: 45 });
+    expect(seen[3]).toEqual({ message: "Embedding frames (4/4)", progress: 90 });
+    expect(seen[4]).toEqual({ message: "Writing frames (1/4)", progress: 93 });
+    expect(seen.at(-1)).toEqual({ message: "Writing frames (4/4)", progress: 100 });
+    const progress = seen.map((s) => s.progress);
+    expect(progress).toEqual([...progress].sort((a, b) => a - b));
     expect(overlayDuringSave).toEqual([{ loading: false, message: "", progress: 0 }]);
     expect(useAppStore.getState().isLoading).toBe(false);
   });
@@ -219,6 +226,23 @@ describe("exportLabelsPackage on desktop (streamed straight to the chosen file)"
     expect(toastInfo).toHaveBeenCalledTimes(1);
     expect(toastError).not.toHaveBeenCalled();
     expect(toastSuccess).not.toHaveBeenCalled();
+  });
+
+  it("refuses a second export while one is running", async () => {
+    onDesktop();
+    let release: () => void = () => {};
+    streamImpl = () => new Promise<void>((r) => (release = r));
+    const first = exportLabelsPackage(mp4Labels, "labels.slp", "user");
+    await new Promise((r) => setTimeout(r, 0));
+    const second = await exportLabelsPackage(mp4Labels, "labels.slp", "user");
+    expect(second).toBeNull();
+    expect(toastInfo).toHaveBeenCalledTimes(1);
+    expect(order.filter((o) => o === "stream")).toEqual(["stream"]);
+    release();
+    expect(await first).toBe("/data/out.pkg.slp");
+    // And it can run again once the first is done.
+    streamImpl = async () => {};
+    expect(await exportLabelsPackage(mp4Labels, "labels.slp", "user")).toBe("/data/out.pkg.slp");
   });
 
   it("builds an already-embedded project's package in memory (its images copy from its own file)", async () => {

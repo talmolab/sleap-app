@@ -232,9 +232,17 @@ async function canStreamPackage(): Promise<boolean> {
  * io `onProgress` that updates the overlay and returns `false` once Cancel is
  * clicked, which makes io stop with `ExportCancelled`. Always clears the
  * overlay.
+ *
+ * The in-memory save reports two passes — "Embedding frames" (read + encode),
+ * then "Writing frames" — each counting from 1. With `twoPasses`, the bar
+ * spends 90% on the first and the last 10% on the second, so it never jumps
+ * back; the streamed export has one pass and uses the whole bar.
  */
 async function withEmbedProgress<T>(
-  work: (onProgress: (current: number, total: number) => boolean) => Promise<T>
+  twoPasses: boolean,
+  work: (
+    onProgress: (current: number, total: number, message?: string) => boolean
+  ) => Promise<T>
 ): Promise<T> {
   const { setLoading, setLoadingCancel } = useAppStore.getState();
   let cancelled = false;
@@ -243,10 +251,16 @@ async function withEmbedProgress<T>(
     cancelled = true;
     setLoading(true, "Cancelling…");
   });
-  const onProgress = (current: number, total: number) => {
+  const onProgress = (current: number, total: number, message?: string) => {
     if (cancelled) return false;
-    const pct = total > 0 ? Math.round((current / total) * 100) : 0;
-    setLoading(true, `Embedding frames (${current}/${total})`, pct);
+    const writing = message === "Writing frames";
+    const fraction = total > 0 ? current / total : 0;
+    const pct = !twoPasses ? fraction : writing ? 0.9 + 0.1 * fraction : 0.9 * fraction;
+    setLoading(
+      true,
+      `${writing ? "Writing frames" : "Embedding frames"} (${current}/${total})`,
+      Math.round(pct * 100)
+    );
     return true;
   };
   try {
@@ -289,6 +303,30 @@ export async function exportLabelsPackage(
   } = {}
 ): Promise<string | null> {
   if (!labels) return null;
+  // One package export at a time: a second would race the first for the
+  // progress overlay and the native file handle (and halve both's speed).
+  if (exportRunning) {
+    toast.info("An export is already running", {
+      description: "Wait for it to finish, or cancel it, before starting another.",
+    });
+    return null;
+  }
+  exportRunning = true;
+  try {
+    return await exportLabelsPackageNow(labels, filename, level, options);
+  } finally {
+    exportRunning = false;
+  }
+}
+
+let exportRunning = false;
+
+async function exportLabelsPackageNow(
+  labels: Labels,
+  filename: string | null,
+  level: ExportPackageLevel,
+  options: { suggestedName?: string }
+): Promise<string | null> {
 
   const mode = embedModeForLevel(level);
   const suggestedName = options.suggestedName ?? derivePackageFilename(filename);
@@ -313,7 +351,7 @@ export async function exportLabelsPackage(
       });
       if (!destPath) return null; // user cancelled the dialog
 
-      const unembedded = await withEmbedProgress(async (onProgress) => {
+      const unembedded = await withEmbedProgress(false, async (onProgress) => {
         // Open videos that haven't been viewed yet (their frames would otherwise
         // be skipped) and decode on a worker where possible.
         await prepareVideosForFrameReads(embedVideos);
@@ -332,7 +370,7 @@ export async function exportLabelsPackage(
     // In memory: read + encode each frame here (seconds per frame for an mp4
     // with sparse keyframes) under the progress overlay, then pick where to
     // save.
-    const bytes = await withEmbedProgress(async (onProgress) => {
+    const bytes = await withEmbedProgress(true, async (onProgress) => {
       await prepareVideosForFrameReads(embedVideos);
       return saveSlpToBytes(exportLabels, { embed: mode, onProgress });
     });

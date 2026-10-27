@@ -59,6 +59,7 @@ vi.mock("@/lib/nativeRange", () => ({
 vi.mock("@/lib/nativeWrite", () => ({
   renameFile: renameFileMock,
   removeFile: removeFileMock,
+  withNativeWriteHandle: <T,>(work: () => Promise<T>) => work(),
 }));
 vi.mock("@/platform/index", () => ({
   getPlatform: async () => ({
