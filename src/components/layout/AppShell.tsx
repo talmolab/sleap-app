@@ -44,7 +44,6 @@ import { DeletePredictionsDialog } from "../dialogs/DeletePredictionsDialog";
 import { MergeProjectDialog } from "../dialogs/MergeProjectDialog";
 import { ExportModelDialog } from "../dialogs/ExportModelDialog";
 import { AddVideoUrlDialog } from "../dialogs/AddVideoUrlDialog";
-import { ExportDialog } from "../dialogs/ExportDialog";
 import { ExportClipDialog } from "../dialogs/ExportClipDialog";
 import { ModelMetricsDialog } from "../dialogs/ModelMetricsDialog";
 import { SizeDistributionDialog } from "../dialogs/SizeDistributionDialog";
@@ -151,8 +150,6 @@ export function AppShell() {
   const setDeletePredictionsDialogOpen = useAppStore(
     (s) => s.setDeletePredictionsDialogOpen
   );
-  const exportDialogOpen = useAppStore((s) => s.exportDialogOpen);
-  const setExportDialogOpen = useAppStore((s) => s.setExportDialogOpen);
   const modelMetricsDialogOpen = useAppStore((s) => s.modelMetricsDialogOpen);
   const setModelMetricsDialogOpen = useAppStore(
     (s) => s.setModelMetricsDialogOpen
@@ -340,10 +337,6 @@ export function AppShell() {
       <DeletePredictionsDialog
         open={deletePredictionsDialogOpen}
         onOpenChange={setDeletePredictionsDialogOpen}
-      />
-      <ExportDialog
-        open={exportDialogOpen}
-        onOpenChange={setExportDialogOpen}
       />
       <ExportClipDialog />
       <ModelMetricsDialog

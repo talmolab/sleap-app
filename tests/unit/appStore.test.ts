@@ -450,7 +450,6 @@ describe("appStore", () => {
       expect(state.inferenceDialogOpen).toBe(false);
       expect(state.goToFrameDialogOpen).toBe(false);
       expect(state.deletePredictionsDialogOpen).toBe(false);
-      expect(state.exportDialogOpen).toBe(false);
       expect(state.shortcutsDialogOpen).toBe(false);
       expect(state.helpDialogOpen).toBe(false);
     });
@@ -486,14 +485,6 @@ describe("appStore", () => {
 
       useAppStore.getState().setDeletePredictionsDialogOpen(false);
       expect(useAppStore.getState().deletePredictionsDialogOpen).toBe(false);
-    });
-
-    it("opens and closes export dialog", () => {
-      useAppStore.getState().setExportDialogOpen(true);
-      expect(useAppStore.getState().exportDialogOpen).toBe(true);
-
-      useAppStore.getState().setExportDialogOpen(false);
-      expect(useAppStore.getState().exportDialogOpen).toBe(false);
     });
 
     it("opens and closes shortcuts dialog", () => {

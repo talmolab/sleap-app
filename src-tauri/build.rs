@@ -37,6 +37,7 @@ fn main() {
                     "window_set_file",
                     "read_image_file",
                     "reveal_in_file_manager",
+                    "open_in_default_app",
                     "open_preferences_directory",
                     "computer_name",
                     // environment (uv / python / training)

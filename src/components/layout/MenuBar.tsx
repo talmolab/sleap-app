@@ -53,6 +53,8 @@ import {
   PasteInstance,
   DeleteFramePredictions,
   DeleteAllPredictions,
+  ExtractClipAndLabelsCommand,
+  ExtractClipLabelsPackageCommand,
   AddInstancesFromAllPredictions,
   AddInstancesFromAllPredictionsInProject,
   AddTrack,
@@ -197,8 +199,11 @@ function FileMenu() {
   const labels = useAppStore((s) => s.labels);
   const projectPath = useAppStore((s) => s.projectPath);
 
-  const exec = (cmd: Parameters<typeof commandContext.execute>[0]) => {
-    commandContext.execute(cmd);
+  const exec = (
+    cmd: Parameters<typeof commandContext.execute>[0],
+    params?: Parameters<typeof commandContext.execute>[1]
+  ) => {
+    commandContext.execute(cmd, params);
   };
 
   return (
@@ -297,17 +302,46 @@ function FileMenu() {
             <MenubarItem onClick={() => exec(ExportJsonCommand)}>
               JSON...
             </MenubarItem>
-            <MenubarItem onClick={() => exec(ExportCSVCommand)}>
-              Analysis CSV...
-            </MenubarItem>
-            <MenubarItem onClick={() => exec(ExportAnalysisH5Command)}>
-              Analysis HDF5...
-            </MenubarItem>
+            <MenubarSub>
+              <MenubarSubTrigger>Analysis CSV</MenubarSubTrigger>
+              <MenubarSubContent>
+                <MenubarItem onClick={() => exec(ExportCSVCommand)}>
+                  Current Video...
+                </MenubarItem>
+                <MenubarItem
+                  onClick={() => exec(ExportCSVCommand, { allVideos: true })}
+                >
+                  All Videos...
+                </MenubarItem>
+              </MenubarSubContent>
+            </MenubarSub>
+            <MenubarSub>
+              <MenubarSubTrigger>Analysis HDF5</MenubarSubTrigger>
+              <MenubarSubContent>
+                <MenubarItem onClick={() => exec(ExportAnalysisH5Command)}>
+                  Current Video...
+                </MenubarItem>
+                <MenubarItem
+                  onClick={() =>
+                    exec(ExportAnalysisH5Command, { allVideos: true })
+                  }
+                >
+                  All Videos...
+                </MenubarItem>
+              </MenubarSubContent>
+            </MenubarSub>
             <MenubarItem onClick={() => exec(ExportNwbCommand)}>
               NWB (ndx-pose)...
             </MenubarItem>
+            <MenubarItem
+              onClick={() =>
+                useAppStore.getState().setExportPackageDialogOpen(true)
+              }
+            >
+              Labels Package (.pkg.slp)...
+            </MenubarItem>
             <MenubarItem onClick={() => exec(ExportPackageCommand)}>
-              Labels Package...
+              JSON Package...
             </MenubarItem>
             <MenubarItem
               onClick={() =>
@@ -1104,6 +1138,21 @@ function LabelsMenu() {
           }}
         >
           Delete All Predictions...
+        </MenubarItem>
+        <MenubarSeparator />
+        <MenubarItem
+          disabled={!projectLoaded}
+          onClick={() => exec(ExtractClipAndLabelsCommand)}
+          title="Export the selected frame range (or the whole video) as a trimmed clip plus its labels, renumbered from frame 0, and open it"
+        >
+          Extract Clip and Labels...
+        </MenubarItem>
+        <MenubarItem
+          disabled={!projectLoaded}
+          onClick={() => exec(ExtractClipLabelsPackageCommand)}
+          title="Export the selected frame range's labeled and suggested frames, with images embedded, as a .pkg.slp, and open it"
+        >
+          Extract Clip Labels Package...
         </MenubarItem>
         <MenubarSeparator />
         <MenubarLabel className="text-xs text-muted-foreground font-normal">

@@ -481,7 +481,6 @@ export interface AppState {
   /** A file is being dragged over the app window (drives the drop-catcher overlay). */
   windowDragActive: boolean;
   addVideoUrlDialogOpen: boolean;
-  exportDialogOpen: boolean;
   exportClipDialogOpen: boolean;
   modelMetricsDialogOpen: boolean;
   sizeDistributionDialogOpen: boolean;
@@ -601,7 +600,6 @@ export interface AppState {
   setMergeProjectSeedPath: (path: string | null) => void;
   setWindowDragActive: (active: boolean) => void;
   setAddVideoUrlDialogOpen: (open: boolean) => void;
-  setExportDialogOpen: (open: boolean) => void;
   setExportClipDialogOpen: (open: boolean) => void;
   setModelMetricsDialogOpen: (open: boolean) => void;
   setSizeDistributionDialogOpen: (open: boolean) => void;
@@ -904,7 +902,6 @@ export const useAppStore = create<AppState>()(
       mergeProjectSeedPath: null,
       windowDragActive: false,
       addVideoUrlDialogOpen: false,
-      exportDialogOpen: false,
       exportClipDialogOpen: false,
       modelMetricsDialogOpen: false,
       sizeDistributionDialogOpen: false,
@@ -1351,11 +1348,6 @@ export const useAppStore = create<AppState>()(
       setAddVideoUrlDialogOpen: (open) =>
         set((state) => {
           state.addVideoUrlDialogOpen = open;
-        }),
-
-      setExportDialogOpen: (open) =>
-        set((state) => {
-          state.exportDialogOpen = open;
         }),
 
       setExportClipDialogOpen: (open) =>

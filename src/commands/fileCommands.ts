@@ -11,6 +11,7 @@ import {
   Skeleton,
   labelsToCsv,
   saveAnalysisH5ToBytes,
+  type Video,
 } from "@talmolab/sleap-io.js";
 import { UpdateTopic } from "../types";
 import type { Command } from "./types";
@@ -36,6 +37,13 @@ import {
   generatePackageJSON,
 } from "../lib/exportUtils";
 import { toast } from "@/lib/notify";
+import { toastExported } from "@/lib/exportToast";
+import {
+  analysisFilename,
+  directoryOf,
+  videosForAnalysis,
+  type AnalysisFormat,
+} from "@/lib/analysisExport";
 
 /**
  * Save text to a user-chosen location. Tauri: native save dialog + writeFile.
@@ -455,7 +463,7 @@ export const SaveAsProjectCommand: Command = {
 export const ExportJsonCommand: Command = {
   name: "ExportJson",
   topics: [],
-  execute(ctx: CommandContext) {
+  async execute(ctx: CommandContext) {
     const { labels, filename } = ctx.state;
     if (!labels) return;
 
@@ -465,10 +473,13 @@ export const ExportJsonCommand: Command = {
       const baseName = filename
         ? filename.replace(/\.slp$/, "")
         : "labels";
-      downloadFile(json, `${baseName}.json`, "application/json");
-      toast.success("JSON exported", {
-        description: `${baseName}.json`,
+      const saved = await saveTextFile(json, `${baseName}.json`, {
+        name: "JSON",
+        ext: "json",
+        mime: "application/json",
       });
+      if (!saved) return; // user cancelled
+      toast.success("JSON exported", { description: saved });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       toast.error("Failed to export JSON", { description: msg });
@@ -478,81 +489,109 @@ export const ExportJsonCommand: Command = {
 };
 
 /**
- * Export the project as a SLEAP Analysis CSV via sleap-io's canonical
- * `labelsToCsv` (wide format: one row per instance per frame, alphabetical
- * `{node}.x/.y/.score` columns) — parity with Python SLEAP's analysis CSV,
- * replacing the app's earlier hand-rolled long-format exporter. Saves through a
- * native dialog on desktop; downloads in the browser.
+ * Export analysis files (SLEAP Analysis HDF5 or CSV), as PyQt SLEAP's
+ * File → Export Analysis HDF5/CSV → Current Video / All Videos: one file per
+ * video with labeled frames, named `{project}.{index:03}_{video}.analysis.{ext}`.
+ * A single file gets a Save dialog (in the project's folder on desktop); several
+ * go into one chosen folder on desktop, or download one by one in the browser.
+ */
+async function exportAnalysisFiles(
+  ctx: CommandContext,
+  format: AnalysisFormat,
+  allVideos: boolean,
+  includeEmpty: boolean
+): Promise<void> {
+  const { labels, filename } = ctx.state;
+  if (!labels) return;
+  const kind = format === "h5" ? "Analysis HDF5" : "Analysis CSV";
+  if (labels.labeledFrames.length === 0) {
+    toast.info("No labeled frames in project. Nothing to export.");
+    return;
+  }
+  const videos = videosForAnalysis(labels, ctx.state.video, allVideos);
+  if (videos.length === 0) {
+    toast.info("No labeled frames in the video(s). Nothing to export.");
+    return;
+  }
+
+  const projectPath = ctx.state.projectPath;
+  const labelsPath = projectPath ?? filename ?? undefined;
+  const fileFor = async (video: Video) => {
+    const name = analysisFilename(filename, labels, video, format);
+    const bytes =
+      format === "h5"
+        ? await saveAnalysisH5ToBytes(labels, { video, labelsPath })
+        : new TextEncoder().encode(labelsToCsv(labels, { video, includeEmpty }));
+    return { name, bytes };
+  };
+  const filter =
+    format === "h5"
+      ? { name: "SLEAP Analysis HDF5", ext: "h5" }
+      : { name: "CSV", ext: "csv" };
+
+  try {
+    const platform = await getPlatform();
+    if (videos.length === 1) {
+      const { name, bytes } = await fileFor(videos[0]);
+      const dir = platform.isTauri ? directoryOf(projectPath) : null;
+      const saved = await saveBytesFile(bytes, dir ? `${dir}/${name}` : name, filter);
+      if (!saved) return; // user cancelled
+      toastExported(`${kind} exported`, saved, platform.isTauri);
+      return;
+    }
+
+    const dest = await pickClipDestination();
+    if (dest.mode === "cancelled") return;
+    for (const video of videos) {
+      const { name, bytes } = await fileFor(video);
+      if (dest.mode === "dir") {
+        await saveBytesToDir(dest.dir, name, bytes);
+      } else {
+        downloadFile(new Blob([bytes as BlobPart]), name, "application/octet-stream");
+      }
+    }
+    const where = dest.mode === "dir" ? dest.dir : "your downloads";
+    toastExported(`${kind}: exported ${videos.length} files`, where, dest.mode === "dir");
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    toast.error(`Failed to export ${kind}`, { description: msg });
+    console.error(`[ExportAnalysis] Failed to export ${format}:`, err);
+  }
+}
+
+/**
+ * Export SLEAP Analysis CSV via sleap-io's canonical `labelsToCsv` (wide
+ * format: one row per instance per frame, alphabetical `{node}.x/.y/.score`
+ * columns), one file per video — parity with Python SLEAP's analysis CSV.
+ * `params.allVideos` exports every video with labeled frames (PyQt's
+ * "All Videos..."); otherwise the current video. `params.includeEmpty`
+ * (default true) pads each video to its full span with NaN rows.
  */
 export const ExportCSVCommand: Command = {
   name: "ExportCSV",
   topics: [],
   async execute(ctx: CommandContext, params?: Record<string, unknown>) {
-    const { labels, filename } = ctx.state;
-    if (!labels) return;
-
-    // Default includeEmpty=true (NaN rows padding each video to its full span),
-    // matching the Export dialog default and Python's analysis export.
-    const includeEmpty = params?.includeEmpty !== false;
-
-    try {
-      const csv = labelsToCsv(labels, { includeEmpty });
-      const baseName = filename
-        ? filename.replace(/\.(slp|json)$/i, "")
-        : "labels";
-      const saved = await saveTextFile(csv, `${baseName}.csv`, {
-        name: "CSV",
-        ext: "csv",
-        mime: "text/csv",
-      });
-      if (!saved) return; // user cancelled
-      toast.success("CSV exported", { description: saved });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to export CSV", { description: msg });
-      console.error("[ExportCSV] Failed to export:", err);
-    }
+    await exportAnalysisFiles(
+      ctx,
+      "csv",
+      params?.allVideos === true,
+      params?.includeEmpty !== false
+    );
   },
 };
 
 /**
- * Export the active video's tracks as a SLEAP Analysis HDF5 (.h5) file — the
- * dense-array format for downstream analysis (Python/MATLAB). Uses sleap-io's
- * browser-safe `saveAnalysisH5ToBytes`; saves through a native dialog on desktop,
- * downloads in the browser. One file per video (the current video), mirroring
- * PyQt SLEAP's "Analysis HDF5 > Current Video".
+ * Export SLEAP Analysis HDF5 (.h5) — the dense-array format for downstream
+ * analysis (Python/MATLAB) — via sleap-io's browser-safe
+ * `saveAnalysisH5ToBytes`, one file per video. `params.allVideos` exports every
+ * video with labeled frames (PyQt's "All Videos..."); otherwise the current
+ * video ("Current Video...").
  */
 export const ExportAnalysisH5Command: Command = {
   name: "ExportAnalysisH5",
   topics: [],
-  async execute(ctx: CommandContext) {
-    const { labels, filename } = ctx.state;
-    if (!labels) return;
-    if (labels.labeledFrames.length === 0) {
-      toast.info("No labeled frames to export.");
-      return;
-    }
-
-    try {
-      // Export the current video when one is active, else the first video.
-      // saveAnalysisH5ToBytes throws "No labeled frames in video" if the chosen
-      // video has none — surfaced as a friendly error below.
-      const video = ctx.state.video ?? labels.videos[0];
-      const bytes = await saveAnalysisH5ToBytes(labels, { video });
-      const baseName = filename
-        ? filename.replace(/\.(slp|json)$/i, "")
-        : "labels";
-      const saved = await saveBytesFile(bytes, `${baseName}.analysis.h5`, {
-        name: "Analysis HDF5",
-        ext: "h5",
-      });
-      if (!saved) return; // user cancelled
-      toast.success("Analysis HDF5 exported", { description: saved });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      toast.error("Failed to export Analysis HDF5", { description: msg });
-      console.error("[ExportAnalysisH5] Failed to export:", err);
-    }
+  async execute(ctx: CommandContext, params?: Record<string, unknown>) {
+    await exportAnalysisFiles(ctx, "h5", params?.allVideos === true, true);
   },
 };
 
@@ -973,11 +1012,11 @@ export const DeleteInstancesByType: Command = {
 // Export Package
 // ---------------------------------------------------------------------------
 
-/** Export a self-contained labels package as JSON. */
+/** Export a self-contained labels package as JSON (`.pkg.json`). */
 export const ExportPackageCommand: Command = {
   name: "ExportPackage",
   topics: [],
-  execute(ctx: CommandContext) {
+  async execute(ctx: CommandContext) {
     const { labels, filename } = ctx.state;
     if (!labels) return;
 
@@ -986,14 +1025,13 @@ export const ExportPackageCommand: Command = {
       const baseName = filename
         ? filename.replace(/\.slp$/, "").replace(/\.json$/, "")
         : "labels";
-      downloadFile(
-        packageJson,
-        `${baseName}.pkg.json`,
-        "application/json"
-      );
-      toast.success("Package exported", {
-        description: `${baseName}.pkg.json`,
+      const saved = await saveTextFile(packageJson, `${baseName}.pkg.json`, {
+        name: "JSON Package",
+        ext: "json",
+        mime: "application/json",
       });
+      if (!saved) return; // user cancelled
+      toast.success("Package exported", { description: saved });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       toast.error("Failed to export package", { description: msg });

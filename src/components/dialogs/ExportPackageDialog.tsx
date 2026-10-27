@@ -57,8 +57,8 @@ const OPTIONS: {
   },
   {
     level: "full",
-    title: "All labeled frames",
-    desc: "Every labeled frame, including predictions (Level 3).",
+    title: "Labeled + predicted + suggested frames",
+    desc: "Every labeled frame, including predictions, plus suggested frames (Level 3).",
   },
 ];
 

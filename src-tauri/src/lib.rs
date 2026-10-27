@@ -439,6 +439,40 @@ fn reveal_in_file_manager(path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Open a file with the OS's default app for its type (e.g. play an exported
+/// clip), as PyQt SLEAP's `open_file`.
+#[tauri::command]
+fn open_in_default_app(path: String) -> Result<(), String> {
+    if !std::path::Path::new(&path).exists() {
+        return Err(format!("Path does not exist: {}", path));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // `start` is a cmd builtin; the empty "" is its window title argument.
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", &path])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
 /// Open the preferences directory (~/.sleap-app) in the OS file manager.
 #[tauri::command]
 fn open_preferences_directory() -> Result<(), String> {
@@ -614,6 +648,7 @@ fn sleap_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
             window_set_file,
             read_image_file,
             reveal_in_file_manager,
+            open_in_default_app,
             open_preferences_directory,
             computer_name,
             environment::detect_uv,

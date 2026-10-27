@@ -16,21 +16,34 @@ import {
   Output,
   Mp4OutputFormat,
   BufferTarget,
+  QUALITY_LOW,
+  QUALITY_MEDIUM,
   QUALITY_HIGH,
+  QUALITY_VERY_HIGH,
   type VideoCodec,
 } from "mediabunny";
 import type { Video } from "@/types";
 import type { RenderedInstance } from "@/canvas/SkeletonRenderer";
+import { clearFullRangeTag, isWebKitEncoder } from "@/lib/h264RangeTag";
 import {
   CLIP_EXPORT_CODEC,
   expandFrameBytesToRGBA,
   inferFrameChannels,
+  rawFrameToRGBA,
   type ClipDrawContext,
   type ClipEncoder,
   type ClipExportDeps,
   type OutputDimensions,
   type CanEncodeVideoProbe,
+  type ClipQuality,
 } from "@/lib/videoExport";
+
+const BITRATE: Record<ClipQuality, typeof QUALITY_HIGH> = {
+  low: QUALITY_LOW,
+  medium: QUALITY_MEDIUM,
+  high: QUALITY_HIGH,
+  "very-high": QUALITY_VERY_HIGH,
+};
 
 /**
  * The live `canEncodeVideo` probe, adapted to the {@link CanEncodeVideoProbe}
@@ -51,6 +64,9 @@ export function buildClipExportPipeline(params: {
   video: Video;
   decodeFrame: (frameIdx: number) => Promise<CanvasImageSource | null>;
   overlayForFrame: (frameIdx: number) => RenderedInstance[];
+  renderUnderlay?: ClipExportDeps["renderUnderlay"];
+  /** Encode quality (default "high"). */
+  quality?: ClipQuality;
 }): ClipExportDeps {
   const canvas = document.createElement("canvas");
   canvas.width = params.output.width;
@@ -60,7 +76,7 @@ export function buildClipExportPipeline(params: {
 
   const source = new CanvasSource(canvas, {
     codec: CLIP_EXPORT_CODEC,
-    bitrate: QUALITY_HIGH,
+    bitrate: BITRATE[params.quality ?? "high"],
   });
   const output = new Output({
     format: new Mp4OutputFormat({ fastStart: "in-memory" }),
@@ -79,7 +95,12 @@ export function buildClipExportPipeline(params: {
       await output.finalize();
       const buffer = (output.target as BufferTarget).buffer;
       if (!buffer) throw new Error("Encoder produced no output.");
-      return new Uint8Array(buffer);
+      const bytes = new Uint8Array(buffer);
+      // WebKit's encoder tags its limited-range output full range, so every
+      // reader decodes it washed out; fix the tag (see h264RangeTag.ts).
+      return isWebKitEncoder(navigator.userAgent)
+        ? (clearFullRangeTag(bytes) ?? bytes)
+        : bytes;
     },
     async cancel() {
       try {
@@ -93,6 +114,7 @@ export function buildClipExportPipeline(params: {
   return {
     decodeFrame: params.decodeFrame,
     overlayForFrame: params.overlayForFrame,
+    renderUnderlay: params.renderUnderlay,
     ctx: ctx as unknown as ClipDrawContext,
     encoder,
   };
@@ -138,6 +160,14 @@ export async function decodeExportFrame(
     const rgba = expandFrameBytesToRGBA(bytes, w, h, channels);
     const c = new OffscreenCanvas(w, h);
     c.getContext("2d")?.putImageData(new ImageData(rgba, w, h), 0, 0);
+    return c;
+  }
+  // A raw pixel object (e.g. a grayscale video's 1-channel frame): not an
+  // ImageData instance, and createImageBitmap rejects it.
+  const raw = rawFrameToRGBA(frame);
+  if (raw) {
+    const c = new OffscreenCanvas(raw.width, raw.height);
+    c.getContext("2d")?.putImageData(new ImageData(raw.rgba, raw.width, raw.height), 0, 0);
     return c;
   }
   try {

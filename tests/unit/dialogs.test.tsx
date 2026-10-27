@@ -306,67 +306,6 @@ describe("Dialog components", () => {
     });
   });
 
-  describe("ExportDialog", () => {
-    it("renders when labels exist", async () => {
-      useAppStore.setState({
-        labels: {
-          videos: [],
-          skeletons: [],
-          labeledFrames: [],
-          tracks: [],
-          suggestions: [],
-          provenance: {},
-          find: () => [],
-          append: () => {},
-        } as unknown as import("@/types").Labels,
-        projectLoaded: true,
-      });
-
-      const { ExportDialog } = await import(
-        "@/components/dialogs/ExportDialog"
-      );
-      render(<ExportDialog open={true} onOpenChange={() => {}} />);
-
-      expect(screen.getByText("Export")).toBeInTheDocument();
-    });
-
-    it("shows export options", async () => {
-      useAppStore.setState({
-        labels: {
-          videos: [],
-          skeletons: [],
-          labeledFrames: [],
-          tracks: [],
-          suggestions: [],
-          provenance: {},
-          find: () => [],
-          append: () => {},
-        } as unknown as import("@/types").Labels,
-        projectLoaded: true,
-      });
-
-      const { ExportDialog } = await import(
-        "@/components/dialogs/ExportDialog"
-      );
-      render(<ExportDialog open={true} onOpenChange={() => {}} />);
-
-      expect(screen.getByText("Analysis CSV")).toBeInTheDocument();
-      expect(screen.getByText("Save As JSON")).toBeInTheDocument();
-      expect(screen.getByText("JSON Package")).toBeInTheDocument();
-    });
-
-    it("returns null when no labels", async () => {
-      // No labels loaded
-      const { ExportDialog } = await import(
-        "@/components/dialogs/ExportDialog"
-      );
-      render(<ExportDialog open={true} onOpenChange={() => {}} />);
-
-      // Should not render anything meaningful
-      expect(screen.queryByText("Export")).not.toBeInTheDocument();
-    });
-  });
-
   describe("NewProjectDialog (#138)", () => {
     it("renders when open", async () => {
       useAppStore.getState().setNewProjectDialogOpen(true);

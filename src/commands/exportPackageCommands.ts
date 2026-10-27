@@ -51,14 +51,13 @@
 
 import type { Labels, Video } from "@talmolab/sleap-io.js";
 import { ExportCancelled, saveSlpToBytes, loadSlp } from "@talmolab/sleap-io.js";
-import { invoke } from "@tauri-apps/api/core";
 import type { Command } from "./types";
 import type { CommandContext } from "./CommandContext";
 import { saveBytesFile } from "./fileCommands";
 import { toast } from "@/lib/notify";
 import { prepareVideosForFrameReads } from "@/lib/resolveVideos";
 import { saveEmbeddedPkgStreaming } from "@/lib/saveEmbeddedPkgStreaming";
-import { sleapCmd } from "@/lib/sleapPlugin";
+import { toastExported } from "@/lib/exportToast";
 import { getPlatform } from "../platform/index";
 import { useAppStore } from "@/stores/appStore";
 
@@ -257,26 +256,6 @@ async function withEmbedProgress<T>(
   }
 }
 
-/** Success toast, with "Show in folder" when the package is a desktop file. */
-function toastExported(savedPath: string, revealable: boolean): void {
-  toast.success("Labels package exported", {
-    description: savedPath,
-    action: revealable
-      ? {
-          label: "Show in folder",
-          onClick: () => {
-            void invoke(sleapCmd("reveal_in_file_manager"), { path: savedPath }).catch(
-              (e: unknown) =>
-                toast.error("Couldn't show the package", {
-                  description: e instanceof Error ? e.message : String(e),
-                })
-            );
-          },
-        }
-      : undefined,
-  });
-}
-
 function warnUnembedded(): void {
   toast.warning("Frames from continuous videos were not embedded", {
     description:
@@ -296,16 +275,23 @@ function warnUnembedded(): void {
  * Cancel. Projects whose videos are already embedded (a `.pkg.slp`), and the
  * browser, build the package in memory via `saveSlpToBytes` and then save it
  * through the Save-As plumbing (File System Access picker / download).
+ *
+ * Returns where the package was saved (a path on desktop, a name in the
+ * browser), or null if nothing was written (cancelled or failed).
  */
 export async function exportLabelsPackage(
   labels: Labels | null,
   filename: string | null,
-  level: ExportPackageLevel
-): Promise<void> {
-  if (!labels) return;
+  level: ExportPackageLevel,
+  options: {
+    /** Default file name in the Save dialog (default: `<project>.pkg.slp`). */
+    suggestedName?: string;
+  } = {}
+): Promise<string | null> {
+  if (!labels) return null;
 
   const mode = embedModeForLevel(level);
-  const suggestedName = derivePackageFilename(filename);
+  const suggestedName = options.suggestedName ?? derivePackageFilename(filename);
   const filter = { name: "SLEAP Labels Package", ext: "slp" };
   try {
     // Restrict the package to the frames this level means (predicted-only frames
@@ -325,7 +311,7 @@ export async function exportLabelsPackage(
         filters: [{ name: filter.name, extensions: [filter.ext] }],
         defaultName: suggestedName,
       });
-      if (!destPath) return; // user cancelled the dialog
+      if (!destPath) return null; // user cancelled the dialog
 
       const unembedded = await withEmbedProgress(async (onProgress) => {
         // Open videos that haven't been viewed yet (their frames would otherwise
@@ -338,9 +324,9 @@ export async function exportLabelsPackage(
         // A video with no open decoder can't be embedded and stays a link.
         return embedVideos.some((v) => !v.backend);
       });
-      toastExported(destPath, true);
+      toastExported("Labels package exported", destPath, true);
       if (unembedded) warnUnembedded();
-      return;
+      return destPath;
     }
 
     // In memory: read + encode each frame here (seconds per frame for an mp4
@@ -351,9 +337,9 @@ export async function exportLabelsPackage(
       return saveSlpToBytes(exportLabels, { embed: mode, onProgress });
     });
     const saved = await saveBytesFile(bytes, suggestedName, filter);
-    if (!saved) return; // user cancelled the dialog/picker
+    if (!saved) return null; // user cancelled the dialog/picker
 
-    toastExported(saved, false);
+    toastExported("Labels package exported", saved, false);
 
     // Warn ONLY if the WRITTEN package genuinely left frames unembedded (accurate
     // by construction — see packageLeavesFramesUnembedded). Checking the export
@@ -369,14 +355,16 @@ export async function exportLabelsPackage(
       console.warn("[ExportLabelsPackage] embed verification failed:", e);
     }
     if (missingEmbeds) warnUnembedded();
+    return saved;
   } catch (err) {
     if (err instanceof ExportCancelled) {
       toast.info("Export cancelled", { description: "No package was written." });
-      return;
+      return null;
     }
     const msg = err instanceof Error ? err.message : String(err);
     toast.error("Failed to export labels package", { description: msg });
     console.error("[ExportLabelsPackage] Failed to export:", err);
+    return null;
   }
 }
 

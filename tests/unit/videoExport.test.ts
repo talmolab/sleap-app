@@ -1,6 +1,8 @@
 import { describe, it, expect } from "../bun-test";
 import {
   Instance,
+  LabeledFrame,
+  Labels,
   PredictedInstance,
   Skeleton,
   Track,
@@ -31,6 +33,8 @@ import {
   ClipExportCancelled,
   CLIP_EXPORT_CODEC,
   CLIP_EXPORT_UNSUPPORTED_MESSAGE,
+  labeledFramesInRange,
+  rawFrameToRGBA,
   type FrameRange,
   type ClipEncoder,
   type ClipDrawContext,
@@ -282,6 +286,7 @@ describe("runClipExportBatch", () => {
     fps: 30,
     scale: 1,
     background: "original",
+    includeUnlabeled: false,
   });
 
   it("exports only the included videos, in order, reporting done", async () => {
@@ -886,5 +891,134 @@ describe("expandFrameBytesToRGBA", () => {
     // Ask for 2 RGB pixels but only supply 3 bytes (1 pixel worth).
     const out = expandFrameBytesToRGBA(new Uint8Array([10, 20, 30]), 2, 1, 3);
     expect(Array.from(out)).toEqual([10, 20, 30, 255, 0, 0, 0, 255]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PyQt parity: labeled-frames-only clips, motion trails
+// ---------------------------------------------------------------------------
+
+describe("labeled-frames-only clips (PyQt's default)", () => {
+  it("starts every video with unlabeled frames left out, and toggles per video", () => {
+    const a = vid(100, "a");
+    const b = vid(100, "b");
+    const state = buildInitialClipConfigs([a, b], a, null);
+    expect(state.configs.map((c) => c.includeUnlabeled)).toEqual([false, false]);
+    const next = clipExportReducer(state, {
+      type: "setIncludeUnlabeled",
+      video: b,
+      includeUnlabeled: true,
+    });
+    expect(next.configs.map((c) => c.includeUnlabeled)).toEqual([false, true]);
+  });
+
+  it("finds the labeled (or predicted) frames of one video inside the range, sorted", () => {
+    const skeleton = new Skeleton({ nodes: ["a"] });
+    const v = new Video({ filename: "v.mp4", openBackend: false });
+    const other = new Video({ filename: "o.mp4", openBackend: false });
+    const lf = (video: Video, frameIdx: number) =>
+      new LabeledFrame({
+        video,
+        frameIdx,
+        instances: [new Instance({ points: { a: [1, 1] }, skeleton })],
+      });
+    const labels = new Labels({
+      labeledFrames: [lf(v, 9), lf(v, 2), lf(other, 3), lf(v, 30), lf(v, 5)],
+      videos: [v, other],
+      skeletons: [skeleton],
+    });
+    expect(labeledFramesInRange(labels, v, { start: 2, end: 9 })).toEqual([2, 5, 9]);
+  });
+
+  it("plans only the given frames, back to back", () => {
+    const timeline = planClipTimeline({ start: 0, end: 20, count: 21 } as FrameRange, 10, [
+      3, 7, 20,
+    ]);
+    expect(timeline.map((t) => [t.frameIdx, t.timestamp])).toEqual([
+      [3, 0],
+      [7, 0.1],
+      [20, 0.2],
+    ]);
+  });
+
+  it("encodes only those frames", async () => {
+    const enc = fakeEncoder();
+    const decoded: number[] = [];
+    await runClipExport(
+      { ...baseParams, range: { start: 0, end: 9, count: 10 } as FrameRange, frames: [1, 6] },
+      {
+        decodeFrame: async (idx) => {
+          decoded.push(idx);
+          return null;
+        },
+        overlayForFrame: () => [],
+        ctx: fakeCtx(),
+        encoder: enc,
+        renderOverlay: () => {},
+      }
+    );
+    expect(decoded).toEqual([1, 6]);
+    expect(enc.timestamps).toEqual([0, 1 / 30]);
+  });
+
+  it("refuses an empty clip, pointing at the include-unlabeled option", async () => {
+    const enc = fakeEncoder();
+    await expect(
+      runClipExport(
+        { ...baseParams, frames: [] },
+        {
+          decodeFrame: async () => null,
+          overlayForFrame: () => [],
+          ctx: fakeCtx(),
+          encoder: enc,
+          renderOverlay: () => {},
+        }
+      )
+    ).rejects.toThrow("Include unlabeled frames");
+    expect(enc.events).toEqual([]);
+  });
+});
+
+describe("motion trails in clips", () => {
+  it("draws the trail underlay before the skeletons, every frame, at the clip's zoom", async () => {
+    const calls: string[] = [];
+    await runClipExport(
+      { ...baseParams, scale: 0.5, output: { width: 50, height: 40 } },
+      {
+        decodeFrame: async () => null,
+        overlayForFrame: () => [],
+        ctx: fakeCtx(),
+        encoder: fakeEncoder(),
+        renderUnderlay: (_ctx, idx, zoom) => calls.push(`trail:${idx}@${zoom}`),
+        renderOverlay: () => calls.push("skeleton"),
+      }
+    );
+    expect(calls).toEqual([
+      "trail:0@0.5",
+      "skeleton",
+      "trail:1@0.5",
+      "skeleton",
+      "trail:2@0.5",
+      "skeleton",
+    ]);
+  });
+});
+
+describe("rawFrameToRGBA (grayscale videos' 1-channel frames)", () => {
+  it("expands a 1-channel frame to opaque gray RGBA", () => {
+    const out = rawFrameToRGBA({ data: Uint8Array.from([10, 200]), width: 2, height: 1, channels: 1 });
+    expect(out && Array.from(out.rgba)).toEqual([10, 10, 10, 255, 200, 200, 200, 255]);
+    expect(out?.width).toBe(2);
+  });
+
+  it("infers the channel count from the data when not given", () => {
+    const out = rawFrameToRGBA({ data: new Uint8ClampedArray([1, 2, 3]), width: 1, height: 1 });
+    expect(out && Array.from(out.rgba)).toEqual([1, 2, 3, 255]);
+  });
+
+  it("returns null for anything that isn't a pixel frame", () => {
+    expect(rawFrameToRGBA(null)).toBeNull();
+    expect(rawFrameToRGBA(new Uint8Array(4))).toBeNull();
+    expect(rawFrameToRGBA({ width: 1, height: 1, close() {} })).toBeNull();
   });
 });
