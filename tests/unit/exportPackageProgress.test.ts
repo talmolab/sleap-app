@@ -45,6 +45,23 @@ vi.mock("@/lib/saveEmbeddedPkgStreaming", () => ({
     return streamImpl(labels, dest, source, opts);
   },
 }));
+const opfs = {
+  supported: false,
+  picked: { name: "out.pkg.slp" } as { name: string } | Error,
+  exportImpl: async (_l: unknown, _d: unknown, _o: SaveOpts): Promise<string> => "out.pkg.slp",
+};
+vi.mock("@/lib/saveEmbeddedPkgOpfs", () => ({
+  isOpfsSaveSupported: () => opfs.supported,
+  pickSlpSaveDestination: async (name: string) => {
+    order.push(`picker(${name})`);
+    if (opfs.picked instanceof Error) throw opfs.picked;
+    return opfs.picked;
+  },
+  exportNewPkgOpfs: (labels: unknown, dest: unknown, opts: SaveOpts) => {
+    order.push("opfs");
+    return opfs.exportImpl(labels, dest, opts);
+  },
+}));
 vi.mock("@/lib/transcode/extractFrames", () => ({
   createTauriExtractFramesDeps: () => ({}),
   createFfmpegFrameReader: async (video: unknown, frames: number[]) => {
@@ -96,6 +113,8 @@ function onDesktop() {
 beforeEach(() => {
   useAppStore.getState().setLoading(false);
   platform.isTauri = false;
+  opfs.supported = false;
+  opfs.picked = { name: "out.pkg.slp" };
   dialogResult = "/data/out.pkg.slp";
   overlayDuringSave.length = 0;
   order.length = 0;
@@ -264,5 +283,52 @@ describe("exportLabelsPackage on desktop (streamed straight to the chosen file)"
     saveImpl = async () => new Uint8Array([1]);
     await exportLabelsPackage(pkgLabels, "p.pkg.slp", "user");
     expect(order).toEqual(["prepare", "saveSlpToBytes", "saveBytesFile"]);
+  });
+
+  describe("browser (Chromium): streamed through OPFS", () => {
+    it("asks where to save first, then streams the package there with progress", async () => {
+      opfs.supported = true;
+      let seen: { dest?: unknown; embed?: string } = {};
+      opfs.exportImpl = async (_l, dest, opts) => {
+        expect(useAppStore.getState().isLoading).toBe(true);
+        opts.onProgress?.(1, 2);
+        expect(useAppStore.getState().loadingMessage).toBe("Embedding frames (1/2)");
+        seen = { dest, embed: opts.embed };
+        return "out.pkg.slp";
+      };
+      expect(await exportLabelsPackage(mp4Labels, "labels.slp", "training")).toBe("out.pkg.slp");
+
+      expect(order).toEqual(["picker(labels.pkg.slp)", "prepare", "opfs"]);
+      expect(seen).toEqual({ dest: { name: "out.pkg.slp" }, embed: "user+suggestions" });
+      expect(useAppStore.getState().isLoading).toBe(false);
+      const [title] = toastSuccess.mock.calls[0] as unknown as [string];
+      expect(title).toBe("Labels package exported");
+    });
+
+    it("does nothing when the picker is cancelled", async () => {
+      opfs.supported = true;
+      opfs.picked = new DOMException("The user aborted a request.", "AbortError");
+      expect(await exportLabelsPackage(mp4Labels, "labels.slp", "user")).toBeNull();
+      expect(order).toEqual(["picker(labels.pkg.slp)"]);
+      expect(toastError).not.toHaveBeenCalled();
+    });
+
+    it("reports a cancelled export as cancelled", async () => {
+      opfs.supported = true;
+      opfs.exportImpl = async () => {
+        throw new ExportCancelled();
+      };
+      expect(await exportLabelsPackage(mp4Labels, "labels.slp", "user")).toBeNull();
+      expect(toastInfo).toHaveBeenCalledTimes(1);
+      expect(toastError).not.toHaveBeenCalled();
+    });
+
+    it("keeps the in-memory export for already-embedded projects", async () => {
+      opfs.supported = true;
+      const pkgLabels = fakeLabels({ filename: "/data/p.pkg.slp", backend: {}, hasEmbeddedImages: true });
+      saveImpl = async () => new Uint8Array([1]);
+      await exportLabelsPackage(pkgLabels, "p.pkg.slp", "user");
+      expect(order).toEqual(["prepare", "saveSlpToBytes", "saveBytesFile"]);
+    });
   });
 });

@@ -35,8 +35,12 @@
  * {@link saveEmbeddedPkgStreaming}. Frames are read here (an mp4 decodes in its
  * own worker) and PNG-encoded + appended by the h5 writer's worker, so the
  * window stays responsive and only a few frames are in memory at a time.
- * Already-embedded (`.pkg.slp`) projects, and the browser, build the package in
- * memory with `saveSlpToBytes` and save it afterwards; the toast warning there
+ * The browser does the same where it can (Chromium): the Save picker first,
+ * then the package is built in an OPFS file by the writer's worker and streamed
+ * into the picked file ({@link exportNewPkgOpfs}, the path Save As of a large
+ * package already uses). Already-embedded (`.pkg.slp`) projects, and other
+ * browsers, build the package in memory with `saveSlpToBytes` and save it
+ * afterwards; the toast warning there
  * fires ONLY when the WRITTEN package genuinely left frames unembedded (see
  * {@link packageLeavesFramesUnembedded}). Both paths show progress with Cancel
  * (io's `onProgress` returning `false` → `ExportCancelled`; nothing is written).
@@ -57,6 +61,11 @@ import { saveBytesFile } from "./fileCommands";
 import { toast } from "@/lib/notify";
 import { prepareVideosForFrameReads } from "@/lib/resolveVideos";
 import { saveEmbeddedPkgStreaming } from "@/lib/saveEmbeddedPkgStreaming";
+import {
+  exportNewPkgOpfs,
+  isOpfsSaveSupported,
+  pickSlpSaveDestination,
+} from "@/lib/saveEmbeddedPkgOpfs";
 import {
   createFfmpegFrameReader,
   createTauriExtractFramesDeps,
@@ -373,6 +382,31 @@ async function exportLabelsPackageNow(
       toastExported("Labels package exported", destPath, true);
       if (unembedded) warnUnembedded();
       return destPath;
+    }
+
+    // Browser (Chromium): stream through OPFS, as Save As of a large package
+    // does. The picker comes first, while the Export click still counts as a
+    // user gesture (the browser requires one to open it).
+    if (
+      !(await getPlatform()).isTauri &&
+      isOpfsSaveSupported() &&
+      !exportLabels.videos.some((v) => v.hasEmbeddedImages)
+    ) {
+      let destHandle: FileSystemFileHandle;
+      try {
+        destHandle = await pickSlpSaveDestination(suggestedName);
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") return null;
+        throw err;
+      }
+      const unembedded = await withEmbedProgress(false, async (onProgress) => {
+        await prepareVideosForFrameReads(embedVideos);
+        await exportNewPkgOpfs(exportLabels, destHandle, { embed: mode, onProgress });
+        return embedVideos.some((v) => !v.backend);
+      });
+      toastExported("Labels package exported", destHandle.name, false);
+      if (unembedded) warnUnembedded();
+      return destHandle.name;
     }
 
     // In memory: read + encode each frame here (seconds per frame for an mp4
