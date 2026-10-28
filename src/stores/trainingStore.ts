@@ -1721,7 +1721,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
           visibility = await checkVideoVisibility(projectVideoPaths(labels), {
             rules: pathRulesFor(remoteOpts.workerId),
             mounts: mounts.map((m) => m.path),
-            stat: (p) => statWorkerPath(p).then((r) => r.exists),
+            stat: (p) => statWorkerPath(p),
           });
         }
 

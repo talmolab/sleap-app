@@ -807,12 +807,13 @@ describe("connectStore", () => {
       });
     });
 
-    it("maps FS_FORBIDDEN to {exists: false}", async () => {
+    it("maps FS_FORBIDDEN (an older worker, outside its shared folders) to {exists: false, forbidden: true}", async () => {
       const client = lastClient();
       client.fsStatResults["/mnt/secret"] = new WorkerProtocolError(FS_FORBIDDEN, "forbidden");
 
       await expect(useConnectStore.getState().statWorkerPath("/mnt/secret")).resolves.toEqual({
         exists: false,
+        forbidden: true,
       });
     });
 

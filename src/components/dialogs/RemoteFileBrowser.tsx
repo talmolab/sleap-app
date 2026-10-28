@@ -695,7 +695,7 @@ export function RemoteFileBrowser({
               </div>
             )}
             {noMounts ? (
-              <EmptyState>This worker isn&apos;t sharing any folders. Start it with --mount to browse.</EmptyState>
+              <EmptyState>This worker isn&apos;t sharing any folders. On the worker, run sleap-rtc add-folder &lt;folder&gt; to browse.</EmptyState>
             ) : view === "columns" ? (
               <div className="flex flex-1 min-h-0 overflow-x-auto">
                 {trail.map((dir, i) => {

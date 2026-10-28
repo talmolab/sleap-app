@@ -605,7 +605,23 @@ describe("protocolV1 WorkerClient", () => {
         type: "file",
         size: 123,
         modified: 1700000000,
+        shared: true,
       });
+    });
+
+    it("fsStat reports a path outside the shared folders as shared: false", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({
+        handleRequest: (method) => {
+          if (method === "pair.claim") return { result: {} };
+          if (method === "fs.stat") return { result: { path: "/raw/v.mp4", type: "file", shared: false } };
+          return { error: { code: "proto.unknown_method", msg: "?" } };
+        },
+      });
+      const client = await pairedClient(identity, socket);
+      const result = await client.fsStat("/raw/v.mp4");
+      expect(result.shared).toBe(false);
+      expect(result.type).toBe("file");
     });
 
     it("fsRead sends path/offset/length and base64-decodes the content", async () => {

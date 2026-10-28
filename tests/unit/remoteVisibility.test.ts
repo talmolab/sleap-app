@@ -68,35 +68,51 @@ describe("checkVideoVisibility", () => {
     expect(classifyVisibility(result)).toBe("none");
   });
 
-  it("a path with no mount or rule match is 'no-location' without calling stat", async () => {
+  it("a path with no mount or rule match is tried as-is; missing there = 'no-location'", async () => {
     const calls: string[] = [];
     const result = await checkVideoVisibility(["/opt/unknown/video.mp4"], {
       rules: RULES,
       mounts: MOUNTS,
       stat: async (p) => {
         calls.push(p);
-        return true;
+        return { exists: false };
       },
     });
 
     expect(result).toEqual([
       { index: 0, local: "/opt/unknown/video.mp4", worker: null, visible: false, reason: "no-location" },
     ]);
-    expect(calls).toEqual([]);
+    expect(calls).toEqual(["/opt/unknown/video.mp4"]);
   });
 
-  it("a rule-translated path outside every worker mount is 'outside-shares' without calling stat", async () => {
-    const calls: string[] = [];
+  it("the same path existing on the worker (outside shared folders) counts as visible, not shared", async () => {
+    const result = await checkVideoVisibility(["/data/raw/video.mp4"], {
+      rules: [],
+      mounts: MOUNTS,
+      stat: async () => ({ exists: true, shared: false }),
+    });
+    expect(result).toEqual([
+      { index: 0, local: "/data/raw/video.mp4", worker: "/data/raw/video.mp4", visible: true, shared: false },
+    ]);
+  });
+
+  it("a rule-translated path outside the shared folders: visible if the worker confirms it exists", async () => {
     const rules = [{ local: "/Users/amickl/other", worker: "/unlisted/dir" }];
     const result = await checkVideoVisibility(["/Users/amickl/other/video.mp4"], {
       rules,
       mounts: MOUNTS,
-      stat: async (p) => {
-        calls.push(p);
-        return true;
-      },
+      stat: async () => ({ exists: true, shared: false }),
     });
+    expect(result[0]).toMatchObject({ worker: "/unlisted/dir/video.mp4", visible: true, shared: false });
+  });
 
+  it("an older worker that refuses to stat outside its shared folders gives 'outside-shares'", async () => {
+    const rules = [{ local: "/Users/amickl/other", worker: "/unlisted/dir" }];
+    const result = await checkVideoVisibility(["/Users/amickl/other/video.mp4"], {
+      rules,
+      mounts: MOUNTS,
+      stat: async () => ({ exists: false, forbidden: true }),
+    });
     expect(result).toEqual([
       {
         index: 0,
@@ -106,7 +122,6 @@ describe("checkVideoVisibility", () => {
         reason: "outside-shares",
       },
     ]);
-    expect(calls).toEqual([]);
   });
 
   it("a stat() rejection never throws — the video is marked 'error'", async () => {

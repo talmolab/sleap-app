@@ -85,6 +85,16 @@ export type ConnectionStatus =
   | "reconnecting"
   | "error";
 
+/** `statWorkerPath`'s answer. */
+export interface WorkerPathStat {
+  exists: boolean;
+  type?: "file" | "directory";
+  /** False: exists, but outside the worker's shared folders (jobs can read it; it can't be browsed). */
+  shared?: boolean;
+  /** An older worker refused to say (the path is outside its shared folders). */
+  forbidden?: boolean;
+}
+
 /** A worker this device has paired with — persisted, Syncthing/Plex-style. */
 export interface PairedWorker {
   nodeId: string;
@@ -327,7 +337,7 @@ interface ConnectState {
    */
   setDeviceName: (name: string) => Promise<void>;
   /** Statted via the worker's `fs.stat` — requires an authenticated connection (same precondition as `browseRemoteDir`). */
-  statWorkerPath: (path: string) => Promise<{ exists: boolean; type?: "file" | "directory" }>;
+  statWorkerPath: (path: string) => Promise<WorkerPathStat>;
   /** Add (or replace, by `rule.local`) one path rule for `workerId`. */
   addPathRule: (workerId: string, rule: PathMapping) => void;
   /** Remove the rule (if any) whose `local` matches, for `workerId`. */
@@ -1700,13 +1710,14 @@ export const useConnectStore = create<ConnectState>()(
         }
         try {
           const result = await _client.fsStat(path);
-          return { exists: true, type: result.type };
+          return { exists: true, type: result.type, shared: result.shared };
         } catch (err) {
-          if (
-            err instanceof WorkerProtocolError &&
-            (err.code === FS_NOT_FOUND || err.code === FS_FORBIDDEN)
-          ) {
+          if (err instanceof WorkerProtocolError && err.code === FS_NOT_FOUND) {
             return { exists: false };
+          }
+          if (err instanceof WorkerProtocolError && err.code === FS_FORBIDDEN) {
+            // An older worker refuses anything outside its shared folders.
+            return { exists: false, forbidden: true };
           }
           throw err;
         }

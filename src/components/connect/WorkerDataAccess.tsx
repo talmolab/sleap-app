@@ -10,7 +10,7 @@ import { FolderSearch } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { RemoteFileBrowser } from "@/components/dialogs/RemoteFileBrowser";
 import type { Mount } from "@/lib/protocolV1/client";
-import type { PathMapping } from "@/lib/pathMappings";
+import { isWorkerPath, type PathMapping } from "@/lib/pathMappings";
 import { useConnectStore } from "@/stores/connectStore";
 
 // Stable empty-array fallback — a fresh `[]` literal on every selector call
@@ -72,7 +72,7 @@ export function WorkerDataAccess({ workerId, refreshToken = 0 }: WorkerDataAcces
       <div className="space-y-1.5">
         <div className="flex items-center gap-2">
           <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
-            Folders this worker shares (set with --mount on the worker)
+            Folders this worker shares (where it was started, plus sleap-rtc add-folder)
           </p>
           <Button
             size="xs"
@@ -129,6 +129,14 @@ export function WorkerDataAccess({ workerId, refreshToken = 0 }: WorkerDataAcces
                     <span className="w-16 shrink-0 font-sans text-[10px] text-muted-foreground">Worker</span>
                     <span className="break-all">{rule.worker}</span>
                   </div>
+                  {!loading && !error && !isWorkerPath(rule.worker, mounts.map((m) => m.path)) && (
+                    <p
+                      className="font-sans text-[10px] text-amber-400"
+                      title="Videos there still work. Labels, configs or models there will be refused by the worker."
+                    >
+                      Not in a shared folder: fine for videos; labels, configs or models there are refused.
+                    </p>
+                  )}
                 </div>
                 <Button
                   size="xs"

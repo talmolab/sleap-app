@@ -165,6 +165,11 @@ export interface FsStatResult {
   type: "file" | "directory";
   size: number;
   modified: number;
+  /**
+   * False for a path outside the worker's shared folders: the worker only
+   * confirms it exists (no size/mtime). Jobs can still read media there.
+   */
+  shared: boolean;
 }
 
 export interface FsReadResult {
@@ -625,6 +630,7 @@ export class WorkerClient {
       type: result.type as "file" | "directory",
       size: (result.size as number) ?? 0,
       modified: (result.modified as number) ?? 0,
+      shared: result.shared !== false,
     };
   }
 
