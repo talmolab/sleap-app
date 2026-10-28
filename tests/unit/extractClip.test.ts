@@ -1,7 +1,7 @@
 /**
  * Labels → Extract Clip and Labels / Extract Clip Labels Package — parity with
- * PyQt SLEAP's ExportLabelsSubset: the seekbar range (or the whole video) of
- * the current video becomes its own project — a trimmed clip + renumbered
+ * PyQt SLEAP's ExportLabelsSubset: the seekbar range of the current video
+ * (required, as in PyQt) becomes its own project — a trimmed clip + renumbered
  * `.slp`, or a `.pkg.slp` with original frame numbers — opened in a new window.
  * The encoder, platform, package export and new-window opening are mocked;
  * sleap-io is real.
@@ -70,8 +70,9 @@ vi.mock("@/lib/videoExportPipeline", () => ({
     },
   }),
 }));
+const toastInfo = vi.fn();
 vi.mock("@/lib/notify", () => ({
-  toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() },
+  toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: toastInfo },
 }));
 
 const {
@@ -128,14 +129,16 @@ beforeEach(() => {
   encodedFrames.length = 0;
   saveDialogResult = "/out/sub.slp";
   packageResult = "/out/sub.pkg.slp";
+  toastInfo.mockClear();
 });
 
 describe("extract helpers", () => {
-  it("takes the seekbar selection, or the whole video", () => {
+  it("takes the seekbar selection; nothing without one", () => {
     const { video } = project();
     expect(extractRange([10, 40], video)).toEqual({ start: 10, end: 40, count: 31 });
-    expect(extractRange(null, video)).toEqual({ start: 0, end: 99, count: 100 });
-    expect(extractRange(null, new Video({ filename: "x.mp4", openBackend: false }))).toBeNull();
+    expect(extractRange([90, 500], video)).toEqual({ start: 90, end: 99, count: 10 });
+    expect(extractRange(null, video)).toBeNull();
+    expect(extractRange([0, 5], new Video({ filename: "x.mp4", openBackend: false }))).toBeNull();
   });
 
   it("names outputs <project>.clip_<start>-<end>", () => {
@@ -207,6 +210,27 @@ describe("Extract Clip and Labels", () => {
     expect(sub.suggestions.map((s) => s.frameIdx).sort((a, b) => a - b)).toEqual([0, 30]);
   });
 
+  it("writes the clip at the chosen fps, and opens nothing when asked not to", async () => {
+    const { labels, video } = project();
+    await ExtractClipAndLabelsCommand.execute(ctx(labels, video, [10, 40]), {
+      fps: 12,
+      openWhenDone: false,
+    });
+    const sub = await loadSlp(written.get("/out/sub.slp")!.buffer as ArrayBuffer, {
+      openVideos: false,
+    });
+    expect(sub.videos[0].fps).toBe(12);
+    expect(opened).toEqual([]);
+  });
+
+  it("needs a selected range, as PyQt", async () => {
+    const { labels, video } = project();
+    await ExtractClipAndLabelsCommand.execute(ctx(labels, video, null));
+    expect(toastInfo).toHaveBeenCalledTimes(1);
+    expect(encodedFrames).toEqual([]);
+    expect(written.size).toBe(0);
+  });
+
   it("does nothing when the Save dialog is cancelled", async () => {
     const { labels, video } = project();
     saveDialogResult = null;
@@ -228,10 +252,23 @@ describe("Extract Clip Labels Package", () => {
     expect(opened).toEqual(["/out/sub.pkg.slp"]);
   });
 
-  it("opens nothing when the export didn't write a file", async () => {
+  it("opens nothing when the export didn't write a file, or when asked not to", async () => {
     const { labels, video } = project();
     packageResult = null;
-    await ExtractClipLabelsPackageCommand.execute(ctx(labels, video, null));
+    await ExtractClipLabelsPackageCommand.execute(ctx(labels, video, [10, 40]));
     expect(opened).toEqual([]);
+    packageResult = "/out/sub.pkg.slp";
+    await ExtractClipLabelsPackageCommand.execute(ctx(labels, video, [10, 40]), {
+      openWhenDone: false,
+    });
+    expect(packageCalls.length).toBe(2);
+    expect(opened).toEqual([]);
+  });
+
+  it("needs a selected range, as PyQt", async () => {
+    const { labels, video } = project();
+    await ExtractClipLabelsPackageCommand.execute(ctx(labels, video, null));
+    expect(toastInfo).toHaveBeenCalledTimes(1);
+    expect(packageCalls).toEqual([]);
   });
 });

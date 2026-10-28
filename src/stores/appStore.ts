@@ -487,6 +487,8 @@ export interface AppState {
   labelQcDialogOpen: boolean;
   overlayModelsDialogOpen: boolean;
   exportPackageDialogOpen: boolean;
+  /** Labels → Extract Clip options dialog: which variant is open, if any. */
+  extractClipDialog: "clip" | "package" | null;
   shortcutsDialogOpen: boolean;
   labelingTipsDialogOpen: boolean;
   helpDialogOpen: boolean;
@@ -606,6 +608,7 @@ export interface AppState {
   setLabelQcDialogOpen: (open: boolean) => void;
   setOverlayModelsDialogOpen: (open: boolean) => void;
   setExportPackageDialogOpen: (open: boolean) => void;
+  setExtractClipDialog: (variant: "clip" | "package" | null) => void;
   setShortcutsDialogOpen: (open: boolean) => void;
   setLabelingTipsDialogOpen: (open: boolean) => void;
   setHelpDialogOpen: (open: boolean) => void;
@@ -908,6 +911,7 @@ export const useAppStore = create<AppState>()(
       labelQcDialogOpen: false,
       overlayModelsDialogOpen: false,
       exportPackageDialogOpen: false,
+      extractClipDialog: null,
       shortcutsDialogOpen: false,
       labelingTipsDialogOpen: false,
       helpDialogOpen: false,
@@ -1378,6 +1382,11 @@ export const useAppStore = create<AppState>()(
       setExportPackageDialogOpen: (open) =>
         set((state) => {
           state.exportPackageDialogOpen = open;
+        }),
+
+      setExtractClipDialog: (variant) =>
+        set((state) => {
+          state.extractClipDialog = variant;
         }),
 
       setShortcutsDialogOpen: (open) =>

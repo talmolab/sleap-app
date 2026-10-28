@@ -53,8 +53,6 @@ import {
   PasteInstance,
   DeleteFramePredictions,
   DeleteAllPredictions,
-  ExtractClipAndLabelsCommand,
-  ExtractClipLabelsPackageCommand,
   AddInstancesFromAllPredictions,
   AddInstancesFromAllPredictionsInProject,
   AddTrack,
@@ -1041,6 +1039,8 @@ function LabelsMenu() {
   // Instances require a skeleton with at least one node (see EditMenu).
   useAppStore((s) => s.overlayVersion);
   const skeletonHasNodes = useAppStore((s) => (s.skeleton?.nodes?.length ?? 0) > 0);
+  const hasFrameRange = useAppStore((s) => s.frameRange !== null);
+  const setExtractClipDialog = useAppStore((s) => s.setExtractClipDialog);
   const totalLabeled = labels?.labeledFrames.length ?? 0;
   const totalInstances =
     labels?.labeledFrames.reduce((sum, lf) => sum + lf.instances.length, 0) ?? 0;
@@ -1140,17 +1140,18 @@ function LabelsMenu() {
           Delete All Predictions...
         </MenubarItem>
         <MenubarSeparator />
+        {/* As in PyQt, these need a frame range selected on the seekbar. */}
         <MenubarItem
-          disabled={!projectLoaded}
-          onClick={() => exec(ExtractClipAndLabelsCommand)}
-          title="Export the selected frame range (or the whole video) as a trimmed clip plus its labels, renumbered from frame 0, and open it"
+          disabled={!projectLoaded || !hasFrameRange}
+          onClick={() => setExtractClipDialog("clip")}
+          title="Export the selected frame range as a trimmed clip plus its labels, renumbered from frame 0, and open it. Select a range by shift-dragging on the seekbar."
         >
           Extract Clip and Labels...
         </MenubarItem>
         <MenubarItem
-          disabled={!projectLoaded}
-          onClick={() => exec(ExtractClipLabelsPackageCommand)}
-          title="Export the selected frame range's labeled and suggested frames, with images embedded, as a .pkg.slp, and open it"
+          disabled={!projectLoaded || !hasFrameRange}
+          onClick={() => setExtractClipDialog("package")}
+          title="Export the selected frame range's labeled and suggested frames, with images embedded, as a .pkg.slp, and open it. Select a range by shift-dragging on the seekbar."
         >
           Extract Clip Labels Package...
         </MenubarItem>

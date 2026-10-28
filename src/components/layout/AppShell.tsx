@@ -50,6 +50,7 @@ import { SizeDistributionDialog } from "../dialogs/SizeDistributionDialog";
 import { LabelQcDialog } from "../dialogs/LabelQcDialog";
 import { OverlayModelsDialog } from "../dialogs/OverlayModelsDialog";
 import { ExportPackageDialog } from "../dialogs/ExportPackageDialog";
+import { ExtractClipDialog } from "../dialogs/ExtractClipDialog";
 import { ShortcutsDialog } from "../dialogs/ShortcutsDialog";
 import { LabelingTipsDialog } from "../dialogs/LabelingTipsDialog";
 import { HelpDialog } from "../dialogs/HelpDialog";
@@ -360,6 +361,7 @@ export function AppShell() {
         open={exportPackageDialogOpen}
         onOpenChange={setExportPackageDialogOpen}
       />
+      <ExtractClipDialog />
       <ShortcutsDialog
         open={shortcutsDialogOpen}
         onOpenChange={setShortcutsDialogOpen}

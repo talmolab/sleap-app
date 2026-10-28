@@ -1,8 +1,11 @@
 /**
  * Labels → Extract Clip and Labels / Extract Clip Labels Package — PyQt SLEAP's
  * `ExportLabelsSubset` (`sleap/gui/commands.py`): export the seekbar's selected
- * frame range of the current video (the whole video when nothing is selected)
- * as a project of its own, then open it in a new window.
+ * frame range of the current video as a project of its own, then open it in a
+ * new window. As in PyQt, both need a selected range (the menu items are
+ * disabled without one), and run from the Extract Clip dialog
+ * (`ExtractClipDialog.tsx`, PyQt's Export Clip Options), which passes
+ * {@link ExtractClipParams}.
  *
  *  - **Clip and Labels**: a trimmed copy of the video (an mp4 of the range's
  *    frames, no overlays) plus a `.slp` whose frames are renumbered to start at
@@ -40,16 +43,25 @@ import { toast } from "@/lib/notify";
 import { toastExported } from "@/lib/exportToast";
 import { useAppStore } from "@/stores/appStore";
 
+/** Options from the Extract Clip dialog. */
+export interface ExtractClipParams {
+  /** The clip's frame rate (Extract Clip and Labels; default: the video's). */
+  fps?: number;
+  /** Open the new project in a new window when done (default true, as PyQt). */
+  openWhenDone?: boolean;
+}
+
 /**
- * The frames to extract from `video`: the seekbar selection (inclusive), or
- * the whole video. Null when the video's length isn't known.
+ * The frames to extract from `video`: the seekbar selection (inclusive),
+ * clamped to the video. Null when nothing is selected or the video's length
+ * isn't known.
  */
 export function extractRange(
   frameRange: readonly [number, number] | null,
   video: Video
 ): FrameRange | null {
   const n = video.shape?.[0] ?? 0;
-  if (n <= 0) return null;
+  if (n <= 0 || !frameRange) return null;
   const { start, end } = computeInitialClipRange(frameRange, n);
   return { start, end, count: end - start + 1 };
 }
@@ -183,6 +195,12 @@ async function rangeToExtract(
     toast.info("Open a video to extract a clip from.");
     return null;
   }
+  if (!ctx.state.frameRange) {
+    toast.info("Select a frame range first", {
+      description: "Shift-drag on the seekbar to select the frames to extract.",
+    });
+    return null;
+  }
   const range = (await ensureShape(video))
     ? extractRange(ctx.state.frameRange, video)
     : null;
@@ -199,7 +217,7 @@ async function rangeToExtract(
 export const ExtractClipAndLabelsCommand: Command = {
   name: "ExtractClipAndLabels",
   topics: [],
-  async execute(ctx: CommandContext) {
+  async execute(ctx: CommandContext, params?: ExtractClipParams) {
     const target = await rangeToExtract(ctx);
     if (!target) return;
     const { labels, video, range } = target;
@@ -226,7 +244,8 @@ export const ExtractClipAndLabelsCommand: Command = {
       setLoading(true, "Cancelling…");
     });
     try {
-      const fps = video.fps && video.fps > 0 ? video.fps : 30;
+      const fps =
+        params?.fps && params.fps > 0 ? params.fps : video.fps && video.fps > 0 ? video.fps : 30;
       const clip = await encodeRawClip(video, range, fps, controller.signal, (done, total) =>
         setLoading(true, `Writing the clip (${done}/${total})`, Math.round((done / total) * 100))
       );
@@ -247,7 +266,7 @@ export const ExtractClipAndLabelsCommand: Command = {
         await platform.writeFile(clipPath, clip.bytes);
         await platform.writeFile(slpPath, slpBytes);
         toastExported("Clip and labels extracted", slpPath, true);
-        await openNewInstance({ file: slpPath });
+        if (params?.openWhenDone !== false) await openNewInstance({ file: slpPath });
       } else {
         downloadFile(new Blob([clip.bytes as BlobPart]), clipVideo.filename as string, "video/mp4");
         downloadFile(new Blob([slpBytes as BlobPart]), slpPath, "application/octet-stream");
@@ -276,7 +295,7 @@ export const ExtractClipAndLabelsCommand: Command = {
 export const ExtractClipLabelsPackageCommand: Command = {
   name: "ExtractClipLabelsPackage",
   topics: [],
-  async execute(ctx: CommandContext) {
+  async execute(ctx: CommandContext, params?: ExtractClipParams) {
     const target = await rangeToExtract(ctx);
     if (!target) return;
     const { labels, video, range } = target;
@@ -286,7 +305,7 @@ export const ExtractClipLabelsPackageCommand: Command = {
       "full",
       { suggestedName: extractFilename(ctx.state.filename, range, "pkg.slp") }
     );
-    if (saved && (await getPlatform()).isTauri) {
+    if (saved && params?.openWhenDone !== false && (await getPlatform()).isTauri) {
       await openNewInstance({ file: saved });
     }
   },

@@ -50,8 +50,6 @@ import {
   CopyTrack,
   PasteTrack,
   DeleteUnusedTracks,
-  ExtractClipAndLabelsCommand,
-  ExtractClipLabelsPackageCommand,
 } from "../../commands";
 import {
   Dialog,
@@ -161,8 +159,9 @@ function buildActions(): MenuAction[] {
     { group: "Labels", label: "Accept All Predictions on Current Frame", shortcut: formatShortcut("$mod+Shift+KeyA"), run: exec(AddInstancesFromAllPredictions) },
     { group: "Labels", label: "Accept All Predictions (Project)", run: exec(AddInstancesFromAllPredictionsInProject) },
     { group: "Labels", label: "Delete Predictions...", run: () => store().setDeletePredictionsDialogOpen(true) },
-    { group: "Labels", label: "Extract Clip and Labels", run: exec(ExtractClipAndLabelsCommand) },
-    { group: "Labels", label: "Extract Clip Labels Package", run: exec(ExtractClipLabelsPackageCommand) },
+    // Without a seekbar range, the dialog says to select one first.
+    { group: "Labels", label: "Extract Clip and Labels", run: () => store().setExtractClipDialog("clip") },
+    { group: "Labels", label: "Extract Clip Labels Package", run: () => store().setExtractClipDialog("package") },
     { group: "Labels", label: "Mark Frame as Negative", shortcut: formatShortcut("KeyN"), run: () => void requestToggleNegativeFrame() },
 
     // Tracks
