@@ -754,6 +754,7 @@ describe("protocolV1 WorkerClient", () => {
         cudaVersion: "12.4",
         sleapNnVersion: "0.1.0",
         busy: true,
+        features: [],
       });
     });
 
@@ -776,6 +777,7 @@ describe("protocolV1 WorkerClient", () => {
         cudaVersion: "unknown",
         sleapNnVersion: "unknown",
         busy: false,
+        features: [],
       });
     });
 

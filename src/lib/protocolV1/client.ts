@@ -72,6 +72,8 @@ export interface WorkerInfo {
   cudaVersion: string;
   sleapNnVersion: string;
   busy: boolean;
+  /** What the worker supports beyond the base protocol (e.g. "output_dir"); [] on older workers. */
+  features: string[];
 }
 
 export interface JobProject {
@@ -549,6 +551,7 @@ export class WorkerClient {
       cudaVersion: (result.cuda_version as string) ?? "unknown",
       sleapNnVersion: (result.sleap_nn_version as string) ?? "unknown",
       busy: !!result.busy,
+      features: Array.isArray(result.features) ? (result.features as string[]) : [],
     };
   }
 
@@ -582,6 +585,19 @@ export class WorkerClient {
 
     return () => {
       listeners.delete(onEvent);
+    };
+  }
+
+  /**
+   * `fs.mounts` plus the folder `sleap-rtc serve` started in (when it's
+   * shared; null otherwise or on older workers).
+   */
+  async fsMountsAndServeFolder(): Promise<{ mounts: Mount[]; serveFolder: string | null }> {
+    const result = await this._request("fs.mounts", {});
+    const mounts = (result.mounts as Array<Record<string, unknown>>) ?? [];
+    return {
+      mounts: mounts.map((m) => ({ path: m.path as string, label: m.label as string | undefined })),
+      serveFolder: typeof result.serve_folder === "string" ? result.serve_folder : null,
     };
   }
 

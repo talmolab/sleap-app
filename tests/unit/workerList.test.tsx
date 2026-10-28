@@ -20,6 +20,7 @@ const GPU_INFO: WorkerInfo = {
   gpuCount: 1,
   cudaVersion: "12.4",
   sleapNnVersion: "0.3.1",
+  features: [],
   busy: false,
 };
 

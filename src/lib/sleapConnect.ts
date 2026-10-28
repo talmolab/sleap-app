@@ -57,6 +57,8 @@ export interface TrackJobSpec {
   data_path: string;
   model_paths: string[];
   output_path?: string;
+  /** Where predictions go when `output_path` isn't set: `<output_dir>/predictions/` (needs worker feature "output_dir"). */
+  output_dir?: string;
   batch_size?: number;
   peak_threshold?: number;
   only_suggested_frames?: boolean;
@@ -127,6 +129,12 @@ export interface TrainJobSpec {
   path_mappings?: Record<string, string>;
   /** Which project submitted this job (`projectTag()`) — shows up in the worker's job list/history (sleap-connect #98). */
   project?: JobProject;
+  /**
+   * Labels sent from this window only: the shared folder on the worker to
+   * save models (`models/`) and predictions (`predictions/`) in. Needs a
+   * worker whose `worker.info.features` includes "output_dir".
+   */
+  output_dir?: string;
   /** Links this job to its siblings in a multi-model training run (sleap-connect `feat/connect-run-id`) — opaque to the worker, round-tripped as-is. */
   run?: JobRun;
   /**

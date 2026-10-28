@@ -120,6 +120,11 @@ export interface PairedWorker {
    * an explicit connect does. Cleared by re-pairing.
    */
   unpairedAt?: string;
+  /**
+   * Folders picked with Change… for "this window" runs' outputs on this
+   * worker, keyed by project (`projectTag(projectPath).id`).
+   */
+  outputDirs?: Record<string, string>;
 }
 
 /**
@@ -340,6 +345,8 @@ interface ConnectState {
   statWorkerPath: (path: string) => Promise<WorkerPathStat>;
   /** Add (or replace, by `rule.local`) one path rule for `workerId`. */
   addPathRule: (workerId: string, rule: PathMapping) => void;
+  /** Remember (or with `null`, forget) the output folder picked for a project on `workerId`. */
+  setOutputDir: (workerId: string, projectKey: string, dir: string | null) => void;
   /** Remove the rule (if any) whose `local` matches, for `workerId`. */
   clearPathRule: (workerId: string, local: string) => void;
   submitJob: (
@@ -1730,6 +1737,18 @@ export const useConnectStore = create<ConnectState>()(
               ? { ...w, pathRules: [...(w.pathRules ?? []).filter((r) => r.local !== rule.local), rule] }
               : w,
           ),
+        }));
+      },
+
+      setOutputDir: (workerId, projectKey, dir) => {
+        set((state) => ({
+          pairedWorkers: state.pairedWorkers.map((w) => {
+            if (w.nodeId !== workerId) return w;
+            const outputDirs = { ...(w.outputDirs ?? {}) };
+            if (dir) outputDirs[projectKey] = dir;
+            else delete outputDirs[projectKey];
+            return { ...w, outputDirs };
+          }),
         }));
       },
 

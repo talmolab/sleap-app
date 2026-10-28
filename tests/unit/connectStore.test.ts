@@ -1997,6 +1997,21 @@ describe("connectStore", () => {
     });
   });
 
+  describe("output folders (Change…)", () => {
+    it("remembers a folder per project on a worker, and forgets it", () => {
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
+      const { setOutputDir } = useConnectStore.getState();
+      setOutputDir(PAIRED_WORKER.nodeId, "p1", "/root/vast/amick/out");
+      setOutputDir(PAIRED_WORKER.nodeId, "p2", "/root/vast/amick/other");
+      expect(useConnectStore.getState().pairedWorkers[0].outputDirs).toEqual({
+        p1: "/root/vast/amick/out",
+        p2: "/root/vast/amick/other",
+      });
+      setOutputDir(PAIRED_WORKER.nodeId, "p1", null);
+      expect(useConnectStore.getState().pairedWorkers[0].outputDirs).toEqual({ p2: "/root/vast/amick/other" });
+    });
+  });
+
   describe("per-worker job actions + worker info", () => {
     beforeEach(() => {
       useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
@@ -2012,6 +2027,7 @@ describe("connectStore", () => {
         cudaVersion: "12.4",
         sleapNnVersion: "0.2.0",
         busy: true,
+        features: ["output_dir"],
       };
       await useConnectStore.getState().refreshWorkerInfo(PAIRED_WORKER.nodeId);
       expect(useConnectStore.getState().workerInfo[PAIRED_WORKER.nodeId]).toEqual({
@@ -2021,6 +2037,7 @@ describe("connectStore", () => {
         cudaVersion: "12.4",
         sleapNnVersion: "0.2.0",
         busy: true,
+        features: ["output_dir"],
       });
     });
 

@@ -17,6 +17,7 @@ import { BackendPicker } from "@/components/common/BackendPicker";
 import { RemoteFileBrowser } from "@/components/dialogs/RemoteFileBrowser";
 import { TrainingConfigDialog } from "@/components/dialogs/TrainingConfigDialog";
 import { RemoteDataSummary } from "@/components/connect/RemoteDataSummary";
+import { RemoteOutputFolder } from "@/components/connect/RemoteOutputFolder";
 import { HiddenVideosDialog } from "@/components/connect/HiddenVideosDialog";
 import { RemoteRunCard } from "@/components/connect/RemoteRunCard";
 import { LossViewerDialog } from "@/components/monitors/LossViewerDialog";
@@ -766,6 +767,7 @@ export function TrainingPanel() {
   const { parseYamlConfig: parseConfig, addConfigFile: addConfig } = useTrainingStore();
   const [discoveredModels, setDiscoveredModels] = useState<DiscoveredModel[]>([]);
   const projectPath = useAppStore((s) => s.projectPath);
+  const filename = useAppStore((s) => s.filename);
   const tutorialActive = useAppStore((s) => s.tutorialActive);
   const tutorialSteps = useAppStore((s) => s.tutorialSteps);
   const tutorialStepIndex = useAppStore((s) => s.tutorialStepIndex);
@@ -935,6 +937,8 @@ export function TrainingPanel() {
   // Latest visibility check from RemoteDataSummary, lifted here so Start (and
   // the pre-submit hidden-videos dialog) can use it without recomputing.
   const [visibility, setVisibility] = useState<VideoVisibility[] | null>(null);
+  // "This window" runs: the worker folder for models + predictions (RemoteOutputFolder).
+  const [remoteOutputDir, setRemoteOutputDir] = useState<string | null>(null);
   const [hiddenDialogOpen, setHiddenDialogOpen] = useState(false);
   const [inferenceTarget, setInferenceTarget] = useState<string>("suggestions");
   const [sampleCount, setSampleCount] = useState(20);
@@ -1141,6 +1145,7 @@ export function TrainingPanel() {
       // recomputes it itself (via checkVideoVisibility) if still unknown.
       visibility: visibility ?? undefined,
       embedFramesToPredict,
+      outputDir: remoteOutputDir ?? undefined,
       valLabelsPath: remoteValLabelsPath || undefined,
       inferenceTarget,
       sampleCount,
@@ -1300,7 +1305,7 @@ export function TrainingPanel() {
                 >
                   <label className="flex items-center gap-1.5 text-xs cursor-pointer">
                     <RadioGroupItem value="window" id="labels-source-window" disabled={isRunning} />
-                    This window ({projectTag(projectPath).name})
+                    This window ({projectPath ? projectTag(projectPath).name : (filename ?? "untitled.slp")})
                   </label>
                   <label className="flex items-center gap-1.5 text-xs cursor-pointer">
                     <RadioGroupItem value="worker-file" id="labels-source-worker-file" disabled={isRunning} />
@@ -1338,6 +1343,14 @@ export function TrainingPanel() {
                     onResult={setVisibility}
                   />
                 )}
+                <RemoteOutputFolder
+                  workerId={selectedWorkerId}
+                  labelsSource={labelsSource}
+                  workerLabelsPath={remoteLabelsPath || undefined}
+                  projectPath={projectPath}
+                  filename={filename}
+                  onChange={setRemoteOutputDir}
+                />
               </div>
             ) : (
               <div className="flex gap-1">

@@ -456,6 +456,8 @@ export interface RemoteTrainingOptions {
   visibility?: VideoVisibility[];
   /** labelsSource: "window" — also embed "frames to predict" pixels (suggestions) so post-training inference can cover a hidden video too. */
   embedFramesToPredict?: boolean;
+  /** "window" runs: the worker folder for models + predictions (`spec.output_dir`). */
+  outputDir?: string;
   valLabelsPath?: string;
   /** Post-training inference target ("nothing"/absent = skip). Run as a separate track job once all models train. */
   inferenceTarget?: string;
@@ -1685,10 +1687,13 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         remoteOpts.workerId;
 
       const { useAppStore } = await import("@/stores/appStore");
-      const { labels, projectPath } = useAppStore.getState();
+      const { labels, projectPath, filename } = useAppStore.getState();
 
       const { projectTag } = await import("@/lib/projectTag");
-      const project = projectTag(projectPath);
+      // A browser-opened project has no path: keep its id (what "my runs"
+      // matches on) but name it after the file, not "untitled.slp".
+      const tag = projectTag(projectPath);
+      const project = projectPath || !filename ? tag : { ...tag, name: filename };
 
       // Which videos get post-training inference. `undefined` = unrestricted
       // (every video) — the "worker-file" default and most "window" runs;
@@ -1839,6 +1844,9 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         labels_content: labelsContentField,
         val_labels_path: remoteOpts.valLabelsPath || undefined,
         project,
+        ...(remoteOpts.labelsSource === "window" && remoteOpts.outputDir
+          ? { output_dir: remoteOpts.outputDir }
+          : {}),
       };
 
       set((state) => ({
@@ -1984,7 +1992,14 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
               currentFrameIdx: frameIdx ?? 0,
               activeVideoFrameCount: video?.shape?.[0] ?? 0,
               allowedVideoIndices,
-            }).map((trackSpec) => ({ ...trackSpec, project }));
+            }).map((trackSpec) => ({
+              ...trackSpec,
+              project,
+              // A "window" run's predictions go with its models (stage 4).
+              ...(remoteOpts.labelsSource === "window" && remoteOpts.outputDir
+                ? { output_dir: remoteOpts.outputDir }
+                : {}),
+            }));
             set((s) => ({
               postTrainingInference: { status: "running", message: null, pendingMerge: null, merged: false },
               log: appendLog(s.log, `— Running inference (${inferenceTarget}) on the worker with models: ${modelDirs.join(", ")}...`),

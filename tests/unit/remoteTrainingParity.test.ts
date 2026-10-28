@@ -618,6 +618,27 @@ describe("startTraining (remote) — labelsSource window vs worker-file", () => 
     expect(track.project).toEqual(train.project as typeof track.project);
   });
 
+  it("sends the chosen output folder with the train job and its inference job", async () => {
+    const visible = new Video({ filename: `${MOUNT}/visible.mp4`, openBackend: false });
+    fakeLabels = new Labels({ videos: [visible], skeletons: [], labeledFrames: [] });
+    fakeWorkerStats[`${MOUNT}/visible.mp4`] = { exists: true, type: "file" };
+
+    await useTrainingStore.getState().startTraining({
+      remote: true,
+      workerId: "worker-1",
+      labelsSource: "window",
+      inferenceTarget: "suggestions",
+      outputDir: "/root/vast/amick/project",
+    });
+
+    expect(submitCalls).toHaveLength(2);
+    const train = submitCalls[0].spec as unknown as Record<string, unknown>;
+    expect(train.output_dir).toBe("/root/vast/amick/project");
+    const track = submitCalls[1].spec;
+    if (track.type !== "track") throw new Error("unreachable");
+    expect(track.output_dir).toBe("/root/vast/amick/project");
+  });
+
   it("embedFramesToPredict + suggestions: covers every video, no restriction even with a hidden one", async () => {
     const visible = new Video({ filename: `${MOUNT}/visible.mp4`, openBackend: false });
     const hidden = new Video({ filename: `${MOUNT}/hidden.mp4`, openBackend: false });
