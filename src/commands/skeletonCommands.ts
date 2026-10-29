@@ -591,6 +591,13 @@ function applyTemplate(
 
   skeleton.rebuildCache(skeleton.nodes);
 
+  // Replace the old symmetries too: left as they were, they'd still pair the
+  // previous skeleton's nodes. addSymmetry() resolves names against the cache.
+  skeleton.symmetries = [];
+  for (const [a, b] of template.symmetries ?? []) {
+    skeleton.addSymmetry(template.nodes[a], template.nodes[b]);
+  }
+
   // Update all instance points to match new node count
   for (const lf of labels.labeledFrames) {
     for (const inst of lf.instances) {

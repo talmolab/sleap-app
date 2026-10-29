@@ -49,10 +49,10 @@ parked somewhere plausible — a guessed point is training signal that says the
 part is *there*, which it isn't.
 
 - To mark a node non-visible, right-click it ▸ **Mark Node Non-Visible** (or
-  **Mark Node Visible** to undo it).
-- ++v++ toggles **View ▸ Show Non-Visible Nodes** — whether non-visible nodes
-  are drawn at all. If the pointer is over a node, or nodes are selected, ++v++
-  also flips those nodes' visibility.
+  **Mark Node Visible** to undo it), or press ++v++ with the pointer over it.
+  With nodes selected, ++v++ flips all of them.
+- ++shift+v++ toggles **View ▸ Show Non-Visible Nodes**: whether non-visible
+  nodes are drawn at all.
 - **View ▸ Display** controls how much of the hidden geometry you see:
 
     | Mode | Shows |

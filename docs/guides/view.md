@@ -39,7 +39,7 @@ Two aids for precision work:
 | Show instances | ++h++ |
 | Show node names | ++t++ |
 | Show edges | ++cmd+shift+tab++ |
-| Show non-visible nodes | ++v++ |
+| Show non-visible nodes | ++shift+v++ |
 
 **View ▸ Display** sets a coarser policy for showing occluded geometry:
 

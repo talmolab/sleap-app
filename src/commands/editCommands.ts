@@ -6,6 +6,7 @@
  * SetInstancePointLocations, DeleteFramePredictions, ConvertPredictionToInstance.
  */
 
+import { frameHasContent } from "@/lib/frameLabeling";
 import { Instance, LabeledFrame, PredictedInstance } from "@talmolab/sleap-io.js";
 import type { Labels } from "@talmolab/sleap-io.js";
 import { UpdateTopic } from "../types";
@@ -671,9 +672,7 @@ export const DeleteAllPredictions: Command = {
     }
 
     // Remove empty labeled frames
-    labels.labeledFrames = labels.labeledFrames.filter(
-      (lf) => lf.instances.length > 0
-    );
+    labels.labeledFrames = labels.labeledFrames.filter(frameHasContent);
 
     if (removed === 0) return;
 
@@ -736,9 +735,7 @@ export const MergePredictions: Command = {
           (inst) => !(inst instanceof PredictedInstance)
         );
       }
-      labels.labeledFrames = labels.labeledFrames.filter(
-        (lf) => lf.instances.length > 0
-      );
+      labels.labeledFrames = labels.labeledFrames.filter(frameHasContent);
     }
 
     // Route through sleap-io.js's Labels.merge (issue #226). Match tracks by

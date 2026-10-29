@@ -30,8 +30,8 @@ import { type JournalStore, baseBakPath } from "@/lib/incrementalAutosave";
 import {
   type TauriDraftFs,
   type TauriDraftManifestEntry,
-  readManifestWithFs,
-  writeManifestWithFs,
+  updateManifestWithFs,
+  pruneMissingDraftsWithFs,
   upsertManifestEntry,
   removeManifestEntry,
   mergeDraftEntry,
@@ -123,9 +123,7 @@ export async function recordTauriDraftSave(
   // — see mergeDraftEntry. A resume while the source volume was unmounted nulls
   // store.projectPath, so without this a re-save would erase the path and orphan
   // the embedded draft from its images permanently.
-  const entries = await readManifestWithFs(fs, mpath);
-  const prior = entries.find((e) => e.draftPath === opts.draftPath);
-  const entry: TauriDraftManifestEntry = mergeDraftEntry(prior, {
+  const fields = {
     draftPath: opts.draftPath,
     projectPath: opts.projectPath,
     displayName: opts.displayName,
@@ -142,13 +140,12 @@ export async function recordTauriDraftSave(
     embedded: labels.videos.some((v) => v.hasEmbeddedImages),
     sourceSize: opts.sourceSize,
     sourceLastModified: opts.sourceLastModified,
+  };
+  await updateManifestWithFs(fs, dir, mpath, (entries) => {
+    const prior = entries.find((e) => e.draftPath === opts.draftPath);
+    const entry: TauriDraftManifestEntry = mergeDraftEntry(prior, fields);
+    return upsertManifestEntry(entries, entry);
   });
-  await writeManifestWithFs(
-    fs,
-    dir,
-    mpath,
-    upsertManifestEntry(entries, entry),
-  );
 }
 
 /**
@@ -184,11 +181,7 @@ export async function removeTauriDraft(draftPath: string): Promise<void> {
     if (await fs.exists(jp)) await fs.remove(jp);
     const bak = baseBakPath(draftPath);
     if (await fs.exists(bak)) await fs.remove(bak);
-    const entries = await readManifestWithFs(fs, mpath);
-    await writeManifestWithFs(
-      fs,
-      dir,
-      mpath,
+    await updateManifestWithFs(fs, dir, mpath, (entries) =>
       removeManifestEntry(entries, draftPath),
     );
   } catch (err) {
@@ -245,12 +238,15 @@ export function makeTauriJournalStore(draftPath: string): JournalStore {
   };
 }
 
-/** All recoverable desktop drafts, newest-saved first. */
+/** All recoverable desktop drafts, newest-saved first. Entries whose draft
+ *  file no longer exists are dropped from the manifest here, not listed. */
 export async function listTauriDraftEntries(): Promise<
   TauriDraftManifestEntry[]
 > {
   const fs = await tauriDraftFs();
-  return sortEntriesNewestFirst(await readManifestWithFs(fs, await manifestPath()));
+  return sortEntriesNewestFirst(
+    await pruneMissingDraftsWithFs(fs, await draftsDir(), await manifestPath()),
+  );
 }
 
 /** Whether a draft `.slp` still exists on disk (Tauri). */

@@ -95,7 +95,8 @@ this page is the full list.
 | Show / hide instances | ++h++ |
 | Show / hide node names | ++t++ |
 | Show / hide edges | ++cmd+shift+tab++ |
-| Toggle non-visible nodes | ++v++ |
+| Mark the node under the pointer (or the selected nodes) visible / non-visible | ++v++ |
+| Toggle non-visible nodes | ++shift+v++ |
 | Increase text size | ++cmd+shift+equal++ |
 | Decrease text size | ++cmd+minus++ |
 

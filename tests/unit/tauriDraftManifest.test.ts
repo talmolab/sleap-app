@@ -16,6 +16,9 @@ import {
   pickRestorableDraft,
   readManifestWithFs,
   writeManifestWithFs,
+  updateManifestWithFs,
+  pruneMissingDraftsWithFs,
+  withManifestLock,
   MANIFEST_VERSION,
   type TauriDraftManifestEntry,
   type TauriDraftFs,
@@ -232,5 +235,129 @@ describe("readManifestWithFs / writeManifestWithFs (injected fs)", () => {
     const fs = fakeFs();
     fs.files.set(manifestPath, "corrupt {{{");
     expect(await readManifestWithFs(fs, manifestPath)).toEqual([]);
+  });
+});
+
+/** {@link fakeFs} whose reads and writes yield to the event loop first, like the
+ *  real Tauri plugin's IPC, so overlapping read-modify-writes actually interleave. */
+function slowFs(): ReturnType<typeof fakeFs> {
+  const fs = fakeFs();
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+  return {
+    ...fs,
+    async readTextFile(path) {
+      await tick();
+      return fs.readTextFile(path);
+    },
+    async writeTextFile(path, contents) {
+      await tick();
+      return fs.writeTextFile(path, contents);
+    },
+  };
+}
+
+describe("manifest updates under concurrency (Discard all)", () => {
+  const DIR = "/data/sleap-drafts";
+  const MPATH = `${DIR}/draft-manifest.json`;
+  const paths = ["/d/a.slp", "/d/b.slp", "/d/c.slp"];
+
+  async function seeded() {
+    const fs = slowFs();
+    await writeManifestWithFs(fs, DIR, MPATH, paths.map((p) => entry({ draftPath: p })));
+    return fs;
+  }
+
+  it("loses removals when unqueued read-modify-writes overlap (the bug)", async () => {
+    const fs = await seeded();
+    await Promise.all(
+      paths.map(async (p) => {
+        const entries = await readManifestWithFs(fs, MPATH);
+        await writeManifestWithFs(fs, DIR, MPATH, removeManifestEntry(entries, p));
+      }),
+    );
+    // Each write kept the other two entries it had read: the last one wins.
+    expect((await readManifestWithFs(fs, MPATH)).length).toBe(2);
+  });
+
+  it("removes every entry when the removals go through updateManifestWithFs", async () => {
+    const fs = await seeded();
+    await Promise.all(
+      paths.map((p) =>
+        updateManifestWithFs(fs, DIR, MPATH, (entries) => removeManifestEntry(entries, p)),
+      ),
+    );
+    expect(await readManifestWithFs(fs, MPATH)).toEqual([]);
+  });
+
+  it("keeps an autosave's upsert that races a discard", async () => {
+    const fs = await seeded();
+    await Promise.all([
+      updateManifestWithFs(fs, DIR, MPATH, (es) => removeManifestEntry(es, "/d/a.slp")),
+      updateManifestWithFs(fs, DIR, MPATH, (es) =>
+        upsertManifestEntry(es, entry({ draftPath: "/d/new.slp" })),
+      ),
+    ]);
+    expect((await readManifestWithFs(fs, MPATH)).map((e) => e.draftPath).sort()).toEqual([
+      "/d/b.slp",
+      "/d/c.slp",
+      "/d/new.slp",
+    ]);
+  });
+
+  it("keeps running queued work after an earlier task fails", async () => {
+    const failed = withManifestLock(async () => {
+      throw new Error("disk full");
+    });
+    const next = withManifestLock(async () => "ran");
+    await expect(failed).rejects.toThrow("disk full");
+    expect(await next).toBe("ran");
+  });
+});
+
+describe("pruneMissingDraftsWithFs (orphaned entries)", () => {
+  const DIR = "/data/sleap-drafts";
+  const MPATH = `${DIR}/draft-manifest.json`;
+
+  it("drops entries whose draft file is gone and rewrites the manifest", async () => {
+    const fs = fakeFs();
+    fs.files.set("/d/kept.slp", "draft");
+    await writeManifestWithFs(fs, DIR, MPATH, [
+      entry({ draftPath: "/d/kept.slp" }),
+      entry({ draftPath: "/d/orphan.slp" }),
+    ]);
+    const kept = await pruneMissingDraftsWithFs(fs, DIR, MPATH);
+    expect(kept.map((e) => e.draftPath)).toEqual(["/d/kept.slp"]);
+    expect((await readManifestWithFs(fs, MPATH)).map((e) => e.draftPath)).toEqual([
+      "/d/kept.slp",
+    ]);
+  });
+
+  it("doesn't rewrite the manifest when nothing is missing", async () => {
+    const fs = fakeFs();
+    fs.files.set("/d/a.slp", "draft");
+    await writeManifestWithFs(fs, DIR, MPATH, [entry({ draftPath: "/d/a.slp" })]);
+    let writes = 0;
+    const counting: TauriDraftFs = {
+      ...fs,
+      writeTextFile: async (p, c) => {
+        writes++;
+        await fs.writeTextFile(p, c);
+      },
+    };
+    expect(await pruneMissingDraftsWithFs(counting, DIR, MPATH)).toHaveLength(1);
+    expect(writes).toBe(0);
+  });
+
+  it("keeps an entry whose existence can't be checked", async () => {
+    const fs = fakeFs();
+    await writeManifestWithFs(fs, DIR, MPATH, [entry({ draftPath: "/d/unknown.slp" })]);
+    const failing: TauriDraftFs = {
+      ...fs,
+      exists: async (p) => {
+        if (p === "/d/unknown.slp") throw new Error("permission denied");
+        return fs.exists(p);
+      },
+    };
+    expect(await pruneMissingDraftsWithFs(failing, DIR, MPATH)).toHaveLength(1);
   });
 });
