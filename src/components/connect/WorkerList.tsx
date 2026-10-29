@@ -156,9 +156,9 @@ export function WorkerList({ selectedId, onSelect }: WorkerListProps) {
 
       {pairedWorkers.length === 0 ? (
         <div className="p-3 space-y-1.5 text-[11px] text-muted-foreground">
-          <p>No workers paired yet. On the machine you want to train/infer on:</p>
+          <p>No workers paired yet. On the machine you want to train/infer on, in your data folder:</p>
           <code className="block bg-black/30 px-1.5 py-1 rounded font-mono text-[10px]">
-            sleap-rtc serve --daemonize
+            sleap-rtc serve
           </code>
           <code className="block bg-black/30 px-1.5 py-1 rounded font-mono text-[10px]">
             sleap-rtc pair

@@ -29,8 +29,14 @@ answer is remembered, so the next `serve` there doesn't ask again. Starting in
 your home folder works too, but the worker warns you: that shares everything in
 it.
 
-`sleap-rtc serve --daemonize` keeps the worker running in the background (it
-asks about the folder before going to the background).
+`sleap-rtc serve` starts the worker in the background (after asking about the
+folder): you get your prompt back, and it keeps running after you close the
+terminal or log out. `sleap-rtc status` shows whether it's running, and
+`sleap-rtc serve --stop` stops it. So you don't forget about it, new terminals
+on that machine show a one-line reminder while it runs (`sleap-rtc shell-hook
+uninstall` removes the reminder). Add `--foreground` to keep the worker attached
+to the terminal instead; Ctrl-C stops it.
+
 `sleap-rtc pair` prints a one-line code that starts with `sleap1`.
 
 ### Sharing more folders
