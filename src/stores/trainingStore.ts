@@ -1293,6 +1293,8 @@ export interface DryRunModel {
   summary: DryRunSummaryField[] | null;
   /** The likely cause (last stderr line); set once failed. */
   error: string | null;
+  /** The last stderr lines of a failed run (its traceback), for the card's error box. */
+  stderrTail: string[];
 }
 
 /**
@@ -2644,6 +2646,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
           status: "pending",
           summary: null,
           error: null,
+          stderrTail: [],
         })),
         log: [],
         config,
@@ -2707,7 +2710,9 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
             runName,
             (event) => {
               if (event.event !== "stdout" && event.event !== "stderr") return;
-              const line = event.data.line;
+              // Lines arrive with their newline; without stripping it, joining
+              // them (the log, the error box, Copy) double-spaces every line.
+              const line = event.data.line.replace(/\r?\n$/, "");
               output.push(line);
               pending.push(line);
               if (event.event === "stderr" && line.trim()) {
@@ -2741,6 +2746,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
           setModel(i, {
             status: "failed",
             error: lastErrorLine(stderrTail) ?? "sleap-nn exited with an error",
+            stderrTail: [...stderrTail],
           });
           allPassed = false;
         }

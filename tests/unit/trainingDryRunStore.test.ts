@@ -105,8 +105,33 @@ describe("startDryRun", () => {
 
     const { dryRun } = useTrainingStore.getState();
     expect(dryRun!.status).toBe("failed");
-    expect(dryRun!.models[0]).toMatchObject({ status: "failed", error: "ValueError: crop_size must be positive" });
+    expect(dryRun!.models[0]).toMatchObject({
+      status: "failed",
+      error: "ValueError: crop_size must be positive",
+      // The traceback for the card's error box (and its Copy button).
+      stderrTail: ["Traceback (most recent call last):", "ValueError: crop_size must be positive"],
+    });
     expect(dryRun!.models[1].status).toBe("passed");
+  });
+
+  it("strips each line's newline, as Tauri sends them, so copied output isn't double-spaced", async () => {
+    script = [
+      {
+        lines: PASSED("centroid").map((l) => `${l}\n`),
+        stderr: ["Traceback (most recent call last):\n", "TypeError: cannot pickle 'cv2.VideoCapture' object\r\n"],
+        success: false,
+      },
+      { lines: PASSED("centered_instance").map((l) => `${l}\n`), success: true },
+    ];
+    await useTrainingStore.getState().startDryRun();
+
+    const { dryRun } = useTrainingStore.getState();
+    expect(dryRun!.models[0].stderrTail).toEqual([
+      "Traceback (most recent call last):",
+      "TypeError: cannot pickle 'cv2.VideoCapture' object",
+    ]);
+    expect(dryRun!.log.every((l) => !l.endsWith("\n"))).toBe(true);
+    expect(dryRun!.models[1].summary![0]).toEqual({ label: "Model type", value: "centered_instance" });
   });
 
   it("fails a run that exits cleanly without the passed summary", async () => {

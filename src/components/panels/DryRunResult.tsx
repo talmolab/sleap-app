@@ -1,14 +1,27 @@
 /**
  * The Training panel's dry-run result: one row per config checked with
  * `sleap-nn train --dry-run` (both heads for top-down), each with sleap-nn's
- * summary of the run it would do or the error that stopped it, and the run's
- * log on demand.
+ * summary of the run it would do or the error output that stopped it, and the
+ * run's log on demand. The error output and the log each have a Copy button,
+ * for pasting into an issue.
  */
 
 import { useMemo, useState } from "react";
 import { useTrainingStore, type DryRunState } from "@/stores/trainingStore";
 import { Button } from "@/components/ui/button";
-import { AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Circle, Loader2, X, XCircle } from "lucide-react";
+import { ErrorOutput } from "@/components/monitors/ErrorOutput";
+import {
+  AlertTriangle,
+  Check,
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  Circle,
+  Copy,
+  Loader2,
+  X,
+  XCircle,
+} from "lucide-react";
 
 const HEADLINE: Record<DryRunState["status"], string> = {
   running: "Dry run: checking setup and one batch...",
@@ -30,6 +43,16 @@ export function DryRunResult({ dryRun }: { dryRun: DryRunState }) {
     [dryRun.status, dryRun.config, config],
   );
   const running = dryRun.status === "running";
+  const [copied, setCopied] = useState(false);
+  const copyLog = async () => {
+    try {
+      await navigator.clipboard.writeText(dryRun.log.join("\n"));
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    } catch {
+      /* clipboard unavailable (e.g. insecure context) — ignore */
+    }
+  };
 
   return (
     <div className="rounded border border-border p-2 text-xs space-y-1.5" data-testid="dry-run-result">
@@ -93,10 +116,14 @@ export function DryRunResult({ dryRun }: { dryRun: DryRunState }) {
               ))}
             </dl>
           )}
-          {m.error && (
-            <p className="ml-[18px] text-[10px] leading-snug text-destructive break-words line-clamp-4" title={m.error}>
-              {m.error}
-            </p>
+          {m.stderrTail.length > 0 ? (
+            <ErrorOutput lines={m.stderrTail} title={m.error ?? "Error output"} className="ml-[18px]" />
+          ) : (
+            m.error && (
+              <p className="ml-[18px] text-[10px] leading-snug text-destructive break-words line-clamp-4" title={m.error}>
+                {m.error}
+              </p>
+            )
           )}
         </div>
       ))}
@@ -109,14 +136,24 @@ export function DryRunResult({ dryRun }: { dryRun: DryRunState }) {
 
       {dryRun.log.length > 0 && (
         <div>
-          <button
-            type="button"
-            className="flex items-center gap-0.5 text-[10px] text-muted-foreground hover:text-foreground"
-            onClick={() => setShowLog((v) => !v)}
-          >
-            {showLog ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-            {showLog ? "Hide log" : "Show log"}
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              className="flex items-center gap-0.5 text-[10px] text-muted-foreground hover:text-foreground"
+              onClick={() => setShowLog((v) => !v)}
+            >
+              {showLog ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+              {showLog ? "Hide log" : "Show log"}
+            </button>
+            <button
+              type="button"
+              className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground"
+              onClick={copyLog}
+            >
+              {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+              {copied ? "Copied" : "Copy log"}
+            </button>
+          </div>
           {showLog && (
             <pre className="mt-1 max-h-40 overflow-auto rounded bg-muted/50 p-1.5 font-mono text-[9px] leading-tight whitespace-pre-wrap break-all">
               {dryRun.log.join("\n")}
