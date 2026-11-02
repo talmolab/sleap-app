@@ -435,6 +435,7 @@ export async function runTraining(
   runName: string,
   onEvent: (event: ProcessEvent) => void,
   modelDir?: string,
+  dryRun = false,
 ): Promise<{ success: boolean; command: string; modelPath: string }> {
   if (!isTauri) {
     console.warn("Training is only available in Tauri desktop mode");
@@ -466,6 +467,7 @@ export async function runTraining(
     labelsPath,
     runName,
     ckptDir,
+    dryRun,
   });
 
   const command = `sleap-nn ${args.join(" ")}`;

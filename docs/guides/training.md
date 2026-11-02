@@ -97,6 +97,25 @@ The top of each model's tab picks how the run starts:
 Fine-tune and Resume need a checkpoint path; **Start Training** stays disabled
 until you set one.
 
+## Checking before you train (desktop)
+
+**Dry run**, next to **Start Training**, checks your setup in seconds before you
+commit to a long run. For each model (both, for top-down) it runs
+`sleap-nn train --dry-run` with the same config a real run would use: all setup,
+plus one training batch and one validation batch, on one device. Nothing is
+saved.
+
+- **Passed** — each model shows what the real run would do: labeled frames and
+  samples, steps per epoch, max epochs, model size, device and run folder
+- **Failed** — the model shows the error that stopped it. **Show log** has the
+  full output. If one model fails, the other is still checked
+- Change the config afterwards and the result says so; run it again to check
+  the new one
+
+Dry runs need a sleap-nn release after 0.3.5. With an older one the result says
+so, and training itself still works. Dry runs run on this computer only, not on
+a remote worker.
+
 ## Running
 
 Click **Start Training** (or **Start Remote Training** with a worker selected).
