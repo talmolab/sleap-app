@@ -99,7 +99,10 @@ export function SkeletonBuildBar() {
   return (
     <>
       <div className="absolute top-2 left-1/2 -translate-x-1/2 z-30 flex flex-col items-center gap-1">
-        <div className="flex items-center gap-1.5 rounded-md bg-black/70 px-2 py-1.5 shadow-lg backdrop-blur-sm pointer-events-auto">
+        <div
+          className="flex items-center gap-1.5 rounded-md bg-black/70 px-2 py-1.5 shadow-lg backdrop-blur-sm pointer-events-auto"
+          data-tutorial="skeleton-build-bar"
+        >
           {stage === "place" ? (
             <>
               <span className="px-1 text-xs font-medium text-white/90">
