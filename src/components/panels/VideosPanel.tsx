@@ -44,6 +44,7 @@ import {
   pickVideoFiles,
   buildStandaloneVideo,
   addVideoFileToLabels,
+  videoIssue,
 } from "../../lib/resolveVideos";
 import {
   VideoImportList,
@@ -57,6 +58,12 @@ import {
   applyVideoReplacement,
 } from "../../lib/replaceVideo";
 import { nextSelectedVideo } from "../../lib/removeVideo";
+import {
+  useVideoCheckStore,
+  videoCheckWarns,
+  type VideoCheckEntry,
+} from "@/stores/videoCheckStore";
+import { frameCheckPassed } from "@/lib/videoCheck";
 
 /** Truncate a filename/path from the left, keeping the rightmost characters. */
 function truncateLeft(path: string, maxLen: number): string {
@@ -71,6 +78,7 @@ function VideoRow({
   isMissing,
   isImageSequence,
   canLocateFolder,
+  checkWarns,
   onSelect,
   onLocate,
   onLocateFolder,
@@ -81,6 +89,8 @@ function VideoRow({
   isMissing: boolean;
   isImageSequence: boolean;
   canLocateFolder: boolean;
+  /** The frame check found (or suspects) frames that show wrongly. */
+  checkWarns: boolean;
   onSelect: () => void;
   onLocate: () => void;
   onLocateFolder: () => void;
@@ -105,6 +115,11 @@ function VideoRow({
         <span className="flex items-center gap-1">
           {isMissing && (
             <AlertTriangle className="h-3 w-3 text-yellow-500 shrink-0" />
+          )}
+          {!isMissing && checkWarns && (
+            <span title="May not show every frame correctly. Use Check Frames to see why.">
+              <AlertTriangle className="h-3 w-3 text-orange-500 shrink-0" />
+            </span>
           )}
           {index + 1}
         </span>
@@ -172,9 +187,23 @@ function formatDuration(seconds: number): string {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
+/** One line on what the frame check knows about this video. */
+function frameCheckStatus(video: Video, entry: VideoCheckEntry | undefined): string | null {
+  if (entry?.full) {
+    return frameCheckPassed(entry.full)
+      ? `All ${entry.full.frameCount.toLocaleString()} frames read correctly`
+      : "Some frames don't read correctly";
+  }
+  if (!entry?.quick || entry.quick.status === "skip") return null;
+  if (entry.quick.status === "warn") return "May not show every frame correctly";
+  return video.backend ? "Not checked" : null;
+}
+
 function VideoDetailPanel({ video }: { video: Video }) {
   const projectPath = useAppStore((s) => s.projectPath);
   const [copied, setCopied] = useState(false);
+  const checkEntry = useVideoCheckStore((s) => s.results.get(video));
+  const checkStatus = frameCheckStatus(video, checkEntry);
 
   const resolvedPath = resolveVideoPath(video, projectPath);
   const shape = video.shape;
@@ -264,6 +293,15 @@ function VideoDetailPanel({ video }: { video: Video }) {
         </div>
       )}
 
+      {checkStatus && (
+        <div className="text-muted-foreground">
+          <span className="font-medium text-foreground">Frame check: </span>
+          <span className={cn(videoCheckWarns(checkEntry) && "text-orange-600 dark:text-orange-400")}>
+            {checkStatus}
+          </span>
+        </div>
+      )}
+
       {/* Collapsible SLP metadata */}
       {hasMetadata && (
         <details className="group">
@@ -319,6 +357,8 @@ export function VideosPanel() {
   const bumpOverlayVersion = useAppStore((s) => s.bumpOverlayVersion);
   const markVideoUpdated = useAppStore((s) => s.markVideoUpdated);
   const markChanged = useAppStore((s) => s.markChanged);
+  const checkResults = useVideoCheckStore((s) => s.results);
+  const openCheckDialog = useVideoCheckStore((s) => s.openDialog);
 
   // Filename search: case-insensitive substring match on each video's basename.
   // Preserves each video's original index (for the # column + stable keys) so
@@ -635,6 +675,7 @@ export function VideosPanel() {
                   isMissing={isVideoMissing(video)}
                   isImageSequence={isImageSequenceVideo(video)}
                   canLocateFolder={isTauri}
+                  checkWarns={videoCheckWarns(checkResults.get(video))}
                   onSelect={() => setVideo(video)}
                   onLocate={() => handleLocateVideo(video)}
                   onLocateFolder={() => {
@@ -680,6 +721,16 @@ export function VideosPanel() {
           onClick={handleRemoveVideo}
         >
           Remove Video
+        </Button>
+        <Button
+          variant="subtle"
+          size="xs"
+          // A video that won't open (unsupported codec) still gets the dialog:
+          // it offers Re-encode. A file that can't be found has nothing to check.
+          disabled={!currentVideo || videoIssue(currentVideo) === "missing"}
+          onClick={() => currentVideo && openCheckDialog(currentVideo)}
+        >
+          Check Frames…
         </Button>
         {missingResolvable.length > 0 && (
           <Button

@@ -84,7 +84,7 @@ export function createTauriTranscodeDeps(): TranscodeDeps {
       return { stdout: output.stdout, stderr: output.stderr, code: output.code };
     },
 
-    async runTranscode(args, onProgress, signal) {
+    async runTranscode(args, onProgress, signal, onStderr) {
       const { Command } = await import("@tauri-apps/plugin-shell");
       const command = Command.sidecar(FFMPEG_SIDECAR, args);
 
@@ -92,6 +92,11 @@ export function createTauriTranscodeDeps(): TranscodeDeps {
       // before parsing so each update carries a complete {frame, outTimeMs}.
       const feed = createProgressAssembler(onProgress);
       command.stdout.on("data", (chunk: string) => feed(chunk));
+      if (onStderr) {
+        command.stderr.on("data", (line: string) => {
+          if (line.trim()) onStderr(line.trim());
+        });
+      }
 
       const child = await command.spawn();
       const onAbort = () => {

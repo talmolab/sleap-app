@@ -40,6 +40,12 @@ export interface TranscodeArgsOptions {
    * the caller can drive a progress bar. Default true.
    */
   progress?: boolean;
+  /**
+   * Pad odd widths/heights up to even with a black row/column at the right and
+   * bottom: H.264 4:2:0 needs even dimensions. Pixel coordinates are unchanged,
+   * so labels still line up. (sleap-io's `reencode` does the same.)
+   */
+  padToEven?: boolean;
 }
 
 const DEFAULT_ENCODER = "libopenh264";
@@ -68,6 +74,7 @@ export function buildTranscodeArgs(options: TranscodeArgsOptions): string[] {
     "-an", // no audio
     "-c:v",
     encoder,
+    ...(options.padToEven ? ["-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2"] : []),
     "-pix_fmt",
     "yuv420p", // 8-bit 4:2:0 — the format WebCodecs can always decode
     "-fps_mode",

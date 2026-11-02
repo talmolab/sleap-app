@@ -89,6 +89,12 @@ describe("buildTranscodeArgs (frame-exact ffmpeg args)", () => {
     expect(legacy).toContain("-fps_mode");
     expect(legacy.join(" ")).not.toContain("scale");
   });
+
+  it("padToEven adds an even-dimension pad filter; off by default", () => {
+    const padded = buildTranscodeArgs({ input: "a", output: "b", padToEven: true });
+    expect(padded[padded.indexOf("-vf") + 1]).toBe("pad=ceil(iw/2)*2:ceil(ih/2)*2");
+    expect(buildTranscodeArgs({ input: "a", output: "b" })).not.toContain("-vf");
+  });
 });
 
 describe("transcodeCache (key + eviction)", () => {
