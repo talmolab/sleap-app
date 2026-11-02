@@ -2468,9 +2468,12 @@ describe("trackedJobs persisted migration (v1 -> v2)", () => {
   });
 
   it("leaves already-v2 persisted state untouched", () => {
-    const existing = { pairedWorkers: [], selectedWorkerId: null, trackedJobs: [makeTracked()] };
+    // One job, not two makeTracked() calls: each stamps Date.now(), and two
+    // calls a millisecond apart made this flaky.
+    const job = makeTracked();
+    const existing = { pairedWorkers: [], selectedWorkerId: null, trackedJobs: [job] };
     const migrated = migrateConnectPersisted(existing, 2) as typeof existing;
-    expect(migrated.trackedJobs).toEqual([makeTracked()]);
+    expect(migrated.trackedJobs).toEqual([job]);
   });
 });
 
