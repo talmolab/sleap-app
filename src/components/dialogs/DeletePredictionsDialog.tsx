@@ -12,6 +12,7 @@
 
 import { useState, useCallback, useMemo } from "react";
 import { PredictedInstance } from "@talmolab/sleap-io.js";
+import { confirmDialog } from "@/stores/confirmStore";
 import { useAppStore } from "../../stores/appStore";
 import { commandContext } from "../../commands/CommandContext";
 import {
@@ -148,9 +149,13 @@ export function DeletePredictionsDialog({
   const handleDelete = useCallback(async () => {
     // Double-confirm for "all" type deletion
     if (mode === "type" && instanceType === "all") {
-      if (!confirm("This will delete ALL instances (both predicted and user-labeled). This cannot be easily undone. Are you sure?")) {
-        return;
-      }
+      const ok = await confirmDialog({
+        title: "Delete all instances",
+        message: "This will delete ALL instances (both predicted and user-labeled). This cannot be easily undone. Are you sure?",
+        confirmLabel: "Delete",
+        destructive: true,
+      });
+      if (!ok) return;
     }
 
     switch (mode) {

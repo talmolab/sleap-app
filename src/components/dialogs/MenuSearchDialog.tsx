@@ -60,6 +60,7 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { requestStartTutorial } from "@/lib/tutorial/startTutorial";
 import { requestToggleNegativeFrame } from "@/lib/negativeFrame";
+import { confirmDeleteUnusedTracks } from "@/lib/trackDeleteConfirms";
 
 interface MenuAction {
   group: string;
@@ -169,7 +170,7 @@ function buildActions(): MenuAction[] {
     { group: "Tracks", label: "New Track", shortcut: formatShortcut("$mod+Digit0"), run: exec(AddTrack) },
     { group: "Tracks", label: "Copy Instance Track", shortcut: formatShortcut("$mod+Shift+KeyC"), run: exec(CopyTrack) },
     { group: "Tracks", label: "Paste Instance Track", shortcut: formatShortcut("$mod+Shift+KeyV"), run: exec(PasteTrack) },
-    { group: "Tracks", label: "Delete Unused Tracks", run: () => { if (confirm("Delete all unused tracks?")) commandContext.execute(DeleteUnusedTracks); } },
+    { group: "Tracks", label: "Delete Unused Tracks", run: async () => { if (await confirmDeleteUnusedTracks()) commandContext.execute(DeleteUnusedTracks); } },
 
     // Predict
     { group: "Predict", label: "Training...", run: () => store().openPanel("training") },

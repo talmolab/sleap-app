@@ -11,6 +11,7 @@ import { tinykeys } from "tinykeys";
 import { DEFAULT_SHORTCUTS, STEP_SIZES } from "../lib/shortcuts";
 import { useAppStore } from "../stores/appStore";
 import { Track } from "@talmolab/sleap-io.js";
+import { confirmDeleteInstanceAndTrack } from "@/lib/trackDeleteConfirms";
 import { quitApp } from "../lib/quit";
 import { openNewInstance } from "../lib/newInstance";
 import { dismiss, toast } from "../lib/notify";
@@ -170,7 +171,7 @@ export function useKeyboardShortcuts() {
         e.preventDefault();
         store().toggle("showEdges");
       },
-      [DEFAULT_SHORTCUTS["toggle node visibility"]]: (e) => {
+      [DEFAULT_SHORTCUTS["show non-visible nodes"]]: (e) => {
         if (isTextInput(e)) return;
         e.preventDefault();
         store().toggle("showNonVisibleNodes");
@@ -256,9 +257,9 @@ export function useKeyboardShortcuts() {
         e.preventDefault();
         commandContext.execute(AddTrack);
       },
-      [DEFAULT_SHORTCUTS["delete track"]]: (e) => {
+      [DEFAULT_SHORTCUTS["delete track"]]: async (e) => {
         e.preventDefault();
-        if (confirm("Delete this instance and its track?")) {
+        if (await confirmDeleteInstanceAndTrack()) {
           commandContext.execute(DeleteInstanceAndTrack);
         }
       },

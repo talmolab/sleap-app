@@ -74,6 +74,7 @@ import {
 import { useAppStore, type UpdateChannel } from "@/stores/appStore";
 import { hasUnsavedWork } from "@/lib/unsavedGuard";
 import { toast } from "@/lib/notify";
+import { confirmDialog } from "@/stores/confirmStore";
 
 const SLEAP_NN_RELEASES_URL = "https://github.com/talmolab/sleap-nn/releases/tag";
 
@@ -758,9 +759,12 @@ export function AppUpdateSection() {
     // restart, not a hot-reload — so warn first if there's anything that
     // hasn't been saved to disk yet.
     if (hasUnsavedWork(useAppStore.getState())) {
-      const proceed = window.confirm(
-        "You have unsaved changes. Installing this update will restart SLEAP. Continue?"
-      );
+      const proceed = await confirmDialog({
+        title: "Unsaved changes",
+        message: "You have unsaved changes. Installing this update will restart SLEAP. Continue?",
+        confirmLabel: "Install and restart",
+        destructive: true,
+      });
       if (!proceed) return;
     }
     setUpdating(true);
