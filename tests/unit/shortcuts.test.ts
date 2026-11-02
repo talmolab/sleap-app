@@ -43,3 +43,24 @@ describe("N vs Shift+N (tinykeys)", () => {
     expect(fired).toEqual(["place", "negative"]);
   });
 });
+
+describe("V vs Shift+V", () => {
+  it("binds V to the node toggle and Shift+V to Show Non-Visible Nodes (as in SLEAP)", () => {
+    expect(DEFAULT_SHORTCUTS["toggle node visibility"]).toBe("KeyV");
+    expect(DEFAULT_SHORTCUTS["show non-visible nodes"]).toBe("Shift+KeyV");
+  });
+
+  it("Shift+V fires Show Non-Visible Nodes; plain V doesn't (tinykeys)", async () => {
+    const { tinykeys } = await import("tinykeys");
+    const fired: string[] = [];
+    const unbind = tinykeys(window, {
+      [DEFAULT_SHORTCUTS["show non-visible nodes"]]: () => fired.push("show non-visible"),
+    });
+    const press = (shiftKey: boolean) =>
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: shiftKey ? "V" : "v", code: "KeyV", shiftKey }));
+    press(false);
+    press(true);
+    unbind();
+    expect(fired).toEqual(["show non-visible"]);
+  });
+});

@@ -54,3 +54,28 @@ export function frameHasPredictedInstances(
   const frames = labels.find({ video, frameIdx });
   return frames.length > 0 && frames[0].hasPredictedInstances;
 }
+
+/**
+ * True if a frame still records anything: instances, a negative (background)
+ * mark, or another annotation (centroid, box, mask, label image, ROI). Deleting
+ * instances must only drop frames this is false for. Mirrors sleap-io's
+ * `Labels.clean(frames=True)`, which legacy SLEAP's deletes go through and which
+ * keeps negative and annotated frames; a plain `instances.length > 0` filter
+ * erased every negative-frame mark in the project.
+ */
+export function frameHasContent(
+  lf: Pick<
+    LabeledFrame,
+    "instances" | "isNegative" | "centroids" | "bboxes" | "masks" | "labelImages" | "rois"
+  >,
+): boolean {
+  return (
+    lf.instances.length > 0 ||
+    lf.isNegative ||
+    lf.centroids.length > 0 ||
+    lf.bboxes.length > 0 ||
+    lf.masks.length > 0 ||
+    lf.labelImages.length > 0 ||
+    lf.rois.length > 0
+  );
+}

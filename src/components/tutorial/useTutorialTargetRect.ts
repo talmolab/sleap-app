@@ -88,22 +88,32 @@ export function useTutorialTargetRect(
 const KEEP_CLEAR_SELECTOR = '[role="menu"], [role="listbox"], [data-tutorial-keep-clear]';
 
 /**
- * Rects of every open menu matching `KEEP_CLEAR_SELECTOR`, re-measured on DOM
- * changes like `useTutorialTargetRect`. Empty while `active` is false. Only
- * sets state when the rects actually change, so the card's own re-renders
- * don't loop back through the observer.
+ * Rects of every open menu matching `KEEP_CLEAR_SELECTOR`. Empty while
+ * `active` is false.
  */
 export function useOpenMenuRects(active: boolean): TutorialTargetRect[] {
+  return useTutorialElementRects(active ? KEEP_CLEAR_SELECTOR : null);
+}
+
+/**
+ * Rects of every visible element matching `selector` (a comma list is fine),
+ * re-measured on DOM changes like `useTutorialTargetRect`. Empty while
+ * `selector` is null. Only sets state when the rects actually change, so the
+ * card's own re-renders don't loop back through the observer.
+ */
+export function useTutorialElementRects(
+  selector: string | null,
+): TutorialTargetRect[] {
   const [rects, setRects] = useState<TutorialTargetRect[]>([]);
 
   useEffect(() => {
-    if (!active) {
+    if (!selector) {
       setRects([]);
       return;
     }
     let lastKey = "";
     const measure = () => {
-      const next = Array.from(document.querySelectorAll(KEEP_CLEAR_SELECTOR))
+      const next = Array.from(document.querySelectorAll(selector))
         .map(rectOf)
         .filter((r) => r.width > 0 && r.height > 0);
       const key = JSON.stringify(next);
@@ -127,7 +137,7 @@ export function useOpenMenuRects(active: boolean): TutorialTargetRect[] {
       window.removeEventListener("resize", measure);
       window.removeEventListener("scroll", measure, true);
     };
-  }, [active]);
+  }, [selector]);
 
   return rects;
 }

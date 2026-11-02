@@ -39,7 +39,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { isTauri } from "../../platform/index";
-import { classifyVersion, VERSION_KIND_LABEL } from "@/lib/version";
+import {
+  classifyVersion,
+  releaseNotesUrlFor,
+  SLEAP_APP_RELEASES_URL,
+  VERSION_KIND_LABEL,
+} from "@/lib/version";
 import {
   useEnvironmentStore,
   type DetectionStatus,
@@ -69,9 +74,9 @@ import {
 import { useAppStore, type UpdateChannel } from "@/stores/appStore";
 import { hasUnsavedWork } from "@/lib/unsavedGuard";
 import { toast } from "@/lib/notify";
+import { confirmDialog } from "@/stores/confirmStore";
 
 const SLEAP_NN_RELEASES_URL = "https://github.com/talmolab/sleap-nn/releases/tag";
-const SLEAP_APP_RELEASES_URL = "https://github.com/talmolab/sleap-app/releases/tag";
 
 // ---------------------------------------------------------------------------
 // Shared components
@@ -617,6 +622,38 @@ export function isOlderVersion(target: string, current: string): boolean {
 // reusing the word "dev" for both.
 const isLocalBuild = import.meta.env.DEV;
 
+/**
+ * Release-notes link for the INSTALLED build: a URL when it has notes of its
+ * own, otherwise null and the tooltip says why the button is greyed out.
+ *
+ * Only stable and pre-release ("latest") builds are a published GitHub Release
+ * with real notes. A dev build's rolling `dev` release describes no particular
+ * build, and a local build's version is just whatever package.json on `main`
+ * says -- it would link the notes of a release this tree is not. Exported for
+ * tests: `isLocalBuild` is always truthy under `bun test`, so the panel itself
+ * can only exercise the local-build branch.
+ */
+export function installedReleaseNotes(
+  version: string,
+  localBuild: boolean,
+): { url: string | null; title: string } {
+  if (localBuild) {
+    return {
+      url: null,
+      title:
+        "Running from source (tauri:dev) — this isn't a published release, so it has no release notes.",
+    };
+  }
+  const url = releaseNotesUrlFor(version);
+  return url
+    ? { url, title: `View release notes for v${version}` }
+    : {
+        url: null,
+        title:
+          "Dev builds are built continuously from main and have no release notes of their own.",
+      };
+}
+
 // Exported for tests only (environmentPanelChannelLabel.test.tsx); the panel
 // itself renders it below.
 export function AppUpdateSection() {
@@ -722,9 +759,12 @@ export function AppUpdateSection() {
     // restart, not a hot-reload — so warn first if there's anything that
     // hasn't been saved to disk yet.
     if (hasUnsavedWork(useAppStore.getState())) {
-      const proceed = window.confirm(
-        "You have unsaved changes. Installing this update will restart SLEAP. Continue?"
-      );
+      const proceed = await confirmDialog({
+        title: "Unsaved changes",
+        message: "You have unsaved changes. Installing this update will restart SLEAP. Continue?",
+        confirmLabel: "Install and restart",
+        destructive: true,
+      });
       if (!proceed) return;
     }
     setUpdating(true);
@@ -774,13 +814,40 @@ export function AppUpdateSection() {
   // links to notes for a version there's no installer here to apply.
   const hasReleaseNotesPage =
     updateAvailable && channel !== "dev" && !isLocalBuild;
+  const installedNotes = version
+    ? installedReleaseNotes(version, !!isLocalBuild)
+    : null;
 
   return (
     <Section
       title="SLEAP App"
       aside={
         version ? (
-          <span className="text-xs text-muted-foreground">v{version}</span>
+          <>
+            {/* aria-disabled rather than `disabled`: a disabled button swallows
+                the hover that shows its tooltip, and the tooltip is the only
+                place that explains why the notes aren't available. */}
+            {installedNotes && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (installedNotes.url) void openExternal(installedNotes.url);
+                }}
+                aria-disabled={!installedNotes.url}
+                title={installedNotes.title}
+                className={cn(
+                  "flex shrink-0 items-center gap-0.5 text-[10px] text-muted-foreground transition-colors",
+                  installedNotes.url
+                    ? "hover:text-foreground"
+                    : "cursor-not-allowed opacity-50"
+                )}
+              >
+                Release notes
+                <ExternalLink className="h-2.5 w-2.5" />
+              </button>
+            )}
+            <span className="text-xs text-muted-foreground">v{version}</span>
+          </>
         ) : null
       }
     >

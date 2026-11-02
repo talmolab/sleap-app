@@ -200,3 +200,61 @@ export async function writeManifestWithFs(
   if (!(await fs.exists(dirPath))) await fs.mkdir(dirPath, { recursive: true });
   await fs.writeTextFile(manifestPath, serializeManifest(entries));
 }
+
+// Every read-modify-write of the manifest goes through this one queue. Without
+// it, "Discard all" (which removes its drafts in parallel) let each removal read
+// the same original manifest, drop only its own entry and write the rest back,
+// so the last write restored every other entry: the draft files were gone but
+// the Welcome screen kept offering them on every launch. An autosave racing a
+// discard had the same problem.
+let manifestQueue: Promise<unknown> = Promise.resolve();
+
+/** Run `fn` once every manifest update queued before it has finished. */
+export function withManifestLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = manifestQueue.then(fn, fn);
+  manifestQueue = run.catch(() => {});
+  return run;
+}
+
+/**
+ * Read the manifest, apply `update`, and write the result, with no other
+ * manifest update in between. Returns the entries written.
+ */
+export function updateManifestWithFs(
+  fs: TauriDraftFs,
+  dirPath: string,
+  manifestPath: string,
+  update: (entries: TauriDraftManifestEntry[]) => TauriDraftManifestEntry[],
+): Promise<TauriDraftManifestEntry[]> {
+  return withManifestLock(async () => {
+    const next = update(await readManifestWithFs(fs, manifestPath));
+    await writeManifestWithFs(fs, dirPath, manifestPath, next);
+    return next;
+  });
+}
+
+/**
+ * The manifest's entries whose draft file still exists, dropping the rest from
+ * the manifest on disk. Heals manifests that already hold such orphans (e.g.
+ * from the "Discard all" race above), so they stop showing as unsaved work. An
+ * entry whose existence can't be checked is kept: dropping it could hide real
+ * unsaved work.
+ */
+export function pruneMissingDraftsWithFs(
+  fs: TauriDraftFs,
+  dirPath: string,
+  manifestPath: string,
+): Promise<TauriDraftManifestEntry[]> {
+  return withManifestLock(async () => {
+    const entries = await readManifestWithFs(fs, manifestPath);
+    const kept: TauriDraftManifestEntry[] = [];
+    for (const entry of entries) {
+      const present = await fs.exists(entry.draftPath).catch(() => true);
+      if (present) kept.push(entry);
+    }
+    if (kept.length !== entries.length) {
+      await writeManifestWithFs(fs, dirPath, manifestPath, kept);
+    }
+    return kept;
+  });
+}

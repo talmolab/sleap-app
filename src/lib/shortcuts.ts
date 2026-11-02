@@ -57,7 +57,11 @@ export const DEFAULT_SHORTCUTS: Record<string, string> = {
   "show instances": "KeyH",
   "show labels": "KeyT",
   "show edges": "$mod+Shift+Tab",
+  // V marks the hovered/selected node(s) (non-)visible (handled in VideoPlayer);
+  // Shift+V shows/hides non-visible nodes across the view, as in legacy SLEAP.
+  // Both used to be plain V, so one press did both and the node vanished.
   "toggle node visibility": "KeyV",
+  "show non-visible nodes": "Shift+KeyV",
   "toggle pan mode": "KeyP",
   "toggle place mode": "Shift+KeyN",
 

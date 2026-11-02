@@ -84,18 +84,21 @@ describe("UnsavedWorkDropdown", () => {
     await waitFor(() => expect(onDiscard).toHaveBeenCalledWith(d));
   });
 
-  it("a real mouse press on the trash icon asks to discard instead of restoring", async () => {
+  it("a real mouse press on the trash icon asks to discard, never restores", async () => {
+    // A mouse press is pointerdown → pointerup → click. The menu item clicks
+    // itself (selects = restores) on a pointerup it didn't see the press for,
+    // so a trash icon that only stopped pointerdown restored the draft.
     const d = draft();
-    render(<UnsavedWorkDropdown drafts={[d]} loading={false} onDiscard={spy<[RecoverableDraft]>()} onDiscardAll={spy()} />);
+    const onDiscard = spy<[RecoverableDraft]>();
+    render(<UnsavedWorkDropdown drafts={[d]} loading={false} onDiscard={onDiscard} onDiscardAll={spy()} />);
     openMenu();
-    // A mouse sends pointerdown → pointerup → click. The menu item clicks
-    // itself on a pointerup it never saw go down, which used to restore.
     const trash = screen.getByRole("button", { name: "Discard mice.slp" });
     fireEvent.pointerDown(trash, { button: 0, pointerType: "mouse" });
     fireEvent.pointerUp(trash, { button: 0, pointerType: "mouse" });
     fireEvent.click(trash);
-    expect(await screen.findByText("Discard permanently?")).toBeInTheDocument();
+    await new Promise((r) => setTimeout(r, 0));
     expect(d.restore).not.toHaveBeenCalled();
+    expect(screen.getByText("Discard permanently?")).toBeInTheDocument();
   });
 
   it("offers Discard all only when there is more than one draft", () => {
