@@ -144,7 +144,11 @@ export function UnsavedWorkDropdown({ drafts, loading, onDiscard, onDiscardAll }
                   "rounded p-1 text-muted-foreground opacity-0 hover:bg-destructive/15 hover:text-destructive",
                   "group-hover:opacity-100 group-data-[highlighted]:opacity-100",
                 )}
+                // Keep the whole press here. The menu item clicks itself (→
+                // restore) on a pointerup whose pointerdown it never saw, so
+                // stopping only pointerdown made the trash icon restore.
                 onPointerDown={(e) => e.stopPropagation()}
+                onPointerUp={(e) => e.stopPropagation()}
                 onClick={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
