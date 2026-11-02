@@ -66,3 +66,38 @@ describe("ModelStatsPreview reset view", () => {
     expect(btn).toBeDisabled();
   });
 });
+
+describe("ModelStatsPreview remote frame", () => {
+  it("asks remoteFrame for the first user-labeled frame when its video can't be decoded here", async () => {
+    const video = { filename: "/data/v.mp4", backend: null };
+    const labels = {
+      videos: [{ filename: "/other.mp4", backend: null }, video],
+      skeletons: [],
+      labeledFrames: [
+        { video, frameIdx: 3, instances: [{ score: 0.9, points: [] }], userInstances: [] },
+        { video, frameIdx: 11, instances: [{ points: [] }], userInstances: [] },
+      ],
+    };
+    const calls: Array<[number, number]> = [];
+    render(
+      <ModelStatsPreview
+        hp={{ ...defaultHyperparams }}
+        maxStride={16}
+        filters={16}
+        filtersRate={1.5}
+        outputStride={2}
+        stemStride={null}
+        backbone="unet"
+        slot="centroid"
+        labels={labels as never}
+        remoteFrame={async (videoIndex, frameIdx) => {
+          calls.push([videoIndex, frameIdx]);
+          throw new Error("Video not found on the worker");
+        }}
+      />
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    // Frame 3 has only a predicted instance; frame 11 is the first user-labeled one.
+    expect(calls).toEqual([[1, 11]]);
+  });
+});

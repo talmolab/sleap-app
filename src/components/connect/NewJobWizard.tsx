@@ -56,6 +56,7 @@ import { getDefaultProfileForHead, slotToHeadType } from "@/lib/trainingProfiles
 import {
   loadWorkerLabels,
   checkWorkerFileVideos,
+  fetchWorkerPreviewFrame,
   needsLabelsRepoint,
   videoChecksToVisibility,
   type WorkerFileVideoCheck,
@@ -600,6 +601,18 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
   const startFromValue =
     startFrom === "past" ? (selectedPastRunId ? `past:${selectedPastRunId}` : "") : startFrom;
 
+  // The receptive-field preview's frame: decoded on the worker, since its
+  // video lives there. Stable per loaded labels + video check, so the preview
+  // fetches once rather than on every render.
+  const remoteFrame = useMemo(
+    () =>
+      labels && videoCheck
+        ? async (videoIndex: number, frameIdx: number) =>
+            fetchWorkerPreviewFrame(await clientFor(workerId), labels, videoCheck, videoIndex, frameIdx)
+        : undefined,
+    [labels, videoCheck, clientFor, workerId],
+  );
+
   const missingVideos = videoCheck?.filter((v) => !v.found) ?? [];
   const allVideosFound = videoCheck != null && missingVideos.length === 0;
   // At least one video only resolved via a remembered rule or next-to-labels
@@ -1118,6 +1131,7 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
           onUpdateSlot={onUpdateSlot}
           configActions={configActions}
           labelsOverride={labels}
+          remoteFrame={remoteFrame}
           mode="worker-file"
           // Unreachable: TrainingConfigDialog hides its post-training-
           // inference controls entirely in mode="worker-file" (this wizard's

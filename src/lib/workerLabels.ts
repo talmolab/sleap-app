@@ -19,7 +19,7 @@ import {
   type RangeSource,
 } from "@talmolab/sleap-io.js";
 import type { WorkerClient } from "@/lib/protocolV1/client";
-import { WorkerProtocolError, FS_NOT_FOUND, FS_FORBIDDEN } from "@/lib/protocolV1/errors";
+import { WorkerProtocolError, FS_NOT_FOUND, FS_FORBIDDEN, PROTO_UNKNOWN_METHOD } from "@/lib/protocolV1/errors";
 import { translatePath, type PathMapping } from "@/lib/pathMappings";
 import type { VideoVisibility } from "@/lib/remoteVisibility";
 
@@ -352,4 +352,67 @@ export function videoChecksToVisibility(checks: WorkerFileVideoCheck[]): VideoVi
       ? { index: c.index, local: c.path, worker: null, visible: false }
       : { index: c.index, local: c.path, worker: c.workerPath, visible: c.workerPath !== null },
   );
+}
+
+/**
+ * The worker-side file holding frame `frameIdx` of a worker `.slp`'s video,
+ * given that video's {@link WorkerFileVideoCheck}: its resolved `workerPath`
+ * for a single-file video; for a multi-file `ImageVideo`, frame `frameIdx`'s
+ * own image, assumed to sit in the same folder the first image resolved to
+ * (only the first is ever checked). `null` when there's no such file — an
+ * embedded video, one not found on the worker, or a frame past the list.
+ */
+export function workerFramePath(
+  filename: string | string[],
+  check: WorkerFileVideoCheck,
+  frameIdx: number,
+): string | null {
+  if (check.embedded || check.workerPath === null) return null;
+  if (!Array.isArray(filename) || filename.length <= 1) return check.workerPath;
+  const image = filename[frameIdx];
+  if (image === undefined) return null;
+  const dir = dirnameOf(check.workerPath);
+  return dir ? `${dir}/${basenameOf(image)}` : basenameOf(image);
+}
+
+/** A decoded preview frame, with the original video frame's size (the image itself may be scaled down). */
+export interface PreviewFrame {
+  bitmap: ImageBitmap;
+  width: number;
+  height: number;
+}
+
+/**
+ * Frame `frameIdx` of video `videoIndex` of a worker `.slp`, decoded on the
+ * worker (`media.frame`) — for the receptive-field preview, since the app
+ * can't decode a worker-side video itself. Throws an `Error` whose message
+ * is fit to show in the preview when it can't.
+ */
+export async function fetchWorkerPreviewFrame(
+  client: WorkerClient,
+  labels: Labels,
+  checks: WorkerFileVideoCheck[],
+  videoIndex: number,
+  frameIdx: number,
+): Promise<PreviewFrame> {
+  const video = labels.videos[videoIndex];
+  const check = checks.find((c) => c.index === videoIndex);
+  if (!video || !check) throw new Error("Preview unavailable");
+  if (check.embedded) throw new Error("No preview for videos embedded in the labels file");
+  const path = workerFramePath(video.filename, check, frameIdx);
+  if (path === null) throw new Error("Video not found on the worker");
+  let frame;
+  try {
+    frame = await client.mediaFrame(path, frameIdx);
+  } catch (err) {
+    if (err instanceof WorkerProtocolError && err.code === PROTO_UNKNOWN_METHOD) {
+      throw new Error("Update sleap-rtc on the worker to preview its videos");
+    }
+    if (err instanceof WorkerProtocolError && err.code === FS_NOT_FOUND) {
+      throw new Error("Video not found on the worker");
+    }
+    throw new Error("Couldn't load a frame from the worker");
+  }
+  const blob = new Blob([frame.content as BlobPart], { type: frame.mime });
+  return { bitmap: await createImageBitmap(blob), width: frame.width, height: frame.height };
 }

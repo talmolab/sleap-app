@@ -25,6 +25,7 @@ import { checkWandbAuth, detectGpu, type WandbAuth } from "@/platform/backend";
 import { BackendPicker } from "@/components/common/BackendPicker";
 import { useAppStore } from "@/stores/appStore";
 import { ModelStatsPreview } from "@/components/dialogs/ModelStatsPreview";
+import type { PreviewFrame } from "@/lib/workerLabels";
 import { getBaselineProfilesForHead, getRecommendedProfileForHead, slotToHeadType } from "@/lib/trainingProfiles";
 import { computeInstanceSizeStats, recommendMaxStride, recommendBackboneProfile, recommendCentroidScale, resolveEffectiveCropSize, detectVideoChannels, resolveInputChannels } from "@/lib/modelStats";
 import { computeNodeVisibility, visibilityTier, type NodeVisibility } from "@/lib/anchorVisibility";
@@ -87,6 +88,8 @@ interface TrainingConfigDialogProps {
    * identical behavior to before (reads the open project).
    */
   labelsOverride?: Labels;
+  /** Launcher wizard: fetches the receptive-field preview's frame from the worker when `labelsOverride`'s video can't be decoded here (see `ModelStatsPreview`'s `remoteFrame`). */
+  remoteFrame?: (videoIndex: number, frameIdx: number) => Promise<PreviewFrame>;
   /** See {@link TrainingConfigActions}. Absent -> identical behavior to before (writes `useTrainingStore` directly). */
   configActions?: TrainingConfigActions;
   /**
@@ -411,6 +414,7 @@ function HeadTabContent({
   onUpdate,
   scrollRefCallback,
   labelsOverride,
+  remoteFrame,
   configActions,
   mode = "project",
 }: {
@@ -421,6 +425,7 @@ function HeadTabContent({
   onUpdate: (updates: Partial<ConfigHyperparams>) => void;
   scrollRefCallback: (el: HTMLDivElement | null) => void;
   labelsOverride?: Labels;
+  remoteFrame?: (videoIndex: number, frameIdx: number) => Promise<PreviewFrame>;
   configActions?: Pick<TrainingConfigActions, "addConfigFile" | "updateConfigCheckpointPath">;
   mode?: "project" | "worker-file";
 }) {
@@ -654,7 +659,7 @@ function HeadTabContent({
       )}
 
       {/* ── Model Stats Preview (thumbnail + RF + crop size + params) ── */}
-      <ModelStatsPreview hp={hp} maxStride={effectiveMaxStride} filters={hp.filters} filtersRate={hp.filtersRate} outputStride={hp.outputStride} stemStride={hp.stemStride} backbone={hp.backbone || "unet"} inputChannels={effectiveInputChannels} slot={slot} labels={labels} />
+      <ModelStatsPreview hp={hp} maxStride={effectiveMaxStride} filters={hp.filters} filtersRate={hp.filtersRate} outputStride={hp.outputStride} stemStride={hp.stemStride} backbone={hp.backbone || "unet"} inputChannels={effectiveInputChannels} slot={slot} labels={labels} remoteFrame={remoteFrame} />
 
       {/* ── 1. Data ── */}
       <div className={allLocked ? "opacity-40 pointer-events-none" : ""}>
@@ -1179,6 +1184,7 @@ export function TrainingConfigDialog({
   useExportedForInference,
   onUseExportedForInferenceChange,
   labelsOverride,
+  remoteFrame,
   configActions,
   mode = "project",
 }: TrainingConfigDialogProps) {
@@ -2029,6 +2035,7 @@ export function TrainingConfigDialog({
                   onUpdate={(updates) => onUpdateSlot(cf.slot, updates)}
                   scrollRefCallback={(el) => { headScrollRefs.current[cf.slot] = el; }}
                   labelsOverride={labelsOverride}
+                  remoteFrame={remoteFrame}
                   configActions={configActions}
                   mode={mode}
                 />

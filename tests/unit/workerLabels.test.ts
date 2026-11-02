@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "../bun-test";
-import { WorkerProtocolError, FS_NOT_FOUND, FS_FORBIDDEN } from "@/lib/protocolV1/errors";
+import { WorkerProtocolError, FS_NOT_FOUND, FS_FORBIDDEN, PROTO_UNKNOWN_METHOD } from "@/lib/protocolV1/errors";
 import type { WorkerClient } from "@/lib/protocolV1/client";
 
 // `readSlpStreaming` runs its H5 parser in a real Worker over a
@@ -24,6 +24,8 @@ const {
   checkWorkerFileVideos,
   needsLabelsRepoint,
   videoChecksToVisibility,
+  workerFramePath,
+  fetchWorkerPreviewFrame,
 } = await import("@/lib/workerLabels");
 
 const FILE_BYTES = new Uint8Array(10_000);
@@ -453,5 +455,78 @@ describe("videoChecksToVisibility", () => {
     expect(videoChecksToVisibility(checks)).toEqual([
       { index: 0, local: "video0", worker: null, visible: false },
     ]);
+  });
+});
+
+describe("workerFramePath", () => {
+  const found = (workerPath: string) => ({
+    index: 0,
+    path: "/Volumes/lab/v.mp4",
+    embedded: false,
+    found: true,
+    workerPath,
+    via: "rule" as const,
+  });
+
+  it("is the resolved worker path for a single-file video", () => {
+    expect(workerFramePath("/Volumes/lab/v.mp4", found("/data/v.mp4"), 99)).toBe("/data/v.mp4");
+  });
+
+  it("is that frame's image, in the folder the first image resolved to, for an image sequence", () => {
+    const files = ["C:\\imgs\\f0.png", "C:\\imgs\\f1.png", "C:\\imgs\\f2.png"];
+    expect(workerFramePath(files, found("/data/imgs/f0.png"), 2)).toBe("/data/imgs/f2.png");
+    expect(workerFramePath(files, found("/data/imgs/f0.png"), 3)).toBeNull();
+  });
+
+  it("is null for an embedded or missing video", () => {
+    expect(workerFramePath("x", { ...found("/a"), embedded: true, workerPath: null }, 0)).toBeNull();
+    expect(workerFramePath("x", { ...found("/a"), found: false, workerPath: null }, 0)).toBeNull();
+  });
+});
+
+describe("fetchWorkerPreviewFrame", () => {
+  const labels = { videos: [{ filename: "/Volumes/lab/v.mp4" }] } as never;
+  const checks = [
+    { index: 0, path: "/Volumes/lab/v.mp4", embedded: false, found: true, workerPath: "/data/v.mp4", via: "rule" as const },
+  ];
+
+  it("asks the worker for that frame and keeps the original size", async () => {
+    const calls: Array<[string, number]> = [];
+    const client = {
+      mediaFrame: async (path: string, frameIdx: number) => {
+        calls.push([path, frameIdx]);
+        return { content: new Uint8Array([1, 2]), mime: "image/jpeg", width: 4096, height: 2048, scaledWidth: 2048, scaledHeight: 1024 };
+      },
+    } as unknown as WorkerClient;
+    const bitmap = { width: 2048, height: 1024 } as unknown as ImageBitmap;
+    const original = globalThis.createImageBitmap;
+    globalThis.createImageBitmap = (async () => bitmap) as never;
+    try {
+      const frame = await fetchWorkerPreviewFrame(client, labels, checks, 0, 7);
+      expect(calls).toEqual([["/data/v.mp4", 7]]);
+      expect(frame).toEqual({ bitmap, width: 4096, height: 2048 });
+    } finally {
+      globalThis.createImageBitmap = original;
+    }
+  });
+
+  it("explains an older worker without media.frame", async () => {
+    const client = {
+      mediaFrame: async () => {
+        throw new WorkerProtocolError(PROTO_UNKNOWN_METHOD, "no such method");
+      },
+    } as unknown as WorkerClient;
+    await expect(fetchWorkerPreviewFrame(client, labels, checks, 0, 7)).rejects.toThrow(
+      "Update sleap-rtc on the worker to preview its videos",
+    );
+  });
+
+  it("explains a video that isn't on the worker, without asking it", async () => {
+    const client = { mediaFrame: vi.fn() } as unknown as WorkerClient;
+    const missing = [{ ...checks[0], found: false, workerPath: null }];
+    await expect(fetchWorkerPreviewFrame(client, labels, missing, 0, 7)).rejects.toThrow(
+      "Video not found on the worker",
+    );
+    expect((client as unknown as { mediaFrame: ReturnType<typeof vi.fn> }).mediaFrame).not.toHaveBeenCalled();
   });
 });

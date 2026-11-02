@@ -12,6 +12,7 @@ import {
 import { expandFrameBytesToRGBA, inferFrameChannels } from "@/lib/videoExport";
 import type { ConfigHyperparams } from "@/stores/trainingStore";
 import type { Labels } from "@talmolab/sleap-io.js";
+import type { PreviewFrame } from "@/lib/workerLabels";
 
 interface ModelStatsPreviewProps {
   hp: ConfigHyperparams;
@@ -25,16 +26,26 @@ interface ModelStatsPreviewProps {
   slot?: string;
   /** Overrides the open project's labels — the launcher wizard (worker-file mode, TrainingConfigDialog's own `labelsOverride`) passes a worker-side `Labels` here instead. Absent -> reads the open project, as before. */
   labels?: Labels | null;
+  /** Fetches a frame the app can't decode itself (a worker-side video, in the launcher wizard) — `(index into labels.videos, frame index)`. Used only when that video has no local backend; throws with a message to show in its place. */
+  remoteFrame?: (videoIndex: number, frameIdx: number) => Promise<PreviewFrame>;
+}
+
+/** The preview image, and the width of the video frame it shows: the image may be scaled down (a worker-decoded JPEG), but the overlay boxes are in original-frame pixels. */
+interface Thumbnail {
+  bitmap: ImageBitmap;
+  sourceWidth: number;
 }
 
 const THUMBNAIL_SIZE = 200;
 const DPR = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
 
-export function ModelStatsPreview({ hp, maxStride, filters, filtersRate, outputStride, stemStride, backbone, inputChannels = 1, slot, labels: labelsProp }: ModelStatsPreviewProps) {
+export function ModelStatsPreview({ hp, maxStride, filters, filtersRate, outputStride, stemStride, backbone, inputChannels = 1, slot, labels: labelsProp, remoteFrame }: ModelStatsPreviewProps) {
   const storeLabels = useAppStore((s) => s.labels);
   const labels = labelsProp !== undefined ? labelsProp : storeLabels;
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [thumbnail, setThumbnail] = useState<ImageBitmap | null>(null);
+  const [thumbnail, setThumbnail] = useState<Thumbnail | null>(null);
+  // Shown in place of the image when there isn't one.
+  const [placeholder, setPlaceholder] = useState("No labeled frames");
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [mousePos, setMousePos] = useState<{ x: number; y: number } | null>(null);
@@ -95,7 +106,17 @@ export function ModelStatsPreview({ hp, maxStride, filters, filtersRate, outputS
       if (!targetFrame) return;
 
       const video = targetFrame.video ?? labels.videos[0];
-      if (!video?.backend) return;
+      if (!video?.backend) {
+        if (!remoteFrame || !video) return;
+        setPlaceholder("Loading frame from worker…");
+        try {
+          const frame = await remoteFrame(labels.videos.indexOf(video), targetFrame.frameIdx);
+          if (!cancelled) setThumbnail({ bitmap: frame.bitmap, sourceWidth: frame.width });
+        } catch (err) {
+          if (!cancelled) setPlaceholder(err instanceof Error ? err.message : String(err));
+        }
+        return;
+      }
 
       try {
         const frame = await video.backend.getFrame(targetFrame.frameIdx);
@@ -146,7 +167,7 @@ export function ModelStatsPreview({ hp, maxStride, filters, filtersRate, outputS
         }
 
         if (!cancelled) {
-          setThumbnail(bmp);
+          setThumbnail({ bitmap: bmp, sourceWidth: bmp.width });
         }
       } catch {
         // Frame decoding failed — thumbnail stays empty
@@ -154,7 +175,7 @@ export function ModelStatsPreview({ hp, maxStride, filters, filtersRate, outputS
     })();
 
     return () => { cancelled = true; };
-  }, [labels]);
+  }, [labels, remoteFrame]);
 
   // Draw thumbnail + overlay boxes
   useEffect(() => {
@@ -177,7 +198,8 @@ export function ModelStatsPreview({ hp, maxStride, filters, filtersRate, outputS
       ctx.translate(-THUMBNAIL_SIZE / 2, -THUMBNAIL_SIZE / 2);
 
       // Draw scaled thumbnail centered
-      const aspect = thumbnail.width / thumbnail.height;
+      const { bitmap } = thumbnail;
+      const aspect = bitmap.width / bitmap.height;
       let drawW: number, drawH: number, offsetX: number, offsetY: number;
       if (aspect > 1) {
         drawW = THUMBNAIL_SIZE;
@@ -190,10 +212,10 @@ export function ModelStatsPreview({ hp, maxStride, filters, filtersRate, outputS
         offsetX = (THUMBNAIL_SIZE - drawW) / 2;
         offsetY = 0;
       }
-      ctx.drawImage(thumbnail, offsetX, offsetY, drawW, drawH);
+      ctx.drawImage(bitmap, offsetX, offsetY, drawW, drawH);
 
-      // Scale factor: thumbnail pixels per original pixel
-      const imgScale = drawW / thumbnail.width;
+      // Scale factor: thumbnail pixels per original-frame pixel
+      const imgScale = drawW / thumbnail.sourceWidth;
 
       // Box center follows mouse; falls back to image center when cursor is outside
       let boxCenterX: number, boxCenterY: number;
@@ -229,9 +251,9 @@ export function ModelStatsPreview({ hp, maxStride, filters, filtersRate, outputS
       ctx.fillStyle = "#71717a";
       ctx.font = "12px sans-serif";
       ctx.textAlign = "center";
-      ctx.fillText("No labeled frames", THUMBNAIL_SIZE / 2, THUMBNAIL_SIZE / 2);
+      ctx.fillText(placeholder, THUMBNAIL_SIZE / 2, THUMBNAIL_SIZE / 2, THUMBNAIL_SIZE - 16);
     }
-  }, [thumbnail, cropSize, rf, hp.scale, zoom, pan, mousePos]);
+  }, [thumbnail, placeholder, cropSize, rf, hp.scale, zoom, pan, mousePos]);
 
   return (
     <div className="mb-5 pb-4 border-b">
