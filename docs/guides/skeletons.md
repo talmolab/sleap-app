@@ -7,15 +7,22 @@ is defined in terms of it.
 
 ## Starting from a template
 
-**File ▸ New Project…** offers built-in skeletons:
+**File ▸ New Project…** and the **Skeleton** panel's **Load template** offer the
+skeletons legacy SLEAP ships, one per SLEAP reference dataset:
 
-| Template | Nodes |
-|---|---|
-| Fly | 32 |
-| Mouse top-down | 12 |
-| Human | 17 |
-| *C. elegans* | 2 |
-| Empty — define later | none yet |
+| Template | Nodes | Animals |
+|---|---|---|
+| Bees | 21 | Bumblebees in a petri dish |
+| Flies 13 | 13 | Pairs of fruit flies |
+| Fly | 32 | A single fruit fly, animal-centered |
+| Gerbils | 14 | Gerbils in a home cage |
+| Mice, home cage | 5 | Pairs of mice, from above |
+| Mice, open field | 11 | Mice in an open field, from below |
+| Empty — define later | none yet | |
+
+Picking one in **Load template** previews it before anything changes: a labeled
+example image, its nodes, and **Example**, which opens a larger frame from the
+reference dataset with the skeleton drawn on each animal. **Load** applies it.
 
 Pick the closest one and edit it, or start empty.
 

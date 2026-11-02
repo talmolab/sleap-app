@@ -88,7 +88,9 @@ function ensureInterceptor() {
  * What a skeleton template looks like before it's loaded: legacy SLEAP's
  * template preview. Shows the template's labeled example image when it has one
  * (the reference-dataset templates do), its name, description and nodes, and a
- * Load button.
+ * Load button. A template from a reference dataset also opens that dataset's
+ * larger example figure, as SLEAP's dataset docs show it, from its image or
+ * "Example" button.
  */
 function TemplatePreview({
   template,
@@ -97,18 +99,32 @@ function TemplatePreview({
   template: SkeletonTemplate;
   onLoad: () => void;
 }) {
+  const [exampleOpen, setExampleOpen] = useState(false);
+  const { dataset } = template;
+  const image = template.previewImage && (
+    <img
+      src={`${import.meta.env.BASE_URL}skeleton-templates/${template.previewImage}`}
+      alt={`Example of the ${template.name} skeleton`}
+      className="h-24 w-24 shrink-0 rounded object-cover"
+      draggable={false}
+    />
+  );
   return (
     <div
       className="mt-1.5 flex gap-2 rounded border border-border p-1.5"
       data-testid="skeleton-template-preview"
     >
-      {template.previewImage && (
-        <img
-          src={`${import.meta.env.BASE_URL}skeleton-templates/${template.previewImage}`}
-          alt={`Example of the ${template.name} skeleton`}
-          className="h-24 w-24 shrink-0 rounded object-cover"
-          draggable={false}
-        />
+      {image && dataset ? (
+        <button
+          type="button"
+          className="shrink-0 cursor-zoom-in rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          title="View the reference dataset's example"
+          onClick={() => setExampleOpen(true)}
+        >
+          {image}
+        </button>
+      ) : (
+        image
       )}
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         <div className="text-xs font-medium leading-snug">{template.name}</div>
@@ -126,10 +142,48 @@ function TemplatePreview({
             {template.nodes.join(", ")}
           </div>
         )}
-        <Button size="xs" className="mt-auto self-start" onClick={onLoad}>
-          Load
-        </Button>
+        <div className="mt-auto flex gap-1">
+          <Button size="xs" onClick={onLoad}>
+            Load
+          </Button>
+          {dataset && (
+            <Button size="xs" variant="subtle" onClick={() => setExampleOpen(true)}>
+              Example
+            </Button>
+          )}
+        </div>
       </div>
+      {dataset && (
+        <Dialog open={exampleOpen} onOpenChange={setExampleOpen}>
+          <DialogContent className="sm:max-w-lg" data-testid="skeleton-template-example">
+            <DialogHeader>
+              <DialogTitle>{template.name}</DialogTitle>
+              <DialogDescription>{dataset.description}</DialogDescription>
+            </DialogHeader>
+            <img
+              src={`${import.meta.env.BASE_URL}skeleton-templates/${dataset.exampleImage}`}
+              alt={`Labeled frames from the ${template.name} reference dataset`}
+              className="mx-auto aspect-square w-full max-w-[467px] rounded"
+              draggable={false}
+            />
+            <p className="text-xs text-muted-foreground">
+              A frame from the reference dataset with this skeleton drawn on
+              each animal, and faded poses from the frames around it.
+            </p>
+            <DialogFooter>
+              <Button
+                size="sm"
+                onClick={() => {
+                  setExampleOpen(false);
+                  onLoad();
+                }}
+              >
+                Load
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
     </div>
   );
 }

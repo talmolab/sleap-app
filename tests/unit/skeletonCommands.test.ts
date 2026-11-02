@@ -451,20 +451,20 @@ describe("Skeleton commands", () => {
     it("loads a fly template", async () => {
       const project = setupProject({ numNodes: 3 });
 
-      await ctx.execute(LoadSkeletonTemplateCommand, { templateId: "fly" });
+      await ctx.execute(LoadSkeletonTemplateCommand, { templateId: "fly32" });
 
       expect(project.skeleton.nodes.length).toBe(32);
       expect(project.skeleton.edges.length).toBeGreaterThan(0);
-      expect(project.skeleton.nodes[0].name).toBe("head");
+      expect(project.skeleton.nodes[0].name).toBe("head1");
     });
 
-    it("loads a human template", async () => {
+    it("loads a mouse template", async () => {
       const project = setupProject({ numNodes: 3 });
 
-      await ctx.execute(LoadSkeletonTemplateCommand, { templateId: "human" });
+      await ctx.execute(LoadSkeletonTemplateCommand, { templateId: "mice_of" });
 
-      expect(project.skeleton.nodes.length).toBe(17);
-      expect(project.skeleton.nodes[0].name).toBe("nose");
+      expect(project.skeleton.nodes.length).toBe(11);
+      expect(project.skeleton.nodes[0].name).toBe("nose1");
     });
 
     it("applies a template's symmetries", async () => {
@@ -483,7 +483,7 @@ describe("Skeleton commands", () => {
       const project = setupProject({ numNodes: 3 });
 
       await ctx.execute(LoadSkeletonTemplateCommand, { templateId: "flies13" });
-      await ctx.execute(LoadSkeletonTemplateCommand, { templateId: "celegans" });
+      await ctx.execute(LoadSkeletonTemplateCommand, { templateId: "mice_hc" });
 
       expect(project.skeleton.symmetries).toHaveLength(0);
     });
@@ -491,11 +491,11 @@ describe("Skeleton commands", () => {
     it("resets instance points to match new node count", async () => {
       const project = setupProject({ numNodes: 3, numFrames: 2, numInstancesPerFrame: 1 });
 
-      await ctx.execute(LoadSkeletonTemplateCommand, { templateId: "celegans" });
+      await ctx.execute(LoadSkeletonTemplateCommand, { templateId: "mice_hc" });
 
       for (const lf of project.labels.labeledFrames) {
         for (const inst of lf.instances) {
-          expect(inst.points.length).toBe(2);
+          expect(inst.points.length).toBe(5);
           // Points should be NaN (reset)
           expect(isNaN(inst.points[0].xy[0])).toBe(true);
         }
@@ -591,9 +591,9 @@ describe("Skeleton commands", () => {
 
       const beforeNodeCount = project.skeleton.nodes.length;
 
-      await ctx.execute(LoadSkeletonTemplateCommand, { templateId: "human" });
+      await ctx.execute(LoadSkeletonTemplateCommand, { templateId: "mice_of" });
 
-      expect(project.skeleton.nodes.length).toBe(17);
+      expect(project.skeleton.nodes.length).toBe(11);
 
       ctx.undo();
 

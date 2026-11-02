@@ -40,8 +40,8 @@ the frames come out of the file itself.
 
 To start fresh, use **File ▸ New Project…** (++cmd+n++ / ++ctrl+n++):
 
-1. Pick a **Skeleton** — one of the built-in templates (fly, mouse top-down,
-   human, *C. elegans*) or **Empty — define later**.
+1. Pick a **Skeleton** — one of the built-in templates (bees, flies, gerbils,
+   mice) or **Empty — define later**.
 2. Add videos: drag them onto the dropzone or click it to browse. No video
    handy? Click **Use sample video** to download `mice.mp4`.
 3. Click **Create Project**.

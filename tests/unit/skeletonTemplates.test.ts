@@ -42,6 +42,34 @@ describe("skeletonTemplates", () => {
     }
   });
 
+  it("offers legacy SLEAP's templates, each with an image, then a blank one", () => {
+    expect([...TEMPLATE_ORDER]).toEqual([
+      "bees",
+      "flies13",
+      "fly32",
+      "gerbils",
+      "mice_hc",
+      "mice_of",
+      "custom",
+    ]);
+    for (const id of TEMPLATE_ORDER) {
+      if (id !== "custom") expect(SKELETON_TEMPLATES[id].previewImage).toBeDefined();
+    }
+  });
+
+  it("no two templates share a name", () => {
+    const names = Object.values(SKELETON_TEMPLATES).map((t) => t.name);
+    expect(new Set(names).size).toBe(names.length);
+  });
+
+  it("offers one 32-node fly: legacy SLEAP's, with its example", () => {
+    const flies = Object.values(SKELETON_TEMPLATES).filter((t) => t.nodes.length === 32);
+    expect(flies).toHaveLength(1);
+    expect(flies[0]).toBe(SKELETON_TEMPLATES.fly32);
+    expect(flies[0].name).toBe("Fly (32 nodes)");
+    expect(flies[0].previewImage).toBe("fly32.png");
+  });
+
   it("no duplicate node names within a template", () => {
     for (const [, template] of Object.entries(SKELETON_TEMPLATES)) {
       const names = new Set(template.nodes);
@@ -50,34 +78,11 @@ describe("skeletonTemplates", () => {
   });
 
   describe("specific templates", () => {
-    it("fly template has 32 nodes", () => {
-      expect(SKELETON_TEMPLATES.fly.nodes.length).toBe(32);
-    });
-
-    it("human template has 17 nodes", () => {
-      expect(SKELETON_TEMPLATES.human.nodes.length).toBe(17);
-    });
-
-    it("mouse_topdown template has 12 nodes", () => {
-      expect(SKELETON_TEMPLATES.mouse_topdown.nodes.length).toBe(12);
-    });
-
-    it("celegans template has 2 nodes", () => {
-      expect(SKELETON_TEMPLATES.celegans.nodes.length).toBe(2);
-    });
-
     it("custom template has 0 nodes", () => {
       expect(SKELETON_TEMPLATES.custom.nodes.length).toBe(0);
       expect(SKELETON_TEMPLATES.custom.edges.length).toBe(0);
     });
 
-    it("fly template starts with 'head'", () => {
-      expect(SKELETON_TEMPLATES.fly.nodes[0]).toBe("head");
-    });
-
-    it("human template starts with 'nose'", () => {
-      expect(SKELETON_TEMPLATES.human.nodes[0]).toBe("nose");
-    });
   });
 
   it("edges are valid index pairs", () => {
@@ -140,6 +145,21 @@ describe("skeletonTemplates", () => {
     expect(named.length).toBe(6);
     for (const t of named) {
       expect(existsSync(join(dir, t.previewImage!))).toBe(true);
+    }
+  });
+
+  it("every reference-dataset template has its example figure and a description", () => {
+    const dir = join(import.meta.dir, "../../public/skeleton-templates");
+    const withDataset = Object.values(SKELETON_TEMPLATES).filter((t) => t.dataset);
+    // The same six that carry legacy SLEAP's preview images.
+    expect(withDataset.map((t) => t.name)).toEqual(
+      Object.values(SKELETON_TEMPLATES)
+        .filter((t) => t.previewImage)
+        .map((t) => t.name)
+    );
+    for (const t of withDataset) {
+      expect(existsSync(join(dir, t.dataset!.exampleImage))).toBe(true);
+      expect(t.dataset!.description.length).toBeGreaterThan(0);
     }
   });
 });

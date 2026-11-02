@@ -88,11 +88,11 @@ describe("skeleton template preview", () => {
     setupProject([]);
     await renderPanel();
 
-    pickTemplate(SKELETON_TEMPLATES.human.name);
+    pickTemplate(SKELETON_TEMPLATES.custom.name);
 
     const card = preview()!;
     expect(within(card).queryByRole("img")).toBeNull();
-    expect(card.textContent).toContain("17 nodes");
+    expect(card.textContent).toContain(SKELETON_TEMPLATES.custom.description);
   });
 
   it("loads the previewed template when Load is clicked", async () => {
@@ -103,6 +103,50 @@ describe("skeleton template preview", () => {
     fireEvent.click(within(preview()!).getByRole("button", { name: "Load" }));
 
     expect(skeleton.nodes.map((n) => n.name)).toEqual(SKELETON_TEMPLATES.mice_of.nodes);
+  });
+
+  it("opens the reference dataset's example figure from the image and the Example button", async () => {
+    setupProject([]);
+    await renderPanel();
+
+    pickTemplate(SKELETON_TEMPLATES.bees.name);
+    const exampleDialog = () => screen.queryByTestId("skeleton-template-example");
+    expect(exampleDialog()).toBeNull();
+
+    fireEvent.click(within(preview()!).getByTitle("View the reference dataset's example"));
+    const dialog = exampleDialog()!;
+    expect(dialog).not.toBeNull();
+    expect(within(dialog).getByRole("img").getAttribute("src")).toContain(
+      "skeleton-templates/bees.example.jpg"
+    );
+    expect(dialog.textContent).toContain(SKELETON_TEMPLATES.bees.dataset!.description);
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    expect(exampleDialog()).toBeNull();
+
+    fireEvent.click(within(preview()!).getByRole("button", { name: "Example" }));
+    expect(exampleDialog()).not.toBeNull();
+  });
+
+  it("loads the template from the example dialog's Load button", async () => {
+    const skeleton = setupProject([]);
+    await renderPanel();
+
+    pickTemplate(SKELETON_TEMPLATES.gerbils.name);
+    fireEvent.click(within(preview()!).getByRole("button", { name: "Example" }));
+    const dialog = screen.getByTestId("skeleton-template-example");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Load" }));
+
+    expect(screen.queryByTestId("skeleton-template-example")).toBeNull();
+    expect(skeleton.nodes.map((n) => n.name)).toEqual(SKELETON_TEMPLATES.gerbils.nodes);
+  });
+
+  it("offers no example for a template without a reference dataset", async () => {
+    setupProject([]);
+    await renderPanel();
+
+    pickTemplate(SKELETON_TEMPLATES.custom.name);
+    expect(within(preview()!).queryByRole("button", { name: "Example" })).toBeNull();
   });
 
   it("still asks before replacing an existing skeleton", async () => {
