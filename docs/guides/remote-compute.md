@@ -29,6 +29,9 @@ answer is remembered, so the next `serve` there doesn't ask again. Starting in
 your home folder works too, but the worker warns you: that shares everything in
 it.
 
+You can also name the folder instead of `cd`-ing into it:
+`sleap-rtc serve /path/to/your/data`.
+
 `sleap-rtc serve` starts the worker in the background (after asking about the
 folder): you get your prompt back, and it keeps running after you close the
 terminal or log out. `sleap-rtc status` shows whether it's running, and
