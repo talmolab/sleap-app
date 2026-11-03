@@ -6,6 +6,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { NumberInput } from "@/components/NumberInput";
 import { toast } from "@/lib/notify";
 import { LogNumberInput } from "@/components/LogNumberInput";
 import { Separator } from "@/components/ui/separator";
@@ -662,7 +663,7 @@ function HeadTabContent({
       <div className="space-y-2">
         <div className={hp.overfitMode ? "opacity-50" : ""}>
           <Field {...HEAD_FIELD_DEFS.validationFraction}>
-            <Input type="number" value={hp.validationFraction} onChange={(e) => onUpdate({ validationFraction: Number(e.target.value) })} min={0} max={1} step={0.05} className="h-9 text-sm" disabled={hp.overfitMode} />
+            <NumberInput min={0} max={1} value={hp.validationFraction} onCommit={(n) => onUpdate({ validationFraction: n })} step={0.05} className="h-9 text-sm" disabled={hp.overfitMode} />
           </Field>
         </div>
         <div className="flex items-center gap-6">
@@ -674,7 +675,7 @@ function HeadTabContent({
               {HEAD_FIELD_DEFS.randomSeed.label}
               <HintBubble text="Random seed for reproducible train/validation data splits. Leave empty (Auto) for random seed each run." />
             </span>
-            <Input type="number" value={hp.randomSeed ?? ""} onChange={(e) => onUpdate({ randomSeed: e.target.value ? Number(e.target.value) : null })} disabled={hp.randomSeed === null} placeholder="0" className="h-8 text-sm w-20" />
+            <NumberInput min={0} integer nullable value={hp.randomSeed} onCommit={(n) => onUpdate({ randomSeed: n })} disabled={hp.randomSeed === null} placeholder="0" className="h-8 text-sm w-20" />
           </div>
           <label className="flex items-center gap-1.5 cursor-pointer">
             <input type="checkbox" checked={hp.randomSeed === null} onChange={(e) => onUpdate({ randomSeed: e.target.checked ? null : 0 })} className="accent-primary" />
@@ -682,7 +683,7 @@ function HeadTabContent({
           </label>
         </div>
         <Field {...HEAD_FIELD_DEFS.inputScaling} hint="Rescaling factor applied to input images before training. Values less than 1.0 downsample the image, which reduces memory usage and speeds up training at the cost of spatial resolution. Note that crop size and sigma values are relative to the scaled image.">
-          <Input type="number" value={hp.scale} onChange={(e) => onUpdate({ scale: Number(e.target.value) })} min={0.125} max={1} step={0.125} className="h-9 text-sm" />
+          <NumberInput min={0.01} value={hp.scale} onCommit={(n) => onUpdate({ scale: n })} step={0.125} className="h-9 text-sm" />
         </Field>
         {slot === "centroid" && centroidScaleRecommendation && (
           <p className="text-[10px] text-green-400 -mt-1 pl-1">
@@ -696,20 +697,14 @@ function HeadTabContent({
           <>
             <div className="flex items-center gap-4">
               <Field {...HEAD_FIELD_DEFS.cropSize} hint="Bounding box crop size around each instance in pixels. Set to 'Auto' to compute from the data (largest instance bounding box, padded for rotation/scale augmentation, aligned to max_stride).">
-                <Input
-                  type="number"
-                  value={hp.cropSize ?? effectiveCropSize ?? ""}
-                  onChange={(e) => {
-                    // Don't force Auto just because the field is momentarily
-                    // empty mid-edit (e.g. select-all + retype) — only the
-                    // explicit "Auto" checkbox below should set cropSize:null.
-                    // Previously this fired on every keystroke, including the
-                    // empty intermediate value, which flipped `disabled` on
-                    // the input and dropped the rest of the user's typing.
-                    if (e.target.value === "") return;
-                    const n = Number(e.target.value);
-                    if (!Number.isNaN(n)) onUpdate({ cropSize: n });
-                  }}
+                <NumberInput
+                  integer
+                  min={32}
+                  max={1024}
+                  value={hp.cropSize ?? effectiveCropSize ?? null}
+                  // Not nullable: only the explicit "Auto" checkbox below sets
+                  // cropSize:null, never a momentarily empty box mid-edit.
+                  onCommit={(n) => onUpdate({ cropSize: n })}
                   disabled={hp.cropSize === null}
                   className="h-9 text-sm"
                 />
@@ -756,7 +751,7 @@ function HeadTabContent({
         {hp.rotationPreset === "custom" && (
           <div className="flex items-center gap-2 pl-6 mb-2">
             <span className="text-sm text-muted-foreground">Angle (&plusmn;&deg;)</span>
-            <Input type="number" value={hp.rotationCustomAngle} onChange={(e) => onUpdate({ rotationCustomAngle: Number(e.target.value) })} min={0} max={180} step={1} className="h-8 text-sm w-20" />
+            <NumberInput min={1} max={180} value={hp.rotationCustomAngle} onCommit={(n) => onUpdate({ rotationCustomAngle: n })} step={1} className="h-8 text-sm w-20" />
           </div>
         )}
 
@@ -770,11 +765,11 @@ function HeadTabContent({
             <div className="flex items-center gap-4 pl-6">
               <div className="flex items-center gap-2">
                 <span className="text-sm text-muted-foreground">Scale Min</span>
-                <Input type="number" value={hp.scaleMin} onChange={(e) => onUpdate({ scaleMin: Number(e.target.value) })} min={0.1} max={2} step={0.05} className="h-8 text-sm w-20" />
+                <NumberInput min={0.01} value={hp.scaleMin} onCommit={(n) => onUpdate({ scaleMin: n })} step={0.05} className="h-8 text-sm w-20" />
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-sm text-muted-foreground">Scale Max</span>
-                <Input type="number" value={hp.scaleMax} onChange={(e) => onUpdate({ scaleMax: Number(e.target.value) })} min={0.1} max={2} step={0.05} className="h-8 text-sm w-20" />
+                <NumberInput min={0.01} value={hp.scaleMax} onCommit={(n) => onUpdate({ scaleMax: n })} step={0.05} className="h-8 text-sm w-20" />
               </div>
             </div>
           )}
@@ -788,11 +783,11 @@ function HeadTabContent({
             <div className="flex items-center gap-4 pl-6">
               <div className="flex items-center gap-2">
                 <span className="text-sm text-muted-foreground">Min Val</span>
-                <Input type="number" value={hp.uniformNoiseMin} onChange={(e) => onUpdate({ uniformNoiseMin: Number(e.target.value) })} min={0} max={1} step={0.01} className="h-8 text-sm w-20" />
+                <NumberInput min={0} max={1} value={hp.uniformNoiseMin} onCommit={(n) => onUpdate({ uniformNoiseMin: n })} step={0.01} className="h-8 text-sm w-20" />
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-sm text-muted-foreground">Max Val</span>
-                <Input type="number" value={hp.uniformNoiseMax} onChange={(e) => onUpdate({ uniformNoiseMax: Number(e.target.value) })} min={0} max={1} step={0.01} className="h-8 text-sm w-20" />
+                <NumberInput min={0} max={1} value={hp.uniformNoiseMax} onCommit={(n) => onUpdate({ uniformNoiseMax: n })} step={0.01} className="h-8 text-sm w-20" />
               </div>
             </div>
           )}
@@ -806,11 +801,11 @@ function HeadTabContent({
             <div className="flex items-center gap-4 pl-6">
               <div className="flex items-center gap-2">
                 <span className="text-sm text-muted-foreground">Mean</span>
-                <Input type="number" value={hp.gaussianNoiseMean} onChange={(e) => onUpdate({ gaussianNoiseMean: Number(e.target.value) })} step={0.01} className="h-8 text-sm w-20" />
+                <NumberInput value={hp.gaussianNoiseMean} onCommit={(n) => onUpdate({ gaussianNoiseMean: n })} step={0.01} className="h-8 text-sm w-20" />
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-sm text-muted-foreground">Std Dev</span>
-                <Input type="number" value={hp.gaussianNoiseStd} onChange={(e) => onUpdate({ gaussianNoiseStd: Number(e.target.value) })} step={0.01} className="h-8 text-sm w-20" />
+                <NumberInput min={0} value={hp.gaussianNoiseStd} onCommit={(n) => onUpdate({ gaussianNoiseStd: n })} step={0.01} className="h-8 text-sm w-20" />
               </div>
             </div>
           )}
@@ -824,11 +819,11 @@ function HeadTabContent({
             <div className="flex items-center gap-4 pl-6">
               <div className="flex items-center gap-2">
                 <span className="text-sm text-muted-foreground">Contrast Min</span>
-                <Input type="number" value={hp.contrastMin} onChange={(e) => onUpdate({ contrastMin: Number(e.target.value) })} min={0.5} max={2} step={0.05} className="h-8 text-sm w-20" />
+                <NumberInput min={0} value={hp.contrastMin} onCommit={(n) => onUpdate({ contrastMin: n })} step={0.05} className="h-8 text-sm w-20" />
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-sm text-muted-foreground">Contrast Max</span>
-                <Input type="number" value={hp.contrastMax} onChange={(e) => onUpdate({ contrastMax: Number(e.target.value) })} min={0.5} max={2} step={0.05} className="h-8 text-sm w-20" />
+                <NumberInput min={0} value={hp.contrastMax} onCommit={(n) => onUpdate({ contrastMax: n })} step={0.05} className="h-8 text-sm w-20" />
               </div>
             </div>
           )}
@@ -842,11 +837,11 @@ function HeadTabContent({
             <div className="flex items-center gap-4 pl-6">
               <div className="flex items-center gap-2">
                 <span className="text-sm text-muted-foreground">Brightness Min</span>
-                <Input type="number" value={hp.brightnessMin} onChange={(e) => onUpdate({ brightnessMin: Number(e.target.value) })} step={0.01} className="h-8 text-sm w-20" />
+                <NumberInput value={hp.brightnessMin} onCommit={(n) => onUpdate({ brightnessMin: n })} step={0.01} className="h-8 text-sm w-20" />
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-sm text-muted-foreground">Brightness Max</span>
-                <Input type="number" value={hp.brightnessMax} onChange={(e) => onUpdate({ brightnessMax: Number(e.target.value) })} step={0.01} className="h-8 text-sm w-20" />
+                <NumberInput value={hp.brightnessMax} onCommit={(n) => onUpdate({ brightnessMax: n })} step={0.01} className="h-8 text-sm w-20" />
               </div>
             </div>
           )}
@@ -861,13 +856,13 @@ function HeadTabContent({
       <SectionHeading {...HEAD_FIELD_DEFS.secOptimization} />
       <div className="space-y-2">
         <Field {...HEAD_FIELD_DEFS.batchSize}>
-          <Input type="number" value={hp.batchSize} onChange={(e) => onUpdate({ batchSize: Number(e.target.value) })} min={1} max={128} className="h-9 text-sm" />
+          <NumberInput min={1} max={512} integer value={hp.batchSize} onCommit={(n) => onUpdate({ batchSize: n })} className="h-9 text-sm" />
         </Field>
         <Field {...HEAD_FIELD_DEFS.maxEpochs}>
-          <Input type="number" value={hp.maxEpochs} onChange={(e) => onUpdate({ maxEpochs: Number(e.target.value) })} min={1} className="h-9 text-sm" />
+          <NumberInput min={1} max={1000} integer value={hp.maxEpochs} onCommit={(n) => onUpdate({ maxEpochs: n })} className="h-9 text-sm" />
         </Field>
         <Field {...HEAD_FIELD_DEFS.learningRate}>
-          <Input type="number" value={hp.learningRate} onChange={(e) => onUpdate({ learningRate: Number(e.target.value) })} step={0.0001} className="h-9 text-sm" />
+          <NumberInput min={0} value={hp.learningRate} onCommit={(n) => onUpdate({ learningRate: n })} step={0.0001} className="h-9 text-sm" />
         </Field>
         <Field {...HEAD_FIELD_DEFS.lrSchedulerType}>
           <Select value={hp.lrSchedulerType} onValueChange={(v) => onUpdate({ lrSchedulerType: v as ConfigHyperparams["lrSchedulerType"] })}>
@@ -885,11 +880,11 @@ function HeadTabContent({
           <div className="flex items-center gap-4 flex-wrap">
             <div id={HEAD_FIELD_DEFS.lrStepSize.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
               <span className="text-sm text-muted-foreground">{HEAD_FIELD_DEFS.lrStepSize.label}</span>
-              <Input type="number" value={hp.stepLRStepSize} onChange={(e) => onUpdate({ stepLRStepSize: Number(e.target.value) })} min={1} className="h-8 text-sm w-20" />
+              <NumberInput min={1} integer value={hp.stepLRStepSize} onCommit={(n) => onUpdate({ stepLRStepSize: n })} className="h-8 text-sm w-20" />
             </div>
             <div id={HEAD_FIELD_DEFS.lrGamma.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
               <span className="text-sm text-muted-foreground">{HEAD_FIELD_DEFS.lrGamma.label}</span>
-              <Input type="number" value={hp.stepLRGamma} onChange={(e) => onUpdate({ stepLRGamma: Number(e.target.value) })} step={0.01} className="h-8 text-sm w-20" />
+              <NumberInput min={0} value={hp.stepLRGamma} onCommit={(n) => onUpdate({ stepLRGamma: n })} step={0.01} className="h-8 text-sm w-20" />
             </div>
           </div>
         )}
@@ -911,15 +906,15 @@ function HeadTabContent({
             </div>
             <div id={HEAD_FIELD_DEFS.lrCooldown.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
               <span className="text-sm text-muted-foreground">{HEAD_FIELD_DEFS.lrCooldown.label}</span>
-              <Input type="number" value={hp.reduceLRCooldown} onChange={(e) => onUpdate({ reduceLRCooldown: Number(e.target.value) })} min={0} className="h-8 text-sm w-16" />
+              <NumberInput min={0} integer value={hp.reduceLRCooldown} onCommit={(n) => onUpdate({ reduceLRCooldown: n })} className="h-8 text-sm w-16" />
             </div>
             <div id={HEAD_FIELD_DEFS.lrPatience.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
               <span className="text-sm text-muted-foreground">{HEAD_FIELD_DEFS.lrPatience.label}</span>
-              <Input type="number" value={hp.reduceLRPatience} onChange={(e) => onUpdate({ reduceLRPatience: Number(e.target.value) })} min={0} className="h-8 text-sm w-16" />
+              <NumberInput min={0} integer value={hp.reduceLRPatience} onCommit={(n) => onUpdate({ reduceLRPatience: n })} className="h-8 text-sm w-16" />
             </div>
             <div id={HEAD_FIELD_DEFS.lrFactor.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
               <span className="text-sm text-muted-foreground">{HEAD_FIELD_DEFS.lrFactor.label}</span>
-              <Input type="number" value={hp.reduceLRFactor} onChange={(e) => onUpdate({ reduceLRFactor: Number(e.target.value) })} step={0.05} min={0} max={1} className="h-8 text-sm w-16" />
+              <NumberInput min={0} max={1} value={hp.reduceLRFactor} onCommit={(n) => onUpdate({ reduceLRFactor: n })} step={0.05} className="h-8 text-sm w-16" />
             </div>
             <div id={HEAD_FIELD_DEFS.lrMinLR.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
               <span className="text-sm text-muted-foreground">{HEAD_FIELD_DEFS.lrMinLR.label}</span>
@@ -931,15 +926,15 @@ function HeadTabContent({
           <div className="flex items-center gap-4 flex-wrap">
             <div id={HEAD_FIELD_DEFS.lrCosineWarmupEpochs.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
               <span className="text-sm text-muted-foreground">{HEAD_FIELD_DEFS.lrCosineWarmupEpochs.label}</span>
-              <Input type="number" value={hp.cosineWarmupEpochs} onChange={(e) => onUpdate({ cosineWarmupEpochs: Number(e.target.value) })} min={0} className="h-8 text-sm w-16" />
+              <NumberInput min={0} integer value={hp.cosineWarmupEpochs} onCommit={(n) => onUpdate({ cosineWarmupEpochs: n })} className="h-8 text-sm w-16" />
             </div>
             <div id={HEAD_FIELD_DEFS.lrCosineWarmupStartLR.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
               <span className="text-sm text-muted-foreground">{HEAD_FIELD_DEFS.lrCosineWarmupStartLR.label}</span>
-              <Input type="number" value={hp.cosineWarmupStartLR} onChange={(e) => onUpdate({ cosineWarmupStartLR: Number(e.target.value) })} step={0.0001} min={0} className="h-8 text-sm w-20" />
+              <NumberInput min={0} value={hp.cosineWarmupStartLR} onCommit={(n) => onUpdate({ cosineWarmupStartLR: n })} step={0.0001} className="h-8 text-sm w-20" />
             </div>
             <div id={HEAD_FIELD_DEFS.lrCosineEtaMin.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
               <span className="text-sm text-muted-foreground">{HEAD_FIELD_DEFS.lrCosineEtaMin.label}</span>
-              <Input type="number" value={hp.cosineEtaMin} onChange={(e) => onUpdate({ cosineEtaMin: Number(e.target.value) })} step={0.0001} min={0} className="h-8 text-sm w-20" />
+              <NumberInput min={0} value={hp.cosineEtaMin} onCommit={(n) => onUpdate({ cosineEtaMin: n })} step={0.0001} className="h-8 text-sm w-20" />
             </div>
           </div>
         )}
@@ -947,15 +942,15 @@ function HeadTabContent({
           <div className="flex items-center gap-4 flex-wrap">
             <div id={HEAD_FIELD_DEFS.lrLinearWarmupEpochs.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
               <span className="text-sm text-muted-foreground">{HEAD_FIELD_DEFS.lrLinearWarmupEpochs.label}</span>
-              <Input type="number" value={hp.linearWarmupEpochs} onChange={(e) => onUpdate({ linearWarmupEpochs: Number(e.target.value) })} min={0} className="h-8 text-sm w-16" />
+              <NumberInput min={0} integer value={hp.linearWarmupEpochs} onCommit={(n) => onUpdate({ linearWarmupEpochs: n })} className="h-8 text-sm w-16" />
             </div>
             <div id={HEAD_FIELD_DEFS.lrLinearWarmupStartLR.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
               <span className="text-sm text-muted-foreground">{HEAD_FIELD_DEFS.lrLinearWarmupStartLR.label}</span>
-              <Input type="number" value={hp.linearWarmupStartLR} onChange={(e) => onUpdate({ linearWarmupStartLR: Number(e.target.value) })} step={0.0001} min={0} className="h-8 text-sm w-20" />
+              <NumberInput min={0} value={hp.linearWarmupStartLR} onCommit={(n) => onUpdate({ linearWarmupStartLR: n })} step={0.0001} className="h-8 text-sm w-20" />
             </div>
             <div id={HEAD_FIELD_DEFS.lrLinearEndLR.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
               <span className="text-sm text-muted-foreground">{HEAD_FIELD_DEFS.lrLinearEndLR.label}</span>
-              <Input type="number" value={hp.linearEndLR} onChange={(e) => onUpdate({ linearEndLR: Number(e.target.value) })} step={0.0001} min={0} className="h-8 text-sm w-20" />
+              <NumberInput min={0} value={hp.linearEndLR} onCommit={(n) => onUpdate({ linearEndLR: n })} step={0.0001} className="h-8 text-sm w-20" />
             </div>
           </div>
         )}
@@ -964,7 +959,7 @@ function HeadTabContent({
           <Input type="text" value={hp.plateauMinDelta} onChange={(e) => onUpdate({ plateauMinDelta: Number(e.target.value) })} disabled={!hp.stopOnPlateau} className="h-9 text-sm" />
         </Field>
         <Field {...HEAD_FIELD_DEFS.plateauPatience}>
-          <Input type="number" value={hp.earlyStoppingPatience} onChange={(e) => onUpdate({ earlyStoppingPatience: Number(e.target.value) })} min={1} max={100} disabled={!hp.stopOnPlateau} className="h-9 text-sm" />
+          <NumberInput min={1} integer value={hp.earlyStoppingPatience} onCommit={(n) => onUpdate({ earlyStoppingPatience: n })} disabled={!hp.stopOnPlateau} className="h-9 text-sm" />
         </Field>
         <Toggle {...HEAD_FIELD_DEFS.onlineMining} checked={hp.onlineMining} onChange={(v) => onUpdate({ onlineMining: v })} />
         <div className={`flex items-center gap-4 flex-wrap ${!hp.onlineMining ? "opacity-50" : ""}`}>
@@ -973,28 +968,28 @@ function HeadTabContent({
               {HEAD_FIELD_DEFS.minHardKeypoints.label}
               <HintBubble text="The minimum number of keypoints that will be considered as 'hard', even if they are not below the hard_to_easy_ratio." />
             </span>
-            <Input type="number" value={hp.minHardKeypoints} onChange={(e) => onUpdate({ minHardKeypoints: Number(e.target.value) })} disabled={!hp.onlineMining} className="h-8 text-sm w-16" />
+            <NumberInput min={1} integer value={hp.minHardKeypoints} onCommit={(n) => onUpdate({ minHardKeypoints: n })} disabled={!hp.onlineMining} className="h-8 text-sm w-16" />
           </div>
           <div id={HEAD_FIELD_DEFS.maxHardKeypoints.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
             <span className="text-sm text-muted-foreground flex items-center gap-1.5">
               {HEAD_FIELD_DEFS.maxHardKeypoints.label}
               <HintBubble text="The maximum number of hard keypoints to apply scaling to. This can help when there are few very easy keypoints which may skew the ratio." />
             </span>
-            <Input type="number" value={hp.maxHardKeypoints ?? ""} onChange={(e) => onUpdate({ maxHardKeypoints: e.target.value ? Number(e.target.value) : null })} disabled={!hp.onlineMining} placeholder="None" className="h-8 text-sm w-16" />
+            <NumberInput min={1} integer nullable value={hp.maxHardKeypoints} onCommit={(n) => onUpdate({ maxHardKeypoints: n })} disabled={!hp.onlineMining} placeholder="None" className="h-8 text-sm w-16" />
           </div>
           <div id={HEAD_FIELD_DEFS.hardToEasyRatio.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
             <span className="text-sm text-muted-foreground flex items-center gap-1.5">
               {HEAD_FIELD_DEFS.hardToEasyRatio.label}
               <HintBubble text="The minimum ratio of an individual keypoint's loss to the lowest keypoint loss for it to be considered 'hard'. This helps switch focus across groups of keypoints during training." />
             </span>
-            <Input type="number" value={hp.hardToEasyRatio} onChange={(e) => onUpdate({ hardToEasyRatio: Number(e.target.value) })} disabled={!hp.onlineMining} step={0.5} min={0} className="h-8 text-sm w-16" />
+            <NumberInput min={0} value={hp.hardToEasyRatio} onCommit={(n) => onUpdate({ hardToEasyRatio: n })} disabled={!hp.onlineMining} step={0.5} className="h-8 text-sm w-16" />
           </div>
           <div id={HEAD_FIELD_DEFS.lossScale.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
             <span className="text-sm text-muted-foreground flex items-center gap-1.5">
               {HEAD_FIELD_DEFS.lossScale.label}
               <HintBubble text="Factor by which the hard keypoints' losses are scaled up in the total loss." />
             </span>
-            <Input type="number" value={hp.lossScale} onChange={(e) => onUpdate({ lossScale: Number(e.target.value) })} disabled={!hp.onlineMining} step={0.5} min={0} className="h-8 text-sm w-16" />
+            <NumberInput min={0} value={hp.lossScale} onCommit={(n) => onUpdate({ lossScale: n })} disabled={!hp.onlineMining} step={0.5} className="h-8 text-sm w-16" />
           </div>
         </div>
       </div>
@@ -1036,7 +1031,7 @@ function HeadTabContent({
               {HEAD_FIELD_DEFS.stemStride.label}
               <HintBubble text="If not None, controls how many stem blocks to use for initial downsampling. These are useful for learned downsampling that retains spatial information while reducing large input image sizes." />
             </span>
-            <Input type="number" value={hp.stemStride ?? ""} onChange={(e) => onUpdate({ stemStride: e.target.value ? Number(e.target.value) : null })} disabled={hp.stemStride === null} placeholder="0" className="h-8 text-sm w-16" />
+            <NumberInput min={1} integer nullable value={hp.stemStride} onCommit={(n) => onUpdate({ stemStride: n })} disabled={hp.stemStride === null} placeholder="0" className="h-8 text-sm w-16" />
             <label className="flex items-center gap-1.5 cursor-pointer">
               <input type="checkbox" checked={hp.stemStride === null} onChange={(e) => onUpdate({ stemStride: e.target.checked ? null : 0 })} className="accent-primary" />
               <span className="text-sm">None</span>
@@ -1070,7 +1065,7 @@ function HeadTabContent({
               {HEAD_FIELD_DEFS.filters.label}
               <HintBubble text="Base number of filters in the network." />
             </span>
-            <Input type="number" value={hp.filters} onChange={(e) => onUpdate({ filters: Number(e.target.value) })} className="h-8 text-sm w-16" />
+            <NumberInput min={1} integer value={hp.filters} onCommit={(n) => onUpdate({ filters: n })} className="h-8 text-sm w-16" />
           </div>
         </div>
         {hp.maxStride === null && isPretrainedBackbone && (
@@ -1089,7 +1084,7 @@ function HeadTabContent({
               {HEAD_FIELD_DEFS.filtersRate.label}
               <HintBubble text="Factor to scale the number of filters by at each block." />
             </span>
-            <Input type="number" value={hp.filtersRate} onChange={(e) => onUpdate({ filtersRate: Number(e.target.value) })} step={0.1} className="h-8 text-sm w-20" />
+            <NumberInput min={1} value={hp.filtersRate} onCommit={(n) => onUpdate({ filtersRate: n })} step={0.1} className="h-8 text-sm w-20" />
           </div>
           <label id={HEAD_FIELD_DEFS.middleBlock.id} data-search-field="" className="flex items-center gap-1.5 cursor-pointer scroll-mt-4">
             <input type="checkbox" checked={hp.middleBlock} onChange={(e) => onUpdate({ middleBlock: e.target.checked })} className="accent-primary" />
@@ -1103,7 +1098,7 @@ function HeadTabContent({
         <Separator className="my-3" />
         <h4 className="text-sm font-medium text-muted-foreground mb-2">Head</h4>
         <Field {...HEAD_FIELD_DEFS.sigma}>
-          <Input type="number" value={hp.sigma} onChange={(e) => onUpdate({ sigma: Number(e.target.value) })} min={0.5} max={30} step={0.5} className="h-9 text-sm" />
+          <NumberInput min={0.1} value={hp.sigma} onCommit={(n) => onUpdate({ sigma: n })} step={0.5} className="h-9 text-sm" />
         </Field>
         <div id={HEAD_FIELD_DEFS.outputStride.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
           <span className="text-sm text-muted-foreground flex items-center gap-1.5">
@@ -1419,11 +1414,10 @@ export function TrainingConfigDialog({
                           {PIPELINE_FIELD_DEFS.sigmaCentroids.label}
                           <HintBubble text="Gaussian spread for centroid confidence maps. Controls how wide the target peak is around each animal's center point." />
                         </span>
-                        <Input
-                          type="number"
+                        <NumberInput min={0.1}
                           value={configs.find((c) => c.slot === "centroid")?.hyperparams.sigma ?? 5.0}
-                          onChange={(e) => { const slot = configs.find((c) => c.slot === "centroid")?.slot; if (slot) onUpdateSlot(slot, { sigma: Number(e.target.value) }); }}
-                          min={0.5} max={30} step={0.5}
+                          onCommit={(n) => { const slot = configs.find((c) => c.slot === "centroid")?.slot; if (slot) onUpdateSlot(slot, { sigma: n }); }}
+ step={0.5}
                           className="h-8 text-sm w-20"
                         />
                       </div>
@@ -1432,11 +1426,10 @@ export function TrainingConfigDialog({
                           {PIPELINE_FIELD_DEFS.sigmaNodes.label}
                           <HintBubble text="Gaussian spread for node confidence maps. Controls how wide the target peak is around each keypoint location." />
                         </span>
-                        <Input
-                          type="number"
+                        <NumberInput min={0.1}
                           value={configs.find((c) => c.slot === "centered_instance")?.hyperparams.sigma ?? 5.0}
-                          onChange={(e) => { const slot = configs.find((c) => c.slot === "centered_instance")?.slot; if (slot) onUpdateSlot(slot, { sigma: Number(e.target.value) }); }}
-                          min={0.5} max={30} step={0.5}
+                          onCommit={(n) => { const slot = configs.find((c) => c.slot === "centered_instance")?.slot; if (slot) onUpdateSlot(slot, { sigma: n }); }}
+ step={0.5}
                           className="h-8 text-sm w-20"
                         />
                       </div>
@@ -1449,11 +1442,10 @@ export function TrainingConfigDialog({
                           Sigma
                           <HintBubble text="Gaussian spread for keypoint heatmaps. Smaller = more precise but harder to train. Larger = easier to train but less spatially precise." />
                         </span>
-                        <Input
-                          type="number"
+                        <NumberInput min={0.1}
                           value={firstHp.sigma}
-                          onChange={(e) => onUpdateSlot(firstConfig!.slot, { sigma: Number(e.target.value) })}
-                          min={0.5} max={30} step={0.5}
+                          onCommit={(n) => onUpdateSlot(firstConfig!.slot, { sigma: n })}
+ step={0.5}
                           className="h-8 text-sm w-20"
                         />
                       </div>
@@ -1466,11 +1458,10 @@ export function TrainingConfigDialog({
                           Sigma
                           <HintBubble text="Gaussian spread for confidence maps. Controls how wide the target peak is around each keypoint." />
                         </span>
-                        <Input
-                          type="number"
+                        <NumberInput min={0.1}
                           value={firstHp.sigma}
-                          onChange={(e) => onUpdateSlot(firstConfig!.slot, { sigma: Number(e.target.value) })}
-                          min={0.5} max={30} step={0.5}
+                          onCommit={(n) => onUpdateSlot(firstConfig!.slot, { sigma: n })}
+ step={0.5}
                           className="h-8 text-sm w-20"
                         />
                       </div>
@@ -1525,8 +1516,8 @@ export function TrainingConfigDialog({
                         {(inferenceTarget === "random_video" || inferenceTarget === "random") && (
                           <div className="flex items-center gap-2">
                             <span className="text-sm text-muted-foreground">Sample count:</span>
-                            <Input type="number" min={1} value={sampleCount}
-                              onChange={(e) => onSampleCountChange(Math.max(1, Number(e.target.value)))}
+                            <NumberInput min={1} integer value={sampleCount}
+                              onCommit={(n) => onSampleCountChange(n)}
                               className="h-8 text-sm w-24" />
                           </div>
                         )}
@@ -1651,7 +1642,7 @@ export function TrainingConfigDialog({
                         {PIPELINE_FIELD_DEFS.dataloaderWorkers.label}
                         <HintBubble text="Number of parallel workers for loading training data. More workers = faster data loading but more CPU/memory usage. 0 = main thread only. Only takes effect with a caching pipeline (Cache in Memory / Cache to Disk); the Stream pipeline forces 0." />
                       </span>
-                      <Input type="number" value={firstHp?.dataloaderWorkers ?? 0} min={0} max={16} onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { dataloaderWorkers: Number(e.target.value) }))} className="h-8 text-sm w-16" />
+                      <NumberInput min={0} max={16} integer value={firstHp?.dataloaderWorkers ?? 0} onCommit={(n) => configs.forEach((c) => onUpdateSlot(c.slot, { dataloaderWorkers: n }))} className="h-8 text-sm w-16" />
                     </div>
                   </div>
                   <div className="flex items-center gap-6 flex-wrap">
@@ -1675,7 +1666,7 @@ export function TrainingConfigDialog({
                         {PIPELINE_FIELD_DEFS.numDevices.label}
                         <HintBubble text="Number of GPUs/devices to use for training. Set to 1 for single-GPU training." />
                       </span>
-                      <Input type="number" value={firstHp?.numDevices === "auto" ? 1 : (firstHp?.numDevices ?? 1)} min={1} max={8} disabled={(firstHp?.numDevices ?? "auto") === "auto"} onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { numDevices: Math.max(1, Number(e.target.value)) }))} className="h-8 text-sm w-16" />
+                      <NumberInput min={1} max={8} integer value={firstHp?.numDevices === "auto" ? 1 : (firstHp?.numDevices ?? 1)} disabled={(firstHp?.numDevices ?? "auto") === "auto"} onCommit={(n) => configs.forEach((c) => onUpdateSlot(c.slot, { numDevices: n }))} className="h-8 text-sm w-16" />
                     </div>
                     <label className="flex items-center gap-1.5 cursor-pointer">
                       <input type="checkbox" checked={(firstHp?.numDevices ?? "auto") === "auto"} onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { numDevices: e.target.checked ? "auto" : 1 }))} className="accent-primary" />
@@ -1799,12 +1790,11 @@ export function TrainingConfigDialog({
                         {PIPELINE_FIELD_DEFS.evalFrequency.label}:
                         <HintBubble text="How often to run full evaluation. Every 1 epoch is most informative but slower. Every 5–10 epochs is a good balance." />
                       </span>
-                      <Input
-                        type="number"
+                      <NumberInput min={1} integer
                         value={firstHp?.evalFrequency ?? 1}
-                        min={1}
+
                         disabled={!firstHp?.evalEnabled}
-                        onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { evalFrequency: Math.max(1, Number(e.target.value)) }))}
+                        onCommit={(n) => configs.forEach((c) => onUpdateSlot(c.slot, { evalFrequency: n }))}
                         className="h-8 text-sm w-16"
                       />
                     </div>
@@ -1815,13 +1805,12 @@ export function TrainingConfigDialog({
                         {PIPELINE_FIELD_DEFS.evalOksStddev.label}
                         <HintBubble text={PIPELINE_FIELD_DEFS.evalOksStddev.hint} />
                       </span>
-                      <Input
-                        type="number"
+                      <NumberInput min={0}
                         value={firstHp?.evalOksStddev ?? 0.025}
                         step={0.001}
-                        min={0}
+
                         disabled={!firstHp?.evalEnabled}
-                        onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { evalOksStddev: Number(e.target.value) }))}
+                        onCommit={(n) => configs.forEach((c) => onUpdateSlot(c.slot, { evalOksStddev: n }))}
                         className="h-8 text-sm w-20"
                       />
                     </div>
@@ -1830,14 +1819,13 @@ export function TrainingConfigDialog({
                         {PIPELINE_FIELD_DEFS.evalOksScale.label}
                         <HintBubble text={PIPELINE_FIELD_DEFS.evalOksScale.hint} />
                       </span>
-                      <Input
-                        type="number"
-                        value={firstHp?.evalOksScale ?? ""}
+                      <NumberInput min={0} nullable
+                        value={firstHp?.evalOksScale}
                         step={0.01}
-                        min={0}
+
                         placeholder="Auto"
                         disabled={!firstHp?.evalEnabled}
-                        onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { evalOksScale: e.target.value ? Number(e.target.value) : null }))}
+                        onCommit={(n) => configs.forEach((c) => onUpdateSlot(c.slot, { evalOksScale: n }))}
                         className="h-8 text-sm w-20"
                       />
                     </div>
@@ -1846,13 +1834,12 @@ export function TrainingConfigDialog({
                         {PIPELINE_FIELD_DEFS.evalMatchThreshold.label}
                         <HintBubble text={PIPELINE_FIELD_DEFS.evalMatchThreshold.hint} />
                       </span>
-                      <Input
-                        type="number"
+                      <NumberInput min={0}
                         value={firstHp?.evalMatchThreshold ?? 50.0}
                         step={0.5}
-                        min={0}
+
                         disabled={!firstHp?.evalEnabled}
-                        onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { evalMatchThreshold: Number(e.target.value) }))}
+                        onCommit={(n) => configs.forEach((c) => onUpdateSlot(c.slot, { evalMatchThreshold: n }))}
                         className="h-8 text-sm w-20"
                       />
                     </div>
@@ -1899,12 +1886,11 @@ export function TrainingConfigDialog({
                           {PIPELINE_FIELD_DEFS.checkpointTopK.label}
                           <HintBubble text={PIPELINE_FIELD_DEFS.checkpointTopK.hint} />
                         </span>
-                        <Input
-                          type="number"
+                        <NumberInput min={-1} integer
                           value={firstHp.saveTopKCount}
-                          min={-1}
+
                           disabled={!firstHp.saveBestModel}
-                          onChange={(e) => configs.forEach((c) => onUpdateSlot(c.slot, { saveTopKCount: Number(e.target.value) }))}
+                          onCommit={(n) => configs.forEach((c) => onUpdateSlot(c.slot, { saveTopKCount: n }))}
                           className="h-8 text-sm w-16"
                         />
                       </div>
