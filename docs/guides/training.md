@@ -101,14 +101,20 @@ until you set one.
 
 **Dry run**, next to **Start Training**, checks your setup in seconds before you
 commit to a long run. For each model (both, for top-down) it runs
-`sleap-nn train --dry-run` with the same config a real run would use: all setup,
-plus one training batch and one validation batch, on one device. Nothing is
-saved.
+`sleap-nn train --dry-run` with the same config a real run would use, data
+pipeline and workers included: all setup, plus one training batch and one
+validation batch, on one device. It also checks it can save to the model folder
+next to your labels file: it writes the configs and a checkpoint there, then
+removes them, so nothing is kept.
 
 - **Passed** — each model shows what the real run would do: labeled frames and
-  samples, steps per epoch, max epochs, model size, device and run folder
-- **Failed** — the model shows the error that stopped it. **Show log** has the
-  full output. If one model fails, the other is still checked
+  samples, steps per epoch, max epochs, model size, device, run folder, data
+  pipeline and workers, whether the image cache fits in memory, and the write
+  check
+- **Failed** — the model shows the error that stopped it, with **Copy** for the
+  error output. **Show log** has the full output, and **Copy log** copies it.
+  If one model fails, the other is still checked
+- **Cancel** stops the check and removes what it had written so far
 - Change the config afterwards and the result says so; run it again to check
   the new one
 

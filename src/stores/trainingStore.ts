@@ -7,6 +7,7 @@ import { computeRuntimeMetrics } from "@/lib/trainingMetrics";
 import { lastErrorLine } from "@/lib/processLog";
 import {
   isDryRunUnsupported,
+  removeDryRunLeftovers,
   parseDryRunSummary,
   type DryRunSummaryField,
 } from "@/lib/trainingDryRun";
@@ -2683,6 +2684,15 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
     const { runTraining } = await import("@/platform/backend");
     // Next to the labels file, as a real run: the summary's run folder shows it.
     const modelDir = labelsPath.replace(/[/\\][^/\\]+$/, "") + "/models";
+    // sleap-nn creates `modelDir` for its write check and removes it again; if a
+    // Cancel kills it first, the app does (only if it wasn't there before).
+    let modelDirExisted = true;
+    try {
+      const { exists } = await import("@tauri-apps/plugin-fs");
+      modelDirExisted = await exists(modelDir);
+    } catch {
+      /* can't tell: keep the folder */
+    }
 
     let allPassed = true;
     try {
@@ -2727,7 +2737,15 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
           stderrTail.push(e instanceof Error ? e.message : String(e));
         }
         flush();
-        if (!isLive()) return;
+        if (!isLive()) {
+          // Cancel killed sleap-nn (it has exited now) before it could remove its
+          // scratch folder; this dry run's own leftovers are the app's to clear.
+          const d = get().dryRun;
+          if (d?.id === id && d.status === "cancelled") {
+            await removeDryRunLeftovers(modelDir, runName, !modelDirExisted);
+          }
+          return;
+        }
 
         if (isDryRunUnsupported(output)) {
           setModel(i, {

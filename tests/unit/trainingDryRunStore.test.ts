@@ -28,6 +28,17 @@ vi.mock("@/platform/backend", () => ({
   cancelCommand: cancelCommandMock,
 }));
 
+// The model folder on disk: whether it existed before the dry run, what's in it,
+// and what got removed (a cancelled dry run's leftovers are the app's to clear).
+let modelDirExists = false;
+let modelDirEntries: { name: string; isDirectory: boolean }[] = [];
+const removed: string[] = [];
+vi.mock("@tauri-apps/plugin-fs", () => ({
+  exists: async () => modelDirExists,
+  readDir: async () => modelDirEntries,
+  remove: async (path: string) => void removed.push(path),
+}));
+
 const PASSED = (modelType: string) => [
   "2026-11-02 11:53:53 | Dry run passed: setup, one training batch and one validation batch all ran. Nothing was written to disk.",
   `  Model type:          ${modelType}`,
@@ -180,7 +191,8 @@ describe("startDryRun", () => {
 });
 
 describe("cancelDryRun", () => {
-  it("kills the run and keeps its late results out", async () => {
+  /** Start a dry run whose first sleap-nn run only exits when `finish()` is called. */
+  async function startHeldRun() {
     let finish!: () => void;
     runTrainingMock.mockImplementationOnce(async (...args: RunTrainingArgs) => {
       await new Promise<void>((r) => (finish = r));
@@ -192,6 +204,17 @@ describe("cancelDryRun", () => {
       await new Promise((r) => setTimeout(r, 5));
     }
     expect(runTrainingMock).toHaveBeenCalledTimes(1);
+    return { done, finish: () => finish() };
+  }
+
+  beforeEach(() => {
+    modelDirExists = false;
+    modelDirEntries = [];
+    removed.length = 0;
+  });
+
+  it("kills the run and keeps its late results out", async () => {
+    const { done, finish } = await startHeldRun();
 
     await useTrainingStore.getState().cancelDryRun();
     expect(cancelCommandMock).toHaveBeenCalledTimes(1);
@@ -202,6 +225,43 @@ describe("cancelDryRun", () => {
     expect(dryRun!.status).toBe("cancelled");
     expect(dryRun!.models[0].status).not.toBe("passed");
     expect(runTrainingMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("removes the killed run's scratch folder once sleap-nn exits, and the model folder it made", async () => {
+    const { done, finish } = await startHeldRun();
+    const runName = call(0)[2];
+    modelDirEntries = [{ name: `.dryrun-${runName}-4242`, isDirectory: true }];
+
+    await useTrainingStore.getState().cancelDryRun();
+    // Nothing is removed while sleap-nn may still be writing.
+    expect(removed).toEqual([]);
+    finish();
+    await done;
+
+    expect(removed).toEqual([`/data/models/.dryrun-${runName}-4242`, "/data/models"]);
+  });
+
+  it("keeps a model folder that was there before", async () => {
+    modelDirExists = true;
+    const { done, finish } = await startHeldRun();
+    const runName = call(0)[2];
+    modelDirEntries = [{ name: `.dryrun-${runName}-4242`, isDirectory: true }];
+
+    await useTrainingStore.getState().cancelDryRun();
+    finish();
+    await done;
+
+    expect(removed).toEqual([`/data/models/.dryrun-${runName}-4242`]);
+  });
+
+  it("removes nothing after a dry run that finished on its own", async () => {
+    script = [
+      { lines: PASSED("centroid"), success: true },
+      { lines: PASSED("centered_instance"), success: true },
+    ];
+    modelDirEntries = [{ name: ".dryrun-whatever-1", isDirectory: true }];
+    await useTrainingStore.getState().startDryRun();
+    expect(removed).toEqual([]);
   });
 });
 

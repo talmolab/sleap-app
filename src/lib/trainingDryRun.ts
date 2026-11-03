@@ -11,7 +11,9 @@
  *
  * (`ModelTrainer._log_dry_run_summary`; the first line carries the log sink's
  * `{time} | ` prefix, the rest are the same multi-line message's bare lines).
- * Kept free of store / Tauri imports so it is unit-testable on its own.
+ * Also removes what a cancelled dry run left on disk. Kept free of store
+ * imports, and Tauri is only imported lazily by the default file access, so it
+ * is unit-testable on its own.
  */
 
 /** One `Key: value` line of the dry-run summary, e.g. `Max epochs` / `200`. */
@@ -49,4 +51,62 @@ export function parseDryRunSummary(lines: string[]): DryRunSummaryField[] | null
  */
 export function isDryRunUnsupported(lines: string[]): boolean {
   return lines.some((l) => /No such option[:\s]*['"]?--dry-run/.test(l));
+}
+
+/** The file access {@link removeDryRunLeftovers} needs; injectable for tests. */
+export interface DryRunCleanupFs {
+  readDir(path: string): Promise<{ name: string; isDirectory: boolean }[]>;
+  remove(path: string, options?: { recursive?: boolean }): Promise<void>;
+}
+
+function defaultCleanupFs(): DryRunCleanupFs {
+  return {
+    async readDir(path) {
+      const { readDir } = await import("@tauri-apps/plugin-fs");
+      return (await readDir(path)).map((e) => ({ name: e.name, isDirectory: e.isDirectory }));
+    },
+    async remove(path, options) {
+      const { remove } = await import("@tauri-apps/plugin-fs");
+      await remove(path, options);
+    },
+  };
+}
+
+/**
+ * Clean up after a dry run that was killed (Cancel). sleap-nn writes a dry run's
+ * configs, checkpoint and image cache to `<modelDir>/.dryrun-<runName>-<pid>/`
+ * and deletes it itself, but a killed process never gets to. This removes that
+ * run's scratch folders (only those, by name) and then `modelDir` if it's empty
+ * and the dry run created it (`removeModelDirIfEmpty`). Best effort: a folder
+ * that's gone or can't be read is left alone.
+ */
+export async function removeDryRunLeftovers(
+  modelDir: string,
+  runName: string,
+  removeModelDirIfEmpty: boolean,
+  fs: DryRunCleanupFs = defaultCleanupFs(),
+): Promise<void> {
+  const sep = modelDir.includes("\\") && !modelDir.includes("/") ? "\\" : "/";
+  const prefix = `.dryrun-${runName}-`;
+  let entries: { name: string; isDirectory: boolean }[];
+  try {
+    entries = await fs.readDir(modelDir);
+  } catch {
+    return;
+  }
+  const scratch = entries.filter((e) => e.isDirectory && e.name.startsWith(prefix));
+  for (const e of scratch) {
+    try {
+      await fs.remove(`${modelDir.replace(/[/\\]+$/, "")}${sep}${e.name}`, { recursive: true });
+    } catch {
+      /* in use or already gone — leave it */
+    }
+  }
+  if (removeModelDirIfEmpty && entries.length === scratch.length) {
+    try {
+      await fs.remove(modelDir);
+    } catch {
+      /* not empty after all — leave it */
+    }
+  }
 }

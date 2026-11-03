@@ -5,7 +5,12 @@
  */
 
 import { describe, it, expect } from "../bun-test";
-import { isDryRunUnsupported, parseDryRunSummary } from "@/lib/trainingDryRun";
+import {
+  isDryRunUnsupported,
+  parseDryRunSummary,
+  removeDryRunLeftovers,
+  type DryRunCleanupFs,
+} from "@/lib/trainingDryRun";
 import { buildTrainingArgs } from "@/platform/trainingArgs";
 
 const PASSED = [
@@ -104,5 +109,61 @@ describe("buildTrainingArgs dryRun", () => {
 
   it("leaves it off by default", () => {
     expect(buildTrainingArgs(base)).not.toContain("--dry-run");
+  });
+});
+
+describe("removeDryRunLeftovers (after a Cancel killed sleap-nn)", () => {
+  /** An in-memory folder tree: path -> child names (folders) or null (files). */
+  function fakeFs(tree: Record<string, string[] | null>) {
+    const removed: string[] = [];
+    const fs: DryRunCleanupFs = {
+      async readDir(path) {
+        const children = tree[path];
+        if (!children) throw new Error(`no folder ${path}`);
+        return children.map((name) => ({ name, isDirectory: tree[`${path}/${name}`] !== null }));
+      },
+      async remove(path) {
+        removed.push(path);
+      },
+    };
+    return { fs, removed };
+  }
+
+  const RUN = "261102_164900.centroid.n=2";
+
+  it("removes this run's scratch folders, and the model folder the dry run created", async () => {
+    const { fs, removed } = fakeFs({
+      "/data/models": [`.dryrun-${RUN}-96588`],
+      [`/data/models/.dryrun-${RUN}-96588`]: [],
+    });
+    await removeDryRunLeftovers("/data/models", RUN, true, fs);
+    expect(removed).toEqual([`/data/models/.dryrun-${RUN}-96588`, "/data/models"]);
+  });
+
+  it("keeps a model folder that was there before the dry run", async () => {
+    const { fs, removed } = fakeFs({
+      "/data/models": [`.dryrun-${RUN}-96588`],
+      [`/data/models/.dryrun-${RUN}-96588`]: [],
+    });
+    await removeDryRunLeftovers("/data/models", RUN, false, fs);
+    expect(removed).toEqual([`/data/models/.dryrun-${RUN}-96588`]);
+  });
+
+  it("never touches anything else: other runs, other dry runs, or files", async () => {
+    const { fs, removed } = fakeFs({
+      "/data/models": ["250101_000000.centroid.n=5", ".dryrun-other.run-1", `.dryrun-${RUN}-1.txt`],
+      "/data/models/250101_000000.centroid.n=5": [],
+      "/data/models/.dryrun-other.run-1": [],
+      [`/data/models/.dryrun-${RUN}-1.txt`]: null,
+    });
+    await removeDryRunLeftovers("/data/models", RUN, true, fs);
+    // Not even the model folder: it isn't empty.
+    expect(removed).toEqual([]);
+  });
+
+  it("does nothing when the model folder isn't there", async () => {
+    const { fs, removed } = fakeFs({});
+    await removeDryRunLeftovers("/data/models", RUN, true, fs);
+    expect(removed).toEqual([]);
   });
 });

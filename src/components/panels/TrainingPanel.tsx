@@ -1627,7 +1627,7 @@ export function TrainingPanel() {
                   className="h-8 text-xs"
                   onClick={() => startDryRun()}
                   disabled={!canStart || dryRunning}
-                  title="Check the config and data first: setup plus one training and one validation batch per model, in seconds. Nothing is saved."
+                  title="Check the config and data first, in seconds: setup plus one training and one validation batch per model, with your settings. Also checks it can save to the model folder; nothing is kept."
                 >
                   <FlaskConical className="h-3.5 w-3.5 mr-1.5" />
                   Dry run
