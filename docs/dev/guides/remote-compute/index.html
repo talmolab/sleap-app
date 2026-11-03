@@ -2191,9 +2191,16 @@ it, and their training and inference jobs can read and write inside it. The
 answer is remembered, so the next <code>serve</code> there doesn't ask again. Starting in
 your home folder works too, but the worker warns you: that shares everything in
 it.</p>
-<p><code>sleap-rtc serve --daemonize</code> keeps the worker running in the background (it
-asks about the folder before going to the background).
-<code>sleap-rtc pair</code> prints a one-line code that starts with <code>sleap1</code>.</p>
+<p>You can also name the folder instead of <code>cd</code>-ing into it:
+<code>sleap-rtc serve /path/to/your/data</code>.</p>
+<p><code>sleap-rtc serve</code> starts the worker in the background (after asking about the
+folder): you get your prompt back, and it keeps running after you close the
+terminal or log out. <code>sleap-rtc status</code> shows whether it's running, and
+<code>sleap-rtc serve --stop</code> stops it. So you don't forget about it, new terminals
+on that machine show a one-line reminder while it runs (<code>sleap-rtc shell-hook
+uninstall</code> removes the reminder). Add <code>--foreground</code> to keep the worker attached
+to the terminal instead; Ctrl-C stops it.</p>
+<p><code>sleap-rtc pair</code> prints a one-line code that starts with <code>sleap1</code>.</p>
 <h3 id="sharing-more-folders">Sharing more folders<a class="headerlink" href="#sharing-more-folders" title="Permanent link">&para;</a></h3>
 <p>To share another folder, run <code>sleap-rtc add-folder</code> with its path (relative paths
 are fine). <code>sleap-rtc folders</code> lists what's shared, and <code>sleap-rtc remove-folder</code>
