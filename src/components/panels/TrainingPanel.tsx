@@ -23,6 +23,7 @@ import { RemoteRunCard } from "@/components/connect/RemoteRunCard";
 import { LossViewerDialog } from "@/components/monitors/LossViewerDialog";
 import { LogTerminalDialog } from "@/components/monitors/LogTerminalDialog";
 import { ErrorOutput } from "@/components/monitors/ErrorOutput";
+import { DryRunResult } from "@/components/panels/DryRunResult";
 import { useAppStore } from "@/stores/appStore";
 import { isTauri } from "@/platform/index";
 import { getBaselineProfilesForHead, slotToHeadType } from "@/lib/trainingProfiles";
@@ -51,6 +52,7 @@ import {
   ChevronDown,
   ChevronRight,
   ExternalLink,
+  FlaskConical,
   Folder,
   Square,
   Settings2,
@@ -762,6 +764,9 @@ export function TrainingPanel() {
   const startTraining = useTrainingStore((s) => s.startTraining);
   const stopTraining = useTrainingStore((s) => s.stopTraining);
   const cancelTraining = useTrainingStore((s) => s.cancelTraining);
+  const dryRun = useTrainingStore((s) => s.dryRun);
+  const startDryRun = useTrainingStore((s) => s.startDryRun);
+  const dryRunning = dryRun?.status === "running";
   const reset = useTrainingStore((s) => s.reset);
   const resetSeq = useTrainingStore((s) => s.resetSeq);
   const { parseYamlConfig: parseConfig, addConfigFile: addConfig } = useTrainingStore();
@@ -1604,15 +1609,32 @@ export function TrainingPanel() {
         )}
         {status === "idle" && (
           <>
-            <Button
-              className="w-full h-8 text-xs"
-              onClick={handleStart}
-              disabled={!canStart}
-              data-tutorial="start-training-button"
-            >
-              <Upload className="h-3.5 w-3.5 mr-1.5" />
-              {remoteEnabled ? "Start Remote Training" : "Start Training"}
-            </Button>
+            <div className="flex gap-2">
+              <Button
+                className="flex-1 h-8 text-xs"
+                onClick={handleStart}
+                disabled={!canStart || dryRunning}
+                data-tutorial="start-training-button"
+              >
+                <Upload className="h-3.5 w-3.5 mr-1.5" />
+                {remoteEnabled ? "Start Remote Training" : "Start Training"}
+              </Button>
+              {/* sleap-nn's --dry-run runs here, on this machine; a worker has
+                  no way to run one yet. */}
+              {isTauri && !remoteEnabled && (
+                <Button
+                  variant="outline"
+                  className="h-8 text-xs"
+                  onClick={() => startDryRun()}
+                  disabled={!canStart || dryRunning}
+                  title="Check the config and data first, in seconds: setup plus one training and one validation batch per model, with your settings. Also checks it can save to the model folder; nothing is kept."
+                >
+                  <FlaskConical className="h-3.5 w-3.5 mr-1.5" />
+                  Dry run
+                </Button>
+              )}
+            </div>
+            {dryRun && !remoteEnabled && <DryRunResult dryRun={dryRun} />}
             {!canStart && (
               <p className="text-[10px] text-muted-foreground text-center mt-1">
                 {!hasAllConfigs
