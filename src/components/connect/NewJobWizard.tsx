@@ -28,7 +28,7 @@ import { useEffect, useMemo, useState } from "react";
 import { CheckIcon, Loader2 } from "lucide-react";
 import { Select as SelectPrimitive } from "radix-ui";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { NumberInput } from "@/components/NumberInput";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import {
   Select,
@@ -980,11 +980,10 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
                         </SelectContent>
                       </Select>
                       {inferenceTarget === "random" && (
-                        <Input
-                          type="number"
-                          min={1}
+                        <NumberInput min={1} integer
+
                           value={sampleCount}
-                          onChange={(e) => setSampleCount(Math.max(1, Number(e.target.value)))}
+                          onCommit={(n) => setSampleCount(n)}
                           className="h-7 text-xs w-20"
                         />
                       )}
@@ -1083,11 +1082,10 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
                       </SelectContent>
                     </Select>
                     {inferenceTarget === "random" && (
-                      <Input
-                        type="number"
-                        min={1}
+                      <NumberInput min={1} integer
+
                         value={sampleCount}
-                        onChange={(e) => setSampleCount(Math.max(1, Number(e.target.value)))}
+                        onCommit={(n) => setSampleCount(n)}
                         className="h-8 text-xs w-20"
                       />
                     )}

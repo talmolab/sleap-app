@@ -5,6 +5,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { NumberInput } from "@/components/NumberInput";
 import { Separator } from "@/components/ui/separator";
 import {
   Select,
@@ -193,10 +194,9 @@ function ToggleNumberField({
       />
       {value != null && (
         <Field label={valueLabel}>
-          <Input
-            type="number"
+          <NumberInput
             value={value}
-            onChange={(e) => onChange(Number(e.target.value))}
+            onCommit={(n) => onChange(n)}
             min={min}
             max={max}
             step={step}
@@ -380,10 +380,9 @@ export function InferenceConfigDialog({
             <SectionHeading id="inference" label="Inference Parameters" />
             <div className="space-y-2">
               <Field label="Peak Threshold" id="field-peakthreshold" hint="Minimum confidence score for a detected keypoint to be kept. Lower values detect more points but may include false positives.">
-                <Input
-                  type="number"
+                <NumberInput
                   value={v.peakThreshold}
-                  onChange={(e) => onUpdate({ peakThreshold: Number(e.target.value) })}
+                  onCommit={(n) => onUpdate({ peakThreshold: n })}
                   min={0}
                   max={1}
                   step={0.05}
@@ -391,10 +390,9 @@ export function InferenceConfigDialog({
                 />
               </Field>
               <Field label="Max Instances" id="field-maxinstances" hint="Maximum number of animal instances to detect per frame. Leave empty for no limit.">
-                <Input
-                  type="number"
-                  value={v.maxInstances ?? ""}
-                  onChange={(e) => onUpdate({ maxInstances: e.target.value ? Number(e.target.value) : null })}
+                <NumberInput integer nullable
+                  value={v.maxInstances}
+                  onCommit={(n) => onUpdate({ maxInstances: n })}
                   min={1}
                   max={100}
                   className="h-9 text-sm"
@@ -476,20 +474,18 @@ export function InferenceConfigDialog({
                     </Select>
                   </Field>
                   <Field label="Window Size" id="field-trackwindow" hint="Number of past frames used as matching candidates. Fixed Window (default) uses the last N frames; Local Queues (used automatically when Max Tracks is set) keeps the last N instances per track ID instead — more robust to track breaks and occlusions.">
-                    <Input
-                      type="number"
+                    <NumberInput integer
                       value={v.trackingWindowSize}
-                      onChange={(e) => onUpdate({ trackingWindowSize: Number(e.target.value) })}
+                      onCommit={(n) => onUpdate({ trackingWindowSize: n })}
                       min={1}
                       max={100}
                       className="h-9 text-sm"
                     />
                   </Field>
                   <Field label="Max Tracks" id="field-maxtracks" hint="Maximum number of simultaneous tracks. Leave empty for no limit; set to the number of animals if known. Setting this automatically switches matching to Local Queues, since Fixed Window ignores this cap.">
-                    <Input
-                      type="number"
-                      value={v.maxTracks ?? ""}
-                      onChange={(e) => onUpdate({ maxTracks: e.target.value ? Number(e.target.value) : null })}
+                    <NumberInput integer nullable
+                      value={v.maxTracks}
+                      onCommit={(n) => onUpdate({ maxTracks: n })}
                       min={1}
                       max={100}
                       className="h-9 text-sm"
@@ -510,10 +506,9 @@ export function InferenceConfigDialog({
                   {showTrackingAdvanced && (
                     <>
                       <Field label="Robust (quantile)" id="field-robust" hint="If between 0 and 1 (exclusive), uses a robust quantile similarity score instead of the plain max across matched keypoints — 0.95 is a good starting value. Leave at 1 to use max similarity (non-robust).">
-                        <Input
-                          type="number"
+                        <NumberInput
                           value={v.robust}
-                          onChange={(e) => onUpdate({ robust: Number(e.target.value) })}
+                          onCommit={(n) => onUpdate({ robust: n })}
                           min={0}
                           max={1}
                           step={0.05}
@@ -528,19 +523,17 @@ export function InferenceConfigDialog({
                         onChange={(val) => onUpdate({ connectSingleBreaks: val })}
                       />
                       <Field label="Min Match Points" id="field-minmatchpoints" hint="Minimum number of non-missing keypoints an instance needs to be considered a valid match candidate.">
-                        <Input
-                          type="number"
+                        <NumberInput integer
                           value={v.minMatchPoints}
-                          onChange={(e) => onUpdate({ minMatchPoints: Number(e.target.value) })}
+                          onCommit={(n) => onUpdate({ minMatchPoints: n })}
                           min={0}
                           className="h-9 text-sm"
                         />
                       </Field>
                       <Field label="Min New Track Points" id="field-minnewtrackpoints" hint="Minimum number of non-missing keypoints required before an unmatched instance is allowed to spawn a new track.">
-                        <Input
-                          type="number"
+                        <NumberInput integer
                           value={v.minNewTrackPoints}
-                          onChange={(e) => onUpdate({ minNewTrackPoints: Number(e.target.value) })}
+                          onCommit={(n) => onUpdate({ minNewTrackPoints: n })}
                           min={0}
                           className="h-9 text-sm"
                         />
@@ -561,10 +554,9 @@ export function InferenceConfigDialog({
                         </Select>
                       </Field>
                       <Field label="Target Instance Count" id="field-targetinstancecount" hint="Target number of instances to track per frame. Required by Kalman filtering and pre-cull; auto-derived from Max Tracks/Max Instances if left empty.">
-                        <Input
-                          type="number"
-                          value={v.trackingTargetInstanceCount ?? ""}
-                          onChange={(e) => onUpdate({ trackingTargetInstanceCount: e.target.value ? Number(e.target.value) : null })}
+                        <NumberInput integer nullable
+                          value={v.trackingTargetInstanceCount}
+                          onCommit={(n) => onUpdate({ trackingTargetInstanceCount: n })}
                           min={1}
                           max={100}
                           className="h-9 text-sm"
@@ -580,10 +572,9 @@ export function InferenceConfigDialog({
                       />
                       {v.trackingPreCullToTarget && (
                         <Field label="Pre-cull IoU Threshold" id="field-precull-iou" hint="IoU threshold used to remove overlapping instances above the target count before tracking.">
-                          <Input
-                            type="number"
+                          <NumberInput
                             value={v.trackingPreCullIouThreshold}
-                            onChange={(e) => onUpdate({ trackingPreCullIouThreshold: Number(e.target.value) })}
+                            onCommit={(n) => onUpdate({ trackingPreCullIouThreshold: n })}
                             min={0}
                             max={1}
                             step={0.05}
@@ -592,10 +583,9 @@ export function InferenceConfigDialog({
                         </Field>
                       )}
                       <Field label="Clean-up Instance Count" id="field-cleaninstancecount" hint="After tracking, cull instances above this target count per frame — unlike Pre-cull (which trims before tracking), this trims the tracked output. Leave empty to disable.">
-                        <Input
-                          type="number"
-                          value={v.trackingCleanInstanceCount ?? ""}
-                          onChange={(e) => onUpdate({ trackingCleanInstanceCount: e.target.value ? Number(e.target.value) : null })}
+                        <NumberInput integer nullable
+                          value={v.trackingCleanInstanceCount}
+                          onCommit={(n) => onUpdate({ trackingCleanInstanceCount: n })}
                           min={1}
                           max={100}
                           className="h-9 text-sm"
@@ -604,10 +594,9 @@ export function InferenceConfigDialog({
                       </Field>
                       {v.trackingCleanInstanceCount != null && (
                         <Field label="Clean-up IoU Threshold" id="field-cleaniou" hint="IoU threshold used when culling instances above the clean-up target count after tracking.">
-                          <Input
-                            type="number"
+                          <NumberInput
                             value={v.trackingCleanIouThreshold}
-                            onChange={(e) => onUpdate({ trackingCleanIouThreshold: Number(e.target.value) })}
+                            onCommit={(n) => onUpdate({ trackingCleanIouThreshold: n })}
                             min={0}
                             max={1}
                             step={0.05}
@@ -629,10 +618,9 @@ export function InferenceConfigDialog({
                 <SectionHeading id="flow" label="Optical Flow" />
                 <div className="space-y-2">
                   <Field label="Image Scale" id="field-flowscale" hint="Scale factor for images before computing optical flow. Lower values are faster but less precise.">
-                    <Input
-                      type="number"
+                    <NumberInput
                       value={v.flowImgScale}
-                      onChange={(e) => onUpdate({ flowImgScale: Number(e.target.value) })}
+                      onCommit={(n) => onUpdate({ flowImgScale: n })}
                       min={0.1}
                       max={2}
                       step={0.1}
@@ -640,10 +628,9 @@ export function InferenceConfigDialog({
                     />
                   </Field>
                   <Field label="Window Size" id="field-flowwindow" hint="Size of the search window for optical flow computation. Larger windows handle faster motion but are slower.">
-                    <Input
-                      type="number"
+                    <NumberInput integer
                       value={v.flowWindowSize}
-                      onChange={(e) => onUpdate({ flowWindowSize: Number(e.target.value) })}
+                      onCommit={(n) => onUpdate({ flowWindowSize: n })}
                       min={3}
                       max={99}
                       step={2}
@@ -651,10 +638,9 @@ export function InferenceConfigDialog({
                     />
                   </Field>
                   <Field label="Pyramid Levels" id="field-flowlevels" hint="Number of image pyramid levels for multi-scale optical flow. More levels handle larger displacements.">
-                    <Input
-                      type="number"
+                    <NumberInput integer
                       value={v.flowMaxLevels}
-                      onChange={(e) => onUpdate({ flowMaxLevels: Number(e.target.value) })}
+                      onCommit={(n) => onUpdate({ flowMaxLevels: n })}
                       min={1}
                       max={10}
                       className="h-9 text-sm"
@@ -690,19 +676,17 @@ export function InferenceConfigDialog({
                     </Select>
                   </Field>
                   <Field label="Init Frame Count" id="field-kfinitframecount" hint="Number of warm-up frames tracked with the base tracker before the Kalman filters are fit.">
-                    <Input
-                      type="number"
+                    <NumberInput integer
                       value={v.kfInitFrameCount}
-                      onChange={(e) => onUpdate({ kfInitFrameCount: Number(e.target.value) })}
+                      onCommit={(n) => onUpdate({ kfInitFrameCount: n })}
                       min={1}
                       className="h-9 text-sm"
                     />
                   </Field>
                   <Field label="Reset Gap Size" id="field-kfresetgapsize" hint="Number of consecutive missed frames after which a stale track's Kalman filter is reset.">
-                    <Input
-                      type="number"
+                    <NumberInput integer
                       value={v.kfResetGapSize}
-                      onChange={(e) => onUpdate({ kfResetGapSize: Number(e.target.value) })}
+                      onCommit={(n) => onUpdate({ kfResetGapSize: n })}
                       min={1}
                       className="h-9 text-sm"
                     />
@@ -733,10 +717,9 @@ export function InferenceConfigDialog({
               />
               {v.integralRefinement && (
                 <Field label="Patch Size" id="field-integralpatch" hint="Size of the local patch around each peak used for integral regression refinement. Larger patches are more robust but slower.">
-                  <Input
-                    type="number"
+                  <NumberInput integer
                     value={v.integralPatchSize}
-                    onChange={(e) => onUpdate({ integralPatchSize: Number(e.target.value) })}
+                    onCommit={(n) => onUpdate({ integralPatchSize: n })}
                     min={3}
                     max={15}
                     step={2}
@@ -749,20 +732,18 @@ export function InferenceConfigDialog({
                   <Separator className="my-4" />
                   <h4 className="text-sm font-medium text-muted-foreground mb-3">PAF Matching</h4>
                   <Field label="Sample Points" id="field-npoints" hint="Number of points sampled along each edge for PAF scoring. More points give better accuracy but are slower.">
-                    <Input
-                      type="number"
+                    <NumberInput integer
                       value={v.nPoints}
-                      onChange={(e) => onUpdate({ nPoints: Number(e.target.value) })}
+                      onCommit={(n) => onUpdate({ nPoints: n })}
                       min={1}
                       max={50}
                       className="h-9 text-sm"
                     />
                   </Field>
                   <Field label="Max Edge Ratio" id="field-maxedgeratio" hint="Maximum edge length as a fraction of image size. Edges longer than this are discarded during PAF matching.">
-                    <Input
-                      type="number"
+                    <NumberInput
                       value={v.maxEdgeLengthRatio}
-                      onChange={(e) => onUpdate({ maxEdgeLengthRatio: Number(e.target.value) })}
+                      onCommit={(n) => onUpdate({ maxEdgeLengthRatio: n })}
                       min={0}
                       max={1}
                       step={0.05}
@@ -770,10 +751,9 @@ export function InferenceConfigDialog({
                     />
                   </Field>
                   <Field label="Distance Penalty" id="field-distpenalty" hint="Weight for penalizing long edges during PAF grouping. Higher values prefer shorter connections between keypoints.">
-                    <Input
-                      type="number"
+                    <NumberInput
                       value={v.distPenaltyWeight}
-                      onChange={(e) => onUpdate({ distPenaltyWeight: Number(e.target.value) })}
+                      onCommit={(n) => onUpdate({ distPenaltyWeight: n })}
                       min={0}
                       max={10}
                       step={0.1}
@@ -781,10 +761,9 @@ export function InferenceConfigDialog({
                     />
                   </Field>
                   <Field label="Min Line Scores" id="field-minlinescores" hint="Minimum PAF score for an edge to be considered valid. Lower values are more permissive.">
-                    <Input
-                      type="number"
+                    <NumberInput
                       value={v.minLineScores}
-                      onChange={(e) => onUpdate({ minLineScores: Number(e.target.value) })}
+                      onCommit={(n) => onUpdate({ minLineScores: n })}
                       min={-1}
                       max={1}
                       step={0.05}
@@ -824,10 +803,9 @@ export function InferenceConfigDialog({
                     </Select>
                   </Field>
                   <Field label="Threshold" id="field-filterthreshold" hint="Overlap score above which instances are considered duplicates and the lower-scoring one is removed. Lower is more aggressive (~0.3), higher is more permissive (0.8 default).">
-                    <Input
-                      type="number"
+                    <NumberInput
                       value={v.filterThreshold}
-                      onChange={(e) => onUpdate({ filterThreshold: Number(e.target.value) })}
+                      onCommit={(n) => onUpdate({ filterThreshold: n })}
                       min={0}
                       max={1}
                       step={0.05}

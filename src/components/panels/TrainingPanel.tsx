@@ -31,6 +31,7 @@ import { computeInstanceSizeStats, hasUserLabeledInstances, recommendBackbonePro
 import type { DiscoveredModel } from "@/lib/modelDiscovery";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { NumberInput } from "@/components/NumberInput";
 import { Separator } from "@/components/ui/separator";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
@@ -646,11 +647,10 @@ function HyperparamsFields({
           Max Epochs
           <HelpTooltip text="Maximum number of epochs to train for. Training can be stopped manually or automatically if early stopping is enabled and a plateau is detected." />
         </span>
-        <Input
-          type="number"
+        <NumberInput min={1} max={1000} integer
           value={hp.maxEpochs}
-          onChange={(e) => onUpdate(slot, { maxEpochs: Number(e.target.value) })}
-          min={1}
+          onCommit={(n) => onUpdate(slot, { maxEpochs: n })}
+
           className="h-6 text-[10px] w-20"
           disabled={disabled}
         />
@@ -661,12 +661,11 @@ function HyperparamsFields({
           Batch Size
           <HelpTooltip text="Number of examples per minibatch. Higher numbers can increase generalization by averaging gradient updates over more examples, at the cost of more GPU memory. Lower numbers may lead to overfitting but can help optimization with few varied examples." />
         </span>
-        <Input
-          type="number"
+        <NumberInput min={1} max={512} integer
           value={hp.batchSize}
-          onChange={(e) => onUpdate(slot, { batchSize: Number(e.target.value) })}
-          min={1}
-          max={128}
+          onCommit={(n) => onUpdate(slot, { batchSize: n })}
+
+
           className="h-6 text-[10px] w-20"
           disabled={disabled}
         />
@@ -1452,8 +1451,8 @@ export function TrainingPanel() {
                   Sample count
                   <HelpTooltip text="How many frames to randomly sample for post-training inference." />
                 </span>
-                <Input type="number" min={1} value={sampleCount}
-                  onChange={(e) => setSampleCount(Math.max(1, Number(e.target.value)))}
+                <NumberInput min={1} integer value={sampleCount}
+                  onCommit={(n) => setSampleCount(n)}
                   className="h-6 text-[10px] w-20" disabled={isRunning} />
               </div>
             )}
