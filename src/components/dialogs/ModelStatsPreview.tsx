@@ -9,7 +9,7 @@ import {
   computeInstanceSizeStats,
   computeAugmentationPadding,
 } from "@/lib/modelStats";
-import { expandFrameBytesToRGBA, inferFrameChannels } from "@/lib/videoExport";
+import { frameToBitmap } from "@/lib/frameBitmap";
 import type { ConfigHyperparams } from "@/stores/trainingStore";
 import type { Labels } from "@talmolab/sleap-io.js";
 import type { PreviewFrame } from "@/lib/workerLabels";
@@ -89,28 +89,27 @@ export function ModelStatsPreview({ hp, maxStride, filters, filtersRate, outputS
   const numKeypoints = labels?.skeletons?.[0]?.nodes?.length ?? 0;
   const headName = slot === "centroid" ? "centroids" : "confmaps";
 
-  // Load thumbnail from first labeled frame
+  // Load the thumbnail: the first frame with user instances, like SLEAP's
+  // receptive-field preview; with none, frame 0 of the first video (SLEAP's
+  // read_test_frame fallback).
   useEffect(() => {
     if (!labels) return;
 
     let cancelled = false;
 
     (async () => {
-      // Find first frame with user instances
-      let targetFrame = null;
-      for (const lf of labels.labeledFrames) {
-        const hasUser = lf.instances.some((i) => !("score" in i));
-        if (hasUser) { targetFrame = lf; break; }
-      }
+      const targetFrame = labels.labeledFrames.find((lf) =>
+        lf.instances.some((i) => !("score" in i))
+      );
+      const video = targetFrame ? (targetFrame.video ?? labels.videos[0]) : labels.videos[0];
+      const frameIdx = targetFrame ? targetFrame.frameIdx : 0;
+      if (!video) return;
 
-      if (!targetFrame) return;
-
-      const video = targetFrame.video ?? labels.videos[0];
-      if (!video?.backend) {
-        if (!remoteFrame || !video) return;
+      if (!video.backend) {
+        if (!remoteFrame) return;
         setPlaceholder("Loading frame from worker…");
         try {
-          const frame = await remoteFrame(labels.videos.indexOf(video), targetFrame.frameIdx);
+          const frame = await remoteFrame(labels.videos.indexOf(video), frameIdx);
           if (!cancelled) setThumbnail({ bitmap: frame.bitmap, sourceWidth: frame.width });
         } catch (err) {
           if (!cancelled) setPlaceholder(err instanceof Error ? err.message : String(err));
@@ -119,56 +118,8 @@ export function ModelStatsPreview({ hp, maxStride, filters, filtersRate, outputS
       }
 
       try {
-        const frame = await video.backend.getFrame(targetFrame.frameIdx);
-        if (cancelled || !frame) return;
-
-        let bmp: ImageBitmap;
-        if (frame instanceof ImageBitmap) {
-          bmp = await createImageBitmap(frame);
-        } else if (frame instanceof ImageData) {
-          bmp = await createImageBitmap(frame);
-        } else if (frame instanceof ArrayBuffer || frame instanceof Uint8Array) {
-          const bytes = frame instanceof ArrayBuffer ? new Uint8Array(frame) : frame;
-          const shape = video.shape;
-          if (!shape) return;
-          const [, h, w] = shape;
-          const channels = inferFrameChannels(bytes.length, w, h, shape[3]);
-          const imageData = new ImageData(
-            expandFrameBytesToRGBA(bytes, w, h, channels),
-            w,
-            h
-          );
-          bmp = await createImageBitmap(imageData);
-        } else if (
-          frame &&
-          typeof frame === "object" &&
-          "data" in frame &&
-          "width" in frame &&
-          "height" in frame
-        ) {
-          const raw = frame as {
-            data: Uint8Array | Uint8ClampedArray;
-            width: number;
-            height: number;
-            channels?: number;
-          };
-          const bytes =
-            raw.data instanceof Uint8ClampedArray
-              ? new Uint8Array(raw.data)
-              : raw.data;
-          const imageData = new ImageData(
-            expandFrameBytesToRGBA(bytes, raw.width, raw.height, raw.channels ?? 1),
-            raw.width,
-            raw.height
-          );
-          bmp = await createImageBitmap(imageData);
-        } else {
-          return;
-        }
-
-        if (!cancelled) {
-          setThumbnail({ bitmap: bmp, sourceWidth: bmp.width });
-        }
+        const bmp = await frameToBitmap(await video.backend.getFrame(frameIdx), video.shape);
+        if (!cancelled && bmp) setThumbnail({ bitmap: bmp, sourceWidth: bmp.width });
       } catch {
         // Frame decoding failed — thumbnail stays empty
       }

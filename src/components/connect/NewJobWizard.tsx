@@ -60,6 +60,7 @@ import {
   needsLabelsRepoint,
   videoChecksToVisibility,
   type WorkerFileVideoCheck,
+  type WorkerLabelsProgress,
 } from "@/lib/workerLabels";
 import { inferRuleFromLocate } from "@/lib/remoteVisibility";
 import {
@@ -322,6 +323,12 @@ function PastRunSelectItem({
   );
 }
 
+/** Bytes as megabytes, one decimal under 10 MB. */
+function formatMB(bytes: number): string {
+  const mb = bytes / 1e6;
+  return mb < 10 ? mb.toFixed(1) : Math.round(mb).toString();
+}
+
 export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted }: NewJobWizardProps) {
   const clientFor = useConnectStore((s) => s.clientFor);
   const listJobs = useConnectStore((s) => s.listJobs);
@@ -341,6 +348,7 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
   const [labelsPath, setLabelsPath] = useState<string | null>(seed?.labelsPath ?? null);
   const [labels, setLabels] = useState<Labels | null>(null);
   const [loadingLabels, setLoadingLabels] = useState(false);
+  const [labelsProgress, setLabelsProgress] = useState<WorkerLabelsProgress | null>(null);
   const [labelsError, setLabelsError] = useState<string | null>(null);
   const [videoCheck, setVideoCheck] = useState<WorkerFileVideoCheck[] | null>(null);
 
@@ -422,9 +430,10 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
       setVideoCheck(null);
       setLabelsError(null);
       setLoadingLabels(true);
+      setLabelsProgress(null);
       try {
         const client = await clientFor(workerId);
-        const loaded = await loadWorkerLabels(client, path);
+        const loaded = await loadWorkerLabels(client, path, { onProgress: setLabelsProgress });
         setLabels(loaded);
         const check = await checkWorkerFileVideos(client, loaded, path, pathRulesFor(workerId));
         setVideoCheck(check);
@@ -608,9 +617,16 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
     () =>
       labels && videoCheck
         ? async (videoIndex: number, frameIdx: number) =>
-            fetchWorkerPreviewFrame(await clientFor(workerId), labels, videoCheck, videoIndex, frameIdx)
+            fetchWorkerPreviewFrame(
+              await clientFor(workerId),
+              labels,
+              labelsPath ?? "",
+              videoCheck,
+              videoIndex,
+              frameIdx,
+            )
         : undefined,
-    [labels, videoCheck, clientFor, workerId],
+    [labels, labelsPath, videoCheck, clientFor, workerId],
   );
 
   const missingVideos = videoCheck?.filter((v) => !v.found) ?? [];
@@ -792,6 +808,11 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
               {loadingLabels && (
                 <div className="flex items-center gap-2 text-xs text-muted-foreground">
                   <Loader2 className="h-3.5 w-3.5 animate-spin" /> Reading worker file…
+                  {labelsProgress && (
+                    <span className="tabular-nums">
+                      {labelsProgress.stage} · {formatMB(labelsProgress.bytesRead)} MB read
+                    </span>
+                  )}
                 </div>
               )}
               {labelsError && <p className="text-xs text-red-400">{labelsError}</p>}
