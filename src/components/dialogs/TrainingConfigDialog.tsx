@@ -897,7 +897,7 @@ function HeadTabContent({
           <div className="flex items-center gap-4 flex-wrap">
             <div id={HEAD_FIELD_DEFS.lrThreshold.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
               <span className="text-sm text-muted-foreground">{HEAD_FIELD_DEFS.lrThreshold.label}</span>
-              <Input type="text" value={hp.reduceLRThreshold} onChange={(e) => onUpdate({ reduceLRThreshold: Number(e.target.value) })} className="h-8 text-sm w-20" />
+              <NumberInput min={0} value={hp.reduceLRThreshold} onCommit={(n) => onUpdate({ reduceLRThreshold: n })} className="h-8 text-sm w-20" />
             </div>
             <div id={HEAD_FIELD_DEFS.lrThresholdMode.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
               <span className="text-sm text-muted-foreground">{HEAD_FIELD_DEFS.lrThresholdMode.label}</span>
@@ -923,7 +923,7 @@ function HeadTabContent({
             </div>
             <div id={HEAD_FIELD_DEFS.lrMinLR.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
               <span className="text-sm text-muted-foreground">{HEAD_FIELD_DEFS.lrMinLR.label}</span>
-              <Input type="text" value={hp.reduceLRMinLR} onChange={(e) => onUpdate({ reduceLRMinLR: Number(e.target.value) })} className="h-8 text-sm w-20" />
+              <NumberInput min={0} value={hp.reduceLRMinLR} onCommit={(n) => onUpdate({ reduceLRMinLR: n })} className="h-8 text-sm w-20" />
             </div>
           </div>
         )}
@@ -961,7 +961,7 @@ function HeadTabContent({
         )}
         <Toggle {...HEAD_FIELD_DEFS.stopOnPlateau} checked={hp.stopOnPlateau} onChange={(v) => onUpdate({ stopOnPlateau: v })} />
         <Field {...HEAD_FIELD_DEFS.plateauMinDelta}>
-          <Input type="text" value={hp.plateauMinDelta} onChange={(e) => onUpdate({ plateauMinDelta: Number(e.target.value) })} disabled={!hp.stopOnPlateau} className="h-9 text-sm" />
+          <NumberInput min={0} value={hp.plateauMinDelta} onCommit={(n) => onUpdate({ plateauMinDelta: n })} disabled={!hp.stopOnPlateau} className="h-9 text-sm" />
         </Field>
         <Field {...HEAD_FIELD_DEFS.plateauPatience}>
           <NumberInput min={1} integer value={hp.earlyStoppingPatience} onCommit={(n) => onUpdate({ earlyStoppingPatience: n })} disabled={!hp.stopOnPlateau} className="h-9 text-sm" />
