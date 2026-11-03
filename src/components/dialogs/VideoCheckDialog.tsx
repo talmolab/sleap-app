@@ -191,7 +191,12 @@ export function VideoCheckDialog() {
         await reencode.reencodeWithFfmpeg(
           videoPath(video),
           dest,
-          { fps: video.fps, width: video.shape?.[2], height: video.shape?.[1] },
+          {
+            fps: video.fps,
+            width: video.shape?.[2],
+            height: video.shape?.[1],
+            frameCount: video.shape?.[0],
+          },
           {
             quality,
             signal: ac.signal,

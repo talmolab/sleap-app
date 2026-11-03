@@ -16,8 +16,11 @@
  * WebCodecs); verify in the app.
  */
 import {
+  ALL_FORMATS,
+  BlobSource,
   BufferTarget,
   CanvasSource,
+  Input,
   Mp4OutputFormat,
   Output,
   QUALITY_HIGH,
@@ -25,7 +28,9 @@ import {
   canEncodeVideo,
   type StreamTargetChunk,
 } from "mediabunny";
+import { GrayscaleVideoBackend, MediaBunnyVideoBackend, type VideoBackend } from "@talmolab/sleap-io.js";
 import type { Video } from "@/types";
+import { browserVideoFile } from "@/lib/resolveVideos";
 import { frameToCanvas } from "@/lib/frameCanvas";
 import { clearFullRangeTag, isWebKitEncoder } from "@/lib/h264RangeTag";
 import { buildTranscodeArgs } from "@/lib/transcode/transcodeArgs";
@@ -65,8 +70,11 @@ function abortError(): DOMException {
 export async function reencodeWithFfmpeg(
   sourcePath: string,
   destPath: string,
-  /** The video's frame rate and size, for the keyframe spacing and bitrate. */
-  source: { fps?: number | null; width?: number; height?: number },
+  /**
+   * The video's frame rate and size, for the keyframe spacing and bitrate, and
+   * its frame count, for progress.
+   */
+  source: { fps?: number | null; width?: number; height?: number; frameCount?: number },
   opts: ReencodeOptions = {}
 ): Promise<void> {
   const deps = createTauriTranscodeDeps();
@@ -96,7 +104,12 @@ export async function reencodeWithFfmpeg(
     await deps.runTranscode(
       args,
       (p) => {
-        if (durationMs && durationMs > 0 && p.outTimeMs !== undefined) {
+        // Every frame is kept, so frames done / total is exact. Fall back to
+        // time when the count is unknown; some containers (MKV) report no
+        // stream duration, which would leave the bar without a percentage.
+        if (source.frameCount && p.frame !== undefined) {
+          opts.onProgress?.(Math.min(100, (p.frame / source.frameCount) * 100));
+        } else if (durationMs && durationMs > 0 && p.outTimeMs !== undefined) {
           opts.onProgress?.(Math.min(100, (p.outTimeMs / durationMs) * 100));
         }
       },
@@ -122,6 +135,32 @@ export async function canReencodeInBrowser(video: Video): Promise<boolean> {
     });
   } catch {
     return false;
+  }
+}
+
+/**
+ * The size `video`'s frames are stored at in its file. The MediaBunny reader
+ * (MOV/MKV/WebM) hands back frames stretched to the display shape when pixels
+ * aren't square (384 wide at 191:189 comes back 388 wide), but labels and every
+ * other reader use the stored size, so a re-encode has to write that size or
+ * labels drift sideways. Null for any other reader, whose frames are already
+ * stored-size.
+ */
+async function storedFrameSize(
+  video: Video,
+  backend: VideoBackend
+): Promise<{ width: number; height: number } | null> {
+  const inner = backend instanceof GrayscaleVideoBackend ? backend.inner : backend;
+  const file = browserVideoFile(video);
+  if (!(inner instanceof MediaBunnyVideoBackend) || !file) return null;
+  const input = new Input({ source: new BlobSource(file), formats: ALL_FORMATS });
+  try {
+    const track = await input.getPrimaryVideoTrack();
+    return track ? { width: track.codedWidth, height: track.codedHeight } : null;
+  } catch {
+    return null;
+  } finally {
+    input.dispose();
   }
 }
 
@@ -163,8 +202,11 @@ export async function reencodeInBrowser(
   const { backend } = reader;
   try {
     const shape = backend.shape ?? video.shape;
-    const [frameCount, h, w] = shape ?? [0, 0, 0];
-    if (!frameCount || !w || !h) throw new Error("Couldn't read this video's size.");
+    const [frameCount, readH, readW] = shape ?? [0, 0, 0];
+    if (!frameCount || !readW || !readH) throw new Error("Couldn't read this video's size.");
+    const stored = await storedFrameSize(video, backend);
+    const w = stored?.width ?? readW;
+    const h = stored?.height ?? readH;
     const fps = video.fps || backend.fps || 30;
     const order = displayOrder(frameCount, (await backend.getFrameTimes?.()) ?? null);
 
@@ -194,7 +236,7 @@ export async function reencodeInBrowser(
         const drawn = await frameToCanvas(frame, shape);
         ctx.fillStyle = "black";
         ctx.fillRect(0, 0, canvas.width, canvas.height);
-        if (drawn) ctx.drawImage(drawn, 0, 0);
+        if (drawn) ctx.drawImage(drawn, 0, 0, w, h);
         else blankFrames++;
         await source.add(i / fps, 1 / fps);
         if (i % 10 === 0 || i === frameCount - 1) {
