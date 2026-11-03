@@ -251,7 +251,9 @@ export function createWorkerFileRangeSource(
  * Reads a worker-side `.slp`'s structure (skeleton, videos, labeled frames)
  * via `fs.stat` + `fs.read` only — never the embedded image bytes
  * (`openVideos: false`), since the launcher wizard only needs stats to
- * build a spec and check video reachability, not to render anything.
+ * build a spec and check video reachability, not to render anything — and
+ * only user instances (`userInstancesOnly`): predicted points are most of a
+ * predictions file and never used here.
  */
 export async function loadWorkerLabels(
   client: WorkerClient,
@@ -270,6 +272,9 @@ export async function loadWorkerLabels(
   try {
     return await readSlpStreaming(source, {
       openVideos: false,
+      // Only the labels: never download pred_points, which is most of a
+      // predictions file and nothing the wizard uses.
+      userInstancesOnly: true,
       filenameHint: path,
       h5wasmUrl: H5WASM_URL,
       onProgress: (_current, _total, message) => {
