@@ -1138,6 +1138,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#checking-before-you-train-desktop" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Checking before you train (desktop)
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#running" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -1962,6 +1973,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#checking-before-you-train-desktop" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Checking before you train (desktop)
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#running" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -2193,6 +2215,29 @@ defaults…</strong> to start over.</p>
 </table>
 <p>Fine-tune and Resume need a checkpoint path; <strong>Start Training</strong> stays disabled
 until you set one.</p>
+<h2 id="checking-before-you-train-desktop">Checking before you train (desktop)<a class="headerlink" href="#checking-before-you-train-desktop" title="Permanent link">&para;</a></h2>
+<p><strong>Dry run</strong>, next to <strong>Start Training</strong>, checks your setup in seconds before you
+commit to a long run. For each model (both, for top-down) it runs
+<code>sleap-nn train --dry-run</code> with the same config a real run would use, data
+pipeline and workers included: all setup, plus one training batch and one
+validation batch, on one device. It also checks it can save to the model folder
+next to your labels file: it writes the configs and a checkpoint there, then
+removes them, so nothing is kept.</p>
+<ul>
+<li><strong>Passed</strong> — each model shows what the real run would do: labeled frames and
+  samples, steps per epoch, max epochs, model size, device, run folder, data
+  pipeline and workers, whether the image cache fits in memory, and the write
+  check</li>
+<li><strong>Failed</strong> — the model shows the error that stopped it, with <strong>Copy</strong> for the
+  error output. <strong>Show log</strong> has the full output, and <strong>Copy log</strong> copies it.
+  If one model fails, the other is still checked</li>
+<li><strong>Cancel</strong> stops the check and removes what it had written so far</li>
+<li>Change the config afterwards and the result says so; run it again to check
+  the new one</li>
+</ul>
+<p>Dry runs need a sleap-nn release after 0.3.5. With an older one the result says
+so, and training itself still works. Dry runs run on this computer only, not on
+a remote worker.</p>
 <h2 id="running">Running<a class="headerlink" href="#running" title="Permanent link">&para;</a></h2>
 <p>Click <strong>Start Training</strong> (or <strong>Start Remote Training</strong> with a worker selected).
 While it runs:</p>
