@@ -1250,9 +1250,9 @@ export function TrainingConfigDialog({
       const baseline = getRecommendedProfileForHead(headType, backboneRecommendation);
       if (baseline) {
         const parsed = parseYamlConfig(baseline.content, baseline.filename, slot);
-        // Fresh configs start in Auto mode for max_stride (see recommendMaxStride
-        // in modelStats.ts) rather than inheriting the preset's fixed value.
-        if (parsed) addConfigFile({ ...parsed, hyperparams: { ...parsed.hyperparams, maxStride: null } });
+        // Fresh configs keep the preset's fixed max_stride, as in SLEAP (Auto
+        // is opt-in; see recommendMaxStride in modelStats.ts).
+        if (parsed) addConfigFile(parsed);
       }
     }
   }, [open, modelType]); // eslint-disable-line react-hooks/exhaustive-deps

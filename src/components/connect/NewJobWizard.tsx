@@ -131,7 +131,8 @@ function defaultConfigsFor(modelType: ModelType): ConfigFile[] {
     const baseline = getDefaultProfileForHead(headType);
     if (!baseline) continue;
     const parsed = parseYamlConfig(baseline.content, baseline.filename, slot);
-    if (parsed) configs.push({ ...parsed, hyperparams: { ...parsed.hyperparams, maxStride: null } });
+    // The preset's fixed max_stride, as in SLEAP (Auto is opt-in).
+    if (parsed) configs.push(parsed);
   }
   return configs;
 }
