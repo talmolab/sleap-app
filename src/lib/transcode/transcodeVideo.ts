@@ -68,12 +68,15 @@ export interface TranscodeDeps {
   /**
    * Streaming transcode via the bundled ffmpeg, reporting parsed progress.
    * Rejects on a nonzero exit or spawn failure; honors `signal` (kills the
-   * child on abort).
+   * child on abort). `onStderr` receives ffmpeg's stderr lines (with
+   * `-v error`, just its errors), for a caller that needs to know whether
+   * anything went wrong, e.g. the frame check's decode pass.
    */
   runTranscode: (
     args: string[],
     onProgress: (p: TranscodeProgress) => void,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    onStderr?: (line: string) => void
   ) => Promise<void>;
 }
 

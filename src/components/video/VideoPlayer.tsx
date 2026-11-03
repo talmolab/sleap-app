@@ -81,6 +81,7 @@ import {
   ensureVideoBackend,
   relocateMissingImageFrames,
 } from "../../lib/resolveVideos";
+import { useVideoCheckStore } from "@/stores/videoCheckStore";
 import { toast } from "@/lib/notify";
 import { hintIfPredictionsRemain, hintIfFirstNodeConfirm } from "@/lib/labelingHints";
 import { setLabelsAutosaveInteracting } from "@/lib/labelsAutosave";
@@ -3335,6 +3336,15 @@ export function VideoPlayer() {
               >
                 Locate Video
               </Button>
+              {videoIssue(video) === "unsupported-codec" && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => useVideoCheckStore.getState().openDialog(video)}
+                >
+                  Re-encode…
+                </Button>
+              )}
             </div>
           </div>
         )}

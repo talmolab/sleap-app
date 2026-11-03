@@ -36,6 +36,8 @@ import { GoToFrameDialog } from "../dialogs/GoToFrameDialog";
 import { NewProjectDialog } from "../dialogs/NewProjectDialog";
 import { TranscodeProgressDialog } from "../dialogs/TranscodeProgressDialog";
 import { TranscodeConfirmDialog } from "../dialogs/TranscodeConfirmDialog";
+import { VideoCheckDialog } from "../dialogs/VideoCheckDialog";
+import { useQuickVideoChecks } from "@/hooks/useQuickVideoChecks";
 import { ConfirmDialog } from "../dialogs/ConfirmDialog";
 import { ChoiceDialog } from "../dialogs/ChoiceDialog";
 import { PromptDialog } from "../dialogs/PromptDialog";
@@ -143,6 +145,7 @@ export function AppShell() {
   const loadingProgress = useAppStore((s) => s.loadingProgress);
   const loadingCancel = useAppStore((s) => s.loadingCancel);
   const sidebarSide = useAppStore((s) => s.sidebarSide);
+  useQuickVideoChecks();
 
   // Dialog state
   const deletePredictionsDialogOpen = useAppStore(
@@ -331,6 +334,7 @@ export function AppShell() {
       <PromptDialog />
       <TranscodeConfirmDialog />
       <TranscodeProgressDialog />
+      <VideoCheckDialog />
       <SelectToFrameDialog />
       <MergeProjectDialog />
       <AddVideoUrlDialog />

@@ -1265,7 +1265,7 @@ export async function resolveAllVideosFromFolder(
  * channels immediately (no autodetect decode needed), matching the import
  * dialog's checkbox, which always yields a definite boolean, never "autodetect".
  */
-async function createBackendForFile(
+export async function createBackendForFile(
   file: File,
   grayscale?: boolean | null,
   hdf5?: Hdf5VideoHints
@@ -1728,6 +1728,38 @@ export async function scheduleWorkerDecodeUpgradeBrowser(
 }
 
 /**
+ * Open a native video path with the reader the viewer uses, but none of the
+ * open path's side work: no scrub proxy, no background swaps, no transcode
+ * prompt. For a frame check, which needs a private reader. A legacy-codec video
+ * the app shows from its converted copy is read from that copy (it never starts
+ * a conversion); otherwise it gets the reader's unsupported-codec error.
+ */
+export async function createPlainBackendForPath(path: string): Promise<VideoBackend> {
+  const name = getBasename(path);
+  switch (backendKindForFilename(name)) {
+    case "mediabunny":
+      return MediaBunnyVideoBackend.fromRangeSource(await makeVideoRangeSource(path), name);
+    case "avi": {
+      const decodable = await ensureDecodablePath(path, createTauriTranscodeDeps(), {
+        confirmTranscode: async () => false,
+      });
+      if (decodable.transcoded) {
+        return new Mp4BoxVideoBackend(await makeVideoRangeSource(decodable.path), {
+          filename: name,
+        });
+      }
+      return AviVideoBackend.fromRangeSource(await makeVideoRangeSource(path), name);
+    }
+    case "seq": {
+      const platform = await getPlatform();
+      return SeqVideoBackend.create(new File([await platform.readFile(path)], name));
+    }
+    default:
+      return new Mp4BoxVideoBackend(await makeVideoRangeSource(path), { filename: name });
+  }
+}
+
+/**
  * Build a backend that reads a native video path lazily by byte range, so a
  * multi-GB external video is never read whole into memory (the desktop
  * freeze/crash). MP4 → Mp4Box, the MediaBunny formats → MediaBunny, both via a
@@ -2056,10 +2088,22 @@ export async function assignVideoBackend(
     persistHdf5Dataset(video);
     return ok; // HDF5 containers have no MP4 stream to hand the decode worker
   }
+  if (ok) browserVideoFiles.set(video, file);
   // Browser: upgrade to off-main worker decode (the worker slices this Blob
   // directly). No-ops on desktop / non-mp4. Fire-and-forget.
   if (ok) void scheduleWorkerDecodeUpgradeBrowser(video, file, file.name);
   return ok;
+}
+
+/**
+ * The File each browser video was last opened from. The viewer's backend keeps
+ * its source private, and a frame check needs to open a reader of its own.
+ */
+const browserVideoFiles = new WeakMap<Video, File>();
+
+/** The File a browser video was opened from, if it was opened from one here. */
+export function browserVideoFile(video: Video): File | null {
+  return browserVideoFiles.get(video) ?? null;
 }
 
 /**
