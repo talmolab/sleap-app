@@ -36,6 +36,10 @@ export const JOB_ACTIVE = "job.active";
 /** A job names a path outside the worker's shared folders; the message says how to share it. */
 export const JOB_PATH_NOT_SHARED = "job.path_not_shared";
 
+// media.*
+/** A `media.frame` source exists but can't be decoded (or has no such frame). */
+export const MEDIA_UNREADABLE = "media.unreadable";
+
 // Catch-all for an unexpected worker-side fault.
 export const INTERNAL = "internal";
 

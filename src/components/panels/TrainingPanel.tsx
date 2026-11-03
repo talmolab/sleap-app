@@ -884,16 +884,13 @@ export function TrainingPanel() {
         if (source) {
           const parsed = parseConfig(source.yamlText, source.filename, slot, source.checkpointPath);
           if (parsed) {
-            // Fresh baseline configs start in Auto mode for max_stride (see
-            // recommendMaxStride in modelStats.ts) rather than inheriting the
-            // preset's fixed value. A trained run's own max_stride is always
-            // honored as-is. The centroid head's input scale similarly starts
-            // from the size-derived recommendation instead of the baseline's
-            // static 0.5, for a small-in-frame animal (see
-            // recommendCentroidScale in modelStats.ts).
+            // Fresh baseline configs keep the preset's fixed max_stride, as in
+            // SLEAP (Auto is opt-in; see recommendMaxStride in modelStats.ts).
+            // The centroid head's input scale starts from the size-derived
+            // recommendation instead of the baseline's static 0.5, for a
+            // small-in-frame animal (see recommendCentroidScale in modelStats.ts).
             const hyperparams = { ...parsed.hyperparams };
             if (source.source === "baseline") {
-              hyperparams.maxStride = null;
               if (slot === "centroid" && centroidScaleRecommendation) {
                 hyperparams.scale = centroidScaleRecommendation.scale;
               }

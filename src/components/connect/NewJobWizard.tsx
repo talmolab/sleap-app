@@ -56,9 +56,11 @@ import { getDefaultProfileForHead, slotToHeadType } from "@/lib/trainingProfiles
 import {
   loadWorkerLabels,
   checkWorkerFileVideos,
+  fetchWorkerPreviewFrame,
   needsLabelsRepoint,
   videoChecksToVisibility,
   type WorkerFileVideoCheck,
+  type WorkerLabelsProgress,
 } from "@/lib/workerLabels";
 import { inferRuleFromLocate } from "@/lib/remoteVisibility";
 import {
@@ -129,7 +131,8 @@ function defaultConfigsFor(modelType: ModelType): ConfigFile[] {
     const baseline = getDefaultProfileForHead(headType);
     if (!baseline) continue;
     const parsed = parseYamlConfig(baseline.content, baseline.filename, slot);
-    if (parsed) configs.push({ ...parsed, hyperparams: { ...parsed.hyperparams, maxStride: null } });
+    // The preset's fixed max_stride, as in SLEAP (Auto is opt-in).
+    if (parsed) configs.push(parsed);
   }
   return configs;
 }
@@ -321,6 +324,12 @@ function PastRunSelectItem({
   );
 }
 
+/** Bytes as megabytes, one decimal under 10 MB. */
+function formatMB(bytes: number): string {
+  const mb = bytes / 1e6;
+  return mb < 10 ? mb.toFixed(1) : Math.round(mb).toString();
+}
+
 export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted }: NewJobWizardProps) {
   const clientFor = useConnectStore((s) => s.clientFor);
   const listJobs = useConnectStore((s) => s.listJobs);
@@ -340,6 +349,7 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
   const [labelsPath, setLabelsPath] = useState<string | null>(seed?.labelsPath ?? null);
   const [labels, setLabels] = useState<Labels | null>(null);
   const [loadingLabels, setLoadingLabels] = useState(false);
+  const [labelsProgress, setLabelsProgress] = useState<WorkerLabelsProgress | null>(null);
   const [labelsError, setLabelsError] = useState<string | null>(null);
   const [videoCheck, setVideoCheck] = useState<WorkerFileVideoCheck[] | null>(null);
 
@@ -421,9 +431,10 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
       setVideoCheck(null);
       setLabelsError(null);
       setLoadingLabels(true);
+      setLabelsProgress(null);
       try {
         const client = await clientFor(workerId);
-        const loaded = await loadWorkerLabels(client, path);
+        const loaded = await loadWorkerLabels(client, path, { onProgress: setLabelsProgress });
         setLabels(loaded);
         const check = await checkWorkerFileVideos(client, loaded, path, pathRulesFor(workerId));
         setVideoCheck(check);
@@ -599,6 +610,25 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
   // here, so the trigger shows its placeholder rather than a wrong entry.
   const startFromValue =
     startFrom === "past" ? (selectedPastRunId ? `past:${selectedPastRunId}` : "") : startFrom;
+
+  // The receptive-field preview's frame: decoded on the worker, since its
+  // video lives there. Stable per loaded labels + video check, so the preview
+  // fetches once rather than on every render.
+  const remoteFrame = useMemo(
+    () =>
+      labels && videoCheck
+        ? async (videoIndex: number, frameIdx: number) =>
+            fetchWorkerPreviewFrame(
+              await clientFor(workerId),
+              labels,
+              labelsPath ?? "",
+              videoCheck,
+              videoIndex,
+              frameIdx,
+            )
+        : undefined,
+    [labels, labelsPath, videoCheck, clientFor, workerId],
+  );
 
   const missingVideos = videoCheck?.filter((v) => !v.found) ?? [];
   const allVideosFound = videoCheck != null && missingVideos.length === 0;
@@ -779,6 +809,11 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
               {loadingLabels && (
                 <div className="flex items-center gap-2 text-xs text-muted-foreground">
                   <Loader2 className="h-3.5 w-3.5 animate-spin" /> Reading worker file…
+                  {labelsProgress && (
+                    <span className="tabular-nums">
+                      {labelsProgress.stage} · {formatMB(labelsProgress.bytesRead)} MB read
+                    </span>
+                  )}
                 </div>
               )}
               {labelsError && <p className="text-xs text-red-400">{labelsError}</p>}
@@ -1118,6 +1153,7 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
           onUpdateSlot={onUpdateSlot}
           configActions={configActions}
           labelsOverride={labels}
+          remoteFrame={remoteFrame}
           mode="worker-file"
           // Unreachable: TrainingConfigDialog hides its post-training-
           // inference controls entirely in mode="worker-file" (this wizard's
