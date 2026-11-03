@@ -222,7 +222,7 @@ describe("loadWorkerLabels", () => {
     readSlpStreamingMock.mockClear();
   });
 
-  it("stats the file then streams it with openVideos: false and a filenameHint", async () => {
+  it("stats the file then streams just its user labels (openVideos: false, userInstancesOnly) with a filenameHint", async () => {
     const { client } = makeFakeClient(FILE_BYTES);
 
     await loadWorkerLabels(client, "/data/x.slp");
@@ -230,7 +230,11 @@ describe("loadWorkerLabels", () => {
     expect(readSlpStreamingMock).toHaveBeenCalledTimes(1);
     const [source, options] = readSlpStreamingMock.mock.calls[0]!;
     expect((source as { size: number }).size).toBe(FILE_BYTES.length);
-    expect(options).toMatchObject({ openVideos: false, filenameHint: "/data/x.slp" });
+    expect(options).toMatchObject({
+      openVideos: false,
+      userInstancesOnly: true,
+      filenameHint: "/data/x.slp",
+    });
   });
 
   it("rethrows the RangeSource's lastError when readSlpStreaming fails after a readRange error", async () => {
