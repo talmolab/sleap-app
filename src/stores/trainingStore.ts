@@ -229,9 +229,9 @@ export interface ConfigHyperparams {
   scale: number;
   // Model — backbone
   stemStride: number | null;
-  /** `null` = Auto (live-recomputed from the loaded project's instance
-   *  sizes, see recommendMaxStride in modelStats.ts); a number is a
-   *  manual override. */
+  /** A fixed max stride (the default, as in SLEAP), or `null` = Auto
+   *  (opt-in: live-recomputed from the loaded project's instance sizes,
+   *  see recommendMaxStride in modelStats.ts). */
   maxStride: number | null;
   filters: number;
   filtersRate: number;
@@ -339,7 +339,7 @@ export const defaultHyperparams: ConfigHyperparams = {
   sigma: 5.0,
   scale: 1.0,
   stemStride: null,
-  maxStride: null,
+  maxStride: 16,
   filters: 16,
   filtersRate: 2.0,
   middleBlock: true,

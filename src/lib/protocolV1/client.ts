@@ -174,6 +174,19 @@ export interface FsStatResult {
   shared: boolean;
 }
 
+/** One video frame from `media.frame`, decoded and re-encoded as a JPEG by the worker. */
+export interface MediaFrameResult {
+  /** The JPEG's bytes, already base64-decoded. */
+  content: Uint8Array;
+  mime: string;
+  /** The frame's original size, before the worker scaled it down to fit `maxSide`. */
+  width: number;
+  height: number;
+  /** The JPEG's own size. */
+  scaledWidth: number;
+  scaledHeight: number;
+}
+
 export interface FsReadResult {
   path: string;
   /** Raw bytes, already base64-decoded. */
@@ -669,6 +682,26 @@ export class WorkerClient {
       size: (result.size as number) ?? 0,
       totalSize: (result.total_size as number) ?? 0,
       eof: !!result.eof,
+    };
+  }
+
+  /**
+   * One frame of a worker-side video (or a single image), decoded by the
+   * worker and re-encoded as a JPEG with its longest side capped at
+   * `maxSide` — for previews of videos the app can't decode itself
+   * (sleap-connect `media.frame`; check for the `media_frame` feature).
+   */
+  async mediaFrame(path: string, frameIdx: number, maxSide?: number): Promise<MediaFrameResult> {
+    const params: Record<string, unknown> = { path, frame_idx: frameIdx };
+    if (maxSide !== undefined) params.max_side = maxSide;
+    const result = await this._request("media.frame", params);
+    return {
+      content: base64ToBytes((result.content_base64 as string) ?? ""),
+      mime: (result.mime as string) ?? "image/jpeg",
+      width: (result.width as number) ?? 0,
+      height: (result.height as number) ?? 0,
+      scaledWidth: (result.scaled_width as number) ?? 0,
+      scaledHeight: (result.scaled_height as number) ?? 0,
     };
   }
 

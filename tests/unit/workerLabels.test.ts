@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "../bun-test";
-import { WorkerProtocolError, FS_NOT_FOUND, FS_FORBIDDEN } from "@/lib/protocolV1/errors";
+import { WorkerProtocolError, FS_NOT_FOUND, FS_FORBIDDEN, PROTO_UNKNOWN_METHOD } from "@/lib/protocolV1/errors";
 import type { WorkerClient } from "@/lib/protocolV1/client";
 
 // `readSlpStreaming` runs its H5 parser in a real Worker over a
@@ -14,8 +14,34 @@ import type { WorkerClient } from "@/lib/protocolV1/client";
 const readSlpStreamingMock = vi.fn(async (_source: unknown, _options: unknown) => {
   return { skeletons: [], videos: [], labeledFrames: [] };
 });
+// Embedded (pkg.slp) previews: a fake reader + backend, recording what was asked.
+const embeddedCalls = { opened: 0, closed: 0, dataset: "", frames: [] as number[] };
+class FakeStreamingHdf5VideoBackend {
+  frameNumbers = [5, 9];
+  shape = [10, 4, 6, 1];
+  constructor(opts: { datasetPath: string }) {
+    embeddedCalls.dataset = opts.datasetPath;
+  }
+  async ensureLoaded() {}
+  async getFrame(frame: number) {
+    embeddedCalls.frames.push(frame);
+    return { decoded: frame };
+  }
+}
 vi.mock("@talmolab/sleap-io.js", () => ({
   readSlpStreaming: readSlpStreamingMock,
+  openH5Worker: async () => {
+    embeddedCalls.opened++;
+    return {
+      close: async () => {
+        embeddedCalls.closed++;
+      },
+    };
+  },
+  StreamingHdf5VideoBackend: FakeStreamingHdf5VideoBackend,
+}));
+vi.mock("@/lib/frameBitmap", () => ({
+  frameToBitmap: async (frame: { decoded: number }) => ({ width: 6, height: 4, decoded: frame.decoded }),
 }));
 
 const {
@@ -24,6 +50,8 @@ const {
   checkWorkerFileVideos,
   needsLabelsRepoint,
   videoChecksToVisibility,
+  workerFramePath,
+  fetchWorkerPreviewFrame,
 } = await import("@/lib/workerLabels");
 
 const FILE_BYTES = new Uint8Array(10_000);
@@ -86,9 +114,10 @@ describe("createWorkerFileRangeSource", () => {
       maxPages: 2,
     });
 
+    // Non-adjacent pages, so no read-ahead muddies the count.
     await source.readRange(0, 1); // page 0
-    await source.readRange(1000, 1); // page 1
-    await source.readRange(2000, 1); // page 2 — evicts page 0 (LRU)
+    await source.readRange(2000, 1); // page 2
+    await source.readRange(4000, 1); // page 4 — evicts page 0 (LRU)
     expect(fsReadCalls.length).toBe(3);
 
     await source.readRange(0, 1); // page 0 again — must re-fetch
@@ -109,6 +138,73 @@ describe("createWorkerFileRangeSource", () => {
     for (const [, length] of fsReadCalls) {
       expect(length).toBeLessThanOrEqual(4 * 1024 * 1024);
     }
+  });
+
+  it("fetches a large read in worker-sized pieces, several at once, skipping the page cache", async () => {
+    const bigFile = new Uint8Array(20 * 1024 * 1024);
+    for (let i = 0; i < bigFile.length; i += 4096) bigFile[i] = (i / 4096) % 256;
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const calls: Array<[number, number]> = [];
+    const client = {
+      fsRead: async (_path: string, offset = 0, length = 0) => {
+        calls.push([offset, length]);
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((r) => setTimeout(r, 1));
+        inFlight--;
+        const content = bigFile.subarray(offset, Math.min(offset + length, bigFile.length));
+        return { path: _path, content, offset, size: content.length, totalSize: bigFile.length, eof: false };
+      },
+    } as unknown as WorkerClient;
+    const source = createWorkerFileRangeSource(client, "/data/big.slp", bigFile.length);
+
+    const bytes = await source.readRange(1000, 18 * 1024 * 1024);
+
+    expect(bytes).toEqual(bigFile.subarray(1000, 1000 + 18 * 1024 * 1024));
+    expect(calls.length).toBe(5); // 18 MiB in ≤4 MiB pieces
+    expect(calls.every(([, length]) => length <= 4 * 1024 * 1024)).toBe(true);
+    expect(maxInFlight).toBeGreaterThan(1);
+  });
+
+  it("keeps small reads paged at 1 MiB", async () => {
+    const bigFile = new Uint8Array(8 * 1024 * 1024);
+    const { client, fsReadCalls } = makeFakeClient(bigFile);
+    const source = createWorkerFileRangeSource(client, "/data/big.slp", bigFile.length);
+
+    await source.readRange(3 * 1024 * 1024 + 10, 100);
+
+    expect(fsReadCalls).toEqual([[3 * 1024 * 1024, 1024 * 1024]]);
+  });
+
+  it("reads ahead while reading forward page by page", async () => {
+    const { client, fsReadCalls } = makeFakeClient(FILE_BYTES);
+    const source = createWorkerFileRangeSource(client, "/data/x.slp", FILE_BYTES.length, {
+      pageSize: 1000,
+    });
+
+    await source.readRange(0, 10); // page 0: no run yet
+    await source.readRange(1000, 10); // page 1: sequential, so page 2 is fetched too
+    const afterRun = fsReadCalls.length;
+    await source.readRange(2000, 10); // page 2: already fetched
+
+    expect(afterRun).toBe(3);
+    expect(fsReadCalls.length).toBe(3 + 2); // page 2 hit, and the run grows: pages 3-4 fetched ahead
+  });
+
+  it("reports the bytes each fs.read brought back", async () => {
+    const { client } = makeFakeClient(FILE_BYTES);
+    let total = 0;
+    const source = createWorkerFileRangeSource(client, "/data/x.slp", FILE_BYTES.length, {
+      pageSize: 1000,
+      onBytes: (n) => {
+        total += n;
+      },
+    });
+
+    await source.readRange(5000, 10);
+
+    expect(total).toBe(1000);
   });
 
   it("records the fs.read failure as lastError() without changing the thrown error", async () => {
@@ -453,5 +549,105 @@ describe("videoChecksToVisibility", () => {
     expect(videoChecksToVisibility(checks)).toEqual([
       { index: 0, local: "video0", worker: null, visible: false },
     ]);
+  });
+});
+
+describe("workerFramePath", () => {
+  const found = (workerPath: string) => ({
+    index: 0,
+    path: "/Volumes/lab/v.mp4",
+    embedded: false,
+    found: true,
+    workerPath,
+    via: "rule" as const,
+  });
+
+  it("is the resolved worker path for a single-file video", () => {
+    expect(workerFramePath("/Volumes/lab/v.mp4", found("/data/v.mp4"), 99)).toBe("/data/v.mp4");
+  });
+
+  it("is that frame's image, in the folder the first image resolved to, for an image sequence", () => {
+    const files = ["C:\\imgs\\f0.png", "C:\\imgs\\f1.png", "C:\\imgs\\f2.png"];
+    expect(workerFramePath(files, found("/data/imgs/f0.png"), 2)).toBe("/data/imgs/f2.png");
+    expect(workerFramePath(files, found("/data/imgs/f0.png"), 3)).toBeNull();
+  });
+
+  it("is null for an embedded or missing video", () => {
+    expect(workerFramePath("x", { ...found("/a"), embedded: true, workerPath: null }, 0)).toBeNull();
+    expect(workerFramePath("x", { ...found("/a"), found: false, workerPath: null }, 0)).toBeNull();
+  });
+});
+
+describe("fetchWorkerPreviewFrame", () => {
+  const labels = { videos: [{ filename: "/Volumes/lab/v.mp4" }] } as never;
+  const checks = [
+    { index: 0, path: "/Volumes/lab/v.mp4", embedded: false, found: true, workerPath: "/data/v.mp4", via: "rule" as const },
+  ];
+
+  it("asks the worker for that frame and keeps the original size", async () => {
+    const calls: Array<[string, number]> = [];
+    const client = {
+      mediaFrame: async (path: string, frameIdx: number) => {
+        calls.push([path, frameIdx]);
+        return { content: new Uint8Array([1, 2]), mime: "image/jpeg", width: 4096, height: 2048, scaledWidth: 2048, scaledHeight: 1024 };
+      },
+    } as unknown as WorkerClient;
+    const bitmap = { width: 2048, height: 1024 } as unknown as ImageBitmap;
+    const original = globalThis.createImageBitmap;
+    globalThis.createImageBitmap = (async () => bitmap) as never;
+    try {
+      const frame = await fetchWorkerPreviewFrame(client, labels, "/data/l.slp", checks, 0, 7);
+      expect(calls).toEqual([["/data/v.mp4", 7]]);
+      expect(frame).toEqual({ bitmap, width: 4096, height: 2048 });
+    } finally {
+      globalThis.createImageBitmap = original;
+    }
+  });
+
+  it("explains an older worker without media.frame", async () => {
+    const client = {
+      mediaFrame: async () => {
+        throw new WorkerProtocolError(PROTO_UNKNOWN_METHOD, "no such method");
+      },
+    } as unknown as WorkerClient;
+    await expect(fetchWorkerPreviewFrame(client, labels, "/data/l.slp", checks, 0, 7)).rejects.toThrow(
+      "Update sleap-rtc on the worker to preview its videos",
+    );
+  });
+
+  it("reads an embedded (pkg.slp) frame's stored image itself, then closes the reader", async () => {
+    embeddedCalls.opened = embeddedCalls.closed = 0;
+    embeddedCalls.frames = [];
+    const pkgLabels = {
+      videos: [{ filename: "/data/l.pkg.slp", backendMetadata: { dataset: "video0/video", format: "png" } }],
+    } as never;
+    const pkgChecks = [
+      { index: 0, path: "/data/l.pkg.slp", embedded: true, found: true, workerPath: null, via: null },
+    ];
+    const mediaFrame = vi.fn();
+    const client = {
+      mediaFrame,
+      fsStat: async () => ({ path: "/data/l.pkg.slp", type: "file", size: 100, modified: 0, shared: true }),
+    } as unknown as WorkerClient;
+
+    const frame = await fetchWorkerPreviewFrame(client, pkgLabels, "/data/l.pkg.slp", pkgChecks, 0, 9);
+    expect(embeddedCalls.dataset).toBe("video0/video");
+    expect(embeddedCalls.frames).toEqual([9]);
+    expect(frame).toMatchObject({ width: 6, height: 4 });
+    // Frame 0 isn't stored (no labeled frame): falls back to the first stored one.
+    await fetchWorkerPreviewFrame(client, pkgLabels, "/data/l.pkg.slp", pkgChecks, 0, 0);
+    expect(embeddedCalls.frames).toEqual([9, 5]);
+
+    expect(mediaFrame).not.toHaveBeenCalled();
+    expect(embeddedCalls.closed).toBe(embeddedCalls.opened);
+  });
+
+  it("explains a video that isn't on the worker, without asking it", async () => {
+    const client = { mediaFrame: vi.fn() } as unknown as WorkerClient;
+    const missing = [{ ...checks[0], found: false, workerPath: null }];
+    await expect(fetchWorkerPreviewFrame(client, labels, "/data/l.slp", missing, 0, 7)).rejects.toThrow(
+      "Video not found on the worker",
+    );
+    expect((client as unknown as { mediaFrame: ReturnType<typeof vi.fn> }).mediaFrame).not.toHaveBeenCalled();
   });
 });

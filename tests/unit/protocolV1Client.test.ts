@@ -654,6 +654,36 @@ describe("protocolV1 WorkerClient", () => {
       expect(readReq?.params).toEqual({ path: "/mnt/data/a.yaml", offset: 0, length: 10 });
     });
 
+    it("mediaFrame sends path/frame_idx and returns the decoded JPEG with both sizes", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({
+        handleRequest: (method) => {
+          if (method === "pair.claim") return { result: {} };
+          if (method === "media.frame") {
+            return {
+              result: {
+                content_base64: btoa("jpegbytes"),
+                mime: "image/jpeg",
+                width: 4096,
+                height: 2048,
+                scaled_width: 2048,
+                scaled_height: 1024,
+              },
+            };
+          }
+          return { error: { code: "proto.unknown_method", msg: "?" } };
+        },
+      });
+      const client = await pairedClient(identity, socket);
+
+      const result = await client.mediaFrame("/data/v.mp4", 42);
+
+      expect(new TextDecoder().decode(result.content)).toBe("jpegbytes");
+      expect(result).toMatchObject({ mime: "image/jpeg", width: 4096, height: 2048, scaledWidth: 2048, scaledHeight: 1024 });
+      const req = socket.sent.find((f) => f.method === "media.frame");
+      expect(req?.params).toEqual({ path: "/data/v.mp4", frame_idx: 42 });
+    });
+
     it("fsRead omits length from params when not given", async () => {
       const identity = await freshIdentity();
       const socket = new FakeWorkerSocket({
