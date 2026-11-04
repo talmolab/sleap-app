@@ -558,7 +558,7 @@ describe("connectStore", () => {
       });
 
       await expect(useConnectStore.getState().pairWithTicket(code)).rejects.toThrow(
-        /This pairing code expired at .*run `sleap-rtc pair` again/,
+        /This pairing code expired at .*run `sleap-connect pair` again/,
       );
       // Never got as far as opening a connection.
       expect(FakeWorkerClient.instances).toHaveLength(0);

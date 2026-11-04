@@ -508,7 +508,7 @@ export async function fetchWorkerPreviewFrame(
     frame = await client.mediaFrame(path, frameIdx);
   } catch (err) {
     if (err instanceof WorkerProtocolError && err.code === PROTO_UNKNOWN_METHOD) {
-      throw new Error("Update sleap-rtc on the worker to preview its videos");
+      throw new Error("Update SLEAP Connect on the worker to preview its videos");
     }
     if (err instanceof WorkerProtocolError && err.code === FS_NOT_FOUND) {
       throw new Error("Video not found on the worker");

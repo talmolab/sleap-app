@@ -72,7 +72,7 @@ export function WorkerDataAccess({ workerId, refreshToken = 0 }: WorkerDataAcces
       <div className="space-y-1.5">
         <div className="flex items-center gap-2">
           <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
-            Folders this worker shares (where it was started, plus sleap-rtc add-folder)
+            Folders this worker shares (where it was started, plus sleap-connect add-folder)
           </p>
           <Button
             size="xs"

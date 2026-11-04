@@ -107,11 +107,11 @@ export function PairWorkerForm({ onPaired, onCancel, showCancel }: PairWorkerFor
       <p className="text-[10px] text-muted-foreground leading-relaxed">
         On the machine you want to train/infer on, run{" "}
         <code className="bg-black/30 px-1 py-0.5 rounded text-[10px] font-mono">
-          sleap-rtc serve
+          sleap-connect serve
         </code>
         . Run{" "}
         <code className="bg-black/30 px-1 py-0.5 rounded text-[10px] font-mono">
-          sleap-rtc pair
+          sleap-connect pair
         </code>{" "}
         on the worker and paste the code below.
       </p>
