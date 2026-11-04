@@ -54,6 +54,7 @@ fn main() {
                     "install_python",
                     "install_uv_tool",
                     "upgrade_uv_tool",
+                    "uninstall_uv_tool",
                     "update_uv",
                     "install_uv",
                     "run_python_command",

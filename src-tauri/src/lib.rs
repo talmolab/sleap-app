@@ -664,6 +664,7 @@ fn sleap_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
             environment::install_python,
             environment::install_uv_tool,
             environment::upgrade_uv_tool,
+            environment::uninstall_uv_tool,
             environment::update_uv,
             environment::install_uv,
             environment::run_python_command,

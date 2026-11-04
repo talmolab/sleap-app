@@ -7,8 +7,7 @@ and from the browser where the browser allows the connection (see
 [How the connection runs](#how-the-connection-runs)).
 
 The machine doing the work is a **worker**: it runs
-[SLEAP Connect](https://github.com/talmolab/sleap-connect) (installed from PyPI as
-`sleap-rtc`) and sleap-nn. There is no
+[SLEAP Connect](https://github.com/talmolab/sleap-connect) and sleap-nn. There is no
 account, login, or server in between. You pair the app with a worker once, using
 a one-line code, and after that the app connects to it directly.
 
@@ -17,7 +16,7 @@ a one-line code, and after that the app connects to it directly.
 On the GPU machine, with [`uv`](https://docs.astral.sh/uv/getting-started/installation/) installed:
 
 ```bash
-uv tool install --python 3.11 "sleap-rtc[nn]" --torch-backend auto
+uv tool install --python 3.11 "sleap-connect[nn]" --torch-backend auto
 ```
 
 This installs the `sleap-connect` command, plus sleap-nn to run the jobs

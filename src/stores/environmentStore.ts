@@ -19,6 +19,7 @@ import {
   installPython as installPythonCmd,
   installUvTool as installUvToolCmd,
   upgradeUvTool as upgradeUvToolCmd,
+  uninstallUvTool as uninstallUvToolCmd,
   updateUv as updateUvCmd,
   installUv as installUvCmd,
   type AcceleratorInfo,
@@ -107,6 +108,12 @@ export interface EnvironmentState {
   installExtras: (want: { onnx: boolean; tensorrt: boolean }) => Promise<void>;
   doUpgradeTool: (pkg: string) => Promise<void>;
   doReinstallTool: (pkg: string) => Promise<void>;
+  /**
+   * Replace a `sleap-rtc` uv tool (the SLEAP Connect worker's PyPI name up
+   * to 0.0.7) with `sleap-connect`. Uninstalls first: both provide the same
+   * executables. The worker's settings (~/.sleap-connect) aren't touched.
+   */
+  switchToSleapConnect: () => Promise<void>;
   doUpdateUv: () => Promise<void>;
   doInstallUv: () => Promise<void>;
   clearInstallLog: () => void;
@@ -526,6 +533,45 @@ export const useEnvironmentStore = create<EnvironmentState>()(
             onEvent,
             extraArgs
           );
+          await get().refresh();
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          set((state) => ({
+            installStatus: "error",
+            installLog: [...state.installLog, `Error: ${msg}`],
+          }));
+        }
+      },
+
+      switchToSleapConnect: async () => {
+        const { selectedPythonPath } = get();
+        set({
+          installStatus: "installing",
+          installTarget: "sleap-connect (replacing sleap-rtc)",
+          installLog: [],
+        });
+        let failed = false;
+        const onEvent = (event: ProcessEvent) => {
+          if (event.event === "stdout" || event.event === "stderr") {
+            set((state) => ({
+              installLog: [...state.installLog, event.data.line],
+            }));
+          } else if (event.event === "finished" && !event.data.success) {
+            failed = true;
+          }
+        };
+
+        try {
+          await uninstallUvToolCmd("sleap-rtc", onEvent);
+          if (!failed) {
+            await installUvToolCmd(
+              "sleap-connect",
+              selectedPythonPath,
+              false,
+              onEvent
+            );
+          }
+          set({ installStatus: failed ? "error" : "done" });
           await get().refresh();
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);

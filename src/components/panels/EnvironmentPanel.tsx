@@ -3,7 +3,7 @@
  *
  * Shows uv status, lets users pick a Python interpreter,
  * install Python versions, and manage uv tools (sleap-nn, and the SLEAP
- * Connect worker — published on PyPI as sleap-rtc).
+ * Connect worker, sleap-connect).
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -1059,6 +1059,7 @@ export function EnvironmentPanel() {
     installExtras,
     doUpgradeTool,
     doReinstallTool,
+    switchToSleapConnect,
     doUpdateUv,
     doInstallUv,
     clearInstallLog,
@@ -1090,12 +1091,12 @@ export function EnvironmentPanel() {
   }
 
   const sleapNnTool = tools.find((t) => t.name === "sleap-nn");
-  // The SLEAP Connect worker: the PyPI package is still `sleap-rtc`; a git
-  // install from before v0.0.8 is named `sleap-connect`.
-  const connectTool = tools.find(
-    (t) => t.name === "sleap-rtc" || t.name === "sleap-connect"
-  );
-  const connectPkg = connectTool?.name ?? "sleap-rtc";
+  // The SLEAP Connect worker. Up to 0.0.7 its PyPI package was `sleap-rtc`;
+  // an install under that name is offered a switch to `sleap-connect`.
+  const connectTool = tools.find((t) => t.name === "sleap-connect");
+  const oldConnectTool = connectTool
+    ? undefined
+    : tools.find((t) => t.name === "sleap-rtc");
   const isDetecting = detectionStatus === "checking";
   const detected = detectionStatus === "done" || detectionStatus === "error";
   const isInstalling = installStatus === "installing";
@@ -1445,9 +1446,9 @@ export function EnvironmentPanel() {
           <Section
             title="SLEAP Connect worker"
             aside={
-              connectTool?.version ? (
+              (connectTool ?? oldConnectTool)?.version ? (
                 <span className="text-xs text-muted-foreground">
-                  v{connectTool.version}
+                  v{(connectTool ?? oldConnectTool)?.version}
                 </span>
               ) : null
             }
@@ -1461,7 +1462,11 @@ export function EnvironmentPanel() {
                     !connectTool && "text-muted-foreground"
                   )}
                 >
-                  {connectTool ? "Installed" : "Not installed"}
+                  {connectTool
+                    ? "Installed"
+                    : oldConnectTool
+                      ? "Installed under its old name, sleap-rtc"
+                      : "Not installed"}
                 </span>
                 <Hint>
                   Lets SLEAP on other computers train and run inference on
@@ -1472,22 +1477,46 @@ export function EnvironmentPanel() {
                 </Hint>
               </span>
             </Field>
-            {connectTool && !sleapNnTool && (
+            {oldConnectTool && (
+              <p className="text-[10px] text-amber-400">
+                SLEAP Connect is now installed as sleap-connect. Switch to get
+                updates; paired devices and shared folders are kept.
+              </p>
+            )}
+            {(connectTool || oldConnectTool) && !sleapNnTool && (
               <p className="text-[10px] text-amber-400">
                 Jobs on this worker run with sleap-nn — install it above.
               </p>
             )}
             <Actions>
-              <ToolActions
-                tool={connectTool}
-                installing={
-                  isInstalling &&
-                  (installTarget?.includes(connectPkg) ?? false)
-                }
-                onInstall={() => doInstallTool(connectPkg)}
-                onUpgrade={() => doUpgradeTool(connectPkg)}
-                onReinstall={() => doReinstallTool(connectPkg)}
-              />
+              {oldConnectTool ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-6 text-[11px]"
+                  disabled={isInstalling}
+                  onClick={() => switchToSleapConnect()}
+                >
+                  {isInstalling &&
+                  (installTarget?.includes("sleap-connect") ?? false) ? (
+                    <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                  ) : (
+                    <ArrowUpCircle className="mr-1 h-3 w-3" />
+                  )}
+                  Switch to sleap-connect
+                </Button>
+              ) : (
+                <ToolActions
+                  tool={connectTool}
+                  installing={
+                    isInstalling &&
+                    (installTarget?.includes("sleap-connect") ?? false)
+                  }
+                  onInstall={() => doInstallTool("sleap-connect")}
+                  onUpgrade={() => doUpgradeTool("sleap-connect")}
+                  onReinstall={() => doReinstallTool("sleap-connect")}
+                />
+              )}
             </Actions>
           </Section>
         )}
