@@ -30,6 +30,14 @@ window.sleap = { loadSlp, Mp4BoxVideoBackend, store: useAppStore, commandContext
 // (its own isolated heap) — render just the viz viewer, not the full editor.
 const vizParams = new URLSearchParams(window.location.search);
 const vizRunDir = vizParams.get("viz");
+// DEV-ONLY: `?prototype=pairing` shows the pairing-layout prototypes instead
+// of the app (src/components/connect/prototypes/).
+const prototype = import.meta.env.DEV ? vizParams.get("prototype") : null;
+const PairingPrototypes = React.lazy(() =>
+  import("@/components/connect/prototypes/PairingPrototypes").then((m) => ({
+    default: m.PairingPrototypes,
+  }))
+);
 
 // Diagnostics (session log + global error capture) for the main app window only —
 // the viz window is a short-lived isolated heap. Best-effort; never blocks boot.
@@ -39,7 +47,11 @@ if (!vizRunDir) {
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    {vizRunDir ? (
+    {prototype === "pairing" ? (
+      <React.Suspense fallback={null}>
+        <PairingPrototypes />
+      </React.Suspense>
+    ) : vizRunDir ? (
       <VizWindow runDir={vizRunDir} title={vizParams.get("vizTitle") ?? "Model"} />
     ) : (
       <App />
