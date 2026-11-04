@@ -125,7 +125,7 @@ describe("WorkerList rendering", () => {
     expect(screen.getByText("gpu-box")).toBeInTheDocument();
     expect(screen.getByText("Idle")).toBeInTheDocument();
     expect(screen.getByText("RTX 4090 · 24 GB ×1 · CUDA 12.4 · sleap-nn 0.3.1")).toBeInTheDocument();
-    expect(screen.getByText(/via WebSocket/)).toBeInTheDocument();
+    expect(screen.getByText(/via local network/)).toBeInTheDocument();
   });
 
   it("selecting a card calls onSelect only — never touches connectStore.selectedWorkerId", () => {
@@ -193,9 +193,11 @@ describe("WorkerList rendering", () => {
     fireEvent.click(screen.getByRole("button", { name: "Re-pair" }));
 
     fireEvent.change(screen.getByPlaceholderText("sleap1…"), {
-      target: { value: '{"node_id":"n2","secret":"s"}' },
+      target: { value: '{"node_id":"n2","secret":"s","addrs":["ws://a:1"]}' },
     });
-    fireEvent.click(screen.getByRole("button", { name: /^Pair$/ }));
+    const pair = screen.getByRole("button", { name: /^Pair$/ });
+    await waitFor(() => expect(pair).not.toBeDisabled());
+    fireEvent.click(pair);
 
     await waitFor(() => expect(forgotten).toEqual(["node-a"]));
   });

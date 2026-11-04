@@ -665,12 +665,14 @@ function rememberedTransport(t: TransportKind): TransportKind | undefined {
 }
 
 const IROH_DESKTOP_ONLY =
-  "Direct (iroh) connections are only available in the desktop app — use the WebSocket address instead.";
+  "Connecting over the internet needs the desktop app — in the browser, use the worker's network address.";
 
 async function irohDial(info: IrohEndpointInfo | undefined, nodeId: string): Promise<DialSpec> {
   if (!irohTransportAvailable()) throw new Error(IROH_DESKTOP_ONLY);
   if (!info) {
-    throw new Error("This worker has no direct (iroh) connection info — use its WebSocket address.");
+    throw new Error(
+      "This worker's code has no internet connection info — run sleap-connect pair again while it's running, or use its network address.",
+    );
   }
   const { encodeIrohDialUrl } = await import("@/lib/protocolV1/tauriIrohSocket");
   const target = toIrohDialTarget(info, nodeId);
@@ -1895,8 +1897,8 @@ export const useConnectStore = create<ConnectState>()(
           // ws:// URL, which a direct iroh connection doesn't have (stage 2.4
           // decides how blobs travel over iroh).
           throw new Error(
-            `Result files can't be downloaded over a ${transportLabel("iroh")} connection yet — ` +
-              "reconnect over the WebSocket address to fetch them.",
+            `Result files can't be downloaded over an ${transportLabel("iroh")} connection this way yet — ` +
+              "reconnect over the worker's network address to fetch them.",
           );
         }
         return _client.fetchBlob(ref.sha256, ref.size);

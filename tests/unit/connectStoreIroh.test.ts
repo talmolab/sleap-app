@@ -152,7 +152,7 @@ describe("connectStore iroh transport (desktop)", () => {
     const s = await store();
     await expect(
       s.getState().pairWithTicket(TICKET_NO_IROH, undefined, { transport: "iroh" }),
-    ).rejects.toThrow(/no direct \(iroh\)/);
+    ).rejects.toThrow(/no internet connection info/);
     expect(FakeWorkerClient.instances).toHaveLength(0);
     expect(s.getState().connectionStatus).toBe("disconnected");
   });
@@ -244,7 +244,7 @@ describe("connectStore iroh transport (desktop)", () => {
     await s.getState().pairWithTicket(TICKET_WITH_IROH, undefined, { transport: "iroh" });
     await expect(
       s.getState().fetchResultBlob({ sha256: "abc", size: 1 } as never),
-    ).rejects.toThrow(/iroh \(direct\).*WebSocket/);
+    ).rejects.toThrow(/internet \(direct or relay\).*network address/);
     expect(last().fetchBlobCalls).toBe(0);
   });
 });
