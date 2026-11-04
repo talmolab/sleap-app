@@ -2210,12 +2210,11 @@ a one-line code, and after that the app connects to it directly.</p>
 whether sleap-nn can start. To update later, run the same command with
 <code>--reinstall</code>.</p>
 <h2 id="pairing-a-worker">Pairing a worker<a class="headerlink" href="#pairing-a-worker" title="Permanent link">&para;</a></h2>
-<p>On the GPU machine, go to the folder with your data, start the worker there, then
-ask it for a pairing code:</p>
+<p>On the GPU machine, go to the folder with your data and start the worker there:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nb">cd</span><span class="w"> </span>/path/to/your/data
 </span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>sleap-connect<span class="w"> </span>serve
-</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>sleap-connect<span class="w"> </span>pair
 </span></code></pre></div>
+<p>Once it's running, it prints a pairing code: one line that starts with <code>sleap1</code>.</p>
 <p>The first time you start the worker in a folder, it asks whether to share that
 folder with the devices you pair. Answer <strong>y</strong>. Paired devices can then browse
 it, and their training and inference jobs can read and write inside it. The
@@ -2231,7 +2230,9 @@ terminal or log out. <code>sleap-connect status</code> shows whether it's runnin
 on that machine show a one-line reminder while it runs (<code>sleap-connect shell-hook
 uninstall</code> removes the reminder). Add <code>--foreground</code> to keep the worker attached
 to the terminal instead; Ctrl-C stops it.</p>
-<p><code>sleap-connect pair</code> prints a one-line code that starts with <code>sleap1</code>.</p>
+<p>The code works once and expires after 5 minutes. For another device, or if it
+expired, <code>sleap-connect pair</code> prints a new one. Run it while the worker is
+running: it warns you if the code can't be used to connect.</p>
 <h3 id="sharing-more-folders">Sharing more folders<a class="headerlink" href="#sharing-more-folders" title="Permanent link">&para;</a></h3>
 <p>To share another folder, run <code>sleap-connect add-folder</code> with its path (relative paths
 are fine). <code>sleap-connect folders</code> lists what's shared, and <code>sleap-connect remove-folder</code>
