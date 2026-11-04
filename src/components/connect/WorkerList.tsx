@@ -158,10 +158,10 @@ export function WorkerList({ selectedId, onSelect }: WorkerListProps) {
         <div className="p-3 space-y-1.5 text-[11px] text-muted-foreground">
           <p>No workers paired yet. On the machine you want to train/infer on, in your data folder:</p>
           <code className="block bg-black/30 px-1.5 py-1 rounded font-mono text-[10px]">
-            sleap-rtc serve
+            sleap-connect serve
           </code>
           <code className="block bg-black/30 px-1.5 py-1 rounded font-mono text-[10px]">
-            sleap-rtc pair
+            sleap-connect pair
           </code>
           <p>Then paste the one-line code it prints below.</p>
         </div>
@@ -237,7 +237,7 @@ export function WorkerList({ selectedId, onSelect }: WorkerListProps) {
                     <div className="px-2 space-y-1 text-[10px] text-red-400">
                       <p>
                         This device was unpaired by {w.label}. Ask for a new code
-                        (<code className="font-mono">sleap-rtc pair</code>) to use it again.
+                        (<code className="font-mono">sleap-connect pair</code>) to use it again.
                       </p>
                       <div className="flex items-center gap-1.5">
                         <Button

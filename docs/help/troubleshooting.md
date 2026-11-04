@@ -69,15 +69,15 @@ instances' tracks. To find where it goes wrong, set the seekbar header to
 
 ## Can't connect to a worker
 
-- Check the worker is running: `sleap-rtc serve` on the GPU machine. A worker
+- Check the worker is running: `sleap-connect serve` on the GPU machine. A worker
   that isn't shows **Offline** in the Connect window.
-- **This pairing code expired** — run `sleap-rtc pair` again and paste the new code.
+- **This pairing code expired** — run `sleap-connect pair` again and paste the new code.
 - **This ticket has no worker address** — fill in **Worker address** under the code,
   for example `ws://192.168.1.42:9631`. This computer must be able to reach that
   address.
 - **Has a new identity** — the address now answers as a different worker (it
   was reinstalled, or the IP moved). Click **Re-pair** on its card and paste a
-  fresh code from `sleap-rtc pair`.
+  fresh code from `sleap-connect pair`.
 - **Reconnecting…** — the app retries on its own. Jobs keep running on the
   worker meanwhile.
 - **Busy** is not an error: the worker is running a job, and new jobs wait in

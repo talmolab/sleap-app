@@ -615,7 +615,7 @@ describe("fetchWorkerPreviewFrame", () => {
       },
     } as unknown as WorkerClient;
     await expect(fetchWorkerPreviewFrame(client, labels, "/data/l.slp", checks, 0, 7)).rejects.toThrow(
-      "Update sleap-rtc on the worker to preview its videos",
+      "Update SLEAP Connect on the worker to preview its videos",
     );
   });
 

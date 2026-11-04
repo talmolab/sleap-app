@@ -20,7 +20,7 @@ export function forgetWorkerConfirm(worker: Pick<PairedWorker, "label" | "unpair
     title: "Forget worker?",
     message:
       `${worker.label} is removed from this app, and this device is unpaired on the worker: ` +
-      "to use it again you'll need a new code from 'sleap-rtc pair'.\n\n" +
+      "to use it again you'll need a new code from 'sleap-connect pair'.\n\n" +
       "Jobs already on the worker keep running.",
     confirmLabel: "Forget worker",
     destructive: true,

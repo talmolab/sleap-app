@@ -127,7 +127,7 @@ It manages a Python toolchain through [`uv`](https://docs.astral.sh/uv/), so you
 never touch conda, pip, or a shell:
 
 1. **Installs `uv`** if you don't have it, via the official installer.
-2. **Installs `sleap-nn` and `sleap-rtc`** as isolated `uv` tools, so they cannot
+2. **Installs `sleap-nn` and the SLEAP Connect worker (`sleap-rtc`)** as isolated `uv` tools, so they cannot
    collide with anything else on your system.
 
 You do not need to pick a Python interpreter — `uv` resolves a suitable one on its own

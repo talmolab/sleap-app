@@ -4,7 +4,7 @@
  * onPaired/onCancel, Cancel only shown per `showCancel`) — ConnectPanel's
  * existing behavior around it is unchanged and isn't retested here.
  *
- * PR6a §a.2 widened the pasted "ticket" to also accept `sleap-rtc pair`'s
+ * PR6a §a.2 widened the pasted "ticket" to also accept `sleap-connect pair`'s
  * one-line pairing code (now the primary, single-line `Input`), while still
  * accepting the legacy JSON ticket — both paths are covered below, including
  * the iroh checkbox's visibility (`ticketHasIroh`, true only when a relay is
@@ -88,10 +88,10 @@ describe("PairWorkerForm", () => {
     render(<PairWorkerForm showCancel={false} />);
     expect(screen.getByPlaceholderText("sleap1…").tagName).toBe("INPUT");
     // The help text's plain-text segments live in their own text nodes
-    // around the inline `sleap-rtc pair` <code>, so they're asserted
+    // around the inline `sleap-connect pair` <code>, so they're asserted
     // separately rather than as one spanning string (RTL's getByText only
     // matches a node's own direct text-node children, not nested elements).
-    expect(screen.getByText("sleap-rtc pair")).toBeInTheDocument();
+    expect(screen.getByText("sleap-connect pair")).toBeInTheDocument();
     expect(screen.getByText(/paste the code below/)).toBeInTheDocument();
   });
 

@@ -778,7 +778,7 @@ fn localhost_capability(port: u16) -> String {
     "fs:allow-exists",
     "fs:allow-stat",
     "fs:allow-rename",
-    {{ "identifier": "fs:scope", "allow": [{{ "path": "**" }}, {{ "path": "$HOME/.sleap-rtc/**" }}] }},
+    {{ "identifier": "fs:scope", "allow": [{{ "path": "**" }}, {{ "path": "$HOME/.sleap-connect/**" }}, {{ "path": "$HOME/.sleap-rtc/**" }}] }},
     "dialog:default",
     "dialog:allow-open",
     "dialog:allow-save",

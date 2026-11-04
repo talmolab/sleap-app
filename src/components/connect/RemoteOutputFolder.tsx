@@ -158,7 +158,7 @@ export function RemoteOutputFolder({
   }
 
   if (!supportsOutputDir) {
-    return line("Models and predictions stay in the worker's job folder (update sleap-rtc on the worker to choose a folder).");
+    return line("Models and predictions stay in the worker's job folder (update SLEAP Connect on the worker to choose a folder).");
   }
 
   return (

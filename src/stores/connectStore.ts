@@ -115,7 +115,7 @@ export interface PairedWorker {
   pathRules?: PathMapping[];
   /**
    * When the worker refused this device as no longer paired (removed there
-   * with `sleap-rtc clients remove`). Set, nothing dials it automatically
+   * with `sleap-connect clients remove`). Set, nothing dials it automatically
    * (background resume, the Connect window's refresh) — only re-pairing or
    * an explicit connect does. Cleared by re-pairing.
    */
@@ -129,7 +129,7 @@ export interface PairedWorker {
 
 /**
  * A worker's pairing ticket (spec §3.2) — either parsed from the legacy
- * pasted-JSON ticket `sleap-rtc pair` used to print, or decoded from its
+ * pasted-JSON ticket `sleap-connect pair` used to print, or decoded from its
  * one-line replacement (`decodePairCode`, PR6a §a.1), which returns this
  * exact shape so `pairWithTicket` never needs to branch on which it got.
  */
@@ -291,7 +291,7 @@ interface ConnectState {
    */
   deleteJobsOn: (workerId: string, jobIds: string[]) => Promise<void>;
   /**
-   * Claim a fresh pairing ticket (JSON from `sleap-rtc pair`) and connect.
+   * Claim a fresh pairing ticket (JSON from `sleap-connect pair`) and connect.
    * `options.transport` picks the dial explicitly (default `"ws"`); `"iroh"`
    * needs the desktop app and an `iroh` section in the ticket.
    */
@@ -439,7 +439,7 @@ async function leaveWorker(worker: PairedWorker, live: WorkerClient | null): Pro
 
 /** Shown wherever a worker refused this device as no longer paired. */
 export const UNPAIRED_MESSAGE =
-  "This device was unpaired by the worker. Pair again with a new code from 'sleap-rtc pair'.";
+  "This device was unpaired by the worker. Pair again with a new code from 'sleap-connect pair'.";
 
 /**
  * Fetches every entry in a directory, paginating via `fetchPage` (one
@@ -1372,7 +1372,7 @@ export const useConnectStore = create<ConnectState>()(
           if (ticket.expires_at !== undefined && ticket.expires_at * 1000 < Date.now()) {
             throw new Error(
               `This pairing code expired at ${new Date(ticket.expires_at * 1000).toLocaleString()}; ` +
-                "run `sleap-rtc pair` again.",
+                "run `sleap-connect pair` again.",
             );
           }
         } else {
@@ -1661,7 +1661,7 @@ export const useConnectStore = create<ConnectState>()(
         // Then tell the worker, best effort: over the live connection if
         // there is one, else a short dial. A worker that's offline (or
         // already removed this device) just keeps or drops its entry on its
-        // own — `sleap-rtc clients remove` there clears it.
+        // own — `sleap-connect clients remove` there clears it.
         try {
           if (worker && !worker.unpairedAt) {
             await withTimeout(leaveWorker(worker, liveClient), FORGET_LEAVE_TIMEOUT_MS);

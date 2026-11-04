@@ -2,7 +2,8 @@
  * Environment panel for Python/uv toolchain configuration.
  *
  * Shows uv status, lets users pick a Python interpreter,
- * install Python versions, and manage uv tools (sleap-nn, sleap-rtc).
+ * install Python versions, and manage uv tools (sleap-nn, and the SLEAP
+ * Connect worker — published on PyPI as sleap-rtc).
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -1089,7 +1090,12 @@ export function EnvironmentPanel() {
   }
 
   const sleapNnTool = tools.find((t) => t.name === "sleap-nn");
-  const sleapRtcTool = tools.find((t) => t.name === "sleap-rtc");
+  // The SLEAP Connect worker: the PyPI package is still `sleap-rtc`; a git
+  // install from before v0.0.8 is named `sleap-connect`.
+  const connectTool = tools.find(
+    (t) => t.name === "sleap-rtc" || t.name === "sleap-connect"
+  );
+  const connectPkg = connectTool?.name ?? "sleap-rtc";
   const isDetecting = detectionStatus === "checking";
   const detected = detectionStatus === "done" || detectionStatus === "error";
   const isInstalling = installStatus === "installing";
@@ -1432,42 +1438,55 @@ export function EnvironmentPanel() {
           </Section>
         )}
 
-        {/* sleap-rtc: remote-worker transport. One row — it has no
-            accelerator or extras of its own. */}
+        {/* SLEAP Connect worker: lets other computers train and run
+            inference on this one. One row — it runs its jobs with the
+            sleap-nn above, so it has no accelerator or extras of its own. */}
         {detected && uv?.available && (
           <Section
-            title="sleap-rtc"
+            title="SLEAP Connect worker"
             aside={
-              sleapRtcTool?.version ? (
+              connectTool?.version ? (
                 <span className="text-xs text-muted-foreground">
-                  v{sleapRtcTool.version}
+                  v{connectTool.version}
                 </span>
               ) : null
             }
           >
             <Field label="Status">
               <span className="flex min-w-0 items-center gap-1.5">
-                <StatusIcon ok={!!sleapRtcTool} />
+                <StatusIcon ok={!!connectTool} />
                 <span
                   className={cn(
                     "truncate",
-                    !sleapRtcTool && "text-muted-foreground"
+                    !connectTool && "text-muted-foreground"
                   )}
                 >
-                  {sleapRtcTool ? "Installed" : "Not installed"}
+                  {connectTool ? "Installed" : "Not installed"}
                 </span>
+                <Hint>
+                  Lets SLEAP on other computers train and run inference on
+                  this one. Start it in a terminal with{" "}
+                  <code>sleap-connect serve</code>, then pair with{" "}
+                  <code>sleap-connect pair</code>. Its jobs use the sleap-nn
+                  installed above.
+                </Hint>
               </span>
             </Field>
+            {connectTool && !sleapNnTool && (
+              <p className="text-[10px] text-amber-400">
+                Jobs on this worker run with sleap-nn — install it above.
+              </p>
+            )}
             <Actions>
               <ToolActions
-                tool={sleapRtcTool}
+                tool={connectTool}
                 installing={
                   isInstalling &&
-                  (installTarget?.includes("sleap-rtc") ?? false)
+                  (installTarget?.includes(connectPkg) ?? false)
                 }
-                onInstall={() => doInstallTool("sleap-rtc")}
-                onUpgrade={() => doUpgradeTool("sleap-rtc")}
-                onReinstall={() => doReinstallTool("sleap-rtc")}
+                onInstall={() => doInstallTool(connectPkg)}
+                onUpgrade={() => doUpgradeTool(connectPkg)}
+                onReinstall={() => doReinstallTool(connectPkg)}
               />
             </Actions>
           </Section>

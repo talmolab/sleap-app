@@ -111,8 +111,8 @@ describe("WorkerList rendering", () => {
   it("shows the empty state with the pairing commands when no workers are paired", () => {
     render(<WorkerList selectedId={null} onSelect={() => {}} />);
     expect(screen.getByText(/No workers paired yet/)).toBeInTheDocument();
-    expect(screen.getByText("sleap-rtc serve")).toBeInTheDocument();
-    expect(screen.getByText("sleap-rtc pair")).toBeInTheDocument();
+    expect(screen.getByText("sleap-connect serve")).toBeInTheDocument();
+    expect(screen.getByText("sleap-connect pair")).toBeInTheDocument();
   });
 
   it("shows a card's label, status, specs line, and route", () => {

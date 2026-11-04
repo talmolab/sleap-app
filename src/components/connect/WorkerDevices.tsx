@@ -2,7 +2,7 @@
  * "Devices with access": every device paired with a worker (who can use
  * it), with when it paired and was last seen — from the worker's
  * `clients.list`. Read-only, except renaming this device. Removing devices
- * is done on the worker (`sleap-rtc clients`).
+ * is done on the worker (`sleap-connect clients`).
  *
  * Shown as a header button ("N devices with access") that opens a popover.
  */
@@ -128,7 +128,7 @@ export function WorkerDevicesList({ devices, onRenameThisDevice }: WorkerDevices
       </ul>
       <p className="text-[10px] text-muted-foreground">
         Every device paired with this worker can use it. To see them on the worker, run{" "}
-        <code className="font-mono">sleap-rtc clients</code>.
+        <code className="font-mono">sleap-connect clients</code>.
       </p>
     </div>
   );
@@ -136,7 +136,7 @@ export function WorkerDevicesList({ devices, onRenameThisDevice }: WorkerDevices
 
 function describeError(err: unknown): string {
   if (err instanceof WorkerProtocolError && err.code === PROTO_UNKNOWN_METHOD) {
-    return "This worker's sleap-rtc is too old to list devices — update it to see who has access.";
+    return "This worker's SLEAP Connect is too old to list devices — update it to see who has access.";
   }
   return `Couldn't load devices: ${err instanceof Error ? err.message : String(err)}`;
 }

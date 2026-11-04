@@ -15,12 +15,12 @@ describe("forgetWorkerConfirm", () => {
     const req = forgetWorkerConfirm(WORKER);
     expect(req.destructive).toBe(true);
     expect(req.message).toContain("GPU box");
-    expect(req.message).toContain("sleap-rtc pair");
+    expect(req.message).toContain("sleap-connect pair");
   });
 
   it("for an already-unpaired worker, only mentions removing it locally", () => {
     const req = forgetWorkerConfirm({ ...WORKER, unpairedAt: "2026-10-23T01:00:00Z" });
-    expect(req.message).not.toContain("sleap-rtc pair");
+    expect(req.message).not.toContain("sleap-connect pair");
     expect(req.message).toContain("already unpaired");
   });
 });

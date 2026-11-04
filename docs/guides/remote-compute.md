@@ -7,9 +7,24 @@ and from the browser where the browser allows the connection (see
 [How the connection runs](#how-the-connection-runs)).
 
 The machine doing the work is a **worker**: it runs
-[sleap-rtc](https://github.com/talmolab/sleap-connect) (from the sleap-connect project) and sleap-nn. There is no
+[SLEAP Connect](https://github.com/talmolab/sleap-connect) (installed from PyPI as
+`sleap-rtc`) and sleap-nn. There is no
 account, login, or server in between. You pair the app with a worker once, using
 a one-line code, and after that the app connects to it directly.
+
+## Installing the worker
+
+On the GPU machine, with [`uv`](https://docs.astral.sh/uv/getting-started/installation/) installed:
+
+```bash
+uv tool install --python 3.11 "sleap-rtc[nn]" --torch-backend auto
+```
+
+This installs the `sleap-connect` command, plus sleap-nn to run the jobs
+(`--torch-backend auto` picks the PyTorch build for the machine's GPU). Run
+`sleap-connect doctor` to check the machine is ready: it shows the GPU and
+whether sleap-nn can start. To update later, run the same command with
+`--reinstall`.
 
 ## Pairing a worker
 
@@ -18,8 +33,8 @@ ask it for a pairing code:
 
 ```bash
 cd /path/to/your/data
-sleap-rtc serve
-sleap-rtc pair
+sleap-connect serve
+sleap-connect pair
 ```
 
 The first time you start the worker in a folder, it asks whether to share that
@@ -30,24 +45,24 @@ your home folder works too, but the worker warns you: that shares everything in
 it.
 
 You can also name the folder instead of `cd`-ing into it:
-`sleap-rtc serve /path/to/your/data`.
+`sleap-connect serve /path/to/your/data`.
 
-`sleap-rtc serve` starts the worker in the background (after asking about the
+`sleap-connect serve` starts the worker in the background (after asking about the
 folder): you get your prompt back, and it keeps running after you close the
-terminal or log out. `sleap-rtc status` shows whether it's running, and
-`sleap-rtc serve --stop` stops it. So you don't forget about it, new terminals
-on that machine show a one-line reminder while it runs (`sleap-rtc shell-hook
+terminal or log out. `sleap-connect status` shows whether it's running, and
+`sleap-connect serve --stop` stops it. So you don't forget about it, new terminals
+on that machine show a one-line reminder while it runs (`sleap-connect shell-hook
 uninstall` removes the reminder). Add `--foreground` to keep the worker attached
 to the terminal instead; Ctrl-C stops it.
 
-`sleap-rtc pair` prints a one-line code that starts with `sleap1`.
+`sleap-connect pair` prints a one-line code that starts with `sleap1`.
 
 ### Sharing more folders
 
-To share another folder, run `sleap-rtc add-folder` with its path (relative paths
-are fine). `sleap-rtc folders` lists what's shared, and `sleap-rtc remove-folder`
+To share another folder, run `sleap-connect add-folder` with its path (relative paths
+are fine). `sleap-connect folders` lists what's shared, and `sleap-connect remove-folder`
 stops sharing one. A running worker picks up changes right away. The worker's
-own settings folder (`~/.sleap-rtc`) is never shared.
+own settings folder (`~/.sleap-connect`) is never shared.
 
 In the app:
 
@@ -58,7 +73,7 @@ In the app:
 
 Fill in **Worker address** only if the code has none — for example
 `ws://192.168.1.42:9631`. Codes expire; if pairing says yours has, run
-`sleap-rtc pair` again.
+`sleap-connect pair` again.
 
 Pairing connects you right away. The worker is remembered, so next time you just
 pick it — no new code needed. The trash button on a worker's card in the
@@ -95,7 +110,7 @@ Every connection is checked both ways. The worker proves it holds the identity
 you paired with, and the app proves it is the device the worker paired. If the
 address now answers as a different worker — say the machine was reinstalled or
 the IP moved to another box — the app refuses it. The worker's card in the Connect window shows **has a
-new identity** with a **Re-pair** button; get a fresh code with `sleap-rtc pair`
+new identity** with a **Re-pair** button; get a fresh code with `sleap-connect pair`
 and paste it there.
 
 ### Dropped connections
@@ -227,7 +242,7 @@ adding jobs (**Add another**) and follow jobs on several workers at once.
 ### Data access tab
 
 - **Folders this worker shares** — the folder the worker was started in, plus
-  any added with `sleap-rtc add-folder` on the worker. The file browser only
+  any added with `sleap-connect add-folder` on the worker. The file browser only
   reaches inside these.
 - **Remembered locations** — the local-to-worker folder matches saved when you
   used **Locate on worker…**. **Clear** forgets one.
