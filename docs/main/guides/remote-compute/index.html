@@ -1131,6 +1131,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#installing-the-worker" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Installing the worker
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#pairing-a-worker" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -1979,6 +1990,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#installing-the-worker" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Installing the worker
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#pairing-a-worker" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -2175,15 +2197,24 @@ can train from a laptop with no Python and no GPU. It works from the desktop app
 and from the browser where the browser allows the connection (see
 <a href="#how-the-connection-runs">How the connection runs</a>).</p>
 <p>The machine doing the work is a <strong>worker</strong>: it runs
-<a href="https://github.com/talmolab/sleap-connect">sleap-rtc</a> (from the sleap-connect project) and sleap-nn. There is no
+<a href="https://github.com/talmolab/sleap-connect">SLEAP Connect</a> and sleap-nn. There is no
 account, login, or server in between. You pair the app with a worker once, using
 a one-line code, and after that the app connects to it directly.</p>
+<h2 id="installing-the-worker">Installing the worker<a class="headerlink" href="#installing-the-worker" title="Permanent link">&para;</a></h2>
+<p>On the GPU machine, with <a href="https://docs.astral.sh/uv/getting-started/installation/"><code>uv</code></a> installed:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>uv<span class="w"> </span>tool<span class="w"> </span>install<span class="w"> </span>--python<span class="w"> </span><span class="m">3</span>.11<span class="w"> </span><span class="s2">"sleap-connect[nn]"</span><span class="w"> </span>--torch-backend<span class="w"> </span>auto
+</span></code></pre></div>
+<p>This installs the <code>sleap-connect</code> command, plus sleap-nn to run the jobs
+(<code>--torch-backend auto</code> picks the PyTorch build for the machine's GPU). Run
+<code>sleap-connect doctor</code> to check the machine is ready: it shows the GPU and
+whether sleap-nn can start. To update later, run the same command with
+<code>--reinstall</code>.</p>
 <h2 id="pairing-a-worker">Pairing a worker<a class="headerlink" href="#pairing-a-worker" title="Permanent link">&para;</a></h2>
 <p>On the GPU machine, go to the folder with your data, start the worker there, then
 ask it for a pairing code:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nb">cd</span><span class="w"> </span>/path/to/your/data
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>sleap-rtc<span class="w"> </span>serve
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>sleap-rtc<span class="w"> </span>pair
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nb">cd</span><span class="w"> </span>/path/to/your/data
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>sleap-connect<span class="w"> </span>serve
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>sleap-connect<span class="w"> </span>pair
 </span></code></pre></div>
 <p>The first time you start the worker in a folder, it asks whether to share that
 folder with the devices you pair. Answer <strong>y</strong>. Paired devices can then browse
@@ -2192,20 +2223,20 @@ answer is remembered, so the next <code>serve</code> there doesn't ask again. St
 your home folder works too, but the worker warns you: that shares everything in
 it.</p>
 <p>You can also name the folder instead of <code>cd</code>-ing into it:
-<code>sleap-rtc serve /path/to/your/data</code>.</p>
-<p><code>sleap-rtc serve</code> starts the worker in the background (after asking about the
+<code>sleap-connect serve /path/to/your/data</code>.</p>
+<p><code>sleap-connect serve</code> starts the worker in the background (after asking about the
 folder): you get your prompt back, and it keeps running after you close the
-terminal or log out. <code>sleap-rtc status</code> shows whether it's running, and
-<code>sleap-rtc serve --stop</code> stops it. So you don't forget about it, new terminals
-on that machine show a one-line reminder while it runs (<code>sleap-rtc shell-hook
+terminal or log out. <code>sleap-connect status</code> shows whether it's running, and
+<code>sleap-connect serve --stop</code> stops it. So you don't forget about it, new terminals
+on that machine show a one-line reminder while it runs (<code>sleap-connect shell-hook
 uninstall</code> removes the reminder). Add <code>--foreground</code> to keep the worker attached
 to the terminal instead; Ctrl-C stops it.</p>
-<p><code>sleap-rtc pair</code> prints a one-line code that starts with <code>sleap1</code>.</p>
+<p><code>sleap-connect pair</code> prints a one-line code that starts with <code>sleap1</code>.</p>
 <h3 id="sharing-more-folders">Sharing more folders<a class="headerlink" href="#sharing-more-folders" title="Permanent link">&para;</a></h3>
-<p>To share another folder, run <code>sleap-rtc add-folder</code> with its path (relative paths
-are fine). <code>sleap-rtc folders</code> lists what's shared, and <code>sleap-rtc remove-folder</code>
+<p>To share another folder, run <code>sleap-connect add-folder</code> with its path (relative paths
+are fine). <code>sleap-connect folders</code> lists what's shared, and <code>sleap-connect remove-folder</code>
 stops sharing one. A running worker picks up changes right away. The worker's
-own settings folder (<code>~/.sleap-rtc</code>) is never shared.</p>
+own settings folder (<code>~/.sleap-connect</code>) is never shared.</p>
 <p>In the app:</p>
 <ol>
 <li>Open the <strong>Connect</strong> panel.</li>
@@ -2215,7 +2246,7 @@ own settings folder (<code>~/.sleap-rtc</code>) is never shared.</p>
 </ol>
 <p>Fill in <strong>Worker address</strong> only if the code has none — for example
 <code>ws://192.168.1.42:9631</code>. Codes expire; if pairing says yours has, run
-<code>sleap-rtc pair</code> again.</p>
+<code>sleap-connect pair</code> again.</p>
 <p>Pairing connects you right away. The worker is remembered, so next time you just
 pick it — no new code needed. The trash button on a worker's card in the
 <strong>Connect</strong> panel forgets it.</p>
@@ -2264,7 +2295,7 @@ desktop app, which doesn't have this restriction.</p>
 you paired with, and the app proves it is the device the worker paired. If the
 address now answers as a different worker — say the machine was reinstalled or
 the IP moved to another box — the app refuses it. The worker's card in the Connect window shows <strong>has a
-new identity</strong> with a <strong>Re-pair</strong> button; get a fresh code with <code>sleap-rtc pair</code>
+new identity</strong> with a <strong>Re-pair</strong> button; get a fresh code with <code>sleap-connect pair</code>
 and paste it there.</p>
 <h3 id="dropped-connections">Dropped connections<a class="headerlink" href="#dropped-connections" title="Permanent link">&para;</a></h3>
 <p>If the connection drops, the app reconnects on its own with increasing waits and
@@ -2379,7 +2410,7 @@ adding jobs (<strong>Add another</strong>) and follow jobs on several workers at
 <h3 id="data-access-tab">Data access tab<a class="headerlink" href="#data-access-tab" title="Permanent link">&para;</a></h3>
 <ul>
 <li><strong>Folders this worker shares</strong> — the folder the worker was started in, plus
-  any added with <code>sleap-rtc add-folder</code> on the worker. The file browser only
+  any added with <code>sleap-connect add-folder</code> on the worker. The file browser only
   reaches inside these.</li>
 <li><strong>Remembered locations</strong> — the local-to-worker folder matches saved when you
   used <strong>Locate on worker…</strong>. <strong>Clear</strong> forgets one.</li>

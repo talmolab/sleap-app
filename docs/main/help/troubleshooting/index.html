@@ -2127,15 +2127,15 @@ instances' tracks. To find where it goes wrong, set the seekbar header to
 <span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-e">E</kbd></span> to walk track spawn frames. See <a href="../../guides/tracks/">Tracks</a>.</p>
 <h2 id="cant-connect-to-a-worker">Can't connect to a worker<a class="headerlink" href="#cant-connect-to-a-worker" title="Permanent link">&para;</a></h2>
 <ul>
-<li>Check the worker is running: <code>sleap-rtc serve</code> on the GPU machine. A worker
+<li>Check the worker is running: <code>sleap-connect serve</code> on the GPU machine. A worker
   that isn't shows <strong>Offline</strong> in the Connect window.</li>
-<li><strong>This pairing code expired</strong> — run <code>sleap-rtc pair</code> again and paste the new code.</li>
+<li><strong>This pairing code expired</strong> — run <code>sleap-connect pair</code> again and paste the new code.</li>
 <li><strong>This ticket has no worker address</strong> — fill in <strong>Worker address</strong> under the code,
   for example <code>ws://192.168.1.42:9631</code>. This computer must be able to reach that
   address.</li>
 <li><strong>Has a new identity</strong> — the address now answers as a different worker (it
   was reinstalled, or the IP moved). Click <strong>Re-pair</strong> on its card and paste a
-  fresh code from <code>sleap-rtc pair</code>.</li>
+  fresh code from <code>sleap-connect pair</code>.</li>
 <li><strong>Reconnecting…</strong> — the app retries on its own. Jobs keep running on the
   worker meanwhile.</li>
 <li><strong>Busy</strong> is not an error: the worker is running a job, and new jobs wait in
