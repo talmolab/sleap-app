@@ -1439,12 +1439,12 @@ export function EnvironmentPanel() {
           </Section>
         )}
 
-        {/* SLEAP Connect worker: lets other computers train and run
+        {/* sleap-connect (the SLEAP Connect worker): lets other computers train and run
             inference on this one. One row — it runs its jobs with the
             sleap-nn above, so it has no accelerator or extras of its own. */}
         {detected && uv?.available && (
           <Section
-            title="SLEAP Connect worker"
+            title="sleap-connect"
             aside={
               (connectTool ?? oldConnectTool)?.version ? (
                 <span className="text-xs text-muted-foreground">
@@ -1470,7 +1470,7 @@ export function EnvironmentPanel() {
                 </span>
                 <Hint>
                   Lets SLEAP on other computers train and run inference on
-                  this one. Start it in a terminal with{" "}
+                  this one. Start a Worker in a remote machine with{" "}
                   <code>sleap-connect serve</code>, then pair with{" "}
                   <code>sleap-connect pair</code>. Its jobs use the sleap-nn
                   installed above.
