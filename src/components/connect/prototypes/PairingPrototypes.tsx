@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PairWorkerForm } from "@/components/connect/PairWorkerForm";
 
 // --- mock cases --------------------------------------------------------------
 
@@ -339,6 +340,11 @@ export function PairingPrototypes() {
         {Object.entries(CODES).map(([key, code]) => (
           <Row key={key} env={env} code={code} />
         ))}
+      </div>
+
+      <h2 className="mb-2 mt-8 text-xs font-semibold">The real form (layout A, built) — paste a code</h2>
+      <div className="w-[280px]" data-testid="real-form">
+        <PairWorkerForm showCancel={false} />
       </div>
 
       <h2 className="mb-2 mt-8 text-xs font-semibold">Reconnecting a paired worker (one button, no transport words)</h2>

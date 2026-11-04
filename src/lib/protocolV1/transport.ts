@@ -45,8 +45,13 @@ export function irohTransportAvailable(): boolean {
   return isTauri;
 }
 
+/**
+ * How a connection runs, in words for people (shown after "via"): iroh is
+ * direct when it can be and relayed when it can't; a WebSocket needs the
+ * worker on the network/VPN. Never the transports' own names.
+ */
 export function transportLabel(kind: TransportKind): string {
-  return kind === "iroh" ? "iroh (direct)" : "WebSocket";
+  return kind === "iroh" ? "internet (direct or relay)" : "local network";
 }
 
 export function toIrohDialTarget(info: IrohEndpointInfo, fallbackNodeId: string): IrohDialTarget {
