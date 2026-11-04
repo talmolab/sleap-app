@@ -161,8 +161,9 @@ describe("PairWorkerForm", () => {
 
   it("shows its one line of help, and never transport names", () => {
     render(<PairWorkerForm showCancel={false} />);
+    expect(screen.getByText("sleap-connect serve")).toBeInTheDocument();
     expect(screen.getByText("sleap-connect pair")).toBeInTheDocument();
-    expect(screen.getByText(/paste the code it prints/)).toBeInTheDocument();
+    expect(screen.getByText(/printed on the worker/)).toBeInTheDocument();
     expect(screen.queryByText(/iroh|WebSocket/i)).not.toBeInTheDocument();
   });
 

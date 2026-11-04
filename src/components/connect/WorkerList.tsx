@@ -160,10 +160,10 @@ export function WorkerList({ selectedId, onSelect }: WorkerListProps) {
           <code className="block bg-black/30 px-1.5 py-1 rounded font-mono text-[10px]">
             sleap-connect serve
           </code>
-          <code className="block bg-black/30 px-1.5 py-1 rounded font-mono text-[10px]">
-            sleap-connect pair
-          </code>
-          <p>Then paste the one-line code it prints below.</p>
+          <p>
+            Then paste the pairing code it prints below (for a new one:{" "}
+            <code className="font-mono">sleap-connect pair</code>).
+          </p>
         </div>
       ) : (
         <>

@@ -67,7 +67,7 @@ export interface PairWorkerFormProps {
 /**
  * The "paste a pairing code" form, shared by the Connect panel and the
  * Connect window's worker list (pairing, and re-pairing a worker whose
- * identity changed). Takes `sleap-connect pair`'s one-line code (or a legacy
+ * identity changed). Takes the one-line code `sleap-connect serve`/`pair` print (or a legacy
  * JSON ticket) and works out how to connect by itself (`planPairing`): the
  * user only pastes. The address box stays under "Advanced" unless the code
  * can't be used without one, and then says why.
@@ -133,11 +133,15 @@ export function PairWorkerForm({ onPaired, onCancel, showCancel }: PairWorkerFor
     <div className="bg-zinc-800/50 border border-border rounded-md p-3 space-y-2">
       <h3 className="text-xs font-medium">Pair with a worker</h3>
       <p className="text-[10px] text-muted-foreground leading-relaxed">
-        On the worker, run{" "}
+        Paste the code{" "}
+        <code className="bg-black/30 px-1 py-0.5 rounded text-[10px] font-mono">
+          sleap-connect serve
+        </code>{" "}
+        printed on the worker, or get a new one there with{" "}
         <code className="bg-black/30 px-1 py-0.5 rounded text-[10px] font-mono">
           sleap-connect pair
-        </code>{" "}
-        and paste the code it prints.
+        </code>
+        .
       </p>
       <Input
         value={ticketText}

@@ -27,14 +27,14 @@ whether sleap-nn can start. To update later, run the same command with
 
 ## Pairing a worker
 
-On the GPU machine, go to the folder with your data, start the worker there, then
-ask it for a pairing code:
+On the GPU machine, go to the folder with your data and start the worker there:
 
 ```bash
 cd /path/to/your/data
 sleap-connect serve
-sleap-connect pair
 ```
+
+Once it's running, it prints a pairing code: one line that starts with `sleap1`.
 
 The first time you start the worker in a folder, it asks whether to share that
 folder with the devices you pair. Answer **y**. Paired devices can then browse
@@ -54,7 +54,9 @@ on that machine show a one-line reminder while it runs (`sleap-connect shell-hoo
 uninstall` removes the reminder). Add `--foreground` to keep the worker attached
 to the terminal instead; Ctrl-C stops it.
 
-`sleap-connect pair` prints a one-line code that starts with `sleap1`.
+The code works once and expires after 5 minutes. For another device, or if it
+expired, `sleap-connect pair` prints a new one. Run it while the worker is
+running: it warns you if the code can't be used to connect.
 
 ### Sharing more folders
 
