@@ -262,7 +262,15 @@ export function AppShell() {
       {!NATIVE_MENU_BAR && <MenuBar />}
 
       <ErrorBoundary>
-        <div className="flex-1 flex overflow-hidden relative">
+        <div
+          className={cn(
+            "flex-1 flex overflow-hidden relative",
+            // With the menus in the native menu bar nothing sits between the
+            // window edge and the frame viewer, so give it a margin, like
+            // PyQt SLEAP's around its viewer.
+            NATIVE_MENU_BAR && "p-1.5 gap-1.5",
+          )}
+        >
           {projectLoaded ? (
             <div
               className={cn(
