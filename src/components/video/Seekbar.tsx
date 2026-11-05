@@ -105,13 +105,13 @@ const WORKER_GRAPHS: ReadonlySet<StatisticGraphType> = new Set<StatisticGraphTyp
   "min-centroid-proximity",
 ]);
 
-/** Length (px) of the suggestion ticks hanging from the top of the main bar. */
+/** Length (px) of the suggestion ticks, centred in the main bar. */
 const SUGGESTION_TICK_PX = 9;
 
 /**
- * Draw frame-index gridlines + labels onto the header canvas every N frames
- * (PyQt-style ticks — see frameTickInterval), so a stretched header stays
- * legible: subtle full-height verticals + small frame numbers at the top.
+ * Draw frame-index gridlines onto the header canvas every N frames (PyQt-style
+ * ticks — see frameTickInterval), lined up with the main bar's. No numbers:
+ * the main bar right below has them, and a second row only cluttered the graph.
  */
 function drawHeaderFrameMarkers(
   ctx: CanvasRenderingContext2D,
@@ -121,24 +121,13 @@ function drawHeaderFrameMarkers(
 ): void {
   if (totalFrames <= 1) return;
   drawFrameGridlines(ctx, totalFrames, w, h);
-  const step = frameTickInterval(totalFrames);
-  ctx.save();
-  ctx.font = "11px system-ui, sans-serif";
-  ctx.textBaseline = "top";
-  // Frame number moved down (y=4) so the drag handle straddling the top seam
-  // doesn't overshadow it, and enlarged for legibility.
-  ctx.fillStyle = "rgba(255, 255, 255, 0.7)";
-  for (let f = step; f < totalFrames; f += step) {
-    ctx.fillText(String(f), (f / (totalFrames - 1)) * w + 3, 4);
-  }
-  ctx.restore();
 }
 
 /**
- * Frame numbers for the main bar's gridlines, just right of each line (as
- * in the header) and along the top edge, leaving the gap below them clear
- * above the labeled-frame marks. A label that would run off the right edge is
- * skipped.
+ * Frame numbers for the main bar's gridlines, just right of each line along
+ * the top edge, at the size the header used to show them (easier to read than
+ * the small ones the bar had). The suggestion ticks sit at the bar's middle,
+ * clear of them. A label that would run off the right edge is skipped.
  */
 function drawBarFrameLabels(
   ctx: CanvasRenderingContext2D,
@@ -148,9 +137,9 @@ function drawBarFrameLabels(
   if (totalFrames <= 1) return;
   const step = frameTickInterval(totalFrames);
   ctx.save();
-  ctx.font = "10px system-ui, sans-serif";
+  ctx.font = "11px system-ui, sans-serif";
   ctx.textBaseline = "top";
-  ctx.fillStyle = "rgba(255, 255, 255, 0.6)";
+  ctx.fillStyle = "rgba(255, 255, 255, 0.7)";
   for (let f = step; f < totalFrames; f += step) {
     const x = (f / (totalFrames - 1)) * w + 3;
     const label = String(f);
@@ -1091,14 +1080,17 @@ export function Seekbar() {
     // alpha, taller lanes — see the tracks-strip render effect) instead of being
     // crammed into ≤4px 60%-alpha lanes here, fighting the marks/playhead/hover.
 
-    // Draw suggestion frame marks (yellow ticks at top of seekbar)
+    // Draw suggestion frame marks: yellow ticks in the middle of the bar,
+    // clear of the frame numbers along its top (they used to hang from the
+    // top edge, right over the numbers) and of the labeled marks at its bottom.
     if (labels) {
       const currentVideo = useAppStore.getState().video;
+      const y = Math.round((h - SUGGESTION_TICK_PX) / 2);
       ctx.fillStyle = "rgba(250, 204, 21, 0.7)"; // yellow
       for (const sf of labels.suggestions ?? []) {
         if (sf.video !== currentVideo) continue;
         const x = frameToX(sf.frameIdx);
-        ctx.fillRect(x - 0.5, 0, 1, SUGGESTION_TICK_PX);
+        ctx.fillRect(x - 0.5, y, 1, SUGGESTION_TICK_PX);
       }
     }
 
