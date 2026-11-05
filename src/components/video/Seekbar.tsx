@@ -82,6 +82,7 @@ import {
   List,
   ListFilter,
   Images,
+  Lightbulb,
 } from "lucide-react";
 
 /** Playback speed presets. */
@@ -330,6 +331,10 @@ export function Seekbar() {
         ? domainIndices.length === 0
           ? "Navigate: labeled frames only — none in this video yet"
           : "Navigate: labeled frames only"
+        : navigationDomain === "suggested"
+          ? domainIndices.length === 0
+            ? "Navigate: suggested frames only — none in this video yet"
+            : "Navigate: suggested frames only"
         : domainIndices.length === 0
           ? videoUnavailable
             ? "Navigate: imaged frames only — no video available"
@@ -1466,7 +1471,7 @@ export function Seekbar() {
         {/* Transport controls */}
         <TooltipProvider delayDuration={300}>
           <div className={`flex gap-0.5 shrink-0 items-center ${controlsOrder}`}>
-          {/* Tri-state navigation domain: All -> Labeled -> Imaged (#137) */}
+          {/* Navigation domain: All -> Labeled -> Suggested -> Imaged (#137) */}
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
@@ -1479,6 +1484,8 @@ export function Seekbar() {
                   <List />
                 ) : navigationDomain === "labeled" ? (
                   <ListFilter />
+                ) : navigationDomain === "suggested" ? (
+                  <Lightbulb />
                 ) : (
                   <Images />
                 )}

@@ -139,10 +139,12 @@ describe("incrementFrameIdx (navigationDomain)", () => {
     expect(useAppStore.getState().frameIdx).toBe(1);
   });
 
-  it("cycles the mode All -> Labeled -> Imaged -> All", () => {
+  it("cycles the mode All -> Labeled -> Suggested -> Imaged -> All", () => {
     expect(useAppStore.getState().navigationDomain).toBe("all");
     useAppStore.getState().cycleNavigationDomain();
     expect(useAppStore.getState().navigationDomain).toBe("labeled");
+    useAppStore.getState().cycleNavigationDomain();
+    expect(useAppStore.getState().navigationDomain).toBe("suggested");
     useAppStore.getState().cycleNavigationDomain();
     expect(useAppStore.getState().navigationDomain).toBe("imaged");
     useAppStore.getState().cycleNavigationDomain();

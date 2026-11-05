@@ -15,6 +15,7 @@ import {
   stepLabeled,
   nearestFrameInDomain,
   navigableDomain,
+  suggestedFrameIndices,
 } from "@/lib/navigableFrames";
 import { useAppStore } from "@/stores/appStore";
 import {
@@ -360,5 +361,48 @@ describe("incrementFrameIdx (labeled-only mode)", () => {
 
     useAppStore.getState().incrementFrameIdx(1);
     expect(useAppStore.getState().frameIdx).toBe(1);
+  });
+});
+
+describe("suggested frames only", () => {
+  beforeEach(() => {
+    useAppStore.setState(useAppStore.getInitialState());
+  });
+
+  function withSuggestions(frames: number[], otherVideoFrames: number[] = []) {
+    const { labels, video } = makeProject([5]);
+    const other = new Video({
+      filename: "other.mp4",
+      backendMetadata: { shape: [100, 480, 640, 3] },
+      openBackend: false,
+    });
+    labels.videos.push(other);
+    labels.suggestions = [
+      ...frames.map((frameIdx) => ({ video, frameIdx })),
+      ...otherVideoFrames.map((frameIdx) => ({ video: other, frameIdx })),
+    ] as unknown as typeof labels.suggestions;
+    return { labels, video };
+  }
+
+  it("is the video's suggestions, sorted and unique", () => {
+    const { labels, video } = withSuggestions([40, 12, 40, 70], [3]);
+    expect(suggestedFrameIndices(labels, video)).toEqual([12, 40, 70]);
+    expect(navigableDomain(labels, video, "suggested")).toEqual([12, 40, 70]);
+  });
+
+  it("steps only through suggested frames, wrapping around", () => {
+    const { labels } = withSuggestions([12, 40, 70]);
+    useAppStore.getState().setLabels(labels, "test.slp");
+    useAppStore.getState().setNavigationDomain("suggested");
+    useAppStore.getState().setFrameIdx(12);
+
+    useAppStore.getState().incrementFrameIdx(1);
+    expect(useAppStore.getState().frameIdx).toBe(40);
+    useAppStore.getState().incrementFrameIdx(1);
+    expect(useAppStore.getState().frameIdx).toBe(70);
+    useAppStore.getState().incrementFrameIdx(1);
+    expect(useAppStore.getState().frameIdx).toBe(12);
+    useAppStore.getState().incrementFrameIdx(-1);
+    expect(useAppStore.getState().frameIdx).toBe(70);
   });
 });
