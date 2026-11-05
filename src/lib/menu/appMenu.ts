@@ -240,54 +240,39 @@ function fileMenu(s: MenuSnapshot): TopMenu {
   return { kind: "menu", id: "file", label: "File", tutorialId: "file-menu-trigger", items };
 }
 
-function editMenu(s: MenuSnapshot): TopMenu {
-  return {
-    kind: "menu",
-    id: "edit",
-    label: "Edit",
-    items: [
-      { kind: "item", id: "edit.undo", label: s.undoLabel ?? "Undo", shortcut: "$mod+KeyZ", enabled: s.undoLabel !== null, run: () => commandContext.undo() },
-      { kind: "item", id: "edit.redo", label: s.redoLabel ?? "Redo", shortcut: "$mod+Shift+KeyZ", enabled: s.redoLabel !== null, run: () => commandContext.redo() },
-      SEP,
-      {
-        kind: "item",
-        id: "edit.copyInstance",
-        label: "Copy Instance",
-        shortcut: "$mod+KeyC",
-        enabled: s.hasInstance,
-        run: () => {
-          commandContext.execute(CopyInstance);
-          toast.info("Instance copied");
-        },
+/** Undo/Redo and the instance clipboard (PyQt SLEAP has no Edit menu; they're under Labels). */
+function undoItems(s: MenuSnapshot): MenuNode[] {
+  return [
+    { kind: "item", id: "labels.undo", label: s.undoLabel ?? "Undo", shortcut: "$mod+KeyZ", enabled: s.undoLabel !== null, run: () => void commandContext.undo() },
+    { kind: "item", id: "labels.redo", label: s.redoLabel ?? "Redo", shortcut: "$mod+Shift+KeyZ", enabled: s.redoLabel !== null, run: () => void commandContext.redo() },
+  ];
+}
+
+function clipboardItems(s: MenuSnapshot): MenuNode[] {
+  return [
+    {
+      kind: "item",
+      id: "labels.copyInstance",
+      label: "Copy Instance",
+      shortcut: "$mod+KeyC",
+      enabled: s.hasInstance,
+      run: () => {
+        commandContext.execute(CopyInstance);
+        toast.info("Instance copied");
       },
-      {
-        kind: "item",
-        id: "edit.pasteInstance",
-        label: "Paste Instance",
-        shortcut: "$mod+KeyV",
-        enabled: s.hasClipboardInstance && s.skeletonHasNodes,
-        run: () => {
-          commandContext.execute(PasteInstance);
-          toast.info("Instance pasted");
-        },
+    },
+    {
+      kind: "item",
+      id: "labels.pasteInstance",
+      label: "Paste Instance",
+      shortcut: "$mod+KeyV",
+      enabled: s.hasClipboardInstance && s.skeletonHasNodes,
+      run: () => {
+        commandContext.execute(PasteInstance);
+        toast.info("Instance pasted");
       },
-      SEP,
-      { kind: "item", id: "edit.addInstance", label: "Add Instance", shortcut: "$mod+KeyI", enabled: s.projectLoaded && s.skeletonHasNodes, run: exec(AddInstance) },
-      {
-        kind: "item",
-        id: "edit.deleteInstance",
-        label: "Delete Instance",
-        shortcut: "$mod+Backspace",
-        enabled: s.hasInstance,
-        run: () => {
-          commandContext.execute(DeleteSelectedInstance);
-          toast.info("Instance deleted");
-        },
-      },
-      SEP,
-      { kind: "item", id: "edit.deleteFramePredictions", label: "Delete Predictions on Current Frame", enabled: s.projectLoaded, run: exec(DeleteFramePredictions) },
-    ],
-  };
+    },
+  ];
 }
 
 function goMenu(s: MenuSnapshot): TopMenu {
@@ -375,6 +360,8 @@ function viewMenu(s: MenuSnapshot): TopMenu {
         checked: s.sidebarMultiPanel,
         run: () => store().setSidebarMultiPanel(!store().sidebarMultiPanel),
       },
+      panelsSubmenu(s),
+      SEP,
       { kind: "check", id: "view.fit", label: "Fit View to Instances", checked: s.fit, run: toggle("fit") },
       { kind: "item", id: "view.fitSelection", label: "Fit View to Selection", enabled: s.hasInstance, run: () => store().set("fitSelection", true) },
       { kind: "check", id: "view.defaultToPan", label: "Default to Pan Mode", shortcut: "KeyP", checked: s.defaultToPan, run: toggle("defaultToPan") },
@@ -502,16 +489,16 @@ function viewMenu(s: MenuSnapshot): TopMenu {
   };
 }
 
-/** Curate which panels appear in the right sidebar strip (#135). */
-function panelsMenu(s: MenuSnapshot): TopMenu {
+/** View ▸ Panels: which panels appear in the sidebar strip (#135); PyQt has its docks under View too. */
+function panelsSubmenu(s: MenuSnapshot): MenuNode {
   return {
-    kind: "menu",
-    id: "panels",
+    kind: "submenu",
+    id: "view.panels",
     label: "Panels",
     items: [
       ...PANELS.map((panel) => ({
         kind: "check" as const,
-        id: `panels.${panel.id}`,
+        id: `view.panels.${panel.id}`,
         label: panel.label,
         checked: !s.hiddenPanels.includes(panel.id),
         keepOpen: true,
@@ -520,7 +507,7 @@ function panelsMenu(s: MenuSnapshot): TopMenu {
       SEP,
       {
         kind: "item",
-        id: "panels.reset",
+        id: "view.panels.reset",
         label: "Reset to Defaults...",
         run: async () => {
           if (await confirmDialog({ message: "Reset panels to their default order and visibility?" })) {
@@ -539,6 +526,8 @@ function labelsMenu(s: MenuSnapshot): TopMenu {
     id: "labels",
     label: "Labels",
     items: [
+      ...undoItems(s),
+      SEP,
       { kind: "item", id: "labels.addInstance", label: "Add Instance", shortcut: "$mod+KeyI", enabled: loaded && s.skeletonHasNodes, run: exec(AddInstance) },
       {
         kind: "submenu",
@@ -561,7 +550,18 @@ function labelsMenu(s: MenuSnapshot): TopMenu {
         ],
       },
       { kind: "check", id: "labels.hints", label: "Show Hints During Labeling", checked: s.showLabelingHints, run: () => store().toggle("showLabelingHints") },
-      { kind: "item", id: "labels.deleteInstance", label: "Delete Instance", shortcut: "$mod+Backspace", enabled: s.hasInstance, run: exec(DeleteSelectedInstance) },
+      {
+        kind: "item",
+        id: "labels.deleteInstance",
+        label: "Delete Instance",
+        shortcut: "$mod+Backspace",
+        enabled: s.hasInstance,
+        run: () => {
+          commandContext.execute(DeleteSelectedInstance);
+          toast.info("Instance deleted");
+        },
+      },
+      ...clipboardItems(s),
       {
         kind: "check",
         id: "labels.markNegative",
@@ -631,6 +631,7 @@ function predictMenu(s: MenuSnapshot): TopMenu {
     items: [
       { kind: "item", id: "predict.training", label: "Training...", run: () => store().openPanel("training") },
       { kind: "item", id: "predict.inference", label: "Inference / Run Prediction...", run: () => store().openPanel("inference") },
+      { kind: "item", id: "predict.connect", label: "Connect (Remote Training / Inference)...", run: () => store().setConnectWindowOpen(true) },
       SEP,
       { kind: "item", id: "predict.exportPackage", label: "Export Labels Package...", enabled: s.projectLoaded, run: () => store().setExportPackageDialogOpen(true) },
       {
@@ -823,17 +824,17 @@ function helpMenu(): TopMenu {
 
 export function buildAppMenu(s: MenuSnapshot): AppMenu {
   return [
+    // The order of PyQt SLEAP's menus.
     fileMenu(s),
-    editMenu(s),
     goMenu(s),
     viewMenu(s),
-    panelsMenu(s),
     labelsMenu(s),
-    predictMenu(s),
-    tracksMenu(s),
     analyzeMenu(s),
-    // Top-level, like Start Tutorial: the Connect window works with or
-    // without a project, so it shouldn't hide inside a project-only menu.
+    tracksMenu(s),
+    predictMenu(s),
+    // Also a button in the in-window bar, like Start Tutorial: the Connect
+    // window works with or without a project, so it's kept in sight. (It's
+    // in Predict too, which is where Search Menus and the native menu list it.)
     { kind: "action", id: "connect", label: "Connect", searchGroup: "Predict", run: () => store().setConnectWindowOpen(true) },
     { kind: "action", id: "tutorial", label: "Start Tutorial", searchGroup: "Help", run: () => void requestStartTutorial() },
     helpMenu(),

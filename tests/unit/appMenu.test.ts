@@ -70,11 +70,21 @@ const find = (menu: AppMenu, id: string) => all(menu).find((n) => "id" in n && n
 const top = (menu: AppMenu, id: string) => menu.find((t) => t.id === id) as TopMenu;
 
 describe("buildAppMenu", () => {
-  it("has the menus in order, with Connect and Start Tutorial as buttons", () => {
+  it("has PyQt SLEAP's menus in its order, with Connect and Start Tutorial as buttons", () => {
     expect(buildAppMenu(BASE).map((t) => t.label)).toEqual([
-      "File", "Edit", "Go", "View", "Panels", "Labels", "Predict", "Tracks", "Analyze",
+      "File", "Go", "View", "Labels", "Analyze", "Tracks", "Predict",
       "Connect", "Start Tutorial", "Help",
     ]);
+  });
+
+  it("has Panels under View, the clipboard and undo under Labels, Connect under Predict", () => {
+    const menu = buildAppMenu(BASE);
+    expect(find(menu, "view.panels")).toMatchObject({ kind: "submenu", label: "Panels" });
+    expect(top(menu, "labels").items[0]).toMatchObject({ id: "labels.undo" });
+    expect(find(menu, "labels.copyInstance")).toBeDefined();
+    const predict = top(menu, "predict").items.map((n) => ("id" in n ? n.id : n.kind));
+    expect(predict.slice(0, 3)).toEqual(["predict.training", "predict.inference", "predict.connect"]);
+    expect(find(menu, "predict.connect")).toMatchObject({ label: "Connect (Remote Training / Inference)..." });
   });
 
   it("gives every node a unique id", () => {
@@ -100,8 +110,8 @@ describe("buildAppMenu", () => {
 
   it("names undo after the command, and disables redo with nothing to redo", () => {
     const menu = buildAppMenu(BASE);
-    expect(find(menu, "edit.undo")).toMatchObject({ label: "Undo Move Node" });
-    expect(find(menu, "edit.redo")).toMatchObject({ label: "Redo", enabled: false });
+    expect(find(menu, "labels.undo")).toMatchObject({ label: "Undo Move Node" });
+    expect(find(menu, "labels.redo")).toMatchObject({ label: "Redo", enabled: false });
   });
 
   it("lists the project's videos and tracks, and drops track menus with no tracks", () => {
@@ -143,15 +153,17 @@ describe("searchableCommands", () => {
 
   it("includes every menu, the top-level buttons, and the dynamic lists", () => {
     expect(new Set(cmds.map((c) => c.group))).toEqual(
-      new Set(["File", "Edit", "Go", "View", "Panels", "Labels", "Predict", "Tracks", "Analyze", "Help"]),
+      new Set(["File", "Go", "View", "Labels", "Analyze", "Tracks", "Predict", "Help"]),
     );
-    expect(labels).toContain("Predict: Connect");
+    expect(labels).toContain("Predict: Connect (Remote Training / Inference)");
+    // Listed once (the in-window Connect button isn't a second entry).
+    expect(labels.filter((l) => l.startsWith("Predict: Connect"))).toHaveLength(1);
     expect(labels).toContain("Help: Start Tutorial");
     expect(labels).toContain("Tracks: Delete Track › mouse2");
   });
 
   it("leaves out disabled commands and Search Menus itself", () => {
-    expect(labels).not.toContain("Edit: Redo");
+    expect(labels).not.toContain("Labels: Redo");
     expect(cmds.find((c) => c.id === "help.searchMenus")).toBeUndefined();
     expect(new Set(cmds.map((c) => c.id)).size).toBe(cmds.length);
   });
