@@ -268,13 +268,15 @@ export function AppShell() {
             // With the menus in the native menu bar nothing sits between the
             // window edge and the frame viewer, so give it a margin, like
             // PyQt SLEAP's around its viewer.
-            NATIVE_MENU_BAR && "p-3 gap-3",
+            NATIVE_MENU_BAR && "p-3",
           )}
         >
           {projectLoaded ? (
             <div
               className={cn(
                 "flex-1 flex min-w-0 h-full",
+                // The same margin between the viewer and the sidebar.
+                NATIVE_MENU_BAR && "gap-3",
                 // Sidebar on the left → reverse the row so it docks left of the
                 // canvas. The Sidebar mirrors its own internals to match.
                 sidebarSide === "left" && "flex-row-reverse"
