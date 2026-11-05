@@ -109,7 +109,10 @@ const WORKER_GRAPHS: ReadonlySet<StatisticGraphType> = new Set<StatisticGraphTyp
  * Height (px) of the ruler strip at the top of the main bar: the frame
  * numbers live there, so the markers below never run over them.
  */
-const RULER_PX = 13;
+const RULER_PX = 16;
+
+/** The ruler strip's fill (the bar below it is #27272a, Tailwind zinc-800). */
+const RULER_FILL = "#1f1f23";
 
 /** The suggestion flags: small down-triangles on the top edge of the bar. */
 const SUGGESTION_FLAG_HALF_WIDTH_PX = 3;
@@ -141,7 +144,7 @@ function drawBarRuler(
   totalFrames: number,
   w: number,
 ): void {
-  ctx.fillStyle = "#1f1f23";
+  ctx.fillStyle = RULER_FILL;
   ctx.fillRect(0, 0, w, RULER_PX);
   if (totalFrames <= 1) return;
   const step = frameTickInterval(totalFrames);
@@ -1416,15 +1419,22 @@ export function Seekbar() {
       )}
 
       {/* `relative` keeps this row painted above the bands above it. */}
-      <div className="relative grid grid-cols-subgrid col-span-full items-center h-[61px] bg-card border-t border-border px-2 gap-2">
+      <div className="relative grid grid-cols-subgrid col-span-full items-center h-[64px] bg-card border-t border-border px-2 gap-2">
         {/* Seekbar canvas (relative wrapper hosts the floating hover tooltip) */}
-        {/* bg-zinc-800 = the canvas fill, so the mx-1 inset reads as part of the
-            bar; the inset keeps marks at frame 0 and N off the bar's edge. */}
-        <div className="relative min-w-0 bg-zinc-800">
+        {/* The wrapper is painted like the canvas (ruler strip on top, the bar's
+            zinc-800 below), so the mx-1 inset reads as part of both rather than
+            a bar-coloured notch beside the ruler; the inset keeps marks at frame
+            0 and N off the bar's edge. */}
+        <div
+          className="relative min-w-0"
+          style={{
+            background: `linear-gradient(to bottom, ${RULER_FILL} ${RULER_PX}px, #27272a ${RULER_PX}px)`,
+          }}
+        >
           <div
             ref={containerRef}
-            // 36px bar + the 13px ruler strip on top (RULER_PX).
-            className="mx-1 h-[49px] cursor-pointer overflow-hidden min-w-0"
+            // 36px bar + the 16px ruler strip on top (RULER_PX).
+            className="mx-1 h-[52px] cursor-pointer overflow-hidden min-w-0"
             onMouseDown={handleMouseDown}
             onMouseMove={handleMouseMove}
             onMouseUp={handleMouseUp}

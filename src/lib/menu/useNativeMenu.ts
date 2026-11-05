@@ -15,6 +15,9 @@ import { NATIVE_MENU_BAR } from "./nativeMenuBar";
 /** Where the page's single menu-click listener is kept (survives hot reloads). */
 const menuWindow = window as Window & { __sleapNativeMenuUnlisten?: () => void };
 
+/** Native menu updates slower than this are logged (see `send`). */
+const SLOW_UPDATE_MS = 50;
+
 /** Coalesce bursts of changes (e.g. a frame change) into one rebuild. */
 const REBUILD_DELAY_MS = 50;
 
@@ -53,7 +56,14 @@ export function useNativeMenu() {
       setNativeMenuShortcuts(ownedShortcuts(latest));
       try {
         const { invoke } = await import("@tauri-apps/api/core");
+        const t0 = performance.now();
         await invoke(sleapCmd("set_app_menu"), { spec });
+        const ms = performance.now() - t0;
+        // The menu bar is updated on the app's main thread: a slow update
+        // shows up as the menu bar hanging when it's clicked.
+        if (ms > SLOW_UPDATE_MS) {
+          console.warn(`[menu] native menu update took ${ms.toFixed(0)} ms (${json.length} bytes)`);
+        }
       } catch (e) {
         sent = "";
         console.error("[menu] couldn't update the native menu bar:", e);
