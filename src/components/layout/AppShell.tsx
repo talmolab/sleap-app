@@ -20,6 +20,7 @@ import type { ResolvedPath } from "@/lib/pathMappings";
 import { Toaster } from "sonner";
 import { Button } from "@/components/ui/button";
 import { MenuBar } from "./MenuBar";
+import { NATIVE_MENU_BAR } from "@/lib/menu/nativeMenuBar";
 import { StatusBar } from "./StatusBar";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { VideoPlayer } from "../video/VideoPlayer";
@@ -257,7 +258,8 @@ export function AppShell() {
 
   return (
     <div className="flex flex-col h-full w-full bg-background">
-      <MenuBar />
+      {/* On macOS desktop the menus are in the native menu bar instead. */}
+      {!NATIVE_MENU_BAR && <MenuBar />}
 
       <ErrorBoundary>
         <div className="flex-1 flex overflow-hidden relative">
