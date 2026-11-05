@@ -135,6 +135,19 @@ describe("buildAppMenu", () => {
   });
 });
 
+describe("Predict ▸ Training… / Inference…", () => {
+  it("open the panel and ask it for its Full Configuration window", async () => {
+    const { useAppStore } = await import("@/stores/appStore");
+    for (const panel of ["training", "inference"] as const) {
+      const item = find(buildAppMenu(BASE), `predict.${panel}`);
+      if (item?.kind !== "item") throw new Error("missing");
+      await item.run();
+      expect(useAppStore.getState().configDialogRequest).toBe(panel);
+      expect(useAppStore.getState().sidebarOpenPanels).toContain(panel);
+    }
+  });
+});
+
 describe("searchableCommands", () => {
   const cmds = searchableCommands(buildAppMenu(BASE));
   const labels = cmds.map((c) => `${c.group}: ${c.label}`);
