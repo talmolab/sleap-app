@@ -493,6 +493,11 @@ export interface AppState {
   labelingTipsDialogOpen: boolean;
   helpDialogOpen: boolean;
   menuSearchDialogOpen: boolean;
+  /**
+   * Predict ▸ Training… / Inference…: the panel's Full Configuration window
+   * to open once that panel is showing (it owns the window; cleared there).
+   */
+  configDialogRequest: "training" | "inference" | null;
   diagnosticsDialogOpen: boolean;
   /** The Connect window (PR4b) — paired workers and every job on them. */
   connectWindowOpen: boolean;
@@ -916,6 +921,7 @@ export const useAppStore = create<AppState>()(
       labelingTipsDialogOpen: false,
       helpDialogOpen: false,
       menuSearchDialogOpen: false,
+      configDialogRequest: null,
       diagnosticsDialogOpen: false,
       connectWindowOpen: false,
       quitConfirmOpen: false,

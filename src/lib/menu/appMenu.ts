@@ -629,8 +629,9 @@ function predictMenu(s: MenuSnapshot): TopMenu {
     id: "predict",
     label: "Predict",
     items: [
-      { kind: "item", id: "predict.training", label: "Training...", run: () => store().openPanel("training") },
-      { kind: "item", id: "predict.inference", label: "Inference / Run Prediction...", run: () => store().openPanel("inference") },
+      // The panel, and its Full Configuration window (opened by the panel).
+      { kind: "item", id: "predict.training", label: "Training...", run: () => openWithConfig("training") },
+      { kind: "item", id: "predict.inference", label: "Inference / Run Prediction...", run: () => openWithConfig("inference") },
       { kind: "item", id: "predict.connect", label: "Connect (Remote Training / Inference)...", run: () => store().setConnectWindowOpen(true) },
       SEP,
       { kind: "item", id: "predict.exportPackage", label: "Export Labels Package...", enabled: s.projectLoaded, run: () => store().setExportPackageDialogOpen(true) },
@@ -671,6 +672,11 @@ function predictMenu(s: MenuSnapshot): TopMenu {
       },
     ],
   };
+}
+
+function openWithConfig(panel: "training" | "inference") {
+  store().set("configDialogRequest", panel);
+  store().openPanel(panel);
 }
 
 function tracksMenu(s: MenuSnapshot): TopMenu {
