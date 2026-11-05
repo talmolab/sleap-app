@@ -18,8 +18,11 @@ export interface SearchableCommand {
   run: () => void | Promise<void>;
 }
 
-/** Ids left out: opening Search Menus from inside it. */
-const EXCLUDED = new Set(["help.searchMenus"]);
+/**
+ * Ids left out: opening Search Menus from inside it, and the Connect button
+ * (Predict ▸ Connect… is listed instead).
+ */
+const EXCLUDED = new Set(["help.searchMenus", "connect"]);
 
 /** "Save As..." → "Save As" (the palette reads better without the dots). */
 function bare(label: string): string {
@@ -65,6 +68,7 @@ export function searchableCommands(menu: AppMenu): SearchableCommand[] {
   };
   for (const top of menu) {
     if (top.kind === "action") {
+      if (EXCLUDED.has(top.id)) continue;
       out.push({ id: top.id, group: top.searchGroup, label: top.label, run: top.run });
     } else {
       walk(top.items, top.label, []);
