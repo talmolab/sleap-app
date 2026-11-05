@@ -8,7 +8,7 @@ is defined in terms of it.
 ## Starting from a template
 
 **File ▸ New Project…** and the **Skeleton** panel's **Load template** offer the
-skeletons legacy SLEAP ships, one per SLEAP reference dataset:
+skeletons legacy SLEAP ships, one per SLEAP reference dataset, plus a human one:
 
 | Template | Nodes | Animals |
 |---|---|---|
@@ -18,11 +18,14 @@ skeletons legacy SLEAP ships, one per SLEAP reference dataset:
 | Gerbils | 14 | Gerbils in a home cage |
 | Mice, home cage | 5 | Pairs of mice, from above |
 | Mice, open field | 11 | Mice in an open field, from below |
+| Human, COCO | 17 | People: the COCO body keypoints most human pose models use |
 | Empty — define later | none yet | |
 
 Picking one in **Load template** previews it before anything changes: a labeled
 example image, its nodes, and **Example**, which opens a larger frame from the
 reference dataset with the skeleton drawn on each animal. **Load** applies it.
+The human template isn't from a SLEAP reference dataset, so it has no
+**Example**. Its node names are COCO's own (`left_shoulder`, `right_knee`, …).
 
 Pick the closest one and edit it, or start empty.
 
