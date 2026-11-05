@@ -755,7 +755,7 @@ export function navigationDomainFromPersisted(p: {
   navigationDomain?: string;
   navigateLabeledOnly?: boolean;
 }): NavigationDomain {
-  const valid: NavigationDomain[] = ["all", "labeled", "suggested", "imaged"];
+  const valid: NavigationDomain[] = ["all", "labeled", "imaged"];
   if (p.navigationDomain && (valid as string[]).includes(p.navigationDomain)) {
     return p.navigationDomain as NavigationDomain;
   }
@@ -1139,7 +1139,7 @@ export const useAppStore = create<AppState>()(
 
       cycleNavigationDomain: () =>
         set((state) => {
-          const order: NavigationDomain[] = ["all", "labeled", "suggested", "imaged"];
+          const order: NavigationDomain[] = ["all", "labeled", "imaged"];
           const i = order.indexOf(state.navigationDomain);
           state.navigationDomain = order[(i + 1) % order.length];
         }),

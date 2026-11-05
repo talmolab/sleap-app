@@ -21,8 +21,6 @@ import { promptDialog } from "@/stores/promptStore";
 export const GoNextLabeledFrame: Command = {
   name: "GoNextLabeledFrame",
   topics: [UpdateTopic.Frame],
-  // Moving to another frame isn't an edit: no undo step (as in PyQt SLEAP).
-  skipAutoSnapshot: true,
   execute(ctx: CommandContext) {
     const { labels, video, frameIdx, editSeq } = ctx.state;
     if (!labels || !video) return;
@@ -44,8 +42,6 @@ export const GoNextLabeledFrame: Command = {
 export const GoPrevLabeledFrame: Command = {
   name: "GoPrevLabeledFrame",
   topics: [UpdateTopic.Frame],
-  // Moving to another frame isn't an edit: no undo step (as in PyQt SLEAP).
-  skipAutoSnapshot: true,
   execute(ctx: CommandContext) {
     const { labels, video, frameIdx, editSeq } = ctx.state;
     if (!labels || !video) return;
@@ -77,8 +73,6 @@ function suggestionOrder(videos: Video[]) {
 export const GoNextSuggestion: Command = {
   name: "GoNextSuggestion",
   topics: [UpdateTopic.Frame, UpdateTopic.Suggestions],
-  // Moving to another frame isn't an edit: no undo step (as in PyQt SLEAP).
-  skipAutoSnapshot: true,
   execute(ctx: CommandContext) {
     const { labels, video, frameIdx } = ctx.state;
     if (!labels || !video) return;
@@ -106,8 +100,6 @@ export const GoNextSuggestion: Command = {
 export const GoPrevSuggestion: Command = {
   name: "GoPrevSuggestion",
   topics: [UpdateTopic.Frame, UpdateTopic.Suggestions],
-  // Moving to another frame isn't an edit: no undo step (as in PyQt SLEAP).
-  skipAutoSnapshot: true,
   execute(ctx: CommandContext) {
     const { labels, video, frameIdx } = ctx.state;
     if (!labels || !video) return;
@@ -132,8 +124,6 @@ export const GoPrevSuggestion: Command = {
 export const GoToStartFrame: Command = {
   name: "GoToStartFrame",
   topics: [UpdateTopic.Frame],
-  // Moving to another frame isn't an edit: no undo step (as in PyQt SLEAP).
-  skipAutoSnapshot: true,
   execute(ctx: CommandContext) {
     ctx.state.setFrameIdx(0);
   },
@@ -143,8 +133,6 @@ export const GoToStartFrame: Command = {
 export const GoToEndFrame: Command = {
   name: "GoToEndFrame",
   topics: [UpdateTopic.Frame],
-  // Moving to another frame isn't an edit: no undo step (as in PyQt SLEAP).
-  skipAutoSnapshot: true,
   execute(ctx: CommandContext) {
     const { video } = ctx.state;
     if (!video) return;
@@ -159,8 +147,6 @@ export const GoToEndFrame: Command = {
 export const GoToFrame: Command = {
   name: "GoToFrame",
   topics: [UpdateTopic.Frame],
-  // Moving to another frame isn't an edit: no undo step (as in PyQt SLEAP).
-  skipAutoSnapshot: true,
   execute(ctx: CommandContext, params?: Record<string, unknown>) {
     const frameIdx = params?.frameIdx;
     if (typeof frameIdx !== "number") return;
@@ -172,8 +158,6 @@ export const GoToFrame: Command = {
 export const GoToLastInteracted: Command = {
   name: "GoToLastInteracted",
   topics: [UpdateTopic.Frame],
-  // Moving to another frame isn't an edit: no undo step (as in PyQt SLEAP).
-  skipAutoSnapshot: true,
   execute(ctx: CommandContext) {
     const { lastInteractedFrame } = ctx.state;
     if (lastInteractedFrame !== null) {
@@ -186,8 +170,6 @@ export const GoToLastInteracted: Command = {
 export const GoNextUserFrame: Command = {
   name: "GoNextUserFrame",
   topics: [UpdateTopic.Frame],
-  // Moving to another frame isn't an edit: no undo step (as in PyQt SLEAP).
-  skipAutoSnapshot: true,
   execute(ctx: CommandContext) {
     const { labels, video, frameIdx, editSeq } = ctx.state;
     if (!labels || !video) return;
@@ -205,8 +187,6 @@ export const GoNextUserFrame: Command = {
 export const GoPrevUserFrame: Command = {
   name: "GoPrevUserFrame",
   topics: [UpdateTopic.Frame],
-  // Moving to another frame isn't an edit: no undo step (as in PyQt SLEAP).
-  skipAutoSnapshot: true,
   execute(ctx: CommandContext) {
     const { labels, video, frameIdx, editSeq } = ctx.state;
     if (!labels || !video) return;
@@ -222,8 +202,6 @@ export const GoPrevUserFrame: Command = {
 export const GoToMarkedFrame: Command = {
   name: "GoToMarkedFrame",
   topics: [UpdateTopic.Frame],
-  // Moving to another frame isn't an edit: no undo step (as in PyQt SLEAP).
-  skipAutoSnapshot: true,
   execute(ctx: CommandContext) {
     const marked = ctx.state.markedFrame;
     if (!marked) return;
@@ -271,8 +249,6 @@ export const SelectToFrame: Command = {
 export const GoNextTrackSpawnFrame: Command = {
   name: "GoNextTrackSpawnFrame",
   topics: [UpdateTopic.Frame],
-  // Moving to another frame isn't an edit: no undo step (as in PyQt SLEAP).
-  skipAutoSnapshot: true,
   execute(ctx: CommandContext) {
     const { labels, video, frameIdx, editSeq } = ctx.state;
     if (!labels || !video) return;

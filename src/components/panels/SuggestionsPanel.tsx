@@ -7,7 +7,6 @@
 
 import { useState, useMemo, useReducer, useRef, useEffect } from "react";
 import { useAppStore } from "../../stores/appStore";
-import { commandContext, SetSuggestions } from "@/commands";
 import {
   suggestionExists,
   addSuggestionFrame,
@@ -340,10 +339,12 @@ export function SuggestionsPanel({
     setFrameIdx(suggestion.frameIdx);
   };
 
-  /** Replace labels.suggestions (an undoable edit) and re-render. */
+  /** Replace labels.suggestions, mark dirty, and force a re-render. */
   const applySuggestions = (next: SuggestionFrame[]) => {
     if (!labels) return;
-    void commandContext.execute(SetSuggestions, { suggestions: next }).then(forceUpdate);
+    labels.suggestions = next;
+    useAppStore.getState().markChanged();
+    forceUpdate();
   };
 
   /**

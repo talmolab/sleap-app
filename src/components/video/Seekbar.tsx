@@ -82,7 +82,6 @@ import {
   List,
   ListFilter,
   Images,
-  Lightbulb,
 } from "lucide-react";
 
 /** Playback speed presets. */
@@ -106,23 +105,13 @@ const WORKER_GRAPHS: ReadonlySet<StatisticGraphType> = new Set<StatisticGraphTyp
   "min-centroid-proximity",
 ]);
 
-/**
- * Height (px) of the ruler strip at the top of the main bar: the frame
- * numbers live there, so the markers below never run over them.
- */
-const RULER_PX = 16;
-
-/** The ruler strip's fill (the bar below it is #27272a, Tailwind zinc-800). */
-const RULER_FILL = "#1f1f23";
-
-/** The suggestion flags: small down-triangles on the top edge of the bar. */
-const SUGGESTION_FLAG_HALF_WIDTH_PX = 3;
-const SUGGESTION_FLAG_HEIGHT_PX = 4;
+/** Length (px) of the suggestion ticks hanging from the top of the main bar. */
+const SUGGESTION_TICK_PX = 9;
 
 /**
- * Draw frame-index gridlines onto the header canvas every N frames (PyQt-style
- * ticks — see frameTickInterval), lined up with the main bar's. No numbers:
- * the main bar right below has them, and a second row only cluttered the graph.
+ * Draw frame-index gridlines + labels onto the header canvas every N frames
+ * (PyQt-style ticks — see frameTickInterval), so a stretched header stays
+ * legible: subtle full-height verticals + small frame numbers at the top.
  */
 function drawHeaderFrameMarkers(
   ctx: CanvasRenderingContext2D,
@@ -132,32 +121,41 @@ function drawHeaderFrameMarkers(
 ): void {
   if (totalFrames <= 1) return;
   drawFrameGridlines(ctx, totalFrames, w, h);
-}
-
-/**
- * The ruler strip along the top of the main bar: a slightly darker band with
- * the frame numbers, just right of each gridline, at the size the header used
- * to show them. Fewer numbers on longer videos (frameTickInterval). A label
- * that would run off the right edge is skipped.
- */
-function drawBarRuler(
-  ctx: CanvasRenderingContext2D,
-  totalFrames: number,
-  w: number,
-): void {
-  ctx.fillStyle = RULER_FILL;
-  ctx.fillRect(0, 0, w, RULER_PX);
-  if (totalFrames <= 1) return;
   const step = frameTickInterval(totalFrames);
   ctx.save();
   ctx.font = "11px system-ui, sans-serif";
   ctx.textBaseline = "top";
+  // Frame number moved down (y=4) so the drag handle straddling the top seam
+  // doesn't overshadow it, and enlarged for legibility.
   ctx.fillStyle = "rgba(255, 255, 255, 0.7)";
+  for (let f = step; f < totalFrames; f += step) {
+    ctx.fillText(String(f), (f / (totalFrames - 1)) * w + 3, 4);
+  }
+  ctx.restore();
+}
+
+/**
+ * Frame numbers for the main bar's gridlines, just right of each line (as
+ * in the header) and along the top edge, leaving the gap below them clear
+ * above the labeled-frame marks. A label that would run off the right edge is
+ * skipped.
+ */
+function drawBarFrameLabels(
+  ctx: CanvasRenderingContext2D,
+  totalFrames: number,
+  w: number,
+): void {
+  if (totalFrames <= 1) return;
+  const step = frameTickInterval(totalFrames);
+  ctx.save();
+  ctx.font = "10px system-ui, sans-serif";
+  ctx.textBaseline = "top";
+  ctx.fillStyle = "rgba(255, 255, 255, 0.6)";
   for (let f = step; f < totalFrames; f += step) {
     const x = (f / (totalFrames - 1)) * w + 3;
     const label = String(f);
     if (x + ctx.measureText(label).width > w) continue;
-    ctx.fillText(label, x, 1);
+    ctx.fillText(label, x, 3);
   }
   ctx.restore();
 }
@@ -331,10 +329,6 @@ export function Seekbar() {
         ? domainIndices.length === 0
           ? "Navigate: labeled frames only — none in this video yet"
           : "Navigate: labeled frames only"
-        : navigationDomain === "suggested"
-          ? domainIndices.length === 0
-            ? "Navigate: suggested frames only — none in this video yet"
-            : "Navigate: suggested frames only"
         : domainIndices.length === 0
           ? videoUnavailable
             ? "Navigate: imaged frames only — no video available"
@@ -1079,38 +1073,33 @@ export function Seekbar() {
 
     const frameToX = (f: number) => (f / (totalFrames - 1)) * w;
 
-    // The ruler strip (frame numbers) on top, then gridlines through both,
-    // matching the header's, so the bar isn't a flat strip.
-    drawBarRuler(ctx, totalFrames, w);
+    // Frame gridlines + numbers, matching the header's, so the bar isn't a flat
+    // strip. Numbers sit just right of their line along the top edge, as in
+    // the header.
     drawFrameGridlines(ctx, totalFrames, w, h);
+    drawBarFrameLabels(ctx, totalFrames, w);
 
     // Draw frame range selection
     if (frameRange) {
       const x1 = frameToX(frameRange[0]);
       const x2 = frameToX(frameRange[1]);
       ctx.fillStyle = "rgba(59, 130, 246, 0.25)";
-      ctx.fillRect(x1, RULER_PX, x2 - x1, h - RULER_PX);
+      ctx.fillRect(x1, 0, x2 - x1, h);
     }
 
     // Track occupancy is drawn on its OWN dedicated strip below the bar (full
     // alpha, taller lanes — see the tracks-strip render effect) instead of being
     // crammed into ≤4px 60%-alpha lanes here, fighting the marks/playhead/hover.
 
-    // Draw suggestion frame marks: small bright-yellow flags on the bar's top
-    // edge, just under the ruler.
+    // Draw suggestion frame marks (yellow ticks at top of seekbar)
     if (labels) {
       const currentVideo = useAppStore.getState().video;
-      ctx.fillStyle = "#fde047"; // bright yellow
-      ctx.beginPath();
+      ctx.fillStyle = "rgba(250, 204, 21, 0.7)"; // yellow
       for (const sf of labels.suggestions ?? []) {
         if (sf.video !== currentVideo) continue;
         const x = frameToX(sf.frameIdx);
-        ctx.moveTo(x - SUGGESTION_FLAG_HALF_WIDTH_PX, RULER_PX);
-        ctx.lineTo(x + SUGGESTION_FLAG_HALF_WIDTH_PX, RULER_PX);
-        ctx.lineTo(x, RULER_PX + SUGGESTION_FLAG_HEIGHT_PX);
-        ctx.closePath();
+        ctx.fillRect(x - 0.5, 0, 1, SUGGESTION_TICK_PX);
       }
-      ctx.fill();
     }
 
     // Draw labeled frame marks (frame + user/predicted flag precomputed).
@@ -1122,15 +1111,15 @@ export function Seekbar() {
       }
     }
 
-    // Draw the marked-frame bookmark: an amber down-triangle "flag" at the top
-    // of the bar, larger than the yellow suggestion flags.
+    // Draw the marked-frame bookmark: an amber down-triangle "flag" at the top,
+    // distinct from the yellow suggestion ticks and the blue labeled marks.
     if (markedFrame && markedFrame.video === video) {
       const mx = frameToX(markedFrame.frameIdx);
       ctx.fillStyle = "#f59e0b"; // amber
       ctx.beginPath();
-      ctx.moveTo(mx - 4, RULER_PX);
-      ctx.lineTo(mx + 4, RULER_PX);
-      ctx.lineTo(mx, RULER_PX + 7);
+      ctx.moveTo(mx - 4, 0);
+      ctx.lineTo(mx + 4, 0);
+      ctx.lineTo(mx, 7);
       ctx.closePath();
       ctx.fill();
     }
@@ -1424,22 +1413,14 @@ export function Seekbar() {
       )}
 
       {/* `relative` keeps this row painted above the bands above it. */}
-      <div className="relative grid grid-cols-subgrid col-span-full items-center h-[64px] bg-card border-t border-border px-2 gap-2">
+      <div className="relative grid grid-cols-subgrid col-span-full items-center h-12 bg-card border-t border-border px-2 gap-2">
         {/* Seekbar canvas (relative wrapper hosts the floating hover tooltip) */}
-        {/* The wrapper is painted like the canvas (ruler strip on top, the bar's
-            zinc-800 below), so the mx-1 inset reads as part of both rather than
-            a bar-coloured notch beside the ruler; the inset keeps marks at frame
-            0 and N off the bar's edge. */}
-        <div
-          className="relative min-w-0"
-          style={{
-            background: `linear-gradient(to bottom, ${RULER_FILL} ${RULER_PX}px, #27272a ${RULER_PX}px)`,
-          }}
-        >
+        {/* bg-zinc-800 = the canvas fill, so the mx-1 inset reads as part of the
+            bar; the inset keeps marks at frame 0 and N off the bar's edge. */}
+        <div className="relative min-w-0 bg-zinc-800">
           <div
             ref={containerRef}
-            // 36px bar + the 16px ruler strip on top (RULER_PX).
-            className="mx-1 h-[52px] cursor-pointer overflow-hidden min-w-0"
+            className="mx-1 h-9 cursor-pointer overflow-hidden min-w-0"
             onMouseDown={handleMouseDown}
             onMouseMove={handleMouseMove}
             onMouseUp={handleMouseUp}
@@ -1471,7 +1452,7 @@ export function Seekbar() {
         {/* Transport controls */}
         <TooltipProvider delayDuration={300}>
           <div className={`flex gap-0.5 shrink-0 items-center ${controlsOrder}`}>
-          {/* Navigation domain: All -> Labeled -> Suggested -> Imaged (#137) */}
+          {/* Tri-state navigation domain: All -> Labeled -> Imaged (#137) */}
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
@@ -1484,8 +1465,6 @@ export function Seekbar() {
                   <List />
                 ) : navigationDomain === "labeled" ? (
                   <ListFilter />
-                ) : navigationDomain === "suggested" ? (
-                  <Lightbulb />
                 ) : (
                   <Images />
                 )}

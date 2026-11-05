@@ -1,9 +1,6 @@
 /**
  * Keeps the window/tab title in sync with the open project, mirroring PyQt
- * SLEAP's MainWindow.setWindowTitle ("{filename} - SLEAP v{version}"), where
- * the filename is the project's full path — so two projects with the same
- * name in different folders can be told apart. (A browser has no path for
- * a file it opened, so it shows the name.)
+ * SLEAP's MainWindow.setWindowTitle ("{filename} - SLEAP v{version}").
  *
  * - Browser: sets document.title (tab title; no native title bar exists).
  * - Tauri: also calls getCurrentWindow().setTitle (native title bar). This
@@ -44,11 +41,10 @@ export function formatWindowTitle(
 /** Effect hook: sync document.title and (in Tauri) the native window title. */
 export function useWindowTitle(): void {
   const filename = useAppStore((s) => s.filename);
-  const projectPath = useAppStore((s) => s.projectPath);
   const hasChanges = useAppStore((s) => s.hasChanges);
 
   useEffect(() => {
-    const title = formatWindowTitle(projectPath ?? filename, hasChanges, APP_VERSION);
+    const title = formatWindowTitle(filename, hasChanges, APP_VERSION);
     document.title = title;
     if (isTauri) {
       loadTauriWindowApi()
@@ -57,5 +53,5 @@ export function useWindowTitle(): void {
           console.warn("[title] setTitle failed:", err);
         });
     }
-  }, [filename, projectPath, hasChanges]);
+  }, [filename, hasChanges]);
 }

@@ -1726,36 +1726,3 @@ describe("Navigation commands (new)", () => {
     });
   });
 });
-
-describe("undo: navigation and suggestion edits", () => {
-  let ctx: CommandContext;
-
-  beforeEach(() => {
-    resetStore();
-    ctx = new CommandContext();
-  });
-
-  it("navigation is not an undoable edit", async () => {
-    setupProjectInStore({ numFrames: 5, numInstancesPerFrame: 1 });
-    await ctx.execute(GoNextLabeledFrame);
-    await ctx.execute(GoToFrame, { frameIdx: 3 });
-    await ctx.execute(GoNextSuggestion);
-    expect(ctx.canUndo).toBe(false);
-  });
-
-  it("clearing suggestions is undoable, and undo restores just that", async () => {
-    const { labels, video } = setupProjectInStore({ numFrames: 5, numInstancesPerFrame: 1 });
-    const { SetSuggestions } = await import("@/commands");
-    const { SuggestionFrame } = await import("@talmolab/sleap-io.js");
-    labels.suggestions = [new SuggestionFrame({ video, frameIdx: 1 }), new SuggestionFrame({ video, frameIdx: 3 })];
-    const before = [...labels.suggestions];
-
-    await ctx.execute(SetSuggestions, { suggestions: [] });
-    expect(labels.suggestions).toEqual([]);
-    expect(ctx.undoCommandName).toBe("EditSuggestions");
-
-    ctx.undo();
-    expect(labels.suggestions).toEqual(before);
-    expect(ctx.canUndo).toBe(false);
-  });
-});
