@@ -719,7 +719,7 @@ function tracksMenu(s: MenuSnapshot): TopMenu {
       shortcut: "$mod+Shift+Backspace",
       enabled: s.hasInstance,
       run: async () => {
-        if (await confirmDeleteInstanceAndTrack()) commandContext.execute(DeleteInstanceAndTrack);
+        if (await confirmDeleteInstanceAndTrack(commandContext.state)) commandContext.execute(DeleteInstanceAndTrack);
       },
     },
     SEP,

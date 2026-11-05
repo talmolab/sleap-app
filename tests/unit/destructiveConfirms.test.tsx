@@ -138,7 +138,11 @@ describe("shared track-delete prompts", () => {
   beforeEach(() => useConfirmStore.setState({ request: null }));
 
   for (const [label, ask, text] of [
-    ["Delete Instance and Track", confirmDeleteInstanceAndTrack, "Delete this instance and its track?"],
+    [
+      "Delete Instance and Track",
+      () => confirmDeleteInstanceAndTrack({ labels: null, video: null, instance: null }),
+      "Delete this instance? It isn't on a track, so nothing else is deleted.",
+    ],
     ["Delete Unused Tracks", confirmDeleteUnusedTracks, "Delete all unused tracks?"],
   ] as const) {
     it(`${label}: resolves with the user's answer`, async () => {
