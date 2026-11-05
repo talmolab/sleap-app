@@ -14,8 +14,14 @@
 //! ran. The app's Labels ▸ Undo shows the shortcut as a hint and its own key
 //! handler does the work.
 
+use std::collections::HashMap;
+use std::fmt::Write as _;
+use std::sync::Mutex;
+
 use serde::Deserialize;
-use tauri::menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::menu::{
+    CheckMenuItem, IsMenuItem, Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu,
+};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 /// The event a clicked item's id is sent on.
@@ -153,11 +159,139 @@ pub fn build_menu<R: Runtime>(app: &AppHandle<R>, spec: &MenuSpec) -> tauri::Res
     Ok(menu)
 }
 
-/// Replace the menu bar with one built from the web app's menus.
+/// The installed menu's shape (see `shape_of`), to tell a change of labels,
+/// checkmarks or enabled state — applied in place — from one that needs a
+/// rebuild.
+#[derive(Default)]
+struct InstalledShape(Mutex<Option<String>>);
+
+/// Everything about the menu except labels, checkmarks and enabled state:
+/// the ids, kinds and shortcuts of every item, in order.
+fn shape_of(spec: &MenuSpec) -> String {
+    fn walk(out: &mut String, nodes: &[MenuNode]) {
+        for node in nodes {
+            match node {
+                MenuNode::Item { id, accelerator, .. } => {
+                    let _ = write!(out, "i:{id}:{};", accelerator.as_deref().unwrap_or(""));
+                }
+                MenuNode::Check { id, accelerator, .. } => {
+                    let _ = write!(out, "c:{id}:{};", accelerator.as_deref().unwrap_or(""));
+                }
+                MenuNode::Submenu { id, items, .. } => {
+                    let _ = write!(out, "s:{id}[");
+                    walk(out, items);
+                    out.push_str("];");
+                }
+                MenuNode::Separator => out.push_str("-;"),
+            }
+        }
+    }
+    let mut out = String::new();
+    for top in &spec.menus {
+        let _ = write!(out, "{}:{}[", top.id, top.label);
+        walk(&mut out, &top.items);
+        out.push_str("];");
+    }
+    out
+}
+
+/// Every item of the installed menu by id (submenus included).
+fn items_by_id<R: Runtime>(menu: &Menu<R>) -> tauri::Result<HashMap<String, MenuItemKind<R>>> {
+    fn walk<R: Runtime>(
+        out: &mut HashMap<String, MenuItemKind<R>>,
+        items: Vec<MenuItemKind<R>>,
+    ) -> tauri::Result<()> {
+        for item in items {
+            if let MenuItemKind::Submenu(sub) = &item {
+                walk(out, sub.items()?)?;
+            }
+            out.insert(item.id().0.clone(), item);
+        }
+        Ok(())
+    }
+    let mut out = HashMap::new();
+    walk(&mut out, menu.items()?)?;
+    Ok(out)
+}
+
+/// Bring the installed menu's labels, checkmarks and enabled state up to date
+/// with `spec` (same shape), touching only what changed.
+fn update_in_place<R: Runtime>(menu: &Menu<R>, spec: &MenuSpec) -> tauri::Result<()> {
+    let items = items_by_id(menu)?;
+    fn walk<R: Runtime>(
+        items: &HashMap<String, MenuItemKind<R>>,
+        nodes: &[MenuNode],
+    ) -> tauri::Result<()> {
+        for node in nodes {
+            match node {
+                MenuNode::Item { id, label, enabled, .. } => {
+                    if let Some(MenuItemKind::MenuItem(item)) = items.get(id) {
+                        if item.text()? != *label {
+                            item.set_text(label)?;
+                        }
+                        if item.is_enabled()? != *enabled {
+                            item.set_enabled(*enabled)?;
+                        }
+                    }
+                }
+                MenuNode::Check { id, label, enabled, checked, .. } => {
+                    if let Some(MenuItemKind::Check(item)) = items.get(id) {
+                        if item.text()? != *label {
+                            item.set_text(label)?;
+                        }
+                        if item.is_enabled()? != *enabled {
+                            item.set_enabled(*enabled)?;
+                        }
+                        if item.is_checked()? != *checked {
+                            item.set_checked(*checked)?;
+                        }
+                    }
+                }
+                MenuNode::Submenu { id, label, enabled, items: children } => {
+                    if let Some(MenuItemKind::Submenu(sub)) = items.get(id) {
+                        if sub.text()? != *label {
+                            sub.set_text(label)?;
+                        }
+                        if sub.is_enabled()? != *enabled {
+                            sub.set_enabled(*enabled)?;
+                        }
+                    }
+                    walk(items, children)?;
+                }
+                MenuNode::Separator => {}
+            }
+        }
+        Ok(())
+    }
+    for top in &spec.menus {
+        walk(&items, &top.items)?;
+    }
+    Ok(())
+}
+
+/// Show the web app's menus in the menu bar. When only labels, checkmarks or
+/// enabled state changed (the usual case: a selection, an edit), the
+/// installed items are updated in place — replacing the whole menu bar made
+/// it visibly flash on every click. It's rebuilt only when its shape changes
+/// (e.g. a track is added).
 #[tauri::command]
 pub fn set_app_menu<R: Runtime>(app: AppHandle<R>, spec: MenuSpec) -> Result<(), String> {
+    if app.try_state::<InstalledShape>().is_none() {
+        app.manage(InstalledShape::default());
+    }
+    let state = app.state::<InstalledShape>();
+    let mut installed = state.0.lock().map_err(|e| e.to_string())?;
+    let shape = shape_of(&spec);
+    if installed.as_deref() == Some(shape.as_str()) {
+        if let Some(menu) = app.menu() {
+            if update_in_place(&menu, &spec).is_ok() {
+                return Ok(());
+            }
+        }
+    }
     let menu = build_menu(&app, &spec).map_err(|e| e.to_string())?;
     app.set_menu(menu).map_err(|e| e.to_string())?;
+    *installed = Some(shape);
     Ok(())
 }
 
@@ -200,5 +334,31 @@ mod tests {
             MenuNode::Item { accelerator: Some(a), .. } if a == "CmdOrCtrl+S"
         ));
         assert!(matches!(&spec.menus[0].items[2], MenuNode::Check { accelerator: None, .. }));
+    }
+
+    #[test]
+    fn shape_ignores_labels_checkmarks_and_enabled_state() {
+        let parse = |json: &str| -> MenuSpec { serde_json::from_str(json).unwrap() };
+        let a = parse(
+            r#"{"menus":[{"id":"labels","label":"Labels","items":[
+                {"kind":"item","id":"labels.undo","label":"Undo","enabled":false},
+                {"kind":"check","id":"view.fit","label":"Fit","enabled":true,"checked":false}
+            ]}]}"#,
+        );
+        let b = parse(
+            r#"{"menus":[{"id":"labels","label":"Labels","items":[
+                {"kind":"item","id":"labels.undo","label":"Undo Move Node","enabled":true},
+                {"kind":"check","id":"view.fit","label":"Fit","enabled":true,"checked":true}
+            ]}]}"#,
+        );
+        let c = parse(
+            r#"{"menus":[{"id":"labels","label":"Labels","items":[
+                {"kind":"item","id":"labels.undo","label":"Undo","enabled":false},
+                {"kind":"separator"},
+                {"kind":"check","id":"view.fit","label":"Fit","enabled":true,"checked":false}
+            ]}]}"#,
+        );
+        assert_eq!(shape_of(&a), shape_of(&b));
+        assert_ne!(shape_of(&a), shape_of(&c));
     }
 }
