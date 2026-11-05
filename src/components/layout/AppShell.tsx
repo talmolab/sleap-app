@@ -268,7 +268,7 @@ export function AppShell() {
             // With the menus in the native menu bar nothing sits between the
             // window edge and the frame viewer, so give it a margin, like
             // PyQt SLEAP's around its viewer.
-            NATIVE_MENU_BAR && "p-1.5 gap-1.5",
+            NATIVE_MENU_BAR && "p-3 gap-3",
           )}
         >
           {projectLoaded ? (
