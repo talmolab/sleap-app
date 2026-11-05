@@ -173,7 +173,20 @@ export function nearestFrameInDomain(
 }
 
 /** Which frames navigation steps through (#137). */
-export type NavigationDomain = "all" | "labeled" | "imaged";
+export type NavigationDomain = "all" | "labeled" | "suggested" | "imaged";
+
+/**
+ * Sorted, unique frame indices of `video`'s labeling suggestions (the
+ * Suggestions panel's list) — the "suggested frames only" domain.
+ */
+export function suggestedFrameIndices(labels: Labels | null, video: Video | null): number[] {
+  if (!labels || !video) return [];
+  const frames = new Set<number>();
+  for (const s of labels.suggestions ?? []) {
+    if (s.video === video) frames.add(s.frameIdx);
+  }
+  return [...frames].sort((a, b) => a - b);
+}
 
 /**
  * Sorted, ascending frame indices that have an available image for `video`, or
@@ -193,6 +206,7 @@ export function imagedFrameIndices(video: Video | null): number[] | null {
  * `null` for "no restriction" (dense stepping across every frame):
  * - `"all"`     → `null`
  * - `"labeled"` → frames with a LabeledFrame (possibly empty)
+ * - `"suggested"` → the video's labeling suggestions
  * - `"imaged"`  → frames with a stored image, or `null` if every frame is imaged
  *
  * An empty array means "restricted, but nothing to visit" — callers fall back
@@ -206,6 +220,8 @@ export function navigableDomain(
   switch (mode) {
     case "labeled":
       return labeledFrameIndices(labels, video);
+    case "suggested":
+      return suggestedFrameIndices(labels, video);
     case "imaged":
       return imagedFrameIndices(video);
     case "all":

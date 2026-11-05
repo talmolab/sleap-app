@@ -301,6 +301,7 @@ function goMenu(s: MenuSnapshot): TopMenu {
         [
           ["all", "Navigate All Frames"],
           ["labeled", "Navigate Labeled Frames Only"],
+          ["suggested", "Navigate Suggested Frames Only"],
           ["imaged", "Navigate Imaged Frames Only"],
         ],
         (v) => store().setNavigationDomain(v as NavigationDomain),
