@@ -10,6 +10,9 @@ export type { Command } from "./types";
 export { CommandContext, commandContext } from "./CommandContext";
 export type { ChangeRecord } from "./CommandContext";
 
+// Suggestion commands
+export { SetSuggestions } from "./suggestionCommands";
+
 // File commands
 export {
   NewProjectCommand,
