@@ -30,14 +30,6 @@ window.sleap = { loadSlp, Mp4BoxVideoBackend, store: useAppStore, commandContext
 // (its own isolated heap) — render just the viz viewer, not the full editor.
 const vizParams = new URLSearchParams(window.location.search);
 const vizRunDir = vizParams.get("viz");
-// DEV-ONLY: `?prototype=seekbar` shows the seekbar-layout prototypes instead
-// of the app (src/components/video/prototypes/).
-const prototype = import.meta.env.DEV ? vizParams.get("prototype") : null;
-const SeekbarPrototypes = React.lazy(() =>
-  import("@/components/video/prototypes/SeekbarPrototypes").then((m) => ({
-    default: m.SeekbarPrototypes,
-  }))
-);
 
 // Diagnostics (session log + global error capture) for the main app window only —
 // the viz window is a short-lived isolated heap. Best-effort; never blocks boot.
@@ -47,11 +39,7 @@ if (!vizRunDir) {
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    {prototype === "seekbar" ? (
-      <React.Suspense fallback={null}>
-        <SeekbarPrototypes />
-      </React.Suspense>
-    ) : vizRunDir ? (
+    {vizRunDir ? (
       <VizWindow runDir={vizRunDir} title={vizParams.get("vizTitle") ?? "Model"} />
     ) : (
       <App />

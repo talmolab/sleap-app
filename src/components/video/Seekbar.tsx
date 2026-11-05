@@ -105,11 +105,15 @@ const WORKER_GRAPHS: ReadonlySet<StatisticGraphType> = new Set<StatisticGraphTyp
   "min-centroid-proximity",
 ]);
 
-/** Length (px) of the suggestion ticks hanging from the top of the main bar. */
-const SUGGESTION_TICK_PX = 9;
+/**
+ * Height (px) of the ruler strip at the top of the main bar: the frame
+ * numbers live there, so the markers below never run over them.
+ */
+const RULER_PX = 13;
 
-/** The labeled-frame marks along the bottom of the main bar: their top is this far up. */
-const LABELED_MARK_TOP_FROM_BOTTOM_PX = 14;
+/** The suggestion flags: small down-triangles on the top edge of the bar. */
+const SUGGESTION_FLAG_HALF_WIDTH_PX = 3;
+const SUGGESTION_FLAG_HEIGHT_PX = 4;
 
 /**
  * Draw frame-index gridlines onto the header canvas every N frames (PyQt-style
@@ -127,29 +131,29 @@ function drawHeaderFrameMarkers(
 }
 
 /**
- * Frame numbers for the main bar's gridlines, just right of each line and
- * centred in the band between the suggestion ticks hanging from the top edge
- * and the labeled-frame marks along the bottom, so they overlap neither; at
- * the size the header used to show them. A label that would run off the
- * right edge is skipped.
+ * The ruler strip along the top of the main bar: a slightly darker band with
+ * the frame numbers, just right of each gridline, at the size the header used
+ * to show them. Fewer numbers on longer videos (frameTickInterval). A label
+ * that would run off the right edge is skipped.
  */
-function drawBarFrameLabels(
+function drawBarRuler(
   ctx: CanvasRenderingContext2D,
   totalFrames: number,
   w: number,
-  h: number,
 ): void {
+  ctx.fillStyle = "#1f1f23";
+  ctx.fillRect(0, 0, w, RULER_PX);
   if (totalFrames <= 1) return;
   const step = frameTickInterval(totalFrames);
   ctx.save();
   ctx.font = "11px system-ui, sans-serif";
-  ctx.textBaseline = "middle";
+  ctx.textBaseline = "top";
   ctx.fillStyle = "rgba(255, 255, 255, 0.7)";
   for (let f = step; f < totalFrames; f += step) {
     const x = (f / (totalFrames - 1)) * w + 3;
     const label = String(f);
     if (x + ctx.measureText(label).width > w) continue;
-    ctx.fillText(label, x, (SUGGESTION_TICK_PX + h - LABELED_MARK_TOP_FROM_BOTTOM_PX) / 2);
+    ctx.fillText(label, x, 1);
   }
   ctx.restore();
 }
@@ -1067,34 +1071,38 @@ export function Seekbar() {
 
     const frameToX = (f: number) => (f / (totalFrames - 1)) * w;
 
-    // Frame gridlines + numbers, matching the header's, so the bar isn't a flat
-    // strip. Numbers sit just right of their line along the top edge, as in
-    // the header.
+    // The ruler strip (frame numbers) on top, then gridlines through both,
+    // matching the header's, so the bar isn't a flat strip.
+    drawBarRuler(ctx, totalFrames, w);
     drawFrameGridlines(ctx, totalFrames, w, h);
-    drawBarFrameLabels(ctx, totalFrames, w, h);
 
     // Draw frame range selection
     if (frameRange) {
       const x1 = frameToX(frameRange[0]);
       const x2 = frameToX(frameRange[1]);
       ctx.fillStyle = "rgba(59, 130, 246, 0.25)";
-      ctx.fillRect(x1, 0, x2 - x1, h);
+      ctx.fillRect(x1, RULER_PX, x2 - x1, h - RULER_PX);
     }
 
     // Track occupancy is drawn on its OWN dedicated strip below the bar (full
     // alpha, taller lanes — see the tracks-strip render effect) instead of being
     // crammed into ≤4px 60%-alpha lanes here, fighting the marks/playhead/hover.
 
-    // Draw suggestion frame marks (bright yellow ticks at the top of the
-    // bar; the frame numbers sit in the middle, clear of them).
+    // Draw suggestion frame marks: small bright-yellow flags on the bar's top
+    // edge, just under the ruler.
     if (labels) {
       const currentVideo = useAppStore.getState().video;
       ctx.fillStyle = "#fde047"; // bright yellow
+      ctx.beginPath();
       for (const sf of labels.suggestions ?? []) {
         if (sf.video !== currentVideo) continue;
         const x = frameToX(sf.frameIdx);
-        ctx.fillRect(x - 0.5, 0, 1, SUGGESTION_TICK_PX);
+        ctx.moveTo(x - SUGGESTION_FLAG_HALF_WIDTH_PX, RULER_PX);
+        ctx.lineTo(x + SUGGESTION_FLAG_HALF_WIDTH_PX, RULER_PX);
+        ctx.lineTo(x, RULER_PX + SUGGESTION_FLAG_HEIGHT_PX);
+        ctx.closePath();
       }
+      ctx.fill();
     }
 
     // Draw labeled frame marks (frame + user/predicted flag precomputed).
@@ -1102,19 +1110,19 @@ export function Seekbar() {
       for (const [f, hasUser, isNeg] of headerData.marks) {
         // red negative/background / blue user-labeled / light-blue predicted
         ctx.fillStyle = isNeg ? "#ef4444" : hasUser ? "#3b82f6" : "#67e8f9";
-        ctx.fillRect(frameToX(f) - 1, h - LABELED_MARK_TOP_FROM_BOTTOM_PX, 2, 10);
+        ctx.fillRect(frameToX(f) - 1, h - 14, 2, 10);
       }
     }
 
-    // Draw the marked-frame bookmark: an amber down-triangle "flag" at the top,
-    // distinct from the yellow suggestion ticks and the blue labeled marks.
+    // Draw the marked-frame bookmark: an amber down-triangle "flag" at the top
+    // of the bar, larger than the yellow suggestion flags.
     if (markedFrame && markedFrame.video === video) {
       const mx = frameToX(markedFrame.frameIdx);
       ctx.fillStyle = "#f59e0b"; // amber
       ctx.beginPath();
-      ctx.moveTo(mx - 4, 0);
-      ctx.lineTo(mx + 4, 0);
-      ctx.lineTo(mx, 7);
+      ctx.moveTo(mx - 4, RULER_PX);
+      ctx.lineTo(mx + 4, RULER_PX);
+      ctx.lineTo(mx, RULER_PX + 7);
       ctx.closePath();
       ctx.fill();
     }
@@ -1408,14 +1416,15 @@ export function Seekbar() {
       )}
 
       {/* `relative` keeps this row painted above the bands above it. */}
-      <div className="relative grid grid-cols-subgrid col-span-full items-center h-12 bg-card border-t border-border px-2 gap-2">
+      <div className="relative grid grid-cols-subgrid col-span-full items-center h-[61px] bg-card border-t border-border px-2 gap-2">
         {/* Seekbar canvas (relative wrapper hosts the floating hover tooltip) */}
         {/* bg-zinc-800 = the canvas fill, so the mx-1 inset reads as part of the
             bar; the inset keeps marks at frame 0 and N off the bar's edge. */}
         <div className="relative min-w-0 bg-zinc-800">
           <div
             ref={containerRef}
-            className="mx-1 h-9 cursor-pointer overflow-hidden min-w-0"
+            // 36px bar + the 13px ruler strip on top (RULER_PX).
+            className="mx-1 h-[49px] cursor-pointer overflow-hidden min-w-0"
             onMouseDown={handleMouseDown}
             onMouseMove={handleMouseMove}
             onMouseUp={handleMouseUp}
