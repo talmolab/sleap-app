@@ -32,6 +32,7 @@ const BASE: MenuSnapshot = {
   showEdges: true,
   showCrosshair: true,
   showInset: true,
+  temporalLoupe: false,
   edgeStyle: "Line",
   markerSize: 4,
   nodeLabelSize: 10,

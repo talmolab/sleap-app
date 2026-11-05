@@ -114,6 +114,7 @@ export interface MenuSnapshot {
   showEdges: boolean;
   showCrosshair: boolean;
   showInset: boolean;
+  temporalLoupe: boolean;
   edgeStyle: string;
   markerSize: number;
   nodeLabelSize: number;
@@ -410,6 +411,7 @@ function viewMenu(s: MenuSnapshot): TopMenu {
       { kind: "check", id: "view.showEdges", label: "Show Edges", checked: s.showEdges, run: toggle("showEdges") },
       { kind: "check", id: "view.crosshair", label: "Crosshair When Zoomed", checked: s.showCrosshair, run: toggle("showCrosshair") },
       { kind: "check", id: "view.magnifier", label: "Magnifier When Moving Nodes", checked: s.showInset, run: toggle("showInset") },
+      { kind: "check", id: "view.temporalLoupe", label: "Play Neighboring Frames in Magnifier", checked: s.temporalLoupe, run: toggle("temporalLoupe") },
       SEP,
       sub("edgeStyle", "Edge Style", radio("view.edgeStyle.value", s.edgeStyle, [["Line", "Line"], ["Wedge", "Wedge"]], set("edgeStyle"))),
       SEP,
