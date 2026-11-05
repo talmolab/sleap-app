@@ -12,6 +12,9 @@ import { setNativeMenuShortcuts } from "./nativeMenuOwnership";
 import type { AppMenu, MenuNode } from "./types";
 import { NATIVE_MENU_BAR } from "./nativeMenuBar";
 
+/** Where the page's single menu-click listener is kept (survives hot reloads). */
+const menuWindow = window as Window & { __sleapNativeMenuUnlisten?: () => void };
+
 /** Coalesce bursts of changes (e.g. a frame change) into one rebuild. */
 const REBUILD_DELAY_MS = 50;
 
@@ -38,11 +41,14 @@ export function useNativeMenu() {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let disposed = false;
 
-    const send = async () => {
-      if (!latest || disposed) return;
+    // The menu bar is shared by every SLEAP window: only the focused one
+    // drives it (and takes over when it gains focus), so the menu never shows
+    // another window's state.
+    const send = async (force = false) => {
+      if (!latest || disposed || !document.hasFocus()) return;
       const spec = toNativeSpec(latest);
       const json = JSON.stringify(spec);
-      if (json === sent) return; // nothing visible changed
+      if (json === sent && !force) return; // nothing visible changed
       sent = json;
       setNativeMenuShortcuts(ownedShortcuts(latest));
       try {
@@ -60,13 +66,24 @@ export function useNativeMenu() {
       timer = setTimeout(() => void send(), REBUILD_DELAY_MS);
     });
 
+    const onFocus = () => void send(true);
+    window.addEventListener("focus", onFocus);
+
     let unlisten: (() => void) | undefined;
     void import("@tauri-apps/api/event").then(({ listen }) =>
       listen<string>("app-menu", (e) => {
         if (latest) runNativeMenuItem(latest, e.payload);
       }).then((fn) => {
-        if (disposed) fn();
-        else unlisten = fn;
+        if (disposed) {
+          fn();
+          return;
+        }
+        // One listener per page, ever: a listener left behind (a hot reload
+        // that failed mid-way, a double mount) would run each click again —
+        // e.g. one file picker per stray listener for File ▸ Open Project.
+        menuWindow.__sleapNativeMenuUnlisten?.();
+        menuWindow.__sleapNativeMenuUnlisten = fn;
+        unlisten = fn;
       }),
     );
 
@@ -74,7 +91,11 @@ export function useNativeMenu() {
       disposed = true;
       clearTimeout(timer);
       unsubscribe();
+      window.removeEventListener("focus", onFocus);
       unlisten?.();
+      if (menuWindow.__sleapNativeMenuUnlisten === unlisten) {
+        menuWindow.__sleapNativeMenuUnlisten = undefined;
+      }
       setNativeMenuShortcuts([]);
     };
   }, []);

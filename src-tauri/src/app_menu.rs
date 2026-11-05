@@ -161,10 +161,22 @@ pub fn set_app_menu<R: Runtime>(app: AppHandle<R>, spec: MenuSpec) -> Result<(),
     Ok(())
 }
 
-/// Forward a clicked item's id to the web app (system items have their own
-/// behaviour; the web app ignores ids it doesn't know).
+/// Forward a clicked item's id to the window the user is working in (system
+/// items have their own behaviour; the web app ignores ids it doesn't know).
+///
+/// Only to that window: the menu bar is shared by every SLEAP window, and a
+/// broadcast had each open window run the command (File ▸ Open Project
+/// showed one file picker per window).
 pub fn forward_menu_event<R: Runtime>(app: &AppHandle<R>, id: &str) {
-    let _ = app.emit(MENU_EVENT, id.to_string());
+    let windows = app.webview_windows();
+    let target = windows
+        .values()
+        .find(|w| w.is_focused().unwrap_or(false))
+        .or_else(|| windows.get("main"))
+        .or_else(|| windows.values().next());
+    if let Some(window) = target {
+        let _ = app.emit_to(window.label(), MENU_EVENT, id.to_string());
+    }
 }
 
 #[cfg(test)]
