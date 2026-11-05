@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { QC_MODE_CHOICES } from "@/lib/instanceVisibility";
+import { windowLabel } from "@/lib/temporalContext";
 import { ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useState, useRef, useEffect, useCallback } from "react";
@@ -55,25 +56,36 @@ function Section({
 function Toggle({
   label,
   storeKey,
+  disabled = false,
 }: {
   label: string;
+  disabled?: boolean;
   storeKey:
     | "showInstances"
     | "showLabels"
     | "showEdges"
     | "showNonVisibleNodes"
     | "colorPredicted"
-    | "showInset";
+    | "showInset"
+    | "temporalLoupe"
+    | "neighborFramesEarlier"
+    | "neighborFramesLater";
 }) {
   const value = useAppStore((s) => s[storeKey]) as boolean;
   const toggle = useAppStore((s) => s.toggle);
   const bumpOverlay = useAppStore((s) => s.bumpOverlayVersion);
 
   return (
-    <label className="flex items-center gap-2 cursor-pointer text-xs text-foreground">
+    <label
+      className={cn(
+        "flex items-center gap-2 text-xs text-foreground",
+        disabled ? "cursor-not-allowed opacity-50" : "cursor-pointer"
+      )}
+    >
       <input
         type="checkbox"
         checked={value}
+        disabled={disabled}
         onChange={() => {
           toggle(storeKey);
           bumpOverlay();
@@ -121,9 +133,17 @@ function SliderRow({
   min,
   max,
   step = 1,
+  disabled = false,
 }: {
   label: string;
-  storeKey: "markerSize" | "nodeLabelSize" | "insetSize" | "insetZoom" | "trailLength";
+  disabled?: boolean;
+  storeKey:
+    | "markerSize"
+    | "nodeLabelSize"
+    | "insetSize"
+    | "insetZoom"
+    | "trailLength"
+    | "temporalWindow";
   min: number;
   max: number;
   step?: number;
@@ -133,7 +153,7 @@ function SliderRow({
   const bumpOverlay = useAppStore((s) => s.bumpOverlayVersion);
 
   return (
-    <div className="space-y-1">
+    <div className={cn("space-y-1", disabled && "opacity-50")}>
       <div className="flex items-center justify-between">
         <span className="text-xs text-muted-foreground">{label}</span>
         <span className="text-xs tabular-nums text-foreground w-6 text-right">
@@ -144,6 +164,7 @@ function SliderRow({
         min={min}
         max={max}
         step={step}
+        disabled={disabled}
         value={[value]}
         onValueChange={([v]) => {
           set(storeKey, v);
@@ -340,6 +361,9 @@ export function ViewPanel() {
   const palette = useAppStore((s) => s.palette);
   const distinctlyColor = useAppStore((s) => s.distinctlyColor);
   const trailShade = useAppStore((s) => s.trailShade);
+  const temporalLoupe = useAppStore((s) => s.temporalLoupe);
+  const neighborFramesEarlier = useAppStore((s) => s.neighborFramesEarlier);
+  const neighborFramesLater = useAppStore((s) => s.neighborFramesLater);
   const currentColormap = useAppStore((s) => s.colormap);
   const rotation = useAppStore((s) => s.rotation);
   const set = useAppStore((s) => s.set);
@@ -508,6 +532,22 @@ export function ViewPanel() {
             </SelectContent>
           </Select>
         </div>
+      </Section>
+
+      {/* Neighboring frames, shown in the magnifier without leaving this one */}
+      <Section title="Visualize Neighboring Frames">
+        <Toggle label="Play frames in magnifier" storeKey="temporalLoupe" />
+        <div className="space-y-1.5 pl-5">
+          <Toggle label="Earlier frames" storeKey="neighborFramesEarlier" disabled={!temporalLoupe} />
+          <Toggle label="Later frames" storeKey="neighborFramesLater" disabled={!temporalLoupe} />
+        </div>
+        <SliderRow
+          label={windowLabel({ earlier: neighborFramesEarlier, later: neighborFramesLater })}
+          storeKey="temporalWindow"
+          min={1}
+          max={10}
+          disabled={!temporalLoupe}
+        />
       </Section>
     </div>
   );
