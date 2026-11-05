@@ -725,6 +725,7 @@ function ViewMenu() {
   const nodeLabelSize = useAppStore((s) => s.nodeLabelSize);
   const palette = useAppStore((s) => s.palette);
   const trailLength = useAppStore((s) => s.trailLength);
+  const temporalLoupe = useAppStore((s) => s.temporalLoupe);
   const distinctlyColor = useAppStore((s) => s.distinctlyColor);
   const defaultToPan = useAppStore((s) => s.defaultToPan);
   const labelingMode = useAppStore((s) => s.labelingMode);
@@ -875,6 +876,12 @@ function ViewMenu() {
           onCheckedChange={() => toggle("showInset")}
         >
           Magnifier When Moving Nodes
+        </MenubarCheckboxItem>
+        <MenubarCheckboxItem
+          checked={temporalLoupe}
+          onCheckedChange={() => toggle("temporalLoupe")}
+        >
+          Play Neighboring Frames in Magnifier
         </MenubarCheckboxItem>
         <MenubarSeparator />
         <MenubarSub>

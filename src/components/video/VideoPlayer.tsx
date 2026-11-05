@@ -74,6 +74,17 @@ import { cn } from "@/lib/utils";
 import { toImageCoords, toSourceCoords } from "@/lib/cropTransform";
 import { shouldPrefetch, shouldDecodeAhead } from "@/lib/videoPrefetch";
 import { expandFrameBytesToRGBA, inferFrameChannels } from "@/lib/videoExport";
+import { frameToCanvas } from "@/lib/frameCanvas";
+import {
+  FUTURE_TINT,
+  LOUPE_STEP_MS,
+  PAST_TINT,
+  loupeOffsets,
+  missingSideNote,
+  neighborFrameIndices,
+  offsetLabel,
+  type NeighborPose,
+} from "@/lib/temporalContext";
 import {
   isVideoMissing,
   resolveVideoFile,
@@ -326,6 +337,22 @@ export function VideoPlayer() {
   // Rust-spawned sidecar instead.)
   const overlayBitmapRef = useRef<ImageBitmap | null>(null);
   const [overlayHeatmapVersion, setOverlayHeatmapVersion] = useState(0);
+  // Neighboring frames in the magnifier (temporal loupe): the ±temporalWindow
+  // frames around the current one, kept per video and shared across a step to
+  // the next frame (whose window mostly overlaps).
+  const temporalLoupe = useAppStore((s) => s.temporalLoupe);
+  const temporalWindow = useAppStore((s) => s.temporalWindow);
+  const neighborFramesEarlier = useAppStore((s) => s.neighborFramesEarlier);
+  const neighborFramesLater = useAppStore((s) => s.neighborFramesLater);
+  const isPlaying = useAppStore((s) => s.isPlaying);
+  const isScrubbing = useAppStore((s) => s.isScrubbing);
+  const neighborFramesRef = useRef<{
+    video: unknown;
+    frames: Map<number, OffscreenCanvas>;
+  }>({ video: null, frames: new Map() });
+  const [neighborVersion, setNeighborVersion] = useState(0);
+  // Offset of the frame the magnifier shows (0 = the current frame).
+  const [loupeOffset, setLoupeOffset] = useState(0);
   // Loopback port of the Rust-spawned overlay-serve sidecar (null until ready).
   const [overlaySidecarPort, setOverlaySidecarPort] = useState<number | null>(null);
   // The current frame's image couldn't be read (resolved backend, but this one
@@ -357,6 +384,8 @@ export function VideoPlayer() {
 
   // Store frame as ImageBitmap so we can re-draw with transforms
   const frameBitmapRef = useRef<OffscreenCanvas | null>(null);
+  // Frame index frameBitmapRef holds (it lags frameIdx while a read is in flight).
+  const frameBitmapIdxRef = useRef<number | null>(null);
 
   // Previous requested frame index, so the load effect can measure the jump
   // distance and disable read-ahead prefetch on large discrete jumps (which
@@ -740,6 +769,7 @@ export function VideoPlayer() {
             // viewed video's frame on screen, which reads as "nothing
             // happened" when a Locate-video placeholder is the only cue.
             frameBitmapRef.current = null;
+            frameBitmapIdxRef.current = null;
             setFrameDims((prev) => (prev[0] === 0 && prev[1] === 0 ? prev : [0, 0]));
             setBitmapVersion((v) => v + 1);
             useAppStore.getState().set("frameLoading", false);
@@ -846,6 +876,7 @@ export function VideoPlayer() {
         // ~200-340ms in WKWebView); running it here blocked every seek. The frame
         // now paints immediately and the histogram catches up when nav settles.
         frameBitmapRef.current = bmp;
+        frameBitmapIdxRef.current = frameIdx;
         setFrameDims((prev) => (prev[0] === bmp.width && prev[1] === bmp.height ? prev : [bmp.width, bmp.height]));
         setBitmapVersion((v) => v + 1);
         if (debugFlags.logSeeking) console.debug(`[seek] frame ${frameIdx} rendered (${bmp.width}x${bmp.height}) total ${(performance.now() - t0).toFixed(1)}ms`);
@@ -879,6 +910,7 @@ export function VideoPlayer() {
         // existence sweep.
         if (!cancelled) {
           frameBitmapRef.current = null;
+          frameBitmapIdxRef.current = null;
           setFrameDims((prev) => (prev[0] === 0 && prev[1] === 0 ? prev : [0, 0]));
           setBitmapVersion((v) => v + 1);
           setFrameImageMissing(true);
@@ -1054,6 +1086,55 @@ export function VideoPlayer() {
     ctx.drawImage(bitmap, 0, 0, fw, fh);
     ctx.restore();
   }, [overlayHeatmapVersion, overlayModelOutputs, frameDims, containerSize, zoom, panX, panY, baseScale, offsetX, offsetY, rotation]);
+
+  // Temporal context: read the neighbor frames once navigation settles (never
+  // while playing or scrubbing), nearest first, keeping the ones already read
+  // for the previous frame's window. Keyed on the shown frame (bitmapVersion),
+  // not frameIdx, so the reads start only after the current frame is on screen
+  // and rerun once a missing or lazily opened video's backend comes up.
+  useEffect(() => {
+    const store = neighborFramesRef.current;
+    if (store.video !== video) {
+      store.video = video;
+      store.frames = new Map();
+    }
+    if (!temporalLoupe && store.frames.size > 0) {
+      store.frames = new Map();
+      setNeighborVersion((v) => v + 1);
+    }
+    const centerIdx = frameBitmapIdxRef.current;
+    if (!temporalLoupe || !video || isPlaying || isScrubbing || centerIdx === null) return;
+
+    const wanted = neighborFrameIndices(
+      centerIdx,
+      temporalWindow,
+      video.shape?.[0] ?? null,
+      { earlier: neighborFramesEarlier, later: neighborFramesLater }
+    );
+    for (const idx of [...store.frames.keys()]) {
+      if (!wanted.includes(idx)) store.frames.delete(idx);
+    }
+    let cancelled = false;
+    const id = setTimeout(async () => {
+      for (const idx of wanted) {
+        if (cancelled) return;
+        if (store.frames.has(idx)) continue;
+        try {
+          const frame = await video.getFrame(idx, { prefetch: false });
+          const canvas = await frameToCanvas(frame, video.shape);
+          if (cancelled || store.video !== video) return;
+          if (canvas) store.frames.set(idx, canvas);
+        } catch {
+          // An unreadable neighbor is just left out of the context.
+        }
+      }
+      if (!cancelled) setNeighborVersion((v) => v + 1);
+    }, 200);
+    return () => {
+      cancelled = true;
+      clearTimeout(id);
+    };
+  }, [video, bitmapVersion, temporalLoupe, temporalWindow, neighborFramesEarlier, neighborFramesLater, isPlaying, isScrubbing]);
 
   // Render the frame with fit-to-window base transform + user zoom/pan
   useEffect(() => {
@@ -1258,6 +1339,77 @@ export function VideoPlayer() {
     showNonVisibleOverride,
     showNonVisibleNodes,
     video,
+    overlayVersion,
+  ]);
+
+  // Neighbor-frame poses for the magnifier: each neighbor frame's poses,
+  // colored the way that frame would color them, drawn by the loupe over the
+  // frame it is showing. A frame with user instances shows only those (its
+  // predictions are usually the same animals again); otherwise its
+  // predictions. Hidden instances stay hidden here too.
+  const neighborPoses = useMemo<NeighborPose[]>(() => {
+    if (!temporalLoupe || !showInstances || !labels || !video) return [];
+    const tracks = labels.tracks ?? [];
+    const vis = { showInstances, hiddenInstances, viewOnlyInstance, showNonVisibleOverride };
+    const numFrames = video.shape?.[0] ?? null;
+    const poses: NeighborPose[] = [];
+    const directions = { earlier: neighborFramesEarlier, later: neighborFramesLater };
+    for (const idx of neighborFrameIndices(frameIdx, temporalWindow, numFrames, directions)) {
+      const lf = labels.find({ video, frameIdx: idx })[0];
+      if (!lf) continue;
+      const frameInstanceTracks = lf.instances.map((i) => i.track);
+      const hasUser = lf.instances.some((i) => !(i instanceof PredictedInstance));
+      lf.instances.forEach((inst, instIdx) => {
+        const isPredicted = inst instanceof PredictedInstance;
+        if (hasUser && isPredicted) return;
+        if (!instanceVisible(vis, inst)) return;
+        const color = getInstanceColor(
+          palette, distinctlyColor, instIdx, inst.track, tracks, isPredicted, colorPredicted, projectHasTracks, frameInstanceTracks, trackColorOverrides
+        );
+        const nodes: RenderedNode[] = inst.points.map((point, nIdx) => {
+          const [nx, ny] = toImageCoords(video, point.xy[0], point.xy[1]);
+          return {
+            x: nx,
+            y: ny,
+            visible: point.visible && !isNaN(point.xy[0]),
+            complete: point.complete,
+            name: inst.skeleton.nodes[nIdx]?.name ?? `node_${nIdx}`,
+          };
+        });
+        const edges = inst.skeleton.edgeIndices.map(([srcIdx, dstIdx]) => ({ srcIdx, dstIdx }));
+        poses.push({
+          offset: idx - frameIdx,
+          instance: {
+            nodes,
+            edges,
+            color,
+            isPredicted,
+            isSelected: false,
+            trackName: null,
+            visible: true,
+            showNonVisible: false,
+          },
+        });
+      });
+    }
+    return poses;
+  }, [
+    temporalLoupe,
+    showInstances,
+    labels,
+    video,
+    frameIdx,
+    temporalWindow,
+    neighborFramesEarlier,
+    neighborFramesLater,
+    hiddenInstances,
+    viewOnlyInstance,
+    showNonVisibleOverride,
+    palette,
+    distinctlyColor,
+    colorPredicted,
+    projectHasTracks,
+    trackColorOverrides,
     overlayVersion,
   ]);
 
@@ -1560,11 +1712,44 @@ export function VideoPlayer() {
   const labelingMode = useAppStore((s) => s.labelingMode);
   const placementNodeIdx = useAppStore((s) => s.placementNodeIdx);
   const isPlacingNodes = labelingMode === "place" && selectedInstance !== null;
-
-  // Render zoomed inset during node drag or placement mode
   const INSET_SIZE = useAppStore((s) => s.insetSize);
   const INSET_ZOOM = useAppStore((s) => s.insetZoom);
   const showInset = useAppStore((s) => s.showInset);
+
+  // Temporal loupe: while the magnifier is up to look (hold-Shift or node
+  // placement, not while dragging a node), step it through the neighbor frames
+  // in a loop. Keypoints are hidden on the other frames, so nothing is ever
+  // placed against the wrong frame's pixels.
+  const loupeActive =
+    temporalLoupe &&
+    showInset &&
+    (isShiftHeld || isPlacingNodes) &&
+    !(interactionMode === "dragging" && !!dragNodeInfo);
+  useEffect(() => {
+    const center = frameBitmapIdxRef.current;
+    const available =
+      center === null
+        ? []
+        : [...neighborFramesRef.current.frames.keys()]
+            .map((idx) => idx - center)
+            .filter(
+              (o) =>
+                o !== 0 &&
+                Math.abs(o) <= temporalWindow &&
+                (o < 0 ? neighborFramesEarlier : neighborFramesLater)
+            );
+    const offsets = loupeActive ? loupeOffsets(available) : [0];
+    setLoupeOffset(0);
+    if (offsets.length <= 1) return;
+    let step = 0;
+    const id = setInterval(() => {
+      step = (step + 1) % offsets.length;
+      setLoupeOffset(offsets[step]);
+    }, LOUPE_STEP_MS);
+    return () => clearInterval(id);
+  }, [loupeActive, neighborVersion, bitmapVersion, temporalWindow, neighborFramesEarlier, neighborFramesLater]);
+
+  // Render zoomed inset during node drag or placement mode
   useEffect(() => {
     const inset = insetCanvasRef.current;
     if (!inset) return;
@@ -1589,7 +1774,14 @@ export function VideoPlayer() {
       return;
     }
 
-    const bmp = frameBitmapRef.current;
+    // Temporal loupe: a neighbor frame's pixels in place of this frame's.
+    const loupeFrame =
+      loupeOffset !== 0 && frameBitmapIdxRef.current !== null
+        ? neighborFramesRef.current.frames.get(
+            frameBitmapIdxRef.current + loupeOffset
+          ) ?? null
+        : null;
+    const bmp = loupeFrame ?? frameBitmapRef.current;
     if (!bmp) {
       hideInset();
       return;
@@ -1665,7 +1857,13 @@ export function VideoPlayer() {
     // placement) overlay ALL instances, so hovering shows the keypoints of
     // whatever is under the cursor. Nodes outside the magnified region are
     // clipped out below, so only nearby keypoints actually draw.
-    const insetInstances = isDragInset && overlayInst ? [overlayInst] : instances;
+    // These keypoints belong to the current frame, so none over a neighbor's
+    // pixels; the loupe draws that frame's own poses below instead.
+    const insetInstances = loupeFrame
+      ? []
+      : isDragInset && overlayInst
+        ? [overlayInst]
+        : instances;
     for (const inst of insetInstances) {
       ctx.lineWidth = 1.5;
       ctx.globalAlpha = 0.7;
@@ -1702,6 +1900,48 @@ export function VideoPlayer() {
       ctx.globalAlpha = 1;
     }
 
+    // Temporal loupe on a neighbor frame: that frame's own poses, so the
+    // keypoints match the pixels shown. Their markers (earlier filled, later
+    // rings) say these aren't the current frame's, and can't be edited.
+    if (loupeFrame) {
+      for (const { offset, instance: inst } of neighborPoses) {
+        if (offset !== loupeOffset) continue;
+        ctx.lineWidth = 1.5;
+        ctx.globalAlpha = 0.7;
+        inst.edges.forEach((edge, eIdx) => {
+          const src = inst.nodes[edge.srcIdx];
+          const dst = inst.nodes[edge.dstIdx];
+          if (!src?.visible || !dst?.visible) return;
+          const s = toInset(src.x, src.y);
+          const d = toInset(dst.x, dst.y);
+          ctx.strokeStyle = rgbToCSS(inst.edgeColors?.[eIdx] ?? inst.color);
+          ctx.beginPath();
+          ctx.moveTo(s.ix, s.iy);
+          ctx.lineTo(d.ix, d.iy);
+          ctx.stroke();
+        });
+        ctx.globalAlpha = 0.9;
+        ctx.lineWidth = 2;
+        for (let nIdx = 0; nIdx < inst.nodes.length; nIdx++) {
+          const n = inst.nodes[nIdx];
+          if (!n.visible) continue;
+          const { ix, iy } = toInset(n.x, n.y);
+          if (ix < -10 || ix > INSET_SIZE + 10 || iy < -10 || iy > INSET_SIZE + 10) continue;
+          const css = rgbToCSS(inst.nodeColors?.[nIdx] ?? inst.color);
+          ctx.beginPath();
+          ctx.arc(ix, iy, 3.5, 0, Math.PI * 2);
+          if (offset < 0) {
+            ctx.fillStyle = css;
+            ctx.fill();
+          } else {
+            ctx.strokeStyle = css;
+            ctx.stroke();
+          }
+        }
+        ctx.globalAlpha = 1;
+      }
+    }
+
     // Draw crosshair spanning full inset
     const cx = INSET_SIZE / 2;
     const cy = INSET_SIZE / 2;
@@ -1726,6 +1966,38 @@ export function VideoPlayer() {
       labelName =
         skeleton?.nodes[hoveredNode.nodeIdx]?.name ??
         `node_${hoveredNode.nodeIdx}`;
+    }
+
+    // Which frame the loupe shows: red for earlier, blue for later.
+    if (loupeActive) {
+      // On the current frame, also say when a chosen side has no frames (at
+      // the start or end of the video), or the loop looks like it's broken.
+      let text = offsetLabel(loupeFrame ? loupeOffset : 0);
+      if (!loupeFrame) {
+        const directions = { earlier: neighborFramesEarlier, later: neighborFramesLater };
+        const center = frameBitmapIdxRef.current ?? frameIdx;
+        const indices = neighborFrameIndices(center, temporalWindow, video?.shape?.[0] ?? null, directions);
+        const note = missingSideNote(
+          directions,
+          indices.some((i) => i < center),
+          indices.some((i) => i > center)
+        );
+        if (note) text = `${text} \u00b7 ${note}`;
+      }
+      ctx.font = "600 11px system-ui, -apple-system, sans-serif";
+      const boxWidth = ctx.measureText(text).width + 12;
+      const boxHeight = 16;
+      const boxX = (INSET_SIZE - boxWidth) / 2;
+      const boxY = INSET_SIZE - boxHeight - 6;
+      const tint = !loupeFrame ? null : loupeOffset < 0 ? PAST_TINT : FUTURE_TINT;
+      ctx.fillStyle = tint ? `rgb(${tint[0]}, ${tint[1]}, ${tint[2]})` : "rgba(0, 0, 0, 0.6)";
+      ctx.beginPath();
+      ctx.roundRect(boxX, boxY, boxWidth, boxHeight, 4);
+      ctx.fill();
+      ctx.fillStyle = "#ffffff";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(text, INSET_SIZE / 2, boxY + boxHeight / 2);
     }
 
     if (labelName) {
@@ -1768,6 +2040,14 @@ export function VideoPlayer() {
     placementNodeIdx,
     hoveredNode,
     showInset,
+    loupeActive,
+    loupeOffset,
+    neighborPoses,
+    neighborFramesEarlier,
+    neighborFramesLater,
+    temporalWindow,
+    frameIdx,
+    video,
   ]);
 
   // Fit view to instances when 'fit' is enabled and frame/labels change
