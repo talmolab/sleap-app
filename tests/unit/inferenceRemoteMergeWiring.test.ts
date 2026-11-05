@@ -28,7 +28,11 @@ const fetchResultBlobMock = vi.fn(async () => new Uint8Array([1, 2, 3]));
 let mockActiveTransport: string | undefined;
 vi.mock("@/stores/connectStore", () => ({
   useConnectStore: {
-    getState: () => ({ fetchResultBlob: fetchResultBlobMock, activeTransport: mockActiveTransport }),
+    getState: () => ({
+      fetchResultBlob: fetchResultBlobMock,
+      activeTransport: mockActiveTransport,
+      _client: { authenticated: true, irohConnectionId: 7 },
+    }),
   },
 }));
 
@@ -135,7 +139,7 @@ describe("fetchAndMergeRemoteResult over an iroh connection (item 2.4)", () => {
 
     expect(fetchResultBlobMock).not.toHaveBeenCalled();
     expect(loadSlpMock).not.toHaveBeenCalled();
-    expect(createTauriIrohBlobRangeSourceMock).toHaveBeenCalledWith("abc123", 4096);
+    expect(createTauriIrohBlobRangeSourceMock).toHaveBeenCalledWith(7, "abc123", 4096);
     expect(readSlpStreamingMock).toHaveBeenCalledTimes(1);
     expect(cmdArg()).toBe(MergePredictions);
     expect(paramsArg().mode).toBe("clear_all");

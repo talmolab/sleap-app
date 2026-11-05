@@ -626,6 +626,13 @@ fn window_set_file(state: tauri::State<WindowFiles>, label: String, path: Option
     state.0.lock().unwrap().insert(label, key);
 }
 
+/// Closes the iroh connections webview `label` opened, in the background.
+fn close_iroh_connections(clients: &iroh_client::IrohClients, label: &str) {
+    let clients = clients.clone();
+    let label = label.to_string();
+    tauri::async_runtime::spawn(async move { clients.close_owned_by(&label).await });
+}
+
 /// SPIKE (spike/tauri-localhost-origin): the inlined "sleap" plugin bundling the range
 /// reader's byte-pipe commands (`read_range`, `file_size`) so they resolve as
 /// `plugin:sleap|...` and stay reachable from the http://localhost (remote) origin. The
@@ -908,17 +915,26 @@ pub fn run() {
     .manage(WriteHandle(Mutex::new(None)))
     .manage(WindowFiles(Mutex::new(HashMap::new())))
     .manage(tokio::sync::Mutex::new(rtc::RtcState::new()))
-    .manage(tokio::sync::Mutex::new(iroh_client::IrohClientState::new()))
-    .manage(tokio::sync::Mutex::new(iroh_client::IrohBlobState::new()))
+    .manage(iroh_client::IrohClients::default())
     // Self-heal the open-file registry: when a window is destroyed (closed or
     // crashed) drop its claim so a later open can't be mis-routed to a dead
     // window. The frontend keeps the map otherwise (window_set_file).
+    // A reloaded page has a fresh JS heap that knows nothing of the iroh
+    // connections its previous page opened, so close them (Destroyed, below,
+    // covers a closed window).
+    .on_page_load(|webview, payload| {
+      if payload.event() == tauri::webview::PageLoadEvent::Started {
+        use tauri::Manager;
+        close_iroh_connections(webview.state::<iroh_client::IrohClients>().inner(), webview.label());
+      }
+    })
     // Native menu bar clicks (macOS): the web app runs the item by its id.
     .on_menu_event(|app, event| app_menu::forward_menu_event(app, event.id().as_ref()))
     .on_window_event(|window, event| {
       if let tauri::WindowEvent::Destroyed = event {
         use tauri::Manager;
         window.state::<WindowFiles>().0.lock().unwrap().remove(window.label());
+        close_iroh_connections(window.state::<iroh_client::IrohClients>().inner(), window.label());
         // The diagnostics "running" sentinel is intentionally NOT cleared here:
         // with multiple windows (File > New Project spawns a sibling) a per-window
         // Destroyed would clear the SHARED sentinel while other windows are still
