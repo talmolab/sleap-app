@@ -47,6 +47,22 @@ import {
   DeleteInstanceAndTrack,
 } from "../commands";
 import { requestToggleNegativeFrame } from "@/lib/negativeFrame";
+import { isNativeMenuShortcut } from "@/lib/menu/nativeMenuOwnership";
+
+type Bindings = Record<string, (e: KeyboardEvent) => void>;
+
+/** Each binding, skipped while the native menu owns its keystroke. */
+function leaveNativeMenuShortcuts(bindings: Bindings): Bindings {
+  return Object.fromEntries(
+    Object.entries(bindings).map(([binding, handler]) => [
+      binding,
+      (e: KeyboardEvent) => {
+        if (isNativeMenuShortcut(binding)) return;
+        handler(e);
+      },
+    ]),
+  );
+}
 
 function isTextInput(e: KeyboardEvent): boolean {
   const tag = (e.target as HTMLElement)?.tagName;
@@ -57,7 +73,9 @@ export function useKeyboardShortcuts() {
   useEffect(() => {
     const store = useAppStore.getState;
 
-    const unsubscribe = tinykeys(window, {
+    // On macOS desktop the native menu owns its ⌘ shortcuts: leave those to
+    // it (not preventDefault-ed, so the menu still gets the keystroke).
+    const unsubscribe = tinykeys(window, leaveNativeMenuShortcuts({
       // Frame navigation (direct store for responsiveness)
       [DEFAULT_SHORTCUTS["frame next"]]: (e) => {
         e.preventDefault();
@@ -472,7 +490,7 @@ export function useKeyboardShortcuts() {
         const prev = labels.videos[(idx - 1 + labels.videos.length) % labels.videos.length];
         if (prev) store().setVideo(prev);
       },
-    });
+    }));
 
     // Suggestion navigation fires on Space/Shift+Space *release*, not press,
     // and only if no pan-drag happened while Space was held (see

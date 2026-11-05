@@ -1,3 +1,4 @@
+mod app_menu;
 mod environment;
 mod iroh_client;
 mod rtc;
@@ -632,6 +633,7 @@ fn window_set_file(state: tauri::State<WindowFiles>, label: String, path: Option
 fn sleap_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
     tauri::plugin::Builder::new("sleap")
         .invoke_handler(tauri::generate_handler![
+            app_menu::set_app_menu,
             read_range,
             file_size,
             write_open,
@@ -911,6 +913,8 @@ pub fn run() {
     // Self-heal the open-file registry: when a window is destroyed (closed or
     // crashed) drop its claim so a later open can't be mis-routed to a dead
     // window. The frontend keeps the map otherwise (window_set_file).
+    // Native menu bar clicks (macOS): the web app runs the item by its id.
+    .on_menu_event(|app, event| app_menu::forward_menu_event(app, event.id().as_ref()))
     .on_window_event(|window, event| {
       if let tauri::WindowEvent::Destroyed = event {
         use tauri::Manager;

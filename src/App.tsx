@@ -3,6 +3,7 @@ import { AppShell } from "./components/layout/AppShell";
 import { QuitConfirmDialog } from "./components/dialogs/QuitConfirmDialog";
 import { SkeletonExitPromptDialog } from "./components/dialogs/SkeletonExitPromptDialog";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
+import { useNativeMenu } from "@/lib/menu/useNativeMenu";
 import { useWindowTitle } from "./hooks/useWindowTitle";
 import { useAppStore } from "./stores/appStore";
 import { useEnvironmentStore } from "./stores/environmentStore";
@@ -49,6 +50,7 @@ let softwareDecodingToastShown = false;
 
 export default function App() {
   useKeyboardShortcuts();
+  useNativeMenu();
   useWindowTitle();
 
   useEffect(() => {

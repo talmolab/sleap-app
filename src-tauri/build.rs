@@ -23,6 +23,8 @@ fn main() {
                     // file / native
                     "read_range",
                     "file_size",
+                    // native menu bar (macOS)
+                    "set_app_menu",
                     "write_open",
                     "write_open_append",
                     "write_at",
