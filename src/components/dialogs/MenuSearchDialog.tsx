@@ -136,6 +136,7 @@ function buildActions(): MenuAction[] {
     { group: "Go", label: "Clear Selection", shortcut: "Esc", run: () => store().setInstance(null) },
     { group: "Go", label: "Navigate All Frames", run: () => store().setNavigationDomain("all") },
     { group: "Go", label: "Navigate Labeled Frames Only", run: () => store().setNavigationDomain("labeled") },
+    { group: "Go", label: "Navigate Suggested Frames Only", run: () => store().setNavigationDomain("suggested") },
     { group: "Go", label: "Navigate Imaged Frames Only", run: () => store().setNavigationDomain("imaged") },
 
     // View

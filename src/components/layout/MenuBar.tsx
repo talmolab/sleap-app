@@ -617,6 +617,9 @@ function GoMenu() {
           <MenubarRadioItem value="labeled" disabled={!projectLoaded}>
             Navigate Labeled Frames Only
           </MenubarRadioItem>
+          <MenubarRadioItem value="suggested" disabled={!projectLoaded}>
+            Navigate Suggested Frames Only
+          </MenubarRadioItem>
           <MenubarRadioItem value="imaged" disabled={!projectLoaded}>
             Navigate Imaged Frames Only
           </MenubarRadioItem>
