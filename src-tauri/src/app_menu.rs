@@ -7,7 +7,7 @@
 //! a click in its in-window menu bar would.
 //!
 //! Around the app's menus this adds what macOS expects: the application menu
-//! (About, Hide, Quit), the system text-editing items at the top of Edit
+//! (About, Hide, Quit), a system Edit menu after File
 //! (Cut/Copy/Paste/Select All, so text fields keep working), and Window.
 //! There are deliberately NO system Undo/Redo items: their ⌘Z/⇧⌘Z would
 //! intercept the keystroke before the WebView, so the app's own undo never
@@ -121,20 +121,25 @@ pub fn build_menu<R: Runtime>(app: &AppHandle<R>, spec: &MenuSpec) -> tauri::Res
     app_menu.append(&item(app, "file.quit", "Quit SLEAP", true, Some("CmdOrCtrl+Q"))?)?;
     menu.append(&app_menu)?;
 
-    for top in &spec.menus {
+    for (i, top) in spec.menus.iter().enumerate() {
         let sub = Submenu::with_id(app, top.id.as_str(), top.label.as_str(), true)?;
-        if top.id == "edit" {
-            let text_editing: [&dyn IsMenuItem<R>; 5] = [
+        append_nodes(app, &sub, &top.items)?;
+        menu.append(&sub)?;
+        if i == 0 {
+            // Edit, after the first menu (File) as on any Mac: the app has no
+            // Edit menu of its own (like PyQt SLEAP), but text fields need
+            // the system Cut/Copy/Paste/Select All — macOS ties ⌘C/⌘V in a
+            // text field to these items.
+            let edit = Submenu::with_id(app, "system.edit", "Edit", true)?;
+            let text_editing: [&dyn IsMenuItem<R>; 4] = [
                 &PredefinedMenuItem::cut(app, None)?,
                 &PredefinedMenuItem::copy(app, None)?,
                 &PredefinedMenuItem::paste(app, None)?,
                 &PredefinedMenuItem::select_all(app, None)?,
-                &PredefinedMenuItem::separator(app)?,
             ];
-            sub.append_items(&text_editing)?;
+            edit.append_items(&text_editing)?;
+            menu.append(&edit)?;
         }
-        append_nodes(app, &sub, &top.items)?;
-        menu.append(&sub)?;
     }
 
     let window_menu = Submenu::new(app, "Window", true)?;

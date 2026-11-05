@@ -146,9 +146,12 @@ function convert(nodes: MenuNode[]): NativeNode[] {
   return out;
 }
 
-/** The in-window bar's top-level buttons, as items in a menu (native only). */
+/**
+ * The in-window bar's top-level buttons, as items in a menu (native only).
+ * Connect has no entry: Predict ▸ Connect (Remote Training / Inference)… is
+ * already in the menus.
+ */
 const ACTION_HOMES: Record<string, { menu: string; position: "start" | "end" }> = {
-  connect: { menu: "predict", position: "end" },
   tutorial: { menu: "help", position: "start" },
 };
 

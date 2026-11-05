@@ -100,10 +100,10 @@ describe("toNativeSpec", () => {
     expect(byId(go, "go.count")).toMatchObject({ kind: "item", label: "3 frames", enabled: false });
   });
 
-  it("puts Connect at the end of Predict and Start Tutorial at the top of Help", () => {
+  it("puts Start Tutorial at the top of Help, and no second Connect in Predict", () => {
     const predict = spec.menus.find((m) => m.id === "predict")!.items;
     const help = spec.menus.find((m) => m.id === "help")!.items;
-    expect(predict.at(-1)).toMatchObject({ id: "connect", label: "Connect" });
+    expect(byId(predict, "connect")).toBeUndefined();
     expect(help[0]).toMatchObject({ id: "tutorial", label: "Start Tutorial" });
   });
 });
