@@ -10,8 +10,8 @@
  * and ⌥/⇧-only combos stay with the app's own key handling, because as menu
  * shortcuts they'd fire while typing or scrubbing; they're shown as a hint
  * after the label instead. So are the text-editing keys (⌘Z/⇧⌘Z/⌘C/⌘V/⌘X/⌘A):
- * Edit keeps the system Cut/Copy/Paste/Select All for text fields, and the
- * app's handler tells a text field from the canvas.
+ * the system Cut/Copy/Paste/Select All (in Labels ▸ Text Editing) serve text
+ * fields, and the app's handler tells a text field from the canvas.
  */
 
 import { formatShortcut } from "@/lib/formatShortcut";
