@@ -236,6 +236,14 @@ export interface AppState {
   showInset: boolean;
   trailLength: number;
   trailShade: string;
+  /** Magnifier plays the ±temporalWindow frames around the cursor. Persisted. */
+  temporalLoupe: boolean;
+  /** The magnifier includes frames before the current one. Persisted. */
+  neighborFramesEarlier: boolean;
+  /** The magnifier includes frames after the current one. Persisted. */
+  neighborFramesLater: boolean;
+  /** Frames on each side of the current one the magnifier plays. Persisted. */
+  temporalWindow: number;
   lutMin: number;
   lutMax: number;
   frameHistogram: Uint32Array | null;
@@ -717,6 +725,10 @@ export const PERSISTED_KEYS: (keyof AppState)[] = [
   "showLabelingHints",
   "hasSeenLabelingHintsPrompt",
   "trailLength",
+  "temporalLoupe",
+  "neighborFramesEarlier",
+  "neighborFramesLater",
+  "temporalWindow",
   "insetSize",
   "insetZoom",
   "showInset",
@@ -827,6 +839,10 @@ export const useAppStore = create<AppState>()(
       showInset: true,
       trailLength: 0,
       trailShade: "Normal",
+      temporalLoupe: false,
+      neighborFramesEarlier: true,
+      neighborFramesLater: true,
+      temporalWindow: 2,
       lutMin: 0,
       lutMax: 255,
       frameHistogram: null,
