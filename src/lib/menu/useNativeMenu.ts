@@ -70,8 +70,12 @@ export function useNativeMenu() {
     window.addEventListener("focus", onFocus);
 
     let unlisten: (() => void) | undefined;
-    void import("@tauri-apps/api/event").then(({ listen }) =>
-      listen<string>("app-menu", (e) => {
+    // This window's own listener: Rust sends a click to the window it was
+    // made in (the focused one). The global `listen` from
+    // @tauri-apps/api/event would hear clicks meant for EVERY window, so each
+    // open window ran the command (Merge into Project, Connect, …).
+    void import("@tauri-apps/api/webviewWindow").then(({ getCurrentWebviewWindow }) =>
+      getCurrentWebviewWindow().listen<string>("app-menu", (e) => {
         if (latest) runNativeMenuItem(latest, e.payload);
       }).then((fn) => {
         if (disposed) {
