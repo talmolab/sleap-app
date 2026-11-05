@@ -7,7 +7,7 @@ import {
   capTrackedJobs,
   migrateConnectPersisted,
   resubscribeWorker,
-  syncDeviceNameFromStorage,
+  syncConnectFromStorage,
   __resetManagedConnections,
   __setManagedDeps,
 } from "@/stores/connectStore";
@@ -21,6 +21,29 @@ import {
   AUTH_UNTRUSTED,
 } from "@/lib/protocolV1/errors";
 import { buildPairCode, base64UrlEncode, fakeBytes, mistypeCode } from "./buildPairCode";
+import type { SharedConnectState } from "@/lib/connectSync";
+
+/** The shared fields of a store state, as another window would have saved them. */
+function sharedOf(s: SharedConnectState): SharedConnectState {
+  return {
+    pairedWorkers: s.pairedWorkers,
+    trackedJobs: s.trackedJobs,
+    deviceName: s.deviceName,
+    lastSelectedWorkerId: s.lastSelectedWorkerId,
+  };
+}
+
+/** A raw persisted Connect value, as a `storage` event's `newValue` carries it. */
+function storedConnect(state: SharedConnectState): string {
+  return JSON.stringify({ state, version: 3 });
+}
+
+/** Another window saving `state`: it writes the shared key, then this window gets the `storage` event. */
+function otherWindowSaves(state: SharedConnectState): void {
+  const raw = storedConnect(state);
+  localStorage.setItem("sleap-app-connect", raw);
+  syncConnectFromStorage(raw);
+}
 
 // connectStore's own actions (pairing flow, browse pagination, job
 // submission/multi-model splitting, cancel/stop) are what's under test here.
@@ -1083,7 +1106,7 @@ describe("connectStore", () => {
     it("a rename in another tab updates this tab and pushes it to this tab's workers", async () => {
       useConnectStore.setState({ deviceName: "Old" });
       await useConnectStore.getState().clientFor(OTHER_WORKER.nodeId);
-      syncDeviceNameFromStorage(JSON.stringify({ state: { deviceName: "New" }, version: 2 }));
+      otherWindowSaves({ ...sharedOf(useConnectStore.getState()), deviceName: "New" });
       expect(useConnectStore.getState().deviceName).toBe("New");
       await Promise.resolve();
       expect(lastClient().clientsRenameCalls).toEqual(["New"]);
@@ -1096,9 +1119,9 @@ describe("connectStore", () => {
     it("ignores storage writes that don't change the name, or aren't parseable", async () => {
       useConnectStore.setState({ deviceName: "Same" });
       await useConnectStore.getState().clientFor(OTHER_WORKER.nodeId);
-      syncDeviceNameFromStorage(JSON.stringify({ state: { deviceName: "Same" } }));
-      syncDeviceNameFromStorage("not json");
-      syncDeviceNameFromStorage(null);
+      otherWindowSaves(sharedOf(useConnectStore.getState()));
+      syncConnectFromStorage("not json");
+      syncConnectFromStorage(null);
       await Promise.resolve();
       expect(useConnectStore.getState().deviceName).toBe("Same");
       expect(lastClient().clientsRenameCalls).toEqual([]);
@@ -2501,5 +2524,116 @@ describe("capTrackedJobs", () => {
     );
 
     expect(capTrackedJobs(active)).toHaveLength(51);
+  });
+});
+
+describe("selection persisted migration (v2 -> v3)", () => {
+  it("moves the shared selectedWorkerId to lastSelectedWorkerId", () => {
+    const migrated = migrateConnectPersisted(
+      { pairedWorkers: [], selectedWorkerId: "w-1", trackedJobs: [] },
+      2,
+    ) as Record<string, unknown>;
+
+    expect(migrated.lastSelectedWorkerId).toBe("w-1");
+    expect("selectedWorkerId" in migrated).toBe(false);
+  });
+});
+
+describe("Connect state shared across windows (#453)", () => {
+  const W1: PairedWorker = { nodeId: "W1", label: "W1", addrs: ["ws://w1"], pairedAt: "2026-11-05T00:00:00Z" };
+  const W2: PairedWorker = { nodeId: "W2", label: "W2", addrs: ["ws://w2"], pairedAt: "2026-11-05T00:00:00Z" };
+  const job = (lastSeq: number): TrackedJob => ({
+    workerId: "W1",
+    jobId: "job-1",
+    lastSeq,
+    kind: "train",
+    label: "Train",
+    source: "window",
+    state: "active",
+    seen: false,
+    submittedAt: 1,
+  });
+  const stored = () =>
+    (JSON.parse(localStorage.getItem("sleap-app-connect") ?? "null") as { state: SharedConnectState }).state;
+  const settle = async () => {
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+  };
+
+  beforeEach(async () => {
+    __resetManagedConnections();
+    localStorage.clear();
+    sessionStorage.clear();
+    // Start from a clean stored copy: the first save after clearing has
+    // nothing to merge with, so it becomes this window's base.
+    useConnectStore.setState({
+      pairedWorkers: [W1],
+      trackedJobs: [job(10)],
+      deviceName: null,
+      lastSelectedWorkerId: null,
+      selectedWorkerId: null,
+    });
+    await settle();
+  });
+
+  it("keeps a worker another window paired when this window saves job progress (W1/W2)", async () => {
+    // The other window's save lands in storage before its event reaches us.
+    localStorage.setItem(
+      "sleap-app-connect",
+      storedConnect({ pairedWorkers: [W1, W2], trackedJobs: [job(10)], deviceName: null, lastSelectedWorkerId: null }),
+    );
+    useConnectStore.setState({ trackedJobs: [job(12)] });
+    await settle();
+
+    expect(stored().pairedWorkers.map((w) => w.nodeId)).toEqual(["W1", "W2"]);
+    expect(stored().trackedJobs[0].lastSeq).toBe(12);
+    // ...and this window now shows it too.
+    expect(useConnectStore.getState().pairedWorkers.map((w) => w.nodeId)).toEqual(["W1", "W2"]);
+  });
+
+  it("doesn't bring back a worker another window forgot", async () => {
+    useConnectStore.setState({ pairedWorkers: [W1, W2], selectedWorkerId: "W1" });
+    await settle();
+
+    otherWindowSaves({ pairedWorkers: [W2], trackedJobs: [], deviceName: null, lastSelectedWorkerId: "W1" });
+    await settle();
+    expect(useConnectStore.getState().pairedWorkers.map((w) => w.nodeId)).toEqual(["W2"]);
+    expect(useConnectStore.getState().selectedWorkerId).toBeNull();
+
+    useConnectStore.setState({ deviceName: "Bench" }); // any later save here
+    await settle();
+    expect(stored().pairedWorkers.map((w) => w.nodeId)).toEqual(["W2"]);
+  });
+
+  it("shows another window's path rules, and keeps them through this window's saves", async () => {
+    const rules = [{ local: "/data", remote: "/mnt/data" }] as unknown as PathMapping[];
+    otherWindowSaves({ pairedWorkers: [{ ...W1, pathRules: rules }], trackedJobs: [job(10)], deviceName: null, lastSelectedWorkerId: null });
+    await settle();
+    expect(useConnectStore.getState().pairedWorkers[0].pathRules).toEqual(rules);
+
+    useConnectStore.setState({ trackedJobs: [job(11)] });
+    await settle();
+    expect(stored().pairedWorkers[0].pathRules).toEqual(rules);
+  });
+
+  it("keeps each window's selection its own", async () => {
+    useConnectStore.setState({ pairedWorkers: [W1, W2], selectedWorkerId: "W1" });
+    await settle();
+    expect(sessionStorage.getItem("sleap-app-connect-selected")).toBe("W1");
+    expect(stored().lastSelectedWorkerId).toBe("W1");
+
+    otherWindowSaves({ pairedWorkers: [W1, W2], trackedJobs: [job(10)], deviceName: null, lastSelectedWorkerId: "W2" });
+    await settle();
+
+    expect(useConnectStore.getState().selectedWorkerId).toBe("W1");
+    expect(useConnectStore.getState().lastSelectedWorkerId).toBe("W2");
+  });
+
+  it("never lets job progress go backwards from a stale window's copy", async () => {
+    useConnectStore.setState({ trackedJobs: [job(20)] });
+    await settle();
+    otherWindowSaves({ pairedWorkers: [W1], trackedJobs: [job(15)], deviceName: null, lastSelectedWorkerId: null });
+    await settle();
+    // The other window changed the job too (10 -> 15), so both changed: max wins.
+    expect(useConnectStore.getState().trackedJobs[0].lastSeq).toBe(20);
   });
 });

@@ -23,7 +23,8 @@
  */
 import yaml from "js-yaml";
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { persist, type PersistStorage, type StorageValue } from "zustand/middleware";
+import { mergeShared, sameShared, type SharedConnectState } from "@/lib/connectSync";
 import type {
   FileEntry,
   JobResult,
@@ -216,7 +217,14 @@ const TERMINAL_JOB_STATES = new Set(["completed", "failed", "canceled"]);
 interface ConnectState {
   // ── Persisted ──────────────────────────────────────────────────
   pairedWorkers: PairedWorker[];
+  /**
+   * The worker this window works with. Per window (kept in sessionStorage,
+   * see `SELECTED_WORKER_SESSION_KEY`), not shared: another window picking a
+   * different worker never changes this one's.
+   */
   selectedWorkerId: string | null;
+  /** The worker some window most recently selected — shared; a new window's starting selection. */
+  lastSelectedWorkerId: string | null;
   trackedJobs: TrackedJob[];
   /**
    * The name this device reports to every worker (`hello`'s
@@ -612,6 +620,11 @@ export function migrateConnectPersisted(persisted: unknown, version: number): un
       : [];
     delete p.currentJob;
   }
+  if (version < 3) {
+    // The selection became per window; the shared copy only remembers the last one.
+    p.lastSelectedWorkerId = p.selectedWorkerId ?? null;
+    delete p.selectedWorkerId;
+  }
   return p;
 }
 
@@ -685,6 +698,162 @@ async function irohDial(info: IrohEndpointInfo | undefined, nodeId: string): Pro
 
 /** localStorage key the connect store persists under. */
 const CONNECT_STORAGE_KEY = "sleap-app-connect";
+const CONNECT_PERSIST_VERSION = 3;
+/** sessionStorage key for this window's selected worker (`""` = none chosen). */
+const SELECTED_WORKER_SESSION_KEY = "sleap-app-connect-selected";
+
+/**
+ * The shared copy this window last read or wrote — the `base` of every
+ * three-way merge (`mergeShared`). `null` until this window has read a
+ * current-version copy, so its first save unions instead of deleting.
+ */
+let sharedBase: SharedConnectState | null = null;
+
+function sharedSlice(state: ConnectState): SharedConnectState {
+  return {
+    pairedWorkers: state.pairedWorkers,
+    trackedJobs: state.trackedJobs,
+    deviceName: state.deviceName,
+    lastSelectedWorkerId: state.lastSelectedWorkerId,
+  };
+}
+
+/** A persisted state's shared fields, or `null` if it isn't shaped like one. */
+function toShared(state: unknown): SharedConnectState | null {
+  const p = state as Partial<SharedConnectState> | null;
+  if (!p || !Array.isArray(p.pairedWorkers) || !Array.isArray(p.trackedJobs)) return null;
+  return {
+    pairedWorkers: p.pairedWorkers,
+    trackedJobs: p.trackedJobs,
+    deviceName: typeof p.deviceName === "string" ? p.deviceName : null,
+    lastSelectedWorkerId: typeof p.lastSelectedWorkerId === "string" ? p.lastSelectedWorkerId : null,
+  };
+}
+
+/** Parses a raw stored value (any version) into the current shared shape. */
+function readStoredShared(raw: string | null): SharedConnectState | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as StorageValue<unknown>;
+    const version = parsed.version ?? 0;
+    const state =
+      version < CONNECT_PERSIST_VERSION ? migrateConnectPersisted(parsed.state, version) : parsed.state;
+    return toShared(state);
+  } catch {
+    return null;
+  }
+}
+
+function capShared(s: SharedConnectState): SharedConnectState {
+  return { ...s, trackedJobs: capTrackedJobs(s.trackedJobs) };
+}
+
+function localStore(): Storage | null {
+  try {
+    return typeof localStorage !== "undefined" ? localStorage : null;
+  } catch {
+    return null;
+  }
+}
+
+/** This window's saved selection: a worker id, `null` = deliberately none, `undefined` = never chosen here. */
+function readSessionSelection(): string | null | undefined {
+  try {
+    const v = sessionStorage.getItem(SELECTED_WORKER_SESSION_KEY);
+    return v === null ? undefined : v || null;
+  } catch {
+    return undefined;
+  }
+}
+
+function writeSessionSelection(id: string | null): void {
+  try {
+    sessionStorage.setItem(SELECTED_WORKER_SESSION_KEY, id ?? "");
+  } catch {
+    // No sessionStorage: the selection just won't survive a reload.
+  }
+}
+
+/**
+ * Puts a merged shared state into this window's store, and undoes locally
+ * whatever another window's change implies: a worker it forgot is
+ * disconnected here too (without `clients.leave` — the forgetting window
+ * already told the worker), and a new device name is pushed to this window's
+ * connected workers.
+ */
+function applyShared(merged: SharedConnectState): void {
+  const before = useConnectStore.getState();
+  const kept = new Set(merged.pairedWorkers.map((w) => w.nodeId));
+  const removed = before.pairedWorkers.filter((w) => !kept.has(w.nodeId)).map((w) => w.nodeId);
+  useConnectStore.setState(merged);
+  for (const nodeId of removed) dropWorkerLocally(nodeId);
+  if (merged.deviceName && merged.deviceName !== before.deviceName) {
+    void pushDeviceNameToConnected(merged.deviceName);
+  }
+}
+
+/** Stops this window's connection to a worker another window forgot, and deselects it. */
+function dropWorkerLocally(nodeId: string): void {
+  const mc = managed.get(nodeId);
+  managed.delete(nodeId);
+  mc?.stop();
+  const state = useConnectStore.getState();
+  const wasSelected = state.selectedWorkerId === nodeId;
+  if (wasSelected && state._client && state._client !== mc?.client) state._client.close();
+  useConnectStore.setState((s) => ({
+    connections: Object.fromEntries(Object.entries(s.connections).filter(([id]) => id !== nodeId)),
+    ...(wasSelected
+      ? {
+          selectedWorkerId: null,
+          connectionStatus: "disconnected" as ConnectionStatus,
+          connectionError: null,
+          workerMounts: [],
+          reattachableJob: null,
+          activeTransport: null,
+          _client: null,
+        }
+      : {}),
+  }));
+}
+
+/**
+ * The `persist` storage: every save is a three-way merge into the stored
+ * copy (`mergeShared`) instead of an overwrite, so a stale window can't undo
+ * another window's pairings, forgets, path rules or tracked jobs (#453). If
+ * the merge brought in another window's changes, they're applied to this
+ * window's store too.
+ */
+const sharedConnectStorage: PersistStorage<SharedConnectState> = {
+  getItem: (name) => {
+    const raw = localStore()?.getItem(name) ?? null;
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw) as StorageValue<SharedConnectState>;
+      if (parsed.version === CONNECT_PERSIST_VERSION) sharedBase = toShared(parsed.state);
+      return parsed;
+    } catch {
+      return null;
+    }
+  },
+  setItem: (name, value) => {
+    const storage = localStore();
+    if (!storage) return;
+    const mine = toShared(value.state);
+    if (!mine) return;
+    const stored = storage.getItem(name);
+    const theirs = readStoredShared(stored);
+    const merged = theirs ? capShared(mergeShared(sharedBase, mine, theirs)) : mine;
+    sharedBase = merged;
+    const raw = JSON.stringify({ state: merged, version: value.version });
+    // Skipping an unchanged write also spares the other windows a storage event.
+    if (raw !== stored) storage.setItem(name, raw);
+    if (!sameShared(merged, mine)) queueMicrotask(() => applyShared(merged));
+  },
+  removeItem: (name) => {
+    localStore()?.removeItem(name);
+    sharedBase = null;
+  },
+};
 
 let _defaultDeviceName: Promise<string> | null = null;
 
@@ -1246,6 +1415,7 @@ export const useConnectStore = create<ConnectState>()(
     (set, get) => ({
       pairedWorkers: [],
       selectedWorkerId: null,
+      lastSelectedWorkerId: null,
       trackedJobs: [],
       deviceName: null,
 
@@ -1976,42 +2146,51 @@ export const useConnectStore = create<ConnectState>()(
     }),
     {
       name: CONNECT_STORAGE_KEY,
-      version: 2,
-      partialize: (state) => ({
-        pairedWorkers: state.pairedWorkers,
-        selectedWorkerId: state.selectedWorkerId,
-        trackedJobs: state.trackedJobs,
-        deviceName: state.deviceName,
-      }),
-      migrate: migrateConnectPersisted as (persisted: unknown, version: number) => ConnectState,
+      version: CONNECT_PERSIST_VERSION,
+      storage: sharedConnectStorage,
+      partialize: sharedSlice,
+      merge: (persisted, current) => {
+        const shared = toShared(persisted);
+        if (!shared) return current;
+        const session = readSessionSelection();
+        const wanted = session !== undefined ? session : shared.lastSelectedWorkerId;
+        const paired = shared.pairedWorkers.some((w) => w.nodeId === wanted);
+        return { ...current, ...shared, selectedWorkerId: paired ? wanted : null };
+      },
+      migrate: migrateConnectPersisted as (persisted: unknown, version: number) => SharedConnectState,
     },
   ),
 );
 
 /**
- * Applies a rename made in ANOTHER tab/window (same origin = same identity,
- * same saved name). Every tab keeps its own in-memory store, so without this
- * a tab opened before the rename would send the old name in its next hello
- * and undo it on the worker. Also pushes the name to the workers this tab is
- * connected to, which the renaming tab may not be. Takes the raw persisted
- * value (`storage` event `newValue`); a no-op if the name didn't change.
+ * Applies a save made in ANOTHER tab/window (same origin = same identity,
+ * same shared Connect state). Every tab keeps its own in-memory store, so
+ * the stored copy is merged in (`mergeShared`, against the copy this tab
+ * last saw) rather than ignored — otherwise this tab would show a stale
+ * worker list and its next save would undo the other tab's changes. Takes
+ * the raw persisted value (`storage` event `newValue`); a no-op if it's
+ * unparseable or changes nothing here.
  */
-export function syncDeviceNameFromStorage(newValue: string | null): void {
-  if (!newValue) return;
-  let name: unknown;
-  try {
-    name = (JSON.parse(newValue) as { state?: { deviceName?: unknown } }).state?.deviceName;
-  } catch {
-    return;
-  }
-  if (typeof name !== "string" && name !== null) return;
-  if (name === useConnectStore.getState().deviceName) return;
-  useConnectStore.setState({ deviceName: name });
-  if (name) void pushDeviceNameToConnected(name);
+export function syncConnectFromStorage(newValue: string | null): void {
+  const theirs = readStoredShared(newValue);
+  if (!theirs) return;
+  const mine = sharedSlice(useConnectStore.getState());
+  const merged = capShared(mergeShared(sharedBase, mine, theirs));
+  sharedBase = theirs;
+  if (!sameShared(merged, mine)) applyShared(merged);
 }
 
 if (typeof window !== "undefined") {
   window.addEventListener("storage", (e) => {
-    if (e.key === CONNECT_STORAGE_KEY) syncDeviceNameFromStorage(e.newValue);
+    if (e.key === CONNECT_STORAGE_KEY) syncConnectFromStorage(e.newValue);
+  });
+  // Keep this window's selection across its own reloads, and offer it to the
+  // next window opened.
+  useConnectStore.subscribe((state, prev) => {
+    if (state.selectedWorkerId === prev.selectedWorkerId) return;
+    writeSessionSelection(state.selectedWorkerId);
+    if (state.selectedWorkerId && state.selectedWorkerId !== state.lastSelectedWorkerId) {
+      useConnectStore.setState({ lastSelectedWorkerId: state.selectedWorkerId });
+    }
   });
 }
