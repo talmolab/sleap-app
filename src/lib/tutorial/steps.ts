@@ -33,6 +33,7 @@
  */
 
 import type { Labels, Skeleton } from "@/types";
+import { NATIVE_MENU_BAR } from "@/lib/menu/nativeMenuBar";
 import { frameHasUserLabels } from "@/lib/frameLabeling";
 import type { TrainingStatus } from "@/stores/trainingStore";
 import type { InferenceStatus } from "@/stores/inferenceStore";
@@ -466,7 +467,8 @@ export const SAVE_PROJECT_STEP: TutorialStep = {
   title: "Save your project",
   body: `Save your project: open **File ▸ Save**, or press \`${SAVE_KEY}\`. The first time, you'll choose where to put the file.\n\nSLEAP projects are .slp files. The save dialog suggests the name **labels.v001.slp**. Next time, open that file (**File ▸ Open Project**) to load this project and pick up where you left off.`,
   location: "File menu",
-  targetSelector: '[data-tutorial="file-menu-trigger"]',
+  // The native menu bar (macOS desktop) has no element to point at.
+  targetSelector: NATIVE_MENU_BAR ? null : '[data-tutorial="file-menu-trigger"]',
   placement: "bottom",
   isComplete: (_entry, current) => current.hasChanges === false,
 };

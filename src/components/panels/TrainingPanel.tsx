@@ -1039,6 +1039,21 @@ export function TrainingPanel() {
   }, [log.length]);
 
   const isRunning = status === "running";
+
+  // Predict ▸ Training… asks for the Full Configuration window too: open it
+  // once there's a configuration to show (the recommended model type is
+  // picked for a freshly loaded project), and not over a running job.
+  const configDialogRequest = useAppStore((s) => s.configDialogRequest);
+  useEffect(() => {
+    if (configDialogRequest !== "training") return;
+    if (labels == null || isRunning) {
+      useAppStore.getState().set("configDialogRequest", null);
+      return;
+    }
+    if (config.configs.length === 0) return; // not picked yet: wait for it
+    useAppStore.getState().set("configDialogRequest", null);
+    setConfigDialogOpen(true);
+  }, [configDialogRequest, labels, isRunning, config.configs.length]);
   const isDone =
     status === "completed" || status === "error" || status === "stopped";
 

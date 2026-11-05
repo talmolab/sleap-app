@@ -20,6 +20,7 @@ import type { ResolvedPath } from "@/lib/pathMappings";
 import { Toaster } from "sonner";
 import { Button } from "@/components/ui/button";
 import { MenuBar } from "./MenuBar";
+import { NATIVE_MENU_BAR } from "@/lib/menu/nativeMenuBar";
 import { StatusBar } from "./StatusBar";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { VideoPlayer } from "../video/VideoPlayer";
@@ -257,14 +258,25 @@ export function AppShell() {
 
   return (
     <div className="flex flex-col h-full w-full bg-background">
-      <MenuBar />
+      {/* On macOS desktop the menus are in the native menu bar instead. */}
+      {!NATIVE_MENU_BAR && <MenuBar />}
 
       <ErrorBoundary>
-        <div className="flex-1 flex overflow-hidden relative">
+        <div
+          className={cn(
+            "flex-1 flex overflow-hidden relative",
+            // With the menus in the native menu bar nothing sits between the
+            // window edge and the frame viewer, so give it a margin, like
+            // PyQt SLEAP's around its viewer.
+            NATIVE_MENU_BAR && "p-3",
+          )}
+        >
           {projectLoaded ? (
             <div
               className={cn(
                 "flex-1 flex min-w-0 h-full",
+                // The same margin between the viewer and the sidebar.
+                NATIVE_MENU_BAR && "gap-3",
                 // Sidebar on the left → reverse the row so it docks left of the
                 // canvas. The Sidebar mirrors its own internals to match.
                 sidebarSide === "left" && "flex-row-reverse"

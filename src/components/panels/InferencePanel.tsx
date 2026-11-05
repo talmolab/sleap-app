@@ -559,6 +559,15 @@ export function InferencePanel() {
     (t) => t.name === "sleap-nn" || t.commands?.includes("sleap-nn")
   );
   const isRunning = inferenceStatus === "running";
+
+  // Predict ▸ Inference… asks for the Full Configuration window too (not over
+  // a running job).
+  const configDialogRequest = useAppStore((s) => s.configDialogRequest);
+  useEffect(() => {
+    if (configDialogRequest !== "inference") return;
+    useAppStore.getState().set("configDialogRequest", null);
+    if (!isRunning) setConfigDialogOpen(true);
+  }, [configDialogRequest, isRunning]);
   const isDone = inferenceStatus === "completed" || inferenceStatus === "error" || inferenceStatus === "cancelled";
   const activeModelPaths = remoteEnabled ? remoteModelPaths : modelPaths;
 
