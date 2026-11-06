@@ -309,3 +309,63 @@ describe("track label readability (#316)", () => {
     expect(fills.map((t) => t.text).sort()).toEqual(["Track: 1", "Track: 2"]);
   });
 });
+
+/**
+ * CanvasRenderingContext2D spy with a real `globalAlpha` + save/restore stack,
+ * recording the alpha in effect at every arc (node), stroke/fill (edge, node)
+ * and fillText (label) call.
+ */
+function mockCtxRecordingAlpha() {
+  let alpha = 1;
+  const stack: number[] = [];
+  const at = { arc: [] as number[], stroke: [] as number[], fillText: [] as number[] };
+  return new Proxy(
+    {},
+    {
+      get(_target, prop) {
+        if (prop === "__at") return at;
+        if (prop === "globalAlpha") return alpha;
+        if (prop === "save") return () => stack.push(alpha);
+        if (prop === "restore") return () => { alpha = stack.pop() ?? 1; };
+        if (prop === "arc") return () => at.arc.push(alpha);
+        if (prop === "stroke") return () => at.stroke.push(alpha);
+        if (prop === "fillText") return () => at.fillText.push(alpha);
+        if (prop === "measureText") return () => ({ width: 20 }) as TextMetrics;
+        return () => {};
+      },
+      set(_target, prop, value) {
+        if (prop === "globalAlpha") alpha = value as number;
+        return true;
+      },
+    },
+  ) as unknown as CanvasRenderingContext2D & { __at: typeof at };
+}
+
+describe("renderInstances poseOpacity (#278)", () => {
+  const twoNodes = inst({
+    nodes: [
+      { x: 1, y: 1, visible: true, complete: true, name: "a" },
+      { x: 5, y: 5, visible: true, complete: true, name: "b" },
+    ],
+    edges: [{ srcIdx: 0, dstIdx: 1 }],
+  });
+
+  it("draws nodes and edges at the chosen opacity, but keeps node labels opaque", () => {
+    const ctx = mockCtxRecordingAlpha();
+    renderInstances(ctx, [twoNodes], { poseOpacity: 0.4, showLabels: true });
+
+    expect(ctx.__at.arc.length).toBeGreaterThan(0);
+    expect(ctx.__at.arc.every((a) => a === 0.4)).toBe(true);
+    expect(ctx.__at.stroke.length).toBeGreaterThan(0);
+    expect(ctx.__at.stroke.every((a) => a === 0.4)).toBe(true);
+    expect(ctx.__at.fillText.length).toBeGreaterThan(0);
+    expect(ctx.__at.fillText.every((a) => a === 1)).toBe(true);
+  });
+
+  it("defaults to fully opaque", () => {
+    const ctx = mockCtxRecordingAlpha();
+    renderInstances(ctx, [twoNodes]);
+
+    expect(ctx.__at.arc.every((a) => a === 1)).toBe(true);
+  });
+});

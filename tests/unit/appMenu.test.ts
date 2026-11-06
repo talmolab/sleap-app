@@ -35,6 +35,7 @@ const BASE: MenuSnapshot = {
   temporalLoupe: false,
   edgeStyle: "Line",
   markerSize: 4,
+  poseOpacity: 100,
   nodeLabelSize: 10,
   trailLength: 0,
   palette: "standard",

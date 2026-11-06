@@ -133,12 +133,16 @@ function SliderRow({
   min,
   max,
   step = 1,
+  suffix = "",
   disabled = false,
 }: {
   label: string;
   disabled?: boolean;
+  /** Shown after the value, e.g. "%". */
+  suffix?: string;
   storeKey:
     | "markerSize"
+    | "poseOpacity"
     | "nodeLabelSize"
     | "insetSize"
     | "insetZoom"
@@ -156,8 +160,9 @@ function SliderRow({
     <div className={cn("space-y-1", disabled && "opacity-50")}>
       <div className="flex items-center justify-between">
         <span className="text-xs text-muted-foreground">{label}</span>
-        <span className="text-xs tabular-nums text-foreground w-6 text-right">
+        <span className="text-xs tabular-nums text-foreground min-w-6 text-right">
           {value}
+          {suffix}
         </span>
       </div>
       <Slider
@@ -445,6 +450,7 @@ export function ViewPanel() {
         </div>
         <SliderRow label="Marker size" storeKey="markerSize" min={1} max={20} />
         <SliderRow label="Label size" storeKey="nodeLabelSize" min={0} max={20} />
+        <SliderRow label="Pose opacity" storeKey="poseOpacity" min={10} max={100} step={5} suffix="%" />
         <Toggle label="Show magnifier" storeKey="showInset" />
         <SliderRow label="Inset size" storeKey="insetSize" min={100} max={800} step={10} />
         <SliderRow label="Inset zoom" storeKey="insetZoom" min={1} max={20} />

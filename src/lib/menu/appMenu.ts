@@ -117,6 +117,7 @@ export interface MenuSnapshot {
   temporalLoupe: boolean;
   edgeStyle: string;
   markerSize: number;
+  poseOpacity: number;
   nodeLabelSize: number;
   trailLength: number;
   palette: string;
@@ -424,6 +425,16 @@ function viewMenu(s: MenuSnapshot): TopMenu {
           String(s.markerSize),
           [["2", "Small (2)"], ["4", "Medium (4)"], ["6", "Large (6)"], ["8", "Extra Large (8)"]],
           setNum("markerSize"),
+        ),
+      ),
+      sub(
+        "poseOpacity",
+        "Pose Opacity",
+        radio(
+          "view.poseOpacity.value",
+          String(s.poseOpacity),
+          [["100", "100%"], ["75", "75%"], ["50", "50%"], ["25", "25%"]],
+          setNum("poseOpacity"),
         ),
       ),
       SEP,
